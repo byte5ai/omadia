@@ -10,6 +10,9 @@
  * Node builtins only — no middleware import.
  */
 
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
+
 import { HomeClient, HomeError, type HomeApi } from './homeClient.js';
 import { cloneAtBaseSha, collectDiff, type GitOptions } from './gitOps.js';
 import { bundleDiff } from './diffUpload.js';
@@ -29,6 +32,8 @@ export interface ShimDeps {
   gitBin?: string;
   now?: () => string;
   log?: (line: string) => void;
+  /** SIGTERM→SIGKILL escalation window on a wall-clock kill. Test hook. */
+  killGraceMs?: number;
 }
 
 /** Run the full shim lifecycle. Returns the process exit code. */
@@ -61,7 +66,9 @@ export async function runShim(env: ShimEnv = readShimEnv(), deps: ShimDeps = {})
 
   // 2. Heartbeat + cancel channel.
   let cancelled = false;
-  let killAgent: (() => void) | null = null;
+  let killAgent: ((signal?: NodeJS.Signals) => void) | null = null;
+  let wallTimer: NodeJS.Timeout | null = null;
+  let graceTimer: NodeJS.Timeout | null = null;
   const heartbeat = setInterval(() => {
     void home
       .heartbeat()
@@ -86,21 +93,71 @@ export async function runShim(env: ShimEnv = readShimEnv(), deps: ShimDeps = {})
     const repoDir = await cloneAtBaseSha(gitOpts, spec.repo);
 
     // 4. Drive the agent.
+    //
+    // LLM auth passthrough is GATED (see ShimEnv.llmEnvAllowed): in W0 the
+    // `OMADIA_ANTHROPIC_*` pair is the middleware's own long-lived proxy
+    // secret, so it crosses into the child ONLY when the backend was launched
+    // with the jail acknowledgment and plumbed `OMADIA_LLM_ENV_ALLOWED=true`.
+    // W1's per-job, short-lived LLM-proxy tokens replace this passthrough.
     const proxyBaseUrl = process.env['OMADIA_ANTHROPIC_BASE_URL']?.trim();
     const proxyToken = process.env['OMADIA_ANTHROPIC_AUTH_TOKEN']?.trim();
+    if (proxyToken && !env.llmEnvAllowed) {
+      log(
+        'OMADIA_ANTHROPIC_AUTH_TOKEN is set but OMADIA_LLM_ENV_ALLOWED!=true — ' +
+          'withholding LLM auth from the child (W0 jail acknowledgment missing)',
+      );
+    }
+    // The child gets a fresh, job-scoped HOME inside the workspace — never the
+    // runner user's real HOME (which holds ~/.claude credentials and config).
+    const agentHome = path.join(env.workspace, 'home');
+    await mkdir(agentHome, { recursive: true });
     const agent = runAgent({
       cliBin: env.cliBin,
       cwd: repoDir,
+      homeDir: agentHome,
       spec,
+      llmEnvAllowed: env.llmEnvAllowed,
       ...(proxyBaseUrl ? { proxyBaseUrl } : {}),
       ...(proxyToken ? { proxyToken } : {}),
       emit,
       ...(deps.now ? { now: deps.now } : {}),
     });
     killAgent = agent.kill;
+
+    // Wall-clock budget (spec §2 `limits.wall_clock_ms`): a hung CLI must not
+    // run forever while heartbeats keep the job looking alive.
+    let wallClockExpired = false;
+    const wallClockMs = spec.limits.wallClockMs;
+    const nowIso = deps.now ?? (() => new Date().toISOString());
+    if (wallClockMs > 0) {
+      wallTimer = setTimeout(() => {
+        wallClockExpired = true;
+        log(`wall-clock budget exceeded (${String(wallClockMs)} ms) — terminating agent`);
+        emit([
+          {
+            type: 'status',
+            ts: nowIso(),
+            payload: { state: 'budget_exceeded', limit: 'wallClockMs', limitMs: wallClockMs },
+          },
+        ]);
+        killAgent?.('SIGTERM');
+        graceTimer = setTimeout(() => killAgent?.('SIGKILL'), deps.killGraceMs ?? 10_000);
+      }, wallClockMs);
+    }
+
     const { code } = await agent.done;
+    if (wallTimer) clearTimeout(wallTimer);
+    if (graceTimer) clearTimeout(graceTimer);
     await postChain; // ensure every event batch has landed before the result
 
+    if (wallClockExpired) {
+      await safeResult(
+        home,
+        { outcome: 'failed', error: `wall-clock budget exceeded (${String(wallClockMs)} ms)` },
+        log,
+      );
+      return 1;
+    }
     if (cancelled) {
       await safeResult(home, { outcome: 'failed', error: 'job cancelled' }, log);
       return 1;
@@ -125,6 +182,8 @@ export async function runShim(env: ShimEnv = readShimEnv(), deps: ShimDeps = {})
     return 1;
   } finally {
     clearInterval(heartbeat);
+    if (wallTimer) clearTimeout(wallTimer);
+    if (graceTimer) clearTimeout(graceTimer);
   }
 }
 

@@ -66,23 +66,17 @@ afterEach(async () => {
 describe('runAgent', () => {
   it('translates stdout, maps stderr to a log event, and exits 0', async () => {
     const events: RunnerEvent[] = [];
-    // HOME must reach the fake so it can drop its argv log.
-    const prev = process.env['HOME'];
-    process.env['HOME'] = ws;
-    try {
-      const handle = runAgent({
-        cliBin: cli,
-        cwd: ws,
-        spec: spec(),
-        emit: (batch) => events.push(...batch),
-        flushIntervalMs: 5,
-      });
-      const { code } = await handle.done;
-      assert.equal(code, 0);
-    } finally {
-      if (prev === undefined) delete process.env['HOME'];
-      else process.env['HOME'] = prev;
-    }
+    // The child's HOME is job-scoped (cwd fallback) — the fake drops its argv
+    // log there, no parent-HOME override needed.
+    const handle = runAgent({
+      cliBin: cli,
+      cwd: ws,
+      spec: spec(),
+      emit: (batch) => events.push(...batch),
+      flushIntervalMs: 5,
+    });
+    const { code } = await handle.done;
+    assert.equal(code, 0);
 
     const types = events.map((e) => e.type);
     assert.ok(types.includes('status'), 'a status event was emitted');
@@ -95,38 +89,66 @@ describe('runAgent', () => {
   });
 
   it('passes the prompt on stdin, never argv, and includes the CLI flags', async () => {
-    const prev = process.env['HOME'];
-    process.env['HOME'] = ws;
-    try {
-      const handle = runAgent({ cliBin: cli, cwd: ws, spec: spec({ agent: { kind: 'claude-cli', model: 'opus' } }), emit: () => {} });
-      await handle.done;
-    } finally {
-      if (prev === undefined) delete process.env['HOME'];
-      else process.env['HOME'] = prev;
-    }
-    const { argv, stdin } = JSON.parse(await import('node:fs').then((m) => m.readFileSync(path.join(ws, '.cli-argv.json'), 'utf8'))) as {
+    const handle = runAgent({ cliBin: cli, cwd: ws, spec: spec({ agent: { kind: 'claude-cli', model: 'opus' } }), emit: () => {} });
+    await handle.done;
+    const { argv, stdin, env } = JSON.parse(
+      await import('node:fs').then((m) => m.readFileSync(path.join(ws, '.cli-argv.json'), 'utf8')),
+    ) as {
       argv: string[];
       stdin: string;
+      env: Record<string, string>;
     };
     assert.equal(stdin, 'PROMPT-ON-STDIN', 'prompt arrived on stdin');
     assert.ok(!argv.includes('PROMPT-ON-STDIN'), 'prompt never on argv');
     assert.ok(argv.includes('--output-format') && argv.includes('stream-json'), 'stream-json requested');
     assert.ok(argv.includes('--dangerously-skip-permissions'));
     assert.ok(argv.includes('--model') && argv.includes('opus'));
+    assert.equal(env['HOME'], ws, 'child HOME is the job workspace, not the runner HOME');
   });
 });
 
 describe('buildAgentEnv — allowlist, not scrub', () => {
-  it('excludes arbitrary parent vars and wires the proxy', () => {
+  it('excludes arbitrary parent vars', () => {
     process.env['SHIM_AGENT_CANARY'] = 'leak';
     try {
-      const env = buildAgentEnv({ cwd: '/tmp/x', proxyBaseUrl: 'http://proxy', proxyToken: 'bearer' });
+      const env = buildAgentEnv({ cwd: '/tmp/x' });
       assert.equal(env['SHIM_AGENT_CANARY'], undefined, 'parent var not forwarded');
-      assert.equal(env['ANTHROPIC_BASE_URL'], 'http://proxy', 'proxy base url wired (NOT scrubbed)');
-      assert.equal(env['ANTHROPIC_AUTH_TOKEN'], 'bearer');
       assert.ok(env['PATH'], 'PATH present so the CLI is resolvable');
     } finally {
       delete process.env['SHIM_AGENT_CANARY'];
+    }
+  });
+
+  it('withholds LLM auth without the jail acknowledgment, wires it with', () => {
+    // Default (no ack): even an explicitly supplied token must NOT cross into
+    // the child — in W0 it is the middleware's long-lived proxy secret.
+    const denied = buildAgentEnv({ cwd: '/tmp/x', proxyBaseUrl: 'http://proxy', proxyToken: 'bearer' });
+    assert.equal(denied['ANTHROPIC_AUTH_TOKEN'], undefined, 'token withheld without llmEnvAllowed');
+    assert.equal(denied['ANTHROPIC_BASE_URL'], undefined, 'base url withheld without llmEnvAllowed');
+
+    // With the acknowledgment (W0 jail) — or a W1 per-job proxy token — the
+    // routing is wired, and deliberately NOT scrubbed.
+    const allowed = buildAgentEnv({ cwd: '/tmp/x', proxyBaseUrl: 'http://proxy', proxyToken: 'bearer', llmEnvAllowed: true });
+    assert.equal(allowed['ANTHROPIC_BASE_URL'], 'http://proxy', 'proxy base url wired (NOT scrubbed)');
+    assert.equal(allowed['ANTHROPIC_AUTH_TOKEN'], 'bearer');
+  });
+
+  it('HOME is job-scoped and the parent HOME never appears in the child env', () => {
+    const prev = process.env['HOME'];
+    const canary = '/tmp/parent-home-canary-9f3a1c';
+    process.env['HOME'] = canary;
+    try {
+      const env = buildAgentEnv({ cwd: '/work/ws/repo', homeDir: '/work/ws/home' });
+      assert.equal(env['HOME'], '/work/ws/home', 'HOME is the dedicated job home dir');
+      for (const [k, v] of Object.entries(env)) {
+        assert.ok(!(v ?? '').includes(canary), `parent HOME leaked into child env var ${k}`);
+      }
+      // Fallback without a dedicated homeDir: the clone dir, still never parent.
+      const fallback = buildAgentEnv({ cwd: '/work/ws/repo' });
+      assert.equal(fallback['HOME'], '/work/ws/repo');
+    } finally {
+      if (prev === undefined) delete process.env['HOME'];
+      else process.env['HOME'] = prev;
     }
   });
 });

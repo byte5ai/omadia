@@ -205,6 +205,24 @@ describe('cloneAtBaseSha — credential handling', () => {
     assert.deepEqual(leftovers, [], 'credential file must be unlinked on failure');
   });
 
+  it('rejects a clone URL with embedded userinfo BEFORE fetching a token or invoking git', async () => {
+    let tokenFetched = false;
+    const opts = baseOpts(async () => {
+      tokenFetched = true;
+      return TOKEN;
+    });
+    await assert.rejects(
+      cloneAtBaseSha(opts, {
+        cloneUrl: 'https://someuser:supersecretpass@github.com/byte5ai/omadia.git',
+        defaultBranch: 'main',
+        baseSha: BASE_SHA,
+      }),
+      /embedded credentials/,
+    );
+    assert.equal(tokenFetched, false, 'no clone token fetched for a poisoned URL');
+    assert.deepEqual(readLog(), [], 'git was never invoked');
+  });
+
   it('refuses to attach a credential to a non-https clone URL', async () => {
     await assert.rejects(
       cloneAtBaseSha(baseOpts(), { cloneUrl: 'git@github.com:byte5ai/omadia.git', defaultBranch: 'main', baseSha: '' }),

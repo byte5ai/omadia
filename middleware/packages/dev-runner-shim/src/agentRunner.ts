@@ -22,10 +22,25 @@ export interface AgentRunOptions {
   cliBin: string;
   cwd: string;
   spec: DevJobSpec;
+  /**
+   * Fresh, job-scoped HOME for the child CLI. MUST live inside the job
+   * workspace. The parent HOME is NEVER inherited — it holds the runner
+   * user's real `~/.claude` CLI credentials and config.
+   */
+  homeDir?: string;
   /** W1 LLM proxy base URL → `ANTHROPIC_BASE_URL`. Absent in the W0 walking skeleton. */
   proxyBaseUrl?: string;
   /** Per-job bearer for the proxy → `ANTHROPIC_AUTH_TOKEN`. */
   proxyToken?: string;
+  /**
+   * Gate for handing LLM auth to the child. `false` (the default) refuses to
+   * wire `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` even when a caller
+   * supplies them — in W0 the token is a long-lived middleware secret, so it
+   * crosses into the child ONLY under the jail acknowledgment
+   * (`OMADIA_LLM_ENV_ALLOWED=true`, see `ShimEnv.llmEnvAllowed`). W1's
+   * per-job proxy tokens replace this.
+   */
+  llmEnvAllowed?: boolean;
   /** Batched event sink. The caller assigns `seq` and posts to the home API. */
   emit: (events: RunnerEvent[]) => void;
   now?: () => string;
@@ -36,8 +51,11 @@ export interface AgentRunOptions {
 export interface AgentRunHandle {
   /** Resolves with the CLI exit code once stdio has drained. */
   done: Promise<{ code: number }>;
-  /** Cooperative stop — SIGTERM the CLI (cancel path, spec §5 step 3). */
-  kill: () => void;
+  /**
+   * Cooperative stop — SIGTERM by default (cancel path, spec §5 step 3).
+   * Pass `'SIGKILL'` to escalate on a CLI that ignores the term.
+   */
+  kill: (signal?: NodeJS.Signals) => void;
 }
 
 export function runAgent(opts: AgentRunOptions): AgentRunHandle {
@@ -104,8 +122,8 @@ export function runAgent(opts: AgentRunOptions): AgentRunHandle {
 
   return {
     done,
-    kill: () => {
-      child.kill('SIGTERM');
+    kill: (signal: NodeJS.Signals = 'SIGTERM') => {
+      child.kill(signal);
     },
   };
 }
@@ -114,19 +132,31 @@ export function runAgent(opts: AgentRunOptions): AgentRunHandle {
  * The env allowlist (spec §5 step 4). Only what the CLI genuinely needs, plus
  * the proxy routing. Deliberately NOT a scrub-list: nothing about the parent
  * environment is trusted to be absent, so we start empty and add.
+ *
+ * Two invariants live here, both regression-tested:
+ *   1. HOME is ALWAYS job-scoped (`homeDir`, falling back to the clone dir) —
+ *      never the parent HOME, which holds the runner user's real `~/.claude`
+ *      credentials and CLI config.
+ *   2. LLM auth crosses into the child only when `llmEnvAllowed` is true (the
+ *      W0 jail acknowledgment; W1 per-job proxy tokens replace it).
  */
-export function buildAgentEnv(opts: Pick<AgentRunOptions, 'cwd' | 'proxyBaseUrl' | 'proxyToken'>): NodeJS.ProcessEnv {
+export function buildAgentEnv(
+  opts: Pick<AgentRunOptions, 'cwd' | 'homeDir' | 'proxyBaseUrl' | 'proxyToken' | 'llmEnvAllowed'>,
+): NodeJS.ProcessEnv {
   const parent = process.env;
   const env: NodeJS.ProcessEnv = {
     PATH: parent['PATH'] ?? '/usr/bin:/bin',
-    HOME: parent['HOME'] ?? opts.cwd,
+    HOME: opts.homeDir ?? opts.cwd,
     LANG: parent['LANG'] ?? 'C.UTF-8',
     ...(parent['TERM'] ? { TERM: parent['TERM'] } : {}),
   };
-  // The W1 LLM proxy — API-key jobs reach the model only through it. In the W0
-  // walking skeleton these are absent and the CLI uses its own host login.
-  if (opts.proxyBaseUrl) env['ANTHROPIC_BASE_URL'] = opts.proxyBaseUrl;
-  if (opts.proxyToken) env['ANTHROPIC_AUTH_TOKEN'] = opts.proxyToken;
+  // LLM routing — gated. In W0 the token is the middleware's own proxy secret,
+  // so it is wired ONLY under the jail acknowledgment; in W1 the caller hands
+  // in a per-job proxy token and sets the gate itself.
+  if (opts.llmEnvAllowed === true) {
+    if (opts.proxyBaseUrl) env['ANTHROPIC_BASE_URL'] = opts.proxyBaseUrl;
+    if (opts.proxyToken) env['ANTHROPIC_AUTH_TOKEN'] = opts.proxyToken;
+  }
   return env;
 }
 

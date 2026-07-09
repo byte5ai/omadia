@@ -88,6 +88,11 @@ export async function runGit(opts: GitOptions, args: string[], cwd: string): Pro
  * (0600, outside the work tree, deleted in `finally`). Returns the work-tree dir.
  */
 export async function cloneAtBaseSha(opts: GitOptions, src: CloneSource): Promise<string> {
+  // Refuse embedded credentials BEFORE fetching a token or touching git: a
+  // `user:pass@` cloneUrl would put secret material on argv and persist it in
+  // `.git/config`, bypassing the credential-store design entirely.
+  assertNoUserinfo(src.cloneUrl);
+
   const repoDir = path.join(opts.workspace, REPO_DIRNAME);
   // The credential file lives OUTSIDE repoDir so it can never end up inside
   // `.git`, and carries a random suffix so two provisions never collide.
@@ -195,6 +200,26 @@ async function writeCredentialStore(credFile: string, cloneUrl: string, token: s
   // `mode` on writeFile is subject to umask; chmod pins it to exactly 0600.
   await writeFile(credFile, line, { mode: 0o600 });
   await chmod(credFile, 0o600);
+}
+
+/**
+ * The clone credential travels ONLY via the credential-store file. A cloneUrl
+ * carrying userinfo (`https://user:pass@host/…`) would leak whatever it embeds
+ * onto git argv (world-readable via `ps`) and into `.git/config` — refuse it.
+ */
+function assertNoUserinfo(cloneUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(cloneUrl);
+  } catch {
+    throw new Error('dev-runner-shim: clone URL is not a valid absolute URL');
+  }
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new Error(
+      'dev-runner-shim: refusing a clone URL with embedded credentials (userinfo); ' +
+        'the clone token travels only via the credential-store file',
+    );
+  }
 }
 
 function lastLine(text: string): string {

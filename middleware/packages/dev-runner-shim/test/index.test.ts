@@ -87,7 +87,10 @@ async function writeFakeCli(): Promise<void> {
   await writeFile(
     cliBin,
     `#!${process.execPath}
+const fs = require('fs'); const path = require('path');
 process.stdin.resume(); process.stdin.on('end', () => {
+  // Dump the env the shim handed us — HOME is job-scoped, so this lands inside the workspace.
+  try { fs.writeFileSync(path.join(process.env.HOME, 'env-dump.json'), JSON.stringify(process.env)); } catch {}
   process.stdout.write(JSON.stringify({ type:'system', subtype:'init', model:'m' })+'\\n');
   process.stdout.write(JSON.stringify({ type:'result', usage:{ input_tokens:1, output_tokens:1 } })+'\\n');
   process.exit(0);
@@ -97,10 +100,28 @@ process.stdin.resume(); process.stdin.on('end', () => {
   await chmod(cliBin, 0o755);
 }
 
+/** A hung CLI: never exits on its own; only a signal ends it. */
+async function writeSleepingCli(): Promise<void> {
+  cliBin = path.join(ws, 'claude-hung.cjs');
+  await writeFile(
+    cliBin,
+    `#!${process.execPath}
+process.stdin.resume();
+setInterval(() => {}, 1000);
+`,
+  );
+  await chmod(cliBin, 0o755);
+}
+
+async function readEnvDump(): Promise<Record<string, string>> {
+  const raw = await import('node:fs/promises').then((m) => m.readFile(path.join(ws, 'home', 'env-dump.json'), 'utf8'));
+  return JSON.parse(raw) as Record<string, string>;
+}
+
 beforeEach(async () => {
   ws = await mkdtemp(path.join(tmpdir(), 'dev-runner-shim-life-'));
   await writeFakeCli();
-  env = { baseUrl: 'http://unused', jobId: 'job-1', jobToken: 'djr_x', workspace: ws, cliBin };
+  env = { baseUrl: 'http://unused', jobId: 'job-1', jobToken: 'djr_x', workspace: ws, cliBin, llmEnvAllowed: false };
 });
 afterEach(async () => {
   await rm(ws, { recursive: true, force: true });
@@ -143,5 +164,57 @@ describe('runShim — end to end', () => {
     // Events were streamed with a monotonic seq seeded per provision.
     assert.ok(home.events.length > 0, 'agent events streamed home');
     assert.equal(home.events[0]?.seq, 0);
+  });
+});
+
+describe('runShim — LLM auth gate + job-scoped HOME', () => {
+  afterEach(() => {
+    delete process.env['OMADIA_ANTHROPIC_AUTH_TOKEN'];
+    delete process.env['OMADIA_ANTHROPIC_BASE_URL'];
+  });
+
+  it('withholds OMADIA_ANTHROPIC_* from the child without the jail acknowledgment', async () => {
+    process.env['OMADIA_ANTHROPIC_AUTH_TOKEN'] = 'middleware-proxy-secret';
+    process.env['OMADIA_ANTHROPIC_BASE_URL'] = 'http://proxy.internal';
+    await writeFakeGit(false);
+    const home = new FakeHome(makeSpec());
+    const code = await runShim({ ...env, llmEnvAllowed: false }, { home, gitBin, log: () => {} });
+    assert.equal(code, 0);
+    const childEnv = await readEnvDump();
+    assert.equal(childEnv['ANTHROPIC_AUTH_TOKEN'], undefined, 'middleware secret must not reach the child');
+    assert.equal(childEnv['ANTHROPIC_BASE_URL'], undefined);
+    assert.ok(!JSON.stringify(childEnv).includes('middleware-proxy-secret'), 'secret appears nowhere in the child env');
+  });
+
+  it('forwards LLM auth only under the acknowledgment, and HOME is inside the workspace', async () => {
+    process.env['OMADIA_ANTHROPIC_AUTH_TOKEN'] = 'middleware-proxy-secret';
+    process.env['OMADIA_ANTHROPIC_BASE_URL'] = 'http://proxy.internal';
+    await writeFakeGit(false);
+    const home = new FakeHome(makeSpec());
+    const code = await runShim({ ...env, llmEnvAllowed: true }, { home, gitBin, log: () => {} });
+    assert.equal(code, 0);
+    const childEnv = await readEnvDump();
+    assert.equal(childEnv['ANTHROPIC_AUTH_TOKEN'], 'middleware-proxy-secret', 'ack gates the passthrough open');
+    assert.equal(childEnv['ANTHROPIC_BASE_URL'], 'http://proxy.internal');
+    assert.equal(childEnv['HOME'], path.join(ws, 'home'), 'child HOME is a fresh dir inside the workspace');
+  });
+});
+
+describe('runShim — wall-clock budget', () => {
+  it('kills a hung CLI when wallClockMs expires and reports budget_exceeded', async () => {
+    await writeFakeGit(false);
+    await writeSleepingCli();
+    const home = new FakeHome(makeSpec({ limits: { wallClockMs: 150 } }));
+    const code = await runShim(
+      { ...env, cliBin },
+      { home, gitBin, log: () => {}, killGraceMs: 500 },
+    );
+    assert.equal(code, 1, 'a budget kill fails the job');
+    const last = home.results.at(-1);
+    assert.equal(last?.outcome, 'failed');
+    assert.match(last?.error ?? '', /wall-clock budget exceeded \(150 ms\)/);
+    const budgetEvent = home.events.find((e) => e.payload['state'] === 'budget_exceeded');
+    assert.ok(budgetEvent, 'a budget_exceeded event was streamed home');
+    assert.equal(budgetEvent?.payload['limitMs'], 150);
   });
 });

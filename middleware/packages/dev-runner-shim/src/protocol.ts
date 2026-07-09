@@ -83,6 +83,18 @@ export interface ShimEnv {
   jobToken: string;
   workspace: string;
   cliBin: string;
+  /**
+   * W0 LLM-auth passthrough acknowledgment. `true` ONLY when the backend sets
+   * `OMADIA_LLM_ENV_ALLOWED=true`, which the jailed LocalProcessBackend does
+   * exclusively when it was itself launched with the W0 jail acknowledgment
+   * (`DEV_PLATFORM_UNSAFE_LOCAL=true`). Without it the shim NEVER forwards
+   * `OMADIA_ANTHROPIC_*` (a long-lived middleware/proxy secret) into the child
+   * CLI env. W1's per-job, short-lived LLM-proxy tokens replace this
+   * passthrough entirely — the flag exists only to keep the W0 walking
+   * skeleton honest about handing a middleware secret to untrusted-adjacent
+   * code.
+   */
+  llmEnvAllowed: boolean;
 }
 
 /**
@@ -96,7 +108,8 @@ export function readShimEnv(env: NodeJS.ProcessEnv = process.env): ShimEnv {
   const jobToken = required(env, 'OMADIA_JOB_TOKEN');
   const workspace = required(env, 'OMADIA_WORKSPACE');
   const cliBin = env['OMADIA_CLI_BIN']?.trim() || 'claude';
-  return { baseUrl: baseUrl.replace(/\/+$/, ''), jobId, jobToken, workspace, cliBin };
+  const llmEnvAllowed = env['OMADIA_LLM_ENV_ALLOWED']?.trim() === 'true';
+  return { baseUrl: baseUrl.replace(/\/+$/, ''), jobId, jobToken, workspace, cliBin, llmEnvAllowed };
 }
 
 function required(env: NodeJS.ProcessEnv, key: string): string {
