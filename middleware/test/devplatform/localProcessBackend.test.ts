@@ -349,9 +349,34 @@ describe('devplatform/localProcessBackend', () => {
   it('terminate is idempotent on an already-dead runner', async () => {
     const { backend, procs } = await makeBackend();
     const handle = await backend.provision(ctx());
-    procs.alive.delete(handle.pid!); // died on its own
+    procs.alive.delete(handle.pid!); // died on its own, whole group gone with it
     await backend.terminate(handle); // must not throw
-    assert.deepEqual(procs.signalsFor(handle.pid!), [], 'no signal sent to a dead pid');
+    assert.deepEqual(procs.signalsFor(handle.pid!), [], 'no signal sent to a dead group');
+  });
+
+  it('terminate SIGKILLs a live group child left behind by a dead shim leader before removing the workspace', async () => {
+    const { backend, procs, root } = await makeBackend();
+    const handle = await backend.provision(ctx());
+    const shimPid = handle.pid!;
+    // The shim spawned the CLI non-detached (same process group), then died
+    // abnormally (OOM/SIGKILL) — its finally-cleanup never ran, so the group
+    // still holds a live child carrying ANTHROPIC_* credentials. terminate()
+    // must key on GROUP liveness, not the dead leader, or the child survives
+    // untracked with no workspace and no pid file left to reap it by.
+    const cliChildPid = nextFakePid++;
+    procs.alive.add(cliChildPid);
+    procs.groups.set(shimPid, new Set([cliChildPid]));
+    procs.alive.delete(shimPid); // leader dead, group still has a live member
+
+    await backend.terminate(handle);
+
+    assert.deepEqual(procs.signalsFor(shimPid), ['SIGTERM', 'SIGKILL'], 'the group was signalled despite the dead leader');
+    assert.ok(
+      procs.kills.some((c) => c.pid === -shimPid && c.signal === 'SIGKILL'),
+      'the SIGKILL targeted the whole process group',
+    );
+    assert.equal(procs.alive.has(cliChildPid), false, 'the orphaned CLI child is dead');
+    assert.deepEqual(await readdir(root), [], 'workspace removed');
   });
 
   it('terminate refuses a handle whose id escapes the workspace root', async () => {

@@ -261,7 +261,14 @@ export class LocalProcessBackend implements RunnerBackend {
   }
 
   /** SIGTERM the shim's process group, escalate to SIGKILL after the grace
-   *  window, then remove the workspace. Idempotent on an already-dead runner. */
+   *  window, then remove the workspace. Idempotent on an already-dead runner.
+   *
+   *  Liveness is keyed on the GROUP, never the leader pid alone: when the shim
+   *  died abnormally (OOM/SIGKILL/segfault) its finally-cleanup never ran and
+   *  its process group may still hold a live CLI child carrying ANTHROPIC_*
+   *  credentials — gating the kill on the leader would let that child outlive
+   *  the workspace and pid file, permanently unreapable (same class of hole
+   *  the tracked-dead branch of `reap()` closes). */
   async terminate(handle: RunnerHandle): Promise<void> {
     if (handle.backend !== 'local') {
       throw new RunnerBackendError(
@@ -271,12 +278,12 @@ export class LocalProcessBackend implements RunnerBackend {
     }
     const dir = this.assertWorkspacePath(handle.id);
     const pid = handle.pid;
-    if (typeof pid === 'number' && this.isAlive(pid)) {
+    if (typeof pid === 'number' && this.isGroupAlive(pid)) {
       this.killTree(pid, 'SIGTERM');
-      const exited = await this.waitForExit(pid, this.killGraceMs);
+      const exited = await this.waitForGroupExit(pid, this.killGraceMs);
       if (!exited) {
         this.killTree(pid, 'SIGKILL');
-        await this.waitForExit(pid, this.killGraceMs);
+        await this.waitForGroupExit(pid, this.killGraceMs);
       }
     }
     this.live.delete(dir);
@@ -362,6 +369,20 @@ export class LocalProcessBackend implements RunnerBackend {
     }
   }
 
+  /** A runner counts as alive while ANY member of its process group lives —
+   *  the leader can die abnormally while its spawned CLI child survives. Falls
+   *  back to the leader pid when the group probe finds nothing, in case the
+   *  shim ended up outside its own group (non-detached spawn edge). */
+  private isGroupAlive(pid: number): boolean {
+    try {
+      this.procKill(-pid, 0);
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') return true;
+    }
+    return this.isAlive(pid);
+  }
+
   /** Signal the whole process group (detached ⇒ the shim leads one); fall back
    *  to the single pid if the group is already gone. */
   private killTree(pid: number, signal: NodeJS.Signals): void {
@@ -376,13 +397,13 @@ export class LocalProcessBackend implements RunnerBackend {
     }
   }
 
-  private async waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
+  private async waitForGroupExit(pid: number, timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (!this.isAlive(pid)) return true;
+      if (!this.isGroupAlive(pid)) return true;
       await sleep(this.pollIntervalMs);
     }
-    return !this.isAlive(pid);
+    return !this.isGroupAlive(pid);
   }
 }
 
