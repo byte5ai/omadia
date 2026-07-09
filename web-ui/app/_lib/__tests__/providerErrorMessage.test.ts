@@ -40,6 +40,20 @@ describe('extractProviderErrorMessage', () => {
     ).toBeNull();
   });
 
+  it('still returns null for a status-prefixed envelope with no surfaceable message', () => {
+    expect(extractProviderErrorMessage('400 {"type":"error"}')).toBeNull();
+  });
+
+  it('leaves a status-less application message that contains valid JSON braces untouched', () => {
+    const raw = 'Build failed with diagnostics {"code":"TS2304","file":"slot.ts"}';
+    expect(extractProviderErrorMessage(raw)).toBe(raw);
+  });
+
+  it('leaves a status-less application message with non-JSON braces untouched', () => {
+    const raw = 'Validation failed for {field: name}';
+    expect(extractProviderErrorMessage(raw)).toBe(raw);
+  });
+
   it('returns null for an empty string', () => {
     expect(extractProviderErrorMessage('')).toBeNull();
     expect(extractProviderErrorMessage('   ')).toBeNull();

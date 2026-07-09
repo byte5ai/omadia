@@ -6,12 +6,20 @@
  * the embedded human-readable message, provider-agnostic (works for the OpenAI
  * plain-text shape and the Anthropic JSON shape alike).
  *
- * It is deliberately a no-op on strings that are already clean: an input with
- * no status prefix and no JSON envelope is returned unchanged, so the builder's
- * own human-readable error events (e.g. `builder.paused_on_issue`) pass through
- * untouched. It returns `null` only when the string looks like a wrapped
- * provider error yet carries no message we can surface — that is the caller's
- * cue to fall back to a translated generic notice.
+ * A leading 3-digit HTTP status is the only reliable evidence that a string is a
+ * wrapped transport error rather than an application message. The function keys
+ * its "give up" behaviour on that fact:
+ *
+ *   - Empty / whitespace input returns `null`.
+ *   - A JSON envelope is mined for `error.message`, then a top-level `message`;
+ *     a match is returned whether or not a status prefix was present.
+ *   - When nothing surfaceable can be pulled out, a status-prefixed input
+ *     returns `null` (it IS a wrapped provider error carrying no message — the
+ *     caller shows the generic fallback), while an input with no status prefix
+ *     is returned unchanged. A string with no status prefix is treated as an
+ *     application message, braces or not, and is never destroyed — so the
+ *     builder's own human-readable events (e.g. `builder.paused_on_issue`) and
+ *     brace-bearing diagnostics pass through untouched.
  */
 export function extractProviderErrorMessage(raw: string): string | null {
   const trimmed = raw.trim();
@@ -28,8 +36,10 @@ export function extractProviderErrorMessage(raw: string): string | null {
   if (jsonStart !== -1 && jsonEnd > jsonStart) {
     const message = messageFromJson(withoutStatus.slice(jsonStart, jsonEnd + 1));
     if (message) return message;
-    // A JSON envelope we can't pull a message from is unusable noise.
-    return null;
+    // A JSON envelope we can't pull a message from is only noise when a status
+    // prefix marks it as a wrapped provider error; without one it is an
+    // application message that merely contains braces — hand it back untouched.
+    return hadStatus ? null : trimmed;
   }
 
   // OpenAI-style: plain-text sentence behind the status prefix.
