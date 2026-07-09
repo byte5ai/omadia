@@ -40,8 +40,21 @@
  *     cohesion:    "dependent" | "independent",
  *     verifyCommand: "npm run build",        // the repo's real gate; run in the worktree
  *     maxIssues:   5,                        // hard-clamped to 8
+ *     codexReview: "auto",                   // auto | required | off
  *     issues: [ { number, title, slug, summary, touchedFiles: [], keySymbols: [] }, ... ]
  *   }})
+ *
+ * ITERATION. When the reviewer rejects a branch it does not vanish -- the reviewer has
+ * just written a precise, code-grounded spec of what is missing. Feed it straight back
+ * by adding two fields to the issue, and the workflow fixes up the existing branch
+ * instead of cutting a new one from base:
+ *
+ *     issues: [ { ...same fields..., resumeBranch: "feat/issue-403-quota-message",
+ *                                    fixFindings: "<the reviewer's blockingFindings>" } ]
+ *
+ * The fixup agent checks the branch out, commits on top, never rebases or force-pushes,
+ * and is told to argue back (blocked=true with a reasoned blockedReason) rather than
+ * quietly skip a finding it believes is wrong. Both review stages then run again.
  *
  * Returns { baseSha, cohesion, results: [...] } where each result carries a branch
  * name and a prReady flag. See the CHOREOGRAPHY block in issue-cluster.workflow.mjs
@@ -184,6 +197,55 @@ const REVIEW_SCHEMA = {
     blockingFindings: { type: 'string', description: 'what must be fixed before a PR; empty string if none' },
     notes: { type: 'string', description: 'non-blocking observations for the human reviewer' },
   },
+}
+
+/**
+ * Iteration. A branch the reviewer rejected is not a dead end -- the reviewer just
+ * wrote a precise, code-grounded spec for what is missing. Passing that spec back to
+ * an implementer on the SAME branch is the cheapest correct move; cutting a fresh
+ * branch from base would throw away work the reviewer already validated.
+ */
+function fixupPrompt(group, branch, findings) {
+  const plural = group.length > 1
+  return [
+    'You are fixing up an existing branch `' + branch + '` that an adversarial reviewer REJECTED.',
+    'It implements ' + (plural ? group.length + ' related GitHub issues' : 'GitHub issue #' + group[0].number) + ' of ' + REPO + '.',
+    '',
+    'You are working inside your own isolated git worktree. Nobody else is editing these files.',
+    '',
+    GROUND_RULES,
+    '',
+    '## The reviewer\'s blocking findings -- this is your spec',
+    '<<<',
+    findings,
+    '>>>',
+    '',
+    '## What to do',
+    '1. `git checkout ' + branch + '` -- the work is already there. Do NOT branch from ' + BASE + ' again,',
+    '   and do NOT revert or rewrite the existing commits.',
+    '2. Read the existing diff first: `git diff ' + BASE + '...' + branch + '`. Understand what was already',
+    '   done and why before you add to it.',
+    '3. Address EVERY blocking finding above. Nothing else. Resist the urge to improve unrelated code --',
+    '   the reviewer already confirmed the current scope is clean, and widening it now would undo that.',
+    '4. If you believe a finding is wrong, do NOT silently ignore it. Fix what you agree with, then set',
+    '   blocked=true and explain in blockedReason precisely why the remaining finding is mistaken, citing',
+    '   the code. A reasoned disagreement is a useful result; a quiet omission is not.',
+    VERIFY_BLOCK,
+    '6. Commit on top of the existing commits. Conventional-commit subject, reference the issue number.',
+    '',
+    '## Do not',
+    '- Do not push. Do not open a pull request. The caller does both, after a human has seen your result.',
+    '- Do not amend, rebase, squash, or force anything. Add a commit.',
+    '',
+    '## Issue' + (plural ? 's' : ''),
+    group.map(issueBrief).join('\n\n'),
+    '',
+    '## Pull request text',
+    'Rewrite prTitle and prBody for the FULL branch (original work plus your fixup), not just your delta.',
+    'End with one "Closes #<n>" line per issue. English, sober technical tone, no emoji.',
+    '',
+    'Return the structured result. `branch` is `' + branch + '`. `commitShas` may list only your new commits.',
+  ].join('\n')
 }
 
 function implementPrompt(group, branch) {
@@ -361,9 +423,10 @@ function skeleton(branch, group, reason) {
 
 // The review stage is a hard gate: nothing reaches the caller as prReady unless a
 // second, adversarial agent independently signed off on the diff.
-function runGroup(group, branch) {
-  return agent(implementPrompt(group, branch), {
-    label: 'implement:' + branch,
+function runGroup(group, branch, fixup) {
+  const prompt = fixup ? fixupPrompt(group, branch, fixup) : implementPrompt(group, branch)
+  return agent(prompt, {
+    label: (fixup ? 'fixup:' : 'implement:') + branch,
     phase: 'Implement',
     schema: IMPLEMENT_SCHEMA,
     isolation: 'worktree',
@@ -422,10 +485,11 @@ let results
 if (COHESION === 'dependent' && issues.length > 1) {
   // One branch, one agent, one pull request. The issues overlap the same files, so
   // parallel branches would collide and revert each other.
-  const branch = 'feat/cluster-' + CLUSTER_SLUG
+  const resume = issues.find((i) => i.resumeBranch)
+  const branch = resume ? resume.resumeBranch : 'feat/cluster-' + CLUSTER_SLUG
   phase('Implement')
-  log('cohesion=dependent -> implementing ' + issues.length + ' issues sequentially on a single branch ' + branch)
-  results = [await runGroup(issues, branch)]
+  log('cohesion=dependent -> ' + (resume ? 'fixing up' : 'implementing') + ' ' + issues.length + ' issues sequentially on a single branch ' + branch)
+  results = [await runGroup(issues, branch, resume ? (resume.fixFindings || '(no findings supplied)') : null)]
 } else {
   // Disjoint files: fan out. pipeline() has no barrier, so issue A can be under
   // review while issue B is still being implemented.
@@ -433,7 +497,9 @@ if (COHESION === 'dependent' && issues.length > 1) {
   log('cohesion=independent -> implementing ' + issues.length + ' issue(s) on parallel branches')
   results = (await pipeline(
     issues,
-    (issue) => runGroup([issue], 'feat/issue-' + issue.number + '-' + safeSlug(issue.slug, 'fix')),
+    (issue) => issue.resumeBranch
+      ? runGroup([issue], issue.resumeBranch, issue.fixFindings || '(no findings supplied)')
+      : runGroup([issue], 'feat/issue-' + issue.number + '-' + safeSlug(issue.slug, 'fix')),
   )).filter(Boolean)
 }
 
