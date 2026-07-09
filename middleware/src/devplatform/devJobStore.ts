@@ -244,6 +244,24 @@ export class DevJobStore {
     return r.rows[0] ? toJob(r.rows[0]) : null;
   }
 
+  /**
+   * Bump liveness without writing an event.
+   *
+   * `appendEvents` bumps `last_heartbeat_at` too, but it returns early on an
+   * empty batch — and an agent that thinks for two minutes without emitting a
+   * tool call produces exactly that. Without a standalone touch, `findStalled`
+   * would reap a perfectly healthy job. Status-guarded: a terminal job stays
+   * terminal, so a half-dead runner cannot resurrect itself by heartbeating.
+   */
+  async touchHeartbeat(jobId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs SET last_heartbeat_at = now(), updated_at = now()
+        WHERE id = $1 AND status IN ('provisioning', 'running', 'applying')`,
+      [jobId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
   /** Flip provisioning → running when the runner fetches its spec (spec §4). Runner-
    *  driven (job-token auth), so status-guarded rather than lease-fenced. */
   async markRunning(jobId: string): Promise<boolean> {
