@@ -11,6 +11,7 @@ import { LocaleSwitcher } from './_components/LocaleSwitcher';
 import { Nav } from './_components/Nav';
 import { ThemeControls } from './_components/ThemeControls';
 import { SessionWatcher } from './_components/SessionWatcher';
+import { RuntimeReadinessBanner } from './_components/RuntimeReadinessBanner';
 import { StreamRunner } from './_components/StreamRunner';
 import { StreamToasts } from './_components/StreamToasts';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
@@ -144,6 +145,7 @@ export default async function RootLayout({
               <StreamRunner />
               <StreamToasts />
               <SessionWatcher />
+              <RuntimeReadinessBanner />
             </StreamStoreProvider>
           </ChatSessionsProvider>
         </NextIntlClientProvider>
