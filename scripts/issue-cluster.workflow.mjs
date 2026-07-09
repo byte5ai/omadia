@@ -103,8 +103,25 @@
  *                 their branch name and the reviewer's blockingFindings; they
  *                 never become a pull request. PRs are ready-for-review (repo
  *                 rule; automerge is not the default here, so a draft PR would
- *                 buy nothing but friction). Record the PR urls in the run-state
- *                 file, then loop back to step 3 for the next cluster.
+ *                 buy nothing but friction).
+ *
+ *   8. MAIN LOOP  comment on each implemented issue. This is not optional and
+ *                 GitHub does not do it for you: `Closes #<n>` in the PR body
+ *                 only creates a timeline cross-reference, so someone reading
+ *                 the issue sees that a PR exists but not what was found. Post:
+ *
+ *                   gh api repos/<repo>/issues/<n>/comments -F body=@<file>
+ *
+ *                 The comment states the PR number, what was actually wrong,
+ *                 what changed, how it was verified, and — separately — any
+ *                 maintainer calls the reviewers surfaced but could not decide.
+ *                 English, technical, no marketing tone.
+ *
+ *                 For an issue the human chose to `defer`, say nothing on
+ *                 GitHub: that decision is local and reversible (see step 5).
+ *
+ *   9. MAIN LOOP  record the PR urls in the run-state file, then loop back to
+ *                 step 3 for the next cluster.
  *
  * GitHub API: REST only, via `gh api repos/...`. Never `gh issue`, `gh pr`,
  * `gh search`, or GraphQL -- the GraphQL quota may be exhausted and those
