@@ -27,9 +27,17 @@
  * Lifecycle: `provision()` = mkdtemp under the workspace root, spawn the shim
  * detached in its own process group, pid file for post-restart reaping.
  * `terminate()` = SIGTERM the group → SIGKILL after the grace window → remove
- * the workspace. `reap()` = kill orphan pids from previous middleware runs and
- * dead tracked runners, remove leftover dirs, return the reaped handles so the
- * worker can `finalizeDevJob(..., 'stalled')`.
+ * the workspace ONLY once the group's exit is confirmed. `reap()` = kill orphan
+ * pids from previous middleware runs and dead tracked runners, remove leftover
+ * dirs, return the reaped handles so the worker can
+ * `finalizeDevJob(..., 'stalled')`.
+ *
+ * Load-bearing invariant across every kill path: signal delivery is NOT proof
+ * of exit. The workspace and pid file are the only handles a later `reap()`
+ * has, so they are removed only after `killGroupAndConfirmExit()` confirms the
+ * group is gone. A group that cannot be confirmed dead (EPERM/unsignalable, or
+ * slower than the grace window) keeps its workspace + pid file for the next
+ * reap sweep rather than becoming a permanent, credential-bearing orphan.
  */
 
 import { spawn, type SpawnOptions } from 'node:child_process';
@@ -205,6 +213,9 @@ export class LocalProcessBackend implements RunnerBackend {
     const id8 = input.jobId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'job';
     const dir = await mkdtemp(path.join(this.workspaceRoot, `${LOCAL_WORKSPACE_PREFIX}${id8}-`));
     this.provisioning.add(dir);
+    // Tracks a shim that already spawned, so a post-spawn failure can kill its
+    // group before removing the workspace instead of orphaning a live child.
+    let spawnedPid: number | undefined;
     try {
       // Hand the workspace to the jail uid so the shim can write its clone and
       // job-scoped HOME. Requires the middleware to be privileged enough to
@@ -241,6 +252,9 @@ export class LocalProcessBackend implements RunnerBackend {
       if (typeof pid !== 'number') {
         throw new RunnerBackendError('devplatform.local_spawn_failed', 'shim spawned without a pid');
       }
+      // The shim is now running in its own group. Record its pid so the catch
+      // can tear the group down before removing the workspace.
+      spawnedPid = pid;
       child.unref();
       await writeFile(path.join(dir, SHIM_PID_FILE), `${String(pid)}\n`, 'utf8');
       const handle: RunnerHandle = {
@@ -252,6 +266,28 @@ export class LocalProcessBackend implements RunnerBackend {
       this.live.set(dir, handle);
       return handle;
     } catch (err) {
+      // A failure AFTER the shim spawned (missing pid aside — that one is
+      // unkillable) leaves a live group behind. Kill it and confirm exit before
+      // removing the workspace; if it survives, keep the workspace + a pid file
+      // so reap() can find and retry it rather than stranding a credential-
+      // bearing child with no handle.
+      if (spawnedPid !== undefined) {
+        const exited = await this.killGroupAndConfirmExit(spawnedPid, { graceful: true });
+        if (!exited) {
+          await writeFile(path.join(dir, SHIM_PID_FILE), `${String(spawnedPid)}\n`, 'utf8').catch(
+            () => undefined,
+          );
+          this.log(
+            `[dev-platform] runner group for '${dir}' survived a failed provision; ` +
+              'kept the workspace and pid file for reap() to retry',
+          );
+          if (err instanceof RunnerBackendError) throw err;
+          throw new RunnerBackendError(
+            'devplatform.local_spawn_failed',
+            `failed to spawn the runner shim: ${errText(err)}`,
+          );
+        }
+      }
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
       if (err instanceof RunnerBackendError) throw err;
       throw new RunnerBackendError('devplatform.local_spawn_failed', `failed to spawn the runner shim: ${errText(err)}`);
@@ -277,14 +313,20 @@ export class LocalProcessBackend implements RunnerBackend {
       );
     }
     const dir = this.assertWorkspacePath(handle.id);
-    const pid = handle.pid;
-    if (typeof pid === 'number' && this.isGroupAlive(pid)) {
-      this.killTree(pid, 'SIGTERM');
-      const exited = await this.waitForGroupExit(pid, this.killGraceMs);
-      if (!exited) {
-        this.killTree(pid, 'SIGKILL');
-        await this.waitForGroupExit(pid, this.killGraceMs);
-      }
+    const exited = await this.killGroupAndConfirmExit(handle.pid, { graceful: true });
+    if (!exited) {
+      // The group did NOT provably exit (EPERM/unsignalable, or slower than the
+      // grace window). Deleting the workspace + pid file now would destroy the
+      // ONLY handles a later reap() has and strand a live, credential-bearing
+      // child forever. Leave them; the handle stays tracked so reap() retries.
+      this.log(
+        `[dev-platform] runner group for '${dir}' did not confirm exit; keeping the workspace and pid file for reap() to retry`,
+      );
+      throw new RunnerBackendError(
+        'devplatform.local_terminate_incomplete',
+        `the runner process group for job workspace '${dir}' did not exit within the grace window; ` +
+          'the workspace and pid file were left in place for reap() to retry',
+      );
     }
     this.live.delete(dir);
     await rm(dir, { recursive: true, force: true });
@@ -315,20 +357,32 @@ export class LocalProcessBackend implements RunnerBackend {
         // The shim leader is dead, but if it died abnormally (OOM/SIGKILL/
         // segfault) its finally-cleanup never ran and its process group may
         // still hold a live CLI child carrying ANTHROPIC_* credentials.
-        // SIGKILL the whole group — same as the orphan branch — so nothing
-        // outlives the job it belonged to.
-        if (typeof tracked.pid === 'number') this.killTree(tracked.pid, 'SIGKILL');
+        // SIGKILL the whole group — same as the orphan branch — and CONFIRM
+        // exit before touching the workspace: signal delivery is not proof of
+        // exit, and rm-ing a still-live group destroys its only reap handles.
+        if (!(await this.killGroupAndConfirmExit(tracked.pid, { graceful: false }))) {
+          this.log(
+            `[dev-platform] tracked runner group for '${dir}' did not confirm exit; keeping it for the next reap sweep`,
+          );
+          continue; // leave the workspace + pid file; retry next reap()
+        }
         this.live.delete(dir);
         await rm(dir, { recursive: true, force: true });
         reaped.push(tracked);
         continue;
       }
-      // Orphan from a previous middleware run. Kill the group unconditionally:
-      // the leader may be long dead while a CLI child of its group still runs
-      // with ANTHROPIC_* credentials. killTree no-ops on an already-gone group,
-      // so probing the leader pid first would only reintroduce that blind spot.
+      // Orphan from a previous middleware run. Kill the group: the leader may be
+      // long dead while a CLI child of its group still runs with ANTHROPIC_*
+      // credentials. Confirm the group is gone before removing the dir — the pid
+      // file is the only way a later reap() can find this group again.
       const pid = await this.readPidFile(dir);
-      if (pid !== null) this.killTree(pid, 'SIGKILL');
+      if (pid !== null && !(await this.killGroupAndConfirmExit(pid, { graceful: false }))) {
+        this.log(
+          `[dev-platform] orphan runner group for '${dir}' (pid ${String(pid)}) did not confirm exit; ` +
+            'keeping the workspace and pid file for the next reap sweep',
+        );
+        continue; // leave the workspace + pid file; retry next reap()
+      }
       const startedAt = await stat(dir)
         .then((s) => s.mtime.toISOString())
         .catch(() => this.now().toISOString());
@@ -386,18 +440,68 @@ export class LocalProcessBackend implements RunnerBackend {
     return this.isAlive(pid);
   }
 
-  /** Signal the whole process group (detached ⇒ the shim leads one); fall back
-   *  to the single pid if the group is already gone. */
-  private killTree(pid: number, signal: NodeJS.Signals): void {
+  /**
+   * Deliver `signal` to the whole process group (detached ⇒ the shim leads
+   * one) and REPORT the outcome — never swallow it. EPERM on the group means
+   * the group is alive but unsignalable (a member we do not own); reporting
+   * that as anything other than a failure is exactly how a live,
+   * credential-bearing child ends up losing its workspace and pid file.
+   *
+   *   - 'signalled' — the signal reached the group (or, on the non-detached
+   *     edge below, the leader individually).
+   *   - 'gone'      — nothing is there to signal (ESRCH on the group AND, if we
+   *     fall back, on the leader): safe to treat as exited.
+   *   - 'failed'    — EPERM/other: the group is still there and we could NOT
+   *     signal it. NOT proof of exit; callers must not delete the workspace.
+   *
+   * The single-pid fallback fires ONLY on ESRCH-on-group — the case where the
+   * shim never led its own group (non-detached spawn edge) and the leader might
+   * still be individually signalable. It is not a general catch-all anymore.
+   */
+  private killTree(pid: number, signal: NodeJS.Signals): 'signalled' | 'gone' | 'failed' {
     try {
       this.procKill(-pid, signal);
-    } catch {
+      return 'signalled';
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
+        // EPERM (alive, not ours) or anything else: the group is still there.
+        return 'failed';
+      }
+      // Group is gone; the leader might still be individually signalable.
       try {
         this.procKill(pid, signal);
-      } catch {
-        /* already gone */
+        return 'signalled';
+      } catch (err2) {
+        return (err2 as NodeJS.ErrnoException).code === 'ESRCH' ? 'gone' : 'failed';
       }
     }
+  }
+
+  /**
+   * Kill the runner's process group and CONFIRM it exited. Returns true only
+   * when the group is provably gone — signal delivery is never proof of exit.
+   * On anything less than confirmed exit (EPERM/unsignalable group, or a group
+   * that outlived the grace window) it returns false so the caller LEAVES the
+   * workspace and pid file — the only handles a later `reap()` has — in place
+   * instead of stranding a live, credential-bearing child forever.
+   *
+   * `graceful` sends SIGTERM first (terminate()); reap paths, whose leader is
+   * already dead/orphaned, go straight to SIGKILL.
+   */
+  private async killGroupAndConfirmExit(
+    pid: number | undefined,
+    opts: { graceful: boolean },
+  ): Promise<boolean> {
+    if (typeof pid !== 'number') return true; // nothing to kill
+    if (!this.isGroupAlive(pid)) return true; // already gone
+    if (opts.graceful) {
+      if (this.killTree(pid, 'SIGTERM') === 'gone') return true;
+      if (await this.waitForGroupExit(pid, this.killGraceMs)) return true;
+    }
+    if (this.killTree(pid, 'SIGKILL') === 'gone') return true;
+    // 'signalled' or 'failed': prove it via the group probe. A 'failed' (EPERM)
+    // group never confirms, and we correctly refuse to delete the workspace.
+    return this.waitForGroupExit(pid, this.killGraceMs);
   }
 
   private async waitForGroupExit(pid: number, timeoutMs: number): Promise<boolean> {

@@ -44,6 +44,13 @@ class FakeProcs {
   readonly groups = new Map<number, Set<number>>();
   /** When true, a SIGTERM already kills the process (a cooperative shim). */
   cooperative = false;
+  /** Members that are alive but NOT ours to signal — kill() throws EPERM.
+   *  Models a process owned by another uid: the group is alive but unreachable,
+   *  so a kill can never CONFIRM exit (the whole point of the fix). */
+  readonly unkillable = new Set<number>();
+  /** Members that accept a signal (it IS recorded) but never die — models a
+   *  process that outlives the grace window. Proves signal-delivery ≠ exit. */
+  readonly immortal = new Set<number>();
 
   readonly kill = (pid: number, signal: NodeJS.Signals | 0): void => {
     if (signal !== 0) this.kills.push({ pid, signal });
@@ -52,11 +59,16 @@ class FakeProcs {
       const pgid = -pid;
       const members = [pgid, ...(this.groups.get(pgid) ?? [])].filter((m) => this.alive.has(m));
       if (members.length === 0) throw esrch(pid);
-      if (lethal) for (const m of members) this.alive.delete(m);
+      const reachable = members.filter((m) => !this.unkillable.has(m));
+      // kill(2) on a group: EPERM only when NONE of the live members can be
+      // signalled. If at least one is reachable, the call succeeds.
+      if (reachable.length === 0) throw eperm(pid);
+      if (lethal) for (const m of reachable) if (!this.immortal.has(m)) this.alive.delete(m);
       return;
     }
     if (!this.alive.has(pid)) throw esrch(pid);
-    if (lethal) this.alive.delete(pid);
+    if (this.unkillable.has(pid)) throw eperm(pid);
+    if (lethal && !this.immortal.has(pid)) this.alive.delete(pid);
   };
 
   signalsFor(pid: number): NodeJS.Signals[] {
@@ -70,6 +82,12 @@ function esrch(pid: number): NodeJS.ErrnoException {
   return err;
 }
 
+function eperm(pid: number): NodeJS.ErrnoException {
+  const err: NodeJS.ErrnoException = new Error(`kill EPERM ${String(pid)}`);
+  err.code = 'EPERM';
+  return err;
+}
+
 interface SpawnCall {
   command: string;
   args: string[];
@@ -79,17 +97,29 @@ interface SpawnCall {
 
 let nextFakePid = 40_000;
 
-function makeSpawn(procs: FakeProcs, calls: SpawnCall[], opts: { fail?: boolean } = {}) {
+function makeSpawn(
+  procs: FakeProcs,
+  calls: SpawnCall[],
+  opts: { fail?: boolean; unrefThrows?: boolean; immortal?: boolean } = {},
+) {
   return (command: string, args: string[], options: SpawnCall['options']): SpawnedShim => {
     const pid = nextFakePid++;
     const child = new EventEmitter() as EventEmitter & { pid?: number; unref(): void };
     child.pid = pid;
-    child.unref = () => undefined;
+    // A post-spawn failure surface: the shim is ALIVE (emitted 'spawn') but
+    // provision() throws afterwards. unref() is the first thing called once the
+    // pid is in hand, so throwing here reproduces "failure after a live spawn".
+    child.unref = opts.unrefThrows
+      ? () => {
+          throw new Error('unref boom (fake post-spawn failure)');
+        }
+      : () => undefined;
     calls.push({ command, args, options, pid });
     if (opts.fail) {
       queueMicrotask(() => child.emit('error', new Error('spawn EPERM (fake)')));
     } else {
       procs.alive.add(pid);
+      if (opts.immortal) procs.immortal.add(pid);
       queueMicrotask(() => child.emit('spawn'));
     }
     return child as unknown as SpawnedShim;
@@ -482,5 +512,126 @@ describe('devplatform/localProcessBackend', () => {
     const { backend, root } = await makeBackend({}, { fail: true });
     await assert.rejects(backend.provision(ctx()), isRefusal('devplatform.local_spawn_failed'));
     assert.deepEqual(await readdir(root), [], 'no leftover workspace');
+  });
+
+  it('terminate keeps the workspace and pid file when the group cannot be confirmed dead (EPERM)', async () => {
+    const { backend, procs, root } = await makeBackend();
+    const handle = await backend.provision(ctx());
+    const pid = handle.pid!;
+    // The group is alive but owned by someone else: every kill throws EPERM.
+    // Signal delivery FAILS, so exit can never be confirmed — deleting the
+    // workspace here would strand a live, credential-bearing group with no
+    // handle left to reap it by.
+    procs.unkillable.add(pid);
+
+    await assert.rejects(
+      backend.terminate(handle),
+      isRefusal('devplatform.local_terminate_incomplete'),
+    );
+
+    assert.equal(procs.alive.has(pid), true, 'the unsignalable group is still alive');
+    const leftovers = await readdir(root);
+    assert.deepEqual(leftovers, [path.basename(handle.id)], 'workspace NOT removed');
+    const pidRaw = await readFile(path.join(handle.id, SHIM_PID_FILE), 'utf8');
+    assert.equal(Number.parseInt(pidRaw.trim(), 10), pid, 'pid file preserved for reap()');
+  });
+
+  it('terminate keeps the workspace when SIGKILL is delivered but the group outlives the grace window', async () => {
+    const { backend, procs, root } = await makeBackend();
+    const handle = await backend.provision(ctx());
+    const shimPid = handle.pid!;
+    // A CLI child that accepts signals (they are recorded) but does not die
+    // within the grace window. The leader is gone; signal delivery to the group
+    // succeeds, yet the group has NOT exited — the fix must not delete the
+    // workspace on the strength of a delivered signal alone.
+    const stubbornChild = nextFakePid++;
+    procs.alive.add(stubbornChild);
+    procs.immortal.add(stubbornChild);
+    procs.groups.set(shimPid, new Set([stubbornChild]));
+    procs.alive.delete(shimPid);
+
+    await assert.rejects(
+      backend.terminate(handle),
+      isRefusal('devplatform.local_terminate_incomplete'),
+    );
+
+    // The group WAS signalled (SIGTERM then SIGKILL) — delivery is not the same
+    // as exit, and that is exactly what the workspace-retention guards against.
+    assert.deepEqual(procs.signalsFor(shimPid), ['SIGTERM', 'SIGKILL'], 'the group was signalled');
+    assert.equal(procs.alive.has(stubbornChild), true, 'the child outlived the signals');
+    assert.deepEqual(await readdir(root), [path.basename(handle.id)], 'workspace NOT removed before verified exit');
+  });
+
+  it('reap leaves a tracked runner whose group cannot be confirmed dead for the next sweep', async () => {
+    const { backend, procs, root } = await makeBackend();
+    const handle = await backend.provision(ctx());
+    const shimPid = handle.pid!;
+    const stubbornChild = nextFakePid++;
+    procs.alive.add(stubbornChild);
+    procs.immortal.add(stubbornChild); // survives SIGKILL within the window
+    procs.groups.set(shimPid, new Set([stubbornChild]));
+    procs.alive.delete(shimPid); // leader dead, group still live
+
+    const reaped = await backend.reap();
+
+    assert.deepEqual(reaped, [], 'nothing reaped while the group is still alive');
+    assert.deepEqual(
+      await readdir(root),
+      [path.basename(handle.id)],
+      'workspace kept — its pid file is the only reap handle',
+    );
+    // Still tracked, so a later reap() (once the child finally dies) retries it.
+    procs.immortal.delete(stubbornChild);
+    procs.alive.delete(stubbornChild);
+    const retried = await backend.reap();
+    assert.deepEqual(
+      retried.map((h) => h.id),
+      [handle.id],
+      'the next sweep reaps it once the group is provably gone',
+    );
+    assert.deepEqual(await readdir(root), [], 'workspace removed on confirmed exit');
+  });
+
+  it('reap leaves an orphan whose group cannot be confirmed dead (EPERM) for the next sweep', async () => {
+    const { backend, procs, root } = await makeBackend();
+    const orphanPid = nextFakePid++;
+    procs.alive.add(orphanPid);
+    procs.unkillable.add(orphanPid); // alive, unsignalable → kill can't confirm
+    const orphanDir = path.join(root, `${LOCAL_WORKSPACE_PREFIX}orphan-eperm`);
+    await mkdir(orphanDir, { recursive: true });
+    await writeFile(path.join(orphanDir, SHIM_PID_FILE), `${String(orphanPid)}\n`, 'utf8');
+
+    const reaped = await backend.reap();
+
+    assert.deepEqual(reaped, [], 'the unconfirmed orphan is NOT reaped');
+    assert.equal(procs.alive.has(orphanPid), true, 'the orphan group is still alive');
+    assert.deepEqual(await readdir(root), [path.basename(orphanDir)], 'orphan workspace kept');
+    const pidRaw = await readFile(path.join(orphanDir, SHIM_PID_FILE), 'utf8');
+    assert.equal(Number.parseInt(pidRaw.trim(), 10), orphanPid, 'orphan pid file preserved for the next sweep');
+  });
+
+  it('kills the live shim before removing the workspace when provision fails after spawn', async () => {
+    const { backend, procs, root } = await makeBackend({}, { unrefThrows: true });
+    await assert.rejects(backend.provision(ctx()), isRefusal('devplatform.local_spawn_failed'));
+
+    // The shim was already running when provision() threw. It must be killed —
+    // not just have its workspace deleted out from under it.
+    assert.equal(procs.kills.some((c) => c.signal === 'SIGKILL'), true, 'the live shim group was SIGKILLed');
+    assert.equal([...procs.alive].length, 0, 'no shim left alive');
+    assert.deepEqual(await readdir(root), [], 'workspace removed only after the group exited');
+  });
+
+  it('keeps the workspace and writes a pid file when a post-spawn failure leaves an unkillable group', async () => {
+    const { backend, procs, root } = await makeBackend({}, { unrefThrows: true, immortal: true });
+    await assert.rejects(backend.provision(ctx()), isRefusal('devplatform.local_spawn_failed'));
+
+    // The shim spawned, provision() failed, and the group would not die. Rather
+    // than rm the workspace and orphan the live credential-bearing process, the
+    // catch keeps the dir and (re)writes the pid file so reap() can retry.
+    const dirs = await readdir(root);
+    assert.equal(dirs.length, 1, 'workspace kept for reap()');
+    assert.equal([...procs.alive].length, 1, 'the live shim was not stranded silently');
+    const pidRaw = await readFile(path.join(root, dirs[0]!, SHIM_PID_FILE), 'utf8');
+    assert.equal(Number.parseInt(pidRaw.trim(), 10), [...procs.alive][0], 'pid file names the live shim');
   });
 });
