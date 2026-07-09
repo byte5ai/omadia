@@ -18,6 +18,95 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — advisory SkillSpector code scanning for plugin packages (#453)
+
+- Every ingested plugin package (direct upload, hub install, Builder install)
+  is optionally scanned by an NVIDIA SkillSpector sidecar
+  (`middleware/sidecars/skillspector/`, enabled via `SKILLSPECTOR_URL` /
+  `docker-compose.skillspector.yaml`). Fire-and-forget after ingest success —
+  a scanner outage records a `scan_failed` verdict and never fails an
+  install; with `SKILLSPECTOR_URL` unset nothing is scheduled and NO verdict
+  row is written (store pages show no badge on unconfigured deployments).
+  The shim and the middleware parser are **fail-closed**: only the
+  positively-verified SkillSpector report schema (exit 0, `issues` list +
+  `risk_assessment` object — observed against the pinned commit, CLI
+  v2.3.11) counts as a scan; any unrecognized output surfaces as
+  `scan_failed`, never as a false `no_signals` all-clear. Coverage of the
+  executed entry point is guaranteed the same way: upload validation
+  rejects a `lifecycle.entry` below `node_modules`/hidden directories
+  (`package.entry_unscannable`), and the scanner force-includes the entry
+  file when the directory walk skipped it — failing closed (`scan_failed`)
+  when it cannot. The sidecar
+  dependency is pinned to an exact upstream commit SHA (pin-bump procedure:
+  sidecar README). Verdicts are cached by ZIP sha256 + scanner version
+  (**migration `0021_plugin_verdict.sql`**, table `plugin_verdicts` incl.
+  inline operator ack columns), surface as a badge + `verdict` field on
+  `GET /api/v1/store/plugins/:id`, and can be acknowledged via
+  `POST /api/v1/store/plugins/:id/verdict/ack`. An ack records the severity
+  the operator saw (`ack_severity`) and is cleared automatically when a
+  later re-scan WORSENS the verdict; it survives equal-or-better results.
+  Advisory-only in v1: nothing blocks. New env vars: `SKILLSPECTOR_URL`,
+  `SKILLSPECTOR_TIMEOUT_MS`.
+
+### Added — free-text user-prompt PII masking, default off (#361)
+
+- `harness-plugin-privacy-guard` 0.3.0: new **default-off** setup field
+  `mask_user_prompt`. When on, PII spans detected in the user's own message
+  (C0 regex baseline: email, IBAN, phone, German street+postal address,
+  amounts, DOB dates) are replaced by realistic pseudonyms before the prompt
+  crosses the LLM wire (pseudonym projection via the shipped `v4/pseudonym`
+  mechanism — no on-wire token map); the real values are restored
+  server-side in the final answer, and the spans surface (PII-free) as
+  `maskedPromptSpans` on the `PrivacyReceipt`. Failure-closed: C1-detector
+  failure degrades to C0 with audit; a baseline failure or residual span
+  blocks the turn — there is no pass-through-unmasked path. Flag-off is
+  byte-identical to previous behavior.
+- Orchestrator: every LLM-bound site (message assembly, **live chat
+  history/`priorTurns` — which replays persisted REAL values from earlier
+  turns**, ingested attachment tail, **mid-turn steering messages injected
+  via `POST /chat/steer`** (masked through the same per-turn map before the
+  iteration loop folds them into the conversation), model/persona routing,
+  KG-recall query, recalled-context injection, **direct-line relay
+  payloads**, fact-extraction prompt, nudge pipeline, card router, excerpt
+  pass) consumes the masked wire variant. Server-side persistence stores real
+  values only: the session log / KG persist the POST-restore answer,
+  extracted facts and the Palaia excerpt are restored surrogate→real before
+  ingest/promotion (fire-and-forget extraction uses a snapshot of the
+  turn's map, `snapshotPromptRestorer`), and receipt attribution keeps the
+  original text. User-facing card content (`ask_user_choice` question/
+  options, follow-up buttons) is restored surrogate→real before rendering.
+  Direct-line turns mask the relayed payload before dispatch, restore the
+  sub-agent's answer, fail closed (generic privacy error, audited) when
+  masking is blocked, and mask the fact-extraction inputs the same way.
+  Streamed deltas may transiently show a surrogate; the `done` answer is
+  authoritative (same contract as the v4 rendered-answer swap).
+- Committed runnable validation harness with pre-committed gates:
+  `harness-plugin-privacy-guard/src/validation/` (not a CI gate). Current
+  coverage: `de` + `en` fixture sets, **C0 regex tier only** — the C1
+  transformer slot (Piiranha/GLiNER) is an inert stub. Gates: recall ≥ 0.97
+  for structured identifiers, ≥ 0.90 for names/free-form entities (needs
+  C1 — C0 does not detect names), precision proxy ≥ 0.85 on PII-free
+  negatives, p95 added latency ≤ 400 ms. Enabling `mask_user_prompt` for a
+  locale requires posting a green harness run for that locale to issue
+  #361 first.
+
+### Changed — v1.0 readiness pass across the earliest core plugins (#431)
+
+- `harness-plugin-web-search`, `harness-plugin-privacy-guard`, and
+  `harness-plugin-quality-guard` now ship READMEs (purpose, config keys,
+  published capabilities/tools, recorded `ctx.jobs`/`ctx.status`/`ctx.llm`/
+  `ctx.mcp` adopt-or-skip decisions).
+- `agent-seo-analyst`: operator-catalog `identity.description` translated to
+  English; README gains the same PluginContext-surface audit section.
+- `harness-plugin-privacy-guard`: `package.json` version aligned to the
+  manifest (`0.2.0` at the time of #431; both sit at `0.3.0` after the #361
+  bump in this branch); the v4 path (`src/service.ts` + `src/v4/`) is
+  declared the single canonical implementation — no legacy branch exists
+  (see README).
+- Recorded decisions: plugins stay independently versioned (no lockstep bump
+  with core); package layout is per-kind (tool plugins `src/`→`dist/`, agent
+  packages flat, per `agent-reference-maximum` + boilerplate templates).
+
 ### Added — pluggable LLM provider (OpenAI as an admin-selectable provider)
 
 - **`@omadia/llm-provider`**: a neutral LLM provider contract with Anthropic and

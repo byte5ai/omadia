@@ -65,6 +65,32 @@ discovered from public registries. This keeps the supply chain explicit:
   filesystem). The runtime enforces the declaration.
 - A plugin's `depends_on` is a soft contract, not an automatic install
   trigger.
+- Optionally (issue #453), every ingested package — direct upload, hub
+  install, Builder install — is statically scanned by an NVIDIA
+  SkillSpector sidecar (`SKILLSPECTOR_URL`, deterministic `--no-llm` mode,
+  no outbound calls; the scanner dependency is pinned to an exact upstream
+  commit SHA — pin-bump procedure in the sidecar README). The scan is
+  **advisory-only in v1**: it runs fire-and-forget after a successful
+  ingest, its verdict (severity + findings, cached by ZIP sha256 + scanner
+  version in `plugin_verdicts`, migration 0021) decorates the store detail
+  page, and a scanner outage degrades to a `scan_failed` verdict — never a
+  failed install. With `SKILLSPECTOR_URL` unset no scan is scheduled and no
+  verdict row is written. The result pipeline is **fail-closed**: only
+  SkillSpector's positively-verified report schema counts as a scan; an
+  unrecognized schema is recorded as `scan_failed`, never as a
+  `no_signals` all-clear. Entry-point coverage is fail-closed too: upload
+  validation rejects a `lifecycle.entry` that resolves below
+  `node_modules` or a hidden directory (`package.entry_unscannable` —
+  the scanner's directory walk skips those, so the runtime would execute
+  code the scan never saw), and as defense in depth the scanner
+  force-includes the manifest's entry file in the scan payload when the
+  walk skipped it, recording `scan_failed` when coverage cannot be
+  guaranteed. Operator acknowledgements persist
+  `ack_by`/`ack_at`/`ack_severity` for audit and are cleared automatically
+  when a later re-scan worsens the verdict beyond the acked severity;
+  turning the verdict into a hard install block is deferred until omadia
+  has a role model (same policy gap as skill-verdict suppression, see
+  `agentBuilder.ts`).
 
 ## 5. Signed artefact URLs
 

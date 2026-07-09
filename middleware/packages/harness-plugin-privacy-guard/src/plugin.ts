@@ -18,6 +18,10 @@ import { createPrivacyGuardService } from './service.js';
  * statistics — there is no per-tenant policy, allowlist, or detector
  * configuration to read. All per-turn state (Dataset Store, receipt
  * counters) lives inside the service and is dropped at `finalizeTurn`.
+ *
+ * #361 — the one operator toggle is `mask_user_prompt` (default off), read
+ * live via the plugin's ConfigAccessor: free-text user prompts get their
+ * detected PII spans replaced by pseudonyms before crossing the LLM wire.
  */
 
 export interface PrivacyGuardPluginHandle {
@@ -34,9 +38,13 @@ export async function activate(
   // an LLM provider (ANTHROPIC_API_KEY). Absent ⇒ the classifier simply does
   // not run; interning behaves byte-identically to before.
   const llm = ctx.llm;
-  const service = createPrivacyGuardService(
-    llm ? { llmComplete: llm.complete.bind(llm) } : undefined,
-  );
+  const service = createPrivacyGuardService({
+    ...(llm ? { llmComplete: llm.complete.bind(llm) } : {}),
+    // #361 — live flag reader for default-off user-prompt masking. Routed
+    // through the plugin's own ConfigAccessor so an operator toggle saved
+    // via the install UI applies on the very next turn (no restart).
+    readConfig: (key) => ctx.config.get(key),
+  });
   const disposeService = ctx.services.provide<PrivacyGuardService>(
     PRIVACY_REDACT_SERVICE_NAME,
     service,

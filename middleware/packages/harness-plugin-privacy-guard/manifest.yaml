@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.2.0"
+  version: "0.3.0"
   kind: "tool"
   domain: "privacy.redact"
   description: "Privacy Shield v4 core plugin. Publishes the `privacy.redact@1` capability — a Data-Plane Boundary that interns raw tool results server-side and hands the LLM only an identity-free Digest. Identity-/order-critical work runs through a server-side Verb API; the final answer is materialized from ground truth. Emits a PII-free PrivacyReceipt the channel renderers (Teams Adaptive-Card, Web inline disclosure) consume to surface what was protected on each turn."
@@ -25,12 +25,26 @@ lifecycle:
   entry: "dist/plugin.js"
 
 # ---------------------------------------------------------------------------
-# No setup fields. The v4 Data-Plane Boundary is generic over JSON shape and
-# value statistics — there is no per-tenant policy, allowlist, or detector
-# configuration to tune.
+# One setup field (#361). The v4 Data-Plane Boundary itself stays
+# configuration-free — generic over JSON shape and value statistics. The
+# only toggle is free-text user-prompt masking, DEFAULT OFF: flag-off is
+# byte-identical to pre-#361 behavior. Flipping it on for a locale requires
+# a green run of the committed validation harness (src/validation/) against
+# its documented recall gates, posted to issue #361 first.
 # ---------------------------------------------------------------------------
 setup:
-  fields: []
+  fields:
+    - key: "mask_user_prompt"
+      type: "enum"
+      label: "Free-text user-prompt PII masking"
+      help: "EXPERIMENTAL, default off. When on, PII spans detected in the user's own message (email, IBAN, phone, address, amounts, dates — C0 regex baseline) are replaced by realistic pseudonyms in every LLM-bound copy of the turn (main prompt, live chat history/priorTurns, ingested attachment text, recalled prior context, direct-line relay payloads, fact-extraction/routing/excerpt passes); the real values are restored server-side in the final answer and in everything persisted (session log, knowledge graph, promoted memories). Failure-closed: if masking cannot be guaranteed, the turn is blocked rather than sent unmasked — this includes direct-line (#specialist) turns. Names/free-form entities require the C1 transformer detector, which is not wired by default — see the plugin README."
+      required: false
+      default: "off"
+      enum:
+        - value: "off"
+          label: "Off — prompts pass unchanged (default)"
+        - value: "on"
+          label: "On — mask detected PII spans (C0 baseline)"
 
 playbook:
   when_to_use: |

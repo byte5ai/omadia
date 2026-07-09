@@ -477,11 +477,35 @@ export type PluginJobSchedule =
 
 export type StoreListResponse = Page<Plugin>;
 
+/** Advisory code-scan verdict for an ingested plugin package (issue #453).
+ *  Absent when the plugin was never scanned (built-ins, no scanner). */
+export interface PluginVerdict {
+  severity:
+    | 'no_signals'
+    | 'flagged'
+    | 'high_risk'
+    | 'scan_failed'
+    | 'pending'
+    | 'too_large_to_scan';
+  findings: readonly {
+    readonly code: string;
+    readonly severity: string;
+    readonly message: string;
+    readonly file: string | null;
+  }[];
+  scanner_version: string;
+  rationale: string | null;
+  computed_at: ISO8601;
+  ack: { by: string; at: ISO8601 } | null;
+}
+
 export interface StoreGetResponse {
   plugin: Plugin;
   manifest: unknown;
   install_available: boolean;
   blocking_reasons?: string[];
+  /** Advisory-only — never blocks install (issue #453). */
+  verdict?: PluginVerdict;
 }
 
 // ---------------------------------------------------------------------------
