@@ -60,6 +60,17 @@
  * of quietly forking.
  */
 
+export const meta = {
+  name: 'wave-implement',
+  description: 'Implement an approved wave-unit manifest in isolated worktrees with cross-family review',
+  whenToUse: 'After wave-decompose produced a unit manifest and a human approved it. Never run without that approval.',
+  phases: [
+    { title: 'Implement', detail: 'one worktree-isolated coding agent per unit, topological order' },
+    { title: 'Review', detail: 'cross-family Forge (GPT-5.4) refutation per diff' },
+    { title: 'Audit', detail: 'Cato security audit for security-sensitive units' },
+  ],
+}
+
 const MAX_UNITS = 16;
 const MAX_FIX_ROUNDS = 2;
 

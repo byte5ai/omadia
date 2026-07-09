@@ -26,6 +26,16 @@
  *   }})
  */
 
+export const meta = {
+  name: 'wave-verify',
+  description: 'Verify an implemented wave against its manifest acceptance criteria and gates',
+  whenToUse: 'After wave-implement branches are merged, before the wave is declared done.',
+  phases: [
+    { title: 'Check', detail: 'per-unit acceptance re-verification against the merged tree' },
+    { title: 'Verify', detail: 'full gates + adversarial completeness pass' },
+  ],
+}
+
 const input = typeof args === 'string' ? JSON.parse(args) : args;
 const { repoPath, manifest, mergedSha, runCommands = true } = input ?? {};
 

@@ -40,6 +40,16 @@
  *   }})
  */
 
+export const meta = {
+  name: 'wave-decompose',
+  description: 'Extract a reviewed unit manifest from a wave spec (units, touches, dependsOn, acceptance)',
+  whenToUse: 'Before wave-implement, whenever a wave has a prose spec but no unit manifest yet.',
+  phases: [
+    { title: 'Extract', detail: 'parallel extractors: units, file-sets, dependency edges' },
+    { title: 'Reduce', detail: 'one agent merges extractions into a single manifest' },
+  ],
+}
+
 const HUB_MIN_UNITS = 3;
 const HUB_FRACTION = 0.1;
 
