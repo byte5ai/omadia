@@ -176,7 +176,7 @@ async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void
         msg = fallback || `HTTP ${String(res.status)}`;
       }
       applyEvent({ type: 'error', message: msg });
-      store.finish(sessionId, 'error', msg);
+      store.finish(sessionId, 'error', humanizeProviderError(msg, t('errorProviderGeneric')));
       finalizePending(depsRef.current.sessions, sessionId, pendingMessageId);
       return;
     }
@@ -216,9 +216,10 @@ async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void
       applyEvent({ type: 'error', message: t('errorAborted') });
       store.finish(sessionId, 'aborted');
     } else {
+      const { t } = depsRef.current;
       const msg = err instanceof Error ? err.message : String(err);
       applyEvent({ type: 'error', message: msg });
-      store.finish(sessionId, 'error', msg);
+      store.finish(sessionId, 'error', humanizeProviderError(msg, t('errorProviderGeneric')));
     }
   } finally {
     finalizePending(depsRef.current.sessions, sessionId, pendingMessageId);

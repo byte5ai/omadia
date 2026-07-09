@@ -50,6 +50,14 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   translates through `llmProviderSeam`, including streaming final-event usage
   telemetry and provider-based retry classification.
 
+### Fixed
+
+- **web-ui/chat**: provider errors (quota, rate-limit, billing) are now surfaced
+  as the provider's human-readable sentence across all chat surfaces — the main
+  chat bubble, the stream toast, the builder chat, the preview chat, and the
+  default simple builder intake — with a translated generic fallback, instead of
+  the raw HTTP status and JSON envelope (#403).
+
 ---
 
 ## [0.54.0] - 2026-07-06
