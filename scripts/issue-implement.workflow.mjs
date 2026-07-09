@@ -1,27 +1,25 @@
 /**
  * Issue implementation workflow (Claude Code "Workflow" tool script).
  *
- * Stage 2 of the interactive issue loop. Takes the issues a human explicitly
- * greenlit for one cluster, implements each on a branch inside an isolated git
- * worktree, and runs two independent reviewers over every diff before the branch
- * is considered fit for a pull request.
+ * Stage 2 of the interactive issue loop. Takes the issues a human explicitly greenlit
+ * for one cluster, implements each on a branch inside an isolated git worktree, and
+ * runs two independent reviewers over every diff before the branch is considered fit
+ * for a pull request.
  *
  * The cluster's `cohesion` flag (from issue-cluster.workflow.mjs) selects the
  * strategy, and that is the whole reason the flag exists:
  *
- *   'dependent'    Issues overlap the same files. ONE agent implements them in
- *                  priority order on ONE branch -> one pull request closing all.
- *                  Fanning these out yields parallel branches that each rewrite
- *                  the same file and revert one another.
- *   'independent'  Disjoint files. One worktree-isolated agent per issue, in
- *                  parallel -> one branch and one pull request each.
+ *   'dependent'    Issues overlap the same files. ONE agent implements them in priority
+ *                  order on ONE branch -> one pull request closing all. Fanning these
+ *                  out yields branches that each rewrite the same file and revert one another.
+ *   'independent'  Disjoint files. One worktree-isolated agent per issue, in parallel.
  *
- * The workflow NEVER writes to GitHub and NEVER pushes. It creates local branches
- * and returns metadata; pushing and opening pull requests is the caller's job, so
- * the remote-write surface stays a single auditable choke point downstream of the
- * human's per-issue greenlight. A branch whose review failed is reported, never
- * proposed as a pull request. Branch refs created inside an agent's worktree live
- * in the shared ref store, so the caller can push them after teardown.
+ * The workflow NEVER writes to GitHub and NEVER pushes. It creates local branches and
+ * returns metadata; pushing and opening pull requests is the caller's job, so the
+ * remote-write surface stays one auditable choke point downstream of the human's
+ * per-issue greenlight. A branch whose review failed is reported, never proposed as a
+ * pull request. Branch refs created inside an agent's worktree live in the shared ref
+ * store, so the caller can push them after teardown.
  *
  * This is NOT a standalone Node script -- it runs inside the Claude Code Workflow
  * tool (agent()/parallel()/pipeline()/log() are provided by that runtime).
@@ -39,16 +37,13 @@
  *     issues: [ { number, title, slug, summary, touchedFiles: [], keySymbols: [] }, ... ]
  *   }})
  *
- * ITERATION. A rejected branch is not a dead end -- the reviewer has just written a
- * precise, code-grounded spec of what is missing. Add `resumeBranch` and `fixFindings`
- * to the issue and the workflow fixes up that branch instead of cutting a new one from
- * base. The fixup agent commits on top, never rebases or force-pushes, and is told to
- * argue back (blocked=true, reasoned blockedReason) rather than quietly skip a finding
- * it believes is wrong. Both review stages then run again over the full branch.
+ * ITERATION. Add `resumeBranch` and `fixFindings` to an issue and the workflow fixes up
+ * that branch instead of cutting a new one from base. The fixup agent commits on top and
+ * is told to argue back (blocked=true, reasoned blockedReason) rather than quietly skip a
+ * finding it believes is wrong. Both review stages then run again over the full branch.
  *
- * Returns { baseSha, cohesion, results: [...] } where each result carries a branch
- * name and a prReady flag. See the CHOREOGRAPHY block in issue-cluster.workflow.mjs
- * for how the caller drives both stages and where the user is asked.
+ * Returns { baseSha, cohesion, results } -- each result carries a branch name and a
+ * prReady flag. The CHOREOGRAPHY block in issue-cluster.workflow.mjs drives both stages.
  *
  * GitHub API: REST only via `gh api repos/...`; never `gh issue`/`gh pr`/GraphQL.
  */
@@ -73,10 +68,9 @@ const COHESION = input.cohesion === 'dependent' ? 'dependent' : 'independent'
 const VERIFY_COMMAND = input.verifyCommand || ''
 
 /**
- * Slugs reach us from an LLM that read attacker-authored issue titles, and they end
- * up inside a branch name that an agent interpolates into `git checkout -b`. Prose
- * ground rules do not stop shell metacharacters; this does. Anything outside
- * [a-z0-9-] is dropped, so the worst a hostile title can produce is a dull branch name.
+ * Slugs reach us from an LLM that read attacker-authored issue titles, and land inside a
+ * branch name an agent interpolates into `git checkout -b`. Prose ground rules do not stop
+ * shell metacharacters; this does. The worst a hostile title yields is a dull branch name.
  */
 function safeSlug(raw, fallback) {
   const s = String(raw == null ? '' : raw)
@@ -96,10 +90,10 @@ const CLUSTER_SLUG = safeSlug(input.clusterSlug, 'cluster')
  * is the cheapest way to find what both of them agree to overlook.
  *
  *   'auto'      (default) run it when the codex CLI is installed AND authenticated;
- *               otherwise SKIP and carry on. An optional reviewer must never break
- *               the pipeline for the many repos and machines that lack it. A skipped
- *               review is reported (codex.ran === false) but never turns prReady
- *               false -- only a codex verdict that actually says "not ready" does.
+ *               otherwise SKIP and carry on -- an optional reviewer must never break
+ *               the pipeline for machines that lack it. A skipped review is reported
+ *               (codex.ran === false) but never turns prReady false; only a codex
+ *               verdict that actually says "not ready" does.
  *   'required'  opt-in: a missing or failing codex review blocks the pull request.
  *   'off'       skip entirely, do not even probe.
  */
@@ -124,8 +118,7 @@ const GROUND_RULES = [
   '- You may NEVER modify .env files, secrets, CI config under .github/, or deployment config, and you',
   '  may NEVER edit files outside your own worktree.',
   '- GitHub API: read-only, REST only, via `gh api repos/...`. NEVER `gh issue`, `gh pr`, `gh search`,',
-  '  or GraphQL -- the GraphQL quota may be exhausted and those commands can fail.',
-  '- Do not add a Co-Authored-By trailer to commits.',
+  '  or GraphQL -- the GraphQL quota may be exhausted. Do not add a Co-Authored-By trailer.',
   '- Stay inside the scope of the issue(s) you were given. Unrelated refactors, drive-by formatting, and',
   '  opportunistic cleanups are scope creep; the reviewer will reject the branch for them.',
   '- Read AGENTS.md and CONTRIBUTING.md at the repo root. They are mandatory and often require a',
@@ -188,10 +181,9 @@ const REVIEW_SCHEMA = {
 }
 
 /**
- * Iteration. A branch the reviewer rejected is not a dead end -- the reviewer just
- * wrote a precise, code-grounded spec for what is missing. Passing that spec back to
- * an implementer on the SAME branch is the cheapest correct move; cutting a fresh
- * branch from base would throw away work the reviewer already validated.
+ * Iteration. A rejected branch is not a dead end -- the reviewer just wrote a precise,
+ * code-grounded spec of what is missing. Passing it back on the SAME branch is the
+ * cheapest correct move; a fresh branch throws away work the reviewer already validated.
  */
 function fixupPrompt(group, branch, findings) {
   const plural = group.length > 1
@@ -250,9 +242,8 @@ function implementPrompt(group, branch) {
     '   If that branch already exists, a previous run left it behind. Do NOT reuse it and do NOT delete it:',
     '   branch as `' + branch + '-2` (then -3, and so on) and say so in blockedReason=""/prBody. An existing',
     '   branch may already have an open pull request against it.',
-    '2. Re-read each issue and its comments via REST: `gh api repos/' + REPO + '/issues/<n>` and',
-    '   `gh api repos/' + REPO + '/issues/<n>/comments`. The descriptors below are a starting point,',
-    '   not the whole truth -- the issue and its comments are authoritative.',
+    '2. Re-read each issue and its comments via REST (`gh api repos/' + REPO + '/issues/<n>` and',
+    '   `.../comments`). The descriptors below are a starting point, not the whole truth.',
     '3. Read the surrounding code before writing any. Follow the conventions you find there: naming,',
     '   error handling, test style, comment density. Your diff should read like the code around it.',
     plural
@@ -382,9 +373,9 @@ function codexPrompt(impl, group) {
     '',
     '## Step 4 -- return',
     'codex prints its JSON as the last object in stdout. Parse it. Copy prReady, blockingFindings and notes',
-    'into your structured result unchanged, put the raw JSON line in rawVerdict, set ran=true available=true.',
-    'If codex errors or emits no parseable JSON, set ran=false prReady=false and put the error in notes.',
-    'Do not edit any file except ' + schemaPath + '. Do not push. Do not open a pull request.',
+    'into your result unchanged, put the raw JSON line in rawVerdict, set ran=true available=true. If codex',
+    'errors or emits no parseable JSON, set ran=false prReady=false and put the error in notes. Do not edit',
+    'any file except ' + schemaPath + '. Do not push. Do not open a pull request.',
   ].join('\n')
 }
 
