@@ -305,6 +305,12 @@ export class LocalProcessBackend implements RunnerBackend {
       const tracked = this.live.get(dir);
       if (tracked) {
         if (typeof tracked.pid === 'number' && this.isAlive(tracked.pid)) continue; // healthy
+        // The shim leader is dead, but if it died abnormally (OOM/SIGKILL/
+        // segfault) its finally-cleanup never ran and its process group may
+        // still hold a live CLI child carrying ANTHROPIC_* credentials.
+        // SIGKILL the whole group — same as the orphan branch — so nothing
+        // outlives the job it belonged to.
+        if (typeof tracked.pid === 'number') this.killTree(tracked.pid, 'SIGKILL');
         this.live.delete(dir);
         await rm(dir, { recursive: true, force: true });
         reaped.push(tracked);

@@ -38,25 +38,36 @@ interface KillCall {
 class FakeProcs {
   readonly kills: KillCall[] = [];
   readonly alive = new Set<number>();
+  /** pgid (= leader pid) → extra member pids, so `kill(-pgid)` group semantics
+   *  can be modeled: a group signal hits every live member, and the group
+   *  exists as long as ANY member lives — even after the leader died. */
+  readonly groups = new Map<number, Set<number>>();
   /** When true, a SIGTERM already kills the process (a cooperative shim). */
   cooperative = false;
 
   readonly kill = (pid: number, signal: NodeJS.Signals | 0): void => {
-    const p = Math.abs(pid);
     if (signal !== 0) this.kills.push({ pid, signal });
-    if (!this.alive.has(p)) {
-      const err: NodeJS.ErrnoException = new Error(`kill ESRCH ${String(pid)}`);
-      err.code = 'ESRCH';
-      throw err;
+    const lethal = signal === 'SIGKILL' || (signal === 'SIGTERM' && this.cooperative);
+    if (pid < 0) {
+      const pgid = -pid;
+      const members = [pgid, ...(this.groups.get(pgid) ?? [])].filter((m) => this.alive.has(m));
+      if (members.length === 0) throw esrch(pid);
+      if (lethal) for (const m of members) this.alive.delete(m);
+      return;
     }
-    if (signal === 'SIGKILL' || (signal === 'SIGTERM' && this.cooperative)) {
-      this.alive.delete(p);
-    }
+    if (!this.alive.has(pid)) throw esrch(pid);
+    if (lethal) this.alive.delete(pid);
   };
 
   signalsFor(pid: number): NodeJS.Signals[] {
     return this.kills.filter((c) => Math.abs(c.pid) === pid).map((c) => c.signal);
   }
+}
+
+function esrch(pid: number): NodeJS.ErrnoException {
+  const err: NodeJS.ErrnoException = new Error(`kill ESRCH ${String(pid)}`);
+  err.code = 'ESRCH';
+  return err;
 }
 
 interface SpawnCall {
@@ -389,6 +400,33 @@ describe('devplatform/localProcessBackend', () => {
     const leftovers = await readdir(root);
     assert.deepEqual(leftovers, [path.basename(liveHandle.id)], 'live workspace untouched');
     assert.equal(procs.alive.has(liveHandle.pid!), true, 'live shim not signalled');
+  });
+
+  it('reap SIGKILLs the dead tracked runner’s whole group so an orphaned CLI child cannot outlive the job', async () => {
+    const { backend, procs, root } = await makeBackend();
+    const handle = await backend.provision(ctx());
+    const shimPid = handle.pid!;
+    // The shim spawned a CLI child (carrying ANTHROPIC_* via the gated
+    // passthrough) into its own process group, then died abnormally
+    // (OOM/SIGKILL) — its finally-cleanup never ran, the child lives on.
+    const cliChildPid = nextFakePid++;
+    procs.alive.add(cliChildPid);
+    procs.groups.set(shimPid, new Set([cliChildPid]));
+    procs.alive.delete(shimPid); // leader dead, group still has a live member
+
+    const reaped = await backend.reap();
+
+    assert.deepEqual(
+      reaped.map((h) => h.id),
+      [handle.id],
+      'the dead tracked runner is reaped',
+    );
+    assert.ok(
+      procs.kills.some((c) => c.pid === -shimPid && c.signal === 'SIGKILL'),
+      'the whole process group was SIGKILLed, not just the dead leader',
+    );
+    assert.equal(procs.alive.has(cliChildPid), false, 'the orphaned CLI child is dead');
+    assert.deepEqual(await readdir(root), [], 'workspace removed');
   });
 
   it('cleans up the workspace when the spawn itself fails', async () => {
