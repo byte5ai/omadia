@@ -6,10 +6,13 @@
 -- upgrade recomputes without losing history for the old version.
 --
 -- Unlike skill verdicts, the operator acknowledgement lives inline
--- (`ack_by` / `ack_at`): the upsert path only ever rewrites the scan columns
--- (severity, findings, rationale, computed_at), so an ack survives a
--- re-scan under the same verifier_version, and a verifier upgrade
--- (new verifier_version → new row) correctly invalidates the ack.
+-- (`ack_by` / `ack_at` / `ack_severity`). `ack_severity` records the
+-- severity the operator actually looked at, so a re-scan under the same
+-- verifier_version keeps the ack only while the new severity is equal or
+-- BETTER than the acked one — a worse re-scan result (e.g. an acked
+-- `scan_failed` upgrading to `high_risk`) clears the ack, because the
+-- operator never saw those findings. A verifier upgrade (new
+-- verifier_version → new row) correctly invalidates the ack either way.
 --
 -- Advisory-only in v1: nothing reads this table to block an install.
 CREATE TABLE IF NOT EXISTS plugin_verdicts (
@@ -24,8 +27,13 @@ CREATE TABLE IF NOT EXISTS plugin_verdicts (
   computed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   ack_by           TEXT,
   ack_at           TIMESTAMPTZ,
+  ack_severity     TEXT,
   PRIMARY KEY (content_hash, verifier_version)
 );
+
+-- Idempotent guard for environments that created the table from an earlier
+-- revision of this (unreleased) migration, before ack_severity existed.
+ALTER TABLE plugin_verdicts ADD COLUMN IF NOT EXISTS ack_severity TEXT;
 
 -- Store/detail pages look verdicts up by plugin id (latest install wins).
 CREATE INDEX IF NOT EXISTS plugin_verdicts_plugin_idx

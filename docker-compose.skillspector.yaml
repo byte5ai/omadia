@@ -2,8 +2,9 @@
 #
 # Adds the SkillSpector sidecar (built from middleware/sidecars/skillspector)
 # and points the middleware at it. Advisory-only: without this overlay the
-# default stack runs unchanged, installs never block, and plugin verdicts
-# record `scan_failed`.
+# default stack runs unchanged, installs never block, no scan is scheduled,
+# and no plugin verdict rows are written (`scan_failed` is reserved for real
+# sidecar failures).
 #
 #   docker compose -f docker-compose.yaml -f docker-compose.skillspector.yaml up -d
 

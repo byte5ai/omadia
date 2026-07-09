@@ -24,14 +24,18 @@ The one setup field is `mask_user_prompt` (enum `off`/`on`, **default
 `off`** — flag-off is byte-identical to pre-#361 behavior). When on, PII
 spans detected in the user's own message are substituted with realistic,
 type-shaped pseudonyms in **every LLM-bound copy of the turn** — the main
-prompt, the ingested attachment tail, the recalled prior-context block,
-and auxiliary LLM passes (fact extraction, model/persona routing, card
-router, excerpt) — while the surrogate↔real map is held server-side per
-turn and inverted over the final answer **and over everything persisted**
-(session log, extracted KG facts, promoted memories store real values,
-never surrogates). Wire-substitution with answer-side restore — NOT
-server-side interning (the prompt must cross the wire) and NOT an on-wire
-token map (deleted for cause by #119/#126/#153).
+prompt, the **live chat history** (`priorTurns`, which replays persisted
+REAL values from earlier turns), the ingested attachment tail, the
+recalled prior-context block, the **direct-line relay payload** (a
+`#specialist question` turn hands the question to an LLM-backed
+sub-agent), and auxiliary LLM passes (fact extraction, model/persona
+routing, card router, excerpt) — while the surrogate↔real map is held
+server-side per turn and inverted over the final answer, over user-facing
+card content (choice cards, follow-up buttons), **and over everything
+persisted** (session log, extracted KG facts, promoted memories store
+real values, never surrogates). Wire-substitution with answer-side
+restore — NOT server-side interning (the prompt must cross the wire) and
+NOT an on-wire token map (deleted for cause by #119/#126/#153).
 
 - **Detection:** pluggable `PromptPiiDetector` seam. Shipped today: the
   deterministic **C0 regex baseline only** (email, IBAN, phone, German

@@ -37,7 +37,7 @@ setup:
     - key: "mask_user_prompt"
       type: "enum"
       label: "Free-text user-prompt PII masking"
-      help: "EXPERIMENTAL, default off. When on, PII spans detected in the user's own message (email, IBAN, phone, address, amounts, dates — C0 regex baseline) are replaced by realistic pseudonyms in every LLM-bound copy of the turn (main prompt, ingested attachment text, recalled prior context, fact-extraction/routing/excerpt passes); the real values are restored server-side in the final answer and in everything persisted (session log, knowledge graph, promoted memories). Failure-closed: if masking cannot be guaranteed, the turn is blocked rather than sent unmasked. Names/free-form entities require the C1 transformer detector, which is not wired by default — see the plugin README."
+      help: "EXPERIMENTAL, default off. When on, PII spans detected in the user's own message (email, IBAN, phone, address, amounts, dates — C0 regex baseline) are replaced by realistic pseudonyms in every LLM-bound copy of the turn (main prompt, live chat history/priorTurns, ingested attachment text, recalled prior context, direct-line relay payloads, fact-extraction/routing/excerpt passes); the real values are restored server-side in the final answer and in everything persisted (session log, knowledge graph, promoted memories). Failure-closed: if masking cannot be guaranteed, the turn is blocked rather than sent unmasked — this includes direct-line (#specialist) turns. Names/free-form entities require the C1 transformer detector, which is not wired by default — see the plugin README."
       required: false
       default: "off"
       enum:

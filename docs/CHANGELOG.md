@@ -24,13 +24,24 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   is optionally scanned by an NVIDIA SkillSpector sidecar
   (`middleware/sidecars/skillspector/`, enabled via `SKILLSPECTOR_URL` /
   `docker-compose.skillspector.yaml`). Fire-and-forget after ingest success —
-  a scanner outage or unset URL records a `scan_failed` verdict and never
-  fails an install. Verdicts are cached by ZIP sha256 + scanner version
+  a scanner outage records a `scan_failed` verdict and never fails an
+  install; with `SKILLSPECTOR_URL` unset nothing is scheduled and NO verdict
+  row is written (store pages show no badge on unconfigured deployments).
+  The shim and the middleware parser are **fail-closed**: only the
+  positively-verified SkillSpector report schema (exit 0, `issues` list +
+  `risk_assessment` object — observed against the pinned commit, CLI
+  v2.3.11) counts as a scan; any unrecognized output surfaces as
+  `scan_failed`, never as a false `no_signals` all-clear. The sidecar
+  dependency is pinned to an exact upstream commit SHA (pin-bump procedure:
+  sidecar README). Verdicts are cached by ZIP sha256 + scanner version
   (**migration `0021_plugin_verdict.sql`**, table `plugin_verdicts` incl.
   inline operator ack columns), surface as a badge + `verdict` field on
   `GET /api/v1/store/plugins/:id`, and can be acknowledged via
-  `POST /api/v1/store/plugins/:id/verdict/ack`. Advisory-only in v1: nothing
-  blocks. New env vars: `SKILLSPECTOR_URL`, `SKILLSPECTOR_TIMEOUT_MS`.
+  `POST /api/v1/store/plugins/:id/verdict/ack`. An ack records the severity
+  the operator saw (`ack_severity`) and is cleared automatically when a
+  later re-scan WORSENS the verdict; it survives equal-or-better results.
+  Advisory-only in v1: nothing blocks. New env vars: `SKILLSPECTOR_URL`,
+  `SKILLSPECTOR_TIMEOUT_MS`.
 
 ### Added — free-text user-prompt PII masking, default off (#361)
 
@@ -45,18 +56,23 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   failure degrades to C0 with audit; a baseline failure or residual span
   blocks the turn — there is no pass-through-unmasked path. Flag-off is
   byte-identical to previous behavior.
-- Orchestrator: every LLM-bound site (message assembly, ingested attachment
-  tail, model/persona routing, KG-recall query, recalled-context injection,
+- Orchestrator: every LLM-bound site (message assembly, **live chat
+  history/`priorTurns` — which replays persisted REAL values from earlier
+  turns**, ingested attachment tail, model/persona routing, KG-recall
+  query, recalled-context injection, **direct-line relay payloads**,
   fact-extraction prompt, nudge pipeline, card router, excerpt pass)
   consumes the masked wire variant. Server-side persistence stores real
   values only: the session log / KG persist the POST-restore answer,
   extracted facts and the Palaia excerpt are restored surrogate→real before
   ingest/promotion (fire-and-forget extraction uses a snapshot of the
   turn's map, `snapshotPromptRestorer`), and receipt attribution keeps the
-  original text. Direct-line turns mask the fact-extraction inputs the same
-  way and skip extraction (audited) if masking is blocked. Streamed deltas
-  may transiently show a surrogate; the `done` answer is authoritative
-  (same contract as the v4 rendered-answer swap).
+  original text. User-facing card content (`ask_user_choice` question/
+  options, follow-up buttons) is restored surrogate→real before rendering.
+  Direct-line turns mask the relayed payload before dispatch, restore the
+  sub-agent's answer, fail closed (generic privacy error, audited) when
+  masking is blocked, and mask the fact-extraction inputs the same way.
+  Streamed deltas may transiently show a surrogate; the `done` answer is
+  authoritative (same contract as the v4 rendered-answer swap).
 - Committed runnable validation harness with pre-committed gates:
   `harness-plugin-privacy-guard/src/validation/` (not a CI gate). Current
   coverage: `de` + `en` fixture sets, **C0 regex tier only** — the C1

@@ -274,4 +274,76 @@ describe('#361 prompt masking — orchestrator pipeline', () => {
     // echoed the surrogate, the user sees the real value.
     assert.ok(result.answer.includes(RAW_EMAIL));
   });
+
+  it('turn N+1: priorTurns (live chat history) are masked before assembly', async () => {
+    // Second-review fix — persisted turns store restored REAL values by
+    // design, and channels replay them verbatim as `priorTurns`. Turn 1
+    // named an IBAN; turn 2 sends priorTurns=[turn 1] → the turn-2 request
+    // body must contain ZERO raw detected spans.
+    const RAW_IBAN = 'DE89370400440532013000';
+    const IBAN_RE = /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/;
+    const mainRequests: string[] = [];
+    const provider = {
+      id: 'anthropic',
+      capabilities: providerCapabilities,
+      complete: async (req: LlmRequest): Promise<LlmResponse> => {
+        const serialized = JSON.stringify(req);
+        mainRequests.push(serialized);
+        const iban = IBAN_RE.exec(serialized)?.[0] ?? 'no-iban-in-request';
+        return textResponse(`Die Überweisung geht an ${iban}.`);
+      },
+      stream: (): AsyncIterable<LlmStreamEvent> => {
+        throw new Error('priorTurns provider: stream() not scripted');
+      },
+      classifyError: () => ({ retryable: false, kind: 'other' as const }),
+    } as unknown as LlmProvider;
+
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      privacyGuard: () => maskingService(),
+    });
+
+    const result = await orch.runTurn({
+      userMessage: 'An welches Konto ging die Überweisung nochmal?',
+      sessionScope: 'sess-1',
+      userId: 'u1',
+      // The IBAN is space-delimited in both copies: the detector's
+      // word-boundary extension folds adjacent punctuation into the span
+      // VALUE, and only byte-identical values share one map entry.
+      priorTurns: [
+        {
+          userMessage: `Bitte überweise das Gehalt auf ${RAW_IBAN} sofort`,
+          assistantAnswer: `Alles klar, ich habe ${RAW_IBAN} als Zielkonto notiert`,
+        },
+      ],
+    });
+
+    assert.equal(mainRequests.length, 1);
+    assert.ok(
+      !mainRequests[0]!.includes(RAW_IBAN),
+      'turn-2 request body must contain zero raw detected spans from turn 1',
+    );
+    const surrogate = IBAN_RE.exec(mainRequests[0]!)?.[0];
+    assert.ok(
+      surrogate,
+      'the prior turns must carry an IBAN-shaped surrogate instead',
+    );
+    assert.notEqual(surrogate, RAW_IBAN);
+    // Both copies (prior user message AND prior assistant answer) carry the
+    // SAME turn-stable surrogate — the shared per-turn map at work.
+    const occurrences = mainRequests[0]!.split(surrogate!).length - 1;
+    assert.ok(
+      occurrences >= 2,
+      'prior user message and prior assistant answer must share one surrogate',
+    );
+    // Answer-side restore covers priorTurn-derived spans too: the provider
+    // echoed the surrogate, the user sees the real value.
+    assert.ok(result.answer.includes(RAW_IBAN));
+    assert.ok(!result.answer.includes(surrogate!));
+  });
 });

@@ -7,7 +7,6 @@ import path from 'node:path';
 import {
   HttpSkillSpectorScanner,
   mapSkillSpectorSeverity,
-  NullPluginScanner,
   parseSidecarResponse,
   PLUGIN_SCANNER_VERSION,
   type ScanFinding,
@@ -54,14 +53,14 @@ describe('parseSidecarResponse', () => {
     assert.equal(result.scannerVersion, `${PLUGIN_SCANNER_VERSION} (1.2.3)`);
   });
 
-  it('tolerates alternate field spellings', () => {
+  it('fails CLOSED on any schema the shim did not promise (no guessing)', () => {
+    // Second-review fix: an unrecognized schema must surface as
+    // `scan_failed`, never as an implicit all-clear.
     const result = parseSidecarResponse({
       results: [{ id: 'LP2', level: 'MEDIUM', description: 'permission mismatch' }],
     });
-    assert.equal(result.severity, 'flagged');
-    assert.equal(result.findings[0]!.code, 'LP2');
-    assert.equal(result.findings[0]!.severity, 'MEDIUM');
-    assert.equal(result.findings[0]!.message, 'permission mismatch');
+    assert.equal(result.status, 'failed');
+    assert.equal(result.severity, 'scan_failed');
   });
 
   it('degrades to scan_failed on ok:false, non-objects, and missing findings', () => {
@@ -69,15 +68,6 @@ describe('parseSidecarResponse', () => {
     assert.equal(parseSidecarResponse(null).severity, 'scan_failed');
     assert.equal(parseSidecarResponse('nope').severity, 'scan_failed');
     assert.equal(parseSidecarResponse({ ok: true }).severity, 'scan_failed');
-  });
-});
-
-describe('NullPluginScanner', () => {
-  it('reports skipped + scan_failed without touching the directory', async () => {
-    const result = await new NullPluginScanner().scan('/does/not/exist');
-    assert.equal(result.status, 'skipped');
-    assert.equal(result.severity, 'scan_failed');
-    assert.equal(result.findings.length, 0);
   });
 });
 

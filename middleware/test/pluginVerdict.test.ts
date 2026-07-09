@@ -13,8 +13,20 @@ import {
   type PluginVerdictStore,
 } from '../src/services/pluginVerdict.js';
 
+/** Mirrors the SQL severity rank in agentGraphStore.upsertPluginVerdict. */
+const SEVERITY_ORDER: Record<string, number> = {
+  no_signals: 0,
+  pending: 1,
+  scan_failed: 2,
+  too_large_to_scan: 3,
+  flagged: 4,
+  high_risk: 5,
+};
+
 class FakePluginVerdictStore implements PluginVerdictStore {
   readonly rows = new Map<string, PluginVerdictRow>();
+  /** Severity at ack time, keyed like `rows` — mirrors `ack_severity`. */
+  readonly ackSeverities = new Map<string, string>();
   upsertCalls = 0;
 
   async getPluginVerdict(
@@ -39,12 +51,21 @@ class FakePluginVerdictStore implements PluginVerdictStore {
   async upsertPluginVerdict(row: PluginVerdictRow): Promise<void> {
     this.upsertCalls += 1;
     const key = `${row.contentHash}:${row.verifierVersion}`;
-    // Mirror the SQL upsert: scan columns are rewritten, ack columns survive.
+    // Mirror the SQL upsert: scan columns are rewritten; the ack survives
+    // only while the new severity is equal or BETTER than the severity the
+    // operator acknowledged (a worse re-scan result clears the ack).
     const existing = this.rows.get(key);
+    const ackedSeverity =
+      this.ackSeverities.get(key) ?? (existing ? existing.severity : undefined);
+    const ackSurvives =
+      existing?.ackBy != null &&
+      ackedSeverity !== undefined &&
+      SEVERITY_ORDER[row.severity]! <= SEVERITY_ORDER[ackedSeverity]!;
+    if (!ackSurvives) this.ackSeverities.delete(key);
     this.rows.set(key, {
       ...row,
-      ackBy: existing?.ackBy ?? null,
-      ackAt: existing?.ackAt ?? null,
+      ackBy: ackSurvives ? existing.ackBy : null,
+      ackAt: ackSurvives ? existing.ackAt : null,
     });
   }
 
@@ -69,6 +90,7 @@ class FakePluginVerdictStore implements PluginVerdictStore {
     const existing = this.rows.get(key);
     if (!existing) return undefined;
     const ack = { ackBy: ackedBy, ackAt: new Date() };
+    this.ackSeverities.set(key, existing.severity);
     this.rows.set(key, { ...existing, ackBy: ack.ackBy, ackAt: ack.ackAt });
     return ack;
   }
@@ -162,7 +184,7 @@ describe('createPluginScanScheduler', () => {
     await assert.doesNotReject(() => scheduler.scheduleScan(scanInput()));
   });
 
-  it('preserves an existing ack across a re-scan under the same version', async () => {
+  it('clears an ack when a re-scan WORSENS the verdict (scan_failed → high_risk)', async () => {
     const store = new FakePluginVerdictStore();
     const failing = new FakeScanner({
       status: 'failed',
@@ -175,7 +197,8 @@ describe('createPluginScanScheduler', () => {
       .scheduleScan(scanInput());
     await store.upsertPluginVerdictAck('sha-1', PLUGIN_SCANNER_VERSION, 'op@example.com');
 
-    // scan_failed is retried; the ack must survive the rewrite.
+    // scan_failed is retried; the operator acked a FAILED scan, never these
+    // findings — a high_risk upgrade must invalidate the ack.
     await createPluginScanScheduler({
       store,
       scanner: new FakeScanner(HIGH_RISK_RESULT),
@@ -184,6 +207,39 @@ describe('createPluginScanScheduler', () => {
 
     const row = await store.getPluginVerdict('sha-1', PLUGIN_SCANNER_VERSION);
     assert.equal(row?.severity, 'high_risk');
+    assert.equal(row?.ackBy, null);
+    assert.equal(row?.ackAt, null);
+  });
+
+  it('keeps an ack when a re-scan is equal or BETTER (scan_failed → no_signals)', async () => {
+    const store = new FakePluginVerdictStore();
+    const failing = new FakeScanner({
+      status: 'failed',
+      severity: 'scan_failed',
+      findings: [],
+      scannerVersion: PLUGIN_SCANNER_VERSION,
+      rationale: null,
+    });
+    await createPluginScanScheduler({ store, scanner: failing, log: () => undefined })
+      .scheduleScan(scanInput());
+    await store.upsertPluginVerdictAck('sha-1', PLUGIN_SCANNER_VERSION, 'op@example.com');
+
+    // The interim `pending` write of the retry must not destroy the
+    // comparison baseline either — the clean result keeps the ack.
+    await createPluginScanScheduler({
+      store,
+      scanner: new FakeScanner({
+        status: 'scanned',
+        severity: 'no_signals',
+        findings: [],
+        scannerVersion: PLUGIN_SCANNER_VERSION,
+        rationale: null,
+      }),
+      log: () => undefined,
+    }).scheduleScan(scanInput());
+
+    const row = await store.getPluginVerdict('sha-1', PLUGIN_SCANNER_VERSION);
+    assert.equal(row?.severity, 'no_signals');
     assert.equal(row?.ackBy, 'op@example.com');
   });
 });

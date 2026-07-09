@@ -43,6 +43,12 @@ export interface PluginVerdictStore {
     pluginId: string,
     verifierVersion: string,
   ): Promise<PluginVerdictRow | undefined>;
+  /**
+   * Rewrites the scan columns. An existing operator ack survives only while
+   * the new severity is equal or BETTER than the severity acked (recorded
+   * at ack time); a WORSE re-scan result clears the ack — the operator
+   * never saw those findings.
+   */
   upsertPluginVerdict(row: PluginVerdictRow): Promise<void>;
   getPluginVerdictsByShas(
     contentHashes: readonly string[],

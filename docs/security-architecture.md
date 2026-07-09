@@ -68,14 +68,21 @@ discovered from public registries. This keeps the supply chain explicit:
 - Optionally (issue #453), every ingested package — direct upload, hub
   install, Builder install — is statically scanned by an NVIDIA
   SkillSpector sidecar (`SKILLSPECTOR_URL`, deterministic `--no-llm` mode,
-  no outbound calls). The scan is **advisory-only in v1**: it runs
-  fire-and-forget after a successful ingest, its verdict (severity +
-  findings, cached by ZIP sha256 + scanner version in `plugin_verdicts`,
-  migration 0021) decorates the store detail page, and a scanner outage
-  degrades to a `scan_failed` verdict — never a failed install. Operator
-  acknowledgements persist `ack_by`/`ack_at` for audit; turning the
-  verdict into a hard install block is deferred until omadia has a role
-  model (same policy gap as skill-verdict suppression, see
+  no outbound calls; the scanner dependency is pinned to an exact upstream
+  commit SHA — pin-bump procedure in the sidecar README). The scan is
+  **advisory-only in v1**: it runs fire-and-forget after a successful
+  ingest, its verdict (severity + findings, cached by ZIP sha256 + scanner
+  version in `plugin_verdicts`, migration 0021) decorates the store detail
+  page, and a scanner outage degrades to a `scan_failed` verdict — never a
+  failed install. With `SKILLSPECTOR_URL` unset no scan is scheduled and no
+  verdict row is written. The result pipeline is **fail-closed**: only
+  SkillSpector's positively-verified report schema counts as a scan; an
+  unrecognized schema is recorded as `scan_failed`, never as a
+  `no_signals` all-clear. Operator acknowledgements persist
+  `ack_by`/`ack_at`/`ack_severity` for audit and are cleared automatically
+  when a later re-scan worsens the verdict beyond the acked severity;
+  turning the verdict into a hard install block is deferred until omadia
+  has a role model (same policy gap as skill-verdict suppression, see
   `agentBuilder.ts`).
 
 ## 5. Signed artefact URLs

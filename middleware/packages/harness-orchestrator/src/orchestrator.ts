@@ -590,6 +590,35 @@ async function maskRecalledForWire(
   return maskPromptForWire(privacy, recalledText);
 }
 
+/** #361 second-review fix — live chat history (`input.priorTurns`) is
+ *  LLM-bound wire content too: persisted turns store restored REAL values
+ *  by design, and channels replay them verbatim as priorTurns, so turn-N
+ *  PII would reach the model raw on turn N+1. Mask every prior userMessage
+ *  AND assistant answer through the SAME turn map before message assembly
+ *  (answer-side restore covers these spans as well). Empty pairs are
+ *  filtered so a failed prior turn can't poison context. */
+async function maskPriorTurnsForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  priorTurns: ChatTurnInput['priorTurns'],
+): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
+  const pairs: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  for (const t of priorTurns ?? []) {
+    if (t.userMessage.trim().length > 0) {
+      pairs.push({
+        role: 'user',
+        content: await maskPromptForWire(privacy, t.userMessage),
+      });
+    }
+    if (t.assistantAnswer.trim().length > 0) {
+      pairs.push({
+        role: 'assistant',
+        content: await maskPromptForWire(privacy, t.assistantAnswer),
+      });
+    }
+  }
+  return pairs;
+}
+
 /**
  * Restore prompt surrogates → real values in a text that is about to be
  * PERSISTED (session log / KG / promoted memory) or returned as the final
@@ -641,6 +670,55 @@ async function restoreExcerptForPersistence(
   }
   restored.excerpts = excerpts;
   return restored;
+}
+
+/** #361 — an `ask_user_choice` card (LLM tool call or card-router pass over
+ *  masked wire text) is user-facing: restore surrogates → real values in
+ *  question, rationale, and option labels/values before the channel renders
+ *  it (cosmetic surrogate exposure otherwise). Identity when no handle is
+ *  present or nothing was masked this turn. */
+async function restorePendingChoiceForUser(
+  privacy: PrivacyTurnHandle | undefined,
+  choice: PendingUserChoice | undefined,
+): Promise<PendingUserChoice | undefined> {
+  if (privacy === undefined || choice === undefined) return choice;
+  const options: PendingUserChoice['options'] = [];
+  for (const opt of choice.options) {
+    options.push({
+      label: await restorePromptForPersistence(privacy, opt.label),
+      value: await restorePromptForPersistence(privacy, opt.value),
+    });
+  }
+  const restored: PendingUserChoice = {
+    ...choice,
+    question: await restorePromptForPersistence(privacy, choice.question),
+    options,
+  };
+  if (choice.rationale !== undefined) {
+    restored.rationale = await restorePromptForPersistence(
+      privacy,
+      choice.rationale,
+    );
+  }
+  return restored;
+}
+
+/** #361 — same rationale as `restorePendingChoiceForUser`, for the
+ *  follow-up suggestion buttons (labels are shown to the user; the prompt
+ *  becomes the next turn's user message). */
+async function restoreFollowUpsForUser(
+  privacy: PrivacyTurnHandle | undefined,
+  followUps: FollowUpOption[] | undefined,
+): Promise<FollowUpOption[] | undefined> {
+  if (privacy === undefined || followUps === undefined) return followUps;
+  const out: FollowUpOption[] = [];
+  for (const f of followUps) {
+    out.push({
+      label: await restorePromptForPersistence(privacy, f.label),
+      prompt: await restorePromptForPersistence(privacy, f.prompt),
+    });
+  }
+  return out;
 }
 
 const MEMORY_TOOL_NAME = 'memory';
@@ -2142,8 +2220,28 @@ export class Orchestrator {
       );
     }
 
+    // #361 second-review fix — the relayed payload is LLM-bound wire
+    // content: `dispatchTool` hands it to an LLM-backed sub-agent verbatim.
+    // Mask it through the SAME turn map as a normal prompt; the sub-agent's
+    // answer is restored surrogate→real below, so the user still sees the
+    // real values (the no-redaction invariant holds on the restored text).
+    // Failure-closed: a `blocked` outcome answers with the generic privacy
+    // error (audited by the guard) instead of dispatching unmasked.
+    const privacyForPrompt = turnContext.current()?.privacyHandle;
+    let wirePayload: string;
+    try {
+      wirePayload = await maskPromptForWire(privacyForPrompt, directive.payload);
+    } catch (err) {
+      if (err instanceof PromptMaskBlockedError) {
+        console.error(`[orchestrator] direct-line dispatch blocked — ${err.message}`);
+        return { answer: PROMPT_MASK_BLOCKED_ANSWER, toolCalls: 0, iterations: 0 };
+      }
+      throw err;
+    }
+
     // Deterministic harness invocation through the choke point. Input is bound
-    // to the verbatim user payload — the orchestrator cannot reshape it.
+    // to the user payload — the orchestrator never reshapes it beyond the
+    // #361 privacy masking above (flag off ⇒ byte-identical verbatim relay).
     const collector = new RunTraceCollector({
       scope: input.sessionScope ?? turnId,
       ...(input.userId ? { userId: input.userId } : {}),
@@ -2154,16 +2252,16 @@ export class Orchestrator {
     let status: 'success' | 'error';
     try {
       // The domain-tool contract takes `{ question }` (see createDomainTool);
-      // bind it to the user's VERBATIM payload — the orchestrator never
-      // reshapes it. Routed through the SAME `dispatchTool` choke point as
-      // every other domain-tool dispatch (not a raw `tool.handle` call) so
-      // the Privacy Shield v4 masking cascade applies here too — #332
-      // gap-closure: a raw `tool.handle` call bypassed `dispatchTool`
-      // entirely, so a verbatim delegated answer was never interned even
-      // when a privacy guard was active.
+      // bind it to the user's payload (masked when the #361 flag is on,
+      // byte-identical otherwise). Routed through the SAME `dispatchTool`
+      // choke point as every other domain-tool dispatch (not a raw
+      // `tool.handle` call) so the Privacy Shield v4 masking cascade applies
+      // here too — #332 gap-closure: a raw `tool.handle` call bypassed
+      // `dispatchTool` entirely, so a verbatim delegated answer was never
+      // interned even when a privacy guard was active.
       verbatim = await this.dispatchTool(
         tool.name,
-        { question: directive.payload },
+        { question: wirePayload },
         handle.observer,
       );
       // `createDomainTool.handle` does not throw on a sub-agent failure — it
@@ -2179,7 +2277,13 @@ export class Orchestrator {
     handle.finish({ durationMs: Date.now() - startedAt, status });
     const runTrace = collector.finish({ iterations: 1, status });
 
-    // Harness-owned, attributed segment — byte-for-byte the sub-agent's words.
+    // #361 — the sub-agent may echo the masked payload's surrogates back;
+    // restore them to real values (identity when nothing was masked) before
+    // the text is rendered, persisted, or attributed.
+    verbatim = await restorePromptForPersistence(privacyForPrompt, verbatim);
+
+    // Harness-owned, attributed segment — byte-for-byte the sub-agent's words
+    // (post surrogate-restore, which only inverts the #361 pseudonym map).
     const delegatedAnswer: DelegatedAnswer = {
       agentId: candidate.agentId ?? candidate.toolName,
       label: candidate.label,
@@ -2251,7 +2355,6 @@ export class Orchestrator {
     // Fail closed on `blocked`: skip fact extraction (audited) rather than
     // send an unmasked prompt — the user-visible answer is unaffected.
     if (this.factExtractor && persistedTurnId) {
-      const privacyForPrompt = turnContext.current()?.privacyHandle;
       try {
         const maskedUserMessage = await maskPromptForWire(
           privacyForPrompt,
@@ -2628,26 +2731,18 @@ export class Orchestrator {
       domain?: string;
     }> = [];
 
+    // #361 — priorTurns replay persisted REAL values (turn N restored them
+    // before persistence), so they are masked through the same turn map
+    // before assembly. See maskPriorTurnsForWire.
+    const priorTurnMessages = await maskPriorTurnsForWire(
+      privacyForPrompt,
+      input.priorTurns,
+    );
     const messages: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] | string }> = [
       // Live chat history first. Each turn becomes a (user, assistant) pair —
       // same shape the Anthropic API expects for a multi-turn conversation.
       // Empty pairs are filtered so a failed prior turn can't poison context.
-      ...(input.priorTurns ?? []).flatMap<{
-        role: 'user' | 'assistant';
-        content: ContentBlock[] | string;
-      }>((t) => {
-        const pair: Array<{
-          role: 'user' | 'assistant';
-          content: ContentBlock[] | string;
-        }> = [];
-        if (t.userMessage.trim().length > 0) {
-          pair.push({ role: 'user', content: t.userMessage });
-        }
-        if (t.assistantAnswer.trim().length > 0) {
-          pair.push({ role: 'assistant', content: t.assistantAnswer });
-        }
-        return pair;
-      }),
+      ...priorTurnMessages,
       { role: 'user', content: buildUserContent(input, ingestedText, wireUserMessage) },
     ];
 
@@ -2900,8 +2995,16 @@ export class Orchestrator {
             answer,
             turnModel,
           );
-          const pendingUserChoice = this.drainPendingChoice();
-          const followUpOptions = this.drainFollowUps();
+          // #361 — card contents came out of an LLM pass over masked wire
+          // text and are user-facing; restore surrogates → real values.
+          const pendingUserChoice = await restorePendingChoiceForUser(
+            privacyForPrompt,
+            this.drainPendingChoice(),
+          );
+          const followUpOptions = await restoreFollowUpsForUser(
+            privacyForPrompt,
+            this.drainFollowUps(),
+          );
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
           const pendingOAuthConsent = this.drainConsentRequired();
@@ -3039,9 +3142,13 @@ export class Orchestrator {
         // plugin-tool result this batch. Stored on the orchestrator until
         // the done block drains it. Doesn't affect short-circuit decisions.
         this.extractToolEmittedRoutineList(toolResults);
-        const pendingUserChoice =
+        // #361 — the choice card is user-facing AND its question is
+        // persisted in the session log; restore surrogates → real values.
+        const pendingUserChoice = await restorePendingChoiceForUser(
+          privacyForPrompt,
           this.drainPendingChoice() ??
-          this.extractToolEmittedChoice(toolResults);
+            this.extractToolEmittedChoice(toolResults),
+        );
         if (pendingUserChoice) {
           this.drainAttachments();
           // Follow-up suggestions are incompatible with a blocking choice
@@ -3397,24 +3504,15 @@ export class Orchestrator {
       domain?: string;
     }> = [];
 
+    // #361 — priorTurns are masked through the same turn map before
+    // assembly; see chatInContextInner / maskPriorTurnsForWire.
+    const priorTurnMessages = await maskPriorTurnsForWire(
+      privacyForPrompt,
+      input.priorTurns,
+    );
     const messages: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] | string }> = [
       // Same in-memory history injection as chat() — see chatInContext().
-      ...(input.priorTurns ?? []).flatMap<{
-        role: 'user' | 'assistant';
-        content: ContentBlock[] | string;
-      }>((t) => {
-        const pair: Array<{
-          role: 'user' | 'assistant';
-          content: ContentBlock[] | string;
-        }> = [];
-        if (t.userMessage.trim().length > 0) {
-          pair.push({ role: 'user', content: t.userMessage });
-        }
-        if (t.assistantAnswer.trim().length > 0) {
-          pair.push({ role: 'assistant', content: t.assistantAnswer });
-        }
-        return pair;
-      }),
+      ...priorTurnMessages,
       { role: 'user', content: buildUserContent(input, ingestedText, wireUserMessage) },
     ];
 
@@ -3685,8 +3783,16 @@ export class Orchestrator {
             answer,
             turnModel,
           );
-          const pendingUserChoice = this.drainPendingChoice();
-          const followUpOptions = this.drainFollowUps();
+          // #361 — card contents came out of an LLM pass over masked wire
+          // text and are user-facing; restore surrogates → real values.
+          const pendingUserChoice = await restorePendingChoiceForUser(
+            privacyForPrompt,
+            this.drainPendingChoice(),
+          );
+          const followUpOptions = await restoreFollowUpsForUser(
+            privacyForPrompt,
+            this.drainFollowUps(),
+          );
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
           const pendingOAuthConsent = this.drainConsentRequired();
@@ -3908,9 +4014,13 @@ export class Orchestrator {
         // plugin-tool result this batch. Stored on the orchestrator until
         // the done block drains it. Doesn't affect short-circuit decisions.
         this.extractToolEmittedRoutineList(toolResults);
-        const pendingUserChoice =
+        // #361 — the choice card is user-facing AND its question is
+        // persisted in the session log; restore surrogates → real values.
+        const pendingUserChoice = await restorePendingChoiceForUser(
+          privacyForPrompt,
           this.drainPendingChoice() ??
-          this.extractToolEmittedChoice(toolResults);
+            this.extractToolEmittedChoice(toolResults),
+        );
         if (pendingUserChoice) {
           this.drainAttachments();
           // Follow-up suggestions are incompatible with a blocking choice

@@ -53,31 +53,53 @@ def materialize(files: list, root: str) -> None:
             fh.write(base64.b64decode(content_b64))
 
 
+class SchemaMismatch(ValueError):
+    """The scanner's output is not the positively-recognized report schema."""
+
+
 def extract_findings(payload) -> list:
-    """Normalize SkillSpector's JSON output into flat finding dicts."""
-    if isinstance(payload, list):
-        raw = payload
-    elif isinstance(payload, dict):
-        raw = None
-        for key in ("findings", "results", "detections"):
-            if isinstance(payload.get(key), list):
-                raw = payload[key]
-                break
-        if raw is None:
-            raw = []
-    else:
-        raw = []
+    """Normalize SkillSpector's JSON report into flat finding dicts.
+
+    FAIL-CLOSED (#453 second-review fix): only the positively-verified
+    SkillSpector report schema is accepted — observed on the pinned commit
+    (v2.3.11): a top-level object with `issues` (list) and `risk_assessment`
+    (dict); each issue carries `id`, `severity`, `explanation`, and
+    `location.file`. Anything else raises `SchemaMismatch`, so the caller
+    answers ok:false and the middleware records `scan_failed` — an
+    unrecognized schema must NEVER read as a clean scan.
+    """
+    if not isinstance(payload, dict):
+        raise SchemaMismatch(f"report is not an object (got {type(payload).__name__})")
+    issues = payload.get("issues")
+    if not isinstance(issues, list):
+        raise SchemaMismatch("report has no 'issues' list — unrecognized schema")
+    if not isinstance(payload.get("risk_assessment"), dict):
+        raise SchemaMismatch("report has no 'risk_assessment' object — unrecognized schema")
     findings = []
-    for item in raw:
+    for item in issues:
         if not isinstance(item, dict):
-            continue
+            raise SchemaMismatch("issue entry is not an object — unrecognized schema")
+        location = item.get("location")
+        file_ = location.get("file") if isinstance(location, dict) else None
         findings.append({
-            "code": str(item.get("code") or item.get("id") or item.get("detector") or "unknown"),
-            "severity": str(item.get("severity") or item.get("level") or "LOW"),
-            "message": str(item.get("message") or item.get("description") or item.get("title") or ""),
-            "file": item.get("file") or item.get("path") or item.get("location"),
+            "code": str(item.get("id") or "unknown"),
+            "severity": str(item.get("severity") or "LOW"),
+            "message": str(
+                item.get("explanation") or item.get("finding") or item.get("category") or ""
+            ),
+            "file": file_ if isinstance(file_, str) else None,
         })
     return findings
+
+
+def report_version(payload) -> str:
+    """Scanner version, preferring the report's own metadata over the CLI."""
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    if isinstance(metadata, dict):
+        v = metadata.get("skillspector_version")
+        if isinstance(v, str) and v:
+            return f"SkillSpector v{v}" if not v.startswith("SkillSpector") else v
+    return skillspector_version()
 
 
 def run_scan(files: list) -> dict:
@@ -88,8 +110,18 @@ def run_scan(files: list) -> dict:
             ["skillspector", "scan", root, "--no-llm", "--format", "json"],
             capture_output=True, text=True, timeout=SCAN_TIMEOUT_S,
         )
-        # SkillSpector uses non-zero exit codes to signal findings; only a
-        # non-parseable stdout is treated as a scanner failure.
+        # Observed on the pinned commit: a completed scan exits 0 whether or
+        # not it found issues (findings do NOT change the exit code); usage/
+        # input errors exit non-zero with a prose message on stdout/stderr.
+        # Positive verification, fail-closed: success requires exit 0 AND
+        # parseable JSON AND the recognized report schema. 'Ran clean' is
+        # exit 0 + `issues: []`; everything ambiguous is a failure.
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "")[:2000]
+            return {
+                "ok": False,
+                "error": f"skillspector exited {proc.returncode}: {detail}",
+            }
         try:
             payload = json.loads(proc.stdout)
         except (json.JSONDecodeError, TypeError):
@@ -97,10 +129,14 @@ def run_scan(files: list) -> dict:
                 "ok": False,
                 "error": f"skillspector produced no JSON (exit={proc.returncode}): {proc.stderr[:2000]}",
             }
+        try:
+            findings = extract_findings(payload)
+        except SchemaMismatch as err:
+            return {"ok": False, "error": f"unrecognized scanner output: {err}"}
         return {
             "ok": True,
-            "scanner_version": skillspector_version(),
-            "findings": extract_findings(payload),
+            "scanner_version": report_version(payload),
+            "findings": findings,
         }
     finally:
         shutil.rmtree(root, ignore_errors=True)

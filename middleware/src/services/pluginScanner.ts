@@ -8,10 +8,12 @@ import type { Severity } from './skillVerdict.js';
  *
  * `PluginScanner` is the seam between the ingest pipeline and the NVIDIA
  * SkillSpector sidecar: one method, directory in, normalized `ScanResult`
- * out. Two implementations ship — `HttpSkillSpectorScanner` posts the
- * package's file tree to the sidecar's `POST /scan` shim (which runs
- * `skillspector scan <dir> --no-llm --format json`), and
- * `NullPluginScanner` covers deployments without a configured sidecar.
+ * out. `HttpSkillSpectorScanner` posts the package's file tree to the
+ * sidecar's `POST /scan` shim (which runs `skillspector scan <dir>
+ * --no-llm --format json`). Deployments without a configured sidecar
+ * (`SKILLSPECTOR_URL` unset) wire NO scanner and NO scheduler at all — no
+ * verdict rows are written, store pages show no badge; `scan_failed` is
+ * reserved for REAL scanner failures.
  *
  * Contract: `scan()` NEVER throws. Every failure mode (sidecar down,
  * timeout, malformed response, unreadable package dir) degrades to a
@@ -45,8 +47,8 @@ export interface ScanFinding {
 }
 
 export interface ScanResult {
-  /** 'skipped' = no scanner configured; 'failed' = scanner errored. */
-  readonly status: 'scanned' | 'skipped' | 'failed';
+  /** 'failed' = the scanner errored (sidecar down/timeout/bad schema). */
+  readonly status: 'scanned' | 'failed';
   readonly severity: Severity;
   readonly findings: readonly ScanFinding[];
   readonly scannerVersion: string;
@@ -81,24 +83,6 @@ function failed(rationale: string): ScanResult {
     scannerVersion: PLUGIN_SCANNER_VERSION,
     rationale,
   };
-}
-
-/**
- * No-op scanner for deployments without a SkillSpector sidecar
- * (`SKILLSPECTOR_URL` unset) and for tests. Reports `scan_failed` with a
- * `skipped` status so the verdict row is honest about why there is no
- * signal — installs proceed unaffected either way (advisory-only v1).
- */
-export class NullPluginScanner implements PluginScanner {
-  async scan(_dir: string): Promise<ScanResult> {
-    return {
-      status: 'skipped',
-      severity: 'scan_failed',
-      findings: [],
-      scannerVersion: PLUGIN_SCANNER_VERSION,
-      rationale: 'No code scanner configured (SKILLSPECTOR_URL is unset).',
-    };
-  }
 }
 
 export interface HttpSkillSpectorScannerOptions {
@@ -205,34 +189,40 @@ async function collectFiles(dir: string): Promise<CollectedFiles> {
 }
 
 /**
- * Tolerant mapping of the sidecar's JSON onto `ScanResult`. The shim
- * forwards SkillSpector's `--format json` output; we read the common field
- * spellings defensively so a minor upstream schema change degrades to
- * `scan_failed` (or a finding with an empty code) rather than a throw.
+ * FAIL-CLOSED mapping of the sidecar shim's JSON onto `ScanResult`
+ * (second-review fix). The shim's contract is exactly
+ * `{ok: true, scanner_version, findings: [{code, severity, message, file}]}`
+ * (the shim itself positively verifies SkillSpector's report schema and
+ * answers `ok: false` on any mismatch — see
+ * middleware/sidecars/skillspector/server.py). No alternate field spellings
+ * are guessed here: anything that is not the promised contract degrades to
+ * `scan_failed`, never to an implicit `no_signals` all-clear.
  */
 export function parseSidecarResponse(body: unknown): ScanResult {
   if (!body || typeof body !== 'object') {
     return failed('Scanner sidecar returned a non-object response.');
   }
   const record = body as Record<string, unknown>;
-  if (record['ok'] === false) {
+  if (record['ok'] !== true) {
     const message =
       typeof record['error'] === 'string' ? record['error'] : 'unknown scanner error';
     return failed(`Scanner reported failure: ${message}`);
   }
-  const rawFindings = firstArray(record, ['findings', 'results', 'detections']);
-  if (!rawFindings) {
+  const rawFindings = record['findings'];
+  if (!Array.isArray(rawFindings)) {
     return failed('Scanner sidecar response carries no findings array.');
   }
   const findings: ScanFinding[] = [];
   for (const raw of rawFindings) {
-    if (!raw || typeof raw !== 'object') continue;
+    if (!raw || typeof raw !== 'object') {
+      return failed('Scanner sidecar response carries a non-object finding.');
+    }
     const f = raw as Record<string, unknown>;
     findings.push({
-      code: firstString(f, ['code', 'id', 'detector']) ?? 'unknown',
-      severity: firstString(f, ['severity', 'level']) ?? 'LOW',
-      message: firstString(f, ['message', 'description', 'title']) ?? '',
-      file: firstString(f, ['file', 'path', 'location']),
+      code: firstString(f, ['code']) ?? 'unknown',
+      severity: firstString(f, ['severity']) ?? 'LOW',
+      message: firstString(f, ['message']) ?? '',
+      file: firstString(f, ['file']),
     });
   }
   const scannerVersion =
@@ -252,17 +242,6 @@ function firstString(record: Record<string, unknown>, keys: string[]): string | 
   for (const key of keys) {
     const value = record[key];
     if (typeof value === 'string' && value.length > 0) return value;
-  }
-  return null;
-}
-
-function firstArray(
-  record: Record<string, unknown>,
-  keys: string[],
-): unknown[] | null {
-  for (const key of keys) {
-    const value = record[key];
-    if (Array.isArray(value)) return value;
   }
   return null;
 }

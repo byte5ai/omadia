@@ -1,4 +1,5 @@
 # NVIDIA SkillSpector — deterministic agent-skill/code scanner (Apache-2.0).
-# Pinned to the repo's main branch until a PyPI release exists; move to a
-# versioned `skillspector==X.Y.Z` pin as soon as one is published.
-skillspector @ git+https://github.com/NVIDIA/skillspector.git
+# Pinned to an exact commit SHA (supply-chain: never track a moving branch).
+# No PyPI release exists yet; move to a versioned `skillspector==X.Y.Z` pin
+# as soon as one is published. Pin-bump procedure: see README.md.
+skillspector @ git+https://github.com/NVIDIA/skillspector.git@c2d09df019e358d3dc12d980b82c798b87cb9f56

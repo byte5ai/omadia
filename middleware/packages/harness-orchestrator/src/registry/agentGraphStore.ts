@@ -394,6 +394,8 @@ interface PluginVerdictDbRow {
   computed_at: Date;
   ack_by: string | null;
   ack_at: Date | null;
+  /** Severity at ack time — drives ack invalidation on a WORSE re-scan. */
+  ack_severity: string | null;
 }
 
 interface SkillResourceDbRow {
@@ -1097,12 +1099,31 @@ export class AgentGraphStore {
   }
 
   /**
-   * Upsert deliberately leaves `ack_by`/`ack_at` untouched: an operator ack
-   * survives a re-scan under the same verifier_version, while a verifier
-   * upgrade produces a fresh row (new PK) with no ack — see
-   * migration 0021_plugin_verdict.sql.
+   * Upsert keeps an operator ack only while the new severity is equal or
+   * BETTER than the severity the operator actually acknowledged
+   * (`ack_severity`, recorded at ack time): a re-scan that upgrades the row
+   * to something WORSE (e.g. acked `scan_failed` → `high_risk`) clears
+   * `ack_by`/`ack_at`/`ack_severity`, because the operator never saw those
+   * findings. Comparing against `ack_severity` (not the live severity)
+   * keeps the scheduler's interim `pending` write from destroying the
+   * comparison baseline. A verifier upgrade produces a fresh row (new PK)
+   * with no ack — see migration 0021_plugin_verdict.sql. Severity ranks
+   * mirror SEVERITY_RANK in middleware/src/services/skillVerdict.ts.
    */
   async upsertPluginVerdict(row: PluginVerdictRow): Promise<void> {
+    const rank = (expr: string): string =>
+      `CASE ${expr}
+         WHEN 'no_signals' THEN 0
+         WHEN 'pending' THEN 1
+         WHEN 'scan_failed' THEN 2
+         WHEN 'too_large_to_scan' THEN 3
+         WHEN 'flagged' THEN 4
+         WHEN 'high_risk' THEN 5
+         ELSE 6 END`;
+    const ackSurvives =
+      `plugin_verdicts.ack_by IS NOT NULL AND ` +
+      `${rank('EXCLUDED.severity')} <= ` +
+      `${rank('COALESCE(plugin_verdicts.ack_severity, plugin_verdicts.severity)')}`;
     await this.pool.query(
       `INSERT INTO plugin_verdicts
          (content_hash, verifier_version, plugin_id, severity, findings, scanner_version, rationale, computed_at)
@@ -1113,7 +1134,10 @@ export class AgentGraphStore {
          findings        = EXCLUDED.findings,
          scanner_version = EXCLUDED.scanner_version,
          rationale       = EXCLUDED.rationale,
-         computed_at     = EXCLUDED.computed_at`,
+         computed_at     = EXCLUDED.computed_at,
+         ack_by          = CASE WHEN ${ackSurvives} THEN plugin_verdicts.ack_by ELSE NULL END,
+         ack_at          = CASE WHEN ${ackSurvives} THEN plugin_verdicts.ack_at ELSE NULL END,
+         ack_severity    = CASE WHEN ${ackSurvives} THEN plugin_verdicts.ack_severity ELSE NULL END`,
       [
         row.contentHash,
         row.verifierVersion,
@@ -1140,8 +1164,10 @@ export class AgentGraphStore {
     return new Map(rows.map((row) => [row.content_hash, mapPluginVerdict(row)]));
   }
 
-  /** Ack the existing verdict row. Returns undefined when nothing has been
-   *  scanned yet — there is no verdict to acknowledge. */
+  /** Ack the existing verdict row. Records the acked severity alongside so
+   *  a later re-scan that WORSENS the verdict can invalidate the ack (see
+   *  upsertPluginVerdict). Returns undefined when nothing has been scanned
+   *  yet — there is no verdict to acknowledge. */
   async upsertPluginVerdictAck(
     contentHash: string,
     verifierVersion: string,
@@ -1149,7 +1175,7 @@ export class AgentGraphStore {
   ): Promise<{ ackBy: string; ackAt: Date } | undefined> {
     const { rows } = await this.pool.query<{ ack_by: string; ack_at: Date }>(
       `UPDATE plugin_verdicts
-       SET ack_by = $3, ack_at = now()
+       SET ack_by = $3, ack_at = now(), ack_severity = severity
        WHERE content_hash = $1 AND verifier_version = $2
        RETURNING ack_by, ack_at`,
       [contentHash, verifierVersion, ackedBy],
