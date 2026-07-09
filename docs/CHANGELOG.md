@@ -18,6 +18,20 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — advisory SkillSpector code scanning for plugin packages (#453)
+
+- Every ingested plugin package (direct upload, hub install, Builder install)
+  is optionally scanned by an NVIDIA SkillSpector sidecar
+  (`middleware/sidecars/skillspector/`, enabled via `SKILLSPECTOR_URL` /
+  `docker-compose.skillspector.yaml`). Fire-and-forget after ingest success —
+  a scanner outage or unset URL records a `scan_failed` verdict and never
+  fails an install. Verdicts are cached by ZIP sha256 + scanner version
+  (**migration `0021_plugin_verdict.sql`**, table `plugin_verdicts` incl.
+  inline operator ack columns), surface as a badge + `verdict` field on
+  `GET /api/v1/store/plugins/:id`, and can be acknowledged via
+  `POST /api/v1/store/plugins/:id/verdict/ack`. Advisory-only in v1: nothing
+  blocks. New env vars: `SKILLSPECTOR_URL`, `SKILLSPECTOR_TIMEOUT_MS`.
+
 ### Added — pluggable LLM provider (OpenAI as an admin-selectable provider)
 
 - **`@omadia/llm-provider`**: a neutral LLM provider contract with Anthropic and

@@ -35,6 +35,15 @@ import {
 } from './services/mcpGrantPolicy.js';
 import { rescanAllMcpServers } from './services/mcpRescan.js';
 import { createLlmVerifier, type LlmVerifier } from './services/skillVerdictLlmVerifier.js';
+import {
+  HttpSkillSpectorScanner,
+  NullPluginScanner,
+} from './services/pluginScanner.js';
+import {
+  createPluginScanScheduler,
+  createPluginVerdictLookup,
+  type PluginVerdictLookup,
+} from './services/pluginVerdict.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
@@ -1449,6 +1458,37 @@ async function main(): Promise<void> {
     ? new McpConfigService({ graph: new AgentGraphStore(graphPool), vault: secretVault })
     : undefined;
 
+  // Plugin code scanning (issue #453) — SkillSpector sidecar behind the
+  // PluginScanner seam. Requires the Postgres graph backend for the verdict
+  // table; without it (in-memory dev/tests) scanning is simply absent.
+  // Advisory-only v1: verdicts decorate the store/detail responses, nothing
+  // reads them to block an install.
+  const pluginVerdictStore = graphPool ? new AgentGraphStore(graphPool) : undefined;
+  const pluginScanScheduler = pluginVerdictStore
+    ? createPluginScanScheduler({
+        store: pluginVerdictStore,
+        scanner: config.SKILLSPECTOR_URL
+          ? new HttpSkillSpectorScanner({
+              baseUrl: config.SKILLSPECTOR_URL,
+              timeoutMs: config.SKILLSPECTOR_TIMEOUT_MS,
+              log: (m) => console.log(m),
+            })
+          : new NullPluginScanner(),
+        log: (m) => console.log(m),
+      })
+    : undefined;
+  const pluginVerdictLookup: PluginVerdictLookup | undefined = pluginVerdictStore
+    ? createPluginVerdictLookup({
+        store: pluginVerdictStore,
+        packages: uploadedPackageStore,
+      })
+    : undefined;
+  if (config.SKILLSPECTOR_URL && !graphPool) {
+    console.warn(
+      '[middleware] SKILLSPECTOR_URL is set but the graph backend is in-memory — plugin code scanning disabled (verdicts need Postgres)',
+    );
+  }
+
   // MCP registry bearer tokens live in the vault, never on the DB row
   // (issue #463 item 5). Move any legacy plaintext token (pre-0020) into the
   // vault on boot — idempotent, a no-op once the column is NULL.
@@ -2646,6 +2686,9 @@ async function main(): Promise<void> {
       registry: installedRegistry,
       client: registryClient,
       pluginStatusRegistry,
+      // Issue #453 — read-only code-scan verdict on the detail response
+      // plus the operator ack endpoint. Lookup only, never scans on GET.
+      verdicts: pluginVerdictLookup,
     }),
   );
   console.log('[middleware] plugin store endpoints ready at /api/v1/store/plugins (auth: required)');
@@ -2788,6 +2831,9 @@ async function main(): Promise<void> {
       hostDependencies,
       registry: installedRegistry,
       migrationRunner,
+      // Issue #453 — advisory SkillSpector scan, fire-and-forget after a
+      // successful ingest. Absent without a Postgres graph backend.
+      scanScheduler: pluginScanScheduler,
       // After a re-upload onto an already installed agent (registry entry
       // still alive, package was deleted + re-uploaded) we activate the
       // runtime directly — otherwise the tool stays unknown until the user

@@ -18,6 +18,7 @@ import {
 import { getLocale, getTranslations } from 'next-intl/server';
 
 import { Markdown } from '../../_components/Markdown';
+import { PluginVerdictBadge } from '../../_components/admin/PluginVerdictBadge';
 import { pickLocalized } from '../../_lib/localized';
 
 import { ApiError, getStorePlugin } from '../../_lib/api';
@@ -147,6 +148,11 @@ export default async function PluginDetailPage({
                 ) : (
                   <Chip tone="muted">{t('unsigned')}</Chip>
                 )}
+                {/* Issue #453 — advisory code-scan verdict for ingested
+                    packages. Absent (no badge) when never scanned. */}
+                {detail.verdict ? (
+                  <PluginVerdictBadge severity={detail.verdict.severity} />
+                ) : null}
               </div>
             </div>
           </div>

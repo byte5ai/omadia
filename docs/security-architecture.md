@@ -65,6 +65,18 @@ discovered from public registries. This keeps the supply chain explicit:
   filesystem). The runtime enforces the declaration.
 - A plugin's `depends_on` is a soft contract, not an automatic install
   trigger.
+- Optionally (issue #453), every ingested package — direct upload, hub
+  install, Builder install — is statically scanned by an NVIDIA
+  SkillSpector sidecar (`SKILLSPECTOR_URL`, deterministic `--no-llm` mode,
+  no outbound calls). The scan is **advisory-only in v1**: it runs
+  fire-and-forget after a successful ingest, its verdict (severity +
+  findings, cached by ZIP sha256 + scanner version in `plugin_verdicts`,
+  migration 0021) decorates the store detail page, and a scanner outage
+  degrades to a `scan_failed` verdict — never a failed install. Operator
+  acknowledgements persist `ack_by`/`ack_at` for audit; turning the
+  verdict into a hard install block is deferred until omadia has a role
+  model (same policy gap as skill-verdict suppression, see
+  `agentBuilder.ts`).
 
 ## 5. Signed artefact URLs
 
