@@ -221,17 +221,15 @@ function fixupPrompt(group, branch, findings) {
     '6. Commit on top of the existing commits. Conventional-commit subject, reference the issue number.',
     '',
     '## Do not',
-    '- Do not push. Do not open a pull request. The caller does both, after a human has seen your result.',
+    '- Do not push, do not open a pull request. The caller does both, after a human sees your result.',
     '- Do not amend, rebase, squash, or force anything. Add a commit.',
     '',
     '## Issue' + (plural ? 's' : ''),
     group.map(issueBrief).join('\n\n'),
     '',
-    '## Pull request text',
     'Rewrite prTitle and prBody for the FULL branch (original work plus your fixup), not just your delta.',
     'End with one "Closes #<n>" line per issue. English, sober technical tone, no emoji.',
-    '',
-    'Return the structured result. `branch` is `' + branch + '`. `commitShas` may list only your new commits.',
+    'Return the structured result. `branch` is `' + branch + '`. `commitShas` may list only new commits.',
   ].join('\n')
 }
 
@@ -379,10 +377,8 @@ function codexPrompt(impl, group) {
     '',
     '## Step 4 -- return',
     'codex prints its JSON as the last object in stdout. Parse it. Copy prReady, blockingFindings and notes',
-    'into your structured result unchanged, put the raw JSON line in rawVerdict, and set ran=true,',
-    'available=true. If codex errors or emits no parseable JSON, set ran=false and prReady=false and put the',
-    'error output in notes.',
-    '',
+    'into your structured result unchanged, put the raw JSON line in rawVerdict, set ran=true available=true.',
+    'If codex errors or emits no parseable JSON, set ran=false prReady=false and put the error in notes.',
     'Do not edit any file except ' + schemaPath + '. Do not push. Do not open a pull request.',
   ].join('\n')
 }
