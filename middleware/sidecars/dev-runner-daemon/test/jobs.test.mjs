@@ -782,3 +782,42 @@ describe('createDockerEngine — a rollback that fails must not be silent', () =
     );
   });
 });
+
+describe('dev-runner image — the job workspace is writable by uid 1000', { skip: !RUN_DOCKER_IT }, () => {
+  it('a fresh named volume mounted at /workspace comes up owned by the runner user', async () => {
+    // The clamp runs the container as 1000:1000 with a read-only rootfs and
+    // mounts a FRESH named volume at /workspace. Docker copies an image
+    // directory's contents AND ownership into an empty volume on first mount —
+    // but only when that directory is non-empty. Without the image's `.keep`
+    // the volume is root-owned and every job dies with EACCES on its first
+    // write. This asserts the property against the REAL image.
+    const dockerHost = process.env.DOCKER_HOST;
+    const docker =
+      dockerHost && dockerHost.startsWith('unix://')
+        ? new Docker({ socketPath: dockerHost.slice('unix://'.length) })
+        : new Docker();
+    const image = process.env.DEV_RUNNER_IT_IMAGE ?? 'omadia-dev-runner:wsfix';
+    const volumeName = `omadia-it-ws-${Date.now()}`;
+    await docker.createVolume({ Name: volumeName });
+    try {
+      const container = await docker.createContainer({
+        Image: image,
+        User: '1000:1000',
+        Entrypoint: ['sh', '-c'],
+        Cmd: ['touch /workspace/probe && stat -c "%u" /workspace'],
+        HostConfig: { ReadonlyRootfs: true, CapDrop: ['ALL'], Binds: [`${volumeName}:/workspace`], AutoRemove: false },
+      });
+      try {
+        await container.start();
+        const { StatusCode } = await container.wait();
+        const logs = (await container.logs({ stdout: true, stderr: true, follow: false })).toString();
+        assert.equal(StatusCode, 0, `the runner could not write to /workspace: ${logs}`);
+        assert.ok(logs.includes('1000'), `/workspace is not owned by uid 1000: ${logs}`);
+      } finally {
+        await container.remove({ force: true }).catch(() => {});
+      }
+    } finally {
+      await docker.getVolume(volumeName).remove({ force: true }).catch(() => {});
+    }
+  });
+});

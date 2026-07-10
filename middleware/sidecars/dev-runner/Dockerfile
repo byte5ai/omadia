@@ -55,6 +55,13 @@ LABEL org.opencontainers.image.source="https://github.com/byte5ai/omadia" \
 # CLI config lands in a writable tmpfs path — the daemon mounts the rootfs
 # read-only, so $HOME is not writable; /tmp is the only writable exec surface.
 ENV CLAUDE_CONFIG_DIR=/tmp/claude-cli
+# The daemon mounts a FRESH named volume at /workspace and runs the container as
+# uid 1000 with a read-only rootfs. Docker copies an image directory's contents
+# AND its ownership into an empty named volume on first mount — but only if that
+# directory is non-empty. Without the marker file the volume comes up root-owned
+# and the shim cannot clone into it: every job dies with EACCES on its first
+# write. The `.keep` is load-bearing, not decoration.
+RUN mkdir -p /workspace && touch /workspace/.keep && chown -R 1000:1000 /workspace
 WORKDIR /workspace
 USER 1000:1000
 # tini reaps the CLI + git; the shim is the single long-lived process per job.
