@@ -30,7 +30,7 @@ import { pathToFileURL } from 'node:url';
 
 import { isAuthorized, parseDaemonTokens } from './auth.mjs';
 import { createDockerEngine, EngineNotImplementedError, JobManager } from './jobs.mjs';
-import { createPolicyClient, PolicyLookupError } from './policyClient.mjs';
+import { createPolicyClient, parseAllowedImages, parseRequireDigest, PolicyLookupError } from './policyClient.mjs';
 import { parseCreateJobRequest, parseRenewLeaseRequest, WireProtocolMismatchError } from './protocol.ts';
 
 /** Default control-plane port (spec §4). */
@@ -348,10 +348,18 @@ export async function main(env = process.env) {
   const bind = assertControlPlaneBind(env.DEV_DAEMON_BIND ?? '127.0.0.1');
   const port = env.DEV_DAEMON_PORT ? Number(env.DEV_DAEMON_PORT) : DEFAULT_DAEMON_PORT;
 
+  // Daemon-side image allowlist + digest policy (round-3 high finding): the
+  // daemon refuses to start without an allowlist, and refuses any policy naming
+  // an unlisted or non-digest-pinned image.
+  const allowedImages = parseAllowedImages(env.DEV_RUNNER_ALLOWED_IMAGES);
+  const requireDigest = parseRequireDigest(env.DEV_RUNNER_REQUIRE_DIGEST);
+
   const engine = createDockerEngine({ env });
   const policyClient = createPolicyClient({
     middlewareUrl,
     daemonToken: tokens[0] ?? '',
+    allowedImages,
+    requireDigest,
   });
   const jobManager = new JobManager({ engine, policyClient });
   const warmImageRefs = (env.DEV_RUNNER_IMAGES ?? env.DEV_RUNNER_DEFAULT_IMAGE ?? '')

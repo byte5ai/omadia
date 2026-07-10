@@ -23,6 +23,13 @@ RUN npm install --omit=dev --no-audit --no-fund
 
 COPY src ./src
 
+# Daemon-side image clamp (spec §4, round-3 high finding). The daemon REFUSES to
+# start without DEV_RUNNER_ALLOWED_IMAGES (the operator sets it in the compose
+# overlay to the bare runner repositories it is allowed to run, e.g.
+# `ghcr.io/byte5ai/omadia-dev-runner`). Digest-pinning is required by default; the
+# warmer unit resolves the configured tag to a digest.
+ENV DEV_RUNNER_REQUIRE_DIGEST=true
+
 # node:22-alpine ships a `node` user (uid 1000); run unprivileged.
 USER node
 

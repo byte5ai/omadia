@@ -224,8 +224,14 @@ export class JobManager {
 
 /**
  * Build dockerode client options from the standard Docker env (spec §8): TLS to
- * dind is mandatory, no 2375 fallback. `DOCKER_HOST=tcp://dev-dind:2376`,
- * `DOCKER_TLS_VERIFY=1`, and `DOCKER_CERT_PATH` pointing at `{ca,cert,key}.pem`.
+ * dind is MANDATORY over a `tcp://` endpoint — no host docker socket, no 2375
+ * plaintext fallback, no ssh tunnel.
+ *
+ * `DOCKER_HOST=tcp://dev-dind:2376`, `DOCKER_TLS_VERIFY=1`, and `DOCKER_CERT_PATH`
+ * pointing at `{ca,cert,key}.pem`. The scheme is enforced (round-3 finding): a
+ * `unix://` host socket, an `http(s)://`, an `ssh://` tunnel, or a Windows
+ * `npipe://` would each defeat the "tcp+TLS only, never a host socket" contract,
+ * so any non-`tcp:` scheme is a FATAL boot error naming the offending value.
  *
  * @param {NodeJS.ProcessEnv} env
  * @returns {Docker.DockerOptions}
@@ -233,7 +239,7 @@ export class JobManager {
 export function dockerOptionsFromEnv(env) {
   const host = env.DOCKER_HOST;
   if (!host) {
-    throw new Error('DOCKER_HOST is not set — the daemon requires a dind engine over TLS');
+    throw new Error('DOCKER_HOST is not set — the daemon requires a dind engine over tcp+TLS');
   }
   let parsed;
   try {
@@ -241,18 +247,48 @@ export function dockerOptionsFromEnv(env) {
   } catch {
     throw new Error(`DOCKER_HOST is not a parseable URL: ${host}`);
   }
+  // Scheme clamp: ONLY tcp:// is a dind-over-TLS endpoint. unix/http/https/ssh/
+  // npipe are all refused — a host socket next to the middleware would be RCE.
+  if (parsed.protocol !== 'tcp:') {
+    throw new Error(
+      `DOCKER_HOST must use the tcp:// scheme (TLS to dind); refusing ${JSON.stringify(host)} ` +
+        `— unix/http/https/ssh/npipe sockets are not allowed`,
+    );
+  }
+  if (!parsed.hostname) {
+    throw new Error(`DOCKER_HOST has no host: ${host}`);
+  }
+  if (!parsed.port) {
+    throw new Error(`DOCKER_HOST must include an explicit port (e.g. tcp://dev-dind:2376): ${host}`);
+  }
   const tls = env.DOCKER_TLS_VERIFY === '1' || env.DOCKER_TLS_VERIFY === 'true';
+  if (!tls) {
+    throw new Error('daemon requires TLS to dind: set DOCKER_TLS_VERIFY=1');
+  }
   const certPath = env.DOCKER_CERT_PATH;
-  if (!tls || !certPath) {
-    throw new Error('daemon requires TLS to dind: set DOCKER_TLS_VERIFY=1 and DOCKER_CERT_PATH');
+  if (!certPath) {
+    throw new Error('daemon requires DOCKER_CERT_PATH pointing at {ca,cert,key}.pem');
+  }
+  let ca;
+  let cert;
+  let key;
+  try {
+    ca = readFileSync(join(certPath, 'ca.pem'));
+    cert = readFileSync(join(certPath, 'cert.pem'));
+    key = readFileSync(join(certPath, 'key.pem'));
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `DOCKER_CERT_PATH is not readable — need ca.pem, cert.pem, key.pem in ${JSON.stringify(certPath)}: ${reason}`,
+    );
   }
   return {
     host: parsed.hostname,
-    port: parsed.port ? Number(parsed.port) : 2376,
+    port: Number(parsed.port),
     protocol: 'https',
-    ca: readFileSync(join(certPath, 'ca.pem')),
-    cert: readFileSync(join(certPath, 'cert.pem')),
-    key: readFileSync(join(certPath, 'key.pem')),
+    ca,
+    cert,
+    key,
   };
 }
 
