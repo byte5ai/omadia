@@ -122,6 +122,34 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   sidecar's text — any mismatch, timeout (default 1500 ms), non-200 or
   malformed body throws and rides the audited degrade-to-C0 path.
 
+### Added — 6-locale prompt-PII validation build-out (#361)
+
+- The runnable validation harness
+  (`harness-plugin-privacy-guard/src/validation/`, still NOT a CI gate) now
+  covers all six target locales: fixtures for fr/es/it/nl plus scaled-up
+  de/en — 121 items per locale (89 positives incl. a 25-item hand-built
+  out-of-distribution slice, 32 PII-free negatives). All committed fixtures
+  are original (hand-built + LLM-generated synthetic); no ai4privacy rows or
+  derivatives are committed (restricted commercial terms — local uncommitted
+  use only). fr/es/it/nl carry a recorded "native-speaker spot-check
+  pending" caveat. Locale ID numbers (Steuer-ID, NINO, NIE/DNI, codice
+  fiscale, BSN) are typed `idnum` and measured informationally, never gated
+  in v1.
+- Harness extensions: with `PII_DETECTOR_URL` set, the eval adds a `c0+c1`
+  set (person recall ≥ 0.90 now enforceable, plus the shipped structured /
+  precision / latency gates) and a `c1-solo` ablation (reported, never
+  gated); one un-timed warm-up call per set keeps model warm-up out of p95;
+  `--markdown` emits GitHub-flavored tables for posting run results to
+  issue #361. Fixture files are linted at load (verbatim span values, known
+  types/tiers, duplicate rejection) and a malformed file fails the run
+  loudly. Without `PII_DETECTOR_URL` the harness runs c0-only exactly as
+  before: de/en still PASS their structured gates, while the fr/es/it/nl
+  runs now honestly document the C0 baseline's locale gaps (French
+  space-grouped amounts, Dutch address/date formats, Spanish local phones)
+  in the validation README instead of the fixtures being softened. The
+  per-locale flag policy is unchanged: results posted to #361 before any
+  locale flips `mask_user_prompt` on.
+
 ### Changed — v1.0 readiness pass across the earliest core plugins (#431)
 
 - `harness-plugin-web-search`, `harness-plugin-privacy-guard`, and

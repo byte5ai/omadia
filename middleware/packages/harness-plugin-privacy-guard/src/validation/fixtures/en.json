@@ -2,31 +2,1484 @@
   {
     "text": "What should we pay Anna Schmidt (32, lives at Bahnhofstr. 5, 60311 Frankfurt) given her current salary of €72,000?",
     "spans": [
-      { "value": "Anna Schmidt", "type": "person", "tier": "high" },
-      { "value": "Bahnhofstr. 5, 60311 Frankfurt", "type": "address", "tier": "high" },
-      { "value": "€72,000", "type": "amount", "tier": "critical" }
-    ]
+      {
+        "value": "Anna Schmidt",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Bahnhofstr. 5, 60311 Frankfurt",
+        "type": "address",
+        "tier": "high"
+      },
+      {
+        "value": "€72,000",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
   },
   {
     "text": "Wire the bonus to GB29 NWBK 6016 1331 9268 19 and cc jane.doe@example-corp.com on the confirmation.",
     "spans": [
-      { "value": "GB29 NWBK 6016 1331 9268 19", "type": "iban", "tier": "critical" },
-      { "value": "jane.doe@example-corp.com", "type": "email", "tier": "high" }
-    ]
+      {
+        "value": "GB29 NWBK 6016 1331 9268 19",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "jane.doe@example-corp.com",
+        "type": "email",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
   },
   {
     "text": "Call the candidate at +44 20 7946 0958; her date of birth is 1990-06-15.",
     "spans": [
-      { "value": "+44 20 7946 0958", "type": "phone", "tier": "high" },
-      { "value": "1990-06-15", "type": "date", "tier": "high" }
+      {
+        "value": "+44 20 7946 0958",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "1990-06-15",
+        "type": "date",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Charlotte Hayes and Emily Carter will share the team lead role from April — please amend both contracts.",
+    "spans": [
+      {
+        "value": "Charlotte Hayes",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Emily Carter",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Mr. O. Bennett is still waiting for feedback on the salary adjustment.",
+    "spans": [
+      {
+        "value": "O. Bennett",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Please have the courier deliver the parcel to the small workshop behind the bakery at Gartenweg 7, second entrance on the left, 55116 Mainz.",
+    "spans": [
+      {
+        "value": "the small workshop behind the bakery at Gartenweg 7, second entrance on the left, 55116 Mainz",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "The national insurance number for Daniel Brooks is QQ 12 34 56 C.",
+    "spans": [
+      {
+        "value": "Daniel Brooks",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "QQ 12 34 56 C",
+        "type": "idnum",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Dr. Fiona Marsh will cover the Leeds office next quarter.",
+    "spans": [
+      {
+        "value": "Fiona Marsh",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Three colleagues attend the offsite: Samuel Pritchard, Grace Middleton and Thomas Ashford.",
+    "spans": [
+      {
+        "value": "Samuel Pritchard",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Grace Middleton",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Thomas Ashford",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Our new contact is Aoife Ní Bhraonáin from the Dublin branch.",
+    "spans": [
+      {
+        "value": "Aoife Ní Bhraonáin",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Please onboard Nguyen Van Minh from procurement next Monday.",
+    "spans": [
+      {
+        "value": "Nguyen Van Minh",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "The tenancy for Mr Kaminski's flat ends on 24/12/2026.",
+    "spans": [
+      {
+        "value": "Mr Kaminski",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/2026",
+        "type": "date",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Candidate Leonie Baumgartner-Schmidt made it to the second interview round.",
+    "spans": [
+      {
+        "value": "Leonie Baumgartner-Schmidt",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "The equipment goes to the storage unit past the old water tower on Mühlenweg 11, gate C at the back of the yard, 28195 Bremen.",
+    "spans": [
+      {
+        "value": "the storage unit past the old water tower on Mühlenweg 11, gate C at the back of the yard, 28195 Bremen",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Payroll flagged that James Whitfield has two open advances totalling £3,150.",
+    "spans": [
+      {
+        "value": "James Whitfield",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "£3,150",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Sophie Turner's emergency contact is her brother at +44 7700 900456.",
+    "spans": [
+      {
+        "value": "Sophie Turner",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+44 7700 900456",
+        "type": "phone",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Forward the signed contract to h.lawson@mail-sample.org and let Hannah Lawson know it arrived.",
+    "spans": [
+      {
+        "value": "h.lawson@mail-sample.org",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "Hannah Lawson",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "What should we pay Thomas Ashford given a current salary of £2,300?",
+    "spans": [
+      {
+        "value": "Thomas Ashford",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "£2,300",
+        "type": "amount",
+        "tier": "critical"
+      }
     ]
   },
   {
+    "text": "What should we pay Daniel Brooks given a current salary of EUR 64,000?",
+    "spans": [
+      {
+        "value": "Daniel Brooks",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "EUR 64,000",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "What should we pay Daniel Brooks given a current salary of €3,499?",
+    "spans": [
+      {
+        "value": "Daniel Brooks",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "€3,499",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "What should we pay Grace Middleton given a current salary of £45,000?",
+    "spans": [
+      {
+        "value": "Grace Middleton",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "£45,000",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Wire the bonus to DE89 3704 0044 0532 0130 00 and cc t.ashford@example-consult.com on the confirmation.",
+    "spans": [
+      {
+        "value": "DE89 3704 0044 0532 0130 00",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "t.ashford@example-consult.com",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Wire the bonus to GB98 MIDL 0700 9312 3456 78 and cc s.turner@example-consult.com on the confirmation.",
+    "spans": [
+      {
+        "value": "GB98 MIDL 0700 9312 3456 78",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "s.turner@example-consult.com",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Wire the bonus to GB82 WEST 1234 5698 7654 32 and cc j.whitfield@acme-example.com on the confirmation.",
+    "spans": [
+      {
+        "value": "GB82 WEST 1234 5698 7654 32",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "j.whitfield@acme-example.com",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Wire the bonus to GB94 BARC 1020 1530 0934 59 and cc charlotte.hayes@sample-industries.co.uk on the confirmation.",
+    "spans": [
+      {
+        "value": "GB94 BARC 1020 1530 0934 59",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "charlotte.hayes@sample-industries.co.uk",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Call the candidate Emily Carter at +44 113 496 0921; the date of birth on file is 03/05/1991.",
+    "spans": [
+      {
+        "value": "Emily Carter",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+44 113 496 0921",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "03/05/1991",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Call the candidate Fiona Marsh at +44 7911 123456; the date of birth on file is 12/11/1979.",
+    "spans": [
+      {
+        "value": "Fiona Marsh",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+44 7911 123456",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "12/11/1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Call the candidate Charlotte Hayes at +44 7700 900123; the date of birth on file is 1984-09-17.",
+    "spans": [
+      {
+        "value": "Charlotte Hayes",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+44 7700 900123",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "1984-09-17",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Call the candidate James Whitfield at +44 7700 900123; the date of birth on file is 24/12/1987.",
+    "spans": [
+      {
+        "value": "James Whitfield",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+44 7700 900123",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/1987",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "The invoice for EUR 64,000 should go to Lindenallee 3, 10115 Berlin.",
+    "spans": [
+      {
+        "value": "EUR 64,000",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Lindenallee 3, 10115 Berlin",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "The invoice for £58,900 should go to Lindenallee 3, 10115 Berlin.",
+    "spans": [
+      {
+        "value": "£58,900",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Lindenallee 3, 10115 Berlin",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "The invoice for £58,900 should go to Schlossallee 2, 70173 Stuttgart.",
+    "spans": [
+      {
+        "value": "£58,900",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Schlossallee 2, 70173 Stuttgart",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "The invoice for EUR 64,000 should go to Marktplatz 8, 50667 Köln.",
+    "spans": [
+      {
+        "value": "EUR 64,000",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Marktplatz 8, 50667 Köln",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Set up Samuel Pritchard as a new employee with the work email h.lawson@mail-sample.org.",
+    "spans": [
+      {
+        "value": "Samuel Pritchard",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "h.lawson@mail-sample.org",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Set up Fiona Marsh as a new employee with the work email invoices@acme-example.com.",
+    "spans": [
+      {
+        "value": "Fiona Marsh",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "invoices@acme-example.com",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Set up Samuel Pritchard as a new employee with the work email emily.carter@mail-sample.org.",
+    "spans": [
+      {
+        "value": "Samuel Pritchard",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "emily.carter@mail-sample.org",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Set up Daniel Brooks as a new employee with the work email emily.carter@mail-sample.org.",
+    "spans": [
+      {
+        "value": "Daniel Brooks",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "emily.carter@mail-sample.org",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Oliver Bennett left the company on 30/06/2026 — please start the offboarding checklist.",
+    "spans": [
+      {
+        "value": "Oliver Bennett",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "30/06/2026",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nathan Ellery left the company on 1990-06-15 — please start the offboarding checklist.",
+    "spans": [
+      {
+        "value": "Nathan Ellery",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "1990-06-15",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Peter Colgan left the company on 03/05/1991 — please start the offboarding checklist.",
+    "spans": [
+      {
+        "value": "Peter Colgan",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "03/05/1991",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Grace Middleton left the company on 24/12/1987 — please start the offboarding checklist.",
+    "spans": [
+      {
+        "value": "Grace Middleton",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/1987",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Update the master data: Nathan Ellery now lives at Lindenallee 3, 10115 Berlin.",
+    "spans": [
+      {
+        "value": "Nathan Ellery",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Lindenallee 3, 10115 Berlin",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Update the master data: Daniel Brooks now lives at Gartenweg 21, 55116 Mainz.",
+    "spans": [
+      {
+        "value": "Daniel Brooks",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Gartenweg 21, 55116 Mainz",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Update the master data: Peter Colgan now lives at Lindenallee 3, 10115 Berlin.",
+    "spans": [
+      {
+        "value": "Peter Colgan",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Lindenallee 3, 10115 Berlin",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Update the master data: James Whitfield now lives at Hauptstraße 64, 79098 Freiburg.",
+    "spans": [
+      {
+        "value": "James Whitfield",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Hauptstraße 64, 79098 Freiburg",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Reimburse travel expenses of $68,500 to GB98 MIDL 0700 9312 3456 78.",
+    "spans": [
+      {
+        "value": "$68,500",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "GB98 MIDL 0700 9312 3456 78",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Reimburse travel expenses of 72,000.50 USD to GB29 NWBK 6016 1331 9268 19.",
+    "spans": [
+      {
+        "value": "72,000.50 USD",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "GB29 NWBK 6016 1331 9268 19",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Reimburse travel expenses of €3,499 to GB33 BUKB 2020 1555 5555 55.",
+    "spans": [
+      {
+        "value": "€3,499",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "GB33 BUKB 2020 1555 5555 55",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Reimburse travel expenses of £12,750 to GB29 NWBK 6016 1331 9268 19.",
+    "spans": [
+      {
+        "value": "£12,750",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "GB29 NWBK 6016 1331 9268 19",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Send the payslip to m.reeves@example-corp.com; gross pay is £58,900.",
+    "spans": [
+      {
+        "value": "m.reeves@example-corp.com",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "£58,900",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Send the payslip to t.ashford@example-consult.com; gross pay is $68,500.",
+    "spans": [
+      {
+        "value": "t.ashford@example-consult.com",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "$68,500",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Send the payslip to s.turner@example-consult.com; gross pay is €3,499.",
+    "spans": [
+      {
+        "value": "s.turner@example-consult.com",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "€3,499",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Send the payslip to h.lawson@mail-sample.org; gross pay is $1,250.75.",
+    "spans": [
+      {
+        "value": "h.lawson@mail-sample.org",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "$1,250.75",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "For the reference check you can reach Michael Reeves at 020 7946 0011.",
+    "spans": [
+      {
+        "value": "Michael Reeves",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "020 7946 0011",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "For the reference check you can reach Grace Middleton at +44 161 496 0142.",
+    "spans": [
+      {
+        "value": "Grace Middleton",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+44 161 496 0142",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "For the reference check you can reach Charlotte Hayes at +44 113 496 0921.",
+    "spans": [
+      {
+        "value": "Charlotte Hayes",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+44 113 496 0921",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "For the reference check you can reach Marcus Tilbury at 020 7946 0011.",
+    "spans": [
+      {
+        "value": "Marcus Tilbury",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "020 7946 0011",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Please prepare the appraisal meeting with Samuel Pritchard.",
+    "spans": [
+      {
+        "value": "Samuel Pritchard",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Please prepare the appraisal meeting with Charlotte Hayes.",
+    "spans": [
+      {
+        "value": "Charlotte Hayes",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Please prepare the appraisal meeting with Rebecca Osborne.",
+    "spans": [
+      {
+        "value": "Rebecca Osborne",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Please prepare the appraisal meeting with Sophie Turner.",
+    "spans": [
+      {
+        "value": "Sophie Turner",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Rachel Duffield called in sick on 1995-02-28 — log it in the HR module.",
+    "spans": [
+      {
+        "value": "Rachel Duffield",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "1995-02-28",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Samuel Pritchard called in sick on 2023-02-01 — log it in the HR module.",
+    "spans": [
+      {
+        "value": "Samuel Pritchard",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "2023-02-01",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Fiona Marsh called in sick on 24/12/1987 — log it in the HR module.",
+    "spans": [
+      {
+        "value": "Fiona Marsh",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/1987",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nathan Ellery called in sick on 1995-02-28 — log it in the HR module.",
+    "spans": [
+      {
+        "value": "Nathan Ellery",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "1995-02-28",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "The supplier expects the payment of $1,250.75 to GB98 MIDL 0700 9312 3456 78.",
+    "spans": [
+      {
+        "value": "$1,250.75",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "GB98 MIDL 0700 9312 3456 78",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "The supplier expects the payment of $68,500 to GB29 NWBK 6016 1331 9268 19.",
+    "spans": [
+      {
+        "value": "$68,500",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "GB29 NWBK 6016 1331 9268 19",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "The supplier expects the payment of EUR 64,000 to GB29 NWBK 6016 1331 9268 19.",
+    "spans": [
+      {
+        "value": "EUR 64,000",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "GB29 NWBK 6016 1331 9268 19",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "The supplier expects the payment of £12,750 to GB94 BARC 1020 1530 0934 59.",
+    "spans": [
+      {
+        "value": "£12,750",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "GB94 BARC 1020 1530 0934 59",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "New application: Sophie Turner, reachable at +44 113 496 0921 or charlotte.hayes@sample-industries.co.uk.",
+    "spans": [
+      {
+        "value": "Sophie Turner",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+44 113 496 0921",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "charlotte.hayes@sample-industries.co.uk",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "New application: Charlotte Hayes, reachable at 0161 496 0735 or t.ashford@example-consult.com.",
+    "spans": [
+      {
+        "value": "Charlotte Hayes",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "0161 496 0735",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "t.ashford@example-consult.com",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "New application: Alice Redfern, reachable at +44 113 496 0921 or t.ashford@example-consult.com.",
+    "spans": [
+      {
+        "value": "Alice Redfern",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+44 113 496 0921",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "t.ashford@example-consult.com",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "New application: Rebecca Osborne, reachable at 020 7946 0011 or hr@sample-industries.co.uk.",
+    "spans": [
+      {
+        "value": "Rebecca Osborne",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "020 7946 0011",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "hr@sample-industries.co.uk",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Please send the offer letter to Marcus Tilbury, Schlossallee 2, 70173 Stuttgart.",
+    "spans": [
+      {
+        "value": "Marcus Tilbury",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Schlossallee 2, 70173 Stuttgart",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Please send the offer letter to Samuel Pritchard, Gartenweg 21, 55116 Mainz.",
+    "spans": [
+      {
+        "value": "Samuel Pritchard",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Gartenweg 21, 55116 Mainz",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Please send the offer letter to Peter Colgan, Mühlenweg 11, 28195 Bremen.",
+    "spans": [
+      {
+        "value": "Peter Colgan",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Mühlenweg 11, 28195 Bremen",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Please send the offer letter to Grace Middleton, Mühlenweg 11, 28195 Bremen.",
+    "spans": [
+      {
+        "value": "Grace Middleton",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Mühlenweg 11, 28195 Bremen",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "The employment contract for Grace Middleton starts on 1995-02-28 with an annual salary of €3,499.",
+    "spans": [
+      {
+        "value": "Grace Middleton",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "1995-02-28",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "€3,499",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "The employment contract for Jessica Holt starts on 1990-06-15 with an annual salary of £45,000.",
+    "spans": [
+      {
+        "value": "Jessica Holt",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "1990-06-15",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "£45,000",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "The employment contract for Emily Carter starts on 30/06/2026 with an annual salary of £58,900.",
+    "spans": [
+      {
+        "value": "Emily Carter",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "30/06/2026",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "£58,900",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "The employment contract for Emily Carter starts on 24/12/1987 with an annual salary of EUR 64,000.",
+    "spans": [
+      {
+        "value": "Emily Carter",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/1987",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "EUR 64,000",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Enroll Grace Middleton in next week's training and notify t.ashford@example-consult.com.",
+    "spans": [
+      {
+        "value": "Grace Middleton",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "t.ashford@example-consult.com",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Enroll Hannah Lawson in next week's training and notify h.lawson@mail-sample.org.",
+    "spans": [
+      {
+        "value": "Hannah Lawson",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "h.lawson@mail-sample.org",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Enroll Jessica Holt in next week's training and notify hr@sample-industries.co.uk.",
+    "spans": [
+      {
+        "value": "Jessica Holt",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "hr@sample-industries.co.uk",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Enroll Michael Reeves in next week's training and notify emily.carter@mail-sample.org.",
+    "spans": [
+      {
+        "value": "Michael Reeves",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "emily.carter@mail-sample.org",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Which address did the last reminder go to — Gartenweg 21, 55116 Mainz, correct?",
+    "spans": [
+      {
+        "value": "Gartenweg 21, 55116 Mainz",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Which address did the last reminder go to — Schlossallee 2, 70173 Stuttgart, correct?",
+    "spans": [
+      {
+        "value": "Schlossallee 2, 70173 Stuttgart",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Which address did the last reminder go to — Marktplatz 8, 50667 Köln, correct?",
+    "spans": [
+      {
+        "value": "Marktplatz 8, 50667 Köln",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Which address did the last reminder go to — Hauptstraße 64, 79098 Freiburg, correct?",
+    "spans": [
+      {
+        "value": "Hauptstraße 64, 79098 Freiburg",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Sickness and holiday absences are counted separately in the monthly report.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "The Works Council and the Management Board meet on the first Monday.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Explain the difference between gross pay and net pay.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Street, avenue and lane are separate field types in the address module.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Reading, Bath and Sale are on the shortlist of towns for the new depot.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Churchill is the name of the large meeting room on the second floor.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
     "text": "Summarize our vacation carry-over policy for employees in their first year.",
-    "spans": []
+    "spans": [],
+    "origin": "hand"
   },
   {
     "text": "Draft a follow-up on the roadmap review; keep the tone neutral.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "How many vacation days does an employee accrue after three years of service?",
+    "spans": []
+  },
+  {
+    "text": "Create a status report for the third-quarter project; the budget is unchanged.",
+    "spans": []
+  },
+  {
+    "text": "Summarize the travel expense policy in five bullet points.",
+    "spans": []
+  },
+  {
+    "text": "Which steps does the onboarding process cover in the first month?",
+    "spans": []
+  },
+  {
+    "text": "Draft a friendly reminder about weekly time tracking.",
+    "spans": []
+  },
+  {
+    "text": "How do I request a new laptop through the ticket system?",
+    "spans": []
+  },
+  {
+    "text": "Create an agenda for the next team meeting with three focus topics.",
+    "spans": []
+  },
+  {
+    "text": "Which deadlines apply to submitting travel expense reports?",
+    "spans": []
+  },
+  {
+    "text": "Summarize the recent changes to the remote work policy.",
+    "spans": []
+  },
+  {
+    "text": "How does purchase order approval work in the procurement module?",
+    "spans": []
+  },
+  {
+    "text": "Explain the approval workflow for external training courses.",
+    "spans": []
+  },
+  {
+    "text": "Which reports can the accounting module generate monthly?",
+    "spans": []
+  },
+  {
+    "text": "Write a short announcement for the weekend system maintenance.",
+    "spans": []
+  },
+  {
+    "text": "How do I create a new cost center in the system?",
+    "spans": []
+  },
+  {
+    "text": "What is the difference between a quotation and an order confirmation?",
+    "spans": []
+  },
+  {
+    "text": "Create a checklist for the month-end close in accounting.",
+    "spans": []
+  },
+  {
+    "text": "How do I export the leave overview as a spreadsheet?",
+    "spans": []
+  },
+  {
+    "text": "Which roles exist in the approval process for incoming invoices?",
+    "spans": []
+  },
+  {
+    "text": "Draft a polite decline for a postponed delivery date.",
+    "spans": []
+  },
+  {
+    "text": "Summarize the key points of the flextime agreement.",
+    "spans": []
+  },
+  {
+    "text": "How do I set up an out-of-office notice for the holidays?",
+    "spans": []
+  },
+  {
+    "text": "Which fields are mandatory when creating a new supplier?",
+    "spans": []
+  },
+  {
+    "text": "Describe the annual warehouse inventory procedure.",
+    "spans": []
+  },
+  {
+    "text": "How can recurring invoices be generated automatically?",
     "spans": []
   }
 ]
