@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -12,6 +12,7 @@ import {
   getConductorRoles,
   instantiateConductorTemplate,
   resolveConductorTemplate,
+  resolveConductorText,
   type ConductorTemplate,
   type ConductorTemplateSlot,
   type ConductorTemplateSlotMapping,
@@ -96,9 +97,13 @@ export function TemplateInstantiateForm({
   onCancel,
 }: TemplateInstantiateFormProps): React.JSX.Element {
   const t = useTranslations('conductor');
+  // Template metadata/slot texts are localized in the manifest itself — resolve against
+  // the active locale (en fallback). The prefilled name is the workflow's stored name,
+  // so the operator starts from the localized reading and stays free to edit it.
+  const locale = useLocale();
 
   const [slug, setSlug] = useState(template.defaultSlug);
-  const [name, setName] = useState(template.name);
+  const [name, setName] = useState(() => resolveConductorText(template.name, locale));
   const [enable, setEnable] = useState(false);
   // Channel slots are prefilled with the ChannelSelect's displayed default ('teams') so
   // the mapping state never diverges from what the operator sees in the select.
@@ -252,22 +257,24 @@ export function TemplateInstantiateForm({
 
   const renderSlotField = (kind: SlotKind, slot: ConductorTemplateSlot): React.JSX.Element => {
     const flagged = flaggedSlots.has(`${kind}:${slot.key}`);
+    const label = resolveConductorText(slot.label, locale);
+    const description = slot.description === undefined ? undefined : resolveConductorText(slot.description, locale);
     if (kind === 'channels') {
       return (
         <div key={slot.key} className="grid gap-1">
           <ChannelSelect
-            label={slot.label}
+            label={label}
             value={mapping.channels[slot.key] ?? ''}
             onChange={(channel) => setSlotValue('channels', slot.key, channel)}
           />
-          {slot.description ? <span className="text-[11px] text-[color:var(--fg-muted)]">{slot.description}</span> : null}
+          {description ? <span className="text-[11px] text-[color:var(--fg-muted)]">{description}</span> : null}
           {flagged ? <span className="text-[12px] text-[color:var(--danger)]">{t('templateSlotMissing')}</span> : null}
         </div>
       );
     }
     return (
       <label key={slot.key} className={gcLbl}>
-        <span className={flagged ? 'text-[color:var(--danger)]' : undefined}>{slot.label}</span>
+        <span className={flagged ? 'text-[color:var(--danger)]' : undefined}>{label}</span>
         <select
           className={fieldClass(flagged)}
           value={mapping[kind][slot.key] ?? ''}
@@ -281,7 +288,7 @@ export function TemplateInstantiateForm({
             </option>
           ))}
         </select>
-        {slot.description ? <span className="text-[11px] text-[color:var(--fg-muted)]">{slot.description}</span> : null}
+        {description ? <span className="text-[11px] text-[color:var(--fg-muted)]">{description}</span> : null}
         {flagged ? <span className="text-[12px] text-[color:var(--danger)]">{t('templateSlotMissing')}</span> : null}
       </label>
     );
@@ -292,9 +299,11 @@ export function TemplateInstantiateForm({
   return (
     <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
       <h3 className="text-[15px] font-medium text-[color:var(--fg-strong)]">
-        {t('templateFormHeading', { name: template.name })}
+        {t('templateFormHeading', { name: resolveConductorText(template.name, locale) })}
       </h3>
-      <p className="mt-1 max-w-2xl text-[13px] leading-[1.55] text-[color:var(--fg-muted)]">{template.description}</p>
+      <p className="mt-1 max-w-2xl text-[13px] leading-[1.55] text-[color:var(--fg-muted)]">
+        {resolveConductorText(template.description, locale)}
+      </p>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <label className={gcLbl}>

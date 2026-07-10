@@ -296,6 +296,58 @@ describe('<TemplateInstantiateForm />', () => {
     expect(screen.queryByText(notice)).not.toBeInTheDocument();
   });
 
+  it('renders German slot labels, help texts, and the prefilled localized name under de', async () => {
+    const localizedTemplate: ConductorTemplate = {
+      ...approvalTemplate,
+      name: { en: 'Expense approval', de: 'Spesenfreigabe' },
+      description: {
+        en: 'Route an expense to the right approver, with escalation above a threshold.',
+        de: 'Leitet Spesen an die richtige Freigaberolle, mit Eskalation oberhalb eines Schwellwerts.',
+      },
+      slots: {
+        roles: [
+          {
+            key: 'approver',
+            label: { en: 'Approver', de: 'Freigaberolle' },
+            description: { en: 'Who signs off expenses.', de: 'Wer Spesen freigibt.' },
+          },
+        ],
+        // Plain-string slot metadata must keep working alongside localized records.
+        agents: [{ key: 'classifier', label: 'Expense classifier' }],
+      },
+    };
+    renderWithIntl(
+      <TemplateInstantiateForm template={localizedTemplate} onCreated={vi.fn()} onOpenInDesigner={vi.fn()} onCancel={vi.fn()} />,
+      { locale: 'de' },
+    );
+
+    expect(await screen.findByRole('combobox', { name: /Freigaberolle/ })).toBeInTheDocument();
+    expect(screen.getByText('Wer Spesen freigibt.')).toBeInTheDocument();
+    expect(screen.getByText('Spesenfreigabe', { exact: false })).toBeInTheDocument(); // form heading
+    expect(screen.getByText(/Leitet Spesen an die richtige Freigaberolle/)).toBeInTheDocument();
+    // Prefilled workflow name resolves to the active locale's reading.
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Spesenfreigabe');
+    // No raw English metadata leaks through under de.
+    expect(screen.queryByText('Who signs off expenses.')).not.toBeInTheDocument();
+    // Untranslated plain-string slot label falls back to its only (English) form.
+    expect(screen.getByRole('combobox', { name: /Expense classifier/ })).toBeInTheDocument();
+  });
+
+  it('falls back to English under de when a localized record has no de entry', async () => {
+    const partiallyLocalized: ConductorTemplate = {
+      ...approvalTemplate,
+      name: { en: 'Expense approval' },
+      slots: { roles: [{ key: 'approver', label: { en: 'Approver' } }] },
+    };
+    renderWithIntl(
+      <TemplateInstantiateForm template={partiallyLocalized} onCreated={vi.fn()} onOpenInDesigner={vi.fn()} onCancel={vi.fn()} />,
+      { locale: 'de' },
+    );
+
+    expect(await screen.findByRole('combobox', { name: /Approver/ })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Expense approval');
+  });
+
   it('swaps the pending button label to verb + animated dots, never a spinner', async () => {
     const user = userEvent.setup();
     // Never settles → the form stays in its in-flight state for the assertion.

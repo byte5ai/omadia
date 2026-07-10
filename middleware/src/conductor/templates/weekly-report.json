@@ -1,8 +1,17 @@
 {
   "id": "weekly-report",
-  "name": "Weekly status report",
-  "description": "Every Monday at 08:00 UTC a reporting agent composes a status report and delivers it to a recipient role for review. Publishing this workflow with the schedule enabled starts the weekly cadence.",
-  "useCase": "reporting",
+  "name": {
+    "en": "Weekly status report",
+    "de": "Wöchentlicher Statusbericht"
+  },
+  "description": {
+    "en": "Every Monday at 08:00 UTC a reporting agent composes a status report and delivers it to a recipient role for review. Publishing this workflow with the schedule enabled starts the weekly cadence.",
+    "de": "Jeden Montag um 08:00 UTC verfasst ein Reporting-Agent einen Statusbericht und stellt ihn einer Empfängerrolle zur Durchsicht zu. Wird der Workflow mit aktiviertem Zeitplan veröffentlicht, startet der wöchentliche Rhythmus."
+  },
+  "useCase": {
+    "en": "reporting",
+    "de": "Reporting"
+  },
   "defaultSlug": "weekly-report",
   "graph": {
     "entryStepId": "compose",
@@ -33,22 +42,40 @@
     "agents": [
       {
         "key": "reporter",
-        "label": "Reporting agent",
-        "description": "Agent that gathers this week's updates and composes the report."
+        "label": {
+          "en": "Reporting agent",
+          "de": "Reporting-Agent"
+        },
+        "description": {
+          "en": "Agent that gathers this week's updates and composes the report.",
+          "de": "Agent, der die Updates der Woche sammelt und den Bericht verfasst."
+        }
       }
     ],
     "roles": [
       {
         "key": "recipient",
-        "label": "Recipient role",
-        "description": "Role whose holders receive and review the weekly report."
+        "label": {
+          "en": "Recipient role",
+          "de": "Empfängerrolle"
+        },
+        "description": {
+          "en": "Role whose holders receive and review the weekly report.",
+          "de": "Rolle, deren Mitglieder den Wochenbericht erhalten und durchsehen."
+        }
       }
     ],
     "channels": [
       {
         "key": "delivery",
-        "label": "Delivery channel",
-        "description": "Channel the report is delivered on."
+        "label": {
+          "en": "Delivery channel",
+          "de": "Zustellkanal"
+        },
+        "description": {
+          "en": "Channel the report is delivered on.",
+          "de": "Kanal, über den der Bericht zugestellt wird."
+        }
       }
     ]
   }

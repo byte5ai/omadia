@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import { applyTemplateSlots, missingSlotMappings, validate } from '@omadia/conductor-core';
+import { applyTemplateSlots, missingSlotMappings, resolveLocalizedText, validate } from '@omadia/conductor-core';
 import type {
   JsonObject,
   KnownRefs,
@@ -248,8 +248,9 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       }
       const out = await deps.workflowStore.createOrPublish({
         slug,
-        name: typeof body.name === 'string' && body.name.trim() ? body.name : resolved.manifest.name,
-        description: typeof body.description === 'string' ? body.description : resolved.manifest.description,
+        // Manifest fallbacks are localizable; the store persists plain strings → resolve to en.
+        name: typeof body.name === 'string' && body.name.trim() ? body.name : resolveLocalizedText(resolved.manifest.name),
+        description: typeof body.description === 'string' ? body.description : resolveLocalizedText(resolved.manifest.description),
         graph: resolved.graph,
         enable: body.enable === true,
         // Reconcile cron schedules atomically with the publish (same as 'POST /'); they

@@ -463,7 +463,12 @@ emittiert** — der Transport ist vollständig.
 
 Kuratierter, file-basierter Template-Katalog für Conductor: `TemplateManifest`s
 (kompletter `WorkflowGraph` mit `slot:<kind>:<key>`-Platzhaltern in den fünf
-Ref-Feldern + Slot-Deklarationen, Contract in `@omadia/conductor-core`) liegen
+Ref-Feldern + Slot-Deklarationen, Contract in `@omadia/conductor-core`;
+Name/Description/useCase und Slot-Label/-Beschreibungen sind **im Manifest
+lokalisierbar** — `LocalizedText` = plain string oder `{ en, de?, … }` mit
+Pflicht-`en`, Auflösung via `resolveLocalizedText`, UI löst client-seitig per
+`useLocale()` auf; `GET /templates` liefert weiterhin unaufgelöste volle
+Manifeste) liegen
 als JSON in `middleware/src/conductor/templates/` und werden beim Wiring einmal
 via `loadTemplateCatalog()` geladen (`templateCatalog.ts`; invalide Assets
 werden mit Log-Zeile übersprungen, CI-Gate ist
@@ -491,7 +496,8 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
   idempotenten Upsert von `createOrPublish` durch). Publish exakt wie
   `POST /` inkl. atomarem Cron-Schedule-Reconcile (`onPublished` →
   `scheduleStore.reconcileOnClient`); `enable` default `false`; `name`/
-  `description` defaulten aufs Manifest → `201 { workflow, version }`.
+  `description` defaulten aufs Manifest (en-aufgelöst) →
+  `201 { workflow, version }`.
 
 **Validierungs-Unterschied zu `POST /`:** beide Template-Routes validieren mit
 **live `KnownRefs`** (Agent-Slugs aus der Registry, Action-Ids, Role-Keys,

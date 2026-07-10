@@ -18,6 +18,27 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — template metadata is localizable in the manifest; bundled templates ship German (#429)
+
+- Template name, description, `useCase` tag, and slot labels/help texts rendered
+  raw English strings from the bundled manifests in the German UI. Because
+  templates are data (v2 distributes them outside the repo), localization now
+  travels **in the manifest**: those fields accept a plain string or an
+  `{ en, de?, … }` record with `en` required as the universal fallback
+  (`LocalizedText` + `resolveLocalizedText` in `@omadia/conductor-core`;
+  `checkTemplateManifest` validates the shape with the new
+  `template_invalid_localized_text` code). All four bundled manifests carry
+  proper German translations, and the catalog CI gate now asserts bundled en/de
+  parity. `GET /templates` keeps returning full, unresolved manifests
+  (machine-readable contract for #330) — the gallery and the slot-mapping form
+  resolve the active locale client-side via next-intl's `useLocale()` with en
+  fallback (`resolveConductorText` in `web-ui/app/_lib/api.ts`); the instantiate
+  route resolves its manifest-borne name/description fallbacks to the en base
+  before persisting. Missing-slot error envelopes keep flat English labels
+  (clients localize by kind+key). Tests: conductor-core `template.test.ts`,
+  `conductorTemplateCatalog.test.ts` (parity gate), and de-locale/en-fallback
+  component tests for `TemplateGallery` and `TemplateInstantiateForm`.
+
 ### Fixed — "Open in designer" no longer drops the template form's enable=OFF default (#429)
 
 - The template slot-mapping form's "Open in designer" handoff only passed

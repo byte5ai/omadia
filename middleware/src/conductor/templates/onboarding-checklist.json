@@ -1,8 +1,17 @@
 {
   "id": "onboarding-checklist",
-  "name": "New-hire onboarding checklist",
-  "description": "Walk a new hire's onboarding through HR, IT, and the manager in sequence — each role confirms its checklist items, with daily reminders — and a notifying agent confirms completion at the end.",
-  "useCase": "onboarding",
+  "name": {
+    "en": "New-hire onboarding checklist",
+    "de": "Onboarding-Checkliste für neue Mitarbeitende"
+  },
+  "description": {
+    "en": "Walk a new hire's onboarding through HR, IT, and the manager in sequence — each role confirms its checklist items, with daily reminders — and a notifying agent confirms completion at the end.",
+    "de": "Führt das Onboarding einer neuen Mitarbeiterin oder eines neuen Mitarbeiters nacheinander durch HR, IT und Führungskraft — jede Rolle bestätigt ihre Checklistenpunkte, mit täglichen Erinnerungen — und ein Benachrichtigungs-Agent bestätigt am Ende den Abschluss."
+  },
+  "useCase": {
+    "en": "onboarding",
+    "de": "Onboarding"
+  },
   "defaultSlug": "onboarding-checklist",
   "graph": {
     "entryStepId": "hr-checklist",
@@ -59,32 +68,62 @@
     "agents": [
       {
         "key": "notifier",
-        "label": "Notifying agent",
-        "description": "Agent that confirms completed onboarding to the stakeholders."
+        "label": {
+          "en": "Notifying agent",
+          "de": "Benachrichtigungs-Agent"
+        },
+        "description": {
+          "en": "Agent that confirms completed onboarding to the stakeholders.",
+          "de": "Agent, der den Beteiligten das abgeschlossene Onboarding bestätigt."
+        }
       }
     ],
     "roles": [
       {
         "key": "hr",
-        "label": "HR role",
-        "description": "Role that completes the HR checklist items."
+        "label": {
+          "en": "HR role",
+          "de": "HR-Rolle"
+        },
+        "description": {
+          "en": "Role that completes the HR checklist items.",
+          "de": "Rolle, die die HR-Checklistenpunkte abschließt."
+        }
       },
       {
         "key": "it",
-        "label": "IT role",
-        "description": "Role that provisions accounts, hardware, and access."
+        "label": {
+          "en": "IT role",
+          "de": "IT-Rolle"
+        },
+        "description": {
+          "en": "Role that provisions accounts, hardware, and access.",
+          "de": "Rolle, die Konten, Hardware und Zugänge bereitstellt."
+        }
       },
       {
         "key": "manager",
-        "label": "Manager role",
-        "description": "Role that prepares the new hire's first week."
+        "label": {
+          "en": "Manager role",
+          "de": "Führungskraft-Rolle"
+        },
+        "description": {
+          "en": "Role that prepares the new hire's first week.",
+          "de": "Rolle, die die erste Woche der neuen Person vorbereitet."
+        }
       }
     ],
     "channels": [
       {
         "key": "delivery",
-        "label": "Delivery channel",
-        "description": "Channel used to reach the HR, IT, and manager roles."
+        "label": {
+          "en": "Delivery channel",
+          "de": "Zustellkanal"
+        },
+        "description": {
+          "en": "Channel used to reach the HR, IT, and manager roles.",
+          "de": "Kanal, über den HR-, IT- und Führungskraft-Rolle erreicht werden."
+        }
       }
     ]
   }

@@ -1,8 +1,17 @@
 {
   "id": "notify-and-escalate",
-  "name": "Notify and escalate on incident",
-  "description": "React to an incident event: a triage agent assesses it, the on-duty role is asked to acknowledge with hourly reminders, and an unacknowledged incident escalates to a second role after 4 hours. The final status is announced.",
-  "useCase": "escalation",
+  "name": {
+    "en": "Notify and escalate on incident",
+    "de": "Benachrichtigen und eskalieren bei Vorfall"
+  },
+  "description": {
+    "en": "React to an incident event: a triage agent assesses it, the on-duty role is asked to acknowledge with hourly reminders, and an unacknowledged incident escalates to a second role after 4 hours. The final status is announced.",
+    "de": "Reagiert auf ein Vorfall-Event: Ein Triage-Agent bewertet es, die Bereitschaftsrolle wird mit stündlichen Erinnerungen um Bestätigung gebeten, und ein unbestätigter Vorfall eskaliert nach 4 Stunden an eine zweite Rolle. Der finale Status wird verkündet."
+  },
+  "useCase": {
+    "en": "escalation",
+    "de": "Eskalation"
+  },
   "defaultSlug": "notify-and-escalate",
   "graph": {
     "entryStepId": "triage",
@@ -62,39 +71,75 @@
     "agents": [
       {
         "key": "triage",
-        "label": "Triage agent",
-        "description": "Agent that assesses the incoming incident and writes the triage note."
+        "label": {
+          "en": "Triage agent",
+          "de": "Triage-Agent"
+        },
+        "description": {
+          "en": "Agent that assesses the incoming incident and writes the triage note.",
+          "de": "Agent, der den eingehenden Vorfall bewertet und die Triage-Notiz schreibt."
+        }
       },
       {
         "key": "notifier",
-        "label": "Notifying agent",
-        "description": "Agent that announces the final incident handling status."
+        "label": {
+          "en": "Notifying agent",
+          "de": "Benachrichtigungs-Agent"
+        },
+        "description": {
+          "en": "Agent that announces the final incident handling status.",
+          "de": "Agent, der den finalen Bearbeitungsstatus des Vorfalls verkündet."
+        }
       }
     ],
     "roles": [
       {
         "key": "on-duty",
-        "label": "On-duty role",
-        "description": "Role asked to acknowledge the incident first."
+        "label": {
+          "en": "On-duty role",
+          "de": "Bereitschaftsrolle"
+        },
+        "description": {
+          "en": "Role asked to acknowledge the incident first.",
+          "de": "Rolle, die den Vorfall zuerst bestätigen soll."
+        }
       },
       {
         "key": "escalation",
-        "label": "Escalation role",
-        "description": "Role that takes over when the on-duty role misses the 4-hour deadline."
+        "label": {
+          "en": "Escalation role",
+          "de": "Eskalationsrolle"
+        },
+        "description": {
+          "en": "Role that takes over when the on-duty role misses the 4-hour deadline.",
+          "de": "Rolle, die übernimmt, wenn die Bereitschaftsrolle die 4-Stunden-Frist verpasst."
+        }
       }
     ],
     "events": [
       {
         "key": "incident",
-        "label": "Incident event",
-        "description": "Catalog event that starts a run of this workflow."
+        "label": {
+          "en": "Incident event",
+          "de": "Vorfall-Event"
+        },
+        "description": {
+          "en": "Catalog event that starts a run of this workflow.",
+          "de": "Katalog-Event, das einen Lauf dieses Workflows startet."
+        }
       }
     ],
     "channels": [
       {
         "key": "delivery",
-        "label": "Delivery channel",
-        "description": "Channel used to reach the on-duty and escalation roles."
+        "label": {
+          "en": "Delivery channel",
+          "de": "Zustellkanal"
+        },
+        "description": {
+          "en": "Channel used to reach the on-duty and escalation roles.",
+          "de": "Kanal, über den Bereitschafts- und Eskalationsrolle erreicht werden."
+        }
       }
     ]
   }

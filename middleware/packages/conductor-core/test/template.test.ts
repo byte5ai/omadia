@@ -4,6 +4,7 @@ import {
   checkTemplateManifest,
   extractSlotRefs,
   missingSlotMappings,
+  resolveLocalizedText,
 } from '../src/template.js';
 import { validate } from '../src/validate.js';
 import type {
@@ -138,6 +139,33 @@ describe('missingSlotMappings', () => {
       { kind: 'channels', key: 'approvals', label: 'Approval channel' },
     ]);
   });
+
+  it('flattens a localized slot label to its en base (wire envelope stays a string)', () => {
+    const manifest = makeManifest();
+    manifest.slots.roles = [{ key: 'approver', label: { en: 'Approver role', de: 'Freigaberolle' } }];
+    const mapping = makeMapping();
+    delete mapping.roles;
+    expect(missingSlotMappings(manifest, mapping)).toEqual([
+      { kind: 'roles', key: 'approver', label: 'Approver role' },
+    ]);
+  });
+});
+
+describe('resolveLocalizedText', () => {
+  it('passes plain strings through unchanged', () => {
+    expect(resolveLocalizedText('Weekly report')).toBe('Weekly report');
+    expect(resolveLocalizedText('Weekly report', 'de')).toBe('Weekly report');
+  });
+
+  it('resolves the requested locale from a record', () => {
+    expect(resolveLocalizedText({ en: 'Weekly report', de: 'Wochenbericht' }, 'de')).toBe('Wochenbericht');
+  });
+
+  it('falls back to en when the locale is absent, blank, or not requested', () => {
+    expect(resolveLocalizedText({ en: 'Weekly report' }, 'de')).toBe('Weekly report');
+    expect(resolveLocalizedText({ en: 'Weekly report', de: '  ' }, 'de')).toBe('Weekly report');
+    expect(resolveLocalizedText({ en: 'Weekly report', de: 'Wochenbericht' })).toBe('Weekly report');
+  });
 });
 
 describe('applyTemplateSlots', () => {
@@ -226,6 +254,41 @@ describe('checkTemplateManifest', () => {
     const err = result.errors.find((e) => e.code === 'template_missing_metadata');
     expect(err?.message).toContain('name');
     expect(err?.message).toContain('defaultSlug');
+  });
+
+  it('accepts a fully localized manifest (metadata and slot texts as { en, de } records)', () => {
+    const manifest = makeManifest();
+    manifest.name = { en: 'Expense approval', de: 'Spesenfreigabe' };
+    manifest.description = { en: 'Route an expense.', de: 'Leitet Spesen weiter.' };
+    manifest.useCase = { en: 'approval', de: 'Freigabe' };
+    manifest.slots.roles = [
+      { key: 'approver', label: { en: 'Approver role', de: 'Freigaberolle' }, description: { en: 'Signs off.', de: 'Gibt frei.' } },
+    ];
+    expect(checkTemplateManifest(manifest)).toEqual({ ok: true, errors: [] });
+  });
+
+  it('rejects a localized record without the required en base', () => {
+    const manifest = makeManifest();
+    manifest.name = { de: 'Spesenfreigabe' } as unknown as TemplateManifest['name'];
+    const result = checkTemplateManifest(manifest);
+    const err = result.errors.find((e) => e.code === 'template_invalid_localized_text');
+    expect(err?.message).toContain("'name'");
+    expect(err?.message).toContain("'en'");
+  });
+
+  it('rejects a localized record with a blank locale entry', () => {
+    const manifest = makeManifest();
+    manifest.description = { en: 'Fine.', de: '   ' };
+    expect(codesOf(manifest)).toContain('template_invalid_localized_text');
+  });
+
+  it('flags a bad slot label shape on the slot, with its placeholder as nodeId', () => {
+    const manifest = makeManifest();
+    manifest.slots.agents = [{ key: 'worker', label: { de: 'Arbeits-Agent' } as unknown as TemplateManifest['name'] }];
+    const result = checkTemplateManifest(manifest);
+    const err = result.errors.find((e) => e.code === 'template_invalid_localized_text');
+    expect(err?.message).toContain("agents slot 'worker' label");
+    expect(err?.nodeIds).toEqual(['slot:agent:worker']);
   });
 
   it('rejects a malformed slot ref (wrong kind token in a ref field)', () => {

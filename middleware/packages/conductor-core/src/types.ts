@@ -200,6 +200,7 @@ export type ValidationCode =
   | 'unknown_event_ref'
   // Template-manifest integrity codes (checkTemplateManifest in template.ts).
   | 'template_missing_metadata'
+  | 'template_invalid_localized_text'
   | 'template_duplicate_slot_key'
   | 'template_undeclared_slot'
   | 'template_unused_slot'
@@ -239,13 +240,26 @@ export interface KnownRefs {
  *  `human.message`, whose `{{...}}` syntax is run-context interpolation. */
 export type TemplateSlotKind = 'agents' | 'actions' | 'roles' | 'events' | 'channels';
 
+/** Per-locale text record carried by a manifest. `en` is the required base and the
+ *  universal fallback; any further locale key ('de', ...) is optional. */
+export interface LocalizedTextMap {
+  en: string;
+  [locale: string]: string | undefined;
+}
+
+/** Manifest-borne localizable text: either a plain string (treated as English) or a
+ *  per-locale record with `en` required. Templates are data -- v2 distributes them
+ *  outside the repo -- so localization travels WITH the manifest instead of living in
+ *  the app's message catalogs. Resolve with `resolveLocalizedText` (template.ts). */
+export type LocalizedText = string | LocalizedTextMap;
+
 export interface TemplateSlot {
   /** unique within its kind; referenced from the graph as `slot:<kind-singular>:<key>`. */
   key: string;
   /** human-readable, shown in the mapping form. */
-  label: string;
+  label: LocalizedText;
   /** authored help text for the mapping form. */
-  description?: string;
+  description?: LocalizedText;
 }
 
 export interface TemplateSlots {
@@ -259,11 +273,11 @@ export interface TemplateSlots {
 export interface TemplateManifest {
   /** stable kebab-case catalog id, e.g. "expense-approval". */
   id: string;
-  name: string;
+  name: LocalizedText;
   /** the business problem it solves, plain language. */
-  description: string;
+  description: LocalizedText;
   /** category tag: 'approval' | 'escalation' | 'reporting' | 'onboarding' | free string. */
-  useCase: string;
+  useCase: LocalizedText;
   /** suggested workflow slug, operator-editable. */
   defaultSlug: string;
   /** complete graph with `slot:` placeholders in ref fields. */
@@ -282,7 +296,9 @@ export interface TemplateSlotRef {
   nodeIds: string[];
 }
 
-/** A declared slot missing from a mapping (missingSlotMappings result item). */
+/** A declared slot missing from a mapping (missingSlotMappings result item). The label
+ *  is resolved to plain English so the wire envelope stays a flat string -- clients
+ *  localize from the manifest they already hold, keyed by kind+key. */
 export interface TemplateMissingSlot {
   kind: TemplateSlotKind;
   key: string;

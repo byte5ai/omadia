@@ -9,8 +9,10 @@ import {
   applyTemplateSlots,
   checkTemplateManifest,
   extractSlotRefs,
+  resolveLocalizedText,
   validate,
   type KnownRefs,
+  type LocalizedText,
   type TemplateManifest,
   type TemplateSlotKind,
   type TemplateSlotMapping,
@@ -105,6 +107,24 @@ describe('bundled conductor template catalog', () => {
           assert.ok(isValidCron(trigger.cron!), `cron trigger '${trigger.id}' expression '${trigger.cron}' is invalid`);
         }
       });
+
+      it('every operator-facing text carries a German translation (bundled en/de parity)', () => {
+        const requireDe = (value: LocalizedText, what: string): void => {
+          assert.ok(typeof value === 'object', `${what} is a plain string — bundled templates must localize`);
+          const de = value.de;
+          assert.ok(typeof de === 'string' && de.trim().length > 0, `${what} lacks a German translation`);
+          assert.ok(typeof value.en === 'string' && value.en.trim().length > 0, `${what} lacks the required en base`);
+        };
+        requireDe(manifest.name, 'name');
+        requireDe(manifest.description, 'description');
+        requireDe(manifest.useCase, 'useCase');
+        for (const kind of SLOT_KINDS) {
+          for (const slot of manifest.slots[kind] ?? []) {
+            requireDe(slot.label, `${kind} slot '${slot.key}' label`);
+            if (slot.description !== undefined) requireDe(slot.description, `${kind} slot '${slot.key}' description`);
+          }
+        }
+      });
     });
   }
 
@@ -121,7 +141,8 @@ describe('loadTemplateCatalog', () => {
       catalog.list().map((m) => m.id),
       ['expense-approval', 'notify-and-escalate', 'onboarding-checklist', 'weekly-report'],
     );
-    assert.equal(catalog.get('expense-approval')?.name, 'Expense approval with escalation');
+    assert.equal(resolveLocalizedText(catalog.get('expense-approval')!.name), 'Expense approval with escalation');
+    assert.equal(resolveLocalizedText(catalog.get('expense-approval')!.name, 'de'), 'Spesenfreigabe mit Eskalation');
     assert.equal(catalog.get('does-not-exist'), undefined);
   });
 

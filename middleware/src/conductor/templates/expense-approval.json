@@ -1,8 +1,17 @@
 {
   "id": "expense-approval",
-  "name": "Expense approval with escalation",
-  "description": "Route an expense request through a summarizing agent to an approver. If the approver does not decide within 48 hours the request escalates to a second role, and the final outcome is announced either way.",
-  "useCase": "approval",
+  "name": {
+    "en": "Expense approval with escalation",
+    "de": "Spesenfreigabe mit Eskalation"
+  },
+  "description": {
+    "en": "Route an expense request through a summarizing agent to an approver. If the approver does not decide within 48 hours the request escalates to a second role, and the final outcome is announced either way.",
+    "de": "Leitet einen Spesenantrag über einen zusammenfassenden Agenten an eine Freigaberolle weiter. Entscheidet die Freigaberolle nicht innerhalb von 48 Stunden, eskaliert der Antrag an eine zweite Rolle; das Ergebnis wird in beiden Fällen verkündet."
+  },
+  "useCase": {
+    "en": "approval",
+    "de": "Freigabe"
+  },
   "defaultSlug": "expense-approval",
   "graph": {
     "entryStepId": "summarize",
@@ -68,32 +77,62 @@
     "agents": [
       {
         "key": "summarizer",
-        "label": "Summarizing agent",
-        "description": "Agent that condenses the incoming expense request for the approver."
+        "label": {
+          "en": "Summarizing agent",
+          "de": "Zusammenfassender Agent"
+        },
+        "description": {
+          "en": "Agent that condenses the incoming expense request for the approver.",
+          "de": "Agent, der den eingehenden Spesenantrag für die Freigaberolle verdichtet."
+        }
       },
       {
         "key": "notifier",
-        "label": "Notifying agent",
-        "description": "Agent that announces the final decision to the requester."
+        "label": {
+          "en": "Notifying agent",
+          "de": "Benachrichtigungs-Agent"
+        },
+        "description": {
+          "en": "Agent that announces the final decision to the requester.",
+          "de": "Agent, der die finale Entscheidung an die antragstellende Person meldet."
+        }
       }
     ],
     "roles": [
       {
         "key": "approver",
-        "label": "Approver role",
-        "description": "Role whose holders decide the expense request."
+        "label": {
+          "en": "Approver role",
+          "de": "Freigaberolle"
+        },
+        "description": {
+          "en": "Role whose holders decide the expense request.",
+          "de": "Rolle, deren Mitglieder über den Spesenantrag entscheiden."
+        }
       },
       {
         "key": "escalation-approver",
-        "label": "Escalation approver role",
-        "description": "Role that decides when the approver misses the 48-hour deadline."
+        "label": {
+          "en": "Escalation approver role",
+          "de": "Eskalations-Freigaberolle"
+        },
+        "description": {
+          "en": "Role that decides when the approver misses the 48-hour deadline.",
+          "de": "Rolle, die entscheidet, wenn die Freigaberolle die 48-Stunden-Frist verpasst."
+        }
       }
     ],
     "channels": [
       {
         "key": "delivery",
-        "label": "Delivery channel",
-        "description": "Channel used to reach the approver and the escalation role."
+        "label": {
+          "en": "Delivery channel",
+          "de": "Zustellkanal"
+        },
+        "description": {
+          "en": "Channel used to reach the approver and the escalation role.",
+          "de": "Kanal, über den Freigabe- und Eskalationsrolle erreicht werden."
+        }
       }
     ]
   }

@@ -1,8 +1,9 @@
 'use client';
 
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
+import { resolveConductorText } from '@/app/_lib/api';
 import type { ConductorTemplate, ConductorTemplateSlots } from '@/app/_lib/api';
 
 /**
@@ -33,6 +34,9 @@ export interface TemplateGalleryProps {
 
 export function TemplateGallery({ templates, onUseTemplate }: TemplateGalleryProps): React.JSX.Element | null {
   const t = useTranslations('conductor');
+  // Template metadata is localized in the manifest itself ({ en, de?, … } or a plain
+  // string) — resolve against the active locale here, en as fallback.
+  const locale = useLocale();
 
   // Empty catalog → render nothing (no empty-state noise).
   if (templates.length === 0) return null;
@@ -54,9 +58,9 @@ export function TemplateGallery({ templates, onUseTemplate }: TemplateGalleryPro
             className="flex flex-col gap-3 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
           >
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-[15px] font-medium text-[color:var(--fg-strong)]">{tpl.name}</h3>
+              <h3 className="text-[15px] font-medium text-[color:var(--fg-strong)]">{resolveConductorText(tpl.name, locale)}</h3>
               <span className="rounded-full border border-[color:var(--border)] px-2 py-0.5 text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
-                {tpl.useCase}
+                {resolveConductorText(tpl.useCase, locale)}
               </span>
               {scheduled && (
                 <span className="rounded-full border border-[color:var(--accent)] px-2 py-0.5 text-[11px] text-[color:var(--accent)]">
@@ -64,7 +68,9 @@ export function TemplateGallery({ templates, onUseTemplate }: TemplateGalleryPro
                 </span>
               )}
             </div>
-            <p className="line-clamp-3 text-[13px] leading-[1.55] text-[color:var(--fg-muted)]">{tpl.description}</p>
+            <p className="line-clamp-3 text-[13px] leading-[1.55] text-[color:var(--fg-muted)]">
+              {resolveConductorText(tpl.description, locale)}
+            </p>
             <div className="mt-auto flex items-center justify-between gap-3">
               <span className="text-[12px] text-[color:var(--fg-muted)]">
                 {mappingSummary ? t('templateMappingSummary', { summary: mappingSummary }) : null}

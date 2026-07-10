@@ -56,10 +56,10 @@ describe('<TemplateGallery />', () => {
 
     expect(screen.getAllByRole('article')).toHaveLength(2);
     expect(screen.getByText('Expense approval')).toBeInTheDocument();
-    expect(screen.getByText(approvalTemplate.description)).toBeInTheDocument();
+    expect(screen.getByText(approvalTemplate.description as string)).toBeInTheDocument();
     expect(screen.getByText('approval')).toBeInTheDocument();
     expect(screen.getByText('Weekly report')).toBeInTheDocument();
-    expect(screen.getByText(reportTemplate.description)).toBeInTheDocument();
+    expect(screen.getByText(reportTemplate.description as string)).toBeInTheDocument();
     expect(screen.getByText('reporting')).toBeInTheDocument();
   });
 
@@ -105,5 +105,50 @@ describe('<TemplateGallery />', () => {
   it('renders nothing for an empty catalog', () => {
     const { container } = renderWithIntl(<TemplateGallery templates={[]} onUseTemplate={vi.fn()} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  // Manifest-borne localization (#429 review): metadata may be { en, de? } records and
+  // must render in the active locale with en as the fallback.
+  const localizedTemplate: ConductorTemplate = {
+    ...reportTemplate,
+    id: 'weekly-report-localized',
+    name: { en: 'Weekly report', de: 'Wochenbericht' },
+    description: {
+      en: 'Compile and deliver a status report every week.',
+      de: 'Erstellt und liefert jede Woche einen Statusbericht.',
+    },
+    useCase: { en: 'reporting', de: 'Berichtswesen' },
+  };
+
+  it('renders German template metadata under the de locale', () => {
+    renderWithIntl(<TemplateGallery templates={[localizedTemplate]} onUseTemplate={vi.fn()} />, { locale: 'de' });
+
+    expect(screen.getByText('Wochenbericht')).toBeInTheDocument();
+    expect(screen.getByText('Erstellt und liefert jede Woche einen Statusbericht.')).toBeInTheDocument();
+    expect(screen.getByText('Berichtswesen')).toBeInTheDocument();
+    expect(screen.queryByText('Weekly report')).not.toBeInTheDocument();
+    expect(screen.queryByText('reporting')).not.toBeInTheDocument();
+  });
+
+  it('falls back to English under de for untranslated fields and plain-string manifests', () => {
+    const partiallyLocalized: ConductorTemplate = {
+      ...localizedTemplate,
+      id: 'weekly-report-partial',
+      name: { en: 'Weekly report' }, // no de entry → en fallback
+      description: 'Compile and deliver a status report every week.', // plain string passes through
+      useCase: { en: 'reporting', de: '  ' }, // blank de entry → en fallback
+    };
+    renderWithIntl(<TemplateGallery templates={[partiallyLocalized]} onUseTemplate={vi.fn()} />, { locale: 'de' });
+
+    expect(screen.getByText('Weekly report')).toBeInTheDocument();
+    expect(screen.getByText('Compile and deliver a status report every week.')).toBeInTheDocument();
+    expect(screen.getByText('reporting')).toBeInTheDocument();
+  });
+
+  it('resolves the localized metadata to English under the default en locale', () => {
+    renderWithIntl(<TemplateGallery templates={[localizedTemplate]} onUseTemplate={vi.fn()} />);
+
+    expect(screen.getByText('Weekly report')).toBeInTheDocument();
+    expect(screen.queryByText('Wochenbericht')).not.toBeInTheDocument();
   });
 });

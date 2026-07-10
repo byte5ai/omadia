@@ -9,6 +9,7 @@
 // interpolation and are deliberately untouched.
 
 import type {
+  LocalizedText,
   Step,
   TemplateManifest,
   TemplateMissingSlot,
@@ -35,6 +36,37 @@ const SLOT_TOKEN: Record<TemplateSlotKind, string> = {
 };
 
 const SLOT_KINDS = Object.keys(SLOT_TOKEN) as TemplateSlotKind[];
+
+/**
+ * Resolve manifest-borne localizable text to a display string. Plain strings pass
+ * through unchanged; localized records resolve `locale` first (exact key) and fall
+ * back to the required `en` base -- also for blank entries. Template metadata is
+ * data, so localization travels with the manifest and is resolved at render time.
+ */
+export function resolveLocalizedText(value: LocalizedText, locale?: string): string {
+  if (typeof value === 'string') return value;
+  const localized = locale ? value[locale] : undefined;
+  return typeof localized === 'string' && localized.trim().length > 0 ? localized : value.en;
+}
+
+/** Why `value` is not valid LocalizedText, or null when it is: a non-empty string, or
+ *  a locale record whose entries are all non-empty strings with `en` present. */
+function localizedTextProblem(value: unknown): string | null {
+  if (typeof value === 'string') return value.trim().length > 0 ? null : 'is empty';
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return 'must be a non-empty string or an { en, ... } locale record';
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record['en'] !== 'string' || record['en'].trim().length === 0) {
+    return "must carry a non-empty 'en' entry (the required fallback locale)";
+  }
+  for (const [locale, text] of Object.entries(record)) {
+    if (typeof text !== 'string' || text.trim().length === 0) {
+      return `carries a non-string or empty '${locale}' entry`;
+    }
+  }
+  return null;
+}
 
 /** Parse `value` as a placeholder of `kind`. Returns the slot key, or null when the
  *  value is not a placeholder of that kind (including plain non-slot refs). */
@@ -119,7 +151,8 @@ export function missingSlotMappings(manifest: TemplateManifest, mapping: Templat
   for (const kind of SLOT_KINDS) {
     for (const slot of manifest.slots[kind] ?? []) {
       if (mappedValue(mapping, kind, slot.key) === null) {
-        missing.push({ kind, key: slot.key, label: slot.label });
+        // Wire envelopes stay flat English strings; clients localize via kind+key.
+        missing.push({ kind, key: slot.key, label: resolveLocalizedText(slot.label) });
       }
     }
   }
@@ -154,7 +187,8 @@ export function applyTemplateSlots(manifest: TemplateManifest, mapping: Template
 
 /**
  * Manifest integrity gate (the CI test over the bundled catalog runs this):
- * 1. metadata (`id`, `name`, `description`, `defaultSlug`) non-empty;
+ * 1. metadata non-empty -- `id`/`defaultSlug` plain strings, `name`/`description`/
+ *    `useCase` localizable (plain string or `{ en, de?, ... }` with `en` required);
  * 2. `graph` passes the structural validate() (shape gate included; placeholders are
  *    plain strings, so a well-formed template passes without KnownRefs);
  * 3. no duplicate slot keys within a kind;
@@ -165,9 +199,37 @@ export function applyTemplateSlots(manifest: TemplateManifest, mapping: Template
 export function checkTemplateManifest(manifest: TemplateManifest): ValidationResult {
   const errors: ValidationError[] = [];
 
-  const emptyMeta = (['id', 'name', 'description', 'defaultSlug'] as const).filter(
+  // id / defaultSlug are machine identifiers -- always plain strings. name /
+  // description / useCase are operator-facing and may be localized records.
+  const emptyMeta: string[] = (['id', 'defaultSlug'] as const).filter(
     (field) => typeof manifest[field] !== 'string' || manifest[field].trim().length === 0,
   );
+  for (const field of ['name', 'description'] as const) {
+    const value: unknown = manifest[field];
+    if (value === undefined || value === null || (typeof value === 'string' && value.trim().length === 0)) {
+      emptyMeta.push(field);
+      continue;
+    }
+    const problem = localizedTextProblem(value);
+    if (problem !== null) {
+      errors.push({
+        code: 'template_invalid_localized_text',
+        message: `template manifest field '${field}' ${problem}`,
+        nodeIds: [],
+      });
+    }
+  }
+  // useCase was never hard-required here; only its localized shape is checked when present.
+  if (manifest.useCase !== undefined) {
+    const problem = localizedTextProblem(manifest.useCase);
+    if (problem !== null) {
+      errors.push({
+        code: 'template_invalid_localized_text',
+        message: `template manifest field 'useCase' ${problem}`,
+        nodeIds: [],
+      });
+    }
+  }
   if (emptyMeta.length) {
     errors.push({
       code: 'template_missing_metadata',
@@ -193,6 +255,24 @@ export function checkTemplateManifest(manifest: TemplateManifest): ValidationRes
         });
       }
       seen.add(slot.key);
+      const labelProblem = localizedTextProblem(slot.label);
+      if (labelProblem !== null) {
+        errors.push({
+          code: 'template_invalid_localized_text',
+          message: `${kind} slot '${slot.key}' label ${labelProblem}`,
+          nodeIds: [`slot:${SLOT_TOKEN[kind]}:${slot.key}`],
+        });
+      }
+      if (slot.description !== undefined) {
+        const descriptionProblem = localizedTextProblem(slot.description);
+        if (descriptionProblem !== null) {
+          errors.push({
+            code: 'template_invalid_localized_text',
+            message: `${kind} slot '${slot.key}' description ${descriptionProblem}`,
+            nodeIds: [`slot:${SLOT_TOKEN[kind]}:${slot.key}`],
+          });
+        }
+      }
       declared.set(`${kind} ${slot.key}`, { ...slot, kind });
     }
   }

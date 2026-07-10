@@ -3864,12 +3864,25 @@ export async function getConductorRun(slug: string, runId: string): Promise<Cond
 // following this file's convention (web-ui does not depend on middleware workspace
 // packages).
 
+/** Manifest-borne localizable text (mirrors conductor-core's LocalizedText): a plain
+ *  string, or a per-locale record with `en` required as the universal fallback. */
+export type ConductorLocalizedText = string | { en: string; [locale: string]: string | undefined };
+
+/** Resolve template text for the active UI locale, falling back to `en`. Templates are
+ *  data (v2 ships them outside the repo), so localization travels in the manifest and is
+ *  resolved client-side — GET /templates keeps returning full manifests (#330). */
+export function resolveConductorText(value: ConductorLocalizedText, locale: string): string {
+  if (typeof value === 'string') return value;
+  const localized = value[locale];
+  return typeof localized === 'string' && localized.trim().length > 0 ? localized : value.en;
+}
+
 export interface ConductorTemplateSlot {
   key: string;
   /** human-readable, shown in the mapping form. */
-  label: string;
+  label: ConductorLocalizedText;
   /** authored help text for the mapping form. */
-  description?: string;
+  description?: ConductorLocalizedText;
 }
 
 export interface ConductorTemplateSlots {
@@ -3897,9 +3910,9 @@ export interface ConductorTemplateGraph {
 
 export interface ConductorTemplate {
   id: string;
-  name: string;
-  description: string;
-  useCase: string;
+  name: ConductorLocalizedText;
+  description: ConductorLocalizedText;
+  useCase: ConductorLocalizedText;
   defaultSlug: string;
   graph: ConductorTemplateGraph;
   slots: ConductorTemplateSlots;

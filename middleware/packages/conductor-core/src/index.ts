@@ -11,4 +11,5 @@ export {
   missingSlotMappings,
   applyTemplateSlots,
   checkTemplateManifest,
+  resolveLocalizedText,
 } from './template.js';

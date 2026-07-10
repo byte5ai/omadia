@@ -17,12 +17,14 @@ import type { ConductorWorkflow } from '../src/conductor/workflowStore.js';
 // ordinary createOrPublish path). Stub-dep express harness, same pattern as the other
 // route tests — no DB.
 
-/** Fixture manifest: one agent slot + one role slot, minimal valid two-step graph. */
+/** Fixture manifest: one agent slot + one role slot, minimal valid two-step graph.
+ *  Metadata + the worker label are localized records ({ en, de }); the approver slot
+ *  stays a plain string to prove both LocalizedText shapes survive the routes. */
 function fixtureManifest(): TemplateManifest {
   return {
     id: 'fixture-approval',
-    name: 'Fixture approval',
-    description: 'Two-step approval used by the route tests.',
+    name: { en: 'Fixture approval', de: 'Fixture-Freigabe' },
+    description: { en: 'Two-step approval used by the route tests.', de: 'Zweistufige Freigabe für die Route-Tests.' },
     useCase: 'approval',
     defaultSlug: 'fixture-approval',
     graph: {
@@ -42,7 +44,7 @@ function fixtureManifest(): TemplateManifest {
       transitions: [{ id: 't-done', source: 'work', target: 'approve' }],
     },
     slots: {
-      agents: [{ key: 'worker', label: 'Worker agent' }],
+      agents: [{ key: 'worker', label: { en: 'Worker agent', de: 'Arbeits-Agent' } }],
       roles: [{ key: 'approver', label: 'Approver role' }],
     },
   };
@@ -159,7 +161,11 @@ describe('GET /templates', () => {
     assert.equal(body.templates.length, 1);
     const [tpl] = body.templates;
     assert.equal(tpl!.id, 'fixture-approval');
-    assert.deepEqual(tpl!.slots.agents, [{ key: 'worker', label: 'Worker agent' }]);
+    // Localized fields pass through UNRESOLVED — the catalog stays machine-readable
+    // (#330) and the client resolves the active locale itself.
+    assert.deepEqual(tpl!.name, { en: 'Fixture approval', de: 'Fixture-Freigabe' });
+    assert.deepEqual(tpl!.slots.agents, [{ key: 'worker', label: { en: 'Worker agent', de: 'Arbeits-Agent' } }]);
+    assert.deepEqual(tpl!.slots.roles, [{ key: 'approver', label: 'Approver role' }]);
     assert.equal(tpl!.graph.steps[0]!.agentId, 'slot:agent:worker');
   });
 
@@ -238,8 +244,8 @@ describe('POST /templates/:id/instantiate', () => {
     assert.equal(h.publishCalls.length, 1);
     const call = h.publishCalls[0]!;
     assert.equal(call.slug, 'my-approval');
-    assert.equal(call.name, 'Fixture approval'); // defaults to manifest.name
-    assert.equal(call.description, 'Two-step approval used by the route tests.');
+    assert.equal(call.name, 'Fixture approval'); // defaults to manifest.name, resolved to its en base
+    assert.equal(call.description, 'Two-step approval used by the route tests.'); // en-resolved too
     assert.equal(call.enable, false); // enable defaults to false
     assert.equal(call.graph.steps[0]!.agentId, KNOWN_AGENT); // substituted, not the placeholder
 
