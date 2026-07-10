@@ -273,6 +273,21 @@ export class GithubForgeClient implements ForgeClient {
     throw new NotImplementedError('commentIssue is not implemented in W0');
   }
 
+  async getRef(owner: string, repo: string, ref: string): Promise<string> {
+    // `git/ref/heads/<branch>` rather than `commits/<ref>`: the latter happily
+    // resolves a tag, a sha, or a branch, and would silently accept a ref that is
+    // not a branch of this repository.
+    const data = asRecord(
+      await this.gh('GET', `/repos/${enc(owner)}/${enc(repo)}/git/ref/heads/${enc(ref)}`),
+    );
+    const object = asRecord(data.object);
+    const sha = object.sha;
+    if (typeof sha !== 'string' || sha === '') {
+      throw new ForgeResponseError(`ref 'heads/${ref}' resolved to no sha`);
+    }
+    return sha;
+  }
+
   private async readFile(repoBase: string, path: string, ref: string): Promise<string> {
     const data = asRecord(
       await this.gh('GET', `${repoBase}/contents/${encPath(path)}?ref=${enc(ref)}`),

@@ -185,7 +185,16 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     repoStore,
     backends,
     applyService,
-    prepareProvision: (job, lease) => jobStore.prepareProvision(job, lease),
+    // Pin the base tree BEFORE the runner clones. `base_sha` is written once
+    // (COALESCE), so a re-provision of the same job keeps the tree the agent
+    // first saw. A forge that cannot answer must not silently produce an
+    // unpinned job: the failure surfaces as a provision failure.
+    prepareProvision: async (job, lease, repo) => {
+      const token = await credentials.resolve(repo.id);
+      if (!token) throw new Error(`devplatform.repo_not_connected: ${repo.owner}/${repo.name}`);
+      const baseSha = await forgeFactory(token).getRef(repo.owner, repo.name, repo.defaultBranch);
+      return jobStore.prepareProvision(job, lease, baseSha);
+    },
     baseUrl: deps.baseUrl,
     maxConcurrent: deps.maxConcurrentJobs,
     wallClockMs: deps.wallClockMs,

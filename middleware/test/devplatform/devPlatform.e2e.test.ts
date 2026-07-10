@@ -158,6 +158,10 @@ class StubForge implements ForgeClient {
   applyCalls: ApplyDiffInput[] = [];
   prCalls: CreatePrInput[] = [];
 
+  getRef(): Promise<string> {
+    return Promise.resolve('e2e-base-sha');
+  }
+
   applyDiff(input: ApplyDiffInput): Promise<ApplyDiffResult> {
     this.applyCalls.push(input);
     return Promise.resolve({

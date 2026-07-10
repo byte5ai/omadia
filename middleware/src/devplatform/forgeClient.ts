@@ -115,6 +115,18 @@ export interface ForgeClient {
    * order, from the validated change set. Never updates an existing ref.
    */
   applyDiff(input: ApplyDiffInput): Promise<ApplyDiffResult>;
+  /**
+   * Resolve a ref (a branch name) to the commit sha it points at, right now.
+   *
+   * This is what makes "applied onto the pinned base tree" true rather than
+   * aspirational. Without it `base_sha` stays NULL, and the apply reads the
+   * default branch's CURRENT tip — a different tree than the one the agent
+   * cloned and reasoned about. `applyHunks` fails closed on the resulting
+   * context mismatch, so the damage is a mysterious failure rather than a
+   * corrupt commit; but a diff must be evaluated against the tree it was made
+   * against, not against whatever `main` happens to be at apply time.
+   */
+  getRef(owner: string, repo: string, ref: string): Promise<string>;
   createPR(input: CreatePrInput): Promise<CreatePrResult>;
   getIssue(owner: string, repo: string, issueNumber: number): Promise<ForgeIssue>;
   listOpenIssues(owner: string, repo: string): Promise<ForgeIssue[]>;

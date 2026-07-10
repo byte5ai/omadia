@@ -117,6 +117,7 @@ export interface DevJobApplyService {
 export type PrepareProvision = (
   job: DevJob,
   lease: string,
+  repo: DevRepo,
 ) => Promise<{ token: string; job: DevJob }>;
 
 export interface DevJobWorkerDeps {
@@ -333,7 +334,7 @@ export class DevJobWorker {
         );
       }
 
-      const prepared = await this.deps.prepareProvision(job, lease);
+      const prepared = await this.deps.prepareProvision(job, lease, repo);
       const provInput: DevJobProvisionContext = {
         jobId: job.id,
         jobToken: prepared.token,
