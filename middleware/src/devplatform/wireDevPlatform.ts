@@ -190,6 +190,11 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     // first saw. A forge that cannot answer must not silently produce an
     // unpinned job: the failure surfaces as a provision failure.
     prepareProvision: async (job, lease, repo) => {
+      // An already-pinned job keeps its tree. `base_sha` is COALESCE'd in SQL, so
+      // asking the forge again could only produce a sha that is thrown away — and
+      // a forge blip on a re-provision (after an at-capacity requeue, say) would
+      // then fail a job whose base was settled on the first attempt.
+      if (job.baseSha) return jobStore.prepareProvision(job, lease, job.baseSha);
       const token = await credentials.resolve(repo.id);
       if (!token) throw new Error(`devplatform.repo_not_connected: ${repo.owner}/${repo.name}`);
       const baseSha = await forgeFactory(token).getRef(repo.owner, repo.name, repo.defaultBranch);

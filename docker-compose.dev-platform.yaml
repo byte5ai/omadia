@@ -47,6 +47,13 @@ services:
       # Where the runner phones home. The daemon injects this into every job; the
       # runner reaches it across dev-control, never over the public internet.
       DEV_PLATFORM_RUNNER_BASE_URL: http://middleware:3000
+      # Neutralise any docker engine address a stray `middleware/.env` (loaded via
+      # the base file's env_file) might inject. `environment` wins over env_file,
+      # so these empty values are the last word: the middleware CANNOT be handed a
+      # socket through the back door. Asserted on the MERGED config, not just here.
+      DOCKER_HOST: ''
+      DOCKER_TLS_VERIFY: ''
+      DOCKER_CERT_PATH: ''
     networks: [omadia, dev-control]
     # No `volumes:` entry for /var/run/docker.sock, and no DOCKER_HOST. Both are
     # asserted absent by test/devplatform-docker/composeTopology.test.ts — the

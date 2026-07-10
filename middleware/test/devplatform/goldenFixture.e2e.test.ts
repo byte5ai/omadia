@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -106,8 +106,27 @@ class StubForge implements ForgeClient {
     return Promise.resolve(this.headSha);
   }
 
+  /** The base tree, keyed by sha → path → content. Set from the fixture. */
+  trees = new Map<string, Map<string, string>>();
+  /** What applyDiff RECONSTRUCTED — the file the forge would commit. */
+  committed = new Map<string, string>();
+
   applyDiff(input: ApplyDiffInput): Promise<ApplyDiffResult> {
     this.applyCalls.push(input);
+    // Reconstruct exactly as GithubForgeClient does: read each file at the PINNED
+    // base_sha and evaluate the hunks. A wrong base_sha, or hunks that do not
+    // apply against that tree, throw HERE — so the test exercises the real
+    // dependency between the pinned sha and the diff, not just a recorded call.
+    const base = this.trees.get(input.baseSha);
+    if (!base) throw new Error(`applyDiff: no tree for base_sha ${input.baseSha}`);
+    for (const f of input.files) {
+      if (f.change === 'delete') {
+        this.committed.set(f.path, '<deleted>');
+        continue;
+      }
+      const baseContent = f.change === 'add' ? '' : base.get(f.oldPath ?? f.path) ?? '';
+      this.committed.set(f.path, applyHunks(baseContent, f.hunks, { path: f.path }));
+    }
     return Promise.resolve({
       commitSha: 'golden-commit',
       treeSha: 'golden-tree',
@@ -205,6 +224,25 @@ function gitHttpBackend(root: string) {
   };
 }
 
+const KNOWN_TOKEN = 'ghp_never_used';
+
+/** Recursively search any JSON-ish value for a credential-shaped key or the token. */
+function findSecret(value: unknown, path = ''): string | null {
+  if (typeof value === 'string') {
+    return value.includes(KNOWN_TOKEN) ? `${path} carries the token` : null;
+  }
+  if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) {
+      if (/token|credential|secret|password|auth/i.test(k) && typeof v === 'string' && v !== '') {
+        return `${path}.${k} looks like a credential`;
+      }
+      const deeper = findSecret(v, `${path}.${k}`);
+      if (deeper) return deeper;
+    }
+  }
+  return null;
+}
+
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, {
     cwd,
@@ -254,6 +292,7 @@ describe('dev-platform golden fixture (pg + git)', { skip: !pgAvailable || !gitA
     git(originDir, 'commit', '-m', 'fixture: initial project', '--quiet');
     baseSha = git(originDir, 'rev-parse', 'HEAD').trim();
     forge.headSha = baseSha;
+    forge.trees.set(baseSha, new Map(Object.entries(FIXTURE_FILES)));
 
     // --- serve it over HTTPS, because the shim refuses anything else ----------
     // `cloneAtBaseSha` will not attach a credential to a non-https URL. That guard
@@ -294,7 +333,8 @@ describe('dev-platform golden fixture (pg + git)', { skip: !pgAvailable || !gitA
     const fakeCli = path.join(scratch, 'fake-claude');
     await writeFile(
       fakeCli,
-      `#!/bin/sh\ncat > src/sum.js <<'PATCH'\n${AGENT_PATCH}PATCH\nexit 0\n`,
+      `#!/bin/sh\nenv > ${JSON.stringify(path.join(scratch, 'agent-env.txt'))}\n` +
+        `cat > src/sum.js <<'PATCH'\n${AGENT_PATCH}PATCH\nexit 0\n`,
     );
     await chmod(fakeCli, 0o755);
 
@@ -400,9 +440,9 @@ describe('dev-platform golden fixture (pg + git)', { skip: !pgAvailable || !gitA
       headers: { Authorization: `Bearer ${token}` },
     });
     assert.equal(specRes.status, 200);
-    const spec = (await specRes.json()) as { repo: Record<string, unknown> } & Record<string, unknown>;
-    assert.ok(!('token' in spec), 'the spec carries no top-level credential');
-    assert.ok(!('token' in spec.repo), 'and none inside repo');
+    const spec = (await specRes.json()) as Record<string, unknown>;
+    const leak = findSecret(spec, 'spec');
+    assert.equal(leak, null, `the spec must carry no credential anywhere (${leak})`);
 
     // 3. The REAL shim runs: clone at base sha → scripted agent → git diff →
     //    upload. It is handed a recording `git` so a push cannot hide.
@@ -444,9 +484,10 @@ describe('dev-platform golden fixture (pg + git)', { skip: !pgAvailable || !gitA
     // tautological (it passed a deliberately corrupted AGENT_PATCH until this).
     const onDisk = await readFile(path.join(workspace, 'repo', 'src', 'sum.js'), 'utf8');
     assert.notEqual(onDisk, FIXTURE_FILES['src/sum.js'], 'the agent really did change the file');
-    const evaluated = applyHunks(FIXTURE_FILES['src/sum.js']!, sumFile.hunks, { path: sumFile.path });
+    // What the forge would COMMIT, reconstructed against the pinned base tree,
+    // must equal the agent's working tree byte for byte.
     assert.equal(
-      evaluated,
+      forge.committed.get('src/sum.js'),
       onDisk,
       'byte-identical: every hop between the agent’s working tree and the forge must be lossless',
     );
@@ -482,13 +523,48 @@ describe('dev-platform golden fixture (pg + git)', { skip: !pgAvailable || !gitA
     assert.ok(gitCalls.some((c) => c.includes('diff')), 'and a diff was collected');
   });
 
-  it('leaves no clone credential behind in the workspace', async () => {
+  it('leaves no clone credential anywhere under the workspace', async () => {
     // `cloneAtBaseSha` writes a credential store OUTSIDE the repo and removes it.
-    // A leftover file, or one inside `.git`, would persist the token on disk.
-    const { readdir } = await import('node:fs/promises');
-    const entries = await readdir(path.join(scratch, 'ws'));
-    for (const e of entries) {
-      assert.ok(!e.startsWith('.git-credentials'), `credential store left behind: ${e}`);
+    // A leftover file — or the token written into `repo/.git/config` — would
+    // persist it on disk for the next job. Walk the whole tree, and grep the
+    // bytes: a file named innocently is still a leak.
+    const workspace = path.join(scratch, 'ws');
+    const offenders: string[] = [];
+    async function walk(dir: string): Promise<void> {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(abs);
+          continue;
+        }
+        if (entry.name.startsWith('.git-credentials')) offenders.push(`${abs} (credential store)`);
+        const body = await readFile(abs, 'utf8').catch(() => '');
+        if (body.includes(KNOWN_TOKEN)) offenders.push(`${abs} (contains the token)`);
+      }
     }
+    await walk(workspace);
+    assert.deepEqual(offenders, [], 'no credential may survive the job');
+  });
+
+  it('hands the agent no long-lived secret in its environment', async () => {
+    // The child CLI is the least-trusted code in the system. It gets a job-scoped
+    // HOME and nothing else worth stealing — no inherited provider key, no SCM
+    // token, no daemon token. The fake CLI dumped its own env to prove it.
+    const dump = await readFile(path.join(scratch, 'agent-env.txt'), 'utf8');
+    const lines = dump.split('\n').filter((l) => l.includes('='));
+    assert.ok(lines.length > 0, 'the agent really did run and dump its environment');
+
+    for (const line of lines) {
+      const eq = line.indexOf('=');
+      const key = line.slice(0, eq);
+      const value = line.slice(eq + 1);
+      assert.ok(!value.includes(KNOWN_TOKEN), `the SCM token reached the agent via ${key}`);
+      assert.ok(
+        !/^(ANTHROPIC_|OMADIA_ANTHROPIC_|DEV_RUNNER_DAEMON_TOKEN$|AWS_SECRET)/.test(key),
+        `a long-lived secret reached the agent: ${key}`,
+      );
+    }
+    const home = lines.find((l) => l.startsWith('HOME='))?.slice('HOME='.length);
+    assert.ok(home && home.startsWith(path.join(scratch, 'ws')), `agent HOME must be job-scoped, got '${home}'`);
   });
 });

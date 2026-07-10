@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +48,32 @@ function load(name: string): ComposeFile {
 const base = load('docker-compose.yaml');
 const overlay = load('docker-compose.dev-platform.yaml');
 
+/** The MERGED config, as docker actually computes it — the only view that shows
+ *  what `middleware/.env` (loaded via the base file's env_file) injects. Requires
+ *  docker; the merge-time assertions skip cleanly without it. */
+function mergedConfig(): { services: Record<string, ComposeService> } | null {
+  try {
+    const json = execFileSync(
+      'docker',
+      [
+        'compose',
+        '-f',
+        resolve(REPO_ROOT, 'docker-compose.yaml'),
+        '-f',
+        resolve(REPO_ROOT, 'docker-compose.dev-platform.yaml'),
+        'config',
+        '--format',
+        'json',
+      ],
+      { encoding: 'utf8', env: { ...process.env, DEV_RUNNER_DAEMON_TOKEN: 'test-token' }, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    return JSON.parse(json) as { services: Record<string, ComposeService> };
+  } catch {
+    return null;
+  }
+}
+const merged = mergedConfig();
+
 /** Compose merges by service name; the overlay's `networks` REPLACES the base's. */
 function networkNames(svc: ComposeService | undefined): string[] {
   if (!svc?.networks) return [];
@@ -74,7 +101,9 @@ describe('dev-platform compose overlay — the middleware never holds a docker s
   it('gives the middleware no DOCKER_HOST and no engine credentials', () => {
     const env = overlay.services['middleware']?.environment ?? {};
     for (const key of ['DOCKER_HOST', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) {
-      assert.equal(env[key], undefined, `the middleware must not carry ${key}`);
+      // Empty is the deliberate neutraliser (it overrides any middleware/.env
+      // value); a non-empty address would be a real engine handle.
+      assert.equal(env[key] ?? '', '', `the middleware must not carry a real ${key}`);
     }
   });
 
@@ -91,7 +120,7 @@ describe('dev-platform compose overlay — the middleware never holds a docker s
     assert.equal(daemon.environment?.['DOCKER_TLS_VERIFY'], '1', 'the daemon refuses a plaintext engine');
     for (const [name, svc] of Object.entries(overlay.services)) {
       if (name === 'dev-runner-daemon') continue;
-      assert.equal(svc.environment?.['DOCKER_HOST'], undefined, `${name} must not address the engine`);
+      assert.equal(svc.environment?.['DOCKER_HOST'] ?? '', '', `${name} must not address the engine`);
     }
   });
 });
@@ -212,5 +241,25 @@ describe('dev-platform compose overlay — one image, two services, two commands
     // The one boundary a compromised middleware cannot cross: it may name a job,
     // never an image. `parseAllowedImages` throws when this is absent.
     assert.ok(overlay.services['dev-runner-daemon']!.environment!['DEV_RUNNER_ALLOWED_IMAGES']);
+  });
+});
+
+describe('dev-platform compose overlay — the MERGED config, not just the overlay map', { skip: !merged }, () => {
+  it('neutralises any DOCKER_HOST a stray middleware/.env could inject', () => {
+    // `environment` wins over `env_file`, so the overlay's empty DOCKER_HOST is the
+    // last word even if middleware/.env sets `DOCKER_HOST=tcp://host:2375`. This is
+    // the property the overlay-only test cannot see.
+    const env = (merged!.services['middleware'] as { environment?: Record<string, string> }).environment ?? {};
+    for (const key of ['DOCKER_HOST', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) {
+      assert.equal(env[key] ?? '', '', `merged middleware must not carry ${key}`);
+    }
+  });
+
+  it('mounts no docker socket into the merged middleware', () => {
+    const volumes = (merged!.services['middleware'] as { volumes?: { source?: string; target?: string }[] }).volumes ?? [];
+    for (const v of volumes) {
+      const src = typeof v === 'string' ? v : `${v.source ?? ''}:${v.target ?? ''}`;
+      assert.ok(!src.includes('docker.sock'), `merged middleware has a docker socket: ${JSON.stringify(v)}`);
+    }
   });
 });
