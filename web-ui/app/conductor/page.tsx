@@ -226,8 +226,16 @@ export default function ConductorPage(): React.JSX.Element {
                   // Reuse the chat→canvas mechanism: the canvas hydrates via its
                   // loadGraphRequest prop; publishing then goes through its normal save
                   // flow. The form's slug/name ride along so Save is armed with the
-                  // template instance identity, not a previously loaded workflow's.
-                  setChatGraphRequest({ graph, nonce: Date.now(), slug: target.slug, name: target.name });
+                  // template instance identity, not a previously loaded workflow's —
+                  // and its enable toggle rides along too, so Save keeps a default-off
+                  // (possibly cron-scheduled) template disabled instead of enabling it.
+                  setChatGraphRequest({
+                    graph,
+                    nonce: Date.now(),
+                    slug: target.slug,
+                    name: target.name,
+                    enable: target.enable,
+                  });
                   designerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 }}
                 onCancel={() => setSelectedTemplate(null)}

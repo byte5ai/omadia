@@ -18,6 +18,21 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — "Open in designer" no longer drops the template form's enable=OFF default (#429)
+
+- The template slot-mapping form's "Open in designer" handoff only passed
+  graph/slug/name to `ConductorCanvas`, whose save path hardcoded
+  `publishConductorWorkflow({ ..., enable: true })` — so a cron template left
+  on the default-off enable toggle was created **enabled** on Save and started
+  its schedule without the form's schedule notice ever applying. The form now
+  hands its `enable` choice along (`onOpenInDesigner` target +
+  `CanvasGraphRequest.enable`), and the canvas publishes with it. Requests
+  without an `enable` choice (chat drafts, US7) and the edit-existing path
+  keep the historical enabled-on-save behaviour (the store only applies
+  `enable` on first create anyway). Regression tests in
+  `web-ui/app/conductor/_components/__tests__/ConductorCanvas.test.tsx` (new)
+  and the form tests.
+
 ### Added — workflow-template slot-mapping form on /conductor (#429, unit f2)
 
 - Picking "Use template" on `/conductor` now renders the guided instantiation

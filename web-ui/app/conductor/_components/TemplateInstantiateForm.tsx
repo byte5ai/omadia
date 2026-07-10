@@ -81,9 +81,11 @@ export interface TemplateInstantiateFormProps {
   /**
    * Receives the resolved (substituted + validated) graph for canvas hydration, plus the
    * instance slug/name from this form so the canvas's own form is publish-ready (and never
-   * publishes the template graph under a previously loaded workflow's slug).
+   * publishes the template graph under a previously loaded workflow's slug). `enable`
+   * carries the form's default-off toggle along, so the canvas's save path publishes with
+   * the operator's choice instead of silently enabling a (possibly cron-scheduled) template.
    */
-  onOpenInDesigner: (graph: unknown, target: { slug: string; name: string }) => void;
+  onOpenInDesigner: (graph: unknown, target: { slug: string; name: string; enable: boolean }) => void;
   onCancel: () => void;
 }
 
@@ -240,7 +242,7 @@ export function TemplateInstantiateForm({
     clearErrors();
     try {
       const res = await resolveConductorTemplate(template.id, buildMapping());
-      onOpenInDesigner(res.graph, { slug: slug.trim(), name: name.trim() });
+      onOpenInDesigner(res.graph, { slug: slug.trim(), name: name.trim(), enable });
     } catch (err) {
       handleFailure(err);
     } finally {

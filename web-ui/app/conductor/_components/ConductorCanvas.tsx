@@ -149,12 +149,15 @@ export interface CanvasEditRequest {
 // draft, US7) directly into the canvas. The nonce changes each push so the same graph re-renders.
 // The template instantiation path (#429) additionally carries the instance slug/name so the
 // canvas form is publish-ready — and never publishes the template graph over a previously
-// loaded workflow's slug. The chat draft path omits them and leaves slug/name untouched.
+// loaded workflow's slug — plus the template form's `enable` choice, so Save honors the
+// default-off toggle (a cron template left disabled must not start its schedule just because
+// it was routed through the designer). The chat draft path omits all three.
 export interface CanvasGraphRequest {
   graph: unknown;
   nonce: number;
   slug?: string;
   name?: string;
+  enable?: boolean;
 }
 
 function CanvasInner({
@@ -221,6 +224,12 @@ function CanvasInner({
     };
   }, []);
 
+  // What `enable` to publish with on Save. Hand-built and edited workflows keep the historical
+  // enabled-on-save behaviour (and the store only applies `enable` on FIRST create anyway — a
+  // re-publish never flips an existing workflow's status). A template handoff (#429) overrides
+  // it with the form's default-off toggle so "Open in designer" → Save cannot silently enable
+  // a scheduled template the operator chose to keep off.
+  const publishEnable = useRef(true);
   // Monotonic id source — guarantees unique node/edge ids even if a click double-fires.
   const nextId = useRef(0);
   const lastAction = useRef(0);
@@ -352,7 +361,7 @@ function CanvasInner({
       return;
     }
     try {
-      await publishConductorWorkflow({ slug, name, graph, enable: true });
+      await publishConductorWorkflow({ slug, name, graph, enable: publishEnable.current });
       onSaved();
     } catch (err) {
       if (err instanceof ApiError) {
@@ -438,6 +447,7 @@ function CanvasInner({
       try {
         const { workflow, graph } = await getConductorWorkflowGraph(wfSlug);
         slugEdited.current = true; // a loaded workflow keeps its slug; don't auto-rewrite from the name
+        publishEnable.current = true; // back to the ordinary save semantics (no-op for existing slugs)
         setSlug(workflow.slug);
         setName(workflow.name);
         hydrateFromGraph(graph);
@@ -458,9 +468,12 @@ function CanvasInner({
   // Mirror the conversational builder's draft into the canvas (US7). A new nonce each turn means a
   // re-push of the same-shaped graph still re-renders, so chat edits show up live on the canvas.
   // A request carrying slug/name (template instantiation, #429) also (re)targets the form fields,
-  // replacing whatever workflow identity a previous load left behind.
+  // replacing whatever workflow identity a previous load left behind, and its `enable` choice
+  // becomes the publish flag for Save. Requests without `enable` (chat drafts) reset to the
+  // ordinary enabled-on-save behaviour so a stale template flag never leaks into a later draft.
   useEffect(() => {
     if (!loadGraphRequest) return;
+    publishEnable.current = loadGraphRequest.enable ?? true;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- prop-nonce-triggered imperative load
     if (loadGraphRequest.slug !== undefined) {
       slugEdited.current = true; // an explicit slug is authoritative; don't auto-rewrite from the name

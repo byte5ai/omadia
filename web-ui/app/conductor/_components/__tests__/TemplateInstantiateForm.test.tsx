@@ -74,7 +74,7 @@ function renderForm(
   template: ConductorTemplate = approvalTemplate,
   handlers: Partial<{
     onCreated: (slug: string) => void;
-    onOpenInDesigner: (graph: unknown, target: { slug: string; name: string }) => void;
+    onOpenInDesigner: (graph: unknown, target: { slug: string; name: string; enable: boolean }) => void;
     onCancel: () => void;
   }> = {},
 ): ReturnType<typeof renderWithIntl> {
@@ -225,7 +225,7 @@ describe('<TemplateInstantiateForm />', () => {
     expect(screen.getByText("step 'classify' references unknown agent 'ghost'")).toBeInTheDocument();
   });
 
-  it('resolves the template and hands the graph plus the instance slug/name to onOpenInDesigner', async () => {
+  it('resolves the template and hands the graph plus the instance slug/name/enable to onOpenInDesigner', async () => {
     const user = userEvent.setup();
     const onOpenInDesigner = vi.fn();
     const resolvedGraph = { entryStepId: 'submit', steps: [], transitions: [] };
@@ -249,7 +249,33 @@ describe('<TemplateInstantiateForm />', () => {
       channels: { notify: 'teams' },
     });
     await waitFor(() => {
-      expect(onOpenInDesigner).toHaveBeenCalledWith(resolvedGraph, { slug: 'q3-expenses', name: 'Q3 expenses' });
+      // enable: false = the untouched default-off toggle — it must travel with the
+      // handoff so the canvas's Save can't silently enable the workflow.
+      expect(onOpenInDesigner).toHaveBeenCalledWith(resolvedGraph, {
+        slug: 'q3-expenses',
+        name: 'Q3 expenses',
+        enable: false,
+      });
+    });
+  });
+
+  it('hands enable: true to onOpenInDesigner when the operator opted in', async () => {
+    const user = userEvent.setup();
+    const onOpenInDesigner = vi.fn();
+    const resolvedGraph = { entryStepId: 'compile', steps: [], transitions: [] };
+    vi.mocked(resolveConductorTemplate).mockResolvedValue({ graph: resolvedGraph });
+    renderForm(cronTemplate, { onOpenInDesigner });
+
+    await user.selectOptions(await screen.findByRole('combobox', { name: /Report writer/ }), 'expense-bot');
+    await user.click(screen.getByRole('checkbox', { name: 'Enable the workflow right away' }));
+    await user.click(screen.getByRole('button', { name: 'Open in designer' }));
+
+    await waitFor(() => {
+      expect(onOpenInDesigner).toHaveBeenCalledWith(resolvedGraph, {
+        slug: 'weekly-report',
+        name: 'Weekly report',
+        enable: true,
+      });
     });
   });
 
