@@ -2412,6 +2412,9 @@ async function main(): Promise<void> {
       // proxy. Absent daemon token / runner image ⇒ the internal endpoint 503s;
       // the LLM proxy is always mounted (its origin probe must answer 2xx).
       ...(config.DEV_RUNNER_DAEMON_TOKEN ? { daemonToken: config.DEV_RUNNER_DAEMON_TOKEN } : {}),
+      ...(config.DEV_RUNNER_DAEMON_URL ? { daemonUrl: config.DEV_RUNNER_DAEMON_URL } : {}),
+      backend: config.DEV_PLATFORM_BACKEND,
+      leaseTtlSec: config.DEV_JOB_LEASE_TTL_SEC,
       ...(config.DEV_RUNNER_DEFAULT_IMAGE ? { runnerImage: config.DEV_RUNNER_DEFAULT_IMAGE } : {}),
       ...(config.DEV_EGRESS_BASE_ALLOWLIST
         ? { egressBaseAllowlist: csvList(config.DEV_EGRESS_BASE_ALLOWLIST) }
