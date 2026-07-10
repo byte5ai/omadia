@@ -26,6 +26,7 @@ import {
   type DevJobEvent,
   type DevJobEventType,
   type DevJobResult,
+  type DevJobPhase,
   type DevJobStatus,
   type NewDevJob,
   type RunnerHandle,
@@ -83,7 +84,8 @@ export const ACTIVE_SET_SQL = `'provisioning','running','applying'`;
 
 export const JOB_COLS =
   `id, repo_id, kind, brief, source, source_ref, base_sha, backend, agent_kind, auth_mode, ` +
-  `provision, phase, status, claimed_by, claimed_at, last_heartbeat_at, runner_handle, ` +
+  `provision, phase, pipeline_mode, review_attempt, review_fingerprint, retry_of, ` +
+  `status, claimed_by, claimed_at, last_heartbeat_at, runner_handle, ` +
   `runner_token_hash, branch, pr_url, result, error, tokens_in, tokens_out, cost_usd, ` +
   `created_by, created_at, started_at, ended_at, updated_at`;
 const EVENT_COLS = `id, job_id, provision, seq, type, ts, payload`;
@@ -102,6 +104,10 @@ export function toJob(r: Row): DevJob {
     authMode: str(r['auth_mode']) as DevJob['authMode'],
     provision: num(r['provision']),
     phase: str(r['phase']) as DevJob['phase'],
+    pipelineMode: (str(r['pipeline_mode']) as DevJob['pipelineMode']) || 'gated',
+    reviewAttempt: num(r['review_attempt']),
+    reviewFingerprint: strN(r['review_fingerprint']),
+    retryOf: strN(r['retry_of']),
     status: str(r['status']) as DevJobStatus,
     claimedBy: strN(r['claimed_by']),
     claimedAt: isoN(r['claimed_at']),
@@ -288,6 +294,63 @@ export class DevJobStore {
       [jobId],
     );
     return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * W2: advance a job's phase, fenced on the phase it is LEAVING. A stale runner
+   * (one that ran a phase the job already moved past) presents the old `from`,
+   * matches 0 rows, and the caller returns 409 — its result is discarded. The
+   * status-guard keeps a terminal job terminal.
+   */
+  async advancePhase(jobId: string, from: DevJobPhase, to: DevJobPhase): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs SET phase = $3, updated_at = now()
+        WHERE id = $1 AND phase = $2 AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [jobId, from, to],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * W2: park a gated job at `await_human` and re-queue it for the next provision.
+   * The runner has exited (park); the claim loop re-provisions at the pinned
+   * base_sha once the gate resolves. Sets phase, clears the lease, status→queued.
+   */
+  async requeueAtPhase(jobId: string, phase: DevJobPhase): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs
+          SET phase = $2, status = 'queued', claimed_by = NULL, claimed_at = NULL,
+              runner_handle = NULL, provision = provision + 1, updated_at = now()
+        WHERE id = $1 AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [jobId, phase],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * W2: park a job at the human gate. The runner has exited; the job holds at
+   * `await_human` with status `waiting` and no lease, so the claim loop leaves it
+   * alone until the gate resolves and `requeueAtPhase` re-queues it. Phase-fenced
+   * on `await_human` so only a job the engine just advanced there parks.
+   */
+  async parkForGate(jobId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs
+          SET status = 'waiting', claimed_by = NULL, claimed_at = NULL,
+              runner_handle = NULL, updated_at = now()
+        WHERE id = $1 AND phase = 'await_human' AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [jobId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /** W2: record the review loop's attempt counter + fingerprint (same provision). */
+  async setReviewState(jobId: string, attempt: number, fingerprint: string | null): Promise<void> {
+    await this.pool.query(
+      `UPDATE dev_jobs SET review_attempt = $2, review_fingerprint = $3, updated_at = now()
+        WHERE id = $1 AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [jobId, attempt, fingerprint],
+    );
   }
 
   /** Attach the backend handle. A WORKER write — lease-fenced; 0 rows ⇒ lease lost. */

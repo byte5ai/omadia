@@ -284,6 +284,14 @@ export interface DevJob {
   authMode: DevJobAuthMode;
   provision: number;
   phase: DevJobPhase;
+  /** W2 pipeline: 'gated' (default, opens the plan gate) or 'collapsed'. */
+  pipelineMode: 'gated' | 'collapsed';
+  /** W2 review loop: how many re-implement rounds have run. */
+  reviewAttempt: number;
+  /** W2 review loop: the last request_changes fingerprint, or null. */
+  reviewFingerprint: string | null;
+  /** W2 whole-job retry: the job this one re-runs, or null. */
+  retryOf: string | null;
   status: DevJobStatus;
   /** Lease token — a UUID (`randomUUID()`); every worker write is fenced on it. */
   claimedBy: string | null;
