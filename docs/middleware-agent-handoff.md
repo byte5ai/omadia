@@ -492,8 +492,12 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
   `resolve`, plus: fehlender/leerer `slug` → `400 conductor.invalid_input`;
   Slug-Kollision → `409 conductor.slug_exists` (**bewusste Abweichung** von der
   Upsert-Semantik von `POST /` — Instanziieren heißt "neu anlegen", nie still
-  über einen bestehenden Workflow publishen; TOCTOU-Race fällt harmlos in den
-  idempotenten Upsert von `createOrPublish` durch). Publish exakt wie
+  über einen bestehenden Workflow publishen). Die Kollision wird **atomar** im
+  Store erkannt: `createOrPublish({ expectNew: true })` →
+  `INSERT … ON CONFLICT (slug) DO NOTHING`, null Rows → Transaktion bricht mit
+  `WorkflowSlugExistsError` ab, Route mappt auf den 409 — kein racy
+  `getBySlug`-Pre-Check mehr; von zwei parallelen Instanziierungen desselben
+  frischen Slugs gewinnt genau eine. Publish sonst exakt wie
   `POST /` inkl. atomarem Cron-Schedule-Reconcile (`onPublished` →
   `scheduleStore.reconcileOnClient`); `enable` default `false`; `name`/
   `description` defaulten aufs Manifest (en-aufgelöst) →

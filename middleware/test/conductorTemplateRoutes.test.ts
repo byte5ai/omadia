@@ -10,6 +10,7 @@ import type { TemplateManifest, WorkflowGraph } from '@omadia/conductor-core';
 
 import { createConductorRouter } from '../src/conductor/routes.js';
 import type { ConductorRouterDeps } from '../src/conductor/routes.js';
+import { WorkflowSlugExistsError } from '../src/conductor/workflowStore.js';
 import type { ConductorWorkflow } from '../src/conductor/workflowStore.js';
 
 // Conductor workflow-template routes (#429): GET /templates, POST /templates/:id/resolve
@@ -63,6 +64,7 @@ interface PublishCall {
   description?: string | null;
   graph: WorkflowGraph;
   enable?: boolean;
+  expectNew?: boolean;
   onPublished?: (client: PoolClient, workflowId: string) => Promise<void>;
 }
 
@@ -89,6 +91,9 @@ async function makeHarness(opts?: { withCatalog?: boolean }): Promise<Harness> {
         : null,
     createOrPublish: async (input: PublishCall) => {
       publishCalls.push(input);
+      // Mirrors the real store's atomic create-only semantics: in expectNew mode a
+      // taken slug fails the INSERT (WorkflowSlugExistsError), never a pre-check.
+      if (input.expectNew && existingSlugs.has(input.slug)) throw new WorkflowSlugExistsError(input.slug);
       return {
         workflow: {
           id: 'wf-1',
@@ -247,6 +252,7 @@ describe('POST /templates/:id/instantiate', () => {
     assert.equal(call.name, 'Fixture approval'); // defaults to manifest.name, resolved to its en base
     assert.equal(call.description, 'Two-step approval used by the route tests.'); // en-resolved too
     assert.equal(call.enable, false); // enable defaults to false
+    assert.equal(call.expectNew, true); // create-only publish — the atomic "create new" contract
     assert.equal(call.graph.steps[0]!.agentId, KNOWN_AGENT); // substituted, not the placeholder
 
     // onPublished is wired to the atomic cron-schedule reconcile.
@@ -272,7 +278,7 @@ describe('POST /templates/:id/instantiate', () => {
     assert.equal(h.publishCalls[0]!.enable, true);
   });
 
-  it('409s on a slug collision without calling createOrPublish', async () => {
+  it('409s on a slug collision — surfaced by the atomic create-only publish, no republish', async () => {
     const h = await makeHarness();
     h.existingSlugs.add('taken');
     const res = await post(`${h.baseUrl}/templates/fixture-approval/instantiate`, {
@@ -280,8 +286,26 @@ describe('POST /templates/:id/instantiate', () => {
       mapping: completeMapping(),
     });
     assert.equal(res.status, 409);
-    assert.equal(((await res.json()) as { code: string }).code, 'conductor.slug_exists');
-    assert.equal(h.publishCalls.length, 0);
+    const body = (await res.json()) as { code: string; message: string };
+    assert.equal(body.code, 'conductor.slug_exists');
+    assert.ok(body.message.includes("'taken'"), body.message);
+    // The collision travels through createOrPublish's expectNew mode (one attempted,
+    // failed create) — there is no racy getBySlug pre-check left to bypass.
+    assert.equal(h.publishCalls.length, 1);
+    assert.equal(h.publishCalls[0]!.expectNew, true);
+    assert.equal(h.reconcileCalls.length, 0);
+  });
+
+  it("does not leak create-only semantics into POST / — the designer's upsert stays", async () => {
+    const h = await makeHarness();
+    const res = await post(h.baseUrl, {
+      slug: 'existing-or-not',
+      name: 'Ordinary publish',
+      graph: fixtureManifest().graph, // structurally valid; placeholders are plain strings for POST /
+    });
+    assert.equal(res.status, 201);
+    assert.equal(h.publishCalls.length, 1);
+    assert.equal(h.publishCalls[0]!.expectNew, undefined);
   });
 
   it('400s on a missing slug', async () => {

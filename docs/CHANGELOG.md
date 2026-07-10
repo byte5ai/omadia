@@ -18,6 +18,22 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — template instantiation slug race can no longer republish over a fresh workflow (#429)
+
+- Two concurrent `POST /templates/:id/instantiate` with the same not-yet-existing
+  slug could both pass the route's `getBySlug` pre-check; the loser then fell
+  into `createOrPublish`'s `ON CONFLICT DO UPDATE` upsert and silently published
+  a second version over the just-created workflow, answering 201 — violating the
+  route's own create-new contract. The 409 is now enforced **atomically**:
+  `createOrPublish` gains a create-only mode (`expectNew: true` →
+  `INSERT … ON CONFLICT (slug) DO NOTHING`; zero returned rows aborts the publish
+  transaction with the new `WorkflowSlugExistsError`), the instantiate route drops
+  the racy pre-check entirely and maps the error to the existing
+  `409 conductor.slug_exists` envelope. `POST /` and the canvas save path keep
+  their idempotent upsert untouched. Store-level tests (fake-pool, SQL-shape
+  scripted) in `middleware/test/conductorWorkflowStore.test.ts` (new); route
+  mapping covered in `middleware/test/conductorTemplateRoutes.test.ts`.
+
 ### Fixed — template metadata is localizable in the manifest; bundled templates ship German (#429)
 
 - Template name, description, `useCase` tag, and slot labels/help texts rendered

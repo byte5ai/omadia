@@ -33,6 +33,16 @@ interface VersionRow {
   graph: WorkflowGraph;
 }
 
+/** Thrown by createOrPublish({ expectNew: true }) when the slug is already taken. The
+ *  conflict is detected by the INSERT itself (ON CONFLICT DO NOTHING), so two racing
+ *  creates of the same fresh slug can never both publish -- no pre-check involved. */
+export class WorkflowSlugExistsError extends Error {
+  constructor(readonly slug: string) {
+    super(`a workflow with slug '${slug}' already exists`);
+    this.name = 'WorkflowSlugExistsError';
+  }
+}
+
 function toWorkflow(r: WorkflowRow): ConductorWorkflow {
   return {
     id: r.id,
@@ -96,6 +106,11 @@ export class ConductorWorkflowStore {
     graph: WorkflowGraph;
     publishedBy?: string | null;
     enable?: boolean;
+    /** Create-only mode: throw WorkflowSlugExistsError when the slug already exists
+     *  instead of publishing a new version onto it (the template-instantiate route's
+     *  "create new" contract). Atomic -- the INSERT's conflict clause decides, not a
+     *  racy SELECT-then-INSERT. Default (absent/false) keeps the idempotent upsert. */
+    expectNew?: boolean;
     /** Runs inside the publish transaction after the version is set active — used to reconcile cron
      *  schedules atomically with the publish (a throw rolls the whole publish back, so a failed
      *  reconcile never leaves stale schedules behind). */
@@ -108,15 +123,21 @@ export class ConductorWorkflowStore {
       // Idempotent upsert — race-safe under concurrent/double-submitted publishes of the
       // same slug (a SELECT-then-INSERT would let two requests both pass the check and one
       // hit the unique-constraint). Status is only set on first create, never changed here.
+      // In expectNew mode the conflict clause flips to DO NOTHING: zero returned rows
+      // means the slug is taken and the publish aborts with WorkflowSlugExistsError.
+      const conflictClause = input.expectNew
+        ? 'ON CONFLICT (slug) DO NOTHING'
+        : `ON CONFLICT (slug) DO UPDATE
+           SET name = EXCLUDED.name, description = EXCLUDED.description, updated_at = now()`;
       const upserted = await client.query<{ id: string }>(
         `INSERT INTO conductor_workflows (slug, name, description, status)
          VALUES ($1, $2, $3, $4)
-         ON CONFLICT (slug) DO UPDATE
-           SET name = EXCLUDED.name, description = EXCLUDED.description, updated_at = now()
+         ${conflictClause}
          RETURNING id`,
         [input.slug, input.name, input.description ?? null, input.enable ? 'enabled' : 'disabled'],
       );
-      const workflowId = upserted.rows[0]!.id;
+      const workflowId = upserted.rows[0]?.id;
+      if (workflowId === undefined) throw new WorkflowSlugExistsError(input.slug);
       // Serialize concurrent publishes of the same workflow so version numbering can't collide.
       await client.query('SELECT id FROM conductor_workflows WHERE id = $1 FOR UPDATE', [workflowId]);
 

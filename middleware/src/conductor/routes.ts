@@ -13,7 +13,7 @@ import type {
 import { ConductorBuilderUnavailableError } from './builderAgent.js';
 import type { BuilderChatMessage, ConductorBuilderAgent } from './builderAgent.js';
 import { emptyGraph } from './graphPatch.js';
-import type { ConductorWorkflowStore } from './workflowStore.js';
+import { WorkflowSlugExistsError, type ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
 import { resolveAwaitHolders } from './awaitStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
@@ -238,14 +238,9 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       const resolved = await resolveTemplateGraph(paramStr(req.params.id), body, res);
       if (!resolved) return;
       // Slug collision → 409. Deliberate divergence from the 'POST /' upsert semantics:
-      // instantiation means "create new", and silently publishing a template over an
-      // existing workflow would be the Power Automate footgun. Benign TOCTOU: a race
-      // between this check and the publish falls through to createOrPublish's idempotent
-      // upsert — acceptable.
-      if (await deps.workflowStore.getBySlug(slug)) {
-        res.status(409).json({ code: 'conductor.slug_exists', message: `a workflow with slug '${slug}' already exists` });
-        return;
-      }
+      // instantiation means "create new"; silently publishing over an existing workflow
+      // would be the Power Automate footgun. Enforced ATOMICALLY by expectNew (no racy
+      // pre-check): of two racing instantiates exactly one INSERT wins, the loser 409s.
       const out = await deps.workflowStore.createOrPublish({
         slug,
         // Manifest fallbacks are localizable; the store persists plain strings → resolve to en.
@@ -253,6 +248,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         description: typeof body.description === 'string' ? body.description : resolveLocalizedText(resolved.manifest.description),
         graph: resolved.graph,
         enable: body.enable === true,
+        expectNew: true,
         // Reconcile cron schedules atomically with the publish (same as 'POST /'); they
         // only fire while the workflow is enabled.
         onPublished: (client, workflowId) => deps.scheduleStore.reconcileOnClient(client, workflowId, resolved.graph),
@@ -262,6 +258,11 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         version: { id: out.version.id, version: out.version.version },
       });
     } catch (err) {
+      if (err instanceof WorkflowSlugExistsError) {
+        // Race loser of two concurrent creates of the same fresh slug (pre-check passed).
+        res.status(409).json({ code: 'conductor.slug_exists', message: err.message });
+        return;
+      }
       console.error('[conductor] template instantiate failed:', err);
       res.status(500).json({ code: 'conductor.template_instantiate_failed', message: errMsg(err) });
     }
