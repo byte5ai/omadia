@@ -731,6 +731,45 @@ function extractOAuthProviders(
   return out;
 }
 
+/**
+ * #478 — plugin-borne workflow templates. Parse `permissions.templates`: an
+ * array of PACKAGE-RELATIVE paths to TemplateManifest JSON files shipped
+ * inside the plugin package. Shape-level only (non-string entries are
+ * errors, not silently dropped — this feeds a security gate that must fail
+ * loud); the fs-aware confinement + strict manifest validation live in
+ * `pluginTemplates.ts` and run at install time. Templates are data, never
+ * code — declaring them grants NO runtime capability (no `ctx.templates`).
+ */
+export function extractTemplateDeclarations(manifest: unknown): {
+  paths: string[];
+  errors: string[];
+} {
+  const doc = asRecord(manifest);
+  const permissions = asRecord(doc?.['permissions']);
+  const raw = permissions?.['templates'];
+  if (raw === undefined) return { paths: [], errors: [] };
+  if (!Array.isArray(raw)) {
+    return {
+      paths: [],
+      errors: [
+        'permissions.templates must be an array of package-relative .json paths',
+      ],
+    };
+  }
+  const paths: string[] = [];
+  const errors: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.trim().length === 0) {
+      errors.push(
+        `permissions.templates entry ${JSON.stringify(entry)} is not a non-empty string`,
+      );
+      continue;
+    }
+    paths.push(entry.trim());
+  }
+  return { paths, errors };
+}
+
 function extractIntegrationTargets(integrations: unknown[]): string[] {
   const out: string[] = [];
   for (const entry of integrations) {

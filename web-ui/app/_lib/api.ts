@@ -3699,6 +3699,17 @@ export async function installSelfExtensionProposal(
 // Backed by the middleware /api/v1/operator/conductors router (cookie auth).
 // ─────────────────────────────────────────────────────────────────────────
 
+/** Template-provenance hint on workflows instantiated from a template (#478,
+ *  additive — mirrors the middleware's WorkflowTemplateHint). `updateAvailable`
+ *  is true only while the template stays visible to the viewer AND carries a
+ *  newer manifest version than the one instantiated. */
+export interface ConductorWorkflowTemplateHint {
+  id: string;
+  version: number;
+  latestVersion: number;
+  updateAvailable: boolean;
+}
+
 export interface ConductorWorkflow {
   id: string;
   slug: string;
@@ -3706,6 +3717,7 @@ export interface ConductorWorkflow {
   description: string | null;
   status: 'enabled' | 'disabled';
   activeVersionId: string | null;
+  template?: ConductorWorkflowTemplateHint;
 }
 
 export interface ConductorRun {
@@ -3859,6 +3871,230 @@ export async function getConductorRun(slug: string, runId: string): Promise<Cond
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}`);
 }
 
+// Workflow templates (#429) — curated, slot-parameterized starting points bundled with
+// the middleware. Wire shapes mirror @omadia/conductor-core's TemplateManifest locally,
+// following this file's convention (web-ui does not depend on middleware workspace
+// packages).
+
+/** Manifest-borne localizable text (mirrors conductor-core's LocalizedText): a plain
+ *  string, or a per-locale record with `en` required as the universal fallback. */
+export type ConductorLocalizedText = string | { en: string; [locale: string]: string | undefined };
+
+/** Resolve template text for the active UI locale, falling back to `en`. Templates are
+ *  data (v2 ships them outside the repo), so localization travels in the manifest and is
+ *  resolved client-side — GET /templates keeps returning full manifests (#330). */
+export function resolveConductorText(value: ConductorLocalizedText, locale: string): string {
+  if (typeof value === 'string') return value;
+  const localized = value[locale];
+  return typeof localized === 'string' && localized.trim().length > 0 ? localized : value.en;
+}
+
+export interface ConductorTemplateSlot {
+  key: string;
+  /** human-readable, shown in the mapping form. */
+  label: ConductorLocalizedText;
+  /** authored help text for the mapping form. */
+  description?: ConductorLocalizedText;
+}
+
+/** A declared text slot (#478): referenced from prompt/message text as the token
+ *  `slot:text:<key>`; pure string substitution, no ref semantics. */
+export interface ConductorTemplateTextSlot {
+  key: string;
+  label: ConductorLocalizedText;
+  description?: ConductorLocalizedText;
+  /** substituted when the instantiating operator supplies no value. */
+  default?: string;
+}
+
+export interface ConductorTemplateSlots {
+  agents?: ConductorTemplateSlot[];
+  actions?: ConductorTemplateSlot[];
+  roles?: ConductorTemplateSlot[];
+  events?: ConductorTemplateSlot[];
+  channels?: ConductorTemplateSlot[];
+  text?: ConductorTemplateTextSlot[];
+}
+
+/** slot key → install-local entity id, per kind (mirrors TemplateSlotMapping).
+ *  `text` maps declared text-slot keys to the substituted strings (#478,
+ *  additive — absent for pure-ref v1 mappings). */
+export type ConductorTemplateSlotMapping = Partial<
+  Record<'agents' | 'actions' | 'roles' | 'events' | 'channels', Record<string, string>>
+> & {
+  text?: Record<string, string>;
+};
+
+/** Just enough of the template graph for catalog rendering (the schedule badge reads
+ *  `triggers`); steps and transitions stay opaque — downstream consumers (designer)
+ *  take them as `unknown`, parity with getConductorWorkflowGraph. */
+export interface ConductorTemplateGraph {
+  entryStepId: string;
+  steps: unknown[];
+  transitions: unknown[];
+  triggers?: Array<{ id: string; kind: string; eventId?: string; cron?: string }>;
+}
+
+export interface ConductorTemplate {
+  id: string;
+  name: ConductorLocalizedText;
+  description: ConductorLocalizedText;
+  useCase: ConductorLocalizedText;
+  defaultSlug: string;
+  graph: ConductorTemplateGraph;
+  slots: ConductorTemplateSlots;
+  /** manifest version, integer >= 1; absent = 1 (v1 manifests). */
+  version?: number;
+  // --- ADDITIVE catalog metadata (#478). Optional here because the same type also
+  // covers plain manifests (save-as-template drafts, POST/PUT request bodies).
+  source?: 'bundled' | 'user' | 'plugin';
+  /** user templates only: review-gate state. */
+  status?: 'private' | 'pending' | 'shared';
+  /** user templates only: backend viewer identity of the author (session sub —
+   *  compare against AuthUser.id, which /auth/me mints from the same claim). */
+  createdBy?: string;
+  latestVersion?: number;
+  instantiationCount?: number;
+  updatedAt?: string;
+}
+
+export async function fetchConductorTemplates(): Promise<{ templates: ConductorTemplate[] }> {
+  return getJson(`${CONDUCTOR_BASE}/templates`);
+}
+
+/** Single catalog entry, same visibility rule as the list (404 when invisible). */
+export async function fetchConductorTemplate(id: string): Promise<{ template: ConductorTemplate }> {
+  return getJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}`);
+}
+
+/** "Save as template" (#478): reverse slot inference over the workflow's active
+ *  published version. Returns a DRAFT manifest only — nothing is persisted; the
+ *  dialog edits it and publishes via createConductorTemplate (fresh id) or
+ *  updateConductorTemplate (new version of an owned id). NB: the conductor router
+ *  is mounted at /conductors, so the path carries no '/workflows' prefix. */
+export async function saveWorkflowAsTemplate(
+  slug: string,
+): Promise<{ draft: ConductorTemplate; sourceWorkflow: { slug: string; version: number } }> {
+  return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/save-as-template`, {});
+}
+
+/** Create a user template (status 'private', v1, owned by the viewer).
+ *  409 conductor.template_id_exists / 400 conductor.template_invalid. */
+export async function createConductorTemplate(
+  manifest: ConductorTemplate,
+): Promise<{ template: ConductorTemplate }> {
+  return postJson(`${CONDUCTOR_BASE}/templates`, { manifest });
+}
+
+/** Publish the next manifest version onto an OWNED template (author-only; the
+ *  server assigns latestVersion+1). postJson hard-codes POST after its init
+ *  spread, so this mirrors putUiPrefs' dedicated PUT fetch instead. */
+export async function updateConductorTemplate(
+  id: string,
+  manifest: ConductorTemplate,
+): Promise<{ template: ConductorTemplate }> {
+  const forwarded = await forwardCookieHeader();
+  const path = `${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}`;
+  const res = await fetch(botApi(path), {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify({ manifest }),
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  const text = await res.text().catch(() => '');
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `PUT ${path} failed: ${res.status}`, text);
+  }
+  return JSON.parse(text) as { template: ConductorTemplate };
+}
+
+/** Delete an OWNED user template (author-only; bundled/plugin entries are
+ *  read-only). 204 on success. postJson hard-codes POST, so this is a dedicated
+ *  DELETE fetch mirroring updateConductorTemplate's PUT. */
+export async function deleteConductorTemplate(id: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const path = `${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}`;
+  const res = await fetch(botApi(path), {
+    method: 'DELETE',
+    headers: {
+      accept: 'application/json',
+      ...forwarded,
+    },
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}`, text);
+  }
+}
+
+/** Review gate (#478): the author submits a private template for review
+ *  (private → pending). 409 conductor.template_status_conflict otherwise. */
+export async function submitConductorTemplate(id: string): Promise<{ template: ConductorTemplate }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/submit`, {});
+}
+
+/** Approve a pending template (pending → shared). Open to ANY operator — the
+ *  revised visibility rule makes pending templates install-wide, so a
+ *  non-author reviewer can act; `reviewed_by` is recorded server-side. */
+export async function approveConductorTemplate(id: string): Promise<{ template: ConductorTemplate | null }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/approve`, {});
+}
+
+/** Reject a pending template (pending → private). Open to any operator; the
+ *  template may drop out of a non-author reviewer's visibility afterwards, so
+ *  the returned `template` can be null. */
+export async function rejectConductorTemplate(id: string): Promise<{ template: ConductorTemplate | null }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/reject`, {});
+}
+
+/** Immutable manifest versions of a template, ascending. Bundled/plugin sources
+ *  report their single file-defined version (no createdAt). */
+export async function fetchConductorTemplateVersions(
+  id: string,
+): Promise<{ versions: Array<{ version: number; createdAt?: string }> }> {
+  return getJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/versions`);
+}
+
+/** Ephemeral instantiation: substituted + validated graph, nothing persisted
+ *  (feeds "open in designer"). `version` pins an explicit manifest version
+ *  (#478 update flow); omitted = latest. */
+export async function resolveConductorTemplate(
+  id: string,
+  mapping: ConductorTemplateSlotMapping,
+  version?: number,
+): Promise<{ graph: unknown }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/resolve`, {
+    mapping,
+    ...(version !== undefined ? { version } : {}),
+  });
+}
+
+/** Persistent instantiation: publishes an ordinary versioned workflow (copy, not
+ *  reference). 409 conductor.slug_exists on collision; enable defaults to false;
+ *  `version` pins an explicit manifest version (omitted = latest). */
+export async function instantiateConductorTemplate(
+  id: string,
+  body: {
+    slug: string;
+    name?: string;
+    description?: string;
+    mapping: ConductorTemplateSlotMapping;
+    enable?: boolean;
+    version?: number;
+  },
+): Promise<{ workflow: ConductorWorkflow; version: { id: string; version: number } }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/instantiate`, body);
+}
+
 // Conversational builder (US7) — co-design a draft graph by chat. A turn is stateless: the
 // client posts the current draft graph + the message, and gets back the patched draft, the
 // applied patches, the assistant's reply, and a validation verdict. The draft stays client-side
@@ -3885,12 +4121,28 @@ export interface ConductorBuilderMessage {
   text: string;
 }
 
+/** A catalog template the builder agent suggests for the current conversation
+ *  (#478 B4/F4). Chat only PROPOSES — instantiation stays on the deliberate
+ *  form flow. The server has already vetted the block: viewer-visible ids only,
+ *  version taken from the catalog (not the LLM), prefill entries validated
+ *  against declared slots and live refs. */
+export interface ConductorTemplateProposal {
+  templateId: string;
+  version: number;
+  /** one user-facing sentence. */
+  reason: string;
+  /** best-effort slot guesses; partial is fine — seeds the instantiate form. */
+  prefill: ConductorTemplateSlotMapping;
+}
+
 export interface ConductorBuilderTurnResult {
   graph: unknown;
   patches: ConductorGraphPatch[];
   reply: string;
   validation: ConductorValidationResult;
   applyErrors: string[];
+  /** ≤3 template suggestions for this turn (#478) — ADDITIVE: absent when none. */
+  templateProposals?: ConductorTemplateProposal[];
 }
 
 export async function conductorBuilderTurn(body: {

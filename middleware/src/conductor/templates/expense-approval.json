@@ -1,0 +1,139 @@
+{
+  "id": "expense-approval",
+  "name": {
+    "en": "Expense approval with escalation",
+    "de": "Spesenfreigabe mit Eskalation"
+  },
+  "description": {
+    "en": "Route an expense request through a summarizing agent to an approver. If the approver does not decide within 48 hours the request escalates to a second role, and the final outcome is announced either way.",
+    "de": "Leitet einen Spesenantrag über einen zusammenfassenden Agenten an eine Freigaberolle weiter. Entscheidet die Freigaberolle nicht innerhalb von 48 Stunden, eskaliert der Antrag an eine zweite Rolle; das Ergebnis wird in beiden Fällen verkündet."
+  },
+  "useCase": {
+    "en": "approval",
+    "de": "Freigabe"
+  },
+  "defaultSlug": "expense-approval",
+  "graph": {
+    "entryStepId": "summarize",
+    "steps": [
+      {
+        "id": "summarize",
+        "kind": "agent",
+        "agentId": "slot:agent:summarizer",
+        "prompt": "Summarize this expense request for an approver. Requester: {{ctx.requester}}. Amount: {{ctx.amount}}. Purpose: {{ctx.purpose}}. Keep it to three sentences and flag anything unusual.",
+        "position": { "x": 80, "y": 160 }
+      },
+      {
+        "id": "approve",
+        "kind": "human",
+        "human": {
+          "principal": { "kind": "role", "ref": "slot:role:approver" },
+          "channel": "slot:channel:delivery",
+          "message": "An expense request from {{ctx.requester}} over {{ctx.amount}} needs your decision. Summary: {{steps.summarize.text}}",
+          "reminderInterval": "PT12H",
+          "deadline": "PT48H"
+        },
+        "fallbackTransitionId": "t-approval-timeout",
+        "position": { "x": 340, "y": 160 }
+      },
+      {
+        "id": "escalate",
+        "kind": "human",
+        "human": {
+          "principal": { "kind": "role", "ref": "slot:role:escalation-approver" },
+          "channel": "slot:channel:delivery",
+          "message": "Escalation: the expense request from {{ctx.requester}} over {{ctx.amount}} was not decided within 48 hours. Please decide now. Summary: {{steps.summarize.text}}"
+        },
+        "position": { "x": 340, "y": 320 }
+      },
+      {
+        "id": "announce",
+        "kind": "agent",
+        "agentId": "slot:agent:notifier",
+        "prompt": "Announce the outcome of the expense request from {{ctx.requester}} over {{ctx.amount}} to the requester. State clearly whether it was approved or rejected and who decided.",
+        "position": { "x": 600, "y": 160 }
+      }
+    ],
+    "transitions": [
+      { "id": "t-summarized", "source": "summarize", "target": "approve" },
+      {
+        "id": "t-approved",
+        "source": "approve",
+        "target": "announce",
+        "guard": { "op": "eq", "path": "stepResult.approved", "value": true }
+      },
+      {
+        "id": "t-rejected",
+        "source": "approve",
+        "target": "announce",
+        "guard": { "op": "eq", "path": "stepResult.approved", "value": false }
+      },
+      { "id": "t-approval-timeout", "source": "approve", "target": "escalate" },
+      { "id": "t-escalated", "source": "escalate", "target": "announce" }
+    ],
+    "triggers": [{ "id": "trigger-manual", "kind": "manual" }]
+  },
+  "slots": {
+    "agents": [
+      {
+        "key": "summarizer",
+        "label": {
+          "en": "Summarizing agent",
+          "de": "Zusammenfassender Agent"
+        },
+        "description": {
+          "en": "Agent that condenses the incoming expense request for the approver.",
+          "de": "Agent, der den eingehenden Spesenantrag für die Freigaberolle verdichtet."
+        }
+      },
+      {
+        "key": "notifier",
+        "label": {
+          "en": "Notifying agent",
+          "de": "Benachrichtigungs-Agent"
+        },
+        "description": {
+          "en": "Agent that announces the final decision to the requester.",
+          "de": "Agent, der die finale Entscheidung an die antragstellende Person meldet."
+        }
+      }
+    ],
+    "roles": [
+      {
+        "key": "approver",
+        "label": {
+          "en": "Approver role",
+          "de": "Freigaberolle"
+        },
+        "description": {
+          "en": "Role whose holders decide the expense request.",
+          "de": "Rolle, deren Mitglieder über den Spesenantrag entscheiden."
+        }
+      },
+      {
+        "key": "escalation-approver",
+        "label": {
+          "en": "Escalation approver role",
+          "de": "Eskalations-Freigaberolle"
+        },
+        "description": {
+          "en": "Role that decides when the approver misses the 48-hour deadline.",
+          "de": "Rolle, die entscheidet, wenn die Freigaberolle die 48-Stunden-Frist verpasst."
+        }
+      }
+    ],
+    "channels": [
+      {
+        "key": "delivery",
+        "label": {
+          "en": "Delivery channel",
+          "de": "Zustellkanal"
+        },
+        "description": {
+          "en": "Channel used to reach the approver and the escalation role.",
+          "de": "Kanal, über den Freigabe- und Eskalationsrolle erreicht werden."
+        }
+      }
+    ]
+  }
+}
