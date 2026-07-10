@@ -85,6 +85,8 @@ export const LEASE_EXPIRES_LABEL = 'ai.omadia.dev.leaseExpiresAt';
  * @property {string} containerId The real docker id (containers are unnamed).
  * @property {string} leaseExpiresAt From the lease label; '' when the label is absent.
  * @property {string} imageDigest Best-effort digest of the running image; '' if unknown.
+ * @property {boolean} running Docker's State === 'running'. A container that has
+ *   exited is stale no matter what its lease label says.
  */
 
 /**
@@ -909,6 +911,7 @@ export function createDockerEngine(opts = {}) {
           containerId: String(c.Id ?? ''),
           leaseExpiresAt: jobLabels[LEASE_EXPIRES_LABEL] ?? '',
           imageDigest: imageDigestOf(String(c.Image ?? '')) ?? '',
+          running: c.State === 'running',
         });
       }
 

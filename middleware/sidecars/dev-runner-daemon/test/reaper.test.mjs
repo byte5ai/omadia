@@ -112,7 +112,15 @@ function fakeEngine(seed = {}, opts = {}) {
       const inv = { containers: [], networks: [], volumes: [] };
       for (const [jobId, j] of jobs) {
         if (j.hasContainer) {
-          inv.containers.push({ jobId, containerId: `c-${jobId}`, leaseExpiresAt: j.lease ?? '', imageDigest: j.imageDigest ?? '' });
+          inv.containers.push({
+            jobId,
+            containerId: `c-${jobId}`,
+            leaseExpiresAt: j.lease ?? '',
+            imageDigest: j.imageDigest ?? '',
+            // Real docker always reports a state; a fake that omits it hides the
+            // difference between a live job and a corpse.
+            running: j.running ?? true,
+          });
         }
         if (j.hasNetwork) inv.networks.push({ jobId, id: `omadia-job-${jobId}` });
         if (j.hasVolume) inv.volumes.push({ jobId, id: `omadia-job-${jobId}` });
@@ -227,10 +235,12 @@ describe('reaper — boot-time state rebuild', () => {
     assert.equal(engine.calls.destroyed.length, 0, 'a live re-adopted job is not reaped');
   });
 
-  it('reaps an adopted container already past its lease as boot_stale', async () => {
+  it('reaps an EXITED container as boot_stale, whatever its lease says', async () => {
     const clock = mutableClock(500_000);
     const engine = fakeEngine({
-      [JOB_A]: { hasContainer: true, hasNetwork: true, hasVolume: true, lease: isoAt(400_000) }, // expired
+      // Not running: its runner exited and nobody is coming back. That, not the
+      // lease label, is the honest boot-time staleness signal.
+      [JOB_A]: { hasContainer: true, hasNetwork: true, hasVolume: true, lease: isoAt(900_000), running: false },
     });
     const logger = capturingLogger();
     const jm = new JobManager({ engine, policyClient: fakePolicyClient(), clock });
@@ -238,24 +248,54 @@ describe('reaper — boot-time state rebuild', () => {
 
     await reaper.rebuild();
 
-    assert.equal(jm.size(), 0, 'the stale adopted job was reaped');
+    assert.equal(jm.size(), 0, 'the corpse was reaped even though its lease is in the future');
     assert.equal(engine.calls.destroyed.length, 1, 'its container+network+volume were torn down');
     assert.equal(logger.reaped('boot_stale').length, 1, 'reaped with the boot_stale reason');
   });
 
-  it('treats a container carrying no lease label as stale and reaps it', async () => {
+  it('grants a RUNNING container a grace window instead of reaping it on a stale label', async () => {
+    // THE BUG THIS GUARDS: the lease label is frozen at create time, but a live
+    // job's lease is renewed in memory — and that memory dies with the daemon.
+    // A job renewed for an hour looks, from its label alone, an hour overdue.
+    // Reaping on the label would kill exactly the jobs the rebuild preserves.
     const clock = mutableClock(500_000);
     const engine = fakeEngine({
-      [JOB_A]: { hasContainer: true, hasNetwork: true, hasVolume: true, lease: '' }, // missing label
+      [JOB_A]: { hasContainer: true, hasNetwork: true, hasVolume: true, lease: isoAt(400_000), running: true },
     });
     const logger = capturingLogger();
     const jm = new JobManager({ engine, policyClient: fakePolicyClient(), clock });
-    const reaper = createReaper({ jobManager: jm, engine, clock, logger });
+    const reaper = createReaper({ jobManager: jm, engine, clock, logger, intervalMs: 30_000 });
 
     await reaper.rebuild();
 
+    assert.equal(jm.size(), 1, 'the live job survives its stale label');
+    assert.equal(engine.calls.destroyed.length, 0, 'nothing was torn down');
+    assert.equal(logger.reaped('boot_stale').length, 0);
+
+    // The middleware never re-asserts the lease, so the ordinary sweep reaps it
+    // one grace window later — through the same path, as lease_expired.
+    clock.t += 30_001;
+    await reaper.sweep();
+    assert.equal(jm.size(), 0, 'an un-renewed job still dies');
+    assert.equal(logger.reaped('lease_expired').length, 1);
+  });
+
+  it('grants a running container with NO lease label the same grace, then reaps it', async () => {
+    const clock = mutableClock(500_000);
+    const engine = fakeEngine({
+      [JOB_A]: { hasContainer: true, hasNetwork: true, hasVolume: true, lease: '', running: true },
+    });
+    const logger = capturingLogger();
+    const jm = new JobManager({ engine, policyClient: fakePolicyClient(), clock });
+    const reaper = createReaper({ jobManager: jm, engine, clock, logger, intervalMs: 30_000 });
+
+    await reaper.rebuild();
+    assert.equal(jm.size(), 1, 'a live container is not killed for a missing label alone');
+
+    clock.t += 30_001;
+    await reaper.sweep();
     assert.equal(jm.size(), 0, 'a container we cannot prove is leased is not kept forever');
-    assert.equal(logger.reaped('boot_stale').length, 1);
+    assert.equal(logger.reaped('lease_expired').length, 1);
   });
 });
 

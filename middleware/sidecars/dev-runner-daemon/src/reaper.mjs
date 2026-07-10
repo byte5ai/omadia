@@ -112,11 +112,16 @@ function errMessage(err) {
  * @param {JobManager} deps.jobManager The registry + the deduplicated teardown authority.
  * @param {ContainerEngine} deps.engine The label-set ground truth and teardown executor.
  * @param {number} [deps.intervalMs] Sweep cadence (default 30 s).
+ * @param {number} [deps.bootGraceMs] Window an adopted job gets to have its lease
+ *   re-asserted after a daemon restart (default: the sweep interval).
  * @param {Clock} [deps.clock]
  * @param {ReaperLogger} [deps.logger]
  * @returns {{ start: () => Promise<void>, stop: () => void, sweep: () => Promise<void>, rebuild: () => Promise<void> }}
  */
 export function createReaper(deps) {
+  /** Window an adopted job gets to have its lease re-asserted after a daemon
+   *  restart. Defaults to the sweep interval: one full sweep to be renewed. */
+  const bootGraceMs = deps.bootGraceMs ?? deps.intervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
   const jobManager = deps.jobManager;
   const engine = deps.engine;
   const intervalMs = deps.intervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
@@ -208,6 +213,8 @@ export function createReaper(deps) {
   async function rebuild() {
     const nowMs = clock.now();
     const inv = await engine.listManagedResources();
+    /** @type {string[]} */
+    const staleAtBoot = [];
     for (const c of inv.containers) {
       /** @type {JobContainer} */
       const container = {
@@ -219,14 +226,31 @@ export function createReaper(deps) {
         volumeName: jobVolumeName(c.jobId),
         imageDigest: c.imageDigest,
       };
-      jobManager.adopt(c.jobId, container, c.leaseExpiresAt);
-    }
-    // Anything already past its lease at boot dies as `boot_stale`, via the same
-    // deduplicated teardown a DELETE uses.
-    for (const record of jobManager.list()) {
-      if (isLeaseExpired(record.leaseExpiresAt, nowMs)) {
-        await reapRegistered(record.jobId, 'boot_stale');
+      // A container that is no longer RUNNING is stale whatever its lease says:
+      // its runner exited and nobody is coming back for it. That, not the lease
+      // label, is the honest boot-time staleness signal.
+      if (!c.running) {
+        staleAtBoot.push(c.jobId);
       }
+      // GRACE, for the ones still running. The lease label is frozen at create
+      // time, but a live job's lease is renewed in memory — and that memory died
+      // with the old daemon. A healthy job renewed for an hour looks, from its
+      // label alone, an hour overdue; reaping on the label would kill exactly
+      // the jobs this rebuild exists to preserve. So every adopted job gets a
+      // window: long enough for the middleware to re-assert its lease against
+      // the restarted daemon, short enough that a job whose middleware never
+      // returns still dies — the ordinary sweep then reaps it as
+      // `lease_expired`, one interval later, through the same path.
+      const labelExpiry = Date.parse(c.leaseExpiresAt);
+      const graced = Number.isNaN(labelExpiry)
+        ? nowMs + bootGraceMs
+        : Math.max(labelExpiry, nowMs + bootGraceMs);
+      jobManager.adopt(c.jobId, container, new Date(graced).toISOString());
+    }
+    // Exited containers die now, through the same deduplicated teardown a DELETE
+    // uses — the grace window is for the living, not for corpses.
+    for (const jobId of staleAtBoot) {
+      await reapRegistered(jobId, 'boot_stale');
     }
     // Partial resources a failed create could not roll back — no container, just a
     // labelled network/volume under the deterministic name.
