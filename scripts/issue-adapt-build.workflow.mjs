@@ -390,6 +390,10 @@ const last = unitResults[unitResults.length - 1]
 let impl = { ...last, branch: tip, verified: unitResults.every((r) => r.verified), verifyLog: unitResults.map((r) => '[' + r.unit + '] ' + r.verifyLog).join('\n') }
 let review = null
 let cx = null
+// The last codex verdict survives the per-round `cx = null` reset below, so a run
+// that dies mid-fixup (agent failure, session limit) still returns the findings
+// that caused the rejection instead of a misleading `codex: null`.
+let lastCodex = null
 let prReady = false
 let fixRounds = 0
 while (true) {
@@ -398,6 +402,7 @@ while (true) {
   if (claudeOk && CODEX_REVIEW === 'off') { prReady = true; break }
   if (claudeOk) {
     cx = await agent(codexPrompt(impl), { label: 'codex:' + impl.branch, phase: 'Codex', schema: CODEX_SCHEMA })
+    if (cx) lastCodex = cx
     const codexOk = cx ? (cx.ran ? cx.prReady : CODEX_REVIEW !== 'required') : CODEX_REVIEW !== 'required'
     if (codexOk) { prReady = true; break }
   }
@@ -411,8 +416,8 @@ while (true) {
   impl = { ...impl, ...fixed, branch: impl.branch, verified: fixed.verified }
 }
 
-if (cx && !cx.ran) log('Codex review SKIPPED (cli missing or not authenticated); this diff carries ONE review, not two')
-if (cx && cx.ran && !cx.prReady && !prReady) log('Codex rejected a branch the first reviewer approved -- the cross-vendor review earning its cost')
+if (lastCodex && !lastCodex.ran) log('Codex review SKIPPED (cli missing or not authenticated); this diff carries ONE review, not two')
+if (lastCodex && lastCodex.ran && !lastCodex.prReady && !prReady) log('Codex rejected a branch the first reviewer approved -- the cross-vendor review earning its cost')
 log(prReady
   ? 'Branch ' + impl.branch + ' is PR-ready after ' + fixRounds + ' fixup round(s). The caller pushes and opens the pull request; this workflow wrote nothing to GitHub.'
   : 'No PR proposed. The caller decides: resume with more fix rounds, or hand the findings back to the issue.')
@@ -428,5 +433,5 @@ return {
   prBody: impl.prBody,
   units: unitResults,
   review,
-  codex: cx,
+  codex: cx || lastCodex,
 }
