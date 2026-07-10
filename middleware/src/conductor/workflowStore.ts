@@ -8,6 +8,13 @@ export interface ConductorWorkflow {
   description: string | null;
   status: 'enabled' | 'disabled';
   activeVersionId: string | null;
+  /** Template provenance (#478): which template manifest (id + version) this
+   *  workflow was instantiated from. Informational only — copy-not-reference
+   *  stands, the columns power the "template updated" hint, never execution.
+   *  Optional so pre-#478 fakes/fixtures keep typechecking; null when the
+   *  workflow was not instantiated from a template. */
+  templateId?: string | null;
+  templateVersion?: number | null;
 }
 
 export interface ConductorVersion {
@@ -24,6 +31,8 @@ interface WorkflowRow {
   description: string | null;
   status: 'enabled' | 'disabled';
   active_version_id: string | null;
+  template_id: string | null;
+  template_version: number | null;
 }
 
 interface VersionRow {
@@ -51,8 +60,12 @@ function toWorkflow(r: WorkflowRow): ConductorWorkflow {
     description: r.description,
     status: r.status,
     activeVersionId: r.active_version_id,
+    templateId: r.template_id,
+    templateVersion: r.template_version,
   };
 }
+
+const WORKFLOW_COLS = 'id, slug, name, description, status, active_version_id, template_id, template_version';
 
 /**
  * Persistence for workflow headers + immutable versions. A publish snapshots the
@@ -64,7 +77,7 @@ export class ConductorWorkflowStore {
 
   async getBySlug(slug: string): Promise<ConductorWorkflow | null> {
     const r = await this.pool.query<WorkflowRow>(
-      'SELECT id, slug, name, description, status, active_version_id FROM conductor_workflows WHERE slug = $1',
+      `SELECT ${WORKFLOW_COLS} FROM conductor_workflows WHERE slug = $1`,
       [slug],
     );
     return r.rows[0] ? toWorkflow(r.rows[0]) : null;
@@ -72,7 +85,7 @@ export class ConductorWorkflowStore {
 
   async getById(id: string): Promise<ConductorWorkflow | null> {
     const r = await this.pool.query<WorkflowRow>(
-      'SELECT id, slug, name, description, status, active_version_id FROM conductor_workflows WHERE id = $1',
+      `SELECT ${WORKFLOW_COLS} FROM conductor_workflows WHERE id = $1`,
       [id],
     );
     return r.rows[0] ? toWorkflow(r.rows[0]) : null;
@@ -80,7 +93,7 @@ export class ConductorWorkflowStore {
 
   async list(): Promise<ConductorWorkflow[]> {
     const r = await this.pool.query<WorkflowRow>(
-      'SELECT id, slug, name, description, status, active_version_id FROM conductor_workflows ORDER BY created_at DESC',
+      `SELECT ${WORKFLOW_COLS} FROM conductor_workflows ORDER BY created_at DESC`,
     );
     return r.rows.map(toWorkflow);
   }
@@ -160,7 +173,7 @@ export class ConductorWorkflowStore {
         `UPDATE conductor_workflows
             SET active_version_id = $2, updated_at = now()
           WHERE id = $1
-        RETURNING id, slug, name, description, status, active_version_id`,
+        RETURNING ${WORKFLOW_COLS}`,
         [workflowId, version.id],
       );
 

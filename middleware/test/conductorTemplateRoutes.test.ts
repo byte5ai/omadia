@@ -8,6 +8,8 @@ import type { Express, Request } from 'express';
 import type { PoolClient } from 'pg';
 import type { TemplateManifest, WorkflowGraph } from '@omadia/conductor-core';
 
+import { applyTemplateSlots } from '@omadia/conductor-core';
+
 import { createConductorRouter } from '../src/conductor/routes.js';
 import type { ConductorRouterDeps } from '../src/conductor/routes.js';
 import { WorkflowSlugExistsError } from '../src/conductor/workflowStore.js';
@@ -15,7 +17,8 @@ import type { ConductorWorkflow } from '../src/conductor/workflowStore.js';
 import { TemplateIdExistsError } from '../src/conductor/templateStore.js';
 import type { ConductorTemplateStore, TemplateRecord, TemplateStatus } from '../src/conductor/templateStore.js';
 import { createCompositeTemplateCatalog } from '../src/conductor/templateCatalog.js';
-import type { TemplateSummary } from '../src/conductor/templateCatalog.js';
+import type { CompositeTemplateCatalog, TemplateSummary } from '../src/conductor/templateCatalog.js';
+import type { WorkflowWithTemplateHint } from '../src/conductor/templateHints.js';
 
 // Conductor workflow-template routes: the #429 surface (GET /templates, resolve,
 // instantiate) plus the #478 v2 surface (CRUD, versioning, viewer-scoped
@@ -176,6 +179,12 @@ interface Harness {
   templateStore: ConductorTemplateStore;
   instantiations: FakeTemplateStore['instantiations'];
   stamps: FakeTemplateStore['stamps'];
+  /** seedable workflow rows served by the fake store's list/getBySlug (#478). */
+  workflowRows: ConductorWorkflow[];
+  /** seedable version rows keyed by version id, served by getVersion (#478). */
+  versionRows: Map<string, { id: string; workflowId: string; version: number; graph: WorkflowGraph }>;
+  /** the REAL composite catalog — exposes the plugin registration seam (#478). */
+  catalog?: CompositeTemplateCatalog;
 }
 
 const servers: Server[] = [];
@@ -186,12 +195,17 @@ async function makeHarness(opts?: { withCatalog?: boolean }): Promise<Harness> {
   const existingSlugs = new Set<string>();
   const manifest = fixtureManifest();
   const fake = fakeTemplateStore();
+  const workflowRows: ConductorWorkflow[] = [];
+  const versionRows = new Map<string, { id: string; workflowId: string; version: number; graph: WorkflowGraph }>();
 
   const workflowStore = {
+    list: async (): Promise<ConductorWorkflow[]> => [...workflowRows],
+    getVersion: async (versionId: string) => versionRows.get(versionId) ?? null,
     getBySlug: async (slug: string): Promise<ConductorWorkflow | null> =>
-      existingSlugs.has(slug)
+      workflowRows.find((w) => w.slug === slug) ??
+      (existingSlugs.has(slug)
         ? { id: 'wf-existing', slug, name: 'existing', description: null, status: 'disabled', activeVersionId: null }
-        : null,
+        : null),
     createOrPublish: async (input: PublishCall) => {
       publishCalls.push(input);
       // Mirrors the real store's atomic create-only semantics: in expectNew mode a
@@ -217,6 +231,17 @@ async function makeHarness(opts?: { withCatalog?: boolean }): Promise<Harness> {
     },
   };
 
+  // REAL composite catalog over the bundled fixture + the fake store —
+  // the #478 visibility rule under test is the catalog's, not a stub's.
+  const catalog =
+    opts?.withCatalog === false
+      ? undefined
+      : createCompositeTemplateCatalog({
+          bundled: { list: () => [manifest], get: (id: string) => (id === manifest.id ? manifest : undefined) },
+          store: fake.store,
+          log: () => undefined,
+        });
+
   const deps = {
     workflowStore,
     runStore: {},
@@ -225,18 +250,12 @@ async function makeHarness(opts?: { withCatalog?: boolean }): Promise<Harness> {
     scheduleStore,
     executor: {},
     eventRouter: {},
-    ...(opts?.withCatalog === false
-      ? {}
-      : {
-          // REAL composite catalog over the bundled fixture + the fake store —
-          // the #478 visibility rule under test is the catalog's, not a stub's.
-          templateCatalog: createCompositeTemplateCatalog({
-            bundled: { list: () => [manifest], get: (id: string) => (id === manifest.id ? manifest : undefined) },
-            store: fake.store,
-            log: () => undefined,
-          }),
+    ...(catalog
+      ? {
+          templateCatalog: catalog,
           templateStore: fake.store,
-        }),
+        }
+      : {}),
     templateKnownRefs: async () => ({
       agentIds: [KNOWN_AGENT],
       actionIds: [],
@@ -267,6 +286,9 @@ async function makeHarness(opts?: { withCatalog?: boolean }): Promise<Harness> {
     templateStore: fake.store,
     instantiations: fake.instantiations,
     stamps: fake.stamps,
+    workflowRows,
+    versionRows,
+    ...(catalog ? { catalog } : {}),
   };
 }
 
@@ -733,5 +755,314 @@ describe('POST /templates/:id/instantiate', () => {
     assert.ok(invalidBody.errors.some((e) => e.code === 'unknown_role_ref'), JSON.stringify(invalidBody.errors));
 
     assert.equal(h.publishCalls.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #478 B3 — review-gate state machine, save-as-template inference, workflow
+// update hint, plugin-contributed read-only templates.
+// ---------------------------------------------------------------------------
+
+describe('review gate: POST /templates/:id/{submit,approve,reject}', () => {
+  it('author submits an own PRIVATE template → pending', async () => {
+    const h = await makeHarness();
+    await h.templateStore.create(fixtureManifest('mine'), 'operator-a');
+    const res = await post(`${h.baseUrl}/templates/mine/submit`, {}, 'operator-a');
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { template: TemplateSummary };
+    assert.equal(body.template.status, 'pending');
+    // submit records no reviewer — only approve/reject do.
+    assert.equal((await h.templateStore.get('mine'))!.reviewedBy, null);
+  });
+
+  it('submit stays author-only: 404 on an invisible private template, 403 on a visible one', async () => {
+    const h = await makeHarness();
+    await h.templateStore.create(fixtureManifest('a-tpl'), 'operator-a');
+    // invisible (private, foreign) → 404, no existence leak
+    assert.equal((await post(`${h.baseUrl}/templates/a-tpl/submit`, {}, 'operator-b')).status, 404);
+    // visible (shared) but foreign → 403
+    await h.templateStore.setStatus('a-tpl', 'shared');
+    const res = await post(`${h.baseUrl}/templates/a-tpl/submit`, {}, 'operator-b');
+    assert.equal(res.status, 403);
+    assert.equal(((await res.json()) as { code: string }).code, 'conductor.template_forbidden');
+  });
+
+  it('submit on a non-private template → 409 template_status_conflict', async () => {
+    const h = await makeHarness();
+    await h.templateStore.create(fixtureManifest('mine'), 'operator-a');
+    await h.templateStore.setStatus('mine', 'pending');
+    const res = await post(`${h.baseUrl}/templates/mine/submit`, {}, 'operator-a');
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as { code: string }).code, 'conductor.template_status_conflict');
+  });
+
+  it('approve by a NON-AUTHOR operator: pending → shared, reviewed_by recorded (reviewer-reachability)', async () => {
+    const h = await makeHarness();
+    await h.templateStore.create(fixtureManifest('a-pending'), 'operator-a');
+    await h.templateStore.setStatus('a-pending', 'pending');
+
+    const res = await post(`${h.baseUrl}/templates/a-pending/approve`, {}, 'operator-b');
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { template: TemplateSummary };
+    assert.equal(body.template.status, 'shared');
+    const record = (await h.templateStore.get('a-pending'))!;
+    assert.equal(record.status, 'shared');
+    assert.equal(record.reviewedBy, 'operator-b');
+    // shared → visible install-wide.
+    assert.ok((await listIds(h, 'operator-c')).includes('a-pending'));
+  });
+
+  it('reject by a non-author: pending → private, reviewed_by recorded, template leaves the reviewer view', async () => {
+    const h = await makeHarness();
+    await h.templateStore.create(fixtureManifest('a-pending'), 'operator-a');
+    await h.templateStore.setStatus('a-pending', 'pending');
+
+    const res = await post(`${h.baseUrl}/templates/a-pending/reject`, {}, 'operator-b');
+    assert.equal(res.status, 200);
+    // Rejecting flips the template private — the non-author reviewer can no
+    // longer see it, so the response carries `template: null` by design.
+    assert.equal(((await res.json()) as { template: TemplateSummary | null }).template, null);
+    const record = (await h.templateStore.get('a-pending'))!;
+    assert.equal(record.status, 'private');
+    assert.equal(record.reviewedBy, 'operator-b');
+    assert.ok(!(await listIds(h, 'operator-b')).includes('a-pending'));
+  });
+
+  it('approve: 409 on non-pending, 403 on bundled (read-only), 404 on unknown', async () => {
+    const h = await makeHarness();
+    await h.templateStore.create(fixtureManifest('a-shared'), 'operator-a');
+    await h.templateStore.setStatus('a-shared', 'shared');
+    const conflict = await post(`${h.baseUrl}/templates/a-shared/approve`, {}, 'operator-b');
+    assert.equal(conflict.status, 409);
+    assert.equal(((await conflict.json()) as { code: string }).code, 'conductor.template_status_conflict');
+
+    assert.equal((await post(`${h.baseUrl}/templates/fixture-approval/approve`, {}, 'operator-b')).status, 403);
+    assert.equal((await post(`${h.baseUrl}/templates/does-not-exist/approve`, {}, 'operator-b')).status, 404);
+  });
+
+  it('self-approval by the author is permitted (single-operator installs must not deadlock)', async () => {
+    const h = await makeHarness();
+    await h.templateStore.create(fixtureManifest('solo'), 'operator-a');
+    await h.templateStore.setStatus('solo', 'pending');
+    const res = await post(`${h.baseUrl}/templates/solo/approve`, {}, 'operator-a');
+    assert.equal(res.status, 200);
+    const record = (await h.templateStore.get('solo'))!;
+    assert.equal(record.status, 'shared');
+    assert.equal(record.reviewedBy, 'operator-a'); // auditable
+  });
+});
+
+/** Concrete (non-templated) graph as a designer would publish it — every ref
+ *  field carries a real entity id; one event trigger exercises that walk too. */
+function concreteGraph(): WorkflowGraph {
+  return {
+    entryStepId: 'work',
+    steps: [
+      { id: 'work', kind: 'agent', agentId: KNOWN_AGENT, prompt: 'Do the work.' },
+      {
+        id: 'approve',
+        kind: 'human',
+        human: { principal: { kind: 'role', ref: KNOWN_ROLE }, channel: 'teams', message: 'Approve the result?' },
+      },
+    ],
+    transitions: [{ id: 't-done', source: 'work', target: 'approve' }],
+    triggers: [{ id: 'tr-ev', kind: 'event', eventId: 'expense.created' }],
+  };
+}
+
+describe('POST /:slug/save-as-template (#478 slot inference)', () => {
+  function seedSource(h: Harness): void {
+    h.workflowRows.push({
+      id: 'wf-src',
+      slug: 'expense-flow',
+      name: 'Expense flow',
+      description: 'Approves expenses',
+      status: 'enabled',
+      activeVersionId: 'v-src',
+      templateId: null,
+      templateVersion: null,
+    });
+    h.versionRows.set('v-src', { id: 'v-src', workflowId: 'wf-src', version: 3, graph: concreteGraph() });
+  }
+
+  it('infers one declared slot per distinct concrete ref; the identity mapping reproduces the graph', async () => {
+    const h = await makeHarness();
+    seedSource(h);
+    const res = await post(`${h.baseUrl}/expense-flow/save-as-template`, {}, 'operator-a');
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { draft: TemplateManifest; sourceWorkflow: { slug: string; version: number } };
+    assert.deepEqual(body.sourceWorkflow, { slug: 'expense-flow', version: 3 });
+
+    const { draft } = body;
+    assert.equal(draft.id, 'expense-flow');
+    assert.equal(draft.defaultSlug, 'expense-flow');
+    assert.equal(draft.name, 'Expense flow'); // workflow-derived defaults
+    assert.equal(draft.description, 'Approves expenses');
+    assert.equal(draft.useCase, 'general');
+
+    // Every concrete ref became a placeholder + declaration (labels = the concrete ref).
+    assert.equal(draft.graph.steps[0]!.agentId, `slot:agent:${KNOWN_AGENT}`);
+    assert.deepEqual(draft.slots.agents, [{ key: KNOWN_AGENT, label: KNOWN_AGENT }]);
+    assert.deepEqual(draft.slots.roles, [{ key: KNOWN_ROLE, label: KNOWN_ROLE }]);
+    assert.deepEqual(draft.slots.channels, [{ key: 'teams', label: 'teams' }]);
+    assert.deepEqual(draft.slots.events, [{ key: 'expense-created', label: 'expense.created' }]); // key slugified
+
+    // Identity mapping (slot key → its original concrete ref, i.e. the label)
+    // round-trips to the exact source graph.
+    const mapping: Record<string, Record<string, string>> = {};
+    for (const kind of ['agents', 'actions', 'roles', 'events', 'channels'] as const) {
+      for (const slot of draft.slots[kind] ?? []) {
+        mapping[kind] = { ...mapping[kind], [slot.key]: slot.label as string };
+      }
+    }
+    assert.deepEqual(applyTemplateSlots(draft, mapping), concreteGraph());
+
+    // Nothing was persisted — the draft is the UI's to edit and publish.
+    assert.ok(!(await listIds(h, 'operator-a')).includes('expense-flow'));
+    // …and the inferred draft is publishable as-is via POST /templates.
+    assert.equal((await post(`${h.baseUrl}/templates`, { manifest: draft }, 'operator-a')).status, 201);
+  });
+
+  it('respects explicit id/name/useCase overrides from the body', async () => {
+    const h = await makeHarness();
+    seedSource(h);
+    const res = await post(
+      `${h.baseUrl}/expense-flow/save-as-template`,
+      { id: 'my-template', name: { en: 'Custom', de: 'Eigenes' }, useCase: 'approval' },
+      'operator-a',
+    );
+    const { draft } = (await res.json()) as { draft: TemplateManifest };
+    assert.equal(draft.id, 'my-template');
+    assert.deepEqual(draft.name, { en: 'Custom', de: 'Eigenes' });
+    assert.equal(draft.useCase, 'approval');
+  });
+
+  it("suffixes the derived id with '-template' when the slug-based id is taken", async () => {
+    const h = await makeHarness();
+    seedSource(h);
+    await h.templateStore.create(fixtureManifest('expense-flow'), 'operator-b'); // even a FOREIGN private template blocks the id
+    const res = await post(`${h.baseUrl}/expense-flow/save-as-template`, {}, 'operator-a');
+    const { draft } = (await res.json()) as { draft: TemplateManifest };
+    assert.equal(draft.id, 'expense-flow-template');
+  });
+
+  it('404s (workflow_not_found) on an unknown slug and on a workflow without a published version', async () => {
+    const h = await makeHarness();
+    const unknown = await post(`${h.baseUrl}/nope/save-as-template`, {}, 'operator-a');
+    assert.equal(unknown.status, 404);
+    assert.equal(((await unknown.json()) as { code: string }).code, 'conductor.workflow_not_found');
+
+    h.existingSlugs.add('unpublished'); // getBySlug hit, but activeVersionId null
+    const unpublished = await post(`${h.baseUrl}/unpublished/save-as-template`, {}, 'operator-a');
+    assert.equal(unpublished.status, 404);
+    assert.equal(((await unpublished.json()) as { code: string }).code, 'conductor.workflow_not_found');
+  });
+});
+
+describe('workflow template update hint (#478)', () => {
+  function seedInstance(h: Harness, templateVersion: number, slug = 'from-template'): void {
+    h.workflowRows.push({
+      id: `wf-${slug}`,
+      slug,
+      name: 'From template',
+      description: null,
+      status: 'disabled',
+      activeVersionId: `v-${slug}`,
+      templateId: 'evolving',
+      templateVersion,
+    });
+    h.versionRows.set(`v-${slug}`, { id: `v-${slug}`, workflowId: `wf-${slug}`, version: 1, graph: concreteGraph() });
+  }
+
+  it('reports updateAvailable on list AND detail once the template gains a newer version', async () => {
+    const h = await makeHarness();
+    await h.templateStore.create(fixtureManifest('evolving'), 'operator-a');
+    seedInstance(h, 1);
+
+    // v1 instantiated, v1 latest → no update.
+    let res = await get(`${h.baseUrl}/from-template`, 'operator-a');
+    assert.equal(res.status, 200);
+    let detail = (await res.json()) as { workflow: WorkflowWithTemplateHint };
+    assert.deepEqual(detail.workflow.template, { id: 'evolving', version: 1, latestVersion: 1, updateAvailable: false });
+
+    await h.templateStore.addVersion('evolving', fixtureManifest('evolving'));
+
+    const listRes = await get(h.baseUrl, 'operator-a');
+    assert.equal(listRes.status, 200);
+    const { workflows } = (await listRes.json()) as { workflows: WorkflowWithTemplateHint[] };
+    assert.deepEqual(workflows[0]!.template, { id: 'evolving', version: 1, latestVersion: 2, updateAvailable: true });
+
+    res = await get(`${h.baseUrl}/from-template`, 'operator-a');
+    detail = (await res.json()) as { workflow: WorkflowWithTemplateHint };
+    assert.deepEqual(detail.workflow.template, { id: 'evolving', version: 1, latestVersion: 2, updateAvailable: true });
+
+    // A workflow re-instantiated from v2 reports v2, no update pending.
+    seedInstance(h, 2, 'from-template-v2');
+    const v2 = await get(`${h.baseUrl}/from-template-v2`, 'operator-a');
+    assert.deepEqual(((await v2.json()) as { workflow: WorkflowWithTemplateHint }).workflow.template, {
+      id: 'evolving',
+      version: 2,
+      latestVersion: 2,
+      updateAvailable: false,
+    });
+  });
+
+  it('does not leak an invisible (foreign private) template: hint degrades, never updateAvailable', async () => {
+    const h = await makeHarness();
+    await h.templateStore.create(fixtureManifest('evolving'), 'operator-a');
+    await h.templateStore.addVersion('evolving', fixtureManifest('evolving'));
+    seedInstance(h, 1);
+
+    const res = await get(`${h.baseUrl}/from-template`, 'operator-b'); // NOT the author; template is private
+    const detail = (await res.json()) as { workflow: WorkflowWithTemplateHint };
+    assert.deepEqual(detail.workflow.template, { id: 'evolving', version: 1, latestVersion: 1, updateAvailable: false });
+  });
+
+  it('omits the template key entirely on workflows without provenance', async () => {
+    const h = await makeHarness();
+    h.workflowRows.push({
+      id: 'wf-plain',
+      slug: 'plain',
+      name: 'Plain',
+      description: null,
+      status: 'disabled',
+      activeVersionId: 'v-plain',
+      templateId: null,
+      templateVersion: null,
+    });
+    h.versionRows.set('v-plain', { id: 'v-plain', workflowId: 'wf-plain', version: 1, graph: concreteGraph() });
+    const res = await get(`${h.baseUrl}/plain`, 'operator-a');
+    const detail = (await res.json()) as { workflow: WorkflowWithTemplateHint };
+    assert.equal(detail.workflow.template, undefined);
+  });
+});
+
+describe('plugin-contributed templates (#478 read-only catalog source)', () => {
+  it('registered plugin templates list as source plugin; every write path 403s; unregister removes them', async () => {
+    const h = await makeHarness();
+    const id = 'plugin:acme:approval';
+    h.catalog!.registerPluginTemplates('acme', [fixtureManifest(id)]);
+
+    assert.ok((await listIds(h, 'operator-a')).includes(id));
+    const res = await get(`${h.baseUrl}/templates/${encodeURIComponent(id)}`, 'operator-a');
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { template: TemplateSummary };
+    assert.equal(body.template.source, 'plugin');
+    assert.equal(body.template.version, 1);
+
+    // Read-only: PUT / DELETE / submit / approve all refuse.
+    const url = `${h.baseUrl}/templates/${encodeURIComponent(id)}`;
+    assert.equal((await put(url, { manifest: fixtureManifest(id) }, 'operator-a')).status, 403);
+    assert.equal((await del(url, 'operator-a')).status, 403);
+    assert.equal((await post(`${url}/submit`, {}, 'operator-a')).status, 403);
+    assert.equal((await post(`${url}/approve`, {}, 'operator-a')).status, 403);
+
+    // POST /templates with a colliding id → 409 (the id is reserved by the plugin source).
+    const collide = await post(`${h.baseUrl}/templates`, { manifest: fixtureManifest(id) }, 'operator-a');
+    assert.equal(collide.status, 409);
+
+    h.catalog!.unregisterPluginTemplates('acme');
+    assert.ok(!(await listIds(h, 'operator-a')).includes(id));
+    assert.equal((await get(`${h.baseUrl}/templates/${encodeURIComponent(id)}`, 'operator-a')).status, 404);
   });
 });

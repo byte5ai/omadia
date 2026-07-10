@@ -23,6 +23,7 @@ import {
 import type { ConductorRunExecutor } from './runExecutor.js';
 import type { ConductorTemplateStore } from './templateStore.js';
 import type { TemplateSummary } from './templateCatalog.js';
+import { attachTemplateHints } from './templateHints.js';
 import { registerTemplateRoutes } from './templateRoutes.js';
 
 function errMsg(err: unknown): string {
@@ -85,10 +86,12 @@ const MAX_BUILDER_GRAPH_BYTES = 200_000;
 export function createConductorRouter(deps: ConductorRouterDeps): Router {
   const router = Router();
 
-  // List workflows.
-  router.get('/', async (_req: Request, res: Response): Promise<void> => {
+  // List workflows. Rows with template provenance carry the additive
+  // `template` update hint (#478) — viewer-scoped, one catalog read per request.
+  router.get('/', async (req: Request, res: Response): Promise<void> => {
     try {
-      res.json({ workflows: await deps.workflowStore.list() });
+      const workflows = await deps.workflowStore.list();
+      res.json({ workflows: await attachTemplateHints(workflows, deps, req.session?.sub ?? 'operator') });
     } catch (err) {
       res.status(500).json({ code: 'conductor.list_failed', message: errMsg(err) });
     }
@@ -308,6 +311,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   });
 
   // Fetch a workflow + its active version graph (for the visual editor to load).
+  // Carries the same additive `template` update hint as the list (#478).
   router.get('/:slug', async (req: Request, res: Response): Promise<void> => {
     try {
       const wf = await deps.workflowStore.getBySlug(paramStr(req.params.slug));
@@ -316,7 +320,8 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         return;
       }
       const version = await deps.workflowStore.getVersion(wf.activeVersionId);
-      res.json({ workflow: wf, graph: version?.graph ?? null });
+      const [enriched] = await attachTemplateHints([wf], deps, req.session?.sub ?? 'operator');
+      res.json({ workflow: enriched, graph: version?.graph ?? null });
     } catch (err) {
       res.status(500).json({ code: 'conductor.get_failed', message: errMsg(err) });
     }

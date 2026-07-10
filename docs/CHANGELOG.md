@@ -18,6 +18,54 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — template authoring, review gate, plugin-borne templates, update hint (#478)
+
+- **Save as template** (`POST /:slug/save-as-template` on the conductor
+  router — it is mounted at `/api/v1/operator/conductors`, so there is no
+  `/workflows` path prefix): loads the workflow's active published version and
+  returns an `inferTemplateManifest` **draft** (`{ draft, sourceWorkflow:
+  { slug, version } }`) with one declared slot per distinct concrete ref
+  (label = the original ref). Nothing is persisted — the UI edits the draft
+  and publishes via `POST /templates` (fresh id) or `PUT /templates/:id`
+  (new version of an owned id). Body overrides `{ id?, name?, description?,
+  useCase? }`; the default id derives from the slug with a `-template` suffix
+  on collision; `404 conductor.workflow_not_found` without a published version.
+- **Review state machine** (Make's team-template shape, `private → pending →
+  shared`): `POST /templates/:id/submit` (author-only; `409
+  conductor.template_status_conflict` from any status but `private`),
+  `POST /templates/:id/approve` / `reject` (**any authenticated operator** —
+  reachable because `pending` templates are visible install-wide; resolved
+  through the viewer-scoped catalog `get`, so a non-author reviewer never
+  404s). `reviewed_by` is recorded for audit; self-approval stays permitted
+  (single-operator installs must not deadlock, separation of duties is an
+  explicit deferral). A reject by a non-author flips the template `private`
+  and out of the reviewer's visibility — the response then carries
+  `template: null`.
+- **Template update hint**: workflow list (`GET /`) and detail (`GET /:slug`)
+  additively report `template?: { id, version, latestVersion,
+  updateAvailable }` when the row carries `template_id`/`template_version`
+  provenance. Viewer-scoped: a template the viewer cannot see degrades to
+  `latestVersion = version, updateAvailable: false` (no existence leak).
+  Copy-not-reference stands — the hint powers deliberate re-instantiation,
+  never silent propagation.
+- **Plugin-borne workflow templates** — the designed trust boundary (recorded
+  in `docs/security-architecture.md` §4): plugins declare TemplateManifest
+  JSON files under `permissions.templates` (package-relative paths). Install
+  is gated **fail-closed** in the new `src/plugins/pluginTemplates.ts`:
+  `.json` only, path confinement after symlink unwrapping, id namespacing
+  `plugin:<pluginId>:<name>` (no shadowing of bundled/user ids),
+  `checkTemplateManifest({ strict: true })` (undeclared concrete refs
+  rejected as confusion/exfiltration vectors), `isValidCron` on cron
+  triggers; any violation fails the install with `install.template_invalid`.
+  Accepted manifests register as read-only `source: 'plugin'` catalog entries
+  (write paths 403), are removed on uninstall, and re-register at boot
+  (fail-open per template — the hard gate ran at install time). Templates are
+  data, never code: no runtime template API, nothing executed. Tests:
+  `test/pluginTemplates.test.ts` (new; gate incl. symlink escape,
+  InstallService integration, boot sweep) + extended
+  `test/conductorTemplateRoutes.test.ts` (state machine incl. non-author
+  approve, inference round-trip, update hint, plugin source read-only).
+
 ### Added — DB-backed workflow templates: store, composite catalog, CRUD + versioning routes (#478)
 
 - New Conductor migration **`0006_templates.sql`** (conductor chain,

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 
 import {
   PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
@@ -6,6 +7,7 @@ import {
   PRIVACY_MODE_DEFAULT,
   PRIVACY_MODE_VALUES,
 } from '@omadia/plugin-api';
+import type { TemplateManifest } from '@omadia/conductor-core';
 
 import type {
   ApiError,
@@ -20,7 +22,10 @@ import {
   walkCapabilityInstallChain,
 } from './capabilityResolver.js';
 import type { InstalledRegistry } from './installedRegistry.js';
+import { extractTemplateDeclarations } from './manifestLoader.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
+import { loadPluginTemplates } from './pluginTemplates.js';
+import type { PluginTemplateRegistrar } from './pluginTemplates.js';
 
 export interface InstallServiceDeps {
   catalog: PluginCatalog;
@@ -35,6 +40,13 @@ export interface InstallServiceDeps {
   /** Counterpart to `onInstalled`: called in the uninstall path BEFORE the
    *  removal from registry/vault, so the runtime can deactivate cleanly. */
   onUninstall?: (agentId: string) => Promise<void>;
+  /** #478 — plugin-borne workflow templates. Resolves the conductor's
+   *  composite-catalog registrar LAZILY: the conductor wires long after this
+   *  service is constructed (same late-binding pattern as channelRegistryRef
+   *  in src/index.ts). The install-time VALIDATION gate runs regardless —
+   *  only the catalog registration is skipped when no registrar is wired
+   *  (boot re-registers via registerInstalledPluginTemplates). */
+  conductorTemplates?: () => PluginTemplateRegistrar | undefined;
 }
 
 /**
@@ -216,6 +228,37 @@ export class InstallService {
       validated.values,
     );
 
+    // #478 — plugin-template import gate, FAIL-CLOSED and BEFORE any persistent
+    // write: every manifest declared under `permissions.templates` must pass the
+    // strict distributed-manifest validation (path confinement incl. symlink
+    // unwrapping, `plugin:<id>:` namespacing, checkTemplateManifest strict mode,
+    // cron syntax). A single bad template refuses the whole install — nothing
+    // is executed, the error carries the per-template findings.
+    let templateManifests: TemplateManifest[] = [];
+    const entry = this.deps.catalog.get(job.plugin_id);
+    if (entry) {
+      const declared = extractTemplateDeclarations(entry.manifest);
+      const loaded =
+        declared.paths.length > 0
+          ? await loadPluginTemplates(
+              job.plugin_id,
+              path.dirname(entry.source_path),
+              declared.paths,
+            )
+          : { manifests: [], errors: [] };
+      const problems = [...declared.errors, ...loaded.errors];
+      if (problems.length > 0) {
+        this.fail(job, {
+          code: 'install.template_invalid',
+          message:
+            'Plugin-Workflow-Templates haben die Validierung nicht bestanden',
+          details: problems,
+        });
+        return job;
+      }
+      templateManifests = loaded.manifests;
+    }
+
     try {
       if (Object.keys(secrets).length > 0) {
         await this.deps.vault.setMany(job.plugin_id, secrets);
@@ -228,6 +271,20 @@ export class InstallService {
         config,
       });
       this.transition(job, 'active', 'Installation abgeschlossen');
+
+      // #478 — register the gated template manifests as read-only 'plugin'
+      // catalog entries. Registration is in-memory; boot re-registers via
+      // registerInstalledPluginTemplates (pluginTemplates.ts).
+      if (templateManifests.length > 0) {
+        const registrar = this.deps.conductorTemplates?.();
+        if (registrar) {
+          registrar.registerPluginTemplates(job.plugin_id, templateManifests);
+        } else {
+          console.warn(
+            `[install] plugin '${job.plugin_id}' declares workflow templates but the conductor catalog is not wired — they register at next boot`,
+          );
+        }
+      }
 
       if (this.deps.onInstalled) {
         try {
@@ -345,6 +402,8 @@ export class InstallService {
         err instanceof Error ? err.message : err,
       );
     }
+    // #478 — contributed workflow templates leave the catalog with the plugin.
+    this.deps.conductorTemplates?.()?.unregisterPluginTemplates(agentId);
     await this.deps.registry.remove(agentId);
   }
 

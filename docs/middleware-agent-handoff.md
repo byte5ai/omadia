@@ -557,6 +557,48 @@ und schreibt best-effort eine Telemetry-Row. Tests:
 `test/conductorTemplateRoutes.test.ts` (echter Composite-Katalog; explizite
 Reviewer-Reachability-Fälle: pending Template von A erscheint in Bs List/Get).
 
+**Templates v2 (#478 B3): Authoring, Review-Gate, Plugin-Templates, Update-Hint.**
+Neu in `templateRoutes.ts`: **`POST /:slug/save-as-template`** (der Router ist
+auf `/api/v1/operator/conductors` gemountet — es gibt keinen
+`/workflows`-Präfix) lädt die aktive publizierte Version und liefert per
+`inferTemplateManifest` einen **Draft** `{ draft, sourceWorkflow: { slug,
+version } }` — jede konkrete Ref wird deklarierter Slot (Label = ursprüngliche
+Ref), NICHTS wird persistiert; die UI editiert und publisht via
+`POST /templates` bzw. `PUT` (Body-Overrides `{ id?, name?, description?,
+useCase? }`; Default-Id = Slug, bei Kollision `-template`-Suffix; `404
+conductor.workflow_not_found` ohne publizierte Version). **Review-Gate**
+(Make-Shape `private → pending → shared`): `POST /templates/:id/submit`
+(author-only; `409 conductor.template_status_conflict` außer aus `private`),
+`POST /templates/:id/approve` / `reject` (**jeder Operator** — erreichbar,
+weil `pending` install-weit sichtbar ist; Auflösung über das viewer-scoped
+Katalog-`get`, `reviewed_by = viewer` wird protokolliert; Self-Approval bleibt
+erlaubt/auditierbar, Separation of Duties explizit deferred). Ein Reject durch
+einen Nicht-Autor macht das Template `private` und damit für den Reviewer
+unsichtbar — die Response trägt dann `template: null`. **Update-Hint:**
+Workflow-List (`GET /`) und -Detail (`GET /:slug`) liefern additiv
+`template?: { id, version, latestVersion, updateAvailable }` wenn die Row
+Provenance trägt (`attachTemplateHints` in `templateHints.ts`; ein
+Katalog-List-Read pro Request, viewer-scoped — ein unsichtbares Template
+degradiert zu `latestVersion = version, updateAvailable: false`, kein
+Existenz-Leak); `workflowStore` liest dafür `template_id`/`template_version`
+mit (additiv auf `ConductorWorkflow`). **Plugin-Templates** (Trust-Boundary
+dokumentiert in `docs/security-architecture.md` §4): Deklaration
+`permissions.templates` (package-relative `.json`-Pfade, Parsing
+`extractTemplateDeclarations` in `plugins/manifestLoader.ts`), Install-Gate
+**fail-closed** in `plugins/pluginTemplates.ts` (`loadPluginTemplates`:
+Pfad-Confinement nach Symlink-Unwrapping, Id-Namespace
+`plugin:<pluginId>:<name>`, `checkTemplateManifest({ strict: true })`,
+`isValidCron`); jeder Verstoß → `install.template_invalid`, Install
+verweigert, nichts wird ausgeführt. Akzeptierte Manifeste registrieren als
+read-only Source `plugin` im Composite-Katalog (InstallService-Dep
+`conductorTemplates`, lazy aufgelöst — Registrar-Forward-Ref in
+`src/index.ts`; Boot-Sweep `registerInstalledPluginTemplates` fail-open pro
+Template), Deregistrierung beim Uninstall. Tests:
+`test/pluginTemplates.test.ts` (Gate incl. Symlink-Escape,
+InstallService-Integration, Boot-Sweep) +
+`test/conductorTemplateRoutes.test.ts` (State-Machine incl.
+Non-Author-Approve, Inferenz-Roundtrip, Update-Hint, Plugin-Source read-only).
+
 ---
 
 ## 4. Migration Managed Agents → Lokal

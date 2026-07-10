@@ -8,17 +8,18 @@
 // reviewer on the single-tier operator API), 'private' ones only to their author.
 // Write paths (POST/PUT/DELETE) are author-only on user-source templates.
 
-import type { Request, Response, Router } from 'express';
+import type { Request, RequestHandler, Response, Router } from 'express';
 
 import {
   applyTemplateSlots,
   checkTemplateManifest,
+  inferTemplateManifest,
   missingSlotMappings,
   resolveLocalizedText,
   templateManifestVersion,
   validate,
 } from '@omadia/conductor-core';
-import type { JsonObject, TemplateManifest, TemplateSlotMapping, WorkflowGraph } from '@omadia/conductor-core';
+import type { JsonObject, LocalizedText, TemplateManifest, TemplateSlotMapping, WorkflowGraph } from '@omadia/conductor-core';
 
 import { WorkflowSlugExistsError } from './workflowStore.js';
 import { TemplateIdExistsError, TemplateInvalidError } from './templateStore.js';
@@ -37,6 +38,15 @@ function paramStr(v: string | string[] | undefined): string {
   if (typeof v === 'string') return v;
   if (Array.isArray(v)) return v[0] ?? '';
   return '';
+}
+
+/** Body-supplied manifest metadata: a non-empty plain string or an { en, ... }
+ *  locale record passes through; anything else falls back to the caller's
+ *  default. Shape validation stays checkTemplateManifest's job at publish. */
+function asLocalizedText(v: unknown): LocalizedText | undefined {
+  if (typeof v === 'string' && v.trim().length > 0) return v;
+  if (typeof v === 'object' && v !== null && !Array.isArray(v)) return v as LocalizedText;
+  return undefined;
 }
 
 export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps): void {
@@ -250,6 +260,76 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
     }
   });
 
+  // Review gate (#478): private → pending → shared, Make's team-template shape.
+  // submit is author-only; approve/reject are open to ANY authenticated operator —
+  // reachable because 'pending' is visible install-wide (the revised visibility
+  // rule), with `reviewed_by` recorded for audit. Self-approval stays permitted
+  // (single-operator installs must not deadlock); separation of duties is a
+  // documented deferral.
+  router.post('/templates/:id/submit', async (req: Request, res: Response): Promise<void> => {
+    if (!deps.templateStore || !deps.templateCatalog) {
+      res.status(503).json({ code: 'conductor.templates_unavailable', message: 'template store is not wired' });
+      return;
+    }
+    const id = paramStr(req.params.id);
+    const viewer = viewerOf(req);
+    try {
+      const summary = await writableUserTemplate(id, res, viewer);
+      if (!summary) return;
+      if (summary.status !== 'private') {
+        res.status(409).json({
+          code: 'conductor.template_status_conflict',
+          message: `template '${id}' is '${summary.status ?? 'unknown'}' — only a private template can be submitted for review`,
+        });
+        return;
+      }
+      await deps.templateStore.setStatus(id, 'pending');
+      res.json({ template: await deps.templateCatalog.get(id, viewer) });
+    } catch (err) {
+      console.error('[conductor] template submit failed:', err);
+      res.status(500).json({ code: 'conductor.template_submit_failed', message: errMsg(err) });
+    }
+  });
+
+  // approve → shared, reject → private. NB: a reject by a non-author flips the
+  // template back to a status the reviewer cannot see — `template` is then null.
+  const reviewRoute = (action: 'approve' | 'reject'): RequestHandler => async (req: Request, res: Response): Promise<void> => {
+    if (!deps.templateStore || !deps.templateCatalog) {
+      res.status(503).json({ code: 'conductor.templates_unavailable', message: 'template store is not wired' });
+      return;
+    }
+    const id = paramStr(req.params.id);
+    const viewer = viewerOf(req);
+    try {
+      // Viewer-scoped get, NOT the author-only writable check: any operator may
+      // review, and 'pending' is visible to all of them (a non-author reviewer
+      // must never 404 here).
+      const summary = await deps.templateCatalog.get(id, viewer);
+      if (!summary) {
+        res.status(404).json({ code: 'conductor.template_not_found', message: `unknown template '${id}'` });
+        return;
+      }
+      if (summary.source !== 'user') {
+        res.status(403).json({ code: 'conductor.template_forbidden', message: `template '${id}' is a read-only ${summary.source} template` });
+        return;
+      }
+      if (summary.status !== 'pending') {
+        res.status(409).json({
+          code: 'conductor.template_status_conflict',
+          message: `template '${id}' is '${summary.status ?? 'unknown'}' — only a pending template can be ${action}d`,
+        });
+        return;
+      }
+      await deps.templateStore.setStatus(id, action === 'approve' ? 'shared' : 'private', viewer);
+      res.json({ template: (await deps.templateCatalog.get(id, viewer)) ?? null });
+    } catch (err) {
+      console.error(`[conductor] template ${action} failed:`, err);
+      res.status(500).json({ code: 'conductor.template_review_failed', message: errMsg(err) });
+    }
+  };
+  router.post('/templates/:id/approve', reviewRoute('approve'));
+  router.post('/templates/:id/reject', reviewRoute('reject'));
+
   // Ephemeral template instantiation (#429, the #330 seam and the UI's "open in designer"):
   // substitute + validate, return the ordinary graph, persist nothing. Optional body
   // `version` (default latest) serves an older manifest version (#478).
@@ -326,6 +406,58 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
       }
       console.error('[conductor] template instantiate failed:', err);
       res.status(500).json({ code: 'conductor.template_instantiate_failed', message: errMsg(err) });
+    }
+  });
+
+  // Is `id` already claimed by ANY catalog entry? Read-only sources first, then
+  // the store directly — other authors' PRIVATE templates also block the id
+  // (the namespace is global), which the viewer-scoped catalog get would hide.
+  async function templateIdTaken(id: string, viewer: string): Promise<boolean> {
+    if (deps.templateCatalog?.staticSource(id)) return true;
+    if (deps.templateStore) return (await deps.templateStore.get(id)) !== undefined;
+    return (await deps.templateCatalog?.get(id, viewer)) !== undefined;
+  }
+
+  // Collision-free default id for a save-as-template draft: the slug itself,
+  // then `-template`, then numeric suffixes.
+  async function defaultTemplateId(slug: string, viewer: string): Promise<string> {
+    const base = slug.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'workflow';
+    if (!(await templateIdTaken(base, viewer))) return base;
+    let candidate = `${base}-template`;
+    for (let n = 2; await templateIdTaken(candidate, viewer); n += 1) candidate = `${base}-template-${String(n)}`;
+    return candidate;
+  }
+
+  // "Save as template" (#478): reverse slot inference over the workflow's ACTIVE
+  // published version. Returns a DRAFT manifest only — nothing is persisted; the
+  // UI lets the author edit slots/metadata and then publishes via POST /templates
+  // (fresh id) or PUT /templates/:id (new version of an owned id). Registered on
+  // the template surface but path-scoped to the workflow: POST /:slug/save-as-template
+  // (this router is mounted at /conductors, so there is no '/workflows' prefix).
+  router.post('/:slug/save-as-template', async (req: Request, res: Response): Promise<void> => {
+    const slug = paramStr(req.params.slug);
+    const body = asObject(req.body);
+    const viewer = viewerOf(req);
+    try {
+      const wf = await deps.workflowStore.getBySlug(slug);
+      const version = wf?.activeVersionId ? await deps.workflowStore.getVersion(wf.activeVersionId) : null;
+      if (!wf || !version) {
+        res.status(404).json({ code: 'conductor.workflow_not_found', message: `no published workflow '${slug}'` });
+        return;
+      }
+      const requestedId = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined;
+      const draft = inferTemplateManifest(version.graph, {
+        id: requestedId ?? (await defaultTemplateId(slug, viewer)),
+        name: asLocalizedText(body.name) ?? wf.name,
+        description: asLocalizedText(body.description) ?? wf.description ?? wf.name,
+        // Free-string category; authors refine it in the dialog before publishing.
+        useCase: asLocalizedText(body.useCase) ?? 'general',
+        defaultSlug: slug,
+      });
+      res.json({ draft, sourceWorkflow: { slug, version: version.version } });
+    } catch (err) {
+      console.error('[conductor] save-as-template failed:', err);
+      res.status(500).json({ code: 'conductor.save_as_template_failed', message: errMsg(err) });
     }
   });
 }
