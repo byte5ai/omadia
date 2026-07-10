@@ -75,10 +75,11 @@ describe('JobManager — DELETE racing an in-flight create', () => {
     const createPromise = jm.create(JOB_ID, 180);
     await tick(); // ensure #provision is parked on the gate, id is in #inflight
 
-    // 2) DELETE arrives BEFORE the container is registered. It returns immediately
-    //    (marks the id cancelled) — no live job yet, nothing to reap synchronously.
-    const destroyed = await jm.destroy(JOB_ID);
-    assert.equal(destroyed, true, 'delete of an in-flight create is acknowledged');
+    // 2) DELETE arrives BEFORE the container is registered. It marks the id
+    //    cancelled and then WAITS for the create to settle: answering earlier
+    //    would claim the job is gone while its teardown could still fail.
+    const destroyPromise = jm.destroy(JOB_ID);
+    await tick();
     assert.equal(jm.size(), 0, 'no job is registered while the create is still cancelled');
     assert.equal(engine.destroyed.length, 0, 'container not created yet — nothing destroyed so far');
 
@@ -90,6 +91,7 @@ describe('JobManager — DELETE racing an in-flight create', () => {
       assert.equal(err.code, 'daemon.job_cancelled');
       return true;
     });
+    assert.equal(await destroyPromise, true, 'the delete is acknowledged once the teardown is proven');
 
     // 4) The container was reaped, and no ghost job remains.
     assert.equal(engine.destroyed.length, 1, 'the raced container is torn down, not leaked');
@@ -104,9 +106,10 @@ describe('JobManager — DELETE racing an in-flight create', () => {
     // First: race a create + delete (create is cancelled while parked on the gate).
     const first = jm.create(JOB_ID, 180);
     await tick();
-    await jm.destroy(JOB_ID);
+    const deleting = jm.destroy(JOB_ID); // awaits the create's outcome
     gate.resolve(); // now the gate is open for this and every later create
     await assert.rejects(first, JobCancelledError);
+    assert.equal(await deleting, true);
     assert.equal(jm.size(), 0);
 
     // A brand-new create for the same id must succeed — the cancellation flag was
