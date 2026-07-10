@@ -35,7 +35,7 @@
  * @param {string} host
  * @returns {string}
  */
-function toDottedQuad(host) {
+export function toDottedQuad(host) {
   const m = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
   if (m) {
     const hi = Number.parseInt(m[1] ?? '0', 16);

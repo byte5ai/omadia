@@ -217,3 +217,27 @@ describe('JobManager — admission bounds', () => {
     assert.equal(jm.size(), 2);
   });
 });
+
+describe('JobManager — create racing an in-progress destroy', () => {
+  it('refuses a create for a job whose container is still being torn down', async () => {
+    let release;
+    const gate = new Promise((r) => (release = r));
+    // The DELETE is mid-flight: the record still exists, but is doomed.
+    const engine = immediateEngine(async () => {
+      await gate;
+    });
+    const jm = new JobManager({ engine, policyClient: fakePolicyClient() });
+    await jm.create(JOB_ID, 60);
+
+    const deleting = jm.destroy(JOB_ID);
+    // Handing back the doomed record here would answer with a container that is
+    // about to disappear.
+    await assert.rejects(() => jm.create(JOB_ID, 60), /deleted while it was being created|cancelled/i);
+
+    release();
+    assert.equal(await deleting, true);
+    // Once the teardown is proven, the id is free again.
+    const again = await jm.create(JOB_ID, 60);
+    assert.equal(again.created, true);
+  });
+});

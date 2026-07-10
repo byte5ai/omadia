@@ -19,7 +19,7 @@
 
 import { strict as assert } from 'node:assert';
 import { Readable } from 'node:stream';
-import { afterEach, describe, it } from 'node:test';
+import { after, afterEach, describe, it } from 'node:test';
 
 import { DaemonAuthConfigError, parseDaemonTokens } from '../src/auth.mjs';
 import { assertControlPlaneBind, createDaemon } from '../src/daemon.mjs';
@@ -164,6 +164,19 @@ describe('dev-runner-daemon — boot-time token config', () => {
   });
 });
 
+describe('dev-runner-daemon — malformed job id in the path', () => {
+  let d;
+  after(async () => d?.close());
+  it('answers a bad percent-encoding with 400, not 500', async () => {
+    const engine = fakeEngine({});
+    const jobManager = new JobManager({ engine, policyClient: fakePolicyClient() });
+    d = await startDaemon({ engine, jobManager });
+    const res = await call(d.url, '/v1/jobs/%zz');
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).code, 'daemon.invalid_job_id');
+  });
+});
+
 describe('dev-runner-daemon — bind guard', () => {
   it('refuses a wildcard/empty bind so nothing listens toward dev-engine', () => {
     for (const bad of [
@@ -177,6 +190,9 @@ describe('dev-runner-daemon — bind guard', () => {
       '000.000.000.000',
       '::0',
       '0:0:0:0:0:0:0:0',
+      // node listens on these as the wildcard too.
+      '::ffff:0.0.0.0',
+      '::ffff:0:0',
     ]) {
       assert.throws(() => assertControlPlaneBind(bad), /wildcard|refusing/i, `should refuse ${JSON.stringify(bad)}`);
     }
@@ -185,6 +201,7 @@ describe('dev-runner-daemon — bind guard', () => {
     assert.equal(assertControlPlaneBind('127.0.0.1'), '127.0.0.1');
     assert.equal(assertControlPlaneBind('172.28.1.4'), '172.28.1.4');
     assert.equal(assertControlPlaneBind('::1'), '::1');
+    assert.equal(assertControlPlaneBind('::ffff:172.28.1.4'), '::ffff:172.28.1.4');
   });
 });
 

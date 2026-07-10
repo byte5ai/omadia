@@ -480,3 +480,15 @@ describe('policyClient — transport safety (real fetch/server)', () => {
     assert.equal(policy.image, `${REPO}@${DIGEST}`);
   });
 });
+
+describe('policyClient — the CANONICAL egress hosts reach the engine', () => {
+  it('replaces the policy allowlist with the classified hosts, not the raw spellings', async () => {
+    // `GitHub.com.` and `[registry.npmjs.org]` both PASS classification, but the
+    // engine (and the egress proxy reading this list) must see the host that was
+    // actually judged — validating one spelling and forwarding another is the
+    // bug class this epic keeps rediscovering.
+    const client = clientWith(policyBody({ egressAllowlist: ['GitHub.com.', 'registry.npmjs.org'] }));
+    const policy = await client.fetchJobPolicy(JOB_ID);
+    assert.deepEqual(policy.egressAllowlist, ['github.com', 'registry.npmjs.org']);
+  });
+});

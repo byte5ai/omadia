@@ -512,6 +512,8 @@ function assertPolicyEgress(egressAllowlist, status) {
       `policy egress allowlist exceeds the ${MAX_EGRESS_ENTRIES}-entry cap`,
     );
   }
+  /** @type {string[]} */
+  const canonical = [];
   for (const raw of egressAllowlist) {
     const classified = classifyEgressEntry(raw);
     if ('reject' in classified) {
@@ -523,7 +525,13 @@ function assertPolicyEgress(egressAllowlist, status) {
         `policy egress allowlist carries an invalid entry (${classified.reject})`,
       );
     }
+    canonical.push(classified.host);
   }
+  // Hand back the CANONICAL hosts. Classifying one spelling and forwarding
+  // another is the bug class this epic keeps rediscovering: `GitHub.com.` and
+  // `[registry.npmjs.org]` pass classification, but the engine — and the egress
+  // proxy that reads this allowlist — must see exactly the host that was judged.
+  return canonical;
 }
 
 /**
@@ -732,7 +740,7 @@ export function createPolicyClient(deps) {
         // high findings).
         assertPolicyImage(parsed.data.image, allowedImages, requireDigest, res.status);
         assertPolicyEnv(parsed.data.env, res.status);
-        assertPolicyEgress(parsed.data.egressAllowlist, res.status);
+        const egressAllowlist = assertPolicyEgress(parsed.data.egressAllowlist, res.status);
         // Inject the daemon-owned identity/location/CLI/proxy keys on top of the
         // clamped policy env. assertPolicyEnv has already refused a policy that
         // tried to supply any of them, so a hostile middleware can neither name
@@ -740,6 +748,7 @@ export function createPolicyClient(deps) {
         // egress through an attacker proxy.
         return {
           ...parsed.data,
+          egressAllowlist,
           env: injectDaemonOwnedEnv(parsed.data.env, jobId, {
             jobBaseUrl,
             workspace,

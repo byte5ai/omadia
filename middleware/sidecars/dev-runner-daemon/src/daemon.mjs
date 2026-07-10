@@ -30,6 +30,7 @@ import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 
 import { isAuthorized, parseDaemonTokens } from './auth.mjs';
+import { toDottedQuad } from './netClassify.mjs';
 import {
   createDockerEngine,
   EngineNotImplementedError,
@@ -63,7 +64,10 @@ function canonicalBind(bind) {
   try {
     // `new URL` normalises numeric/short/zero-padded IPv4 and compresses IPv6.
     const host = new URL(`http://${family === 6 ? `[${raw}]` : raw}/`).hostname;
-    return host.startsWith('[') ? host.slice(1, -1) : host;
+    const bare = host.startsWith('[') ? host.slice(1, -1) : host;
+    // …and an IPv4-mapped IPv6 must be reduced to its v4 form: node listens on
+    // `::ffff:0.0.0.0` (which URL compresses to `::ffff:0:0`) as the wildcard.
+    return toDottedQuad(bare);
   } catch {
     return raw;
   }
@@ -352,7 +356,16 @@ export function createDaemon(deps) {
     // --- per-job routes ------------------------------------------------------
     const jobMatch = /^\/v1\/jobs\/([^/]+)(\/lease|\/logs)?$/.exec(path);
     if (jobMatch) {
-      const jobId = decodeURIComponent(jobMatch[1] ?? '');
+      // Malformed percent-encoding (`%zz`) makes decodeURIComponent throw. That
+      // is a bad request, not a daemon fault — decode defensively so it cannot
+      // surface as a 500.
+      let jobId;
+      try {
+        jobId = decodeURIComponent(jobMatch[1] ?? '');
+      } catch {
+        sendError(res, 400, 'daemon.invalid_job_id', 'jobId is not a valid UUID');
+        return;
+      }
       const sub = jobMatch[2];
       if (!UUID_RE.test(jobId)) {
         sendError(res, 400, 'daemon.invalid_job_id', 'jobId is not a valid UUID');

@@ -169,6 +169,9 @@ export class JobManager {
    *  tears the container down instead of registering it. Lifetime is exactly the
    *  in-flight window (cleared in `create`'s finally). */
   #cancelled = new Set();
+
+  /** Ids whose DELETE is mid-flight: their record still exists but is doomed. */
+  #destroying = new Set();
   /** @type {number} Max live jobs (registry size + in-flight) admitted. */
   #maxLiveJobs;
   /** @type {number} Max concurrent provisions admitted. */
@@ -200,6 +203,12 @@ export class JobManager {
    * @returns {Promise<{ record: JobRecord, created: boolean }>}
    */
   async create(jobId, leaseTtlSec) {
+    // A DELETE currently tearing this job down still holds its record (the
+    // record is only dropped once cleanup is PROVEN). Handing that record back
+    // as a live job would return a container that is about to disappear, so an
+    // overlapping create is refused rather than answered with a corpse.
+    if (this.#destroying.has(jobId)) throw new JobCancelledError(jobId);
+
     const existing = this.#jobs.get(jobId);
     if (existing) return { record: existing, created: false };
 
@@ -290,6 +299,7 @@ export class JobManager {
   async destroy(jobId) {
     const record = this.#jobs.get(jobId);
     if (record) {
+      this.#destroying.add(jobId);
       // Tear the container down FIRST; only forget the job once cleanup is proven
       // (review medium finding — same class as the W0 backend bug: never destroy
       // the only handle on a live resource before its removal succeeds). If the
@@ -299,6 +309,8 @@ export class JobManager {
         await this.#engine.destroyJobContainer(record.container);
       } catch (err) {
         throw new JobCleanupError(jobId, err);
+      } finally {
+        this.#destroying.delete(jobId);
       }
       this.#jobs.delete(jobId);
       return true;
