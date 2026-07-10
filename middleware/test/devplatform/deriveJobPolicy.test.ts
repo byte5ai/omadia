@@ -168,6 +168,7 @@ describe('deriveJobPolicy — pure derivation', () => {
           // Bracketed IPv6 + IPv4-mapped-IPv6 literals.
           '[::1]',
           '[::ffff:7f00:1]',
+          '[::ffff:127.0.0.1]',
           'artifactory.internal', // operator-chosen internal NAME is kept
           'good.example.com',
         ],

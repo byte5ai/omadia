@@ -545,4 +545,48 @@ describe('dev-runner-daemon — log-follow hardening', () => {
       await waitFor(() => streams.every((s) => s.destroyed)).catch(() => {});
     }
   });
+
+  it('holds the follow cap under a concurrent burst (the slot is reserved before the await)', async () => {
+    /** @type {Readable[]} */
+    const streams = [];
+    const engine = fakeEngine({
+      // Real docker I/O spans event-loop turns. Resolving on a macrotask is what
+      // lets a whole burst past a check-then-act cap, so the fake must do it too
+      // — a promise that settles in one microtask cannot reproduce the race.
+      async streamLogs() {
+        await new Promise((r) => setTimeout(r, 5));
+        const s = new Readable({ read() {} });
+        s.push('x\n');
+        streams.push(s);
+        return s;
+      },
+    });
+    const jobManager = new JobManager({ engine, policyClient: fakePolicyClient() });
+    d = await startDaemon({ engine, jobManager, maxLogFollows: 2 });
+    await call(d.url, '/v1/jobs', { method: 'POST', body: createBody() });
+
+    /** @type {AbortController[]} */
+    const controllers = [];
+    try {
+      const burst = await Promise.all(
+        Array.from({ length: 6 }, () => {
+          const c = new AbortController();
+          controllers.push(c);
+          return fetch(`${d.url}/v1/jobs/${JOB_ID}/logs?follow=1`, {
+            headers: { authorization: `Bearer ${TOKEN}` },
+            signal: c.signal,
+          });
+        }),
+      );
+      const admitted = burst.filter((r) => r.status === 200).length;
+      const refused = burst.filter((r) => r.status === 429).length;
+      assert.equal(admitted, 2, 'exactly maxLogFollows streams are admitted');
+      assert.equal(refused, 4, 'the rest are refused, not queued');
+      assert.ok(streams.length <= 2, 'no docker log stream is opened past the cap');
+    } finally {
+      for (const c of controllers) c.abort();
+      for (const s of streams) if (!s.destroyed) s.destroy();
+      await waitFor(() => streams.every((s) => s.destroyed)).catch(() => {});
+    }
+  });
 });

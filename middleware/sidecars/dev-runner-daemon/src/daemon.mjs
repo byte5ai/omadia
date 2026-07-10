@@ -364,11 +364,26 @@ export function createDaemon(deps) {
         const follow = url.searchParams.get('follow') === '1';
         // Concurrency cap: a follow pins a docker log stream + a socket, so past
         // the bound we refuse rather than let abandoned follows exhaust handles.
-        if (follow && activeFollows >= maxLogFollows) {
-          sendError(res, 429, 'daemon.too_many_log_follows', 'too many concurrent log-follow streams');
-          return;
+        // The slot is RESERVED synchronously, in the same event-loop turn as the
+        // check. `engine.streamLogs` awaits real docker I/O spanning several
+        // turns, so a check that only counts before the await and increments
+        // after it lets an entire concurrent burst past the bound: every request
+        // observes activeFollows === 0. Reserve first, release on every exit.
+        if (follow) {
+          if (activeFollows >= maxLogFollows) {
+            sendError(res, 429, 'daemon.too_many_log_follows', 'too many concurrent log-follow streams');
+            return;
+          }
+          activeFollows += 1;
         }
-        const stream = await engine.streamLogs(record.container, { follow });
+        /** @type {import('node:stream').Readable} */
+        let stream;
+        try {
+          stream = await engine.streamLogs(record.container, { follow });
+        } catch (err) {
+          if (follow) activeFollows -= 1;
+          throw err;
+        }
         res.writeHead(200, { 'content-type': 'application/octet-stream' });
 
         // One-shot teardown: destroy the UPSTREAM docker stream, release the
@@ -389,7 +404,6 @@ export function createDaemon(deps) {
         };
 
         if (follow) {
-          activeFollows += 1;
           const armIdle = () => {
             if (idleTimer) clearTimeout(idleTimer);
             idleTimer = setTimeout(() => {

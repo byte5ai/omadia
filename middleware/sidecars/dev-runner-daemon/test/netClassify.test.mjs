@@ -76,6 +76,8 @@ describe('netClassify — classifyEgressEntry parity with the middleware', () =>
     ['127.1', 'bare hostname'], // → 127.0.0.1
     // Bracketed IPv6 + IPv4-mapped-IPv6 literals (the `:` trips the IPv6 branch).
     ['[::ffff:7f00:1]', 'port or is an IPv6 literal'],
+    ['[::1]', 'port or is an IPv6 literal'],
+    ['[::ffff:127.0.0.1]', 'port or is an IPv6 literal'],
     ['-bad.example', 'not a valid hostname'],
     ['bad-.example', 'not a valid hostname'],
     ['example..com', 'not a valid hostname'],
