@@ -173,6 +173,31 @@ export class CreateRollbackError extends Error {
 }
 
 /**
+ * Strip docker's stream framing from a non-TTY log buffer: each frame is an
+ * 8-byte header (stream byte, three pad bytes, 4-byte big-endian payload
+ * length) followed by that many payload bytes. A buffer that does not look
+ * framed is returned untouched, so a TTY container (or a future docker that
+ * stops framing) still yields its text.
+ * @param {Buffer} buf @returns {Buffer}
+ */
+function demuxLogBuffer(buf) {
+  /** @type {Buffer[]} */
+  const parts = [];
+  let offset = 0;
+  while (offset + 8 <= buf.length) {
+    const streamByte = buf[offset];
+    if (streamByte !== 0 && streamByte !== 1 && streamByte !== 2) return buf; // not framed
+    const length = buf.readUInt32BE(offset + 4);
+    const start = offset + 8;
+    const end = start + length;
+    if (end > buf.length) return buf; // truncated/unframed — hand back what we got
+    parts.push(buf.subarray(start, end));
+    offset = end;
+  }
+  return offset === buf.length && parts.length > 0 ? Buffer.concat(parts) : buf;
+}
+
+/**
  * The repository part of an image reference: strip any `@digest`, then a
  * trailing `:tag` — but only from the LAST path segment, so a registry port
  * (`ghcr.io:5000/org/img`) is not mistaken for a tag.
@@ -755,7 +780,10 @@ export function createDockerEngine(opts = {}) {
         return out;
       }
       const buffer = await handle.logs({ follow: false, stdout: true, stderr: true });
-      return Readable.from([buffer]);
+      // The one-shot path is framed exactly like the follow path — same non-TTY
+      // container, same 8-byte headers. Demuxing only one of them would leave
+      // `GET /logs` (no ?follow) handing docker's wire format to the operator.
+      return Readable.from([demuxLogBuffer(Buffer.from(buffer))]);
     },
 
     async warmImages(refs) {

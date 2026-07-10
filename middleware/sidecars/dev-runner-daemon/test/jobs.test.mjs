@@ -452,16 +452,20 @@ function makeFakeDocker(opts = {}) {
         return { Id: id };
       },
       async logs(o) {
-        if (!o.follow) return Buffer.from('history');
+        const frame = (text, stream = 1) => {
+          const payload = Buffer.from(text);
+          const header = Buffer.alloc(8);
+          header[0] = stream;
+          header.writeUInt32BE(payload.length, 4);
+          return Buffer.concat([header, payload]);
+        };
+        // Non-follow is framed exactly like follow — same non-TTY container.
+        if (!o.follow) return Buffer.concat([frame('his'), frame('tory', 2)]);
         // A non-TTY container's follow stream is FRAMED: an 8-byte header per
         // chunk (stream byte, 3 pad, 4-byte big-endian length) before the
         // payload. The fake must emit real frames or it cannot catch a demux
         // bug — a stub that hands back clean text tests nothing.
-        const payload = Buffer.from('live-stream');
-        const header = Buffer.alloc(8);
-        header[0] = 1; // stdout
-        header.writeUInt32BE(payload.length, 4);
-        return Readable.from([Buffer.concat([header, payload])]);
+        return Readable.from([frame('live-stream')]);
       },
     };
   }
@@ -677,7 +681,11 @@ describe('createDockerEngine — streamLogs and warmImages', () => {
     assert.ok(once instanceof Readable);
     const chunks = [];
     for await (const c of once) chunks.push(c);
-    assert.equal(Buffer.concat(chunks).toString(), 'history', 'non-follow yields the raw buffer as one chunk');
+    assert.equal(
+      Buffer.concat(chunks).toString(),
+      'history',
+      "non-follow is demuxed too — stdout and stderr frames combined, no wire headers",
+    );
   });
 
   it('warmImages pulls each ref and returns the resolved digests', async () => {
