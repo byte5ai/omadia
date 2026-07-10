@@ -107,8 +107,20 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   middleware env var `PRIVACY_C1_DETECTOR_URL`. Without the overlay the
   default stack is unchanged; sidecar down at runtime means the audited
   degrade-to-C0 path (`promptMaskDegraded`), never a silent unmasked
-  pass-through. The middleware-side detector client wiring follows in the
-  same branch.
+  pass-through.
+- `harness-plugin-privacy-guard` 0.4.0: the sidecar is wired into the
+  shipped `PromptPiiDetector` seam via a new fail-closed HTTP client
+  (`createC1HttpDetector`, detector id `c1-gliner`) injected through the
+  existing `createPrivacyGuardService({c1Detector})` slot — no service-,
+  mask- or orchestrator-logic changes. New non-secret setup field
+  `c1_detector_url` (live-read per call; `PRIVACY_C1_DETECTOR_URL` env
+  fallback; empty ⇒ C0-only, no C1 call attempted) and one deliberate
+  `permissions.network.outbound` entry for the sidecar (the plugin was
+  previously pure compute). The client positively validates the sidecar's
+  response schema and converts its Unicode code-point offsets to UTF-16
+  exactly, asserting per span that the converted slice reproduces the
+  sidecar's text — any mismatch, timeout (default 1500 ms), non-200 or
+  malformed body throws and rides the audited degrade-to-C0 path.
 
 ### Changed — v1.0 readiness pass across the earliest core plugins (#431)
 
