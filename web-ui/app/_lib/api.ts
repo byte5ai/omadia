@@ -3859,6 +3859,80 @@ export async function getConductorRun(slug: string, runId: string): Promise<Cond
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}`);
 }
 
+// Workflow templates (#429) — curated, slot-parameterized starting points bundled with
+// the middleware. Wire shapes mirror @omadia/conductor-core's TemplateManifest locally,
+// following this file's convention (web-ui does not depend on middleware workspace
+// packages).
+
+export interface ConductorTemplateSlot {
+  key: string;
+  /** human-readable, shown in the mapping form. */
+  label: string;
+  /** authored help text for the mapping form. */
+  description?: string;
+}
+
+export interface ConductorTemplateSlots {
+  agents?: ConductorTemplateSlot[];
+  actions?: ConductorTemplateSlot[];
+  roles?: ConductorTemplateSlot[];
+  events?: ConductorTemplateSlot[];
+  channels?: ConductorTemplateSlot[];
+}
+
+/** slot key → install-local entity id, per kind (mirrors TemplateSlotMapping). */
+export type ConductorTemplateSlotMapping = Partial<
+  Record<'agents' | 'actions' | 'roles' | 'events' | 'channels', Record<string, string>>
+>;
+
+/** Just enough of the template graph for catalog rendering (the schedule badge reads
+ *  `triggers`); steps and transitions stay opaque — downstream consumers (designer)
+ *  take them as `unknown`, parity with getConductorWorkflowGraph. */
+export interface ConductorTemplateGraph {
+  entryStepId: string;
+  steps: unknown[];
+  transitions: unknown[];
+  triggers?: Array<{ id: string; kind: string; eventId?: string; cron?: string }>;
+}
+
+export interface ConductorTemplate {
+  id: string;
+  name: string;
+  description: string;
+  useCase: string;
+  defaultSlug: string;
+  graph: ConductorTemplateGraph;
+  slots: ConductorTemplateSlots;
+}
+
+export async function fetchConductorTemplates(): Promise<{ templates: ConductorTemplate[] }> {
+  return getJson(`${CONDUCTOR_BASE}/templates`);
+}
+
+/** Ephemeral instantiation: substituted + validated graph, nothing persisted
+ *  (feeds "open in designer"). */
+export async function resolveConductorTemplate(
+  id: string,
+  mapping: ConductorTemplateSlotMapping,
+): Promise<{ graph: unknown }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/resolve`, { mapping });
+}
+
+/** Persistent instantiation: publishes an ordinary versioned workflow (copy, not
+ *  reference). 409 conductor.slug_exists on collision; enable defaults to false. */
+export async function instantiateConductorTemplate(
+  id: string,
+  body: {
+    slug: string;
+    name?: string;
+    description?: string;
+    mapping: ConductorTemplateSlotMapping;
+    enable?: boolean;
+  },
+): Promise<{ workflow: ConductorWorkflow; version: { id: string; version: number } }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/instantiate`, body);
+}
+
 // Conversational builder (US7) — co-design a draft graph by chat. A turn is stateless: the
 // client posts the current draft graph + the message, and gets back the patched draft, the
 // applied patches, the assistant's reply, and a validation verdict. The draft stays client-side

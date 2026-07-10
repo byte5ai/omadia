@@ -570,7 +570,17 @@
     "kvKey": "key",
     "kvValue": "value",
     "kvAddRow": "+ Add field",
-    "kvHint": "Tip: wrap text in quotes to keep it a string, e.g. \"123\"."
+    "kvHint": "Tip: wrap text in quotes to keep it a string, e.g. \"123\".",
+    "templatesHeading": "Workflow templates",
+    "templatesHint": "Start from a curated template: pick a use case, map its slots to your agents, roles and channels, then publish it as an ordinary, fully editable workflow.",
+    "templateUseButton": "Use template",
+    "templateScheduleBadge": "Runs on a schedule",
+    "templateMappingSummary": "You will map: {summary}",
+    "templateSlotRoles": "{count, plural, one {# role} other {# roles}}",
+    "templateSlotAgents": "{count, plural, one {# agent} other {# agents}}",
+    "templateSlotActions": "{count, plural, one {# action} other {# actions}}",
+    "templateSlotEvents": "{count, plural, one {# event} other {# events}}",
+    "templateSlotChannels": "{count, plural, one {# channel} other {# channels}}"
   },
   "operatorChannels": {
     "title": "Channels",

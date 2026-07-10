@@ -18,6 +18,24 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — workflow-template gallery on /conductor (#429, unit f1)
+
+- The `/conductor` admin page gains a "Workflow templates" section above the
+  workflows list: a card grid (`web-ui/app/conductor/_components/TemplateGallery.tsx`)
+  rendering the bundled catalog from `GET /templates`. Each card answers "what
+  problem does this solve and what will I need to map" before commit — name,
+  `useCase` tag, description, a pluralized "You will map: 2 roles · 2 agents ·
+  1 channel" slot summary, and a text/edge "Runs on a schedule" badge for
+  cron-triggered templates. An empty catalog renders nothing (no empty-state
+  noise). "Use template" stores the selection for the slot-mapping form
+  (follow-up unit f2). API client (`web-ui/app/_lib/api.ts`) mirrors the
+  `TemplateManifest` wire shape locally (web-ui does not depend on
+  `@omadia/conductor-core`) and ships all three fetchers —
+  `fetchConductorTemplates`, `resolveConductorTemplate`,
+  `instantiateConductorTemplate` — so f2 only builds UI. i18n keys under the
+  `conductor` namespace in `messages/en.json` + `messages/de.json`; Vitest
+  component tests in `app/conductor/_components/__tests__/`.
+
 ### Added — conductor workflow-template routes (#429, unit b3)
 
 - Three new operator routes on the auth-gated `/api/v1/operator/conductors`

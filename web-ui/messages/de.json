@@ -570,7 +570,17 @@
     "kvKey": "Schlüssel",
     "kvValue": "Wert",
     "kvAddRow": "+ Feld hinzufügen",
-    "kvHint": "Tipp: Text in Anführungszeichen bleibt ein String, z. B. \"123\"."
+    "kvHint": "Tipp: Text in Anführungszeichen bleibt ein String, z. B. \"123\".",
+    "templatesHeading": "Workflow-Vorlagen",
+    "templatesHint": "Starte mit einer kuratierten Vorlage: Use Case wählen, Platzhalter auf deine Agenten, Rollen und Kanäle abbilden, dann als gewöhnlichen, voll editierbaren Workflow veröffentlichen.",
+    "templateUseButton": "Vorlage verwenden",
+    "templateScheduleBadge": "Läuft nach Zeitplan",
+    "templateMappingSummary": "Du ordnest zu: {summary}",
+    "templateSlotRoles": "{count, plural, one {# Rolle} other {# Rollen}}",
+    "templateSlotAgents": "{count, plural, one {# Agent} other {# Agenten}}",
+    "templateSlotActions": "{count, plural, one {# Aktion} other {# Aktionen}}",
+    "templateSlotEvents": "{count, plural, one {# Event} other {# Events}}",
+    "templateSlotChannels": "{count, plural, one {# Kanal} other {# Kanäle}}"
   },
   "operatorChannels": {
     "title": "Channels",

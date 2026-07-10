@@ -9,6 +9,7 @@ import {
   assignRoleHolder,
   createConductorRole,
   emitConductorEvent,
+  fetchConductorTemplates,
   getConductorRun,
   listConductorRoles,
   listConductorWorkflows,
@@ -19,17 +20,24 @@ import {
   type ConductorEmitResult,
   type ConductorRole,
   type ConductorRunResult,
+  type ConductorTemplate,
   type ConductorWorkflow,
 } from '@/app/_lib/api';
 
 import { ConductorCanvas } from './_components/ConductorCanvas';
 import { ConductorChatPane } from './_components/ConductorChatPane';
 import { ConductorRunHistory, ConductorRunTrace } from './_components/ConductorRunTrace';
+import { TemplateGallery } from './_components/TemplateGallery';
 
 export default function ConductorPage(): React.JSX.Element {
   const t = useTranslations('conductor');
 
   const [workflows, setWorkflows] = useState<ConductorWorkflow[]>([]);
+  const [templates, setTemplates] = useState<ConductorTemplate[]>([]);
+  // Template instantiation flow (#429): "Use template" stores the selection; the
+  // slot-mapping form (a follow-up unit) reads it. Until that lands, only the setter
+  // is bound — the selection is held but renders nothing.
+  const [, setSelectedTemplate] = useState<ConductorTemplate | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runningSlug, setRunningSlug] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<ConductorRunResult | null>(null);
@@ -59,14 +67,16 @@ export default function ConductorPage(): React.JSX.Element {
   const reload = useCallback(async () => {
     try {
       setLoadError(null);
-      const [wfRes, awRes, roleRes] = await Promise.all([
+      const [wfRes, awRes, roleRes, tplRes] = await Promise.all([
         listConductorWorkflows(),
         listPendingAwaits(),
         listConductorRoles(),
+        fetchConductorTemplates(),
       ]);
       setWorkflows(wfRes.workflows);
       setAwaits(awRes.awaits);
       setRoles(roleRes.roles);
+      setTemplates(tplRes.templates);
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : String(err));
     }
@@ -190,6 +200,18 @@ export default function ConductorPage(): React.JSX.Element {
         </h1>
         <p className="mt-3 max-w-2xl text-[15px] leading-[1.55] text-[color:var(--fg-muted)]">{t('intro')}</p>
       </header>
+
+      {/* Workflow templates (#429) — curated starting points, above the workflows list.
+          Hidden while the catalog is empty (or still loading): no empty-state noise. */}
+      {templates.length > 0 && (
+        <section className="mb-10">
+          <h2 className="mb-1 text-[13px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
+            {t('templatesHeading')}
+          </h2>
+          <p className="mb-4 max-w-2xl text-[13px] text-[color:var(--fg-muted)]">{t('templatesHint')}</p>
+          <TemplateGallery templates={templates} onUseTemplate={(tpl) => setSelectedTemplate(tpl)} />
+        </section>
+      )}
 
       {/* Workflows list with quick-run */}
       <section className="mb-10">
