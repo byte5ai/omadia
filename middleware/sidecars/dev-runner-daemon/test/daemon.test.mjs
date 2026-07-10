@@ -22,6 +22,7 @@ import { Readable } from 'node:stream';
 import { after, afterEach, describe, it } from 'node:test';
 
 import { SpecRejectedError } from '../src/clamp.mjs';
+import { createImageWarmer } from '../src/warmer.mjs';
 
 import { DaemonAuthConfigError, parseDaemonTokens } from '../src/auth.mjs';
 import { assertControlPlaneBind, createDaemon } from '../src/daemon.mjs';
@@ -101,6 +102,7 @@ async function startDaemon(opts = {}) {
     jobManager,
     engine,
     warmImageRefs: opts.warmImageRefs ?? ['ghcr.io/byte5ai/omadia-dev-runner:latest'],
+    warmer: opts.warmer,
     maxLogFollows: opts.maxLogFollows,
     logger: { warn() {} },
   });
@@ -637,5 +639,42 @@ describe('dev-runner-daemon — a clamp refusal is a bad request, not an interna
     const res = await call(d.url, '/v1/jobs', { method: 'POST', body: createBody() });
     assert.equal(res.status, 400, 'the caller named a shape the daemon will not run');
     assert.equal((await res.json()).code, 'daemon.spec_rejected');
+  });
+});
+
+describe('dev-runner-daemon — the warmer owns the health warm-state', () => {
+  let d;
+  after(async () => d?.close());
+  it('reports the warmer state, joins concurrent warms, and never lies about a failed pull', async () => {
+    let pulls = 0;
+    let release;
+    const gate = new Promise((r) => (release = r));
+    const engine = fakeEngine({
+      async warmImages() {
+        pulls += 1;
+        await gate;
+        if (pulls === 1) throw new Error('registry down');
+        return ['sha256:aaa'];
+      },
+    });
+    const jobManager = new JobManager({ engine, policyClient: fakePolicyClient() });
+    const warmer = createImageWarmer({ engine, refs: ['img:tag'], logger: { warn() {}, error() {} } });
+    d = await startDaemon({ engine, jobManager, warmer });
+
+    // A pull that fails must leave the cache cold: a health endpoint that lies
+    // about warmth is worse than one that says nothing.
+    const failing = call(d.url, '/v1/warm', { method: 'POST' });
+    release();
+    await failing.catch(() => {});
+    let health = await (await call(d.url, '/v1/health')).json();
+    assert.equal(health.imageWarm, false, 'a failed pull never marks the image warm');
+    assert.deepEqual(health.warmedDigests, []);
+
+    // A second, successful warm updates the state the health route reports —
+    // proving /v1/health reads the WARMER, not a stale local object.
+    await call(d.url, '/v1/warm', { method: 'POST' });
+    health = await (await call(d.url, '/v1/health')).json();
+    assert.equal(health.imageWarm, true);
+    assert.deepEqual(health.warmedDigests, ['sha256:aaa']);
   });
 });

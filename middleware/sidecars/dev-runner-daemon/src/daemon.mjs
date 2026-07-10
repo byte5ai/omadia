@@ -43,6 +43,7 @@ import { SpecRejectedError } from './clamp.mjs';
 import { createPolicyClient, parseAllowedImages, parseRequireDigest, PolicyLookupError } from './policyClient.mjs';
 import { parseCreateJobRequest, parseRenewLeaseRequest, WireProtocolMismatchError } from './protocol.ts';
 import { createReaper, resolveSweepIntervalMs } from './reaper.mjs';
+import { createImageWarmer } from './warmer.mjs';
 
 /** Default control-plane port (spec §4). */
 export const DEFAULT_DAEMON_PORT = 7411;
@@ -104,6 +105,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * @property {JobManager} jobManager
  * @property {import('./jobs.mjs').ContainerEngine} engine
  * @property {readonly string[]} [warmImageRefs] Refs `POST /v1/warm` pulls (`DEV_RUNNER_IMAGES`).
+ * @property {import('./warmer.mjs').ImageWarmer} [warmer] Owns the warm loop + state that `/v1/health` reports.
  * @property {number} [maxLogFollows] Concurrent `?follow=1` stream cap (default 4).
  * @property {{ warn: (msg: string) => void }} [logger]
  */
@@ -294,6 +296,7 @@ function toJobSummary(record) {
 export function createDaemon(deps) {
   const logger = deps.logger ?? console;
   const warmImageRefs = deps.warmImageRefs ?? [];
+  const warmer = deps.warmer;
   const maxLogFollows = deps.maxLogFollows ?? DEFAULT_MAX_LOG_FOLLOWS;
   /** Count of live `?follow=1` streams — the concurrency-cap denominator. */
   let activeFollows = 0;
@@ -328,18 +331,28 @@ export function createDaemon(deps) {
     // --- collection + singleton routes --------------------------------------
     if (path === '/v1/health' && method === 'GET') {
       const ping = await engine.ping();
+      const warm = warmer ? warmer.getState() : warmState;
       sendJson(res, 200, {
         ok: ping.reachable,
         dindReachable: ping.reachable,
         engineApiVersion: ping.apiVersion,
-        warmedDigests: warmState.digests,
-        imageWarm: warmState.warm,
+        warmedDigests: warm.digests,
+        imageWarm: warm.warm,
         liveJobs: jobManager.size(),
       });
       return;
     }
 
     if (path === '/v1/warm' && method === 'POST') {
+      // The warmer owns the warm state and de-duplicates concurrent pulls, so a
+      // burst of POSTs joins one engine pull instead of stampeding it, and a
+      // failed pull leaves `warm` false — a health endpoint that lies about a
+      // cold cache is worse than one that says nothing.
+      if (warmer) {
+        const digests = await warmer.warm();
+        sendJson(res, 200, { warmedDigests: digests, imageWarm: warmer.getState().warm });
+        return;
+      }
       const digests = await engine.warmImages(warmImageRefs);
       warmState.digests = digests;
       warmState.warm = digests.length > 0;
@@ -560,7 +573,11 @@ export async function main(env = process.env) {
     .map((r) => r.trim())
     .filter((r) => r.length > 0);
 
-  const server = createDaemon({ tokens, policyClient, jobManager, engine, warmImageRefs, maxLogFollows });
+  // The warm loop owns the state `/v1/health` reports. Built here (not inside
+  // createDaemon) so main() can stop it with the server — an unstopped interval
+  // keeps the process alive and hangs the tests.
+  const warmer = createImageWarmer({ engine, refs: warmImageRefs, intervalMs: parsePositiveIntEnv(env.DEV_RUNNER_WARM_INTERVAL_MS) });
+  const server = createDaemon({ tokens, policyClient, jobManager, engine, warmImageRefs, warmer, maxLogFollows });
 
   // The lease reaper is the daemon's self-authority for containers (spec §7): it
   // rebuilds the registry from engine labels at boot (so a restart does not
@@ -570,7 +587,11 @@ export async function main(env = process.env) {
   // Rebuild + first sweep BEFORE accepting traffic, so a create for an already
   // running (re-adopted) job is idempotent from the first request.
   await reaper.start();
-  server.on('close', () => reaper.stop());
+  warmer.start();
+  server.on('close', () => {
+    reaper.stop();
+    warmer.stop();
+  });
 
   await new Promise((resolve) => server.listen(port, bind, () => resolve(undefined)));
   console.log(`[dev-runner-daemon] listening on ${bind}:${port}`);
