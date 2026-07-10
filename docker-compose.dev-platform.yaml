@@ -1,0 +1,200 @@
+# Overlay: the dev platform (epic #470) — isolated per-job runner containers.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.dev-platform.yaml up -d
+#
+# The whole point of this file is a property the middleware cannot enforce about
+# itself: THE MIDDLEWARE NEVER TOUCHES A DOCKER SOCKET. It asks a small daemon to
+# create a container; that daemon talks to a dedicated, nested docker engine
+# (`dev-dind`) that holds nothing else. If the middleware is compromised — the
+# threat this design assumes — the blast radius is one dind, on internal-only
+# networks, whose containers can only reach the world through a default-deny
+# proxy that authorises them per job.
+#
+# Four services, four networks, and the reasons they are shaped this way:
+#
+#   dev-runner-daemon  the ONLY holder of docker credentials. Sits on dev-control
+#                      (to be called by the middleware, and to call it back) and
+#                      dev-engine (to reach dind). NOT on `omadia`: nothing else in
+#                      the stack may reach its control API.
+#   dev-dind           the nested engine. `privileged: true` — the only service in
+#                      the whole compose stack that is. Therefore it sits on
+#                      internal-only networks, publishes no host port, and speaks
+#                      TLS only (the daemon refuses a plaintext 2375 engine).
+#   dev-egress-proxy   the ONLY path from a job container to the internet.
+#                      Default-deny; the daemon registers each job's allowlist and
+#                      a per-job credential before its container starts.
+#   middleware         joins dev-control so it can call the daemon. It gains NO
+#                      docker socket, NO DOCKER_HOST, and no route to dev-engine.
+#
+# The proxy has a PINNED IP (172.28.5.3) rather than a DNS name because job
+# containers are created by the nested dind, not by compose — they never see
+# compose's DNS. `HTTP_PROXY` inside a runner must therefore be an address.
+#
+# Secrets: every value below is a placeholder read from the environment. Generate
+# DEV_RUNNER_DAEMON_TOKEN with `openssl rand -hex 32`; it is a comma-separated list
+# so it can be rotated with zero downtime (both ends ACCEPT every token, senders
+# SEND the first). Nothing here belongs in git.
+
+services:
+  # --- the middleware gains a client, and nothing else ----------------------
+  middleware:
+    environment:
+      DEV_PLATFORM_ENABLED: 'true'
+      DEV_PLATFORM_BACKEND: docker
+      # The daemon's control API, reachable only across dev-control.
+      DEV_RUNNER_DAEMON_URL: http://172.28.4.2:7411
+      DEV_RUNNER_DAEMON_TOKEN: ${DEV_RUNNER_DAEMON_TOKEN:?set DEV_RUNNER_DAEMON_TOKEN}
+      # Where the runner phones home. The daemon injects this into every job; the
+      # runner reaches it across dev-control, never over the public internet.
+      DEV_PLATFORM_RUNNER_BASE_URL: http://middleware:3000
+    networks: [omadia, dev-control]
+    # No `volumes:` entry for /var/run/docker.sock, and no DOCKER_HOST. Both are
+    # asserted absent by test/devplatform-docker/composeTopology.test.ts — the
+    # single most important property of this file.
+    depends_on:
+      dev-runner-daemon:
+        condition: service_healthy
+
+  # --- the only holder of docker credentials --------------------------------
+  dev-runner-daemon:
+    build:
+      context: middleware/sidecars/dev-runner-daemon
+    image: omadia-dev-runner-daemon:local
+    restart: unless-stopped
+    command: ['node', 'src/daemon.mjs']
+    environment:
+      # Bind to the dev-control interface ONLY, never a wildcard: the daemon also
+      # sits on dev-engine, and a wildcard bind would expose its control API to
+      # every container the nested engine runs. `assertControlPlaneBind` refuses
+      # 0.0.0.0, so the address is pinned (a container's IP is otherwise dynamic).
+      DEV_DAEMON_BIND: '172.28.4.2'
+      DEV_DAEMON_PORT: '7411'
+      DEV_RUNNER_DAEMON_TOKEN: ${DEV_RUNNER_DAEMON_TOKEN:?set DEV_RUNNER_DAEMON_TOKEN}
+
+      # The nested engine. TLS is mandatory — the daemon refuses tcp://…:2375.
+      DOCKER_HOST: tcp://dev-dind:2376
+      DOCKER_TLS_VERIFY: '1'
+      DOCKER_CERT_PATH: /certs/client
+
+      # Policy source. The daemon fetches each job's policy ITSELF; it never takes
+      # one from its caller.
+      OMADIA_INTERNAL_API_URL: http://middleware:3000
+
+      # The image allowlist is the boundary a compromised middleware cannot cross:
+      # it may name a job, never an image. The daemon REFUSES TO BOOT without it.
+      # Digest-pinned by default (DEV_RUNNER_REQUIRE_DIGEST=0 to relax, locally).
+      DEV_RUNNER_ALLOWED_IMAGES: ${DEV_RUNNER_ALLOWED_IMAGES:-ghcr.io/byte5ai/omadia-dev-runner}
+      DEV_RUNNER_IMAGES: ${DEV_RUNNER_IMAGE:-ghcr.io/byte5ai/omadia-dev-runner:latest}
+
+      # Egress. These two are configured TOGETHER or not at all: a job routed
+      # through the proxy that the daemon cannot register with it is answered 407
+      # on every request, which inside the runner looks like a broken network.
+      # The daemon refuses to boot on a half-configuration.
+      DEV_RUNNER_EGRESS_PROXY_URL: http://172.28.5.3:3128
+      DEV_RUNNER_EGRESS_PROXY_CONTROL_URL: http://172.28.4.3:3129
+      # The runner reaches the middleware directly, not through the proxy.
+      DEV_RUNNER_NO_PROXY: middleware,localhost,127.0.0.1
+
+      # A lease says "still working"; it can never say "run forever".
+      DEV_RUNNER_MAX_JOB_LIFETIME_MS: ${DEV_RUNNER_MAX_JOB_LIFETIME_MS:-21600000}
+    volumes:
+      - dev-dind-certs:/certs/client:ro
+    networks:
+      dev-control:
+        ipv4_address: 172.28.4.2
+      dev-engine: {}
+    # No `ports:` — the daemon is unreachable from the host and from `omadia`.
+    depends_on:
+      dev-dind:
+        condition: service_healthy
+      dev-egress-proxy:
+        condition: service_started
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://172.28.4.2:7411/v1/health',{headers:{authorization:'Bearer '+process.env.DEV_RUNNER_DAEMON_TOKEN.split(',')[0]}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # --- the nested engine: the only privileged service in the stack ----------
+  dev-dind:
+    image: docker:27-dind
+    restart: unless-stopped
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: /certs
+      # Even the nested engine's own registry pulls traverse the egress proxy, so
+      # a compromised daemon cannot reach an arbitrary registry.
+      HTTP_PROXY: http://172.28.5.3:3128
+      HTTPS_PROXY: http://172.28.5.3:3128
+      NO_PROXY: dev-runner-daemon,middleware,localhost,127.0.0.1
+    volumes:
+      - dev-dind-certs:/certs/client
+      - dev-dind-data:/var/lib/docker
+    # dev-engine reaches the daemon; dev-egress carries the job containers' traffic
+    # to the proxy. Both are `internal: true`, so this privileged container has no
+    # route to the host network and no route out except through the proxy.
+    networks: [dev-engine, dev-egress]
+    # No `ports:` — nothing outside dev-engine may speak to a privileged docker API.
+    healthcheck:
+      test: ['CMD', 'docker', 'info']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # --- the only path from a job container to the world ----------------------
+  dev-egress-proxy:
+    # SAME image as the daemon, different entrypoint: one build, two services, so
+    # the proxy never inherits the daemon's docker credentials.
+    build:
+      context: middleware/sidecars/dev-runner-daemon
+    image: omadia-dev-runner-daemon:local
+    restart: unless-stopped
+    command: ['node', 'src/proxy.mjs']
+    environment:
+      DEV_RUNNER_DAEMON_TOKEN: ${DEV_RUNNER_DAEMON_TOKEN:?set DEV_RUNNER_DAEMON_TOKEN}
+      DEV_EGRESS_DATA_PORT: '3128'
+      DEV_EGRESS_CONTROL_PORT: '3129'
+      # The one deliberate internal destination: the middleware's LLM proxy. Every
+      # other internal address is refused, including an allowlisted name that
+      # resolves to one (the rebinding defence).
+      OMADIA_INTERNAL_API_URL: http://middleware:3000
+    networks:
+      dev-egress:
+        # Pinned: job containers are created by dind, not compose, so they cannot
+        # resolve `dev-egress-proxy`. Their HTTP_PROXY must be an address.
+        ipv4_address: 172.28.5.3
+      dev-control:
+        # The daemon reaches the CONTROL plane here (dev-control); job containers
+        # reach the DATA plane at 172.28.5.3 (dev-egress). Two planes, two networks,
+        # and the daemon never joins the one the jobs are on.
+        ipv4_address: 172.28.4.3
+    # No `ports:` — the proxy is not reachable from the host.
+
+volumes:
+  dev-dind-certs:
+  dev-dind-data:
+
+networks:
+  # The middleware ↔ daemon ↔ middleware control path. Internal: nothing here is
+  # reachable from the host.
+  dev-control:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.4.0/24
+  # The daemon ↔ dind engine path. Nothing else joins it.
+  dev-engine:
+    driver: bridge
+    internal: true
+  # Job containers ↔ the egress proxy. Job containers are attached to a per-job
+  # network by the daemon's clamp; this network exists so the proxy has a stable,
+  # pinned address that those per-job networks can be bridged to.
+  dev-egress:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.5.0/24
