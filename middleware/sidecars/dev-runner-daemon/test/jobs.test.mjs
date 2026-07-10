@@ -340,3 +340,34 @@ describe('JobManager — DELETE of an in-flight create waits for the outcome', (
     assert.equal(jm.list().length, 0, 'nothing is left behind');
   });
 });
+
+describe('JobManager — concurrent DELETEs for the same job', () => {
+  it('runs one teardown and never deletes a job a later create registered', async () => {
+    const gate = deferred();
+    let destroys = 0;
+    const base = immediateEngine();
+    const engine = {
+      ...base,
+      async destroyJobContainer(container) {
+        destroys += 1;
+        await gate.promise; // both DELETEs are now inside destroy()
+        return base.destroyJobContainer(container);
+      },
+    };
+    const jm = new JobManager({ engine, policyClient: fakePolicyClient() });
+    await jm.create(JOB_ID, 60);
+
+    const first = jm.destroy(JOB_ID);
+    const second = jm.destroy(JOB_ID); // must join the first, not start its own
+    gate.resolve();
+    assert.equal(await first, true);
+    assert.equal(await second, true);
+    assert.equal(destroys, 1, 'the container is torn down exactly once');
+
+    // A fresh create for the same id must survive: a late-returning DELETE that
+    // deleted unconditionally would drop this record and leak its container.
+    const again = await jm.create(JOB_ID, 60);
+    assert.equal(again.created, true);
+    assert.equal(jm.size(), 1, 'the new job is still tracked');
+  });
+});

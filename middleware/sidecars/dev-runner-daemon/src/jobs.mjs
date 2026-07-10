@@ -172,6 +172,10 @@ export class JobManager {
 
   /** Ids whose DELETE is mid-flight: their record still exists but is doomed. */
   #destroying = new Set();
+
+  /** One teardown per id: concurrent DELETEs share the first one's promise. */
+  /** @type {Map<string, Promise<boolean>>} */
+  #destroyRuns = new Map();
   /** @type {number} Max live jobs (registry size + in-flight) admitted. */
   #maxLiveJobs;
   /** @type {number} Max concurrent provisions admitted. */
@@ -307,6 +311,25 @@ export class JobManager {
    * @returns {Promise<boolean>} true if a job was present/in-flight and torn down.
    */
   async destroy(jobId) {
+    // Two DELETEs for the same id must not both run a teardown. Without this,
+    // the second one can finish AFTER the first succeeded and a fresh create
+    // registered a new record — and its unconditional delete would then drop
+    // the new job's handle, leaving that container untracked. One teardown per
+    // id, and both callers await the same answer.
+    const running = this.#destroyRuns.get(jobId);
+    if (running) return running;
+
+    const run = this.#destroyOnce(jobId);
+    this.#destroyRuns.set(jobId, run);
+    try {
+      return await run;
+    } finally {
+      this.#destroyRuns.delete(jobId);
+    }
+  }
+
+  /** @param {string} jobId @returns {Promise<boolean>} */
+  async #destroyOnce(jobId) {
     const record = this.#jobs.get(jobId);
     if (record) {
       this.#destroying.add(jobId);
@@ -322,9 +345,15 @@ export class JobManager {
       } finally {
         this.#destroying.delete(jobId);
       }
-      this.#jobs.delete(jobId);
+      // Only forget THIS record: a later create may have registered a new one.
+      if (this.#jobs.get(jobId) === record) this.#jobs.delete(jobId);
       return true;
     }
+    return this.#destroyInflight(jobId);
+  }
+
+  /** @param {string} jobId @returns {Promise<boolean>} */
+  async #destroyInflight(jobId) {
     // No live job yet — but a create may be mid-provision. Mark it cancelled so
     // #provision reaps the container it is about to create, then WAIT for that
     // create to settle before answering. Returning success the moment the flag
@@ -344,7 +373,8 @@ export class JobManager {
         throw err;
       }
       // The create won the race and registered a live job; tear that down.
-      return this.destroy(jobId);
+      // Call the inner path: `destroy` would find this very run in #destroyRuns.
+      return this.#destroyOnce(jobId);
     }
     return false;
   }
