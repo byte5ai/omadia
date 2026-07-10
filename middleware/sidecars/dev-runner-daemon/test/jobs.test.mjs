@@ -452,7 +452,16 @@ function makeFakeDocker(opts = {}) {
         return { Id: id };
       },
       async logs(o) {
-        return o.follow ? Readable.from(['live-stream']) : Buffer.from('history');
+        if (!o.follow) return Buffer.from('history');
+        // A non-TTY container's follow stream is FRAMED: an 8-byte header per
+        // chunk (stream byte, 3 pad, 4-byte big-endian length) before the
+        // payload. The fake must emit real frames or it cannot catch a demux
+        // bug — a stub that hands back clean text tests nothing.
+        const payload = Buffer.from('live-stream');
+        const header = Buffer.alloc(8);
+        header[0] = 1; // stdout
+        header.writeUInt32BE(payload.length, 4);
+        return Readable.from([Buffer.concat([header, payload])]);
       },
     };
   }
@@ -462,6 +471,11 @@ function makeFakeDocker(opts = {}) {
     modem: {
       followProgress(_stream, done) {
         done(null, []);
+      },
+      // Real dockerode demuxes docker's 8-byte stream frames. A fake that omits
+      // it lets a demux bug ship, so model it: strip the header from each frame.
+      demuxStream(source, stdout, _stderr) {
+        source.on('data', (chunk) => stdout.write(chunk.subarray(8)));
       },
     },
     pull(ref, cb) {
@@ -491,7 +505,9 @@ function makeFakeDocker(opts = {}) {
     getVolume: (name) => volumeHandle(name),
     getImage: (ref) => ({
       async inspect() {
-        return { RepoDigests: [`${ref.split('@')[0]}@${DIGEST}`], Id: 'sha256:imgid' };
+        // Real docker reports `repository@sha256:…` — never with a tag.
+        const repo = (ref.split('@')[0] ?? ref).replace(/:[^:/]+$/, '');
+        return { RepoDigests: [`${repo}@${DIGEST}`], Id: 'sha256:imgid' };
       },
     }),
   };
@@ -650,6 +666,13 @@ describe('createDockerEngine — streamLogs and warmImages', () => {
     const engine = createDockerEngine({ docker, env: {} });
     const followed = await engine.streamLogs({ containerId: 'ctr-1' }, { follow: true });
     assert.ok(followed instanceof Readable);
+    const live = [];
+    for await (const c of followed) live.push(c);
+    assert.equal(
+      Buffer.concat(live).toString(),
+      'live-stream',
+      "follow yields demuxed text — docker's 8-byte frame headers never reach the operator",
+    );
     const once = await engine.streamLogs({ containerId: 'ctr-1' }, { follow: false });
     assert.ok(once instanceof Readable);
     const chunks = [];

@@ -21,6 +21,8 @@ import { strict as assert } from 'node:assert';
 import { Readable } from 'node:stream';
 import { after, afterEach, describe, it } from 'node:test';
 
+import { SpecRejectedError } from '../src/clamp.mjs';
+
 import { DaemonAuthConfigError, parseDaemonTokens } from '../src/auth.mjs';
 import { assertControlPlaneBind, createDaemon } from '../src/daemon.mjs';
 import { JobManager } from '../src/jobs.mjs';
@@ -617,5 +619,23 @@ describe('dev-runner-daemon — log-follow hardening', () => {
       for (const s of streams) if (!s.destroyed) s.destroy();
       await waitFor(() => streams.every((s) => s.destroyed)).catch(() => {});
     }
+  });
+});
+
+describe('dev-runner-daemon — a clamp refusal is a bad request, not an internal error', () => {
+  let d;
+  after(async () => d?.close());
+  it('maps SpecRejectedError to 400 daemon.spec_rejected', async () => {
+    const engine = fakeEngine({
+      async createJobContainer() {
+        throw new SpecRejectedError('image_not_digest_pinned', 'the job image is a floating tag');
+      },
+    });
+    const jobManager = new JobManager({ engine, policyClient: fakePolicyClient() });
+    d = await startDaemon({ engine, jobManager });
+
+    const res = await call(d.url, '/v1/jobs', { method: 'POST', body: createBody() });
+    assert.equal(res.status, 400, 'the caller named a shape the daemon will not run');
+    assert.equal((await res.json()).code, 'daemon.spec_rejected');
   });
 });

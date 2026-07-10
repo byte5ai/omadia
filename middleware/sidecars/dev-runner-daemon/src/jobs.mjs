@@ -30,8 +30,8 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { PassThrough, Readable } from 'node:stream';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
 
 import Docker from 'dockerode';
 
@@ -149,6 +149,21 @@ export class JobCapacityError extends Error {
     /** @type {string} */
     this.code = kind === 'inflight' ? 'daemon.too_many_inflight' : 'daemon.at_capacity';
   }
+}
+
+
+/**
+ * The repository part of an image reference: strip any `@digest`, then a
+ * trailing `:tag` — but only from the LAST path segment, so a registry port
+ * (`ghcr.io:5000/org/img`) is not mistaken for a tag.
+ * @param {string} ref @returns {string}
+ */
+function repositoryOf(ref) {
+  const noDigest = ref.split('@')[0] ?? ref;
+  const slash = noDigest.lastIndexOf('/');
+  const lastSegment = noDigest.slice(slash + 1);
+  const colon = lastSegment.lastIndexOf(':');
+  return colon === -1 ? noDigest : noDigest.slice(0, slash + 1 + colon);
 }
 
 /** Default live-job admission bound (spec §4 hardening). */
@@ -532,12 +547,10 @@ async function removeContainer(docker, id, errors) {
   try {
     // SIGTERM, 10s grace; docker escalates to SIGKILL at the deadline.
     await container.stop({ t: 10 });
-  } catch (err) {
-    // 304 = already stopped, 404 = already gone — both fine; the force remove
-    // below (a hard SIGKILL) is the backstop for any other stop failure.
-    if (!hasStatus(err, 304) && !isNotFound(err)) {
-      // fall through — force remove is the guarantee, not stop.
-    }
+  } catch {
+    // Every stop failure is survivable: 304 (already stopped), 404 (already
+    // gone), or anything else. The force remove below is the guarantee and the
+    // post-remove inspect is the proof — a graceful stop is only a courtesy.
   }
   try {
     await container.remove({ force: true, v: true });
@@ -694,8 +707,23 @@ export function createDockerEngine(opts = {}) {
       // a live stream; `follow:false` a single Buffer, which we wrap as ONE chunk
       // so the reader gets raw bytes, not per-byte object-mode integers.
       if (follow) {
-        const stream = await handle.logs({ follow: true, stdout: true, stderr: true });
-        return /** @type {Readable} */ (/** @type {unknown} */ (stream));
+        const stream = /** @type {Readable} */ (
+          /** @type {unknown} */ (await handle.logs({ follow: true, stdout: true, stderr: true }))
+        );
+        // The clamp creates non-TTY containers, so docker frames every chunk with
+        // an 8-byte stream header. Demux it here: the seam promises "combined
+        // stdout/stderr", and an operator tailing a job must not have to parse
+        // docker's wire format out of their log lines.
+        const out = new PassThrough();
+        docker.modem.demuxStream(stream, out, out);
+        stream.on('end', () => out.end());
+        stream.on('error', (err) => out.destroy(err));
+        // Destroying the demuxed stream must release the upstream docker socket,
+        // which is what the daemon's follow-slot teardown relies on.
+        out.on('close', () => {
+          if (typeof stream.destroy === 'function') stream.destroy();
+        });
+        return out;
       }
       const buffer = await handle.logs({ follow: false, stdout: true, stderr: true });
       return Readable.from([buffer]);
@@ -708,10 +736,15 @@ export function createDockerEngine(opts = {}) {
         await ensureImage(docker, ref);
         const info = await docker.getImage(ref).inspect();
         const repoDigests = Array.isArray(info.RepoDigests) ? info.RepoDigests : [];
-        const first = repoDigests[0];
+        // An image pulled under several names carries one RepoDigest per
+        // repository, and they are NOT interchangeable — taking [0] can hand
+        // back a digest that belongs to a different registry than the ref we
+        // were asked to warm. Match on the repository we actually pulled.
+        const repository = repositoryOf(ref);
+        const match = repoDigests.find((rd) => typeof rd === 'string' && rd.startsWith(`${repository}@`));
         const resolved =
-          typeof first === 'string' && first.includes('@')
-            ? first.slice(first.indexOf('@') + 1)
+          typeof match === 'string'
+            ? match.slice(match.indexOf('@') + 1)
             : (imageDigestOf(ref) ?? String(info.Id ?? ''));
         digests.push(resolved);
       }

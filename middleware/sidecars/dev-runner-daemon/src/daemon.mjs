@@ -39,6 +39,7 @@ import {
   JobCleanupError,
   JobManager,
 } from './jobs.mjs';
+import { SpecRejectedError } from './clamp.mjs';
 import { createPolicyClient, parseAllowedImages, parseRequireDigest, PolicyLookupError } from './policyClient.mjs';
 import { parseCreateJobRequest, parseRenewLeaseRequest, WireProtocolMismatchError } from './protocol.ts';
 
@@ -224,6 +225,13 @@ function sendMappedError(res, err, logger) {
   }
   if (err instanceof EngineNotImplementedError) {
     sendError(res, 501, err.code, err.message);
+    return;
+  }
+  // The hardening clamp refused the container shape (e.g. a floating-tag image).
+  // Never a 500: the request named something the daemon will not run, and the
+  // caller must learn that rather than see an internal error.
+  if (err instanceof SpecRejectedError) {
+    sendError(res, 400, err.code, err.message);
     return;
   }
   // A create that raced a delete: the job was cancelled mid-provision.
