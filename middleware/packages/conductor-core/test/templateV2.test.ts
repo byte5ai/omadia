@@ -291,3 +291,38 @@ describe('inferTemplateManifest', () => {
     ]);
   });
 });
+
+// POST /templates bodies are arbitrary JSON: the gate must report malformed
+// manifests as validation errors, never throw (codex review of #478).
+describe('checkTemplateManifest — malformed route input', () => {
+  it('reports errors instead of throwing on an empty-object manifest', () => {
+    const result = checkTemplateManifest({} as TemplateManifest);
+    expect(result.ok).toBe(false);
+    const codes = result.errors.map((e) => e.code);
+    expect(codes).toContain('template_missing_metadata');
+    expect(codes).toContain('shape');
+    expect(result.errors.some((e) => e.message.includes("'slots'"))).toBe(true);
+  });
+
+  it('reports errors instead of throwing on a metadata-only manifest', () => {
+    const result = checkTemplateManifest({ id: 'x' } as TemplateManifest);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.message.includes("'slots'"))).toBe(true);
+  });
+
+  it('rejects a non-array slot kind list without throwing', () => {
+    const manifest = makeManifest();
+    (manifest.slots as Record<string, unknown>).agents = 'worker';
+    const result = checkTemplateManifest(manifest);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.message.includes("'slots.agents'"))).toBe(true);
+  });
+
+  it('rejects a keyless slot declaration entry without throwing', () => {
+    const manifest = makeTextManifest();
+    (manifest.slots.text as unknown[]).push({ label: 'No key' });
+    const result = checkTemplateManifest(manifest);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.message.includes('slots.text[2]'))).toBe(true);
+  });
+});

@@ -49,7 +49,7 @@ function fakeDb(): Db {
   };
   const NOW = '2026-07-10T00:00:00.000Z';
 
-   
+
   async function query(sql: string, params: unknown[] = []): Promise<{ rows: unknown[]; rowCount: number }> {
     const s = sql.replace(/\s+/g, ' ').trim();
     if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') return { rows: [], rowCount: 0 };

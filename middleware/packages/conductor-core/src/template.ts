@@ -23,13 +23,17 @@ import type {
   TemplateSlotMapping,
   TemplateSlotRef,
   TemplateSlots,
+  TemplateTextSlot,
   Trigger,
   ValidationError,
   ValidationResult,
   WorkflowGraph,
 } from './types.js';
+import { localizedTextProblem, resolveLocalizedText } from './localizedText.js';
 import { applyTextSlots, extractTextSlotRefs, TEXT_SLOT_PREFIX } from './textSlots.js';
 import { validate } from './validate.js';
+
+export { resolveLocalizedText } from './localizedText.js';
 
 const SLOT_PREFIX = 'slot:';
 
@@ -43,37 +47,6 @@ const SLOT_TOKEN: Record<TemplateSlotKind, string> = {
 };
 
 const SLOT_KINDS = Object.keys(SLOT_TOKEN) as TemplateSlotKind[];
-
-/**
- * Resolve manifest-borne localizable text to a display string. Plain strings pass
- * through unchanged; localized records resolve `locale` first (exact key) and fall
- * back to the required `en` base -- also for blank entries. Template metadata is
- * data, so localization travels with the manifest and is resolved at render time.
- */
-export function resolveLocalizedText(value: LocalizedText, locale?: string): string {
-  if (typeof value === 'string') return value;
-  const localized = locale ? value[locale] : undefined;
-  return typeof localized === 'string' && localized.trim().length > 0 ? localized : value.en;
-}
-
-/** Why `value` is not valid LocalizedText, or null when it is: a non-empty string, or
- *  a locale record whose entries are all non-empty strings with `en` present. */
-function localizedTextProblem(value: unknown): string | null {
-  if (typeof value === 'string') return value.trim().length > 0 ? null : 'is empty';
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return 'must be a non-empty string or an { en, ... } locale record';
-  }
-  const record = value as Record<string, unknown>;
-  if (typeof record['en'] !== 'string' || record['en'].trim().length === 0) {
-    return "must carry a non-empty 'en' entry (the required fallback locale)";
-  }
-  for (const [locale, text] of Object.entries(record)) {
-    if (typeof text !== 'string' || text.trim().length === 0) {
-      return `carries a non-string or empty '${locale}' entry`;
-    }
-  }
-  return null;
-}
 
 /** Parse `value` as a placeholder of `kind`. Returns the slot key, or null when the
  *  value is not a placeholder of that kind (including plain non-slot refs). */
@@ -227,6 +200,10 @@ export function applyTemplateSlots(manifest: TemplateManifest, mapping: Template
  *    (undeclared install-local refs are confusion/exfiltration vectors). Bundled
  *    and user-authored templates stay non-strict: pinning install-local refs
  *    deliberately is allowed there.
+ *
+ * Never throws on malformed input: route bodies are arbitrary JSON, so a manifest
+ * whose `slots` (or a kind's declaration list / entry) has the wrong shape is
+ * reported as a validation error, not a crash.
  */
 export function checkTemplateManifest(
   manifest: TemplateManifest,
@@ -286,10 +263,37 @@ export function checkTemplateManifest(
   // On a shape failure the graph cannot be walked structurally — slot checks would be noise.
   const shapeOk = !graphResult.errors.some((e) => e.code === 'shape');
 
+  // Route-facing entry point: the manifest is arbitrary JSON, so `slots` (and each
+  // kind's declaration list) must be shape-checked before walking — a malformed
+  // manifest is a validation ERROR, never a throw (POST /templates with `{}`).
+  const rawSlots: unknown = (manifest as { slots?: unknown }).slots;
+  const slotsWalkable = typeof rawSlots === 'object' && rawSlots !== null && !Array.isArray(rawSlots);
+  if (!slotsWalkable) {
+    errors.push({ code: 'template_missing_metadata', message: "template manifest field 'slots' must be an object of slot-declaration arrays ({} for a template without slots)", nodeIds: [] });
+  }
+  function slotDecls<T extends TemplateSlot | TemplateTextSlot>(kind: TemplateSlotKind | 'text'): T[] {
+    const list = slotsWalkable ? (rawSlots as Record<string, unknown>)[kind] : undefined;
+    if (list === undefined) return [];
+    if (!Array.isArray(list)) {
+      errors.push({ code: 'template_missing_metadata', message: `template manifest field 'slots.${kind}' must be an array of slot declarations`, nodeIds: [] });
+      return [];
+    }
+    const wellFormed: T[] = [];
+    list.forEach((entry: unknown, index) => {
+      const key = typeof entry === 'object' && entry !== null && !Array.isArray(entry) ? (entry as { key?: unknown }).key : undefined;
+      if (typeof key === 'string' && key.length > 0) {
+        wellFormed.push(entry as T);
+      } else {
+        errors.push({ code: 'template_missing_metadata', message: `slots.${kind}[${index}] must be an object with a non-empty string 'key'`, nodeIds: [] });
+      }
+    });
+    return wellFormed;
+  }
+
   const declared = new Map<string, TemplateSlot & { kind: TemplateSlotKind }>();
   for (const kind of SLOT_KINDS) {
     const seen = new Set<string>();
-    for (const slot of manifest.slots[kind] ?? []) {
+    for (const slot of slotDecls<TemplateSlot>(kind)) {
       if (seen.has(slot.key)) {
         errors.push({
           code: 'template_duplicate_slot_key',
@@ -321,7 +325,7 @@ export function checkTemplateManifest(
   }
 
   const declaredText = new Set<string>();
-  for (const slot of manifest.slots.text ?? []) {
+  for (const slot of slotDecls<TemplateTextSlot>('text')) {
     if (declaredText.has(slot.key)) {
       errors.push({
         code: 'template_duplicate_slot_key',

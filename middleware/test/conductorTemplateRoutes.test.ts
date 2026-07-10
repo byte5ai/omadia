@@ -108,13 +108,13 @@ function fakeTemplateStore(): FakeTemplateStore {
   };
 
   const store: ConductorTemplateStore = {
-     
+
     async create(manifest, createdBy) {
       if (rows.has(manifest.id)) throw new TemplateIdExistsError(manifest.id);
       rows.set(manifest.id, { createdBy, status: 'private', latestVersion: 1, reviewedBy: null, versions: new Map([[1, manifest]]) });
       return record(manifest.id)!;
     },
-     
+
     async addVersion(id, manifest) {
       const r = rows.get(id);
       if (!r) return undefined;
@@ -122,19 +122,19 @@ function fakeTemplateStore(): FakeTemplateStore {
       r.versions.set(r.latestVersion, manifest);
       return record(id);
     },
-     
+
     async get(id) {
       return record(id);
     },
-     
+
     async list() {
       return [...rows.keys()].sort().map((id) => record(id)!);
     },
-     
+
     async delete(id) {
       return rows.delete(id);
     },
-     
+
     async setStatus(id, status, reviewedBy) {
       const r = rows.get(id);
       if (!r) return undefined;
@@ -142,27 +142,27 @@ function fakeTemplateStore(): FakeTemplateStore {
       if (reviewedBy !== undefined) r.reviewedBy = reviewedBy;
       return record(id);
     },
-     
+
     async listVersions(id) {
       const r = rows.get(id);
       return r ? [...r.versions.keys()].sort((a, b) => a - b).map((version) => ({ version, createdAt: NOW })) : [];
     },
-     
+
     async getVersion(id, version) {
       const m = rows.get(id)?.versions.get(version);
       return m ? { ...m, version } : undefined;
     },
-     
+
     async recordInstantiation(input) {
       instantiations.push(input);
     },
-     
+
     async instantiationCounts() {
       const counts: Record<string, number> = {};
       for (const i of instantiations) counts[i.templateId] = (counts[i.templateId] ?? 0) + 1;
       return counts;
     },
-     
+
     async stampWorkflowProvenance(_client, workflowId, templateId, version) {
       stamps.push({ workflowId, templateId, version });
     },
@@ -479,6 +479,17 @@ describe('POST /templates', () => {
     const body = (await res.json()) as { code: string; errors: Array<{ code: string }> };
     assert.equal(body.code, 'conductor.template_invalid');
     assert.ok(body.errors.some((e) => e.code === 'template_undeclared_slot'), JSON.stringify(body.errors));
+  });
+
+  it('400s (never 500s) on malformed bodies: {} and a metadata-only manifest', async () => {
+    const h = await makeHarness();
+    for (const body of [{}, { manifest: { id: 'x' } }]) {
+      const res = await post(`${h.baseUrl}/templates`, body, 'operator-a');
+      assert.equal(res.status, 400, JSON.stringify(body));
+      const parsed = (await res.json()) as { code: string; errors: Array<{ message: string }> };
+      assert.equal(parsed.code, 'conductor.template_invalid');
+      assert.ok(parsed.errors.some((e) => e.message.includes("'slots'")), JSON.stringify(parsed.errors));
+    }
   });
 });
 

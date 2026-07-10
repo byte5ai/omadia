@@ -36,7 +36,19 @@ const inferredDraft: ConductorTemplate = {
   description: 'Route expenses to an approver.',
   useCase: 'general',
   defaultSlug: 'expense-flow',
-  graph: { entryStepId: 'submit', steps: [], transitions: [], triggers: [] },
+  graph: {
+    entryStepId: 'submit',
+    steps: [
+      { id: 'submit', kind: 'agent', agentId: 'slot:agent:expense-bot', prompt: 'Collect the expense report.' },
+      {
+        id: 'approve',
+        kind: 'human',
+        human: { principal: { kind: 'role', ref: 'slot:role:finance-lead' }, channel: 'teams', message: 'Approve the expense?' },
+      },
+    ],
+    transitions: [{ id: 't1', source: 'submit', target: 'approve' }],
+    triggers: [],
+  },
   slots: {
     roles: [{ key: 'finance-lead', label: 'finance-lead' }],
     agents: [{ key: 'expense-bot', label: 'expense-bot' }],
@@ -149,6 +161,10 @@ describe('<SaveAsTemplateDialog />', () => {
     await user.type(within(textGroup).getByRole('textbox', { name: 'Default value (optional)' }), 'EMEA');
     expect(screen.getByText('Token: slot:text:region')).toBeInTheDocument();
 
+    // Place the token into the agent step's prompt via the insert button (one
+    // button per step-text field; the prompt field renders first).
+    await user.click(screen.getAllByRole('button', { name: 'Insert slot:text:region' })[0]!);
+
     await user.click(screen.getByRole('button', { name: 'Publish template' }));
 
     expect(createConductorTemplate).toHaveBeenCalledWith({
@@ -157,7 +173,17 @@ describe('<SaveAsTemplateDialog />', () => {
       description: 'Route expenses to an approver.',
       useCase: 'general',
       defaultSlug: 'expense-flow',
-      graph: inferredDraft.graph,
+      graph: {
+        ...inferredDraft.graph,
+        steps: [
+          { id: 'submit', kind: 'agent', agentId: 'slot:agent:expense-bot', prompt: 'Collect the expense report. slot:text:region' },
+          {
+            id: 'approve',
+            kind: 'human',
+            human: { principal: { kind: 'role', ref: 'slot:role:finance-lead' }, channel: 'teams', message: 'Approve the expense?' },
+          },
+        ],
+      },
       slots: {
         roles: [{ key: 'finance-lead', label: { en: 'Finance approver', de: 'Freigaberolle' } }],
         agents: [{ key: 'expense-bot', label: 'expense-bot' }],
@@ -168,6 +194,31 @@ describe('<SaveAsTemplateDialog />', () => {
     await waitFor(() => {
       expect(onPublished).toHaveBeenCalledWith({ id: 'expense-flow', version: 1 });
     });
+  });
+
+  it('blocks publish while a declared text slot has no placed token, and unblocks after insertion', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(await screen.findByRole('button', { name: '+ Add text slot' }));
+    const textGroup = screen.getByRole('group', { name: /slot:text:/ });
+    await user.type(within(textGroup).getByRole('textbox', { name: /^Key/ }), 'greeting');
+    await user.type(within(textGroup).getByRole('textbox', { name: 'Label (English)' }), 'Greeting');
+
+    // Declared but unplaced → the backend would reject template_text_slot_unused.
+    expect(screen.getByRole('button', { name: 'Publish template' })).toBeDisabled();
+    expect(screen.getByText("Insert each text slot's token into at least one step text below.")).toBeInTheDocument();
+
+    // Both designated fields (agent prompt + human message) offer an insert path.
+    const inserts = screen.getAllByRole('button', { name: 'Insert slot:text:greeting' });
+    expect(inserts).toHaveLength(2);
+    await user.click(inserts[1]!); // place it in the human step's message
+
+    expect(screen.queryByText("Insert each text slot's token into at least one step text below.")).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Publish template' })).toBeEnabled();
+    expect(screen.getByRole('textbox', { name: 'Message — step approve' })).toHaveValue(
+      'Approve the expense? slot:text:greeting',
+    );
   });
 
   it('switches the primary action to "Publish as v2" for an owned existing id and submits via PUT', async () => {

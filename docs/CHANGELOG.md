@@ -18,6 +18,23 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — templates v2 review round 2: input hardening, token placement (#478)
+
+- `checkTemplateManifest` (conductor-core) no longer throws on malformed input:
+  `POST /conductors/templates` with `{}` (or a manifest whose `slots` / kind
+  lists / entries have the wrong shape) now returns a 400
+  `conductor.template_invalid` envelope instead of a 500. The localized-text
+  helpers moved to `conductor-core/src/localizedText.ts` (500-line rule; the
+  `@omadia/conductor-core` export surface is unchanged).
+- Save-as-template text slots are now actually publishable: the dialog gained a
+  "Place text-slot tokens" section that edits the graph's designated step texts
+  (`step.prompt`, `human.message`) with per-field insert buttons for each
+  declared `slot:text:<key>` token, and blocks publish until every declared
+  slot's token is placed — previously the manifest shipped without tokens and
+  the backend rejected it as `template_text_slot_unused`.
+- Stripped committed trailing whitespace from the conductor template test files
+  (`git diff --check` hygiene).
+
 ### Changed — templates v2 review fixups: step-kind tokens, component splits (#478)
 
 - The Conductor step-kind palette (agent/action/human node colors + badge text)

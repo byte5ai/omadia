@@ -12,6 +12,7 @@ import {
   updateConductorTemplate,
   type ConductorLocalizedText,
   type ConductorTemplate,
+  type ConductorTemplateGraph,
 } from '@/app/_lib/api';
 
 import { gcLbl } from './GuidedControls';
@@ -19,9 +20,12 @@ import {
   fieldClass,
   REF_KINDS,
   RefSlotSection,
+  StepTextsSection,
   TEXT_KEY_RE,
+  TEXT_TOKEN_RE,
   TextSlotSection,
   type EditableRefSlot,
+  type EditableStepText,
   type EditableTextSlot,
 } from './SaveAsTemplateSlotEditors';
 
@@ -75,6 +79,46 @@ function parseErrorBody(raw: string): TemplateErrorBody {
   }
 }
 
+/** Narrow view of a (wire-opaque) graph step: just the two designated text fields
+ *  of conductor-core's textSlotFields walk (`step.prompt`, `step.human.message`). */
+interface StepTextView {
+  id?: unknown;
+  prompt?: unknown;
+  human?: { message?: unknown } | null;
+}
+
+/** Enumerate the designated text fields of the draft graph, in step order. */
+function stepTextFields(graph: ConductorTemplateGraph): EditableStepText[] {
+  const fields: EditableStepText[] = [];
+  for (const step of graph.steps) {
+    if (typeof step !== 'object' || step === null) continue;
+    const s = step as StepTextView;
+    if (typeof s.id !== 'string') continue;
+    if (typeof s.prompt === 'string') fields.push({ stepId: s.id, field: 'prompt', value: s.prompt });
+    if (s.human && typeof s.human === 'object' && typeof s.human.message === 'string') {
+      fields.push({ stepId: s.id, field: 'message', value: s.human.message });
+    }
+  }
+  return fields;
+}
+
+/** Write the (token-bearing) edited step texts back onto a clone of the draft
+ *  graph — the structural mirror of stepTextFields, never a JSON string-replace. */
+function applyStepTexts(graph: ConductorTemplateGraph, fields: EditableStepText[]): ConductorTemplateGraph {
+  const cloned = structuredClone(graph);
+  const steps = cloned.steps.filter((step): step is StepTextView => typeof step === 'object' && step !== null);
+  for (const field of fields) {
+    const step = steps.find((s) => s.id === field.stepId);
+    if (!step) continue;
+    if (field.field === 'prompt' && typeof step.prompt === 'string') {
+      (step as { prompt: string }).prompt = field.value;
+    } else if (field.field === 'message' && step.human && typeof step.human === 'object' && typeof step.human.message === 'string') {
+      (step.human as { message: string }).message = field.value;
+    }
+  }
+  return cloned;
+}
+
 export interface SaveAsTemplateDialogProps {
   workflowSlug: string;
   /** loaded catalog (viewer-scoped: includes the viewer's own templates in every
@@ -105,6 +149,7 @@ export function SaveAsTemplateDialog({
   const [useCaseDe, setUseCaseDe] = useState('');
   const [refSlots, setRefSlots] = useState<EditableRefSlot[]>([]);
   const [textSlots, setTextSlots] = useState<EditableTextSlot[]>([]);
+  const [stepTexts, setStepTexts] = useState<EditableStepText[]>([]);
   const [pending, setPending] = useState(false);
   // 409-race recovery: the re-fetched, viewer-owned template overrides the (stale)
   // catalog lookup so the dialog can switch into "Publish as v{n+1}" mode.
@@ -138,6 +183,7 @@ export function SaveAsTemplateDialog({
             })),
           ),
         );
+        setStepTexts(stepTextFields(inferred.graph));
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -178,8 +224,24 @@ export function SaveAsTemplateDialog({
     textSlots.some((slot) => !TEXT_KEY_RE.test(slot.key.trim())) ||
     new Set(textSlots.map((slot) => slot.key.trim())).size !== textSlots.length;
 
+  // Backend contract: every declared text slot must be USED — its token placed in
+  // at least one step text (else `template_text_slot_unused`). Gate client-side.
+  const placedTokenKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const field of stepTexts) {
+      for (const match of field.value.matchAll(TEXT_TOKEN_RE)) keys.add(match[1]!);
+    }
+    return keys;
+  }, [stepTexts]);
+  const validTextKeys = useMemo(
+    () => [...new Set(textSlots.map((slot) => slot.key.trim()).filter((key) => TEXT_KEY_RE.test(key)))],
+    [textSlots],
+  );
+  const textUnplaced = validTextKeys.some((key) => !placedTokenKeys.has(key));
+
   const submitBlocked =
-    draft === null || pending || trimmedId.length === 0 || idInvalid || enMissing || textKeysInvalid || publishMode.kind === 'taken';
+    draft === null || pending || trimmedId.length === 0 || idInvalid || enMissing || textKeysInvalid || textUnplaced ||
+    publishMode.kind === 'taken';
 
   const setRefSlot = (index: number, patch: Partial<EditableRefSlot>): void => {
     setRefSlots((slots) => slots.map((slot, i) => (i === index ? { ...slot, ...patch } : slot)));
@@ -210,7 +272,8 @@ export function SaveAsTemplateDialog({
       description: loc(descEn, descDe),
       useCase: loc(useCaseEn, useCaseDe),
       defaultSlug: base.defaultSlug,
-      graph: base.graph,
+      // The edited step texts carry the placed `slot:text:<key>` tokens.
+      graph: applyStepTexts(base.graph, stepTexts),
       slots,
     };
   };
@@ -342,6 +405,24 @@ export function SaveAsTemplateDialog({
             onRemove={(index) => setTextSlots((slots) => slots.filter((_, i) => i !== index))}
           />
 
+          {/* Token placement: only relevant while text slots are declared. */}
+          {textSlots.length > 0 ? (
+            <StepTextsSection
+              fields={stepTexts}
+              tokenKeys={validTextKeys}
+              onChange={(index, value) =>
+                setStepTexts((fields) => fields.map((f, i) => (i === index ? { ...f, value } : f)))
+              }
+              onInsert={(index, key) =>
+                setStepTexts((fields) =>
+                  fields.map((f, i) =>
+                    i === index ? { ...f, value: `${f.value}${f.value.length === 0 || f.value.endsWith(' ') ? '' : ' '}slot:text:${key}` } : f,
+                  ),
+                )
+              }
+            />
+          ) : null}
+
           {/* Version mode: copy-not-reference transparency before the PUT. */}
           {publishMode.kind === 'version' ? (
             <p className="mt-4 max-w-2xl text-[12px] leading-[1.5] text-[color:var(--warning)]">
@@ -350,6 +431,9 @@ export function SaveAsTemplateDialog({
           ) : null}
           {enMissing ? (
             <p className="mt-3 text-[12px] text-[color:var(--danger)]">{t('saveTemplateEnRequired')}</p>
+          ) : null}
+          {textUnplaced ? (
+            <p className="mt-3 text-[12px] text-[color:var(--danger)]">{t('saveTemplateTextSlotUnplaced')}</p>
           ) : null}
           {manifestErrors.length > 0 ? (
             <div className="mt-3 text-[13px] text-[color:var(--danger)]">
