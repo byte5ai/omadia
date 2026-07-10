@@ -31,8 +31,18 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
 import Docker from 'dockerode';
+
+import {
+  buildContainerCreateOptions,
+  imageDigestOf,
+  jobNetworkName,
+  jobVolumeName,
+  resolveClampLimits,
+  SpecRejectedError,
+} from './clamp.mjs';
 
 /**
  * @typedef {import('./policyClient.mjs').DerivedJobPolicy} DerivedJobPolicy
@@ -476,10 +486,115 @@ export function dockerOptionsFromEnv(env) {
   };
 }
 
+/** True when a dockerode error carries the given HTTP status (404 = gone, 304 =
+ *  not-modified/already-stopped, 409 = conflict). Errors from dockerode are plain
+ *  objects with a `statusCode`; anything else (a network error) is not a status.
+ * @param {unknown} err @param {number} code @returns {boolean} */
+function hasStatus(err, code) {
+  return typeof err === 'object' && err !== null && 'statusCode' in err && err.statusCode === code;
+}
+
+/** @param {unknown} err @returns {boolean} */
+function isNotFound(err) {
+  return hasStatus(err, 404);
+}
+
+/** @param {unknown} err @returns {string} */
+function errMessage(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Pull an image ref to completion (a pull is a progress STREAM — resolving the
+ *  call is not resolving the pull, so we drain `followProgress`). Digest-pinned
+ *  refs resolve to exactly that content; tags resolve at the registry.
+ * @param {Docker} docker @param {string} ref @returns {Promise<void>} */
+function ensureImage(docker, ref) {
+  return new Promise((resolve, reject) => {
+    docker.pull(
+      ref,
+      /** @param {Error | null} err @param {NodeJS.ReadableStream} [stream] */ (err, stream) => {
+        if (err) return reject(err);
+        if (!stream) return reject(new Error(`docker pull returned no stream for ${ref}`));
+        docker.modem.followProgress(stream, (doneErr) => (doneErr ? reject(doneErr) : resolve()));
+      },
+    );
+  });
+}
+
+/** Remove a container after a graceful SIGTERM/10s/SIGKILL stop, then VERIFY it is
+ *  gone (lesson (c): a remove call returning is not proof of removal). A 404 at any
+ *  step means already-gone (idempotent). Any surviving container or hard error is
+ *  pushed to `errors` so the caller keeps the handle and can retry.
+ * @param {Docker} docker @param {string} id @param {string[]} errors */
+async function removeContainer(docker, id, errors) {
+  if (!id) return;
+  const container = docker.getContainer(id);
+  try {
+    // SIGTERM, 10s grace; docker escalates to SIGKILL at the deadline.
+    await container.stop({ t: 10 });
+  } catch (err) {
+    // 304 = already stopped, 404 = already gone — both fine; the force remove
+    // below (a hard SIGKILL) is the backstop for any other stop failure.
+    if (!hasStatus(err, 304) && !isNotFound(err)) {
+      // fall through — force remove is the guarantee, not stop.
+    }
+  }
+  try {
+    await container.remove({ force: true, v: true });
+  } catch (err) {
+    if (!isNotFound(err)) errors.push(`container ${id} remove failed: ${errMessage(err)}`);
+  }
+  try {
+    await container.inspect();
+    errors.push(`container ${id} still present after remove`);
+  } catch (err) {
+    if (!isNotFound(err)) errors.push(`container ${id} removal unverifiable: ${errMessage(err)}`);
+  }
+}
+
+/** Remove the per-job network and verify (lesson (c)). 404 = already gone.
+ * @param {Docker} docker @param {string} id @param {string[]} errors */
+async function removeNetwork(docker, id, errors) {
+  if (!id) return;
+  const network = docker.getNetwork(id);
+  try {
+    await network.remove();
+  } catch (err) {
+    if (!isNotFound(err)) errors.push(`network ${id} remove failed: ${errMessage(err)}`);
+  }
+  try {
+    await network.inspect();
+    errors.push(`network ${id} still present after remove`);
+  } catch (err) {
+    if (!isNotFound(err)) errors.push(`network ${id} removal unverifiable: ${errMessage(err)}`);
+  }
+}
+
+/** Remove the per-job workspace volume and verify (lesson (c)). 404 = already gone.
+ * @param {Docker} docker @param {string} name @param {string[]} errors */
+async function removeVolume(docker, name, errors) {
+  if (!name) return;
+  const volume = docker.getVolume(name);
+  try {
+    await volume.remove({ force: true });
+  } catch (err) {
+    if (!isNotFound(err)) errors.push(`volume ${name} remove failed: ${errMessage(err)}`);
+  }
+  try {
+    await volume.inspect();
+    errors.push(`volume ${name} still present after remove`);
+  } catch (err) {
+    if (!isNotFound(err)) errors.push(`volume ${name} removal unverifiable: ${errMessage(err)}`);
+  }
+}
+
 /**
- * A real dockerode-backed engine. `ping` (used by `/v1/health`) is implemented
- * now; the mutating lifecycle methods are the seam the clamp/warmer units fill,
- * so they throw `EngineNotImplementedError` until then.
+ * A real dockerode-backed engine implementing the full §4 container lifecycle
+ * behind the `ContainerEngine` seam. `createJobContainer` builds the create-options
+ * via the PURE `buildContainerCreateOptions` and hands THAT EXACT object to
+ * dockerode (lesson (b) — the validated object is the launched object), after
+ * creating the per-job bridge network and workspace volume; on any failure it
+ * rolls the partial resources back so a failed create leaks nothing.
  *
  * @param {object} [opts]
  * @param {Docker} [opts.docker] Injected client (else built from env).
@@ -487,7 +602,11 @@ export function dockerOptionsFromEnv(env) {
  * @returns {ContainerEngine}
  */
 export function createDockerEngine(opts = {}) {
-  const docker = opts.docker ?? new Docker(dockerOptionsFromEnv(opts.env ?? process.env));
+  const env = opts.env ?? process.env;
+  const docker = opts.docker ?? new Docker(dockerOptionsFromEnv(env));
+  const limits = resolveClampLimits(env);
+  const createdBy = env.DEV_RUNNER_CREATED_BY?.trim() || 'omadia-middleware';
+
   return {
     async ping() {
       try {
@@ -498,17 +617,105 @@ export function createDockerEngine(opts = {}) {
         return { reachable: false, apiVersion: '' };
       }
     },
-    async createJobContainer() {
-      throw new EngineNotImplementedError('createJobContainer');
+
+    async createJobContainer({ jobId, policy, leaseExpiresAt }) {
+      const networkName = jobNetworkName(jobId);
+      const volumeName = jobVolumeName(jobId);
+      // Build (and thereby VALIDATE) the create-options FIRST: a forbidden spec
+      // (a floating-tag image) throws SpecRejectedError here, before any docker
+      // resource is created — so a rejected job leaks nothing.
+      const createOptions = buildContainerCreateOptions({
+        jobId,
+        policy,
+        leaseExpiresAt,
+        networkName,
+        volumeName,
+        createdBy,
+        limits,
+      });
+      const imageDigest = imageDigestOf(policy.image);
+      if (imageDigest === undefined) {
+        // Unreachable: buildContainerCreateOptions already rejected a tag-only image.
+        throw new SpecRejectedError('image_not_digest_pinned', 'the job image resolved to no digest');
+      }
+      // Resolve the image BY DIGEST (never a floating tag) so the container is
+      // created from exactly the vetted content.
+      await ensureImage(docker, policy.image);
+
+      const labels = {
+        'ai.omadia.dev.jobId': jobId,
+        'ai.omadia.dev.createdBy': createdBy,
+      };
+      /** @type {import('dockerode').Network | undefined} */
+      let network;
+      let volumeCreated = false;
+      /** @type {import('dockerode').Container | undefined} */
+      let container;
+      try {
+        // Per-job bridge (NOT --internal: the job needs the NAT hop to the egress
+        // proxy) and per-job workspace volume, both UUID-named for the reaper.
+        network = await docker.createNetwork({ Name: networkName, Driver: 'bridge', Internal: false, Labels: labels });
+        await docker.createVolume({ Name: volumeName, Labels: labels });
+        volumeCreated = true;
+        // Lesson (b): the object validated above is the object launched now.
+        container = await docker.createContainer(createOptions);
+        await container.start();
+        return { containerId: container.id, networkId: network.id, volumeName, imageDigest };
+      } catch (err) {
+        // Roll back whatever this create managed to make, so a partial failure
+        // never strands a network/volume/container nobody tracks.
+        /** @type {string[]} */
+        const rollback = [];
+        if (container) await removeContainer(docker, container.id, rollback);
+        if (network) await removeNetwork(docker, network.id, rollback);
+        if (volumeCreated) await removeVolume(docker, volumeName, rollback);
+        throw err;
+      }
     },
-    async destroyJobContainer() {
-      throw new EngineNotImplementedError('destroyJobContainer');
+
+    async destroyJobContainer(container) {
+      // Idempotent full teardown: container (graceful stop → remove), per-job
+      // network, per-job volume — each verified gone. A second call on a
+      // partially-removed job finds 404s and succeeds; any resource that will
+      // NOT remove surfaces as a throw so the caller keeps the handle to retry.
+      /** @type {string[]} */
+      const errors = [];
+      await removeContainer(docker, container.containerId, errors);
+      await removeNetwork(docker, container.networkId, errors);
+      await removeVolume(docker, container.volumeName, errors);
+      if (errors.length > 0) {
+        throw new Error(`destroyJobContainer failed to fully remove job resources: ${errors.join('; ')}`);
+      }
     },
-    async streamLogs() {
-      throw new EngineNotImplementedError('streamLogs');
+
+    async streamLogs(container, { follow }) {
+      const handle = docker.getContainer(container.containerId);
+      // Branch on the literal so the SDK's overloads resolve: `follow:true` yields
+      // a live stream; `follow:false` a single Buffer, which we wrap as ONE chunk
+      // so the reader gets raw bytes, not per-byte object-mode integers.
+      if (follow) {
+        const stream = await handle.logs({ follow: true, stdout: true, stderr: true });
+        return /** @type {Readable} */ (/** @type {unknown} */ (stream));
+      }
+      const buffer = await handle.logs({ follow: false, stdout: true, stderr: true });
+      return Readable.from([buffer]);
     },
-    async warmImages() {
-      throw new EngineNotImplementedError('warmImages');
+
+    async warmImages(refs) {
+      /** @type {string[]} */
+      const digests = [];
+      for (const ref of refs) {
+        await ensureImage(docker, ref);
+        const info = await docker.getImage(ref).inspect();
+        const repoDigests = Array.isArray(info.RepoDigests) ? info.RepoDigests : [];
+        const first = repoDigests[0];
+        const resolved =
+          typeof first === 'string' && first.includes('@')
+            ? first.slice(first.indexOf('@') + 1)
+            : (imageDigestOf(ref) ?? String(info.Id ?? ''));
+        digests.push(resolved);
+      }
+      return digests;
     },
   };
 }

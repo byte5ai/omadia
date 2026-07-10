@@ -13,9 +13,13 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { Readable } from 'node:stream';
 import { describe, it } from 'node:test';
 
-import { JobCancelledError, JobCapacityError, JobCleanupError, JobManager } from '../src/jobs.mjs';
+import Docker from 'dockerode';
+
+import { SpecRejectedError } from '../src/clamp.mjs';
+import { createDockerEngine, JobCancelledError, JobCapacityError, JobCleanupError, JobManager } from '../src/jobs.mjs';
 
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -369,5 +373,357 @@ describe('JobManager — concurrent DELETEs for the same job', () => {
     const again = await jm.create(JOB_ID, 60);
     assert.equal(again.created, true);
     assert.equal(jm.size(), 1, 'the new job is still tracked');
+  });
+});
+
+// --------------------------------------------------------------------------
+// createDockerEngine — the real dockerode lifecycle behind the seam.
+// Driven against a FAKE dockerode (injected via `docker`) so the orchestration
+// (network+volume+container+start, rollback, verified idempotent teardown) is
+// asserted without a running engine. A real-docker check lives at the bottom.
+// --------------------------------------------------------------------------
+
+const DIGEST = 'sha256:2222222222222222222222222222222222222222222222222222222222222222';
+const DIGEST_IMAGE = `ghcr.io/byte5ai/omadia-dev-runner@${DIGEST}`;
+
+/** @returns {import('../src/policyClient.mjs').DerivedJobPolicy} */
+function enginePolicy(image = DIGEST_IMAGE) {
+  return { jobId: JOB_ID, image, env: { OMADIA_JOB_ID: JOB_ID }, egressAllowlist: [] };
+}
+
+/** A 404 dockerode error (the "already gone" signal teardown must treat as success). */
+function notFound(what) {
+  return Object.assign(new Error(`${what}: not found`), { statusCode: 404 });
+}
+
+/**
+ * A minimal in-memory dockerode double. `opts` injects failures at each step so
+ * rollback and teardown-surfacing paths are reachable.
+ */
+function makeFakeDocker(opts = {}) {
+  let seq = 0;
+  const networks = new Set();
+  const volumes = new Set();
+  const containers = new Set();
+  const events = { pulled: [], started: [], stopped: [], removedContainers: [] };
+
+  function networkHandle(id) {
+    return {
+      id,
+      async remove() {
+        if (opts.networkRemoveFail && networks.has(id)) throw opts.networkRemoveFail;
+        networks.delete(id);
+      },
+      async inspect() {
+        if (!networks.has(id)) throw notFound('network');
+        return { Id: id };
+      },
+    };
+  }
+  function volumeHandle(name) {
+    return {
+      async remove() {
+        if (opts.volumeRemoveFail && volumes.has(name)) throw opts.volumeRemoveFail;
+        volumes.delete(name);
+      },
+      async inspect() {
+        if (!volumes.has(name)) throw notFound('volume');
+        return { Name: name };
+      },
+    };
+  }
+  function containerHandle(id) {
+    return {
+      id,
+      async start() {
+        if (opts.startFail) throw opts.startFail;
+        events.started.push(id);
+      },
+      async stop() {
+        events.stopped.push(id);
+      },
+      async remove() {
+        if (opts.containerRemoveFail && containers.has(id)) throw opts.containerRemoveFail;
+        events.removedContainers.push(id);
+        containers.delete(id);
+      },
+      async inspect() {
+        if (!containers.has(id)) throw notFound('container');
+        return { Id: id };
+      },
+      async logs(o) {
+        return o.follow ? Readable.from(['live-stream']) : Buffer.from('history');
+      },
+    };
+  }
+
+  return {
+    state: { networks, volumes, containers, events },
+    modem: {
+      followProgress(_stream, done) {
+        done(null, []);
+      },
+    },
+    pull(ref, cb) {
+      if (opts.pullFail) return cb(opts.pullFail);
+      events.pulled.push(ref);
+      cb(null, {});
+    },
+    async createNetwork(o) {
+      if (opts.networkCreateFail) throw opts.networkCreateFail;
+      const id = `net-${++seq}`;
+      networks.add(id);
+      return networkHandle(id);
+    },
+    async createVolume(o) {
+      if (opts.volumeCreateFail) throw opts.volumeCreateFail;
+      volumes.add(o.Name);
+      return { Name: o.Name };
+    },
+    async createContainer(_o) {
+      if (opts.containerCreateFail) throw opts.containerCreateFail;
+      const id = `ctr-${++seq}`;
+      containers.add(id);
+      return containerHandle(id);
+    },
+    getContainer: (id) => containerHandle(id),
+    getNetwork: (id) => networkHandle(id),
+    getVolume: (name) => volumeHandle(name),
+    getImage: (ref) => ({
+      async inspect() {
+        return { RepoDigests: [`${ref.split('@')[0]}@${DIGEST}`], Id: 'sha256:imgid' };
+      },
+    }),
+  };
+}
+
+describe('createDockerEngine — createJobContainer applies the clamp and provisions cleanly', () => {
+  it('pulls by digest, creates the per-job network+volume+container, starts it, returns the handle', async () => {
+    const docker = makeFakeDocker();
+    const engine = createDockerEngine({ docker, env: {} });
+
+    const handle = await engine.createJobContainer({
+      jobId: JOB_ID,
+      policy: enginePolicy(),
+      leaseExpiresAt: '2026-07-10T12:00:00.000Z',
+    });
+
+    assert.equal(handle.volumeName, `omadia-job-${JOB_ID}`);
+    assert.equal(handle.imageDigest, DIGEST);
+    assert.ok(handle.containerId.startsWith('ctr-'));
+    assert.ok(handle.networkId.startsWith('net-'));
+    assert.deepEqual(docker.state.events.pulled, [DIGEST_IMAGE], 'pulled the digest ref');
+    assert.equal(docker.state.networks.size, 1, 'one per-job network');
+    assert.equal(docker.state.volumes.size, 1, 'one per-job volume');
+    assert.equal(docker.state.containers.size, 1, 'one container');
+    assert.equal(docker.state.events.started.length, 1, 'the container was started');
+  });
+
+  it('refuses a floating-tag image with spec_rejected BEFORE creating any resource', async () => {
+    const docker = makeFakeDocker();
+    const engine = createDockerEngine({ docker, env: {} });
+
+    await assert.rejects(
+      () =>
+        engine.createJobContainer({
+          jobId: JOB_ID,
+          policy: enginePolicy('ghcr.io/byte5ai/omadia-dev-runner:latest'),
+          leaseExpiresAt: '2026-07-10T12:00:00.000Z',
+        }),
+      (err) => err instanceof SpecRejectedError && err.reason === 'image_not_digest_pinned',
+    );
+    assert.equal(docker.state.events.pulled.length, 0, 'no pull for a rejected spec');
+    assert.equal(docker.state.networks.size, 0, 'no network for a rejected spec');
+    assert.equal(docker.state.volumes.size, 0, 'no volume for a rejected spec');
+  });
+
+  it('rolls back the network and volume when the container fails to start', async () => {
+    const docker = makeFakeDocker({ startFail: new Error('OCI start failed') });
+    const engine = createDockerEngine({ docker, env: {} });
+
+    await assert.rejects(
+      () =>
+        engine.createJobContainer({
+          jobId: JOB_ID,
+          policy: enginePolicy(),
+          leaseExpiresAt: '2026-07-10T12:00:00.000Z',
+        }),
+      /OCI start failed/,
+    );
+    assert.equal(docker.state.containers.size, 0, 'the created container was removed');
+    assert.equal(docker.state.networks.size, 0, 'the per-job network was removed');
+    assert.equal(docker.state.volumes.size, 0, 'the per-job volume was removed');
+  });
+
+  it('rolls back the network and volume when createContainer itself fails', async () => {
+    const docker = makeFakeDocker({ containerCreateFail: new Error('no such image') });
+    const engine = createDockerEngine({ docker, env: {} });
+
+    await assert.rejects(
+      () =>
+        engine.createJobContainer({
+          jobId: JOB_ID,
+          policy: enginePolicy(),
+          leaseExpiresAt: '2026-07-10T12:00:00.000Z',
+        }),
+      /no such image/,
+    );
+    assert.equal(docker.state.networks.size, 0, 'network rolled back');
+    assert.equal(docker.state.volumes.size, 0, 'volume rolled back');
+  });
+
+  it('honours env-tuned limits in the create-options handed to dockerode', async () => {
+    let captured;
+    const base = makeFakeDocker();
+    const docker = {
+      ...base,
+      async createContainer(o) {
+        captured = o;
+        return base.createContainer(o);
+      },
+    };
+    const engine = createDockerEngine({ docker, env: { DEV_JOB_MEM: '8g', DEV_JOB_PIDS: '1024' } });
+    await engine.createJobContainer({
+      jobId: JOB_ID,
+      policy: enginePolicy(),
+      leaseExpiresAt: '2026-07-10T12:00:00.000Z',
+    });
+    assert.equal(captured.HostConfig.Memory, 8 * 1024 ** 3);
+    assert.equal(captured.HostConfig.PidsLimit, 1024);
+    assert.equal(captured.User, '1000:1000');
+    assert.equal(captured.HostConfig.ReadonlyRootfs, true);
+  });
+});
+
+describe('createDockerEngine — destroyJobContainer removes all three, verifies, and is idempotent', () => {
+  const handle = {
+    containerId: 'ctr-1',
+    networkId: 'net-1',
+    volumeName: `omadia-job-${JOB_ID}`,
+    imageDigest: DIGEST,
+  };
+
+  it('removes container, network and volume, then a second call still succeeds', async () => {
+    const docker = makeFakeDocker();
+    docker.state.containers.add('ctr-1');
+    docker.state.networks.add('net-1');
+    docker.state.volumes.add(handle.volumeName);
+    const engine = createDockerEngine({ docker, env: {} });
+
+    await engine.destroyJobContainer(handle);
+    assert.equal(docker.state.containers.size, 0, 'container gone');
+    assert.equal(docker.state.networks.size, 0, 'network gone');
+    assert.equal(docker.state.volumes.size, 0, 'volume gone');
+    assert.deepEqual(docker.state.events.stopped, ['ctr-1'], 'graceful stop was attempted');
+
+    // Idempotent: a second teardown on the now-empty state finds 404s and succeeds.
+    await engine.destroyJobContainer(handle);
+  });
+
+  it('idempotent on a partially-removed job: only the volume remains, teardown clears it', async () => {
+    const docker = makeFakeDocker();
+    docker.state.volumes.add(handle.volumeName); // container + network already gone
+    const engine = createDockerEngine({ docker, env: {} });
+
+    await engine.destroyJobContainer(handle);
+    assert.equal(docker.state.volumes.size, 0, 'the surviving volume was removed');
+  });
+
+  it('surfaces a teardown failure (so the caller keeps the handle to retry)', async () => {
+    const docker = makeFakeDocker({ volumeRemoveFail: new Error('volume in use') });
+    docker.state.containers.add('ctr-1');
+    docker.state.networks.add('net-1');
+    docker.state.volumes.add(handle.volumeName);
+    const engine = createDockerEngine({ docker, env: {} });
+
+    await assert.rejects(() => engine.destroyJobContainer(handle), /volume in use|failed to fully remove/);
+    // Container and network were still cleaned; only the volume remains for retry.
+    assert.equal(docker.state.containers.size, 0);
+    assert.equal(docker.state.networks.size, 0);
+    assert.equal(docker.state.volumes.size, 1, 'the unremovable volume is kept, not silently forgotten');
+  });
+});
+
+describe('createDockerEngine — streamLogs and warmImages', () => {
+  it('returns a Readable of combined output, honouring follow', async () => {
+    const docker = makeFakeDocker();
+    const engine = createDockerEngine({ docker, env: {} });
+    const followed = await engine.streamLogs({ containerId: 'ctr-1' }, { follow: true });
+    assert.ok(followed instanceof Readable);
+    const once = await engine.streamLogs({ containerId: 'ctr-1' }, { follow: false });
+    assert.ok(once instanceof Readable);
+    const chunks = [];
+    for await (const c of once) chunks.push(c);
+    assert.equal(Buffer.concat(chunks).toString(), 'history', 'non-follow yields the raw buffer as one chunk');
+  });
+
+  it('warmImages pulls each ref and returns the resolved digests', async () => {
+    const docker = makeFakeDocker();
+    const engine = createDockerEngine({ docker, env: {} });
+    const digests = await engine.warmImages(['ghcr.io/byte5ai/omadia-dev-runner:v1', 'registry.npmjs.org/x:2']);
+    assert.deepEqual(digests, [DIGEST, DIGEST]);
+    assert.equal(docker.state.events.pulled.length, 2, 'both refs were pulled');
+  });
+});
+
+// Real dockerode against the local engine. Skipped in the default suite; run with
+// DEV_RUNNER_DOCKER_IT=1 to exercise a genuine hardened container end-to-end.
+const RUN_DOCKER_IT = process.env.DEV_RUNNER_DOCKER_IT === '1';
+describe('createDockerEngine — real dockerode integration', { skip: !RUN_DOCKER_IT }, () => {
+  it('creates a hardened container docker-inspect confirms, then reaps it idempotently', async () => {
+    // Honour DOCKER_HOST for a unix socket (dockerode's default does not read it),
+    // so a non-standard engine socket (OrbStack, rootless) is reachable.
+    const dockerHost = process.env.DOCKER_HOST;
+    const docker =
+      dockerHost && dockerHost.startsWith('unix://')
+        ? new Docker({ socketPath: dockerHost.slice('unix://'.length) })
+        : new Docker();
+    const ref = 'alpine:3.20';
+    // Ensure the image is present and resolve its digest ref.
+    await new Promise((resolve, reject) =>
+      docker.pull(ref, (err, stream) =>
+        err || !stream ? reject(err ?? new Error('no stream')) : docker.modem.followProgress(stream, (e) => (e ? reject(e) : resolve(undefined))),
+      ),
+    );
+    const info = await docker.getImage(ref).inspect();
+    const digestRef = info.RepoDigests?.[0];
+    assert.ok(digestRef && digestRef.includes('@sha256:'), `alpine has a digest ref: ${digestRef}`);
+
+    const engine = createDockerEngine({ docker, env: {} });
+    const itJobId = `it-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const policy = { jobId: itJobId, image: digestRef, env: { OMADIA_JOB_ID: itJobId }, egressAllowlist: [] };
+
+    const handle = await engine.createJobContainer({
+      jobId: itJobId,
+      policy,
+      leaseExpiresAt: new Date(Date.now() + 180_000).toISOString(),
+    });
+    try {
+      const insp = await docker.getContainer(handle.containerId).inspect();
+      assert.equal(insp.Config.User, '1000:1000', 'non-root');
+      assert.equal(insp.HostConfig.ReadonlyRootfs, true, 'read-only rootfs');
+      assert.deepEqual(insp.HostConfig.CapDrop, ['ALL'], 'all caps dropped');
+      assert.ok(insp.HostConfig.CapAdd == null || insp.HostConfig.CapAdd.length === 0, 'no CapAdd');
+      assert.ok(insp.HostConfig.SecurityOpt.some((s) => s.includes('no-new-privileges')), 'no-new-privileges');
+      assert.equal(insp.HostConfig.Privileged, false, 'not privileged');
+      assert.equal(insp.HostConfig.Memory, 4 * 1024 ** 3, 'memory capped');
+      assert.equal(insp.HostConfig.PidsLimit, 512, 'pids capped');
+      assert.equal(insp.HostConfig.NetworkMode, `omadia-job-${itJobId}`, 'per-job network, not host/bridge');
+      assert.ok(
+        insp.HostConfig.Binds?.includes(`omadia-job-${itJobId}:/workspace`),
+        'only the per-job workspace volume is bound',
+      );
+      // The per-job network and volume really exist.
+      await docker.getNetwork(handle.networkId).inspect();
+      await docker.getVolume(handle.volumeName).inspect();
+    } finally {
+      await engine.destroyJobContainer(handle);
+    }
+
+    // Everything is gone, and a second teardown is idempotent.
+    await assert.rejects(() => docker.getContainer(handle.containerId).inspect(), /no such container|not found|404/i);
+    await assert.rejects(() => docker.getNetwork(handle.networkId).inspect(), /not found|404/i);
+    await assert.rejects(() => docker.getVolume(handle.volumeName).inspect(), /no such volume|not found|404/i);
+    await engine.destroyJobContainer(handle);
   });
 });
