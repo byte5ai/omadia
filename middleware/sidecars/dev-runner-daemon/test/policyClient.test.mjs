@@ -160,6 +160,11 @@ describe('policyClient — env clamp on the untrusted policy (allowlist)', () =>
   // allowlist refuses every one because none is on it. Plus the old denylist
   // members, to prove the allowlist is a strict superset of the prior guard.
   const DANGEROUS_KEYS = [
+    // Not merely 'unused': HOME hands the attacker ~/.gitconfig (core.pager,
+    // core.sshCommand, alias.* all execute) and CLAUDE_CONFIG_DIR hands them
+    // Claude Code hooks. The image fixes both to job-scoped paths.
+    'HOME',
+    'CLAUDE_CONFIG_DIR',
     'GIT_SSH_COMMAND',
     'GIT_EXTERNAL_DIFF',
     'GIT_PROXY_COMMAND',
@@ -200,7 +205,6 @@ describe('policyClient — env clamp on the untrusted policy (allowlist)', () =>
     'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
     'DISABLE_AUTOUPDATER',
     'DISABLE_TELEMETRY',
-    'CLAUDE_CONFIG_DIR',
     'HTTP_PROXY',
     'HTTPS_PROXY',
     'NO_PROXY',
@@ -210,7 +214,6 @@ describe('policyClient — env clamp on the untrusted policy (allowlist)', () =>
     'LANG',
     'LC_ALL',
     'TERM',
-    'HOME',
   ];
   for (const key of ALLOWED_KEYS) {
     it(`accepts the allowlisted key ${key}`, async () => {

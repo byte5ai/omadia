@@ -116,7 +116,6 @@ const ALLOWED_ENV_KEYS = new Set([
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
   'DISABLE_AUTOUPDATER',
   'DISABLE_TELEMETRY',
-  'CLAUDE_CONFIG_DIR',
   // egress proxy (W1 spec §6) — both spellings
   'HTTP_PROXY',
   'HTTPS_PROXY',
@@ -128,8 +127,22 @@ const ALLOWED_ENV_KEYS = new Set([
   'LANG',
   'LC_ALL',
   'TERM',
-  'HOME',
 ]);
+
+/**
+ * `HOME` and `CLAUDE_CONFIG_DIR` are deliberately ABSENT from the allowlist,
+ * even though the container needs both. They are command-execution levers, not
+ * settings: a `HOME` under attacker control means an attacker-controlled
+ * `~/.gitconfig` (`core.pager`, `core.sshCommand`, `alias.*` all execute) and
+ * an attacker-controlled Claude config directory means attacker-controlled
+ * hooks. Accepting them from the untrusted policy would reopen, through a side
+ * door, exactly the arbitrary-execution class this allowlist exists to shut —
+ * the same reason `localProcessBackend` gives the shim a job-scoped `HOME` and
+ * never the parent's.
+ *
+ * The container image sets both to fixed, job-scoped paths. The middleware has
+ * no say in them.
+ */
 
 /**
  * @typedef {object} DerivedJobPolicy
