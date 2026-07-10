@@ -107,6 +107,46 @@ export class JobCancelledError extends Error {
   }
 }
 
+/** Raised when a DELETE's container teardown throws: the engine cleanup failed,
+ *  so the job is KEPT in the registry (its handle is the only thing that can retry
+ *  the cleanup) rather than forgotten with a live container leaking behind it. The
+ *  HTTP layer maps it to 502 so the caller knows the job is still tracked and the
+ *  DELETE can be retried. */
+export class JobCleanupError extends Error {
+  /** @param {string} jobId @param {unknown} cause */
+  constructor(jobId, cause) {
+    super(`job ${jobId} container teardown failed; the job is still tracked and DELETE can be retried`);
+    this.name = 'JobCleanupError';
+    /** @type {string} */
+    this.code = 'daemon.cleanup_failed';
+    this.cause = cause;
+  }
+}
+
+/** Raised when admission control refuses a NEW job because the daemon is at
+ *  capacity. A bearer-authed caller must not be able to drive unbounded concurrent
+ *  container creation / daemon memory growth, so both a live-job cap and a smaller
+ *  in-flight cap gate every new provision. The HTTP layer maps it to 429. */
+export class JobCapacityError extends Error {
+  /** @param {'live' | 'inflight'} kind @param {number} limit */
+  constructor(kind, limit) {
+    super(
+      kind === 'inflight'
+        ? `too many jobs are being created at once (in-flight cap ${limit})`
+        : `the daemon is at its live-job capacity (${limit})`,
+    );
+    this.name = 'JobCapacityError';
+    /** @type {string} */
+    this.code = kind === 'inflight' ? 'daemon.too_many_inflight' : 'daemon.at_capacity';
+  }
+}
+
+/** Default live-job admission bound (spec §4 hardening). */
+export const DEFAULT_MAX_LIVE_JOBS = 8;
+/** Default concurrent-provision (in-flight) admission bound — smaller than the
+ *  live cap so a burst can't stampede the engine. */
+export const DEFAULT_MAX_INFLIGHT_JOBS = 4;
+
 /** @type {Clock} */
 const SYSTEM_CLOCK = { now: () => Date.now() };
 
@@ -129,17 +169,25 @@ export class JobManager {
    *  tears the container down instead of registering it. Lifetime is exactly the
    *  in-flight window (cleared in `create`'s finally). */
   #cancelled = new Set();
+  /** @type {number} Max live jobs (registry size + in-flight) admitted. */
+  #maxLiveJobs;
+  /** @type {number} Max concurrent provisions admitted. */
+  #maxInflight;
 
   /**
    * @param {object} deps
    * @param {ContainerEngine} deps.engine
    * @param {PolicyClient} deps.policyClient
    * @param {Clock} [deps.clock]
+   * @param {number} [deps.maxLiveJobs] Live-job admission cap (default 8).
+   * @param {number} [deps.maxInflight] In-flight admission cap (default 4).
    */
   constructor(deps) {
     this.#engine = deps.engine;
     this.#policyClient = deps.policyClient;
     this.#clock = deps.clock ?? SYSTEM_CLOCK;
+    this.#maxLiveJobs = deps.maxLiveJobs ?? DEFAULT_MAX_LIVE_JOBS;
+    this.#maxInflight = deps.maxInflight ?? DEFAULT_MAX_INFLIGHT_JOBS;
   }
 
   /**
@@ -157,6 +205,18 @@ export class JobManager {
 
     const pending = this.#inflight.get(jobId);
     if (pending) return { record: await pending, created: false };
+
+    // Admission control (review medium finding): #jobs and #inflight are otherwise
+    // unbounded, so a bearer-authed caller could drive unlimited concurrent
+    // container creation and daemon memory growth. A NEW job (neither live nor
+    // already provisioning — the idempotent re-attach paths above create nothing)
+    // is admitted only under BOTH caps; over either, nothing is created.
+    if (this.#jobs.size + this.#inflight.size >= this.#maxLiveJobs) {
+      throw new JobCapacityError('live', this.#maxLiveJobs);
+    }
+    if (this.#inflight.size >= this.#maxInflight) {
+      throw new JobCapacityError('inflight', this.#maxInflight);
+    }
 
     const provision = this.#provision(jobId, leaseTtlSec);
     this.#inflight.set(jobId, provision);
@@ -230,10 +290,17 @@ export class JobManager {
   async destroy(jobId) {
     const record = this.#jobs.get(jobId);
     if (record) {
-      // Drop from the registry first so a concurrent create sees it gone and a
-      // re-create provisions a fresh container rather than re-attaching a corpse.
+      // Tear the container down FIRST; only forget the job once cleanup is proven
+      // (review medium finding — same class as the W0 backend bug: never destroy
+      // the only handle on a live resource before its removal succeeds). If the
+      // engine throws, KEEP the record so this DELETE and the future reaper can
+      // retry; dropping the handle here would leak a container nothing tracks.
+      try {
+        await this.#engine.destroyJobContainer(record.container);
+      } catch (err) {
+        throw new JobCleanupError(jobId, err);
+      }
       this.#jobs.delete(jobId);
-      await this.#engine.destroyJobContainer(record.container);
       return true;
     }
     // No live job yet — but a create may be mid-provision. Mark it cancelled so

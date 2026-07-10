@@ -157,6 +157,17 @@ describe('deriveJobPolicy — pure derivation', () => {
           '10.0.0.0/8',
           '169.254.169.254',
           'bad host',
+          // Non-dotted IPv4 spellings the WHATWG URL parser canonicalises to
+          // loopback/RFC1918 — a label-shaped match would allowlist them under a
+          // numeric "name". All five must be dropped like a dotted literal.
+          '2130706433', // → 127.0.0.1
+          '0x7f.0.0.1', // → 127.0.0.1
+          '017700000001', // → 127.0.0.1
+          '3232235777', // → 192.168.1.1
+          '127.1', // → 127.0.0.1
+          // Bracketed IPv6 + IPv4-mapped-IPv6 literals.
+          '[::1]',
+          '[::ffff:7f00:1]',
           'artifactory.internal', // operator-chosen internal NAME is kept
           'good.example.com',
         ],
@@ -164,9 +175,28 @@ describe('deriveJobPolicy — pure derivation', () => {
       { authMode: 'api_key' },
       CONFIG,
     );
-    for (const rejected of ['*', 'http://evil.example', 'host:443', '10.0.0.0/8', '169.254.169.254', 'bad host']) {
+    for (const rejected of [
+      '*',
+      'http://evil.example',
+      'host:443',
+      '10.0.0.0/8',
+      '169.254.169.254',
+      'bad host',
+      '2130706433',
+      '0x7f.0.0.1',
+      '017700000001',
+      '3232235777',
+      '127.1',
+      '[::1]',
+      '[::ffff:7f00:1]',
+    ]) {
       assert.ok(!p.egressAllowlist.includes(rejected), `${rejected} must be dropped`);
     }
+    // Nothing survived that a URL parser would read as loopback/RFC1918.
+    assert.ok(
+      !p.egressAllowlist.some((h) => h === '127.0.0.1' || h === '192.168.1.1'),
+      'no numeric spelling survived as a dotted-quad internal address',
+    );
     // No entry retains a scheme, port, path, or wildcard character.
     assert.ok(!p.egressAllowlist.some((h) => /[/:*@?# ]/.test(h)), 'every surviving entry is a bare hostname');
     assert.ok(p.egressAllowlist.includes('artifactory.internal'), 'operator internal name kept');

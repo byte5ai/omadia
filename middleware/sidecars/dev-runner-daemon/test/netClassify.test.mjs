@@ -67,6 +67,15 @@ describe('netClassify — classifyEgressEntry parity with the middleware', () =>
     ['127.0.0.1', 'IP literal'],
     ['0.0.0.0', 'IP literal'],
     ['169.254.169.254.', 'IP literal'], // trailing dot normalised, still an IP
+    // Non-dotted IPv4 spellings the WHATWG URL parser canonicalises to loopback/
+    // RFC1918 — a label-shaped match would allowlist them under a numeric "name".
+    ['2130706433', 'bare hostname'], // → 127.0.0.1
+    ['0x7f.0.0.1', 'bare hostname'], // → 127.0.0.1
+    ['017700000001', 'bare hostname'], // → 127.0.0.1
+    ['3232235777', 'bare hostname'], // → 192.168.1.1
+    ['127.1', 'bare hostname'], // → 127.0.0.1
+    // Bracketed IPv6 + IPv4-mapped-IPv6 literals (the `:` trips the IPv6 branch).
+    ['[::ffff:7f00:1]', 'port or is an IPv6 literal'],
     ['-bad.example', 'not a valid hostname'],
     ['bad-.example', 'not a valid hostname'],
     ['example..com', 'not a valid hostname'],

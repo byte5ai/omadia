@@ -99,6 +99,7 @@ async function startDaemon(opts = {}) {
     jobManager,
     engine,
     warmImageRefs: opts.warmImageRefs ?? ['ghcr.io/byte5ai/omadia-dev-runner:latest'],
+    maxLogFollows: opts.maxLogFollows,
     logger: { warn() {} },
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(undefined)));
@@ -131,6 +132,15 @@ function call(url, path, { method = 'GET', token = TOKEN, body } = {}) {
 /** A valid create body. */
 function createBody(jobId = JOB_ID, leaseTtlSec = 180) {
   return { protocol: 1, jobId, leaseTtlSec };
+}
+
+/** Poll `pred` until true or timeout. */
+async function waitFor(pred, ms = 3000) {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > ms) throw new Error('waitFor timed out');
+    await new Promise((r) => setTimeout(r, 10));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -432,5 +442,107 @@ describe('dev-runner-daemon — health + warm', () => {
     const res = await call(d.url, '/v1/jobs', { method: 'POST', body: createBody() });
     assert.equal(res.status, 501);
     assert.equal((await res.json()).code, 'daemon.engine_not_implemented');
+  });
+});
+
+describe('dev-runner-daemon — admission bound on POST /v1/jobs', () => {
+  let d;
+  afterEach(async () => d && d.close());
+
+  it('429s a NEW job past the live-job cap, and still allows the idempotent re-attach', async () => {
+    const engine = fakeEngine();
+    const jobManager = new JobManager({ engine, policyClient: fakePolicyClient(), maxLiveJobs: 1, maxInflight: 1 });
+    d = await startDaemon({ engine, jobManager });
+
+    const first = await call(d.url, '/v1/jobs', { method: 'POST', body: createBody(JOB_ID) });
+    assert.equal(first.status, 201);
+
+    const second = await call(d.url, '/v1/jobs', { method: 'POST', body: createBody(JOB_ID_2) });
+    assert.equal(second.status, 429);
+    assert.equal((await second.json()).code, 'daemon.at_capacity');
+    // The second job's container was never created.
+    assert.equal(engine.calls.create.length, 1);
+
+    // Re-attaching to the existing job is not a new admission — still allowed.
+    const again = await call(d.url, '/v1/jobs', { method: 'POST', body: createBody(JOB_ID) });
+    assert.equal(again.status, 200);
+  });
+});
+
+describe('dev-runner-daemon — log-follow hardening', () => {
+  let d;
+  afterEach(async () => d && d.close());
+
+  it('destroys the upstream docker stream when the client disconnects', async () => {
+    const src = new Readable({ read() {} });
+    src.push('hello\n'); // flush response headers to the client
+    const engine = fakeEngine({
+      async streamLogs() {
+        return src;
+      },
+    });
+    d = await startDaemon({ engine });
+    await call(d.url, '/v1/jobs', { method: 'POST', body: createBody() });
+
+    const controller = new AbortController();
+    const res = await fetch(`${d.url}/v1/jobs/${JOB_ID}/logs?follow=1`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+      signal: controller.signal,
+    });
+    assert.equal(res.status, 200);
+    // Pull the first chunk so the body stream is live, then hang up.
+    await res.body.getReader().read();
+    controller.abort();
+
+    await waitFor(() => src.destroyed);
+    assert.equal(src.destroyed, true, 'a client disconnect tore down the docker log stream');
+  });
+
+  it('caps concurrent follow streams and 429s past the cap, freeing a slot on disconnect', async () => {
+    /** @type {import('node:stream').Readable[]} */
+    const streams = [];
+    const engine = fakeEngine({
+      async streamLogs() {
+        const s = new Readable({ read() {} });
+        s.push('x\n');
+        streams.push(s);
+        return s;
+      },
+    });
+    const jobManager = new JobManager({ engine, policyClient: fakePolicyClient() });
+    d = await startDaemon({ engine, jobManager, maxLogFollows: 2 });
+    await call(d.url, '/v1/jobs', { method: 'POST', body: createBody() });
+
+    /** @type {AbortController[]} */
+    const controllers = [];
+    const openFollow = async () => {
+      const c = new AbortController();
+      controllers.push(c);
+      const r = await fetch(`${d.url}/v1/jobs/${JOB_ID}/logs?follow=1`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+        signal: c.signal,
+      });
+      return r;
+    };
+
+    try {
+      // Two follows fill the cap.
+      assert.equal((await openFollow()).status, 200);
+      assert.equal((await openFollow()).status, 200);
+
+      // The third is refused rather than allowed to pin another docker stream.
+      const third = await call(d.url, `/v1/jobs/${JOB_ID}/logs?follow=1`);
+      assert.equal(third.status, 429);
+      assert.equal((await third.json()).code, 'daemon.too_many_log_follows');
+
+      // Free a slot by disconnecting the first follow; a new follow then gets in.
+      controllers[0].abort();
+      await waitFor(() => streams[0].destroyed);
+      assert.equal((await openFollow()).status, 200);
+    } finally {
+      for (const c of controllers) c.abort();
+      for (const s of streams) if (!s.destroyed) s.destroy();
+      await waitFor(() => streams.every((s) => s.destroyed)).catch(() => {});
+    }
   });
 });

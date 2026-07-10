@@ -15,7 +15,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { JobCancelledError, JobManager } from '../src/jobs.mjs';
+import { JobCancelledError, JobCapacityError, JobCleanupError, JobManager } from '../src/jobs.mjs';
 
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -115,5 +115,105 @@ describe('JobManager — DELETE racing an in-flight create', () => {
     assert.equal(created, true);
     assert.equal(record.jobId, JOB_ID);
     assert.equal(jm.size(), 1, 'the later create registers a live job');
+  });
+});
+
+/** A fake engine whose createJobContainer resolves immediately and whose
+ *  destroyJobContainer is controlled by `destroyImpl` (default: succeed). */
+function immediateEngine(destroyImpl) {
+  let seq = 0;
+  return {
+    async ping() {
+      return { reachable: true, apiVersion: '1.47' };
+    },
+    async createJobContainer() {
+      seq += 1;
+      return { containerId: `c-${seq}`, networkId: `n-${seq}`, volumeName: `v-${seq}`, imageDigest: 'sha256:x' };
+    },
+    async destroyJobContainer(container) {
+      if (destroyImpl) return destroyImpl(container);
+    },
+    async streamLogs() {
+      return { on() {}, pipe() {} };
+    },
+    async warmImages() {
+      return [];
+    },
+  };
+}
+
+describe('JobManager — destroy tears down BEFORE forgetting the job', () => {
+  it('keeps the job listed when engine teardown throws, and a retry succeeds once it recovers', async () => {
+    let fail = true;
+    const destroyed = [];
+    const engine = immediateEngine((container) => {
+      if (fail) throw new Error('docker cleanup blew up');
+      destroyed.push(container);
+    });
+    const jm = new JobManager({ engine, policyClient: fakePolicyClient() });
+
+    await jm.create(JOB_ID, 180);
+    assert.equal(jm.size(), 1);
+
+    // First DELETE: engine cleanup throws → the job is KEPT (its handle is the
+    // only thing that can retry the cleanup), and the error names it as retryable.
+    await assert.rejects(jm.destroy(JOB_ID), (err) => {
+      assert.ok(err instanceof JobCleanupError, `expected JobCleanupError, got ${err}`);
+      assert.equal(err.code, 'daemon.cleanup_failed');
+      return true;
+    });
+    assert.equal(jm.size(), 1, 'the job is still tracked after a failed teardown');
+    assert.equal(jm.get(JOB_ID)?.jobId, JOB_ID, 'the handle is retained for the retry');
+
+    // Engine recovers; a second DELETE succeeds and now forgets the job.
+    fail = false;
+    const ok = await jm.destroy(JOB_ID);
+    assert.equal(ok, true);
+    assert.equal(jm.size(), 0, 'the job is gone only after cleanup is proven');
+    assert.equal(destroyed.length, 1, 'the container was actually torn down');
+  });
+});
+
+describe('JobManager — admission bounds', () => {
+  it('refuses a NEW job past the live-job cap with a 429-mapped error, creating nothing', async () => {
+    const engine = immediateEngine();
+    const jm = new JobManager({ engine, policyClient: fakePolicyClient(), maxLiveJobs: 2, maxInflight: 2 });
+
+    await jm.create('11111111-1111-4111-8111-000000000001', 180);
+    await jm.create('11111111-1111-4111-8111-000000000002', 180);
+    assert.equal(jm.size(), 2);
+
+    await assert.rejects(jm.create('11111111-1111-4111-8111-000000000003', 180), (err) => {
+      assert.ok(err instanceof JobCapacityError, `expected JobCapacityError, got ${err}`);
+      assert.equal(err.code, 'daemon.at_capacity');
+      return true;
+    });
+    assert.equal(jm.size(), 2, 'no job was created past the cap');
+
+    // An idempotent re-attach to an EXISTING job is still allowed at capacity.
+    const { created } = await jm.create('11111111-1111-4111-8111-000000000001', 180);
+    assert.equal(created, false);
+  });
+
+  it('refuses past the smaller in-flight cap while creates are parked', async () => {
+    const gate = deferred();
+    const engine = gatedEngine(gate);
+    const jm = new JobManager({ engine, policyClient: fakePolicyClient(), maxLiveJobs: 8, maxInflight: 2 });
+
+    // Two creates park on the gate — both in flight, none live yet.
+    const p1 = jm.create('11111111-1111-4111-8111-00000000000a', 180);
+    const p2 = jm.create('11111111-1111-4111-8111-00000000000b', 180);
+    await tick();
+
+    // A third NEW create trips the in-flight cap (2) even though no job is live.
+    await assert.rejects(jm.create('11111111-1111-4111-8111-00000000000c', 180), (err) => {
+      assert.ok(err instanceof JobCapacityError);
+      assert.equal(err.code, 'daemon.too_many_inflight');
+      return true;
+    });
+
+    gate.resolve();
+    await Promise.all([p1, p2]);
+    assert.equal(jm.size(), 2);
   });
 });

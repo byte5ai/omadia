@@ -159,8 +159,27 @@ function classifyEgressEntry(raw: unknown): { host: string } | { reject: string 
   // a trailing-dot literal (`169.254.169.254.`) is caught by the IP checks below
   // and a `foo.internal.` name is validated in canonical form.
   const lower = normalizeHostname(trimmed);
-  // Reject IPv4 literals outright — including internal ones (metadata/RFC1918).
-  if (/^[0-9]+(\.[0-9]+){3}$/.test(lower) || isInternalIp(lower)) return { reject: 'IP literal' };
+  // Canonicalise the entry the way a network consumer will: parse it as a URL
+  // authority and read the hostname back. WHATWG URL parsing rewrites numeric,
+  // hex, octal, and short-form IPv4 spellings to dotted-quad (`2130706433` →
+  // `127.0.0.1`, `0x7f.0.0.1` → `127.0.0.1`, `017700000001` → `127.0.0.1`,
+  // `3232235777` → `192.168.1.1`, `127.1` → `127.0.0.1`). A label-shaped pattern
+  // match would happily accept those all-digit/hex strings as a "hostname" and so
+  // allowlist loopback/RFC1918 under a non-dotted spelling. So if the parser
+  // rewrites the host AT ALL, it was not the plain hostname it appeared to be —
+  // reject the whole class here rather than enumerate spellings.
+  let canonical: string;
+  try {
+    canonical = new URL(`http://${lower}/`).hostname;
+  } catch {
+    return { reject: 'not a valid hostname' };
+  }
+  if (canonical !== lower) return { reject: `not a bare hostname (URL parser rewrote it to ${canonical})` };
+  // Reject IPv4 literals outright — including internal ones (metadata/RFC1918) and
+  // bracketed IPv6 literals (a `:` was already refused above, but the canonical
+  // form is checked for defence in depth).
+  if (/^[0-9]+(\.[0-9]+){3}$/.test(canonical) || canonical.startsWith('[') || isInternalIp(canonical))
+    return { reject: 'IP literal' };
   const labels = lower.split('.');
   if (!labels.every((l) => HOSTNAME_LABEL.test(l))) return { reject: 'not a valid hostname' };
   return { host: lower };

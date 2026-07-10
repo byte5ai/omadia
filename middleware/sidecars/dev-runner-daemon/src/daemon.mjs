@@ -29,7 +29,14 @@ import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 
 import { isAuthorized, parseDaemonTokens } from './auth.mjs';
-import { createDockerEngine, EngineNotImplementedError, JobCancelledError, JobManager } from './jobs.mjs';
+import {
+  createDockerEngine,
+  EngineNotImplementedError,
+  JobCancelledError,
+  JobCapacityError,
+  JobCleanupError,
+  JobManager,
+} from './jobs.mjs';
 import { createPolicyClient, parseAllowedImages, parseRequireDigest, PolicyLookupError } from './policyClient.mjs';
 import { parseCreateJobRequest, parseRenewLeaseRequest, WireProtocolMismatchError } from './protocol.ts';
 
@@ -42,6 +49,15 @@ const WILDCARD_BINDS = new Set(['0.0.0.0', '::', '', '*']);
 
 /** Max control-plane request body — these are tiny JSON envelopes. */
 const MAX_BODY_BYTES = 64 * 1024;
+
+/** Default cap on concurrent `?follow=1` log streams (spec §4 hardening): each
+ *  pins a docker log stream + a socket, so an unbounded number of abandoned
+ *  follows would exhaust the engine's stream handles. */
+const DEFAULT_MAX_LOG_FOLLOWS = 4;
+/** A follow stream that emits no bytes for this long is closed (idle timeout). */
+const FOLLOW_IDLE_MS = 5 * 60 * 1000;
+/** Absolute lifetime cap for a single follow stream, idle or not. */
+const FOLLOW_ABSOLUTE_MS = 60 * 60 * 1000;
 
 /** UUID form `dev_jobs.id` takes; path params are matched against it so a
  *  traversal/control-char id never reaches the registry or the engine. */
@@ -60,6 +76,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * @property {JobManager} jobManager
  * @property {import('./jobs.mjs').ContainerEngine} engine
  * @property {readonly string[]} [warmImageRefs] Refs `POST /v1/warm` pulls (`DEV_RUNNER_IMAGES`).
+ * @property {number} [maxLogFollows] Concurrent `?follow=1` stream cap (default 4).
  * @property {{ warn: (msg: string) => void }} [logger]
  */
 
@@ -72,6 +89,15 @@ export function assertControlPlaneBind(bind) {
     );
   }
   return bind;
+}
+
+/** Parse an optional positive-integer env override. Returns undefined for unset,
+ *  non-numeric, or non-positive values so the caller's default applies.
+ *  @param {string | undefined} raw @returns {number | undefined} */
+function parsePositiveIntEnv(raw) {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
 /** @param {import('node:http').ServerResponse} res @param {number} status @param {unknown} body */
@@ -179,6 +205,16 @@ function sendMappedError(res, err, logger) {
     sendError(res, 409, err.code, 'the job was deleted while it was being created');
     return;
   }
+  // Admission control refused a new job — the daemon is at capacity.
+  if (err instanceof JobCapacityError) {
+    sendError(res, 429, err.code, err.message);
+    return;
+  }
+  // A DELETE whose container teardown failed: the job is still tracked, retryable.
+  if (err instanceof JobCleanupError) {
+    sendError(res, 502, err.code, err.message);
+    return;
+  }
   logger.warn(`[dev-runner-daemon] unhandled error: ${err instanceof Error ? err.message : String(err)}`);
   sendError(res, 500, 'daemon.internal', 'internal daemon error');
 }
@@ -223,6 +259,9 @@ function toJobSummary(record) {
 export function createDaemon(deps) {
   const logger = deps.logger ?? console;
   const warmImageRefs = deps.warmImageRefs ?? [];
+  const maxLogFollows = deps.maxLogFollows ?? DEFAULT_MAX_LOG_FOLLOWS;
+  /** Count of live `?follow=1` streams — the concurrency-cap denominator. */
+  let activeFollows = 0;
   /** @type {WarmState} */
   const warmState = { digests: [], warm: false };
   const { jobManager, engine, policyClient } = deps;
@@ -323,9 +362,62 @@ export function createDaemon(deps) {
           return;
         }
         const follow = url.searchParams.get('follow') === '1';
+        // Concurrency cap: a follow pins a docker log stream + a socket, so past
+        // the bound we refuse rather than let abandoned follows exhaust handles.
+        if (follow && activeFollows >= maxLogFollows) {
+          sendError(res, 429, 'daemon.too_many_log_follows', 'too many concurrent log-follow streams');
+          return;
+        }
         const stream = await engine.streamLogs(record.container, { follow });
         res.writeHead(200, { 'content-type': 'application/octet-stream' });
-        stream.on('error', () => res.end());
+
+        // One-shot teardown: destroy the UPSTREAM docker stream, release the
+        // follow slot, and clear the timers — so a client disconnect (req/res
+        // 'close'/'error') or a timeout can never pin the source stream.
+        let torndown = false;
+        /** @type {NodeJS.Timeout | undefined} */
+        let idleTimer;
+        /** @type {NodeJS.Timeout | undefined} */
+        let absoluteTimer;
+        const teardown = () => {
+          if (torndown) return;
+          torndown = true;
+          if (follow) activeFollows -= 1;
+          if (idleTimer) clearTimeout(idleTimer);
+          if (absoluteTimer) clearTimeout(absoluteTimer);
+          if (!stream.destroyed) stream.destroy();
+        };
+
+        if (follow) {
+          activeFollows += 1;
+          const armIdle = () => {
+            if (idleTimer) clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => {
+              teardown();
+              res.end();
+            }, FOLLOW_IDLE_MS);
+            idleTimer.unref?.();
+          };
+          absoluteTimer = setTimeout(() => {
+            teardown();
+            res.end();
+          }, FOLLOW_ABSOLUTE_MS);
+          absoluteTimer.unref?.();
+          armIdle();
+          stream.on('data', armIdle);
+        }
+
+        // Client went away, or the response socket errored/closed → tear down.
+        res.on('close', teardown);
+        res.on('error', teardown);
+        req.on('close', teardown);
+        req.on('error', teardown);
+        // Upstream ended or errored → release the slot; on error also end the res.
+        stream.on('end', teardown);
+        stream.on('error', () => {
+          teardown();
+          res.end();
+        });
         stream.pipe(res);
         return;
       }
@@ -378,13 +470,19 @@ export async function main(env = process.env) {
     egressProxyUrl: env.DEV_RUNNER_EGRESS_PROXY_URL,
     noProxy: env.DEV_RUNNER_NO_PROXY,
   });
-  const jobManager = new JobManager({ engine, policyClient });
+  // Admission bounds (spec §4 hardening): a bearer-authed caller must not drive
+  // unbounded container creation / stream handles. Each is an optional positive
+  // integer override; a non-positive/non-numeric value falls back to the default.
+  const maxLiveJobs = parsePositiveIntEnv(env.DEV_RUNNER_MAX_LIVE_JOBS);
+  const maxInflight = parsePositiveIntEnv(env.DEV_RUNNER_MAX_INFLIGHT_JOBS);
+  const maxLogFollows = parsePositiveIntEnv(env.DEV_RUNNER_MAX_LOG_FOLLOWS);
+  const jobManager = new JobManager({ engine, policyClient, maxLiveJobs, maxInflight });
   const warmImageRefs = (env.DEV_RUNNER_IMAGES ?? env.DEV_RUNNER_DEFAULT_IMAGE ?? '')
     .split(',')
     .map((r) => r.trim())
     .filter((r) => r.length > 0);
 
-  const server = createDaemon({ tokens, policyClient, jobManager, engine, warmImageRefs });
+  const server = createDaemon({ tokens, policyClient, jobManager, engine, warmImageRefs, maxLogFollows });
   await new Promise((resolve) => server.listen(port, bind, () => resolve(undefined)));
   console.log(`[dev-runner-daemon] listening on ${bind}:${port}`);
   return server;
