@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Express, RequestHandler } from 'express';
 import type { Pool } from 'pg';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
+import type { KnownRefs } from '@omadia/conductor-core';
 
 import { runConductorMigrations } from './migrator.js';
 import { ConductorWorkflowStore } from './workflowStore.js';
@@ -43,7 +44,7 @@ export { StubStepEffects } from './stepEffects.js';
 export { RealStepEffects } from './realStepEffects.js';
 export type { StepEffects, StepExecution, StepMeta } from './stepEffects.js';
 export { ConductorBuilderAgent, ConductorBuilderUnavailableError } from './builderAgent.js';
-export type { ConductorBuilderTurnInput, ConductorBuilderTurnResult, BuilderChatMessage } from './builderAgent.js';
+export type { ConductorBuilderTurnInput, ConductorBuilderTurnResult, BuilderChatMessage, TemplateProposal } from './builderAgent.js';
 export { applyGraphPatches, emptyGraph } from './graphPatch.js';
 export type { GraphPatch } from './graphPatch.js';
 export { createConductorRouter } from './routes.js';
@@ -176,11 +177,24 @@ export async function wireConductor(deps: {
     log,
   });
 
+  // Live known-reference sets, shared by the STRICT template validation on the
+  // resolve/instantiate routes AND the builder's proposal-prefill vetting (#478 B4)
+  // — one definition so the two gates can never drift apart.
+  const templateKnownRefs = async (): Promise<KnownRefs> => ({
+    agentIds: (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
+    actionIds: deps.listActions?.() ?? [],
+    roleKeys: (await roleStore.listRoles()).map((r) => r.key),
+    eventIds: deps.eventCatalog?.list() ?? [],
+  });
+
   // Conversational builder agent (US7) — drives draft co-design via a registry Agent turn. Known
   // refs are sourced live from the event catalog so the builder + validate can flag unknown events.
+  // #478 B4: the viewer-scoped composite catalog feeds its prompt digest + proposal allowlist.
   const builderAgent = new ConductorBuilderAgent({
     getRegistry: deps.getRegistry,
     knownRefs: () => ({ eventIds: deps.eventCatalog?.list() ?? [] }),
+    templateCatalog,
+    templateKnownRefs,
     log,
   });
 
@@ -205,12 +219,7 @@ export async function wireConductor(deps: {
       templateStore,
       // Live known-reference sets for the STRICT template validation (stricter than 'POST /'
       // on purpose: a template instance must be runnable, not merely well-formed).
-      templateKnownRefs: async () => ({
-        agentIds: (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
-        actionIds: deps.listActions?.() ?? [],
-        roleKeys: (await roleStore.listRoles()).map((r) => r.key),
-        eventIds: deps.eventCatalog?.list() ?? [],
-      }),
+      templateKnownRefs,
     }),
   );
 

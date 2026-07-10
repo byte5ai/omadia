@@ -599,6 +599,33 @@ InstallService-Integration, Boot-Sweep) +
 `test/conductorTemplateRoutes.test.ts` (State-Machine incl.
 Non-Author-Approve, Inferenz-Roundtrip, Update-Hint, Plugin-Source read-only).
 
+**Templates v2 (#478 B4): Builder-Chat-Template-Awareness.** Der
+Conversational-Builder (`src/conductor/builderAgent.ts`) sieht jetzt den
+Template-Katalog: seine Deps bekommen den viewer-scoped Composite-Katalog
+(`templateCatalog.list(viewer)`) plus `templateKnownRefs` (dieselbe — jetzt in
+`src/conductor/index.ts` gehoistete — Funktion, gegen die auch
+`resolve`/`instantiate` validieren). Der System-Prompt trägt einen kompakten
+**Katalog-Digest** (pro sichtbarem Template: id, en-aufgelöste `name`/`useCase`
+via `resolveLocalizedText`, Version, Slot-Liste inkl. Text-Slots; Cap 30
+Templates mit Count-Note). Das Reply-Protokoll erlaubt zusätzlich zu
+`{ reply, patches }` einen `templateProposals`-Block; **`POST /builder/turn`**
+liefert ihn **additiv** durch (`templateProposals?: [{ templateId, version,
+reason, prefill }]`, Feld fehlt komplett ohne Proposals — v1-Wire-Shape
+byte-identisch). Serverseitiges Gate im Agent-Seam (defensiv, wirft nie):
+unbekannte/unsichtbare Template-Ids werden gegen den viewer-scoped Katalog
+gedroppt, Duplikate dedupliziert, max. 3 Proposals, `version` kommt
+autoritativ aus dem Katalog (nicht vom LLM), `prefill`-Guesses nur für
+deklarierte Slot-Keys und Ref-Kinds nur wenn sie gegen die live `KnownRefs`
+auflösen (`channels` hat kein KnownRefs-Set → strukturell akzeptiert, wie in
+`validate()`); gestrippte Guesses rendert das Formular leer statt kaputt. Ein
+kaputter Katalog/KnownRefs-Read degradiert zum templatelosen Turn statt zum
+500. Chat **proponiert und prefillt nur** — Instanziierung bleibt auf den
+bestehenden `resolve`/`instantiate`-Routen (Formular-Flow, keine
+Auto-Instanziierung). Der Viewer läuft als `req.session?.sub ?? 'operator'`
+durch `runTurn({ ..., viewer })`. Tests: `test/conductorBuilder.test.ts`
+(Digest-Sichtbarkeit inkl. pending/fremd-privat, Proposal-Vetting,
+Malformed-Blocks, No-Proposal-Regression).
+
 ---
 
 ## 4. Migration Managed Agents → Lokal

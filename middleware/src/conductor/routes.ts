@@ -187,6 +187,9 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
 
   // Conversational builder turn (US7): (draft graph + message) → patched draft + reply + validation.
   // Stateless — the draft lives client-side (parity with the visual Designer); this just transforms it.
+  // #478 B4 (additive): the response may carry `templateProposals` (≤3) — already filtered inside the
+  // agent seam to viewer-visible template ids with prefill vetted against live KnownRefs; the viewer
+  // is passed through so the prompt's catalog digest matches what this operator can see.
   router.post('/builder/turn', async (req: Request, res: Response): Promise<void> => {
     if (!deps.builderAgent) {
       res.status(503).json({ code: 'conductor.builder_unavailable', message: 'conversational builder is not wired (no orchestrator registry)' });
@@ -220,7 +223,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         return { role: r.role as 'user' | 'assistant', text: r.text as string };
       });
     try {
-      const result = await deps.builderAgent.runTurn({ graph, message, history });
+      const result = await deps.builderAgent.runTurn({ graph, message, history, viewer: req.session?.sub ?? 'operator' });
       res.json(result);
     } catch (err) {
       if (err instanceof ConductorBuilderUnavailableError) {

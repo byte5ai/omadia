@@ -18,6 +18,33 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — builder-chat template awareness (#478)
+
+- The Conductor conversational builder (`src/conductor/builderAgent.ts`) now
+  sees the workflow-template catalog: its system prompt carries a compact,
+  **viewer-scoped** catalog digest (id, en-resolved name/useCase, version,
+  slot list incl. text slots; capped at 30 templates with a count note), and
+  the reply protocol accepts an additional `templateProposals` block.
+  `POST /builder/turn` returns it **additively** as
+  `templateProposals?: [{ templateId, version, reason, prefill }]` — the key
+  is absent entirely when there are no proposals, so the v1 wire shape stays
+  byte-identical for existing consumers.
+- The proposals are server-side gated inside the agent seam (defensive, never
+  throws): unknown or viewer-invisible template ids are dropped against the
+  composite catalog, duplicates deduped, at most 3 survive, `version` is
+  catalog-authoritative (the LLM's claim is ignored), and `prefill` guesses
+  are kept only for declared slot keys whose ref values resolve against the
+  live `KnownRefs` sets (`channels` has no KnownRefs set → structural
+  acceptance, mirroring `validate()`). A stripped guess renders as an empty
+  form field, never a broken one. A failing catalog/KnownRefs read degrades
+  to a template-less turn instead of a 500. Chat proposes and prefills only —
+  instantiation stays on the existing `resolve`/`instantiate` form flow, no
+  auto-instantiation. The shared `templateKnownRefs` function is hoisted in
+  `src/conductor/index.ts` so the builder's prefill vetting and the template
+  routes' strict validation can never drift apart. Tests: extended
+  `test/conductorBuilder.test.ts` (digest visibility incl. pending/foreign-
+  private, proposal vetting, malformed blocks, no-proposal regression).
+
 ### Added — template authoring, review gate, plugin-borne templates, update hint (#478)
 
 - **Save as template** (`POST /:slug/save-as-template` on the conductor
