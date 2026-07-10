@@ -90,6 +90,26 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   locale requires posting a green harness run for that locale to issue
   #361 first.
 
+### Added — GLiNER PII-detector sidecar for prompt masking (#361)
+
+- New optional inference sidecar `middleware/sidecars/pii-detector/`
+  (skillspector pattern: stdlib-only HTTP shim, stateless, fail-closed):
+  runs `urchade/gliner_multi_pii-v1` (Apache-2.0, quantized ONNX backend by
+  default, torch fallback) and answers `POST /detect` with scored
+  `person`/`address` spans as Unicode code-point offsets — the C1
+  transformer tier that detects the PII classes the C0 regex baseline
+  structurally cannot (names, free-form addresses). Model + deps are pinned
+  to exact versions and baked into the image at build time (pinned HF
+  revision, `HF_HUB_OFFLINE=1` — the running container performs no egress).
+  Enable via the `docker-compose.pii-detector.yaml` overlay, which keeps the
+  sidecar internal-network-only (no published ports — it receives raw prompt
+  PII; request text and span values are never logged) and sets the new
+  middleware env var `PRIVACY_C1_DETECTOR_URL`. Without the overlay the
+  default stack is unchanged; sidecar down at runtime means the audited
+  degrade-to-C0 path (`promptMaskDegraded`), never a silent unmasked
+  pass-through. The middleware-side detector client wiring follows in the
+  same branch.
+
 ### Changed — v1.0 readiness pass across the earliest core plugins (#431)
 
 - `harness-plugin-web-search`, `harness-plugin-privacy-guard`, and
