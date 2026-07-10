@@ -1,0 +1,101 @@
+{
+  "id": "notify-and-escalate",
+  "name": "Notify and escalate on incident",
+  "description": "React to an incident event: a triage agent assesses it, the on-duty role is asked to acknowledge with hourly reminders, and an unacknowledged incident escalates to a second role after 4 hours. The final status is announced.",
+  "useCase": "escalation",
+  "defaultSlug": "notify-and-escalate",
+  "graph": {
+    "entryStepId": "triage",
+    "steps": [
+      {
+        "id": "triage",
+        "kind": "agent",
+        "agentId": "slot:agent:triage",
+        "prompt": "An incident event arrived. Assess its impact and urgency from the event payload: {{ctx.summary}}. Produce a short triage note with a recommended first action.",
+        "position": { "x": 80, "y": 160 }
+      },
+      {
+        "id": "acknowledge",
+        "kind": "human",
+        "human": {
+          "principal": { "kind": "role", "ref": "slot:role:on-duty" },
+          "channel": "slot:channel:delivery",
+          "message": "Incident reported: {{ctx.summary}}. Triage note: {{steps.triage.text}}. Please acknowledge that you are handling it.",
+          "reminderInterval": "PT1H",
+          "deadline": "PT4H"
+        },
+        "fallbackTransitionId": "t-ack-timeout",
+        "position": { "x": 340, "y": 160 }
+      },
+      {
+        "id": "escalate",
+        "kind": "human",
+        "human": {
+          "principal": { "kind": "role", "ref": "slot:role:escalation" },
+          "channel": "slot:channel:delivery",
+          "message": "Escalation: the incident ({{ctx.summary}}) was not acknowledged by the on-duty role within 4 hours. Please take over. Triage note: {{steps.triage.text}}"
+        },
+        "position": { "x": 340, "y": 320 }
+      },
+      {
+        "id": "announce",
+        "kind": "agent",
+        "agentId": "slot:agent:notifier",
+        "prompt": "Announce the incident handling status: who acknowledged or took over the incident ({{ctx.summary}}) and what happens next.",
+        "position": { "x": 600, "y": 160 }
+      }
+    ],
+    "transitions": [
+      { "id": "t-triaged", "source": "triage", "target": "acknowledge" },
+      {
+        "id": "t-acknowledged",
+        "source": "acknowledge",
+        "target": "announce",
+        "guard": { "op": "eq", "path": "stepResult.acknowledged", "value": true }
+      },
+      { "id": "t-ack-timeout", "source": "acknowledge", "target": "escalate" },
+      { "id": "t-escalated", "source": "escalate", "target": "announce" }
+    ],
+    "triggers": [{ "id": "trigger-incident", "kind": "event", "eventId": "slot:event:incident" }]
+  },
+  "slots": {
+    "agents": [
+      {
+        "key": "triage",
+        "label": "Triage agent",
+        "description": "Agent that assesses the incoming incident and writes the triage note."
+      },
+      {
+        "key": "notifier",
+        "label": "Notifying agent",
+        "description": "Agent that announces the final incident handling status."
+      }
+    ],
+    "roles": [
+      {
+        "key": "on-duty",
+        "label": "On-duty role",
+        "description": "Role asked to acknowledge the incident first."
+      },
+      {
+        "key": "escalation",
+        "label": "Escalation role",
+        "description": "Role that takes over when the on-duty role misses the 4-hour deadline."
+      }
+    ],
+    "events": [
+      {
+        "key": "incident",
+        "label": "Incident event",
+        "description": "Catalog event that starts a run of this workflow."
+      }
+    ],
+    "channels": [
+      {
+        "key": "delivery",
+        "label": "Delivery channel",
+        "description": "Channel used to reach the on-duty and escalation roles."
+      }
+    ]
+  }
+}

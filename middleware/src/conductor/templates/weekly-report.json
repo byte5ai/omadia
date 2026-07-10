@@ -1,0 +1,55 @@
+{
+  "id": "weekly-report",
+  "name": "Weekly status report",
+  "description": "Every Monday at 08:00 UTC a reporting agent composes a status report and delivers it to a recipient role for review. Publishing this workflow with the schedule enabled starts the weekly cadence.",
+  "useCase": "reporting",
+  "defaultSlug": "weekly-report",
+  "graph": {
+    "entryStepId": "compose",
+    "steps": [
+      {
+        "id": "compose",
+        "kind": "agent",
+        "agentId": "slot:agent:reporter",
+        "prompt": "Compose this week's status report for the team. Structure it as: highlights, in progress, risks, and plans for next week. Keep it concise and factual.",
+        "position": { "x": 80, "y": 160 }
+      },
+      {
+        "id": "review",
+        "kind": "human",
+        "human": {
+          "principal": { "kind": "role", "ref": "slot:role:recipient" },
+          "channel": "slot:channel:delivery",
+          "message": "The weekly status report is ready: {{steps.compose.text}}",
+          "quorum": "any"
+        },
+        "position": { "x": 340, "y": 160 }
+      }
+    ],
+    "transitions": [{ "id": "t-composed", "source": "compose", "target": "review" }],
+    "triggers": [{ "id": "trigger-weekly", "kind": "cron", "cron": "0 8 * * 1" }]
+  },
+  "slots": {
+    "agents": [
+      {
+        "key": "reporter",
+        "label": "Reporting agent",
+        "description": "Agent that gathers this week's updates and composes the report."
+      }
+    ],
+    "roles": [
+      {
+        "key": "recipient",
+        "label": "Recipient role",
+        "description": "Role whose holders receive and review the weekly report."
+      }
+    ],
+    "channels": [
+      {
+        "key": "delivery",
+        "label": "Delivery channel",
+        "description": "Channel the report is delivered on."
+      }
+    ]
+  }
+}

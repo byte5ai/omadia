@@ -18,6 +18,28 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — bundled conductor workflow-template catalog (#429, unit b2)
+
+- Four curated workflow-template manifests ship as JSON assets in
+  `middleware/src/conductor/templates/`: `expense-approval` (manual trigger,
+  summarize → approve with 48h deadline → escalation → outcome announcement),
+  `notify-and-escalate` (event trigger, triage → acknowledge with hourly
+  reminders and 4h deadline → escalation), `weekly-report` (cron `0 8 * * 1`,
+  compose → review) and `onboarding-checklist` (sequential HR → IT → manager
+  checklists with daily reminders → confirmation). New loader
+  `middleware/src/conductor/templateCatalog.ts` scans the dir next to its own
+  compiled module (same dirname-relative pattern as the conductor migrator),
+  runs `checkTemplateManifest` on every file, and skips invalid/unparsable
+  assets with a `[conductor] template <file> invalid: …` log line instead of
+  failing boot; `middleware/test/conductorTemplateCatalog.test.ts` is the hard
+  CI gate (manifest integrity, synthetic-mapping end-to-end instantiability
+  incl. `validate()` with live-style KnownRefs, cron validity, unique
+  kebab-case ids, loader skip/duplicate behavior). Build plumbing in the same
+  change: `middleware/scripts/copy-build-assets.mjs` mirrors the dir into
+  `dist/conductor/templates` and the Dockerfile COPYs it next to the
+  conductor-migrations line. File-based catalog — **no DB migration** (the
+  conductor chain's next free number stays `0006`).
+
 ### Added — conductor-core workflow-template contract (#429, unit b1)
 
 - `@omadia/conductor-core` gains the shared workflow-template contract:

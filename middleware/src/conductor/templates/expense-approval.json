@@ -1,0 +1,100 @@
+{
+  "id": "expense-approval",
+  "name": "Expense approval with escalation",
+  "description": "Route an expense request through a summarizing agent to an approver. If the approver does not decide within 48 hours the request escalates to a second role, and the final outcome is announced either way.",
+  "useCase": "approval",
+  "defaultSlug": "expense-approval",
+  "graph": {
+    "entryStepId": "summarize",
+    "steps": [
+      {
+        "id": "summarize",
+        "kind": "agent",
+        "agentId": "slot:agent:summarizer",
+        "prompt": "Summarize this expense request for an approver. Requester: {{ctx.requester}}. Amount: {{ctx.amount}}. Purpose: {{ctx.purpose}}. Keep it to three sentences and flag anything unusual.",
+        "position": { "x": 80, "y": 160 }
+      },
+      {
+        "id": "approve",
+        "kind": "human",
+        "human": {
+          "principal": { "kind": "role", "ref": "slot:role:approver" },
+          "channel": "slot:channel:delivery",
+          "message": "An expense request from {{ctx.requester}} over {{ctx.amount}} needs your decision. Summary: {{steps.summarize.text}}",
+          "reminderInterval": "PT12H",
+          "deadline": "PT48H"
+        },
+        "fallbackTransitionId": "t-approval-timeout",
+        "position": { "x": 340, "y": 160 }
+      },
+      {
+        "id": "escalate",
+        "kind": "human",
+        "human": {
+          "principal": { "kind": "role", "ref": "slot:role:escalation-approver" },
+          "channel": "slot:channel:delivery",
+          "message": "Escalation: the expense request from {{ctx.requester}} over {{ctx.amount}} was not decided within 48 hours. Please decide now. Summary: {{steps.summarize.text}}"
+        },
+        "position": { "x": 340, "y": 320 }
+      },
+      {
+        "id": "announce",
+        "kind": "agent",
+        "agentId": "slot:agent:notifier",
+        "prompt": "Announce the outcome of the expense request from {{ctx.requester}} over {{ctx.amount}} to the requester. State clearly whether it was approved or rejected and who decided.",
+        "position": { "x": 600, "y": 160 }
+      }
+    ],
+    "transitions": [
+      { "id": "t-summarized", "source": "summarize", "target": "approve" },
+      {
+        "id": "t-approved",
+        "source": "approve",
+        "target": "announce",
+        "guard": { "op": "eq", "path": "stepResult.approved", "value": true }
+      },
+      {
+        "id": "t-rejected",
+        "source": "approve",
+        "target": "announce",
+        "guard": { "op": "eq", "path": "stepResult.approved", "value": false }
+      },
+      { "id": "t-approval-timeout", "source": "approve", "target": "escalate" },
+      { "id": "t-escalated", "source": "escalate", "target": "announce" }
+    ],
+    "triggers": [{ "id": "trigger-manual", "kind": "manual" }]
+  },
+  "slots": {
+    "agents": [
+      {
+        "key": "summarizer",
+        "label": "Summarizing agent",
+        "description": "Agent that condenses the incoming expense request for the approver."
+      },
+      {
+        "key": "notifier",
+        "label": "Notifying agent",
+        "description": "Agent that announces the final decision to the requester."
+      }
+    ],
+    "roles": [
+      {
+        "key": "approver",
+        "label": "Approver role",
+        "description": "Role whose holders decide the expense request."
+      },
+      {
+        "key": "escalation-approver",
+        "label": "Escalation approver role",
+        "description": "Role that decides when the approver misses the 48-hour deadline."
+      }
+    ],
+    "channels": [
+      {
+        "key": "delivery",
+        "label": "Delivery channel",
+        "description": "Channel used to reach the approver and the escalation role."
+      }
+    ]
+  }
+}

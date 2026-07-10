@@ -1,0 +1,91 @@
+{
+  "id": "onboarding-checklist",
+  "name": "New-hire onboarding checklist",
+  "description": "Walk a new hire's onboarding through HR, IT, and the manager in sequence — each role confirms its checklist items, with daily reminders — and a notifying agent confirms completion at the end.",
+  "useCase": "onboarding",
+  "defaultSlug": "onboarding-checklist",
+  "graph": {
+    "entryStepId": "hr-checklist",
+    "steps": [
+      {
+        "id": "hr-checklist",
+        "kind": "human",
+        "human": {
+          "principal": { "kind": "role", "ref": "slot:role:hr" },
+          "channel": "slot:channel:delivery",
+          "message": "New hire {{ctx.employeeName}} starts on {{ctx.startDate}}. Please complete the HR onboarding items (contract, payroll, policies) and confirm.",
+          "reminderInterval": "PT24H"
+        },
+        "position": { "x": 80, "y": 160 }
+      },
+      {
+        "id": "it-checklist",
+        "kind": "human",
+        "human": {
+          "principal": { "kind": "role", "ref": "slot:role:it" },
+          "channel": "slot:channel:delivery",
+          "message": "HR onboarding for {{ctx.employeeName}} is done. Please provision accounts, hardware, and access, then confirm.",
+          "reminderInterval": "PT24H"
+        },
+        "position": { "x": 340, "y": 160 }
+      },
+      {
+        "id": "manager-checklist",
+        "kind": "human",
+        "human": {
+          "principal": { "kind": "role", "ref": "slot:role:manager" },
+          "channel": "slot:channel:delivery",
+          "message": "IT setup for {{ctx.employeeName}} is done. Please prepare the first-week plan and introductions, then confirm.",
+          "reminderInterval": "PT24H"
+        },
+        "position": { "x": 600, "y": 160 }
+      },
+      {
+        "id": "confirm",
+        "kind": "agent",
+        "agentId": "slot:agent:notifier",
+        "prompt": "Confirm that onboarding for {{ctx.employeeName}} is complete: HR, IT, and the manager have each finished their checklist. Summarize what was completed.",
+        "position": { "x": 860, "y": 160 }
+      }
+    ],
+    "transitions": [
+      { "id": "t-hr-done", "source": "hr-checklist", "target": "it-checklist" },
+      { "id": "t-it-done", "source": "it-checklist", "target": "manager-checklist" },
+      { "id": "t-manager-done", "source": "manager-checklist", "target": "confirm" }
+    ],
+    "triggers": [{ "id": "trigger-manual", "kind": "manual" }]
+  },
+  "slots": {
+    "agents": [
+      {
+        "key": "notifier",
+        "label": "Notifying agent",
+        "description": "Agent that confirms completed onboarding to the stakeholders."
+      }
+    ],
+    "roles": [
+      {
+        "key": "hr",
+        "label": "HR role",
+        "description": "Role that completes the HR checklist items."
+      },
+      {
+        "key": "it",
+        "label": "IT role",
+        "description": "Role that provisions accounts, hardware, and access."
+      },
+      {
+        "key": "manager",
+        "label": "Manager role",
+        "description": "Role that prepares the new hire's first week."
+      }
+    ],
+    "channels": [
+      {
+        "key": "delivery",
+        "label": "Delivery channel",
+        "description": "Channel used to reach the HR, IT, and manager roles."
+      }
+    ]
+  }
+}
