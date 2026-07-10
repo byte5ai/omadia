@@ -1,0 +1,375 @@
+/**
+ * Epic #470 W1 — runner daemon control-plane HTTP server (spec §4).
+ *
+ * The ONLY process in the stack that talks to the docker engine (a host docker
+ * socket next to the middleware and its Vault would be RCE — the daemon exists
+ * to keep that socket out of the middleware). It exposes a small bearer-gated
+ * HTTP API the middleware calls over the `dev-control` network:
+ *
+ *   POST   /v1/jobs            create/re-attach a job (idempotent on jobId)
+ *   DELETE /v1/jobs/:id        kill + clean a job (idempotent)
+ *   POST   /v1/jobs/:id/lease  renew a job's lease
+ *   GET    /v1/jobs            list live jobs (middleware reap() join source)
+ *   GET    /v1/jobs/:id/logs   raw container stdout/stderr (?follow=1)
+ *   GET    /v1/health          dind reachability, version, warmth, live count
+ *   POST   /v1/warm            pull + record warmed image digests
+ *
+ * EVERY route is bearer-gated, `/v1/health` included. The server binds ONLY the
+ * control-plane interface (`DEV_DAEMON_BIND`) and REFUSES a wildcard bind
+ * (0.0.0.0 / ::) so nothing listens toward `dev-engine`, where nested job
+ * containers live (spec §2/§4, review finding S3). No express — node builtins
+ * only, so the image stays dockerode + zod + node.
+ *
+ * Built on node's `http` so the tests exercise the REAL server over a real
+ * socket (review lesson (c): a component tested only through a hand-built stub
+ * is not the component that ships).
+ */
+
+import { createServer } from 'node:http';
+import { pathToFileURL } from 'node:url';
+
+import { isAuthorized, parseDaemonTokens } from './auth.mjs';
+import { createDockerEngine, EngineNotImplementedError, JobManager } from './jobs.mjs';
+import { createPolicyClient, PolicyLookupError } from './policyClient.mjs';
+import { parseCreateJobRequest, parseRenewLeaseRequest, WireProtocolMismatchError } from './protocol.ts';
+
+/** Default control-plane port (spec §4). */
+export const DEFAULT_DAEMON_PORT = 7411;
+
+/** Bind addresses the daemon REFUSES: a wildcard would expose the control API
+ *  toward `dev-engine` and every nested job container. */
+const WILDCARD_BINDS = new Set(['0.0.0.0', '::', '', '*']);
+
+/** Max control-plane request body — these are tiny JSON envelopes. */
+const MAX_BODY_BYTES = 64 * 1024;
+
+/** UUID form `dev_jobs.id` takes; path params are matched against it so a
+ *  traversal/control-char id never reaches the registry or the engine. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * @typedef {object} WarmState
+ * @property {string[]} digests
+ * @property {boolean} warm
+ */
+
+/**
+ * @typedef {object} DaemonDeps
+ * @property {readonly string[]} tokens Accepted bearer tokens (>= 1, each >= 32 chars).
+ * @property {import('./policyClient.mjs').PolicyClient} policyClient
+ * @property {JobManager} jobManager
+ * @property {import('./jobs.mjs').ContainerEngine} engine
+ * @property {readonly string[]} [warmImageRefs] Refs `POST /v1/warm` pulls (`DEV_RUNNER_IMAGES`).
+ * @property {{ warn: (msg: string) => void }} [logger]
+ */
+
+/** Reject a wildcard/empty bind so nothing listens toward `dev-engine`.
+ *  @param {string} bind @returns {string} the validated bind */
+export function assertControlPlaneBind(bind) {
+  if (WILDCARD_BINDS.has(bind.trim())) {
+    throw new Error(
+      `DEV_DAEMON_BIND=${JSON.stringify(bind)} is a wildcard — refusing to expose the control API toward dev-engine`,
+    );
+  }
+  return bind;
+}
+
+/** @param {import('node:http').ServerResponse} res @param {number} status @param {unknown} body */
+function sendJson(res, status, body) {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+  res.end(payload);
+}
+
+/** @param {import('node:http').ServerResponse} res @param {number} status @param {string} code @param {string} message */
+function sendError(res, status, code, message) {
+  sendJson(res, status, { code, message });
+}
+
+/**
+ * Read + JSON-parse a request body with a hard size cap.
+ * @param {import('node:http').IncomingMessage} req
+ * @returns {Promise<unknown>}
+ */
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    /** @type {Buffer[]} */
+    const chunks = [];
+    let total = 0;
+    req.on('data', (chunk) => {
+      total += chunk.length;
+      if (total > MAX_BODY_BYTES) {
+        reject(new BodyTooLargeError());
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8').trim();
+      if (raw.length === 0) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(raw));
+      } catch {
+        reject(new InvalidJsonError());
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+class BodyTooLargeError extends Error {
+  constructor() {
+    super('request body exceeds the control-plane limit');
+    this.name = 'BodyTooLargeError';
+  }
+}
+class InvalidJsonError extends Error {
+  constructor() {
+    super('request body is not valid JSON');
+    this.name = 'InvalidJsonError';
+  }
+}
+
+/**
+ * Map a thrown error to an HTTP response. Never leaks a stack or a secret.
+ * @param {import('node:http').ServerResponse} res
+ * @param {unknown} err
+ * @param {{ warn: (msg: string) => void }} logger
+ */
+function sendMappedError(res, err, logger) {
+  if (err instanceof WireProtocolMismatchError) {
+    sendError(res, 400, 'daemon.protocol_mismatch', err.message);
+    return;
+  }
+  if (err instanceof BodyTooLargeError) {
+    sendError(res, 413, 'daemon.body_too_large', err.message);
+    return;
+  }
+  if (err instanceof InvalidJsonError) {
+    sendError(res, 400, 'daemon.invalid_json', err.message);
+    return;
+  }
+  // zod validation failure (bad body shape, extra keys, non-UUID jobId, …).
+  if (err && typeof err === 'object' && /** @type {{ name?: string }} */ (err).name === 'ZodError') {
+    sendError(res, 400, 'daemon.invalid_request', 'request body failed schema validation');
+    return;
+  }
+  if (err instanceof PolicyLookupError) {
+    if (err.status === 404) {
+      sendError(res, 404, 'daemon.job_not_found', 'the named job does not exist');
+      return;
+    }
+    if (err.status === 0) {
+      sendError(res, 503, 'daemon.policy_unreachable', 'the middleware policy endpoint is unreachable');
+      return;
+    }
+    sendError(res, 502, 'daemon.policy_lookup_failed', 'the middleware could not supply the job policy');
+    return;
+  }
+  if (err instanceof EngineNotImplementedError) {
+    sendError(res, 501, err.code, err.message);
+    return;
+  }
+  logger.warn(`[dev-runner-daemon] unhandled error: ${err instanceof Error ? err.message : String(err)}`);
+  sendError(res, 500, 'daemon.internal', 'internal daemon error');
+}
+
+/**
+ * @param {import('./jobs.mjs').JobRecord} record
+ * @returns {{ containerId: string, networkId: string, volumeName: string, leaseExpiresAt: string, imageDigest: string }}
+ */
+function toCreateResponse(record) {
+  return {
+    containerId: record.container.containerId,
+    networkId: record.container.networkId,
+    volumeName: record.container.volumeName,
+    leaseExpiresAt: record.leaseExpiresAt,
+    imageDigest: record.container.imageDigest,
+  };
+}
+
+/**
+ * @param {import('./jobs.mjs').JobRecord} record
+ * @returns {{ jobId: string, containerId: string, networkId: string, volumeName: string, imageDigest: string, leaseExpiresAt: string }}
+ */
+function toJobSummary(record) {
+  return {
+    jobId: record.jobId,
+    containerId: record.container.containerId,
+    networkId: record.container.networkId,
+    volumeName: record.container.volumeName,
+    imageDigest: record.container.imageDigest,
+    leaseExpiresAt: record.leaseExpiresAt,
+  };
+}
+
+/**
+ * Build the daemon HTTP server (not yet listening). Injecting the deps is the
+ * test seam: tests pass a fake engine + policy client and a valid token, then
+ * drive the real server over a real socket.
+ *
+ * @param {DaemonDeps} deps
+ * @returns {import('node:http').Server}
+ */
+export function createDaemon(deps) {
+  const logger = deps.logger ?? console;
+  const warmImageRefs = deps.warmImageRefs ?? [];
+  /** @type {WarmState} */
+  const warmState = { digests: [], warm: false };
+  const { jobManager, engine, policyClient } = deps;
+
+  return createServer((req, res) => {
+    void handle(req, res).catch((err) => {
+      // Last-ditch guard: a handler that rejects still gets a mapped response
+      // rather than a hung socket.
+      if (!res.headersSent) sendMappedError(res, err, logger);
+      else res.end();
+    });
+  });
+
+  /**
+   * @param {import('node:http').IncomingMessage} req
+   * @param {import('node:http').ServerResponse} res
+   */
+  async function handle(req, res) {
+    // AUTH FIRST — every route is bearer-gated, /v1/health included.
+    if (!isAuthorized(req.headers.authorization, deps.tokens)) {
+      sendError(res, 401, 'daemon.unauthorized', 'missing or invalid bearer token');
+      return;
+    }
+
+    const method = req.method ?? 'GET';
+    const url = new URL(req.url ?? '/', 'http://daemon.local');
+    const path = url.pathname;
+
+    // --- collection + singleton routes --------------------------------------
+    if (path === '/v1/health' && method === 'GET') {
+      const ping = await engine.ping();
+      sendJson(res, 200, {
+        ok: ping.reachable,
+        dindReachable: ping.reachable,
+        engineApiVersion: ping.apiVersion,
+        warmedDigests: warmState.digests,
+        imageWarm: warmState.warm,
+        liveJobs: jobManager.size(),
+      });
+      return;
+    }
+
+    if (path === '/v1/warm' && method === 'POST') {
+      const digests = await engine.warmImages(warmImageRefs);
+      warmState.digests = digests;
+      warmState.warm = digests.length > 0;
+      sendJson(res, 200, { warmedDigests: digests, imageWarm: warmState.warm });
+      return;
+    }
+
+    if (path === '/v1/jobs' && method === 'GET') {
+      sendJson(res, 200, { jobs: jobManager.list().map(toJobSummary) });
+      return;
+    }
+
+    if (path === '/v1/jobs' && method === 'POST') {
+      const body = await readJsonBody(req);
+      // The wire schema is the S3 clamp: it accepts EXACTLY
+      // { protocol, jobId, leaseTtlSec } and rejects env/image/egressAllowlist.
+      const parsed = parseCreateJobRequest(body);
+      const { record, created } = await jobManager.create(parsed.jobId, parsed.leaseTtlSec);
+      sendJson(res, created ? 201 : 200, toCreateResponse(record));
+      return;
+    }
+
+    // --- per-job routes ------------------------------------------------------
+    const jobMatch = /^\/v1\/jobs\/([^/]+)(\/lease|\/logs)?$/.exec(path);
+    if (jobMatch) {
+      const jobId = decodeURIComponent(jobMatch[1] ?? '');
+      const sub = jobMatch[2];
+      if (!UUID_RE.test(jobId)) {
+        sendError(res, 400, 'daemon.invalid_job_id', 'jobId is not a valid UUID');
+        return;
+      }
+
+      if (!sub && method === 'DELETE') {
+        await jobManager.destroy(jobId); // idempotent: unknown job still succeeds
+        sendJson(res, 200, { jobId, deleted: true });
+        return;
+      }
+
+      if (sub === '/lease' && method === 'POST') {
+        const body = await readJsonBody(req);
+        const parsed = parseRenewLeaseRequest(body);
+        const record = jobManager.renew(jobId, parsed.leaseTtlSec);
+        if (!record) {
+          sendError(res, 404, 'daemon.job_not_found', 'no live job with that id');
+          return;
+        }
+        sendJson(res, 200, { jobId, leaseExpiresAt: record.leaseExpiresAt });
+        return;
+      }
+
+      if (sub === '/logs' && method === 'GET') {
+        const record = jobManager.get(jobId);
+        if (!record) {
+          sendError(res, 404, 'daemon.job_not_found', 'no live job with that id');
+          return;
+        }
+        const follow = url.searchParams.get('follow') === '1';
+        const stream = await engine.streamLogs(record.container, { follow });
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        stream.on('error', () => res.end());
+        stream.pipe(res);
+        return;
+      }
+    }
+
+    sendError(res, 404, 'daemon.not_found', 'no such route');
+  }
+}
+
+/**
+ * Wire the daemon from the environment and start listening. Constructs the real
+ * dockerode engine (TLS to dind), the policy client, and the job manager.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {Promise<import('node:http').Server>}
+ */
+export async function main(env = process.env) {
+  const tokens = parseDaemonTokens(env.DEV_RUNNER_DAEMON_TOKEN);
+  const middlewareUrl = env.OMADIA_INTERNAL_API_URL ?? env.DEV_RUNNER_MIDDLEWARE_URL;
+  if (!middlewareUrl) {
+    throw new Error('OMADIA_INTERNAL_API_URL is not set — the daemon cannot fetch job policy');
+  }
+  // Refuse a wildcard bind; default to loopback (never 0.0.0.0). In compose the
+  // operator sets DEV_DAEMON_BIND to the dev-control interface address.
+  const bind = assertControlPlaneBind(env.DEV_DAEMON_BIND ?? '127.0.0.1');
+  const port = env.DEV_DAEMON_PORT ? Number(env.DEV_DAEMON_PORT) : DEFAULT_DAEMON_PORT;
+
+  const engine = createDockerEngine({ env });
+  const policyClient = createPolicyClient({
+    middlewareUrl,
+    daemonToken: tokens[0] ?? '',
+  });
+  const jobManager = new JobManager({ engine, policyClient });
+  const warmImageRefs = (env.DEV_RUNNER_IMAGES ?? env.DEV_RUNNER_DEFAULT_IMAGE ?? '')
+    .split(',')
+    .map((r) => r.trim())
+    .filter((r) => r.length > 0);
+
+  const server = createDaemon({ tokens, policyClient, jobManager, engine, warmImageRefs });
+  await new Promise((resolve) => server.listen(port, bind, () => resolve(undefined)));
+  console.log(`[dev-runner-daemon] listening on ${bind}:${port}`);
+  return server;
+}
+
+// Run main() only when executed as the entrypoint, so importing this module in
+// a test never starts a listening server or touches docker.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(`[dev-runner-daemon] failed to start: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });
+}

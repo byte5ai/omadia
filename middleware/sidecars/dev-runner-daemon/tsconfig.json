@@ -12,7 +12,10 @@
     "types": ["node"],
     "resolveJsonModule": true,
     "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "allowJs": true,
+    "checkJs": true,
+    "allowImportingTsExtensions": true
   },
   "include": ["src"]
 }
