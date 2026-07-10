@@ -241,3 +241,42 @@ describe('JobManager — create racing an in-progress destroy', () => {
     assert.equal(again.created, true);
   });
 });
+
+describe('JobManager — a failed teardown on the cancel path keeps the handle', () => {
+  it('registers the container when destroying a cancelled create fails', async () => {
+    let releaseCreate;
+    const createGate = new Promise((r) => (releaseCreate = r));
+    let seq = 0;
+    const engine = {
+      async ping() {
+        return { reachable: true, apiVersion: '1.47' };
+      },
+      async createJobContainer() {
+        await createGate; // the DELETE lands while we are provisioning
+        seq += 1;
+        return { containerId: `c-${seq}`, networkId: `n-${seq}`, volumeName: `v-${seq}`, imageDigest: 'sha256:x' };
+      },
+      async destroyJobContainer() {
+        throw new Error('docker is down');
+      },
+      async streamLogs() {
+        return { on() {}, pipe() {} };
+      },
+      async warmImages() {
+        return [];
+      },
+    };
+    const jm = new JobManager({ engine, policyClient: fakePolicyClient() });
+
+    const creating = jm.create(JOB_ID, 60);
+    await Promise.resolve();
+    const deleting = jm.destroy(JOB_ID); // cancels the in-flight create
+    releaseCreate();
+
+    // The container exists but could not be torn down, so the create fails with
+    // a cleanup error — and the job stays tracked so cleanup can be retried.
+    await assert.rejects(() => creating, /teardown failed|cleanup/i);
+    await deleting.catch(() => {});
+    assert.equal(jm.list().length, 1, 'the container is still tracked, not leaked');
+  });
+});

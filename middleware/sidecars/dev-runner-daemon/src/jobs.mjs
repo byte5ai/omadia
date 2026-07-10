@@ -255,7 +255,17 @@ export class JobManager {
     // just-created container down instead of registering it, so a
     // delete-before-create-completes never leaks a container nobody will reap.
     if (this.#cancelled.has(jobId)) {
-      await this.#engine.destroyJobContainer(container);
+      try {
+        await this.#engine.destroyJobContainer(container);
+      } catch (err) {
+        // The teardown failed, so the container may well still be running. The
+        // record is the ONLY handle a later DELETE or the reaper has, and this
+        // frame is about to unwind — so register it before rethrowing. Losing
+        // the handle here is the same leak `destroy()` refuses to cause; the
+        // cancel path must refuse it too.
+        this.#jobs.set(jobId, { jobId, container, leaseExpiresAt });
+        throw new JobCleanupError(jobId, err);
+      }
       throw new JobCancelledError(jobId);
     }
     /** @type {JobRecord} */
