@@ -752,3 +752,32 @@ describe('devplatform/devJobWorker — a backend at capacity requeues, it does n
     assert.ok(h.logs.some((l) => l.includes('lease already lost')));
   });
 });
+
+describe('devplatform/devJobWorker — losing the lease mid-attach must not finalize the row', () => {
+  it('does not fall through to failed when the orphan teardown itself fails', async () => {
+    // provision succeeds → setRunnerHandle throws (another worker owns the row now)
+    // → terminate throws too (daemon cleanup_failed). Before the fix, that throw
+    // escaped into the outer catch and finalized a job we no longer owned as
+    // `failed`, with no handle recorded, while the container was still up.
+    const store = new FakeStore();
+    store.add(makeJob({ id: 'job-lost-lease' }));
+    const h = makeWorker({ store });
+    const originalSet = store.setRunnerHandle.bind(store);
+    store.setRunnerHandle = async () => {
+      throw new Error(`dev job 'job-lost-lease' lease lost`);
+    };
+    h.backend.terminateError = new RunnerBackendError('cleanup_failed', 'teardown unproven');
+
+    await h.worker.tick();
+
+    const job = await store.getJob('job-lost-lease');
+    assert.notEqual(job?.status, 'failed', 'the row belongs to whoever holds the lease now');
+    assert.equal(store.finishCalls.get('job-lost-lease') ?? 0, 0, 'we finalized nothing');
+    assert.equal(h.backend.terminated.length, 1, 'we did attempt the teardown');
+    assert.ok(
+      h.logs.some((l) => l.includes('could not terminate orphaned runner')),
+      'and we said so loudly',
+    );
+    store.setRunnerHandle = originalSet;
+  });
+});

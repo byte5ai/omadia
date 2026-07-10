@@ -170,6 +170,14 @@ export class DockerBackend implements RunnerBackend {
   private readonly live = new Map<string, DockerRunnerHandle>();
   private renewTimer: ReturnType<typeof setInterval> | undefined;
 
+  /**
+   * Jobs whose teardown has been requested. Their leases are NEVER renewed again,
+   * even if the DELETE failed and the handle is retained: a retained handle means
+   * "we could not prove it is gone", not "keep it alive". Renewing it would make
+   * a container we are actively trying to destroy immortal.
+   */
+  private readonly terminating = new Set<string>();
+
   constructor(deps: DockerBackendDeps) {
     if (!deps.daemonUrl || deps.daemonUrl.trim() === '') {
       throw new DockerBackendError(
@@ -286,11 +294,15 @@ export class DockerBackend implements RunnerBackend {
       );
     }
     const jobId = dockerJobId(handle);
+    // From this instant the lease is forfeit: whatever happens below, we have
+    // decided this container must die.
+    this.terminating.add(jobId);
     const res = await this.daemonFetch('DELETE', `/v1/jobs/${encodeURIComponent(jobId)}`, {
       timeoutMs: this.callTimeoutMs,
     });
     if (res.ok || res.status === 404) {
       this.live.delete(jobId);
+      this.terminating.delete(jobId);
       this.maybeStopRenewLoop();
       return;
     }
@@ -352,6 +364,11 @@ export class DockerBackend implements RunnerBackend {
    * this middleware forever — the "a delete-decider with an empty registry"
    * failure, inverted.
    */
+  /** Test/introspection seam: is this job's lease forfeit? */
+  isTerminating(jobId: string): boolean {
+    return this.terminating.has(jobId);
+  }
+
   async rehydrate(
     rows: readonly { readonly id: string; readonly runnerHandle: RunnerHandle | null }[],
   ): Promise<{ adopted: number; skipped: number; reconciled: number }> {
@@ -424,6 +441,10 @@ export class DockerBackend implements RunnerBackend {
     for (const [jobId, handle] of this.live) {
       if (!daemonIds.has(jobId)) {
         this.live.delete(jobId);
+        // The daemon lost it: a pending teardown is now moot, and the id must not
+        // leak into `terminating` forever (a job id is never reused, but a set
+        // that only grows is still a leak).
+        this.terminating.delete(jobId);
         lost.push(handle);
       }
     }
@@ -445,6 +466,9 @@ export class DockerBackend implements RunnerBackend {
    */
   async renewLeases(): Promise<void> {
     for (const [jobId, handle] of [...this.live]) {
+      // A job we are tearing down keeps its handle (teardown unproven) but forfeits
+      // its lease — otherwise a failed DELETE would renew the container forever.
+      if (this.terminating.has(jobId)) continue;
       let res: DaemonResponse;
       try {
         res = await this.daemonFetch('POST', `/v1/jobs/${encodeURIComponent(jobId)}/lease`, {

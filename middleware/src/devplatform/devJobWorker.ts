@@ -371,7 +371,19 @@ export class DevJobWorker {
         this.log(
           `[dev-platform] job ${job.id} lease lost after provision (${errText(err)}); terminating orphaned runner ${handle.id}`,
         );
-        await this.terminateHandle(handle);
+        try {
+          await this.terminateHandle(handle);
+        } catch (termErr) {
+          // The teardown itself failed. Do NOT let this reach the outer catch: it
+          // would finalize a row we no longer own, with no handle recorded, while
+          // the runner is still up. The backend has stopped renewing this handle's
+          // lease, so the daemon's own reaper destroys it within the TTL — that
+          // lease is the durable backstop precisely for this case.
+          this.log(
+            `[dev-platform] job ${job.id}: could not terminate orphaned runner ${handle.id} ` +
+              `(${errText(termErr)}); its lease is no longer renewed, so the runner reaper will destroy it`,
+          );
+        }
         return;
       }
     } catch (err) {

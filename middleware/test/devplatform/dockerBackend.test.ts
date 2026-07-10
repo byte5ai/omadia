@@ -720,3 +720,71 @@ describe('devplatform/DockerBackend — rehydrate prefers the daemon over the da
     backend.stop();
   });
 });
+
+describe('devplatform/DockerBackend — a failed teardown forfeits the lease', () => {
+  const daemon = new FakeDaemon();
+  const JOB = '33333333-3333-4333-8333-333333333333';
+
+  before(async () => daemon.start());
+  after(async () => daemon.stop());
+
+  function handleFor(jobId: string): DockerRunnerHandle {
+    return {
+      backend: 'docker',
+      id: jobId,
+      jobId,
+      containerId: 'c1',
+      networkId: 'n1',
+      volumeName: 'v1',
+      imageDigest: `sha256:${'e'.repeat(64)}`,
+      leaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+      startedAt: new Date().toISOString(),
+    };
+  }
+
+  it('never renews a container it is trying to destroy, even when the DELETE fails', async () => {
+    // `keepHandle` means "teardown unproven", not "keep it alive". If the lease kept
+    // being renewed, a container we decided must die would live forever — and the
+    // daemon's lease reaper, the only backstop, would never fire.
+    const renews: string[] = [];
+    daemon.handler = (req) => {
+      if (req.method === 'DELETE') return { status: 502, body: { code: 'daemon.cleanup_failed' } };
+      if (req.path.endsWith('/lease')) {
+        renews.push(req.path);
+        return { status: 200, body: { leaseExpiresAt: new Date(Date.now() + 600_000).toISOString() } };
+      }
+      return { status: 200, body: { jobs: [] } };
+    };
+    const backend = makeBackend(daemon.url);
+    await backend.rehydrate([{ id: JOB, runnerHandle: handleFor(JOB) }]);
+
+    await backend.renewLeases();
+    assert.equal(renews.length, 1, 'before teardown, the lease is renewed normally');
+
+    await assert.rejects(
+      () => backend.terminate(handleFor(JOB)),
+      (e: unknown) => e instanceof DockerBackendError && e.keepHandle,
+    );
+    assert.equal(backend.isTerminating(JOB), true);
+
+    await backend.renewLeases();
+    assert.equal(renews.length, 1, 'after a failed teardown the lease is NEVER renewed again');
+    backend.stop();
+  });
+
+  it('clears the terminating mark once the daemon confirms the job is gone', async () => {
+    daemon.handler = (req) => {
+      if (req.method === 'DELETE') return { status: 502, body: { code: 'daemon.cleanup_failed' } };
+      return { status: 200, body: { jobs: [] } };
+    };
+    const backend = makeBackend(daemon.url);
+    await backend.rehydrate([{ id: JOB, runnerHandle: handleFor(JOB) }]);
+    await assert.rejects(() => backend.terminate(handleFor(JOB)), DockerBackendError);
+    assert.equal(backend.isTerminating(JOB), true);
+
+    const lost = await backend.reap();
+    assert.equal(lost.length, 1, 'the daemon no longer has it; reap settles the row');
+    assert.equal(backend.isTerminating(JOB), false, 'and the mark does not leak');
+    backend.stop();
+  });
+});
