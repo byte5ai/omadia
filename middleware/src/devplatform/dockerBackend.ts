@@ -84,6 +84,11 @@ function asDockerHandle(handle: RunnerHandle): DockerRunnerHandle | null {
   for (const key of ['id', 'jobId', 'containerId', 'networkId', 'volumeName', 'imageDigest'] as const) {
     if (typeof h[key] !== 'string' || h[key] === '') return null;
   }
+  // `id` IS `jobId` (the store/reap join key). A handle where they disagree is
+  // malformed, and it is dangerous: `terminate()` would act on `jobId` while the
+  // caller believes it named `id`, so a corrupt row could mark a HEALTHY job's
+  // lease forfeit and have the daemon reaper kill it mid-run.
+  if (h.id !== h.jobId) return null;
   return h as DockerRunnerHandle;
 }
 
@@ -293,7 +298,14 @@ export class DockerBackend implements RunnerBackend {
         `DockerBackend cannot terminate a '${handle.backend}' handle`,
       );
     }
-    const jobId = dockerJobId(handle);
+    const docker = asDockerHandle(handle);
+    if (!docker) {
+      throw new DockerBackendError(
+        'devplatform.malformed_handle',
+        `DockerBackend cannot terminate a malformed docker handle (id='${handle.id}')`,
+      );
+    }
+    const jobId = docker.jobId;
     // From this instant the lease is forfeit: whatever happens below, we have
     // decided this container must die.
     this.terminating.add(jobId);
@@ -752,11 +764,6 @@ function clampLeaseTtl(ttl: number): number {
 /** The jobId carried by a docker handle. Prefer the explicit field; fall back to
  *  `id` (they are equal by construction, but a DB round-trip could surface only
  *  the base `RunnerHandle`). */
-function dockerJobId(handle: RunnerHandle): string {
-  const asDocker = handle as Partial<DockerRunnerHandle>;
-  return asDocker.jobId ?? handle.id;
-}
-
 /**
  * Read a response body under a hard byte cap, aborting the whole request the
  * moment the cap is exceeded so an oversized body never buffers to exhaustion

@@ -788,3 +788,74 @@ describe('devplatform/DockerBackend — a failed teardown forfeits the lease', (
     backend.stop();
   });
 });
+
+describe('devplatform/DockerBackend — a handle whose id and jobId disagree is malformed', () => {
+  const daemon = new FakeDaemon();
+  const HEALTHY = '44444444-4444-4444-8444-444444444444';
+
+  before(async () => daemon.start());
+  after(async () => daemon.stop());
+
+  it('refuses to terminate through a handle that names a different job than its id', async () => {
+    // A corrupt or attacker-supplied row: id = 'A' (the job the caller means),
+    // jobId = the id of a HEALTHY running job. terminate() used to trust jobId,
+    // mark the healthy job's lease forfeit, and let the daemon reaper kill it.
+    const deletes: string[] = [];
+    const renews: string[] = [];
+    daemon.handler = (req) => {
+      if (req.method === 'DELETE') {
+        deletes.push(req.path);
+        return { status: 502, body: { code: 'daemon.cleanup_failed' } };
+      }
+      if (req.path.endsWith('/lease')) {
+        renews.push(req.path);
+        return { status: 200, body: { leaseExpiresAt: new Date(Date.now() + 600_000).toISOString() } };
+      }
+      return { status: 200, body: { jobs: [] } };
+    };
+    const backend = makeBackend(daemon.url);
+    const healthy: DockerRunnerHandle = {
+      backend: 'docker',
+      id: HEALTHY,
+      jobId: HEALTHY,
+      containerId: 'c-healthy',
+      networkId: 'n',
+      volumeName: 'v',
+      imageDigest: `sha256:${'f'.repeat(64)}`,
+      leaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+      startedAt: new Date().toISOString(),
+    };
+    await backend.rehydrate([{ id: HEALTHY, runnerHandle: healthy }]);
+
+    const liar = { ...healthy, id: 'some-other-job' };
+    await assert.rejects(
+      () => backend.terminate(liar),
+      (e: unknown) => e instanceof DockerBackendError && e.code === 'devplatform.malformed_handle',
+    );
+
+    assert.deepEqual(deletes, [], 'nothing was deleted');
+    assert.equal(backend.isTerminating(HEALTHY), false, 'the healthy job keeps its lease');
+    await backend.renewLeases();
+    assert.equal(renews.length, 1, 'and it is still being renewed');
+    backend.stop();
+  });
+
+  it('refuses to rehydrate such a handle too', async () => {
+    daemon.handler = () => ({ status: 200, body: { jobs: [] } });
+    const backend = makeBackend(daemon.url);
+    const liar = {
+      backend: 'docker' as const,
+      id: 'job-a',
+      jobId: 'job-b',
+      containerId: 'c',
+      networkId: 'n',
+      volumeName: 'v',
+      imageDigest: `sha256:${'0'.repeat(64)}`,
+      leaseExpiresAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+    };
+    const r = await backend.rehydrate([{ id: 'job-a', runnerHandle: liar }]);
+    assert.deepEqual(r, { adopted: 0, skipped: 1, reconciled: 0 });
+    backend.stop();
+  });
+});
