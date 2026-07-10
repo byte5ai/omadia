@@ -287,11 +287,12 @@ async function makeRunner(template: RoutineOutputTemplate): Promise<{
   const sender = new StubSender();
   const senderRegistry = new InMemoryProactiveSenderRegistry();
   senderRegistry.register(sender);
+  const hrOrchestrator = makeHrOrchestrator();
   const runner = new RoutineRunner({
     store: store as unknown as RoutineStore,
     runsStore: runsStore as unknown as RoutineRunsStore,
     scheduler,
-    orchestrator: makeHrOrchestrator(),
+    getOrchestrator: () => hrOrchestrator,
     senderRegistry,
     log: () => {},
   });
@@ -462,7 +463,7 @@ describe('Phase C.8 — HR routine end-to-end with reference template', () => {
       store: store as unknown as RoutineStore,
       runsStore: runsStore as unknown as RoutineRunsStore,
       scheduler,
-      orchestrator,
+      getOrchestrator: () => orchestrator,
       senderRegistry,
       log: () => {},
     });
