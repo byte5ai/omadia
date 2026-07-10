@@ -150,6 +150,20 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   per-locale flag policy is unchanged: results posted to #361 before any
   locale flips `mask_user_prompt` on.
 
+### Added — privacy receipt card shows masked prompt spans (#361)
+
+- The chat privacy-receipt card now surfaces the backend receipt field
+  `maskedPromptSpans` (shipped with the prompt-masking runtime path, but
+  until now unknown to the frontend mirror): a collapsed summary chunk
+  ("prompt: N masked") plus an expanded fact row with a per-type breakdown
+  (e.g. "3 (2 × person, 1 × email)"). Span types are an open set rendered
+  verbatim; detector ids stay in the data and are not rendered. A dedicated
+  explainer line states that identifiers in the user's own message were
+  pseudonymised before the model call and restored in the answer. Absent or
+  empty field ⇒ the card renders byte-identically to before. New
+  `privacyReceipt.{summaryPromptMasked,factPromptMasked,explainerPromptMasked}`
+  i18n keys in en + de.
+
 ### Changed — v1.0 readiness pass across the earliest core plugins (#431)
 
 - `harness-plugin-web-search`, `harness-plugin-privacy-guard`, and
