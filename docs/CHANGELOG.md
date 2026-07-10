@@ -18,6 +18,297 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
+
+- The save-as-template dialog no longer reads the viewer's own template id as
+  "taken" while the `getAuthMe` identity probe is still in flight. Ownership is
+  now derived from live viewer state plus a new `viewerPending` flag: a
+  user-sourced id collision holds a gated "Checking ownership" pending state
+  (busy-dots, submit disabled) and flips to "Publish as v{n+1}" — or the
+  id-taken error — once the viewer is known. Bundled/plugin collisions stay
+  terminal, and the 409-race re-check keeps working (now also pending-aware).
+
+### Fixed — templates v2 review round 2: input hardening, token placement (#478)
+
+- `checkTemplateManifest` (conductor-core) no longer throws on malformed input:
+  `POST /conductors/templates` with `{}` (or a manifest whose `slots` / kind
+  lists / entries have the wrong shape) now returns a 400
+  `conductor.template_invalid` envelope instead of a 500. The localized-text
+  helpers moved to `conductor-core/src/localizedText.ts` (500-line rule; the
+  `@omadia/conductor-core` export surface is unchanged).
+- Save-as-template text slots are now actually publishable: the dialog gained a
+  "Place text-slot tokens" section that edits the graph's designated step texts
+  (`step.prompt`, `human.message`) with per-field insert buttons for each
+  declared `slot:text:<key>` token, and blocks publish until every declared
+  slot's token is placed — previously the manifest shipped without tokens and
+  the backend rejected it as `template_text_slot_unused`.
+- Stripped committed trailing whitespace from the conductor template test files
+  (`git diff --check` hygiene).
+
+### Changed — templates v2 review fixups: step-kind tokens, component splits (#478)
+
+- The Conductor step-kind palette (agent/action/human node colors + badge text)
+  moved from hardcoded hex in `ConductorCanvas`/`TemplatePreview` into Lume
+  tokens (`--step-kind-*` in `web-ui/app/_lib/theme.css`), consumed through the
+  shared `stepKindColors.ts` map — one source of truth, no per-component hex.
+- Oversized web-ui files split per the 500-line rule, behavior-preserving:
+  `SaveAsTemplateDialog` extracted its ref-/text-slot editor sections into
+  `SaveAsTemplateSlotEditors.tsx`; `conductor/page.tsx` extracted the Roles
+  (US6) and emit-event sections into `ConductorRolesSection.tsx` and
+  `ConductorEmitSection.tsx`.
+
+### Added — builder-chat template proposal cards (#478)
+
+- `ConductorChatPane` (`web-ui/app/conductor/_components/`) renders B4's
+  `templateProposals` as up to 3 compact cards under the assistant reply:
+  locale-resolved template name, `v{n}` tag, the agent's one-line reason, and a
+  slot-coverage line ("{filled} of {total} slots prefilled" — counted against
+  DECLARED slots only, parity with the form's prefill seeding). One action,
+  **"Use template"**, hands off to the instantiate form via the page's existing
+  state plumbing (a prefill analog of the chat→canvas `setChatGraphRequest`
+  hand-off): the form opens pinned to the proposed version with the proposal's
+  prefill as `initialMapping`. Chat never auto-instantiates — creation stays a
+  deliberate form action. A proposal whose template id no longer resolves in
+  the catalog degrades to plain text (no dead action). Turns without proposals
+  render byte-identically to before; the API client's builder-turn result type
+  gains the additive `templateProposals` field.
+
+### Added — instantiate form v2: text slots, graph preview, version pin, update hint (#478)
+
+- `TemplateInstantiateForm` (`web-ui/app/conductor/_components/`) renders one
+  required-fill input per declared **text slot** (`slots.text`), the declared
+  default prefilled; an emptied defaulted slot is omitted from the mapping so
+  the server substitutes the default. The client completeness gate mirrors
+  `missingSlotMappings` (a text slot passes with a value OR a default), and the
+  server's `kind:'text'` incomplete-mapping entries land inline on the right
+  fields via the shared `text:<key>` flag ids. The submitted
+  `TemplateSlotMapping` carries the additive `text` record.
+- **Graph preview**: new `TemplatePreview` renders the MANIFEST graph — slot
+  placeholders shown as their locale-resolved declared labels — into a small
+  read-only designer canvas (no stored thumbnails), collapsed by default behind
+  a "Preview graph" toggle so only an OPENED form mounts a flow instance. The
+  plan drafted this on Cytoscape; the designer actually runs on
+  `@xyflow/react`, so the preview is a locked-down React Flow reusing the
+  canvas's node styling.
+- **Versioning surface**: the form header shows the manifest version
+  (`v{n}`); an explicit pinned version travels into `resolve`/`instantiate`.
+  Workflows carrying B3's `template.updateAvailable` hint render
+  "Template updated (v{n} → v{m})" (warning-colored text only, per Lume) with
+  a **"Re-instantiate from v{m}"** action (`TemplateUpdateHint`) that opens the
+  instantiate form pinned to the latest version — a deliberate NEW workflow;
+  the existing instance keeps its copy (copy-not-reference).
+- The form accepts an `initialMapping` prefill (consumed by the builder-chat
+  template proposals, F4). API client: `mapping.text` + optional `version` on
+  resolve/instantiate, `fetchConductorTemplateVersions`, and the additive
+  `template` hint on the workflow wire type.
+
+### Added — template gallery v2: facets, pending-review queue, search, manage actions (#478)
+
+- `TemplateGallery` (`web-ui/app/conductor/_components/`) now renders the
+  composite catalog with **provenance facets** (All / Bundled / My templates /
+  Shared / Plugins / **Pending review**), client-side **text search** over the
+  locale-resolved name/description/useCase, and secondary **use-case chips**.
+  "My templates" derives ownership from `createdBy = viewer` (viewer identity
+  via the page's existing `getAuthMe` plumbing), falling back to "a visible
+  private template is the viewer's own" per the backend visibility rule.
+- **Pending review is the reviewer queue**: every `status = 'pending'` user
+  template is listed for EVERY operator (the install-wide pending visibility
+  rule makes the review gate reachable by non-author reviewers), with the
+  submitter shown and **Approve / Reject** actions directly on the card — not
+  inside an author-only menu. The facet label carries a waiting-count badge;
+  empty state: "No templates waiting for review".
+- Cards gain a provenance/status badge (text + edge color only, per Lume), a
+  `v{n}` tag, an instantiation count ("Used {n}×"), and author manage actions
+  on own user templates: **Submit for review** (private only) and **Delete**
+  behind an inline confirm. All mutations refetch the catalog through the
+  page (`onCatalogChanged` → `reload()`); errors surface inline as text with
+  the server's error message.
+- API client (`web-ui/app/_lib/api.ts`): `deleteConductorTemplate`,
+  `submitConductorTemplate`, `approveConductorTemplate`,
+  `rejectConductorTemplate` over B3's review-gate routes.
+
+### Added — save-as-template dialog in the Conductor admin UI (#478)
+
+- Published workflows in the Conductor page's workflow list gain a **"Save as
+  template"** action (only with an active published version). It opens
+  `SaveAsTemplateDialog` (`web-ui/app/conductor/_components/`), seeded by the
+  backend's inference draft (`POST /:slug/save-as-template`): metadata with
+  separate en/de inputs (en required — the manifest's universal fallback; de
+  present → a `LocalizedText` record travels, absent → a plain string), the
+  inferred ref slots grouped per kind with editable en/de labels and the
+  original concrete ref shown as context, and a manual text-slot editor
+  (key/label/default, with the paste-able `slot:text:<key>` token shown per
+  row — text slots are never inferred).
+- **Owner-aware primary action** (the v2 version-publish path): the entered id
+  is resolved against the loaded viewer-scoped catalog — unused id → "Publish
+  template" (`POST /templates`); an existing USER template with
+  `createdBy = viewer` → **"Publish as v{latestVersion+1}"**
+  (`PUT /templates/:id`, with a copy-not-reference note that existing
+  instances are unaffected and will show an update hint); bundled/plugin/
+  foreign id → inline "id taken" error, primary disabled. A **409 race** on
+  POST re-fetches the template (`GET /templates/:id`) and, when it turns out
+  viewer-owned, switches the dialog into the PUT state instead of
+  dead-ending. Viewer identity comes from `GET /auth/me` (`user.id` = the
+  session `sub` the backend scopes the catalog by).
+- API client (`web-ui/app/_lib/api.ts`): `saveWorkflowAsTemplate`,
+  `createConductorTemplate`, `updateConductorTemplate`,
+  `fetchConductorTemplate`; `ConductorTemplate` widened with the additive
+  catalog metadata (`source/status/createdBy/version/latestVersion/
+  instantiationCount/updatedAt`) and `slots.text`
+  (`ConductorTemplateTextSlot`). Lume throughout (state colors text/edge
+  only, Button busy verb+dots, `.lume-skeleton` while the draft loads); all
+  strings i18n'd en+de. Tests:
+  `__tests__/SaveAsTemplateDialog.test.tsx` (draft rendering, POST manifest
+  shape incl. text slot + de label map, owned-id PUT switch, foreign/bundled
+  dead-end, 409-race recovery both ways, missing-en gate, busy-dots).
+
+### Added — builder-chat template awareness (#478)
+
+- The Conductor conversational builder (`src/conductor/builderAgent.ts`) now
+  sees the workflow-template catalog: its system prompt carries a compact,
+  **viewer-scoped** catalog digest (id, en-resolved name/useCase, version,
+  slot list incl. text slots; capped at 30 templates with a count note), and
+  the reply protocol accepts an additional `templateProposals` block.
+  `POST /builder/turn` returns it **additively** as
+  `templateProposals?: [{ templateId, version, reason, prefill }]` — the key
+  is absent entirely when there are no proposals, so the v1 wire shape stays
+  byte-identical for existing consumers.
+- The proposals are server-side gated inside the agent seam (defensive, never
+  throws): unknown or viewer-invisible template ids are dropped against the
+  composite catalog, duplicates deduped, at most 3 survive, `version` is
+  catalog-authoritative (the LLM's claim is ignored), and `prefill` guesses
+  are kept only for declared slot keys whose ref values resolve against the
+  live `KnownRefs` sets (`channels` has no KnownRefs set → structural
+  acceptance, mirroring `validate()`). A stripped guess renders as an empty
+  form field, never a broken one. A failing catalog/KnownRefs read degrades
+  to a template-less turn instead of a 500. Chat proposes and prefills only —
+  instantiation stays on the existing `resolve`/`instantiate` form flow, no
+  auto-instantiation. The shared `templateKnownRefs` function is hoisted in
+  `src/conductor/index.ts` so the builder's prefill vetting and the template
+  routes' strict validation can never drift apart. Tests: extended
+  `test/conductorBuilder.test.ts` (digest visibility incl. pending/foreign-
+  private, proposal vetting, malformed blocks, no-proposal regression).
+
+### Added — template authoring, review gate, plugin-borne templates, update hint (#478)
+
+- **Save as template** (`POST /:slug/save-as-template` on the conductor
+  router — it is mounted at `/api/v1/operator/conductors`, so there is no
+  `/workflows` path prefix): loads the workflow's active published version and
+  returns an `inferTemplateManifest` **draft** (`{ draft, sourceWorkflow:
+  { slug, version } }`) with one declared slot per distinct concrete ref
+  (label = the original ref). Nothing is persisted — the UI edits the draft
+  and publishes via `POST /templates` (fresh id) or `PUT /templates/:id`
+  (new version of an owned id). Body overrides `{ id?, name?, description?,
+  useCase? }`; the default id derives from the slug with a `-template` suffix
+  on collision; `404 conductor.workflow_not_found` without a published version.
+- **Review state machine** (Make's team-template shape, `private → pending →
+  shared`): `POST /templates/:id/submit` (author-only; `409
+  conductor.template_status_conflict` from any status but `private`),
+  `POST /templates/:id/approve` / `reject` (**any authenticated operator** —
+  reachable because `pending` templates are visible install-wide; resolved
+  through the viewer-scoped catalog `get`, so a non-author reviewer never
+  404s). `reviewed_by` is recorded for audit; self-approval stays permitted
+  (single-operator installs must not deadlock, separation of duties is an
+  explicit deferral). A reject by a non-author flips the template `private`
+  and out of the reviewer's visibility — the response then carries
+  `template: null`.
+- **Template update hint**: workflow list (`GET /`) and detail (`GET /:slug`)
+  additively report `template?: { id, version, latestVersion,
+  updateAvailable }` when the row carries `template_id`/`template_version`
+  provenance. Viewer-scoped: a template the viewer cannot see degrades to
+  `latestVersion = version, updateAvailable: false` (no existence leak).
+  Copy-not-reference stands — the hint powers deliberate re-instantiation,
+  never silent propagation.
+- **Plugin-borne workflow templates** — the designed trust boundary (recorded
+  in `docs/security-architecture.md` §4): plugins declare TemplateManifest
+  JSON files under `permissions.templates` (package-relative paths). Install
+  is gated **fail-closed** in the new `src/plugins/pluginTemplates.ts`:
+  `.json` only, path confinement after symlink unwrapping, id namespacing
+  `plugin:<pluginId>:<name>` (no shadowing of bundled/user ids),
+  `checkTemplateManifest({ strict: true })` (undeclared concrete refs
+  rejected as confusion/exfiltration vectors), `isValidCron` on cron
+  triggers; any violation fails the install with `install.template_invalid`.
+  Accepted manifests register as read-only `source: 'plugin'` catalog entries
+  (write paths 403), are removed on uninstall, and re-register at boot
+  (fail-open per template — the hard gate ran at install time). Templates are
+  data, never code: no runtime template API, nothing executed. Tests:
+  `test/pluginTemplates.test.ts` (new; gate incl. symlink escape,
+  InstallService integration, boot sweep) + extended
+  `test/conductorTemplateRoutes.test.ts` (state machine incl. non-author
+  approve, inference round-trip, update hint, plugin source read-only).
+
+### Added — DB-backed workflow templates: store, composite catalog, CRUD + versioning routes (#478)
+
+- New Conductor migration **`0006_templates.sql`** (conductor chain,
+  `_conductor_migrations`; verified free against open PRs — the top-level
+  chain's `0022` belongs to PR #476 and is not used here): `conductor_templates`
+  (owner, review `status` `private|pending|shared` — TEXT without CHECK, growable
+  enum per the #470 lesson, `latest_version`, `reviewed_by`),
+  `conductor_template_versions` (immutable JSONB manifest snapshots,
+  PK `(template_id, version)`, mirroring the workflow version store),
+  `conductor_template_instantiations` (append-only anonymous telemetry with
+  denormalized `template_name` so rows survive deletion — the `0009_mcp_call_log`
+  pattern), plus `template_id`/`template_version` provenance columns on
+  `conductor_workflows`. Idempotent (`IF NOT EXISTS`), forward-only. The
+  conductor migrations dir is now also mirrored into `dist/` by
+  `copy-build-assets.mjs` (previously Dockerfile-COPY only, so a plain
+  `npm run build` dist missed it).
+- New `src/conductor/templateStore.ts` (`createTemplateStore(pool, log)`):
+  create (unique violation → typed 409), atomic `addVersion`
+  (`latest_version + 1` under `FOR UPDATE`), get/list/delete/setStatus,
+  `listVersions`/`getVersion`, `recordInstantiation` + `instantiationCounts`,
+  and `stampWorkflowProvenance` (runs on the publish transaction's client).
+  The `version` column is authoritative — it is stamped into
+  `manifest.version` at write and read, so the JSONB can never drift.
+- `templateCatalog.ts` gains the **composite catalog** (bundled files + DB user
+  templates + a plugin registration seam for #478 B3) behind a viewer-scoped
+  `{ list(viewer), get(id, viewer) }`. **Visibility rule (the reviewer-reachable
+  review gate):** bundled/plugin → everyone; a user template is visible iff
+  `shared` OR `createdBy = viewer` OR **`pending`** — every operator on the
+  single-tier operator API is a potential reviewer, so pending submissions are
+  visible install-wide; only foreign `private` templates are hidden. `get`
+  applies exactly the list's rule (no 404-vs-list divergence).
+- Template routes (split into `src/conductor/templateRoutes.ts` for file size;
+  same mount + order, before the `/:slug` catch-all): `GET /templates` now
+  serves `TemplateSummary` = manifest + ADDITIVE `source`/`status`/`createdBy`/
+  `version`/`latestVersion`/`instantiationCount`/`updatedAt` (v1 fields
+  untouched — #330 contract-tested); new `GET /templates/:id`,
+  `POST /templates` (private create, `409 conductor.template_id_exists`,
+  `400 conductor.template_invalid`), `PUT /templates/:id` (author-only version
+  bump; sharing status deliberately unchanged — the gate governs sharing, not
+  each version), `DELETE /templates/:id` (author-only, user source only),
+  `GET /templates/:id/versions`; `resolve`/`instantiate` accept an optional
+  body `version` (default latest). `instantiate` stamps `{template_id,
+  template_version}` provenance inside the same transaction as the publish and
+  appends a best-effort telemetry row. Viewer identity: `req.session?.sub ??
+  'operator'`. Tests: `test/conductorTemplateStore.test.ts` (new, stateful
+  fake-pool) + `test/conductorTemplateRoutes.test.ts` (real composite catalog;
+  explicit reviewer-reachability cases incl. "pending template of A is listed
+  and gettable by B").
+
+### Added — template contract v2: versioning, text slots, slot inference, strict import gate (#478)
+
+- `@omadia/conductor-core` extends the workflow-template contract for templates
+  v2, purely additively over the #429 v1 surface: `TemplateManifest.version`
+  (integer ≥ 1, absent = 1 — read via the new `templateManifestVersion()`),
+  declared **text slots** (`slots.text`, referenced as `slot:text:<key>` tokens
+  inside the designated text fields `step.prompt` / `step.human.message` only,
+  disjoint from `{{...}}` run-context interpolation, with optional per-slot
+  `default`), `TemplateSlotMapping.text` for their instantiation values, and
+  `missingSlotMappings` reporting unfilled text slots as `kind: 'text'` entries.
+  `checkTemplateManifest` now validates text-slot declaration/usage both ways
+  (`template_text_slot_undeclared` / `template_text_slot_unused`) and gains a
+  `{ strict: true }` mode for distributed (plugin/hub-imported) manifests that
+  rejects any concrete ref left in the five ref fields
+  (`template_concrete_ref_in_strict_mode`) — undeclared install-local refs are
+  confusion/exfiltration vectors, so distributed templates must declare every
+  external ref as a slot. New `inferTemplateManifest(graph, opts)` reverses the
+  `extractSlotRefs` walk for "save as template": each distinct concrete ref
+  becomes a declared slot with a slugified, de-duplicated key (pre-existing
+  `slot:` placeholders pass through), round-trip covered by tests. Pure
+  functions only; text-slot machinery lives in the new `src/textSlots.ts`,
+  v2 tests in `test/templateV2.test.ts`.
+
 ### Fixed — template instantiation slug race can no longer republish over a fresh workflow (#429)
 
 - Two concurrent `POST /templates/:id/instantiate` with the same not-yet-existing

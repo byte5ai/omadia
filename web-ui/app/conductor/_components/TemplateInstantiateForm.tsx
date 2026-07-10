@@ -16,9 +16,11 @@ import {
   type ConductorTemplate,
   type ConductorTemplateSlot,
   type ConductorTemplateSlotMapping,
+  type ConductorTemplateTextSlot,
 } from '@/app/_lib/api';
 
 import { ChannelSelect, gcLbl } from './GuidedControls';
+import { TemplatePreview } from './TemplatePreview';
 
 /**
  * Workflow-template slot-mapping form (#429): ONE upfront form for the whole template
@@ -88,6 +90,13 @@ export interface TemplateInstantiateFormProps {
    */
   onOpenInDesigner: (graph: unknown, target: { slug: string; name: string; enable: boolean }) => void;
   onCancel: () => void;
+  /** Pin an explicit manifest version (#478 update flow, "Re-instantiate from
+   *  v{latest}"): travels into resolve/instantiate and shows in the header.
+   *  Absent = the server's latest. */
+  version?: number;
+  /** Slot-mapping prefill (chat template proposals, F4). Applied once on mount,
+   *  declared keys only; every value stays editable. */
+  initialMapping?: ConductorTemplateSlotMapping;
 }
 
 export function TemplateInstantiateForm({
@@ -95,6 +104,8 @@ export function TemplateInstantiateForm({
   onCreated,
   onOpenInDesigner,
   onCancel,
+  version,
+  initialMapping,
 }: TemplateInstantiateFormProps): React.JSX.Element {
   const t = useTranslations('conductor');
   // Template metadata/slot texts are localized in the manifest itself — resolve against
@@ -106,12 +117,29 @@ export function TemplateInstantiateForm({
   const [name, setName] = useState(() => resolveConductorText(template.name, locale));
   const [enable, setEnable] = useState(false);
   // Channel slots are prefilled with the ChannelSelect's displayed default ('teams') so
-  // the mapping state never diverges from what the operator sees in the select.
+  // the mapping state never diverges from what the operator sees in the select. A
+  // prefill (F4 chat proposals) seeds declared keys on top; unknown keys are dropped.
   const [mapping, setMapping] = useState<Record<SlotKind, Record<string, string>>>(() => {
-    const channels: Record<string, string> = {};
-    for (const slot of template.slots.channels ?? []) channels[slot.key] = 'teams';
-    return { roles: {}, agents: {}, actions: {}, events: {}, channels };
+    const out: Record<SlotKind, Record<string, string>> = { roles: {}, agents: {}, actions: {}, events: {}, channels: {} };
+    for (const slot of template.slots.channels ?? []) out.channels[slot.key] = 'teams';
+    for (const kind of SLOT_KINDS) {
+      for (const slot of template.slots[kind] ?? []) {
+        const prefilled = initialMapping?.[kind]?.[slot.key];
+        if (typeof prefilled === 'string' && prefilled.trim().length > 0) out[kind][slot.key] = prefilled;
+      }
+    }
+    return out;
   });
+  // Text-slot values (#478): prefill wins over the declared default, which lands
+  // IN the input — what will be substituted is what's on screen.
+  const [textValues, setTextValues] = useState<Record<string, string>>(() => {
+    const out: Record<string, string> = {};
+    for (const slot of template.slots.text ?? []) {
+      out[slot.key] = initialMapping?.text?.[slot.key] ?? slot.default ?? '';
+    }
+    return out;
+  });
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [catalogs, setCatalogs] = useState<Catalogs>({});
   const [pending, setPending] = useState<'create' | 'resolve' | null>(null);
   // Server-error surfaces (fail-clear): per-slot flags, slug conflict, graph-validation
@@ -168,22 +196,35 @@ export function TemplateInstantiateForm({
   );
 
   // Mirror of the server's completeness check — fast feedback only, the server stays
-  // authoritative (its incomplete/invalid envelopes still render inline below).
+  // authoritative (its incomplete/invalid envelopes still render inline below). A text
+  // slot is complete when it has a value OR a declared default (the server falls back
+  // to the default when the mapping omits the key — missingSlotMappings parity).
   const complete =
     slug.trim().length > 0 &&
-    declaredSlots.every(({ kind, slot }) => (mapping[kind][slot.key] ?? '').trim().length > 0);
+    declaredSlots.every(({ kind, slot }) => (mapping[kind][slot.key] ?? '').trim().length > 0) &&
+    (template.slots.text ?? []).every(
+      (slot) => (textValues[slot.key] ?? '').trim().length > 0 || typeof slot.default === 'string',
+    );
 
   const scheduled = (template.graph.triggers ?? []).some((trigger) => trigger.kind === 'cron');
 
-  const setSlotValue = (kind: SlotKind, key: string, value: string): void => {
-    setMapping((m) => ({ ...m, [kind]: { ...m[kind], [key]: value } }));
+  const unflagSlot = (id: string): void => {
     setFlaggedSlots((prev) => {
-      const id = `${kind}:${key}`;
       if (!prev.has(id)) return prev;
       const next = new Set(prev);
       next.delete(id);
       return next;
     });
+  };
+
+  const setSlotValue = (kind: SlotKind, key: string, value: string): void => {
+    setMapping((m) => ({ ...m, [kind]: { ...m[kind], [key]: value } }));
+    unflagSlot(`${kind}:${key}`);
+  };
+
+  const setTextValue = (key: string, value: string): void => {
+    setTextValues((m) => ({ ...m, [key]: value }));
+    unflagSlot(`text:${key}`);
   };
 
   const clearErrors = (): void => {
@@ -214,11 +255,20 @@ export function TemplateInstantiateForm({
     setGenericError(t('templateRequestFailed', { message: err instanceof Error ? err.message : String(err) }));
   };
 
-  /** Only declared kinds go over the wire (mirrors TemplateSlotMapping semantics). */
+  /** Only declared kinds go over the wire (mirrors TemplateSlotMapping). Empty
+   *  text entries are OMITTED so the server substitutes the declared default. */
   const buildMapping = (): ConductorTemplateSlotMapping => {
     const out: ConductorTemplateSlotMapping = {};
     for (const kind of SLOT_KINDS) {
       if ((template.slots[kind] ?? []).length > 0) out[kind] = { ...mapping[kind] };
+    }
+    if ((template.slots.text ?? []).length > 0) {
+      const text: Record<string, string> = {};
+      for (const slot of template.slots.text ?? []) {
+        const value = (textValues[slot.key] ?? '').trim();
+        if (value.length > 0) text[slot.key] = value;
+      }
+      out.text = text;
     }
     return out;
   };
@@ -233,6 +283,8 @@ export function TemplateInstantiateForm({
         name: name.trim(),
         mapping: buildMapping(),
         enable,
+        // Explicit pin only (update flow) — the default path lets the server serve latest.
+        ...(version !== undefined ? { version } : {}),
       });
       onCreated(trimmedSlug);
     } catch (err) {
@@ -246,7 +298,10 @@ export function TemplateInstantiateForm({
     setPending('resolve');
     clearErrors();
     try {
-      const res = await resolveConductorTemplate(template.id, buildMapping());
+      const res =
+        version !== undefined
+          ? await resolveConductorTemplate(template.id, buildMapping(), version)
+          : await resolveConductorTemplate(template.id, buildMapping());
       onOpenInDesigner(res.graph, { slug: slug.trim(), name: name.trim(), enable });
     } catch (err) {
       handleFailure(err);
@@ -294,16 +349,51 @@ export function TemplateInstantiateForm({
     );
   };
 
+  const renderTextField = (slot: ConductorTemplateTextSlot): React.JSX.Element => {
+    const flagged = flaggedSlots.has(`text:${slot.key}`);
+    const label = resolveConductorText(slot.label, locale);
+    const description = slot.description === undefined ? undefined : resolveConductorText(slot.description, locale);
+    return (
+      <label key={slot.key} className={gcLbl}>
+        <span className={flagged ? 'text-[color:var(--danger)]' : undefined}>{label}</span>
+        <input
+          className={fieldClass(flagged)}
+          value={textValues[slot.key] ?? ''}
+          aria-invalid={flagged || undefined}
+          onChange={(e) => setTextValue(slot.key, e.target.value)}
+        />
+        {description ? <span className="text-[11px] text-[color:var(--fg-muted)]">{description}</span> : null}
+        {flagged ? <span className="text-[12px] text-[color:var(--danger)]">{t('templateTextSlotMissing')}</span> : null}
+      </label>
+    );
+  };
+
   const busyDisabled = !complete || pending !== null;
 
   return (
     <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
-      <h3 className="text-[15px] font-medium text-[color:var(--fg-strong)]">
+      <h3 className="flex items-baseline gap-2 text-[15px] font-medium text-[color:var(--fg-strong)]">
         {t('templateFormHeading', { name: resolveConductorText(template.name, locale) })}
+        {/* Which manifest version this form instantiates — explicit pin or the catalog manifest's own. */}
+        <span className="font-mono text-[12px] font-normal text-[color:var(--fg-muted)]">
+          {t('templateVersionTag', { version: version ?? template.version ?? 1 })}
+        </span>
       </h3>
       <p className="mt-1 max-w-2xl text-[13px] leading-[1.55] text-[color:var(--fg-muted)]">
         {resolveConductorText(template.description, locale)}
       </p>
+
+      {/* Graph preview (#478): collapsed by default — one flow canvas per OPENED form. */}
+      <div className="mt-3">
+        <Button variant="ghost" size="sm" aria-expanded={previewOpen} onClick={() => setPreviewOpen((o) => !o)}>
+          {previewOpen ? t('templatePreviewHide') : t('templatePreviewShow')}
+        </Button>
+        {previewOpen ? (
+          <div className="mt-2">
+            <TemplatePreview template={template} />
+          </div>
+        ) : null}
+      </div>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <label className={gcLbl}>
@@ -340,6 +430,17 @@ export function TemplateInstantiateForm({
           </fieldset>
         );
       })}
+
+      {/* Text slots (#478): free-text substitution into prompt/message text; the
+          server's kind:'text' missing entries land here via `text:<key>` flag ids. */}
+      {(template.slots.text ?? []).length > 0 ? (
+        <fieldset className="mt-4">
+          <legend className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
+            {t('templateSlotGroupText')}
+          </legend>
+          <div className="grid gap-3 sm:grid-cols-2">{(template.slots.text ?? []).map(renderTextField)}</div>
+        </fieldset>
+      ) : null}
 
       <label className="mt-5 flex items-center gap-2 text-[13px] text-[color:var(--fg)]">
         <input

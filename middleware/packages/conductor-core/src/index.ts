@@ -12,4 +12,12 @@ export {
   applyTemplateSlots,
   checkTemplateManifest,
   resolveLocalizedText,
+  templateManifestVersion,
+  inferTemplateManifest,
+  type InferTemplateOptions,
 } from './template.js';
+export {
+  extractTextSlotRefs,
+  TEXT_SLOT_PREFIX,
+  type TemplateTextSlotRef,
+} from './textSlots.js';
