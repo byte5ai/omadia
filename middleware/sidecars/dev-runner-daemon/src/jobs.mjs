@@ -29,6 +29,7 @@
  * the JobManager only stores what it returns.
  */
 
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { PassThrough, Readable } from 'node:stream';
 import { join } from 'node:path';
@@ -283,6 +284,15 @@ export class JobManager {
   #engine;
   /** @type {PolicyClient} */
   #policyClient;
+
+  /** Optional. Absent ⇒ no egress proxy configured; jobs egress direct (still
+   *  clamped by the per-job network). Present ⇒ registration is MANDATORY and a
+   *  failure aborts the create: a container that boots without its registration
+   *  would be answered 407 on every request, which looks like a network outage. */
+  #proxyClient;
+
+  /** @type {(msg: string) => void} */
+  #log;
   /** @type {Clock} */
   #clock;
   /** @type {Map<string, JobRecord>} */
@@ -316,10 +326,13 @@ export class JobManager {
    * @param {number} [deps.maxLiveJobs] Live-job admission cap (default 8).
    * @param {number} [deps.maxInflight] In-flight admission cap (default 4).
    * @param {number} [deps.maxJobLifetimeMs] Absolute container lifetime (default 6 h).
+   * @param {{ register: Function, unregister: Function }} [deps.proxyClient] Egress-proxy control plane.
    */
   constructor(deps) {
     this.#engine = deps.engine;
     this.#policyClient = deps.policyClient;
+    this.#proxyClient = deps.proxyClient;
+    this.#log = deps.log ?? (() => {});
     this.#clock = deps.clock ?? SYSTEM_CLOCK;
     this.#maxLiveJobs = deps.maxLiveJobs ?? DEFAULT_MAX_LIVE_JOBS;
     this.#maxInflight = deps.maxInflight ?? DEFAULT_MAX_INFLIGHT_JOBS;
@@ -379,10 +392,38 @@ export class JobManager {
    * @returns {Promise<JobRecord>}
    */
   async #provision(jobId, leaseTtlSec) {
+    // Hex, so the credential survives the URL userinfo round-trip a proxy-aware
+    // http client performs, with no encoding ambiguity at either end.
+    const proxyToken = this.#proxyClient ? randomBytes(32).toString('hex') : undefined;
     // The daemon fetches the policy ITSELF — never from the caller (S3).
-    const policy = await this.#policyClient.fetchJobPolicy(jobId);
+    const policy = await this.#policyClient.fetchJobPolicy(jobId, { proxyToken });
     const leaseExpiresAt = this.#leaseExpiry(leaseTtlSec);
-    const container = await this.#engine.createJobContainer({ jobId, policy, leaseExpiresAt });
+    const hardDeadlineAt = new Date(this.#clock.now() + this.#maxLifetimeMs).toISOString();
+
+    if (this.#proxyClient && proxyToken) {
+      // BEFORE the container starts: a runner that boots first races its own first
+      // request against this call. The TTL is the job's hard deadline, not its
+      // lease — a lease is renewed every ~TTL/3, and hanging egress off that
+      // cadence would let one missed refresh silently blackhole a running job.
+      // The reaper guarantees no container outlives the hard deadline, so this
+      // registration can neither expire under a live job nor outlive a dead one.
+      const ttlSec = Math.max(1, Math.ceil(this.#maxLifetimeMs / 1000));
+      await this.#proxyClient.register(jobId, {
+        allowlist: policy.egressAllowlist,
+        proxyToken,
+        ttlSec,
+      });
+    }
+
+    let container;
+    try {
+      container = await this.#engine.createJobContainer({ jobId, policy, leaseExpiresAt });
+    } catch (err) {
+      // No container exists, so nothing may keep egress authorisation. Failing to
+      // withdraw it is not fatal (it expires at the hard deadline) but it is never silent.
+      await this.#withdrawEgress(jobId);
+      throw err;
+    }
     // A DELETE that raced this create marked the id cancelled WHILE we were
     // provisioning (destroy() saw it in #inflight, not yet in #jobs). Tear the
     // just-created container down instead of registering it, so a
@@ -396,23 +437,14 @@ export class JobManager {
         // frame is about to unwind — so register it before rethrowing. Losing
         // the handle here is the same leak `destroy()` refuses to cause; the
         // cancel path must refuse it too.
-        this.#jobs.set(jobId, {
-          jobId,
-          container,
-          leaseExpiresAt,
-          hardDeadlineAt: new Date(this.#clock.now() + this.#maxLifetimeMs).toISOString(),
-        });
+        this.#jobs.set(jobId, { jobId, container, leaseExpiresAt, hardDeadlineAt });
         throw new JobCleanupError(jobId, err);
       }
+      await this.#withdrawEgress(jobId);
       throw new JobCancelledError(jobId);
     }
     /** @type {JobRecord} */
-    const record = {
-      jobId,
-      container,
-      leaseExpiresAt,
-      hardDeadlineAt: new Date(this.#clock.now() + this.#maxLifetimeMs).toISOString(),
-    };
+    const record = { jobId, container, leaseExpiresAt, hardDeadlineAt };
     this.#jobs.set(jobId, record);
     return record;
   }
@@ -488,11 +520,33 @@ export class JobManager {
       } finally {
         this.#destroying.delete(jobId);
       }
+      // The container is proven gone: withdraw its egress authorisation. Order
+      // matters — withdrawing first would strip egress from a container whose
+      // teardown then failed and which is still running.
+      await this.#withdrawEgress(jobId);
       // Only forget THIS record: a later create may have registered a new one.
       if (this.#jobs.get(jobId) === record) this.#jobs.delete(jobId);
       return true;
     }
     return this.#destroyInflight(jobId);
+  }
+
+  /**
+   * Remove a job's egress authorisation. Never throws: by the time this runs the
+   * container is already gone (or was never created), and the registration expires
+   * on its own at the hard deadline. Silence, though, is not on offer.
+   * @param {string} jobId
+   */
+  async #withdrawEgress(jobId) {
+    if (!this.#proxyClient) return;
+    try {
+      await this.#proxyClient.unregister(jobId);
+    } catch (err) {
+      this.#log(
+        `[dev-runner] job ${jobId}: could not withdraw egress authorisation ` +
+          `(${err instanceof Error ? err.message : String(err)}); it expires at the job's hard deadline`,
+      );
+    }
   }
 
   /** @param {string} jobId @returns {Promise<boolean>} */

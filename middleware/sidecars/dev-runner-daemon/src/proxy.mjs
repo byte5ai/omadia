@@ -32,6 +32,7 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { pathToFileURL } from 'node:url';
 
 import { isAuthorized, parseDaemonTokens } from './auth.mjs';
+import { withDeadline } from './deadline.mjs';
 import {
   DEFAULT_ALLOWED_PORTS,
   JobRegistry,
@@ -45,24 +46,6 @@ import {
 
 /** Data-plane port (spec §6). */
 
-/**
- * Reject if `p` has not settled within `ms`. A tarpit authoritative nameserver
- * would otherwise hold a request before ANY deadline is armed and before the
- * tunnel is counted against the concurrency cap — unbounded parked requests,
- * each holding a socket, none visible to the limiter.
- * Not unref'd: an unref'd deadline never fires when node is idle, so the awaited
- * race would hang instead of failing. Always cleared in `finally`.
- * @template T @param {Promise<T>} p @param {number} ms @param {string} label
- * @returns {Promise<T>}
- */
-function withDeadline(p, ms, label) {
-  /** @type {ReturnType<typeof setTimeout>} */
-  let timer;
-  const deadline = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms);
-  });
-  return Promise.race([p, deadline]).finally(() => clearTimeout(timer));
-}
 
 /** DNS must not be a way to park a connection forever before the limiter sees it. */
 export const DEFAULT_RESOLVE_TIMEOUT_MS = 5_000;

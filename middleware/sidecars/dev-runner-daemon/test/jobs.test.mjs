@@ -821,3 +821,155 @@ describe('dev-runner image — the job workspace is writable by uid 1000', { ski
     }
   });
 });
+
+/**
+ * Epic #470 W1 — the egress proxy is default-deny and knows nothing about a job
+ * until the daemon registers it. Registration is therefore not an optimisation:
+ * an unregistered job is answered 407 on EVERY request, which inside the runner
+ * is indistinguishable from a total network outage.
+ */
+describe('JobManager — egress-proxy registration is part of provisioning', () => {
+  function recordingProxyClient(overrides = {}) {
+    const calls = [];
+    return {
+      calls,
+      async register(jobId, entry) {
+        calls.push({ op: 'register', jobId, entry });
+        if (overrides.registerError) throw overrides.registerError;
+      },
+      async unregister(jobId) {
+        calls.push({ op: 'unregister', jobId });
+        if (overrides.unregisterError) throw overrides.unregisterError;
+        return true;
+      },
+    };
+  }
+
+  /** An engine that records the order of operations against the proxy calls. */
+  function orderedEngine(order, opts = {}) {
+    return {
+      async createJobContainer() {
+        order.push('createContainer');
+        if (opts.createError) throw opts.createError;
+        return { jobId: JOB_ID, id: 'c1', networkId: 'n1', volumeName: 'v1', imageDigest: 'sha256:abc' };
+      },
+      async destroyJobContainer() {
+        order.push('destroyContainer');
+        if (opts.destroyError) throw opts.destroyError;
+      },
+    };
+  }
+
+  it('registers the job with the proxy BEFORE the container starts', async () => {
+    const order = [];
+    const proxy = recordingProxyClient();
+    const wrapped = {
+      ...proxy,
+      async register(jobId, entry) {
+        order.push('register');
+        return proxy.register(jobId, entry);
+      },
+    };
+    const jm = new JobManager({ engine: orderedEngine(order), policyClient: fakePolicyClient(), proxyClient: wrapped });
+    await jm.create(JOB_ID, 180);
+    assert.deepEqual(order, ['register', 'createContainer'], 'a container must never boot before its egress authorisation exists');
+  });
+
+  it('passes the policy allowlist and a fresh token, with a TTL covering the hard deadline', async () => {
+    const proxy = recordingProxyClient();
+    const policyClient = {
+      async fetchJobPolicy(jobId, opts) {
+        // The daemon mints the token and threads it into the container's proxy URL.
+        assert.equal(typeof opts?.proxyToken, 'string');
+        assert.match(opts.proxyToken, /^[0-9a-f]{64}$/, 'hex, so the URL userinfo round-trip is unambiguous');
+        return { jobId, image: 'ghcr.io/x/y@sha256:abc', env: {}, egressAllowlist: ['registry.npmjs.org'] };
+      },
+    };
+    const jm = new JobManager({
+      engine: orderedEngine([]),
+      policyClient,
+      proxyClient: proxy,
+      maxJobLifetimeMs: 3_600_000,
+    });
+    await jm.create(JOB_ID, 180);
+    const reg = proxy.calls.find((c) => c.op === 'register');
+    assert.deepEqual(reg.entry.allowlist, ['registry.npmjs.org']);
+    assert.equal(reg.entry.ttlSec, 3600, 'the TTL is the hard deadline, not the 180s lease');
+    assert.match(reg.entry.proxyToken, /^[0-9a-f]{64}$/);
+  });
+
+  it('aborts the create when the proxy refuses the registration', async () => {
+    // Fail closed: a job that boots without egress authorisation looks like a
+    // broken network to the agent inside it, and burns a whole run.
+    const order = [];
+    const proxy = recordingProxyClient({ registerError: new Error('proxy.control_unreachable') });
+    const jm = new JobManager({ engine: orderedEngine(order), policyClient: fakePolicyClient(), proxyClient: proxy });
+    await assert.rejects(() => jm.create(JOB_ID, 180), /proxy.control_unreachable/);
+    assert.deepEqual(order, [], 'no container was created');
+    assert.equal(jm.size(), 0);
+  });
+
+  it('withdraws the registration when the container fails to start', async () => {
+    const proxy = recordingProxyClient();
+    const jm = new JobManager({
+      engine: orderedEngine([], { createError: new Error('boom') }),
+      policyClient: fakePolicyClient(),
+      proxyClient: proxy,
+    });
+    await assert.rejects(() => jm.create(JOB_ID, 180), /boom/);
+    assert.deepEqual(proxy.calls.map((c) => c.op), ['register', 'unregister']);
+  });
+
+  it('withdraws the registration only AFTER the container is proven gone', async () => {
+    const order = [];
+    const proxy = recordingProxyClient();
+    const wrapped = {
+      ...proxy,
+      async unregister(jobId) {
+        order.push('unregister');
+        return proxy.unregister(jobId);
+      },
+    };
+    const jm = new JobManager({ engine: orderedEngine(order), policyClient: fakePolicyClient(), proxyClient: wrapped });
+    await jm.create(JOB_ID, 180);
+    await jm.destroy(JOB_ID);
+    assert.deepEqual(
+      order,
+      ['createContainer', 'destroyContainer', 'unregister'],
+      'stripping egress from a container whose teardown then failed would leave it running and blind',
+    );
+  });
+
+  it('keeps the egress authorisation when the teardown itself fails', async () => {
+    const proxy = recordingProxyClient();
+    const jm = new JobManager({
+      engine: orderedEngine([], { destroyError: new Error('cleanup failed') }),
+      policyClient: fakePolicyClient(),
+      proxyClient: proxy,
+    });
+    await jm.create(JOB_ID, 180);
+    await assert.rejects(() => jm.destroy(JOB_ID));
+    assert.deepEqual(proxy.calls.map((c) => c.op), ['register'], 'the container may still be running');
+  });
+
+  it('a failed withdrawal is logged, never thrown — the registration expires on its own', async () => {
+    const logs = [];
+    const proxy = recordingProxyClient({ unregisterError: new Error('proxy down') });
+    const jm = new JobManager({
+      engine: orderedEngine([]),
+      policyClient: fakePolicyClient(),
+      proxyClient: proxy,
+      log: (m) => logs.push(m),
+    });
+    await jm.create(JOB_ID, 180);
+    assert.equal(await jm.destroy(JOB_ID), true, 'the container IS gone; the job is destroyed');
+    assert.ok(logs.some((l) => l.includes('could not withdraw egress authorisation')));
+  });
+
+  it('does nothing proxy-shaped when no proxy is configured', async () => {
+    const jm = new JobManager({ engine: orderedEngine([]), policyClient: fakePolicyClient() });
+    await jm.create(JOB_ID, 180);
+    await jm.destroy(JOB_ID);
+    assert.equal(jm.size(), 0);
+  });
+});

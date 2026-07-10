@@ -438,6 +438,21 @@ function assertPolicyEnv(env, status) {
  * @param {{ jobBaseUrl: string, workspace: string, cliBin: string, egressProxyUrl?: string, noProxy?: string }} owned
  * @returns {Record<string, string>}
  */
+/**
+ * Splice per-job proxy credentials into the operator's proxy URL.
+ *
+ * @param {string} proxyUrl A userinfo-free http(s) URL (parseEgressProxyUrl enforces that).
+ * @param {string} jobId
+ * @param {string} proxyToken
+ * @returns {string}
+ */
+function authorizedProxyUrl(proxyUrl, jobId, proxyToken) {
+  const url = new URL(proxyUrl);
+  url.username = encodeURIComponent(jobId);
+  url.password = encodeURIComponent(proxyToken);
+  return url.toString();
+}
+
 function injectDaemonOwnedEnv(policyEnv, jobId, owned) {
   /** @type {Record<string, string>} */
   const env = {
@@ -448,10 +463,20 @@ function injectDaemonOwnedEnv(policyEnv, jobId, owned) {
     OMADIA_CLI_BIN: owned.cliBin,
   };
   if (owned.egressProxyUrl) {
-    env.HTTP_PROXY = owned.egressProxyUrl;
-    env.HTTPS_PROXY = owned.egressProxyUrl;
-    env.http_proxy = owned.egressProxyUrl;
-    env.https_proxy = owned.egressProxyUrl;
+    // The proxy is default-deny and authenticates every request as
+    // `Proxy-Authorization: Basic base64(jobId:proxyToken)`. Standard http clients
+    // (curl, git, undici, python-requests) derive that header from the proxy URL's
+    // userinfo, so the credential travels in the injected value — NOT in the
+    // operator-supplied DEV_RUNNER_EGRESS_PROXY_URL, which is still refused if it
+    // carries userinfo. The token names exactly one job's allowlist, and it is the
+    // daemon that mints it, so a job cannot borrow another job's egress.
+    const withCreds = owned.proxyToken
+      ? authorizedProxyUrl(owned.egressProxyUrl, jobId, owned.proxyToken)
+      : owned.egressProxyUrl;
+    env.HTTP_PROXY = withCreds;
+    env.HTTPS_PROXY = withCreds;
+    env.http_proxy = withCreds;
+    env.https_proxy = withCreds;
   }
   if (owned.noProxy) {
     env.NO_PROXY = owned.noProxy;
@@ -649,9 +674,11 @@ export function createPolicyClient(deps) {
   return {
     /**
      * @param {string} jobId
+     * @param {{ proxyToken?: string }} [opts] The per-job proxy credential, minted by
+     *   the JobManager and registered with the proxy before the container starts.
      * @returns {Promise<DerivedJobPolicy>}
      */
-    async fetchJobPolicy(jobId) {
+    async fetchJobPolicy(jobId, opts = {}) {
       // jobId is UUID-validated at the wire schema before we get here; encode it
       // anyway so nothing malformed could ever alter the request path.
       const url = `${base}/api/v1/dev-runner/internal/job-policy/${encodeURIComponent(jobId)}`;
@@ -755,6 +782,7 @@ export function createPolicyClient(deps) {
             cliBin,
             egressProxyUrl,
             noProxy,
+            proxyToken: opts.proxyToken,
           }),
         };
       } finally {

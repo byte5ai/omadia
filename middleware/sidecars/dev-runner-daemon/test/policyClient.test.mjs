@@ -313,6 +313,29 @@ describe('policyClient — daemon-owned env keys are injected, never accepted', 
     assert.equal(policy.env.no_proxy, 'middleware,localhost');
   });
 
+  it('splices the per-job proxy credentials into the injected proxy URL', async () => {
+    // The proxy is default-deny and authenticates as Basic base64(jobId:proxyToken).
+    // Standard http clients derive that header from the URL userinfo, so the
+    // credential has to travel there — in the INJECTED value, never in the
+    // operator-supplied DEV_RUNNER_EGRESS_PROXY_URL (which still refuses userinfo).
+    const token = 'a'.repeat(64);
+    const client = clientWith(policyBody(), {
+      clientOpts: { egressProxyUrl: 'http://egress-proxy:3128' },
+    });
+    const policy = await client.fetchJobPolicy(JOB_ID, { proxyToken: token });
+    const expected = `http://${JOB_ID}:${token}@egress-proxy:3128/`;
+    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) {
+      assert.equal(policy.env[k], expected, `${k} must carry the job's own credential`);
+    }
+  });
+
+  it('still refuses an operator proxy URL that carries userinfo', async () => {
+    assert.throws(
+      () => clientWith(policyBody(), { clientOpts: { egressProxyUrl: 'http://u:p@egress-proxy:3128' } }),
+      /must not carry userinfo/,
+    );
+  });
+
   it('injects NO proxy vars when the daemon has none configured', async () => {
     const client = clientWith(policyBody());
     const policy = await client.fetchJobPolicy(JOB_ID);

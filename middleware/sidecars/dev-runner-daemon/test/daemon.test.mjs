@@ -18,6 +18,7 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { after, afterEach, describe, it } from 'node:test';
 
@@ -25,7 +26,7 @@ import { SpecRejectedError } from '../src/clamp.mjs';
 import { createImageWarmer } from '../src/warmer.mjs';
 
 import { DaemonAuthConfigError, parseDaemonTokens } from '../src/auth.mjs';
-import { assertControlPlaneBind, createDaemon } from '../src/daemon.mjs';
+import { assertControlPlaneBind, buildEgressProxyClient, createDaemon } from '../src/daemon.mjs';
 import { JobManager } from '../src/jobs.mjs';
 
 const TOKEN = 'test-daemon-token-000000000000000000';
@@ -676,5 +677,77 @@ describe('dev-runner-daemon — the warmer owns the health warm-state', () => {
     health = await (await call(d.url, '/v1/health')).json();
     assert.equal(health.imageWarm, true);
     assert.deepEqual(health.warmedDigests, ['sha256:aaa']);
+  });
+});
+
+/**
+ * Epic #470 W1 — the egress proxy's control plane. `main()` cannot be tested (it
+ * dials docker), so the decision it makes lives in `buildEgressProxyClient`, and
+ * prod and test call the SAME function. Three "not mounted = not shipped" bugs in
+ * this epic came from a component nobody constructed; this is the guard.
+ */
+describe('dev-runner-daemon — egress proxy control-plane wiring', () => {
+  const TOKENS = ['t'.repeat(40), 'o'.repeat(40)];
+
+  it('builds a client when both proxy URLs are configured', () => {
+    const client = buildEgressProxyClient(
+      {
+        DEV_RUNNER_EGRESS_PROXY_URL: 'http://dev-egress:3128',
+        DEV_RUNNER_EGRESS_PROXY_CONTROL_URL: 'http://dev-egress:3129',
+      },
+      TOKENS,
+    );
+    assert.ok(client, 'the JobManager must receive a proxy client');
+    assert.equal(typeof client.register, 'function');
+    assert.equal(typeof client.unregister, 'function');
+  });
+
+  it('builds nothing when no proxy is configured (direct egress)', () => {
+    assert.equal(buildEgressProxyClient({}, TOKENS), undefined);
+  });
+
+  it('REFUSES to boot when jobs are proxied but the daemon cannot register them', () => {
+    // The expensive failure: every runner sees 407 on every request and reports a
+    // broken network. Fail at boot instead.
+    assert.throws(
+      () => buildEgressProxyClient({ DEV_RUNNER_EGRESS_PROXY_URL: 'http://dev-egress:3128' }, TOKENS),
+      /must be set together/,
+    );
+  });
+
+  it('REFUSES to boot when a control URL is set but jobs are not proxied', () => {
+    assert.throws(
+      () => buildEgressProxyClient({ DEV_RUNNER_EGRESS_PROXY_CONTROL_URL: 'http://dev-egress:3129' }, TOKENS),
+      /must be set together/,
+    );
+  });
+
+  it('sends the FIRST daemon token — the incoming one in a rotation', async () => {
+    // Both ends read the same comma list; the proxy ACCEPTS every token, the daemon
+    // must SEND the one being rotated in. Driven over a real control-plane server.
+    const seen = [];
+    const server = createServer((req, res) => {
+      seen.push({ method: req.method, url: req.url, auth: req.headers.authorization });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ jobId: 'j', registered: true, expiresAt: new Date().toISOString() }));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address();
+    try {
+      const client = buildEgressProxyClient(
+        {
+          DEV_RUNNER_EGRESS_PROXY_URL: 'http://dev-egress:3128',
+          DEV_RUNNER_EGRESS_PROXY_CONTROL_URL: `http://127.0.0.1:${port}`,
+        },
+        TOKENS,
+      );
+      await client.register('job-1', { allowlist: ['registry.npmjs.org'], proxyToken: 'tok', ttlSec: 60 });
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].method, 'PUT');
+      assert.equal(seen[0].url, '/jobs/job-1');
+      assert.equal(seen[0].auth, `Bearer ${TOKENS[0]}`, 'the retiring token must never be the one we send');
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });

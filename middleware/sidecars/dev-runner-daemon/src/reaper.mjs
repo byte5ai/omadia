@@ -38,6 +38,7 @@
  */
 
 import { jobNetworkName, jobVolumeName } from './clamp.mjs';
+import { withDeadline } from './deadline.mjs';
 
 /**
  * @typedef {import('./jobs.mjs').JobManager} JobManager
@@ -101,26 +102,6 @@ export function isLeaseExpired(leaseExpiresAt, nowMs) {
 }
 
 
-/**
- * Reject if `p` has not settled within `ms`. The reaper's single-flight guard
- * would otherwise be held forever by one hung engine call, silently disabling
- * lease and lifetime enforcement — the loop would look alive and do nothing.
- * The hung work is abandoned, not cancelled: docker has no cancellation here,
- * but the next pass gets to run.
- * @template T @param {Promise<T>} p @param {number} ms @param {string} label
- * @returns {Promise<T>}
- */
-function withDeadline(p, ms, label) {
-  /** @type {ReturnType<typeof setTimeout>} */
-  let timer;
-  const deadline = new Promise((_, reject) => {
-    // NOT unref'd: an unref'd deadline lets node exit before it fires, so the
-    // awaited race never settles and the caller hangs. It is always cleared in
-    // `finally`, so it cannot keep the process alive either.
-    timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms);
-  });
-  return Promise.race([p, deadline]).finally(() => clearTimeout(timer));
-}
 
 /** @param {unknown} err @returns {string} */
 function errMessage(err) {

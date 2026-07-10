@@ -42,6 +42,7 @@ import {
 import { SpecRejectedError } from './clamp.mjs';
 import { createPolicyClient, parseAllowedImages, parseRequireDigest, PolicyLookupError } from './policyClient.mjs';
 import { parseCreateJobRequest, parseRenewLeaseRequest, WireProtocolMismatchError } from './protocol.ts';
+import { createProxyClient } from './proxyClient.mjs';
 import { createReaper, resolveSweepIntervalMs } from './reaper.mjs';
 import { createImageWarmer } from './warmer.mjs';
 
@@ -519,6 +520,35 @@ export function createDaemon(deps) {
 }
 
 /**
+ * Build the egress proxy's control-plane client from the daemon's own env.
+ *
+ * Configuring a proxy for the JOBS (`DEV_RUNNER_EGRESS_PROXY_URL`) without telling
+ * the daemon how to REGISTER them with it is a footgun that presents as a total
+ * network outage inside every runner: the proxy is default-deny and answers 407 to
+ * an unregistered job. The two are therefore configured together or not at all,
+ * and a half-configuration is a boot refusal rather than a silent, expensive
+ * mystery in production. Exported so `main()` and its test share one decision.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @param {readonly string[]} tokens Parsed DEV_RUNNER_DAEMON_TOKEN, in rotation order.
+ * @returns {import('./proxyClient.mjs').ProxyClient | undefined}
+ */
+export function buildEgressProxyClient(env, tokens) {
+  const jobsProxyUrl = env.DEV_RUNNER_EGRESS_PROXY_URL;
+  const controlUrl = env.DEV_RUNNER_EGRESS_PROXY_CONTROL_URL;
+  if (Boolean(jobsProxyUrl) !== Boolean(controlUrl)) {
+    throw new Error(
+      'DEV_RUNNER_EGRESS_PROXY_URL and DEV_RUNNER_EGRESS_PROXY_CONTROL_URL must be set together: ' +
+        'a job routed through a proxy the daemon cannot register it with is answered 407 on every request',
+    );
+  }
+  if (!controlUrl) return undefined;
+  // Both ends read DEV_RUNNER_DAEMON_TOKEN, a comma list for zero-downtime
+  // rotation: ACCEPT every token, SEND the first (the incoming one).
+  return createProxyClient({ controlUrl, token: tokens[0] });
+}
+
+/**
  * Wire the daemon from the environment and start listening. Constructs the real
  * dockerode engine (TLS to dind), the policy client, and the job manager.
  *
@@ -567,7 +597,16 @@ export async function main(env = process.env) {
   const maxLiveJobs = parsePositiveIntEnv(env.DEV_RUNNER_MAX_LIVE_JOBS);
   const maxInflight = parsePositiveIntEnv(env.DEV_RUNNER_MAX_INFLIGHT_JOBS);
   const maxLogFollows = parsePositiveIntEnv(env.DEV_RUNNER_MAX_LOG_FOLLOWS);
-  const jobManager = new JobManager({ maxJobLifetimeMs: parsePositiveIntEnv(env.DEV_RUNNER_MAX_JOB_LIFETIME_MS), engine, policyClient, maxLiveJobs, maxInflight });
+  const proxyClient = buildEgressProxyClient(env, tokens);
+  const jobManager = new JobManager({
+    maxJobLifetimeMs: parsePositiveIntEnv(env.DEV_RUNNER_MAX_JOB_LIFETIME_MS),
+    engine,
+    policyClient,
+    maxLiveJobs,
+    maxInflight,
+    proxyClient,
+    log: (msg) => console.log(msg),
+  });
   const warmImageRefs = (env.DEV_RUNNER_IMAGES ?? env.DEV_RUNNER_DEFAULT_IMAGE ?? '')
     .split(',')
     .map((r) => r.trim())

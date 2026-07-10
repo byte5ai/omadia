@@ -37,6 +37,8 @@
  * out, now sourced from the warmer rather than an inline object.
  */
 
+import { withDeadline } from './deadline.mjs';
+
 /** Default warm interval: every 6 h (spec §4). */
 export const DEFAULT_WARM_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
@@ -76,24 +78,6 @@ export const DEFAULT_WARM_INTERVAL_MS = 6 * 60 * 60 * 1000;
  */
 
 
-/**
- * Reject if `p` has not settled within `ms`. A docker pull that hangs would
- * otherwise hold the in-flight slot forever: every later interval tick and every
- * `POST /v1/warm` would join the stuck pull instead of retrying, and the image
- * would never warm again without a restart.
- * @template T @param {Promise<T>} p @param {number} ms
- * @returns {Promise<T>}
- */
-function withDeadline(p, ms) {
-  /** @type {ReturnType<typeof setTimeout>} */
-  let timer;
-  const deadline = new Promise((_, reject) => {
-    // NOT unref'd — see the reaper's twin: an unref'd deadline never fires if
-    // node is otherwise idle, and the awaited race hangs. Cleared in `finally`.
-    timer = setTimeout(() => reject(new Error(`image pull exceeded ${ms}ms`)), ms);
-  });
-  return Promise.race([p, deadline]).finally(() => clearTimeout(timer));
-}
 
 /** @type {Clock} */
 const SYSTEM_CLOCK = { now: () => Date.now() };
@@ -148,7 +132,7 @@ export function createImageWarmer(deps) {
       // dedup wrapper: a hung pull must surface as an ordinary failure (recorded
       // in `lastError`, retried next tick) rather than holding the slot forever
       // so every later warm joins a pull that will never settle.
-      const resolved = await withDeadline(engine.warmImages(refs), pullTimeoutMs);
+      const resolved = await withDeadline(engine.warmImages(refs), pullTimeoutMs, 'image pull');
       state.digests = resolved;
       // A pull that resolves zero digests is a success but not "warm" — mirrors
       // the empty-refs case: there is nothing cached to launch from.

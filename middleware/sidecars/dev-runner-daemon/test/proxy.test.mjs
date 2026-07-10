@@ -25,7 +25,9 @@ import { createServer as createHttpServer, request as httpRequest } from 'node:h
 import { describe, it } from 'node:test';
 
 import { JobRegistry } from '../src/egressPolicy.mjs';
+import { createPolicyClient } from '../src/policyClient.mjs';
 import { createProxy } from '../src/proxy.mjs';
+import { createProxyClient } from '../src/proxyClient.mjs';
 
 const DAEMON_TOKEN = 'control-plane-token-000000000000000000';
 const PROXY_TOKEN = 'job-proxy-token-abcdefghijklmnop';
@@ -413,6 +415,171 @@ describe('proxy — a tarpit nameserver cannot park connections before the limit
       const { statusCode, socket } = await sendConnect(p.dataPort, 'good.test:443', basicAuth());
       socket.destroy();
       assert.notEqual(statusCode, 200, 'the tunnel must not be established');
+    } finally {
+      await p.close();
+    }
+  });
+});
+
+/**
+ * Epic #470 W1 — the whole egress chain, end to end, over real sockets.
+ *
+ * Every link was built and unit-tested; NONE of them were connected. The daemon
+ * never registered a job with the proxy and never gave the container a credential,
+ * so a correctly-configured deployment would have answered `407` to every request
+ * a runner made — a fail-closed proxy failing closed on everything, presenting as
+ * a total network outage. This test refuses to let that happen again by driving
+ * the actual production pieces: `createProxyClient` (the daemon's control-plane
+ * client) registers the job, `createPolicyClient` builds the exact HTTP_PROXY value
+ * the container receives, and a real CONNECT is made using only that value.
+ */
+describe('egress chain — daemon registers, container connects, nothing else does', () => {
+  const CHAIN_JOB = '99999999-9999-4999-8999-999999999999';
+  const CHAIN_TOKEN = 'b'.repeat(64);
+
+  /** The credential a proxy-aware http client derives from the URL's userinfo. */
+  function authFromProxyUrl(proxyUrl) {
+    const u = new URL(proxyUrl);
+    const user = decodeURIComponent(u.username);
+    const pass = decodeURIComponent(u.password);
+    return `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+  }
+
+  it('an allowlisted host is reachable using ONLY the injected proxy URL', async () => {
+    // The rebind guard refuses a public name that resolves to a private address, so
+    // the reachable destination here is the single deliberate internal one (the same
+    // path the middleware LLM proxy is reached on). The allowlist is still exercised
+    // by the denied case below, which never gets as far as a connection.
+    const upstream = await startTcpEcho();
+    const p = await startProxy({
+      jobs: [],
+      internalHost: 'allowed.example.com',
+      internalPort: upstream.port,
+      resolveMap: { 'allowed.example.com': [{ address: '127.0.0.1', family: 4 }] },
+    });
+    try {
+      // 1. The daemon registers the job with the proxy — its control-plane client.
+      const control = createProxyClient({
+        controlUrl: `http://127.0.0.1:${p.controlPort}`,
+        token: DAEMON_TOKEN,
+      });
+      await control.register(CHAIN_JOB, {
+        allowlist: ['allowed.example.com'],
+        proxyToken: CHAIN_TOKEN,
+        ttlSec: 180,
+      });
+
+      // 2. The daemon hands the container its env. This is the production builder.
+      const policyClient = createPolicyClient({
+        middlewareUrl: 'http://middleware:8080',
+        daemonToken: 'x'.repeat(40),
+        allowedImages: ['ghcr.io/byte5ai/omadia-dev-runner'],
+        egressProxyUrl: `http://127.0.0.1:${p.dataPort}`,
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              jobId: CHAIN_JOB,
+              image: `ghcr.io/byte5ai/omadia-dev-runner@sha256:${'a'.repeat(64)}`,
+              env: {},
+              egressAllowlist: ['allowed.example.com'],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+      });
+      const policy = await policyClient.fetchJobPolicy(CHAIN_JOB, { proxyToken: CHAIN_TOKEN });
+      const proxyUrl = policy.env.HTTP_PROXY;
+      assert.ok(proxyUrl.includes(CHAIN_JOB), 'the container is told who it is');
+
+      // 3. The container connects, deriving its credential from that URL alone.
+      const allowed = await sendConnect(
+        p.dataPort,
+        `allowed.example.com:${upstream.port}`,
+        authFromProxyUrl(proxyUrl),
+      );
+      assert.equal(allowed.statusCode, 200, 'an allowlisted host is reachable');
+      allowed.socket.destroy();
+
+      // 4. And the allowlist still bites.
+      const denied = await sendConnect(p.dataPort, 'evil.example.com:443', authFromProxyUrl(proxyUrl));
+      assert.equal(denied.statusCode, 403, 'a host off the allowlist is refused');
+      denied.socket.destroy();
+    } finally {
+      await p.close();
+      await upstream.close();
+    }
+  });
+
+  it('without the daemon registration, the same container gets 407 on everything', async () => {
+    // The bug this whole test exists for: every link correct, none connected.
+    const p = await startProxy({ jobs: [] });
+    try {
+      const auth = `Basic ${Buffer.from(`${CHAIN_JOB}:${CHAIN_TOKEN}`).toString('base64')}`;
+      const res = await sendConnect(p.dataPort, 'allowed.example.com:443', auth);
+      assert.equal(res.statusCode, 407, 'an unregistered job is refused, allowlist or not');
+      res.socket.destroy();
+    } finally {
+      await p.close();
+    }
+  });
+
+  it('one job cannot borrow another job’s egress authorisation', async () => {
+    const p = await startProxy({ jobs: [] });
+    try {
+      const control = createProxyClient({ controlUrl: `http://127.0.0.1:${p.controlPort}`, token: DAEMON_TOKEN });
+      await control.register(CHAIN_JOB, { allowlist: ['allowed.example.com'], proxyToken: CHAIN_TOKEN, ttlSec: 180 });
+
+      // Right token, wrong job id.
+      const other = `Basic ${Buffer.from(`00000000-0000-4000-8000-000000000000:${CHAIN_TOKEN}`).toString('base64')}`;
+      const a = await sendConnect(p.dataPort, 'allowed.example.com:443', other);
+      assert.equal(a.statusCode, 407);
+      a.socket.destroy();
+
+      // Right job id, wrong token.
+      const wrong = `Basic ${Buffer.from(`${CHAIN_JOB}:${'c'.repeat(64)}`).toString('base64')}`;
+      const b = await sendConnect(p.dataPort, 'allowed.example.com:443', wrong);
+      assert.equal(b.statusCode, 407);
+      b.socket.destroy();
+    } finally {
+      await p.close();
+    }
+  });
+
+  it('the daemon can withdraw a job’s egress, and it takes effect immediately', async () => {
+    const upstream = await startTcpEcho();
+    const p = await startProxy({
+      jobs: [],
+      internalHost: 'allowed.example.com',
+      internalPort: upstream.port,
+      resolveMap: { 'allowed.example.com': [{ address: '127.0.0.1', family: 4 }] },
+    });
+    try {
+      const control = createProxyClient({ controlUrl: `http://127.0.0.1:${p.controlPort}`, token: DAEMON_TOKEN });
+      await control.register(CHAIN_JOB, { allowlist: ['allowed.example.com'], proxyToken: CHAIN_TOKEN, ttlSec: 180 });
+      const auth = `Basic ${Buffer.from(`${CHAIN_JOB}:${CHAIN_TOKEN}`).toString('base64')}`;
+
+      const before = await sendConnect(p.dataPort, `allowed.example.com:${upstream.port}`, auth);
+      assert.equal(before.statusCode, 200);
+      before.socket.destroy();
+
+      assert.equal(await control.unregister(CHAIN_JOB), true);
+
+      const after = await sendConnect(p.dataPort, `allowed.example.com:${upstream.port}`, auth);
+      assert.equal(after.statusCode, 407, 'a withdrawn job is a stranger again');
+      after.socket.destroy();
+    } finally {
+      await p.close();
+      await upstream.close();
+    }
+  });
+
+  it('the control plane refuses an unauthenticated registration', async () => {
+    const p = await startProxy({ jobs: [] });
+    try {
+      const control = createProxyClient({ controlUrl: `http://127.0.0.1:${p.controlPort}`, token: 'not-the-token' });
+      await assert.rejects(
+        () => control.register(CHAIN_JOB, { allowlist: ['allowed.example.com'], proxyToken: CHAIN_TOKEN, ttlSec: 180 }),
+        (e) => e.name === 'ProxyControlError' && e.httpStatus === 401,
+      );
     } finally {
       await p.close();
     }
