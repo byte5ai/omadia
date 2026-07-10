@@ -35,6 +35,10 @@ const ASSETS = [
   // Conductor workflow-template catalog (#429) — templateCatalog.ts scans the
   // JSON manifests next to its compiled module (dist/conductor/templates).
   { from: 'src/conductor/templates', to: 'dist/conductor/templates' },
+  // Conductor SQL migrations (#478) — runConductorMigrations scans the directory
+  // next to its compiled module. Previously mirrored only by the Dockerfile COPY,
+  // so a plain `npm run build` dist (desktop-installer staging) missed them.
+  { from: 'src/conductor/migrations', to: 'dist/conductor/migrations' },
 ];
 
 async function main() {

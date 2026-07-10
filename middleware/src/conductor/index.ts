@@ -21,7 +21,10 @@ import { ConductorScheduleWorker } from './scheduleWorker.js';
 import { ConductorEventRouter } from './eventRouter.js';
 import { RealStepEffects } from './realStepEffects.js';
 import { ConductorBuilderAgent } from './builderAgent.js';
-import { loadTemplateCatalog } from './templateCatalog.js';
+import { createCompositeTemplateCatalog, loadTemplateCatalog } from './templateCatalog.js';
+import type { CompositeTemplateCatalog } from './templateCatalog.js';
+import { createTemplateStore } from './templateStore.js';
+import type { ConductorTemplateStore } from './templateStore.js';
 import { createConductorRouter } from './routes.js';
 
 export { runConductorMigrations } from './migrator.js';
@@ -44,6 +47,10 @@ export type { ConductorBuilderTurnInput, ConductorBuilderTurnResult, BuilderChat
 export { applyGraphPatches, emptyGraph } from './graphPatch.js';
 export type { GraphPatch } from './graphPatch.js';
 export { createConductorRouter } from './routes.js';
+export { createTemplateStore, TemplateIdExistsError, TemplateInvalidError } from './templateStore.js';
+export type { ConductorTemplateStore, TemplateRecord, TemplateStatus } from './templateStore.js';
+export { createCompositeTemplateCatalog, loadTemplateCatalog, userTemplateVisible } from './templateCatalog.js';
+export type { CompositeTemplateCatalog, TemplateSummary } from './templateCatalog.js';
 
 export interface ConductorWiring {
   workflowStore: ConductorWorkflowStore;
@@ -58,6 +65,11 @@ export interface ConductorWiring {
   scheduleWorker: ConductorScheduleWorker;
   eventRouter: ConductorEventRouter;
   builderAgent: ConductorBuilderAgent;
+  /** DB-backed user-template store (#478). */
+  templateStore: ConductorTemplateStore;
+  /** Composite template catalog (bundled + user + plugin) — its plugin
+   *  registration seam is what the plugin install service feeds (#478). */
+  templateCatalog: CompositeTemplateCatalog;
 }
 
 /**
@@ -155,6 +167,15 @@ export async function wireConductor(deps: {
   // Event router — a domain event starts every subscribed workflow's run (US4).
   const eventRouter = new ConductorEventRouter({ workflowStore, executor, log });
 
+  // Template surface (#429 bundled files + #478 DB store): one composite,
+  // viewer-scoped catalog over both, plus the plugin registration seam.
+  const templateStore = createTemplateStore(deps.pool, log);
+  const templateCatalog = createCompositeTemplateCatalog({
+    bundled: loadTemplateCatalog({ log }),
+    store: templateStore,
+    log,
+  });
+
   // Conversational builder agent (US7) — drives draft co-design via a registry Agent turn. Known
   // refs are sourced live from the event catalog so the builder + validate can flag unknown events.
   const builderAgent = new ConductorBuilderAgent({
@@ -179,8 +200,9 @@ export async function wireConductor(deps: {
       agentCatalog: () => (deps.getRegistry()?.list() ?? []).map((a) => ({ slug: a.agent.slug, name: a.agent.name })),
       ...(deps.listActions ? { actionCatalog: deps.listActions } : {}),
       builderAgent,
-      // Bundled workflow-template catalog (#429) — file-based, loaded once at wire time.
-      templateCatalog: loadTemplateCatalog({ log }),
+      // Composite workflow-template catalog (#429 bundled + #478 user/plugin) + DB store.
+      templateCatalog,
+      templateStore,
       // Live known-reference sets for the STRICT template validation (stricter than 'POST /'
       // on purpose: a template instance must be runnable, not merely well-formed).
       templateKnownRefs: async () => ({
@@ -192,5 +214,5 @@ export async function wireConductor(deps: {
     }),
   );
 
-  return { workflowStore, runStore, awaitStore, roleStore, scheduleStore, channelBindingStore, executor, awaitWorker, resumeWorker, scheduleWorker, eventRouter, builderAgent };
+  return { workflowStore, runStore, awaitStore, roleStore, scheduleStore, channelBindingStore, executor, awaitWorker, resumeWorker, scheduleWorker, eventRouter, builderAgent, templateStore, templateCatalog };
 }

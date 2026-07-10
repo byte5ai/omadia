@@ -508,11 +508,54 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
 Event-Katalog — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
 strukturell. Bewusst strenger: eine Template-Instanz muss lauffähig sein, nicht
 nur wohlgeformt. Ergebnis der Instanziierung ist ein gewöhnlicher versionierter
-Workflow ohne Rückverweis aufs Template (Copy, not Reference). Keine
-DB-Migration (Katalog ist file-basiert; die Conductor-eigene Chain wäre bei
-Bedarf als Nächstes bei `0006` frei). Tests:
-`test/conductorTemplateRoutes.test.ts` (Stub-Deps, alle Statuscodes, 409-Pfad,
-`createOrPublish`-Callshape, Route-Order-Regression).
+Workflow ohne Rückverweis aufs Template (Copy, not Reference — seit #478 mit
+`template_id`/`template_version`-Provenance-Stempel auf der Workflow-Row, aber
+weiterhin nie zur Laufzeit dereferenziert).
+
+**Templates v2 (#478): DB-Store + Composite-Katalog + CRUD/Versionierung.**
+Conductor-Migration **`0006_templates.sql`** (eigene Chain,
+`_conductor_migrations`): `conductor_templates` (Owner, Review-`status`
+`private|pending|shared` ohne CHECK, `latest_version`, `reviewed_by`),
+`conductor_template_versions` (immutable JSONB-Manifeste, PK
+`(template_id, version)`), `conductor_template_instantiations` (append-only,
+anonym, denormalisierter `template_name`), plus Provenance-Spalten auf
+`conductor_workflows`. `src/conductor/templateStore.ts` =
+`createTemplateStore(pool, log)` (create/addVersion atomar per `FOR UPDATE`/
+get/list/delete/setStatus/listVersions/getVersion/recordInstantiation/
+instantiationCounts/stampWorkflowProvenance); die `version`-Spalte ist
+autoritativ und wird beim Lesen in `manifest.version` gestempelt.
+
+Der **Composite-Katalog** (`createCompositeTemplateCatalog` in
+`templateCatalog.ts`; Bundled-Files + DB-User-Templates + Plugin-Seam
+`registerPluginTemplates`/`unregisterPluginTemplates` für B3) ist
+viewer-scoped: `{ list(viewer), get(id, viewer) }`, Viewer =
+`req.session?.sub ?? 'operator'`. **Sichtbarkeitsregel (Review-Gate-Fix):**
+bundled/plugin für alle; User-Template sichtbar wenn `shared` ODER
+`createdBy = viewer` ODER **`pending`** (jeder Operator auf der single-tier
+Operator-API ist potenzieller Reviewer); nur fremde `private` bleiben
+verborgen. `get` wendet exakt die List-Regel an (kein 404-vs-List-Drift).
+
+Routes (in `src/conductor/templateRoutes.ts` ausgelagert, Registrierung
+unverändert **vor** `/:slug`): `GET /templates` liefert jetzt
+`TemplateSummary` = Manifest + **additive** Felder `source`
+(`bundled|user|plugin`), `status?`, `createdBy?`, `version`, `latestVersion`,
+`instantiationCount`, `updatedAt?` (v1-Felder unangetastet — #330 per
+Contract-Test gesichert). Neu: **`GET /templates/:id`** (`404
+conductor.template_not_found` wenn unsichtbar), **`POST /templates`** Body
+`{ manifest }` (validiert, erstellt `private` im Besitz des Viewers → `201
+{ template }`; `409 conductor.template_id_exists` bei Kollision mit
+bundled/plugin/DB; `400 conductor.template_invalid` mit Issues-Array),
+**`PUT /templates/:id`** (author-only `403 conductor.template_forbidden`;
+`manifest.id` muss `:id` sein → 400; hängt Version `latestVersion+1` an —
+Status bleibt bewusst unverändert: das Gate regelt das Teilen, nicht jede
+Version), **`DELETE /templates/:id`** (author-only, nur User-Source → 204),
+**`GET /templates/:id/versions`**. `resolve`/`instantiate` akzeptieren
+optional `version` im Body (Default: latest); `instantiate` stempelt die
+Provenance **in derselben Transaktion** wie den Publish (via `onPublished`)
+und schreibt best-effort eine Telemetry-Row. Tests:
+`test/conductorTemplateStore.test.ts` (stateful Fake-Pool) +
+`test/conductorTemplateRoutes.test.ts` (echter Composite-Katalog; explizite
+Reviewer-Reachability-Fälle: pending Template von A erscheint in Bs List/Get).
 
 ---
 
