@@ -18,6 +18,18 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — templates v2 review fixups: step-kind tokens, component splits (#478)
+
+- The Conductor step-kind palette (agent/action/human node colors + badge text)
+  moved from hardcoded hex in `ConductorCanvas`/`TemplatePreview` into Lume
+  tokens (`--step-kind-*` in `web-ui/app/_lib/theme.css`), consumed through the
+  shared `stepKindColors.ts` map — one source of truth, no per-component hex.
+- Oversized web-ui files split per the 500-line rule, behavior-preserving:
+  `SaveAsTemplateDialog` extracted its ref-/text-slot editor sections into
+  `SaveAsTemplateSlotEditors.tsx`; `conductor/page.tsx` extracted the Roles
+  (US6) and emit-event sections into `ConductorRolesSection.tsx` and
+  `ConductorEmitSection.tsx`.
+
 ### Added — builder-chat template proposal cards (#478)
 
 - `ConductorChatPane` (`web-ui/app/conductor/_components/`) renders B4's

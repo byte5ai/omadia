@@ -17,6 +17,8 @@ import '@xyflow/react/dist/style.css';
 
 import { resolveConductorText, type ConductorTemplate } from '@/app/_lib/api';
 
+import { KIND_BADGE_FG, KIND_COLOR } from './stepKindColors';
+
 /**
  * Read-only template graph preview (#478 F3). Renders the MANIFEST graph — slot
  * placeholders and all — into a small, non-interactive designer canvas so the
@@ -40,14 +42,6 @@ interface PreviewNodeData extends Record<string, unknown> {
 }
 
 type PreviewNode = Node<PreviewNodeData>;
-
-// Keep in sync with ConductorCanvas's KIND_COLOR — the preview must read as a
-// miniature of the designer, so the step-kind palette is the canvas's, verbatim.
-const KIND_COLOR: Record<string, string> = {
-  agent: '#6ab7ff',
-  action: '#8b9cff',
-  human: '#f2b95e',
-};
 
 /** kind (plural, as declared in TemplateSlots) → placeholder token (singular);
  *  mirrors conductor-core's SLOT_TOKEN. */
@@ -138,7 +132,7 @@ function PreviewStepNode({ data }: NodeProps<PreviewNode>): React.JSX.Element {
       <div className="flex items-center gap-2">
         <span
           className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase"
-          style={{ background: KIND_COLOR[data.kind] ?? 'var(--border)', color: '#0b0b0b' }}
+          style={{ background: KIND_COLOR[data.kind] ?? 'var(--border)', color: KIND_BADGE_FG }}
         >
           {data.kind}
         </span>

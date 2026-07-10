@@ -15,6 +15,15 @@ import {
 } from '@/app/_lib/api';
 
 import { gcLbl } from './GuidedControls';
+import {
+  fieldClass,
+  REF_KINDS,
+  RefSlotSection,
+  TEXT_KEY_RE,
+  TextSlotSection,
+  type EditableRefSlot,
+  type EditableTextSlot,
+} from './SaveAsTemplateSlotEditors';
 
 /**
  * Save-as-template dialog (#478 F1): authoring UX over the backend's inference
@@ -33,39 +42,8 @@ import { gcLbl } from './GuidedControls';
  * (verb + animated dots, never a spinner), loading uses .lume-skeleton.
  */
 
-type RefKind = 'roles' | 'agents' | 'actions' | 'events' | 'channels';
-
-/** Render order — matches the instantiate form's grouping order. */
-const REF_KINDS: readonly RefKind[] = ['roles', 'agents', 'actions', 'events', 'channels'];
-
-const KIND_BADGE_KEY: Record<RefKind, string> = {
-  roles: 'templateSlotGroupRoles',
-  agents: 'templateSlotGroupAgents',
-  actions: 'templateSlotGroupActions',
-  events: 'templateSlotGroupEvents',
-  channels: 'templateSlotGroupChannels',
-};
-
 /** Template ids are kebab-case machine identifiers (mirrors the bundled catalog). */
 const ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-/** conductor-core's text-slot token grammar. */
-const TEXT_KEY_RE = /^[A-Za-z0-9_-]+$/;
-
-interface EditableRefSlot {
-  kind: RefKind;
-  key: string;
-  /** the concrete ref the slot replaced — the draft proposes it as the label. */
-  originalRef: string;
-  labelEn: string;
-  labelDe: string;
-}
-
-interface EditableTextSlot {
-  key: string;
-  labelEn: string;
-  labelDe: string;
-  defaultValue: string;
-}
 
 function textEn(value: ConductorLocalizedText): string {
   return typeof value === 'string' ? value : value.en;
@@ -96,16 +74,6 @@ function parseErrorBody(raw: string): TemplateErrorBody {
     return {};
   }
 }
-
-const FIELD_BASE = 'w-full rounded-md border bg-transparent px-2 py-1 text-[13px] text-[color:var(--fg-strong)]';
-
-function fieldClass(invalid: boolean): string {
-  return `${FIELD_BASE} ${invalid ? 'border-[color:var(--danger-edge)]' : 'border-[color:var(--border)]'}`;
-}
-
-/** Kind badge — text + edge only, never a filled pill (Lume state-color rule). */
-const BADGE =
-  'rounded-full border border-[color:var(--border-strong)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]';
 
 export interface SaveAsTemplateDialogProps {
   workflowSlug: string;
@@ -365,121 +333,14 @@ export function SaveAsTemplateDialog({
             </label>
           </div>
 
-          {/* Inferred ref slots — one per distinct concrete ref, labels editable. */}
-          <h4 className="mt-5 text-[12px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-            {t('saveTemplateRefSlotsHeading')}
-          </h4>
-          <p className="mt-1 max-w-2xl text-[12px] text-[color:var(--fg-muted)]">{t('saveTemplateRefSlotsHint')}</p>
-          {refSlots.length === 0 ? (
-            <p className="mt-2 text-[13px] text-[color:var(--fg-muted)]">{t('saveTemplateNoRefSlots')}</p>
-          ) : (
-            <div className="mt-2 grid gap-3">
-              {refSlots.map((slot, index) => (
-                <fieldset
-                  key={`${slot.kind}:${slot.key}`}
-                  className="rounded-md border border-[color:var(--border)] p-3"
-                >
-                  <legend className="flex items-center gap-2 px-1">
-                    <span className={BADGE}>{t(KIND_BADGE_KEY[slot.kind])}</span>
-                    <span className="font-mono text-[12px] text-[color:var(--fg-strong)]">{slot.key}</span>
-                    <span className="text-[11px] text-[color:var(--fg-muted)]">
-                      {t('saveTemplateOriginalRef', { ref: slot.originalRef })}
-                    </span>
-                  </legend>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <label className={gcLbl}>
-                      {t('saveTemplateSlotLabelEnLabel')}
-                      <input
-                        className={fieldClass(false)}
-                        value={slot.labelEn}
-                        onChange={(e) => setRefSlot(index, { labelEn: e.target.value })}
-                      />
-                    </label>
-                    <label className={gcLbl}>
-                      {t('saveTemplateSlotLabelDeLabel')}
-                      <input
-                        className={fieldClass(false)}
-                        value={slot.labelDe}
-                        onChange={(e) => setRefSlot(index, { labelDe: e.target.value })}
-                      />
-                    </label>
-                  </div>
-                </fieldset>
-              ))}
-            </div>
-          )}
+          <RefSlotSection slots={refSlots} onPatch={setRefSlot} />
 
-          {/* Text slots — never inferred; authored here. */}
-          <h4 className="mt-5 text-[12px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-            {t('saveTemplateTextSlotsHeading')}
-          </h4>
-          <p className="mt-1 max-w-2xl text-[12px] text-[color:var(--fg-muted)]">{t('saveTemplateTextSlotsHint')}</p>
-          <div className="mt-2 grid gap-3">
-            {textSlots.map((slot, index) => {
-              const keyInvalid = !TEXT_KEY_RE.test(slot.key.trim());
-              return (
-                <fieldset key={index} className="rounded-md border border-[color:var(--border)] p-3">
-                  <legend className="px-1 font-mono text-[12px] text-[color:var(--fg-muted)]">
-                    {t('saveTemplateTextSlotToken', { token: `slot:text:${slot.key.trim() || '…'}` })}
-                  </legend>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <label className={gcLbl}>
-                      <span className={keyInvalid ? 'text-[color:var(--danger)]' : undefined}>
-                        {t('saveTemplateTextSlotKeyLabel')}
-                      </span>
-                      <input
-                        className={`${fieldClass(keyInvalid)} font-mono`}
-                        value={slot.key}
-                        aria-invalid={keyInvalid || undefined}
-                        onChange={(e) => setTextSlot(index, { key: e.target.value })}
-                      />
-                      {keyInvalid ? (
-                        <span className="text-[12px] text-[color:var(--danger)]">{t('saveTemplateTextSlotKeyInvalid')}</span>
-                      ) : null}
-                    </label>
-                    <label className={gcLbl}>
-                      {t('saveTemplateTextSlotDefaultLabel')}
-                      <input
-                        className={fieldClass(false)}
-                        value={slot.defaultValue}
-                        onChange={(e) => setTextSlot(index, { defaultValue: e.target.value })}
-                      />
-                    </label>
-                    <label className={gcLbl}>
-                      {t('saveTemplateSlotLabelEnLabel')}
-                      <input
-                        className={fieldClass(false)}
-                        value={slot.labelEn}
-                        onChange={(e) => setTextSlot(index, { labelEn: e.target.value })}
-                      />
-                    </label>
-                    <label className={gcLbl}>
-                      {t('saveTemplateSlotLabelDeLabel')}
-                      <input
-                        className={fieldClass(false)}
-                        value={slot.labelDe}
-                        onChange={(e) => setTextSlot(index, { labelDe: e.target.value })}
-                      />
-                    </label>
-                  </div>
-                  <div className="mt-2">
-                    <Button variant="ghost" size="sm" onClick={() => setTextSlots((slots) => slots.filter((_, i) => i !== index))}>
-                      {t('saveTemplateRemoveTextSlot')}
-                    </Button>
-                  </div>
-                </fieldset>
-              );
-            })}
-            <div>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setTextSlots((slots) => [...slots, { key: '', labelEn: '', labelDe: '', defaultValue: '' }])}
-              >
-                {t('saveTemplateAddTextSlot')}
-              </Button>
-            </div>
-          </div>
+          <TextSlotSection
+            slots={textSlots}
+            onPatch={setTextSlot}
+            onAdd={() => setTextSlots((slots) => [...slots, { key: '', labelEn: '', labelDe: '', defaultValue: '' }])}
+            onRemove={(index) => setTextSlots((slots) => slots.filter((_, i) => i !== index))}
+          />
 
           {/* Version mode: copy-not-reference transparency before the PUT. */}
           {publishMode.kind === 'version' ? (

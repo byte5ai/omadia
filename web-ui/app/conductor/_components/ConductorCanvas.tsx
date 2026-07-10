@@ -42,6 +42,7 @@ import {
   type ConductorRunResult,
   type ConductorWorkflow,
 } from '@/app/_lib/api';
+import { KIND_BADGE_FG, KIND_COLOR } from './stepKindColors';
 
 // ── Node data model ────────────────────────────────────────────────────────
 // node.id is a stable internal id; data.stepId is the user-facing (renameable)
@@ -72,12 +73,6 @@ interface StepNodeData extends Record<string, unknown> {
 
 type StepNode = Node<StepNodeData>;
 
-const KIND_COLOR: Record<StepKind, string> = {
-  agent: '#6ab7ff',
-  action: '#8b9cff',
-  human: '#f2b95e',
-};
-
 function StepNodeView({ data, selected }: NodeProps<StepNode>): React.JSX.Element {
   const primary =
     data.kind === 'agent' ? data.agentId || '—' : data.kind === 'action' ? data.actionId || '—' : data.human.principalRef || '—';
@@ -90,7 +85,7 @@ function StepNodeView({ data, selected }: NodeProps<StepNode>): React.JSX.Elemen
       <div className="flex items-center gap-2">
         <span
           className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase"
-          style={{ background: KIND_COLOR[data.kind], color: '#0b0b0b' }}
+          style={{ background: KIND_COLOR[data.kind], color: KIND_BADGE_FG }}
         >
           {data.kind}
         </span>

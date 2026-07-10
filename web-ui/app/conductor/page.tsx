@@ -6,9 +6,6 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
-  assignRoleHolder,
-  createConductorRole,
-  emitConductorEvent,
   fetchConductorTemplates,
   getAuthMe,
   getConductorRun,
@@ -18,7 +15,6 @@ import {
   respondToAwait,
   startConductorRun,
   type ConductorAwait,
-  type ConductorEmitResult,
   type ConductorRole,
   type ConductorRunResult,
   type ConductorTemplate,
@@ -29,6 +25,8 @@ import {
 
 import { ConductorCanvas, type CanvasGraphRequest } from './_components/ConductorCanvas';
 import { ConductorChatPane } from './_components/ConductorChatPane';
+import { ConductorEmitSection } from './_components/ConductorEmitSection';
+import { ConductorRolesSection } from './_components/ConductorRolesSection';
 import { ConductorRunHistory, ConductorRunTrace } from './_components/ConductorRunTrace';
 import { SaveAsTemplateDialog } from './_components/SaveAsTemplateDialog';
 import { TemplateGallery } from './_components/TemplateGallery';
@@ -61,18 +59,18 @@ export default function ConductorPage(): React.JSX.Element {
   const [historySlug, setHistorySlug] = useState<string | null>(null);
   const [awaits, setAwaits] = useState<ConductorAwait[]>([]);
   const [awaitBusy, setAwaitBusy] = useState<string | null>(null);
-  const [eventId, setEventId] = useState('github.pull_request.merged');
-  const [eventPayload, setEventPayload] = useState('{ "base": "main" }');
-  const [emitting, setEmitting] = useState(false);
-  const [emitResult, setEmitResult] = useState<ConductorEmitResult | null>(null);
-  const [emitError, setEmitError] = useState<string | null>(null);
   const [roles, setRoles] = useState<ConductorRole[]>([]);
-  const [newRoleKey, setNewRoleKey] = useState('');
-  const [newRoleLabel, setNewRoleLabel] = useState('');
-  const [holderInputs, setHolderInputs] = useState<Record<string, string>>({});
   // Swallows a double-fired click (synthetic input / accidental double-click) so one intent
   // never starts two runs or sends two responses.
   const lastAction = useRef(0);
+  // The swallow window as a callable, shared with the extracted emit section:
+  // false = this click arrived within 600ms of the last action, drop it.
+  const guardAction = useCallback(() => {
+    const now = Date.now();
+    if (now - lastAction.current < 600) return false;
+    lastAction.current = now;
+    return true;
+  }, []);
   // Edit flow: clicking "Edit" on a workflow loads it into the designer canvas below and
   // scrolls there. The nonce changes per click so editing the same workflow twice reloads it.
   const [editRequest, setEditRequest] = useState<{ slug: string; nonce: number } | null>(null);
@@ -119,32 +117,6 @@ export default function ConductorPage(): React.JSX.Element {
         setRunError(err instanceof ApiError ? err.message : String(err));
       } finally {
         setAwaitBusy(null);
-      }
-    },
-    [reload],
-  );
-
-  const handleCreateRole = useCallback(async () => {
-    if (!newRoleKey || !newRoleLabel) return;
-    try {
-      await createConductorRole(newRoleKey, newRoleLabel);
-      setNewRoleKey('');
-      setNewRoleLabel('');
-      await reload();
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : String(err));
-    }
-  }, [newRoleKey, newRoleLabel, reload]);
-
-  const handleAssign = useCallback(
-    async (key: string, action: 'add' | 'remove', holderId: string) => {
-      if (!holderId) return;
-      try {
-        await assignRoleHolder(key, holderId, action);
-        setHolderInputs((m) => ({ ...m, [key]: '' }));
-        await reload();
-      } catch (err) {
-        setLoadError(err instanceof ApiError ? err.message : String(err));
       }
     },
     [reload],
@@ -240,32 +212,6 @@ export default function ConductorPage(): React.JSX.Element {
     },
     [reload],
   );
-
-  const handleEmit = useCallback(async () => {
-    const now = Date.now();
-    if (now - lastAction.current < 600) return;
-    lastAction.current = now;
-    setEmitting(true);
-    setEmitError(null);
-    setEmitResult(null);
-    let payload: unknown;
-    try {
-      payload = eventPayload.trim() ? JSON.parse(eventPayload) : {};
-    } catch {
-      setEmitError('Payload is not valid JSON');
-      setEmitting(false);
-      return;
-    }
-    try {
-      const res = await emitConductorEvent(eventId, payload);
-      setEmitResult(res);
-      await reload();
-    } catch (err) {
-      setEmitError(err instanceof ApiError ? err.message : String(err));
-    } finally {
-      setEmitting(false);
-    }
-  }, [eventId, eventPayload, reload]);
 
   const card = 'rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4';
 
@@ -439,99 +385,13 @@ export default function ConductorPage(): React.JSX.Element {
         {historySlug && <ConductorRunHistory slug={historySlug} onClose={() => setHistorySlug(null)} />}
       </section>
 
-      {/* Roles & the baton (US6) */}
-      <section className="mb-10">
-        <h2 className="mb-1 text-[13px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-          {t('rolesHeading')}
-        </h2>
-        <p className="mb-4 max-w-2xl text-[13px] text-[color:var(--fg-muted)]">{t('rolesHint')}</p>
-        <div className="grid gap-3">
-          {roles.map((role) => (
-            <div key={role.key} className={card}>
-              <div className="text-[15px] text-[color:var(--fg-strong)]">
-                {role.label} <span className="font-mono text-[12px] text-[color:var(--fg-muted)]">{role.key}</span>
-              </div>
-              <div className="font-mono text-[12px] text-[color:var(--fg-muted)]">
-                {t('holdersLabel')}: {role.holders.length ? role.holders.join(', ') : '—'}
-              </div>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <input
-                  className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 text-[13px] text-[color:var(--fg-strong)]"
-                  placeholder="holder@email"
-                  value={holderInputs[role.key] ?? ''}
-                  onChange={(e) => setHolderInputs((m) => ({ ...m, [role.key]: e.target.value }))}
-                />
-                <Button variant="primary" onClick={() => void handleAssign(role.key, 'add', holderInputs[role.key] ?? '')}>
-                  {t('assignButton')}
-                </Button>
-                {role.holders.map((h) => (
-                  <button
-                    key={h}
-                    className="rounded-md border border-[color:var(--border)] px-2 py-1 font-mono text-[11px] text-[color:var(--fg-muted)]"
-                    onClick={() => void handleAssign(role.key, 'remove', h)}
-                  >
-                    ✕ {h}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-          <div className={`${card} flex flex-wrap items-end gap-2`}>
-            <input
-              className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 font-mono text-[13px] text-[color:var(--fg-strong)]"
-              placeholder="approver.release"
-              value={newRoleKey}
-              onChange={(e) => setNewRoleKey(e.target.value)}
-            />
-            <input
-              className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 text-[13px] text-[color:var(--fg-strong)]"
-              placeholder="Release approver"
-              value={newRoleLabel}
-              onChange={(e) => setNewRoleLabel(e.target.value)}
-            />
-            <Button variant="ghost" onClick={() => void handleCreateRole()}>
-              {t('createRoleButton')}
-            </Button>
-          </div>
-        </div>
-      </section>
+      {/* Roles & the baton (US6) — mutations refetch the lists; failures land in
+          the load-error slot above, exactly as before the split. */}
+      <ConductorRolesSection roles={roles} onChanged={() => void reload()} onError={setLoadError} />
 
-      {/* Emit a domain event (test the Conductor Surface) */}
-      <section className="mb-10">
-        <h2 className="mb-1 text-[13px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-          {t('emitHeading')}
-        </h2>
-        <p className="mb-4 max-w-2xl text-[13px] text-[color:var(--fg-muted)]">{t('emitHint')}</p>
-        <div className={`${card} grid gap-3`}>
-          <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-            <label className="grid gap-1 text-[13px] text-[color:var(--fg-muted)]">
-              {t('eventIdLabel')}
-              <input
-                className="w-full rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-[14px] text-[color:var(--fg-strong)]"
-                value={eventId}
-                onChange={(e) => setEventId(e.target.value)}
-              />
-            </label>
-            <label className="grid gap-1 text-[13px] text-[color:var(--fg-muted)]">
-              {t('payloadLabel')}
-              <input
-                className="w-full rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 font-mono text-[12px] text-[color:var(--fg-strong)]"
-                value={eventPayload}
-                onChange={(e) => setEventPayload(e.target.value)}
-              />
-            </label>
-            <Button variant="primary" busy={emitting} disabled={emitting} onClick={() => void handleEmit()}>
-              {t('emitButton')}
-            </Button>
-          </div>
-          {emitError && <p className="text-[14px] text-[color:var(--danger,#e5484d)]">{emitError}</p>}
-          {emitResult && (
-            <p className="text-[13px] text-[color:var(--fg-muted)]">
-              {t('emitResult', { matched: emitResult.matchedWorkflows, started: emitResult.startedRuns.length })}
-            </p>
-          )}
-        </div>
-      </section>
+      {/* Emit a domain event (test the Conductor Surface) — shares the page's
+          double-fire guard so one intent never triggers two actions. */}
+      <ConductorEmitSection guardAction={guardAction} onEmitted={() => void reload()} />
 
       {/* Pending human awaits (operator inbox) */}
       {awaits.length > 0 && (
