@@ -459,6 +459,51 @@ Fan-out; Turn vor Handshake wird verworfen; `localOperations`/`action` landen in
 Canvas synthetisieren, sobald Tier 2 (`omadia-ui-orchestrator`) `surface_*`
 emittiert** — der Transport ist vollständig.
 
+### Conductor Workflow-Templates (Operator-API, #429)
+
+Kuratierter, file-basierter Template-Katalog für Conductor: `TemplateManifest`s
+(kompletter `WorkflowGraph` mit `slot:<kind>:<key>`-Platzhaltern in den fünf
+Ref-Feldern + Slot-Deklarationen, Contract in `@omadia/conductor-core`) liegen
+als JSON in `middleware/src/conductor/templates/` und werden beim Wiring einmal
+via `loadTemplateCatalog()` geladen (`templateCatalog.ts`; invalide Assets
+werden mit Log-Zeile übersprungen, CI-Gate ist
+`test/conductorTemplateCatalog.test.ts`). Drei neue Routes in
+`src/conductor/routes.ts`, gemountet unter dem auth-gated
+`/api/v1/operator/conductors`, **vor** dem `/:slug`-Catch-all registriert:
+
+- **`GET /templates`** → `200 { templates: TemplateManifest[] }` — volle
+  Manifeste inkl. Graph + Slots (maschinenlesbar für #330/Facilitator). Ohne
+  verdrahteten Katalog `{ templates: [] }`; Fehler →
+  `500 conductor.templates_failed`.
+- **`POST /templates/:id/resolve`** — Body `{ mapping }`. Ephemere
+  Instanziierung (der #330-Seam und "Open in designer" der UI): Slot-Mapping
+  substituieren, validieren, Graph zurückgeben, **nichts persistieren** →
+  `200 { graph }`. Fehler: `404 conductor.template_not_found`;
+  `400 conductor.template_slot_mapping_incomplete` mit
+  `missing: [{ kind, key, label }]` (fail-clear vor allem anderen);
+  `400 conductor.invalid_graph` mit den bekannten `unknown_*_ref`-Codes.
+- **`POST /templates/:id/instantiate`** — Body
+  `{ slug, name?, description?, mapping, enable? }`. Gleiche Fehlerpfade wie
+  `resolve`, plus: fehlender/leerer `slug` → `400 conductor.invalid_input`;
+  Slug-Kollision → `409 conductor.slug_exists` (**bewusste Abweichung** von der
+  Upsert-Semantik von `POST /` — Instanziieren heißt "neu anlegen", nie still
+  über einen bestehenden Workflow publishen; TOCTOU-Race fällt harmlos in den
+  idempotenten Upsert von `createOrPublish` durch). Publish exakt wie
+  `POST /` inkl. atomarem Cron-Schedule-Reconcile (`onPublished` →
+  `scheduleStore.reconcileOnClient`); `enable` default `false`; `name`/
+  `description` defaulten aufs Manifest → `201 { workflow, version }`.
+
+**Validierungs-Unterschied zu `POST /`:** beide Template-Routes validieren mit
+**live `KnownRefs`** (Agent-Slugs aus der Registry, Action-Ids, Role-Keys,
+Event-Katalog — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
+strukturell. Bewusst strenger: eine Template-Instanz muss lauffähig sein, nicht
+nur wohlgeformt. Ergebnis der Instanziierung ist ein gewöhnlicher versionierter
+Workflow ohne Rückverweis aufs Template (Copy, not Reference). Keine
+DB-Migration (Katalog ist file-basiert; die Conductor-eigene Chain wäre bei
+Bedarf als Nächstes bei `0006` frei). Tests:
+`test/conductorTemplateRoutes.test.ts` (Stub-Deps, alle Statuscodes, 409-Pfad,
+`createOrPublish`-Callshape, Route-Order-Regression).
+
 ---
 
 ## 4. Migration Managed Agents → Lokal

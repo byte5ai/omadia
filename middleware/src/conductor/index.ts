@@ -21,6 +21,7 @@ import { ConductorScheduleWorker } from './scheduleWorker.js';
 import { ConductorEventRouter } from './eventRouter.js';
 import { RealStepEffects } from './realStepEffects.js';
 import { ConductorBuilderAgent } from './builderAgent.js';
+import { loadTemplateCatalog } from './templateCatalog.js';
 import { createConductorRouter } from './routes.js';
 
 export { runConductorMigrations } from './migrator.js';
@@ -178,6 +179,16 @@ export async function wireConductor(deps: {
       agentCatalog: () => (deps.getRegistry()?.list() ?? []).map((a) => ({ slug: a.agent.slug, name: a.agent.name })),
       ...(deps.listActions ? { actionCatalog: deps.listActions } : {}),
       builderAgent,
+      // Bundled workflow-template catalog (#429) — file-based, loaded once at wire time.
+      templateCatalog: loadTemplateCatalog({ log }),
+      // Live known-reference sets for the STRICT template validation (stricter than 'POST /'
+      // on purpose: a template instance must be runnable, not merely well-formed).
+      templateKnownRefs: async () => ({
+        agentIds: (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
+        actionIds: deps.listActions?.() ?? [],
+        roleKeys: (await roleStore.listRoles()).map((r) => r.key),
+        eventIds: deps.eventCatalog?.list() ?? [],
+      }),
     }),
   );
 

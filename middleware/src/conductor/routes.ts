@@ -1,8 +1,14 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import { validate } from '@omadia/conductor-core';
-import type { JsonObject, WorkflowGraph } from '@omadia/conductor-core';
+import { applyTemplateSlots, missingSlotMappings, validate } from '@omadia/conductor-core';
+import type {
+  JsonObject,
+  KnownRefs,
+  TemplateManifest,
+  TemplateSlotMapping,
+  WorkflowGraph,
+} from '@omadia/conductor-core';
 
 import { ConductorBuilderUnavailableError } from './builderAgent.js';
 import type { BuilderChatMessage, ConductorBuilderAgent } from './builderAgent.js';
@@ -52,6 +58,10 @@ export interface ConductorRouterDeps {
   actionCatalog?: () => string[];
   /** Conversational builder agent (US7) — co-design a draft graph by chat. Optional: absent on hosts without a registry. */
   builderAgent?: ConductorBuilderAgent;
+  /** Bundled workflow-template catalog (#429) — file-based, loaded once at wire time. */
+  templateCatalog?: { list(): TemplateManifest[]; get(id: string): TemplateManifest | undefined };
+  /** Live known-reference sets for strict template validation. */
+  templateKnownRefs?: () => Promise<KnownRefs>;
 }
 
 /**
@@ -159,6 +169,100 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.json({ actions: deps.actionCatalog?.() ?? [] });
     } catch (err) {
       res.status(500).json({ code: 'conductor.action_catalog_failed', message: errMsg(err) });
+    }
+  });
+
+  // Shared resolution path of the two template routes (#429): manifest lookup → mapping
+  // completeness gate → slot substitution → validation with LIVE KnownRefs. Deliberately
+  // stricter than 'POST /' (structural only): a template instance must be runnable against
+  // this install's agents/actions/roles/events, not merely well-formed. Writes the error
+  // response and returns null on any failure.
+  async function resolveTemplateGraph(id: string, body: JsonObject, res: Response): Promise<{ manifest: TemplateManifest; graph: WorkflowGraph } | null> {
+    const manifest = deps.templateCatalog?.get(id);
+    if (!manifest) {
+      res.status(404).json({ code: 'conductor.template_not_found', message: `unknown template '${id}'` });
+      return null;
+    }
+    // Fail-clear before anything else: name every declared-but-unmapped slot.
+    const mapping = asObject(body.mapping) as TemplateSlotMapping;
+    const missing = missingSlotMappings(manifest, mapping);
+    if (missing.length > 0) {
+      res.status(400).json({ code: 'conductor.template_slot_mapping_incomplete', missing });
+      return null;
+    }
+    const graph = applyTemplateSlots(manifest, mapping);
+    const knownRefs = deps.templateKnownRefs ? await deps.templateKnownRefs() : undefined;
+    const result = validate(graph, knownRefs);
+    if (!result.ok) {
+      res.status(400).json({ code: 'conductor.invalid_graph', errors: result.errors });
+      return null;
+    }
+    return { manifest, graph };
+  }
+
+  // Workflow-template catalog (#429) — full manifests incl. graph + slot declarations
+  // (machine-readable for #330). Registered before '/:slug' so it is not swallowed by
+  // the catch-all workflow route.
+  router.get('/templates', (_req: Request, res: Response): void => {
+    try {
+      res.json({ templates: deps.templateCatalog?.list() ?? [] });
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.templates_failed', message: errMsg(err) });
+    }
+  });
+
+  // Ephemeral template instantiation (#429, the #330 seam and the UI's "open in designer"):
+  // substitute + validate, return the ordinary graph, persist nothing.
+  router.post('/templates/:id/resolve', async (req: Request, res: Response): Promise<void> => {
+    try {
+      const resolved = await resolveTemplateGraph(paramStr(req.params.id), asObject(req.body), res);
+      if (!resolved) return;
+      res.json({ graph: resolved.graph });
+    } catch (err) {
+      console.error('[conductor] template resolve failed:', err);
+      res.status(500).json({ code: 'conductor.template_resolve_failed', message: errMsg(err) });
+    }
+  });
+
+  // Persistent template instantiation (#429): substitute + validate, then publish through
+  // the ordinary createOrPublish path — the result is a normal versioned workflow with no
+  // link back to the template (copy, not reference).
+  router.post('/templates/:id/instantiate', async (req: Request, res: Response): Promise<void> => {
+    const body = asObject(req.body);
+    const slug = typeof body.slug === 'string' ? body.slug.trim() : '';
+    if (!slug) {
+      res.status(400).json({ code: 'conductor.invalid_input', message: 'slug is required' });
+      return;
+    }
+    try {
+      const resolved = await resolveTemplateGraph(paramStr(req.params.id), body, res);
+      if (!resolved) return;
+      // Slug collision → 409. Deliberate divergence from the 'POST /' upsert semantics:
+      // instantiation means "create new", and silently publishing a template over an
+      // existing workflow would be the Power Automate footgun. Benign TOCTOU: a race
+      // between this check and the publish falls through to createOrPublish's idempotent
+      // upsert — acceptable.
+      if (await deps.workflowStore.getBySlug(slug)) {
+        res.status(409).json({ code: 'conductor.slug_exists', message: `a workflow with slug '${slug}' already exists` });
+        return;
+      }
+      const out = await deps.workflowStore.createOrPublish({
+        slug,
+        name: typeof body.name === 'string' && body.name.trim() ? body.name : resolved.manifest.name,
+        description: typeof body.description === 'string' ? body.description : resolved.manifest.description,
+        graph: resolved.graph,
+        enable: body.enable === true,
+        // Reconcile cron schedules atomically with the publish (same as 'POST /'); they
+        // only fire while the workflow is enabled.
+        onPublished: (client, workflowId) => deps.scheduleStore.reconcileOnClient(client, workflowId, resolved.graph),
+      });
+      res.status(201).json({
+        workflow: out.workflow,
+        version: { id: out.version.id, version: out.version.version },
+      });
+    } catch (err) {
+      console.error('[conductor] template instantiate failed:', err);
+      res.status(500).json({ code: 'conductor.template_instantiate_failed', message: errMsg(err) });
     }
   });
 

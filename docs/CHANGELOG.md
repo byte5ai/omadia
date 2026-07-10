@@ -18,6 +18,30 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — conductor workflow-template routes (#429, unit b3)
+
+- Three new operator routes on the auth-gated `/api/v1/operator/conductors`
+  (registered before the `/:slug` catch-all): `GET /templates` (full manifests
+  incl. graph + slot declarations — machine-readable for #330),
+  `POST /templates/:id/resolve` (ephemeral instantiation: substitute the slot
+  mapping, validate, return the graph, persist nothing) and
+  `POST /templates/:id/instantiate` (publish through the ordinary
+  `createOrPublish` path incl. the atomic cron-schedule reconcile; `enable`
+  defaults to `false`, `name`/`description` default to the manifest). Error
+  contract: `404 conductor.template_not_found`,
+  `400 conductor.template_slot_mapping_incomplete` with
+  `missing: [{ kind, key, label }]`, `400 conductor.invalid_graph` with the
+  existing `unknown_*_ref` codes, `400 conductor.invalid_input` on a missing
+  slug and `409 conductor.slug_exists` on a slug collision (deliberate
+  divergence from `POST /`'s upsert — instantiation means "create new"). Both
+  template routes validate with **live `KnownRefs`** (registry agent slugs,
+  action ids, role keys, event catalog) — stricter than `POST /`'s structural
+  validation on purpose: a template instance must be runnable, not merely
+  well-formed. Wired in `wireConductor`
+  (`middleware/src/conductor/index.ts`); route tests with stubbed deps in
+  `middleware/test/conductorTemplateRoutes.test.ts`; API documented in
+  `docs/middleware-agent-handoff.md` §3.
+
 ### Added — bundled conductor workflow-template catalog (#429, unit b2)
 
 - Four curated workflow-template manifests ship as JSON assets in
