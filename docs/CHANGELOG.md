@@ -139,6 +139,8 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   coverage). Foundation for the file-based template catalog and the
   `/templates` middleware routes (follow-up units on the same branch).
 
+### Added — advisory SkillSpector code scanning for plugin packages (#453)
+
 - Every ingested plugin package (direct upload, hub install, Builder install)
   is optionally scanned by an NVIDIA SkillSpector sidecar
   (`middleware/sidecars/skillspector/`, enabled via `SKILLSPECTOR_URL` /
