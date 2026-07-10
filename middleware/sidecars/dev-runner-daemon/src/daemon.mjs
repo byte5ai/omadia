@@ -29,7 +29,7 @@ import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 
 import { isAuthorized, parseDaemonTokens } from './auth.mjs';
-import { createDockerEngine, EngineNotImplementedError, JobManager } from './jobs.mjs';
+import { createDockerEngine, EngineNotImplementedError, JobCancelledError, JobManager } from './jobs.mjs';
 import { createPolicyClient, parseAllowedImages, parseRequireDigest, PolicyLookupError } from './policyClient.mjs';
 import { parseCreateJobRequest, parseRenewLeaseRequest, WireProtocolMismatchError } from './protocol.ts';
 
@@ -172,6 +172,11 @@ function sendMappedError(res, err, logger) {
   }
   if (err instanceof EngineNotImplementedError) {
     sendError(res, 501, err.code, err.message);
+    return;
+  }
+  // A create that raced a delete: the job was cancelled mid-provision.
+  if (err instanceof JobCancelledError) {
+    sendError(res, 409, err.code, 'the job was deleted while it was being created');
     return;
   }
   logger.warn(`[dev-runner-daemon] unhandled error: ${err instanceof Error ? err.message : String(err)}`);
@@ -367,6 +372,11 @@ export async function main(env = process.env) {
     jobBaseUrl: env.DEV_RUNNER_JOB_BASE_URL ?? middlewareUrl,
     workspacePath: env.DEV_RUNNER_WORKSPACE,
     cliBin: env.DEV_RUNNER_CLI_BIN,
+    // Egress proxy is deployment topology (a static IP), never per-job policy: the
+    // daemon injects HTTP(S)_PROXY/NO_PROXY into every job from its own config and
+    // refuses a policy that carries them.
+    egressProxyUrl: env.DEV_RUNNER_EGRESS_PROXY_URL,
+    noProxy: env.DEV_RUNNER_NO_PROXY,
   });
   const jobManager = new JobManager({ engine, policyClient });
   const warmImageRefs = (env.DEV_RUNNER_IMAGES ?? env.DEV_RUNNER_DEFAULT_IMAGE ?? '')

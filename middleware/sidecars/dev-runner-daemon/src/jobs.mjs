@@ -93,6 +93,20 @@ export class EngineNotImplementedError extends Error {
   }
 }
 
+/** Raised when a `create` is torn down by a `destroy` that raced it: the DELETE
+ *  arrived while the container was still provisioning, so `#provision` destroys
+ *  the just-created container instead of registering it and signals the create
+ *  caller that its job was cancelled. The HTTP layer maps it to 409. */
+export class JobCancelledError extends Error {
+  /** @param {string} jobId */
+  constructor(jobId) {
+    super(`job ${jobId} was deleted while it was being created`);
+    this.name = 'JobCancelledError';
+    /** @type {string} */
+    this.code = 'daemon.job_cancelled';
+  }
+}
+
 /** @type {Clock} */
 const SYSTEM_CLOCK = { now: () => Date.now() };
 
@@ -110,6 +124,11 @@ export class JobManager {
   #jobs = new Map();
   /** @type {Map<string, Promise<JobRecord>>} */
   #inflight = new Map();
+  /** Job ids a `destroy` cancelled while their create was still in flight. The
+   *  in-flight `#provision` reads this after `createJobContainer` resolves and
+   *  tears the container down instead of registering it. Lifetime is exactly the
+   *  in-flight window (cleared in `create`'s finally). */
+  #cancelled = new Set();
 
   /**
    * @param {object} deps
@@ -146,6 +165,9 @@ export class JobManager {
       return { record, created: true };
     } finally {
       this.#inflight.delete(jobId);
+      // Clear any cancellation flag so it can never leak into a later create for
+      // the same id — its lifetime is exactly this in-flight window.
+      this.#cancelled.delete(jobId);
     }
   }
 
@@ -159,6 +181,14 @@ export class JobManager {
     const policy = await this.#policyClient.fetchJobPolicy(jobId);
     const leaseExpiresAt = this.#leaseExpiry(leaseTtlSec);
     const container = await this.#engine.createJobContainer({ jobId, policy, leaseExpiresAt });
+    // A DELETE that raced this create marked the id cancelled WHILE we were
+    // provisioning (destroy() saw it in #inflight, not yet in #jobs). Tear the
+    // just-created container down instead of registering it, so a
+    // delete-before-create-completes never leaks a container nobody will reap.
+    if (this.#cancelled.has(jobId)) {
+      await this.#engine.destroyJobContainer(container);
+      throw new JobCancelledError(jobId);
+    }
     /** @type {JobRecord} */
     const record = { jobId, container, leaseExpiresAt };
     this.#jobs.set(jobId, record);
@@ -182,17 +212,37 @@ export class JobManager {
    * Kill + forget a job. Idempotent: destroying an unknown job succeeds with
    * `false` (nothing to do), a known job is torn down via the engine and
    * dropped from the registry.
+   *
+   * RACE-SAFE against an in-flight create (review medium finding): a DELETE that
+   * arrives after `create` recorded the id in `#inflight` but before `#provision`
+   * registered it in `#jobs` used to return `false` ('not found'), then the
+   * create completed and left a live container for an id the caller believed was
+   * deleted — a container nobody would reap. So when the id is not yet in `#jobs`
+   * but a create is in flight, we MARK it cancelled; `#provision` then destroys
+   * the container it is about to create instead of registering it. This method's
+   * checks are synchronous (no await before the decision), so relative to
+   * `#provision`'s synchronous check-then-register segment there is no window: the
+   * id is either already in `#jobs` (live path) or still only in `#inflight`
+   * (cancel path).
    * @param {string} jobId
-   * @returns {Promise<boolean>} true if a job was present and destroyed.
+   * @returns {Promise<boolean>} true if a job was present/in-flight and torn down.
    */
   async destroy(jobId) {
     const record = this.#jobs.get(jobId);
-    if (!record) return false;
-    // Drop from the registry first so a concurrent create sees it gone and a
-    // re-create provisions a fresh container rather than re-attaching a corpse.
-    this.#jobs.delete(jobId);
-    await this.#engine.destroyJobContainer(record.container);
-    return true;
+    if (record) {
+      // Drop from the registry first so a concurrent create sees it gone and a
+      // re-create provisions a fresh container rather than re-attaching a corpse.
+      this.#jobs.delete(jobId);
+      await this.#engine.destroyJobContainer(record.container);
+      return true;
+    }
+    // No live job yet — but a create may be mid-provision. Mark it cancelled so
+    // #provision reaps the container it is about to create.
+    if (this.#inflight.has(jobId)) {
+      this.#cancelled.add(jobId);
+      return true;
+    }
+    return false;
   }
 
   /**

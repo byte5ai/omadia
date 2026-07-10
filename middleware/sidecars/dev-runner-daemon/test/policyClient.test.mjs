@@ -20,6 +20,7 @@ import { afterEach, describe, it } from 'node:test';
 import {
   createPolicyClient,
   parseAllowedImages,
+  parseEgressProxyUrl,
   parseImageReference,
   parseRequireDigest,
   PolicyConfigError,
@@ -183,6 +184,8 @@ describe('policyClient — env clamp on the untrusted policy (allowlist)', () =>
     'PYTHONSTARTUP',
     'IFS',
   ];
+  // Non-daemon-owned dangerous keys (proxy vars are daemon-owned — a separate
+  // rejection code — so they are tested in the daemon-owned block below).
   for (const key of DANGEROUS_KEYS) {
     it(`refuses a policy env carrying the un-allowlisted key ${key}`, async () => {
       const client = clientWith(policyBody({ env: { [key]: 'sh -c id' } }));
@@ -203,12 +206,6 @@ describe('policyClient — env clamp on the untrusted policy (allowlist)', () =>
     'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
     'DISABLE_AUTOUPDATER',
     'DISABLE_TELEMETRY',
-    'HTTP_PROXY',
-    'HTTPS_PROXY',
-    'NO_PROXY',
-    'http_proxy',
-    'https_proxy',
-    'no_proxy',
     'LANG',
     'LC_ALL',
     'TERM',
@@ -252,14 +249,28 @@ describe('policyClient — env clamp on the untrusted policy (allowlist)', () =>
 });
 
 describe('policyClient — daemon-owned env keys are injected, never accepted', () => {
-  const DAEMON_OWNED = ['OMADIA_JOB_BASE_URL', 'OMADIA_JOB_ID', 'OMADIA_WORKSPACE', 'OMADIA_CLI_BIN'];
+  const DAEMON_OWNED = [
+    'OMADIA_JOB_BASE_URL',
+    'OMADIA_JOB_ID',
+    'OMADIA_WORKSPACE',
+    'OMADIA_CLI_BIN',
+    // Egress-routing lever — daemon-owned (both spellings). A policy value would
+    // redirect every http(s) client in the container (git included) through an
+    // attacker proxy, so the policy must never supply it.
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'no_proxy',
+  ];
 
   // A policy that carries any of these is a compromised/spoofed middleware trying
-  // to steer the CLI binary or redirect phone-home; it is refused LOUDLY (its own
-  // code), never silently overwritten.
+  // to steer the CLI binary, redirect phone-home, or route egress through an
+  // attacker proxy; it is refused LOUDLY (its own code), never silently overwritten.
   for (const key of DAEMON_OWNED) {
     it(`REJECTS a policy that supplies the daemon-owned key ${key}`, async () => {
-      const hostile = key === 'OMADIA_CLI_BIN' ? './pwn' : 'https://attacker.example';
+      const hostile = key === 'OMADIA_CLI_BIN' ? './pwn' : 'http://attacker.example:3128';
       const client = clientWith(policyBody({ env: { [key]: hostile } }));
       await rejectsWithCode(client.fetchJobPolicy(JOB_ID), 'daemon.env_key_reserved');
     });
@@ -289,12 +300,98 @@ describe('policyClient — daemon-owned env keys are injected, never accepted', 
     assert.equal(policy.env.OMADIA_CLI_BIN, '/usr/local/bin/claude');
   });
 
-  it('pins OMADIA_JOB_ID to the daemon request jobId, not the middleware-echoed jobId', async () => {
-    // the body echoes a DIFFERENT jobId; the injected value must be the daemon's
-    // UUID-validated request jobId, so the middleware cannot skew a job's identity.
+  it('injects proxy vars (both spellings) ONLY when the daemon has one configured', async () => {
+    const client = clientWith(policyBody(), {
+      clientOpts: { egressProxyUrl: 'http://egress-proxy:3128', noProxy: 'middleware,localhost' },
+    });
+    const policy = await client.fetchJobPolicy(JOB_ID);
+    assert.equal(policy.env.HTTP_PROXY, 'http://egress-proxy:3128');
+    assert.equal(policy.env.HTTPS_PROXY, 'http://egress-proxy:3128');
+    assert.equal(policy.env.http_proxy, 'http://egress-proxy:3128');
+    assert.equal(policy.env.https_proxy, 'http://egress-proxy:3128');
+    assert.equal(policy.env.NO_PROXY, 'middleware,localhost');
+    assert.equal(policy.env.no_proxy, 'middleware,localhost');
+  });
+
+  it('injects NO proxy vars when the daemon has none configured', async () => {
+    const client = clientWith(policyBody());
+    const policy = await client.fetchJobPolicy(JOB_ID);
+    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY', 'no_proxy']) {
+      assert.equal(policy.env[k], undefined, `${k} must be absent without a configured proxy`);
+    }
+  });
+});
+
+describe('policyClient — response jobId is pinned to the request (review low finding)', () => {
+  it('REJECTS a response whose jobId does not equal the requested one', async () => {
+    // A policy for a DIFFERENT job is a confused or hostile middleware; refuse it
+    // outright rather than trust it anywhere (the daemon-pinned OMADIA_JOB_ID is
+    // defence-in-depth, not a licence to accept a mismatched policy).
     const client = clientWith(policyBody({ jobId: '99999999-9999-4999-8999-999999999999' }));
+    await rejectsWithCode(client.fetchJobPolicy(JOB_ID), 'daemon.policy_job_mismatch');
+  });
+
+  it('refuses a non-UUID jobId at the schema (never reaches the equality check)', async () => {
+    const client = clientWith(policyBody({ jobId: 'not-a-uuid' }));
+    await rejectsWithCode(client.fetchJobPolicy(JOB_ID), 'daemon.policy_malformed');
+  });
+
+  it('accepts a response whose jobId equals the requested one', async () => {
+    const client = clientWith(policyBody());
     const policy = await client.fetchJobPolicy(JOB_ID);
     assert.equal(policy.env.OMADIA_JOB_ID, JOB_ID);
+  });
+});
+
+describe('policyClient — DEV_RUNNER_EGRESS_PROXY_URL parsing', () => {
+  it('treats unset/empty as no proxy', () => {
+    assert.equal(parseEgressProxyUrl(undefined), undefined);
+    assert.equal(parseEgressProxyUrl(''), undefined);
+    assert.equal(parseEgressProxyUrl('   '), undefined);
+  });
+  it('accepts an http(s) origin', () => {
+    assert.equal(parseEgressProxyUrl('http://egress-proxy:3128'), 'http://egress-proxy:3128');
+    assert.equal(parseEgressProxyUrl('https://egress-proxy:3128'), 'https://egress-proxy:3128');
+  });
+  it('rejects a set-but-invalid value (a typo must not silently disable the proxy)', () => {
+    assert.throws(() => parseEgressProxyUrl('not a url'), PolicyConfigError);
+    assert.throws(() => parseEgressProxyUrl('ftp://proxy:21'), PolicyConfigError);
+    assert.throws(() => parseEgressProxyUrl('http://user:pass@proxy:3128'), PolicyConfigError);
+  });
+});
+
+describe('policyClient — egress allowlist clamp on the untrusted policy', () => {
+  it('accepts a bare-hostname allowlist', async () => {
+    const client = clientWith(policyBody({ egressAllowlist: ['github.com', 'registry.npmjs.org', 'foo.internal'] }));
+    const policy = await client.fetchJobPolicy(JOB_ID);
+    assert.deepEqual(policy.egressAllowlist, ['github.com', 'registry.npmjs.org', 'foo.internal']);
+  });
+
+  // Each of these must reject the WHOLE policy (not silently drop the bad entry).
+  const BAD_ENTRIES = [
+    ['a scheme', 'https://github.com'],
+    ['a path/userinfo', 'github.com/evil'],
+    ['a userinfo confusion', 'github.com@169.254.169.254'],
+    ['a port', 'github.com:8080'],
+    ['a wildcard', '*.evil.example'],
+    ['an IPv4 literal (public)', '8.8.8.8'],
+    ['an IPv4 literal (metadata)', '169.254.169.254'],
+    ['an IPv4 literal (RFC1918)', '10.0.0.1'],
+    ['an IPv4-mapped IPv6 literal', '[::ffff:127.0.0.1]'],
+    ['a control char', 'git\thub.com'],
+    ['an empty entry', ''],
+  ];
+  for (const [why, entry] of BAD_ENTRIES) {
+    it(`rejects the whole policy when an egress entry has ${why}`, async () => {
+      const client = clientWith(policyBody({ egressAllowlist: ['github.com', entry] }));
+      await rejectsWithCode(client.fetchJobPolicy(JOB_ID), 'daemon.egress_not_allowed');
+    });
+  }
+
+  it('caps the number of egress entries', async () => {
+    const many = Array.from({ length: 300 }, (_, i) => `h${i}.example`);
+    const client = clientWith(policyBody({ egressAllowlist: many }));
+    await rejectsWithCode(client.fetchJobPolicy(JOB_ID), 'daemon.egress_too_many');
   });
 });
 

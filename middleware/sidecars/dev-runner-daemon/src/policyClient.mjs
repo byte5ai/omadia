@@ -49,17 +49,33 @@
 
 import { z } from 'zod';
 
+import { classifyEgressEntry } from './netClassify.mjs';
+
+/** The exact UUID form `dev_jobs.id` takes. The requested jobId is already
+ *  UUID-validated at the wire schema; the response's echoed jobId is pinned to
+ *  the same shape (review low finding) so a policy cannot smuggle a non-UUID id. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * The internal job-policy response. Mirrors `devRunnerJobPolicyRoute.ts`, which
  * returns `deriveJobPolicy`'s output plus the echoed `jobId`. Validated so a
- * broken policy can never reach `createJobContainer`.
+ * broken policy can never reach `createJobContainer`. The `jobId` is constrained
+ * to a UUID (review low finding): the daemon pinned `OMADIA_JOB_ID` to its own
+ * request id regardless, but a response echoing a differently-shaped id is a
+ * confused or hostile middleware and is refused at the schema, then cross-checked
+ * for equality against the requested id in `fetchJobPolicy`.
  */
 const JobPolicyResponseSchema = z.object({
-  jobId: z.string(),
+  jobId: z.string().regex(UUID_RE),
   image: z.string().min(1),
   env: z.record(z.string(), z.string()),
   egressAllowlist: z.array(z.string()),
 });
+
+/** Hard cap on the number of egress-allowlist entries the daemon will accept from
+ *  the policy. A legitimate allowlist is a handful of hosts; a flood is a sign of
+ *  a confused or hostile middleware and is refused wholesale. */
+const MAX_EGRESS_ENTRIES = 256;
 
 /** Default hard cap on the policy response body. These are tiny JSON envelopes;
  *  256 KiB is orders of magnitude of headroom while still bounding a flood. */
@@ -99,12 +115,19 @@ const DIGEST_RE = /^[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[0-9a-f]{32,}$/;
  *     accepted from the policy — plus the gated LLM-passthrough pair in `index.ts`;
  *   - LLM + CLI behaviour keys emitted/consumed by
  *     `src/devplatform/deriveJobPolicy.ts` and the Claude CLI;
- *   - the egress-proxy vars (W1 spec §6) — both UPPER and lower spellings are
- *     accepted because curl/libcurl honour the lowercase names and git/node the
- *     uppercase ones; the docker clamp overrides these per-job anyway, so
- *     admitting them in the policy env is harmless and keeps the two layers from
- *     disagreeing;
  *   - benign locale/tooling keys.
+ *
+ * The egress-proxy vars (`HTTP(S)_PROXY` / `NO_PROXY`, both spellings) are
+ * deliberately ABSENT: they are DAEMON-OWNED (`DAEMON_OWNED_ENV_KEYS`), not
+ * policy-supplied. Unlike `ANTHROPIC_BASE_URL`, which only steers LLM traffic the
+ * middleware already owns the credentials for, the proxy vars are a GENERIC
+ * egress-routing lever — they redirect EVERY http(s) client in the container,
+ * git included. A compromised middleware that could set `HTTPS_PROXY` at its own
+ * host would route the runner's clone, its SCM-token exchange and its diff upload
+ * through the attacker. The egress proxy's address is deployment topology (a
+ * static IP the daemon knows from its own config), never per-job policy, so the
+ * daemon injects it (`DEV_RUNNER_EGRESS_PROXY_URL` / `DEV_RUNNER_NO_PROXY`) and
+ * refuses a policy that carries one.
  * `deriveJobPolicy` today emits only a small subset; the rest are admitted so a
  * legitimate future policy is not rejected — the point of the clamp is to refuse
  * the DANGEROUS unknown, not every unknown the derivation might grow into.
@@ -126,13 +149,6 @@ const ALLOWED_ENV_KEYS = new Set([
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
   'DISABLE_AUTOUPDATER',
   'DISABLE_TELEMETRY',
-  // egress proxy (W1 spec §6) — both spellings
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'NO_PROXY',
-  'http_proxy',
-  'https_proxy',
-  'no_proxy',
   // benign locale / tooling
   'LANG',
   'LC_ALL',
@@ -171,6 +187,15 @@ const ALLOWED_ENV_KEYS = new Set([
  *     UUID-validated job id, not a value the middleware can skew.
  *   - `OMADIA_WORKSPACE` — where the repo is cloned; must be the container's fixed
  *     workspace path, not a policy-chosen directory.
+ *   - `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` (and their lowercase spellings) —
+ *     the container-wide egress-routing lever. A policy value would redirect every
+ *     http(s) client in the container (clone, SCM-token exchange, diff upload,
+ *     git, node, curl) through an attacker-chosen proxy. The egress proxy's
+ *     address is deployment topology the daemon knows from its own config, so the
+ *     daemon injects it (`DEV_RUNNER_EGRESS_PROXY_URL` / `DEV_RUNNER_NO_PROXY`)
+ *     and never accepts it from the policy. Both spellings are owned because
+ *     curl/libcurl honour the lowercase names and git/node the uppercase ones —
+ *     admitting either from the policy would reopen the lever the other closes.
  *
  * A policy that CARRIES any of these is not a legitimate policy — it is a
  * compromised or spoofed middleware. So we REJECT it loudly (`assertPolicyEnv`)
@@ -184,6 +209,13 @@ const DAEMON_OWNED_ENV_KEYS = new Set([
   'OMADIA_JOB_ID',
   'OMADIA_WORKSPACE',
   'OMADIA_CLI_BIN',
+  // egress-routing lever — daemon-owned, injected from its own config (below).
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
 ]);
 
 /** The container's fixed, job-scoped clone directory (W1 clamp: the per-job
@@ -396,19 +428,102 @@ function assertPolicyEnv(env, status) {
  * set them unconditionally (the daemon is the sole authority for their values),
  * so even a future clamp gap cannot let a policy value survive here.
  *
+ * The egress-proxy vars are injected ONLY when the daemon has an egress proxy
+ * configured; both spellings are set together so no http(s) client in the
+ * container escapes the proxy on a casing quirk. When no proxy is configured the
+ * keys are absent (direct egress, still bounded by the per-job network clamp).
+ *
  * @param {Record<string, string>} policyEnv The validated, allowlisted policy env.
  * @param {string} jobId The daemon's UUID-validated job id.
- * @param {{ jobBaseUrl: string, workspace: string, cliBin: string }} owned
+ * @param {{ jobBaseUrl: string, workspace: string, cliBin: string, egressProxyUrl?: string, noProxy?: string }} owned
  * @returns {Record<string, string>}
  */
 function injectDaemonOwnedEnv(policyEnv, jobId, owned) {
-  return {
+  /** @type {Record<string, string>} */
+  const env = {
     ...policyEnv,
     OMADIA_JOB_BASE_URL: owned.jobBaseUrl,
     OMADIA_JOB_ID: jobId,
     OMADIA_WORKSPACE: owned.workspace,
     OMADIA_CLI_BIN: owned.cliBin,
   };
+  if (owned.egressProxyUrl) {
+    env.HTTP_PROXY = owned.egressProxyUrl;
+    env.HTTPS_PROXY = owned.egressProxyUrl;
+    env.http_proxy = owned.egressProxyUrl;
+    env.https_proxy = owned.egressProxyUrl;
+  }
+  if (owned.noProxy) {
+    env.NO_PROXY = owned.noProxy;
+    env.no_proxy = owned.noProxy;
+  }
+  return env;
+}
+
+/**
+ * Validate the daemon's egress-proxy URL from its own config. This is operator
+ * (deployment) config, not per-job policy, so it is trusted — but a typo that
+ * silently disabled the proxy would route job egress DIRECT past the intended
+ * choke point, so a set-but-unparseable value is a FATAL boot error rather than a
+ * silent no-proxy. An http(s) `origin` is required (no path/query/userinfo).
+ *
+ * @param {string | undefined} raw
+ * @returns {string | undefined} the normalized proxy URL, or undefined if unset.
+ */
+export function parseEgressProxyUrl(raw) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return undefined;
+  const value = String(raw).trim();
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new PolicyConfigError(`DEV_RUNNER_EGRESS_PROXY_URL is not a parseable URL: ${JSON.stringify(value)}`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new PolicyConfigError(
+      `DEV_RUNNER_EGRESS_PROXY_URL must be an http(s) URL, got ${JSON.stringify(url.protocol)}`,
+    );
+  }
+  if (url.username || url.password) {
+    throw new PolicyConfigError('DEV_RUNNER_EGRESS_PROXY_URL must not carry userinfo');
+  }
+  return value;
+}
+
+/**
+ * Clamp the policy's egress allowlist (review round-4 high finding). The daemon
+ * validates the network policy with the SAME rigour as the image and env, because
+ * it arrives from exactly the party the clamp defends against. Every entry must
+ * be a bare hostname (no scheme/port/path/wildcard/CIDR/control chars) and must
+ * NOT be an IP literal — classified by the ported `classifyEgressEntry`, which is
+ * kept in lockstep with the middleware's own classifier by a parity test. The
+ * list length is capped. A bad entry REJECTS the whole policy (never a silent
+ * drop): the middleware has already validated the allowlist, so a bad entry
+ * reaching the daemon means the middleware is confused or hostile — fail loudly.
+ *
+ * @param {readonly string[]} egressAllowlist
+ * @param {number} status Upstream status to attach (the fetch itself was 2xx).
+ */
+function assertPolicyEgress(egressAllowlist, status) {
+  if (egressAllowlist.length > MAX_EGRESS_ENTRIES) {
+    throw new PolicyLookupError(
+      status,
+      'daemon.egress_too_many',
+      `policy egress allowlist exceeds the ${MAX_EGRESS_ENTRIES}-entry cap`,
+    );
+  }
+  for (const raw of egressAllowlist) {
+    const classified = classifyEgressEntry(raw);
+    if ('reject' in classified) {
+      // Name the REASON, not the raw entry: a hostile allowlist could carry a
+      // long/attacker-shaped string, and the reason alone is enough to diagnose.
+      throw new PolicyLookupError(
+        status,
+        'daemon.egress_not_allowed',
+        `policy egress allowlist carries an invalid entry (${classified.reject})`,
+      );
+    }
+  }
 }
 
 /**
@@ -484,6 +599,11 @@ async function readCappedBody(res, maxBytes, controller) {
  *   `OMADIA_WORKSPACE`; defaults to `/workspace`.
  * @property {string} [cliBin] DAEMON-OWNED CLI injected as `OMADIA_CLI_BIN`
  *   (`DEV_RUNNER_CLI_BIN`); defaults to `claude`.
+ * @property {string} [egressProxyUrl] DAEMON-OWNED egress proxy injected as
+ *   `HTTP(S)_PROXY` (`DEV_RUNNER_EGRESS_PROXY_URL`); when unset, no proxy is
+ *   injected. Never policy-supplied.
+ * @property {string} [noProxy] DAEMON-OWNED `NO_PROXY` bypass list
+ *   (`DEV_RUNNER_NO_PROXY`); injected only alongside/with a proxy. Never policy-supplied.
  * @property {typeof fetch} [fetchImpl] Test seam; defaults to global `fetch`.
  * @property {number} [timeoutMs] Per-lookup timeout; defaults to 10s (spec §5 connect budget).
  * @property {number} [maxBodyBytes] Hard cap on the policy body; defaults to 256 KiB.
@@ -512,6 +632,11 @@ export function createPolicyClient(deps) {
   const jobBaseUrl = (deps.jobBaseUrl ?? base).replace(/\/+$/, '');
   const workspace = deps.workspacePath ?? DEFAULT_WORKSPACE_PATH;
   const cliBin = deps.cliBin ?? DEFAULT_CLI_BIN;
+  // Egress-routing lever — daemon-owned, from the daemon's OWN config (never the
+  // policy). Validated here so a typo fails at boot rather than silently routing
+  // job egress direct past the intended choke point.
+  const egressProxyUrl = parseEgressProxyUrl(deps.egressProxyUrl);
+  const noProxy = deps.noProxy && String(deps.noProxy).trim() !== '' ? String(deps.noProxy).trim() : undefined;
 
   return {
     /**
@@ -589,18 +714,39 @@ export function createPolicyClient(deps) {
           );
         }
 
-        // Daemon-side clamp on the UNTRUSTED upstream policy (round-3 high finding):
-        // an unlisted image, a floating tag, or a reserved env key is refused here,
-        // before the policy can reach createJobContainer.
+        // The response's echoed jobId must equal the one we requested (review low
+        // finding). The daemon pins OMADIA_JOB_ID to its own request id regardless,
+        // but a policy for a DIFFERENT job is a confused or hostile middleware —
+        // refuse it outright rather than trust it anywhere.
+        if (parsed.data.jobId !== jobId) {
+          throw new PolicyLookupError(
+            res.status,
+            'daemon.policy_job_mismatch',
+            'job-policy response is for a different jobId than requested',
+          );
+        }
+
+        // Daemon-side clamp on the UNTRUSTED upstream policy: an unlisted image, a
+        // floating tag, a reserved env key, or an invalid egress entry is refused
+        // here, before the policy can reach createJobContainer (round-3 + round-4
+        // high findings).
         assertPolicyImage(parsed.data.image, allowedImages, requireDigest, res.status);
         assertPolicyEnv(parsed.data.env, res.status);
-        // Inject the daemon-owned identity/location/CLI keys on top of the
+        assertPolicyEgress(parsed.data.egressAllowlist, res.status);
+        // Inject the daemon-owned identity/location/CLI/proxy keys on top of the
         // clamped policy env. assertPolicyEnv has already refused a policy that
         // tried to supply any of them, so a hostile middleware can neither name
-        // the CLI binary nor redirect the runner's phone-home target.
+        // the CLI binary, redirect the runner's phone-home target, nor route its
+        // egress through an attacker proxy.
         return {
           ...parsed.data,
-          env: injectDaemonOwnedEnv(parsed.data.env, jobId, { jobBaseUrl, workspace, cliBin }),
+          env: injectDaemonOwnedEnv(parsed.data.env, jobId, {
+            jobBaseUrl,
+            workspace,
+            cliBin,
+            egressProxyUrl,
+            noProxy,
+          }),
         };
       } finally {
         clearTimeout(timer);
