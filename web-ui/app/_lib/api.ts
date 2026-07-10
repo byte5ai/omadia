@@ -3699,6 +3699,17 @@ export async function installSelfExtensionProposal(
 // Backed by the middleware /api/v1/operator/conductors router (cookie auth).
 // ─────────────────────────────────────────────────────────────────────────
 
+/** Template-provenance hint on workflows instantiated from a template (#478,
+ *  additive — mirrors the middleware's WorkflowTemplateHint). `updateAvailable`
+ *  is true only while the template stays visible to the viewer AND carries a
+ *  newer manifest version than the one instantiated. */
+export interface ConductorWorkflowTemplateHint {
+  id: string;
+  version: number;
+  latestVersion: number;
+  updateAvailable: boolean;
+}
+
 export interface ConductorWorkflow {
   id: string;
   slug: string;
@@ -3706,6 +3717,7 @@ export interface ConductorWorkflow {
   description: string | null;
   status: 'enabled' | 'disabled';
   activeVersionId: string | null;
+  template?: ConductorWorkflowTemplateHint;
 }
 
 export interface ConductorRun {
@@ -3904,10 +3916,14 @@ export interface ConductorTemplateSlots {
   text?: ConductorTemplateTextSlot[];
 }
 
-/** slot key → install-local entity id, per kind (mirrors TemplateSlotMapping). */
+/** slot key → install-local entity id, per kind (mirrors TemplateSlotMapping).
+ *  `text` maps declared text-slot keys to the substituted strings (#478,
+ *  additive — absent for pure-ref v1 mappings). */
 export type ConductorTemplateSlotMapping = Partial<
   Record<'agents' | 'actions' | 'roles' | 'events' | 'channels', Record<string, string>>
->;
+> & {
+  text?: Record<string, string>;
+};
 
 /** Just enough of the template graph for catalog rendering (the schedule badge reads
  *  `triggers`); steps and transitions stay opaque — downstream consumers (designer)
@@ -4040,17 +4056,31 @@ export async function rejectConductorTemplate(id: string): Promise<{ template: C
   return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/reject`, {});
 }
 
+/** Immutable manifest versions of a template, ascending. Bundled/plugin sources
+ *  report their single file-defined version (no createdAt). */
+export async function fetchConductorTemplateVersions(
+  id: string,
+): Promise<{ versions: Array<{ version: number; createdAt?: string }> }> {
+  return getJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/versions`);
+}
+
 /** Ephemeral instantiation: substituted + validated graph, nothing persisted
- *  (feeds "open in designer"). */
+ *  (feeds "open in designer"). `version` pins an explicit manifest version
+ *  (#478 update flow); omitted = latest. */
 export async function resolveConductorTemplate(
   id: string,
   mapping: ConductorTemplateSlotMapping,
+  version?: number,
 ): Promise<{ graph: unknown }> {
-  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/resolve`, { mapping });
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/resolve`, {
+    mapping,
+    ...(version !== undefined ? { version } : {}),
+  });
 }
 
 /** Persistent instantiation: publishes an ordinary versioned workflow (copy, not
- *  reference). 409 conductor.slug_exists on collision; enable defaults to false. */
+ *  reference). 409 conductor.slug_exists on collision; enable defaults to false;
+ *  `version` pins an explicit manifest version (omitted = latest). */
 export async function instantiateConductorTemplate(
   id: string,
   body: {
@@ -4059,6 +4089,7 @@ export async function instantiateConductorTemplate(
     description?: string;
     mapping: ConductorTemplateSlotMapping;
     enable?: boolean;
+    version?: number;
   },
 ): Promise<{ workflow: ConductorWorkflow; version: { id: string; version: number } }> {
   return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/instantiate`, body);

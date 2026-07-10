@@ -31,6 +31,7 @@ import { ConductorRunHistory, ConductorRunTrace } from './_components/ConductorR
 import { SaveAsTemplateDialog } from './_components/SaveAsTemplateDialog';
 import { TemplateGallery } from './_components/TemplateGallery';
 import { TemplateInstantiateForm } from './_components/TemplateInstantiateForm';
+import { TemplateUpdateHint } from './_components/TemplateUpdateHint';
 
 export default function ConductorPage(): React.JSX.Element {
   const t = useTranslations('conductor');
@@ -38,8 +39,11 @@ export default function ConductorPage(): React.JSX.Element {
   const [workflows, setWorkflows] = useState<ConductorWorkflow[]>([]);
   const [templates, setTemplates] = useState<ConductorTemplate[]>([]);
   // Template instantiation flow (#429): "Use template" stores the selection; the
-  // slot-mapping form below the gallery reads it. Cancel/create clear it.
+  // slot-mapping form below the gallery reads it. Cancel/create clear it. The
+  // update flow (#478) additionally pins an explicit manifest version — set only
+  // by "Re-instantiate from v{latest}", cleared on every ordinary selection.
   const [selectedTemplate, setSelectedTemplate] = useState<ConductorTemplate | null>(null);
+  const [selectedVersion, setSelectedVersion] = useState<number | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runningSlug, setRunningSlug] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<ConductorRunResult | null>(null);
@@ -65,6 +69,8 @@ export default function ConductorPage(): React.JSX.Element {
   // The conversational builder's evolving draft, mirrored into the canvas below (US7 parity).
   const [chatGraphRequest, setChatGraphRequest] = useState<CanvasGraphRequest | null>(null);
   const designerRef = useRef<HTMLElement>(null);
+  // Scroll target for the update flow's jump back to the templates section (#478).
+  const templatesRef = useRef<HTMLElement>(null);
   // Save-as-template (#478 F1): which workflow's dialog is open, the backend viewer
   // identity for the dialog's ownership pre-check (AuthUser.id = session sub), and
   // the post-publish notice (text-only success feedback, Lume state-color rule).
@@ -138,6 +144,22 @@ export default function ConductorPage(): React.JSX.Element {
     setEditRequest({ slug: wfSlug, nonce: Date.now() });
     designerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
+
+  // Opt-in template update path (#478): open the instantiate form pinned to the
+  // template's latest version. Deliberate re-instantiation — a NEW workflow under
+  // a new slug; the existing instance keeps its copy (copy-not-reference). The
+  // catalog list already serves the latest manifest, so the pinned version and
+  // the manifest the form renders from always agree.
+  const handleReinstantiate = useCallback(
+    (templateId: string, version: number) => {
+      const tpl = templates.find((x) => x.id === templateId);
+      if (!tpl) return;
+      setSelectedVersion(version);
+      setSelectedTemplate(tpl);
+      templatesRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    },
+    [templates],
+  );
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount loader
@@ -229,7 +251,7 @@ export default function ConductorPage(): React.JSX.Element {
       {/* Workflow templates (#429) — curated starting points, above the workflows list.
           Hidden while the catalog is empty (or still loading): no empty-state noise. */}
       {templates.length > 0 && (
-        <section className="mb-10">
+        <section ref={templatesRef} className="mb-10">
           <h2 className="mb-1 text-[13px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
             {t('templatesHeading')}
           </h2>
@@ -240,19 +262,27 @@ export default function ConductorPage(): React.JSX.Element {
           <TemplateGallery
             templates={templates}
             viewer={viewer}
-            onUseTemplate={(tpl) => setSelectedTemplate(tpl)}
+            onUseTemplate={(tpl) => {
+              // Ordinary selection instantiates the latest version — clear any pin
+              // a previous "Re-instantiate from v{n}" left behind.
+              setSelectedVersion(undefined);
+              setSelectedTemplate(tpl);
+            }}
             onCatalogChanged={() => void reload()}
           />
           {selectedTemplate && (
             <div className="mt-4">
               <TemplateInstantiateForm
-                // Re-key per template so slug/name/mapping state resets on re-selection.
-                key={selectedTemplate.id}
+                // Re-key per template AND pinned version so slug/name/mapping state
+                // resets on re-selection and on the update flow's version switch.
+                key={`${selectedTemplate.id}@${String(selectedVersion ?? 'latest')}`}
                 template={selectedTemplate}
+                version={selectedVersion}
                 onCreated={() => {
                   // Same success feedback as the canvas publish path (onSaved): reload
                   // the lists so the new workflow appears immediately.
                   setSelectedTemplate(null);
+                  setSelectedVersion(undefined);
                   void reload();
                 }}
                 onOpenInDesigner={(graph, target) => {
@@ -271,7 +301,10 @@ export default function ConductorPage(): React.JSX.Element {
                   });
                   designerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 }}
-                onCancel={() => setSelectedTemplate(null)}
+                onCancel={() => {
+                  setSelectedTemplate(null);
+                  setSelectedVersion(undefined);
+                }}
               />
             </div>
           )}
@@ -300,6 +333,9 @@ export default function ConductorPage(): React.JSX.Element {
                   <div className="font-mono text-[12px] text-[color:var(--fg-muted)]">
                     {wf.slug} · {t('statusLabel')}: {wf.status}
                   </div>
+                  {/* Template provenance update hint (#478): opt-in re-instantiation
+                      from the latest version; this workflow stays untouched. */}
+                  {wf.template ? <TemplateUpdateHint hint={wf.template} onReinstantiate={handleReinstantiate} /> : null}
                 </div>
                 <div className="flex shrink-0 gap-2">
                   <Button

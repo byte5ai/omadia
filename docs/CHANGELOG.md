@@ -18,6 +18,35 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — instantiate form v2: text slots, graph preview, version pin, update hint (#478)
+
+- `TemplateInstantiateForm` (`web-ui/app/conductor/_components/`) renders one
+  required-fill input per declared **text slot** (`slots.text`), the declared
+  default prefilled; an emptied defaulted slot is omitted from the mapping so
+  the server substitutes the default. The client completeness gate mirrors
+  `missingSlotMappings` (a text slot passes with a value OR a default), and the
+  server's `kind:'text'` incomplete-mapping entries land inline on the right
+  fields via the shared `text:<key>` flag ids. The submitted
+  `TemplateSlotMapping` carries the additive `text` record.
+- **Graph preview**: new `TemplatePreview` renders the MANIFEST graph — slot
+  placeholders shown as their locale-resolved declared labels — into a small
+  read-only designer canvas (no stored thumbnails), collapsed by default behind
+  a "Preview graph" toggle so only an OPENED form mounts a flow instance. The
+  plan drafted this on Cytoscape; the designer actually runs on
+  `@xyflow/react`, so the preview is a locked-down React Flow reusing the
+  canvas's node styling.
+- **Versioning surface**: the form header shows the manifest version
+  (`v{n}`); an explicit pinned version travels into `resolve`/`instantiate`.
+  Workflows carrying B3's `template.updateAvailable` hint render
+  "Template updated (v{n} → v{m})" (warning-colored text only, per Lume) with
+  a **"Re-instantiate from v{m}"** action (`TemplateUpdateHint`) that opens the
+  instantiate form pinned to the latest version — a deliberate NEW workflow;
+  the existing instance keeps its copy (copy-not-reference).
+- The form accepts an `initialMapping` prefill (consumed by the builder-chat
+  template proposals, F4). API client: `mapping.text` + optional `version` on
+  resolve/instantiate, `fetchConductorTemplateVersions`, and the additive
+  `template` hint on the workflow wire type.
+
 ### Added — template gallery v2: facets, pending-review queue, search, manage actions (#478)
 
 - `TemplateGallery` (`web-ui/app/conductor/_components/`) now renders the

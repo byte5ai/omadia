@@ -9,9 +9,11 @@ import {
   instantiateConductorTemplate,
   resolveConductorTemplate,
   type ConductorTemplate,
+  type ConductorTemplateSlotMapping,
 } from '@/app/_lib/api';
 import { renderWithIntl } from '../../../_lib/test-utils';
 import { TemplateInstantiateForm } from '../TemplateInstantiateForm';
+import { TemplateUpdateHint } from '../TemplateUpdateHint';
 
 // Partial mock: only the network layer is stubbed — ApiError (used for the error-
 // envelope mapping tests) and the wire types stay real.
@@ -27,6 +29,17 @@ vi.mock('@/app/_lib/api', async (importOriginal) => {
     resolveConductorTemplate: vi.fn(),
   };
 });
+
+// jsdom cannot drive @xyflow/react's measured canvas (imported via the form's
+// collapsed-by-default TemplatePreview) — stub the flow surface with inert
+// elements; the preview's own render contract is covered in TemplatePreview.test.
+vi.mock('@xyflow/react', () => ({
+  ReactFlow: () => <div data-testid="flow-canvas" />,
+  ReactFlowProvider: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  Background: () => null,
+  Handle: () => null,
+  Position: { Left: 'left', Right: 'right' },
+}));
 
 const approvalTemplate: ConductorTemplate = {
   id: 'expense-approval',
@@ -77,6 +90,7 @@ function renderForm(
     onOpenInDesigner: (graph: unknown, target: { slug: string; name: string; enable: boolean }) => void;
     onCancel: () => void;
   }> = {},
+  extra: Partial<{ version: number; initialMapping: ConductorTemplateSlotMapping }> = {},
 ): ReturnType<typeof renderWithIntl> {
   return renderWithIntl(
     <TemplateInstantiateForm
@@ -84,9 +98,24 @@ function renderForm(
       onCreated={handlers.onCreated ?? vi.fn()}
       onOpenInDesigner={handlers.onOpenInDesigner ?? vi.fn()}
       onCancel={handlers.onCancel ?? vi.fn()}
+      version={extra.version}
+      initialMapping={extra.initialMapping}
     />,
   );
 }
+
+/** cronTemplate plus declared text slots: one with a default, one required-fill. */
+const textTemplate: ConductorTemplate = {
+  ...cronTemplate,
+  id: 'weekly-report-text',
+  slots: {
+    agents: [{ key: 'reporter', label: 'Report writer' }],
+    text: [
+      { key: 'tone', label: 'Tone of voice', description: 'How the report should read.', default: 'concise' },
+      { key: 'audience', label: 'Audience' },
+    ],
+  },
+};
 
 /** Fill every declared slot of approvalTemplate (channel is prefilled with 'teams'). */
 async function fillAllSlots(user: ReturnType<typeof userEvent.setup>): Promise<void> {
@@ -362,5 +391,167 @@ describe('<TemplateInstantiateForm />', () => {
     expect(busyButton.querySelector('.lume-busy-dots')).not.toBeNull();
     // Lume: no spinner glyphs or rings anywhere.
     expect(container.querySelector('svg, .animate-spin')).toBeNull();
+  });
+});
+
+describe('<TemplateInstantiateForm /> text slots (#478)', () => {
+  it('renders one input per declared text slot, with the default prefilled', async () => {
+    renderForm(textTemplate);
+
+    const group = await screen.findByRole('group', { name: 'Text slots' });
+    expect(within(group).getByRole('textbox', { name: /Tone of voice/ })).toHaveValue('concise');
+    expect(within(group).getByText('How the report should read.')).toBeInTheDocument();
+    expect(within(group).getByRole('textbox', { name: 'Audience' })).toHaveValue('');
+  });
+
+  it('blocks submit while a defaultless text slot is empty and sends the text record once filled', async () => {
+    const user = userEvent.setup();
+    vi.mocked(instantiateConductorTemplate).mockResolvedValue({
+      workflow: { slug: 'weekly-report' } as never,
+      version: { id: 'v1', version: 1 },
+    });
+    renderForm(textTemplate);
+
+    await user.selectOptions(await screen.findByRole('combobox', { name: /Report writer/ }), 'expense-bot');
+    // 'audience' has no default → the gate stays armed until it holds a value.
+    const create = screen.getByRole('button', { name: 'Create workflow' });
+    expect(create).toBeDisabled();
+
+    await user.type(screen.getByRole('textbox', { name: 'Audience' }), 'quarterly investors');
+    expect(create).toBeEnabled();
+    await user.click(create);
+
+    expect(instantiateConductorTemplate).toHaveBeenCalledWith('weekly-report-text', {
+      slug: 'weekly-report',
+      name: 'Weekly report',
+      mapping: {
+        agents: { reporter: 'expense-bot' },
+        text: { tone: 'concise', audience: 'quarterly investors' },
+      },
+      enable: false,
+    });
+  });
+
+  it('stays submittable with an EMPTY defaulted text slot and omits it from the mapping (server default wins)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(instantiateConductorTemplate).mockResolvedValue({
+      workflow: { slug: 'weekly-report' } as never,
+      version: { id: 'v1', version: 1 },
+    });
+    renderForm(textTemplate);
+
+    await user.selectOptions(await screen.findByRole('combobox', { name: /Report writer/ }), 'expense-bot');
+    await user.clear(screen.getByRole('textbox', { name: /Tone of voice/ }));
+    await user.type(screen.getByRole('textbox', { name: 'Audience' }), 'board');
+    const create = screen.getByRole('button', { name: 'Create workflow' });
+    expect(create).toBeEnabled();
+    await user.click(create);
+
+    const body = vi.mocked(instantiateConductorTemplate).mock.calls[0]?.[1];
+    // The emptied 'tone' key is omitted so the server substitutes the declared default.
+    expect(body?.mapping.text).toEqual({ audience: 'board' });
+  });
+
+  it("maps a server kind:'text' incomplete-mapping entry onto the right text field", async () => {
+    const user = userEvent.setup();
+    vi.mocked(instantiateConductorTemplate).mockRejectedValue(
+      new ApiError(
+        400,
+        'POST failed: 400',
+        JSON.stringify({
+          code: 'conductor.template_slot_mapping_incomplete',
+          missing: [{ kind: 'text', key: 'audience', label: 'Audience' }],
+        }),
+      ),
+    );
+    renderForm(textTemplate);
+
+    await user.selectOptions(await screen.findByRole('combobox', { name: /Report writer/ }), 'expense-bot');
+    // Client gate passes (spaces), the authoritative server still rejects.
+    await user.type(screen.getByRole('textbox', { name: 'Audience' }), 'x');
+    await user.click(screen.getByRole('button', { name: 'Create workflow' }));
+
+    expect(await screen.findByText('Enter a value for this text slot.')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: /Audience/ })).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('textbox', { name: /Tone of voice/ })).not.toHaveAttribute('aria-invalid');
+  });
+});
+
+describe('<TemplateInstantiateForm /> version pin + prefill + preview (#478)', () => {
+  it('shows the pinned version in the header and passes it to resolve and instantiate', async () => {
+    const user = userEvent.setup();
+    vi.mocked(instantiateConductorTemplate).mockResolvedValue({
+      workflow: { slug: 'weekly-report' } as never,
+      version: { id: 'v1', version: 1 },
+    });
+    vi.mocked(resolveConductorTemplate).mockResolvedValue({ graph: { entryStepId: 'compile', steps: [] } });
+    renderForm(cronTemplate, {}, { version: 3 });
+
+    expect(screen.getByText('v3')).toBeInTheDocument();
+
+    await user.selectOptions(await screen.findByRole('combobox', { name: /Report writer/ }), 'expense-bot');
+    await user.click(screen.getByRole('button', { name: 'Create workflow' }));
+    expect(instantiateConductorTemplate).toHaveBeenCalledWith(
+      'weekly-report',
+      expect.objectContaining({ version: 3 }),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Open in designer' }));
+    await waitFor(() => {
+      expect(resolveConductorTemplate).toHaveBeenCalledWith('weekly-report', { agents: { reporter: 'expense-bot' } }, 3);
+    });
+  });
+
+  it('falls back to the manifest version in the header when nothing is pinned', () => {
+    renderForm({ ...cronTemplate, version: 2 });
+    expect(screen.getByText('v2')).toBeInTheDocument();
+  });
+
+  it('seeds the mapping from an initial prefill (chat proposals) while keeping every field editable', async () => {
+    renderForm(textTemplate, {}, { initialMapping: { agents: { reporter: 'expense-bot' }, text: { audience: 'board' } } });
+
+    expect(await screen.findByRole('combobox', { name: /Report writer/ })).toHaveValue('expense-bot');
+    // Prefill wins over the declared default only where it supplies a value.
+    expect(screen.getByRole('textbox', { name: 'Audience' })).toHaveValue('board');
+    expect(screen.getByRole('textbox', { name: /Tone of voice/ })).toHaveValue('concise');
+    expect(screen.getByRole('button', { name: 'Create workflow' })).toBeEnabled();
+  });
+
+  it('mounts the graph preview only behind the collapsed-by-default toggle', async () => {
+    const user = userEvent.setup();
+    renderForm();
+
+    expect(screen.queryByTestId('template-preview')).not.toBeInTheDocument();
+    const toggle = screen.getByRole('button', { name: 'Preview graph' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    await user.click(toggle);
+    expect(screen.getByTestId('template-preview')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Hide preview' }));
+    expect(screen.queryByTestId('template-preview')).not.toBeInTheDocument();
+  });
+});
+
+describe('<TemplateUpdateHint /> (#478)', () => {
+  const hint = { id: 'weekly-report', version: 1, latestVersion: 2, updateAvailable: true };
+
+  it('renders the update text and hands (templateId, latestVersion) to onReinstantiate', async () => {
+    const user = userEvent.setup();
+    const onReinstantiate = vi.fn();
+    renderWithIntl(<TemplateUpdateHint hint={hint} onReinstantiate={onReinstantiate} />);
+
+    expect(screen.getByText('Template updated (v1 → v2)')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Re-instantiate from v2' }));
+    // The page wires this to open the instantiate form pinned to latestVersion —
+    // the pin's passthrough is covered by the version tests above.
+    expect(onReinstantiate).toHaveBeenCalledWith('weekly-report', 2);
+  });
+
+  it('renders nothing while no update is available', () => {
+    const { container } = renderWithIntl(
+      <TemplateUpdateHint hint={{ ...hint, latestVersion: 1, updateAvailable: false }} onReinstantiate={vi.fn()} />,
+    );
+    expect(container).toBeEmptyDOMElement();
   });
 });
