@@ -20,12 +20,7 @@ const METADATA_HOSTNAMES = new Set(['metadata.google.internal', 'metadata.goog',
  *  cloud-metadata endpoint, or an `.internal`/`localhost` name — with the ONE
  *  predicate the egress guard uses, so the two can never drift. */
 export function isInternalHost(host: string): boolean {
-  // Strip a single FQDN trailing dot BEFORE any check: `localhost.` and
-  // `metadata.google.internal.` resolve to the same targets as their dotless
-  // forms, so the `.internal`/`localhost`/metadata predicates must see the
-  // canonical name (otherwise `…internal.` slips past `.endsWith('.internal')`).
-  const stripped = host.toLowerCase().replace(/^\[|\]$/g, '');
-  const h = stripped.endsWith('.') ? stripped.slice(0, -1) : stripped;
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
   if (METADATA_HOSTNAMES.has(h)) return true;
   if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.internal') || h.endsWith('.local'))
     return true;

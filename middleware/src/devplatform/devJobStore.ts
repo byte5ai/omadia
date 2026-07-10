@@ -425,33 +425,17 @@ export class DevJobStore {
   }
 
   /** Resolve a job from its runner bearer alone — the LLM proxy (spec §6b) sees
-   *  only `Authorization: Bearer <djr_…>` and no jobId.
-   *
-   *  The indexed sha256 equality is used only to FIND the candidate row; the
-   *  bearer is then VERIFIED against the stored hash with `crypto.timingSafeEqual`
-   *  (the same constant-time pattern as {@link verifyRunnerToken}), so the check
-   *  cannot be turned into a timing oracle.
-   *
-   *  Response-shape decision (documented): a TERMINAL job returns `null`, exactly
-   *  like an unknown token. The LLM proxy therefore answers 401 for both, so a
-   *  holder of a stale (now-terminal) token cannot use the 401-vs-410 distinction
-   *  as a valid-token / job-state oracle. The proxy's own terminal→410 branch
-   *  remains as defence-in-depth for any caller that surfaces a terminal job by
-   *  other means. */
+   *  only `Authorization: Bearer <djr_…>` and no jobId. A sha256-hash equality on
+   *  the indexed `runner_token_hash` column; unknown token ⇒ null. */
   async resolveJobByToken(token: string): Promise<Pick<DevJob, 'id' | 'status' | 'agentKind'> | null> {
     if (typeof token !== 'string' || token.length === 0) return null;
     const r = await this.pool.query<Row>(
-      `SELECT id, status, agent_kind, runner_token_hash FROM dev_jobs WHERE runner_token_hash = $1`,
+      `SELECT id, status, agent_kind FROM dev_jobs WHERE runner_token_hash = $1`,
       [hashRunnerToken(token)],
     );
     const row = r.rows[0];
     if (!row) return null;
-    // Constant-time verify (defends against a timing oracle even though the
-    // indexed lookup already matched on the hash).
-    if (!verifyToken(token, strN(row['runner_token_hash']))) return null;
-    const status = str(row['status']) as DevJobStatus;
-    if (isTerminalDevJobStatus(status)) return null;
-    return { id: str(row['id']), status, agentKind: str(row['agent_kind']) };
+    return { id: str(row['id']), status: str(row['status']) as DevJobStatus, agentKind: str(row['agent_kind']) };
   }
 
   /** Atomic per-job usage increment (spec §6b/§ W4). One statement so a
