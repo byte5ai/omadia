@@ -190,13 +190,11 @@ describe('policyClient — env clamp on the untrusted policy (allowlist)', () =>
     });
   }
 
-  // Every key on the allowlist must pass, individually.
+  // Every key on the allowlist must pass, individually. The daemon-owned keys
+  // (OMADIA_JOB_BASE_URL/JOB_ID/WORKSPACE/CLI_BIN) are NOT here — they are
+  // injected, never accepted; their own describe block below covers that.
   const ALLOWED_KEYS = [
-    'OMADIA_JOB_BASE_URL',
-    'OMADIA_JOB_ID',
     'OMADIA_JOB_TOKEN',
-    'OMADIA_WORKSPACE',
-    'OMADIA_CLI_BIN',
     'OMADIA_LLM_ENV_ALLOWED',
     'OMADIA_ANTHROPIC_BASE_URL',
     'OMADIA_ANTHROPIC_AUTH_TOKEN',
@@ -215,18 +213,23 @@ describe('policyClient — env clamp on the untrusted policy (allowlist)', () =>
     'LC_ALL',
     'TERM',
   ];
+  const INJECTED_KEYS = ['OMADIA_JOB_BASE_URL', 'OMADIA_JOB_ID', 'OMADIA_WORKSPACE', 'OMADIA_CLI_BIN'];
+
   for (const key of ALLOWED_KEYS) {
-    it(`accepts the allowlisted key ${key}`, async () => {
+    it(`accepts the allowlisted key ${key} (kept alongside the injected daemon-owned keys)`, async () => {
       const client = clientWith(policyBody({ env: { [key]: 'value' } }));
       const policy = await client.fetchJobPolicy(JOB_ID);
-      assert.deepEqual(Object.keys(policy.env), [key]);
+      assert.equal(policy.env[key], 'value');
+      // the returned env is the allowlisted policy env PLUS the daemon-owned keys.
+      assert.deepEqual(Object.keys(policy.env).sort(), [key, ...INJECTED_KEYS].sort());
     });
   }
 
   it('accepts a policy env of several allowlisted keys together', async () => {
     const client = clientWith(policyBody({ env: { ANTHROPIC_BASE_URL: 'http://mw/llm', DISABLE_TELEMETRY: '1' } }));
     const policy = await client.fetchJobPolicy(JOB_ID);
-    assert.deepEqual(Object.keys(policy.env).sort(), ['ANTHROPIC_BASE_URL', 'DISABLE_TELEMETRY']);
+    assert.equal(policy.env.ANTHROPIC_BASE_URL, 'http://mw/llm');
+    assert.equal(policy.env.DISABLE_TELEMETRY, '1');
   });
 
   it('rejects the un-allowlisted key even when mixed with allowlisted keys', async () => {
@@ -245,6 +248,53 @@ describe('policyClient — env clamp on the untrusted policy (allowlist)', () =>
       assert.ok(!err.message.includes('evil.example'), 'error must NOT leak any part of the value');
       return true;
     });
+  });
+});
+
+describe('policyClient — daemon-owned env keys are injected, never accepted', () => {
+  const DAEMON_OWNED = ['OMADIA_JOB_BASE_URL', 'OMADIA_JOB_ID', 'OMADIA_WORKSPACE', 'OMADIA_CLI_BIN'];
+
+  // A policy that carries any of these is a compromised/spoofed middleware trying
+  // to steer the CLI binary or redirect phone-home; it is refused LOUDLY (its own
+  // code), never silently overwritten.
+  for (const key of DAEMON_OWNED) {
+    it(`REJECTS a policy that supplies the daemon-owned key ${key}`, async () => {
+      const hostile = key === 'OMADIA_CLI_BIN' ? './pwn' : 'https://attacker.example';
+      const client = clientWith(policyBody({ env: { [key]: hostile } }));
+      await rejectsWithCode(client.fetchJobPolicy(JOB_ID), 'daemon.env_key_reserved');
+    });
+  }
+
+  it('rejects a daemon-owned key even mixed with allowlisted keys, and returns no policy', async () => {
+    const client = clientWith(policyBody({ env: { ANTHROPIC_BASE_URL: 'http://mw/llm', OMADIA_CLI_BIN: './pwn' } }));
+    await rejectsWithCode(client.fetchJobPolicy(JOB_ID), 'daemon.env_key_reserved');
+  });
+
+  it('injects the daemon defaults (job id, own base URL, /workspace, claude)', async () => {
+    const client = clientWith(policyBody());
+    const policy = await client.fetchJobPolicy(JOB_ID);
+    assert.equal(policy.env.OMADIA_JOB_ID, JOB_ID);
+    assert.equal(policy.env.OMADIA_JOB_BASE_URL, 'http://middleware:8080');
+    assert.equal(policy.env.OMADIA_WORKSPACE, '/workspace');
+    assert.equal(policy.env.OMADIA_CLI_BIN, 'claude');
+  });
+
+  it('injects the daemon-configured overrides for base URL, workspace and CLI', async () => {
+    const client = clientWith(policyBody(), {
+      clientOpts: { jobBaseUrl: 'https://mw.internal/', workspacePath: '/srv/job', cliBin: '/usr/local/bin/claude' },
+    });
+    const policy = await client.fetchJobPolicy(JOB_ID);
+    assert.equal(policy.env.OMADIA_JOB_BASE_URL, 'https://mw.internal'); // trailing slash stripped
+    assert.equal(policy.env.OMADIA_WORKSPACE, '/srv/job');
+    assert.equal(policy.env.OMADIA_CLI_BIN, '/usr/local/bin/claude');
+  });
+
+  it('pins OMADIA_JOB_ID to the daemon request jobId, not the middleware-echoed jobId', async () => {
+    // the body echoes a DIFFERENT jobId; the injected value must be the daemon's
+    // UUID-validated request jobId, so the middleware cannot skew a job's identity.
+    const client = clientWith(policyBody({ jobId: '99999999-9999-4999-8999-999999999999' }));
+    const policy = await client.fetchJobPolicy(JOB_ID);
+    assert.equal(policy.env.OMADIA_JOB_ID, JOB_ID);
   });
 });
 

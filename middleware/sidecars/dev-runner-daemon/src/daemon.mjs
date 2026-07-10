@@ -360,6 +360,13 @@ export async function main(env = process.env) {
     daemonToken: tokens[0] ?? '',
     allowedImages,
     requireDigest,
+    // Daemon-owned runner env (never policy-supplied): the runner phones home to
+    // the daemon's OWN middleware URL (a hostile policy can no longer redirect
+    // it), clones into the container's fixed workspace, and spawns the daemon's
+    // configured CLI — not a binary the policy names.
+    jobBaseUrl: env.DEV_RUNNER_JOB_BASE_URL ?? middlewareUrl,
+    workspacePath: env.DEV_RUNNER_WORKSPACE,
+    cliBin: env.DEV_RUNNER_CLI_BIN,
   });
   const jobManager = new JobManager({ engine, policyClient });
   const warmImageRefs = (env.DEV_RUNNER_IMAGES ?? env.DEV_RUNNER_DEFAULT_IMAGE ?? '')

@@ -27,7 +27,14 @@
  *     mutable and is refused;
  *   - the policy `env` must carry ONLY keys on an explicit ALLOWLIST — the exact
  *     set the runner legitimately needs (`ALLOWED_ENV_KEYS`); anything else is
- *     refused by key name.
+ *     refused by key name;
+ *   - the runner's identity/location/CLI keys are DAEMON-OWNED
+ *     (`DAEMON_OWNED_ENV_KEYS`: `OMADIA_CLI_BIN`, `OMADIA_JOB_BASE_URL`,
+ *     `OMADIA_JOB_ID`, `OMADIA_WORKSPACE`) — each is an execution or phone-home
+ *     redirection sink, so a policy that carries one is refused loudly and the
+ *     daemon INJECTS its own value instead (`injectDaemonOwnedEnv`). Only
+ *     `OMADIA_JOB_TOKEN` stays policy-supplied, and with the base URL now pinned
+ *     by the daemon it can no longer be aimed at an attacker host.
  *
  * Any violation throws `PolicyLookupError` BEFORE the policy reaches
  * `createJobContainer`, so no container is ever created from a rejected policy.
@@ -84,10 +91,12 @@ const DIGEST_RE = /^[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[0-9a-f]{32,}$/;
  * lesson the W0 shim env (`readShimEnv`) and the W1 egress-proxy headers already
  * learned: name what you accept, refuse everything else.
  *
- * The set is the exhaustive union of what the runner legitimately needs, derived
- * from the code on this branch:
- *   - shim inputs (`packages/dev-runner-shim/src/protocol.ts` `readShimEnv`, and
- *     the gated LLM-passthrough pair in `index.ts`);
+ * The set is the exhaustive union of what the runner legitimately needs FROM THE
+ * POLICY, derived from the code on this branch:
+ *   - the policy-supplied shim inputs (`packages/dev-runner-shim/src/protocol.ts`
+ *     `readShimEnv`): the job TOKEN only — the base URL, job id, workspace and CLI
+ *     bin are DAEMON-OWNED (`DAEMON_OWNED_ENV_KEYS`), injected here and never
+ *     accepted from the policy — plus the gated LLM-passthrough pair in `index.ts`;
  *   - LLM + CLI behaviour keys emitted/consumed by
  *     `src/devplatform/deriveJobPolicy.ts` and the Claude CLI;
  *   - the egress-proxy vars (W1 spec §6) — both UPPER and lower spellings are
@@ -101,12 +110,13 @@ const DIGEST_RE = /^[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[0-9a-f]{32,}$/;
  * the DANGEROUS unknown, not every unknown the derivation might grow into.
  */
 const ALLOWED_ENV_KEYS = new Set([
-  // shim inputs (readShimEnv) + gated LLM passthrough (index.ts)
-  'OMADIA_JOB_BASE_URL',
-  'OMADIA_JOB_ID',
+  // policy-supplied shim input (readShimEnv): the job TOKEN only. The middleware
+  // mints it and it authenticates the runner TO the middleware — with the base
+  // URL daemon-pinned (below), a hostile token can no longer be aimed anywhere.
+  // OMADIA_JOB_BASE_URL / OMADIA_JOB_ID / OMADIA_WORKSPACE / OMADIA_CLI_BIN are
+  // deliberately ABSENT — they are daemon-owned (DAEMON_OWNED_ENV_KEYS), injected.
   'OMADIA_JOB_TOKEN',
-  'OMADIA_WORKSPACE',
-  'OMADIA_CLI_BIN',
+  // gated LLM passthrough (index.ts)
   'OMADIA_LLM_ENV_ALLOWED',
   'OMADIA_ANTHROPIC_BASE_URL',
   'OMADIA_ANTHROPIC_AUTH_TOKEN',
@@ -143,6 +153,45 @@ const ALLOWED_ENV_KEYS = new Set([
  * The container image sets both to fixed, job-scoped paths. The middleware has
  * no say in them.
  */
+
+/**
+ * Keys the DAEMON owns and INJECTS — never accepts from the policy. Each is a
+ * value the daemon already knows from its own configuration, and each is an
+ * execution/redirection lever if it comes from the untrusted middleware:
+ *
+ *   - `OMADIA_CLI_BIN` — the shim reads it as `cliBin` and `agentRunner` spawns
+ *     it; a policy value like `./pwn` would run an attacker binary from the
+ *     cloned repo. The daemon injects its configured CLI (`DEV_RUNNER_CLI_BIN`,
+ *     default `claude`).
+ *   - `OMADIA_JOB_BASE_URL` — the shim's `homeClient` builds every phone-home URL
+ *     (and the bearer header) from it; a policy value like `https://attacker`
+ *     would send the runner's spec fetch, SCM-token fetch, events, diff and
+ *     result to the attacker. The daemon injects its own middleware base URL.
+ *   - `OMADIA_JOB_ID` — identifies the job to the middleware; must be the daemon's
+ *     UUID-validated job id, not a value the middleware can skew.
+ *   - `OMADIA_WORKSPACE` — where the repo is cloned; must be the container's fixed
+ *     workspace path, not a policy-chosen directory.
+ *
+ * A policy that CARRIES any of these is not a legitimate policy — it is a
+ * compromised or spoofed middleware. So we REJECT it loudly (`assertPolicyEnv`)
+ * rather than silently overwrite, then inject the daemon-owned values
+ * (`injectDaemonOwnedEnv`). `OMADIA_JOB_TOKEN` is intentionally NOT here: the
+ * middleware legitimately mints it and it only authenticates the runner TO the
+ * middleware, whose base URL the daemon now pins.
+ */
+const DAEMON_OWNED_ENV_KEYS = new Set([
+  'OMADIA_JOB_BASE_URL',
+  'OMADIA_JOB_ID',
+  'OMADIA_WORKSPACE',
+  'OMADIA_CLI_BIN',
+]);
+
+/** The container's fixed, job-scoped clone directory (W1 clamp: the per-job
+ *  volume is mounted read-write at `/workspace`). Daemon-owned, never policy. */
+const DEFAULT_WORKSPACE_PATH = '/workspace';
+
+/** The CLI the runner spawns when the operator sets no `DEV_RUNNER_CLI_BIN`. */
+const DEFAULT_CLI_BIN = 'claude';
 
 /**
  * @typedef {object} DerivedJobPolicy
@@ -319,6 +368,17 @@ function assertPolicyImage(image, allowedImages, requireDigest, status) {
  */
 function assertPolicyEnv(env, status) {
   for (const key of Object.keys(env)) {
+    // A daemon-owned key in the policy is not a stray extra key — it is a
+    // middleware trying to steer the runner's CLI binary or phone-home target.
+    // Fail LOUDLY with its own code (never silently overwrite): a policy that
+    // carries one is a compromised or spoofed middleware.
+    if (DAEMON_OWNED_ENV_KEYS.has(key)) {
+      throw new PolicyLookupError(
+        status,
+        'daemon.env_key_reserved',
+        `policy env carries a daemon-owned key it must never supply: ${JSON.stringify(key)}`,
+      );
+    }
     if (!ALLOWED_ENV_KEYS.has(key)) {
       throw new PolicyLookupError(
         status,
@@ -327,6 +387,28 @@ function assertPolicyEnv(env, status) {
       );
     }
   }
+}
+
+/**
+ * Build the effective container env: the (clamped, allowlisted) policy env with
+ * the DAEMON-OWNED keys injected on top. `assertPolicyEnv` has already refused a
+ * policy that tried to supply any of these, so this only ever adds keys — but we
+ * set them unconditionally (the daemon is the sole authority for their values),
+ * so even a future clamp gap cannot let a policy value survive here.
+ *
+ * @param {Record<string, string>} policyEnv The validated, allowlisted policy env.
+ * @param {string} jobId The daemon's UUID-validated job id.
+ * @param {{ jobBaseUrl: string, workspace: string, cliBin: string }} owned
+ * @returns {Record<string, string>}
+ */
+function injectDaemonOwnedEnv(policyEnv, jobId, owned) {
+  return {
+    ...policyEnv,
+    OMADIA_JOB_BASE_URL: owned.jobBaseUrl,
+    OMADIA_JOB_ID: jobId,
+    OMADIA_WORKSPACE: owned.workspace,
+    OMADIA_CLI_BIN: owned.cliBin,
+  };
 }
 
 /**
@@ -396,6 +478,12 @@ async function readCappedBody(res, maxBytes, controller) {
  * @property {string} daemonToken The daemon bearer used to authenticate the lookup.
  * @property {readonly string[]} allowedImages Repositories the daemon will run (non-empty).
  * @property {boolean} [requireDigest] Require a digest-pinned image; defaults to true.
+ * @property {string} [jobBaseUrl] DAEMON-OWNED phone-home base URL injected as
+ *   `OMADIA_JOB_BASE_URL`; defaults to the normalized `middlewareUrl`.
+ * @property {string} [workspacePath] DAEMON-OWNED clone dir injected as
+ *   `OMADIA_WORKSPACE`; defaults to `/workspace`.
+ * @property {string} [cliBin] DAEMON-OWNED CLI injected as `OMADIA_CLI_BIN`
+ *   (`DEV_RUNNER_CLI_BIN`); defaults to `claude`.
  * @property {typeof fetch} [fetchImpl] Test seam; defaults to global `fetch`.
  * @property {number} [timeoutMs] Per-lookup timeout; defaults to 10s (spec §5 connect budget).
  * @property {number} [maxBodyBytes] Hard cap on the policy body; defaults to 256 KiB.
@@ -419,6 +507,11 @@ export function createPolicyClient(deps) {
     throw new PolicyConfigError('createPolicyClient requires a non-empty image allowlist (DEV_RUNNER_ALLOWED_IMAGES)');
   }
   const base = deps.middlewareUrl.replace(/\/+$/, '');
+  // Daemon-owned env the runner needs but the policy must never supply. Resolved
+  // once here from the daemon's own config; injected on every fetched policy.
+  const jobBaseUrl = (deps.jobBaseUrl ?? base).replace(/\/+$/, '');
+  const workspace = deps.workspacePath ?? DEFAULT_WORKSPACE_PATH;
+  const cliBin = deps.cliBin ?? DEFAULT_CLI_BIN;
 
   return {
     /**
@@ -501,7 +594,14 @@ export function createPolicyClient(deps) {
         // before the policy can reach createJobContainer.
         assertPolicyImage(parsed.data.image, allowedImages, requireDigest, res.status);
         assertPolicyEnv(parsed.data.env, res.status);
-        return parsed.data;
+        // Inject the daemon-owned identity/location/CLI keys on top of the
+        // clamped policy env. assertPolicyEnv has already refused a policy that
+        // tried to supply any of them, so a hostile middleware can neither name
+        // the CLI binary nor redirect the runner's phone-home target.
+        return {
+          ...parsed.data,
+          env: injectDaemonOwnedEnv(parsed.data.env, jobId, { jobBaseUrl, workspace, cliBin }),
+        };
       } finally {
         clearTimeout(timer);
       }
