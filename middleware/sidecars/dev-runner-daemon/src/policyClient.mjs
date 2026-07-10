@@ -25,8 +25,9 @@
  *   - the image must be DIGEST-PINNED (`repo@sha256:<64hex>`) when
  *     `DEV_RUNNER_REQUIRE_DIGEST` is on (default true) — a floating tag is
  *     mutable and is refused;
- *   - the policy `env` must not carry a RESERVED key (`DOCKER_*`, the daemon's
- *     own token name, or a loader/PATH override) — see `RESERVED_ENV_KEYS`.
+ *   - the policy `env` must carry ONLY keys on an explicit ALLOWLIST — the exact
+ *     set the runner legitimately needs (`ALLOWED_ENV_KEYS`); anything else is
+ *     refused by key name.
  *
  * Any violation throws `PolicyLookupError` BEFORE the policy reaches
  * `createJobContainer`, so no container is ever created from a rejected policy.
@@ -69,24 +70,65 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const DIGEST_RE = /^[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[0-9a-f]{32,}$/;
 
 /**
- * Environment keys the daemon REFUSES to pass into a job container, even when a
- * (compromised/spoofed) middleware puts them in the derived policy. `deriveJobPolicy`
- * never emits any of these, so a legitimate policy is unaffected; this is a
- * last-line clamp on an untrusted upstream:
- *   - `DOCKER_*`   — would repoint the child's docker client at another engine.
- *   - `DEV_RUNNER_DAEMON_TOKEN` — the daemon's own control-plane bearer.
- *   - `PATH`       — a PATH override hijacks which binaries the job runs.
- *   - `LD_PRELOAD` / `LD_LIBRARY_PATH` — dynamic-loader injection.
- *   - `NODE_OPTIONS` — arbitrary flags/`--require` into any node the job spawns.
- * The `DOCKER_` prefix is matched as a family; the rest are exact keys.
+ * The EXACT set of environment keys the daemon will pass into a job container.
+ * This is an ALLOWLIST, not a denylist — and that choice is the whole security
+ * property here. A denylist has to predict every dangerous key, but the runner's
+ * job is to clone and diff repositories and spawn a CLI, so the git/shell/loader
+ * families alone already carry command-execution sinks (`GIT_SSH_COMMAND`,
+ * `GIT_EXTERNAL_DIFF`, `GIT_PROXY_COMMAND`, `BASH_ENV`, `ENV`, `LD_PRELOAD`,
+ * `LD_AUDIT`, `NODE_OPTIONS`, …). A compromised or spoofed middleware — this
+ * unit's stated adversary — needs only ONE such key to get arbitrary execution
+ * on the next `git`/shell invocation, and every tool the runner image later
+ * gains (ssh, make, perl) silently adds more. A denylist cannot enumerate that
+ * moving target; an allowlist refuses it by construction. This is the same
+ * lesson the W0 shim env (`readShimEnv`) and the W1 egress-proxy headers already
+ * learned: name what you accept, refuse everything else.
+ *
+ * The set is the exhaustive union of what the runner legitimately needs, derived
+ * from the code on this branch:
+ *   - shim inputs (`packages/dev-runner-shim/src/protocol.ts` `readShimEnv`, and
+ *     the gated LLM-passthrough pair in `index.ts`);
+ *   - LLM + CLI behaviour keys emitted/consumed by
+ *     `src/devplatform/deriveJobPolicy.ts` and the Claude CLI;
+ *   - the egress-proxy vars (W1 spec §6) — both UPPER and lower spellings are
+ *     accepted because curl/libcurl honour the lowercase names and git/node the
+ *     uppercase ones; the docker clamp overrides these per-job anyway, so
+ *     admitting them in the policy env is harmless and keeps the two layers from
+ *     disagreeing;
+ *   - benign locale/tooling keys.
+ * `deriveJobPolicy` today emits only a small subset; the rest are admitted so a
+ * legitimate future policy is not rejected — the point of the clamp is to refuse
+ * the DANGEROUS unknown, not every unknown the derivation might grow into.
  */
-const RESERVED_ENV_PREFIXES = ['DOCKER_'];
-const RESERVED_ENV_KEYS = new Set([
-  'DEV_RUNNER_DAEMON_TOKEN',
-  'PATH',
-  'LD_PRELOAD',
-  'LD_LIBRARY_PATH',
-  'NODE_OPTIONS',
+const ALLOWED_ENV_KEYS = new Set([
+  // shim inputs (readShimEnv) + gated LLM passthrough (index.ts)
+  'OMADIA_JOB_BASE_URL',
+  'OMADIA_JOB_ID',
+  'OMADIA_JOB_TOKEN',
+  'OMADIA_WORKSPACE',
+  'OMADIA_CLI_BIN',
+  'OMADIA_LLM_ENV_ALLOWED',
+  'OMADIA_ANTHROPIC_BASE_URL',
+  'OMADIA_ANTHROPIC_AUTH_TOKEN',
+  // LLM + CLI behaviour (deriveJobPolicy + Claude CLI)
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+  'DISABLE_AUTOUPDATER',
+  'DISABLE_TELEMETRY',
+  'CLAUDE_CONFIG_DIR',
+  // egress proxy (W1 spec §6) — both spellings
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  // benign locale / tooling
+  'LANG',
+  'LC_ALL',
+  'TERM',
+  'HOME',
 ]);
 
 /**
@@ -253,21 +295,22 @@ function assertPolicyImage(image, allowedImages, requireDigest, status) {
 }
 
 /**
- * Clamp the policy env against the reserved-key list. Throws `PolicyLookupError`
- * on the first reserved key; the message names the key (a key name is not a
- * secret) so a spoof attempt is diagnosable in the daemon log.
+ * Clamp the policy env against the ALLOWLIST. Throws `PolicyLookupError` on the
+ * first key that is not in `ALLOWED_ENV_KEYS`. The message names the offending
+ * KEY (a key name is not a secret) but NEVER its value — a spoof attempt smuggles
+ * the payload in the value (e.g. `GIT_SSH_COMMAND=sh -c <cmd>`), so logging the
+ * value would echo the attack; the key alone is enough to diagnose.
  *
  * @param {Record<string, string>} env
  * @param {number} status
  */
 function assertPolicyEnv(env, status) {
   for (const key of Object.keys(env)) {
-    const reserved = RESERVED_ENV_KEYS.has(key) || RESERVED_ENV_PREFIXES.some((p) => key.startsWith(p));
-    if (reserved) {
+    if (!ALLOWED_ENV_KEYS.has(key)) {
       throw new PolicyLookupError(
         status,
-        'daemon.env_reserved_key',
-        `policy env carries a reserved key that the daemon refuses to inject: ${JSON.stringify(key)}`,
+        'daemon.env_key_not_allowed',
+        `policy env carries a key that is not on the daemon allowlist: ${JSON.stringify(key)}`,
       );
     }
   }
