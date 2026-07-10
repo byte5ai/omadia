@@ -440,21 +440,18 @@ export async function rehydrateDockerBackend(
   wired: WiredDevPlatform,
   log: (msg: string) => void = () => {},
 ): Promise<number> {
-  const store = wired.jobStore;
   const docker = wired.backends.find((b): b is DockerBackend => b instanceof DockerBackend);
   if (!docker) return 0;
 
   const active: DevJob[] = [];
   for (const status of ['provisioning', 'running', 'applying'] as const) {
-    active.push(...(await store.listJobs({ status })));
+    active.push(...(await wired.jobStore.listJobs({ status })));
   }
+  const rows = active
+    .filter((j) => j.backend === 'docker')
+    .map((j) => ({ id: j.id, runnerHandle: j.runnerHandle ?? null }));
 
-  let adopted = 0;
-  for (const job of active) {
-    if (job.backend !== 'docker' || !job.runnerHandle) continue;
-    if (docker.adopt(job.id, job.runnerHandle)) adopted += 1;
-    else log(`[dev-platform] docker rehydrate: job ${job.id} has a handle this backend cannot own; skipped`);
-  }
-  if (adopted > 0) log(`[dev-platform] docker rehydrate: re-adopted ${String(adopted)} live job(s) after restart`);
+  const { adopted, skipped } = await docker.rehydrate(rows);
+  if (skipped > 0) log(`[dev-platform] docker rehydrate: ${String(skipped)} handle(s) skipped`);
   return adopted;
 }

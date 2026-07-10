@@ -86,6 +86,17 @@ export function parseAuthority(authority, defaultPort) {
   // reason to silently substitute the default.
   if (hasPort && !/^\d{1,5}$/.test(portPart)) return null;
 
+  // The host half must be a bare host — NOT a second authority. `example.com:80:90`
+  // splits into hostPart `example.com:80` + port `90`, and `new URL()` then erases
+  // the embedded `:80` (it is http's default), yielding host `example.com`. The
+  // allowlist would authorise `example.com` while the tunnel dialled port 90.
+  // Same trap for `[::1]:80:90`. Reject the shape instead of normalising it away.
+  if (hostPart.startsWith('[')) {
+    if (!hostPart.endsWith(']') || hostPart.indexOf(']') !== hostPart.length - 1) return null;
+  } else if (hostPart.includes(':')) {
+    return null;
+  }
+
   let u;
   try {
     u = new URL(`http://${hostPart}`);
@@ -95,6 +106,8 @@ export function parseAuthority(authority, defaultPort) {
   // userinfo, a path, a query, or a fragment in a CONNECT authority is malformed.
   if (u.username || u.password || u.search || u.hash) return null;
   if (u.pathname !== '/' && u.pathname !== '') return null;
+  // Nothing above may have smuggled a port past the shape check.
+  if (u.port !== '') return null;
   const host = normalizeParsedHost(u.hostname);
   if (!host) return null;
   const port = hasPort ? Number(portPart) : defaultPort;

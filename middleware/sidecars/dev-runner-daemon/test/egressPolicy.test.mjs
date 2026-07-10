@@ -318,4 +318,26 @@ describe('parseAuthority — the port comes from the authority, not from a URL p
     assert.deepEqual(parseAuthority('GitHub.com.:80', 443), { host: 'github.com', port: 80 });
     assert.deepEqual(parseAuthority('2130706433:80', 443), { host: '127.0.0.1', port: 80 });
   });
+
+  /**
+   * A nested authority is TWO representations in one string. `example.com:80:90`
+   * splits into hostPart `example.com:80` and port `90`; `new URL()` then erases
+   * the embedded `:80` because it is http's default, so the allowlist sees a
+   * clean `example.com` while the tunnel dials 90. The host half must therefore
+   * be a bare host, not a second authority.
+   */
+  it('rejects an authority that hides a second port inside the host half', () => {
+    assert.equal(parseAuthority('example.com:80:90', 443), null);
+    assert.equal(parseAuthority('example.com:443:22', 443), null);
+    assert.equal(parseAuthority('[::1]:80:90', 443), null);
+    assert.equal(parseAuthority('[::1]]:443', 443), null);
+    assert.equal(parseAuthority('[::1:443', 443), null);
+  });
+
+  it('still accepts the legitimate shapes it must not break', () => {
+    assert.deepEqual(parseAuthority('[::1]:443', 443), { host: '::1', port: 443 });
+    assert.deepEqual(parseAuthority('[::1]', 443), { host: '::1', port: 443 });
+    assert.deepEqual(parseAuthority('example.com', 443), { host: 'example.com', port: 443 });
+    assert.deepEqual(parseAuthority('example.com:80', 443), { host: 'example.com', port: 80 });
+  });
 });

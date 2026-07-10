@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { after, describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 
 import {
   DEFAULT_LEASE_TTL_SEC,
@@ -239,7 +239,12 @@ describe('DockerBackend — provision', () => {
     await daemon.start();
     after(() => daemon.stop());
     const jobId = randomUUID();
-    daemon.handler = () => ({ status: 429, body: { code: 'daemon.at_capacity', message: 'busy' } });
+    // The retryable promise ("nothing was created") is confirmed against the
+    // daemon before it is made, so the job list must answer too.
+    daemon.handler = (req) =>
+      req.method === 'GET' && req.path === '/v1/jobs'
+        ? { status: 200, body: { jobs: [] } }
+        : { status: 429, body: { code: 'daemon.at_capacity', message: 'busy' } };
     const backend = makeBackend(daemon.url);
     after(() => backend.stop());
     await assert.rejects(backend.provision(input(jobId)), (e: unknown) => {
@@ -558,5 +563,160 @@ describe('DockerBackend — lease renewal', () => {
     await new Promise((r) => setTimeout(r, 250));
     backend.stop();
     assert.ok(leaseCalls >= 1, `expected at least one auto-renew, got ${String(leaseCalls)}`);
+  });
+});
+
+/**
+ * Epic #470 W1 — the two holes a cross-family audit found in the first cut of
+ * `adopt()`/`releaseClaim()`.
+ */
+describe('devplatform/DockerBackend — a retryable create must PROVE nothing was created', () => {
+  const daemon = new FakeDaemon();
+  const JOB = '11111111-1111-4111-8111-111111111111';
+
+  const summary = {
+    jobId: JOB,
+    containerId: 'real-container',
+    networkId: 'net-1',
+    volumeName: 'vol-1',
+    imageDigest: `sha256:${'c'.repeat(64)}`,
+    leaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+  };
+
+  before(async () => daemon.start());
+  after(async () => daemon.stop());
+
+  it('adopts the container when a 429 lied and the create had in fact succeeded', async () => {
+    // A retry or proxy layer between middleware and daemon turned a successful
+    // create into a 429. Requeueing here would leak a container nobody holds.
+    daemon.handler = (req) => {
+      if (req.method === 'POST' && req.path === '/v1/jobs') return { status: 429, body: { code: 'daemon.at_capacity' } };
+      if (req.method === 'GET' && req.path === '/v1/jobs') return { status: 200, body: { jobs: [summary] } };
+      return { status: 500, body: { code: 'daemon.unexpected' } };
+    };
+    const backend = makeBackend(daemon.url);
+    const handle = (await backend.provision(input(JOB))) as DockerRunnerHandle;
+    assert.equal(handle.containerId, 'real-container', 'the create succeeded; we hold its handle');
+    assert.equal(handle.jobId, JOB);
+    backend.stop();
+  });
+
+  it('propagates the 429 as retryable once the daemon confirms the job is absent', async () => {
+    daemon.handler = (req) => {
+      if (req.method === 'POST' && req.path === '/v1/jobs') return { status: 429, body: { code: 'daemon.at_capacity' } };
+      if (req.method === 'GET' && req.path === '/v1/jobs') return { status: 200, body: { jobs: [] } };
+      return { status: 500, body: { code: 'daemon.unexpected' } };
+    };
+    const backend = makeBackend(daemon.url);
+    await assert.rejects(
+      () => backend.provision(input(JOB)),
+      (e: unknown) =>
+        e instanceof DockerBackendError && e.code === 'devplatform.daemon_at_capacity' && e.retryable,
+    );
+    backend.stop();
+  });
+
+  it('refuses to promise a clean retry when the daemon cannot be read afterwards', async () => {
+    // Absence unproven ⇒ requeueing the same jobId might collide with a container
+    // the daemon still holds. Fail the job; the daemon's lease reaper is the backstop.
+    daemon.handler = (req) => {
+      if (req.method === 'POST' && req.path === '/v1/jobs') return { status: 429, body: { code: 'daemon.at_capacity' } };
+      return { status: 500, body: { code: 'daemon.engine_error' } };
+    };
+    const backend = makeBackend(daemon.url);
+    await assert.rejects(
+      () => backend.provision(input(JOB)),
+      (e: unknown) =>
+        e instanceof DockerBackendError && e.code === 'devplatform.orphan_unproven' && !e.retryable,
+    );
+    backend.stop();
+  });
+});
+
+describe('devplatform/DockerBackend — rehydrate prefers the daemon over the database', () => {
+  const daemon = new FakeDaemon();
+  const JOB = '22222222-2222-4222-8222-222222222222';
+
+  function persisted(containerId: string): DockerRunnerHandle {
+    return {
+      backend: 'docker',
+      id: JOB,
+      jobId: JOB,
+      containerId,
+      networkId: 'net-db',
+      volumeName: 'vol-db',
+      imageDigest: `sha256:${'d'.repeat(64)}`,
+      leaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+      startedAt: new Date().toISOString(),
+    };
+  }
+
+  before(async () => daemon.start());
+  after(async () => daemon.stop());
+
+  it('trusts the daemon container id when the persisted handle diverges', async () => {
+    daemon.handler = (req) => {
+      if (req.method === 'GET' && req.path === '/v1/jobs') {
+        return {
+          status: 200,
+          body: {
+            jobs: [
+              {
+                jobId: JOB,
+                containerId: 'daemon-truth',
+                networkId: 'net-1',
+                volumeName: 'vol-1',
+                imageDigest: `sha256:${'c'.repeat(64)}`,
+                leaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+              },
+            ],
+          },
+        };
+      }
+      return { status: 200, body: { jobs: [] } };
+    };
+    const backend = makeBackend(daemon.url);
+    const r = await backend.rehydrate([{ id: JOB, runnerHandle: persisted('stale-or-forged') }]);
+    assert.deepEqual(r, { adopted: 1, skipped: 0, reconciled: 1 });
+    // reap() joins live against the daemon: the job IS on the daemon, so nothing is lost.
+    assert.deepEqual(await backend.reap(), []);
+    backend.stop();
+  });
+
+  it('adopts a job the daemon no longer lists, so reap() can settle it', async () => {
+    // This is the whole point of rehydration: a container that died while the
+    // middleware was down must become visible again, or its row hangs in `running`.
+    daemon.handler = () => ({ status: 200, body: { jobs: [] } });
+    const backend = makeBackend(daemon.url);
+    const r = await backend.rehydrate([{ id: JOB, runnerHandle: persisted('gone') }]);
+    assert.equal(r.adopted, 1);
+    const lost = await backend.reap();
+    assert.equal(lost.length, 1, 'reap now reports the lost job, and the worker finalizes it');
+    assert.equal((lost[0] as DockerRunnerHandle).jobId, JOB);
+    backend.stop();
+  });
+
+  it('adopts from the database when the daemon cannot be listed at all', async () => {
+    // Adopting nothing here would make every live container invisible forever.
+    daemon.handler = () => ({ status: 503, body: { code: 'daemon.engine_unreachable' } });
+    const backend = makeBackend(daemon.url);
+    const r = await backend.rehydrate([{ id: JOB, runnerHandle: persisted('from-db') }]);
+    assert.equal(r.adopted, 1);
+    backend.stop();
+  });
+
+  it('skips a handle that does not narrow to this backend, and one whose jobId lies', async () => {
+    daemon.handler = () => ({ status: 200, body: { jobs: [] } });
+    const backend = makeBackend(daemon.url);
+    const foreign: RunnerHandle = { backend: 'local', id: '/tmp/ws', pid: 1, startedAt: new Date().toISOString() };
+    const liar = { ...persisted('x'), jobId: 'someone-elses-job' };
+    const r = await backend.rehydrate([
+      { id: JOB, runnerHandle: foreign },
+      { id: JOB, runnerHandle: liar },
+      { id: JOB, runnerHandle: null },
+    ]);
+    assert.deepEqual(r, { adopted: 0, skipped: 2, reconciled: 0 });
+    assert.deepEqual(await backend.reap(), [], 'nothing was adopted, so nothing is tracked');
+    backend.stop();
   });
 });

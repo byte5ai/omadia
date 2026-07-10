@@ -73,6 +73,11 @@ export interface DockerRunnerHandle extends RunnerHandle {
  * that is not a complete docker handle — a foreign backend's row, a truncated
  * write, or a hand-edited one.
  */
+/** Not an error: the retryable create had in fact succeeded, and we adopted it. */
+class AdoptedAfterRetryable {
+  constructor(readonly handle: DockerRunnerHandle) {}
+}
+
 function asDockerHandle(handle: RunnerHandle): DockerRunnerHandle | null {
   const h = handle as Partial<DockerRunnerHandle>;
   if (h.backend !== 'docker') return null;
@@ -237,8 +242,19 @@ export class DockerBackend implements RunnerBackend {
         throw this.mapDaemonError(res.status, res.json, `provision job ${jobId}`);
       } catch (err) {
         const mapped = this.asBackendError(err, `provision job ${jobId}`);
+        // A `retryable` error tells the worker to rewind the claim and try the
+        // SAME jobId again later. That is only safe if nothing was created. A 429
+        // from the daemon itself precedes creation — but a retry or proxy layer
+        // between us and it can turn a successful create into a 429 we see, and
+        // requeueing then leaks a container the middleware has no handle for.
+        // So: confirm absence before promising the worker a clean retry.
+        if (mapped.retryable) {
+          const outcome = await this.confirmAbsentOrAdopt(jobId, mapped);
+          if (outcome instanceof AdoptedAfterRetryable) return outcome.handle;
+          throw outcome;
+        }
         // Only a genuine transport failure is retryable-by-confirm; a mapped
-        // daemon status (spec_rejected/at_capacity/engine_error) propagates as-is.
+        // daemon status (spec_rejected/engine_error) propagates as-is.
         if (mapped.code !== 'devplatform.daemon_unreachable') throw mapped;
         lastUnreachable = mapped;
       }
@@ -294,14 +310,6 @@ export class DockerBackend implements RunnerBackend {
   // -------------------------------------------------------------------------
 
   /**
-   * Reconcile the middleware's tracked jobs against the daemon's live set
-   * (`GET /v1/jobs`). A job this middleware still tracks that the daemon no
-   * longer knows about is lost (its container died/was reaped daemon-side); its
-   * handle is returned so the worker finalizes the job `stalled`
-   * (`runner_lost`). A daemon read failure yields NO reaps (a transient blip
-   * must never mass-finalize healthy jobs).
-   */
-  /**
    * Re-adopt a handle the middleware persisted before it restarted.
    *
    * `reap()` answers "which jobs does the middleware still think are running that
@@ -326,6 +334,82 @@ export class DockerBackend implements RunnerBackend {
     return true;
   }
 
+  /**
+   * Rebuild `this.live` after a middleware restart, preferring the daemon's view.
+   *
+   * The rows are the middleware's durable view (`dev_jobs.runner_handle`); the
+   * daemon's `GET /v1/jobs` is the authority on what actually exists. Where both
+   * speak, the daemon wins: a stale or tampered `runner_handle` must not be the
+   * thing we later show an operator, or log as the container we ran.
+   *
+   * A job the daemon does NOT list is still adopted, deliberately. It is exactly
+   * the job whose container died while we were down, and only an adopted job is
+   * visible to `reap()`, which is what finalizes it `stalled`/`runner_lost`.
+   * Adopting it costs one 404 on the next lease renewal, which is already handled.
+   *
+   * If the daemon cannot be read at all, every narrowing handle is adopted from
+   * the database. Adopting nothing would make every live container invisible to
+   * this middleware forever — the "a delete-decider with an empty registry"
+   * failure, inverted.
+   */
+  async rehydrate(
+    rows: readonly { readonly id: string; readonly runnerHandle: RunnerHandle | null }[],
+  ): Promise<{ adopted: number; skipped: number; reconciled: number }> {
+    let summaries: Map<string, JobSummary> | null = null;
+    try {
+      summaries = new Map((await this.listDaemonJobs()).map((j) => [j.jobId, j]));
+    } catch (err) {
+      this.log(
+        `[dev-platform] docker rehydrate: daemon list failed (${errText(err)}); ` +
+          'adopting from the database and letting reap() reconcile',
+      );
+    }
+
+    let adopted = 0;
+    let skipped = 0;
+    let reconciled = 0;
+    for (const row of rows) {
+      if (!row.runnerHandle) continue;
+      const persisted = asDockerHandle(row.runnerHandle);
+      if (!persisted || persisted.jobId !== row.id) {
+        skipped += 1;
+        this.log(
+          `[dev-platform] docker rehydrate: job ${row.id} has a handle this backend cannot own; skipped`,
+        );
+        continue;
+      }
+      if (this.live.has(row.id)) continue;
+      const live = summaries?.get(row.id);
+      if (live) {
+        if (live.containerId !== persisted.containerId) {
+          reconciled += 1;
+          this.log(
+            `[dev-platform] docker rehydrate: job ${row.id} persisted container ` +
+              `${persisted.containerId} but the daemon runs ${live.containerId}; trusting the daemon`,
+          );
+        }
+        this.trackHandle(live);
+      } else {
+        // Not on the daemon: adopt anyway so reap() can settle the row.
+        this.live.set(row.id, persisted);
+        this.ensureRenewLoop();
+      }
+      adopted += 1;
+    }
+    if (adopted > 0) {
+      this.log(`[dev-platform] docker rehydrate: re-adopted ${String(adopted)} live job(s) after restart`);
+    }
+    return { adopted, skipped, reconciled };
+  }
+
+  /**
+   * Reconcile the middleware's tracked jobs against the daemon's live set
+   * (`GET /v1/jobs`). A job this middleware still tracks that the daemon no
+   * longer knows about is lost (its container died/was reaped daemon-side); its
+   * handle is returned so the worker finalizes the job `stalled`
+   * (`runner_lost`). A daemon read failure yields NO reaps (a transient blip
+   * must never mass-finalize healthy jobs).
+   */
   async reap(): Promise<RunnerHandle[]> {
     // Empty after `adopt()` has run means the middleware genuinely tracks nothing.
     if (this.live.size === 0) return [];
@@ -445,6 +529,48 @@ export class DockerBackend implements RunnerBackend {
   }
 
   /** Find a job on the daemon by id (idempotency check for provision retry). */
+  /**
+   * A retryable provision error promises the worker "nothing was created". Prove it.
+   *
+   * Three outcomes:
+   *  - the daemon does not know the job  → the promise holds; propagate as retryable.
+   *  - the daemon DOES know the job      → the create actually succeeded (a retry or
+   *    proxy layer manufactured the 429). Adopt it — throwing `AdoptedAfterRetryable`
+   *    so `provision` returns the handle instead of leaking the container.
+   *  - the daemon cannot be read         → absence is UNPROVEN. Strip `retryable`, so
+   *    the worker fails the job rather than requeueing a jobId the daemon may still
+   *    hold (a re-create would collide, and the container would outlive its row).
+   *    The daemon's own lease reaper is the backstop that eventually kills it.
+   */
+  private async confirmAbsentOrAdopt(
+    jobId: string,
+    mapped: DockerBackendError,
+  ): Promise<DockerBackendError | AdoptedAfterRetryable> {
+    let existing: Awaited<ReturnType<DockerBackend['findLiveOnDaemon']>>;
+    try {
+      existing = await this.findLiveOnDaemon(jobId);
+    } catch (err) {
+      this.log(
+        `[dev-platform] provision job ${jobId}: ${mapped.code} but the daemon could not be ` +
+          `read (${errText(err)}); absence unproven, failing the job rather than requeueing`,
+      );
+      return new DockerBackendError(
+        'devplatform.orphan_unproven',
+        `${mapped.message} — and the daemon could not be read afterwards, so it is unknown ` +
+          'whether a container was created',
+        { httpStatus: mapped.httpStatus ?? 0 },
+      );
+    }
+    if (existing) {
+      this.log(
+        `[dev-platform] provision job ${jobId}: ${mapped.code}, but the daemon HAS the job — ` +
+          'the create succeeded; adopting instead of requeueing',
+      );
+      return new AdoptedAfterRetryable(this.trackHandle(existing));
+    }
+    return mapped;
+  }
+
   private async findLiveOnDaemon(jobId: string): Promise<{
     jobId: string;
     containerId: string;
