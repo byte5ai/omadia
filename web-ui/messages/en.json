@@ -615,6 +615,7 @@
     "saveTemplateIdLabel": "Template id",
     "saveTemplateIdInvalid": "Use lowercase letters, digits and hyphens.",
     "saveTemplateIdTaken": "This template id is taken.",
+    "saveTemplateOwnershipPending": "Checking ownership",
     "saveTemplateNameEnLabel": "Name (English)",
     "saveTemplateNameDeLabel": "Name (German)",
     "saveTemplateDescriptionEnLabel": "Description (English)",

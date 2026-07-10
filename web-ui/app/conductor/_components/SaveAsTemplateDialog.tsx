@@ -38,7 +38,11 @@ import {
  * Owner-aware primary action (the v2-publish path): the entered id is resolved
  * against the loaded catalog — unused id → POST "Publish template"; an existing
  * USER template owned by the viewer → PUT "Publish as v{latestVersion+1}"; any
- * other collision (bundled/plugin/foreign) → inline "id taken" error. A 409 race
+ * other collision (bundled/plugin/foreign) → inline "id taken" error. While the
+ * viewer identity is still resolving (getAuthMe in flight), a user-sourced
+ * collision is NOT a terminal verdict: the dialog holds a gated "checking
+ * ownership" pending state (busy-dots, submit disabled) that flips to the
+ * version publish or the id-taken error once the viewer is known. A 409 race
  * on POST re-fetches the template and, when it turns out viewer-owned, switches
  * the dialog into the PUT state instead of dead-ending.
  *
@@ -126,6 +130,9 @@ export interface SaveAsTemplateDialogProps {
   templates: ConductorTemplate[];
   /** backend viewer identity (AuthUser.id = session sub); null while unknown. */
   viewer: string | null;
+  /** true while getAuthMe is still in flight — distinguishes "viewer unknown
+   *  (auth pending)" from "viewer known to be absent/anonymous". */
+  viewerPending: boolean;
   onPublished: (result: { id: string; version: number }) => void;
   onCancel: () => void;
 }
@@ -134,6 +141,7 @@ export function SaveAsTemplateDialog({
   workflowSlug,
   templates,
   viewer,
+  viewerPending,
   onPublished,
   onCancel,
 }: SaveAsTemplateDialogProps): React.JSX.Element {
@@ -204,13 +212,21 @@ export function SaveAsTemplateDialog({
     return templates.find((tpl) => tpl.id === trimmedId);
   }, [templates, trimmedId, raceOwned]);
 
-  const publishMode: { kind: 'create' } | { kind: 'version'; next: number } | { kind: 'taken' } = useMemo(() => {
-    if (!existing) return { kind: 'create' };
-    if (existing.source === 'user' && viewer !== null && existing.createdBy === viewer) {
-      return { kind: 'version', next: (existing.latestVersion ?? existing.version ?? 1) + 1 };
-    }
-    return { kind: 'taken' };
-  }, [existing, viewer]);
+  const publishMode: { kind: 'create' } | { kind: 'version'; next: number } | { kind: 'pending' } | { kind: 'taken' } =
+    useMemo(() => {
+      if (!existing) return { kind: 'create' };
+      if (existing.source === 'user') {
+        if (viewer !== null && existing.createdBy === viewer) {
+          return { kind: 'version', next: (existing.latestVersion ?? existing.version ?? 1) + 1 };
+        }
+        // Viewer identity still resolving: a user-sourced collision COULD be the
+        // viewer's own template, so no terminal "taken" verdict yet — hold a
+        // gated pending state that re-derives once getAuthMe settles (this memo
+        // recomputes from the live viewer/viewerPending props, never a snapshot).
+        if (viewer === null && viewerPending) return { kind: 'pending' };
+      }
+      return { kind: 'taken' };
+    }, [existing, viewer, viewerPending]);
 
   const idInvalid = trimmedId.length > 0 && !ID_RE.test(trimmedId);
   // Every localizable field needs its English base (the universal fallback).
@@ -241,7 +257,7 @@ export function SaveAsTemplateDialog({
 
   const submitBlocked =
     draft === null || pending || trimmedId.length === 0 || idInvalid || enMissing || textKeysInvalid || textUnplaced ||
-    publishMode.kind === 'taken';
+    publishMode.kind === 'taken' || publishMode.kind === 'pending';
 
   const setRefSlot = (index: number, patch: Partial<EditableRefSlot>): void => {
     setRefSlots((slots) => slots.map((slot, i) => (i === index ? { ...slot, ...patch } : slot)));
@@ -287,7 +303,12 @@ export function SaveAsTemplateDialog({
         // "Publish as v{n+1}" state instead of dead-ending on the error.
         try {
           const { template } = await fetchConductorTemplate(trimmedId);
-          if (template.source === 'user' && viewer !== null && template.createdBy === viewer) {
+          if (
+            template.source === 'user' &&
+            ((viewer !== null && template.createdBy === viewer) || (viewer === null && viewerPending))
+          ) {
+            // Owned → PUT mode. Viewer still resolving → the pending gate takes
+            // over (publishMode re-derives to 'version' or 'taken' once known).
             setRaceOwned(template);
             return;
           }
@@ -367,6 +388,14 @@ export function SaveAsTemplateDialog({
               {idInvalid ? <span className="text-[12px] text-[color:var(--danger)]">{t('saveTemplateIdInvalid')}</span> : null}
               {publishMode.kind === 'taken' || idError !== null ? (
                 <span className="text-[12px] text-[color:var(--danger)]">{t('saveTemplateIdTaken')}</span>
+              ) : null}
+              {/* Ownership check in flight — Lume in-progress recipe (text +
+                  animated dots, never a spinner), NOT the id-taken error. */}
+              {publishMode.kind === 'pending' ? (
+                <span className="inline-flex items-center text-[12px] text-[color:var(--fg-muted)]" data-testid="save-template-ownership-pending">
+                  {t('saveTemplateOwnershipPending')}
+                  <span className="lume-busy-dots" aria-hidden />
+                </span>
               ) : null}
             </label>
             <div />

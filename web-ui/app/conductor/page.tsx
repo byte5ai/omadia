@@ -84,6 +84,10 @@ export default function ConductorPage(): React.JSX.Element {
   // the post-publish notice (text-only success feedback, Lume state-color rule).
   const [saveTemplateSlug, setSaveTemplateSlug] = useState<string | null>(null);
   const [viewer, setViewer] = useState<string | null>(null);
+  // Distinguishes "viewer unknown because getAuthMe is still in flight" from
+  // "resolved without a viewer": the save-as-template dialog must not read an
+  // owned id as taken while the identity probe is merely pending (#478 F1).
+  const [viewerPending, setViewerPending] = useState(true);
   const [templateNotice, setTemplateNotice] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -170,7 +174,8 @@ export default function ConductorPage(): React.JSX.Element {
 
   // Viewer identity for the save-as-template ownership pre-check. Best-effort:
   // without it the dialog still publishes fresh ids, it just cannot offer the
-  // "Publish as v{n+1}" switch (owned ids then read as taken).
+  // "Publish as v{n+1}" switch. While the probe is in flight, viewerPending
+  // keeps owned ids in a gated pending state instead of a false "taken".
   useEffect(() => {
     let cancelled = false;
     getAuthMe()
@@ -179,6 +184,9 @@ export default function ConductorPage(): React.JSX.Element {
       })
       .catch(() => {
         /* unauthenticated probes redirect via getJson; nothing to surface here */
+      })
+      .finally(() => {
+        if (!cancelled) setViewerPending(false);
       });
     return () => {
       cancelled = true;
@@ -365,6 +373,7 @@ export default function ConductorPage(): React.JSX.Element {
               workflowSlug={saveTemplateSlug}
               templates={templates}
               viewer={viewer}
+              viewerPending={viewerPending}
               onPublished={({ id, version }) => {
                 setSaveTemplateSlug(null);
                 setTemplateNotice(t('saveTemplatePublished', { id, version }));

@@ -615,6 +615,7 @@
     "saveTemplateIdLabel": "Vorlagen-ID",
     "saveTemplateIdInvalid": "Nur Kleinbuchstaben, Ziffern und Bindestriche.",
     "saveTemplateIdTaken": "Diese Vorlagen-ID ist bereits vergeben.",
+    "saveTemplateOwnershipPending": "Prüfe Eigentümerschaft",
     "saveTemplateNameEnLabel": "Name (Englisch)",
     "saveTemplateNameDeLabel": "Name (Deutsch)",
     "saveTemplateDescriptionEnLabel": "Beschreibung (Englisch)",

@@ -95,22 +95,30 @@ beforeEach(() => {
   });
 });
 
-function renderDialog(
-  handlers: Partial<{
-    onPublished: (result: { id: string; version: number }) => void;
-    onCancel: () => void;
-  }> = {},
-  overrides: Partial<{ templates: ConductorTemplate[]; viewer: string | null }> = {},
-): ReturnType<typeof renderWithIntl> {
-  return renderWithIntl(
+type DialogHandlers = Partial<{
+  onPublished: (result: { id: string; version: number }) => void;
+  onCancel: () => void;
+}>;
+type DialogOverrides = Partial<{ templates: ConductorTemplate[]; viewer: string | null; viewerPending: boolean }>;
+
+function dialogElement(handlers: DialogHandlers = {}, overrides: DialogOverrides = {}): React.JSX.Element {
+  return (
     <SaveAsTemplateDialog
       workflowSlug="expense-flow"
       templates={overrides.templates ?? [ownedTemplate, bundledTemplate, foreignSharedTemplate]}
       viewer={overrides.viewer !== undefined ? overrides.viewer : VIEWER}
+      viewerPending={overrides.viewerPending ?? false}
       onPublished={handlers.onPublished ?? vi.fn()}
       onCancel={handlers.onCancel ?? vi.fn()}
-    />,
+    />
   );
+}
+
+function renderDialog(
+  handlers: DialogHandlers = {},
+  overrides: DialogOverrides = {},
+): ReturnType<typeof renderWithIntl> {
+  return renderWithIntl(dialogElement(handlers, overrides));
 }
 
 async function idField(): Promise<HTMLElement> {
@@ -249,6 +257,58 @@ describe('<SaveAsTemplateDialog />', () => {
     await waitFor(() => {
       expect(onPublished).toHaveBeenCalledWith({ id: 'expense-flow-owned', version: 2 });
     });
+  });
+
+  it('holds a gated pending state (not id-taken) for an owned id while the viewer resolves, then offers the version publish', async () => {
+    const user = userEvent.setup();
+    // Reviewer scenario (#478 F1): the dialog opens BEFORE getAuthMe settles —
+    // the catalog already contains the viewer's own template under this id.
+    const view = renderDialog({}, { viewer: null, viewerPending: true });
+
+    const id = await idField();
+    await user.clear(id);
+    await user.type(id, 'expense-flow-owned');
+
+    // No terminal verdict while ownership is unknowable: submit stays gated
+    // with the in-progress presentation (busy dots), not the id-taken error.
+    expect(screen.queryByText('This template id is taken.')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Publish template' })).toBeDisabled();
+    const pendingNote = screen.getByTestId('save-template-ownership-pending');
+    expect(pendingNote).toHaveTextContent('Checking ownership');
+    expect(pendingNote.querySelector('.lume-busy-dots')).not.toBeNull();
+    expect(view.container.querySelector('svg, .animate-spin')).toBeNull();
+
+    // A bundled collision stays terminal even while the viewer is unknown —
+    // no viewer identity could ever own it.
+    await user.clear(id);
+    await user.type(id, 'bundled-template');
+    expect(screen.getByText('This template id is taken.')).toBeInTheDocument();
+    expect(screen.queryByTestId('save-template-ownership-pending')).not.toBeInTheDocument();
+
+    await user.clear(id);
+    await user.type(id, 'expense-flow-owned');
+
+    // getAuthMe resolves to the owner → the live-derived mode flips to the
+    // version publish and submit becomes enabled (no reopen needed).
+    view.rerender(dialogElement({}, { viewer: VIEWER, viewerPending: false }));
+    expect(await screen.findByRole('button', { name: 'Publish as v2' })).toBeEnabled();
+    expect(screen.queryByTestId('save-template-ownership-pending')).not.toBeInTheDocument();
+    expect(screen.queryByText('This template id is taken.')).not.toBeInTheDocument();
+  });
+
+  it('resolves an owned id to id-taken when auth settles without a viewer', async () => {
+    const user = userEvent.setup();
+    // getAuthMe already failed/anonymous: viewer null but NOT pending — the
+    // ownership switch is genuinely unavailable, so the collision is terminal.
+    renderDialog({}, { viewer: null, viewerPending: false });
+
+    const id = await idField();
+    await user.clear(id);
+    await user.type(id, 'expense-flow-owned');
+
+    expect(screen.getByText('This template id is taken.')).toBeInTheDocument();
+    expect(screen.queryByTestId('save-template-ownership-pending')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Publish template' })).toBeDisabled();
   });
 
   it('shows the inline id-taken error for bundled and foreign ids and sends no request', async () => {

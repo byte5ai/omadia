@@ -18,6 +18,16 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
+
+- The save-as-template dialog no longer reads the viewer's own template id as
+  "taken" while the `getAuthMe` identity probe is still in flight. Ownership is
+  now derived from live viewer state plus a new `viewerPending` flag: a
+  user-sourced id collision holds a gated "Checking ownership" pending state
+  (busy-dots, submit disabled) and flips to "Publish as v{n+1}" — or the
+  id-taken error — once the viewer is known. Bundled/plugin collisions stay
+  terminal, and the 409-race re-check keeps working (now also pending-aware).
+
 ### Fixed — templates v2 review round 2: input hardening, token placement (#478)
 
 - `checkTemplateManifest` (conductor-core) no longer throws on malformed input:
