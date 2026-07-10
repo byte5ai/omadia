@@ -1,0 +1,17 @@
+{
+  "name": "@omadia/dev-runner-daemon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Epic #470 W1 dev-platform runner daemon: control-plane HTTP API over dockerode that provisions and reaps hardened job containers inside a dedicated docker:dind engine. STANDALONE — dockerode + zod + node builtins only, never imports middleware. This unit (w1-daemon-wire-protocol) lands only the wire-protocol schema; the full service scaffold (daemon.mjs/proxy.mjs entrypoints, Dockerode client, HTTP API, bundle, Dockerfile) lands in w1-daemon-service-api.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "typescript": "^5.9.0"
+  }
+}
