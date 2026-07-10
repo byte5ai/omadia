@@ -86,6 +86,42 @@ describe('dedupSpans', () => {
     ]);
     assert.equal(resolved[0]!.value, 'anna.schmidt@firma.de');
   });
+
+  it('keeps the uncovered remainder of a losing lower-confidence span (review finding)', () => {
+    // A long C1 free-form-address span (score < 1) brushing a short
+    // confidence-1 C0 hit inside it must NOT be dropped wholesale — the
+    // parts C0 does not cover would otherwise reach the wire unmasked.
+    const text =
+      'Das Paket bitte an das gelbe Hinterhaus im zweiten Hof der ' +
+      'Lindenallee 5, dritter Aufgang links, 60311 Frankfurt am Main liefern.';
+    const c1Value =
+      'das gelbe Hinterhaus im zweiten Hof der Lindenallee 5, ' +
+      'dritter Aufgang links, 60311 Frankfurt am Main';
+    const c1Start = text.indexOf(c1Value);
+    const c0Value = '60311 Frankfurt';
+    const c0Start = text.indexOf(c0Value);
+    const resolved = dedupSpans(text, [
+      {
+        span: { start: c1Start, end: c1Start + c1Value.length, type: 'address', confidence: 0.8 },
+        detector: 'c1-gliner',
+      },
+      {
+        span: { start: c0Start, end: c0Start + c0Value.length, type: 'address', confidence: 1 },
+        detector: 'c0-regex',
+      },
+    ]);
+    // Every character of the C1 span is covered by some kept span.
+    for (let i = c1Start; i < c1Start + c1Value.length; i++) {
+      assert.ok(
+        resolved.some((s) => s.start <= i && i < s.end),
+        `offset ${String(i)} ('${text[i]!}') of the C1 span lost coverage`,
+      );
+    }
+    // And the output stays non-overlapping, sorted by start.
+    for (let i = 1; i < resolved.length; i++) {
+      assert.ok(resolved[i - 1]!.end <= resolved[i]!.start);
+    }
+  });
 });
 
 describe('createPromptPseudonymMap', () => {
@@ -155,6 +191,31 @@ describe('maskPrompt', () => {
     const result = await maskPrompt(text, [createBaselineDetector()]);
     assert.equal(result.maskedText, text);
     assert.equal(result.spans.length, 0);
+  });
+
+  it('masks a C1 free-form address even where C0 hits inside it (review finding)', async () => {
+    const text =
+      'Das Paket bitte an das gelbe Hinterhaus im zweiten Hof der ' +
+      'Lindenallee 5, dritter Aufgang links, 60311 Frankfurt am Main liefern.';
+    const c1Value =
+      'das gelbe Hinterhaus im zweiten Hof der Lindenallee 5, ' +
+      'dritter Aufgang links, 60311 Frankfurt am Main';
+    const c1Start = text.indexOf(c1Value);
+    const fakeC1: PromptPiiDetector = {
+      id: 'c1-gliner',
+      detect: async () => [
+        { start: c1Start, end: c1Start + c1Value.length, type: 'address', confidence: 0.8 },
+      ],
+    };
+    const result = await maskPrompt(text, [createBaselineDetector(), fakeC1]);
+    for (const fragment of ['Hinterhaus', 'Lindenallee', 'Aufgang', 'Frankfurt']) {
+      assert.equal(
+        findIdentityLeaks(result.maskedText, [fragment]).length,
+        0,
+        `address fragment '${fragment}' survived masking`,
+      );
+    }
+    assert.equal(resolvePseudonyms(result.maskedText, result.map), text);
   });
 });
 

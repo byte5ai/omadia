@@ -1,0 +1,11 @@
+# GLiNER — multilingual zero-shot NER used for PII span detection
+# (github.com/urchade/GLiNER, Apache-2.0). Exact pins, never ranges: the
+# sidecar sits on the raw-prompt path and its output gates what crosses the
+# LLM wire. Pin-bump procedure: see README.md.
+#
+# onnxruntime powers the default backend (quantized ONNX on CPU — avoids the
+# documented AVX2 "Illegal instruction" hazard of default torch inference).
+# gliner's own transitive deps (torch, transformers, huggingface_hub) come
+# with the gliner pin; the torch path stays available as a fallback backend.
+gliner==0.2.27
+onnxruntime==1.27.0

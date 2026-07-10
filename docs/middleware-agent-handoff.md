@@ -961,6 +961,8 @@ DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # Tenant-Scope (auch für Diagramm-Cache-Keys genutzt)
 GRAPH_TENANT_ID=byte5
+# Prompt-PII C1-Detector (GLiNER-Sidecar, #361) — optional
+PRIVACY_C1_DETECTOR_URL=http://pii-detector:8812   # unset ⇒ nur C0-Regex-Baseline
 # Runtime
 PORT=3979
 ```
@@ -982,6 +984,69 @@ PORT=3979
    undici-Agent mit `rejectUnauthorized: false`. Global
    `NODE_TLS_REJECT_UNAUTHORIZED=0` **nicht** setzen — kompromittiert
    auch Anthropic-Verbindung.
+
+### Prompt-PII-Masking (#361): C1-Transformer-Detector (GLiNER-Sidecar)
+
+Das Privacy-Guard-Plugin (`middleware/packages/harness-plugin-privacy-guard`,
+Manifest 0.4.0) maskiert bei aktiviertem Setup-Field `mask_user_prompt`
+(default **off**) PII-Spans im freien User-Prompt durch Pseudonyme, bevor der
+Text die LLM-Wire kreuzt; die Realwerte werden server-seitig in der finalen
+Antwort restauriert. Zwei Detektor-Tiers:
+
+- **C0** — deterministische Regex-Baseline (E-Mail, IBAN, Telefon, Adresse,
+  Beträge, Daten), immer aktiv, wirft nie.
+- **C1** — Transformer-Tier für Personennamen + Freiform-Adressen:
+  `src/c1Detector.ts` (`createC1HttpDetector`, Detector-Id `c1-gliner`)
+  spricht den GLiNER-Inference-Sidecar `middleware/sidecars/pii-detector/`
+  über `POST /detect` an. Injection über den bestehenden
+  `createPrivacyGuardService({c1Detector})`-Slot — **keine** Änderungen an
+  `service.ts` / Orchestrator; `promptMask.ts` wurde nur durch den
+  Overlap-Remainder-Fix (`6b42c6c`, siehe unten) angepasst.
+
+Konfiguration (live pro Call aufgelöst, kein Restart nötig): Setup-Field
+`c1_detector_url` zuerst, Env-Fallback `PRIVACY_C1_DETECTOR_URL` (leer =
+unset). URL nicht gesetzt ⇒ C1 unkonfiguriert, es wird **kein** Call
+versucht (kein Degrade-Audit-Noise). Docker: Overlay
+`docker-compose.pii-detector.yaml` baut den Sidecar (keine published Ports —
+er sieht rohe Prompt-PII, niemals öffentlich exponieren) und setzt die URL.
+
+Fail-closed-Verhalten des Clients: Response-Schema wird **positiv**
+validiert (skillspector-Präzedenz); Non-200, `ok:false`, malformed Spans,
+Non-JSON oder Timeout (default 1500 ms) ⇒ throw ⇒ der Service degradiert
+auditiert auf C0 (`promptMaskDegraded`-Log-Zeile), niemals ein stiller
+unmaskierter Pass-Through. Offset-Kontrakt: der Sidecar liefert
+Unicode-**Code-Point**-Offsets (Python-Semantik), der Client konvertiert
+exakt nach UTF-16 und asserted pro Span `text.slice(...) === span.text` —
+Mismatch ⇒ throw (ein falsch verankerter Personen-Span wäre ein Leak).
+Fehlermeldungen tragen nie Prompt-Text oder Span-Werte (sie landen im
+Audit-Log).
+
+Manuelles E2E (dev):
+
+1. `docker compose -f docker-compose.yaml -f docker-compose.pii-detector.yaml up -d`,
+   warten bis `pii-detector` healthy (Modell-Load ~1-2 min).
+2. Im Plugin-Setup `c1_detector_url` (`http://pii-detector:8812`) und
+   `mask_user_prompt: on` setzen.
+3. Prompt senden: *"What should we pay Anna Schmidt (32, lives at
+   Bahnhofstr. 5, 60311 Frankfurt) given her salary of €72,000?"* —
+   Service-Log zeigt `promptMask ... spans=N` inkl. `person`-Span, der
+   Wire-Text trägt einen Surrogat-Namen, die finale Antwort den echten.
+4. Sidecar stoppen, erneut senden — Log zeigt `promptMaskDegraded`, der
+   Turn läuft auf C0 weiter (E-Mail/IBAN etc. weiterhin maskiert).
+5. `mask_user_prompt: off` ⇒ byte-identisches Legacy-Verhalten.
+
+Tests: `middleware/test/privacyPromptC1Detector.test.ts` (Client-Kontrakt +
+Service-Komposition), `privacyPromptMask.test.ts` (Seam/Degrade generisch,
+inkl. Regression: Overlap-Verlierer-Spans behalten ihre unbedeckten Reste —
+ein langer C1-Adress-Span wird nie mehr komplett verworfen, nur weil ein
+kurzer C0-Treffer in ihm liegt).
+
+Recorded Validation-Run (2026-07-10, alle drei Detector-Sets × 6 Locales):
+`middleware/packages/harness-plugin-privacy-guard/src/validation/RESULTS.md`
+— de/en/it bestehen ALLE Gates auf `c0+c1`; es/fr/nl scheitern an
+dokumentierten C0-Locale-Lücken (Beträge/Daten/Telefonformate). Flag-Policy
+unverändert: Tabellen müssen vor dem Flag-Flip pro Locale auf Issue #361
+gepostet sein.
 
 ---
 

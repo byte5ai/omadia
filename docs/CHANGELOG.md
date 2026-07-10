@@ -539,6 +539,107 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   locale requires posting a green harness run for that locale to issue
   #361 first.
 
+### Added — GLiNER PII-detector sidecar for prompt masking (#361)
+
+- New optional inference sidecar `middleware/sidecars/pii-detector/`
+  (skillspector pattern: stdlib-only HTTP shim, stateless, fail-closed):
+  runs `urchade/gliner_multi_pii-v1` (Apache-2.0, quantized ONNX backend by
+  default, torch fallback) and answers `POST /detect` with scored
+  `person`/`address` spans as Unicode code-point offsets — the C1
+  transformer tier that detects the PII classes the C0 regex baseline
+  structurally cannot (names, free-form addresses). Model + deps are pinned
+  to exact versions and baked into the image at build time (pinned HF
+  revision, `HF_HUB_OFFLINE=1` — the running container performs no egress).
+  Enable via the `docker-compose.pii-detector.yaml` overlay, which keeps the
+  sidecar internal-network-only (no published ports — it receives raw prompt
+  PII; request text and span values are never logged) and sets the new
+  middleware env var `PRIVACY_C1_DETECTOR_URL`. Without the overlay the
+  default stack is unchanged; sidecar down at runtime means the audited
+  degrade-to-C0 path (`promptMaskDegraded`), never a silent unmasked
+  pass-through.
+- `harness-plugin-privacy-guard` 0.4.0: the sidecar is wired into the
+  shipped `PromptPiiDetector` seam via a new fail-closed HTTP client
+  (`createC1HttpDetector`, detector id `c1-gliner`) injected through the
+  existing `createPrivacyGuardService({c1Detector})` slot — no service-,
+  mask- or orchestrator-logic changes. New non-secret setup field
+  `c1_detector_url` (live-read per call; `PRIVACY_C1_DETECTOR_URL` env
+  fallback; empty ⇒ C0-only, no C1 call attempted) and one deliberate
+  `permissions.network.outbound` entry for the sidecar (the plugin was
+  previously pure compute). The client positively validates the sidecar's
+  response schema and converts its Unicode code-point offsets to UTF-16
+  exactly, asserting per span that the converted slice reproduces the
+  sidecar's text — any mismatch, timeout (default 1500 ms), non-200 or
+  malformed body throws and rides the audited degrade-to-C0 path.
+
+### Added — 6-locale prompt-PII validation build-out (#361)
+
+- The runnable validation harness
+  (`harness-plugin-privacy-guard/src/validation/`, still NOT a CI gate) now
+  covers all six target locales: fixtures for fr/es/it/nl plus scaled-up
+  de/en — 121 items per locale (89 positives incl. a 25-item hand-built
+  out-of-distribution slice, 32 PII-free negatives). All committed fixtures
+  are original (hand-built + LLM-generated synthetic); no ai4privacy rows or
+  derivatives are committed (restricted commercial terms — local uncommitted
+  use only). fr/es/it/nl carry a recorded "native-speaker spot-check
+  pending" caveat. Locale ID numbers (Steuer-ID, NINO, NIE/DNI, codice
+  fiscale, BSN) are typed `idnum` and measured informationally, never gated
+  in v1.
+- Harness extensions: with `PII_DETECTOR_URL` set, the eval adds a `c0+c1`
+  set (person recall ≥ 0.90 now enforceable, plus the shipped structured /
+  precision / latency gates) and a `c1-solo` ablation (reported, never
+  gated); one un-timed warm-up call per set keeps model warm-up out of p95;
+  `--markdown` emits GitHub-flavored tables for posting run results to
+  issue #361. Fixture files are linted at load (verbatim span values, known
+  types/tiers, duplicate rejection) and a malformed file fails the run
+  loudly. Without `PII_DETECTOR_URL` the harness runs c0-only exactly as
+  before: de/en still PASS their structured gates, while the fr/es/it/nl
+  runs now honestly document the C0 baseline's locale gaps (French
+  space-grouped amounts, Dutch address/date formats, Spanish local phones)
+  in the validation README instead of the fixtures being softened. The
+  per-locale flag policy is unchanged: results posted to #361 before any
+  locale flips `mask_user_prompt` on.
+
+### Fixed — prompt-mask overlap resolution kept only the winning span (#361)
+
+- `promptMask.ts#dedupSpans` resolved detector overlaps by dropping the
+  lower-confidence span wholesale. A long C1 span (e.g. a free-form address
+  GLiNER scored 0.8) that merely brushed a short confidence-1 C0 hit inside
+  it (the postal code) therefore lost its ENTIRE coverage — the rest of the
+  address reached the LLM wire unmasked, and the post-mask residual check
+  only asserts kept values, so it could not catch the drop (review finding
+  on the #361 branch). Overlap resolution now lets the winner own only the
+  contested characters: every uncovered remainder of a losing span is kept
+  as a masking span of its own (word-boundary re-extended, output still
+  non-overlapping). Regression tests cover the exact reviewer scenario at
+  both the `dedupSpans` and the `maskPrompt` level.
+
+### Added — recorded 6-locale validation run (#361)
+
+- `harness-plugin-privacy-guard/src/validation/RESULTS.md` commits the full
+  `c0` / `c0+c1` / `c1-solo` × 6-locale harness run (2026-07-10, pinned
+  GLiNER ONNX model, sidecar defaults, dedup fix included): **de/en/it pass
+  ALL gates on `c0+c1`** (person recall 100% incl. the hand-built OOD
+  slice); es/fr/nl fail on recorded C0 structured locale gaps (amounts /
+  dates / phone formats), not on C1 quality; the `c1-solo` ablation
+  confirms C0 stays load-bearing for structured identifiers. The flag
+  policy is unchanged — these tables must be posted to issue #361 before
+  any locale flips `mask_user_prompt` on; the validation README now links
+  the recorded run.
+
+### Added — privacy receipt card shows masked prompt spans (#361)
+
+- The chat privacy-receipt card now surfaces the backend receipt field
+  `maskedPromptSpans` (shipped with the prompt-masking runtime path, but
+  until now unknown to the frontend mirror): a collapsed summary chunk
+  ("prompt: N masked") plus an expanded fact row with a per-type breakdown
+  (e.g. "3 (2 × person, 1 × email)"). Span types are an open set rendered
+  verbatim; detector ids stay in the data and are not rendered. A dedicated
+  explainer line states that identifiers in the user's own message were
+  pseudonymised before the model call and restored in the answer. Absent or
+  empty field ⇒ the card renders byte-identically to before. New
+  `privacyReceipt.{summaryPromptMasked,factPromptMasked,explainerPromptMasked}`
+  i18n keys in en + de.
+
 ### Changed — v1.0 readiness pass across the earliest core plugins (#431)
 
 - `harness-plugin-web-search`, `harness-plugin-privacy-guard`, and
