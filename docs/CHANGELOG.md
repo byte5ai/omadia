@@ -150,6 +150,33 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   per-locale flag policy is unchanged: results posted to #361 before any
   locale flips `mask_user_prompt` on.
 
+### Fixed — prompt-mask overlap resolution kept only the winning span (#361)
+
+- `promptMask.ts#dedupSpans` resolved detector overlaps by dropping the
+  lower-confidence span wholesale. A long C1 span (e.g. a free-form address
+  GLiNER scored 0.8) that merely brushed a short confidence-1 C0 hit inside
+  it (the postal code) therefore lost its ENTIRE coverage — the rest of the
+  address reached the LLM wire unmasked, and the post-mask residual check
+  only asserts kept values, so it could not catch the drop (review finding
+  on the #361 branch). Overlap resolution now lets the winner own only the
+  contested characters: every uncovered remainder of a losing span is kept
+  as a masking span of its own (word-boundary re-extended, output still
+  non-overlapping). Regression tests cover the exact reviewer scenario at
+  both the `dedupSpans` and the `maskPrompt` level.
+
+### Added — recorded 6-locale validation run (#361)
+
+- `harness-plugin-privacy-guard/src/validation/RESULTS.md` commits the full
+  `c0` / `c0+c1` / `c1-solo` × 6-locale harness run (2026-07-10, pinned
+  GLiNER ONNX model, sidecar defaults, dedup fix included): **de/en/it pass
+  ALL gates on `c0+c1`** (person recall 100% incl. the hand-built OOD
+  slice); es/fr/nl fail on recorded C0 structured locale gaps (amounts /
+  dates / phone formats), not on C1 quality; the `c1-solo` ablation
+  confirms C0 stays load-bearing for structured identifiers. The flag
+  policy is unchanged — these tables must be posted to issue #361 before
+  any locale flips `mask_user_prompt` on; the validation README now links
+  the recorded run.
+
 ### Added — privacy receipt card shows masked prompt spans (#361)
 
 - The chat privacy-receipt card now surfaces the backend receipt field

@@ -868,7 +868,17 @@ Manuelles E2E (dev):
 5. `mask_user_prompt: off` ⇒ byte-identisches Legacy-Verhalten.
 
 Tests: `middleware/test/privacyPromptC1Detector.test.ts` (Client-Kontrakt +
-Service-Komposition), `privacyPromptMask.test.ts` (Seam/Degrade generisch).
+Service-Komposition), `privacyPromptMask.test.ts` (Seam/Degrade generisch,
+inkl. Regression: Overlap-Verlierer-Spans behalten ihre unbedeckten Reste —
+ein langer C1-Adress-Span wird nie mehr komplett verworfen, nur weil ein
+kurzer C0-Treffer in ihm liegt).
+
+Recorded Validation-Run (2026-07-10, alle drei Detector-Sets × 6 Locales):
+`middleware/packages/harness-plugin-privacy-guard/src/validation/RESULTS.md`
+— de/en/it bestehen ALLE Gates auf `c0+c1`; es/fr/nl scheitern an
+dokumentierten C0-Locale-Lücken (Beträge/Daten/Telefonformate). Flag-Policy
+unverändert: Tabellen müssen vor dem Flag-Flip pro Locale auf Issue #361
+gepostet sein.
 
 ---
 

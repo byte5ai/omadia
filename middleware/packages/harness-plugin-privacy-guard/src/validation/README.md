@@ -66,6 +66,11 @@ and the harness results for that locale must be posted to issue #361 BEFORE
 the flag flips on. A deployment that needs name masking must run the
 `c0+c1` set against the GLiNER sidecar and pass the person gate.
 
+**Recorded run:** the full `c0` / `c0+c1` / `c1-solo` × 6-locale run
+(2026-07-10, pinned model + sidecar defaults) is committed in
+[`RESULTS.md`](./RESULTS.md) — de/en/it pass ALL gates on `c0+c1`;
+es/fr/nl fail on C0 structured locale gaps (details below and there).
+
 ## Fixtures
 
 `fixtures/<locale>.json` — array of items:
@@ -124,19 +129,20 @@ ceiling), and locale ID numbers typed `idnum`.
   out-of-distribution for the candidate model by construction, which is the
   honest go/no-go signal the RFC's in-distribution caveat asks for.
 
-## Known C0 locale gaps (c0-only run, recorded findings)
+## Known C0 locale gaps (recorded run, see RESULTS.md)
 
-The C0 regexes are de/en-centric by design. The 6-locale c0-only run
-reports these honestly rather than the fixtures being softened around them:
+The C0 regexes are de/en-centric by design. The recorded 6-locale run
+([`RESULTS.md`](./RESULTS.md)) reports these honestly rather than the
+fixtures being softened around them:
 
-| Locale | Structured recall (c0) | Main gaps |
+| Locale | Structured recall (c0 / c0+c1) | Main gaps |
 |---|---|---|
-| de | 100% — PASS | — |
-| en | 100% — PASS | — |
-| it | ~99% — PASS | street-only addresses without a postal code (dot-grouped amounts and 5-digit postal codes coincide with the de patterns) |
-| es | ~94% — FAIL | amounts without thousands separator ("899 €"), local phone formats without leading 0/+ ("612 334 455"), street-only addresses |
-| nl | ~85% — FAIL | Dutch addresses (`straat`/`gracht`/`plein` suffixes and 4-digit `1016 AZ` postcodes match nothing), dashed dates ("24-12-1987") |
-| fr | ~75% — FAIL | space-grouped amounts ("2 400 €"), written-out dates ("17 septembre 1984"), street-only addresses |
+| de | 100% / 100% — PASS | — |
+| en | 100% / 100% — PASS | — |
+| it | 99.1% / 100% — PASS | street-only addresses without a postal code (closed by C1; dot-grouped amounts and 5-digit postal codes coincide with the de patterns) |
+| es | 94.4% / 95.4% — FAIL | amounts without thousands separator ("899 €"), local phone formats without leading 0/+ ("612 334 455"), street-only addresses |
+| nl | 85.3% / 96.3% — FAIL | dashed dates ("24-12-1987"); Dutch addresses (`straat`/`gracht`/`plein` suffixes, 4-digit `1016 AZ` postcodes) match no C0 pattern but are fully carried by C1 |
+| fr | 75.0% / 75.9% — FAIL | space-grouped amounts ("2 400 €"), written-out dates ("17 septembre 1984"), street-only addresses |
 
 Where fr/es/it/nl address rows *do* count as masked under c0, it is mostly
 the partial-masking effect described above (the 5-digit postal-code
