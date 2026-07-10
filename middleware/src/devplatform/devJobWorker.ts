@@ -36,7 +36,11 @@ import {
   type FinalizeContext,
   type FinalizeStore,
 } from './finalizeDevJob.js';
-import { RunnerBackendError, type DevJobProvisionContext } from './runnerBackend.js';
+import {
+  RunnerBackendError,
+  isRetryableProvisionError,
+  type DevJobProvisionContext,
+} from './runnerBackend.js';
 // Pure policy + wire helpers live in `devJobWorkerPolicy.ts` (keeps this file
 // under the 500-line guideline); import from there, not here.
 import {
@@ -71,6 +75,8 @@ export const DEFAULT_WORKER_INTERVAL_MS = 5_000;
 export interface DevJobWorkerStore extends FinalizeStore {
   /** Atomically claim the oldest queued job, stamping `claimedBy` as the lease. */
   claimNextQueued(claimedBy: string): Promise<DevJob | null>;
+  /** Lease-fenced rewind of a claim back to `queued` (0 rows ⇒ lease lost). */
+  releaseClaim(jobId: string, claimedBy: string): Promise<boolean>;
   /** Lease-fenced attach of the backend handle (0 rows ⇒ lease lost, throws). */
   setRunnerHandle(jobId: string, claimedBy: string, handle: RunnerHandle): Promise<void>;
   /** Read jobs by status — the worker uses `{ status: 'applying' }`. */
@@ -340,6 +346,17 @@ export class DevJobWorker {
       try {
         handle = await backend.provision(provInput);
       } catch (err) {
+        if (isRetryableProvisionError(err)) {
+          // "Not now", not "broken": the daemon is at capacity. Nothing was
+          // spawned, so rewind the claim and let the next poll re-take the row.
+          // Finalizing here would surface a queue-depth condition as a failed job.
+          const released = await this.deps.store.releaseClaim(job.id, lease);
+          this.log(
+            `[dev-platform] job ${job.id} requeued (${errText(err)})` +
+              (released ? '' : ' — lease already lost, left alone'),
+          );
+          return;
+        }
         // Nothing spawned (or the backend refused): finalize failed, no handle.
         await this.finalize(job.id, 'failed', { reason: 'provision_failed', error: errText(err) });
         return;

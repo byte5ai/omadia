@@ -297,4 +297,71 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     assert.equal(await store.artifactBelongsToJob('00000000-0000-0000-0000-000000000000', artifactId), false);
     assert.equal(await store.artifactBelongsToJob(job.id, 'not-a-uuid'), false);
   });
+
+  /**
+   * Epic #470 W1 — "the daemon is at capacity" is not "the job failed".
+   * `releaseClaim` is the rewind, and it must be as tightly fenced as every other
+   * worker write: only the lease holder, only before anything was spawned.
+   */
+  it('releaseClaim rewinds a provisioning claim back to queued — fenced on the lease', async () => {
+    const { hash } = mintRunnerToken();
+    const job = await store.createJob({
+      repoId: repo.id,
+      kind: 'implement',
+      brief: 'at-capacity',
+      source: 'admin',
+      backend: 'docker',
+      createdBy: MARK,
+      runnerTokenHash: hash,
+    });
+    const lease = randomUUID();
+    // claimNextQueued takes the OLDEST queued row — earlier tests leave some behind,
+    // so drain until we hold the one we just created.
+    let claimed = await store.claimNextQueued(lease);
+    while (claimed && claimed.id !== job.id) claimed = await store.claimNextQueued(lease);
+    assert.equal(claimed?.id, job.id);
+
+    // A stranger's lease cannot rewind our claim.
+    assert.equal(await store.releaseClaim(job.id, randomUUID()), false);
+    assert.equal((await store.getJob(job.id))?.status, 'provisioning');
+
+    assert.equal(await store.releaseClaim(job.id, lease), true);
+    const requeued = await store.getJob(job.id);
+    assert.equal(requeued?.status, 'queued');
+    assert.equal(requeued?.claimedBy, null);
+    assert.equal(requeued?.startedAt, null);
+
+    // Idempotent-safe: a second rewind of an already-queued row is a no-op.
+    assert.equal(await store.releaseClaim(job.id, lease), false);
+  });
+
+  it('releaseClaim refuses once a runner handle exists — a spawned container is never abandoned', async () => {
+    const { hash } = mintRunnerToken();
+    const job = await store.createJob({
+      repoId: repo.id,
+      kind: 'implement',
+      brief: 'already spawned',
+      source: 'admin',
+      backend: 'docker',
+      createdBy: MARK,
+      runnerTokenHash: hash,
+    });
+    const lease = randomUUID();
+    let claimed = await store.claimNextQueued(lease);
+    while (claimed && claimed.id !== job.id) claimed = await store.claimNextQueued(lease);
+    assert.equal(claimed?.id, job.id);
+    await store.setRunnerHandle(job.id, lease, {
+      backend: 'local',
+      id: '/tmp/ws',
+      pid: 42,
+      startedAt: new Date().toISOString(),
+    });
+
+    assert.equal(await store.releaseClaim(job.id, lease), false);
+    assert.equal((await store.getJob(job.id))?.status, 'provisioning');
+  });
+
+  it('releaseClaim rejects a non-UUID lease loudly', async () => {
+    await assert.rejects(() => store.releaseClaim(randomUUID(), 'not-a-uuid'), TypeError);
+  });
 });

@@ -70,3 +70,21 @@ export function assertProvisionContext(
     );
   }
 }
+
+/**
+ * Did the backend *decline* to start this job, rather than fail it?
+ *
+ * A `retryable` provision error means "not now" — the daemon is at capacity, the
+ * pool is drained. Nothing was spawned, nothing leaked. The worker must rewind
+ * the claim and let the next poll try again; finalizing the job as `failed`
+ * would turn a queue-depth condition into a permanent user-visible error.
+ *
+ * Structural (`retryable === true`) rather than `instanceof DockerBackendError`:
+ * the worker must not know which backends exist.
+ */
+export function isRetryableProvisionError(err: unknown): boolean {
+  return (
+    err instanceof RunnerBackendError &&
+    (err as RunnerBackendError & { retryable?: unknown }).retryable === true
+  );
+}

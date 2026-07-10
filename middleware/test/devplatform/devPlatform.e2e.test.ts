@@ -575,3 +575,151 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
     assert.equal(forbidden.status, 403, 'the model allowlist is enforced by the mounted proxy');
   });
 });
+
+/**
+ * Epic #470 W1 — a middleware restart must not orphan live containers.
+ *
+ * The DockerBackend tracks its containers in memory. Before this, a restart left
+ * `this.live` empty: `reap()` saw no jobs to compare against, so a container the
+ * daemon still ran was invisible to the middleware forever — it kept running
+ * until its lease expired, and its job row hung in `running` with nobody
+ * renewing. `start()` re-adopts from the persisted `runner_handle` first, and it
+ * is the ONLY way to bring the platform online, so this cannot be forgotten
+ * again (the twin of the "a component that isn't mounted isn't shipped" bug).
+ */
+describe('devplatform — docker rehydration after a middleware restart (pg)', { skip: !pgAvailable }, () => {
+  const MARK = 'rehydrate-e2e-mark';
+  let pool: Pool;
+  let jobStore: DevJobStore;
+  let repoId: string;
+
+  before(async () => {
+    pool = new Pool({ connectionString: PG_URL });
+    await runMultiOrchestratorMigrations(pool);
+    jobStore = new DevJobStore(pool);
+    const repoStore = new DevRepoStore(pool);
+    const repo = await repoStore.createRepo({
+      owner: 'byte5ai',
+      name: `rehydrate-${randomUUID().slice(0, 8)}`,
+      cloneUrl: 'https://github.com/byte5ai/omadia.git',
+      credentialKind: 'pat',
+      credentialRef: 'repo/x',
+      runsTests: true,
+      createdBy: MARK,
+    });
+    repoId = repo.id;
+  });
+
+  after(async () => {
+    await pool.query('DELETE FROM dev_repos WHERE created_by = $1', [MARK]);
+    await pool.end();
+  });
+
+  async function seedRunningDockerJob(): Promise<string> {
+    const { hash } = mintRunnerToken();
+    const job = await jobStore.createJob({
+      repoId,
+      kind: 'implement',
+      brief: 'a job that outlived the middleware',
+      source: 'admin',
+      sourceRef: null,
+      backend: 'docker',
+      createdBy: MARK,
+      runnerTokenHash: hash,
+    });
+    const lease = randomUUID();
+    await pool.query(`UPDATE dev_jobs SET status = 'provisioning', claimed_by = $2 WHERE id = $1`, [
+      job.id,
+      lease,
+    ]);
+    await jobStore.setRunnerHandle(job.id, lease, {
+      backend: 'docker',
+      id: job.id,
+      jobId: job.id,
+      containerId: 'deadbeefcafe',
+      networkId: 'net-deadbeef',
+      volumeName: `omadia-job-${job.id}`,
+      imageDigest: `sha256:${'b'.repeat(64)}`,
+      leaseExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+      startedAt: new Date().toISOString(),
+    });
+    await pool.query(`UPDATE dev_jobs SET status = 'running' WHERE id = $1`, [job.id]);
+    return job.id;
+  }
+
+  function assemble(logs: string[]) {
+    return assembleDevPlatform({
+      pool,
+      vault: new InMemorySecretVault(),
+      baseUrl: 'http://127.0.0.1:3333',
+      cliBin: 'claude',
+      wallClockMs: 600_000,
+      heartbeatTimeoutMs: 600_000,
+      maxConcurrentJobs: 1,
+      commitAuthor: 'omadia-dev <dev-platform@omadia.ai>',
+      subscriptionModeEnabled: false,
+      workspaceDir: '/tmp/rehydrate-e2e',
+      unsafeLocal: false,
+      shimEntry: '/dev/null',
+      // A daemon URL that is never dialled: adoption is a pure in-memory read of
+      // the persisted handle, and we stop the backend before its renew loop ticks.
+      daemonUrl: 'http://127.0.0.1:1',
+      daemonToken: 'tok',
+      runnerImage: 'ghcr.io/byte5ai/omadia-dev-runner@sha256:' + 'a'.repeat(64),
+      log: (m) => logs.push(m),
+    });
+  }
+
+  it('start() re-adopts the live container before the claim loop runs', async () => {
+    const jobId = await seedRunningDockerJob();
+    const logs: string[] = [];
+    const wired = assemble(logs);
+    try {
+      await wired.start();
+      assert.ok(
+        logs.some((l) => l.includes('re-adopted 1 live job(s)')),
+        `expected the docker backend to re-adopt ${jobId}; logs: ${logs.join(' | ')}`,
+      );
+    } finally {
+      wired.worker.stop();
+      for (const b of wired.backends) (b as { stop?: () => void }).stop?.();
+    }
+  });
+
+  it('skips a handle that belongs to another backend rather than adopting it', async () => {
+    const { hash } = mintRunnerToken();
+    const job = await jobStore.createJob({
+      repoId,
+      kind: 'implement',
+      brief: 'a local job, wrongly marked docker',
+      source: 'admin',
+      sourceRef: null,
+      backend: 'docker',
+      createdBy: MARK,
+      runnerTokenHash: hash,
+    });
+    const lease = randomUUID();
+    await pool.query(`UPDATE dev_jobs SET status = 'provisioning', claimed_by = $2 WHERE id = $1`, [
+      job.id,
+      lease,
+    ]);
+    await jobStore.setRunnerHandle(job.id, lease, {
+      backend: 'local',
+      id: '/tmp/ws-1',
+      pid: 4242,
+      startedAt: new Date().toISOString(),
+    });
+    const logs: string[] = [];
+    const wired = assemble(logs);
+    try {
+      await wired.start();
+      assert.ok(
+        logs.some((l) => l.includes(job.id) && l.includes('cannot own; skipped')),
+        'a damaged or foreign handle is skipped loudly, never adopted',
+      );
+    } finally {
+      wired.worker.stop();
+      for (const b of wired.backends) (b as { stop?: () => void }).stop?.();
+    }
+  });
+});

@@ -143,6 +143,22 @@ class FakeStore implements DevJobWorkerStore {
     return claimed;
   }
 
+  async releaseClaim(jobId: string, claimedBy: string): Promise<boolean> {
+    const job = this.jobs.get(jobId);
+    // Mirror the SQL guard exactly: own the lease, still provisioning, nothing spawned.
+    if (!job || job.claimedBy !== claimedBy || job.status !== 'provisioning' || job.runnerHandle) {
+      return false;
+    }
+    this.jobs.set(jobId, {
+      ...job,
+      status: 'queued',
+      claimedBy: null,
+      claimedAt: null,
+      startedAt: null,
+    });
+    return true;
+  }
+
   async setRunnerHandle(jobId: string, claimedBy: string, handle: RunnerHandle): Promise<void> {
     const job = this.jobs.get(jobId);
     if (!job || job.claimedBy !== claimedBy || isTerminalDevJobStatus(job.status)) {
@@ -674,5 +690,65 @@ describe('devplatform/devJobWorker — splitDiffBundle', () => {
   it('splits on the marker and treats a marker-less body as all-diff', () => {
     assert.deepEqual(splitDiffBundle(`DIFF${NUMSTAT_MARKER}NUM`), { diff: 'DIFF', numstat: 'NUM' });
     assert.deepEqual(splitDiffBundle('just a diff'), { diff: 'just a diff', numstat: '' });
+  });
+});
+
+describe('devplatform/devJobWorker — a backend at capacity requeues, it does not fail the job', () => {
+  it('rewinds the claim on a retryable provision error and re-claims on the next poll', async () => {
+    const store = new FakeStore();
+    store.add(makeJob({ id: 'job-cap' }));
+    const h = makeWorker({ store });
+    const atCapacity = new RunnerBackendError('daemon_at_capacity', 'daemon at capacity');
+    (atCapacity as RunnerBackendError & { retryable: boolean }).retryable = true;
+    h.backend.provisionError = atCapacity;
+
+    await h.worker.tick();
+
+    const requeued = await store.getJob('job-cap');
+    assert.equal(requeued?.status, 'queued', 'a full daemon is not a failed job');
+    assert.equal(requeued?.claimedBy, null);
+    assert.equal(requeued?.startedAt, null, 'the job never started, so it has no start time');
+    assert.equal(store.finishCalls.get('job-cap') ?? 0, 0, 'nothing was finalized');
+    assert.equal(h.backend.terminated.length, 0, 'nothing was spawned, so nothing to tear down');
+
+    // Capacity frees up: the very next poll picks the same row back up.
+    h.backend.provisionError = null;
+    await h.worker.tick();
+    assert.equal((await store.getJob('job-cap'))?.status, 'provisioning');
+    assert.equal(h.backend.provisioned.length, 1);
+  });
+
+  it('still fails the job when the provision error is NOT retryable', async () => {
+    const store = new FakeStore();
+    store.add(makeJob({ id: 'job-broken' }));
+    const h = makeWorker({ store });
+    h.backend.provisionError = new RunnerBackendError('image_denied', 'image not allowlisted');
+
+    await h.worker.tick();
+
+    const job = await store.getJob('job-broken');
+    assert.equal(job?.status, 'failed', 'a real provisioning fault must surface, not spin forever');
+  });
+
+  it('leaves the row alone when the lease moved on while we were provisioning', async () => {
+    const store = new FakeStore();
+    store.add(makeJob({ id: 'job-stolen' }));
+    const h = makeWorker({ store });
+    const atCapacity = new RunnerBackendError('daemon_at_capacity', 'daemon at capacity');
+    (atCapacity as RunnerBackendError & { retryable: boolean }).retryable = true;
+    // Another worker reaped the stalled claim and re-claimed the row *while* we
+    // were talking to the daemon — the classic lease-lost window.
+    h.backend.provision = async (): Promise<RunnerHandle> => {
+      const stolen = store.jobs.get('job-stolen')!;
+      store.jobs.set('job-stolen', { ...stolen, claimedBy: 'ffffffff-ffff-4fff-8fff-ffffffffffff' });
+      throw atCapacity;
+    };
+
+    await h.worker.tick();
+
+    const job = await store.getJob('job-stolen');
+    assert.equal(job?.claimedBy, 'ffffffff-ffff-4fff-8fff-ffffffffffff', 'we did not stomp the new owner');
+    assert.equal(job?.status, 'provisioning');
+    assert.ok(h.logs.some((l) => l.includes('lease already lost')));
   });
 });

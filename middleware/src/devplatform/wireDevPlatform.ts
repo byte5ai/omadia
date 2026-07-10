@@ -128,6 +128,14 @@ export interface WiredDevPlatform {
   repoStore: DevRepoStore;
   credentials: DevRepoCredentialStore;
   worker: DevJobWorker;
+  /**
+   * Bring the platform online: re-adopt containers that outlived this process,
+   * THEN start the claim loop. Callers must use this instead of
+   * `worker.start()` — a worker that starts before rehydration sees a daemon
+   * full of jobs it believes it does not own, and `reap()` would leave every
+   * one of them running until its lease expires.
+   */
+  start: () => Promise<void>;
   adminRouter: ReturnType<typeof createDevPlatformRouter>;
   runnerRouter: ReturnType<typeof createDevRunnerRouter>;
   backends: readonly RunnerBackend[];
@@ -269,18 +277,23 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     ...(deps.now ? { now: () => deps.now!().getTime() } : {}),
   });
 
-  return {
+  const wired: WiredDevPlatform = {
     eventBus,
     jobStore,
     repoStore,
     credentials,
     worker,
+    start: async () => {
+      await rehydrateDockerBackend(wired, log);
+      worker.start();
+    },
     adminRouter,
     runnerRouter,
     backends,
     finalizeDevJob: boundFinalize,
     applyJob,
   };
+  return wired;
 }
 
 /**
@@ -408,4 +421,40 @@ function hostOf(baseUrl: string): string {
   } catch {
     return baseUrl;
   }
+}
+
+/**
+ * Re-adopt the docker jobs this middleware was running before it restarted.
+ *
+ * `DockerBackend.reap()` answers "which jobs does the middleware still believe are
+ * running that the daemon has lost?" — a question that needs BOTH views. The
+ * daemon's view survives a restart (it rebuilds from docker labels); the
+ * middleware's lives in memory and does not. Without this, a restarted middleware
+ * reaps nothing and a job whose container died stays `running` in the database
+ * for as long as the process lives.
+ *
+ * A handle that does not narrow to this backend's shape is skipped loudly rather
+ * than adopted: it belongs to another backend, or the row is damaged.
+ */
+export async function rehydrateDockerBackend(
+  wired: WiredDevPlatform,
+  log: (msg: string) => void = () => {},
+): Promise<number> {
+  const store = wired.jobStore;
+  const docker = wired.backends.find((b): b is DockerBackend => b instanceof DockerBackend);
+  if (!docker) return 0;
+
+  const active: DevJob[] = [];
+  for (const status of ['provisioning', 'running', 'applying'] as const) {
+    active.push(...(await store.listJobs({ status })));
+  }
+
+  let adopted = 0;
+  for (const job of active) {
+    if (job.backend !== 'docker' || !job.runnerHandle) continue;
+    if (docker.adopt(job.id, job.runnerHandle)) adopted += 1;
+    else log(`[dev-platform] docker rehydrate: job ${job.id} has a handle this backend cannot own; skipped`);
+  }
+  if (adopted > 0) log(`[dev-platform] docker rehydrate: re-adopted ${String(adopted)} live job(s) after restart`);
+  return adopted;
 }

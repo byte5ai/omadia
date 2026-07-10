@@ -234,6 +234,34 @@ export class DevJobStore {
   }
 
   /**
+   * Hand a claimed job back to the queue, un-started.
+   *
+   * A backend that answers "at capacity" has not failed the job — it has
+   * declined to start it *now*. Finalizing such a job as `failed` would turn a
+   * transient scheduling condition into a permanent, user-visible error, so the
+   * worker calls this instead and the next poll re-claims the row.
+   *
+   * Lease-fenced and status-guarded: only the worker that still owns the claim,
+   * and only while the job is still `provisioning` (nothing was spawned, no
+   * runner handle was ever attached), can rewind it. 0 rows ⇒ the lease moved
+   * on and the caller must not touch the row.
+   */
+  async releaseClaim(jobId: string, claimedBy: string): Promise<boolean> {
+    if (!UUID_RE.test(claimedBy)) {
+      throw new TypeError(`releaseClaim: claimedBy must be a UUID (got '${claimedBy}')`);
+    }
+    const r = await this.pool.query(
+      `UPDATE dev_jobs
+          SET status = 'queued', claimed_by = NULL, claimed_at = NULL, started_at = NULL,
+              updated_at = now()
+        WHERE id = $1 AND claimed_by = $2 AND status = 'provisioning'
+          AND runner_handle IS NULL`,
+      [jobId, claimedBy],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
    * Bump liveness without writing an event.
    *
    * `appendEvents` bumps `last_heartbeat_at` too, but it returns early on an

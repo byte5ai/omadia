@@ -2433,7 +2433,10 @@ async function main(): Promise<void> {
     });
     mountDevPlatform(app, requireAuth, wiredDevPlatform, (msg) => console.log(msg));
     // Start the claim/enforce/reap/apply loop; stop it cleanly on shutdown.
-    wiredDevPlatform.worker.start();
+    // Re-adopt the docker jobs this process was running before it restarted, so
+    // reap() can still see a job whose container the daemon has since lost. The
+    // daemon rebuilds its own view from docker labels; ours lives only in memory.
+    await wiredDevPlatform.start();
     const stopDevPlatformWorker = (): void => wiredDevPlatform.worker.stop();
     process.once('SIGTERM', stopDevPlatformWorker);
     process.once('SIGINT', stopDevPlatformWorker);

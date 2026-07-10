@@ -69,6 +69,20 @@ export interface DockerRunnerHandle extends RunnerHandle {
 }
 
 /**
+ * Narrow a persisted handle to this backend's shape. Returns null for anything
+ * that is not a complete docker handle — a foreign backend's row, a truncated
+ * write, or a hand-edited one.
+ */
+function asDockerHandle(handle: RunnerHandle): DockerRunnerHandle | null {
+  const h = handle as Partial<DockerRunnerHandle>;
+  if (h.backend !== 'docker') return null;
+  for (const key of ['id', 'jobId', 'containerId', 'networkId', 'volumeName', 'imageDigest'] as const) {
+    if (typeof h[key] !== 'string' || h[key] === '') return null;
+  }
+  return h as DockerRunnerHandle;
+}
+
+/**
  * A typed daemon failure. Extends `RunnerBackendError` so `.code` survives into
  * `dev_jobs.error`/logs, and adds the two policy bits the worker's callers act on:
  *   - `retryable` — a 429 at-capacity: the create should be retried later, NOT
@@ -287,7 +301,33 @@ export class DockerBackend implements RunnerBackend {
    * (`runner_lost`). A daemon read failure yields NO reaps (a transient blip
    * must never mass-finalize healthy jobs).
    */
+  /**
+   * Re-adopt a handle the middleware persisted before it restarted.
+   *
+   * `reap()` answers "which jobs does the middleware still think are running that
+   * the daemon has lost?" — a question only answerable from BOTH views. The
+   * daemon's view survives a restart because it rebuilds from docker labels; the
+   * middleware's view lives in `this.live`, which does not. Without rehydration a
+   * restarted middleware reaps nothing, and a job whose container died stays
+   * `running` in the database forever.
+   *
+   * The store is the middleware's durable view, so the wiring hands every active
+   * docker-backend job's handle back at boot.
+   */
+  adopt(jobId: string, handle: RunnerHandle): boolean {
+    if (this.live.has(jobId)) return true;
+    const docker = asDockerHandle(handle);
+    // The handle is JSONB the database happens to hold. A row written by another
+    // backend — or corrupted — must not be re-adopted as a docker container and
+    // then have its lease renewed against a daemon that never created it.
+    if (!docker || docker.jobId !== jobId) return false;
+    this.live.set(jobId, docker);
+    this.ensureRenewLoop();
+    return true;
+  }
+
   async reap(): Promise<RunnerHandle[]> {
+    // Empty after `adopt()` has run means the middleware genuinely tracks nothing.
     if (this.live.size === 0) return [];
     let daemonIds: Set<string>;
     try {
