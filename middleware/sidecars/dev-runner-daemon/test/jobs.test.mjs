@@ -750,3 +750,27 @@ describe('createDockerEngine — real dockerode integration', { skip: !RUN_DOCKE
     await engine.destroyJobContainer(handle);
   });
 });
+
+describe('createDockerEngine — a rollback that fails must not be silent', () => {
+  it('names the resources that survived a failed create + failed cleanup', async () => {
+    const docker = makeFakeDocker({
+      startFail: new Error('start refused'),
+      containerRemoveFail: new Error('docker is down'),
+    });
+    const engine = createDockerEngine({ docker, env: {} });
+    await assert.rejects(
+      () =>
+        engine.createJobContainer({
+          jobId: JOB_ID,
+          policy: { image: `alpine@sha256:${'a'.repeat(64)}`, env: {}, egressAllowlist: [] },
+          leaseExpiresAt: new Date(0).toISOString(),
+        }),
+      (err) => {
+        assert.equal(err.code, 'daemon.create_rollback_failed');
+        // Nothing holds a handle on these — the error is the only trace.
+        assert.ok(err.resources.some((r) => r.includes(JOB_ID.slice(0, 8))), 'the surviving resources are named');
+        return true;
+      },
+    );
+  });
+});

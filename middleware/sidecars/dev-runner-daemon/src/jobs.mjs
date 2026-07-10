@@ -152,6 +152,26 @@ export class JobCapacityError extends Error {
 }
 
 
+/** Raised when a failed `createJobContainer` could not clean up after itself.
+ *  The job is never registered, so nothing holds a handle on whatever survived —
+ *  the error names the resources so an operator (or the reaper, which knows the
+ *  deterministic `omadia-job-<id>` names) can remove them. Mapped to 500: this is
+ *  a daemon-side failure, not a bad request. */
+export class CreateRollbackError extends Error {
+  /** @param {string} jobId @param {readonly string[]} resources @param {readonly string[]} failures @param {unknown} cause */
+  constructor(jobId, resources, failures, cause) {
+    super(
+      `job ${jobId} failed to create AND failed to roll back; these may survive: ${resources.join(', ')} (${failures.join('; ')})`,
+    );
+    this.name = 'CreateRollbackError';
+    /** @type {string} */
+    this.code = 'daemon.create_rollback_failed';
+    /** @type {readonly string[]} */
+    this.resources = resources;
+    this.cause = cause;
+  }
+}
+
 /**
  * The repository part of an image reference: strip any `@digest`, then a
  * trailing `:tag` — but only from the LAST path segment, so a registry port
@@ -682,6 +702,15 @@ export function createDockerEngine(opts = {}) {
         if (container) await removeContainer(docker, container.id, rollback);
         if (network) await removeNetwork(docker, network.id, rollback);
         if (volumeCreated) await removeVolume(docker, volumeName, rollback);
+        if (rollback.length > 0) {
+          // The rollback itself failed. Nothing will hold a handle on these —
+          // the job was never registered — so the ONLY way they get cleaned up
+          // is if the failure is loud and names them. Swallowing it here is the
+          // same lost-handle leak `destroy()` refuses to cause. The names are
+          // deterministic (`omadia-job-<id>`), so an operator or the reaper can
+          // find exactly what survived.
+          throw new CreateRollbackError(jobId, [networkName, volumeName], rollback, err);
+        }
         throw err;
       }
     },
