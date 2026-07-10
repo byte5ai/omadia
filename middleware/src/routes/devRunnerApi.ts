@@ -22,7 +22,7 @@
  */
 
 import { Router, json as expressJson, text as expressText } from 'express';
-import type { NextFunction, Request, Response } from 'express';
+import type { NextFunction, Request, Response, Router as ExpressRouter } from 'express';
 
 import type { DeriveJobPolicyConfig } from '../devplatform/deriveJobPolicy.js';
 import { mountJobPolicyRoute } from './devRunnerJobPolicyRoute.js';
@@ -127,6 +127,14 @@ export interface DevRunnerRouterDeps {
   jobPolicyConfig?: DeriveJobPolicyConfig;
   /** Clock injection for `expiresAt` (tests). Default `Date.now`. */
   now?: () => number;
+  /**
+   * W1 LLM proxy (spec §6b), mounted at `/llm` so the Claude CLI's
+   * `ANTHROPIC_BASE_URL` → `/api/v1/dev-runner/llm` reaches it. Built by the wire
+   * unit via `createLlmProxyRouter`; the sub-router does its OWN job-token auth
+   * (the CLI sends no jobId, only the bearer), so it is mounted without `authMw`.
+   * Absent ⇒ the proxy surface is simply not mounted (W0 shape).
+   */
+  llmProxyRouter?: ExpressRouter;
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +204,12 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
     daemonToken,
     jobPolicyConfig,
     now = Date.now,
+    llmProxyRouter,
   } = deps;
+
+  // W1: mount the Anthropic-compatible LLM proxy under `/llm`. It authenticates
+  // the per-job bearer itself (same `djr_` token the shim holds), so no `authMw`.
+  if (llmProxyRouter) router.use('/llm', llmProxyRouter);
 
   // One-shot `scm-token` guard, keyed by `<jobId>#<provision>`. In-memory is the
   // right scope for W0: the clone token is fetched once, early, and a middleware
