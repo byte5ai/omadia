@@ -33,7 +33,8 @@
  * The timer is unref'd and single-flighted: a slow pass never stacks on the next
  * tick, and a hung engine call cannot pin the process open or wedge the daemon
  * (lesson (d) — the tests must not hang). Every reap logs the job id and the
- * reason (`lease_expired` | `orphan` | `boot_stale`) so a reap is observable.
+ * reason (`lease_expired` | `lifetime_exceeded` | `orphan` | `boot_stale`) so a
+ * reap is observable.
  */
 
 import { jobNetworkName, jobVolumeName } from './clamp.mjs';
@@ -130,6 +131,11 @@ export function createReaper(deps) {
   const info = logger.info ?? logger.log ?? (() => {});
   const warn = logger.warn ?? info;
 
+  /** Jobs a `boot_stale` teardown could not remove. Their record survives with a
+   *  future lease, so the ordinary lease sweep would never retry them — they are
+   *  retried explicitly, every sweep, until the engine lets them go. */
+  const forceReap = new Set();
+
   /** @type {ReturnType<typeof setInterval> | undefined} */
   let timer;
   /** Single-flight guard: the sweep never runs two passes at once (spec §7). */
@@ -144,13 +150,18 @@ export function createReaper(deps) {
    * Tear a REGISTERED job down through the same deduplicated path a DELETE uses.
    * A failed teardown keeps the record (JobManager retains it), so the next sweep
    * retries — the failure is surfaced, never swallowed, and the handle is kept.
-   * @param {string} jobId @param {'lease_expired' | 'boot_stale'} reason
+   * @param {string} jobId @param {'lease_expired' | 'boot_stale' | 'lifetime_exceeded'} reason
    */
   async function reapRegistered(jobId, reason) {
     try {
       const torn = await jobManager.destroy(jobId);
       if (torn) logReap(jobId, reason);
+      forceReap.delete(jobId);
     } catch (err) {
+      // The handle is retained by JobManager. But a `boot_stale` corpse keeps a
+      // graced (future) lease, so the ordinary lease sweep would never look at
+      // it again — remember it and retry every sweep.
+      if (reason === 'boot_stale') forceReap.add(jobId);
       warn(`[dev-runner-daemon] reap of ${jobId} (${reason}) failed; handle retained for retry: ${errMessage(err)}`);
     }
   }
@@ -161,9 +172,17 @@ export function createReaper(deps) {
    * @param {number} nowMs
    */
   async function reapExpiredLeases(nowMs) {
+    for (const jobId of [...forceReap]) {
+      await reapRegistered(jobId, 'boot_stale');
+    }
     for (const record of jobManager.list()) {
-      if (isLeaseExpired(record.leaseExpiresAt, nowMs)) {
-        await reapRegistered(record.jobId, 'lease_expired');
+      // The lease says "the middleware still wants this". The hard deadline says
+      // "the daemon will not run it any longer, whatever the middleware wants" —
+      // without it, endless renewals pin a container forever and the daemon is
+      // no longer self-authoritative for containers.
+      const pastDeadline = isLeaseExpired(record.hardDeadlineAt, nowMs);
+      if (pastDeadline || isLeaseExpired(record.leaseExpiresAt, nowMs)) {
+        await reapRegistered(record.jobId, pastDeadline ? 'lifetime_exceeded' : 'lease_expired');
       }
     }
   }

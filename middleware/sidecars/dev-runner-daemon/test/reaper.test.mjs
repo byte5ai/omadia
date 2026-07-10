@@ -462,3 +462,58 @@ describe('reaper — pure helpers', () => {
     assert.equal(resolveSweepIntervalMs({ DEV_RUNNER_SWEEP_INTERVAL_MS: '5000' }), 5000, 'a valid override is honoured');
   });
 });
+
+describe('reaper — the daemon owns the container lifetime, not the middleware', () => {
+  it('reaps a job past its hard deadline no matter how often its lease is renewed', async () => {
+    const clock = mutableClock(0);
+    const engine = fakeEngine({});
+    const logger = capturingLogger();
+    const jm = new JobManager({
+      engine,
+      policyClient: fakePolicyClient(),
+      clock,
+      maxJobLifetimeMs: 60_000,
+    });
+    const reaper = createReaper({ jobManager: jm, engine, clock, logger, intervalMs: 1_000 });
+    await jm.create(JOB_A, 30);
+
+    // The middleware behaves exactly as a compromised one would: renew forever.
+    for (let t = 0; t < 60_000; t += 10_000) {
+      clock.t = t;
+      jm.renew(JOB_A, 30);
+      await reaper.sweep();
+      assert.equal(jm.size(), 1, `job still alive within its lifetime (t=${t})`);
+    }
+
+    // Past the deadline the renewal cannot save it: a lease says "still
+    // working", it can never say "run forever".
+    clock.t = 60_001;
+    jm.renew(JOB_A, 3600);
+    await reaper.sweep();
+    assert.equal(jm.size(), 0, 'the container dies at the daemon-owned deadline');
+    assert.equal(logger.reaped('lifetime_exceeded').length, 1);
+  });
+
+  it('retries a boot_stale teardown the engine refused, sweep after sweep', async () => {
+    const clock = mutableClock(500_000);
+    let refuse = true;
+    const engine = fakeEngine(
+      { [JOB_A]: { hasContainer: true, hasNetwork: true, hasVolume: true, lease: isoAt(900_000), running: false } },
+      { destroyFail: () => refuse },
+    );
+    const logger = capturingLogger();
+    const jm = new JobManager({ engine, policyClient: fakePolicyClient(), clock });
+    const reaper = createReaper({ jobManager: jm, engine, clock, logger, intervalMs: 1_000 });
+
+    await reaper.rebuild();
+    assert.equal(jm.size(), 1, 'the corpse is retained — its handle is the only way to retry');
+
+    // Its graced lease is in the future, so nothing but an explicit retry would
+    // ever look at it again.
+    refuse = false;
+    clock.t += 1;
+    await reaper.sweep();
+    assert.equal(jm.size(), 0, 'the retry tore it down once the engine recovered');
+    assert.equal(logger.reaped('boot_stale').length, 1);
+  });
+});

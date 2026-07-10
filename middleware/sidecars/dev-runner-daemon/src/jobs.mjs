@@ -125,6 +125,10 @@ export const LEASE_EXPIRES_LABEL = 'ai.omadia.dev.leaseExpiresAt';
  * @property {string} jobId
  * @property {JobContainer} container
  * @property {string} leaseExpiresAt
+ * @property {string} hardDeadlineAt The daemon-owned absolute deadline. Renewals
+ *   can move `leaseExpiresAt`, never this — otherwise a compromised middleware
+ *   pins a container forever simply by renewing it, and the reaper's whole
+ *   purpose (the daemon is self-authoritative for containers) is defeated.
  */
 
 /**
@@ -254,6 +258,10 @@ function repositoryOf(ref) {
   return colon === -1 ? noDigest : noDigest.slice(0, slash + 1 + colon);
 }
 
+/** Absolute lifetime of a job container, renewals notwithstanding. The middleware
+ *  renews a lease to say "still working"; it can never say "run forever". */
+export const DEFAULT_MAX_JOB_LIFETIME_MS = 6 * 60 * 60 * 1000;
+
 /** Default live-job admission bound (spec §4 hardening). */
 export const DEFAULT_MAX_LIVE_JOBS = 8;
 /** Default concurrent-provision (in-flight) admission bound — smaller than the
@@ -293,6 +301,8 @@ export class JobManager {
   #maxLiveJobs;
   /** @type {number} Max concurrent provisions admitted. */
   #maxInflight;
+  /** @type {number} Absolute container lifetime; renewals cannot exceed it. */
+  #maxLifetimeMs;
 
   /**
    * @param {object} deps
@@ -301,6 +311,7 @@ export class JobManager {
    * @param {Clock} [deps.clock]
    * @param {number} [deps.maxLiveJobs] Live-job admission cap (default 8).
    * @param {number} [deps.maxInflight] In-flight admission cap (default 4).
+   * @param {number} [deps.maxJobLifetimeMs] Absolute container lifetime (default 6 h).
    */
   constructor(deps) {
     this.#engine = deps.engine;
@@ -308,6 +319,7 @@ export class JobManager {
     this.#clock = deps.clock ?? SYSTEM_CLOCK;
     this.#maxLiveJobs = deps.maxLiveJobs ?? DEFAULT_MAX_LIVE_JOBS;
     this.#maxInflight = deps.maxInflight ?? DEFAULT_MAX_INFLIGHT_JOBS;
+    this.#maxLifetimeMs = deps.maxJobLifetimeMs ?? DEFAULT_MAX_JOB_LIFETIME_MS;
   }
 
   /**
@@ -380,13 +392,23 @@ export class JobManager {
         // frame is about to unwind — so register it before rethrowing. Losing
         // the handle here is the same leak `destroy()` refuses to cause; the
         // cancel path must refuse it too.
-        this.#jobs.set(jobId, { jobId, container, leaseExpiresAt });
+        this.#jobs.set(jobId, {
+          jobId,
+          container,
+          leaseExpiresAt,
+          hardDeadlineAt: new Date(this.#clock.now() + this.#maxLifetimeMs).toISOString(),
+        });
         throw new JobCleanupError(jobId, err);
       }
       throw new JobCancelledError(jobId);
     }
     /** @type {JobRecord} */
-    const record = { jobId, container, leaseExpiresAt };
+    const record = {
+      jobId,
+      container,
+      leaseExpiresAt,
+      hardDeadlineAt: new Date(this.#clock.now() + this.#maxLifetimeMs).toISOString(),
+    };
     this.#jobs.set(jobId, record);
     return record;
   }
@@ -400,7 +422,11 @@ export class JobManager {
   renew(jobId, leaseTtlSec) {
     const record = this.#jobs.get(jobId);
     if (!record) return null;
-    record.leaseExpiresAt = this.#leaseExpiry(leaseTtlSec);
+    // A renewal may extend the lease, but never past the daemon's own deadline.
+    // The middleware is trusted to say "still working", not "run forever".
+    const requested = Date.parse(this.#leaseExpiry(leaseTtlSec));
+    const deadline = Date.parse(record.hardDeadlineAt);
+    record.leaseExpiresAt = new Date(Math.min(requested, deadline)).toISOString();
     return record;
   }
 
@@ -527,7 +553,16 @@ export class JobManager {
     // A create or destroy already owns this id; its handle is authoritative.
     if (this.#inflight.has(jobId) || this.#destroying.has(jobId)) return null;
     /** @type {JobRecord} */
-    const record = { jobId, container, leaseExpiresAt };
+    // An adopted container's true birth time is unknown after a restart, so the
+    // deadline is measured from adoption. A middleware that restarts the daemon
+    // to reset it must also survive the reaper's grace window, and the container
+    // it inherits is at most one lifetime old.
+    const record = {
+      jobId,
+      container,
+      leaseExpiresAt,
+      hardDeadlineAt: new Date(this.#clock.now() + this.#maxLifetimeMs).toISOString(),
+    };
     this.#jobs.set(jobId, record);
     return record;
   }

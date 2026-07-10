@@ -567,7 +567,7 @@ export async function main(env = process.env) {
   const maxLiveJobs = parsePositiveIntEnv(env.DEV_RUNNER_MAX_LIVE_JOBS);
   const maxInflight = parsePositiveIntEnv(env.DEV_RUNNER_MAX_INFLIGHT_JOBS);
   const maxLogFollows = parsePositiveIntEnv(env.DEV_RUNNER_MAX_LOG_FOLLOWS);
-  const jobManager = new JobManager({ engine, policyClient, maxLiveJobs, maxInflight });
+  const jobManager = new JobManager({ maxJobLifetimeMs: parsePositiveIntEnv(env.DEV_RUNNER_MAX_JOB_LIFETIME_MS), engine, policyClient, maxLiveJobs, maxInflight });
   const warmImageRefs = (env.DEV_RUNNER_IMAGES ?? env.DEV_RUNNER_DEFAULT_IMAGE ?? '')
     .split(',')
     .map((r) => r.trim())
