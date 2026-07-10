@@ -833,7 +833,8 @@ Antwort restauriert. Zwei Detektor-Tiers:
   spricht den GLiNER-Inference-Sidecar `middleware/sidecars/pii-detector/`
   über `POST /detect` an. Injection über den bestehenden
   `createPrivacyGuardService({c1Detector})`-Slot — **keine** Änderungen an
-  `service.ts` / `promptMask.ts` / Orchestrator.
+  `service.ts` / Orchestrator; `promptMask.ts` wurde nur durch den
+  Overlap-Remainder-Fix (`6b42c6c`, siehe unten) angepasst.
 
 Konfiguration (live pro Call aufgelöst, kein Restart nötig): Setup-Field
 `c1_detector_url` zuerst, Env-Fallback `PRIVACY_C1_DETECTOR_URL` (leer =

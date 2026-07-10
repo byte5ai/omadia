@@ -467,4 +467,3 @@ Detector sets: `c0`, `c0+c1`, `c1-solo`.
 | p95 added latency | 42.3 ms | ≤ 400 ms | not gated |
 
 **Verdict** (ablation — reported, never gated): n/a
-
