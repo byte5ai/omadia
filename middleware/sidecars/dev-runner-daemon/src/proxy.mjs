@@ -44,6 +44,29 @@ import {
 } from './egressPolicy.mjs';
 
 /** Data-plane port (spec §6). */
+
+/**
+ * Reject if `p` has not settled within `ms`. A tarpit authoritative nameserver
+ * would otherwise hold a request before ANY deadline is armed and before the
+ * tunnel is counted against the concurrency cap — unbounded parked requests,
+ * each holding a socket, none visible to the limiter.
+ * Not unref'd: an unref'd deadline never fires when node is idle, so the awaited
+ * race would hang instead of failing. Always cleared in `finally`.
+ * @template T @param {Promise<T>} p @param {number} ms @param {string} label
+ * @returns {Promise<T>}
+ */
+function withDeadline(p, ms, label) {
+  /** @type {ReturnType<typeof setTimeout>} */
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms);
+  });
+  return Promise.race([p, deadline]).finally(() => clearTimeout(timer));
+}
+
+/** DNS must not be a way to park a connection forever before the limiter sees it. */
+export const DEFAULT_RESOLVE_TIMEOUT_MS = 5_000;
+
 export const DEFAULT_DATA_PORT = 3128;
 /** Control-plane port (spec §6). */
 export const DEFAULT_CONTROL_PORT = 3129;
@@ -95,6 +118,7 @@ async function defaultResolve(host) {
  * @property {number} [internalPort]
  * @property {ReadonlySet<number>} [allowedPorts]
  * @property {(host: string) => Promise<Array<{ address: string, family?: number }>>} [resolve] DNS seam.
+ * @property {number} [resolveTimeoutMs] Deadline on name resolution (default 5 s).
  * @property {Partial<typeof DEFAULTS>} [limits]
  * @property {{ warn?: (m: string) => void }} [logger]
  * @property {() => number} [now]
@@ -110,7 +134,10 @@ export function createProxy(deps) {
   const logger = deps.logger ?? console;
   const now = deps.now ?? (() => Date.now());
   const allowedPorts = deps.allowedPorts ?? new Set(DEFAULT_ALLOWED_PORTS);
-  const resolve = deps.resolve ?? defaultResolve;
+  const rawResolve = deps.resolve ?? defaultResolve;
+  const resolveTimeoutMs = deps.resolveTimeoutMs ?? DEFAULT_RESOLVE_TIMEOUT_MS;
+  /** @param {string} host */
+  const resolve = (host) => withDeadline(rawResolve(host), resolveTimeoutMs, 'dns resolve');
   const limits = { ...DEFAULTS, ...(deps.limits ?? {}) };
   const ctx = {
     registry: deps.registry,

@@ -71,9 +71,24 @@ function normalizeParsedHost(hostname) {
  */
 export function parseAuthority(authority, defaultPort) {
   if (typeof authority !== 'string' || authority.length === 0) return null;
+
+  // The PORT is read from the raw authority, never from a WHATWG URL: the parser
+  // erases a port that matches the scheme's default. `new URL('http://h:80').port`
+  // is the empty string, so an explicit `CONNECT h:80` would fall through to the
+  // 443 default and be tunnelled to the wrong port entirely. Parse the authority
+  // ourselves; the URL is used only to canonicalise the HOST.
+  const lastColon = authority.lastIndexOf(':');
+  const closingBracket = authority.lastIndexOf(']');
+  const hasPort = lastColon > closingBracket && lastColon !== -1;
+  const hostPart = hasPort ? authority.slice(0, lastColon) : authority;
+  const portPart = hasPort ? authority.slice(lastColon + 1) : '';
+  // An empty or non-numeric port (`h:`, `h:https`, `h:80x`) is malformed, not a
+  // reason to silently substitute the default.
+  if (hasPort && !/^\d{1,5}$/.test(portPart)) return null;
+
   let u;
   try {
-    u = new URL(`http://${authority}`);
+    u = new URL(`http://${hostPart}`);
   } catch {
     return null;
   }
@@ -82,7 +97,7 @@ export function parseAuthority(authority, defaultPort) {
   if (u.pathname !== '/' && u.pathname !== '') return null;
   const host = normalizeParsedHost(u.hostname);
   if (!host) return null;
-  const port = u.port ? Number(u.port) : defaultPort;
+  const port = hasPort ? Number(portPart) : defaultPort;
   if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
   return { host, port };
 }

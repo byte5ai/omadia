@@ -297,3 +297,25 @@ describe('createEventClient — batching + immediate deny flush', () => {
     assert.equal(client.queueLength, 0);
   });
 });
+
+describe('parseAuthority — the port comes from the authority, not from a URL parser', () => {
+  it('keeps an explicit :80 instead of falling back to the CONNECT default', () => {
+    // `new URL('http://h:80').port` is '' — the parser erases a port that equals
+    // the scheme default. Reading it back would tunnel `CONNECT h:80` to 443.
+    assert.deepEqual(parseAuthority('example.com:80', 443), { host: 'example.com', port: 80 });
+    assert.deepEqual(parseAuthority('example.com:443', 443), { host: 'example.com', port: 443 });
+    assert.deepEqual(parseAuthority('example.com', 443), { host: 'example.com', port: 443 });
+    assert.deepEqual(parseAuthority('[::1]:80', 443), { host: '::1', port: 80 });
+  });
+
+  it('refuses a malformed port rather than silently substituting the default', () => {
+    for (const bad of ['h:', 'h:https', 'h:80x', 'h:0', 'h:99999', 'h:-1']) {
+      assert.equal(parseAuthority(bad, 443), null, `should refuse ${bad}`);
+    }
+  });
+
+  it('still canonicalises the host before it is classified', () => {
+    assert.deepEqual(parseAuthority('GitHub.com.:80', 443), { host: 'github.com', port: 80 });
+    assert.deepEqual(parseAuthority('2130706433:80', 443), { host: '127.0.0.1', port: 80 });
+  });
+});

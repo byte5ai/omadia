@@ -71,6 +71,8 @@ async function startProxy(opts = {}) {
   const eventClient = { record: (e) => events.push(e), flush: async () => {}, stop: () => {} };
   const resolve = async (host) => {
     resolveCalls.push(host);
+    // A nameserver that never answers: the tarpit the resolve deadline exists for.
+    if (opts.resolveHangs) return new Promise(() => {});
     return opts.resolveMap?.[host] ?? [{ address: '127.0.0.1', family: 4 }];
   };
   const proxy = createProxy({
@@ -82,6 +84,7 @@ async function startProxy(opts = {}) {
     resolve,
     logger: { warn() {} },
     limits: { connectMs: 2000, idleMs: 2000, absoluteMs: 5000 },
+    ...(opts.resolveTimeoutMs !== undefined ? { resolveTimeoutMs: opts.resolveTimeoutMs } : {}),
   });
   const dataPort = await listen(proxy.dataServer);
   const controlPort = await listen(proxy.controlServer);
@@ -395,3 +398,23 @@ function controlRequest(controlPort, method, path, token, body) {
     req.end();
   });
 }
+
+describe('proxy — a tarpit nameserver cannot park connections before the limiter sees them', () => {
+  it('fails a CONNECT whose DNS resolution outruns the deadline', async () => {
+    // The connect/idle/absolute deadlines are armed only AFTER resolution, and a
+    // tunnel is counted only once the socket exists. A nameserver that never
+    // answers would therefore hold sockets no bound can see.
+    const p = await startProxy({
+      jobs: [{ jobId: JOB_ID, allowlist: ['good.test'], proxyToken: PROXY_TOKEN }],
+      resolveHangs: true,
+      resolveTimeoutMs: 25,
+    });
+    try {
+      const { statusCode, socket } = await sendConnect(p.dataPort, 'good.test:443', basicAuth());
+      socket.destroy();
+      assert.notEqual(statusCode, 200, 'the tunnel must not be established');
+    } finally {
+      await p.close();
+    }
+  });
+});
