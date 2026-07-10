@@ -280,3 +280,60 @@ describe('JobManager — a failed teardown on the cancel path keeps the handle',
     assert.equal(jm.list().length, 1, 'the container is still tracked, not leaked');
   });
 });
+
+describe('JobManager — DELETE of an in-flight create waits for the outcome', () => {
+  it('reports failure (not success) when the cancel teardown fails', async () => {
+    let releaseCreate;
+    const createGate = new Promise((r) => (releaseCreate = r));
+    const engine = {
+      async ping() {
+        return { reachable: true, apiVersion: '1.47' };
+      },
+      async createJobContainer() {
+        await createGate;
+        return { containerId: 'c-1', networkId: 'n-1', volumeName: 'v-1', imageDigest: 'sha256:x' };
+      },
+      async destroyJobContainer() {
+        throw new Error('docker is down');
+      },
+      async streamLogs() {
+        return { on() {}, pipe() {} };
+      },
+      async warmImages() {
+        return [];
+      },
+    };
+    const jm = new JobManager({ engine, policyClient: fakePolicyClient() });
+
+    const creating = jm.create(JOB_ID, 60);
+    await Promise.resolve();
+    const deleting = jm.destroy(JOB_ID);
+    releaseCreate();
+
+    await assert.rejects(() => creating, /teardown failed|cleanup/i);
+    // Answering `true` here would tell the caller the job is gone while its
+    // container is still alive and tracked.
+    await assert.rejects(() => deleting, /teardown failed|cleanup/i);
+    assert.equal(jm.list().length, 1, 'the surviving container is still tracked for a retry');
+  });
+
+  it('reports success once the cancelled create tore its container down', async () => {
+    let releaseCreate;
+    const createGate = new Promise((r) => (releaseCreate = r));
+    const engine = immediateEngine();
+    const slowCreate = { ...engine, async createJobContainer(args) {
+      await createGate;
+      return engine.createJobContainer(args);
+    } };
+    const jm = new JobManager({ engine: slowCreate, policyClient: fakePolicyClient() });
+
+    const creating = jm.create(JOB_ID, 60);
+    await Promise.resolve();
+    const deleting = jm.destroy(JOB_ID);
+    releaseCreate();
+
+    await assert.rejects(() => creating, /deleted while it was being created|cancelled/i);
+    assert.equal(await deleting, true);
+    assert.equal(jm.list().length, 0, 'nothing is left behind');
+  });
+});

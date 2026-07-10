@@ -411,6 +411,18 @@ export function createDaemon(deps) {
           }
           activeFollows += 1;
         }
+        // The client can vanish while dockerode is still OPENING the stream. If
+        // we only listened for 'close' after the await, that disconnect would be
+        // missed: the stream resolves into nobody's hands, is never destroyed,
+        // and its slot is never released — enough of those and every later
+        // follow gets a 429 until the daemon restarts. So the disconnect is
+        // recorded from here on, and honoured the moment the stream arrives.
+        let clientGone = false;
+        const markGone = () => {
+          clientGone = true;
+        };
+        req.on('close', markGone);
+        res.on('close', markGone);
         /** @type {import('node:stream').Readable} */
         let stream;
         try {
@@ -418,6 +430,14 @@ export function createDaemon(deps) {
         } catch (err) {
           if (follow) activeFollows -= 1;
           throw err;
+        }
+        if (clientGone) {
+          // The disconnect landed during the await. Nobody is reading, so give
+          // the docker stream and the slot straight back.
+          if (follow) activeFollows -= 1;
+          stream.destroy();
+          res.end();
+          return;
         }
         res.writeHead(200, { 'content-type': 'application/octet-stream' });
 

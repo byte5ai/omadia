@@ -326,10 +326,25 @@ export class JobManager {
       return true;
     }
     // No live job yet — but a create may be mid-provision. Mark it cancelled so
-    // #provision reaps the container it is about to create.
-    if (this.#inflight.has(jobId)) {
+    // #provision reaps the container it is about to create, then WAIT for that
+    // create to settle before answering. Returning success the moment the flag
+    // is set would tell the DELETE caller the job is gone while the cancel
+    // teardown might still fail and leave the container tracked and alive.
+    const pending = this.#inflight.get(jobId);
+    if (pending) {
       this.#cancelled.add(jobId);
-      return true;
+      try {
+        await pending;
+      } catch (err) {
+        // JobCancelledError is the expected outcome: the create aborted and its
+        // container was torn down. Anything else — notably JobCleanupError —
+        // means the container survived and is still tracked, so the DELETE has
+        // NOT succeeded and the caller must retry.
+        if (err instanceof JobCancelledError) return true;
+        throw err;
+      }
+      // The create won the race and registered a live job; tear that down.
+      return this.destroy(jobId);
     }
     return false;
   }
