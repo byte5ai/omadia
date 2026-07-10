@@ -42,6 +42,7 @@ import {
 import { SpecRejectedError } from './clamp.mjs';
 import { createPolicyClient, parseAllowedImages, parseRequireDigest, PolicyLookupError } from './policyClient.mjs';
 import { parseCreateJobRequest, parseRenewLeaseRequest, WireProtocolMismatchError } from './protocol.ts';
+import { createReaper, resolveSweepIntervalMs } from './reaper.mjs';
 
 /** Default control-plane port (spec §4). */
 export const DEFAULT_DAEMON_PORT = 7411;
@@ -560,6 +561,17 @@ export async function main(env = process.env) {
     .filter((r) => r.length > 0);
 
   const server = createDaemon({ tokens, policyClient, jobManager, engine, warmImageRefs, maxLogFollows });
+
+  // The lease reaper is the daemon's self-authority for containers (spec §7): it
+  // rebuilds the registry from engine labels at boot (so a restart does not
+  // orphan live jobs), then enforces lease expiry and sweeps orphans on a timer —
+  // a wedged or compromised middleware can no longer pin containers forever.
+  const reaper = createReaper({ jobManager, engine, intervalMs: resolveSweepIntervalMs(env) });
+  // Rebuild + first sweep BEFORE accepting traffic, so a create for an already
+  // running (re-adopted) job is idempotent from the first request.
+  await reaper.start();
+  server.on('close', () => reaper.stop());
+
   await new Promise((resolve) => server.listen(port, bind, () => resolve(undefined)));
   console.log(`[dev-runner-daemon] listening on ${bind}:${port}`);
   return server;

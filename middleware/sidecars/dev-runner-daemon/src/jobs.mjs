@@ -49,6 +49,18 @@ import {
  * @typedef {import('./policyClient.mjs').PolicyClient} PolicyClient
  */
 
+/** The label every job container/network/volume carries — the ground truth the
+ *  reaper reconciles against (spec §7: "the label set is the ground truth the
+ *  daemon reconciles against"). Kept here so the engine that WRITES them and the
+ *  engine method that READS them back share one source of the strings. */
+export const JOB_ID_LABEL = 'ai.omadia.dev.jobId';
+/** The principal that created the resource; the reaper filters on it so one
+ *  daemon deployment never reaps another's jobs on a shared engine. */
+export const CREATED_BY_LABEL = 'ai.omadia.dev.createdBy';
+/** The ISO-8601 lease expiry, stamped on the container so a restarted daemon can
+ *  rebuild lease state from labels alone (spec §7 "state rebuilt from labels"). */
+export const LEASE_EXPIRES_LABEL = 'ai.omadia.dev.leaseExpiresAt';
+
 /**
  * A created job container, as the engine reports it back.
  * @typedef {object} JobContainer
@@ -66,6 +78,32 @@ import {
  */
 
 /**
+ * A job container the engine discovered on dind by its label, for boot-time
+ * registry rebuild (spec §7: "State rebuilt from container labels on boot").
+ * @typedef {object} ManagedContainer
+ * @property {string} jobId From the `ai.omadia.dev.jobId` label.
+ * @property {string} containerId The real docker id (containers are unnamed).
+ * @property {string} leaseExpiresAt From the lease label; '' when the label is absent.
+ * @property {string} imageDigest Best-effort digest of the running image; '' if unknown.
+ */
+
+/**
+ * A labelled per-job network or volume the engine discovered on dind. The
+ * reaper joins these against live jobs to find orphans (spec §7 daemon restart).
+ * @typedef {object} ManagedResource
+ * @property {string} jobId From the `ai.omadia.dev.jobId` label.
+ * @property {string} id The network id or volume name (docker remove accepts either).
+ */
+
+/**
+ * The full label-derived inventory of what this daemon left on the engine.
+ * @typedef {object} ManagedInventory
+ * @property {ManagedContainer[]} containers
+ * @property {ManagedResource[]} networks
+ * @property {ManagedResource[]} volumes
+ */
+
+/**
  * The container-lifecycle seam. The clamp/warmer/reaper units implement the
  * mutating methods; this unit provides `ping` and the fake used by tests.
  * @typedef {object} ContainerEngine
@@ -74,6 +112,9 @@ import {
  * @property {(container: JobContainer) => Promise<void>} destroyJobContainer
  * @property {(container: JobContainer, opts: { follow: boolean }) => Promise<import('node:stream').Readable>} streamLogs
  * @property {(refs: readonly string[]) => Promise<string[]>} warmImages
+ * @property {() => Promise<ManagedInventory>} listManagedResources List every
+ *   container/network/volume carrying THIS daemon's label — the reaper's
+ *   reconciliation source for boot rebuild and the orphan sweep.
  */
 
 /**
@@ -468,6 +509,40 @@ export class JobManager {
   }
 
   /**
+   * Re-adopt a container the reaper discovered on the engine at boot, so a daemon
+   * restart does not orphan a live job (spec §7: "State rebuilt from container
+   * labels on boot"). Idempotent and NON-clobbering: if the id is already live,
+   * or a create/destroy for it is in flight, the existing authority wins and this
+   * is a no-op — a rebuild that raced a fresh create must never overwrite it.
+   * @param {string} jobId
+   * @param {JobContainer} container
+   * @param {string} leaseExpiresAt
+   * @returns {JobRecord | null} The adopted record, or null if a live op owns the id.
+   */
+  adopt(jobId, container, leaseExpiresAt) {
+    const existing = this.#jobs.get(jobId);
+    if (existing) return existing;
+    // A create or destroy already owns this id; its handle is authoritative.
+    if (this.#inflight.has(jobId) || this.#destroying.has(jobId)) return null;
+    /** @type {JobRecord} */
+    const record = { jobId, container, leaseExpiresAt };
+    this.#jobs.set(jobId, record);
+    return record;
+  }
+
+  /**
+   * True if this id is live, being provisioned, or being torn down. The reaper's
+   * "not an orphan" guard: a mid-create job's network/volume exist before its
+   * record lands in `#jobs`, so an orphan sweep that keyed only on `list()` would
+   * reap a healthy job's resources out from under it (hard-won lesson (a)).
+   * @param {string} jobId
+   * @returns {boolean}
+   */
+  tracks(jobId) {
+    return this.#jobs.has(jobId) || this.#inflight.has(jobId) || this.#destroying.has(jobId);
+  }
+
+  /**
    * @param {number} leaseTtlSec
    * @returns {string} ISO-8601 lease expiry.
    */
@@ -701,8 +776,8 @@ export function createDockerEngine(opts = {}) {
       await ensureImage(docker, policy.image);
 
       const labels = {
-        'ai.omadia.dev.jobId': jobId,
-        'ai.omadia.dev.createdBy': createdBy,
+        [JOB_ID_LABEL]: jobId,
+        [CREATED_BY_LABEL]: createdBy,
       };
       /** @type {import('dockerode').Network | undefined} */
       let network;
@@ -806,6 +881,58 @@ export function createDockerEngine(opts = {}) {
         digests.push(resolved);
       }
       return digests;
+    },
+
+    async listManagedResources() {
+      // One label selects every resource this daemon authored; the createdBy
+      // check below narrows to THIS deployment so a shared engine's other jobs
+      // are never in scope. Filters ride as a JSON string (dockerode accepts it
+      // for all three list calls) to sidestep per-endpoint filter-typing drift.
+      const filters = JSON.stringify({ label: [JOB_ID_LABEL] });
+      const [rawContainers, rawNetworks, rawVolumesResult] = await Promise.all([
+        docker.listContainers({ all: true, filters }),
+        docker.listNetworks({ filters }),
+        docker.listVolumes({ filters }),
+      ]);
+
+      /** @type {ManagedContainer[]} */
+      const containers = [];
+      for (const c of rawContainers ?? []) {
+        const jobLabels = c.Labels;
+        // Only resources this deployment created: a foreign createdBy is skipped
+        // so we never tear down another daemon's job on the same engine.
+        if (!jobLabels || jobLabels[CREATED_BY_LABEL] !== createdBy) continue;
+        const jobId = jobLabels[JOB_ID_LABEL];
+        if (!jobId) continue;
+        containers.push({
+          jobId,
+          containerId: String(c.Id ?? ''),
+          leaseExpiresAt: jobLabels[LEASE_EXPIRES_LABEL] ?? '',
+          imageDigest: imageDigestOf(String(c.Image ?? '')) ?? '',
+        });
+      }
+
+      /** @type {ManagedResource[]} */
+      const networks = [];
+      for (const n of rawNetworks ?? []) {
+        const jobLabels = n.Labels;
+        if (!jobLabels || jobLabels[CREATED_BY_LABEL] !== createdBy) continue;
+        const jobId = jobLabels[JOB_ID_LABEL];
+        if (!jobId) continue;
+        networks.push({ jobId, id: String(n.Id ?? n.Name ?? '') });
+      }
+
+      /** @type {ManagedResource[]} */
+      const volumes = [];
+      for (const v of rawVolumesResult?.Volumes ?? []) {
+        const jobLabels = v.Labels;
+        if (!jobLabels || jobLabels[CREATED_BY_LABEL] !== createdBy) continue;
+        const jobId = jobLabels[JOB_ID_LABEL];
+        if (!jobId) continue;
+        volumes.push({ jobId, id: String(v.Name ?? '') });
+      }
+
+      return { containers, networks, volumes };
     },
   };
 }
