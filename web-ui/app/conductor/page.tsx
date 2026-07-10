@@ -24,7 +24,7 @@ import {
   type ConductorWorkflow,
 } from '@/app/_lib/api';
 
-import { ConductorCanvas } from './_components/ConductorCanvas';
+import { ConductorCanvas, type CanvasGraphRequest } from './_components/ConductorCanvas';
 import { ConductorChatPane } from './_components/ConductorChatPane';
 import { ConductorRunHistory, ConductorRunTrace } from './_components/ConductorRunTrace';
 import { TemplateGallery } from './_components/TemplateGallery';
@@ -61,7 +61,7 @@ export default function ConductorPage(): React.JSX.Element {
   // scrolls there. The nonce changes per click so editing the same workflow twice reloads it.
   const [editRequest, setEditRequest] = useState<{ slug: string; nonce: number } | null>(null);
   // The conversational builder's evolving draft, mirrored into the canvas below (US7 parity).
-  const [chatGraphRequest, setChatGraphRequest] = useState<{ graph: unknown; nonce: number } | null>(null);
+  const [chatGraphRequest, setChatGraphRequest] = useState<CanvasGraphRequest | null>(null);
   const designerRef = useRef<HTMLElement>(null);
 
   const reload = useCallback(async () => {
@@ -222,11 +222,12 @@ export default function ConductorPage(): React.JSX.Element {
                   setSelectedTemplate(null);
                   void reload();
                 }}
-                onOpenInDesigner={(graph) => {
-                  // Reuse the chat→canvas mechanism verbatim: the canvas hydrates via
-                  // its loadGraphRequest prop; publishing then goes through its normal
-                  // save flow.
-                  setChatGraphRequest({ graph, nonce: Date.now() });
+                onOpenInDesigner={(graph, target) => {
+                  // Reuse the chat→canvas mechanism: the canvas hydrates via its
+                  // loadGraphRequest prop; publishing then goes through its normal save
+                  // flow. The form's slug/name ride along so Save is armed with the
+                  // template instance identity, not a previously loaded workflow's.
+                  setChatGraphRequest({ graph, nonce: Date.now(), slug: target.slug, name: target.name });
                   designerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 }}
                 onCancel={() => setSelectedTemplate(null)}

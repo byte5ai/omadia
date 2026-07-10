@@ -32,8 +32,10 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `POST /templates/:id/instantiate`, then the list reloads), **Open in
   designer** (secondary → `POST /templates/:id/resolve`; the resolved graph
   hydrates `ConductorCanvas` through the existing chat→canvas
-  `loadGraphRequest` mechanism, publish goes through the canvas's normal save
-  flow) and **Cancel** (ghost). Enable toggle defaults to OFF; with a
+  `loadGraphRequest` mechanism — extended with optional `slug`/`name` so the
+  canvas form arrives publish-ready under the template instance identity and
+  never republishes over a previously loaded workflow's slug; publish then
+  goes through the canvas's normal save flow) and **Cancel** (ghost). Enable toggle defaults to OFF; with a
   cron-triggered template and the toggle ON, a persistent warning-colored TEXT
   notice states that the schedule starts as soon as the workflow is created.
   Client gate mirrors the server's completeness check (slug + every slot
@@ -104,9 +106,10 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   incl. `validate()` with live-style KnownRefs, cron validity, unique
   kebab-case ids, loader skip/duplicate behavior). Build plumbing in the same
   change: `middleware/scripts/copy-build-assets.mjs` mirrors the dir into
-  `dist/conductor/templates` and the Dockerfile COPYs it next to the
-  conductor-migrations line. File-based catalog — **no DB migration** (the
-  conductor chain's next free number stays `0006`).
+  `dist/conductor/templates` — that alone covers the Docker image too, since
+  the builder stage runs `npm run build` and the runtime stage copies the
+  resulting `dist/` (no Dockerfile change). File-based catalog — **no DB
+  migration** (the conductor chain's next free number stays `0006`).
 
 ### Added — conductor-core workflow-template contract (#429, unit b1)
 

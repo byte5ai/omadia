@@ -109,9 +109,6 @@ COPY middleware/src/profileSnapshots/migrations ./dist/profileSnapshots/migratio
 # Conductor migrations (Spec 005) — tsc skips .sql, so copy them next to the
 # compiled migrator (runConductorMigrations scans dist/conductor/migrations).
 COPY middleware/src/conductor/migrations ./dist/conductor/migrations
-# Conductor workflow-template catalog (#429) — tsc skips .json, so copy the
-# manifests next to the compiled loader (loadTemplateCatalog scans dist/conductor/templates).
-COPY middleware/src/conductor/templates ./dist/conductor/templates
 # Multi-orchestrator runtime migrations — runMultiOrchestratorMigrations
 # (in @omadia/orchestrator) scans this dir. Top-level location matches the
 # spec convention (specs/001-multi-orchestrator-runtime/data-model.md); the

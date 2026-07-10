@@ -78,8 +78,12 @@ function fieldClass(invalid: boolean): string {
 export interface TemplateInstantiateFormProps {
   template: ConductorTemplate;
   onCreated: (slug: string) => void;
-  /** Receives the resolved (substituted + validated) graph for canvas hydration. */
-  onOpenInDesigner: (graph: unknown) => void;
+  /**
+   * Receives the resolved (substituted + validated) graph for canvas hydration, plus the
+   * instance slug/name from this form so the canvas's own form is publish-ready (and never
+   * publishes the template graph under a previously loaded workflow's slug).
+   */
+  onOpenInDesigner: (graph: unknown, target: { slug: string; name: string }) => void;
   onCancel: () => void;
 }
 
@@ -236,7 +240,7 @@ export function TemplateInstantiateForm({
     clearErrors();
     try {
       const res = await resolveConductorTemplate(template.id, buildMapping());
-      onOpenInDesigner(res.graph);
+      onOpenInDesigner(res.graph, { slug: slug.trim(), name: name.trim() });
     } catch (err) {
       handleFailure(err);
     } finally {

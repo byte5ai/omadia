@@ -1,7 +1,8 @@
 // File-based conductor workflow-template catalog (issue #429). Bundled
 // TemplateManifest JSONs live next to this module in `templates/` (mirrored
-// into dist/ by scripts/copy-build-assets.mjs and the Dockerfile, same
-// pattern as the conductor migrations dir). Loaded once at wire time.
+// into dist/ by scripts/copy-build-assets.mjs, which `npm run build` runs —
+// the Docker image picks them up through its existing dist COPY). Loaded
+// once at wire time.
 //
 // An invalid or unparsable asset is skipped with a loud log line — a broken
 // bundled file must never brick boot; the CI gate

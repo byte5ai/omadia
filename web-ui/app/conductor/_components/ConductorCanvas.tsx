@@ -147,9 +147,14 @@ export interface CanvasEditRequest {
 
 // A request from the parent to render a draft graph (e.g. the conversational builder's evolving
 // draft, US7) directly into the canvas. The nonce changes each push so the same graph re-renders.
+// The template instantiation path (#429) additionally carries the instance slug/name so the
+// canvas form is publish-ready — and never publishes the template graph over a previously
+// loaded workflow's slug. The chat draft path omits them and leaves slug/name untouched.
 export interface CanvasGraphRequest {
   graph: unknown;
   nonce: number;
+  slug?: string;
+  name?: string;
 }
 
 function CanvasInner({
@@ -452,9 +457,17 @@ function CanvasInner({
 
   // Mirror the conversational builder's draft into the canvas (US7). A new nonce each turn means a
   // re-push of the same-shaped graph still re-renders, so chat edits show up live on the canvas.
+  // A request carrying slug/name (template instantiation, #429) also (re)targets the form fields,
+  // replacing whatever workflow identity a previous load left behind.
   useEffect(() => {
+    if (!loadGraphRequest) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- prop-nonce-triggered imperative load
-    if (loadGraphRequest) hydrateFromGraph(loadGraphRequest.graph);
+    if (loadGraphRequest.slug !== undefined) {
+      slugEdited.current = true; // an explicit slug is authoritative; don't auto-rewrite from the name
+      setSlug(loadGraphRequest.slug);
+    }
+    if (loadGraphRequest.name !== undefined) setName(loadGraphRequest.name);
+    hydrateFromGraph(loadGraphRequest.graph);
   }, [loadGraphRequest, hydrateFromGraph]);
 
   const handleRun = useCallback(async () => {

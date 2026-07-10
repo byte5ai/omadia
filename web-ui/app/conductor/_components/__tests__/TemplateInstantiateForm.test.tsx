@@ -74,7 +74,7 @@ function renderForm(
   template: ConductorTemplate = approvalTemplate,
   handlers: Partial<{
     onCreated: (slug: string) => void;
-    onOpenInDesigner: (graph: unknown) => void;
+    onOpenInDesigner: (graph: unknown, target: { slug: string; name: string }) => void;
     onCancel: () => void;
   }> = {},
 ): ReturnType<typeof renderWithIntl> {
@@ -225,7 +225,7 @@ describe('<TemplateInstantiateForm />', () => {
     expect(screen.getByText("step 'classify' references unknown agent 'ghost'")).toBeInTheDocument();
   });
 
-  it('resolves the template and hands the returned graph to onOpenInDesigner', async () => {
+  it('resolves the template and hands the graph plus the instance slug/name to onOpenInDesigner', async () => {
     const user = userEvent.setup();
     const onOpenInDesigner = vi.fn();
     const resolvedGraph = { entryStepId: 'submit', steps: [], transitions: [] };
@@ -233,6 +233,14 @@ describe('<TemplateInstantiateForm />', () => {
     renderForm(approvalTemplate, { onOpenInDesigner });
 
     await fillAllSlots(user);
+    // Edit the prefilled identity so the assertion proves the FORM values travel
+    // (trimmed), not the template defaults.
+    const slugField = screen.getByRole('textbox', { name: 'Workflow slug' });
+    await user.clear(slugField);
+    await user.type(slugField, 'q3-expenses');
+    const nameField = screen.getByRole('textbox', { name: 'Name' });
+    await user.clear(nameField);
+    await user.type(nameField, 'Q3 expenses ');
     await user.click(screen.getByRole('button', { name: 'Open in designer' }));
 
     expect(resolveConductorTemplate).toHaveBeenCalledWith('expense-approval', {
@@ -241,7 +249,7 @@ describe('<TemplateInstantiateForm />', () => {
       channels: { notify: 'teams' },
     });
     await waitFor(() => {
-      expect(onOpenInDesigner).toHaveBeenCalledWith(resolvedGraph);
+      expect(onOpenInDesigner).toHaveBeenCalledWith(resolvedGraph, { slug: 'q3-expenses', name: 'Q3 expenses' });
     });
   });
 
