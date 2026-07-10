@@ -2390,6 +2390,10 @@ async function main(): Promise<void> {
     const shimEntry = fileURLToPath(
       new URL('../packages/dev-runner-shim/dist/src/index.js', import.meta.url),
     );
+    // Comma-separated env list → trimmed non-empty entries (egress allowlist,
+    // model allowlist). Entry-level validation happens in deriveJobPolicy.
+    const csvList = (raw: string): string[] =>
+      raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
     const wiredDevPlatform = assembleDevPlatform({
       pool: graphPool,
       vault: secretVault,
@@ -2404,6 +2408,24 @@ async function main(): Promise<void> {
       unsafeLocal: config.DEV_PLATFORM_UNSAFE_LOCAL,
       ...(config.DEV_PLATFORM_LOCAL_UID !== undefined ? { localUid: config.DEV_PLATFORM_LOCAL_UID } : {}),
       shimEntry,
+      // W1 keystones (spec §4/§6b): the daemon job-policy endpoint + the LLM
+      // proxy. Absent daemon token / runner image ⇒ the internal endpoint 503s;
+      // the LLM proxy is always mounted (its origin probe must answer 2xx).
+      ...(config.DEV_RUNNER_DAEMON_TOKEN ? { daemonToken: config.DEV_RUNNER_DAEMON_TOKEN } : {}),
+      ...(config.DEV_RUNNER_DEFAULT_IMAGE ? { runnerImage: config.DEV_RUNNER_DEFAULT_IMAGE } : {}),
+      ...(config.DEV_EGRESS_BASE_ALLOWLIST
+        ? { egressBaseAllowlist: csvList(config.DEV_EGRESS_BASE_ALLOWLIST) }
+        : {}),
+      ...(config.DEV_PLATFORM_MIDDLEWARE_HOST
+        ? { middlewareHost: config.DEV_PLATFORM_MIDDLEWARE_HOST }
+        : {}),
+      llm: {
+        provider: config.DEV_PLATFORM_LLM_PROVIDER,
+        upstreamBaseUrl: config.DEV_PLATFORM_LLM_UPSTREAM_BASE_URL,
+        allowedModels: config.DEV_PLATFORM_LLM_ALLOWED_MODELS
+          ? csvList(config.DEV_PLATFORM_LLM_ALLOWED_MODELS)
+          : [],
+      },
       log: (msg) => console.log(msg),
     });
     mountDevPlatform(app, requireAuth, wiredDevPlatform, (msg) => console.log(msg));

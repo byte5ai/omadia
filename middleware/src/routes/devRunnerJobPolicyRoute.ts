@@ -103,7 +103,7 @@ export function mountJobPolicyRoute(router: Router, deps: JobPolicyRouteDeps): v
     }
     let policy;
     try {
-      policy = deriveJobPolicy(repo, job, deps.jobPolicyConfig);
+      policy = deriveJobPolicy(repo, job, deps.jobPolicyConfig, (msg) => console.warn(msg));
     } catch (err) {
       // JobPolicyError (e.g. an unparseable clone_url) is a server-side
       // misconfiguration; never echo its message (defence-in-depth) or a stack.

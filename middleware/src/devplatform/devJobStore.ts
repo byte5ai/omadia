@@ -16,7 +16,7 @@ import type { Pool } from 'pg';
 import * as artifacts from './devJobArtifactStore.js';
 import type { DevJobEventBus } from './devJobEventBus.js';
 import * as seams from './devJobWorkerSeams.js';
-import { verifyRunnerToken as verifyToken } from './jobToken.js';
+import { hashRunnerToken, verifyRunnerToken as verifyToken } from './jobToken.js';
 import { asObj, iso, isoN, num, str, strN, type Row } from './pgMappers.js';
 import {
   isDevJobEventType,
@@ -422,6 +422,31 @@ export class DevJobStore {
     );
     if (!r.rows[0]) return false;
     return verifyToken(token, strN(r.rows[0]['runner_token_hash']));
+  }
+
+  /** Resolve a job from its runner bearer alone — the LLM proxy (spec §6b) sees
+   *  only `Authorization: Bearer <djr_…>` and no jobId. A sha256-hash equality on
+   *  the indexed `runner_token_hash` column; unknown token ⇒ null. */
+  async resolveJobByToken(token: string): Promise<Pick<DevJob, 'id' | 'status' | 'agentKind'> | null> {
+    if (typeof token !== 'string' || token.length === 0) return null;
+    const r = await this.pool.query<Row>(
+      `SELECT id, status, agent_kind FROM dev_jobs WHERE runner_token_hash = $1`,
+      [hashRunnerToken(token)],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return { id: str(row['id']), status: str(row['status']) as DevJobStatus, agentKind: str(row['agent_kind']) };
+  }
+
+  /** Atomic per-job usage increment (spec §6b/§ W4). One statement so a
+   *  concurrent read never sees a half-applied bump; W4 will add the budget
+   *  enforcement onto this same UPDATE. */
+  async addJobUsage(jobId: string, tokensIn: number, tokensOut: number): Promise<void> {
+    await this.pool.query(
+      `UPDATE dev_jobs SET tokens_in = tokens_in + $2, tokens_out = tokens_out + $3, updated_at = now()
+        WHERE id = $1`,
+      [jobId, Math.max(0, Math.trunc(tokensIn)), Math.max(0, Math.trunc(tokensOut))],
+    );
   }
 
   // --- reaper / enforcement reads (worker calls finalizeDevJob on these) ----

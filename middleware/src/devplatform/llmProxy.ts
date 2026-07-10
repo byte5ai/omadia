@@ -80,6 +80,10 @@ export interface LlmProxyDeps {
   addJobUsage(jobId: string, tokensIn: number, tokensOut: number): Promise<void>;
   /** Ledger writer. Defaults to the shared `@omadia/usage-telemetry` recorder. */
   recordUsage?: (record: LlmProxyUsageRecord) => void;
+  /** Called when the authoritative `addJobUsage` write fails — the accounting
+   *  loss is surfaced (and counted) rather than swallowed. Default: no-op (the
+   *  error is still logged at error level). */
+  onAccountingError?: (err: unknown, ctx: { jobId: string; tokensIn: number; tokensOut: number }) => void;
   /** Upstream fetch (test seam). Default: global `fetch`. */
   fetchImpl?: typeof fetch;
   /** Structured log sink (e.g. mid-stream truncation notes). */
@@ -95,25 +99,37 @@ export interface LlmProxyDeps {
 const DEFAULT_MAX_BODY_BYTES = 25 * 1024 * 1024;
 const USAGE_SOURCE = 'dev-job';
 
-/** Request headers never forwarded upstream: hop-by-hop, length (fetch recomputes),
- *  and — critically — the client's auth. The provider key is attached separately. */
-const STRIPPED_REQUEST_HEADERS = new Set([
-  'host',
-  'connection',
-  'content-length',
-  'transfer-encoding',
-  'authorization',
-  'x-api-key',
+/**
+ * The ONLY client request headers forwarded upstream (allowlist, not denylist —
+ * the same lesson the W0 shim env learned). Everything else a hostile job
+ * container sends — `cookie`, `x-forwarded-*`, `proxy-authorization`, the client
+ * `authorization`/`x-api-key`, and every hop-by-hop header — is dropped. The
+ * provider key + `content-type` + `anthropic-version` are attached server-side.
+ */
+const FORWARDED_REQUEST_HEADERS = new Set([
+  'accept',
+  'anthropic-version',
+  'anthropic-beta',
+  'content-type',
 ]);
 
 /** Response headers not copied back: hop-by-hop + encoding/length that Node's
- *  fetch has already decoded away and express will recompute. */
+ *  fetch has already decoded away and express will recompute, PLUS auth-like
+ *  headers an upstream/intermediary might echo — the provider key must never be
+ *  handed back to the container the proxy exists to keep it away from. */
 const STRIPPED_RESPONSE_HEADERS = new Set([
   'connection',
   'transfer-encoding',
   'content-length',
   'content-encoding',
   'keep-alive',
+  // auth-like echoes (review S-finding).
+  'authorization',
+  'proxy-authorization',
+  'x-api-key',
+  'set-cookie',
+  'www-authenticate',
+  'proxy-authenticate',
 ]);
 
 function fail(res: Response, status: number, code: string, message: string): void {
@@ -127,6 +143,89 @@ function bearerToken(req: Request): string | null {
   if (!header) return null;
   const m = /^Bearer[ ]+(.+)$/i.exec(header.trim());
   return m ? m[1]!.trim() || null : null;
+}
+
+/**
+ * Scan raw JSON for a duplicate key within ANY single object and return the
+ * first one found (else null). `JSON.parse` silently keeps the last value for a
+ * repeated key, so a body with two `model` keys would pass the allowlist check
+ * on the parser's interpretation while the upstream honored the other — a
+ * model-allowlist bypass (review S-finding). We refuse such a body outright.
+ * A minimal state machine: a stack of key-sets, one per open object; strings
+ * with escapes handled; a key is a string token immediately followed by `:`.
+ */
+function firstDuplicateJsonKey(raw: string): string | null {
+  const stack: Array<Set<string>> = [];
+  let i = 0;
+  const n = raw.length;
+  // `pendingKey` holds the most recently closed string while we look for the
+  // `:` that would make it an object key (vs. a string value or array element).
+  let pendingKey: string | null = null;
+  while (i < n) {
+    const c = raw[i]!;
+    if (c === '"') {
+      // Read a full JSON string (with escapes).
+      let s = '';
+      i++;
+      while (i < n) {
+        const ch = raw[i]!;
+        if (ch === '\\') {
+          s += ch + (raw[i + 1] ?? '');
+          i += 2;
+          continue;
+        }
+        if (ch === '"') {
+          i++;
+          break;
+        }
+        s += ch;
+        i++;
+      }
+      pendingKey = s;
+      continue;
+    }
+    if (c === '{') {
+      stack.push(new Set());
+      pendingKey = null;
+      i++;
+      continue;
+    }
+    if (c === '}') {
+      stack.pop();
+      pendingKey = null;
+      i++;
+      continue;
+    }
+    if (c === '[') {
+      pendingKey = null;
+      i++;
+      continue;
+    }
+    if (c === ']') {
+      pendingKey = null;
+      i++;
+      continue;
+    }
+    if (c === ':') {
+      // The pending string was an object key. Register it against the current
+      // object; a second sighting is the duplicate we refuse.
+      const top = stack[stack.length - 1];
+      if (top && pendingKey !== null) {
+        if (top.has(pendingKey)) return pendingKey;
+        top.add(pendingKey);
+      }
+      pendingKey = null;
+      i++;
+      continue;
+    }
+    if (c === ',') {
+      pendingKey = null;
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return null;
 }
 
 interface UsageAccumulator {
@@ -223,6 +322,7 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
     resolveProviderKey,
     addJobUsage,
     recordUsage = defaultRecordUsage,
+    onAccountingError = () => {},
     fetchImpl = fetch,
     log = () => {},
     maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
@@ -266,11 +366,20 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
     // 3. Read the request body (raw bytes — forwarded verbatim, and parsed for
     //    the model gate). `express.raw` yields a Buffer.
     const body: Buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const rawText = body.length > 0 ? body.toString('utf8') : '';
     let parsed: Record<string, unknown>;
     try {
-      parsed = body.length > 0 ? (JSON.parse(body.toString('utf8')) as Record<string, unknown>) : {};
+      parsed = rawText.length > 0 ? (JSON.parse(rawText) as Record<string, unknown>) : {};
     } catch {
       fail(res, 400, 'devplatform.invalid_body', 'request body must be valid JSON');
+      return;
+    }
+    // Refuse duplicate JSON keys: the allowlist check reads one parser's view of
+    // `model` while the raw body we forward could carry a second `model` the
+    // upstream honors instead — a model-allowlist bypass.
+    const dup = firstDuplicateJsonKey(rawText);
+    if (dup !== null) {
+      fail(res, 400, 'devplatform.invalid_body', 'request body has a duplicate JSON key');
       return;
     }
     const model = parsed['model'];
@@ -312,6 +421,7 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
       upstreamUrl,
       headers,
       body,
+      providerKey,
     });
   }
 
@@ -323,8 +433,9 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
     upstreamUrl: string;
     headers: Record<string, string>;
     body: Buffer;
+    providerKey: string;
   }): Promise<void> {
-    const { res, job, model, upstreamUrl, headers, body } = args;
+    const { res, job, model, upstreamUrl, headers, body, providerKey } = args;
 
     // Retry loop: a 5xx or a connect error may be retried ONCE — but only here,
     // BEFORE any byte reaches the client. Once streaming starts, this loop is
@@ -360,6 +471,22 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
 
     const contentType = (upstream.headers.get('content-type') ?? '').toLowerCase();
     const isSse = contentType.includes('text/event-stream');
+
+    // Non-stream ERROR bodies are buffered and defensively scrubbed of the
+    // provider key before they reach the container: an upstream/intermediary
+    // that reflects the request (incl. the injected key) into an error payload
+    // must not hand it to the job. Success bodies stream verbatim (below).
+    if (!isSse && upstream.status >= 400) {
+      let errBody = Buffer.from(await upstream.arrayBuffer());
+      if (providerKey.length > 0) {
+        const scrubbed = errBody.toString('utf8').split(providerKey).join('[REDACTED]');
+        errBody = Buffer.from(scrubbed, 'utf8');
+      }
+      res.removeHeader('content-length');
+      res.end(errBody);
+      return;
+    }
+
     const acc = newUsage();
     const decoder = new TextDecoder();
     let sseBuffer = '';
@@ -403,13 +530,25 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
     if (!acc.seen) return;
     const tokensIn = acc.inputTokens + acc.cacheReadTokens + acc.cacheCreationTokens;
     const tokensOut = acc.outputTokens;
+
+    // dev_jobs is the AUTHORITATIVE per-job counter (W4 enforces budget on it),
+    // so it is written FIRST. Its failure is NOT swallowed: it is logged at error
+    // level, counted via `onAccountingError`, and — crucially — the ledger row is
+    // then SKIPPED, so the two stores can never diverge into "billed the ledger
+    // but not dev_jobs". (The shared usage-telemetry recorder is a non-blocking,
+    // buffered sink that drops in in-memory-KG mode and cannot join a pg
+    // transaction, so authoritative-first ordering is the strongest guarantee
+    // available here — see the unit's review note.)
     try {
-      // Atomic increment into dev_jobs (W1 records, W4 will enforce budget here).
       await addJobUsage(job.id, tokensIn, tokensOut);
     } catch (err) {
-      log(`[dev-llm] addJobUsage failed for job ${job.id}: ${errText(err)}`);
+      log(`[dev-llm] ERROR addJobUsage failed for job ${job.id} (${String(tokensIn)}/${String(tokensOut)} tok): ${errText(err)}`);
+      onAccountingError(err, { jobId: job.id, tokensIn, tokensOut });
+      return;
     }
-    // Ledger row — source + session id are the dev-platform provenance.
+
+    // Ledger row — source + session id are the dev-platform provenance. Reached
+    // only after the authoritative increment committed.
     recordUsage({
       source: USAGE_SOURCE,
       model,
@@ -425,16 +564,18 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
   return router;
 }
 
-/** Copy client request headers except the strip-list, then attach the provider
- *  key as `x-api-key`. Any client-supplied `x-api-key` / `Authorization` is
- *  dropped by the strip-list before this override. */
+/** Build the upstream request headers from an ALLOWLIST (not a scrub-list), then
+ *  attach the provider key as `x-api-key`. Any header not explicitly allowed —
+ *  cookies, `x-forwarded-*`, `proxy-authorization`, the client's own auth, and
+ *  all hop-by-hop headers — never reaches upstream. */
 function buildForwardHeaders(req: Request, providerKey: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;
-    if (STRIPPED_REQUEST_HEADERS.has(key.toLowerCase())) continue;
+    if (!FORWARDED_REQUEST_HEADERS.has(key.toLowerCase())) continue;
     out[key] = Array.isArray(value) ? value.join(', ') : value;
   }
+  // Server-injected, overriding any allowlisted client copy.
   out['x-api-key'] = providerKey;
   if (!Object.keys(out).some((k) => k.toLowerCase() === 'anthropic-version')) {
     out['anthropic-version'] = '2023-06-01';

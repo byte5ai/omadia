@@ -121,6 +121,10 @@ const PG_URL =
   'postgres://test:test@127.0.0.1:55438/test';
 
 const MARK = 'e2e-devplatform-test';
+const E2E_DAEMON_TOKEN = 'e2e-daemon-secret-token-0123456789abcdef';
+const E2E_RUNNER_IMAGE = 'ghcr.io/byte5ai/omadia-dev-runner@sha256:e2e';
+const E2E_PROVIDER_KEY = 'sk-ant-e2e-REAL-PROVIDER-KEY';
+const E2E_MODEL = 'claude-opus-4-8';
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
 
 const probePool = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 2000 });
@@ -297,6 +301,20 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
     return job.id;
   }
 
+  /** A job flipped to `provisioning` with a freshly minted one-time runner token
+   *  (its hash stored), so the phone-home + LLM-proxy token paths can resolve it. */
+  async function provisionedJob(): Promise<{ jobId: string; token: string }> {
+    const jobId = await newQueuedJob();
+    const lease = randomUUID();
+    await pool.query(
+      `UPDATE dev_jobs SET status = 'provisioning', claimed_by = $2, started_at = now() WHERE id = $1`,
+      [jobId, lease],
+    );
+    const job = await jobStore.getJob(jobId);
+    const { token } = await jobStore.prepareProvision(job!, lease);
+    return { jobId, token };
+  }
+
   before(async () => {
     await runMultiOrchestratorMigrations(pool, undefined, migrationsDir);
     await cleanup();
@@ -310,6 +328,8 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
       createdBy: MARK,
     });
     await credentials.save(repo.id, { token: 'ghp_e2e_token', kind: 'pat', login: 'e2e-owner' });
+    // W1 keystone: the LLM proxy resolves the provider key from this Vault slot.
+    await vault.set('core:dev-platform', 'llm/anthropic/api_key', E2E_PROVIDER_KEY);
 
     const app = express();
     // Reproduce production's guard topology, not a convenient subset. index.ts
@@ -341,6 +361,21 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
       shimEntry: '/dev/null',
       backends: [fakeBackend],
       forgeFactory: () => stubForge,
+      // W1 keystones (spec §4/§6b): the daemon job-policy endpoint + the LLM
+      // proxy, wired exactly as index.ts does — so this test fails if either is
+      // left unmounted, instead of the routes silently not existing.
+      daemonToken: E2E_DAEMON_TOKEN,
+      runnerImage: E2E_RUNNER_IMAGE,
+      egressBaseAllowlist: ['registry.npmjs.org'],
+      llm: {
+        allowedModels: [E2E_MODEL],
+        // A fake upstream so a POST reaches the proxy without real network.
+        fetchImpl: (async () =>
+          new Response(JSON.stringify({ usage: { input_tokens: 1, output_tokens: 1 } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })) as unknown as typeof fetch,
+      },
     });
     mountDevPlatform(app, requireAuth, wired);
   });
@@ -467,5 +502,56 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
     assert.equal(authed.status, 200, 'a session reaches the admin surface');
     const body = (await authed.json()) as { repos: unknown[] };
     assert.ok(Array.isArray(body.repos), 'repos list is returned');
+  });
+
+  it('W1 job-policy endpoint IS mounted: a DAEMON token returns the server-derived policy', async () => {
+    const { jobId } = await provisionedJob();
+    const res = await fetch(`${baseUrl}/api/v1/dev-runner/internal/job-policy/${jobId}`, {
+      headers: { Authorization: `Bearer ${E2E_DAEMON_TOKEN}` },
+    });
+    assert.equal(res.status, 200, 'the endpoint exists and the daemon token is accepted');
+    const policy = (await res.json()) as { image: string; env: Record<string, string>; egressAllowlist: string[] };
+    assert.equal(policy.image, E2E_RUNNER_IMAGE);
+    assert.ok(policy.egressAllowlist.includes('github.com'), 'forge host derived from clone_url');
+    assert.ok(policy.egressAllowlist.includes('registry.npmjs.org'), 'operator base allowlist folded in');
+  });
+
+  it('W1 job-policy endpoint REJECTS a per-job djr_ runner bearer (S3 guarantee)', async () => {
+    const { jobId, token } = await provisionedJob();
+    // The SAME token is valid on /jobs/:id/* but must be refused here.
+    const ok = await fetch(`${baseUrl}/api/v1/dev-runner/jobs/${jobId}/spec`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(ok.status, 200, 'the runner token is valid on the phone-home surface');
+    const rejected = await fetch(`${baseUrl}/api/v1/dev-runner/internal/job-policy/${jobId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(rejected.status, 401, 'a runner token can never read a job policy');
+  });
+
+  it('W1 LLM proxy IS mounted: GET /llm/ probes 2xx and a job token reaches the proxy + model gate', async () => {
+    const probe = await fetch(`${baseUrl}/api/v1/dev-runner/llm/`);
+    assert.equal(probe.status, 200, 'the CLI origin probe answers 2xx');
+    await probe.text();
+
+    const { token } = await provisionedJob();
+    const reached = await fetch(`${baseUrl}/api/v1/dev-runner/llm/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ model: E2E_MODEL, messages: [] }),
+    });
+    // An unmounted (or wrongly session-guarded) route would 401; reaching the
+    // fake upstream returns 200.
+    assert.equal(reached.status, 200, 'a valid job token reaches the proxy and the upstream');
+    await reached.text();
+
+    // The allowlist actually runs inside the proxy: a forbidden model → 403.
+    const { token: token2 } = await provisionedJob();
+    const forbidden = await fetch(`${baseUrl}/api/v1/dev-runner/llm/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${token2}` },
+      body: JSON.stringify({ model: 'claude-forbidden', messages: [] }),
+    });
+    assert.equal(forbidden.status, 403, 'the model allowlist is enforced by the mounted proxy');
   });
 });

@@ -379,3 +379,116 @@ describe('llmProxy — failure semantics', () => {
     assert.deepEqual(fx.jobUsage, [{ jobId: 'job-1', tokensIn: 15, tokensOut: 1 }]);
   });
 });
+
+describe('llmProxy — request header allowlist (review S-finding)', () => {
+  let fx: Fixture;
+  afterEach(async () => {
+    if (fx) await fx.close();
+  });
+
+  it('forwards ONLY the allowlist; drops cookie / x-forwarded-* / proxy-authorization / te', async () => {
+    fx = await makeFixture({ upstream: () => sseResponse(FULL_SSE) });
+    const res = await post(fx.base, OK_BODY, {
+      ...authed,
+      cookie: 'session=secret',
+      'x-forwarded-for': '10.9.9.9',
+      'proxy-authorization': 'Basic c2VjcmV0',
+      te: 'trailers',
+      'anthropic-beta': 'output-128k-2025-02-19',
+      accept: 'text/event-stream',
+    });
+    await res.text();
+    const fwd = fx.calls[0]!.headers;
+    const keys = Object.keys(fwd).map((k) => k.toLowerCase());
+    for (const banned of ['cookie', 'x-forwarded-for', 'proxy-authorization', 'te']) {
+      assert.ok(!keys.includes(banned), `${banned} must not reach upstream`);
+    }
+    // the server key is attached, allowlisted client headers survive.
+    assert.equal(fwd['x-api-key'], REAL_KEY);
+    assert.ok(keys.includes('anthropic-beta'), 'allowlisted anthropic-beta is forwarded');
+    assert.ok(!JSON.stringify(fwd).includes('secret'), 'no cookie/proxy secret is leaked upstream');
+  });
+});
+
+describe('llmProxy — duplicate JSON key (model-allowlist bypass)', () => {
+  let fx: Fixture;
+  afterEach(async () => {
+    if (fx) await fx.close();
+  });
+
+  it('400 refuses a body with two `model` keys; nothing is forwarded', async () => {
+    fx = await makeFixture({ upstream: () => sseResponse(FULL_SSE) });
+    // A hand-crafted raw body: the allowed model first, a forbidden one second.
+    const raw = '{"model":"claude-opus-4-8","model":"claude-forbidden","messages":[]}';
+    const res = await fetch(`${fx.base}/llm/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authed },
+      body: raw,
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { code: string }).code, 'devplatform.invalid_body');
+    assert.equal(fx.calls.length, 0, 'a duplicate-key body never reaches upstream');
+  });
+});
+
+describe('llmProxy — response redaction (review S-finding)', () => {
+  let fx: Fixture;
+  afterEach(async () => {
+    if (fx) await fx.close();
+  });
+
+  it('strips an echoed x-api-key response header', async () => {
+    fx = await makeFixture({
+      upstream: () =>
+        new Response(FULL_SSE, {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream', 'x-api-key': REAL_KEY },
+        }),
+    });
+    const res = await post(fx.base, OK_BODY, authed);
+    await res.text();
+    assert.equal(res.headers.get('x-api-key'), null, 'the provider key is never handed back');
+  });
+
+  it('redacts the provider key from a non-stream error body', async () => {
+    fx = await makeFixture({
+      upstream: () =>
+        new Response(JSON.stringify({ error: `invalid x-api-key: ${REAL_KEY}` }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        }),
+    });
+    const res = await post(fx.base, OK_BODY, authed);
+    assert.equal(res.status, 400);
+    const text = await res.text();
+    assert.ok(!text.includes(REAL_KEY), 'the provider key must not leak in an echoed error body');
+    assert.ok(text.includes('[REDACTED]'));
+  });
+});
+
+describe('llmProxy — accounting failure is surfaced, not swallowed (review S-finding)', () => {
+  let fx: Fixture;
+  afterEach(async () => {
+    if (fx) await fx.close();
+  });
+
+  it('a failed dev_jobs increment surfaces and the ledger is NOT billed (no divergence)', async () => {
+    const errored = deferred<{ jobId: string; tokensIn: number; tokensOut: number }>();
+    fx = await makeFixture({
+      upstream: () => sseResponse(FULL_SSE),
+      proxyOverrides: {
+        addJobUsage: async () => {
+          throw new Error('dev_jobs update failed');
+        },
+        onAccountingError: (_err, ctx) => errored.resolve(ctx),
+      },
+    });
+    const res = await post(fx.base, OK_BODY, authed);
+    assert.equal(res.status, 200);
+    await res.text();
+    const ctx = await errored.promise; // surfaced, not swallowed
+    assert.equal(ctx.jobId, 'job-1');
+    assert.equal(ctx.tokensIn, 15);
+    assert.equal(fx.usageRows.length, 0, 'ledger is not written when the authoritative store failed');
+  });
+});

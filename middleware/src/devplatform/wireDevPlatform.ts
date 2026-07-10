@@ -36,10 +36,16 @@ import type {
   RepoAccessResult,
 } from '../routes/devPlatformShared.js';
 import { createDevRunnerRouter } from '../routes/devRunnerApi.js';
+import { createLlmProxyRouter, type LlmModelPolicy } from './llmProxy.js';
+import type { DeriveJobPolicyConfig } from './deriveJobPolicy.js';
 import type { Pool } from 'pg';
-import type { Express, RequestHandler } from 'express';
+import type { Express, RequestHandler, Router as ExpressRouter } from 'express';
 
 const DEFAULT_GITHUB_API_BASE = 'https://api.github.com';
+const DEFAULT_LLM_UPSTREAM_BASE_URL = 'https://api.anthropic.com';
+const DEFAULT_LLM_PROVIDER = 'anthropic';
+/** Vault namespace the dev-platform provider keys live under (spec §6b). */
+const DEV_PLATFORM_VAULT_AGENT = 'core:dev-platform';
 
 export interface WireDevPlatformDeps {
   pool: Pool;
@@ -58,6 +64,36 @@ export interface WireDevPlatformDeps {
   localUid?: number | undefined;
   /** Absolute path to the built shim entry (`dev-runner-shim/dist/src/index.js`). */
   shimEntry: string;
+
+  // --- W1 keystones: daemon job-policy endpoint + LLM proxy (spec §4/§6b) ----
+  /** `DEV_RUNNER_DAEMON_TOKEN` — the daemon's shared bearer for the internal
+   *  job-policy endpoint. Absent ⇒ that endpoint 503s (daemon not wired). */
+  daemonToken?: string;
+  /** Digest-pinned runner image (`DEV_RUNNER_DEFAULT_IMAGE`). Absent ⇒ the
+   *  job-policy endpoint 503s (nothing to derive an image from). */
+  runnerImage?: string;
+  /** Operator egress default (`DEV_EGRESS_BASE_ALLOWLIST`). */
+  egressBaseAllowlist?: readonly string[];
+  /** Hostname the job container reaches the middleware on. Defaults to the host
+   *  of `baseUrl`. */
+  middlewareHost?: string;
+  /** LLM-proxy config (spec §6b). The proxy router is ALWAYS mounted (its `GET /`
+   *  probe must answer 2xx); these tune the model gate + upstream. */
+  llm?: {
+    /** Vault provider segment. Default `anthropic`. */
+    provider?: string;
+    /** Upstream origin. Default `https://api.anthropic.com`. */
+    upstreamBaseUrl?: string;
+    /** Exact model ids a job may call. Empty/absent ⇒ the proxy 500s "no policy". */
+    allowedModels?: readonly string[];
+    /** `ANTHROPIC_BASE_URL` handed to api_key jobs. Defaults to `<baseUrl>/api/v1/dev-runner/llm`. */
+    proxyBaseUrl?: string;
+    /** Test seams. */
+    fetchImpl?: typeof fetch;
+    resolvePolicy?: (agentKind: string) => Promise<LlmModelPolicy | null>;
+    resolveProviderKey?: (provider: string) => Promise<string | undefined>;
+    onAccountingError?: (err: unknown, ctx: { jobId: string; tokensIn: number; tokensOut: number }) => void;
+  };
 
   // --- optional / test seams ------------------------------------------------
   /** Override the backend list (tests inject a fake shim-driving backend). When
@@ -172,12 +208,53 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     log,
   });
 
+  // --- W1 keystones: job-policy config + the always-mounted LLM proxy --------
+  const middlewareHost = deps.middlewareHost ?? hostOf(deps.baseUrl);
+  const llmProxyBaseUrl =
+    deps.llm?.proxyBaseUrl ?? `${deps.baseUrl.replace(/\/+$/, '')}/api/v1/dev-runner/llm`;
+  // Present ONLY when a runner image is configured; otherwise the internal
+  // job-policy endpoint 503s (there is no image to derive), matching its contract.
+  const jobPolicyConfig: DeriveJobPolicyConfig | undefined = deps.runnerImage
+    ? {
+        middlewareHost,
+        baseAllowlist: deps.egressBaseAllowlist ?? [],
+        image: deps.runnerImage,
+        llmProxyBaseUrl,
+      }
+    : undefined;
+
+  const llmProvider = deps.llm?.provider ?? DEFAULT_LLM_PROVIDER;
+  const llmUpstreamBaseUrl = deps.llm?.upstreamBaseUrl ?? DEFAULT_LLM_UPSTREAM_BASE_URL;
+  const llmAllowedModels = deps.llm?.allowedModels ?? [];
+  const resolvePolicy =
+    deps.llm?.resolvePolicy ??
+    (async (): Promise<LlmModelPolicy | null> =>
+      llmAllowedModels.length === 0
+        ? null // unconfigured ⇒ proxy answers 500 "no LLM policy"
+        : { provider: llmProvider, upstreamBaseUrl: llmUpstreamBaseUrl, allowedModels: llmAllowedModels });
+  const resolveProviderKey =
+    deps.llm?.resolveProviderKey ??
+    ((provider: string) => deps.vault.get(DEV_PLATFORM_VAULT_AGENT, `llm/${provider}/api_key`));
+
+  const llmProxyRouter: ExpressRouter = createLlmProxyRouter({
+    resolveJobByToken: (token) => jobStore.resolveJobByToken(token),
+    resolvePolicy,
+    resolveProviderKey,
+    addJobUsage: (jobId, tokensIn, tokensOut) => jobStore.addJobUsage(jobId, tokensIn, tokensOut),
+    ...(deps.llm?.fetchImpl ? { fetchImpl: deps.llm.fetchImpl } : {}),
+    ...(deps.llm?.onAccountingError ? { onAccountingError: deps.llm.onAccountingError } : {}),
+    log,
+  });
+
   const runnerRouter = createDevRunnerRouter({
     store: jobStore,
     repos: repoStore,
     scmTokens: credentials,
     finalizeDevJob: boundFinalize,
     wallClockMs: deps.wallClockMs,
+    ...(deps.daemonToken ? { daemonToken: deps.daemonToken } : {}),
+    ...(jobPolicyConfig ? { jobPolicyConfig } : {}),
+    llmProxyRouter,
     ...(deps.now ? { now: () => deps.now!().getTime() } : {}),
   });
 
@@ -289,4 +366,14 @@ function makeProbeRepoAccess(
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Hostname of a base URL, used as the implicit egress-allowlist middleware host.
+ *  Falls back to the raw string if it does not parse (an operator-supplied host). */
+function hostOf(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return baseUrl;
+  }
 }

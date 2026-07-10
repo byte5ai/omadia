@@ -36,6 +36,19 @@ export const DAEMON_PROTOCOL_VERSION = 1;
 /** The `protocol` field every request carries — `const: 1` in the snapshot. */
 const protocolField = z.literal(DAEMON_PROTOCOL_VERSION);
 
+/** `dev_jobs.id` is a UUID (migrations/0022_dev_platform.sql). Constrain the wire
+ *  field to a UUID so a traversal payload or control chars can never reach a
+ *  container/volume name, a log path, or the job-policy URL (review S-finding). */
+const jobIdField = z.string().uuid();
+
+/** Lease TTL bounds, in seconds. Lower bound keeps a renew from racing the
+ *  reaper; upper bound caps how long a caller can pin daemon resources past the
+ *  intended clamp. The daemon's reaper sweeps well inside an hour, so [30, 3600]
+ *  is the justified window (review S-finding). */
+const LEASE_TTL_MIN_SEC = 30;
+const LEASE_TTL_MAX_SEC = 3600;
+const leaseTtlField = z.number().int().min(LEASE_TTL_MIN_SEC).max(LEASE_TTL_MAX_SEC);
+
 // ---------------------------------------------------------------------------
 // Requests (bodied endpoints).
 // ---------------------------------------------------------------------------
@@ -48,15 +61,15 @@ const protocolField = z.literal(DAEMON_PROTOCOL_VERSION);
  */
 export const CreateJobRequestSchema = z.strictObject({
   protocol: protocolField,
-  jobId: z.string().min(1),
-  leaseTtlSec: z.number().int().positive(),
+  jobId: jobIdField,
+  leaseTtlSec: leaseTtlField,
 });
 export type CreateJobRequest = z.infer<typeof CreateJobRequestSchema>;
 
 /** `POST /v1/jobs/:jobId/lease` body — renew a lease. jobId rides in the path. */
 export const RenewLeaseRequestSchema = z.strictObject({
   protocol: protocolField,
-  leaseTtlSec: z.number().int().positive(),
+  leaseTtlSec: leaseTtlField,
 });
 export type RenewLeaseRequest = z.infer<typeof RenewLeaseRequestSchema>;
 

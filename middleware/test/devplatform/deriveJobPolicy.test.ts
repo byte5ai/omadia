@@ -113,6 +113,48 @@ describe('deriveJobPolicy — pure derivation', () => {
       JobPolicyError,
     );
   });
+
+  it('SSRF: refuses a clone_url that would allowlist an internal/metadata host', () => {
+    for (const cloneUrl of [
+      'https://github.com@169.254.169.254/x', // userinfo confusion → metadata IP
+      'https://169.254.169.254/o/r.git', // cloud-metadata literal
+      'https://10.0.0.5/o/r.git', // RFC1918 literal
+      'https://foo.internal/o/r.git', // internal name
+      'http://github.com/o/r.git', // non-https
+    ]) {
+      assert.throws(
+        () => deriveJobPolicy(repoInput({ cloneUrl }), { authMode: 'api_key' }, CONFIG),
+        JobPolicyError,
+        `clone_url ${cloneUrl} must be refused`,
+      );
+    }
+  });
+
+  it('egress: drops malformed / IP-literal entries, keeps operator-chosen names', () => {
+    const p = deriveJobPolicy(
+      repoInput({
+        egressAllowlist: [
+          '*',
+          'http://evil.example',
+          'host:443',
+          '10.0.0.0/8',
+          '169.254.169.254',
+          'bad host',
+          'artifactory.internal', // operator-chosen internal NAME is kept
+          'good.example.com',
+        ],
+      }),
+      { authMode: 'api_key' },
+      CONFIG,
+    );
+    for (const rejected of ['*', 'http://evil.example', 'host:443', '10.0.0.0/8', '169.254.169.254', 'bad host']) {
+      assert.ok(!p.egressAllowlist.includes(rejected), `${rejected} must be dropped`);
+    }
+    // No entry retains a scheme, port, path, or wildcard character.
+    assert.ok(!p.egressAllowlist.some((h) => /[/:*@?# ]/.test(h)), 'every surviving entry is a bare hostname');
+    assert.ok(p.egressAllowlist.includes('artifactory.internal'), 'operator internal name kept');
+    assert.ok(p.egressAllowlist.includes('good.example.com'));
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -14,8 +14,12 @@ export class SsrfBlockedError extends Error {
 
 const METADATA_HOSTNAMES = new Set(['metadata.google.internal', 'metadata.goog', 'metadata']);
 
-/** Sync host classification against internal/loopback/metadata ranges. */
-function isInternalHost(host: string): boolean {
+/** Sync host classification against internal/loopback/metadata ranges. Exported
+ *  so the dev-platform job-policy derivation (epic #470 W1) rejects the same
+ *  internal targets — a clone_url or egress entry pointing at RFC1918 space, the
+ *  cloud-metadata endpoint, or an `.internal`/`localhost` name — with the ONE
+ *  predicate the egress guard uses, so the two can never drift. */
+export function isInternalHost(host: string): boolean {
   const h = host.toLowerCase().replace(/^\[|\]$/g, '');
   if (METADATA_HOSTNAMES.has(h)) return true;
   if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.internal') || h.endsWith('.local'))
@@ -30,7 +34,9 @@ function isInternalHost(host: string): boolean {
   return false;
 }
 
-function isInternalIp(ip: string): boolean {
+/** Sync classification of an IP LITERAL against internal/loopback/metadata
+ *  ranges. Exported for the same reuse as {@link isInternalHost}. */
+export function isInternalIp(ip: string): boolean {
   const v = ip.toLowerCase();
   const v4 = v.startsWith('::ffff:') ? v.slice('::ffff:'.length) : v;
   if (/^127\./.test(v4) || v4 === '::1') return true;

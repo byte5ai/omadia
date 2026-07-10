@@ -475,6 +475,23 @@ const ConfigSchema = z.object({
   // string (loadConfig, below) — a boot-time refusal, not a warning.
   DEV_PLATFORM_SUBSCRIPTION_MODE: devFlag(),
   DEV_PLATFORM_SUBSCRIPTION_ACK: optionalNonEmpty(z.string().min(1)),
+  // --- W1 keystones (spec §4/§6/§6b) ---------------------------------------
+  // The daemon's shared bearer for the internal job-policy endpoint. Absent ⇒
+  // that endpoint 503s (the daemon/DockerBackend is not wired).
+  DEV_RUNNER_DAEMON_TOKEN: optionalNonEmpty(z.string().min(1)),
+  // Digest-pinned runner image. Absent ⇒ the job-policy endpoint 503s.
+  DEV_RUNNER_DEFAULT_IMAGE: optionalNonEmpty(z.string().min(1)),
+  // Operator egress default, comma-separated bare hostnames (validated in
+  // deriveJobPolicy). Absent ⇒ empty base allowlist.
+  DEV_EGRESS_BASE_ALLOWLIST: optionalNonEmpty(z.string().min(1)),
+  // Hostname the job container reaches the middleware on; defaults to the
+  // RUNNER_BASE_URL host in the wire layer when unset.
+  DEV_PLATFORM_MIDDLEWARE_HOST: optionalNonEmpty(z.string().min(1)),
+  // LLM proxy (spec §6b): upstream origin + exact model allowlist. The proxy is
+  // always mounted; an empty allowlist ⇒ it answers 500 "no LLM policy".
+  DEV_PLATFORM_LLM_UPSTREAM_BASE_URL: z.string().url().default('https://api.anthropic.com'),
+  DEV_PLATFORM_LLM_PROVIDER: z.string().min(1).default('anthropic'),
+  DEV_PLATFORM_LLM_ALLOWED_MODELS: optionalNonEmpty(z.string().min(1)),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
