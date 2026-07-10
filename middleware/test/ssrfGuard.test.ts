@@ -21,6 +21,10 @@ describe('assertPublicHttpsUrl', () => {
       'https://metadata.google.internal/computeMetadata',
       'https://localhost/token',
       'https://foo.internal/token',
+      // trailing-dot FQDN — same target, must not slip past the name predicates.
+      'https://metadata.google.internal./computeMetadata',
+      'https://localhost./token',
+      'https://foo.internal./token',
     ]) {
       await assert.rejects(assertPublicHttpsUrl(u), SsrfBlockedError, `should refuse ${u}`);
     }
