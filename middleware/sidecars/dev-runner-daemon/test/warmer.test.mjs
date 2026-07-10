@@ -251,9 +251,9 @@ describe('dev-runner-daemon — image warmer', () => {
       clearInterval: timers.clearInterval,
     });
     warmer.start(); // boot pull fails — must NOT throw out of the loop
-    // give the swallowed boot rejection a turn to settle
-    await Promise.resolve();
-    await Promise.resolve();
+    // Join the boot pull and wait for it to SETTLE. Counting microtasks is a
+    // guess: any extra await inside the pull (a deadline, a retry) shifts it.
+    await warmer.warm().catch(() => {});
     assert.equal(warmer.getState().warm, false);
     assert.ok(engine.calls.warm >= 1);
     // Registry recovers; the next tick succeeds and flips warm true.

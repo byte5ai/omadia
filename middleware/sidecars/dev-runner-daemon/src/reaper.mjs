@@ -100,6 +100,28 @@ export function isLeaseExpired(leaseExpiresAt, nowMs) {
   return t <= nowMs;
 }
 
+
+/**
+ * Reject if `p` has not settled within `ms`. The reaper's single-flight guard
+ * would otherwise be held forever by one hung engine call, silently disabling
+ * lease and lifetime enforcement — the loop would look alive and do nothing.
+ * The hung work is abandoned, not cancelled: docker has no cancellation here,
+ * but the next pass gets to run.
+ * @template T @param {Promise<T>} p @param {number} ms @param {string} label
+ * @returns {Promise<T>}
+ */
+function withDeadline(p, ms, label) {
+  /** @type {ReturnType<typeof setTimeout>} */
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    // NOT unref'd: an unref'd deadline lets node exit before it fires, so the
+    // awaited race never settles and the caller hangs. It is always cleared in
+    // `finally`, so it cannot keep the process alive either.
+    timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms);
+  });
+  return Promise.race([p, deadline]).finally(() => clearTimeout(timer));
+}
+
 /** @param {unknown} err @returns {string} */
 function errMessage(err) {
   return err instanceof Error ? err.message : String(err);
@@ -113,6 +135,7 @@ function errMessage(err) {
  * @param {JobManager} deps.jobManager The registry + the deduplicated teardown authority.
  * @param {ContainerEngine} deps.engine The label-set ground truth and teardown executor.
  * @param {number} [deps.intervalMs] Sweep cadence (default 30 s).
+ * @param {number} [deps.passTimeoutMs] Abandon a sweep/rebuild that outruns this.
  * @param {number} [deps.bootGraceMs] Window an adopted job gets to have its lease
  *   re-asserted after a daemon restart (default: the sweep interval).
  * @param {Clock} [deps.clock]
@@ -123,6 +146,8 @@ export function createReaper(deps) {
   /** Window an adopted job gets to have its lease re-asserted after a daemon
    *  restart. Defaults to the sweep interval: one full sweep to be renewed. */
   const bootGraceMs = deps.bootGraceMs ?? deps.intervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
+  /** A pass that outruns this is abandoned so the loop keeps sweeping. */
+  const passTimeoutMs = deps.passTimeoutMs ?? Math.max(30_000, (deps.intervalMs ?? DEFAULT_SWEEP_INTERVAL_MS) * 5);
   const jobManager = deps.jobManager;
   const engine = deps.engine;
   const intervalMs = deps.intervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
@@ -135,6 +160,13 @@ export function createReaper(deps) {
    *  future lease, so the ordinary lease sweep would never retry them — they are
    *  retried explicitly, every sweep, until the engine lets them go. */
   const forceReap = new Set();
+
+  /** Has a boot rebuild ever COMPLETED? The orphan sweep decides what to destroy
+   *  by asking "is this job tracked?" — so an empty registry makes every live
+   *  container look like a leak. If the rebuild never ran (a transient dind
+   *  listing error is enough), sweeping would delete exactly the jobs the
+   *  rebuild exists to adopt. Nothing is swept until a rebuild has succeeded. */
+  let rebuilt = false;
 
   /** @type {ReturnType<typeof setInterval> | undefined} */
   let timer;
@@ -266,6 +298,9 @@ export function createReaper(deps) {
         : Math.max(labelExpiry, nowMs + bootGraceMs);
       jobManager.adopt(c.jobId, container, new Date(graced).toISOString());
     }
+    // The registry now mirrors the engine, so the orphan sweep can trust "not
+    // tracked" to mean "leaked". Set BEFORE the reaps below so they may run.
+    rebuilt = true;
     // Exited containers die now, through the same deduplicated teardown a DELETE
     // uses — the grace window is for the living, not for corpses.
     for (const jobId of staleAtBoot) {
@@ -280,6 +315,15 @@ export function createReaper(deps) {
    *  @param {number} nowMs */
   async function sweepPass(nowMs) {
     await reapExpiredLeases(nowMs);
+    // The orphan sweep asks "is this job tracked?" and destroys whatever is not.
+    // An empty registry therefore makes every live container look like a leak.
+    // Until a boot rebuild has SUCCEEDED the registry is not trustworthy, so the
+    // sweep enforces leases (only over jobs it actually knows) but destroys
+    // nothing it never had a chance to adopt.
+    if (!rebuilt) {
+      warn('[dev-runner-daemon] orphan sweep skipped: no successful boot rebuild yet');
+      return;
+    }
     await reapOrphans();
   }
 
@@ -289,12 +333,17 @@ export function createReaper(deps) {
    * @param {() => Promise<void>} fn @param {string} label
    */
   async function guarded(fn, label) {
-    if (running) return; // a pass is already in flight — never stack (spec §7)
+    if (running) return false; // a pass is already in flight — never stack (spec §7)
     running = true;
     try {
-      await fn();
+      // A hung engine call must not wedge the loop: without a deadline, `running`
+      // would stay true forever and every later sweep would return immediately —
+      // leases and hard deadlines would silently stop being enforced.
+      await withDeadline(fn(), passTimeoutMs, label);
+      return true;
     } catch (err) {
       warn(`[dev-runner-daemon] ${label} failed; retrying next tick: ${errMessage(err)}`);
+      return false;
     } finally {
       running = false;
     }
@@ -306,7 +355,16 @@ export function createReaper(deps) {
       // registry, then arm an unref'd interval that never stacks.
       await guarded(rebuild, 'boot rebuild');
       timer = setInterval(() => {
-        void guarded(() => sweepPass(clock.now()), 'sweep');
+        // A rebuild that failed is retried on every tick. Until one succeeds the
+        // registry is not trustworthy, so nothing is swept — a transient listing
+        // error must never turn live jobs into orphan-sweep victims.
+        void (async () => {
+          if (!rebuilt) {
+            await guarded(rebuild, 'boot rebuild (retry)');
+            return;
+          }
+          await guarded(() => sweepPass(clock.now()), 'sweep');
+        })();
       }, intervalMs);
       timer.unref?.();
     },

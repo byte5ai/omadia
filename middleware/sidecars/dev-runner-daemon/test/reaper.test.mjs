@@ -86,6 +86,12 @@ function fakeEngine(seed = {}, opts = {}) {
   };
   return {
     calls,
+    /** Introduce a resource AFTER construction — a leak that appears while the
+     *  daemon is already running, which is the only way a labelled container can
+     *  be an orphan: the boot rebuild adopts everything it can see. */
+    seed(jobId, spec) {
+      jobs.set(jobId, { ...spec });
+    },
     async ping() {
       return { reachable: true, apiVersion: '1.47' };
     },
@@ -311,6 +317,10 @@ describe('reaper — orphan sweep', () => {
     const jm = new JobManager({ engine, policyClient: fakePolicyClient(), clock });
     const reaper = createReaper({ jobManager: jm, engine, clock, logger });
 
+    // start() always rebuilds before it sweeps, and the orphan sweep refuses to
+    // run on a registry no rebuild ever populated — an empty registry makes
+    // every live container look like a leak.
+    await reaper.rebuild();
     await reaper.sweep();
 
     assert.equal(engine.calls.destroyed.length, 1, 'the dangling pair was reaped in one teardown');
@@ -323,14 +333,16 @@ describe('reaper — orphan sweep', () => {
 
   it('removes a fully-leaked container+network+volume group in one teardown', async () => {
     const clock = mutableClock(0);
-    const engine = fakeEngine({
-      [JOB_A]: { hasContainer: true, hasNetwork: true, hasVolume: true, lease: isoAt(999_999_999) },
-    });
+    const engine = fakeEngine({});
     const logger = capturingLogger();
-    // Empty registry: the container is not tracked, so it is an orphan (a leak the
-    // registry lost track of), reaped as one group.
     const jm = new JobManager({ engine, policyClient: fakePolicyClient(), clock });
     const reaper = createReaper({ jobManager: jm, engine, clock, logger });
+    // The rebuild sees an empty engine, so the registry is trustworthy. THEN a
+    // labelled group appears that the registry never knew — created out of band,
+    // or left by a daemon that died mid-create. That is what an orphan is: after
+    // a successful rebuild, anything untracked is a leak.
+    await reaper.rebuild();
+    engine.seed(JOB_A, { hasContainer: true, hasNetwork: true, hasVolume: true, lease: isoAt(999_999_999) });
 
     await reaper.sweep();
 
@@ -355,6 +367,10 @@ describe('reaper — orphan sweep', () => {
     assert.equal(jm.size(), 1);
     engine.calls.destroyed.length = 0; // ignore anything rebuild did
 
+    // start() always rebuilds before it sweeps, and the orphan sweep refuses to
+    // run on a registry no rebuild ever populated — an empty registry makes
+    // every live container look like a leak.
+    await reaper.rebuild();
     await reaper.sweep();
     assert.equal(engine.calls.destroyed.length, 0, 'a tracked job is never swept as an orphan');
     assert.equal(jm.size(), 1);
@@ -372,6 +388,10 @@ describe('reaper — orphan sweep', () => {
     const creating = jm.create(JOB_A, 180); // parks inside #provision on the gate
     await new Promise((r) => setImmediate(r)); // let #provision reach the gate, id now in #inflight
 
+    // start() always rebuilds before it sweeps, and the orphan sweep refuses to
+    // run on a registry no rebuild ever populated — an empty registry makes
+    // every live container look like a leak.
+    await reaper.rebuild();
     await reaper.sweep();
     assert.equal(engine.calls.destroyed.length, 0, 'a mid-create job’s resources are never swept');
 
@@ -385,27 +405,40 @@ describe('reaper — scheduling + resilience', () => {
   it('never runs two passes concurrently (single-flight)', async () => {
     const clock = mutableClock(0);
     const listGate = deferred();
-    const engine = fakeEngine({}, { listGate });
+    const opts = {};
+    const engine = fakeEngine({}, opts);
     const jm = new JobManager({ engine, policyClient: fakePolicyClient(), clock });
     const reaper = createReaper({ jobManager: jm, engine, clock, logger: capturingLogger() });
+
+    // The orphan sweep refuses to run before a successful rebuild, so rebuild
+    // first — exactly as start() does — and only then arm the gate.
+    await reaper.rebuild();
+    const listsAfterRebuild = engine.calls.list;
+    opts.listGate = listGate;
 
     const p1 = reaper.sweep(); // parks inside reapOrphans on the list gate
     const p2 = reaper.sweep(); // must see a pass in flight and no-op
     await new Promise((r) => setImmediate(r)); // let p1 reach the gated engine list
-    assert.equal(engine.calls.list, 1, 'the second sweep did not start its own pass');
+    assert.equal(engine.calls.list, listsAfterRebuild + 1, 'the second sweep did not start its own pass');
 
     listGate.resolve();
     await Promise.all([p1, p2]);
-    assert.equal(engine.calls.list, 1, 'still exactly one engine list across both calls');
+    assert.equal(engine.calls.list, listsAfterRebuild + 1, 'still exactly one engine list across both sweeps');
   });
 
   it('survives an engine error and resolves (retries next tick)', async () => {
     const clock = mutableClock(0);
-    let broken = true;
-    const engine = fakeEngine({ [JOB_A]: { hasNetwork: true, hasVolume: true } }, { listThrows: () => broken });
+    let broken = false;
+    const engine = fakeEngine({}, { listThrows: () => broken });
     const logger = capturingLogger();
     const jm = new JobManager({ engine, policyClient: fakePolicyClient(), clock });
     const reaper = createReaper({ jobManager: jm, engine, clock, logger });
+
+    // Rebuild first (start() does), so the sweep is allowed to touch orphans at
+    // all. The leak appears afterwards, then the engine breaks underneath it.
+    await reaper.rebuild();
+    engine.seed(JOB_A, { hasNetwork: true, hasVolume: true });
+    broken = true;
 
     // A throwing engine must not reject out of sweep() — it logs and returns.
     await reaper.sweep();
@@ -515,5 +548,56 @@ describe('reaper — the daemon owns the container lifetime, not the middleware'
     await reaper.sweep();
     assert.equal(jm.size(), 0, 'the retry tore it down once the engine recovered');
     assert.equal(logger.reaped('boot_stale').length, 1);
+  });
+});
+
+describe('reaper — a failed boot rebuild must never let the sweep eat live jobs', () => {
+  it('sweeps nothing until a rebuild has succeeded, then adopts instead of orphaning', async () => {
+    const clock = mutableClock(0);
+    let listFails = true;
+    const engine = fakeEngine({
+      [JOB_A]: { hasContainer: true, hasNetwork: true, hasVolume: true, lease: isoAt(600_000), running: true },
+    });
+    const realList = engine.listManagedResources;
+    engine.listManagedResources = async () => {
+      if (listFails) throw new Error('dind is not up yet');
+      return realList();
+    };
+    const logger = capturingLogger();
+    const jm = new JobManager({ engine, policyClient: fakePolicyClient(), clock });
+    const reaper = createReaper({ jobManager: jm, engine, clock, logger, intervalMs: 1_000 });
+
+    // The rebuild fails: the registry is empty. A sweep now would see every
+    // labelled container as an unclaimed orphan and destroy the live job.
+    await reaper.rebuild().catch(() => {});
+    assert.equal(jm.size(), 0, 'nothing adopted — the listing failed');
+
+    // dind recovers, but the registry is STILL empty. A sweep now must not treat
+    // the live container as an orphan just because nobody adopted it yet.
+    listFails = false;
+    await reaper.sweep();
+    assert.equal(engine.calls.destroyed.length, 0, 'the live container was NOT orphan-swept');
+    await reaper.rebuild();
+    assert.equal(jm.size(), 1, 'the live job is adopted, not destroyed');
+    assert.equal(engine.calls.destroyed.length, 0);
+  });
+
+  it('abandons a hung pass so the loop keeps enforcing leases', async () => {
+    const clock = mutableClock(0);
+    const engine = fakeEngine({});
+    engine.listManagedResources = () => new Promise(() => {}); // never settles
+    const logger = capturingLogger();
+    const jm = new JobManager({ engine, policyClient: fakePolicyClient(), clock });
+    const reaper = createReaper({ jobManager: jm, engine, clock, logger, intervalMs: 1_000, passTimeoutMs: 20 });
+
+    // Without a deadline the single-flight guard stays held forever and every
+    // later sweep returns immediately — the loop looks alive and does nothing.
+    // start() always rebuilds before it sweeps; the orphan sweep refuses to run
+    // on an unrebuilt registry, so a bare sweep() would be a no-op.
+    await reaper.rebuild();
+    await reaper.sweep();
+    engine.listManagedResources = async () => ({ containers: [], networks: [], volumes: [] });
+    await reaper.sweep(); // must actually run, not be blocked by the hung pass
+    assert.ok(logger.warns.some((m) => /exceeded 20ms/.test(m)), 'the hung pass was abandoned and logged');
   });
 });

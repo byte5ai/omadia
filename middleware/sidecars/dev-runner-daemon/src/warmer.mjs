@@ -75,6 +75,26 @@ export const DEFAULT_WARM_INTERVAL_MS = 6 * 60 * 60 * 1000;
  * @property {() => boolean} isRunning True while the interval is armed.
  */
 
+
+/**
+ * Reject if `p` has not settled within `ms`. A docker pull that hangs would
+ * otherwise hold the in-flight slot forever: every later interval tick and every
+ * `POST /v1/warm` would join the stuck pull instead of retrying, and the image
+ * would never warm again without a restart.
+ * @template T @param {Promise<T>} p @param {number} ms
+ * @returns {Promise<T>}
+ */
+function withDeadline(p, ms) {
+  /** @type {ReturnType<typeof setTimeout>} */
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    // NOT unref'd — see the reaper's twin: an unref'd deadline never fires if
+    // node is otherwise idle, and the awaited race hangs. Cleared in `finally`.
+    timer = setTimeout(() => reject(new Error(`image pull exceeded ${ms}ms`)), ms);
+  });
+  return Promise.race([p, deadline]).finally(() => clearTimeout(timer));
+}
+
 /** @type {Clock} */
 const SYSTEM_CLOCK = { now: () => Date.now() };
 
@@ -84,6 +104,7 @@ const SYSTEM_CLOCK = { now: () => Date.now() };
  * @param {object} deps
  * @param {WarmEngine} deps.engine The container engine (its `warmImages`).
  * @param {readonly string[]} [deps.refs] Refs to warm (`DEV_RUNNER_IMAGES`); default none.
+ * @param {number} [deps.pullTimeoutMs] Abandon a pull that outruns this (default 30 min).
  * @param {number} [deps.intervalMs] Warm interval (default 6 h).
  * @param {{ warn: (msg: string) => void, info?: (msg: string) => void }} [deps.logger]
  * @param {Clock} [deps.clock]
@@ -98,6 +119,8 @@ export function createImageWarmer(deps) {
   const logger = deps.logger ?? console;
   const clock = deps.clock ?? SYSTEM_CLOCK;
   const setIntervalImpl = deps.setInterval ?? setInterval;
+  /** A pull that outruns this is abandoned; the next tick retries. */
+  const pullTimeoutMs = deps.pullTimeoutMs ?? 30 * 60 * 1000;
   const clearIntervalImpl = deps.clearInterval ?? clearInterval;
 
   /** @type {WarmState} */
@@ -121,7 +144,11 @@ export function createImageWarmer(deps) {
    *  @returns {Promise<string[]>} */
   async function runWarm() {
     try {
-      const resolved = await engine.warmImages(refs);
+      // The deadline sits around the ENGINE call, not around the in-flight
+      // dedup wrapper: a hung pull must surface as an ordinary failure (recorded
+      // in `lastError`, retried next tick) rather than holding the slot forever
+      // so every later warm joins a pull that will never settle.
+      const resolved = await withDeadline(engine.warmImages(refs), pullTimeoutMs);
       state.digests = resolved;
       // A pull that resolves zero digests is a success but not "warm" — mirrors
       // the empty-refs case: there is nothing cached to launch from.
