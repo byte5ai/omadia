@@ -18,6 +18,29 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — template contract v2: versioning, text slots, slot inference, strict import gate (#478)
+
+- `@omadia/conductor-core` extends the workflow-template contract for templates
+  v2, purely additively over the #429 v1 surface: `TemplateManifest.version`
+  (integer ≥ 1, absent = 1 — read via the new `templateManifestVersion()`),
+  declared **text slots** (`slots.text`, referenced as `slot:text:<key>` tokens
+  inside the designated text fields `step.prompt` / `step.human.message` only,
+  disjoint from `{{...}}` run-context interpolation, with optional per-slot
+  `default`), `TemplateSlotMapping.text` for their instantiation values, and
+  `missingSlotMappings` reporting unfilled text slots as `kind: 'text'` entries.
+  `checkTemplateManifest` now validates text-slot declaration/usage both ways
+  (`template_text_slot_undeclared` / `template_text_slot_unused`) and gains a
+  `{ strict: true }` mode for distributed (plugin/hub-imported) manifests that
+  rejects any concrete ref left in the five ref fields
+  (`template_concrete_ref_in_strict_mode`) — undeclared install-local refs are
+  confusion/exfiltration vectors, so distributed templates must declare every
+  external ref as a slot. New `inferTemplateManifest(graph, opts)` reverses the
+  `extractSlotRefs` walk for "save as template": each distinct concrete ref
+  becomes a declared slot with a slugified, de-duplicated key (pre-existing
+  `slot:` placeholders pass through), round-trip covered by tests. Pure
+  functions only; text-slot machinery lives in the new `src/textSlots.ts`,
+  v2 tests in `test/templateV2.test.ts`.
+
 ### Fixed — template instantiation slug race can no longer republish over a fresh workflow (#429)
 
 - Two concurrent `POST /templates/:id/instantiate` with the same not-yet-existing

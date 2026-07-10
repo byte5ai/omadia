@@ -204,7 +204,10 @@ export type ValidationCode =
   | 'template_duplicate_slot_key'
   | 'template_undeclared_slot'
   | 'template_unused_slot'
-  | 'template_malformed_slot_ref';
+  | 'template_malformed_slot_ref'
+  | 'template_text_slot_undeclared'
+  | 'template_text_slot_unused'
+  | 'template_concrete_ref_in_strict_mode';
 
 export interface ValidationError {
   code: ValidationCode;
@@ -262,12 +265,30 @@ export interface TemplateSlot {
   description?: LocalizedText;
 }
 
+/** A declared text slot, referenced from designated text fields (`step.prompt`,
+ *  `step.human.message`) as the token `slot:text:<key>`. Text slots are NOT a
+ *  TemplateSlotKind — the five ref kinds stay closed (they drive KnownRefs
+ *  validation); text slots carry no ref semantics, only string substitution. */
+export interface TemplateTextSlot {
+  /** unique among text slots; token grammar `[A-Za-z0-9_-]+` (other characters
+   *  are not recognized as part of a token). */
+  key: string;
+  /** human-readable, shown in the mapping form. */
+  label: LocalizedText;
+  /** authored help text for the mapping form. */
+  description?: LocalizedText;
+  /** substituted when the instantiating operator supplies no mapping value;
+   *  a text slot with a default is never reported missing. */
+  default?: string;
+}
+
 export interface TemplateSlots {
   agents?: TemplateSlot[];
   actions?: TemplateSlot[];
   roles?: TemplateSlot[];
   events?: TemplateSlot[];
   channels?: TemplateSlot[];
+  text?: TemplateTextSlot[];
 }
 
 export interface TemplateManifest {
@@ -283,10 +304,16 @@ export interface TemplateManifest {
   /** complete graph with `slot:` placeholders in ref fields. */
   graph: WorkflowGraph;
   slots: TemplateSlots;
+  /** manifest version, integer ≥ 1. Absent = 1 (wire/back-compat with v1
+   *  bundled manifests and #330 consumers) — read via templateManifestVersion(). */
+  version?: number;
 }
 
-/** slot key → install-local entity id, per kind. */
-export type TemplateSlotMapping = Partial<Record<TemplateSlotKind, Record<string, string>>>;
+/** slot key → install-local entity id, per kind; `text` maps text-slot keys to
+ *  the substituted strings (additive, absent for pure-ref v1 mappings). */
+export type TemplateSlotMapping = Partial<Record<TemplateSlotKind, Record<string, string>>> & {
+  text?: Record<string, string>;
+};
 
 /** One placeholder found in a template graph, with every node referencing it. */
 export interface TemplateSlotRef {
@@ -298,9 +325,10 @@ export interface TemplateSlotRef {
 
 /** A declared slot missing from a mapping (missingSlotMappings result item). The label
  *  is resolved to plain English so the wire envelope stays a flat string -- clients
- *  localize from the manifest they already hold, keyed by kind+key. */
+ *  localize from the manifest they already hold, keyed by kind+key. `kind: 'text'`
+ *  entries are additive over v1 -- ref kinds keep the exact v1 shape. */
 export interface TemplateMissingSlot {
-  kind: TemplateSlotKind;
+  kind: TemplateSlotKind | 'text';
   key: string;
   label: string;
 }

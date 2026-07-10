@@ -1,12 +1,17 @@
-// Workflow-template slot machinery (issue #429). Pure functions, no I/O — matching the
-// package's character. A TemplateManifest is a complete WorkflowGraph whose external
-// references are replaced by `slot:<kind-singular>:<key>` placeholder strings, plus a
-// slot declaration; instantiation substitutes an operator-supplied slot→entity mapping
-// into the five ref fields and hands the result to the ordinary validate()/publish path.
+// Workflow-template slot machinery (issues #429, #478). Pure functions, no I/O —
+// matching the package's character. A TemplateManifest is a complete WorkflowGraph
+// whose external references are replaced by `slot:<kind-singular>:<key>` placeholder
+// strings, plus a slot declaration; instantiation substitutes an operator-supplied
+// slot→entity mapping into the five ref fields and hands the result to the ordinary
+// validate()/publish path.
 //
-// Substitution is a structural walk of the ref fields — NEVER a string-replace over
-// serialized JSON. `step.prompt` / `human.message` use `{{ctx.path}}` run-context
-// interpolation and are deliberately untouched.
+// Substitution is a structural walk of designated fields — NEVER a string-replace
+// over serialized JSON. Ref placeholders live ONLY in the five ref fields. v2 adds
+// `slot:text:<key>` tokens inside the designated text fields (`step.prompt`,
+// `human.message` — see textSlots.ts), which remain explicitly DISJOINT from the
+// `{{ctx.path}}` run-context interpolation those fields also carry: text slots are
+// resolved once at instantiation, `{{...}}` is rendered per run and never touched
+// here.
 
 import type {
   LocalizedText,
@@ -17,11 +22,13 @@ import type {
   TemplateSlotKind,
   TemplateSlotMapping,
   TemplateSlotRef,
+  TemplateSlots,
   Trigger,
   ValidationError,
   ValidationResult,
   WorkflowGraph,
 } from './types.js';
+import { applyTextSlots, extractTextSlotRefs, TEXT_SLOT_PREFIX } from './textSlots.js';
 import { validate } from './validate.js';
 
 const SLOT_PREFIX = 'slot:';
@@ -144,7 +151,9 @@ function mappedValue(mapping: TemplateSlotMapping, kind: TemplateSlotKind, key: 
 
 /**
  * Every declared slot without a non-empty mapping value. An empty / whitespace-only
- * mapping value counts as missing. Callers gate instantiation on this returning [].
+ * mapping value counts as missing. Text slots (kind 'text', additive over v1) are
+ * missing only when they carry no `default` either. Callers gate instantiation on
+ * this returning [].
  */
 export function missingSlotMappings(manifest: TemplateManifest, mapping: TemplateSlotMapping): TemplateMissingSlot[] {
   const missing: TemplateMissingSlot[] = [];
@@ -156,15 +165,29 @@ export function missingSlotMappings(manifest: TemplateManifest, mapping: Templat
       }
     }
   }
+  for (const slot of manifest.slots.text ?? []) {
+    const mapped = mapping.text?.[slot.key];
+    const hasMapping = typeof mapped === 'string' && mapped.trim().length > 0;
+    if (!hasMapping && typeof slot.default !== 'string') {
+      missing.push({ kind: 'text', key: slot.key, label: resolveLocalizedText(slot.label) });
+    }
+  }
   return missing;
+}
+
+/** The manifest's version; absent = 1 (v1 wire/back-compat -- #330 consumers never
+ *  saw the field). Single reading everywhere: catalog, store, routes, UI. */
+export function templateManifestVersion(manifest: TemplateManifest): number {
+  return manifest.version ?? 1;
 }
 
 /**
  * Substitute the mapping into a deep clone of `manifest.graph` (the manifest is never
- * mutated) and return the resulting ordinary graph. Field-targeted: only the five ref
- * fields are touched. Throws TypeError when a placeholder has no (non-empty) mapping
- * value or is malformed for its field — callers must gate on missingSlotMappings /
- * checkTemplateManifest first.
+ * mutated) and return the resulting ordinary graph. Field-targeted: the five ref
+ * fields, then `slot:text:<key>` tokens in the designated text fields (textSlots.ts).
+ * Throws TypeError when a placeholder has no (non-empty) mapping value — for text
+ * slots, no declared default either — or is malformed for its field; callers must
+ * gate on missingSlotMappings / checkTemplateManifest first.
  */
 export function applyTemplateSlots(manifest: TemplateManifest, mapping: TemplateSlotMapping): WorkflowGraph {
   const graph = structuredClone(manifest.graph);
@@ -182,6 +205,7 @@ export function applyTemplateSlots(manifest: TemplateManifest, mapping: Template
     }
     field.set(value);
   }
+  applyTextSlots(graph, manifest, mapping);
   return graph;
 }
 
@@ -191,13 +215,32 @@ export function applyTemplateSlots(manifest: TemplateManifest, mapping: Template
  *    `useCase` localizable (plain string or `{ en, de?, ... }` with `en` required);
  * 2. `graph` passes the structural validate() (shape gate included; placeholders are
  *    plain strings, so a well-formed template passes without KnownRefs);
- * 3. no duplicate slot keys within a kind;
+ * 3. no duplicate slot keys within a kind (text slots included);
  * 4. bidirectional slot coverage — every placeholder has a declared slot AND every
- *    declared slot is used by at least one placeholder;
- * 5. no malformed `slot:`-prefixed value in a ref field (wrong kind token / empty key).
+ *    declared slot is used by at least one placeholder; same rule for
+ *    `slot:text:<key>` tokens vs declared text slots;
+ * 5. no malformed `slot:`-prefixed value in a ref field (wrong kind token / empty key);
+ * 6. `version`, when present, is an integer ≥ 1 (absent = 1);
+ * 7. strict mode (`{ strict: true }`, the distributed-manifest import gate for
+ *    plugin/hub sources): any CONCRETE ref remaining in the five ref fields is an
+ *    error — distributed templates must declare every external ref as a slot
+ *    (undeclared install-local refs are confusion/exfiltration vectors). Bundled
+ *    and user-authored templates stay non-strict: pinning install-local refs
+ *    deliberately is allowed there.
  */
-export function checkTemplateManifest(manifest: TemplateManifest): ValidationResult {
+export function checkTemplateManifest(
+  manifest: TemplateManifest,
+  options?: { strict?: boolean },
+): ValidationResult {
   const errors: ValidationError[] = [];
+
+  if (manifest.version !== undefined && (!Number.isInteger(manifest.version) || manifest.version < 1)) {
+    errors.push({
+      code: 'template_missing_metadata',
+      message: `template manifest field 'version' must be an integer >= 1 when present (got ${JSON.stringify(manifest.version)})`,
+      nodeIds: [],
+    });
+  }
 
   // id / defaultSlug are machine identifiers -- always plain strings. name /
   // description / useCase are operator-facing and may be localized records.
@@ -277,6 +320,36 @@ export function checkTemplateManifest(manifest: TemplateManifest): ValidationRes
     }
   }
 
+  const declaredText = new Set<string>();
+  for (const slot of manifest.slots.text ?? []) {
+    if (declaredText.has(slot.key)) {
+      errors.push({
+        code: 'template_duplicate_slot_key',
+        message: `duplicate text slot key '${slot.key}'`,
+        nodeIds: [`${TEXT_SLOT_PREFIX}${slot.key}`],
+      });
+    }
+    declaredText.add(slot.key);
+    const labelProblem = localizedTextProblem(slot.label);
+    if (labelProblem !== null) {
+      errors.push({
+        code: 'template_invalid_localized_text',
+        message: `text slot '${slot.key}' label ${labelProblem}`,
+        nodeIds: [`${TEXT_SLOT_PREFIX}${slot.key}`],
+      });
+    }
+    if (slot.description !== undefined) {
+      const descriptionProblem = localizedTextProblem(slot.description);
+      if (descriptionProblem !== null) {
+        errors.push({
+          code: 'template_invalid_localized_text',
+          message: `text slot '${slot.key}' description ${descriptionProblem}`,
+          nodeIds: [`${TEXT_SLOT_PREFIX}${slot.key}`],
+        });
+      }
+    }
+  }
+
   if (shapeOk) {
     const refs = extractSlotRefs(manifest.graph);
     const used = new Set(refs.map((r) => `${r.kind} ${r.key}`));
@@ -306,8 +379,116 @@ export function checkTemplateManifest(manifest: TemplateManifest): ValidationRes
           nodeIds: [field.nodeId],
         });
       }
+      if (options?.strict === true && !field.value.startsWith(SLOT_PREFIX)) {
+        errors.push({
+          code: 'template_concrete_ref_in_strict_mode',
+          message: `node '${field.nodeId}' pins the concrete ${field.kind} ref '${field.value}'; a distributed template must declare it as a slot`,
+          nodeIds: [field.nodeId],
+        });
+      }
+    }
+
+    const textRefs = extractTextSlotRefs(manifest.graph);
+    const usedText = new Set(textRefs.map((r) => r.key));
+    for (const ref of textRefs) {
+      if (!declaredText.has(ref.key)) {
+        errors.push({
+          code: 'template_text_slot_undeclared',
+          message: `graph references undeclared text slot '${ref.key}'`,
+          nodeIds: ref.nodeIds,
+        });
+      }
+    }
+    for (const key of declaredText) {
+      if (!usedText.has(key)) {
+        errors.push({
+          code: 'template_text_slot_unused',
+          message: `declared text slot '${key}' is not referenced by any '${TEXT_SLOT_PREFIX}${key}' token in the graph`,
+          nodeIds: [`${TEXT_SLOT_PREFIX}${key}`],
+        });
+      }
     }
   }
 
   return { ok: errors.length === 0, errors };
+}
+
+/** Slug a concrete ref value into a slot key: lowercase, `[a-z0-9]+` runs kept,
+ *  the rest collapsed to single dashes. Falls back to 'slot' for all-symbol refs. */
+function slugifyKey(value: string): string {
+  const slug = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug.length > 0 ? slug : 'slot';
+}
+
+/** Metadata for inferTemplateManifest. `defaultSlug` falls back to `id`. */
+export interface InferTemplateOptions {
+  id: string;
+  name: LocalizedText;
+  description: LocalizedText;
+  useCase: LocalizedText;
+  defaultSlug?: string;
+}
+
+/**
+ * "Save as template": reverse the extractSlotRefs walk over a CONCRETE graph. Walks
+ * the same five ref fields, collects each distinct concrete ref per kind, replaces
+ * it with a `slot:<kind-singular>:<key>` placeholder (key slugified from the ref
+ * value, de-duplicated with numeric suffixes) and declares one slot per distinct ref
+ * with the ref value as its proposed label (authors edit labels in the UI). Refs
+ * already in well-formed `slot:` form pass through unchanged and are (re)declared
+ * with their key as label — re-templating an instantiated-and-edited workflow works.
+ * Malformed `slot:`-prefixed values pass through untouched for checkTemplateManifest
+ * to flag. Text slots are NEVER inferred — authors declare those manually (inferring
+ * which prose is install-specific is guesswork). The input graph is not mutated.
+ */
+export function inferTemplateManifest(graph: WorkflowGraph, opts: InferTemplateOptions): TemplateManifest {
+  const cloned = structuredClone(graph);
+  const perKind = new Map<TemplateSlotKind, { taken: Set<string>; refToKey: Map<string, string>; slots: TemplateSlot[] }>();
+  for (const kind of SLOT_KINDS) {
+    perKind.set(kind, { taken: new Set(), refToKey: new Map(), slots: [] });
+  }
+
+  // Pass 1: reserve pre-existing placeholder keys so inferred keys cannot collide.
+  for (const field of slotFields(cloned)) {
+    if (!field.value.startsWith(SLOT_PREFIX)) continue;
+    const key = parsePlaceholder(field.value, field.kind);
+    if (key === null) continue; // malformed — left as-is, checkTemplateManifest flags it
+    const state = perKind.get(field.kind)!;
+    if (!state.taken.has(key)) {
+      state.taken.add(key);
+      state.slots.push({ key, label: key });
+    }
+  }
+
+  // Pass 2: replace each distinct concrete ref with a fresh placeholder + declaration.
+  for (const field of slotFields(cloned)) {
+    if (field.value.startsWith(SLOT_PREFIX)) continue;
+    const state = perKind.get(field.kind)!;
+    let key = state.refToKey.get(field.value);
+    if (key === undefined) {
+      const base = slugifyKey(field.value);
+      key = base;
+      for (let n = 2; state.taken.has(key); n += 1) key = `${base}-${n}`;
+      state.taken.add(key);
+      state.refToKey.set(field.value, key);
+      state.slots.push({ key, label: field.value });
+    }
+    field.set(`${SLOT_PREFIX}${SLOT_TOKEN[field.kind]}:${key}`);
+  }
+
+  const slots: TemplateSlots = {};
+  for (const kind of SLOT_KINDS) {
+    const declared = perKind.get(kind)!.slots;
+    if (declared.length > 0) slots[kind] = declared;
+  }
+
+  return {
+    id: opts.id,
+    name: opts.name,
+    description: opts.description,
+    useCase: opts.useCase,
+    defaultSlug: opts.defaultSlug ?? opts.id,
+    graph: cloned,
+    slots,
+  };
 }
