@@ -135,6 +135,11 @@ export const DEV_JOB_ARTIFACT_KINDS = [
   'analysis',
   'plan',
   'summary',
+  // W2 pipeline artifacts.
+  'bootstrap_report',
+  'questions',
+  'answers',
+  'review_verdict',
 ] as const;
 export type DevJobArtifactKind = (typeof DEV_JOB_ARTIFACT_KINDS)[number];
 export function isDevJobArtifactKind(x: unknown): x is DevJobArtifactKind {
