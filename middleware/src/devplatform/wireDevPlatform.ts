@@ -26,6 +26,7 @@ import { finalizeDevJob, type FinalizeContext } from './finalizeDevJob.js';
 import { GithubForgeClient, type ForgeFetch } from './githubForgeClient.js';
 import { GithubIssuesTracker } from './githubIssuesTracker.js';
 import { LocalProcessBackend } from './localProcessBackend.js';
+import { DockerBackend } from './dockerBackend.js';
 import type { ForgeClient } from './forgeClient.js';
 import type { DevJob, DevJobStatus, RunnerBackend } from './types.js';
 import type { SecretVault } from '../secrets/vault.js';
@@ -67,8 +68,18 @@ export interface WireDevPlatformDeps {
 
   // --- W1 keystones: daemon job-policy endpoint + LLM proxy (spec §4/§6b) ----
   /** `DEV_RUNNER_DAEMON_TOKEN` — the daemon's shared bearer for the internal
-   *  job-policy endpoint. Absent ⇒ that endpoint 503s (daemon not wired). */
+   *  job-policy endpoint AND the DockerBackend's control-plane calls. Absent ⇒
+   *  that endpoint 503s and the DockerBackend is not registered. */
   daemonToken?: string;
+  /** `DEV_RUNNER_DAEMON_URL` — the daemon control-plane origin the DockerBackend
+   *  calls (spec §4/§5). Absent ⇒ no DockerBackend (nothing to talk to). */
+  daemonUrl?: string;
+  /** `DEV_PLATFORM_BACKEND` (spec §5). `docker` registers the container backend
+   *  when a daemon URL + token are present; `local` skips it. Default `docker`. */
+  backend?: 'docker' | 'local';
+  /** `DEV_JOB_LEASE_TTL_SEC` — lease TTL a docker job requests + renews at
+   *  ~TTL/3 (spec §7/§8). Default 180 in the backend. */
+  leaseTtlSec?: number;
   /** Digest-pinned runner image (`DEV_RUNNER_DEFAULT_IMAGE`). Absent ⇒ the
    *  job-policy endpoint 503s (nothing to derive an image from). */
   runnerImage?: string;
@@ -299,21 +310,42 @@ export function mountDevPlatform(
 // ---------------------------------------------------------------------------
 
 function buildBackends(deps: WireDevPlatformDeps, log: (msg: string) => void): readonly RunnerBackend[] {
-  // W0 ships only the LocalProcessBackend, and only when the operator has
-  // acknowledged the jail. Without it there is no backend and a claimed job
-  // fails `no_backend` (until W1's DockerBackend). The backend constructor
-  // enforces the uid; config's boot refusal already guarantees the uid is set.
-  if (!deps.unsafeLocal) return [];
-  return [
-    new LocalProcessBackend({
-      unsafeLocalAck: true,
-      localUid: deps.localUid ?? 0,
-      workspaceDir: deps.workspaceDir,
-      shimEntry: deps.shimEntry,
-      cliBin: deps.cliBin,
-      log,
-    }),
-  ];
+  const backends: RunnerBackend[] = [];
+
+  // W1 shipping path: the DockerBackend, selected by DEV_PLATFORM_BACKEND=docker
+  // (the default) and registered ONLY when a daemon URL + token are configured —
+  // without both there is nothing to talk to, so it stays unregistered rather
+  // than throwing at boot (secure default: off until the operator sets the token).
+  if ((deps.backend ?? 'docker') === 'docker' && deps.daemonUrl && deps.daemonToken) {
+    backends.push(
+      new DockerBackend({
+        daemonUrl: deps.daemonUrl,
+        daemonToken: deps.daemonToken,
+        ...(deps.leaseTtlSec !== undefined ? { leaseTtlSec: deps.leaseTtlSec } : {}),
+        log,
+      }),
+    );
+    log('[dev-platform] DockerBackend registered (kind=docker) — the container execution path');
+  }
+
+  // W0 skeleton: the LocalProcessBackend, and ONLY when the operator has
+  // acknowledged the jail (DEV_PLATFORM_UNSAFE_LOCAL). W1 demotes it to an escape
+  // hatch so it never becomes the permanent crutch the epic names as a risk. The
+  // backend constructor enforces the uid; config's boot refusal guarantees it.
+  if (deps.unsafeLocal) {
+    backends.push(
+      new LocalProcessBackend({
+        unsafeLocalAck: true,
+        localUid: deps.localUid ?? 0,
+        workspaceDir: deps.workspaceDir,
+        shimEntry: deps.shimEntry,
+        cliBin: deps.cliBin,
+        log,
+      }),
+    );
+  }
+
+  return backends;
 }
 
 /** Adapt the repo-bound `GithubIssuesTracker` to the route's `DevPlatformTracker`

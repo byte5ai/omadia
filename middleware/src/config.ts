@@ -476,9 +476,22 @@ const ConfigSchema = z.object({
   DEV_PLATFORM_SUBSCRIPTION_MODE: devFlag(),
   DEV_PLATFORM_SUBSCRIPTION_ACK: optionalNonEmpty(z.string().min(1)),
   // --- W1 keystones (spec §4/§6/§6b) ---------------------------------------
-  // The daemon's shared bearer for the internal job-policy endpoint. Absent ⇒
-  // that endpoint 503s (the daemon/DockerBackend is not wired).
+  // The daemon's shared bearer for the internal job-policy endpoint AND the
+  // DockerBackend's control-plane calls. Absent ⇒ the job-policy endpoint 503s
+  // and the DockerBackend is NOT registered.
   DEV_RUNNER_DAEMON_TOKEN: optionalNonEmpty(z.string().min(1)),
+  // The daemon control-plane origin the middleware calls (spec §4/§5). Absent ⇒
+  // the DockerBackend is not registered even under DEV_PLATFORM_BACKEND=docker.
+  DEV_RUNNER_DAEMON_URL: optionalNonEmpty(z.string().url()),
+  // Which runner backend the operator ships (spec §5): `docker` registers the
+  // container backend as the shipping path; `local` keeps the W0 skeleton (which
+  // ALSO requires DEV_PLATFORM_UNSAFE_LOCAL). Default `docker` — the local
+  // backend never becomes the permanent crutch the epic warns against, and it
+  // stays inert until its own acknowledgment flag is set anyway.
+  DEV_PLATFORM_BACKEND: z.enum(['docker', 'local']).default('docker'),
+  // Lease TTL a docker job requests + renews at ~TTL/3 (spec §7/§8). Bounded to
+  // the daemon's [30, 3600] window in the backend.
+  DEV_JOB_LEASE_TTL_SEC: z.coerce.number().int().positive().default(180),
   // Digest-pinned runner image. Absent ⇒ the job-policy endpoint 503s.
   DEV_RUNNER_DEFAULT_IMAGE: optionalNonEmpty(z.string().min(1)),
   // Operator egress default, comma-separated bare hostnames (validated in
