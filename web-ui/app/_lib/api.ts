@@ -3885,12 +3885,23 @@ export interface ConductorTemplateSlot {
   description?: ConductorLocalizedText;
 }
 
+/** A declared text slot (#478): referenced from prompt/message text as the token
+ *  `slot:text:<key>`; pure string substitution, no ref semantics. */
+export interface ConductorTemplateTextSlot {
+  key: string;
+  label: ConductorLocalizedText;
+  description?: ConductorLocalizedText;
+  /** substituted when the instantiating operator supplies no value. */
+  default?: string;
+}
+
 export interface ConductorTemplateSlots {
   agents?: ConductorTemplateSlot[];
   actions?: ConductorTemplateSlot[];
   roles?: ConductorTemplateSlot[];
   events?: ConductorTemplateSlot[];
   channels?: ConductorTemplateSlot[];
+  text?: ConductorTemplateTextSlot[];
 }
 
 /** slot key → install-local entity id, per kind (mirrors TemplateSlotMapping). */
@@ -3916,10 +3927,75 @@ export interface ConductorTemplate {
   defaultSlug: string;
   graph: ConductorTemplateGraph;
   slots: ConductorTemplateSlots;
+  /** manifest version, integer >= 1; absent = 1 (v1 manifests). */
+  version?: number;
+  // --- ADDITIVE catalog metadata (#478). Optional here because the same type also
+  // covers plain manifests (save-as-template drafts, POST/PUT request bodies).
+  source?: 'bundled' | 'user' | 'plugin';
+  /** user templates only: review-gate state. */
+  status?: 'private' | 'pending' | 'shared';
+  /** user templates only: backend viewer identity of the author (session sub —
+   *  compare against AuthUser.id, which /auth/me mints from the same claim). */
+  createdBy?: string;
+  latestVersion?: number;
+  instantiationCount?: number;
+  updatedAt?: string;
 }
 
 export async function fetchConductorTemplates(): Promise<{ templates: ConductorTemplate[] }> {
   return getJson(`${CONDUCTOR_BASE}/templates`);
+}
+
+/** Single catalog entry, same visibility rule as the list (404 when invisible). */
+export async function fetchConductorTemplate(id: string): Promise<{ template: ConductorTemplate }> {
+  return getJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}`);
+}
+
+/** "Save as template" (#478): reverse slot inference over the workflow's active
+ *  published version. Returns a DRAFT manifest only — nothing is persisted; the
+ *  dialog edits it and publishes via createConductorTemplate (fresh id) or
+ *  updateConductorTemplate (new version of an owned id). NB: the conductor router
+ *  is mounted at /conductors, so the path carries no '/workflows' prefix. */
+export async function saveWorkflowAsTemplate(
+  slug: string,
+): Promise<{ draft: ConductorTemplate; sourceWorkflow: { slug: string; version: number } }> {
+  return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/save-as-template`, {});
+}
+
+/** Create a user template (status 'private', v1, owned by the viewer).
+ *  409 conductor.template_id_exists / 400 conductor.template_invalid. */
+export async function createConductorTemplate(
+  manifest: ConductorTemplate,
+): Promise<{ template: ConductorTemplate }> {
+  return postJson(`${CONDUCTOR_BASE}/templates`, { manifest });
+}
+
+/** Publish the next manifest version onto an OWNED template (author-only; the
+ *  server assigns latestVersion+1). postJson hard-codes POST after its init
+ *  spread, so this mirrors putUiPrefs' dedicated PUT fetch instead. */
+export async function updateConductorTemplate(
+  id: string,
+  manifest: ConductorTemplate,
+): Promise<{ template: ConductorTemplate }> {
+  const forwarded = await forwardCookieHeader();
+  const path = `${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}`;
+  const res = await fetch(botApi(path), {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify({ manifest }),
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  const text = await res.text().catch(() => '');
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `PUT ${path} failed: ${res.status}`, text);
+  }
+  return JSON.parse(text) as { template: ConductorTemplate };
 }
 
 /** Ephemeral instantiation: substituted + validated graph, nothing persisted

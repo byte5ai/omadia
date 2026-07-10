@@ -10,6 +10,7 @@ import {
   createConductorRole,
   emitConductorEvent,
   fetchConductorTemplates,
+  getAuthMe,
   getConductorRun,
   listConductorRoles,
   listConductorWorkflows,
@@ -27,6 +28,7 @@ import {
 import { ConductorCanvas, type CanvasGraphRequest } from './_components/ConductorCanvas';
 import { ConductorChatPane } from './_components/ConductorChatPane';
 import { ConductorRunHistory, ConductorRunTrace } from './_components/ConductorRunTrace';
+import { SaveAsTemplateDialog } from './_components/SaveAsTemplateDialog';
 import { TemplateGallery } from './_components/TemplateGallery';
 import { TemplateInstantiateForm } from './_components/TemplateInstantiateForm';
 
@@ -63,6 +65,12 @@ export default function ConductorPage(): React.JSX.Element {
   // The conversational builder's evolving draft, mirrored into the canvas below (US7 parity).
   const [chatGraphRequest, setChatGraphRequest] = useState<CanvasGraphRequest | null>(null);
   const designerRef = useRef<HTMLElement>(null);
+  // Save-as-template (#478 F1): which workflow's dialog is open, the backend viewer
+  // identity for the dialog's ownership pre-check (AuthUser.id = session sub), and
+  // the post-publish notice (text-only success feedback, Lume state-color rule).
+  const [saveTemplateSlug, setSaveTemplateSlug] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<string | null>(null);
+  const [templateNotice, setTemplateNotice] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -135,6 +143,23 @@ export default function ConductorPage(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount loader
     void reload();
   }, [reload]);
+
+  // Viewer identity for the save-as-template ownership pre-check. Best-effort:
+  // without it the dialog still publishes fresh ids, it just cannot offer the
+  // "Publish as v{n+1}" switch (owned ids then read as taken).
+  useEffect(() => {
+    let cancelled = false;
+    getAuthMe()
+      .then((me) => {
+        if (!cancelled) setViewer(me.user.id);
+      })
+      .catch(() => {
+        /* unauthenticated probes redirect via getJson; nothing to surface here */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleRun = useCallback(
     async (wfSlug: string) => {
@@ -275,6 +300,19 @@ export default function ConductorPage(): React.JSX.Element {
                   >
                     {t('historyButton')}
                   </Button>
+                  {/* Save as template (#478): works from the PUBLISHED version, so it
+                      needs an active version — hidden for never-published workflows. */}
+                  {wf.activeVersionId !== null && (
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setTemplateNotice(null);
+                        setSaveTemplateSlug((s) => (s === wf.slug ? null : wf.slug));
+                      }}
+                    >
+                      {t('saveAsTemplateButton')}
+                    </Button>
+                  )}
                   <Button variant="secondary" disabled={runningSlug !== null} onClick={() => handleEdit(wf.slug)}>
                     {t('editButton')}
                   </Button>
@@ -290,6 +328,26 @@ export default function ConductorPage(): React.JSX.Element {
               </li>
             ))}
           </ul>
+        )}
+        {/* Success feedback after a template publish — TEXT only (Lume state rule). */}
+        {templateNotice && <p className="mt-3 text-[13px] text-[color:var(--success)]">{templateNotice}</p>}
+        {saveTemplateSlug && (
+          <div className="mt-4">
+            <SaveAsTemplateDialog
+              // Re-key per workflow so the draft and all field state reset on re-open.
+              key={saveTemplateSlug}
+              workflowSlug={saveTemplateSlug}
+              templates={templates}
+              viewer={viewer}
+              onPublished={({ id, version }) => {
+                setSaveTemplateSlug(null);
+                setTemplateNotice(t('saveTemplatePublished', { id, version }));
+                // Gallery refresh: the new/updated template appears immediately.
+                void reload();
+              }}
+              onCancel={() => setSaveTemplateSlug(null)}
+            />
+          </div>
         )}
         {runError && <p className="mt-3 text-[14px] text-[color:var(--danger,#e5484d)]">{runError}</p>}
         {runResult && (

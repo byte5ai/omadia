@@ -18,6 +18,41 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — save-as-template dialog in the Conductor admin UI (#478)
+
+- Published workflows in the Conductor page's workflow list gain a **"Save as
+  template"** action (only with an active published version). It opens
+  `SaveAsTemplateDialog` (`web-ui/app/conductor/_components/`), seeded by the
+  backend's inference draft (`POST /:slug/save-as-template`): metadata with
+  separate en/de inputs (en required — the manifest's universal fallback; de
+  present → a `LocalizedText` record travels, absent → a plain string), the
+  inferred ref slots grouped per kind with editable en/de labels and the
+  original concrete ref shown as context, and a manual text-slot editor
+  (key/label/default, with the paste-able `slot:text:<key>` token shown per
+  row — text slots are never inferred).
+- **Owner-aware primary action** (the v2 version-publish path): the entered id
+  is resolved against the loaded viewer-scoped catalog — unused id → "Publish
+  template" (`POST /templates`); an existing USER template with
+  `createdBy = viewer` → **"Publish as v{latestVersion+1}"**
+  (`PUT /templates/:id`, with a copy-not-reference note that existing
+  instances are unaffected and will show an update hint); bundled/plugin/
+  foreign id → inline "id taken" error, primary disabled. A **409 race** on
+  POST re-fetches the template (`GET /templates/:id`) and, when it turns out
+  viewer-owned, switches the dialog into the PUT state instead of
+  dead-ending. Viewer identity comes from `GET /auth/me` (`user.id` = the
+  session `sub` the backend scopes the catalog by).
+- API client (`web-ui/app/_lib/api.ts`): `saveWorkflowAsTemplate`,
+  `createConductorTemplate`, `updateConductorTemplate`,
+  `fetchConductorTemplate`; `ConductorTemplate` widened with the additive
+  catalog metadata (`source/status/createdBy/version/latestVersion/
+  instantiationCount/updatedAt`) and `slots.text`
+  (`ConductorTemplateTextSlot`). Lume throughout (state colors text/edge
+  only, Button busy verb+dots, `.lume-skeleton` while the draft loads); all
+  strings i18n'd en+de. Tests:
+  `__tests__/SaveAsTemplateDialog.test.tsx` (draft rendering, POST manifest
+  shape incl. text slot + de label map, owned-id PUT switch, foreign/bundled
+  dead-end, 409-race recovery both ways, missing-en gate, busy-dots).
+
 ### Added — builder-chat template awareness (#478)
 
 - The Conductor conversational builder (`src/conductor/builderAgent.ts`) now
