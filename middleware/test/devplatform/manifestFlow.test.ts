@@ -96,7 +96,7 @@ describe('devplatform/manifestFlow — exchangeManifestCode', () => {
     client_id: 'Iv1.abc',
     client_secret: 'shh',
     webhook_secret: 'whsec',
-    pem: '-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----\n',
+    pem: 'FAKE-PEM-FIXTURE-not-a-key',
     html_url: 'https://github.com/apps/omadia-dev-byte5ai',
   };
 
