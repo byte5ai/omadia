@@ -460,6 +460,8 @@
     "chatNeedSlug": "Slug und Name zum Veröffentlichen angeben.",
     "chatApplyIssues": "Einige Änderungen konnten nicht angewendet werden:",
     "chatDraftInvalid": "Entwurf hat Validierungsprobleme.",
+    "chatProposalsHeading": "Vorlagen-Vorschläge",
+    "chatProposalCoverage": "{filled} von {total} Slots vorausgefüllt",
     "triggerLabel": "Trigger",
     "eventIdLabel": "Event-ID",
     "eventCatalogHint": "{count} deklarierte(s) Event(s) verfügbar — wähle eines oder gib eine eigene ID ein.",

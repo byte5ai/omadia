@@ -4121,12 +4121,28 @@ export interface ConductorBuilderMessage {
   text: string;
 }
 
+/** A catalog template the builder agent suggests for the current conversation
+ *  (#478 B4/F4). Chat only PROPOSES — instantiation stays on the deliberate
+ *  form flow. The server has already vetted the block: viewer-visible ids only,
+ *  version taken from the catalog (not the LLM), prefill entries validated
+ *  against declared slots and live refs. */
+export interface ConductorTemplateProposal {
+  templateId: string;
+  version: number;
+  /** one user-facing sentence. */
+  reason: string;
+  /** best-effort slot guesses; partial is fine — seeds the instantiate form. */
+  prefill: ConductorTemplateSlotMapping;
+}
+
 export interface ConductorBuilderTurnResult {
   graph: unknown;
   patches: ConductorGraphPatch[];
   reply: string;
   validation: ConductorValidationResult;
   applyErrors: string[];
+  /** ≤3 template suggestions for this turn (#478) — ADDITIVE: absent when none. */
+  templateProposals?: ConductorTemplateProposal[];
 }
 
 export async function conductorBuilderTurn(body: {

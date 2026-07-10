@@ -22,6 +22,8 @@ import {
   type ConductorRole,
   type ConductorRunResult,
   type ConductorTemplate,
+  type ConductorTemplateProposal,
+  type ConductorTemplateSlotMapping,
   type ConductorWorkflow,
 } from '@/app/_lib/api';
 
@@ -44,6 +46,14 @@ export default function ConductorPage(): React.JSX.Element {
   // by "Re-instantiate from v{latest}", cleared on every ordinary selection.
   const [selectedTemplate, setSelectedTemplate] = useState<ConductorTemplate | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<number | undefined>(undefined);
+  // Chat proposal hand-off (#478 F4): "Use template" on a proposal card seeds the
+  // instantiate form with the proposal's prefill. The nonce re-keys the form so
+  // accepting the same proposal twice re-applies the prefill; ordinary selections
+  // and the update flow clear it (they start from an empty mapping).
+  const [instantiatePrefill, setInstantiatePrefill] = useState<{
+    mapping: ConductorTemplateSlotMapping;
+    nonce: number;
+  } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runningSlug, setRunningSlug] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<ConductorRunResult | null>(null);
@@ -154,7 +164,27 @@ export default function ConductorPage(): React.JSX.Element {
     (templateId: string, version: number) => {
       const tpl = templates.find((x) => x.id === templateId);
       if (!tpl) return;
+      setInstantiatePrefill(null);
       setSelectedVersion(version);
+      setSelectedTemplate(tpl);
+      templatesRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    },
+    [templates],
+  );
+
+  // Chat proposal hand-off (#478 F4) — same pattern as the chat→canvas
+  // setChatGraphRequest hand-off: the chat pane stays presentation-only and the
+  // page routes the request into the existing instantiate-form state. The form
+  // opens pinned to the PROPOSED version (the catalog-served one B4 stamped),
+  // seeded with the proposal's prefill; creation stays the operator's deliberate
+  // form action. A proposal whose template left the catalog since the turn is a
+  // no-op here (the chat pane already degrades it to plain text).
+  const handleUseTemplateProposal = useCallback(
+    (proposal: ConductorTemplateProposal) => {
+      const tpl = templates.find((x) => x.id === proposal.templateId);
+      if (!tpl) return;
+      setInstantiatePrefill({ mapping: proposal.prefill, nonce: Date.now() });
+      setSelectedVersion(proposal.version);
       setSelectedTemplate(tpl);
       templatesRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     },
@@ -264,7 +294,9 @@ export default function ConductorPage(): React.JSX.Element {
             viewer={viewer}
             onUseTemplate={(tpl) => {
               // Ordinary selection instantiates the latest version — clear any pin
-              // a previous "Re-instantiate from v{n}" left behind.
+              // a previous "Re-instantiate from v{n}" left behind, and any prefill
+              // a previous chat proposal seeded.
+              setInstantiatePrefill(null);
               setSelectedVersion(undefined);
               setSelectedTemplate(tpl);
             }}
@@ -273,16 +305,19 @@ export default function ConductorPage(): React.JSX.Element {
           {selectedTemplate && (
             <div className="mt-4">
               <TemplateInstantiateForm
-                // Re-key per template AND pinned version so slug/name/mapping state
-                // resets on re-selection and on the update flow's version switch.
-                key={`${selectedTemplate.id}@${String(selectedVersion ?? 'latest')}`}
+                // Re-key per template AND pinned version AND prefill nonce so
+                // slug/name/mapping state resets on re-selection, on the update
+                // flow's version switch, and on every chat-proposal hand-off.
+                key={`${selectedTemplate.id}@${String(selectedVersion ?? 'latest')}@${String(instantiatePrefill?.nonce ?? 'none')}`}
                 template={selectedTemplate}
                 version={selectedVersion}
+                initialMapping={instantiatePrefill?.mapping}
                 onCreated={() => {
                   // Same success feedback as the canvas publish path (onSaved): reload
                   // the lists so the new workflow appears immediately.
                   setSelectedTemplate(null);
                   setSelectedVersion(undefined);
+                  setInstantiatePrefill(null);
                   void reload();
                 }}
                 onOpenInDesigner={(graph, target) => {
@@ -304,6 +339,7 @@ export default function ConductorPage(): React.JSX.Element {
                 onCancel={() => {
                   setSelectedTemplate(null);
                   setSelectedVersion(undefined);
+                  setInstantiatePrefill(null);
                 }}
               />
             </div>
@@ -543,6 +579,10 @@ export default function ConductorPage(): React.JSX.Element {
             setChatGraphRequest({ graph, nonce: Date.now() });
             designerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
           }}
+          // Template proposal cards (#478 F4): the catalog resolves proposal ids to
+          // names/slots; "Use template" routes into the instantiate form above.
+          templates={templates}
+          onUseTemplateProposal={handleUseTemplateProposal}
         />
       </section>
 

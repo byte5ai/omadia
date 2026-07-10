@@ -460,6 +460,8 @@
     "chatNeedSlug": "Set a slug and a name to publish.",
     "chatApplyIssues": "Some edits couldn't be applied:",
     "chatDraftInvalid": "Draft has validation issues.",
+    "chatProposalsHeading": "Template suggestions",
+    "chatProposalCoverage": "{filled} of {total} slots prefilled",
     "triggerLabel": "Trigger",
     "eventIdLabel": "Event id",
     "eventCatalogHint": "{count} declared event(s) available — pick one or type a custom id.",

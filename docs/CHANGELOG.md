@@ -18,6 +18,22 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — builder-chat template proposal cards (#478)
+
+- `ConductorChatPane` (`web-ui/app/conductor/_components/`) renders B4's
+  `templateProposals` as up to 3 compact cards under the assistant reply:
+  locale-resolved template name, `v{n}` tag, the agent's one-line reason, and a
+  slot-coverage line ("{filled} of {total} slots prefilled" — counted against
+  DECLARED slots only, parity with the form's prefill seeding). One action,
+  **"Use template"**, hands off to the instantiate form via the page's existing
+  state plumbing (a prefill analog of the chat→canvas `setChatGraphRequest`
+  hand-off): the form opens pinned to the proposed version with the proposal's
+  prefill as `initialMapping`. Chat never auto-instantiates — creation stays a
+  deliberate form action. A proposal whose template id no longer resolves in
+  the catalog degrades to plain text (no dead action). Turns without proposals
+  render byte-identically to before; the API client's builder-turn result type
+  gains the additive `templateProposals` field.
+
 ### Added — instantiate form v2: text slots, graph preview, version pin, update hint (#478)
 
 - `TemplateInstantiateForm` (`web-ui/app/conductor/_components/`) renders one
