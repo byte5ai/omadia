@@ -145,87 +145,54 @@ function bearerToken(req: Request): string | null {
   return m ? m[1]!.trim() || null : null;
 }
 
+/** Replace every occurrence of `secret` (a byte sequence) in `buf` with
+ *  `[REDACTED]`, operating on raw bytes via a latin1 round-trip (1:1 with
+ *  bytes, so arbitrary binary is preserved). Returns `buf` unchanged when the
+ *  secret is empty or absent. */
+function redactBytes(buf: Buffer, secretLatin: string): Buffer {
+  if (secretLatin.length === 0) return buf;
+  const latin = buf.toString('latin1');
+  if (!latin.includes(secretLatin)) return buf;
+  return Buffer.from(latin.split(secretLatin).join('[REDACTED]'), 'latin1');
+}
+
 /**
- * Scan raw JSON for a duplicate key within ANY single object and return the
- * first one found (else null). `JSON.parse` silently keeps the last value for a
- * repeated key, so a body with two `model` keys would pass the allowlist check
- * on the parser's interpretation while the upstream honored the other — a
- * model-allowlist bypass (review S-finding). We refuse such a body outright.
- * A minimal state machine: a stack of key-sets, one per open object; strings
- * with escapes handled; a key is a string token immediately followed by `:`.
+ * Rolling redactor for the STREAMED response path (review S-finding): an
+ * upstream error event on a `text/event-stream` reaches the job container
+ * verbatim, so an echoed provider key would leak — the exact thing the proxy
+ * exists to prevent. This scans each chunk for the provider-key bytes before
+ * they are written downstream, holding back the last `N-1` bytes (N = key
+ * length) across chunk boundaries so the secret cannot be smuggled split over
+ * two chunks. `flush()` emits the retained tail once the stream ends.
  */
-function firstDuplicateJsonKey(raw: string): string | null {
-  const stack: Array<Set<string>> = [];
-  let i = 0;
-  const n = raw.length;
-  // `pendingKey` holds the most recently closed string while we look for the
-  // `:` that would make it an object key (vs. a string value or array element).
-  let pendingKey: string | null = null;
-  while (i < n) {
-    const c = raw[i]!;
-    if (c === '"') {
-      // Read a full JSON string (with escapes).
-      let s = '';
-      i++;
-      while (i < n) {
-        const ch = raw[i]!;
-        if (ch === '\\') {
-          s += ch + (raw[i + 1] ?? '');
-          i += 2;
-          continue;
-        }
-        if (ch === '"') {
-          i++;
-          break;
-        }
-        s += ch;
-        i++;
-      }
-      pendingKey = s;
-      continue;
-    }
-    if (c === '{') {
-      stack.push(new Set());
-      pendingKey = null;
-      i++;
-      continue;
-    }
-    if (c === '}') {
-      stack.pop();
-      pendingKey = null;
-      i++;
-      continue;
-    }
-    if (c === '[') {
-      pendingKey = null;
-      i++;
-      continue;
-    }
-    if (c === ']') {
-      pendingKey = null;
-      i++;
-      continue;
-    }
-    if (c === ':') {
-      // The pending string was an object key. Register it against the current
-      // object; a second sighting is the duplicate we refuse.
-      const top = stack[stack.length - 1];
-      if (top && pendingKey !== null) {
-        if (top.has(pendingKey)) return pendingKey;
-        top.add(pendingKey);
-      }
-      pendingKey = null;
-      i++;
-      continue;
-    }
-    if (c === ',') {
-      pendingKey = null;
-      i++;
-      continue;
-    }
-    i++;
+class StreamRedactor {
+  private carry = Buffer.alloc(0);
+  private readonly secretLatin: string;
+  private readonly keep: number;
+  constructor(secret: string) {
+    // Match on the secret's raw UTF-8 bytes, expressed as a latin1 string.
+    this.secretLatin = Buffer.from(secret, 'utf8').toString('latin1');
+    this.keep = Math.max(0, this.secretLatin.length - 1);
   }
-  return null;
+  /** Feed one upstream chunk; return the bytes safe to write to the client now. */
+  push(chunk: Buffer): Buffer {
+    if (this.secretLatin.length === 0) return chunk;
+    const combined = this.carry.length > 0 ? Buffer.concat([this.carry, chunk]) : chunk;
+    const redacted = redactBytes(combined, this.secretLatin);
+    if (redacted.length <= this.keep) {
+      this.carry = Buffer.from(redacted);
+      return Buffer.alloc(0);
+    }
+    const emit = Buffer.from(redacted.subarray(0, redacted.length - this.keep));
+    this.carry = Buffer.from(redacted.subarray(redacted.length - this.keep));
+    return emit;
+  }
+  /** Emit the held-back tail (< N bytes — can never contain a full secret). */
+  flush(): Buffer {
+    const out = this.carry;
+    this.carry = Buffer.alloc(0);
+    return out;
+  }
 }
 
 interface UsageAccumulator {
@@ -363,26 +330,30 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
       return;
     }
 
-    // 3. Read the request body (raw bytes — forwarded verbatim, and parsed for
-    //    the model gate). `express.raw` yields a Buffer.
-    const body: Buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    const rawText = body.length > 0 ? body.toString('utf8') : '';
-    let parsed: Record<string, unknown>;
+    // 3. Parse the request body and CANONICALISE it. `express.raw` yields a
+    //    Buffer; we parse it, enforce the model allowlist on the PARSED object,
+    //    and forward `JSON.stringify(parsed)` (step 6) — never the raw bytes.
+    //    This kills the whole "validate one representation, forward another"
+    //    class (duplicate keys, `\u`-escaped keys, whitespace/nesting tricks):
+    //    after canonicalisation the forwarded body carries exactly one `model`
+    //    field, holding the value that was checked here.
+    const rawBody: Buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const rawText = rawBody.length > 0 ? rawBody.toString('utf8') : '';
+    let parsed: unknown;
     try {
-      parsed = rawText.length > 0 ? (JSON.parse(rawText) as Record<string, unknown>) : {};
+      parsed = rawText.length > 0 ? JSON.parse(rawText) : {};
     } catch {
       fail(res, 400, 'devplatform.invalid_body', 'request body must be valid JSON');
       return;
     }
-    // Refuse duplicate JSON keys: the allowlist check reads one parser's view of
-    // `model` while the raw body we forward could carry a second `model` the
-    // upstream honors instead — a model-allowlist bypass.
-    const dup = firstDuplicateJsonKey(rawText);
-    if (dup !== null) {
-      fail(res, 400, 'devplatform.invalid_body', 'request body has a duplicate JSON key');
+    // A non-object top-level body (array, string, number, null) can never be a
+    // valid Messages request and must not be forwarded.
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      fail(res, 400, 'devplatform.invalid_body', 'request body must be a JSON object');
       return;
     }
-    const model = parsed['model'];
+    const parsedObj = parsed as Record<string, unknown>;
+    const model = parsedObj['model'];
     if (typeof model !== 'string' || model.length === 0) {
       fail(res, 400, 'devplatform.invalid_body', 'request body must name a model');
       return;
@@ -406,12 +377,15 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
       return;
     }
 
-    // 6. Forward. `?beta=true` (and any other query) is preserved.
+    // 6. Forward the CANONICAL body (re-serialised from the parsed object, with
+    //    content-length recomputed by fetch). `?beta=true` (and any other
+    //    query) is preserved.
     const queryIdx = req.originalUrl.indexOf('?');
     const query = queryIdx === -1 ? '' : req.originalUrl.slice(queryIdx);
     const upstreamUrl = `${policy.upstreamBaseUrl.replace(/\/+$/, '')}/v1/messages${query}`;
     const headers = buildForwardHeaders(req, providerKey);
-    const streamed = parsed['stream'] === true;
+    const streamed = parsedObj['stream'] === true;
+    const forwardBody = Buffer.from(JSON.stringify(parsedObj), 'utf8');
 
     await proxyUpstream({
       res,
@@ -420,7 +394,7 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
       streamed,
       upstreamUrl,
       headers,
-      body,
+      body: forwardBody,
       providerKey,
     });
   }
@@ -492,20 +466,36 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
     let sseBuffer = '';
     let jsonBuffer = '';
     let truncated = false;
+    // Redact the provider key from every byte written downstream (incl. streamed
+    // SSE error events an upstream might echo it into). A rolling window holds
+    // back the last N-1 bytes so the secret cannot be split across two chunks.
+    const redactor = new StreamRedactor(providerKey);
 
     try {
       for await (const chunk of upstream.body as AsyncIterable<Uint8Array>) {
-        // Verbatim passthrough FIRST — no re-chunking, no buffering of the body.
-        await writeChunk(res, chunk);
-        // Then tap the same bytes for usage metering.
-        const text = decoder.decode(chunk, { stream: true });
+        const buf = Buffer.from(chunk);
+        // Meter on the RAW upstream bytes (the key never appears in usage JSON),
+        // then write the REDACTED bytes to the client.
+        const text = decoder.decode(buf, { stream: true });
         if (isSse) sseBuffer = drainSse(acc, sseBuffer + text);
         else jsonBuffer += text;
+        const safe = redactor.push(buf);
+        if (safe.length > 0) await writeChunk(res, safe);
       }
+      const tail = redactor.flush();
+      if (tail.length > 0) await writeChunk(res, tail);
     } catch (err) {
-      // Mid-stream disconnect: keep whatever usage we accumulated; note the truncation.
+      // Mid-stream disconnect: keep whatever usage we accumulated; note the
+      // truncation. Best-effort flush of the redactor's retained tail so the
+      // client is not shorted the (already redacted) bytes we held back.
       truncated = true;
       log(`[dev-llm] stream truncated for job ${job.id}: ${errText(err)}`);
+      try {
+        const tail = redactor.flush();
+        if (tail.length > 0) await writeChunk(res, tail);
+      } catch {
+        /* client already gone — nothing to flush to */
+      }
     }
 
     if (!isSse && jsonBuffer.length > 0) {
@@ -570,9 +560,23 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
  *  all hop-by-hop headers — never reaches upstream. */
 function buildForwardHeaders(req: Request, providerKey: string): Record<string, string> {
   const out: Record<string, string> = {};
+  // Headers named by the `Connection` header are hop-by-hop and MUST be stripped
+  // by a proxy (RFC 7230 §6.1). A client that writes `Connection: anthropic-beta`
+  // must not have `Anthropic-Beta` forwarded even though it is allowlisted.
+  const connectionNamed = new Set<string>();
+  const conn = req.headers['connection'];
+  const connValues = Array.isArray(conn) ? conn : conn === undefined ? [] : [conn];
+  for (const cv of connValues) {
+    for (const token of cv.split(',')) {
+      const name = token.trim().toLowerCase();
+      if (name) connectionNamed.add(name);
+    }
+  }
   for (const [key, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;
-    if (!FORWARDED_REQUEST_HEADERS.has(key.toLowerCase())) continue;
+    const lower = key.toLowerCase();
+    if (connectionNamed.has(lower)) continue; // hop-by-hop per the Connection header
+    if (!FORWARDED_REQUEST_HEADERS.has(lower)) continue;
     out[key] = Array.isArray(value) ? value.join(', ') : value;
   }
   // Server-injected, overriding any allowlisted client copy.

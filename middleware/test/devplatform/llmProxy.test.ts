@@ -1,5 +1,6 @@
 import { describe, it, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
+import http from 'node:http';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -180,6 +181,30 @@ function post(base: string, body: unknown, headers: Record<string, string>): Pro
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
+  });
+}
+
+/** A raw HTTP POST via node:http — needed for headers `fetch`/undici forbids a
+ *  client from setting (e.g. `Connection`), which the proxy must still handle. */
+function rawPost(
+  base: string,
+  path: string,
+  headers: Record<string, string>,
+  body: string,
+): Promise<{ status: number; text: string }> {
+  const u = new URL(base + path);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: 'POST', headers },
+      (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (d: string) => (data += d));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, text: data }));
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
   });
 }
 
@@ -410,24 +435,88 @@ describe('llmProxy — request header allowlist (review S-finding)', () => {
   });
 });
 
-describe('llmProxy — duplicate JSON key (model-allowlist bypass)', () => {
+describe('llmProxy — body canonicalisation (model-allowlist bypass)', () => {
   let fx: Fixture;
   afterEach(async () => {
     if (fx) await fx.close();
   });
 
-  it('400 refuses a body with two `model` keys; nothing is forwarded', async () => {
+  it('canonicalises a unicode-escaped duplicate `model`: exactly the checked value reaches upstream', async () => {
     fx = await makeFixture({ upstream: () => sseResponse(FULL_SSE) });
-    // A hand-crafted raw body: the allowed model first, a forbidden one second.
-    const raw = '{"model":"claude-opus-4-8","model":"claude-forbidden","messages":[]}';
+    // `model` decodes to the SAME key `model`; JSON.parse keeps the LAST
+    // value ("claude-opus-4-8" = allowed). The forbidden earlier value must not
+    // survive canonicalisation — the guard validates and forwards ONE representation.
+    const raw = '{"\\u006dodel":"claude-forbidden","model":"claude-opus-4-8","messages":[]}';
     const res = await fetch(`${fx.base}/llm/v1/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...authed },
       body: raw,
     });
+    assert.equal(res.status, 200);
+    await res.text();
+    assert.equal(fx.calls.length, 1);
+    const forwarded = fx.calls[0]!.body;
+    const parsedForward = JSON.parse(forwarded) as Record<string, unknown>;
+    assert.equal(parsedForward['model'], 'claude-opus-4-8', 'only the checked model is forwarded');
+    assert.equal((forwarded.match(/"model"/g) ?? []).length, 1, 'canonical body has a single model field');
+    assert.ok(!forwarded.includes('claude-forbidden'), 'the forbidden value is gone from the forwarded body');
+  });
+
+  it('403 when the effective (last) `model` is forbidden, even via an escaped duplicate', async () => {
+    fx = await makeFixture({ upstream: () => sseResponse(FULL_SSE) });
+    // Allowed model first, forbidden model last → JSON.parse resolves to forbidden.
+    const raw = '{"model":"claude-opus-4-8","\\u006dodel":"claude-forbidden","messages":[]}';
+    const res = await fetch(`${fx.base}/llm/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authed },
+      body: raw,
+    });
+    assert.equal(res.status, 403);
+    assert.equal(((await res.json()) as { code: string }).code, 'dev.model_not_allowed');
+    assert.equal(fx.calls.length, 0, 'a forbidden effective model never reaches upstream');
+  });
+
+  it('400 refuses a non-object top-level body (array); nothing is forwarded', async () => {
+    fx = await makeFixture({ upstream: () => sseResponse(FULL_SSE) });
+    const res = await fetch(`${fx.base}/llm/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authed },
+      body: '[{"model":"claude-opus-4-8"}]',
+    });
     assert.equal(res.status, 400);
     assert.equal(((await res.json()) as { code: string }).code, 'devplatform.invalid_body');
-    assert.equal(fx.calls.length, 0, 'a duplicate-key body never reaches upstream');
+    assert.equal(fx.calls.length, 0);
+  });
+});
+
+describe('llmProxy — hop-by-hop Connection header (review finding)', () => {
+  let fx: Fixture;
+  afterEach(async () => {
+    if (fx) await fx.close();
+  });
+
+  it('strips a header NAMED by Connection even though it is allowlisted', async () => {
+    fx = await makeFixture({ upstream: () => sseResponse(FULL_SSE) });
+    const body = JSON.stringify(OK_BODY);
+    const { status } = await rawPost(
+      fx.base,
+      '/llm/v1/messages?beta=true',
+      {
+        'content-type': 'application/json',
+        authorization: `Bearer ${VALID}`,
+        connection: 'anthropic-beta',
+        'anthropic-beta': 'output-128k-2025-02-19',
+        'content-length': String(Buffer.byteLength(body)),
+      },
+      body,
+    );
+    assert.equal(status, 200);
+    assert.equal(fx.calls.length, 1);
+    const keys = Object.keys(fx.calls[0]!.headers).map((k) => k.toLowerCase());
+    assert.ok(
+      !keys.includes('anthropic-beta'),
+      'a Connection-named hop-by-hop header must be stripped even when allowlisted',
+    );
   });
 });
 
@@ -463,6 +552,43 @@ describe('llmProxy — response redaction (review S-finding)', () => {
     const text = await res.text();
     assert.ok(!text.includes(REAL_KEY), 'the provider key must not leak in an echoed error body');
     assert.ok(text.includes('[REDACTED]'));
+  });
+
+  it('redacts the provider key from a STREAMED SSE error split across two chunks', async () => {
+    // The key straddles the chunk boundary: neither half alone contains it, so a
+    // naive per-chunk scan would miss it. The rolling redactor must still catch it.
+    const boundary = REAL_KEY.indexOf('PROVIDER');
+    const part1 = `event: error\ndata: {"error":"upstream rejected key ${REAL_KEY.slice(0, boundary)}`;
+    const part2 = `${REAL_KEY.slice(boundary)} — retry"}\n\n`;
+    // sanity: only the concatenation holds the full key.
+    assert.ok(!part1.includes(REAL_KEY) && !part2.includes(REAL_KEY));
+    assert.ok((part1 + part2).includes(REAL_KEY));
+
+    fx = await makeFixture({
+      upstream: () => {
+        const enc = new TextEncoder();
+        let stage = 0;
+        const stream = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (stage === 0) {
+              stage = 1;
+              controller.enqueue(enc.encode(part1));
+            } else if (stage === 1) {
+              stage = 2;
+              controller.enqueue(enc.encode(part2));
+            } else {
+              controller.close();
+            }
+          },
+        });
+        return new Response(stream, { status: 400, headers: { 'content-type': 'text/event-stream' } });
+      },
+    });
+    const res = await post(fx.base, OK_BODY, authed);
+    assert.equal(res.status, 400);
+    const text = await res.text();
+    assert.ok(!text.includes(REAL_KEY), 'the split provider key must not reach the job container');
+    assert.ok(text.includes('[REDACTED]'), 'the key is redacted in the streamed body');
   });
 });
 

@@ -121,6 +121,13 @@ describe('deriveJobPolicy — pure derivation', () => {
       'https://10.0.0.5/o/r.git', // RFC1918 literal
       'https://foo.internal/o/r.git', // internal name
       'http://github.com/o/r.git', // non-https
+      // trailing-dot FQDN bypass — resolves to the SAME internal target but would
+      // slip past `.endsWith('.internal')` / `localhost` without normalisation.
+      'https://metadata.google.internal./x', // metadata, trailing dot
+      'https://localhost./o/r.git', // loopback name, trailing dot
+      'https://foo.internal./o/r.git', // internal name, trailing dot
+      'https://METADATA.GOOGLE.INTERNAL/x', // uppercase metadata
+      'https://foo.internal../o/r.git', // double trailing dot (malformed)
     ]) {
       assert.throws(
         () => deriveJobPolicy(repoInput({ cloneUrl }), { authMode: 'api_key' }, CONFIG),
@@ -128,6 +135,16 @@ describe('deriveJobPolicy — pure derivation', () => {
         `clone_url ${cloneUrl} must be refused`,
       );
     }
+  });
+
+  it('normalises a benign trailing-dot forge host to its canonical (dotless) form', () => {
+    const p = deriveJobPolicy(
+      repoInput({ cloneUrl: 'https://gitlab.example.com./o/r.git' }),
+      { authMode: 'api_key' },
+      CONFIG,
+    );
+    assert.ok(p.egressAllowlist.includes('gitlab.example.com'), 'trailing dot stripped');
+    assert.ok(!p.egressAllowlist.some((h) => h.endsWith('.')), 'no entry keeps a trailing dot');
   });
 
   it('egress: drops malformed / IP-literal entries, keeps operator-chosen names', () => {

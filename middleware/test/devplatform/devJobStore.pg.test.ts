@@ -16,6 +16,7 @@ import {
 } from '../../src/devplatform/devJobStore.js';
 import { DevRepoStore } from '../../src/devplatform/devRepoStore.js';
 import { hashRunnerToken, mintRunnerToken } from '../../src/devplatform/jobToken.js';
+import { isTerminalDevJobStatus } from '../../src/devplatform/types.js';
 import type { DevRepo } from '../../src/devplatform/types.js';
 
 /**
@@ -206,6 +207,34 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     assert.equal(await store.verifyRunnerToken(job.id, token), true);
     assert.equal(await store.verifyRunnerToken(job.id, mintRunnerToken().token), false);
     assert.equal(await store.verifyRunnerToken(randomUUID(), token), false, 'unknown job → false');
+  });
+
+  it('resolveJobByToken verifies constant-time and excludes terminal jobs (no state oracle)', async () => {
+    const { token } = mintRunnerToken();
+    const hash = hashRunnerToken(token);
+    const localRepo = await newRepo();
+    const job = await store.createJob({
+      repoId: localRepo.id,
+      kind: 'implement',
+      brief: 'b',
+      source: 'admin',
+      backend: 'local',
+      createdBy: MARK,
+      runnerTokenHash: hash,
+    });
+
+    // A live (non-terminal) job resolves; the wrong token never does.
+    const resolved = await store.resolveJobByToken(token);
+    assert.ok(resolved, 'a valid token resolves its job');
+    assert.equal(resolved?.id, job.id);
+    assert.ok(!isTerminalDevJobStatus(resolved!.status), 'resolved job is non-terminal');
+    assert.equal(await store.resolveJobByToken(mintRunnerToken().token), null, 'wrong token → null');
+    assert.equal(await store.resolveJobByToken(''), null, 'empty token → null');
+
+    // Once terminal, the SAME valid token resolves to null — so the proxy answers
+    // 401 (not 410), denying a stale-token holder a valid/terminal oracle.
+    await store.finishTerminal(TERMINAL_FINISH_BRAND, job.id, 'done', { branch: 'omadia/job-y' });
+    assert.equal(await store.resolveJobByToken(token), null, 'terminal job → null (no oracle)');
   });
 
   it('recordResult moves diff_ready → applying and persists usage', async () => {
