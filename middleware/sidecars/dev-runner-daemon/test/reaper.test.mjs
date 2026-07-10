@@ -126,6 +126,9 @@ function fakeEngine(seed = {}, opts = {}) {
             // Real docker always reports a state; a fake that omits it hides the
             // difference between a live job and a corpse.
             running: j.running ?? true,
+            // Real docker reports the container's creation time; the daemon's
+            // absolute lifetime is measured from it.
+            createdAtMs: j.createdAtMs ?? 0,
           });
         }
         if (j.hasNetwork) inv.networks.push({ jobId, id: `omadia-job-${jobId}` });
@@ -599,5 +602,35 @@ describe('reaper — a failed boot rebuild must never let the sweep eat live job
     engine.listManagedResources = async () => ({ containers: [], networks: [], volumes: [] });
     await reaper.sweep(); // must actually run, not be blocked by the hung pass
     assert.ok(logger.warns.some((m) => /exceeded 20ms/.test(m)), 'the hung pass was abandoned and logged');
+  });
+});
+
+describe('reaper — restarting the daemon does not reset a container lifetime', () => {
+  it('measures the hard deadline from the container birth, not from adoption', async () => {
+    // The container was born at t=0 and the lifetime is 60s. The daemon restarts
+    // at t=90_000 — long past the deadline. Adoption must NOT hand it a fresh
+    // lifetime: otherwise a middleware that can restart the daemon owns an
+    // immortal container and `lifetime_exceeded` means nothing.
+    const clock = mutableClock(90_000);
+    const engine = fakeEngine({
+      [JOB_A]: {
+        hasContainer: true,
+        hasNetwork: true,
+        hasVolume: true,
+        lease: isoAt(999_999_999),
+        running: true,
+        createdAtMs: 0,
+      },
+    });
+    const logger = capturingLogger();
+    const jm = new JobManager({ engine, policyClient: fakePolicyClient(), clock, maxJobLifetimeMs: 60_000 });
+    const reaper = createReaper({ jobManager: jm, engine, clock, logger, intervalMs: 1_000 });
+
+    await reaper.rebuild();
+    assert.equal(jm.size(), 1, 'adopted, so its teardown goes through the normal path');
+
+    await reaper.sweep();
+    assert.equal(jm.size(), 0, 'the container is past its lifetime and dies');
+    assert.equal(logger.reaped('lifetime_exceeded').length, 1);
   });
 });

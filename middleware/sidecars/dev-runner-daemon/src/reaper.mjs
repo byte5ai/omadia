@@ -296,7 +296,7 @@ export function createReaper(deps) {
       const graced = Number.isNaN(labelExpiry)
         ? nowMs + bootGraceMs
         : Math.max(labelExpiry, nowMs + bootGraceMs);
-      jobManager.adopt(c.jobId, container, new Date(graced).toISOString());
+      jobManager.adopt(c.jobId, container, new Date(graced).toISOString(), c.createdAtMs);
     }
     // The registry now mirrors the engine, so the orphan sweep can trust "not
     // tracked" to mean "leaked". Set BEFORE the reaps below so they may run.

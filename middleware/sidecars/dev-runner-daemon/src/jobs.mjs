@@ -87,6 +87,10 @@ export const LEASE_EXPIRES_LABEL = 'ai.omadia.dev.leaseExpiresAt';
  * @property {string} imageDigest Best-effort digest of the running image; '' if unknown.
  * @property {boolean} running Docker's State === 'running'. A container that has
  *   exited is stale no matter what its lease label says.
+ * @property {number} createdAtMs Docker's `Created` timestamp. The container's
+ *   real age — the daemon's absolute lifetime is measured from THIS, not from
+ *   the adoption, or a restart would hand every job a fresh lifetime and the
+ *   `lifetime_exceeded` guard would be defeated by restarting the daemon.
  */
 
 /**
@@ -545,23 +549,24 @@ export class JobManager {
    * @param {string} jobId
    * @param {JobContainer} container
    * @param {string} leaseExpiresAt
+   * @param {number} [createdAtMs] The container's real creation time (docker `Created`).
    * @returns {JobRecord | null} The adopted record, or null if a live op owns the id.
    */
-  adopt(jobId, container, leaseExpiresAt) {
+  adopt(jobId, container, leaseExpiresAt, createdAtMs) {
     const existing = this.#jobs.get(jobId);
     if (existing) return existing;
     // A create or destroy already owns this id; its handle is authoritative.
     if (this.#inflight.has(jobId) || this.#destroying.has(jobId)) return null;
+    // The deadline is measured from the container's REAL birth, not from this
+    // adoption. Otherwise every daemon restart hands the job a fresh lifetime,
+    // and a middleware that can restart the daemon has an immortal container.
+    const bornAt = typeof createdAtMs === 'number' ? createdAtMs : this.#clock.now();
     /** @type {JobRecord} */
-    // An adopted container's true birth time is unknown after a restart, so the
-    // deadline is measured from adoption. A middleware that restarts the daemon
-    // to reset it must also survive the reaper's grace window, and the container
-    // it inherits is at most one lifetime old.
     const record = {
       jobId,
       container,
       leaseExpiresAt,
-      hardDeadlineAt: new Date(this.#clock.now() + this.#maxLifetimeMs).toISOString(),
+      hardDeadlineAt: new Date(bornAt + this.#maxLifetimeMs).toISOString(),
     };
     this.#jobs.set(jobId, record);
     return record;
@@ -947,6 +952,8 @@ export function createDockerEngine(opts = {}) {
           leaseExpiresAt: jobLabels[LEASE_EXPIRES_LABEL] ?? '',
           imageDigest: imageDigestOf(String(c.Image ?? '')) ?? '',
           running: c.State === 'running',
+          // docker reports `Created` in unix seconds.
+          createdAtMs: typeof c.Created === 'number' ? c.Created * 1000 : Date.now(),
         });
       }
 
