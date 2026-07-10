@@ -18,7 +18,18 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
-### Added — advisory SkillSpector code scanning for plugin packages (#453)
+### Added — conductor-core workflow-template contract (#429, unit b1)
+
+- `@omadia/conductor-core` gains the shared workflow-template contract:
+  `TemplateManifest` / `TemplateSlots` / `TemplateSlotMapping` types plus pure
+  helpers in `src/template.ts` — `extractSlotRefs` (structural walk of the five
+  ref fields `step.agentId`, `step.actionId`, role `step.human.principal.ref`,
+  `step.human.channel`, `trigger.eventId`), `missingSlotMappings`,
+  `applyTemplateSlots` (deep-clone, field-targeted `slot:<kind>:<key>`
+  substitution; never touches `{{ctx.*}}` prompt/message interpolation) and
+  `checkTemplateManifest` (metadata + structural validate + bidirectional slot
+  coverage). Foundation for the file-based template catalog and the
+  `/templates` middleware routes (follow-up units on the same branch).
 
 - Every ingested plugin package (direct upload, hub install, Builder install)
   is optionally scanned by an NVIDIA SkillSpector sidecar

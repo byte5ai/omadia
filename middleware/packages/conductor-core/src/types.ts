@@ -197,7 +197,13 @@ export type ValidationCode =
   | 'unknown_agent_ref'
   | 'unknown_action_ref'
   | 'unknown_role_ref'
-  | 'unknown_event_ref';
+  | 'unknown_event_ref'
+  // Template-manifest integrity codes (checkTemplateManifest in template.ts).
+  | 'template_missing_metadata'
+  | 'template_duplicate_slot_key'
+  | 'template_undeclared_slot'
+  | 'template_unused_slot'
+  | 'template_malformed_slot_ref';
 
 export interface ValidationError {
   code: ValidationCode;
@@ -219,6 +225,68 @@ export interface KnownRefs {
   actionIds?: readonly string[];
   roleKeys?: readonly string[];
   eventIds?: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
+// Workflow templates ("workflow templates" user-facing; slot-parameterized graphs)
+// ---------------------------------------------------------------------------
+
+/** The five slot kinds a template graph can parameterize. Referenced from graph ref
+ *  fields with the kind-SINGULAR placeholder syntax `slot:<kind-singular>:<key>`
+ *  (e.g. kind 'agents' → `slot:agent:<key>`). Placeholders appear ONLY in ref fields
+ *  (`step.agentId`, `step.actionId`, role `step.human.principal.ref`,
+ *  `step.human.channel`, `trigger.eventId`) — never in `step.prompt` /
+ *  `human.message`, whose `{{...}}` syntax is run-context interpolation. */
+export type TemplateSlotKind = 'agents' | 'actions' | 'roles' | 'events' | 'channels';
+
+export interface TemplateSlot {
+  /** unique within its kind; referenced from the graph as `slot:<kind-singular>:<key>`. */
+  key: string;
+  /** human-readable, shown in the mapping form. */
+  label: string;
+  /** authored help text for the mapping form. */
+  description?: string;
+}
+
+export interface TemplateSlots {
+  agents?: TemplateSlot[];
+  actions?: TemplateSlot[];
+  roles?: TemplateSlot[];
+  events?: TemplateSlot[];
+  channels?: TemplateSlot[];
+}
+
+export interface TemplateManifest {
+  /** stable kebab-case catalog id, e.g. "expense-approval". */
+  id: string;
+  name: string;
+  /** the business problem it solves, plain language. */
+  description: string;
+  /** category tag: 'approval' | 'escalation' | 'reporting' | 'onboarding' | free string. */
+  useCase: string;
+  /** suggested workflow slug, operator-editable. */
+  defaultSlug: string;
+  /** complete graph with `slot:` placeholders in ref fields. */
+  graph: WorkflowGraph;
+  slots: TemplateSlots;
+}
+
+/** slot key → install-local entity id, per kind. */
+export type TemplateSlotMapping = Partial<Record<TemplateSlotKind, Record<string, string>>>;
+
+/** One placeholder found in a template graph, with every node referencing it. */
+export interface TemplateSlotRef {
+  kind: TemplateSlotKind;
+  key: string;
+  /** steps/triggers referencing the slot. */
+  nodeIds: string[];
+}
+
+/** A declared slot missing from a mapping (missingSlotMappings result item). */
+export interface TemplateMissingSlot {
+  kind: TemplateSlotKind;
+  key: string;
+  label: string;
 }
 
 // ---------------------------------------------------------------------------

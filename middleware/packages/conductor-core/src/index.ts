@@ -6,3 +6,9 @@ export { evaluatePredicate, resolvePath } from './predicate.js';
 export { conductorGraphSchema, validateGraphShape, type ShapeResult } from './schema.js';
 export { validate } from './validate.js';
 export { nextStep } from './engine.js';
+export {
+  extractSlotRefs,
+  missingSlotMappings,
+  applyTemplateSlots,
+  checkTemplateManifest,
+} from './template.js';
