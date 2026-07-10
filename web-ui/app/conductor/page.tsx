@@ -234,7 +234,15 @@ export default function ConductorPage(): React.JSX.Element {
             {t('templatesHeading')}
           </h2>
           <p className="mb-4 max-w-2xl text-[13px] text-[color:var(--fg-muted)]">{t('templatesHint')}</p>
-          <TemplateGallery templates={templates} onUseTemplate={(tpl) => setSelectedTemplate(tpl)} />
+          {/* viewer + onCatalogChanged (#478 F2): the gallery's facets and manage/
+              review actions need the viewer identity and a way to refetch the
+              catalog after submit/approve/reject/delete. */}
+          <TemplateGallery
+            templates={templates}
+            viewer={viewer}
+            onUseTemplate={(tpl) => setSelectedTemplate(tpl)}
+            onCatalogChanged={() => void reload()}
+          />
           {selectedTemplate && (
             <div className="mt-4">
               <TemplateInstantiateForm

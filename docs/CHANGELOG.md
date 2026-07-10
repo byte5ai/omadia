@@ -18,6 +18,31 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — template gallery v2: facets, pending-review queue, search, manage actions (#478)
+
+- `TemplateGallery` (`web-ui/app/conductor/_components/`) now renders the
+  composite catalog with **provenance facets** (All / Bundled / My templates /
+  Shared / Plugins / **Pending review**), client-side **text search** over the
+  locale-resolved name/description/useCase, and secondary **use-case chips**.
+  "My templates" derives ownership from `createdBy = viewer` (viewer identity
+  via the page's existing `getAuthMe` plumbing), falling back to "a visible
+  private template is the viewer's own" per the backend visibility rule.
+- **Pending review is the reviewer queue**: every `status = 'pending'` user
+  template is listed for EVERY operator (the install-wide pending visibility
+  rule makes the review gate reachable by non-author reviewers), with the
+  submitter shown and **Approve / Reject** actions directly on the card — not
+  inside an author-only menu. The facet label carries a waiting-count badge;
+  empty state: "No templates waiting for review".
+- Cards gain a provenance/status badge (text + edge color only, per Lume), a
+  `v{n}` tag, an instantiation count ("Used {n}×"), and author manage actions
+  on own user templates: **Submit for review** (private only) and **Delete**
+  behind an inline confirm. All mutations refetch the catalog through the
+  page (`onCatalogChanged` → `reload()`); errors surface inline as text with
+  the server's error message.
+- API client (`web-ui/app/_lib/api.ts`): `deleteConductorTemplate`,
+  `submitConductorTemplate`, `approveConductorTemplate`,
+  `rejectConductorTemplate` over B3's review-gate routes.
+
 ### Added — save-as-template dialog in the Conductor admin UI (#478)
 
 - Published workflows in the Conductor page's workflow list gain a **"Save as

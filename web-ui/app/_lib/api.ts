@@ -3998,6 +3998,48 @@ export async function updateConductorTemplate(
   return JSON.parse(text) as { template: ConductorTemplate };
 }
 
+/** Delete an OWNED user template (author-only; bundled/plugin entries are
+ *  read-only). 204 on success. postJson hard-codes POST, so this is a dedicated
+ *  DELETE fetch mirroring updateConductorTemplate's PUT. */
+export async function deleteConductorTemplate(id: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const path = `${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}`;
+  const res = await fetch(botApi(path), {
+    method: 'DELETE',
+    headers: {
+      accept: 'application/json',
+      ...forwarded,
+    },
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}`, text);
+  }
+}
+
+/** Review gate (#478): the author submits a private template for review
+ *  (private → pending). 409 conductor.template_status_conflict otherwise. */
+export async function submitConductorTemplate(id: string): Promise<{ template: ConductorTemplate }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/submit`, {});
+}
+
+/** Approve a pending template (pending → shared). Open to ANY operator — the
+ *  revised visibility rule makes pending templates install-wide, so a
+ *  non-author reviewer can act; `reviewed_by` is recorded server-side. */
+export async function approveConductorTemplate(id: string): Promise<{ template: ConductorTemplate | null }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/approve`, {});
+}
+
+/** Reject a pending template (pending → private). Open to any operator; the
+ *  template may drop out of a non-author reviewer's visibility afterwards, so
+ *  the returned `template` can be null. */
+export async function rejectConductorTemplate(id: string): Promise<{ template: ConductorTemplate | null }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/reject`, {});
+}
+
 /** Ephemeral instantiation: substituted + validated graph, nothing persisted
  *  (feeds "open in designer"). */
 export async function resolveConductorTemplate(
