@@ -24,6 +24,8 @@
 import { Router, json as expressJson, text as expressText } from 'express';
 import type { NextFunction, Request, Response } from 'express';
 
+import type { DeriveJobPolicyConfig } from '../devplatform/deriveJobPolicy.js';
+import { mountJobPolicyRoute } from './devRunnerJobPolicyRoute.js';
 import type { FinalizeContext } from '../devplatform/finalizeDevJob.js';
 import type { RunnerEventInput } from '../devplatform/devJobStore.js';
 import {
@@ -64,9 +66,13 @@ export interface DevRunnerJobStore {
   recordResult(jobId: string, result: DevJobResult): Promise<void>;
 }
 
-/** Repo lookup for spec assembly — clone URL + default branch + test policy. */
+/** Repo lookup for spec assembly + policy derivation — clone URL + default
+ *  branch + test policy + per-repo egress allowlist. `egressAllowlist` feeds the
+ *  internal job-policy endpoint (spec §6); `GET /spec` ignores it. */
 export interface DevRunnerRepoLookup {
-  getRepo(id: string): Promise<Pick<DevRepo, 'cloneUrl' | 'defaultBranch' | 'runsTests'> | null>;
+  getRepo(
+    id: string,
+  ): Promise<Pick<DevRepo, 'cloneUrl' | 'defaultBranch' | 'runsTests' | 'egressAllowlist'> | null>;
 }
 
 /** Read-only clone-credential source. In W0 this resolves the repo's own stored
@@ -104,6 +110,21 @@ export interface DevRunnerRouterDeps {
   agentModel?: string;
   /** `spec.agent.maxTurns`. */
   maxTurns?: number;
+  /**
+   * The DAEMON's shared bearer secret (W1, `DEV_RUNNER_DAEMON_TOKEN`). Guards the
+   * internal job-policy endpoint ONLY — it is a different credential from the
+   * per-job `djr_` runner bearer, and a runner token is REJECTED there (spec §4,
+   * review finding S3). Absent ⇒ the internal endpoint is not configured (503),
+   * exactly as when the DockerBackend is not wired.
+   */
+  daemonToken?: string;
+  /**
+   * Deploy config for server-side job-policy derivation (spec §6). Required for
+   * the internal job-policy endpoint; absent ⇒ 503. Passed straight to
+   * `deriveJobPolicy`, so the endpoint and `DockerBackend.provision` derive an
+   * identical policy from one function.
+   */
+  jobPolicyConfig?: DeriveJobPolicyConfig;
   /** Clock injection for `expiresAt` (tests). Default `Date.now`. */
   now?: () => number;
 }
@@ -132,6 +153,7 @@ function bearerToken(req: Request): string | null {
   const m = /^Bearer[ ]+(.+)$/i.exec(header.trim());
   return m ? m[1]!.trim() || null : null;
 }
+
 
 function deriveCapabilities(
   backend: DevJob['backend'],
@@ -171,6 +193,8 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
     maxEventPayloadBytes = DEFAULT_MAX_EVENT_PAYLOAD_BYTES,
     agentModel,
     maxTurns,
+    daemonToken,
+    jobPolicyConfig,
     now = Date.now,
   } = deps;
 
@@ -478,6 +502,11 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
     });
     res.json({ ok: true });
   });
+
+  // --- GET /internal/job-policy/:jobId (daemon-token auth; spec §4/§6) ------
+  // Split into its own module to keep this file within the 500-line rule. The
+  // DAEMON fetches a job's server-derived policy; a runner bearer is rejected.
+  mountJobPolicyRoute(router, { store, repos, daemonToken, jobPolicyConfig });
 
   // --- Body-parser / unexpected error boundary -----------------------------
   // Converts express's payload-too-large / parse errors and any thrown handler
