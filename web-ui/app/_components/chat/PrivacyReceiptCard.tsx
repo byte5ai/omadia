@@ -2,7 +2,10 @@
 
 import { useTranslations } from 'next-intl';
 
-import type { PrivacyReceipt } from '../../_lib/chatSessions';
+import type {
+  PrivacyReceipt,
+  PromptMaskedSpanInfo,
+} from '../../_lib/chatSessions';
 
 interface PrivacyReceiptCardProps {
   receipt: PrivacyReceipt;
@@ -36,6 +39,7 @@ export function PrivacyReceiptCard({
   const t = useTranslations('privacyReceipt');
   const verbs = receipt.verbsExecuted;
   const bypassed = receipt.bypassedTools ?? [];
+  const promptSpans = receipt.maskedPromptSpans ?? [];
 
   // Palette precedence: identity-breach (red) wins over bypass-warning
   // (amber) wins over default (emerald). Breach is a transparency notice
@@ -101,6 +105,13 @@ export function PrivacyReceiptCard({
             }
             labelClass={palette.label}
           />
+          {promptSpans.length > 0 && (
+            <Fact
+              label={t('factPromptMasked')}
+              value={formatMaskedPromptSpans(promptSpans)}
+              labelClass={palette.label}
+            />
+          )}
           {breached && (
             <Fact
               label={t('factIdentityOnWire')}
@@ -140,6 +151,11 @@ export function PrivacyReceiptCard({
         <div className={['text-[11px] italic', palette.muted].join(' ')}>
           {t(explainerKey)}
         </div>
+        {promptSpans.length > 0 && (
+          <div className={['text-[11px] italic', palette.muted].join(' ')}>
+            {t('explainerPromptMasked')}
+          </div>
+        )}
         {hasBypass && (
           <div className={['text-[11px] italic', palette.muted].join(' ')}>
             {t('explainerBypassed')}
@@ -212,12 +228,38 @@ export function summarisePrivacyReceipt(r: PrivacyReceipt, t: TFn): string {
   if (bypassed.length > 0) {
     parts.push(t('summaryBypassed', { count: bypassed.length }));
   }
+  const promptSpans = r.maskedPromptSpans ?? [];
+  if (promptSpans.length > 0) {
+    parts.push(t('summaryPromptMasked', { count: promptSpans.length }));
+  }
   const onWire = r.identityValuesOnWire ?? 0;
   if (onWire > 0) {
     // Lead with the breach clause so it is the first thing read.
     parts.unshift(t('summaryIdentityOnWire', { count: onWire }));
   }
   return parts.join(' · ');
+}
+
+/**
+ * #361 — fact-row value for the masked-prompt-spans row: total count plus a
+ * per-type breakdown, e.g. `3 (2 × person, 1 × email)`. Pure and exported
+ * for unit tests. Types are an OPEN set — whatever string the backend
+ * detector emitted renders verbatim (like verb names), no type enum here.
+ * Detector ids stay in the data; the card does not surface them (parity
+ * with the existing fact-row density — no other row shows engine ids).
+ * Grouping preserves first-seen order so the value is deterministic.
+ */
+export function formatMaskedPromptSpans(
+  spans: readonly PromptMaskedSpanInfo[],
+): string {
+  const byType = new Map<string, number>();
+  for (const span of spans) {
+    byType.set(span.type, (byType.get(span.type) ?? 0) + 1);
+  }
+  const breakdown = [...byType.entries()]
+    .map(([type, count]) => `${String(count)} × ${type}`)
+    .join(', ');
+  return `${String(spans.length)} (${breakdown})`;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,1480 @@
+[
+  {
+    "text": "Mario Rossi, codice fiscale RSSMRA85T10A562S, va inserito in anagrafica fornitori.",
+    "spans": [
+      {
+        "value": "Mario Rossi",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "RSSMRA85T10A562S",
+        "type": "idnum",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Il codice fiscale di Giulia Ferrari è FRRGLI90A41L219X — aggiornare la scheda.",
+    "spans": [
+      {
+        "value": "Giulia Ferrari",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "FRRGLI90A41L219X",
+        "type": "idnum",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Chiara Romano e Marco Esposito condividono il coordinamento del turno serale.",
+    "spans": [
+      {
+        "value": "Chiara Romano",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Marco Esposito",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Il signor Bianchi attende ancora una risposta sull'aspettativa.",
+    "spans": [
+      {
+        "value": "signor Bianchi",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Consegnate il materiale al magazzino dietro la vecchia stazione in Via dei Tigli 27, secondo cancello a sinistra dopo il passaggio a livello, 40121 Bologna.",
+    "spans": [
+      {
+        "value": "al magazzino dietro la vecchia stazione in Via dei Tigli 27, secondo cancello a sinistra dopo il passaggio a livello, 40121 Bologna",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Manda il corriere in Piazza del Duomo 1 entro mezzogiorno.",
+    "spans": [
+      {
+        "value": "Piazza del Duomo 1",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Matteo De Luca subentra come referente per la sede di Genova.",
+    "spans": [
+      {
+        "value": "Matteo De Luca",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Al workshop partecipano Valentina Conti, Davide Gallo e Silvia Costa.",
+    "spans": [
+      {
+        "value": "Valentina Conti",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Davide Gallo",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Silvia Costa",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "La tredicesima di Luca Marino, pari a 2.150,00 €, sarà accreditata a dicembre.",
+    "spans": [
+      {
+        "value": "Luca Marino",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "2.150,00 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Trasferisci l'acconto sul conto IT60 X054 2811 1010 0000 0123 456 di Elisa Fontana.",
+    "spans": [
+      {
+        "value": "IT60 X054 2811 1010 0000 0123 456",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "Elisa Fontana",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Chiama Andrea Serra al +39 347 112 8845 per la visita medica.",
+    "spans": [
+      {
+        "value": "Andrea Serra",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+39 347 112 8845",
+        "type": "phone",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Federica Villa è nata il 24/12/1987 secondo il fascicolo.",
+    "spans": [
+      {
+        "value": "Federica Villa",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/1987",
+        "type": "date",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Il candidato Riccardo Monti-Pellegrini ha superato il secondo colloquio.",
+    "spans": [
+      {
+        "value": "Riccardo Monti-Pellegrini",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "L'ospite si chiama Jean-Claude Njoya e arriva dalla sede di Lione.",
+    "spans": [
+      {
+        "value": "Jean-Claude Njoya",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "La dottoressa Alessia Barbieri coprirà l'ambulatorio aziendale a marzo.",
+    "spans": [
+      {
+        "value": "Alessia Barbieri",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Stefano Longo ha comunicato il nuovo indirizzo: Via San Marco 19, 35139 Padova.",
+    "spans": [
+      {
+        "value": "Stefano Longo",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Via San Marco 19, 35139 Padova",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Inoltra il contratto firmato a f.greco@azienda-esempio.it e avvisa Francesca Greco.",
+    "spans": [
+      {
+        "value": "f.greco@azienda-esempio.it",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "Francesca Greco",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Quanto dovremmo offrire a Simone Ferraro, considerando lo stipendio attuale di 67.200 €?",
+    "spans": [
+      {
+        "value": "Simone Ferraro",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "67.200 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Quanto dovremmo offrire a Nicola Basile, considerando lo stipendio attuale di 1.250,50 €?",
+    "spans": [
+      {
+        "value": "Nicola Basile",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "1.250,50 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Quanto dovremmo offrire a Luca Marino, considerando lo stipendio attuale di 72.000 €?",
+    "spans": [
+      {
+        "value": "Luca Marino",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "72.000 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Quanto dovremmo offrire a Beatrice Colombo, considerando lo stipendio attuale di 2.150,00 €?",
+    "spans": [
+      {
+        "value": "Beatrice Colombo",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "2.150,00 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Bonifica l'acconto su IT09 X054 2811 1010 5544 3322 110 e metti in copia d.gallo@azienda-esempio.it.",
+    "spans": [
+      {
+        "value": "IT09 X054 2811 1010 5544 3322 110",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "d.gallo@azienda-esempio.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bonifica l'acconto su IT45 K054 2811 1010 0000 0987 654 e metti in copia hr@esempio-consult.it.",
+    "spans": [
+      {
+        "value": "IT45 K054 2811 1010 0000 0987 654",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "hr@esempio-consult.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bonifica l'acconto su IT77 B030 0203 2801 9911 2233 445 e metti in copia paghe@esempio-srl.it.",
+    "spans": [
+      {
+        "value": "IT77 B030 0203 2801 9911 2233 445",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "paghe@esempio-srl.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bonifica l'acconto su IT09 X054 2811 1010 5544 3322 110 e metti in copia fatture@esempio-consult.it.",
+    "spans": [
+      {
+        "value": "IT09 X054 2811 1010 5544 3322 110",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "fatture@esempio-consult.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Chiama Camilla Orlandi al +39 06 4890 0312; la data di nascita in archivio è 24/12/1987.",
+    "spans": [
+      {
+        "value": "Camilla Orlandi",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+39 06 4890 0312",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/1987",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Chiama Federica Villa al 011 562 4478; la data di nascita in archivio è 17/09/1984.",
+    "spans": [
+      {
+        "value": "Federica Villa",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "011 562 4478",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "17/09/1984",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Chiama Marco Esposito al +39 320 445 7789; la data di nascita in archivio è 24/12/1987.",
+    "spans": [
+      {
+        "value": "Marco Esposito",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+39 320 445 7789",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/1987",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Chiama Stefano Longo al +39 320 445 7789; la data di nascita in archivio è 28/02/1995.",
+    "spans": [
+      {
+        "value": "Stefano Longo",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+39 320 445 7789",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "28/02/1995",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La fattura di 2.150,00 € va spedita a Largo Augusto 2, 20122 Milano.",
+    "spans": [
+      {
+        "value": "2.150,00 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Largo Augusto 2, 20122 Milano",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La fattura di 58.500 € va spedita a Via Dante 5, 16121 Genova.",
+    "spans": [
+      {
+        "value": "58.500 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Via Dante 5, 16121 Genova",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La fattura di 4.980 € va spedita a Via Dante 5, 16121 Genova.",
+    "spans": [
+      {
+        "value": "4.980 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Via Dante 5, 16121 Genova",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La fattura di 72.000 € va spedita a Via Dante 5, 16121 Genova.",
+    "spans": [
+      {
+        "value": "72.000 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Via Dante 5, 16121 Genova",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Registra Federica Villa come nuovo dipendente con l'email aziendale f.greco@azienda-esempio.it.",
+    "spans": [
+      {
+        "value": "Federica Villa",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "f.greco@azienda-esempio.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Registra Nicola Basile come nuovo dipendente con l'email aziendale d.gallo@azienda-esempio.it.",
+    "spans": [
+      {
+        "value": "Nicola Basile",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "d.gallo@azienda-esempio.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Registra Riccardo Monti come nuovo dipendente con l'email aziendale l.marino@posta-esempio.it.",
+    "spans": [
+      {
+        "value": "Riccardo Monti",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "l.marino@posta-esempio.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Registra Andrea Serra come nuovo dipendente con l'email aziendale l.marino@posta-esempio.it.",
+    "spans": [
+      {
+        "value": "Andrea Serra",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "l.marino@posta-esempio.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Alessia Barbieri ha lasciato l'azienda il 28/02/1995 — avvia la procedura di uscita.",
+    "spans": [
+      {
+        "value": "Alessia Barbieri",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "28/02/1995",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Giulia Ferrari ha lasciato l'azienda il 17/09/1984 — avvia la procedura di uscita.",
+    "spans": [
+      {
+        "value": "Giulia Ferrari",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "17/09/1984",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Martina Rizzo ha lasciato l'azienda il 12/11/1979 — avvia la procedura di uscita.",
+    "spans": [
+      {
+        "value": "Martina Rizzo",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12/11/1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Ilaria Pellegrini ha lasciato l'azienda il 03/05/1991 — avvia la procedura di uscita.",
+    "spans": [
+      {
+        "value": "Ilaria Pellegrini",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "03/05/1991",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Aggiorna l'anagrafica: Matteo De Luca abita ora in Via Roma 8, 50123 Firenze.",
+    "spans": [
+      {
+        "value": "Matteo De Luca",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Via Roma 8, 50123 Firenze",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Aggiorna l'anagrafica: Chiara Romano abita ora in Via Roma 8, 50123 Firenze.",
+    "spans": [
+      {
+        "value": "Chiara Romano",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Via Roma 8, 50123 Firenze",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Aggiorna l'anagrafica: Chiara Romano abita ora in Viale dei Mille 33, 40121 Bologna.",
+    "spans": [
+      {
+        "value": "Chiara Romano",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Viale dei Mille 33, 40121 Bologna",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Aggiorna l'anagrafica: Davide Gallo abita ora in Piazza del Duomo 1, 20121 Milano.",
+    "spans": [
+      {
+        "value": "Davide Gallo",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Piazza del Duomo 1, 20121 Milano",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Rimborsa le spese di trasferta di 62.400 € su IT60 X054 2811 1010 0000 0123 456.",
+    "spans": [
+      {
+        "value": "62.400 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "IT60 X054 2811 1010 0000 0123 456",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Rimborsa le spese di trasferta di 58.500 € su IT09 X054 2811 1010 5544 3322 110.",
+    "spans": [
+      {
+        "value": "58.500 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "IT09 X054 2811 1010 5544 3322 110",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Rimborsa le spese di trasferta di 4.980 € su IT28 W030 0203 2801 1257 3862 400.",
+    "spans": [
+      {
+        "value": "4.980 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "IT28 W030 0203 2801 1257 3862 400",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Rimborsa le spese di trasferta di 58.500 € su IT60 X054 2811 1010 0000 0123 456.",
+    "spans": [
+      {
+        "value": "58.500 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "IT60 X054 2811 1010 0000 0123 456",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Invia il cedolino a c.romano@posta-esempio.it; il lordo è di 58.500 €.",
+    "spans": [
+      {
+        "value": "c.romano@posta-esempio.it",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "58.500 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Invia il cedolino a giulia.ferrari@esempio-srl.it; il lordo è di 4.980 €.",
+    "spans": [
+      {
+        "value": "giulia.ferrari@esempio-srl.it",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "4.980 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Invia il cedolino a a.ricci@esempio-consult.it; il lordo è di 67.200 €.",
+    "spans": [
+      {
+        "value": "a.ricci@esempio-consult.it",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "67.200 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Invia il cedolino a v.conti@esempio-srl.it; il lordo è di 67.200 €.",
+    "spans": [
+      {
+        "value": "v.conti@esempio-srl.it",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "67.200 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Per le referenze puoi raggiungere Stefano Longo al +39 02 8846 1220.",
+    "spans": [
+      {
+        "value": "Stefano Longo",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+39 02 8846 1220",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Per le referenze puoi raggiungere Ilaria Pellegrini al 011 562 4478.",
+    "spans": [
+      {
+        "value": "Ilaria Pellegrini",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "011 562 4478",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Per le referenze puoi raggiungere Elisa Fontana al 06 8830 1245.",
+    "spans": [
+      {
+        "value": "Elisa Fontana",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "06 8830 1245",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Per le referenze puoi raggiungere Silvia Costa al 011 562 4478.",
+    "spans": [
+      {
+        "value": "Silvia Costa",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "011 562 4478",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Prepara il colloquio di valutazione con Stefano Longo.",
+    "spans": [
+      {
+        "value": "Stefano Longo",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Prepara il colloquio di valutazione con Valentina Conti.",
+    "spans": [
+      {
+        "value": "Valentina Conti",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Prepara il colloquio di valutazione con Francesca Greco.",
+    "spans": [
+      {
+        "value": "Francesca Greco",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Prepara il colloquio di valutazione con Beatrice Colombo.",
+    "spans": [
+      {
+        "value": "Beatrice Colombo",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Elisa Fontana si è messo in malattia il 03/05/1991 — registralo nel modulo HR.",
+    "spans": [
+      {
+        "value": "Elisa Fontana",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "03/05/1991",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Giulia Ferrari si è messo in malattia il 01/02/2023 — registralo nel modulo HR.",
+    "spans": [
+      {
+        "value": "Giulia Ferrari",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "01/02/2023",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Martina Rizzo si è messo in malattia il 05/03/2001 — registralo nel modulo HR.",
+    "spans": [
+      {
+        "value": "Martina Rizzo",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "05/03/2001",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Chiara Romano si è messo in malattia il 05/03/2001 — registralo nel modulo HR.",
+    "spans": [
+      {
+        "value": "Chiara Romano",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "05/03/2001",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Il fornitore attende il pagamento di 72.000 € su IT28 W030 0203 2801 1257 3862 400.",
+    "spans": [
+      {
+        "value": "72.000 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "IT28 W030 0203 2801 1257 3862 400",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Il fornitore attende il pagamento di 58.500 € su IT09 X054 2811 1010 5544 3322 110.",
+    "spans": [
+      {
+        "value": "58.500 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "IT09 X054 2811 1010 5544 3322 110",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Il fornitore attende il pagamento di 72.000 € su IT12 A030 0203 2801 4455 6677 889.",
+    "spans": [
+      {
+        "value": "72.000 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "IT12 A030 0203 2801 4455 6677 889",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Il fornitore attende il pagamento di 1.250,50 € su IT09 X054 2811 1010 5544 3322 110.",
+    "spans": [
+      {
+        "value": "1.250,50 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "IT09 X054 2811 1010 5544 3322 110",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Nuova candidatura: Federica Villa, raggiungibile al +39 06 4890 0312 o via fatture@esempio-consult.it.",
+    "spans": [
+      {
+        "value": "Federica Villa",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+39 06 4890 0312",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "fatture@esempio-consult.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nuova candidatura: Elisa Fontana, raggiungibile al 06 8830 1245 o via d.gallo@azienda-esempio.it.",
+    "spans": [
+      {
+        "value": "Elisa Fontana",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "06 8830 1245",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "d.gallo@azienda-esempio.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nuova candidatura: Luca Marino, raggiungibile al +39 333 482 1157 o via l.marino@posta-esempio.it.",
+    "spans": [
+      {
+        "value": "Luca Marino",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+39 333 482 1157",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "l.marino@posta-esempio.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nuova candidatura: Riccardo Monti, raggiungibile al +39 347 112 8845 o via giulia.ferrari@esempio-srl.it.",
+    "spans": [
+      {
+        "value": "Riccardo Monti",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+39 347 112 8845",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "giulia.ferrari@esempio-srl.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Spedisci l'offerta a Camilla Orlandi, Via San Marco 19, 35139 Padova.",
+    "spans": [
+      {
+        "value": "Camilla Orlandi",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Via San Marco 19, 35139 Padova",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Spedisci l'offerta a Tommaso Ferri, Viale dei Mille 33, 40121 Bologna.",
+    "spans": [
+      {
+        "value": "Tommaso Ferri",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Viale dei Mille 33, 40121 Bologna",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Spedisci l'offerta a Alessia Barbieri, Corso Vittorio Emanuele 15, 00186 Roma.",
+    "spans": [
+      {
+        "value": "Alessia Barbieri",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Corso Vittorio Emanuele 15, 00186 Roma",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Spedisci l'offerta a Marco Esposito, Corso Vittorio Emanuele 15, 00186 Roma.",
+    "spans": [
+      {
+        "value": "Marco Esposito",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Corso Vittorio Emanuele 15, 00186 Roma",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Il contratto di Luca Marino inizia il 01/02/2023 con una retribuzione annua di 1.250,50 €.",
+    "spans": [
+      {
+        "value": "Luca Marino",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "01/02/2023",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "1.250,50 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Il contratto di Marco Esposito inizia il 24/12/1987 con una retribuzione annua di 58.500 €.",
+    "spans": [
+      {
+        "value": "Marco Esposito",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/1987",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "58.500 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Il contratto di Riccardo Monti inizia il 05/03/2001 con una retribuzione annua di 1.250,50 €.",
+    "spans": [
+      {
+        "value": "Riccardo Monti",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "05/03/2001",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "1.250,50 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Il contratto di Chiara Romano inizia il 05/03/2001 con una retribuzione annua di 2.150,00 €.",
+    "spans": [
+      {
+        "value": "Chiara Romano",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "05/03/2001",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "2.150,00 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Iscrivi Beatrice Colombo alla formazione della prossima settimana e informa f.greco@azienda-esempio.it.",
+    "spans": [
+      {
+        "value": "Beatrice Colombo",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "f.greco@azienda-esempio.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Iscrivi Luca Marino alla formazione della prossima settimana e informa d.gallo@azienda-esempio.it.",
+    "spans": [
+      {
+        "value": "Luca Marino",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "d.gallo@azienda-esempio.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Iscrivi Riccardo Monti alla formazione della prossima settimana e informa m.esposito@azienda-esempio.it.",
+    "spans": [
+      {
+        "value": "Riccardo Monti",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "m.esposito@azienda-esempio.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Iscrivi Alessia Barbieri alla formazione della prossima settimana e informa l.marino@posta-esempio.it.",
+    "spans": [
+      {
+        "value": "Alessia Barbieri",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "l.marino@posta-esempio.it",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "A quale indirizzo è partito l'ultimo sollecito — Via Dante 5, 16121 Genova, giusto?",
+    "spans": [
+      {
+        "value": "Via Dante 5, 16121 Genova",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "A quale indirizzo è partito l'ultimo sollecito — Largo Augusto 2, 20122 Milano, giusto?",
+    "spans": [
+      {
+        "value": "Largo Augusto 2, 20122 Milano",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "A quale indirizzo è partito l'ultimo sollecito — Viale dei Mille 33, 40121 Bologna, giusto?",
+    "spans": [
+      {
+        "value": "Viale dei Mille 33, 40121 Bologna",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "A quale indirizzo è partito l'ultimo sollecito — Via Roma 8, 50123 Firenze, giusto?",
+    "spans": [
+      {
+        "value": "Via Roma 8, 50123 Firenze",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Malattia e ferie vengono conteggiate separatamente nel report mensile.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "La Direzione e il Consiglio di Amministrazione si riuniscono lunedì.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Spiega la differenza tra retribuzione lorda e netta.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Via, viale e piazza sono tipi di indirizzo distinti nel modulo anagrafico.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Leonardo da Vinci è il nome della sala riunioni al secondo piano.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Le Risorse Umane pubblicano domani il nuovo tariffario interno.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Il Codice Fiscale come campo è obbligatorio solo per i fornitori italiani.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "San Marco è la fermata più vicina alla sede di Padova.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Quanti giorni di ferie matura un dipendente dopo tre anni di anzianità?",
+    "spans": []
+  },
+  {
+    "text": "Prepara un report di stato per il progetto del terzo trimestre; il budget resta invariato.",
+    "spans": []
+  },
+  {
+    "text": "Riassumi la policy delle note spese in cinque punti.",
+    "spans": []
+  },
+  {
+    "text": "Quali passaggi copre il processo di onboarding nel primo mese?",
+    "spans": []
+  },
+  {
+    "text": "Scrivi un promemoria gentile sulla rilevazione settimanale delle ore.",
+    "spans": []
+  },
+  {
+    "text": "Come richiedo un nuovo portatile tramite il sistema di ticket?",
+    "spans": []
+  },
+  {
+    "text": "Prepara l'ordine del giorno per la prossima riunione di team con tre priorità.",
+    "spans": []
+  },
+  {
+    "text": "Quali scadenze valgono per la consegna delle note spese?",
+    "spans": []
+  },
+  {
+    "text": "Riassumi le modifiche recenti alla policy sul lavoro da remoto.",
+    "spans": []
+  },
+  {
+    "text": "Come funziona l'approvazione degli ordini nel modulo acquisti?",
+    "spans": []
+  },
+  {
+    "text": "Spiega il flusso di approvazione per le formazioni esterne.",
+    "spans": []
+  },
+  {
+    "text": "Quali report può generare mensilmente il modulo contabilità?",
+    "spans": []
+  },
+  {
+    "text": "Scrivi un breve annuncio per la manutenzione di sistema nel fine settimana.",
+    "spans": []
+  },
+  {
+    "text": "Come creo un nuovo centro di costo nel sistema?",
+    "spans": []
+  },
+  {
+    "text": "Qual è la differenza tra un preventivo e una conferma d'ordine?",
+    "spans": []
+  },
+  {
+    "text": "Prepara una checklist per la chiusura mensile in contabilità.",
+    "spans": []
+  },
+  {
+    "text": "Come esporto il riepilogo ferie in un foglio di calcolo?",
+    "spans": []
+  },
+  {
+    "text": "Quali ruoli intervengono nell'approvazione delle fatture passive?",
+    "spans": []
+  },
+  {
+    "text": "Scrivi un rifiuto cortese per una consegna posticipata.",
+    "spans": []
+  },
+  {
+    "text": "Riassumi i punti chiave dell'accordo sull'orario flessibile.",
+    "spans": []
+  },
+  {
+    "text": "Come imposto una risposta di assenza per le festività?",
+    "spans": []
+  },
+  {
+    "text": "Quali campi sono obbligatori alla creazione di un nuovo fornitore?",
+    "spans": []
+  },
+  {
+    "text": "Descrivi la procedura dell'inventario annuale di magazzino.",
+    "spans": []
+  },
+  {
+    "text": "Come si possono generare automaticamente fatture ricorrenti?",
+    "spans": []
+  }
+]

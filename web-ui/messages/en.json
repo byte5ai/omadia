@@ -923,7 +923,10 @@
     "factBypassed": "Not masked (operator decision)",
     "bypassedReasonOperatorSetting": "Operator setting: bypass",
     "bypassedBytes": "{kb} KB raw",
-    "explainerBypassed": "The operator set Privacy Mode to »Bypass« for at least one plugin — its tool results reached the model unmasked. Used for trusted internal sources whose content the Privacy Shield cannot usefully digest structurally."
+    "explainerBypassed": "The operator set Privacy Mode to »Bypass« for at least one plugin — its tool results reached the model unmasked. Used for trusted internal sources whose content the Privacy Shield cannot usefully digest structurally.",
+    "summaryPromptMasked": "prompt: {count} masked",
+    "factPromptMasked": "PII masked in your prompt",
+    "explainerPromptMasked": "Identifiers detected in your own message were replaced with pseudonyms before the model call and restored in the answer."
   },
   "directLine": {
     "consultedLabel": "🔎 Consulted",
