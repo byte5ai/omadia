@@ -122,6 +122,9 @@ const PG_URL =
 
 const MARK = 'e2e-devplatform-test';
 const E2E_DAEMON_TOKEN = 'e2e-daemon-secret-token-0123456789abcdef';
+/** The retiring half of a rotation: DEV_RUNNER_DAEMON_TOKEN is a comma list so a
+ *  token can be replaced with zero downtime, and BOTH ends must accept both. */
+const E2E_DAEMON_TOKEN_OLD = 'e2e-daemon-secret-token-fedcba9876543210';
 const E2E_RUNNER_IMAGE = 'ghcr.io/byte5ai/omadia-dev-runner@sha256:e2e';
 const E2E_PROVIDER_KEY = 'sk-ant-e2e-REAL-PROVIDER-KEY';
 const E2E_MODEL = 'claude-opus-4-8';
@@ -364,7 +367,7 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
       // W1 keystones (spec §4/§6b): the daemon job-policy endpoint + the LLM
       // proxy, wired exactly as index.ts does — so this test fails if either is
       // left unmounted, instead of the routes silently not existing.
-      daemonToken: E2E_DAEMON_TOKEN,
+      daemonToken: `${E2E_DAEMON_TOKEN},${E2E_DAEMON_TOKEN_OLD}`,
       runnerImage: E2E_RUNNER_IMAGE,
       egressBaseAllowlist: ['registry.npmjs.org'],
       llm: {
@@ -514,6 +517,23 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
     assert.equal(policy.image, E2E_RUNNER_IMAGE);
     assert.ok(policy.egressAllowlist.includes('github.com'), 'forge host derived from clone_url');
     assert.ok(policy.egressAllowlist.includes('registry.npmjs.org'), 'operator base allowlist folded in');
+  });
+
+  it('W1 job-policy endpoint accepts EVERY token in a rotation list, and nothing else', async () => {
+    const { jobId } = await provisionedJob();
+    const ask = (token: string) =>
+      fetch(`${baseUrl}/api/v1/dev-runner/internal/job-policy/${jobId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+    // Mid-rotation both halves must work: the daemon presents the first entry,
+    // but an operator may still be running a daemon holding the retiring one.
+    assert.equal((await ask(E2E_DAEMON_TOKEN)).status, 200, 'the incoming token is accepted');
+    assert.equal((await ask(E2E_DAEMON_TOKEN_OLD)).status, 200, 'the retiring token is accepted');
+    // The list is not a prefix match and not a substring match.
+    assert.equal((await ask(`${E2E_DAEMON_TOKEN},${E2E_DAEMON_TOKEN_OLD}`)).status, 401);
+    assert.equal((await ask('e2e-daemon-secret-token-0123456789abcde')).status, 401);
+    assert.equal((await ask('not-a-daemon-token-at-all-0123456789')).status, 401);
   });
 
   it('W1 job-policy endpoint REJECTS a per-job djr_ runner bearer (S3 guarantee)', async () => {

@@ -75,7 +75,19 @@ export function mountJobPolicyRoute(router: Router, deps: JobPolicyRouteDeps): v
     }
     // A per-job `djr_` runner token can never equal the daemon secret, so the
     // constant-time compare already rejects it — this is the S3 guarantee.
-    if (!timingSafeStrEqual(token, deps.daemonToken)) {
+    //
+    // `DEV_RUNNER_DAEMON_TOKEN` is a comma-separated list so a token can be
+    // rotated with zero downtime; the daemon accepts every entry on its own API
+    // and presents the first one here, so this side must accept the list too —
+    // otherwise the two ends disagree mid-rotation and every policy lookup 401s.
+    // Every candidate is compared (no early exit) so the number of comparisons
+    // does not depend on which entry matched.
+    const candidates = deps.daemonToken
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    const matched = candidates.reduce((acc, candidate) => timingSafeStrEqual(token, candidate) || acc, false);
+    if (!matched) {
       fail(res, 401, 'devplatform.unauthorized', 'invalid daemon token');
       return;
     }

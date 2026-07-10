@@ -25,6 +25,7 @@
  * is not the component that ships).
  */
 
+import { isIP } from 'node:net';
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 
@@ -44,8 +45,29 @@ import { parseCreateJobRequest, parseRenewLeaseRequest, WireProtocolMismatchErro
 export const DEFAULT_DAEMON_PORT = 7411;
 
 /** Bind addresses the daemon REFUSES: a wildcard would expose the control API
- *  toward `dev-engine` and every nested job container. */
+ *  toward `dev-engine` and every nested job container.
+ *
+ *  These are the CANONICAL forms. A literal list is not enough: node binds `0`,
+ *  `000.000.000.000`, `::0` and `0:0:0:0:0:0:0:0` to the wildcard too. So the
+ *  bind is canonicalised before it is compared — the same rule the egress
+ *  classifier follows, for the same reason: a validator that matches spellings
+ *  is checking text, while the consumer resolves an address. */
 const WILDCARD_BINDS = new Set(['0.0.0.0', '::', '', '*']);
+
+/** Canonicalise a bind address the way the network stack will resolve it.
+ *  @param {string} bind @returns {string} */
+function canonicalBind(bind) {
+  const raw = bind.trim();
+  if (raw === '' || raw === '*') return raw;
+  const family = isIP(raw);
+  try {
+    // `new URL` normalises numeric/short/zero-padded IPv4 and compresses IPv6.
+    const host = new URL(`http://${family === 6 ? `[${raw}]` : raw}/`).hostname;
+    return host.startsWith('[') ? host.slice(1, -1) : host;
+  } catch {
+    return raw;
+  }
+}
 
 /** Max control-plane request body — these are tiny JSON envelopes. */
 const MAX_BODY_BYTES = 64 * 1024;
@@ -83,7 +105,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /** Reject a wildcard/empty bind so nothing listens toward `dev-engine`.
  *  @param {string} bind @returns {string} the validated bind */
 export function assertControlPlaneBind(bind) {
-  if (WILDCARD_BINDS.has(bind.trim())) {
+  if (WILDCARD_BINDS.has(canonicalBind(bind))) {
     throw new Error(
       `DEV_DAEMON_BIND=${JSON.stringify(bind)} is a wildcard — refusing to expose the control API toward dev-engine`,
     );

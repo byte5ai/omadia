@@ -166,13 +166,25 @@ describe('dev-runner-daemon — boot-time token config', () => {
 
 describe('dev-runner-daemon — bind guard', () => {
   it('refuses a wildcard/empty bind so nothing listens toward dev-engine', () => {
-    for (const bad of ['0.0.0.0', '::', '', '*']) {
-      assert.throws(() => assertControlPlaneBind(bad), /wildcard|refusing/i);
+    for (const bad of [
+      '0.0.0.0',
+      '::',
+      '',
+      '*',
+      // node binds every one of these to the wildcard too, so a literal-spelling
+      // list is not a guard — the bind is canonicalised before comparison.
+      '0',
+      '000.000.000.000',
+      '::0',
+      '0:0:0:0:0:0:0:0',
+    ]) {
+      assert.throws(() => assertControlPlaneBind(bad), /wildcard|refusing/i, `should refuse ${JSON.stringify(bad)}`);
     }
   });
   it('accepts a concrete control-plane address', () => {
     assert.equal(assertControlPlaneBind('127.0.0.1'), '127.0.0.1');
     assert.equal(assertControlPlaneBind('172.28.1.4'), '172.28.1.4');
+    assert.equal(assertControlPlaneBind('::1'), '::1');
   });
 });
 
