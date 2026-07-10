@@ -28,6 +28,7 @@ import { ConductorCanvas } from './_components/ConductorCanvas';
 import { ConductorChatPane } from './_components/ConductorChatPane';
 import { ConductorRunHistory, ConductorRunTrace } from './_components/ConductorRunTrace';
 import { TemplateGallery } from './_components/TemplateGallery';
+import { TemplateInstantiateForm } from './_components/TemplateInstantiateForm';
 
 export default function ConductorPage(): React.JSX.Element {
   const t = useTranslations('conductor');
@@ -35,9 +36,8 @@ export default function ConductorPage(): React.JSX.Element {
   const [workflows, setWorkflows] = useState<ConductorWorkflow[]>([]);
   const [templates, setTemplates] = useState<ConductorTemplate[]>([]);
   // Template instantiation flow (#429): "Use template" stores the selection; the
-  // slot-mapping form (a follow-up unit) reads it. Until that lands, only the setter
-  // is bound — the selection is held but renders nothing.
-  const [, setSelectedTemplate] = useState<ConductorTemplate | null>(null);
+  // slot-mapping form below the gallery reads it. Cancel/create clear it.
+  const [selectedTemplate, setSelectedTemplate] = useState<ConductorTemplate | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runningSlug, setRunningSlug] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<ConductorRunResult | null>(null);
@@ -210,6 +210,29 @@ export default function ConductorPage(): React.JSX.Element {
           </h2>
           <p className="mb-4 max-w-2xl text-[13px] text-[color:var(--fg-muted)]">{t('templatesHint')}</p>
           <TemplateGallery templates={templates} onUseTemplate={(tpl) => setSelectedTemplate(tpl)} />
+          {selectedTemplate && (
+            <div className="mt-4">
+              <TemplateInstantiateForm
+                // Re-key per template so slug/name/mapping state resets on re-selection.
+                key={selectedTemplate.id}
+                template={selectedTemplate}
+                onCreated={() => {
+                  // Same success feedback as the canvas publish path (onSaved): reload
+                  // the lists so the new workflow appears immediately.
+                  setSelectedTemplate(null);
+                  void reload();
+                }}
+                onOpenInDesigner={(graph) => {
+                  // Reuse the chat→canvas mechanism verbatim: the canvas hydrates via
+                  // its loadGraphRequest prop; publishing then goes through its normal
+                  // save flow.
+                  setChatGraphRequest({ graph, nonce: Date.now() });
+                  designerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }}
+                onCancel={() => setSelectedTemplate(null)}
+              />
+            </div>
+          )}
         </section>
       )}
 

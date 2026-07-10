@@ -18,6 +18,32 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — workflow-template slot-mapping form on /conductor (#429, unit f2)
+
+- Picking "Use template" on `/conductor` now renders the guided instantiation
+  form (`web-ui/app/conductor/_components/TemplateInstantiateForm.tsx`) inline
+  below the gallery: ONE upfront mapping form for the whole template (never
+  per-node walking) with prefilled slug/name fields and one picker per declared
+  slot, grouped by kind — roles/agents/actions/events fed by the existing
+  designer catalog fetchers (`getConductorRoles` / `getConductorAgents` /
+  `getConductorActions` / `getConductorEventCatalog`), channels via the shared
+  `ChannelSelect` (prefilled `teams` so the mapping state matches the select's
+  display). Three actions: **Create workflow** (primary →
+  `POST /templates/:id/instantiate`, then the list reloads), **Open in
+  designer** (secondary → `POST /templates/:id/resolve`; the resolved graph
+  hydrates `ConductorCanvas` through the existing chat→canvas
+  `loadGraphRequest` mechanism, publish goes through the canvas's normal save
+  flow) and **Cancel** (ghost). Enable toggle defaults to OFF; with a
+  cron-triggered template and the toggle ON, a persistent warning-colored TEXT
+  notice states that the schedule starts as soon as the workflow is created.
+  Client gate mirrors the server's completeness check (slug + every slot
+  mapped); the b3 error envelope maps to inline errors — missing slots flagged
+  field-level (error text + border only), `conductor.slug_exists` (409) on the
+  slug field, `conductor.invalid_graph` as a message list. In-flight = verb +
+  animated dots via the Button busy recipe (no spinners). i18n en+de under
+  `conductor`; Vitest tests in
+  `app/conductor/_components/__tests__/TemplateInstantiateForm.test.tsx`.
+
 ### Added — workflow-template gallery on /conductor (#429, unit f1)
 
 - The `/conductor` admin page gains a "Workflow templates" section above the
