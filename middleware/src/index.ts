@@ -172,6 +172,7 @@ import {
   hasActiveTriggerJob as hasActiveDevTriggerJob,
 } from './devplatform/triggers/triggerJobService.js';
 import { mintRunnerToken as mintDevRunnerToken } from './devplatform/jobToken.js';
+import { DevRetentionRunner } from './devplatform/retention.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -2601,6 +2602,26 @@ async function main(): Promise<void> {
     console.log(
       `[middleware] dev platform ENABLED — worker running (max ${String(config.DEV_PLATFORM_MAX_CONCURRENT_JOBS)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
     );
+
+    // W5 data lifecycle — the daily retention sweep (two-tier event prune). The
+    // per-job event cap + artifact ceiling are enforced inline at write time; this
+    // cron only prunes aged rows. Terminal-job purge stays operator-driven via
+    // `scripts/dev-transcript.ts purge`. `overlap:'skip'` so a slow run never stacks.
+    const devRetention = new DevRetentionRunner(graphPool, {
+      eventRetentionDays: config.DEV_PLATFORM_EVENT_RETENTION_DAYS,
+      auditRetentionDays: config.DEV_PLATFORM_AUDIT_RETENTION_DAYS,
+    });
+    jobScheduler.register(
+      'dev-platform',
+      { name: 'dev-retention', schedule: { cron: '17 3 * * *' }, overlap: 'skip' },
+      async () => {
+        const r = await devRetention.run();
+        console.log(
+          `[middleware] dev-retention swept: ${String(r.lowValueEventsDeleted)} low-value + ${String(r.expiredEventsDeleted)} expired events pruned`,
+        );
+      },
+    );
+    console.log('[middleware] dev-retention cron registered (17 3 * * *)');
   } else if (config.DEV_PLATFORM_ENABLED) {
     console.warn(
       '[middleware] DEV_PLATFORM_ENABLED=true but no graphPool (in-memory KG backend) — dev platform NOT started; set DATABASE_URL to enable',
