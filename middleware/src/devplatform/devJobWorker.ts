@@ -537,13 +537,16 @@ function toRegistry(revokers: DevJobWorkerDeps['revokers']): CredentialRevokerRe
 
 /**
  * Extra secret VALUES to scan the diff/PR-body for — beyond the prefix + entropy
- * rules. Deliberately EMPTY: the runner's real credentials (`djr_` bearer, `ghs_`
- * scoped App token, LLM-proxy token) all carry detectable prefixes and are caught
- * by scanForSecrets regardless of this list. The job id is PUBLIC (the platform
- * itself writes it into the PR body — `- Job: <id>`), and `runner_token_hash` is a
- * sha256 hash, not a usable credential; scanning for either would deny the
- * platform's own honest PR body as a "leak" (Forge-integration false positive).
- * A prefix-less secret nonce the server actually held would be added here.
+ * rules. Deliberately EMPTY: the runner's real credentials — the `djr_` bearer and
+ * the `ghs_`/`gho_`/`ghu_`/`ghr_` GitHub clone tokens the platform mints/stores —
+ * all carry detectable prefixes in scanForSecrets.PREFIX_PATTERNS, so they are
+ * caught over the diff + PR body regardless of this list, and their plaintext is
+ * never available host-side anyway (only a hash is stored). The job id is PUBLIC
+ * (the platform itself writes it into the PR body — `- Job: <id>`), and
+ * `runner_token_hash` is a sha256 hash, not a usable credential; scanning for
+ * either would deny the platform's own honest PR body as a "leak" (the
+ * Forge-integration false positive that this replaced). A prefix-less secret nonce
+ * the server actually held would be added here.
  */
 function jobTokensFor(_job: DevJob): string[] {
   return [];

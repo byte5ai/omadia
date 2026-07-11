@@ -39,7 +39,25 @@ const PREFIX_PATTERNS: ReadonlyArray<{ kind: string; re: RegExp }> = [
   { kind: 'prefix:github_pat_', re: /github_pat_[A-Za-z0-9_]{20,}/g },
   { kind: 'prefix:sk-ant-', re: /sk-ant-[A-Za-z0-9_-]{20,}/g },
   { kind: 'prefix:djr_', re: /djr_[A-Za-z0-9]{16,}/g },
+  // The GitHub token families the platform itself mints/stores and hands the
+  // runner as its clone credential — these MUST be detectable by prefix, because
+  // the runner never sees their value server-side (only a hash is stored) so the
+  // own-token scan can't carry them. `ghs_` = installation token (github_app
+  // repos, contents:read); `gho_` = device-flow / OAuth (non-app repos; often
+  // repo-scoped read+write, long-lived — higher blast radius); `ghu_`/`ghr_` =
+  // user-to-server / refresh. Without these a hostile runner could dilute the
+  // token's entropy below threshold with low-entropy filler and slip it past the
+  // entropy heuristic onto the target branch — the one channel the egress proxy
+  // cannot police. (Forge W3 apply-gate audit.)
+  { kind: 'prefix:ghs_', re: /ghs_[A-Za-z0-9]{20,}/g },
+  { kind: 'prefix:gho_', re: /gho_[A-Za-z0-9]{20,}/g },
+  { kind: 'prefix:ghu_', re: /ghu_[A-Za-z0-9]{20,}/g },
+  { kind: 'prefix:ghr_', re: /ghr_[A-Za-z0-9]{20,}/g },
 ];
+
+/** The literal prefix strings of PREFIX_PATTERNS (e.g. `ghp_`, `sk-ant-`), used
+ *  to skip double-reporting a prefix token that also trips the entropy scan. */
+const KNOWN_PREFIXES: readonly string[] = PREFIX_PATTERNS.map((p) => p.kind.replace(/^prefix:/, ''));
 
 /**
  * PEM banner detector, assembled from fragments so the source/committed file
@@ -119,11 +137,9 @@ export function scanForSecrets(text: string, jobTokens?: string[]): SecretFindin
     const threshold = isHex ? HEX_ENTROPY_THRESHOLD : BASE64_ENTROPY_THRESHOLD;
     if (token.length < MIN_ENTROPY_LEN) continue;
     if (shannonEntropy(token) < threshold) continue;
-    // Do not double-report a prefix token that also looks high-entropy.
-    if (token.startsWith('ghp_') || token.startsWith('djr_') ||
-        token.startsWith('github_pat_') || token.startsWith('sk-ant-')) {
-      continue;
-    }
+    // Do not double-report a prefix token that also looks high-entropy. Derived
+    // from PREFIX_PATTERNS so a newly-added prefix can never drift out of sync.
+    if (KNOWN_PREFIXES.some((p) => token.startsWith(p))) continue;
     const sample = redact(token);
     if (alreadyFlagged.has(sample)) continue;
     alreadyFlagged.add(sample);
