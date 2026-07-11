@@ -46,6 +46,20 @@ export interface AgentRunOptions {
   now?: () => string;
   flushIntervalMs?: number;
   flushMaxEvents?: number;
+  /**
+   * W2 — the exact prompt to hand the session on STDIN. When set it REPLACES
+   * `spec.brief` (the W0 collapsed input). The phase loop uses it to feed a
+   * per-phase system-prompt-plus-inputs bundle; a fresh process per phase means
+   * no context bleeds between phases. Absent ⇒ W0 behaviour (`spec.brief`).
+   */
+  promptOverride?: string;
+  /**
+   * W2 — extra environment for the child, merged over the allowlisted base env
+   * (e.g. `OMADIA_PHASE_ARTIFACT`, the file a phase writes its JSON artifact to).
+   * Merged last, but the HOME/LLM-auth invariants in `buildAgentEnv` are set on
+   * the base and callers pass only non-secret routing here.
+   */
+  extraEnv?: NodeJS.ProcessEnv;
 }
 
 export interface AgentRunHandle {
@@ -96,16 +110,19 @@ export function runAgent(opts: AgentRunOptions): AgentRunHandle {
   if (opts.spec.agent.model) args.push('--model', opts.spec.agent.model);
   if (opts.spec.agent.maxTurns !== undefined) args.push('--max-turns', String(opts.spec.agent.maxTurns));
 
+  const baseEnv = buildAgentEnv(opts);
   const child = spawn(opts.cliBin, args, {
     cwd: opts.cwd,
-    env: buildAgentEnv(opts),
+    env: opts.extraEnv ? { ...baseEnv, ...opts.extraEnv } : baseEnv,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
   wireLineStream(child, translator, enqueue);
 
-  // The prompt goes on stdin, never argv — argv is world-readable via `ps`.
-  child.stdin.end(opts.spec.brief);
+  // The prompt goes on stdin, never argv — argv is world-readable via `ps`. W2
+  // phases supply `promptOverride` (system prompt + explicit inputs); W0 uses
+  // the collapsed brief.
+  child.stdin.end(opts.promptOverride ?? opts.spec.brief);
 
   const done = new Promise<{ code: number }>((resolve, reject) => {
     child.once('error', (err) => {

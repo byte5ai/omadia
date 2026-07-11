@@ -12,7 +12,14 @@ import path from 'node:path';
 
 import { runShim } from '../src/index.js';
 import type { HomeApi, ScmToken, HeartbeatReply } from '../src/homeClient.js';
-import type { DevJobSpec, RunnerResult, SeqRunnerEvent, ShimEnv } from '../src/protocol.js';
+import type {
+  DevJobSpec,
+  PhaseDirective,
+  PhaseResultBody,
+  RunnerResult,
+  SeqRunnerEvent,
+  ShimEnv,
+} from '../src/protocol.js';
 
 function makeSpec(over: Partial<DevJobSpec> = {}): DevJobSpec {
   return {
@@ -55,6 +62,10 @@ class FakeHome implements HomeApi {
   postResult(result: RunnerResult): Promise<void> {
     this.results.push(result);
     return Promise.resolve();
+  }
+  // W2 phase-result surface — never exercised by the collapsed W0 path.
+  postPhaseResult(_body: PhaseResultBody): Promise<PhaseDirective> {
+    return Promise.reject(new Error('collapsed path must not call postPhaseResult'));
   }
 }
 

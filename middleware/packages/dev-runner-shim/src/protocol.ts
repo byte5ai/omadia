@@ -45,7 +45,144 @@ export interface DevJobSpec {
   agent: { kind: 'claude-cli'; model?: string; maxTurns?: number };
   limits: { wallClockMs: number };
   capabilities: { installDeps: boolean; runTests: boolean };
+  /**
+   * W2 gated pipeline (spec §4). All three are OPTIONAL so the W0 collapsed
+   * `/spec` payload keeps validating unchanged; the collapsed path
+   * (`runShim`) ignores them entirely. THE SEAM: for a gated provision the
+   * middleware `/spec` route must populate `phaseContext` (at minimum the
+   * start `phase`) and, for a repo that needs it, `bootstrap`.
+   */
+  phaseContext?: PhaseContext;
+  bootstrap?: BootstrapSpec;
 }
+
+// ---------------------------------------------------------------------------
+// W2 — gated pipeline additions (spec §4).
+//
+// The runner runs each phase as a FRESH headless CLI session; the MIDDLEWARE,
+// never the runner, decides transitions. These types mirror
+// `middleware/src/devplatform/{types.ts,pipeline/{phaseEngine,phasePrompts,
+// reviewLoop}.ts}` (the source of truth) — the same deliberate duplication as
+// `RUNNER_PROTOCOL_VERSION`: this package must not import middleware code
+// (untrusted-adjacent, a separate bundle), so the contract is restated here and
+// kept honest by the protocol-version gate + tests.
+// ---------------------------------------------------------------------------
+
+/** Pipeline phases. Mirror of `DEV_JOB_PHASES`. */
+export const DEV_JOB_PHASES = [
+  'analyze',
+  'bootstrap',
+  'plan',
+  'clarify',
+  'await_human',
+  'implement',
+  'review',
+  'pr',
+] as const;
+export type DevJobPhase = (typeof DEV_JOB_PHASES)[number];
+export function isDevJobPhase(x: unknown): x is DevJobPhase {
+  return typeof x === 'string' && (DEV_JOB_PHASES as readonly string[]).includes(x);
+}
+
+/** The phases that actually start a headless CLI session (spec §4 table). */
+export const AGENT_SESSION_PHASES = ['analyze', 'plan', 'clarify', 'implement', 'review'] as const;
+export type AgentSessionPhase = (typeof AGENT_SESSION_PHASES)[number];
+export function isAgentSessionPhase(p: DevJobPhase): p is AgentSessionPhase {
+  return (AGENT_SESSION_PHASES as readonly string[]).includes(p);
+}
+
+export type ReviewSeverity = 'blocker' | 'major' | 'minor';
+/** Mirror of `pipeline/reviewLoop.ReviewFinding`. */
+export interface ReviewFinding {
+  severity: ReviewSeverity;
+  file: string;
+  line?: number;
+  issue: string;
+  suggestion?: string;
+}
+/** Mirror of `pipeline/reviewLoop.ReviewVerdict`. */
+export interface ReviewVerdict {
+  verdict: 'approve' | 'request_changes';
+  summary: string;
+  findings: ReviewFinding[];
+}
+
+/** A clarify question surfaced at the gate. Mirror of `gateStore.GateQuestion`. */
+export interface GateQuestion {
+  id: string;
+  text: string;
+}
+
+/** An operator answer collected at the gate (mirror of `phasePrompts.OperatorAnswer`). */
+export interface OperatorAnswer {
+  questionId: string;
+  text: string;
+}
+
+/**
+ * Cross-provision inputs the runner cannot reproduce in-session, plus the phase
+ * the runner begins at. Provision A builds every phase input from the brief +
+ * the artifacts it just produced, so for it `phase` is all that is needed.
+ * Provision B (implement/review) additionally needs the human-APPROVED `plan`
+ * and the gate `answers` (produced in provision A, living server-side) — the
+ * middleware packs those onto the `/spec` it serves the second provision.
+ */
+export interface PhaseContext {
+  /** Phase the runner begins at (the job's current `dev_jobs.phase`). */
+  phase: DevJobPhase;
+  /** Provision B: the approved plan artifact content. */
+  plan?: string;
+  /** Provision B: operator answers collected at the gate. */
+  answers?: OperatorAnswer[];
+  /** review→implement retry: prior review findings, replayed to implement. */
+  priorFindings?: ReviewFinding[];
+  /** 0 on the first implement; incremented per review→implement retry round. */
+  attempt?: number;
+}
+
+/**
+ * Bootstrap (dependency install) is a COMMAND, not a CLI session (spec §4). The
+ * middleware resolves it from `dev_repos.bootstrap_command` or the detected
+ * default and hands it here; the runner executes it under its own timeout.
+ */
+export interface BootstrapSpec {
+  command: string;
+  /** Defaults to `DEV_BOOTSTRAP_TIMEOUT_MS` (600 s) when absent. */
+  timeoutMs?: number;
+}
+
+/** The runner's `POST /jobs/:id/phase-result` body (spec §4). */
+export interface PhaseResultBody {
+  phase: DevJobPhase;
+  ok: boolean;
+  artifact?: { kind: string; content: string; meta?: Record<string, unknown> };
+  /** clarify only — the questions to surface at the gate (may be empty). */
+  questions?: GateQuestion[];
+  /** review only — the raw verdict object (the engine validates it). */
+  verdict?: unknown;
+  headSha?: string;
+  diffstat?: string;
+  error?: string;
+}
+
+/**
+ * The engine's reply to a phase result. Mirror of the SHIPPED
+ * `PhaseEngine.PhaseDirective` (`pipeline/phaseEngine.ts`), which the route
+ * serialises verbatim via `res.json(directive)`.
+ *
+ * NOTE — contract reconciliation: spec §4 prose sketches
+ * `{ next: { phase, spec } }` (directive carries the next phase spec), but the
+ * shipped engine returns `{ directive: 'next', phase }` and carries NO spec. The
+ * shipped shape is authoritative, so the shim builds each phase session locally
+ * from `phasePrompts` + the artifacts it holds. If the middleware later chooses
+ * to carry the spec on the directive, drop the local prompt copy and read it
+ * from here instead.
+ */
+export type PhaseDirective =
+  | { directive: 'next'; phase: DevJobPhase }
+  | { directive: 'park' }
+  | { directive: 'done' }
+  | { directive: 'failed'; reason: string };
 
 /** An event before the home client stamps its `seq`. */
 export interface RunnerEvent {
@@ -95,6 +232,15 @@ export interface ShimEnv {
    * code.
    */
   llmEnvAllowed: boolean;
+  /**
+   * W2 dispatch flag (`OMADIA_PIPELINE_MODE`). `'gated'` runs the phase loop
+   * (`runPhasedShim`); anything else (default) runs the W0 collapsed
+   * `runShim`. Read from the env — the backend that launches the container
+   * knows the job's mode, and dispatching here avoids a second, side-effecting
+   * `GET /spec` just to learn it. OPTIONAL so W0 callers that build `ShimEnv`
+   * literally keep type-checking.
+   */
+  pipelineMode?: 'gated' | 'collapsed';
 }
 
 /**
@@ -109,7 +255,16 @@ export function readShimEnv(env: NodeJS.ProcessEnv = process.env): ShimEnv {
   const workspace = required(env, 'OMADIA_WORKSPACE');
   const cliBin = env['OMADIA_CLI_BIN']?.trim() || 'claude';
   const llmEnvAllowed = env['OMADIA_LLM_ENV_ALLOWED']?.trim() === 'true';
-  return { baseUrl: baseUrl.replace(/\/+$/, ''), jobId, jobToken, workspace, cliBin, llmEnvAllowed };
+  const pipelineMode = env['OMADIA_PIPELINE_MODE']?.trim() === 'gated' ? 'gated' : 'collapsed';
+  return {
+    baseUrl: baseUrl.replace(/\/+$/, ''),
+    jobId,
+    jobToken,
+    workspace,
+    cliBin,
+    llmEnvAllowed,
+    pipelineMode,
+  };
 }
 
 function required(env: NodeJS.ProcessEnv, key: string): string {

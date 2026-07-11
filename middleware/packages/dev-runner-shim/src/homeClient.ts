@@ -8,6 +8,8 @@
 import {
   RUNNER_API_PREFIX,
   type DevJobSpec,
+  type PhaseDirective,
+  type PhaseResultBody,
   type RunnerResult,
   type SeqRunnerEvent,
   type ShimEnv,
@@ -31,6 +33,13 @@ export interface HomeApi {
   heartbeat(): Promise<HeartbeatReply>;
   postDiff(bundle: string): Promise<string>;
   postResult(result: RunnerResult): Promise<void>;
+  /**
+   * W2 — POST /jobs/:id/phase-result. Reports the phase just run and returns the
+   * engine's directive (next / park / done / failed). A 409 (StalePhaseError
+   * server-side) surfaces as a `HomeError` with status 409. Mounted only when
+   * the middleware runs the gated pipeline; the collapsed W0 path never calls it.
+   */
+  postPhaseResult(body: PhaseResultBody): Promise<PhaseDirective>;
 }
 
 /** Thrown for any non-2xx phone-home response. Never includes the bearer. */
@@ -94,6 +103,11 @@ export class HomeClient implements HomeApi {
   /** POST /jobs/:id/result — terminal report. */
   public async postResult(result: RunnerResult): Promise<void> {
     await this.json<{ ok: boolean }>('POST', '/result', { json: result });
+  }
+
+  /** POST /jobs/:id/phase-result — reports a phase, returns the next directive. */
+  public async postPhaseResult(body: PhaseResultBody): Promise<PhaseDirective> {
+    return this.json<PhaseDirective>('POST', '/phase-result', { json: body });
   }
 
   private async json<T>(

@@ -17,6 +17,7 @@ import { HomeClient, HomeError, type HomeApi } from './homeClient.js';
 import { cloneAtBaseSha, collectDiff, type GitOptions } from './gitOps.js';
 import { bundleDiff } from './diffUpload.js';
 import { runAgent } from './agentRunner.js';
+import { runPhasedShim } from './phaseLoop.js';
 import {
   RUNNER_PROTOCOL_VERSION,
   readShimEnv,
@@ -24,6 +25,8 @@ import {
   type RunnerResult,
   type ShimEnv,
 } from './protocol.js';
+
+export { runPhasedShim } from './phaseLoop.js';
 
 const HEARTBEAT_MS = 30_000;
 
@@ -202,9 +205,13 @@ function errText(err: unknown): string {
   return String(err);
 }
 
-// Entrypoint: run when invoked directly (the backend spawns this file).
+// Entrypoint: run when invoked directly (the backend spawns this file). The
+// backend sets OMADIA_PIPELINE_MODE=gated for a gated job → the W2 phase loop;
+// otherwise the W0 collapsed path runs unchanged.
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
-  runShim()
+  const env = readShimEnv();
+  const run = env.pipelineMode === 'gated' ? runPhasedShim : runShim;
+  run(env)
     .then((code) => process.exit(code))
     .catch((err: unknown) => {
       process.stderr.write(`[dev-runner-shim] fatal: ${errText(err)}\n`);
