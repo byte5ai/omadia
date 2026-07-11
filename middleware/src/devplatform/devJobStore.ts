@@ -18,6 +18,7 @@ import type { DevJobEventBus } from './devJobEventBus.js';
 import * as seams from './devJobWorkerSeams.js';
 import { hashRunnerToken, verifyRunnerToken as verifyToken } from './jobToken.js';
 import { asObj, iso, isoN, num, str, strN, type Row } from './pgMappers.js';
+import { isLowValueEventType, type ArtifactCeilingOptions } from './retention.js';
 import {
   isDevJobEventType,
   isTerminalDevJobStatus,
@@ -148,6 +149,19 @@ function toEvent(r: Row): DevJobEvent {
 export interface DevJobStoreOptions {
   /** Live tail for SSE. When present, appended events are published to it. */
   eventBus?: DevJobEventBus;
+  /**
+   * W5 (spec §7): per-job event cap (`DEV_JOB_MAX_EVENTS`). Once a job holds this
+   * many events, `appendEvents` drops further LOW-VALUE telemetry (`log`/
+   * `heartbeat`) but keeps audit-grade events, recording the truncation as exactly
+   * one `events_truncated` status event. `<= 0` (default) disables the cap.
+   */
+  maxEvents?: number;
+  /**
+   * W5 (spec §7): artifact ceiling (`DEV_ARTIFACT_MAX_BYTES`). Threaded into
+   * `addArtifact`; absent ⇒ no ceiling (W0 behaviour). An `objectStore` here is
+   * the offload seam — absent, oversized content is marked and refused inline.
+   */
+  artifactCeiling?: ArtifactCeilingOptions;
 }
 
 export interface ListJobsFilter {
@@ -177,10 +191,14 @@ export interface DevJobBudgetPosition {
 export class DevJobStore {
   private readonly pool: Pool;
   private readonly bus?: DevJobEventBus;
+  private readonly maxEvents: number;
+  private readonly artifactCeiling?: ArtifactCeilingOptions;
 
   constructor(pool: Pool, opts: DevJobStoreOptions = {}) {
     this.pool = pool;
     this.bus = opts.eventBus;
+    this.maxEvents = opts.maxEvents ?? 0;
+    this.artifactCeiling = opts.artifactCeiling;
   }
 
   async createJob(input: NewDevJob & { runnerTokenHash: string }): Promise<DevJob> {
@@ -503,8 +521,8 @@ export class DevJobStore {
    */
   async appendEvents(jobId: string, provision: number, events: RunnerEventInput[]): Promise<number> {
     if (events.length === 0) return 0;
-    const params: unknown[] = [jobId, provision];
-    const tuples: string[] = [];
+    // Validate the WHOLE batch first (the throwing contract is unchanged: a bad
+    // seq/type rejects the batch even if that event would later be dropped).
     for (const e of events) {
       if (!Number.isInteger(e.seq) || e.seq < 0) {
         throw new TypeError(`appendEvents: seq must be a non-negative integer (got ${String(e.seq)})`);
@@ -512,26 +530,94 @@ export class DevJobStore {
       if (!isDevJobEventType(e.type)) {
         throw new TypeError(`appendEvents: invalid event type '${String(e.type)}'`);
       }
-      const b = params.length + 1;
-      params.push(e.seq, e.type, e.ts ?? null, JSON.stringify(e.payload ?? {}));
-      tuples.push(`($1, $2, $${b}, $${b + 1}, COALESCE($${b + 2}::timestamptz, now()), $${b + 3}::jsonb)`);
     }
-    const res = await this.pool.query<Row>(
-      `INSERT INTO dev_job_events (job_id, provision, seq, type, ts, payload)
-       VALUES ${tuples.join(', ')}
-       ON CONFLICT (job_id, provision, seq) DO NOTHING
-       RETURNING ${EVENT_COLS}`,
-      params,
-    );
+
+    // W5 per-job event cap (spec §7): once a job is at/over the cap, drop further
+    // LOW-VALUE telemetry (`log`/`heartbeat`) but STILL accept audit-grade events
+    // (status/tool/gate/token/approval/egress/phase). Silent truncation would make
+    // the log a liar, so the drop is recorded as exactly ONE `events_truncated`
+    // status event (idempotent below — never re-inserted on every over-cap append).
+    let toInsert = events;
+    let droppedByCap = 0;
+    if (this.maxEvents > 0) {
+      const count = await this.countEvents(jobId);
+      if (count >= this.maxEvents) {
+        const kept: RunnerEventInput[] = [];
+        for (const e of events) {
+          if (isLowValueEventType(e.type)) droppedByCap++;
+          else kept.push(e);
+        }
+        toInsert = kept;
+      }
+    }
+
+    let inserted = 0;
+    if (toInsert.length > 0) {
+      const params: unknown[] = [jobId, provision];
+      const tuples: string[] = [];
+      for (const e of toInsert) {
+        const b = params.length + 1;
+        params.push(e.seq, e.type, e.ts ?? null, JSON.stringify(e.payload ?? {}));
+        tuples.push(`($1, $2, $${b}, $${b + 1}, COALESCE($${b + 2}::timestamptz, now()), $${b + 3}::jsonb)`);
+      }
+      const res = await this.pool.query<Row>(
+        `INSERT INTO dev_job_events (job_id, provision, seq, type, ts, payload)
+         VALUES ${tuples.join(', ')}
+         ON CONFLICT (job_id, provision, seq) DO NOTHING
+         RETURNING ${EVENT_COLS}`,
+        params,
+      );
+      for (const row of res.rows) this.bus?.publish(jobId, toEvent(row));
+      inserted = res.rows.length;
+    }
+
+    if (droppedByCap > 0) await this.recordTruncationOnce(jobId, droppedByCap);
+
     // Heartbeat only while the job can still receive events (never resurrect a
-    // terminal job's timestamps).
+    // terminal job's timestamps). Bumped even when every event was capped — a
+    // batch arriving is itself a sign of life.
     await this.pool.query(
       `UPDATE dev_jobs SET last_heartbeat_at = now(), updated_at = now()
         WHERE id = $1 AND status NOT IN (${TERMINAL_SET_SQL})`,
       [jobId],
     );
-    for (const row of res.rows) this.bus?.publish(jobId, toEvent(row));
-    return res.rows.length;
+    return inserted;
+  }
+
+  /** Count of a job's events — the per-job cap check. Served by the
+   *  `dev_job_events(job_id, id)` index (0022). */
+  private async countEvents(jobId: string): Promise<number> {
+    const r = await this.pool.query<Row>(
+      `SELECT count(*)::bigint AS n FROM dev_job_events WHERE job_id = $1`,
+      [jobId],
+    );
+    return Number(r.rows[0]!['n']);
+  }
+
+  /**
+   * Record the once-per-job `events_truncated` status marker in the HOST provision
+   * namespace, but ONLY if the job has no such marker yet — the `NOT EXISTS` guard
+   * makes a re-drive past the cap a no-op (spec §7: recorded "exactly once, not
+   * re-inserted every append"). `dropped` is the count at the FIRST truncation.
+   */
+  private async recordTruncationOnce(jobId: string, dropped: number): Promise<void> {
+    const payload = JSON.stringify({ state: 'events_truncated', dropped });
+    const res = await this.pool.query<Row>(
+      `INSERT INTO dev_job_events (job_id, provision, seq, type, payload)
+       SELECT $1, ${HOST_EVENT_PROVISION},
+              (SELECT COALESCE(MAX(seq), -1) + 1 FROM dev_job_events
+                WHERE job_id = $1 AND provision = ${HOST_EVENT_PROVISION}),
+              'status', $2::jsonb
+        WHERE NOT EXISTS (
+          SELECT 1 FROM dev_job_events
+           WHERE job_id = $1 AND type = 'status'
+             AND payload->>'state' = 'events_truncated'
+        )
+       ON CONFLICT (job_id, provision, seq) DO NOTHING
+       RETURNING ${EVENT_COLS}`,
+      [jobId, payload],
+    );
+    if (res.rows[0]) this.bus?.publish(jobId, toEvent(res.rows[0]));
   }
 
   /**
@@ -593,7 +679,10 @@ export class DevJobStore {
     content: string,
     meta: Record<string, unknown> = {},
   ): Promise<string> {
-    return artifacts.addArtifact(this.pool, jobId, kind, content, meta);
+    // W5: enforce the artifact ceiling (spec §7) when the store was constructed
+    // with one — oversized inline content is offloaded or marked, never stored
+    // unbounded. Absent ⇒ unchanged W0 behaviour.
+    return artifacts.addArtifact(this.pool, jobId, kind, content, meta, this.artifactCeiling);
   }
 
   async getArtifact(id: string): Promise<DevJobArtifact | null> {

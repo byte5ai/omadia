@@ -485,6 +485,18 @@ const ConfigSchema = z.object({
   DEV_PLATFORM_GITHUB_CLIENT_ID: optionalNonEmpty(z.string().min(1)),
   DEV_PLATFORM_COMMIT_AUTHOR: z.string().min(1).default('omadia-dev <dev-platform@omadia.ai>'),
   DEV_PLATFORM_EVENT_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
+  // Epic #470 W5 — data lifecycle (spec §7). Two-tier event retention: low-value
+  // telemetry (heartbeat/log) is pruned at EVENT_RETENTION_DAYS above; audit-grade
+  // events (status/tool/gate/token/approval/egress/phase) are kept until this outer
+  // bound. The daily retention job also purges terminal jobs older than it.
+  DEV_PLATFORM_AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(365),
+  // Per-job event cap: once a job holds this many events, the append path drops
+  // further low-value telemetry (keeps audit-grade events) and records one
+  // `events_truncated` status event. Bounds a runaway agent's event stream.
+  DEV_JOB_MAX_EVENTS: z.coerce.number().int().positive().default(50_000),
+  // Artifact ceiling: inline content larger than this is offloaded to object
+  // storage (when wired) or marked and refused inline (default 5 MiB).
+  DEV_ARTIFACT_MAX_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
   // Q4 decision: subscription-mode jobs run the CLI on the operator's Claude
   // login, so the credential is IN the runner. It is off by default and boot
   // REFUSES the flag unless the operator also sets the explicit acknowledgment
