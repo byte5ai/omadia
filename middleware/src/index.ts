@@ -24,7 +24,7 @@ import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
-import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError } from './conductor/index.js';
+import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore } from './conductor/index.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
@@ -158,7 +158,9 @@ import {
   startMdnsAdvertiser,
   type MdnsAdvertisement,
 } from './pairing/mdns.js';
+import { publicPaths } from './auth/publicPaths.js';
 import { createRequireAuth } from './auth/requireAuth.js';
+import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -1309,46 +1311,7 @@ async function main(): Promise<void> {
     // those so the channel plugins can run their own auth downstream —
     // same protection as before for `/api/chat`, `/api/v1/operator/*`,
     // `/api/v1/admin/*`, etc. since none of them match these regexes.
-    publicPaths: [
-      /^\/api\/v1\/auth(?:\/|$|\?)/,
-      /^\/api\/v1\/setup(?:\/|$|\?)/,
-      /^\/api\/auth(?:\/|$|\?)/,
-      // Spec 005 — kernel OAuth broker callback. The IdP redirects the
-      // operator's browser back here after consent; the session cookie may
-      // have lapsed during the round-trip, so the route is public and
-      // self-secures via the signed, single-use `state` token. `/oauth/start`
-      // is NOT listed — it stays behind the cookie gate (operator-initiated).
-      /^\/api\/v1\/install\/oauth\/callback(?:\/|$|\?)/,
-      // Bot Framework webhook for channel-teams. The Teams adapter
-      // validates the Bot-issued JWT inside the handler; the session
-      // cookie check would silently drop every inbound activity because
-      // Teams never sends one.
-      /^\/api\/messages(?:\/|$|\?)/,
-      // Plugin-served UI surfaces (`/p/<pluginId>/...`). Teams iframes
-      // these from inside the bot-app shell where there is no
-      // middleware session cookie — only a Teams SSO token. Routing
-      // them through the cookie gate redirects to /login inside the
-      // iframe, which shows the operator login form instead of the
-      // Tab content. Plugins that expose sensitive data are
-      // responsible for validating the Teams SSO token themselves;
-      // pages like /p/channel-teams/{hub,tab-config} are public-by-
-      // design and the reference dashboard is read-only demo state.
-      /^\/p\/[^/]+(?:\/|$|\?)/,
-      // Local dev surfaces. The `/api/dev/*` mount itself is conditional
-      // on `DEV_ENDPOINTS_ENABLED=true` further down (see graph +
-      // memory dev routers around the "DEV endpoints enabled" log line)
-      // — when that flag is on the operator has already opted into an
-      // unauthenticated surface and the local Next-UI relies on the
-      // routes being callable without a session cookie. When the flag
-      // is off, no `/api/dev/*` routes are mounted at all, so this
-      // bypass cannot leak anything. When the flag is on AND the stack
-      // is exposed beyond localhost, that is a separate operator
-      // mistake the compose `127.0.0.1` port bindings are designed to
-      // prevent.
-      ...(config.DEV_ENDPOINTS_ENABLED
-        ? [/^\/api\/dev(?:\/|$|\?)/]
-        : []),
-    ],
+    publicPaths: publicPaths({ devEndpointsEnabled: config.DEV_ENDPOINTS_ENABLED }),
   });
 
   // ContextRetriever + FactExtractor construction moved to AFTER
@@ -2430,6 +2393,83 @@ async function main(): Promise<void> {
   } else {
     console.log(
       '[middleware] usage cost endpoint skipped — no graphPool (in-memory KG backend)',
+    );
+  }
+
+  // Dev platform (epic #470 W0) — isolated per-job code runners. DARK BY
+  // DEFAULT: with DEV_PLATFORM_ENABLED unset, nothing below runs — no router
+  // mounts and no worker starts. It also needs the Postgres graphPool (the job
+  // spine + repo/artifact tables live there); in-memory mode has nowhere to
+  // persist a durable queue. The two safety-critical modes (subscription auth,
+  // unsafe-local backend) already refused boot in config.ts if misconfigured.
+  if (config.DEV_PLATFORM_ENABLED && graphPool) {
+    const shimEntry = fileURLToPath(
+      new URL('../packages/dev-runner-shim/dist/src/index.js', import.meta.url),
+    );
+    // Comma-separated env list → trimmed non-empty entries (egress allowlist,
+    // model allowlist). Entry-level validation happens in deriveJobPolicy.
+    const csvList = (raw: string): string[] =>
+      raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+    // W2: role-principal gates resolve their live holder set against the same
+    // conductor role store the conductor await gate uses.
+    const devPlatformRoleStore = new ConductorRoleStore(graphPool);
+    const wiredDevPlatform = assembleDevPlatform({
+      pool: graphPool,
+      vault: secretVault,
+      resolveRoleHolders: (key) => devPlatformRoleStore.resolve(key),
+      baseUrl: config.DEV_PLATFORM_RUNNER_BASE_URL ?? `http://127.0.0.1:${String(config.PORT)}`,
+      cliBin: config.DEV_PLATFORM_CLI_BIN,
+      wallClockMs: config.DEV_PLATFORM_JOB_WALL_CLOCK_MS,
+      heartbeatTimeoutMs: config.DEV_PLATFORM_HEARTBEAT_TIMEOUT_MS,
+      maxConcurrentJobs: config.DEV_PLATFORM_MAX_CONCURRENT_JOBS,
+      commitAuthor: config.DEV_PLATFORM_COMMIT_AUTHOR,
+      subscriptionModeEnabled: config.DEV_PLATFORM_SUBSCRIPTION_MODE,
+      workspaceDir: config.DEV_PLATFORM_WORKSPACE_DIR,
+      unsafeLocal: config.DEV_PLATFORM_UNSAFE_LOCAL,
+      ...(config.DEV_PLATFORM_LOCAL_UID !== undefined ? { localUid: config.DEV_PLATFORM_LOCAL_UID } : {}),
+      shimEntry,
+      // W1 keystones (spec §4/§6b): the daemon job-policy endpoint + the LLM
+      // proxy. Absent daemon token / runner image ⇒ the internal endpoint 503s;
+      // the LLM proxy is always mounted (its origin probe must answer 2xx).
+      ...(config.DEV_RUNNER_DAEMON_TOKEN ? { daemonToken: config.DEV_RUNNER_DAEMON_TOKEN } : {}),
+      ...(config.DEV_RUNNER_DAEMON_URL ? { daemonUrl: config.DEV_RUNNER_DAEMON_URL } : {}),
+      backend: config.DEV_PLATFORM_BACKEND,
+      leaseTtlSec: config.DEV_JOB_LEASE_TTL_SEC,
+      ...(config.DEV_RUNNER_DEFAULT_IMAGE ? { runnerImage: config.DEV_RUNNER_DEFAULT_IMAGE } : {}),
+      ...(config.DEV_EGRESS_BASE_ALLOWLIST
+        ? { egressBaseAllowlist: csvList(config.DEV_EGRESS_BASE_ALLOWLIST) }
+        : {}),
+      ...(config.DEV_PLATFORM_MIDDLEWARE_HOST
+        ? { middlewareHost: config.DEV_PLATFORM_MIDDLEWARE_HOST }
+        : {}),
+      llm: {
+        provider: config.DEV_PLATFORM_LLM_PROVIDER,
+        upstreamBaseUrl: config.DEV_PLATFORM_LLM_UPSTREAM_BASE_URL,
+        allowedModels: config.DEV_PLATFORM_LLM_ALLOWED_MODELS
+          ? csvList(config.DEV_PLATFORM_LLM_ALLOWED_MODELS)
+          : [],
+      },
+      log: (msg) => console.log(msg),
+    });
+    mountDevPlatform(app, requireAuth, wiredDevPlatform, (msg) => console.log(msg));
+    // Start the claim/enforce/reap/apply loop; stop it cleanly on shutdown.
+    // Re-adopt the docker jobs this process was running before it restarted, so
+    // reap() can still see a job whose container the daemon has since lost. The
+    // daemon rebuilds its own view from docker labels; ours lives only in memory.
+    await wiredDevPlatform.start();
+    // `stop()` halts BOTH the claim worker and the W2 gate-deadline worker (and
+    // awaits an in-flight deadline tick — a fire-and-forget on the signal handler).
+    const stopDevPlatformWorker = (): void => {
+      void wiredDevPlatform.stop();
+    };
+    process.once('SIGTERM', stopDevPlatformWorker);
+    process.once('SIGINT', stopDevPlatformWorker);
+    console.log(
+      `[middleware] dev platform ENABLED — worker running (max ${String(config.DEV_PLATFORM_MAX_CONCURRENT_JOBS)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
+    );
+  } else if (config.DEV_PLATFORM_ENABLED) {
+    console.warn(
+      '[middleware] DEV_PLATFORM_ENABLED=true but no graphPool (in-memory KG backend) — dev platform NOT started; set DATABASE_URL to enable',
     );
   }
 

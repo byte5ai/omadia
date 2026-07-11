@@ -1,4 +1,4 @@
-import { createSign } from 'node:crypto';
+import { mintAppJwt } from '../../devplatform/githubApp/appJwt.js';
 
 /**
  * GitHub App authentication for the native direct-create path
@@ -68,8 +68,6 @@ export interface GitHubAppTokenProviderOptions {
 
 /** Refresh the installation token this far before its stated expiry. */
 const EXPIRY_SKEW_MS = 5 * 60 * 1000;
-/** JWT lifetime. GitHub caps App JWTs at 10 minutes; stay under it. */
-const JWT_TTL_SECONDS = 9 * 60;
 const DEFAULT_API_BASE = 'https://api.github.com';
 const DEFAULT_USER_AGENT = 'omadia-builder-bot';
 
@@ -149,27 +147,9 @@ export class GitHubAppTokenProvider implements IssueTokenProvider {
   }
 
   private mintJwt(): string {
-    const issuedAt = Math.floor(this.now() / 1000);
-    const header = { alg: 'RS256', typ: 'JWT' };
-    const payload = {
-      // Backdate 30 s to tolerate minor clock skew against GitHub.
-      iat: issuedAt - 30,
-      exp: issuedAt + JWT_TTL_SECONDS,
-      iss: this.config.appId,
-    };
-    const signingInput = `${b64url(JSON.stringify(header))}.${b64url(
-      JSON.stringify(payload),
-    )}`;
-    const signature = createSign('RSA-SHA256')
-      .update(signingInput)
-      .sign(this.config.privateKey)
-      .toString('base64url');
-    return `${signingInput}.${signature}`;
+    // Shared with W2's scoped-token minter — one signing primitive, not two.
+    return mintAppJwt(this.config.appId, this.config.privateKey, this.now);
   }
-}
-
-function b64url(value: string): string {
-  return Buffer.from(value, 'utf8').toString('base64url');
 }
 
 const defaultFetch: AppAuthFetch = async (url, init) => {

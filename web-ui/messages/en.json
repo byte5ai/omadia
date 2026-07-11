@@ -217,6 +217,10 @@
           "title": "MCP Control Center",
           "description": "MCP servers, discovered tools with scan verdicts, grants, and the call audit log in one place."
         },
+        "devPlatform": {
+          "title": "Dev Platform",
+          "description": "Register repositories and launch isolated code-runner jobs that open a pull request from a reviewed diff."
+        },
         "auth": {
           "title": "Authentication Providers",
           "description": "Enable or disable local login and Entra ID sign-in; changes apply without a restart."
@@ -407,7 +411,8 @@
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
-    "adminCluster": "Admin"
+    "adminCluster": "Admin",
+    "devPlatform": "Dev Platform"
   },
   "conductor": {
     "title": "Conductor",
@@ -2906,6 +2911,324 @@
         "plugin": "Plugin",
         "unattributed": "Unattributed"
       }
+    }
+  },
+  "adminDevPlatform": {
+    "title": "Dev Platform",
+    "intro": "Repositories, dev jobs, and pull-request pipelines run by omadia agents. Jobs run isolated and always end in a pull request for human review — omadia never merges.",
+    "tabs": {
+      "repos": "Repositories",
+      "jobs": "Jobs",
+      "apps": "GitHub Apps",
+      "gates": "Approvals"
+    },
+    "apps": {
+      "createHeading": "Create a GitHub App",
+      "createBody": "A GitHub App gives the dev platform short-lived, per-repository tokens that cannot merge — the strongest credential mode. Creating one sends you to GitHub to approve the manifest, then brings you back.",
+      "orgLabel": "Organization (optional)",
+      "orgPlaceholder": "acme",
+      "orgHelp": "Leave empty to create the App under your personal account. Set an organization to create it there instead.",
+      "create": "Create GitHub App",
+      "creating": "Opening GitHub",
+      "createError": "The App setup could not be started. Try again.",
+      "listHeading": "Registered Apps",
+      "loading": "Loading",
+      "unauthorized": "you need operator access for the dev platform.",
+      "loadError": "Something went wrong while loading.",
+      "retry": "Retry",
+      "empty": "No GitHub Apps yet. Create one to bind repositories with scoped tokens.",
+      "colOwner": "Owner",
+      "colSlug": "App",
+      "colInstalls": "Installations",
+      "installs": "{count, plural, one {# installation} other {# installations}}",
+      "openOnGithub": "Open on GitHub"
+    },
+    "gates": {
+      "advisoryHeading": "Plan approval is advisory",
+      "advisoryBody": "Approving a plan only lets the job start implementing. The authoritative safety check is the diff gate, which reviews the actual patch before any pull request. omadia never merges.",
+      "loading": "Loading",
+      "unauthorized": "you need operator access for the dev platform.",
+      "loadError": "Something went wrong while loading.",
+      "retry": "Retry",
+      "empty": "No plans are waiting for approval.",
+      "job": "Job",
+      "deadline": "Deadline {at}",
+      "noDeadline": "No deadline",
+      "plan": "Plan",
+      "viewPlan": "View plan",
+      "noPlan": "No plan artifact",
+      "holders": "Holders",
+      "noHolders": "none",
+      "questions": "Questions",
+      "answerPlaceholder": "Your answer",
+      "noQuestions": "The agent asked no questions.",
+      "noteLabel": "Note (optional)",
+      "notePlaceholder": "Context for the decision",
+      "approve": "Approve plan",
+      "approving": "Approving",
+      "reject": "Reject",
+      "rejecting": "Rejecting",
+      "notHolder": "You are not authorized to resolve this gate. Its holder role has moved to someone else.",
+      "alreadyResolved": "This gate is no longer pending — it was resolved or expired. The list has been refreshed.",
+      "resolveError": "The gate could not be resolved. Try again."
+    },
+    "bindApp": {
+      "intro": "Bind this repository to a GitHub App installation. The App issues scoped, short-lived tokens that cannot merge. omadia verifies the installation covers this repository before saving.",
+      "loadingApps": "Loading Apps",
+      "noApps": "No GitHub Apps yet. Create one from the GitHub Apps tab first.",
+      "installLink": "Install / manage",
+      "installationLabel": "Installation ID",
+      "installationPlaceholder": "12345678",
+      "installationHelp": "Install the App on this repository, then paste the installation ID GitHub shows after install.",
+      "bind": "Bind GitHub App",
+      "binding": "Binding",
+      "bound": "GitHub App bound. Scoped tokens are now used for this repository.",
+      "boundWithWarnings": "Bound with warnings",
+      "errors": {
+        "notCovering": "That installation does not cover this repository. Install the App on this repository, then use its installation ID.",
+        "unknownInstallation": "That installation is not registered. Complete the App install so omadia records it, then try again.",
+        "invalidInstallation": "Enter the installation ID GitHub showed after installing the App.",
+        "appUnusable": "The App backing this installation is unusable — its credentials are missing. Re-create the App.",
+        "generic": "The GitHub App could not be bound. Try again."
+      }
+    },
+    "loading": "Loading",
+    "loadError": "Something went wrong while loading.",
+    "unauthorized": "you need operator access for the dev platform.",
+    "retry": "Retry",
+    "repos": {
+      "count": "{count, plural, one {# repository} other {# repositories}}",
+      "name": "Repository",
+      "forge": "Forge",
+      "credential": "Credential mode",
+      "branch": "Default branch",
+      "protectionCol": "Protection",
+      "credentialExpired": "credential expired",
+      "credentialModes": {
+        "githubApp": "GitHub App",
+        "deviceFlow": "Device flow — user token",
+        "pat": "Personal access token"
+      },
+      "newJob": "New job",
+      "settings": "Settings",
+      "add": "Add repository",
+      "empty": {
+        "heading": "No repositories yet",
+        "body": "the dev platform runs isolated jobs against your repositories: analyze an issue, plan, implement, and open a pull request for human review. omadia never merges — that stays with you.",
+        "cta": "Add repository"
+      },
+      "remove": {
+        "action": "Remove",
+        "title": "Remove repository?",
+        "body": "Running jobs are cancelled first. The stored credential for this repository is deleted from the vault.",
+        "confirm": "Remove repository",
+        "cancel": "Keep repository"
+      },
+      "protection": {
+        "protected": "protected",
+        "unprotected": "unprotected",
+        "unchecked": "unchecked",
+        "recheck": "Re-check",
+        "rechecking": "Checking",
+        "warning": "Without branch protection your token could push to the default branch directly. The no-merge guarantee depends on it."
+      }
+    },
+    "jobs": {
+      "job": "Job",
+      "repo": "Repo",
+      "kind": "Kind",
+      "phase": "Phase",
+      "status": "Status",
+      "cost": "Cost",
+      "age": "Age",
+      "view": "View",
+      "cancel": "Cancel",
+      "empty": "No jobs yet. Start one from a repository row.",
+      "live": "live",
+      "liveLost": "connection lost — retrying",
+      "filters": {
+        "allRepos": "All repositories",
+        "allStatuses": "All statuses"
+      },
+      "statuses": {
+        "queued": "queued",
+        "provisioning": "provisioning",
+        "running": "running",
+        "waiting": "waiting",
+        "applying": "applying",
+        "done": "done",
+        "failed": "failed",
+        "cancelled": "cancelled",
+        "stalled": "stalled",
+        "budgetExceeded": "budget exceeded"
+      },
+      "kinds": {
+        "analyze": "Analyze",
+        "fixIssue": "Fix issue",
+        "implement": "Implement"
+      },
+      "cancelConfirm": {
+        "title": "Cancel job?",
+        "body": "The runner is terminated. The branch, the log, and any uploaded diff are kept.",
+        "confirm": "Cancel job",
+        "cancel": "Keep running"
+      }
+    },
+    "newJob": {
+      "title": "New job for {repo}",
+      "kind": "Kind",
+      "kinds": {
+        "fixIssue": "Fix an issue",
+        "analyze": "Analyze",
+        "implement": "Implement"
+      },
+      "fromIssue": "From issue",
+      "fromBrief": "Free-text brief",
+      "loadingIssues": "Loading open issues",
+      "noIssues": "No open issues found for this repository.",
+      "issue": "Issue",
+      "selectIssue": "Select an issue",
+      "brief": "Brief",
+      "briefPlaceholder": "What should the agent do?",
+      "error": "The job could not be created.",
+      "cancel": "Cancel",
+      "starting": "Starting",
+      "start": "Start job"
+    },
+    "wizard": {
+      "title": "Add repository",
+      "intro": "Connect a repository so the dev platform can run isolated jobs against it and open pull requests for your review.",
+      "backToRepos": "Back to repositories",
+      "steps": {
+        "repo": "Repository",
+        "credentials": "Credentials",
+        "confirm": "Confirm"
+      },
+      "fields": {
+        "forge": "Forge",
+        "owner": "Owner",
+        "name": "Repository name",
+        "branch": "Default branch"
+      },
+      "next": "Next",
+      "back": "Back",
+      "finish": "Add repository",
+      "adding": "Adding",
+      "edit": "Edit",
+      "summary": {
+        "github_app": "GitHub App",
+        "device_flow": "Device flow",
+        "pat": "Personal access token"
+      },
+      "error": {
+        "submit": "The repository could not be added. Check the owner, name, and credential, then try again."
+      },
+      "done": {
+        "heading": "Repository added",
+        "body": "{repo} is connected. You can start a job from the repository list.",
+        "toList": "Go to repositories"
+      },
+      "credentials": {
+        "groupLabel": "Credential mode",
+        "githubApp": {
+          "title": "GitHub App — recommended",
+          "soon": "available soon",
+          "body": "Per-repository installation, short-lived scoped tokens, commits as omadia-dev[bot]. The token cannot merge — structurally."
+        },
+        "deviceFlow": {
+          "title": "Device flow — quick start",
+          "body": "Sign in with your GitHub account through a one-time device code. The fastest way to try the dev platform."
+        },
+        "deviceTradeoffs": {
+          "heading": "What this mode means",
+          "asUser": "commits appear as your GitHub user, not a bot",
+          "repoWide": "the token grants access to all your repositories, not just this one",
+          "canMerge": "the token can merge — the no-merge rule is enforced by omadia policy only, not by token scope",
+          "noWebhooks": "webhook triggers stay disabled for this repository"
+        },
+        "device": {
+          "codeAria": "Device code {code}",
+          "copyCode": "Copy code",
+          "copied": "Copied",
+          "waiting": "Waiting for authorization",
+          "authorizedAs": "Authorized as {login}",
+          "expired": "Code expired",
+          "error": "Authorization failed",
+          "restart": "Start again"
+        },
+        "pat": {
+          "title": "Fine-grained PAT / deploy key",
+          "body": "Paste a fine-grained personal access token scoped to this repository. Also the path for GitLab and Gitea.",
+          "label": "Token",
+          "placeholder": "github_pat_…"
+        }
+      },
+      "checks": {
+        "label": "branch protection on {branch}",
+        "enabled": "enabled",
+        "missing": "missing",
+        "unknown": "could not verify",
+        "warning": "without branch protection a device-flow or PAT token could push to {branch} directly. Enable it in the repository settings — the dev platform will only ever push to omadia/job-* branches, but protection makes that structural.",
+        "unknownHint": "The stored token cannot read the protection settings — classic device-flow tokens usually lack admin read. You can re-check any time."
+      }
+    },
+    "detail": {
+      "jobLabel": "job {hash}",
+      "loading": "Loading",
+      "notFound": "No such job.",
+      "railLabel": "Pipeline phases",
+      "phases": {
+        "analyze": "analyze",
+        "bootstrap": "bootstrap",
+        "plan": "plan",
+        "clarify": "clarify",
+        "gate": "gate",
+        "implement": "implement",
+        "review": "review",
+        "pr": "pr"
+      },
+      "phaseSkipped": "skipped — no questions",
+      "noArtifact": "No artifact for this phase yet.",
+      "openPr": "Open pull request",
+      "logEmpty": "No log output yet.",
+      "scrollToBottom": "Scroll to bottom",
+      "connection": {
+        "live": "live · last event {seconds}s ago",
+        "reconnecting": "reconnecting",
+        "closed": "stream closed — job finished"
+      },
+      "cancel": {
+        "action": "Cancel",
+        "title": "Cancel job?",
+        "body": "The runner is terminated and the branch is kept.",
+        "confirm": "Cancel job",
+        "cancelLabel": "Keep running"
+      },
+      "sidebar": {
+        "backend": "Backend",
+        "agent": "Agent",
+        "branch": "Branch",
+        "source": "Source",
+        "createdBy": "Created by",
+        "tokens": "Tokens in / out",
+        "cost": "Cost"
+      }
+    },
+    "repoDetail": {
+      "back": "Back to repositories",
+      "loading": "Loading",
+      "loadError": "This repository could not be loaded.",
+      "forge": "Forge",
+      "branch": "Default branch",
+      "credential": "Credential",
+      "credentialHeading": "Credential",
+      "credentialCurrent": "Current mode: {kind}",
+      "runsTests": "Runs tests",
+      "yes": "yes",
+      "no": "no",
+      "protectionHeading": "Branch protection",
+      "recheck": "Re-check",
+      "rechecking": "Checking"
     }
   },
   "adminRegistries": {
