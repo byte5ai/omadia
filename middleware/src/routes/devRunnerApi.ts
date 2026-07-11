@@ -29,8 +29,14 @@ import { mountJobPolicyRoute } from './devRunnerJobPolicyRoute.js';
 import type { FinalizeContext } from '../devplatform/finalizeDevJob.js';
 import type { RunnerEventInput } from '../devplatform/devJobStore.js';
 import {
+  StalePhaseError,
+  type PhaseDirective,
+  type PhaseResultInput,
+} from '../devplatform/pipeline/phaseEngine.js';
+import {
   RUNNER_PROTOCOL_VERSION,
   isDevJobEventType,
+  isDevJobPhase,
   isTerminalDevJobStatus,
   type DevJob,
   type DevJobResult,
@@ -106,6 +112,13 @@ export interface DevRunnerRouterDeps {
   maxEventsPerBatch?: number;
   /** Hard cap on one event's serialized payload, in bytes. Default 64 KiB. */
   maxEventPayloadBytes?: number;
+  /**
+   * W2 phase engine. Given the authenticated job and the runner's phase result,
+   * decide + persist the transition and return the directive. Throws
+   * StalePhaseError (→409) for a phase the job already left. Absent ⇒ the
+   * phase-result endpoint is not mounted (W0/collapsed shape).
+   */
+  handlePhaseResult?: (job: DevJob, input: PhaseResultInput) => Promise<PhaseDirective>;
   /** `spec.agent.model` — not persisted in W0's schema, injected if configured. */
   agentModel?: string;
   /** `spec.agent.maxTurns`. */
@@ -205,6 +218,7 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
     jobPolicyConfig,
     now = Date.now,
     llmProxyRouter,
+    handlePhaseResult,
   } = deps;
 
   // W1: mount the Anthropic-compatible LLM proxy under `/llm`. It authenticates
@@ -515,6 +529,63 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
     });
     res.json({ ok: true });
   });
+
+  // --- POST /jobs/:id/phase-result (W2 pipeline; spec §4) -------------------
+  // The runner reports the phase it just ran; the middleware decides the
+  // transition and returns a directive (next / park / done / failed). A phase
+  // that does not match the job's current phase is a stale runner → 409, its
+  // result discarded. Absent handler ⇒ the endpoint is simply not mounted.
+  if (handlePhaseResult) {
+    router.post('/jobs/:id/phase-result', authMw, expressJson({ limit: '4mb' }), async (req, res) => {
+      const job = jobOf(res);
+      if (!statusGate(res, job, ['provisioning', 'running'])) return;
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const phase = body['phase'];
+      if (!isDevJobPhase(phase)) {
+        fail(res, 400, 'devplatform.invalid_phase', 'phase is missing or not a known phase');
+        return;
+      }
+      if (typeof body['ok'] !== 'boolean') {
+        fail(res, 400, 'devplatform.invalid_result', 'ok must be a boolean');
+        return;
+      }
+
+      const input: PhaseResultInput = { phase, ok: body['ok'] };
+      const artifact = body['artifact'];
+      if (artifact && typeof artifact === 'object') {
+        const a = artifact as Record<string, unknown>;
+        if (typeof a['kind'] === 'string' && typeof a['content'] === 'string') {
+          input.artifact = {
+            kind: a['kind'],
+            content: a['content'],
+            ...(a['meta'] && typeof a['meta'] === 'object' ? { meta: a['meta'] as Record<string, unknown> } : {}),
+          };
+        }
+      }
+      if (Array.isArray(body['questions'])) {
+        input.questions = body['questions']
+          .filter((q): q is { id: string; text: string } =>
+            !!q && typeof q === 'object' && typeof (q as Record<string, unknown>)['id'] === 'string' &&
+            typeof (q as Record<string, unknown>)['text'] === 'string')
+          .map((q) => ({ id: q.id, text: q.text }));
+      }
+      if (body['verdict'] !== undefined) input.verdict = body['verdict'];
+      if (typeof body['headSha'] === 'string') input.headSha = body['headSha'];
+      if (typeof body['error'] === 'string') input.error = body['error'];
+
+      try {
+        const directive = await handlePhaseResult(job, input);
+        res.json(directive);
+      } catch (err) {
+        if (err instanceof StalePhaseError) {
+          fail(res, 409, 'devplatform.stale_phase', 'reported phase does not match the job’s current phase');
+          return;
+        }
+        throw err;
+      }
+    });
+  }
 
   // --- GET /internal/job-policy/:jobId (daemon-token auth; spec §4/§6) ------
   // Split into its own module to keep this file within the 500-line rule. The
