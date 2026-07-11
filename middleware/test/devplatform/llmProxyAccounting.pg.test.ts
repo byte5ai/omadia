@@ -322,6 +322,55 @@ describe('devplatform/llmProxyAccounting (pg)', { skip: !pgAvailable }, () => {
     assert.equal(upstreamCalls, 2, 'a capped-job call never reaches upstream');
   });
 
+  it('enforcement is LEVEL-triggered: a call ALREADY over budget still 402s (not just the edge call)', async () => {
+    // Forge W4 audit #1: an edge-only trigger let every call AFTER the crossing
+    // deliver 200. Level-triggered means every over-budget call reports exceeded.
+    const { jobId } = await makeJob({ jobBudgetCostUsd: 1 });
+    const hook = createLlmProxyAccounting({
+      store,
+      defaultBudgetCostUsd: 5,
+      markBudgetExceeded: async () => {}, // do NOT finalize — isolate the meter verdict
+      emitBudgetWarning: async () => {},
+      recordUsage: () => {},
+    });
+    const usage = { inputTokens: 400_000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    const first = await hook.meter({ jobId, model: MODEL, usage }); // $2 ≥ $1 → crosses
+    assert.equal(first.exceeded, true, 'the crossing call exceeds');
+    // The job is NOT finalized here (markBudgetExceeded is a no-op), so a second
+    // meter call lands on an already-over-budget job WITHOUT crossing any edge.
+    const second = await hook.meter({ jobId, model: MODEL, usage }); // $4, prev already ≥ $1
+    // COUNTER-PROOF: an edge trigger returns exceeded=false here (prev ≥ budget, no
+    // crossing) and the call would be billed. Level-triggered must still exceed.
+    assert.equal(second.exceeded, true, 'an already-over-budget call STILL exceeds (level-triggered)');
+  });
+
+  it('a markBudgetExceeded failure SELF-HEALS: the next over-budget call re-drives finalize', async () => {
+    // Forge W4 audit #1: an edge trigger fired markBudgetExceeded exactly once, so a
+    // transient failure there left the cap open forever. Level-triggered re-attempts.
+    const { jobId } = await makeJob({ jobBudgetCostUsd: 1 });
+    let attempts = 0;
+    const hook = createLlmProxyAccounting({
+      store,
+      defaultBudgetCostUsd: 5,
+      markBudgetExceeded: async (id) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('transient finalize blip'); // fail at the crossing
+        await finalizeDevJob({ store, terminate: async () => {} }, id, 'budget_exceeded', { reason: 'llm budget' });
+      },
+      emitBudgetWarning: async () => {},
+      recordUsage: () => {},
+    });
+    const usage = { inputTokens: 400_000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    const first = await hook.meter({ jobId, model: MODEL, usage }); // crosses; markBudgetExceeded THROWS
+    assert.equal(first.exceeded, true, 'the crossing call still 402s despite the finalize failure');
+    assert.notEqual((await readJob(jobId)).status, 'budget_exceeded', 'the first finalize did not stick');
+    const second = await hook.meter({ jobId, model: MODEL, usage }); // still over → RE-drives finalize
+    assert.equal(second.exceeded, true);
+    // COUNTER-PROOF: an edge trigger never retries → the job stays active forever.
+    assert.equal(attempts, 2, 'markBudgetExceeded was re-attempted by the next over-budget call');
+    assert.equal((await readJob(jobId)).status, 'budget_exceeded', 'the retry finalized the job');
+  });
+
   it('budget resolution: job override wins over the repo budget', async () => {
     const { token } = await makeJob({ jobBudgetCostUsd: 0.5, repoBudgetCostUsd: 100, withHandle: true });
     upstream = () => usageResponse(200_000, 0); // $1.00 ≥ job $0.50, < repo $100

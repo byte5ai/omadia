@@ -136,6 +136,10 @@ export interface LlmProxyDeps {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MAX_BODY_BYTES = 25 * 1024 * 1024;
+/** Hard ceiling on the response the ENFORCED (buffered) path holds in memory before
+ *  committing it — the OOM backstop that does not depend on the optional max_tokens
+ *  clamp being wired (Forge W4 audit #2). A real LLM response is far under this. */
+const MAX_ENFORCED_BUFFER_BYTES = 32 * 1024 * 1024;
 const USAGE_SOURCE = 'dev-job';
 
 /**
@@ -666,10 +670,22 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
     let truncated = false;
     const redactor = new StreamRedactor(args.providerKey);
     const chunks: Buffer[] = [];
+    let bytesRead = 0;
 
     try {
       for await (const chunk of body) {
         const buf = Buffer.from(chunk);
+        // Hard independent byte ceiling (Forge W4 audit #2): the enforced path
+        // BUFFERS the whole response to meter it before committing, so a hostile job
+        // that sets a huge `max_tokens` could OOM the middleware. The `max_tokens`
+        // clamp normally bounds this, but it is an OPTIONAL wire dep — this ceiling
+        // is the defense-in-depth backstop that does NOT depend on wire discipline.
+        bytesRead += buf.length;
+        if (bytesRead > MAX_ENFORCED_BUFFER_BYTES) {
+          truncated = true;
+          log(`[dev-llm] enforced response for job ${job.id} exceeded ${String(MAX_ENFORCED_BUFFER_BYTES)}B; truncating to bound memory`);
+          break;
+        }
         // Meter on the RAW upstream bytes; buffer the REDACTED bytes for delivery.
         const text = decoder.decode(buf, { stream: true });
         if (isSse) sseBuffer = drainSse(acc, sseBuffer + text);

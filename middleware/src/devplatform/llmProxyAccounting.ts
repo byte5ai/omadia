@@ -191,16 +191,23 @@ export function createLlmProxyAccounting(deps: LlmProxyAccountingDeps): LlmProxy
     const prevCost = position.costUsd - deltaCost;
     const prevTokens = position.tokensTotal - deltaTokens;
 
-    const crossedCost = crossedEdge(prevCost, position.costUsd, costBudget);
-    const crossedTokens =
-      tokenBudget !== undefined && crossedEdge(prevTokens, position.tokensTotal, tokenBudget);
+    // Enforcement is LEVEL-triggered (Forge W4 audit #1), NOT edge-triggered: EVERY
+    // call whose committed spend is at/over budget returns `exceeded` (→402), not only
+    // the single call that first crossed the threshold. This closes two holes an
+    // edge-only trigger had: (a) if `markBudgetExceeded` fails at the crossing (a
+    // transient finalize/DB blip), the job stayed active and every later call was
+    // billed for the rest of its life — now each over-budget call RE-ATTEMPTS the
+    // idempotent finalize until it sticks (self-healing); and (b) a concurrent burst
+    // at the crossing 402s on all of its over-budget calls, not just the edge one.
+    const overCost = costBudget > 0 && position.costUsd >= costBudget;
+    const overTokens = tokenBudget !== undefined && position.tokensTotal >= tokenBudget;
 
-    if (crossedCost || crossedTokens) {
+    if (overCost || overTokens) {
       try {
-        await markBudgetExceeded(jobId);
+        await markBudgetExceeded(jobId); // idempotent — no-ops on an already-terminal job
       } catch (err) {
         // The proxy still 402s (both sides converge); the finalize failure is
-        // surfaced for operator follow-up.
+        // surfaced for operator follow-up and retried by the next over-budget call.
         log(`[dev-llm-budget] markBudgetExceeded failed for job ${jobId}: ${errText(err)}`);
       }
       return { exceeded: true };
