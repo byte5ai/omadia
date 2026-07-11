@@ -602,22 +602,41 @@ export class DevJobStore {
    */
   private async recordTruncationOnce(jobId: string, dropped: number): Promise<void> {
     const payload = JSON.stringify({ state: 'events_truncated', dropped });
-    const res = await this.pool.query<Row>(
-      `INSERT INTO dev_job_events (job_id, provision, seq, type, payload)
-       SELECT $1, ${HOST_EVENT_PROVISION},
-              (SELECT COALESCE(MAX(seq), -1) + 1 FROM dev_job_events
-                WHERE job_id = $1 AND provision = ${HOST_EVENT_PROVISION}),
-              'status', $2::jsonb
-        WHERE NOT EXISTS (
-          SELECT 1 FROM dev_job_events
-           WHERE job_id = $1 AND type = 'status'
-             AND payload->>'state' = 'events_truncated'
-        )
-       ON CONFLICT (job_id, provision, seq) DO NOTHING
-       RETURNING ${EVENT_COLS}`,
-      [jobId, payload],
-    );
-    if (res.rows[0]) this.bus?.publish(jobId, toEvent(res.rows[0]));
+    // Retry the seq allocation on a collision, exactly like `appendHostEvent`
+    // (Forge W5 A3b — this method previously did NOT retry, so it lost the
+    // provision-0 seq race against the finalize `status` event and the marker
+    // vanished). `ON CONFLICT DO NOTHING` (no target) catches BOTH a seq collision
+    // AND the marker's partial-unique index (0030); the exists-recheck then tells
+    // the two apart: marker present ⇒ recorded (done), else ⇒ seq collision ⇒ retry.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const res = await this.pool.query<Row>(
+        `INSERT INTO dev_job_events (job_id, provision, seq, type, payload)
+         SELECT $1, ${HOST_EVENT_PROVISION},
+                (SELECT COALESCE(MAX(seq), -1) + 1 FROM dev_job_events
+                  WHERE job_id = $1 AND provision = ${HOST_EVENT_PROVISION}),
+                'status', $2::jsonb
+          WHERE NOT EXISTS (
+            SELECT 1 FROM dev_job_events
+             WHERE job_id = $1 AND type = 'status'
+               AND payload->>'state' = 'events_truncated'
+          )
+         ON CONFLICT DO NOTHING
+         RETURNING ${EVENT_COLS}`,
+        [jobId, payload],
+      );
+      if (res.rows[0]) {
+        this.bus?.publish(jobId, toEvent(res.rows[0]));
+        return;
+      }
+      // 0 rows ⇒ marker already exists (done) OR a seq collision (retry).
+      const exists = await this.pool.query(
+        `SELECT 1 FROM dev_job_events
+          WHERE job_id = $1 AND type = 'status' AND payload->>'state' = 'events_truncated'
+          LIMIT 1`,
+        [jobId],
+      );
+      if ((exists.rowCount ?? 0) > 0) return; // recorded (by us earlier or a concurrent writer)
+    }
   }
 
   /**

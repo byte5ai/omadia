@@ -157,6 +157,30 @@ describe('devplatform/retention (pg)', { skip: !pgAvailable }, () => {
     assert.ok(events.some((e) => e.type === 'gate' && e.seq === 6), 'the gate must be accepted');
   });
 
+  it('the events_truncated marker survives a provision-0 seq race with host events (Forge W5 A3b)', async () => {
+    const capped = new DevJobStore(pool, { maxEvents: 2 });
+    const job = await newQueuedJob(capped);
+    await capped.appendEvents(job.id, 1, [{ seq: 0, type: 'tool' }, { seq: 1, type: 'tool' }]); // at cap
+
+    // Fire the cap-triggering log drops (→ recordTruncationOnce, provision 0) CONCURRENTLY
+    // with finalize-style host status events that compete for the SAME provision-0 seq.
+    // COUNTER-PROOF: the pre-fix recordTruncationOnce did not retry, so on a seq
+    // collision its ON CONFLICT (…,seq) inserted zero and the marker was LOST (0
+    // markers) — the "log never lies" invariant broken. The retry + partial-unique
+    // index (0030) guarantee EXACTLY ONE regardless of who wins the seq.
+    await Promise.all([
+      capped.appendEvents(job.id, 1, [{ seq: 2, type: 'log' }]),
+      capped.appendHostEvent(job.id, 'status', { state: 'done' }),
+      capped.appendEvents(job.id, 1, [{ seq: 3, type: 'log' }]),
+      capped.appendHostEvent(job.id, 'phase', { phase: 'review' }),
+      capped.appendEvents(job.id, 1, [{ seq: 4, type: 'log' }]),
+      capped.appendHostEvent(job.id, 'status', { state: 'x' }),
+    ]);
+
+    const events = await capped.listEvents(job.id);
+    assert.equal(truncatedStatusEvents(events).length, 1, 'exactly one events_truncated marker survives the race');
+  });
+
   it('artifact ceiling: oversized content is marked+refused inline, small content stored as-is', async () => {
     const store = new DevJobStore(pool, { artifactCeiling: { maxBytes: 1024 } });
     const job = await newQueuedJob(store);
