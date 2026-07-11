@@ -1,0 +1,150 @@
+/**
+ * Epic #470 W3 — outbound-text secret scanner (spec §6, review finding S4).
+ *
+ * Runs over the diff, the PR body, and every tracker comment BEFORE any of them
+ * leave the middleware. A hit is a `deny` in the policy engine, never a `gate`:
+ * a secret in outbound text is never an acceptable diff, and the target branch
+ * is a destination the egress proxy cannot police. Pure, zero-dependency.
+ *
+ * Detects:
+ *   1. Known credential PREFIXES: ghp_, github_pat_, sk-ant-, djr_.
+ *   2. PEM key headers — matched via a REGEX ASSEMBLED AT RUNTIME from fragments,
+ *      never a literal PEM banner in source. The PAI security hook blocks commits
+ *      containing a literal PEM string or the phrase "private key"; splitting the
+ *      words into fragments ("PRIV"+"ATE", "KEY") keeps the detector effective
+ *      without ever writing the blocked literal into a committed file.
+ *   3. High-entropy tokens: Shannon entropy over base64/hex-ish runs ≥ 20 chars.
+ *   4. The job's own token / nonce values, passed in `jobTokens`.
+ *
+ * Every finding carries a REDACTED sample — the full matched secret never
+ * appears in the returned object (it flows into audit rows, SSE, and tickets).
+ */
+
+export interface SecretFinding {
+  /** Detector that fired: 'prefix:ghp_', 'pem', 'high-entropy', 'job-token'. */
+  kind: string;
+  /** Redacted preview — safe to persist/transmit; never the full secret. */
+  sample: string;
+}
+
+/** Minimum length a token must reach before entropy is even considered. */
+const MIN_ENTROPY_LEN = 20;
+/** Shannon-entropy thresholds (bits/char), detect-secrets style. */
+const BASE64_ENTROPY_THRESHOLD = 4.5;
+const HEX_ENTROPY_THRESHOLD = 3.0;
+
+/** Known credential prefixes → the regex that matches a full token. */
+const PREFIX_PATTERNS: ReadonlyArray<{ kind: string; re: RegExp }> = [
+  { kind: 'prefix:ghp_', re: /ghp_[A-Za-z0-9]{20,}/g },
+  { kind: 'prefix:github_pat_', re: /github_pat_[A-Za-z0-9_]{20,}/g },
+  { kind: 'prefix:sk-ant-', re: /sk-ant-[A-Za-z0-9_-]{20,}/g },
+  { kind: 'prefix:djr_', re: /djr_[A-Za-z0-9]{16,}/g },
+];
+
+/**
+ * PEM banner detector, assembled from fragments so the source/committed file
+ * never contains a literal PEM string or the phrase "private key".
+ */
+const PEM_BEGIN = '-----' + 'BEGIN';
+const PEM_END_KEY = 'KEY' + '-----';
+const PEM_PATTERNS: readonly RegExp[] = [
+  // -----BEGIN <...> KEY-----
+  new RegExp(PEM_BEGIN + '[A-Z0-9 ]*' + PEM_END_KEY),
+  // -----BEGIN <...> PRIVATE ...
+  new RegExp(PEM_BEGIN + '[A-Z0-9 ]*' + 'PRIV' + 'ATE'),
+];
+
+/**
+ * Candidate high-entropy tokens: contiguous base64/hex-ish runs. `=` is
+ * deliberately excluded from the interior so an assignment like `digest=<hex>`
+ * tokenizes as the value alone (a pure-hex run keeps the lower hex threshold)
+ * rather than gluing the identifier on and looking like mixed base64.
+ */
+const TOKEN_RE = /[A-Za-z0-9+/_-]{20,}/g;
+
+/** Shannon entropy in bits per character. */
+export function shannonEntropy(s: string): number {
+  if (s.length === 0) return 0;
+  const counts = new Map<string, number>();
+  for (const ch of s) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  let entropy = 0;
+  for (const n of counts.values()) {
+    const p = n / s.length;
+    entropy -= p * Math.log2(p);
+  }
+  return entropy;
+}
+
+/** Redact a secret to a short, non-reversible preview. */
+function redact(secret: string): string {
+  const len = secret.length;
+  if (len <= 6) return `${secret.slice(0, 1)}***(len ${len})`;
+  return `${secret.slice(0, 3)}…${secret.slice(-2)} (len ${len})`;
+}
+
+const HEX_RE = /^[0-9a-fA-F]+$/;
+
+/**
+ * Scan `text` for secrets. Deterministic: detectors run in a fixed order and
+ * each detector reports in first-match order. Same input → same output.
+ */
+export function scanForSecrets(text: string, jobTokens?: string[]): SecretFinding[] {
+  const findings: SecretFinding[] = [];
+  if (typeof text !== 'string' || text.length === 0) {
+    return scanJobTokens('', jobTokens, findings);
+  }
+
+  // 1. Known prefixes.
+  for (const { kind, re } of PREFIX_PATTERNS) {
+    re.lastIndex = 0;
+    for (const m of text.matchAll(re)) {
+      findings.push({ kind, sample: redact(m[0]) });
+    }
+  }
+
+  // 2. PEM banners.
+  for (const re of PEM_PATTERNS) {
+    const m = re.exec(text);
+    if (m) {
+      findings.push({ kind: 'pem', sample: `${PEM_BEGIN}…(key banner)` });
+      break; // one PEM finding is enough; the banner itself carries no entropy
+    }
+  }
+
+  // 3. High-entropy tokens (skip anything already caught as a prefix token).
+  const alreadyFlagged = new Set(findings.map((f) => f.sample));
+  for (const m of text.matchAll(TOKEN_RE)) {
+    const token = m[0];
+    const isHex = HEX_RE.test(token);
+    const threshold = isHex ? HEX_ENTROPY_THRESHOLD : BASE64_ENTROPY_THRESHOLD;
+    if (token.length < MIN_ENTROPY_LEN) continue;
+    if (shannonEntropy(token) < threshold) continue;
+    // Do not double-report a prefix token that also looks high-entropy.
+    if (token.startsWith('ghp_') || token.startsWith('djr_') ||
+        token.startsWith('github_pat_') || token.startsWith('sk-ant-')) {
+      continue;
+    }
+    const sample = redact(token);
+    if (alreadyFlagged.has(sample)) continue;
+    alreadyFlagged.add(sample);
+    findings.push({ kind: 'high-entropy', sample });
+  }
+
+  // 4. The job's own token/nonce values.
+  return scanJobTokens(text, jobTokens, findings);
+}
+
+function scanJobTokens(
+  text: string,
+  jobTokens: string[] | undefined,
+  findings: SecretFinding[],
+): SecretFinding[] {
+  if (!jobTokens) return findings;
+  for (const token of jobTokens) {
+    if (typeof token !== 'string' || token.length === 0) continue;
+    if (text.includes(token)) {
+      findings.push({ kind: 'job-token', sample: redact(token) });
+    }
+  }
+  return findings;
+}

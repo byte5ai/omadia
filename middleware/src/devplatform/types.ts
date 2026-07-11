@@ -13,6 +13,8 @@
  * surfaced as ISO strings, jsonb as structured objects.
  */
 
+import type { DiffPolicyOverrides } from './policy/diffPolicyEngine.js';
+
 /**
  * Phone-home wire-protocol version. Bumped whenever the runner <-> middleware
  * contract changes; the shim aborts loudly on a mismatch (spec §5). Baked into
@@ -312,6 +314,9 @@ export interface DevRepo {
   bootstrapCommand: string | null;
   /** W2 test command; null = agent-detected during analyze. */
   testCommand: string | null;
+  /** W3 operator diff-policy overrides (`dev_repos.policy_overrides`, 0024).
+   *  Empty object = code defaults; can never remove a `deny` rule. */
+  policyOverrides: DiffPolicyOverrides;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -405,6 +410,8 @@ export interface NewDevRepo {
   allowedLaunchers?: string[];
   egressAllowlist?: string[];
   runsTests?: boolean;
+  /** W3 diff-policy overrides; omitted = DB default `'{}'`. */
+  policyOverrides?: DiffPolicyOverrides;
   createdBy: string;
 }
 

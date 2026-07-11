@@ -11,13 +11,15 @@
 import type { Pool } from 'pg';
 
 import { asArr, asObj, iso, isoN, str, strN, type Row } from './pgMappers.js';
+import type { DiffPolicyOverrides } from './policy/diffPolicyEngine.js';
 import type { DevRepo, NewDevRepo } from './types.js';
 
 const REPO_COLS =
   `id, forge_kind, owner, name, clone_url, default_branch, credential_kind, credential_ref, ` +
   `tracker_kind, tracker_config, allowed_triggers, allowed_launchers, egress_allowlist, ` +
   `runs_tests, branch_protection_ok, branch_protection_checked_at, approver_role_key, ` +
-  `gate_deadline_iso, bootstrap_command, test_command, created_by, created_at, updated_at`;
+  `gate_deadline_iso, bootstrap_command, test_command, policy_overrides, ` +
+  `created_by, created_at, updated_at`;
 
 function toRepo(r: Row): DevRepo {
   return {
@@ -41,6 +43,7 @@ function toRepo(r: Row): DevRepo {
     gateDeadlineIso: str(r['gate_deadline_iso']),
     bootstrapCommand: strN(r['bootstrap_command']),
     testCommand: strN(r['test_command']),
+    policyOverrides: asObj<DiffPolicyOverrides>(r['policy_overrides'], {}),
     createdBy: str(r['created_by']),
     createdAt: iso(r['created_at']),
     updatedAt: iso(r['updated_at']),
@@ -103,6 +106,7 @@ export class DevRepoStore {
       allowedLaunchers: ['allowed_launchers', patch.allowedLaunchers, false],
       egressAllowlist: ['egress_allowlist', patch.egressAllowlist, false],
       runsTests: ['runs_tests', patch.runsTests, false],
+      policyOverrides: ['policy_overrides', patch.policyOverrides, true],
     };
     const sets: string[] = [];
     const params: unknown[] = [id];
