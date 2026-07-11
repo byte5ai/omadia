@@ -287,7 +287,15 @@ export interface DevJobView {
   prUrl: string | null;
   result: { outcome: string; summary?: string; diffArtifactId?: string; error?: string } | null;
   error: string | null;
-  usage: { input: number; output: number; costUsd: number; estimated: boolean };
+  usage: {
+    input: number;
+    output: number;
+    costUsd: number;
+    /** W4 effective per-job cost budget override, or null when it falls back to
+     *  the repo budget / config default (spec §5). */
+    budgetCostUsd: number | null;
+    estimated: boolean;
+  };
   createdBy: string;
   createdAt: string;
   startedAt: string | null;
@@ -326,7 +334,11 @@ export function toJobView(job: DevJob): DevJobView {
       input: job.tokensIn,
       output: job.tokensOut,
       costUsd: job.costUsd,
-      estimated: r?.usage?.estimated ?? false,
+      budgetCostUsd: job.budgetCostUsd,
+      // W4: exact when metered from provider usage at the proxy; estimated only
+      // for subscription-CLI jobs (the shim sets `usage_estimated`). The result
+      // fallback preserves the pre-W4 self-declared flag.
+      estimated: job.usageEstimated || (r?.usage?.estimated ?? false),
     },
     createdBy: job.createdBy,
     createdAt: job.createdAt,

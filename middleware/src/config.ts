@@ -199,6 +199,11 @@ const ConfigSchema = z.object({
   DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR: z.coerce.number().int().positive().default(5),
   DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR: z.coerce.number().int().positive().default(2),
 
+  // Epic #470 W4 — default per-job LLM cost budget (USD) applied when neither the
+  // job nor its repo sets one (spec §5). Token budgets have NO default: they are
+  // enforced only when explicitly set on the job or repo.
+  DEV_JOB_DEFAULT_BUDGET_USD: z.coerce.number().positive().default(5),
+
   // Postgres connection string for the Neon-backed knowledge graph.
   // When set, `bootstrapKnowledgeGraphFromEnv` installs the
   // harness-knowledge-graph-neon sibling; when unset, the inmemory

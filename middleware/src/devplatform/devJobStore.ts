@@ -87,6 +87,7 @@ export const JOB_COLS =
   `provision, phase, pipeline_mode, review_attempt, review_fingerprint, retry_of, ` +
   `status, claimed_by, claimed_at, last_heartbeat_at, runner_handle, ` +
   `runner_token_hash, branch, pr_url, result, error, tokens_in, tokens_out, cost_usd, ` +
+  `budget_cost_usd, budget_tokens, usage_estimated, ` +
   `created_by, created_at, started_at, ended_at, updated_at`;
 const EVENT_COLS = `id, job_id, provision, seq, type, ts, payload`;
 
@@ -121,6 +122,9 @@ export function toJob(r: Row): DevJob {
     tokensIn: num(r['tokens_in']),
     tokensOut: num(r['tokens_out']),
     costUsd: num(r['cost_usd']),
+    budgetCostUsd: r['budget_cost_usd'] == null ? null : Number(r['budget_cost_usd']),
+    budgetTokens: r['budget_tokens'] == null ? null : Number(r['budget_tokens']),
+    usageEstimated: r['usage_estimated'] === true,
     createdBy: str(r['created_by']),
     createdAt: iso(r['created_at']),
     startedAt: isoN(r['started_at']),
@@ -154,6 +158,20 @@ export interface ListJobsFilter {
   repoIds?: readonly string[];
   status?: DevJobStatus;
   limit?: number;
+}
+
+/**
+ * The new position returned by {@link DevJobStore.accumulateJobUsage}: the job's
+ * counters AFTER this call's atomic increment, plus the EFFECTIVE budgets (the
+ * job override coalesced with the repo default) so the caller resolves job→repo
+ * budgets without a second query. The config default is applied by the caller
+ * only when `effectiveBudgetCostUsd` is null. `budget_tokens` has no default.
+ */
+export interface DevJobBudgetPosition {
+  costUsd: number;
+  tokensTotal: number;
+  effectiveBudgetCostUsd: number | null;
+  effectiveBudgetTokens: number | null;
 }
 
 export class DevJobStore {
@@ -629,7 +647,11 @@ export class DevJobStore {
     // indexed lookup already matched on the hash).
     if (!verifyToken(token, strN(row['runner_token_hash']))) return null;
     const status = str(row['status']) as DevJobStatus;
-    if (isTerminalDevJobStatus(status)) return null;
+    // W4: a `budget_exceeded` job (terminal) STILL resolves so the LLM proxy can
+    // answer the runner a fatal 402 and both sides converge (spec §5). Every
+    // OTHER terminal returns null so a stale-token holder gets no valid/terminal
+    // state oracle (the proxy answers 401 for both unknown and stale tokens).
+    if (isTerminalDevJobStatus(status) && status !== 'budget_exceeded') return null;
     return { id: str(row['id']), status, agentKind: str(row['agent_kind']) };
   }
 
@@ -642,6 +664,49 @@ export class DevJobStore {
         WHERE id = $1`,
       [jobId, Math.max(0, Math.trunc(tokensIn)), Math.max(0, Math.trunc(tokensOut))],
     );
+  }
+
+  /**
+   * W4 atomic accumulate-and-readback for budget enforcement (spec §5). ONE
+   * statement bumps the per-job counters and RETURNS the new position together
+   * with the effective budgets (job override coalesced with the repo default).
+   *
+   * Race-safe by construction: the increment is `SET x = x + $n` under the row
+   * lock the UPDATE takes, and the new value is read back via RETURNING — never
+   * read-modify-write — so two concurrent proxy calls cannot lose an update. The
+   * job→repo budget resolution is folded into the same statement so metering
+   * needs no second round trip. Returns null if the job row does not exist.
+   */
+  async accumulateJobUsage(
+    jobId: string,
+    tokensIn: number,
+    tokensOut: number,
+    costUsd: number,
+  ): Promise<DevJobBudgetPosition | null> {
+    const r = await this.pool.query<Row>(
+      `UPDATE dev_jobs AS j
+          SET tokens_in = tokens_in + $2,
+              tokens_out = tokens_out + $3,
+              cost_usd = cost_usd + $4,
+              updated_at = now()
+        WHERE j.id = $1
+        RETURNING
+          j.cost_usd AS cost_usd,
+          (j.tokens_in + j.tokens_out) AS tokens_total,
+          COALESCE(j.budget_cost_usd,
+                   (SELECT r.budget_cost_usd FROM dev_repos r WHERE r.id = j.repo_id)) AS eff_budget_cost_usd,
+          COALESCE(j.budget_tokens,
+                   (SELECT r.budget_tokens FROM dev_repos r WHERE r.id = j.repo_id)) AS eff_budget_tokens`,
+      [jobId, Math.max(0, Math.trunc(tokensIn)), Math.max(0, Math.trunc(tokensOut)), Math.max(0, costUsd)],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return {
+      costUsd: Number(row['cost_usd']),
+      tokensTotal: Number(row['tokens_total']),
+      effectiveBudgetCostUsd: row['eff_budget_cost_usd'] == null ? null : Number(row['eff_budget_cost_usd']),
+      effectiveBudgetTokens: row['eff_budget_tokens'] == null ? null : Number(row['eff_budget_tokens']),
+    };
   }
 
   // --- reaper / enforcement reads (worker calls finalizeDevJob on these) ----

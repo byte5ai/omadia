@@ -374,6 +374,15 @@ export interface DevJob {
   tokensIn: number;
   tokensOut: number;
   costUsd: number;
+  /** W4 per-job cost budget override (`0027`); null ⇒ fall back to the repo
+   *  budget, then the `DEV_JOB_DEFAULT_BUDGET_USD` config default (spec §5). */
+  budgetCostUsd: number | null;
+  /** W4 per-job token budget override (`0027`); null ⇒ repo budget, then
+   *  unenforced (there is no token-budget default). */
+  budgetTokens: number | null;
+  /** W4: true when cost is a self-declared estimate (subscription-CLI jobs),
+   *  false when metered exactly from provider usage at the proxy (`0027`). */
+  usageEstimated: boolean;
   createdBy: string;
   createdAt: string;
   startedAt: string | null;
