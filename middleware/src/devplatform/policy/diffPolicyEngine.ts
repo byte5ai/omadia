@@ -92,6 +92,18 @@ export interface DiffPolicyInput {
    *  an optional field failed OPEN — a caller that forgot it silently skipped the
    *  job's-own-token detector. Pass `[]` only if the job genuinely has no tokens. */
   jobTokens: string[];
+  /**
+   * A human with authority over this repo APPROVED the diff-policy gate (W3).
+   *
+   * When true, `gate`-severity findings are DEMOTED: they still appear in
+   * `verdict.findings` (the audit trail is intact), but they no longer contribute
+   * to the decision — so an operator-approved diff whose only findings are gates
+   * resolves to `allow`. `deny`-severity findings are UNTOUCHED: a deny still
+   * denies, with or without this flag. A human can never launder a credential (or
+   * any other deny) past the gate by approving it. Absent/false ⇒ the normal
+   * unattended verdict (any gate ⇒ gate).
+   */
+  operatorApprovedGate?: boolean;
 }
 
 export const DEFAULT_MAX_FILES = 50;
@@ -277,9 +289,19 @@ export function evaluateDiffPolicy(input: DiffPolicyInput): PolicyVerdict {
     });
   }
 
-  const decision: PolicyDecision = findings.some((f) => f.severity === 'deny')
+  // Verdict precedence (spec §6), with the W3 operator-override folded in:
+  //   1. ANY deny finding ⇒ deny. This is checked FIRST and is NEVER affected by
+  //      `operatorApprovedGate` — a human cannot override a deny.
+  //   2. else ANY gate finding ⇒ gate, UNLESS the operator approved the gate, in
+  //      which case the gate findings are demoted (still in `findings`, but they
+  //      do not escalate the decision).
+  //   3. else allow.
+  const hasDeny = findings.some((f) => f.severity === 'deny');
+  const hasGate = findings.some((f) => f.severity === 'gate');
+  const operatorApproved = input.operatorApprovedGate === true;
+  const decision: PolicyDecision = hasDeny
     ? 'deny'
-    : findings.some((f) => f.severity === 'gate')
+    : hasGate && !operatorApproved
       ? 'gate'
       : 'allow';
 

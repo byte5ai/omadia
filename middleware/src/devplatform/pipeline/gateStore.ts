@@ -32,10 +32,18 @@ export interface GateAnswer {
 
 export type GatePrincipalKind = 'user' | 'role';
 export type GateStatus = 'waiting' | 'resolved' | 'rejected' | 'expired' | 'cancelled';
+/**
+ * What kind of gate this is — it decides how an APPROVAL resumes the job (W3):
+ *   'review'      — plan/clarify/review gate; approval re-queues at `implement`.
+ *   'diff_policy' — the apply gate; approval re-applies the already-produced diff.
+ * Defaults to 'review' everywhere (the DB default), so W2 behaviour is unchanged.
+ */
+export type GateKind = 'review' | 'diff_policy';
 
 export interface DevJobGate {
   id: string;
   jobId: string;
+  gateKind: GateKind;
   planArtifactId: string | null;
   planSha256: string | null;
   baseSha: string | null;
@@ -52,6 +60,9 @@ export interface DevJobGate {
 
 export interface OpenGateInput {
   jobId: string;
+  /** Defaults to 'review' — the W2 plan/clarify gate. The apply gate passes
+   *  'diff_policy' so its approval re-applies the diff instead of re-running. */
+  gateKind?: GateKind;
   planArtifactId?: string | null;
   planSha256?: string | null;
   baseSha?: string | null;
@@ -65,6 +76,7 @@ export interface OpenGateInput {
 interface GateRow {
   id: string;
   job_id: string;
+  gate_kind: GateKind;
   plan_artifact_id: string | null;
   plan_sha256: string | null;
   base_sha: string | null;
@@ -83,6 +95,7 @@ function toGate(r: GateRow): DevJobGate {
   return {
     id: r.id,
     jobId: r.job_id,
+    gateKind: r.gate_kind,
     planArtifactId: r.plan_artifact_id,
     planSha256: r.plan_sha256,
     baseSha: r.base_sha,
@@ -99,7 +112,7 @@ function toGate(r: GateRow): DevJobGate {
 }
 
 const COLS =
-  'id, job_id, plan_artifact_id, plan_sha256, base_sha, questions, principal_kind, ' +
+  'id, job_id, gate_kind, plan_artifact_id, plan_sha256, base_sha, questions, principal_kind, ' +
   'principal_ref, status, answers, resolved_by, resolved_at, deadline_at, created_at';
 
 const DEFAULT_DEADLINE_ISO = 'P7D';
@@ -120,12 +133,13 @@ export class DevJobGateStore {
     const deadlineAt = new Date(this.now() + ms);
     const inserted = await this.pool.query<GateRow>(
       `INSERT INTO dev_job_gates
-         (job_id, plan_artifact_id, plan_sha256, base_sha, questions, principal_kind, principal_ref, deadline_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8)
+         (job_id, gate_kind, plan_artifact_id, plan_sha256, base_sha, questions, principal_kind, principal_ref, deadline_at)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)
        ON CONFLICT (job_id) WHERE status = 'waiting' DO NOTHING
        RETURNING ${COLS}`,
       [
         input.jobId,
+        input.gateKind ?? 'review',
         input.planArtifactId ?? null,
         input.planSha256 ?? null,
         input.baseSha ?? null,

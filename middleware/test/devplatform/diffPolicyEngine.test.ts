@@ -266,3 +266,51 @@ describe('diffPolicyEngine — determinism', () => {
     assert.deepEqual(evaluateDiffPolicy(input), evaluateDiffPolicy(input));
   });
 });
+
+describe('diffPolicyEngine — operator-approved gate override (W3, spec §6)', () => {
+  // A repo authority who approves a diff-policy gate demotes GATE-severity
+  // findings — but can NEVER override a DENY. These are the security counter-proofs
+  // for the `operatorApprovedGate` flag; the whole gate-resume path rests on them.
+
+  it('operatorApproved + gate-only findings → allow', () => {
+    const diff = addFileDiff('.github/workflows/ci.yml', ['on: push']); // protected-ci = gate
+    // Baseline: unattended → gate.
+    assert.equal(evalDiff(diff).decision, 'gate');
+    // Approved → the sole gate finding is demoted, decision becomes allow.
+    const v = evalDiff(diff, { operatorApprovedGate: true });
+    // COUNTER-PROOF: if `operatorApprovedGate` stopped demoting gate findings this
+    // stays 'gate' and the assertion fails.
+    assert.equal(v.decision, 'allow');
+  });
+
+  it('operatorApproved KEEPS the demoted gate finding in verdict.findings (audit trail)', () => {
+    const diff = addFileDiff('.github/workflows/ci.yml', ['on: push']);
+    const v = evalDiff(diff, { operatorApprovedGate: true });
+    // Demoted, not erased — the operator's override is auditable.
+    assert.ok(ruleIds(v).includes('protected-ci'), 'gate finding must remain recorded even when demoted');
+  });
+
+  it('operatorApproved + a DENY finding → STILL deny (a human cannot override a deny)', () => {
+    const secret = 'ghp_' + 'D'.repeat(36);
+    const diff = addFileDiff('src/config.ts', [`const t = "${secret}";`]); // credential = deny
+    const v = evalDiff(diff, { operatorApprovedGate: true });
+    // COUNTER-PROOF: if `operatorApprovedGate` ever touched the deny path this would
+    // become 'allow' — a credential laundered past the gate. It MUST stay 'deny'.
+    assert.equal(v.decision, 'deny');
+    assert.ok(ruleIds(v).includes('credential-content'));
+  });
+
+  it('operatorApproved + BOTH gate AND deny findings → STILL deny (the launder guard)', () => {
+    const secret = 'ghp_' + 'E'.repeat(36);
+    const diff =
+      addFileDiff('.github/workflows/ci.yml', ['on: push']) + // gate (protected-ci)
+      addFileDiff('src/config.ts', [`const t = "${secret}";`]); // deny (credential-content)
+    // Unattended this is a deny already (any deny dominates).
+    assert.equal(evalDiff(diff).decision, 'deny');
+    // Approving the gate must NOT let the co-located deny through.
+    const v = evalDiff(diff, { operatorApprovedGate: true });
+    assert.equal(v.decision, 'deny');
+    assert.ok(ruleIds(v).includes('credential-content'), 'the deny finding still stands');
+    assert.ok(ruleIds(v).includes('protected-ci'), 'the demoted gate finding is still recorded');
+  });
+});

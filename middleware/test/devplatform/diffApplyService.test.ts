@@ -354,4 +354,61 @@ describe('DiffApplyService.apply', () => {
     );
     assert.equal(calls.length, 0);
   });
+
+  it('operatorApprovedGate re-applies a previously-GATED diff → PR opens (gate demoted)', async () => {
+    const { fetch, calls } = recordingFetch();
+    // The same protected-ci change that gated above; now an operator approved it.
+    const result = await service(fetch).apply({
+      job: JOB,
+      repo: REPO,
+      diff: [
+        'diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml',
+        'new file mode 100644',
+        '--- /dev/null',
+        '+++ b/.github/workflows/deploy.yml',
+        '@@ -0,0 +1 @@',
+        '+on: push',
+        '',
+      ].join('\n'),
+      numstat: '1\t0\t.github/workflows/deploy.yml\n',
+      pr: PR,
+      jobTokens: [],
+      operatorApprovedGate: true,
+    });
+    // COUNTER-PROOF: without the operatorApprovedGate demotion this would throw
+    // policy_gate and open nothing. It must open the PR instead.
+    assert.equal(result.prUrl, 'https://github.com/acme/widgets/pull/42');
+    assert.ok(calls.some((c) => c.url.endsWith('/pulls')), 'the PR is opened');
+  });
+
+  it('operatorApprovedGate STILL denies a credential (deny is never overridable), writes nothing', async () => {
+    const token = 'ghp' + '_' + 'A'.repeat(36);
+    const { fetch, calls } = recordingFetch();
+    const err = await service(fetch)
+      .apply({
+        job: JOB,
+        repo: REPO,
+        diff: [
+          'diff --git a/config.txt b/config.txt',
+          'new file mode 100644',
+          '--- /dev/null',
+          '+++ b/config.txt',
+          '@@ -0,0 +1 @@',
+          `+token=${token}`,
+          '',
+        ].join('\n'),
+        numstat: '1\t0\tconfig.txt\n',
+        pr: PR,
+        jobTokens: [],
+        operatorApprovedGate: true, // a human approved the gate — must NOT lift the deny
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    // COUNTER-PROOF: if operatorApprovedGate ever reached the deny path this would
+    // open a PR carrying the credential. It must still deny and write nothing.
+    assert.ok(err instanceof DiffApplyError && err.code === 'policy_deny', 'deny stands despite approval');
+    assert.equal(calls.length, 0);
+  });
 });

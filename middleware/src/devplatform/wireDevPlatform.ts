@@ -16,7 +16,7 @@
  */
 
 import { parseGitIdentity } from './diffApplyService.js';
-import { DiffApplyService, type ApplyInput, type ApplyResult } from './diffApplyService.js';
+import { DiffApplyError, DiffApplyService, type ApplyInput, type ApplyResult } from './diffApplyService.js';
 import { DevJobEventBus } from './devJobEventBus.js';
 import { DevJobStore } from './devJobStore.js';
 import {
@@ -300,6 +300,9 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
         : { kind: 'user', ref: job.createdBy };
       const gate = await gateStore.open({
         jobId: job.id,
+        // Mark this a diff-policy gate so an APPROVAL re-applies the already-produced
+        // diff (the runner has exited) instead of re-running the runner at implement.
+        gateKind: 'diff_policy',
         baseSha: job.baseSha,
         // The findings ARE the gate's questions, so the operator sees exactly why.
         questions: verdict.findings.map((f, i) => ({
@@ -310,7 +313,9 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
         principalRef: principal.ref,
         deadlineIso: repo?.gateDeadlineIso,
       });
-      await jobStore.parkForGate(job.id);
+      // The apply gate fires while the job is `applying` (host-side; phase is
+      // review/pr, NOT await_human), so park on the status, not the phase.
+      await jobStore.parkForApplyGate(job.id);
       // The runner already exited (apply is host-side); revoke its scoped token.
       // Best-effort — a revoke failure must not un-park the now-`waiting` job.
       try {
@@ -483,16 +488,67 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     ...(deps.now ? { now: () => deps.now!().getTime() } : {}),
   });
 
+  // --- W3 diff-policy gate resume (spec §6) --------------------------------
+  // An operator with authority over the repo approved a diff-policy apply gate.
+  // Move the parked job `waiting → applying` and re-apply the ALREADY-PRODUCED
+  // diff with gate findings demoted. A deny finding hiding behind the gate is
+  // NEVER overridable: the re-apply throws `policy_deny`, applyJob finalizes the
+  // job `failed`, and this swallows only that (expected) error so the resolve
+  // returns cleanly. Idempotent: `resumeApplyAfterGate` is CAS-fenced on
+  // `waiting`, so a self-heal re-drive of an already-applied job is a no-op —
+  // no second PR.
+  const onApprovedDiffPolicyGate = async (gate: DevJobGate, resolvedBy: string): Promise<void> => {
+    const resumed = await jobStore.resumeApplyAfterGate(gate.jobId);
+    if (!resumed) {
+      // Already re-applied (done/failed) or already applying — nothing to redo.
+      log(`[dev-platform] diff-policy gate ${gate.id}: resume skipped (job not waiting)`);
+      return;
+    }
+    // Audit the operator override on the same trail the policy verdict uses.
+    await jobStore.addArtifact(
+      gate.jobId,
+      'review_verdict',
+      JSON.stringify({
+        source: 'diff_policy_override',
+        gateId: gate.id,
+        resolvedBy,
+        resolvedAt: gate.resolvedAt,
+        note: 'operator approved the diff-policy gate; gate-severity findings demoted, deny findings still block',
+      }),
+      { source: 'diff_policy_override', gateId: gate.id, resolvedBy },
+    );
+    try {
+      await worker.applyJob(gate.jobId, { operatorApprovedGate: true });
+    } catch (err) {
+      // A deny finding was hiding behind the gate — never overridable. applyJob has
+      // already persisted the deny audit and finalized the job `failed`; swallow so
+      // the operator's resolve does not surface a 500 for a correctly-failed job.
+      if (err instanceof DiffApplyError && err.code === 'policy_deny') {
+        log(`[dev-platform] diff-policy gate ${gate.id}: re-apply DENIED (deny finding not overridable); job failed`);
+        return;
+      }
+      throw err;
+    }
+  };
+
   // --- W2 human-gate admin router (spec §5) --------------------------------
   const resolveRoleHolders = deps.resolveRoleHolders ?? (async () => []);
   const gatesRouter = createDevPlatformGatesRouter({
     gates: gateStore,
     resolveRoleHolders,
-    // Approval: append the operator's answers to the brief (once), persist an
-    // `answers` artifact, then re-queue the job at `implement`. requeueAtPhase is
-    // fenced on `await_human`, and appendToBrief is marker-idempotent, so the
-    // gate router's crash self-heal can re-drive this safely.
+    // Approval branches on the gate KIND:
+    //   'diff_policy' → re-apply the already-produced diff with gate findings
+    //     demoted (a deny still blocks). See onApprovedDiffPolicyGate.
+    //   'review' (or undefined) → the W2 path: append the operator's answers to
+    //     the brief (once), persist an `answers` artifact, then re-queue at
+    //     `implement`. requeueAtPhase is fenced on `await_human`, and appendToBrief
+    //     is marker-idempotent, so the gate router's crash self-heal re-drives it
+    //     safely.
     onApproved: async (gate, answers, resolvedBy) => {
+      if (gate.gateKind === 'diff_policy') {
+        await onApprovedDiffPolicyGate(gate, resolvedBy);
+        return;
+      }
       const wrote = await jobStore.appendToBrief(
         gate.jobId,
         briefMarker(gate),
@@ -513,12 +569,17 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
       await jobStore.appendToBrief(gate.jobId, briefMarker(gate), rejectionBriefSection(gate, note, resolvedBy));
       await boundFinalize(gate.jobId, 'cancelled', { reason: 'gate_rejected' });
     },
-    // A job is still parked iff it is `waiting` at `await_human` — the signal the
-    // gate router uses to distinguish a crash-stranded job (self-heal) from a
-    // normal concurrent resolve (409).
+    // A job is still parked iff it is `waiting` — the signal the gate router uses
+    // to distinguish a crash-stranded job (self-heal) from a normal concurrent
+    // resolve (409). `waiting` is used ONLY for gate parking (parkForGate /
+    // parkForApplyGate), so it covers BOTH kinds: a review gate parks at
+    // `await_human`, a diff-policy gate parks while `applying` (phase review/pr).
+    // After a successful resolve, a review gate's job is `queued` and a diff-policy
+    // gate's job is `applying`/`done`/`failed` — never `waiting` — so this stays a
+    // precise stuck signal for either kind.
     isJobStuckAtGate: async (jobId) => {
       const j = await jobStore.getJob(jobId);
-      return j?.status === 'waiting' && j?.phase === 'await_human';
+      return j?.status === 'waiting';
     },
     log,
   });

@@ -426,25 +426,50 @@ export class DevJobWorker {
       return;
     }
     for (const job of jobs) {
+      // Cheap pre-check to avoid the throw in the common case; `applyJob` re-checks
+      // and owns the authoritative in-flight guard (add/delete), so a job already
+      // being applied by a concurrent caller (the gate-resume path) is skipped.
       if (this.applying.has(job.id)) continue;
-      this.applying.add(job.id);
       try {
         await this.applyJob(job.id);
       } catch (err) {
-        // applyJob already finalized the job `failed`; this is the log path.
+        // applyJob already finalized the job `failed` (or refused a double apply);
+        // this is the log path.
         this.log(`[dev-platform] apply(${job.id}) failed: ${errText(err)}`);
-      } finally {
-        this.applying.delete(job.id);
       }
     }
   }
 
   /** Commit the uploaded diff host-side and open the PR (spec §8). Also the
-   *  route's `POST /jobs/:id/apply` retry entry, so it accepts `applying` OR a
-   *  job that `failed` after a diff was uploaded. Success ⇒ `done` (+ pr_url);
-   *  any failure ⇒ `failed` with the diff artifact RETAINED, then rethrows so the
-   *  HTTP caller sees the error. */
-  async applyJob(jobId: string): Promise<ApplyJobOutcome> {
+   *  route's `POST /jobs/:id/apply` retry entry AND the diff-policy gate-resume
+   *  entry, so it accepts `applying` OR a job that `failed` after a diff was
+   *  uploaded. Success ⇒ `done` (+ pr_url); any failure ⇒ `failed` with the diff
+   *  artifact RETAINED, then rethrows so the HTTP caller sees the error.
+   *
+   *  `opts.operatorApprovedGate` (W3): a repo authority approved the diff-policy
+   *  gate, so gate-severity findings are demoted on this re-apply (deny findings
+   *  are NOT — a deny still fails the job). The default path (no opts) is
+   *  unchanged.
+   *
+   *  The in-flight guard lives HERE, not just in `applyReady`, so a direct caller
+   *  (the gate-resume path) and the claim loop can never double-apply the same job
+   *  — a second concurrent apply throws `apply_in_progress` and no PR is opened. */
+  async applyJob(jobId: string, opts?: { operatorApprovedGate?: boolean }): Promise<ApplyJobOutcome> {
+    if (this.applying.has(jobId)) {
+      throw new DevJobWorkerError('devplatform.apply_in_progress', `an apply is already in flight for '${jobId}'`);
+    }
+    this.applying.add(jobId);
+    try {
+      return await this.applyJobInner(jobId, opts);
+    } finally {
+      this.applying.delete(jobId);
+    }
+  }
+
+  private async applyJobInner(
+    jobId: string,
+    opts?: { operatorApprovedGate?: boolean },
+  ): Promise<ApplyJobOutcome> {
     const job = await this.deps.store.getJob(jobId);
     if (!job) throw new DevJobWorkerError('devplatform.job_not_found', `no such job '${jobId}'`);
 
@@ -476,6 +501,9 @@ export class DevJobWorker {
         // overrides, and the job's own tokens (see `jobTokensFor`).
         policyOverrides: repo.policyOverrides,
         jobTokens: jobTokensFor(job),
+        // W3: on an operator-approved diff-policy gate resume, demote gate findings
+        // (deny findings still block). Only set when explicitly approved.
+        ...(opts?.operatorApprovedGate ? { operatorApprovedGate: true } : {}),
       });
 
       await this.finalize(job.id, 'done', {

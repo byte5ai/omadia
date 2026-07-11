@@ -351,6 +351,44 @@ export class DevJobStore {
   }
 
   /**
+   * W3: park a job at the AUTHORITATIVE diff-policy apply gate. Unlike the W2
+   * clarify gate, the apply gate fires host-side while the job is `applying` (the
+   * runner already uploaded its diff and exited) — the phase is `review`/`pr`, not
+   * `await_human` — so this is fenced on `status = 'applying'`, NOT on the phase.
+   * The phase is left untouched: the resume re-applies the diff, it does not
+   * re-run a phase. `waiting` is outside the active set, so a parked job holds no
+   * runner slot and is never swept by the stall/wall-clock sweeps. Returns true iff
+   * a row was parked (a re-drive after the park already happened matches 0 rows).
+   */
+  async parkForApplyGate(jobId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs
+          SET status = 'waiting', claimed_by = NULL, claimed_at = NULL,
+              runner_handle = NULL, updated_at = now()
+        WHERE id = $1 AND status = 'applying'`,
+      [jobId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * W3: resume a diff-policy-gate-parked job for the host-side re-apply. Moves it
+   * `waiting → applying` so `DevJobWorker.applyJob` (which requires `applying`)
+   * and the claim loop's `applyReady` sweep both pick it up. CAS-fenced on
+   * `status = 'waiting'`: a self-heal re-drive of a gate whose job already
+   * re-applied (now `done`/`failed`/`applying`) matches 0 rows and returns false,
+   * so the caller skips the re-apply and no second PR is opened.
+   */
+  async resumeApplyAfterGate(jobId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs SET status = 'applying', updated_at = now()
+        WHERE id = $1 AND status = 'waiting'`,
+      [jobId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
    * W2: append a delimited section to the job's brief, at most once (spec §5,
    * "answers append to the brief"). The `marker` is a substring the caller
    * guarantees is present in `section`; the append is skipped when the brief

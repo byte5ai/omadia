@@ -67,6 +67,10 @@ export interface ApplyInput {
    *  need no churn; the engine ALWAYS receives a concrete array (its own-token
    *  detector is fail-closed). The worker threads the real values. */
   jobTokens?: string[];
+  /** A repo authority approved the diff-policy gate (W3): forwarded to the engine
+   *  so `gate`-severity findings are demoted on this re-apply. Deny findings are
+   *  unaffected — a deny still aborts the apply. Absent ⇒ normal verdict. */
+  operatorApprovedGate?: boolean;
 }
 
 export interface ApplyResult {
@@ -172,6 +176,7 @@ export class DiffApplyService {
       trackerComments: input.trackerComments ?? [],
       ...(input.policyOverrides ? { policyOverrides: input.policyOverrides } : {}),
       jobTokens: input.jobTokens ?? [],
+      ...(input.operatorApprovedGate ? { operatorApprovedGate: true } : {}),
     });
     if (verdict.decision === 'deny') {
       throw new DiffApplyError('policy_deny', policyMessage('denied', verdict), verdict);
