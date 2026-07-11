@@ -1659,9 +1659,11 @@ async function main(): Promise<void> {
   // so chat goes live the moment the key is saved — no restart needed.
   //
   // The boot-only wiring guarded on `orchestrator` below (domain-tool
-  // hydration of per-Agent orchestrators, the routines feature) re-applies on
-  // the next restart for advanced stacks (sub-agents / routines). The default
-  // out-of-the-box stack has no domain tools, so chat is fully functional hot.
+  // hydration of per-Agent orchestrators) re-applies on the next restart for
+  // advanced stacks (sub-agents). The default out-of-the-box stack has no
+  // domain tools, so chat is fully functional hot. Routines follows the same
+  // live-resolution pattern as chat (issue #473): its runner resolves
+  // chatAgent per run, so it hot-enables on key save too.
   const chatAgentBundle = serviceRegistry.get<ChatAgentBundle>('chatAgent');
   const orchestrator = chatAgentBundle?.raw;
   if (!chatAgentBundle) {
@@ -1938,8 +1940,12 @@ async function main(): Promise<void> {
 
   // Routines feature (OB-NEW): persistent user-created scheduled agent
   // invocations. Requires Postgres for persistence; skipped in zero-config
-  // dev (in-memory KG backend, no DATABASE_URL). Channel adapters that want
-  // proactive delivery register their `ProactiveSender` into
+  // dev (in-memory KG backend, no DATABASE_URL). The chat agent is NOT
+  // required at wiring time — the runner resolves chatAgent@1 live per run
+  // (same pattern as the chat routes above), so routines hot-enable the
+  // moment the Setup Wizard key save publishes it; keyless fires record an
+  // `error` run naming the missing key (issue #473). Channel adapters that
+  // want proactive delivery register their `ProactiveSender` into
   // `routinesHandle.senderRegistry` after this call (Teams: wrap a
   // long-lived `CloudAdapter.continueConversationAsync` via
   // `createProactiveSender('teams', sendFn)`). Channel adapters MUST also
@@ -1948,11 +1954,11 @@ async function main(): Promise<void> {
   // `manage_routine` tool's `create`/`list` actions return a
   // model-friendly error string and the model degrades gracefully.
   let routinesHandle: RoutinesHandle | undefined;
-  if (graphPool && orchestrator) {
+  if (graphPool) {
     routinesHandle = await initRoutines({
       pool: graphPool,
       scheduler: jobScheduler,
-      orchestrator,
+      getOrchestrator: () => getChatAgentBundle()?.raw,
       registerNativeTool: (name, handler, options) =>
         nativeToolRegistry.register(name, {
           handler,
@@ -1987,15 +1993,11 @@ async function main(): Promise<void> {
       }),
     );
     console.log(
-      '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published)',
-    );
-  } else if (!graphPool) {
-    console.log(
-      '[middleware] routines feature SKIPPED — no graphPool (in-memory KG backend; set DATABASE_URL to enable)',
+      '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published, chat agent resolved live per run)',
     );
   } else {
     console.log(
-      '[middleware] routines feature SKIPPED — chatAgent not active (set ANTHROPIC_API_KEY via the Setup Wizard, then restart to enable routines)',
+      '[middleware] routines feature SKIPPED — no graphPool (in-memory KG backend; set DATABASE_URL to enable)',
     );
   }
 
