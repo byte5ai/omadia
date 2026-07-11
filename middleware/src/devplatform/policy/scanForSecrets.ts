@@ -164,3 +164,53 @@ function scanJobTokens(
   }
   return findings;
 }
+
+/** Placeholder substituted for every matched secret by {@link redactSecrets}. */
+export const REDACTION_PLACEHOLDER = '[REDACTED]';
+
+/**
+ * Scrub secrets OUT of `text`, returning a copy with every match replaced by
+ * {@link REDACTION_PLACEHOLDER}. This is the content-rewriting sibling of
+ * {@link scanForSecrets} (which only *reports* redacted samples): the W5
+ * transcript CLI's `export --redact` needs the whole document cleaned before it
+ * becomes a SIEM feed, not a list of findings.
+ *
+ * It reuses the EXACT same detectors as {@link scanForSecrets} — the known
+ * credential prefixes, the assembled-at-runtime PEM banners, the entropy pass,
+ * and the job's own tokens — so the two can never drift apart. Detectors run in
+ * the same fixed order; prefix/PEM matches are replaced first so the entropy
+ * pass never re-examines an already-scrubbed span.
+ */
+export function redactSecrets(text: string, jobTokens?: string[]): string {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  let out = text;
+
+  // 1. Known credential prefixes.
+  for (const { re } of PREFIX_PATTERNS) {
+    out = out.replace(new RegExp(re.source, 'g'), REDACTION_PLACEHOLDER);
+  }
+
+  // 2. PEM banners.
+  for (const re of PEM_PATTERNS) {
+    out = out.replace(new RegExp(re.source, 'g'), REDACTION_PLACEHOLDER);
+  }
+
+  // 3. High-entropy tokens (same thresholds as the scan; prefix tokens already
+  //    scrubbed above are skipped via KNOWN_PREFIXES for defence in depth).
+  out = out.replace(new RegExp(TOKEN_RE.source, 'g'), (token) => {
+    if (token.length < MIN_ENTROPY_LEN) return token;
+    if (KNOWN_PREFIXES.some((p) => token.startsWith(p))) return token;
+    const threshold = HEX_RE.test(token) ? HEX_ENTROPY_THRESHOLD : BASE64_ENTROPY_THRESHOLD;
+    return shannonEntropy(token) < threshold ? token : REDACTION_PLACEHOLDER;
+  });
+
+  // 4. The job's own token/nonce values.
+  if (jobTokens) {
+    for (const token of jobTokens) {
+      if (typeof token !== 'string' || token.length === 0) continue;
+      out = out.split(token).join(REDACTION_PLACEHOLDER);
+    }
+  }
+
+  return out;
+}
