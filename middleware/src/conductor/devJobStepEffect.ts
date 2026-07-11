@@ -31,6 +31,23 @@ export function isDevJobStep(step: Step): boolean {
   return step.kind === 'action' && step.actionId === DEV_JOB_ACTION_ID;
 }
 
+/** Prefix of the synthetic `principalRef` a dev-job await carries (a dev job has no human
+ *  holder). The jobId is recoverable from the await alone, so the reconciliation sweep needs
+ *  no extra column. Defined once here and shared by open + reconcile. */
+export const DEV_JOB_PRINCIPAL_PREFIX = 'dev_job:';
+
+/** Build the synthetic principalRef for a dev-job await. */
+export function buildDevJobPrincipalRef(jobId: string): string {
+  return `${DEV_JOB_PRINCIPAL_PREFIX}${jobId}`;
+}
+
+/** Recover the jobId from a dev-job await's principalRef, or `null` if it is not one. */
+export function parseDevJobPrincipalRef(principalRef: string): string | null {
+  if (!principalRef.startsWith(DEV_JOB_PRINCIPAL_PREFIX)) return null;
+  const jobId = principalRef.slice(DEV_JOB_PRINCIPAL_PREFIX.length);
+  return jobId.length > 0 ? jobId : null;
+}
+
 /**
  * Terminal outcome of a dev job, fed back to the parked Conductor step as its `result`.
  * `status` is a terminal DevJobStatus (`done`/`failed`/`cancelled`/`stalled`/
@@ -62,6 +79,14 @@ export interface DevJobStepPort {
   bindAwait(jobId: string, awaitId: string): Promise<void>;
   /** The await bound to a job, or `null` when the job is not conductor-driven. */
   awaitIdForJob(jobId: string): Promise<string | null>;
+  /**
+   * The job's terminal outcome if it is ALREADY terminal, else `null` (still running / unknown).
+   * The recovery path for the terminal-before-bind lost-wakeup: the `DevJobOutcomeEmitter` is
+   * edge-triggered and unbuffered, so a job that finished before its await existed (a crash, or
+   * the microsecond window between `create` and `bindAwait`) never re-emits. The reconciliation
+   * sweep polls this for every still-waiting dev-job await and resumes the ones already done.
+   */
+  terminalOutcomeForJob(jobId: string): Promise<DevJobTerminalOutcome | null>;
 }
 
 /** A source of terminal dev-job outcomes — an event-bus tail or a `finalizeDevJob` hook.

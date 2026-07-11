@@ -9,7 +9,7 @@ import { RunLeaseLostError } from './runStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { StepEffects } from './stepEffects.js';
 import type { DevJobStepPort, DevJobTerminalOutcome } from './devJobStepEffect.js';
-import { isDevJobStep } from './devJobStepEffect.js';
+import { isDevJobStep, buildDevJobPrincipalRef, parseDevJobPrincipalRef } from './devJobStepEffect.js';
 import { canonicalizePrincipalId } from './principalId.js';
 
 export class WorkflowNotFoundError extends Error {}
@@ -372,6 +372,36 @@ export class ConductorRunExecutor {
     return (await this.runStore.get(aw.runId)) ?? run;
   }
 
+  /**
+   * Reconciliation sweep for the terminal-before-bind lost-wakeup (Epic #470 W3). The
+   * `DevJobOutcomeEmitter` is edge-triggered and unbuffered, so a job that reaches a terminal
+   * state BEFORE its await was bound — a crash between `launch` and `bindAwait`, or the
+   * microsecond window between `create` and `bindAwait` — never re-emits, and neither
+   * `claimResumableRuns` (only `running` runs) nor the deadline worker (dev-job awaits have no
+   * deadline) would ever recover the parked run. Left unrecovered the run hangs forever.
+   *
+   * The sweep re-derives the wakeup from durable state: for every still-waiting dev-job await it
+   * asks the port whether the bound job is already terminal, and if so feeds that outcome through
+   * the idempotent `resolveDevJobAwait`. Safe to run repeatedly and concurrently with a live emit
+   * — the await's status guard + close CAS make the winner unique. Returns the number resolved.
+   * Wire-nothing: W4 schedules this on a timer; it is a no-op until the dev-job port is present.
+   */
+  async reconcileTerminalDevJobAwaits(limit = 200): Promise<number> {
+    const port = this.devJob;
+    if (!port) return 0;
+    const waiting = await this.awaitStore.listWaitingDevJobAwaits(limit);
+    let resolved = 0;
+    for (const aw of waiting) {
+      const jobId = parseDevJobPrincipalRef(aw.principalRef);
+      if (!jobId) continue; // not a dev-job principal (defensive) — leave it for the human paths
+      const outcome = await port.terminalOutcomeForJob(jobId);
+      if (!outcome) continue; // still running / unknown — nothing to resume yet
+      await this.resolveDevJobAwait(outcome);
+      resolved += 1;
+    }
+    return resolved;
+  }
+
   /** A deadline passed with no response — close the await and fire the in-graph fallback (FR-017). */
   async expireAwait(awaitId: string): Promise<void> {
     const aw = await this.awaitStore.get(awaitId);
@@ -521,13 +551,19 @@ export class ConductorRunExecutor {
       runId,
       stepId: step.id,
       principalKind: 'user',
-      principalRef: `dev_job:${jobId}`,
+      principalRef: buildDevJobPrincipalRef(jobId),
       channelType: 'dev_job',
       message: '',
       quorum: 'any',
       reminderIntervalMs: null,
       deadlineAt: null,
-      fallbackTransitionId: step.fallbackTransitionId ?? null,
+      // Deliberately NULL (unlike openHumanAwait): a dev-job await carries no deadline, so
+      // `expireAwait` never fires and an await-level fallback could never be read. Failure
+      // branching for a dev-job step is expressed as ordinary GRAPH transitions on the outcome
+      // (`step.fallbackTransitionId` + guards), which `resolveDevJobAwait` honours through
+      // `nextStep`. Copying it onto the await too would be dead data that misleads authors into
+      // thinking the await-level field is what catches a failed job.
+      fallbackTransitionId: null,
     });
     await port.bindAwait(jobId, aw.id);
     await this.runStore.park(runId, step.id, context, lease);

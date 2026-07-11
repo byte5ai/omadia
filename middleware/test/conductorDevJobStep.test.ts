@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import { ConductorRunExecutor } from '../src/conductor/runExecutor.js';
+import { ConductorAwaitStore } from '../src/conductor/awaitStore.js';
 import { subscribeDevJobResolver } from '../src/conductor/devJobStepEffect.js';
 import { DevJobOutcomeEmitter } from '../src/devplatform/devJobConductorBridge.js';
 
@@ -41,9 +42,14 @@ function makeWorld(graph: unknown) {
     isDryRun: false, startedAt: new Date(0), endedAt: null,
   };
   const steps: RecordedStep[] = [];
-  const awaits = new Map<string, { id: string; runId: string; stepId: string; status: string }>();
+  interface AwaitRow {
+    id: string; runId: string; stepId: string; status: string;
+    principalRef: string; channelType: string; fallbackTransitionId: string | null;
+  }
+  const awaits = new Map<string, AwaitRow>();
   const byRunStep = new Map<string, string>();
   const devJobLink = new Map<string, string>(); // jobId → awaitId (models dev_jobs.conductor_await_id)
+  const terminalJobs = new Map<string, { jobId: string; status: string; prUrl?: string | null; result?: unknown; error?: string | null }>();
   const launchCalls: Array<{ runId: string; stepId: string }> = [];
   const launchByKey = new Map<string, string>(); // (runId,stepId) → jobId (launch idempotency)
   let awaitCounter = 0;
@@ -69,12 +75,19 @@ function makeWorld(graph: unknown) {
     },
   };
   const awaitStore = {
-    async create(input: { runId: string; stepId: string }) {
+    async create(input: {
+      runId: string; stepId: string; principalRef: string; channelType: string;
+      fallbackTransitionId: string | null;
+    }) {
       const key = `${input.runId}:${input.stepId}`;
       const existingId = byRunStep.get(key);
       if (existingId && awaits.get(existingId)!.status === 'waiting') return awaits.get(existingId)!;
       const id = `aw${++awaitCounter}`;
-      const row = { id, runId: input.runId, stepId: input.stepId, status: 'waiting' };
+      const row: AwaitRow = {
+        id, runId: input.runId, stepId: input.stepId, status: 'waiting',
+        principalRef: input.principalRef, channelType: input.channelType,
+        fallbackTransitionId: input.fallbackTransitionId,
+      };
       awaits.set(id, row); byRunStep.set(key, id); return row;
     },
     async get(id: string) { return awaits.get(id) ?? null; },
@@ -82,6 +95,9 @@ function makeWorld(graph: unknown) {
       const row = awaits.get(id);
       if (row && row.status === 'waiting') { row.status = status; return true; }
       return false;
+    },
+    async listWaitingDevJobAwaits() {
+      return [...awaits.values()].filter((a) => a.status === 'waiting' && a.channelType === 'dev_job');
     },
   };
   const port = {
@@ -95,6 +111,7 @@ function makeWorld(graph: unknown) {
     },
     async bindAwait(jobId: string, awaitId: string) { devJobLink.set(jobId, awaitId); },
     async awaitIdForJob(jobId: string) { return devJobLink.get(jobId) ?? null; },
+    async terminalOutcomeForJob(jobId: string) { return terminalJobs.get(jobId) ?? null; },
   };
   const effects = {
     async runAgentStep(): Promise<never> { throw new Error('unused'); },
@@ -112,7 +129,12 @@ function makeWorld(graph: unknown) {
     devJob: port as never,
   });
 
-  return { executor, run, steps, awaitStore, port, launchCalls };
+  const setJobTerminal = (
+    jobId: string,
+    o: { status: string; prUrl?: string | null; result?: unknown; error?: string | null },
+  ) => { terminalJobs.set(jobId, { jobId, ...o }); };
+
+  return { executor, run, steps, awaits, awaitStore, port, launchCalls, setJobTerminal };
 }
 
 describe('dev-job step — launch + park (guarantee a, d)', () => {
@@ -137,6 +159,51 @@ describe('dev-job step — launch + park (guarantee a, d)', () => {
     const aw = await w.awaitStore.get(awaitId!);
     assert.equal(aw!.status, 'waiting');
     assert.equal(aw!.stepId, 'dj1');
+    assert.equal(aw!.channelType, 'dev_job');
+    // Footgun fix (Option B): the dev-job await carries NO fallbackTransitionId even though the
+    // STEP declares one (`t_denied`). Dev-job failure branching is graph-level (honoured by
+    // nextStep in resolveDevJobAwait), not an await-level field that would be dead data.
+    // FAIL-IF-REVERTED: copying step.fallbackTransitionId onto the await would make this 't_denied'.
+    assert.equal(aw!.fallbackTransitionId, null);
+  });
+});
+
+describe('dev-job step — terminal-before-bind reconciliation (guarantee HIGH)', () => {
+  it('reconcileTerminalDevJobAwaits resolves an already-terminal job whose emit was lost, so the run advances (not hung)', async () => {
+    const w = makeWorld(graphBranch);
+    // Park normally: await is created + bound, run waiting. This is also the post-re-drive state of
+    // the terminal-before-bind race — the second openDevJobAwait binds the await, but the job is
+    // already terminal so the edge-triggered emitter will never fire again.
+    await w.executor.startRun({ slug: 'wf', payload: {}, awaitCompletion: true });
+    assert.equal(w.run.status, 'waiting');
+    assert.equal(w.steps.length, 0);
+
+    // The job finished (done) but no emit reached resolveDevJobAwait — the lost wakeup.
+    w.setJobTerminal('job1', { status: 'done', prUrl: 'https://pr/7' });
+
+    const n = await w.executor.reconcileTerminalDevJobAwaits();
+
+    // The sweep recovered the parked run: it advanced down the happy path and completed.
+    // FAIL-IF-REVERTED: without the sweep the run stays 'waiting' forever (steps stays empty).
+    assert.equal(n, 1);
+    assert.equal(w.run.status, 'completed');
+    assert.deepEqual(w.steps.map((s) => s.stepId), ['dj1', 'ok']);
+    assert.equal(w.steps.find((s) => s.stepId === 'dj1')!.context.steps!.dj1!.prUrl, 'https://pr/7');
+
+    // Idempotent: a second sweep finds no waiting dev-job await and does nothing.
+    const again = await w.executor.reconcileTerminalDevJobAwaits();
+    assert.equal(again, 0);
+  });
+
+  it('reconcile leaves a still-running job parked (no premature resume)', async () => {
+    const w = makeWorld(graphBranch);
+    await w.executor.startRun({ slug: 'wf', payload: {}, awaitCompletion: true });
+    // job1 is NOT terminal → terminalOutcomeForJob returns null.
+    const n = await w.executor.reconcileTerminalDevJobAwaits();
+    // FAIL-IF-REVERTED: resuming a non-terminal job here would advance the run mid-job.
+    assert.equal(n, 0);
+    assert.equal(w.run.status, 'waiting');
+    assert.equal(w.steps.length, 0);
   });
 });
 
@@ -208,6 +275,48 @@ describe('dev-job step — idempotency (guarantee e)', () => {
     assert.equal(w.steps.length, stepsAfterFirst);
     assert.equal(w.run.status, statusAfterFirst);
     assert.equal(w.steps.filter((s) => s.stepId === 'dj1').length, 1);
+  });
+});
+
+describe('operator inbox excludes dev_job awaits (guarantee MEDIUM)', () => {
+  // Behavioural fake Pool over an in-memory `conductor_awaits` table: it applies the query's own
+  // channel_type predicate, so it faithfully proves the SQL filter — remove `<> 'dev_job'` from
+  // listWaiting and the dev_job row leaks back into the result and the assertion fails.
+  function awaitRow(id: string, channelType: string) {
+    return {
+      id, run_id: 'run1', step_id: id, principal_kind: channelType === 'dev_job' ? 'user' : 'role',
+      principal_ref: channelType === 'dev_job' ? 'dev_job:job1' : 'approvers', channel_type: channelType,
+      message: '', quorum: 'any', reminder_interval_ms: null, deadline_at: null,
+      fallback_transition_id: null, status: 'waiting', unreachable: false, created_at: new Date(0),
+    };
+  }
+  function makePool(rows: Array<ReturnType<typeof awaitRow>>) {
+    return {
+      async query(sql: string) {
+        const waiting = rows.filter((r) => r.status === 'waiting');
+        let out = waiting;
+        if (/channel_type\s*<>\s*'dev_job'/.test(sql)) out = waiting.filter((r) => r.channel_type !== 'dev_job');
+        else if (/channel_type\s*=\s*'dev_job'/.test(sql)) out = waiting.filter((r) => r.channel_type === 'dev_job');
+        return { rows: out, rowCount: out.length };
+      },
+    };
+  }
+
+  it('listWaiting returns human awaits only; listWaitingDevJobAwaits returns the complement', async () => {
+    const store = new ConductorAwaitStore(
+      makePool([awaitRow('h1', 'teams'), awaitRow('dj1', 'dev_job')]) as never,
+    );
+
+    const inbox = await store.listWaiting();
+    // FAIL-IF-REVERTED: dropping the `channel_type <> 'dev_job'` filter surfaces dj1 in the inbox.
+    assert.equal(inbox.length, 1);
+    assert.equal(inbox[0]!.stepId, 'h1');
+    assert.ok(!inbox.some((a) => a.channelType === 'dev_job'));
+
+    const sweep = await store.listWaitingDevJobAwaits();
+    assert.equal(sweep.length, 1);
+    assert.equal(sweep[0]!.channelType, 'dev_job');
+    assert.equal(sweep[0]!.principalRef, 'dev_job:job1');
   });
 });
 

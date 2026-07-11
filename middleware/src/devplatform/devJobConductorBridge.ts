@@ -32,6 +32,9 @@ export interface DevJobLaunchDeps {
   }): Promise<{ jobId: string }>;
   setAwaitId(jobId: string, awaitId: string): Promise<void>;
   getAwaitId(jobId: string): Promise<string | null>;
+  /** Load a job's terminal-relevant fields (a `DevJobStore.getJob` slice). Backs the
+   *  reconciliation sweep's `terminalOutcomeForJob`; `null` for an unknown job. */
+  getJob(jobId: string): Promise<TerminalDevJobView | null>;
 }
 
 /** Build the `DevJobStepPort` the executor launches through. A thin adapter — the injected
@@ -41,6 +44,13 @@ export function createDevJobLaunchPort(deps: DevJobLaunchDeps): DevJobStepPort {
     launch: (input) => deps.createConductorJob(input),
     bindAwait: (jobId, awaitId) => deps.setAwaitId(jobId, awaitId),
     awaitIdForJob: (jobId) => deps.getAwaitId(jobId),
+    terminalOutcomeForJob: async (jobId) => {
+      const job = await deps.getJob(jobId);
+      // Only a genuinely terminal job produces an outcome — a still-active job returns null so the
+      // sweep leaves the run parked (no premature resume).
+      if (!job || !isTerminalDevJobStatus(job.status)) return null;
+      return toTerminalOutcome(job);
+    },
   };
 }
 
