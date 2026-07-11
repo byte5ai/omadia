@@ -276,6 +276,9 @@ interface Harness {
 
 interface MakeHarnessOptions {
   orchestrator?: OrchestratorLike;
+  /** Live resolver seam (issue #473). Takes precedence over `orchestrator`;
+   *  lets tests flip the chat agent between fires (hot-enable / rotation). */
+  getOrchestrator?: () => OrchestratorLike | undefined;
   agentCallsRef?: Array<{
     userMessage: string;
     userId?: string;
@@ -311,7 +314,7 @@ function makeHarness(options: MakeHarnessOptions = {}): Harness {
     store: store as unknown as RoutineStore,
     runsStore: runsStore as unknown as RoutineRunsStore,
     scheduler,
-    orchestrator: stubOrch.orchestrator,
+    getOrchestrator: options.getOrchestrator ?? (() => stubOrch.orchestrator),
     senderRegistry,
     log: () => {},
     maxActivePerUser: options.maxActivePerUser,
@@ -847,7 +850,7 @@ describe('RoutineRunner — Phase C.5 templated end-to-end pipeline', () => {
       store: store as unknown as RoutineStore,
       runsStore: runsStore as unknown as RoutineRunsStore,
       scheduler,
-      orchestrator,
+      getOrchestrator: () => orchestrator,
       senderRegistry,
       log: (msg) => {
         logLines.push(msg);
@@ -1073,5 +1076,97 @@ describe('RoutineRunner — Phase C.6 adaptive-card path', () => {
     assert.equal(h.sender.calls.length, 1);
     assert.equal(h.sender.calls[0]!.cardBody, undefined);
     assert.equal(h.sender.calls[0]!.message.text, 'Hi.');
+  });
+});
+
+/**
+ * Issue #473 — the runner resolves the chat agent LIVE per fire (never
+ * captured at construction), so routines hot-enable the moment the Setup
+ * Wizard key save publishes chatAgent@1, and a key rotation swaps
+ * orchestrator instances without a restart. Keyless fires record an
+ * `error` run naming the missing key.
+ */
+describe('live chat-agent resolution (issue #473)', () => {
+  it('records a chat-unavailable error run when no orchestrator resolves — before the sender lookup', async () => {
+    // Pre-key BOTH the chat agent and the channel senders are dark
+    // (channel plugins require chatAgent@^1). The recorded error must
+    // name the missing key, not the missing sender — so the routine is
+    // registered without a sender and the chat-agent check has to win.
+    const h = makeHarness({
+      getOrchestrator: () => undefined,
+      registerSender: false,
+    });
+    // createRoutine guards on a registered sender; seed the row directly
+    // and let resumeRoutine do the scheduler registration (it only warns
+    // on a missing sender).
+    const row = await h.store.create(baseInput);
+    await h.runner.resumeRoutine(row.id);
+
+    await h.scheduler.fire(row.id);
+
+    assert.equal(h.runsStore.inserts.length, 1);
+    assert.equal(h.runsStore.inserts[0]!.status, 'error');
+    assert.match(
+      h.runsStore.inserts[0]!.errorMessage ?? '',
+      /chat agent unavailable.*LLM API key/i,
+    );
+    assert.doesNotMatch(
+      h.runsStore.inserts[0]!.errorMessage ?? '',
+      /no proactive sender/,
+    );
+    assert.equal(h.store.recordRunCalls.length, 1);
+    assert.equal(h.store.recordRunCalls[0]!.status, 'error');
+  });
+
+  it('hot-enables: a fire after the resolver starts returning an orchestrator succeeds without re-registration', async () => {
+    const stub = makeStubOrchestrator({ answerText: 'routines are live' });
+    let current: OrchestratorLike | undefined;
+    const h = makeHarness({ getOrchestrator: () => current });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    // Keyless fire → error run, orchestrator never invoked.
+    await h.scheduler.fire(routine.id);
+    assert.equal(h.runsStore.inserts[0]!.status, 'error');
+    assert.equal(h.sender.calls.length, 0);
+
+    // Key saved → chatAgent@1 published. Same scheduler entry, next fire
+    // just works — no restart, no re-init.
+    current = stub.orchestrator;
+    await h.scheduler.fire(routine.id);
+
+    assert.equal(h.runsStore.inserts.length, 2);
+    assert.equal(h.runsStore.inserts[1]!.status, 'ok');
+    assert.equal(stub.calls.length, 1);
+    assert.equal(h.sender.calls.length, 1);
+    assert.equal(h.sender.calls[0]!.message.text, 'routines are live');
+  });
+
+  it('key rotation: each fire uses the orchestrator instance current at fire time', async () => {
+    const a = makeStubOrchestrator({ answerText: 'from A' });
+    const b = makeStubOrchestrator({ answerText: 'from B' });
+    let current: OrchestratorLike | undefined = a.orchestrator;
+    const h = makeHarness({ getOrchestrator: () => current });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    await h.scheduler.fire(routine.id);
+    current = b.orchestrator; // reactivate published a NEW bundle
+    await h.scheduler.fire(routine.id);
+
+    assert.equal(a.calls.length, 1);
+    assert.equal(b.calls.length, 1);
+    assert.equal(h.sender.calls[0]!.message.text, 'from A');
+    assert.equal(h.sender.calls[1]!.message.text, 'from B');
+    assert.deepEqual(
+      h.runsStore.inserts.map((r) => r.status),
+      ['ok', 'ok'],
+    );
+  });
+
+  it('chatAgentAvailable() mirrors the resolver', async () => {
+    let current: OrchestratorLike | undefined;
+    const h = makeHarness({ getOrchestrator: () => current });
+    assert.equal(h.runner.chatAgentAvailable(), false);
+    current = makeStubOrchestrator().orchestrator;
+    assert.equal(h.runner.chatAgentAvailable(), true);
   });
 });

@@ -217,6 +217,10 @@
           "title": "MCP Control Center",
           "description": "MCP-Server, erkannte Tools mit Scan-Verdicts, Grants und das Call-Audit-Log an einem Ort."
         },
+        "devPlatform": {
+          "title": "Dev-Plattform",
+          "description": "Repositories registrieren und isolierte Code-Runner-Jobs starten, die aus einem geprüften Diff einen Pull Request öffnen."
+        },
         "auth": {
           "title": "Authentifizierungs-Provider",
           "description": "Lokale Anmeldung und Entra-ID aktivieren oder deaktivieren; Änderungen wirken ohne Neustart."
@@ -407,7 +411,8 @@
     "agentsOverview": "Übersicht",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
-    "adminCluster": "Admin"
+    "adminCluster": "Admin",
+    "devPlatform": "Dev-Plattform"
   },
   "conductor": {
     "title": "Conductor",
@@ -460,6 +465,8 @@
     "chatNeedSlug": "Slug und Name zum Veröffentlichen angeben.",
     "chatApplyIssues": "Einige Änderungen konnten nicht angewendet werden:",
     "chatDraftInvalid": "Entwurf hat Validierungsprobleme.",
+    "chatProposalsHeading": "Vorlagen-Vorschläge",
+    "chatProposalCoverage": "{filled} von {total} Slots vorausgefüllt",
     "triggerLabel": "Trigger",
     "eventIdLabel": "Event-ID",
     "eventCatalogHint": "{count} deklarierte(s) Event(s) verfügbar — wähle eines oder gib eine eigene ID ein.",
@@ -570,7 +577,111 @@
     "kvKey": "Schlüssel",
     "kvValue": "Wert",
     "kvAddRow": "+ Feld hinzufügen",
-    "kvHint": "Tipp: Text in Anführungszeichen bleibt ein String, z. B. \"123\"."
+    "kvHint": "Tipp: Text in Anführungszeichen bleibt ein String, z. B. \"123\".",
+    "templatesHeading": "Workflow-Vorlagen",
+    "templatesHint": "Starte mit einer kuratierten Vorlage: Use Case wählen, Platzhalter auf deine Agenten, Rollen und Kanäle abbilden, dann als gewöhnlichen, voll editierbaren Workflow veröffentlichen.",
+    "templateUseButton": "Vorlage verwenden",
+    "templateScheduleBadge": "Läuft nach Zeitplan",
+    "templateMappingSummary": "Du ordnest zu: {summary}",
+    "templateSlotRoles": "{count, plural, one {# Rolle} other {# Rollen}}",
+    "templateSlotAgents": "{count, plural, one {# Agent} other {# Agenten}}",
+    "templateSlotActions": "{count, plural, one {# Aktion} other {# Aktionen}}",
+    "templateSlotEvents": "{count, plural, one {# Event} other {# Events}}",
+    "templateSlotChannels": "{count, plural, one {# Kanal} other {# Kanäle}}",
+    "templateFormHeading": "Vorlage verwenden: {name}",
+    "templateSlugLabel": "Workflow-Slug",
+    "templateNameLabel": "Name",
+    "templateEnableLabel": "Workflow sofort aktivieren",
+    "templateScheduleNotice": "Diese Vorlage läuft nach Zeitplan. Wenn du sie aktivierst, startet der Zeitplan, sobald der Workflow erstellt ist.",
+    "templateCreateButton": "Workflow erstellen",
+    "templateCreating": "Wird erstellt",
+    "templateOpenDesignerButton": "Im Designer öffnen",
+    "templatePreparing": "Wird vorbereitet",
+    "templateCancelButton": "Abbrechen",
+    "templateSlotMissing": "Wähle einen Wert für diesen Platzhalter.",
+    "templateSlugExistsError": "Ein Workflow mit diesem Slug existiert bereits — wähle einen anderen Slug.",
+    "templateInvalidGraphHeading": "Der aufgelöste Workflow hat die Validierung nicht bestanden:",
+    "templateRequestFailed": "Anfrage fehlgeschlagen: {message}",
+    "templateSlotGroupRoles": "Rollen",
+    "templateSlotGroupAgents": "Agenten",
+    "templateSlotGroupActions": "Aktionen",
+    "templateSlotGroupEvents": "Events",
+    "templateSlotGroupChannels": "Kanäle",
+    "templateSlotGroupText": "Text-Slots",
+    "templateTextSlotMissing": "Gib einen Wert für diesen Text-Slot ein.",
+    "templatePreviewShow": "Graph-Vorschau",
+    "templatePreviewHide": "Vorschau ausblenden",
+    "templateUpdateHint": "Vorlage aktualisiert (v{version} → v{latestVersion})",
+    "templateReinstantiateButton": "Neu aus v{version} erstellen",
+    "templateRolesEmptyHint": "Noch keine Rollen — lege im Rollen-Bereich weiter unten eine an.",
+    "saveAsTemplateButton": "Als Vorlage speichern",
+    "saveTemplateHeading": "Als Vorlage speichern: {slug}",
+    "saveTemplateHint": "Konkrete Referenzen wurden durch Slots ersetzt. Prüfe Metadaten und Slot-Labels, ergänze optional Text-Slots und veröffentliche dann in den Vorlagenkatalog.",
+    "saveTemplateIdLabel": "Vorlagen-ID",
+    "saveTemplateIdInvalid": "Nur Kleinbuchstaben, Ziffern und Bindestriche.",
+    "saveTemplateIdTaken": "Diese Vorlagen-ID ist bereits vergeben.",
+    "saveTemplateOwnershipPending": "Prüfe Eigentümerschaft",
+    "saveTemplateNameEnLabel": "Name (Englisch)",
+    "saveTemplateNameDeLabel": "Name (Deutsch)",
+    "saveTemplateDescriptionEnLabel": "Beschreibung (Englisch)",
+    "saveTemplateDescriptionDeLabel": "Beschreibung (Deutsch)",
+    "saveTemplateUseCaseEnLabel": "Anwendungsfall (Englisch)",
+    "saveTemplateUseCaseDeLabel": "Anwendungsfall (Deutsch)",
+    "saveTemplateEnRequired": "Englisch ist für Name, Beschreibung, Anwendungsfall und jedes Slot-Label erforderlich.",
+    "saveTemplateRefSlotsHeading": "Abgeleitete Slots",
+    "saveTemplateRefSlotsHint": "Ein Slot pro eindeutiger Referenz. Operatoren ordnen diese beim Instanziieren ihren eigenen Agents, Rollen und Kanälen zu.",
+    "saveTemplateNoRefSlots": "Keine Referenzen zu parametrisieren — jede Instanziierung ist eine identische Kopie.",
+    "saveTemplateOriginalRef": "vorher: {ref}",
+    "saveTemplateSlotLabelEnLabel": "Label (Englisch)",
+    "saveTemplateSlotLabelDeLabel": "Label (Deutsch)",
+    "saveTemplateTextSlotsHeading": "Text-Slots",
+    "saveTemplateTextSlotsHint": "Optionale Freitext-Platzhalter. Platziere jedes Token unten in einem Step-Text, um die Stelle für den Wert zu markieren.",
+    "saveTemplateStepTextsHeading": "Text-Slot-Token platzieren",
+    "saveTemplateStepTextsHint": "Jeder deklarierte Text-Slot muss als Token in mindestens einem Step-Text vorkommen. Füge das Token dort ein, wo der Text des Operators stehen soll, und passe die Formulierung bei Bedarf an.",
+    "saveTemplateStepTextPromptLabel": "Prompt — Step {stepId}",
+    "saveTemplateStepTextMessageLabel": "Nachricht — Step {stepId}",
+    "saveTemplateInsertTokenButton": "{token} einfügen",
+    "saveTemplateNoStepTexts": "Dieser Workflow hat keine Step-Prompts oder Nachrichtentexte für Token — entferne die Text-Slots oder ergänze zuerst Text in einem Step.",
+    "saveTemplateTextSlotUnplaced": "Füge das Token jedes Text-Slots in mindestens einen Step-Text unten ein.",
+    "saveTemplateTextSlotKeyLabel": "Schlüssel",
+    "saveTemplateTextSlotKeyInvalid": "Schlüssel dürfen Buchstaben, Ziffern, Unterstriche und Bindestriche enthalten und müssen eindeutig sein.",
+    "saveTemplateTextSlotDefaultLabel": "Standardwert (optional)",
+    "saveTemplateTextSlotToken": "Token: {token}",
+    "saveTemplateAddTextSlot": "+ Text-Slot hinzufügen",
+    "saveTemplateRemoveTextSlot": "Entfernen",
+    "saveTemplatePublishButton": "Vorlage veröffentlichen",
+    "saveTemplatePublishVersionButton": "Als v{version} veröffentlichen",
+    "saveTemplatePublishing": "Veröffentliche",
+    "saveTemplateVersionNote": "Eine neue Version verändert bestehende, aus dieser Vorlage erstellte Workflows nicht — sie behalten ihre Kopie und zeigen einen Update-Hinweis.",
+    "saveTemplateInvalidHeading": "Das Vorlagen-Manifest hat die Validierung nicht bestanden:",
+    "saveTemplatePublished": "Vorlage {id} als v{version} veröffentlicht.",
+    "templateFacetAria": "Vorlagen nach Quelle filtern",
+    "templateFacetAll": "Alle",
+    "templateFacetBundled": "Mitgeliefert",
+    "templateFacetMine": "Meine Vorlagen",
+    "templateFacetShared": "Geteilt",
+    "templateFacetPlugins": "Plugins",
+    "templateFacetPending": "Wartet auf Review",
+    "templateSearchPlaceholder": "Vorlagen durchsuchen",
+    "templateUseCaseAria": "Vorlagen nach Use Case filtern",
+    "templateBadgeBundled": "Mitgeliefert",
+    "templateBadgeMine": "Meine",
+    "templateBadgeShared": "Geteilt",
+    "templateBadgePlugin": "Plugin",
+    "templateBadgePending": "Wartet auf Review",
+    "templateVersionTag": "v{version}",
+    "templateUsageCount": "{count}× verwendet",
+    "templateSubmittedBy": "Eingereicht von {author}",
+    "templateSubmitButton": "Zum Review einreichen",
+    "templateSubmitting": "Wird eingereicht",
+    "templateDeleteButton": "Löschen",
+    "templateDeleting": "Wird gelöscht",
+    "templateDeleteConfirm": "Diese Vorlage löschen? Daraus erstellte Workflows behalten ihre Kopie.",
+    "templateDeleteConfirmButton": "Vorlage löschen",
+    "templateApproving": "Wird freigegeben",
+    "templateRejecting": "Wird abgelehnt",
+    "templatePendingEmpty": "Keine Vorlagen warten auf Review",
+    "templateNoMatches": "Keine Vorlagen entsprechen deinen Filtern."
   },
   "operatorChannels": {
     "title": "Channels",
@@ -923,7 +1034,10 @@
     "factBypassed": "Nicht maskiert (Operator-Entscheidung)",
     "bypassedReasonOperatorSetting": "Operator-Setting: Bypass",
     "bypassedBytes": "{kb} KB roh",
-    "explainerBypassed": "Der Operator hat für mindestens ein Plugin den Privacy-Mode auf »Bypass« gestellt — dessen Tool-Ergebnisse erreichten das Modell unmaskiert. Eingesetzt für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht sinnvoll digestieren kann."
+    "explainerBypassed": "Der Operator hat für mindestens ein Plugin den Privacy-Mode auf »Bypass« gestellt — dessen Tool-Ergebnisse erreichten das Modell unmaskiert. Eingesetzt für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht sinnvoll digestieren kann.",
+    "summaryPromptMasked": "Prompt: {count} maskiert",
+    "factPromptMasked": "Maskierte PII in deiner Nachricht",
+    "explainerPromptMasked": "In deiner eigenen Nachricht erkannte Identifikatoren wurden vor dem Modellaufruf durch Pseudonyme ersetzt und in der Antwort wiederhergestellt."
   },
   "directLine": {
     "consultedLabel": "🔎 Konsultiert",
@@ -2799,6 +2913,324 @@
       }
     }
   },
+  "adminDevPlatform": {
+    "title": "Dev-Plattform",
+    "intro": "Repositories, Dev-Jobs und Pull-Request-Pipelines, ausgeführt von omadia-Agenten. Jobs laufen isoliert und enden immer in einem Pull Request zur menschlichen Prüfung — omadia merged nie.",
+    "tabs": {
+      "repos": "Repositories",
+      "jobs": "Jobs",
+      "apps": "GitHub Apps",
+      "gates": "Freigaben"
+    },
+    "apps": {
+      "createHeading": "GitHub App erstellen",
+      "createBody": "Eine GitHub App gibt der Dev-Plattform kurzlebige, repository-spezifische Tokens, die nicht mergen können — der stärkste Credential-Modus. Beim Erstellen leiten wir dich zu GitHub, wo du das Manifest bestätigst, und danach wieder zurück.",
+      "orgLabel": "Organisation (optional)",
+      "orgPlaceholder": "acme",
+      "orgHelp": "Leer lassen, um die App unter deinem persönlichen Konto zu erstellen. Mit Organisation wird sie dort angelegt.",
+      "create": "GitHub App erstellen",
+      "creating": "GitHub wird geöffnet",
+      "createError": "Das App-Setup konnte nicht gestartet werden. Versuch es erneut.",
+      "listHeading": "Registrierte Apps",
+      "loading": "Lädt…",
+      "unauthorized": "Du brauchst Operator-Zugriff für die Dev-Plattform.",
+      "loadError": "Beim Laden ist etwas schiefgelaufen.",
+      "retry": "Erneut versuchen",
+      "empty": "Noch keine GitHub Apps. Erstell eine, um Repositories mit Scoped Tokens zu verbinden.",
+      "colOwner": "Owner",
+      "colSlug": "App",
+      "colInstalls": "Installationen",
+      "installs": "{count, plural, one {# Installation} other {# Installationen}}",
+      "openOnGithub": "Auf GitHub öffnen"
+    },
+    "gates": {
+      "advisoryHeading": "Plan-Freigabe ist beratend",
+      "advisoryBody": "Eine Plan-Freigabe lässt den Job nur mit der Umsetzung beginnen. Die maßgebliche Sicherheitsprüfung ist das Diff-Gate, das den tatsächlichen Patch vor jedem Pull Request prüft. omadia merged nie.",
+      "loading": "Lädt…",
+      "unauthorized": "Du brauchst Operator-Zugriff für die Dev-Plattform.",
+      "loadError": "Beim Laden ist etwas schiefgelaufen.",
+      "retry": "Erneut versuchen",
+      "empty": "Es warten keine Pläne auf Freigabe.",
+      "job": "Job",
+      "deadline": "Frist {at}",
+      "noDeadline": "Keine Frist",
+      "plan": "Plan",
+      "viewPlan": "Plan ansehen",
+      "noPlan": "Kein Plan-Artefakt",
+      "holders": "Holder",
+      "noHolders": "keine",
+      "questions": "Rückfragen",
+      "answerPlaceholder": "Deine Antwort",
+      "noQuestions": "Der Agent hatte keine Rückfragen.",
+      "noteLabel": "Notiz (optional)",
+      "notePlaceholder": "Kontext zur Entscheidung",
+      "approve": "Plan freigeben",
+      "approving": "Wird freigegeben",
+      "reject": "Ablehnen",
+      "rejecting": "Wird abgelehnt",
+      "notHolder": "Du bist nicht berechtigt, dieses Gate aufzulösen. Die Holder-Rolle liegt inzwischen bei jemand anderem.",
+      "alreadyResolved": "Dieses Gate ist nicht mehr offen — es wurde aufgelöst oder ist abgelaufen. Die Liste wurde aktualisiert.",
+      "resolveError": "Das Gate konnte nicht aufgelöst werden. Versuch es erneut."
+    },
+    "bindApp": {
+      "intro": "Verbinde dieses Repository mit einer GitHub-App-Installation. Die App stellt Scoped, kurzlebige Tokens aus, die nicht mergen können. omadia prüft, dass die Installation dieses Repository abdeckt, bevor gespeichert wird.",
+      "loadingApps": "Apps werden geladen",
+      "noApps": "Noch keine GitHub Apps. Erstell zuerst eine im Tab „GitHub Apps“.",
+      "installLink": "Installieren / verwalten",
+      "installationLabel": "Installations-ID",
+      "installationPlaceholder": "12345678",
+      "installationHelp": "Installiere die App auf diesem Repository und füge dann die Installations-ID ein, die GitHub nach der Installation anzeigt.",
+      "bind": "GitHub App verbinden",
+      "binding": "Wird verbunden",
+      "bound": "GitHub App verbunden. Für dieses Repository werden jetzt Scoped Tokens verwendet.",
+      "boundWithWarnings": "Verbunden mit Warnungen",
+      "errors": {
+        "notCovering": "Diese Installation deckt dieses Repository nicht ab. Installiere die App auf diesem Repository und verwende dann dessen Installations-ID.",
+        "unknownInstallation": "Diese Installation ist nicht registriert. Schließe die App-Installation ab, damit omadia sie erfasst, und versuch es erneut.",
+        "invalidInstallation": "Gib die Installations-ID ein, die GitHub nach der Installation der App angezeigt hat.",
+        "appUnusable": "Die App hinter dieser Installation ist unbrauchbar — ihre Credentials fehlen. Erstelle die App neu.",
+        "generic": "Die GitHub App konnte nicht verbunden werden. Versuch es erneut."
+      }
+    },
+    "loading": "Lädt…",
+    "loadError": "Beim Laden ist etwas schiefgelaufen.",
+    "unauthorized": "Du brauchst Operator-Zugriff für die Dev-Plattform.",
+    "retry": "Erneut versuchen",
+    "repos": {
+      "count": "{count, plural, one {# Repository} other {# Repositories}}",
+      "name": "Repository",
+      "forge": "Forge",
+      "credential": "Credential-Modus",
+      "branch": "Default-Branch",
+      "protectionCol": "Protection",
+      "credentialExpired": "Credential abgelaufen",
+      "credentialModes": {
+        "githubApp": "GitHub App",
+        "deviceFlow": "Device Flow — User-Token",
+        "pat": "Personal Access Token"
+      },
+      "newJob": "Neuer Job",
+      "settings": "Einstellungen",
+      "add": "Repository hinzufügen",
+      "empty": {
+        "heading": "Noch keine Repositories",
+        "body": "Die Dev-Plattform führt isolierte Jobs gegen deine Repositories aus: ein Issue analysieren, planen, implementieren und einen Pull Request zur menschlichen Prüfung öffnen. omadia merged nie — das bleibt bei dir.",
+        "cta": "Repository hinzufügen"
+      },
+      "remove": {
+        "action": "Entfernen",
+        "title": "Repository entfernen?",
+        "body": "Laufende Jobs werden zuerst abgebrochen. Das gespeicherte Credential dieses Repositories wird aus dem Vault gelöscht.",
+        "confirm": "Repository entfernen",
+        "cancel": "Repository behalten"
+      },
+      "protection": {
+        "protected": "geschützt",
+        "unprotected": "ungeschützt",
+        "unchecked": "ungeprüft",
+        "recheck": "Neu prüfen",
+        "rechecking": "Prüft",
+        "warning": "Ohne Branch Protection könnte dein Token direkt auf den Default-Branch pushen. Die No-Merge-Garantie hängt daran."
+      }
+    },
+    "jobs": {
+      "job": "Job",
+      "repo": "Repo",
+      "kind": "Art",
+      "phase": "Phase",
+      "status": "Status",
+      "cost": "Kosten",
+      "age": "Alter",
+      "view": "Ansehen",
+      "cancel": "Abbrechen",
+      "empty": "Noch keine Jobs. Starte einen aus einer Repository-Zeile.",
+      "live": "live",
+      "liveLost": "Verbindung verloren — versucht erneut",
+      "filters": {
+        "allRepos": "Alle Repositories",
+        "allStatuses": "Alle Status"
+      },
+      "statuses": {
+        "queued": "wartet",
+        "provisioning": "provisioniert",
+        "running": "läuft",
+        "waiting": "wartet auf dich",
+        "applying": "wendet an",
+        "done": "fertig",
+        "failed": "fehlgeschlagen",
+        "cancelled": "abgebrochen",
+        "stalled": "hängt",
+        "budgetExceeded": "Budget überschritten"
+      },
+      "kinds": {
+        "analyze": "Analysieren",
+        "fixIssue": "Issue fixen",
+        "implement": "Implementieren"
+      },
+      "cancelConfirm": {
+        "title": "Job abbrechen?",
+        "body": "Der Runner wird beendet. Branch, Log und ein bereits hochgeladener Diff bleiben erhalten.",
+        "confirm": "Job abbrechen",
+        "cancel": "Weiterlaufen lassen"
+      }
+    },
+    "newJob": {
+      "title": "Neuer Job für {repo}",
+      "kind": "Art",
+      "kinds": {
+        "fixIssue": "Ein Issue fixen",
+        "analyze": "Analysieren",
+        "implement": "Implementieren"
+      },
+      "fromIssue": "Aus Issue",
+      "fromBrief": "Freitext-Brief",
+      "loadingIssues": "Lädt offene Issues",
+      "noIssues": "Keine offenen Issues in diesem Repository gefunden.",
+      "issue": "Issue",
+      "selectIssue": "Issue auswählen",
+      "brief": "Brief",
+      "briefPlaceholder": "Was soll der Agent tun?",
+      "error": "Der Job konnte nicht angelegt werden.",
+      "cancel": "Abbrechen",
+      "starting": "Startet",
+      "start": "Job starten"
+    },
+    "wizard": {
+      "title": "Repository hinzufügen",
+      "intro": "Verbinde ein Repository, damit die Dev-Plattform isolierte Jobs dagegen ausführen und Pull Requests zu deiner Prüfung öffnen kann.",
+      "backToRepos": "Zurück zu den Repositories",
+      "steps": {
+        "repo": "Repository",
+        "credentials": "Credentials",
+        "confirm": "Bestätigen"
+      },
+      "fields": {
+        "forge": "Forge",
+        "owner": "Owner",
+        "name": "Repository-Name",
+        "branch": "Default-Branch"
+      },
+      "next": "Weiter",
+      "back": "Zurück",
+      "finish": "Repository hinzufügen",
+      "adding": "Fügt hinzu",
+      "edit": "Bearbeiten",
+      "summary": {
+        "github_app": "GitHub App",
+        "device_flow": "Device Flow",
+        "pat": "Personal Access Token"
+      },
+      "error": {
+        "submit": "Das Repository konnte nicht hinzugefügt werden. Prüfe Owner, Name und Credential und versuche es erneut."
+      },
+      "done": {
+        "heading": "Repository hinzugefügt",
+        "body": "{repo} ist verbunden. Du kannst aus der Repository-Liste einen Job starten.",
+        "toList": "Zu den Repositories"
+      },
+      "credentials": {
+        "groupLabel": "Credential-Modus",
+        "githubApp": {
+          "title": "GitHub App — empfohlen",
+          "soon": "bald verfügbar",
+          "body": "Installation pro Repository, kurzlebige, eng gescopte Tokens, Commits als omadia-dev[bot]. Das Token kann nicht mergen — strukturell."
+        },
+        "deviceFlow": {
+          "title": "Device Flow — Schnellstart",
+          "body": "Melde dich per einmaligem Device-Code mit deinem GitHub-Account an. Der schnellste Weg, die Dev-Plattform auszuprobieren."
+        },
+        "deviceTradeoffs": {
+          "heading": "Was dieser Modus bedeutet",
+          "asUser": "Commits erscheinen als dein GitHub-User, nicht als Bot",
+          "repoWide": "das Token gewährt Zugriff auf alle deine Repositories, nicht nur dieses",
+          "canMerge": "das Token kann mergen — die No-Merge-Regel setzt nur die omadia-Policy durch, nicht der Token-Scope",
+          "noWebhooks": "Webhook-Trigger bleiben für dieses Repository deaktiviert"
+        },
+        "device": {
+          "codeAria": "Device-Code {code}",
+          "copyCode": "Code kopieren",
+          "copied": "Kopiert",
+          "waiting": "Wartet auf Autorisierung",
+          "authorizedAs": "Autorisiert als {login}",
+          "expired": "Code abgelaufen",
+          "error": "Autorisierung fehlgeschlagen",
+          "restart": "Neu starten"
+        },
+        "pat": {
+          "title": "Fine-grained PAT / Deploy-Key",
+          "body": "Füge ein fine-grained Personal Access Token ein, das auf dieses Repository gescopt ist. Auch der Weg für GitLab und Gitea.",
+          "label": "Token",
+          "placeholder": "github_pat_…"
+        }
+      },
+      "checks": {
+        "label": "Branch Protection auf {branch}",
+        "enabled": "aktiv",
+        "missing": "fehlt",
+        "unknown": "nicht prüfbar",
+        "warning": "Ohne Branch Protection könnte ein Device-Flow- oder PAT-Token direkt auf {branch} pushen. Aktiviere sie in den Repository-Einstellungen — die Dev-Plattform pusht nur auf omadia/job-*-Branches, aber Protection macht das strukturell.",
+        "unknownHint": "Das gespeicherte Token kann die Protection-Einstellungen nicht lesen — klassischen Device-Flow-Tokens fehlt meist der Admin-Lesezugriff. Du kannst jederzeit neu prüfen."
+      }
+    },
+    "detail": {
+      "jobLabel": "Job {hash}",
+      "loading": "Lädt…",
+      "notFound": "Diesen Job gibt es nicht.",
+      "railLabel": "Pipeline-Phasen",
+      "phases": {
+        "analyze": "analyze",
+        "bootstrap": "bootstrap",
+        "plan": "plan",
+        "clarify": "clarify",
+        "gate": "gate",
+        "implement": "implement",
+        "review": "review",
+        "pr": "pr"
+      },
+      "phaseSkipped": "übersprungen — keine Fragen",
+      "noArtifact": "Für diese Phase gibt es noch kein Artefakt.",
+      "openPr": "Pull Request öffnen",
+      "logEmpty": "Noch keine Log-Ausgabe.",
+      "scrollToBottom": "Nach unten scrollen",
+      "connection": {
+        "live": "live · letztes Event vor {seconds}s",
+        "reconnecting": "verbindet neu",
+        "closed": "Stream beendet — Job abgeschlossen"
+      },
+      "cancel": {
+        "action": "Abbrechen",
+        "title": "Job abbrechen?",
+        "body": "Der Runner wird beendet, der Branch bleibt erhalten.",
+        "confirm": "Job abbrechen",
+        "cancelLabel": "Weiterlaufen lassen"
+      },
+      "sidebar": {
+        "backend": "Backend",
+        "agent": "Agent",
+        "branch": "Branch",
+        "source": "Quelle",
+        "createdBy": "Angelegt von",
+        "tokens": "Tokens ein / aus",
+        "cost": "Kosten"
+      }
+    },
+    "repoDetail": {
+      "back": "Zurück zu den Repositories",
+      "loading": "Lädt…",
+      "loadError": "Dieses Repository konnte nicht geladen werden.",
+      "forge": "Forge",
+      "branch": "Default-Branch",
+      "credential": "Credential",
+      "credentialHeading": "Credential",
+      "credentialCurrent": "Aktueller Modus: {kind}",
+      "runsTests": "Führt Tests aus",
+      "yes": "ja",
+      "no": "nein",
+      "protectionHeading": "Branch Protection",
+      "recheck": "Neu prüfen",
+      "rechecking": "Prüft"
+    }
+  },
   "adminRegistries": {
     "title": "Plugin-Registries",
     "intro": "Quellen, aus denen Plugins in den Store gezogen werden. Neue Instanzen starten mit {hub}. Der Token wird verschlüsselt gespeichert und nie wieder angezeigt — nur, ob einer hinterlegt ist. Änderungen wirken ohne Neustart.",
@@ -3417,6 +3849,7 @@
       "triggerButton": "Jetzt",
       "triggerTitle": "Routine jetzt manuell auslösen — feuert einen Agent-Run und liefert das Ergebnis ins Channel.",
       "triggerNotice": "Gestartet — Ergebnis erscheint in ~30 Sekunden im Channel.",
+      "triggerChatUnavailable": "Kein LLM-API-Key konfiguriert — bitte in Admin → Einstellungen hinterlegen und erneut auslösen.",
       "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden."
     },
     "templateEditor": {

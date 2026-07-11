@@ -47,6 +47,8 @@ const NAV: readonly NavItem[] = [
       // operator-facing configuration surfaces, same audience as Admin/System.
       { kind: 'link', href: '/operator/agents', key: 'agentsCluster' },
       { kind: 'link', href: '/conductor', key: 'conductor' },
+      // Dev platform (epic #470) — operator surface for isolated code-runner jobs.
+      { kind: 'link', href: '/admin/dev-platform', key: 'devPlatform' },
     ],
   },
 ] as const;

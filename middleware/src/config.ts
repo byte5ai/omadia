@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
@@ -26,6 +27,14 @@ const optionalNonEmpty = <T extends z.ZodTypeAny>(inner: T) =>
     (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
     inner.optional(),
   );
+
+/** A boolean env flag, off by default — the `'true'|'false'` string pattern used
+ *  across this schema (an unset var short-circuits to `false`). */
+const devFlag = () =>
+  z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(false);
 
 const ConfigSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3979),
@@ -400,6 +409,13 @@ const ConfigSchema = z.object({
   PACKAGE_UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(15 * 1024 * 1024),
   PACKAGE_UPLOAD_MAX_EXTRACTED_BYTES: z.coerce.number().int().positive().default(80 * 1024 * 1024),
   PACKAGE_UPLOAD_MAX_ENTRIES: z.coerce.number().int().positive().default(2000),
+  /** Base URL of the SkillSpector code-scan sidecar (issue #453), e.g.
+   *  http://skillspector:8811. Unset → no scanning: ingests succeed
+   *  unchanged and NO verdict rows are written (`scan_failed` is reserved
+   *  for real sidecar failures). Advisory-only in v1 — a verdict never
+   *  blocks an install. */
+  SKILLSPECTOR_URL: z.string().url().optional(),
+  SKILLSPECTOR_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
   /** Root of the built-in package tree (scanned for manifest.yaml files at
    *  boot). In dev this resolves to `<repo>/middleware/packages`; in the
    *  Docker image it's `/app/packages`. Each subdirectory with a valid
@@ -427,6 +443,68 @@ const ConfigSchema = z.object({
     .int()
     .positive()
     .default(15_000),
+
+  // --- Dev platform (epic #470 W0) ----------------------------------------
+  // Isolated per-job code runners (clone → agent-edit → diff → server-side PR).
+  // The whole subsystem is dark by default: DEV_PLATFORM_ENABLED=false mounts
+  // no router and starts no worker. See src/devplatform/ and the wire unit.
+  DEV_PLATFORM_ENABLED: devFlag(),
+  // The W0 walking-skeleton LocalProcessBackend runs the agent under a dedicated
+  // unprivileged uid with an allowlist-built env and NO dependency-install / test
+  // execution. It is an unsafe skeleton by construction, so it stays off unless
+  // the operator explicitly acknowledges it — and boot REFUSES the flag without a
+  // uid (loadConfig, below), never runs the agent as root.
+  DEV_PLATFORM_UNSAFE_LOCAL: devFlag(),
+  DEV_PLATFORM_LOCAL_UID: optionalNonEmpty(z.coerce.number().int().positive()),
+  DEV_PLATFORM_WORKSPACE_DIR: z
+    .string()
+    .min(1)
+    .default(() => path.join(os.tmpdir(), 'omadia-dev-jobs')),
+  // Where the runner phones home. Defaults to loopback + PORT in loadConfig.
+  DEV_PLATFORM_RUNNER_BASE_URL: optionalNonEmpty(z.string().url()),
+  DEV_PLATFORM_CLI_BIN: z.string().min(1).default('claude'),
+  DEV_PLATFORM_JOB_WALL_CLOCK_MS: z.coerce.number().int().positive().default(1_800_000),
+  DEV_PLATFORM_HEARTBEAT_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  DEV_PLATFORM_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(1),
+  DEV_PLATFORM_GITHUB_CLIENT_ID: optionalNonEmpty(z.string().min(1)),
+  DEV_PLATFORM_COMMIT_AUTHOR: z.string().min(1).default('omadia-dev <dev-platform@omadia.ai>'),
+  DEV_PLATFORM_EVENT_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
+  // Q4 decision: subscription-mode jobs run the CLI on the operator's Claude
+  // login, so the credential is IN the runner. It is off by default and boot
+  // REFUSES the flag unless the operator also sets the explicit acknowledgment
+  // string (loadConfig, below) — a boot-time refusal, not a warning.
+  DEV_PLATFORM_SUBSCRIPTION_MODE: devFlag(),
+  DEV_PLATFORM_SUBSCRIPTION_ACK: optionalNonEmpty(z.string().min(1)),
+  // --- W1 keystones (spec §4/§6/§6b) ---------------------------------------
+  // The daemon's shared bearer for the internal job-policy endpoint AND the
+  // DockerBackend's control-plane calls. Absent ⇒ the job-policy endpoint 503s
+  // and the DockerBackend is NOT registered.
+  DEV_RUNNER_DAEMON_TOKEN: optionalNonEmpty(z.string().min(1)),
+  // The daemon control-plane origin the middleware calls (spec §4/§5). Absent ⇒
+  // the DockerBackend is not registered even under DEV_PLATFORM_BACKEND=docker.
+  DEV_RUNNER_DAEMON_URL: optionalNonEmpty(z.string().url()),
+  // Which runner backend the operator ships (spec §5): `docker` registers the
+  // container backend as the shipping path; `local` keeps the W0 skeleton (which
+  // ALSO requires DEV_PLATFORM_UNSAFE_LOCAL). Default `docker` — the local
+  // backend never becomes the permanent crutch the epic warns against, and it
+  // stays inert until its own acknowledgment flag is set anyway.
+  DEV_PLATFORM_BACKEND: z.enum(['docker', 'local']).default('docker'),
+  // Lease TTL a docker job requests + renews at ~TTL/3 (spec §7/§8). Bounded to
+  // the daemon's [30, 3600] window in the backend.
+  DEV_JOB_LEASE_TTL_SEC: z.coerce.number().int().positive().default(180),
+  // Digest-pinned runner image. Absent ⇒ the job-policy endpoint 503s.
+  DEV_RUNNER_DEFAULT_IMAGE: optionalNonEmpty(z.string().min(1)),
+  // Operator egress default, comma-separated bare hostnames (validated in
+  // deriveJobPolicy). Absent ⇒ empty base allowlist.
+  DEV_EGRESS_BASE_ALLOWLIST: optionalNonEmpty(z.string().min(1)),
+  // Hostname the job container reaches the middleware on; defaults to the
+  // RUNNER_BASE_URL host in the wire layer when unset.
+  DEV_PLATFORM_MIDDLEWARE_HOST: optionalNonEmpty(z.string().min(1)),
+  // LLM proxy (spec §6b): upstream origin + exact model allowlist. The proxy is
+  // always mounted; an empty allowlist ⇒ it answers 500 "no LLM policy".
+  DEV_PLATFORM_LLM_UPSTREAM_BASE_URL: z.string().url().default('https://api.anthropic.com'),
+  DEV_PLATFORM_LLM_PROVIDER: z.string().min(1).default('anthropic'),
+  DEV_PLATFORM_LLM_ALLOWED_MODELS: optionalNonEmpty(z.string().min(1)),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -466,6 +544,35 @@ export function resolveStateDir(
   return resolvePath(zodDefaultResolved);
 }
 
+/**
+ * Boot-time refusals for the dev platform's two credential-exposing modes
+ * (epic #470 W0). These are hard refusals, NOT warnings: an operator who turns
+ * on subscription mode or the unsafe local backend without the paired safety
+ * variable must not boot. Pure + exported so the wire unit's test can drive it
+ * without importing the whole config module.
+ */
+export function devPlatformBootRefusals(cfg: {
+  subscriptionMode: boolean;
+  subscriptionAck: string | undefined;
+  unsafeLocal: boolean;
+  localUid: number | undefined;
+}): string[] {
+  const refusals: string[] = [];
+  if (cfg.subscriptionMode && !cfg.subscriptionAck) {
+    refusals.push(
+      'DEV_PLATFORM_SUBSCRIPTION_MODE=true requires DEV_PLATFORM_SUBSCRIPTION_ACK to be set ' +
+        '(the operator must acknowledge that subscription jobs run the CLI credential inside the runner)',
+    );
+  }
+  if (cfg.unsafeLocal && cfg.localUid === undefined) {
+    refusals.push(
+      'DEV_PLATFORM_UNSAFE_LOCAL=true requires DEV_PLATFORM_LOCAL_UID ' +
+        '(the jailed shim must run as a dedicated unprivileged uid, never root)',
+    );
+  }
+  return refusals;
+}
+
 function loadConfig(): Config {
   const parsed = ConfigSchema.safeParse(process.env);
   if (!parsed.success) {
@@ -473,6 +580,15 @@ function loadConfig(): Config {
       .map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`)
       .join('\n');
     throw new Error(`Invalid configuration:\n${issues}`);
+  }
+  const refusals = devPlatformBootRefusals({
+    subscriptionMode: parsed.data.DEV_PLATFORM_SUBSCRIPTION_MODE,
+    subscriptionAck: parsed.data.DEV_PLATFORM_SUBSCRIPTION_ACK,
+    unsafeLocal: parsed.data.DEV_PLATFORM_UNSAFE_LOCAL,
+    localUid: parsed.data.DEV_PLATFORM_LOCAL_UID,
+  });
+  if (refusals.length > 0) {
+    throw new Error(`Invalid configuration:\n${refusals.map((r) => `  - ${r}`).join('\n')}`);
   }
   return {
     ...parsed.data,
@@ -486,6 +602,10 @@ function loadConfig(): Config {
     PLUGIN_DEV_DIR: parsed.data.PLUGIN_DEV_DIR
       ? resolvePath(parsed.data.PLUGIN_DEV_DIR)
       : undefined,
+    // Runner phone-home base URL: explicit override, else loopback + PORT.
+    DEV_PLATFORM_RUNNER_BASE_URL:
+      parsed.data.DEV_PLATFORM_RUNNER_BASE_URL ?? `http://127.0.0.1:${String(parsed.data.PORT)}`,
+    DEV_PLATFORM_WORKSPACE_DIR: resolvePath(parsed.data.DEV_PLATFORM_WORKSPACE_DIR),
   };
 }
 

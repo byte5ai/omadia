@@ -114,6 +114,34 @@ export interface SkillVerdictRow {
   readonly computedAt: Date;
 }
 
+/**
+ * Mirrored from `middleware/src/services/pluginScanner.ts`; keep in sync.
+ * The route layer wires these together via structural typing.
+ */
+export interface PluginScanFinding {
+  readonly code: string;
+  readonly severity: string;
+  readonly message: string;
+  readonly file: string | null;
+}
+
+/**
+ * Mirrored from `middleware/src/services/pluginVerdict.ts`; keep in sync.
+ * The route layer wires these together via structural typing.
+ */
+export interface PluginVerdictRow {
+  readonly contentHash: string;
+  readonly verifierVersion: string;
+  readonly pluginId: string;
+  readonly severity: Severity;
+  readonly findings: readonly PluginScanFinding[];
+  readonly scannerVersion: string;
+  readonly rationale: string | null;
+  readonly computedAt: Date;
+  readonly ackBy: string | null;
+  readonly ackAt: Date | null;
+}
+
 export interface SkillResourceRow {
   readonly id: string;
   readonly skillId: string;
@@ -353,6 +381,21 @@ interface SkillVerdictDbRow {
   risk_codes: unknown;
   rationale: string | null;
   computed_at: Date;
+}
+
+interface PluginVerdictDbRow {
+  content_hash: string;
+  verifier_version: string;
+  plugin_id: string;
+  severity: string;
+  findings: unknown;
+  scanner_version: string;
+  rationale: string | null;
+  computed_at: Date;
+  ack_by: string | null;
+  ack_at: Date | null;
+  /** Severity at ack time — drives ack invalidation on a WORSE re-scan. */
+  ack_severity: string | null;
 }
 
 interface SkillResourceDbRow {
@@ -609,6 +652,42 @@ function mapSkillVerdict(r: SkillVerdictDbRow): SkillVerdictRow {
     riskCodes: parseSkillVerdictRiskCodes(r.risk_codes),
     rationale: r.rationale,
     computedAt: r.computed_at,
+  };
+}
+
+function parsePluginScanFindings(value: unknown): readonly PluginScanFinding[] {
+  const raw = typeof value === 'string' ? JSON.parse(value) : value;
+  if (!Array.isArray(raw)) return [];
+  const parsed: PluginScanFinding[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const f = entry as Record<string, unknown>;
+    if (typeof f['code'] !== 'string' || typeof f['severity'] !== 'string') continue;
+    parsed.push({
+      code: f['code'],
+      severity: f['severity'],
+      message: typeof f['message'] === 'string' ? f['message'] : '',
+      file: typeof f['file'] === 'string' ? f['file'] : null,
+    });
+  }
+  return parsed;
+}
+
+function mapPluginVerdict(r: PluginVerdictDbRow): PluginVerdictRow {
+  if (!isSeverity(r.severity)) {
+    throw new Error(`unexpected plugin verdict severity in DB: ${String(r.severity)}`);
+  }
+  return {
+    contentHash: r.content_hash,
+    verifierVersion: r.verifier_version,
+    pluginId: r.plugin_id,
+    severity: r.severity,
+    findings: parsePluginScanFindings(r.findings),
+    scannerVersion: r.scanner_version,
+    rationale: r.rationale,
+    computedAt: r.computed_at,
+    ackBy: r.ack_by,
+    ackAt: r.ack_at,
   };
 }
 
@@ -986,6 +1065,123 @@ export class AgentGraphStore {
     );
     const row = rows[0]!;
     return { ackedBy: row.acked_by, ackedAt: row.acked_at };
+  }
+
+  // ── plugin code-scan verdicts (issue #453) ─────────────────────────────────
+
+  async getPluginVerdict(
+    contentHash: string,
+    verifierVersion: string,
+  ): Promise<PluginVerdictRow | undefined> {
+    const { rows } = await this.pool.query<PluginVerdictDbRow>(
+      `SELECT * FROM plugin_verdicts
+       WHERE content_hash = $1 AND verifier_version = $2`,
+      [contentHash, verifierVersion],
+    );
+    const row = rows[0];
+    return row ? mapPluginVerdict(row) : undefined;
+  }
+
+  /** Latest verdict for a plugin id — fallback lookup when the uploaded-
+   *  package record (and with it the sha256) is no longer around. */
+  async getLatestPluginVerdict(
+    pluginId: string,
+    verifierVersion: string,
+  ): Promise<PluginVerdictRow | undefined> {
+    const { rows } = await this.pool.query<PluginVerdictDbRow>(
+      `SELECT * FROM plugin_verdicts
+       WHERE plugin_id = $1 AND verifier_version = $2
+       ORDER BY computed_at DESC LIMIT 1`,
+      [pluginId, verifierVersion],
+    );
+    const row = rows[0];
+    return row ? mapPluginVerdict(row) : undefined;
+  }
+
+  /**
+   * Upsert keeps an operator ack only while the new severity is equal or
+   * BETTER than the severity the operator actually acknowledged
+   * (`ack_severity`, recorded at ack time): a re-scan that upgrades the row
+   * to something WORSE (e.g. acked `scan_failed` → `high_risk`) clears
+   * `ack_by`/`ack_at`/`ack_severity`, because the operator never saw those
+   * findings. Comparing against `ack_severity` (not the live severity)
+   * keeps the scheduler's interim `pending` write from destroying the
+   * comparison baseline. A verifier upgrade produces a fresh row (new PK)
+   * with no ack — see migration 0021_plugin_verdict.sql. Severity ranks
+   * mirror SEVERITY_RANK in middleware/src/services/skillVerdict.ts.
+   */
+  async upsertPluginVerdict(row: PluginVerdictRow): Promise<void> {
+    const rank = (expr: string): string =>
+      `CASE ${expr}
+         WHEN 'no_signals' THEN 0
+         WHEN 'pending' THEN 1
+         WHEN 'scan_failed' THEN 2
+         WHEN 'too_large_to_scan' THEN 3
+         WHEN 'flagged' THEN 4
+         WHEN 'high_risk' THEN 5
+         ELSE 6 END`;
+    const ackSurvives =
+      `plugin_verdicts.ack_by IS NOT NULL AND ` +
+      `${rank('EXCLUDED.severity')} <= ` +
+      `${rank('COALESCE(plugin_verdicts.ack_severity, plugin_verdicts.severity)')}`;
+    await this.pool.query(
+      `INSERT INTO plugin_verdicts
+         (content_hash, verifier_version, plugin_id, severity, findings, scanner_version, rationale, computed_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8)
+       ON CONFLICT (content_hash, verifier_version) DO UPDATE SET
+         plugin_id       = EXCLUDED.plugin_id,
+         severity        = EXCLUDED.severity,
+         findings        = EXCLUDED.findings,
+         scanner_version = EXCLUDED.scanner_version,
+         rationale       = EXCLUDED.rationale,
+         computed_at     = EXCLUDED.computed_at,
+         ack_by          = CASE WHEN ${ackSurvives} THEN plugin_verdicts.ack_by ELSE NULL END,
+         ack_at          = CASE WHEN ${ackSurvives} THEN plugin_verdicts.ack_at ELSE NULL END,
+         ack_severity    = CASE WHEN ${ackSurvives} THEN plugin_verdicts.ack_severity ELSE NULL END`,
+      [
+        row.contentHash,
+        row.verifierVersion,
+        row.pluginId,
+        row.severity,
+        JSON.stringify(row.findings),
+        row.scannerVersion,
+        row.rationale,
+        row.computedAt,
+      ],
+    );
+  }
+
+  async getPluginVerdictsByShas(
+    contentHashes: readonly string[],
+    verifierVersion: string,
+  ): Promise<Map<string, PluginVerdictRow>> {
+    if (contentHashes.length === 0) return new Map<string, PluginVerdictRow>();
+    const { rows } = await this.pool.query<PluginVerdictDbRow>(
+      `SELECT * FROM plugin_verdicts
+       WHERE content_hash = ANY($1) AND verifier_version = $2`,
+      [contentHashes, verifierVersion],
+    );
+    return new Map(rows.map((row) => [row.content_hash, mapPluginVerdict(row)]));
+  }
+
+  /** Ack the existing verdict row. Records the acked severity alongside so
+   *  a later re-scan that WORSENS the verdict can invalidate the ack (see
+   *  upsertPluginVerdict). Returns undefined when nothing has been scanned
+   *  yet — there is no verdict to acknowledge. */
+  async upsertPluginVerdictAck(
+    contentHash: string,
+    verifierVersion: string,
+    ackedBy: string,
+  ): Promise<{ ackBy: string; ackAt: Date } | undefined> {
+    const { rows } = await this.pool.query<{ ack_by: string; ack_at: Date }>(
+      `UPDATE plugin_verdicts
+       SET ack_by = $3, ack_at = now(), ack_severity = severity
+       WHERE content_hash = $1 AND verifier_version = $2
+       RETURNING ack_by, ack_at`,
+      [contentHash, verifierVersion, ackedBy],
+    );
+    const row = rows[0];
+    return row ? { ackBy: row.ack_by, ackAt: row.ack_at } : undefined;
   }
 
   // ── MCP tool verdicts (epic #459 W1, issue #454) ───────────────────────────

@@ -24,7 +24,7 @@ import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
-import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError } from './conductor/index.js';
+import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore } from './conductor/index.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
@@ -35,6 +35,12 @@ import {
 } from './services/mcpGrantPolicy.js';
 import { rescanAllMcpServers } from './services/mcpRescan.js';
 import { createLlmVerifier, type LlmVerifier } from './services/skillVerdictLlmVerifier.js';
+import { HttpSkillSpectorScanner } from './services/pluginScanner.js';
+import {
+  createPluginScanScheduler,
+  createPluginVerdictLookup,
+  type PluginVerdictLookup,
+} from './services/pluginVerdict.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
@@ -152,7 +158,9 @@ import {
   startMdnsAdvertiser,
   type MdnsAdvertisement,
 } from './pairing/mdns.js';
+import { publicPaths } from './auth/publicPaths.js';
 import { createRequireAuth } from './auth/requireAuth.js';
+import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -194,6 +202,8 @@ import { PluginCatalog } from './plugins/manifestLoader.js';
 import { buildKgHealth } from './health/kgHealth.js';
 import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
+import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
+import type { PluginTemplateRegistrar } from './plugins/pluginTemplates.js';
 import {
   OAuthBrokerService,
   PendingFlowStore,
@@ -902,6 +912,14 @@ async function main(): Promise<void> {
   // eslint-disable-next-line prefer-const
   let channelRegistryRef: ChannelRegistry | undefined;
 
+  // Forward reference for the conductor's composite template catalog (#478) —
+  // wired inside the graphPool block far below, long after the install service
+  // is constructed. The install service resolves it lazily so plugin-borne
+  // workflow templates registered at runtime land in the catalog. Stays
+  // undefined on the in-memory backend (conductor inert); the install-time
+  // template VALIDATION gate runs regardless.
+  let conductorTemplateRegistrarRef: PluginTemplateRegistrar | undefined;
+
   // Forward refs — runtime propagation of a POST-BOOT agent-plugin
   // (de)activation into the per-Agent registry orchestrators + the fallback
   // Agent's enabled-plugin set. Assigned in the orchestrator-wiring block far
@@ -1039,6 +1057,10 @@ async function main(): Promise<void> {
     catalog: pluginCatalog,
     registry: installedRegistry,
     vault: secretVault,
+    // #478 — lazily resolved: the conductor's composite template catalog is
+    // wired ~1400 LOC below (graphPool block). Undefined until then / on the
+    // in-memory backend; the install-time template gate validates regardless.
+    conductorTemplates: () => conductorTemplateRegistrarRef,
     onInstalled: async (agentId) => {
       // A plugin may contribute an `llm_provider` block regardless of its kind
       // (provider plugins ship as `extension`). Register it FIRST — mirroring
@@ -1289,46 +1311,7 @@ async function main(): Promise<void> {
     // those so the channel plugins can run their own auth downstream —
     // same protection as before for `/api/chat`, `/api/v1/operator/*`,
     // `/api/v1/admin/*`, etc. since none of them match these regexes.
-    publicPaths: [
-      /^\/api\/v1\/auth(?:\/|$|\?)/,
-      /^\/api\/v1\/setup(?:\/|$|\?)/,
-      /^\/api\/auth(?:\/|$|\?)/,
-      // Spec 005 — kernel OAuth broker callback. The IdP redirects the
-      // operator's browser back here after consent; the session cookie may
-      // have lapsed during the round-trip, so the route is public and
-      // self-secures via the signed, single-use `state` token. `/oauth/start`
-      // is NOT listed — it stays behind the cookie gate (operator-initiated).
-      /^\/api\/v1\/install\/oauth\/callback(?:\/|$|\?)/,
-      // Bot Framework webhook for channel-teams. The Teams adapter
-      // validates the Bot-issued JWT inside the handler; the session
-      // cookie check would silently drop every inbound activity because
-      // Teams never sends one.
-      /^\/api\/messages(?:\/|$|\?)/,
-      // Plugin-served UI surfaces (`/p/<pluginId>/...`). Teams iframes
-      // these from inside the bot-app shell where there is no
-      // middleware session cookie — only a Teams SSO token. Routing
-      // them through the cookie gate redirects to /login inside the
-      // iframe, which shows the operator login form instead of the
-      // Tab content. Plugins that expose sensitive data are
-      // responsible for validating the Teams SSO token themselves;
-      // pages like /p/channel-teams/{hub,tab-config} are public-by-
-      // design and the reference dashboard is read-only demo state.
-      /^\/p\/[^/]+(?:\/|$|\?)/,
-      // Local dev surfaces. The `/api/dev/*` mount itself is conditional
-      // on `DEV_ENDPOINTS_ENABLED=true` further down (see graph +
-      // memory dev routers around the "DEV endpoints enabled" log line)
-      // — when that flag is on the operator has already opted into an
-      // unauthenticated surface and the local Next-UI relies on the
-      // routes being callable without a session cookie. When the flag
-      // is off, no `/api/dev/*` routes are mounted at all, so this
-      // bypass cannot leak anything. When the flag is on AND the stack
-      // is exposed beyond localhost, that is a separate operator
-      // mistake the compose `127.0.0.1` port bindings are designed to
-      // prevent.
-      ...(config.DEV_ENDPOINTS_ENABLED
-        ? [/^\/api\/dev(?:\/|$|\?)/]
-        : []),
-    ],
+    publicPaths: publicPaths({ devEndpointsEnabled: config.DEV_ENDPOINTS_ENABLED }),
   });
 
   // ContextRetriever + FactExtractor construction moved to AFTER
@@ -1448,6 +1431,39 @@ async function main(): Promise<void> {
   const mcpConfigService = graphPool
     ? new McpConfigService({ graph: new AgentGraphStore(graphPool), vault: secretVault })
     : undefined;
+
+  // Plugin code scanning (issue #453) — SkillSpector sidecar behind the
+  // PluginScanner seam. Requires the Postgres graph backend for the verdict
+  // table; without it (in-memory dev/tests) scanning is simply absent.
+  // Second-review fix: with SKILLSPECTOR_URL unset no scheduler is wired at
+  // all — no verdict row is written on ingest, so store pages show no badge
+  // on unconfigured deployments. `scan_failed` is reserved for REAL sidecar
+  // failures. Advisory-only v1: verdicts decorate the store/detail
+  // responses, nothing reads them to block an install.
+  const pluginVerdictStore = graphPool ? new AgentGraphStore(graphPool) : undefined;
+  const pluginScanScheduler =
+    pluginVerdictStore && config.SKILLSPECTOR_URL
+      ? createPluginScanScheduler({
+          store: pluginVerdictStore,
+          scanner: new HttpSkillSpectorScanner({
+            baseUrl: config.SKILLSPECTOR_URL,
+            timeoutMs: config.SKILLSPECTOR_TIMEOUT_MS,
+            log: (m) => console.log(m),
+          }),
+          log: (m) => console.log(m),
+        })
+      : undefined;
+  const pluginVerdictLookup: PluginVerdictLookup | undefined = pluginVerdictStore
+    ? createPluginVerdictLookup({
+        store: pluginVerdictStore,
+        packages: uploadedPackageStore,
+      })
+    : undefined;
+  if (config.SKILLSPECTOR_URL && !graphPool) {
+    console.warn(
+      '[middleware] SKILLSPECTOR_URL is set but the graph backend is in-memory — plugin code scanning disabled (verdicts need Postgres)',
+    );
+  }
 
   // MCP registry bearer tokens live in the vault, never on the DB row
   // (issue #463 item 5). Move any legacy plaintext token (pre-0020) into the
@@ -1606,9 +1622,11 @@ async function main(): Promise<void> {
   // so chat goes live the moment the key is saved — no restart needed.
   //
   // The boot-only wiring guarded on `orchestrator` below (domain-tool
-  // hydration of per-Agent orchestrators, the routines feature) re-applies on
-  // the next restart for advanced stacks (sub-agents / routines). The default
-  // out-of-the-box stack has no domain tools, so chat is fully functional hot.
+  // hydration of per-Agent orchestrators) re-applies on the next restart for
+  // advanced stacks (sub-agents). The default out-of-the-box stack has no
+  // domain tools, so chat is fully functional hot. Routines follows the same
+  // live-resolution pattern as chat (issue #473): its runner resolves
+  // chatAgent per run, so it hot-enables on key save too.
   const chatAgentBundle = serviceRegistry.get<ChatAgentBundle>('chatAgent');
   const orchestrator = chatAgentBundle?.raw;
   if (!chatAgentBundle) {
@@ -1885,8 +1903,12 @@ async function main(): Promise<void> {
 
   // Routines feature (OB-NEW): persistent user-created scheduled agent
   // invocations. Requires Postgres for persistence; skipped in zero-config
-  // dev (in-memory KG backend, no DATABASE_URL). Channel adapters that want
-  // proactive delivery register their `ProactiveSender` into
+  // dev (in-memory KG backend, no DATABASE_URL). The chat agent is NOT
+  // required at wiring time — the runner resolves chatAgent@1 live per run
+  // (same pattern as the chat routes above), so routines hot-enable the
+  // moment the Setup Wizard key save publishes it; keyless fires record an
+  // `error` run naming the missing key (issue #473). Channel adapters that
+  // want proactive delivery register their `ProactiveSender` into
   // `routinesHandle.senderRegistry` after this call (Teams: wrap a
   // long-lived `CloudAdapter.continueConversationAsync` via
   // `createProactiveSender('teams', sendFn)`). Channel adapters MUST also
@@ -1895,11 +1917,11 @@ async function main(): Promise<void> {
   // `manage_routine` tool's `create`/`list` actions return a
   // model-friendly error string and the model degrades gracefully.
   let routinesHandle: RoutinesHandle | undefined;
-  if (graphPool && orchestrator) {
+  if (graphPool) {
     routinesHandle = await initRoutines({
       pool: graphPool,
       scheduler: jobScheduler,
-      orchestrator,
+      getOrchestrator: () => getChatAgentBundle()?.raw,
       registerNativeTool: (name, handler, options) =>
         nativeToolRegistry.register(name, {
           handler,
@@ -1934,15 +1956,11 @@ async function main(): Promise<void> {
       }),
     );
     console.log(
-      '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published)',
-    );
-  } else if (!graphPool) {
-    console.log(
-      '[middleware] routines feature SKIPPED — no graphPool (in-memory KG backend; set DATABASE_URL to enable)',
+      '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published, chat agent resolved live per run)',
     );
   } else {
     console.log(
-      '[middleware] routines feature SKIPPED — chatAgent not active (set ANTHROPIC_API_KEY via the Setup Wizard, then restart to enable routines)',
+      '[middleware] routines feature SKIPPED — no graphPool (in-memory KG backend; set DATABASE_URL to enable)',
     );
   }
 
@@ -2378,6 +2396,83 @@ async function main(): Promise<void> {
     );
   }
 
+  // Dev platform (epic #470 W0) — isolated per-job code runners. DARK BY
+  // DEFAULT: with DEV_PLATFORM_ENABLED unset, nothing below runs — no router
+  // mounts and no worker starts. It also needs the Postgres graphPool (the job
+  // spine + repo/artifact tables live there); in-memory mode has nowhere to
+  // persist a durable queue. The two safety-critical modes (subscription auth,
+  // unsafe-local backend) already refused boot in config.ts if misconfigured.
+  if (config.DEV_PLATFORM_ENABLED && graphPool) {
+    const shimEntry = fileURLToPath(
+      new URL('../packages/dev-runner-shim/dist/src/index.js', import.meta.url),
+    );
+    // Comma-separated env list → trimmed non-empty entries (egress allowlist,
+    // model allowlist). Entry-level validation happens in deriveJobPolicy.
+    const csvList = (raw: string): string[] =>
+      raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+    // W2: role-principal gates resolve their live holder set against the same
+    // conductor role store the conductor await gate uses.
+    const devPlatformRoleStore = new ConductorRoleStore(graphPool);
+    const wiredDevPlatform = assembleDevPlatform({
+      pool: graphPool,
+      vault: secretVault,
+      resolveRoleHolders: (key) => devPlatformRoleStore.resolve(key),
+      baseUrl: config.DEV_PLATFORM_RUNNER_BASE_URL ?? `http://127.0.0.1:${String(config.PORT)}`,
+      cliBin: config.DEV_PLATFORM_CLI_BIN,
+      wallClockMs: config.DEV_PLATFORM_JOB_WALL_CLOCK_MS,
+      heartbeatTimeoutMs: config.DEV_PLATFORM_HEARTBEAT_TIMEOUT_MS,
+      maxConcurrentJobs: config.DEV_PLATFORM_MAX_CONCURRENT_JOBS,
+      commitAuthor: config.DEV_PLATFORM_COMMIT_AUTHOR,
+      subscriptionModeEnabled: config.DEV_PLATFORM_SUBSCRIPTION_MODE,
+      workspaceDir: config.DEV_PLATFORM_WORKSPACE_DIR,
+      unsafeLocal: config.DEV_PLATFORM_UNSAFE_LOCAL,
+      ...(config.DEV_PLATFORM_LOCAL_UID !== undefined ? { localUid: config.DEV_PLATFORM_LOCAL_UID } : {}),
+      shimEntry,
+      // W1 keystones (spec §4/§6b): the daemon job-policy endpoint + the LLM
+      // proxy. Absent daemon token / runner image ⇒ the internal endpoint 503s;
+      // the LLM proxy is always mounted (its origin probe must answer 2xx).
+      ...(config.DEV_RUNNER_DAEMON_TOKEN ? { daemonToken: config.DEV_RUNNER_DAEMON_TOKEN } : {}),
+      ...(config.DEV_RUNNER_DAEMON_URL ? { daemonUrl: config.DEV_RUNNER_DAEMON_URL } : {}),
+      backend: config.DEV_PLATFORM_BACKEND,
+      leaseTtlSec: config.DEV_JOB_LEASE_TTL_SEC,
+      ...(config.DEV_RUNNER_DEFAULT_IMAGE ? { runnerImage: config.DEV_RUNNER_DEFAULT_IMAGE } : {}),
+      ...(config.DEV_EGRESS_BASE_ALLOWLIST
+        ? { egressBaseAllowlist: csvList(config.DEV_EGRESS_BASE_ALLOWLIST) }
+        : {}),
+      ...(config.DEV_PLATFORM_MIDDLEWARE_HOST
+        ? { middlewareHost: config.DEV_PLATFORM_MIDDLEWARE_HOST }
+        : {}),
+      llm: {
+        provider: config.DEV_PLATFORM_LLM_PROVIDER,
+        upstreamBaseUrl: config.DEV_PLATFORM_LLM_UPSTREAM_BASE_URL,
+        allowedModels: config.DEV_PLATFORM_LLM_ALLOWED_MODELS
+          ? csvList(config.DEV_PLATFORM_LLM_ALLOWED_MODELS)
+          : [],
+      },
+      log: (msg) => console.log(msg),
+    });
+    mountDevPlatform(app, requireAuth, wiredDevPlatform, (msg) => console.log(msg));
+    // Start the claim/enforce/reap/apply loop; stop it cleanly on shutdown.
+    // Re-adopt the docker jobs this process was running before it restarted, so
+    // reap() can still see a job whose container the daemon has since lost. The
+    // daemon rebuilds its own view from docker labels; ours lives only in memory.
+    await wiredDevPlatform.start();
+    // `stop()` halts BOTH the claim worker and the W2 gate-deadline worker (and
+    // awaits an in-flight deadline tick — a fire-and-forget on the signal handler).
+    const stopDevPlatformWorker = (): void => {
+      void wiredDevPlatform.stop();
+    };
+    process.once('SIGTERM', stopDevPlatformWorker);
+    process.once('SIGINT', stopDevPlatformWorker);
+    console.log(
+      `[middleware] dev platform ENABLED — worker running (max ${String(config.DEV_PLATFORM_MAX_CONCURRENT_JOBS)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
+    );
+  } else if (config.DEV_PLATFORM_ENABLED) {
+    console.warn(
+      '[middleware] DEV_PLATFORM_ENABLED=true but no graphPool (in-memory KG backend) — dev platform NOT started; set DATABASE_URL to enable',
+    );
+  }
+
 
   // ── OB-49 — provider-aware auth bootstrap ────────────────────────────────
   // graphPool is resolved above (line ~595). Auth schema + UserStore +
@@ -2436,6 +2531,18 @@ async function main(): Promise<void> {
           throw err;
         }
       },
+    });
+    // #478 — plugin-borne workflow templates: hand the composite catalog's
+    // registrar to the install service (runtime installs/uninstalls) and
+    // re-register templates of already-installed plugins (registrations are
+    // in-memory and do not survive a restart). Boot sweep is fail-open per
+    // template with a loud log — the fail-closed gate ran at install time.
+    conductorTemplateRegistrarRef = conductorWiring.templateCatalog;
+    await registerInstalledPluginTemplates({
+      catalog: pluginCatalog,
+      registry: installedRegistry,
+      registrar: conductorWiring.templateCatalog,
+      log: (m) => console.log(m),
     });
     console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
     const userStore = new UserStore(graphPool);
@@ -2646,6 +2753,9 @@ async function main(): Promise<void> {
       registry: installedRegistry,
       client: registryClient,
       pluginStatusRegistry,
+      // Issue #453 — read-only code-scan verdict on the detail response
+      // plus the operator ack endpoint. Lookup only, never scans on GET.
+      verdicts: pluginVerdictLookup,
     }),
   );
   console.log('[middleware] plugin store endpoints ready at /api/v1/store/plugins (auth: required)');
@@ -2788,6 +2898,9 @@ async function main(): Promise<void> {
       hostDependencies,
       registry: installedRegistry,
       migrationRunner,
+      // Issue #453 — advisory SkillSpector scan, fire-and-forget after a
+      // successful ingest. Absent without a Postgres graph backend.
+      scanScheduler: pluginScanScheduler,
       // After a re-upload onto an already installed agent (registry entry
       // still alive, package was deleted + re-uploaded) we activate the
       // runtime directly — otherwise the tool stays unknown until the user

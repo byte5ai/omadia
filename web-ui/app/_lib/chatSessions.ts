@@ -163,6 +163,22 @@ export interface PrivacyReceipt {
    * Absent / empty when no bypass fired. PII-free.
    */
   bypassedTools?: readonly BypassedToolEntry[];
+  /**
+   * #361 — PII spans detected in the user's own prompt and substituted with
+   * pseudonyms before the prompt crossed the LLM wire. Absent when prompt
+   * masking is off (the default) or nothing was detected. PII-free: entries
+   * carry the span TYPE + detector id only, never the value.
+   */
+  maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
+}
+
+/** #361 — PII-free record of one prompt span masked before the LLM wire.
+ *  Mirrors `PromptMaskedSpanInfo` from `@omadia/plugin-api`. */
+export interface PromptMaskedSpanInfo {
+  /** Span type — open set, e.g. `person`, `email`, `address`, `iban`. */
+  type: string;
+  /** Detector that found the span, e.g. `c0-regex` or `c1-gliner`. */
+  detector: string;
 }
 
 /**

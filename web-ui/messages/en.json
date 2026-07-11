@@ -217,6 +217,10 @@
           "title": "MCP Control Center",
           "description": "MCP servers, discovered tools with scan verdicts, grants, and the call audit log in one place."
         },
+        "devPlatform": {
+          "title": "Dev Platform",
+          "description": "Register repositories and launch isolated code-runner jobs that open a pull request from a reviewed diff."
+        },
         "auth": {
           "title": "Authentication Providers",
           "description": "Enable or disable local login and Entra ID sign-in; changes apply without a restart."
@@ -407,7 +411,8 @@
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
-    "adminCluster": "Admin"
+    "adminCluster": "Admin",
+    "devPlatform": "Dev Platform"
   },
   "conductor": {
     "title": "Conductor",
@@ -460,6 +465,8 @@
     "chatNeedSlug": "Set a slug and a name to publish.",
     "chatApplyIssues": "Some edits couldn't be applied:",
     "chatDraftInvalid": "Draft has validation issues.",
+    "chatProposalsHeading": "Template suggestions",
+    "chatProposalCoverage": "{filled} of {total} slots prefilled",
     "triggerLabel": "Trigger",
     "eventIdLabel": "Event id",
     "eventCatalogHint": "{count} declared event(s) available — pick one or type a custom id.",
@@ -570,7 +577,111 @@
     "kvKey": "key",
     "kvValue": "value",
     "kvAddRow": "+ Add field",
-    "kvHint": "Tip: wrap text in quotes to keep it a string, e.g. \"123\"."
+    "kvHint": "Tip: wrap text in quotes to keep it a string, e.g. \"123\".",
+    "templatesHeading": "Workflow templates",
+    "templatesHint": "Start from a curated template: pick a use case, map its slots to your agents, roles and channels, then publish it as an ordinary, fully editable workflow.",
+    "templateUseButton": "Use template",
+    "templateScheduleBadge": "Runs on a schedule",
+    "templateMappingSummary": "You will map: {summary}",
+    "templateSlotRoles": "{count, plural, one {# role} other {# roles}}",
+    "templateSlotAgents": "{count, plural, one {# agent} other {# agents}}",
+    "templateSlotActions": "{count, plural, one {# action} other {# actions}}",
+    "templateSlotEvents": "{count, plural, one {# event} other {# events}}",
+    "templateSlotChannels": "{count, plural, one {# channel} other {# channels}}",
+    "templateFormHeading": "Use template: {name}",
+    "templateSlugLabel": "Workflow slug",
+    "templateNameLabel": "Name",
+    "templateEnableLabel": "Enable the workflow right away",
+    "templateScheduleNotice": "This template runs on a schedule. Enabling it starts the schedule as soon as the workflow is created.",
+    "templateCreateButton": "Create workflow",
+    "templateCreating": "Creating",
+    "templateOpenDesignerButton": "Open in designer",
+    "templatePreparing": "Preparing",
+    "templateCancelButton": "Cancel",
+    "templateSlotMissing": "Select a value for this slot.",
+    "templateSlugExistsError": "A workflow with this slug already exists — choose a different slug.",
+    "templateInvalidGraphHeading": "The resolved workflow failed validation:",
+    "templateRequestFailed": "Request failed: {message}",
+    "templateSlotGroupRoles": "Roles",
+    "templateSlotGroupAgents": "Agents",
+    "templateSlotGroupActions": "Actions",
+    "templateSlotGroupEvents": "Events",
+    "templateSlotGroupChannels": "Channels",
+    "templateSlotGroupText": "Text slots",
+    "templateTextSlotMissing": "Enter a value for this text slot.",
+    "templatePreviewShow": "Preview graph",
+    "templatePreviewHide": "Hide preview",
+    "templateUpdateHint": "Template updated (v{version} → v{latestVersion})",
+    "templateReinstantiateButton": "Re-instantiate from v{version}",
+    "templateRolesEmptyHint": "No roles yet — create one in the roles section below.",
+    "saveAsTemplateButton": "Save as template",
+    "saveTemplateHeading": "Save as template: {slug}",
+    "saveTemplateHint": "Concrete references were replaced with slots. Review the metadata and slot labels, optionally add text slots, then publish to the template catalog.",
+    "saveTemplateIdLabel": "Template id",
+    "saveTemplateIdInvalid": "Use lowercase letters, digits and hyphens.",
+    "saveTemplateIdTaken": "This template id is taken.",
+    "saveTemplateOwnershipPending": "Checking ownership",
+    "saveTemplateNameEnLabel": "Name (English)",
+    "saveTemplateNameDeLabel": "Name (German)",
+    "saveTemplateDescriptionEnLabel": "Description (English)",
+    "saveTemplateDescriptionDeLabel": "Description (German)",
+    "saveTemplateUseCaseEnLabel": "Use case (English)",
+    "saveTemplateUseCaseDeLabel": "Use case (German)",
+    "saveTemplateEnRequired": "English is required for the name, description, use case and every slot label.",
+    "saveTemplateRefSlotsHeading": "Inferred slots",
+    "saveTemplateRefSlotsHint": "One slot per distinct reference. Operators map these to their own agents, roles and channels when they instantiate the template.",
+    "saveTemplateNoRefSlots": "No references to parameterize — every instantiation is an identical copy.",
+    "saveTemplateOriginalRef": "was: {ref}",
+    "saveTemplateSlotLabelEnLabel": "Label (English)",
+    "saveTemplateSlotLabelDeLabel": "Label (German)",
+    "saveTemplateTextSlotsHeading": "Text slots",
+    "saveTemplateTextSlotsHint": "Optional free-text placeholders. Place each token in a step text below to mark where the operator's value goes.",
+    "saveTemplateStepTextsHeading": "Place text-slot tokens",
+    "saveTemplateStepTextsHint": "Each declared text slot must appear as its token in at least one step text. Insert the token where the operator's text belongs, then adjust the wording as needed.",
+    "saveTemplateStepTextPromptLabel": "Prompt — step {stepId}",
+    "saveTemplateStepTextMessageLabel": "Message — step {stepId}",
+    "saveTemplateInsertTokenButton": "Insert {token}",
+    "saveTemplateNoStepTexts": "This workflow has no step prompt or message texts to place tokens in — remove the text slots or add prose to a step first.",
+    "saveTemplateTextSlotUnplaced": "Insert each text slot's token into at least one step text below.",
+    "saveTemplateTextSlotKeyLabel": "Key",
+    "saveTemplateTextSlotKeyInvalid": "Keys may contain letters, digits, underscores and hyphens, and must be unique.",
+    "saveTemplateTextSlotDefaultLabel": "Default value (optional)",
+    "saveTemplateTextSlotToken": "Token: {token}",
+    "saveTemplateAddTextSlot": "+ Add text slot",
+    "saveTemplateRemoveTextSlot": "Remove",
+    "saveTemplatePublishButton": "Publish template",
+    "saveTemplatePublishVersionButton": "Publish as v{version}",
+    "saveTemplatePublishing": "Publishing",
+    "saveTemplateVersionNote": "Publishing a new version leaves existing workflows created from this template unchanged — they keep their copy and will show an update hint.",
+    "saveTemplateInvalidHeading": "The template manifest failed validation:",
+    "saveTemplatePublished": "Template {id} published as v{version}.",
+    "templateFacetAria": "Filter templates by source",
+    "templateFacetAll": "All",
+    "templateFacetBundled": "Bundled",
+    "templateFacetMine": "My templates",
+    "templateFacetShared": "Shared",
+    "templateFacetPlugins": "Plugins",
+    "templateFacetPending": "Pending review",
+    "templateSearchPlaceholder": "Search templates",
+    "templateUseCaseAria": "Filter templates by use case",
+    "templateBadgeBundled": "Bundled",
+    "templateBadgeMine": "Mine",
+    "templateBadgeShared": "Shared",
+    "templateBadgePlugin": "Plugin",
+    "templateBadgePending": "Pending review",
+    "templateVersionTag": "v{version}",
+    "templateUsageCount": "Used {count}×",
+    "templateSubmittedBy": "Submitted by {author}",
+    "templateSubmitButton": "Submit for review",
+    "templateSubmitting": "Submitting",
+    "templateDeleteButton": "Delete",
+    "templateDeleting": "Deleting",
+    "templateDeleteConfirm": "Delete this template? Workflows created from it keep their copy.",
+    "templateDeleteConfirmButton": "Delete template",
+    "templateApproving": "Approving",
+    "templateRejecting": "Rejecting",
+    "templatePendingEmpty": "No templates waiting for review",
+    "templateNoMatches": "No templates match your filters."
   },
   "operatorChannels": {
     "title": "Channels",
@@ -923,7 +1034,10 @@
     "factBypassed": "Not masked (operator decision)",
     "bypassedReasonOperatorSetting": "Operator setting: bypass",
     "bypassedBytes": "{kb} KB raw",
-    "explainerBypassed": "The operator set Privacy Mode to »Bypass« for at least one plugin — its tool results reached the model unmasked. Used for trusted internal sources whose content the Privacy Shield cannot usefully digest structurally."
+    "explainerBypassed": "The operator set Privacy Mode to »Bypass« for at least one plugin — its tool results reached the model unmasked. Used for trusted internal sources whose content the Privacy Shield cannot usefully digest structurally.",
+    "summaryPromptMasked": "prompt: {count} masked",
+    "factPromptMasked": "PII masked in your prompt",
+    "explainerPromptMasked": "Identifiers detected in your own message were replaced with pseudonyms before the model call and restored in the answer."
   },
   "directLine": {
     "consultedLabel": "🔎 Consulted",
@@ -2799,6 +2913,324 @@
       }
     }
   },
+  "adminDevPlatform": {
+    "title": "Dev Platform",
+    "intro": "Repositories, dev jobs, and pull-request pipelines run by omadia agents. Jobs run isolated and always end in a pull request for human review — omadia never merges.",
+    "tabs": {
+      "repos": "Repositories",
+      "jobs": "Jobs",
+      "apps": "GitHub Apps",
+      "gates": "Approvals"
+    },
+    "apps": {
+      "createHeading": "Create a GitHub App",
+      "createBody": "A GitHub App gives the dev platform short-lived, per-repository tokens that cannot merge — the strongest credential mode. Creating one sends you to GitHub to approve the manifest, then brings you back.",
+      "orgLabel": "Organization (optional)",
+      "orgPlaceholder": "acme",
+      "orgHelp": "Leave empty to create the App under your personal account. Set an organization to create it there instead.",
+      "create": "Create GitHub App",
+      "creating": "Opening GitHub",
+      "createError": "The App setup could not be started. Try again.",
+      "listHeading": "Registered Apps",
+      "loading": "Loading",
+      "unauthorized": "you need operator access for the dev platform.",
+      "loadError": "Something went wrong while loading.",
+      "retry": "Retry",
+      "empty": "No GitHub Apps yet. Create one to bind repositories with scoped tokens.",
+      "colOwner": "Owner",
+      "colSlug": "App",
+      "colInstalls": "Installations",
+      "installs": "{count, plural, one {# installation} other {# installations}}",
+      "openOnGithub": "Open on GitHub"
+    },
+    "gates": {
+      "advisoryHeading": "Plan approval is advisory",
+      "advisoryBody": "Approving a plan only lets the job start implementing. The authoritative safety check is the diff gate, which reviews the actual patch before any pull request. omadia never merges.",
+      "loading": "Loading",
+      "unauthorized": "you need operator access for the dev platform.",
+      "loadError": "Something went wrong while loading.",
+      "retry": "Retry",
+      "empty": "No plans are waiting for approval.",
+      "job": "Job",
+      "deadline": "Deadline {at}",
+      "noDeadline": "No deadline",
+      "plan": "Plan",
+      "viewPlan": "View plan",
+      "noPlan": "No plan artifact",
+      "holders": "Holders",
+      "noHolders": "none",
+      "questions": "Questions",
+      "answerPlaceholder": "Your answer",
+      "noQuestions": "The agent asked no questions.",
+      "noteLabel": "Note (optional)",
+      "notePlaceholder": "Context for the decision",
+      "approve": "Approve plan",
+      "approving": "Approving",
+      "reject": "Reject",
+      "rejecting": "Rejecting",
+      "notHolder": "You are not authorized to resolve this gate. Its holder role has moved to someone else.",
+      "alreadyResolved": "This gate is no longer pending — it was resolved or expired. The list has been refreshed.",
+      "resolveError": "The gate could not be resolved. Try again."
+    },
+    "bindApp": {
+      "intro": "Bind this repository to a GitHub App installation. The App issues scoped, short-lived tokens that cannot merge. omadia verifies the installation covers this repository before saving.",
+      "loadingApps": "Loading Apps",
+      "noApps": "No GitHub Apps yet. Create one from the GitHub Apps tab first.",
+      "installLink": "Install / manage",
+      "installationLabel": "Installation ID",
+      "installationPlaceholder": "12345678",
+      "installationHelp": "Install the App on this repository, then paste the installation ID GitHub shows after install.",
+      "bind": "Bind GitHub App",
+      "binding": "Binding",
+      "bound": "GitHub App bound. Scoped tokens are now used for this repository.",
+      "boundWithWarnings": "Bound with warnings",
+      "errors": {
+        "notCovering": "That installation does not cover this repository. Install the App on this repository, then use its installation ID.",
+        "unknownInstallation": "That installation is not registered. Complete the App install so omadia records it, then try again.",
+        "invalidInstallation": "Enter the installation ID GitHub showed after installing the App.",
+        "appUnusable": "The App backing this installation is unusable — its credentials are missing. Re-create the App.",
+        "generic": "The GitHub App could not be bound. Try again."
+      }
+    },
+    "loading": "Loading",
+    "loadError": "Something went wrong while loading.",
+    "unauthorized": "you need operator access for the dev platform.",
+    "retry": "Retry",
+    "repos": {
+      "count": "{count, plural, one {# repository} other {# repositories}}",
+      "name": "Repository",
+      "forge": "Forge",
+      "credential": "Credential mode",
+      "branch": "Default branch",
+      "protectionCol": "Protection",
+      "credentialExpired": "credential expired",
+      "credentialModes": {
+        "githubApp": "GitHub App",
+        "deviceFlow": "Device flow — user token",
+        "pat": "Personal access token"
+      },
+      "newJob": "New job",
+      "settings": "Settings",
+      "add": "Add repository",
+      "empty": {
+        "heading": "No repositories yet",
+        "body": "the dev platform runs isolated jobs against your repositories: analyze an issue, plan, implement, and open a pull request for human review. omadia never merges — that stays with you.",
+        "cta": "Add repository"
+      },
+      "remove": {
+        "action": "Remove",
+        "title": "Remove repository?",
+        "body": "Running jobs are cancelled first. The stored credential for this repository is deleted from the vault.",
+        "confirm": "Remove repository",
+        "cancel": "Keep repository"
+      },
+      "protection": {
+        "protected": "protected",
+        "unprotected": "unprotected",
+        "unchecked": "unchecked",
+        "recheck": "Re-check",
+        "rechecking": "Checking",
+        "warning": "Without branch protection your token could push to the default branch directly. The no-merge guarantee depends on it."
+      }
+    },
+    "jobs": {
+      "job": "Job",
+      "repo": "Repo",
+      "kind": "Kind",
+      "phase": "Phase",
+      "status": "Status",
+      "cost": "Cost",
+      "age": "Age",
+      "view": "View",
+      "cancel": "Cancel",
+      "empty": "No jobs yet. Start one from a repository row.",
+      "live": "live",
+      "liveLost": "connection lost — retrying",
+      "filters": {
+        "allRepos": "All repositories",
+        "allStatuses": "All statuses"
+      },
+      "statuses": {
+        "queued": "queued",
+        "provisioning": "provisioning",
+        "running": "running",
+        "waiting": "waiting",
+        "applying": "applying",
+        "done": "done",
+        "failed": "failed",
+        "cancelled": "cancelled",
+        "stalled": "stalled",
+        "budgetExceeded": "budget exceeded"
+      },
+      "kinds": {
+        "analyze": "Analyze",
+        "fixIssue": "Fix issue",
+        "implement": "Implement"
+      },
+      "cancelConfirm": {
+        "title": "Cancel job?",
+        "body": "The runner is terminated. The branch, the log, and any uploaded diff are kept.",
+        "confirm": "Cancel job",
+        "cancel": "Keep running"
+      }
+    },
+    "newJob": {
+      "title": "New job for {repo}",
+      "kind": "Kind",
+      "kinds": {
+        "fixIssue": "Fix an issue",
+        "analyze": "Analyze",
+        "implement": "Implement"
+      },
+      "fromIssue": "From issue",
+      "fromBrief": "Free-text brief",
+      "loadingIssues": "Loading open issues",
+      "noIssues": "No open issues found for this repository.",
+      "issue": "Issue",
+      "selectIssue": "Select an issue",
+      "brief": "Brief",
+      "briefPlaceholder": "What should the agent do?",
+      "error": "The job could not be created.",
+      "cancel": "Cancel",
+      "starting": "Starting",
+      "start": "Start job"
+    },
+    "wizard": {
+      "title": "Add repository",
+      "intro": "Connect a repository so the dev platform can run isolated jobs against it and open pull requests for your review.",
+      "backToRepos": "Back to repositories",
+      "steps": {
+        "repo": "Repository",
+        "credentials": "Credentials",
+        "confirm": "Confirm"
+      },
+      "fields": {
+        "forge": "Forge",
+        "owner": "Owner",
+        "name": "Repository name",
+        "branch": "Default branch"
+      },
+      "next": "Next",
+      "back": "Back",
+      "finish": "Add repository",
+      "adding": "Adding",
+      "edit": "Edit",
+      "summary": {
+        "github_app": "GitHub App",
+        "device_flow": "Device flow",
+        "pat": "Personal access token"
+      },
+      "error": {
+        "submit": "The repository could not be added. Check the owner, name, and credential, then try again."
+      },
+      "done": {
+        "heading": "Repository added",
+        "body": "{repo} is connected. You can start a job from the repository list.",
+        "toList": "Go to repositories"
+      },
+      "credentials": {
+        "groupLabel": "Credential mode",
+        "githubApp": {
+          "title": "GitHub App — recommended",
+          "soon": "available soon",
+          "body": "Per-repository installation, short-lived scoped tokens, commits as omadia-dev[bot]. The token cannot merge — structurally."
+        },
+        "deviceFlow": {
+          "title": "Device flow — quick start",
+          "body": "Sign in with your GitHub account through a one-time device code. The fastest way to try the dev platform."
+        },
+        "deviceTradeoffs": {
+          "heading": "What this mode means",
+          "asUser": "commits appear as your GitHub user, not a bot",
+          "repoWide": "the token grants access to all your repositories, not just this one",
+          "canMerge": "the token can merge — the no-merge rule is enforced by omadia policy only, not by token scope",
+          "noWebhooks": "webhook triggers stay disabled for this repository"
+        },
+        "device": {
+          "codeAria": "Device code {code}",
+          "copyCode": "Copy code",
+          "copied": "Copied",
+          "waiting": "Waiting for authorization",
+          "authorizedAs": "Authorized as {login}",
+          "expired": "Code expired",
+          "error": "Authorization failed",
+          "restart": "Start again"
+        },
+        "pat": {
+          "title": "Fine-grained PAT / deploy key",
+          "body": "Paste a fine-grained personal access token scoped to this repository. Also the path for GitLab and Gitea.",
+          "label": "Token",
+          "placeholder": "github_pat_…"
+        }
+      },
+      "checks": {
+        "label": "branch protection on {branch}",
+        "enabled": "enabled",
+        "missing": "missing",
+        "unknown": "could not verify",
+        "warning": "without branch protection a device-flow or PAT token could push to {branch} directly. Enable it in the repository settings — the dev platform will only ever push to omadia/job-* branches, but protection makes that structural.",
+        "unknownHint": "The stored token cannot read the protection settings — classic device-flow tokens usually lack admin read. You can re-check any time."
+      }
+    },
+    "detail": {
+      "jobLabel": "job {hash}",
+      "loading": "Loading",
+      "notFound": "No such job.",
+      "railLabel": "Pipeline phases",
+      "phases": {
+        "analyze": "analyze",
+        "bootstrap": "bootstrap",
+        "plan": "plan",
+        "clarify": "clarify",
+        "gate": "gate",
+        "implement": "implement",
+        "review": "review",
+        "pr": "pr"
+      },
+      "phaseSkipped": "skipped — no questions",
+      "noArtifact": "No artifact for this phase yet.",
+      "openPr": "Open pull request",
+      "logEmpty": "No log output yet.",
+      "scrollToBottom": "Scroll to bottom",
+      "connection": {
+        "live": "live · last event {seconds}s ago",
+        "reconnecting": "reconnecting",
+        "closed": "stream closed — job finished"
+      },
+      "cancel": {
+        "action": "Cancel",
+        "title": "Cancel job?",
+        "body": "The runner is terminated and the branch is kept.",
+        "confirm": "Cancel job",
+        "cancelLabel": "Keep running"
+      },
+      "sidebar": {
+        "backend": "Backend",
+        "agent": "Agent",
+        "branch": "Branch",
+        "source": "Source",
+        "createdBy": "Created by",
+        "tokens": "Tokens in / out",
+        "cost": "Cost"
+      }
+    },
+    "repoDetail": {
+      "back": "Back to repositories",
+      "loading": "Loading",
+      "loadError": "This repository could not be loaded.",
+      "forge": "Forge",
+      "branch": "Default branch",
+      "credential": "Credential",
+      "credentialHeading": "Credential",
+      "credentialCurrent": "Current mode: {kind}",
+      "runsTests": "Runs tests",
+      "yes": "yes",
+      "no": "no",
+      "protectionHeading": "Branch protection",
+      "recheck": "Re-check",
+      "rechecking": "Checking"
+    }
+  },
   "adminRegistries": {
     "title": "Plugin Registries",
     "intro": "Sources from which plugins are pulled into the store. New instances start with {hub}. The token is stored encrypted and never shown again — only whether one is set. Changes take effect without a restart.",
@@ -3417,6 +3849,7 @@
       "triggerButton": "Now",
       "triggerTitle": "Trigger the routine manually now — fires an agent run and delivers the result to the channel.",
       "triggerNotice": "Started — the result will appear in the channel in ~30 seconds.",
+      "triggerChatUnavailable": "No LLM API key configured — add it in Admin → Settings, then trigger again.",
       "deleteConfirm": "Delete routine ''{name}''? This cannot be undone."
     },
     "templateEditor": {

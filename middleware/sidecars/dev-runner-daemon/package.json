@@ -1,0 +1,20 @@
+{
+  "name": "@omadia/dev-runner-daemon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Epic #470 W1 dev-platform runner daemon: bearer-authed control-plane HTTP API over dockerode that provisions and reaps hardened job containers inside a dedicated docker:dind engine. STANDALONE — dockerode + zod + node builtins only, never imports middleware. This unit (w1-daemon-service-api) lands the service scaffold: daemon.mjs HTTP API, auth, job-policy client, job registry, and the ContainerEngine seam the clamp/warmer/reaper units fill.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "dockerode": "^4.0.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.31",
+    "@types/node": "^25.9.3",
+    "typescript": "^5.9.0"
+  }
+}

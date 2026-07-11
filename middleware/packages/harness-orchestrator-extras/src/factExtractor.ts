@@ -40,9 +40,23 @@ export interface FactExtractorOptions {
 
 export interface ExtractInput {
   turnId: string;
+  /**
+   * #361 — when prompt masking is on, the caller passes the MASKED wire
+   * variants here: the extraction prompt goes to an LLM (Haiku), so it is
+   * wire content like the main call. Facts are restored via `restoreFacts`
+   * before persistence.
+   */
   userMessage: string;
   assistantAnswer: string;
   entityRefs: readonly EntityRef[];
+  /**
+   * #361 — surrogate→real inversion snapshot for this turn (see
+   * `PrivacyTurnHandle.snapshotPromptRestorer`). Applied to every extracted
+   * fact field before ingest, so the knowledge graph stores REAL values —
+   * never surrogates — while the Haiku call above only ever saw the masked
+   * text. Absent when the turn masked nothing.
+   */
+  restoreFacts?: (text: string) => string;
 }
 
 export interface ExtractedFact {
@@ -95,7 +109,21 @@ export class FactExtractor {
    */
   async extractAndIngest(input: ExtractInput): Promise<number> {
     try {
-      const facts = await this.extract(input);
+      const extracted = await this.extract(input);
+      // #361 — restore prompt surrogates → real values BEFORE persistence.
+      // The Haiku extraction above ran on masked wire text; the graph must
+      // store ground truth (a fabricated surrogate IBAN re-surfaced by
+      // recall as if real is memory poisoning). Identity when no restorer
+      // was passed (turn masked nothing / flag off).
+      const restore = input.restoreFacts;
+      const facts = restore
+        ? extracted.map((f) => ({
+            ...f,
+            subject: restore(f.subject),
+            predicate: restore(f.predicate),
+            object: restore(f.object),
+          }))
+        : extracted;
       if (facts.length === 0) {
         this.opts.log(`[fact-extractor] 0 facts turn=${shortTurn(input.turnId)}`);
         return 0;
