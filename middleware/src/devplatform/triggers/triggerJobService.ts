@@ -30,11 +30,14 @@ import type {
   DevJobKind,
   DevJobPhase,
   DevJobSource,
+  DevJobStatus,
   DevRepo,
   RunnerBackendKind,
 } from '../types.js';
 
-/** Minimal `DevJobStore` surface the service needs. */
+/** Minimal `DevJobStore` surface the service needs. A gated job is born
+ *  `status:'waiting', phase:'await_human'` in this single INSERT (fix #2), so the
+ *  service no longer needs the advancePhase/parkForGate two-step. */
 export interface TriggerJobStore {
   createJob(input: {
     repoId: string;
@@ -45,9 +48,9 @@ export interface TriggerJobStore {
     backend: RunnerBackendKind;
     createdBy: string;
     runnerTokenHash: string;
+    phase?: DevJobPhase;
+    status?: DevJobStatus;
   }): Promise<DevJob>;
-  advancePhase(jobId: string, from: DevJobPhase, to: DevJobPhase): Promise<boolean>;
-  parkForGate(jobId: string): Promise<boolean>;
 }
 
 /** Minimal `DevJobGateStore.open` input the service needs. The concrete store's
@@ -73,7 +76,14 @@ export interface TriggerJobServiceDeps {
   log?: (msg: string) => void;
 }
 
-export type TriggerJobDecision = 'created' | 'refused_policy';
+export type TriggerJobDecision = 'created' | 'refused_policy' | 'deduped_active_job';
+
+/** True iff a Postgres error is a unique-violation (SQLSTATE 23505). The partial
+ *  unique index `dev_jobs_webhook_one_active` (0028) raises this when a concurrent
+ *  delivery for the same issue tries to create a second active webhook job. */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
+}
 
 export interface CreateTriggerJobInput {
   repo: DevRepo;
@@ -127,29 +137,50 @@ export async function createTriggerJob(
   }
 
   // --- Create the job. pipeline_mode defaults to 'gated' in the DB (0023); a
-  //     trigger job is NEVER collapsed (spec §3). ---------------------------
-  const job = await deps.jobStore.createJob({
-    repoId: repo.id,
-    kind: input.kind,
-    brief: input.brief,
-    source: input.source,
-    sourceRef: input.sourceRef,
-    backend: input.backend,
-    createdBy: input.createdBy,
-    runnerTokenHash: input.runnerTokenHash,
-  });
+  //     trigger job is NEVER collapsed (spec §3).
+  //
+  //     A gated job (fix #2) is born DIRECTLY at `status:'waiting',
+  //     phase:'await_human'` in this ONE INSERT — never transiently `'queued'`, so
+  //     `claimNextQueued` (which requires `status='queued'`) can never provision a
+  //     runner for it in the window before the gate holds. The already-wired
+  //     `/gates/:id/resolve` route still resumes it (approve →
+  //     `requeueAtPhase('implement')`, which is fenced on `phase='await_human'`).
+  //
+  //     The INSERT races safely against a concurrent delivery for the SAME issue:
+  //     the partial unique index `dev_jobs_webhook_one_active` (0028) lets exactly
+  //     ONE win; the loser's 23505 becomes `deduped_active_job` (fix #3), the
+  //     atomic backstop behind the route's cheap pre-check. --------------------
+  let job: DevJob;
+  try {
+    job = await deps.jobStore.createJob({
+      repoId: repo.id,
+      kind: input.kind,
+      brief: input.brief,
+      source: input.source,
+      sourceRef: input.sourceRef,
+      backend: input.backend,
+      createdBy: input.createdBy,
+      runnerTokenHash: input.runnerTokenHash,
+      phase: input.requireGate ? 'await_human' : undefined,
+      status: input.requireGate ? 'waiting' : undefined,
+    });
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      deps.log?.(`[dev-platform] trigger job deduped (active job exists) for ${input.sourceRef}`);
+      return { decision: 'deduped_active_job', gated: false };
+    }
+    throw err;
+  }
 
   if (!input.requireGate) {
     return { decision: 'created', job, gated: false };
   }
 
   // --- First-source human gate --------------------------------------------
-  // We replicate the W2 clarify-gate park EXACTLY: advance the phase pointer
-  // `implement → await_human`, open a 'review' gate, then park the job at
-  // `waiting`. A parked job is `waiting`, never `queued`, so the claim loop never
-  // provisions a runner for it — the gate genuinely holds BEFORE the agent runs.
-  // Reusing this exact shape means the ALREADY-WIRED `/gates/:id/resolve` route
-  // resumes it (approve → `requeueAtPhase('implement')`) with zero new wiring.
+  // The job is ALREADY parked (`waiting` at `await_human`, no lease) from the
+  // INSERT above; we only open the 'review' gate over it. Opening the gate LAST
+  // is safe: the job is unclaimable the entire time, so there is no window in
+  // which the agent could run before the gate exists.
   const principal = repo.approverRoleKey
     ? ({ kind: 'role', ref: repo.approverRoleKey } as const)
     : ({ kind: 'user', ref: repo.createdBy } as const);
@@ -169,8 +200,6 @@ export async function createTriggerJob(
     baseSha: null,
     deadlineIso: repo.gateDeadlineIso,
   });
-  const advanced = await deps.jobStore.advancePhase(job.id, 'implement', 'await_human');
-  if (advanced) await deps.jobStore.parkForGate(job.id);
   deps.log?.(`[dev-platform] trigger job ${job.id} parked at first-source gate for ${repo.owner}/${repo.name}`);
   return { decision: 'created', job, gated: true };
 }

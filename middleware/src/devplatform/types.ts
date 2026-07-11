@@ -450,6 +450,14 @@ export interface NewDevJob {
   authMode?: DevJobAuthMode;
   provision?: number;
   phase?: DevJobPhase;
+  /**
+   * Initial lifecycle status. Omitted ⇒ the DB default `'queued'` (claimable).
+   * Set to `'waiting'` ONLY by the trigger service's first-source gate, so a
+   * gated job is born parked at `await_human` and `claimNextQueued` (which
+   * requires `status='queued'`) can never provision a runner for it before the
+   * gate holds (Epic #470 W4 concurrency fix #2).
+   */
+  status?: DevJobStatus;
   branch?: string | null;
   createdBy: string;
 }

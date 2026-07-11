@@ -57,8 +57,17 @@ export interface DevWebhooksDeliveryStore {
     sender: string | null;
   }): Promise<boolean>;
   setOutcome(deliveryId: string, outcome: WebhookDeliveryOutcome): Promise<void>;
-  countJobsForRepoSince(repo: string, sinceIso: string): Promise<number>;
-  countJobsForSenderSince(repo: string, sender: string, sinceIso: string): Promise<number>;
+  /** Atomic per-repo rate-limit reservation (replaces the count→create TOCTOU).
+   *  Serialises admission on a per-repo advisory lock and COMMITs the reservation
+   *  as `job_created` before releasing it, so concurrent deliveries count it. */
+  reserveJobSlot(input: {
+    repo: string;
+    sender: string;
+    deliveryId: string;
+    repoLimit: number;
+    senderLimit: number;
+    sinceIso: string;
+  }): Promise<{ admitted: boolean; reason?: 'rate_limited' }>;
   hasPriorJob(repo: string, sender: string): Promise<boolean>;
 }
 
@@ -204,16 +213,28 @@ async function handleGithubWebhook(
   const sourceRef = `${repoFullName}#${issueNumber}`;
   if (await deps.hasActiveWebhookJob(repo.id, sourceRef)) return finish('deduped_active_job');
 
-  // 12. Rate limits — per-repo AND per-sender over the last rolling hour.
-  const sinceIso = new Date(now() - ONE_HOUR_MS).toISOString();
-  const repoCount = await deps.deliveries.countJobsForRepoSince(repoFullName, sinceIso);
-  const senderCount = await deps.deliveries.countJobsForSenderSince(repoFullName, sender, sinceIso);
-  if (repoCount >= deps.maxJobsPerRepoHour || senderCount >= deps.maxJobsPerSenderHour) {
-    return finish('rate_limited');
-  }
-
-  // 13. First job from a not-yet-seen (repo, sender) pair → human gate before the agent runs.
+  // 12. First job from a not-yet-seen (repo, sender) pair → human gate before the
+  //     agent runs. Computed BEFORE the slot reservation on purpose: the
+  //     reservation stamps THIS delivery `job_created`, and `hasPriorJob` counts
+  //     `job_created` rows — so reserving first would make a delivery see its own
+  //     row and skip its own first-source gate.
   const requireGate = !(await deps.deliveries.hasPriorJob(repoFullName, sender));
+
+  // 13. Rate limits — per-repo AND per-sender over the last rolling hour, enforced
+  //     as an ATOMIC reservation. A per-repo advisory lock serialises admission and
+  //     the reserved slot is committed as `job_created` while the lock is held, so
+  //     concurrent deliveries count it — closing the count→create→setOutcome TOCTOU
+  //     that let N racing deliveries all pass a cap of 2 (Forge W4 concurrency #1).
+  const sinceIso = new Date(now() - ONE_HOUR_MS).toISOString();
+  const reservation = await deps.deliveries.reserveJobSlot({
+    repo: repoFullName,
+    sender,
+    deliveryId,
+    repoLimit: deps.maxJobsPerRepoHour,
+    senderLimit: deps.maxJobsPerSenderHour,
+    sinceIso,
+  });
+  if (!reservation.admitted) return finish('rate_limited');
 
   // 14. Create the job through the structural-policy service. The brief is HOSTILE
   //     issue text passed through UNCHANGED — the W3 policy engine is the guard,
@@ -235,9 +256,16 @@ async function handleGithubWebhook(
     senderLogin: sender,
   });
 
+  // A structural refusal or a same-issue dedupe (the 0028 unique index caught a
+  // concurrent create) corrects this delivery's reserved `job_created` slot to its
+  // real terminal outcome — freeing the slot for the next window count.
   if (result.decision === 'refused_policy') {
     log(`[dev-webhooks] ${repoFullName}#${issueNumber} refused_policy: ${result.reason ?? ''}`);
     return finish('refused_policy');
+  }
+  if (result.decision === 'deduped_active_job') {
+    log(`[dev-webhooks] ${repoFullName}#${issueNumber} deduped_active_job (unique index)`);
+    return finish('deduped_active_job');
   }
   log(`[dev-webhooks] job ${result.job?.id ?? '?'} created for ${sourceRef} (gated=${result.gated})`);
   return finish('job_created', 201, { jobId: result.job?.id, gated: result.gated });

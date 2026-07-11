@@ -166,11 +166,14 @@ export class DevJobStore {
   }
 
   async createJob(input: NewDevJob & { runnerTokenHash: string }): Promise<DevJob> {
+    // `status` is threaded so a gated trigger job can be born `'waiting'` in this
+    // single INSERT (never transiently `'queued'` and therefore never claimable);
+    // omitted ⇒ `'queued'` (the DB default, kept explicit here for the same value).
     const r = await this.pool.query<Row>(
       `INSERT INTO dev_jobs
          (repo_id, kind, brief, source, source_ref, base_sha, backend, agent_kind, auth_mode,
-          provision, phase, branch, runner_token_hash, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+          provision, phase, status, branch, runner_token_hash, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
        RETURNING ${JOB_COLS}`,
       [
         input.repoId,
@@ -184,6 +187,7 @@ export class DevJobStore {
         input.authMode ?? 'api_key',
         input.provision ?? 1,
         input.phase ?? 'implement',
+        input.status ?? 'queued',
         input.branch ?? null,
         input.runnerTokenHash,
         input.createdBy,

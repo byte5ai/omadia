@@ -71,25 +71,66 @@ export class WebhookDeliveryStore {
     ]);
   }
 
-  /** Count deliveries that produced a job for this repo at/after `sinceIso`. Only
-   *  `job_created` rows count — refused/dropped deliveries never consume the budget. */
-  async countJobsForRepoSince(repo: string, sinceIso: string): Promise<number> {
-    const r = await this.pool.query<{ n: string }>(
-      `SELECT COUNT(*)::text AS n FROM dev_webhook_deliveries
-        WHERE repo = $1 AND outcome = 'job_created' AND received_at >= $2`,
-      [repo, sinceIso],
-    );
-    return Number(r.rows[0]?.n ?? '0');
-  }
-
-  /** Count deliveries that produced a job for this (repo, sender) at/after `sinceIso`. */
-  async countJobsForSenderSince(repo: string, sender: string, sinceIso: string): Promise<number> {
-    const r = await this.pool.query<{ n: string }>(
-      `SELECT COUNT(*)::text AS n FROM dev_webhook_deliveries
-        WHERE repo = $1 AND sender = $2 AND outcome = 'job_created' AND received_at >= $3`,
-      [repo, sender, sinceIso],
-    );
-    return Number(r.rows[0]?.n ?? '0');
+  /**
+   * Atomically reserve a rate-limit slot for the claimed delivery — the fix for
+   * the count→create→setOutcome TOCTOU (Epic #470 W4 concurrency fix #1). A naive
+   * "count `job_created` rows, then create" lets N concurrent deliveries all read
+   * the same pre-reservation count and all pass a cap of 2.
+   *
+   * ONE transaction, in order:
+   *   1. `pg_advisory_xact_lock(hashtext(repo))` — serialises admission PER REPO,
+   *      so a concurrent delivery for the same repo blocks here until we COMMIT.
+   *   2. Count committed `job_created` rows in the rolling window, per-repo and
+   *      per-(repo, sender).
+   *   3. Over either cap ⇒ stamp this delivery `'rate_limited'`, COMMIT, refuse.
+   *      Otherwise RESERVE the slot by stamping this delivery `'job_created'`,
+   *      COMMIT (releasing the lock).
+   *
+   * Because the reservation is COMMITTED while the lock is held, the next delivery
+   * to acquire the lock counts it — the window is consistent. If job creation then
+   * refuses/dedupes, the route corrects this delivery's outcome to the real
+   * terminal value, freeing the slot; a transient over-count in that gap is
+   * fail-safe (it can only refuse, never over-admit).
+   */
+  async reserveJobSlot(input: {
+    repo: string;
+    sender: string;
+    deliveryId: string;
+    repoLimit: number;
+    senderLimit: number;
+    sinceIso: string;
+  }): Promise<{ admitted: boolean; reason?: 'rate_limited' }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // int4 from hashtext widens to the bigint pg_advisory_xact_lock(bigint) overload.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [input.repo]);
+      const repoRes = await client.query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM dev_webhook_deliveries
+          WHERE repo = $1 AND outcome = 'job_created' AND received_at >= $2`,
+        [input.repo, input.sinceIso],
+      );
+      const senderRes = await client.query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM dev_webhook_deliveries
+          WHERE repo = $1 AND sender = $2 AND outcome = 'job_created' AND received_at >= $3`,
+        [input.repo, input.sender, input.sinceIso],
+      );
+      const repoCount = Number(repoRes.rows[0]?.n ?? '0');
+      const senderCount = Number(senderRes.rows[0]?.n ?? '0');
+      const nextOutcome: WebhookDeliveryOutcome =
+        repoCount >= input.repoLimit || senderCount >= input.senderLimit ? 'rate_limited' : 'job_created';
+      await client.query(`UPDATE dev_webhook_deliveries SET outcome = $2 WHERE delivery_id = $1`, [
+        input.deliveryId,
+        nextOutcome,
+      ]);
+      await client.query('COMMIT');
+      return nextOutcome === 'job_created' ? { admitted: true } : { admitted: false, reason: 'rate_limited' };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   /** True iff this (repo, sender) pair has EVER produced a job — drives the

@@ -91,13 +91,24 @@ function fakeDeliveries() {
       const r = rows.get(id);
       if (r) r.outcome = o;
     },
-    countJobsForRepoSince: async (r, sinceIso) =>
-      [...rows.values()].filter((x) => x.repo === r && x.outcome === 'job_created' && x.at >= Date.parse(sinceIso))
-        .length,
-    countJobsForSenderSince: async (r, s, sinceIso) =>
-      [...rows.values()].filter(
-        (x) => x.repo === r && x.sender === s && x.outcome === 'job_created' && x.at >= Date.parse(sinceIso),
-      ).length,
+    // Single-threaded in-memory mirror of the real advisory-locked reservation:
+    // count committed `job_created` rows in the window, then stamp THIS delivery.
+    reserveJobSlot: async ({ repo, sender, deliveryId, repoLimit, senderLimit, sinceIso }) => {
+      const since = Date.parse(sinceIso);
+      const repoCount = [...rows.values()].filter(
+        (x) => x.repo === repo && x.outcome === 'job_created' && x.at >= since,
+      ).length;
+      const senderCount = [...rows.values()].filter(
+        (x) => x.repo === repo && x.sender === sender && x.outcome === 'job_created' && x.at >= since,
+      ).length;
+      const row = rows.get(deliveryId);
+      if (repoCount >= repoLimit || senderCount >= senderLimit) {
+        if (row) row.outcome = 'rate_limited';
+        return { admitted: false, reason: 'rate_limited' };
+      }
+      if (row) row.outcome = 'job_created';
+      return { admitted: true };
+    },
     hasPriorJob: async (r, s) =>
       [...rows.values()].some((x) => x.repo === r && x.sender === s && x.outcome === 'job_created'),
   };
@@ -446,22 +457,12 @@ describe('devWebhooks route', () => {
 
 function jobStoreFake() {
   const calls = {
-    create: [] as unknown[],
-    advance: [] as Array<{ from: string; to: string }>,
-    park: [] as string[],
+    create: [] as Array<Parameters<TriggerJobStore['createJob']>[0]>,
   };
   const store: TriggerJobStore = {
     createJob: async (i) => {
       calls.create.push(i);
       return { id: 'job-1' } as unknown as DevJob;
-    },
-    advancePhase: async (_id, from, to) => {
-      calls.advance.push({ from, to });
-      return true;
-    },
-    parkForGate: async (id) => {
-      calls.park.push(id);
-      return true;
     },
   };
   return { calls, store };
@@ -527,20 +528,23 @@ describe('createTriggerJob (structural policy)', () => {
     assert.equal(js.calls.create.length, 0);
   });
 
-  it('github_app + requireGate=false → job created, no gate opened', async () => {
+  it('github_app + requireGate=false → job created queued (unset status), no gate opened', async () => {
     const js = jobStoreFake();
     const gs = gateStoreFake();
     const r = await createTriggerJob({ jobStore: js.store, gateStore: gs.store }, svcInput());
     assert.equal(r.decision, 'created');
     assert.equal(r.gated, false);
     assert.equal(js.calls.create.length, 1);
+    // A non-gated job carries no explicit status → the store defaults it to 'queued'.
+    assert.equal(js.calls.create[0]!.status, undefined);
     assert.equal(gs.opened.length, 0);
-    assert.equal(js.calls.park.length, 0);
   });
 
-  it('first job from a new source (requireGate=true) opens a review gate and parks the job', async () => {
+  it('first job from a new source (requireGate=true) is BORN parked and then a review gate opens', async () => {
     // FAIL-IF-REVERTED: the first job from a new source must be held at a human gate
-    // BEFORE the agent runs — open a 'review' gate, advance implement→await_human, park.
+    // BEFORE the agent runs. The fix creates it DIRECTLY as status='waiting',
+    // phase='await_human' in the single INSERT (never a transient 'queued' the claim
+    // loop could grab), then opens the 'review' gate over the already-parked job.
     const js = jobStoreFake();
     const gs = gateStoreFake();
     const r = await createTriggerJob(
@@ -549,12 +553,13 @@ describe('createTriggerJob (structural policy)', () => {
     );
     assert.equal(r.decision, 'created');
     assert.equal(r.gated, true);
+    assert.equal(js.calls.create.length, 1);
+    assert.equal(js.calls.create[0]!.status, 'waiting');
+    assert.equal(js.calls.create[0]!.phase, 'await_human');
     assert.equal(gs.opened.length, 1);
     assert.equal(gs.opened[0]!.gateKind, 'review');
     assert.equal(gs.opened[0]!.principalKind, 'user');
     assert.equal(gs.opened[0]!.principalRef, 'user-1');
-    assert.deepEqual(js.calls.advance[0], { from: 'implement', to: 'await_human' });
-    assert.equal(js.calls.park.length, 1);
   });
 
   it('first-source gate targets the approver role when the repo sets one', async () => {
