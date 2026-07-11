@@ -876,6 +876,19 @@
     "streamingSuffix": "· streaming…",
     "toolTraceHeading": "Tool trace ({count})",
     "subCallCount": "{count, plural, one {# sub-call} other {# sub-calls}}",
+    "devJob": {
+      "heading": "Dev job",
+      "viewJob": "Open job",
+      "viewPr": "View PR",
+      "connectionLost": "connection lost",
+      "gate": {
+        "title": "Approval needed",
+        "approve": "Approve",
+        "reject": "Reject",
+        "resolving": "Submitting…",
+        "error": "Could not resolve the gate."
+      }
+    },
     "inputLabel": "input",
     "outputLabel": "output",
     "persona": {

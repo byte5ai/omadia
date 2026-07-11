@@ -876,6 +876,19 @@
     "streamingSuffix": "· streamt…",
     "toolTraceHeading": "Tool-Trace ({count})",
     "subCallCount": "{count, plural, one {# Sub-Call} other {# Sub-Calls}}",
+    "devJob": {
+      "heading": "Dev-Job",
+      "viewJob": "Job öffnen",
+      "viewPr": "PR ansehen",
+      "connectionLost": "Verbindung verloren",
+      "gate": {
+        "title": "Freigabe erforderlich",
+        "approve": "Freigeben",
+        "reject": "Ablehnen",
+        "resolving": "Wird gesendet…",
+        "error": "Gate konnte nicht aufgelöst werden."
+      }
+    },
     "inputLabel": "input",
     "outputLabel": "output",
     "persona": {

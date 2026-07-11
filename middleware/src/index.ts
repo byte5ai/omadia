@@ -161,6 +161,8 @@ import {
 import { publicPaths } from './auth/publicPaths.js';
 import { createRequireAuth } from './auth/requireAuth.js';
 import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
+import { createChatDevJobOrchestratorTools } from './devplatform/chatDevJobToolWiring.js';
+import { isPermittedLauncher } from './routes/devPlatformShared.js';
 import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from './routes/devWebhooks.js';
 import { WebhookDeliveryStore } from './devplatform/triggers/webhookDeliveryStore.js';
 import { DevGithubAppStore } from './devplatform/githubApp/appStore.js';
@@ -2587,6 +2589,35 @@ async function main(): Promise<void> {
       log: (msg) => console.log(msg),
     });
     mountDevPlatform(app, requireAuth, wiredDevPlatform, (msg) => console.log(msg));
+
+    // Epic #470 W3 — register the chat orchestrator dev-job tools globally on
+    // the native-tool registry (mirrors `requestSelfExtensionTool`). ONE global
+    // registration; the caller is resolved PER CALL from `turnContext.userId`
+    // (the human driving the turn) — no `userId` ⇒ fail closed. The launch
+    // envelope is the operator's own launchable repos (the `isPermittedLauncher`
+    // gate), matching the admin `POST /jobs` contract. Gate resolution is
+    // deliberately NOT a tool (spec §4 — human-session-attributable only); the
+    // chat job card calls the W2 gate API directly.
+    {
+      const chatDevJobTools = createChatDevJobOrchestratorTools({
+        repoStore: wiredDevPlatform.repoStore,
+        jobStore: wiredDevPlatform.jobStore,
+        isPermittedLauncher,
+        defaultBackend: config.DEV_PLATFORM_BACKEND,
+        getCallerUserId: () => turnContext.current()?.userId,
+      });
+      for (const reg of chatDevJobTools.registrations) {
+        nativeToolRegistry.register(reg.name, {
+          handler: reg.handler,
+          spec: reg.spec,
+          promptDoc: reg.promptDoc,
+        });
+      }
+      console.log(
+        '[middleware] dev-platform chat orchestrator tools registered (dev_job_start / dev_job_status / dev_job_list)',
+      );
+    }
+
     // Start the claim/enforce/reap/apply loop; stop it cleanly on shutdown.
     // Re-adopt the docker jobs this process was running before it restarted, so
     // reap() can still see a job whose container the daemon has since lost. The
