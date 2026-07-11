@@ -16,6 +16,7 @@ import type { DevJobEventBus } from '../devplatform/devJobEventBus.js';
 import type { DevRepoConnection } from '../devplatform/devRepoCredentials.js';
 import type { ListJobsFilter } from '../devplatform/devJobStore.js';
 import type { FinalizeContext } from '../devplatform/finalizeDevJob.js';
+import type { ApplyJobOutcome } from '../devplatform/devJobWorker.js';
 import type { GitHubDeviceFlowProvider } from '../issues/githubOAuthProvider.js';
 import type { DeviceFlowStore } from '../issues/deviceFlowStore.js';
 import type { Ticket } from '../devplatform/githubIssuesTracker.js';
@@ -105,8 +106,9 @@ export interface DevPlatformRouterDeps {
   makeIssuesTracker: (opts: { owner: string; name: string; token: string }) => DevPlatformTracker;
   /** Bound `finalizeDevJob` — the ONLY terminal-transition path (spec §4). */
   finalizeDevJob: (jobId: string, status: DevJobStatus, ctx?: FinalizeContext) => Promise<DevJob | null>;
-  /** Host-side apply retry (`POST /jobs/:id/apply`). */
-  applyJob: (jobId: string) => Promise<{ prUrl: string }>;
+  /** Host-side apply retry (`POST /jobs/:id/apply`). `gated` ⇒ the diff policy
+   *  parked the job for a human (spec §6) instead of opening a PR. */
+  applyJob: (jobId: string) => Promise<ApplyJobOutcome>;
   /** Q4 admission flag (`DEV_PLATFORM_SUBSCRIPTION_MODE`). */
   subscriptionModeEnabled: boolean;
   deviceFlow?: DevPlatformDeviceFlow;

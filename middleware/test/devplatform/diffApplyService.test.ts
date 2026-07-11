@@ -286,4 +286,72 @@ describe('DiffApplyService.apply', () => {
     );
     assert.equal(calls.length, 0);
   });
+
+  it('DENIES an added credential (policy_deny), rides the verdict, and writes nothing', async () => {
+    // A GitHub PAT prefix + 36 body chars — assembled at runtime so the source
+    // file carries no literal token (SecurityPipeline hook).
+    const token = 'ghp' + '_' + 'A'.repeat(36);
+    const { fetch, calls } = recordingFetch();
+    const err = await service(fetch)
+      .apply({
+        job: JOB,
+        repo: REPO,
+        diff: [
+          'diff --git a/config.txt b/config.txt',
+          'new file mode 100644',
+          '--- /dev/null',
+          '+++ b/config.txt',
+          '@@ -0,0 +1 @@',
+          `+token=${token}`,
+          '',
+        ].join('\n'),
+        numstat: '1\t0\tconfig.txt\n',
+        pr: PR,
+        jobTokens: [],
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    assert.ok(err instanceof DiffApplyError && err.code === 'policy_deny', 'expected policy_deny');
+    // The verdict must ride the error so the caller can persist findings.
+    assert.equal((err as DiffApplyError).verdict?.decision, 'deny');
+    assert.ok(
+      (err as DiffApplyError).verdict?.findings.some((r) => r.ruleId === 'credential-content'),
+      'verdict carries the credential-content reason',
+    );
+    assert.equal(calls.length, 0);
+  });
+
+  it('GATES a protected CI change (policy_gate), rides the verdict, and writes nothing', async () => {
+    const { fetch, calls } = recordingFetch();
+    const err = await service(fetch)
+      .apply({
+        job: JOB,
+        repo: REPO,
+        diff: [
+          'diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml',
+          'new file mode 100644',
+          '--- /dev/null',
+          '+++ b/.github/workflows/deploy.yml',
+          '@@ -0,0 +1 @@',
+          '+on: push',
+          '',
+        ].join('\n'),
+        numstat: '1\t0\t.github/workflows/deploy.yml\n',
+        pr: PR,
+        jobTokens: [],
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    assert.ok(err instanceof DiffApplyError && err.code === 'policy_gate', 'expected policy_gate');
+    assert.equal((err as DiffApplyError).verdict?.decision, 'gate');
+    assert.ok(
+      (err as DiffApplyError).verdict?.findings.some((r) => r.ruleId === 'protected-ci'),
+      'verdict carries the protected-ci reason',
+    );
+    assert.equal(calls.length, 0);
+  });
 });

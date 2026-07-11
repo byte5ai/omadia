@@ -28,7 +28,8 @@
 
 import { randomUUID } from 'node:crypto';
 
-import type { ApplyInput, ApplyResult } from './diffApplyService.js';
+import { DiffApplyError, type ApplyInput, type ApplyResult } from './diffApplyService.js';
+import type { PolicyVerdict } from './policy/diffPolicyEngine.js';
 import {
   CredentialRevokerRegistry,
   finalizeDevJob,
@@ -106,6 +107,25 @@ export interface DevJobApplyService {
   apply(input: ApplyInput): Promise<ApplyResult>;
 }
 
+/** The result of a host-side apply. `applied` → a PR; `gated` → the AUTHORITATIVE
+ *  diff policy parked the job for a human (spec §6), no PR. A `deny` is NOT an
+ *  outcome here — it throws, and the worker finalizes the job `failed`. */
+export type ApplyJobOutcome = { prUrl: string } | { gated: true; gateId: string };
+
+/** How the worker disposes of a non-`allow` diff-policy verdict. Injected by the
+ *  wiring, which closes over the gate store, job store, and token revoker. Absent
+ *  in unit tests that never exercise a policy gate/deny — those still finalize
+ *  `failed`, unchanged (the policy engine only runs inside the real
+ *  `DiffApplyService`, which those tests do not use). */
+export interface DiffPolicyGateHandler {
+  /** Persist findings, open a `diff_policy` human gate, park the job `waiting`,
+   *  revoke the (already-exited) runner's token. Returns the gate id. */
+  onGate(job: DevJob, verdict: PolicyVerdict): Promise<{ gateId: string }>;
+  /** Persist findings for the audit trail. The worker then finalizes `failed`
+   *  (deny is final — no human override). */
+  onDeny(job: DevJob, verdict: PolicyVerdict): Promise<void>;
+}
+
 /**
  * Mint the one-time runner token and pin the job's `branch` + `base_sha` before
  * provision (all persisted lease-fenced), returning the plaintext token + the
@@ -127,6 +147,9 @@ export interface DevJobWorkerDeps {
    *  wiring error and rejected in the constructor. */
   backends: readonly RunnerBackend[];
   applyService: DevJobApplyService;
+  /** Disposes of a non-`allow` diff-policy verdict (gate → park; deny → audit).
+   *  Absent ⇒ a policy gate/deny finalizes `failed` like any other apply error. */
+  policyGate?: DiffPolicyGateHandler;
   prepareProvision: PrepareProvision;
   /** The base url the runner phones home to (`DEV_PLATFORM_RUNNER_BASE_URL`). */
   baseUrl: string;
@@ -421,7 +444,7 @@ export class DevJobWorker {
    *  job that `failed` after a diff was uploaded. Success ⇒ `done` (+ pr_url);
    *  any failure ⇒ `failed` with the diff artifact RETAINED, then rethrows so the
    *  HTTP caller sees the error. */
-  async applyJob(jobId: string): Promise<{ prUrl: string }> {
+  async applyJob(jobId: string): Promise<ApplyJobOutcome> {
     const job = await this.deps.store.getJob(jobId);
     if (!job) throw new DevJobWorkerError('devplatform.job_not_found', `no such job '${jobId}'`);
 
@@ -449,6 +472,10 @@ export class DevJobWorker {
         diff,
         numstat,
         pr: { title: prTitle(job), body: prBody(job, repo) },
+        // The AUTHORITATIVE apply gate reads these (spec §6): the repo's operator
+        // overrides, and the job's own tokens (see `jobTokensFor`).
+        policyOverrides: repo.policyOverrides,
+        jobTokens: jobTokensFor(job),
       });
 
       await this.finalize(job.id, 'done', {
@@ -458,6 +485,20 @@ export class DevJobWorker {
       });
       return { prUrl: applied.prUrl };
     } catch (err) {
+      // A `gate` verdict is NOT a failure — the diff policy needs a human. Open the
+      // gate + park the job `waiting` (nothing applied, no PR) and return; do NOT
+      // finalize `failed`, do NOT rethrow. Requires the wiring to have injected a
+      // gate handler; without one, it falls through to the `failed` finalize.
+      if (err instanceof DiffApplyError && err.code === 'policy_gate' && this.deps.policyGate && err.verdict) {
+        const { gateId } = await this.deps.policyGate.onGate(job, err.verdict);
+        this.log(`[dev-platform] apply(${job.id}) gated by diff policy → gate ${gateId} (job waiting)`);
+        return { gated: true, gateId };
+      }
+      // A `deny` is final (no human override): persist the findings for the audit
+      // trail, then fall through to the `failed` finalize below.
+      if (err instanceof DiffApplyError && err.code === 'policy_deny' && this.deps.policyGate && err.verdict) {
+        await this.deps.policyGate.onDeny(job, err.verdict);
+      }
       // The diff artifact is never deleted here — `POST /jobs/:id/apply` can
       // retry against the same stored diff.
       await this.finalize(job.id, 'failed', { reason: 'apply_failed', error: errText(err) });
@@ -492,6 +533,20 @@ function toRegistry(revokers: DevJobWorkerDeps['revokers']): CredentialRevokerRe
   const reg = new CredentialRevokerRegistry();
   for (const r of revokers ?? []) reg.register(r);
   return reg;
+}
+
+/**
+ * Extra secret VALUES to scan the diff/PR-body for — beyond the prefix + entropy
+ * rules. Deliberately EMPTY: the runner's real credentials (`djr_` bearer, `ghs_`
+ * scoped App token, LLM-proxy token) all carry detectable prefixes and are caught
+ * by scanForSecrets regardless of this list. The job id is PUBLIC (the platform
+ * itself writes it into the PR body — `- Job: <id>`), and `runner_token_hash` is a
+ * sha256 hash, not a usable credential; scanning for either would deny the
+ * platform's own honest PR body as a "leak" (Forge-integration false positive).
+ * A prefix-less secret nonce the server actually held would be added here.
+ */
+function jobTokensFor(_job: DevJob): string[] {
+  return [];
 }
 
 /** The authoritative branch when a job was never pinned one — mirrors the

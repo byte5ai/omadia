@@ -19,7 +19,12 @@ import { parseGitIdentity } from './diffApplyService.js';
 import { DiffApplyService, type ApplyInput, type ApplyResult } from './diffApplyService.js';
 import { DevJobEventBus } from './devJobEventBus.js';
 import { DevJobStore } from './devJobStore.js';
-import { DevJobWorker, type DevJobApplyService } from './devJobWorker.js';
+import {
+  DevJobWorker,
+  type ApplyJobOutcome,
+  type DevJobApplyService,
+  type DiffPolicyGateHandler,
+} from './devJobWorker.js';
 import { DevRepoCredentialStore } from './devRepoCredentials.js';
 import { DevRepoStore } from './devRepoStore.js';
 import { finalizeDevJob, CredentialRevokerRegistry, type FinalizeContext } from './finalizeDevJob.js';
@@ -171,7 +176,7 @@ export interface WiredDevPlatform {
   gateDeadlineWorker: { tick: () => Promise<number>; start: () => void; stop: () => Promise<void> };
   backends: readonly RunnerBackend[];
   finalizeDevJob: (jobId: string, status: DevJobStatus, ctx?: FinalizeContext) => Promise<DevJob | null>;
-  applyJob: (jobId: string) => Promise<{ prUrl: string }>;
+  applyJob: (jobId: string) => Promise<ApplyJobOutcome>;
   /** Stop every background loop this platform owns (claim worker + gate-deadline
    *  worker). The counterpart to `start()`; index.ts calls it on shutdown. */
   stop: () => void | Promise<void>;
@@ -274,11 +279,61 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
 
   const backends = deps.backends ?? buildBackends(deps, log);
 
+  // The durable human-gate table (spec §5). Created BEFORE the worker so the
+  // diff-policy gate handler can close over it; the W2 phase engine below reuses
+  // the same instance.
+  const gateStore = new DevJobGateStore(deps.pool, deps.now ? () => deps.now!().getTime() : undefined);
+
+  // The AUTHORITATIVE apply gate's non-`allow` disposition (spec §6). The engine
+  // runs INSIDE DiffApplyService; this decides what happens to its verdict:
+  //   gate → persist findings, open a `diff_policy` human gate, park `waiting`;
+  //   deny → persist findings for the audit trail (the worker then fails the job).
+  const policyGate: DiffPolicyGateHandler = {
+    onGate: async (job, verdict) => {
+      await jobStore.addArtifact(job.id, 'review_verdict', JSON.stringify(verdict), {
+        source: 'diff_policy',
+        decision: verdict.decision,
+      });
+      const repo = await repoStore.getRepo(job.repoId);
+      const principal: { kind: 'user' | 'role'; ref: string } = repo?.approverRoleKey
+        ? { kind: 'role', ref: repo.approverRoleKey }
+        : { kind: 'user', ref: job.createdBy };
+      const gate = await gateStore.open({
+        jobId: job.id,
+        baseSha: job.baseSha,
+        // The findings ARE the gate's questions, so the operator sees exactly why.
+        questions: verdict.findings.map((f, i) => ({
+          id: `diff_policy:${f.ruleId}:${String(i)}`,
+          text: `[${f.severity}] ${f.ruleId} (${f.paths.join(', ') || 'diff'}): ${f.detail}`,
+        })),
+        principalKind: principal.kind,
+        principalRef: principal.ref,
+        deadlineIso: repo?.gateDeadlineIso,
+      });
+      await jobStore.parkForGate(job.id);
+      // The runner already exited (apply is host-side); revoke its scoped token.
+      // Best-effort — a revoke failure must not un-park the now-`waiting` job.
+      try {
+        await tokenRegistry.revoker(job);
+      } catch (err) {
+        log(`[dev-platform] diff-policy gate ${gate.id}: token revoke failed: ${errText(err)}`);
+      }
+      return { gateId: gate.id };
+    },
+    onDeny: async (job, verdict) => {
+      await jobStore.addArtifact(job.id, 'review_verdict', JSON.stringify(verdict), {
+        source: 'diff_policy',
+        decision: verdict.decision,
+      });
+    },
+  };
+
   const worker = new DevJobWorker({
     store: jobStore,
     repoStore,
     backends,
     applyService,
+    policyGate,
     // Pin the base tree BEFORE the runner clones. `base_sha` is written once
     // (COALESCE), so a re-provision of the same job keeps the tree the agent
     // first saw. A forge that cannot answer must not silently produce an
@@ -328,11 +383,9 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
   const applyJob = (jobId: string) => worker.applyJob(jobId);
 
   // --- W2 pipeline orchestration (spec §4/§5) -------------------------------
-  // The durable gate table + the stateful phase engine. The engine ties the pure
-  // transition table, the review loop, the gate store, and token revocation to
-  // persistence; the runner's POST /jobs/:id/phase-result routes into it.
-  const gateStore = new DevJobGateStore(deps.pool, deps.now ? () => deps.now!().getTime() : undefined);
-
+  // The stateful phase engine ties the pure transition table, the review loop, the
+  // gate store (created above), and token revocation to persistence; the runner's
+  // POST /jobs/:id/phase-result routes into it.
   const phaseEngine = new PhaseEngine({
     // DevJobStore already satisfies PhaseEngineStore (addArtifact / getLatestArtifact
     // / advancePhase / parkForGate / setReviewState).

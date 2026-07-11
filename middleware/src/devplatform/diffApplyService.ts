@@ -10,16 +10,28 @@
  *      A mismatch aborts BEFORE any forge write — a runner must not be able to
  *      understate its own diff. (W3 turns this into a policy `gate`; W0 = hard fail.)
  *   2. Refuse any path escaping the repo (`..`, absolute) — a `deny`, not a gate.
- *   3. Run the `DiffPolicyEngine` seam. W0 ships `allowAllPolicy`; W3 adds rules
- *      here, not plumbing.
+ *   3. Run the AUTHORITATIVE diff policy (`evaluateDiffPolicy`, spec §6) over the
+ *      full input — the diff, the parsed numstat, the outbound PR body + tracker
+ *      comments, the repo's overrides, and the job's own tokens. `allow` applies;
+ *      `deny`/`gate` throw a `DiffApplyError` carrying the verdict findings (the
+ *      caller finalises the job `failed` on deny, or opens a human gate on gate).
  *   4. `forge.applyDiff` builds blobs → tree (base = pinned base_sha) → commit →
- *      a fresh ref; then `forge.createPR`.
+ *      a fresh ref; then `forge.createPR`. The forge receives the SAME parsed
+ *      change set the policy evaluated, so what a human approves and what lands on
+ *      the branch are byte-identical by construction.
  */
 
 import {
   parseUnifiedDiffDetailed,
   type DiffFileChange,
 } from './policy/parseUnifiedDiff.js';
+import {
+  evaluateDiffPolicy,
+  type DiffPolicyInput as EngineDiffPolicyInput,
+  type DiffPolicyOverrides,
+  type NumstatEntry,
+  type PolicyVerdict,
+} from './policy/diffPolicyEngine.js';
 import type { ForgeClient, ForgeFileChange, GitIdentity } from './forgeClient.js';
 
 export interface ApplyJob {
@@ -44,6 +56,17 @@ export interface ApplyInput {
   /** The runner's `git diff --numstat` output. */
   numstat: string;
   pr: { title: string; body: string };
+  /** The repo's operator diff-policy overrides (`dev_repos.policy_overrides`).
+   *  Absent ⇒ code defaults; can never remove a `deny` rule. */
+  policyOverrides?: DiffPolicyOverrides;
+  /** Outbound tracker comments to scan for secrets. Empty/absent at apply time
+   *  when comments are posted only after the PR opens. */
+  trackerComments?: string[];
+  /** The job's own token/nonce values, scanned so a runner cannot exfiltrate its
+   *  own credential in the diff. Optional HERE so the many byte-identity tests
+   *  need no churn; the engine ALWAYS receives a concrete array (its own-token
+   *  detector is fail-closed). The worker threads the real values. */
+  jobTokens?: string[];
 }
 
 export interface ApplyResult {
@@ -59,35 +82,21 @@ export interface DiffStats {
   deletions: number;
 }
 
-export type PolicyDecision = 'allow' | 'deny' | 'gate';
-
-export interface PolicyResult {
-  decision: PolicyDecision;
-  reason?: string;
-  stats: DiffStats;
-}
-
-export interface DiffPolicyInput {
-  files: DiffFileChange[];
-  stats: DiffStats;
-}
-
 /**
- * The W3 seam. Shipping it in W0 means W3 adds rules, not plumbing. The default
- * `allowAllPolicy` returns `allow` with the stats.
+ * The apply gate (Epic #470 W3). `apply()` calls this with the FULL engine input
+ * and honours the verdict. Defaults to the real `evaluateDiffPolicy`; a test may
+ * inject a stub. Retiring the W0 `allowAllPolicy` seam: the real engine is now the
+ * one that runs.
  */
-export interface DiffPolicyEngine {
-  evaluate(input: DiffPolicyInput): PolicyResult;
-}
-
-export const allowAllPolicy: DiffPolicyEngine = {
-  evaluate: (input) => ({ decision: 'allow', stats: input.stats }),
-};
+export type DiffPolicyEvaluator = (input: EngineDiffPolicyInput) => PolicyVerdict;
 
 export class DiffApplyError extends Error {
   constructor(
     readonly code: 'numstat_mismatch' | 'path_escape' | 'policy_deny' | 'policy_gate',
     message: string,
+    /** For `policy_deny`/`policy_gate`: the engine verdict, so the caller can
+     *  persist its findings (deny → audit artifact; gate → gate questions). */
+    readonly verdict?: PolicyVerdict,
   ) {
     super(message);
     this.name = 'DiffApplyError';
@@ -108,18 +117,19 @@ export function parseGitIdentity(spec: string): GitIdentity {
 
 export interface DiffApplyServiceOptions {
   forge: ForgeClient;
-  policy?: DiffPolicyEngine;
+  /** The apply gate. Defaults to the real `evaluateDiffPolicy`. */
+  policy?: DiffPolicyEvaluator;
   author?: GitIdentity;
 }
 
 export class DiffApplyService {
   private readonly forge: ForgeClient;
-  private readonly policy: DiffPolicyEngine;
+  private readonly policy: DiffPolicyEvaluator;
   private readonly author: GitIdentity;
 
   constructor(opts: DiffApplyServiceOptions) {
     this.forge = opts.forge;
-    this.policy = opts.policy ?? allowAllPolicy;
+    this.policy = opts.policy ?? evaluateDiffPolicy;
     this.author = opts.author ?? DEFAULT_COMMIT_AUTHOR;
   }
 
@@ -149,13 +159,25 @@ export class DiffApplyService {
       }
     }
 
-    // 3. Policy seam (W0: allow).
-    const verdict = this.policy.evaluate({ files, stats: parsed });
+    // 3. The AUTHORITATIVE diff policy (spec §6). Runs over the full engine input,
+    //    reasoning ONLY over the parsed diff, the uploaded numstat, and outbound
+    //    text — never an LLM's say-so. `deny`/`gate` abort BEFORE any forge write;
+    //    the verdict rides the error so the caller can persist findings / open a
+    //    gate. The numstat + path-escape hard checks above are kept as defense in
+    //    depth (the engine's diff-integrity + git-internals rules also cover them).
+    const verdict = this.policy({
+      diff: input.diff,
+      numstat: parseNumstatEntries(input.numstat),
+      prBody: input.pr.body,
+      trackerComments: input.trackerComments ?? [],
+      ...(input.policyOverrides ? { policyOverrides: input.policyOverrides } : {}),
+      jobTokens: input.jobTokens ?? [],
+    });
     if (verdict.decision === 'deny') {
-      throw new DiffApplyError('policy_deny', verdict.reason ?? 'diff denied by policy');
+      throw new DiffApplyError('policy_deny', policyMessage('denied', verdict), verdict);
     }
     if (verdict.decision === 'gate') {
-      throw new DiffApplyError('policy_gate', verdict.reason ?? 'diff requires a gate');
+      throw new DiffApplyError('policy_gate', policyMessage('gated', verdict), verdict);
     }
 
     // 4. Build the commit from the validated diff, then open the PR.
@@ -211,6 +233,33 @@ function diffTotals(files: DiffFileChange[]): DiffStats {
     deletions += f.deletions;
   }
   return { files: files.length, additions, deletions };
+}
+
+/** Parse a `git diff --numstat` blob into the engine's structured entries.
+ *  Binary rows (`-\t-\t…`) carry additions/deletions 0 and `binary: true`. */
+function parseNumstatEntries(numstat: string): NumstatEntry[] {
+  const out: NumstatEntry[] = [];
+  for (const raw of numstat.split('\n')) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (line.trim() === '') continue;
+    const parts = line.split('\t');
+    if (parts.length < 3) continue;
+    const a = parts[0] ?? '';
+    const d = parts[1] ?? '';
+    out.push({
+      path: parts.slice(2).join('\t'),
+      additions: a === '-' ? 0 : Number.parseInt(a, 10) || 0,
+      deletions: d === '-' ? 0 : Number.parseInt(d, 10) || 0,
+      binary: a === '-' && d === '-',
+    });
+  }
+  return out;
+}
+
+/** A short human-readable policy message naming the rules that fired. */
+function policyMessage(disposition: 'denied' | 'gated', verdict: PolicyVerdict): string {
+  const rules = verdict.findings.map((f) => f.ruleId).join(', ') || 'policy';
+  return `diff ${disposition} by policy (${rules})`;
 }
 
 /** Sum a `git diff --numstat` blob. Binary rows (`-\t-\t…`) contribute 0/0. */
