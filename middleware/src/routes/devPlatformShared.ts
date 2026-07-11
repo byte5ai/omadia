@@ -80,10 +80,13 @@ export interface RepoAccessResult {
   login?: string;
 }
 
-/** Read-only tracker bound to one repo + token. */
+/** Read-only tracker bound to one repo + token. A repo's bound tracker plugin
+ *  (Jira etc.) or the built-in GitHub Issues tracker both satisfy this shape;
+ *  the W3 `TrackerRegistry` resolves the right one per repo. */
 export interface DevPlatformTracker {
   getTicket(issueNumber: number): Promise<Ticket>;
-  listOpenTickets(opts: { limit: number }): Promise<Ticket[]>;
+  /** `label` narrows to tickets carrying it (W4 tracker poller, §4). */
+  listOpenTickets(opts: { limit: number; label?: string }): Promise<Ticket[]>;
 }
 
 /** Device-flow onboarding seam. Absent ⇒ the feature reports itself

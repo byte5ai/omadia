@@ -25,6 +25,9 @@ export interface Ticket {
   labels: string[];
   htmlUrl: string;
   authorLogin: string;
+  /** Last-updated timestamp (ISO-8601). Drives the tracker poller's cursor
+   *  filter (W4 §4). Optional: absent when the source doesn't surface it. */
+  updatedAt?: string;
 }
 
 /** Narrow subset of the Fetch API used here — keeps test doubles small. */
@@ -50,6 +53,7 @@ interface RawIssue {
   labels?: unknown;
   html_url?: unknown;
   user?: unknown;
+  updated_at?: unknown;
   /** Present (and non-null) only when the "issue" is actually a PR. */
   pull_request?: unknown;
 }
@@ -76,6 +80,7 @@ function toTicket(raw: RawIssue): Ticket {
     labels,
     htmlUrl: typeof raw.html_url === 'string' ? raw.html_url : '',
     authorLogin: user && typeof user.login === 'string' ? user.login : '',
+    ...(typeof raw.updated_at === 'string' ? { updatedAt: raw.updated_at } : {}),
   };
 }
 
@@ -119,17 +124,22 @@ export class GithubIssuesTracker {
   /**
    * List open tickets, newest first (GitHub's default order). Pull requests are
    * filtered out, so fewer than `limit` tickets may come back when the page
-   * mixed in PRs — acceptable for W0.
+   * mixed in PRs — acceptable for W0. An optional `label` narrows the query to
+   * issues carrying that label (used by the W4 tracker poller, §4).
    */
   async listOpenTickets(
     repo: TrackerRepo,
-    opts: { limit: number },
+    opts: { limit: number; label?: string },
   ): Promise<Ticket[]> {
     const perPage = Math.max(1, Math.min(100, Math.trunc(opts.limit)));
+    const labelQuery =
+      opts.label && opts.label.length > 0
+        ? `&labels=${encodeURIComponent(opts.label)}`
+        : '';
     const raw = await this.request(
       `/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(
         repo.name,
-      )}/issues?state=open&per_page=${String(perPage)}`,
+      )}/issues?state=open&per_page=${String(perPage)}${labelQuery}`,
     );
     const rows = Array.isArray(raw) ? (raw as RawIssue[]) : [];
     return rows
