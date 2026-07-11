@@ -1,13 +1,21 @@
 /**
  * Bounded, in-memory ring buffer of recent client-side errors — feeds the
  * opt-in "attach recent errors" diagnostics excerpt on the Create Issue
- * flow (issue #433). Captures three sources:
+ * flow (issue #433). Captures exactly two sources:
  *
  *   - `window` `error` events (uncaught exceptions)
  *   - `window` `unhandledrejection` events (unhandled promise rejections)
- *   - `ApiError` occurrences, recorded by the API client via
- *     `recordApiErrorDiagnostic` (most callers catch `ApiError` and render
- *     an in-page message, so it never becomes an uncaught error)
+ *
+ * Deliberately does NOT hook every failed API call (issue #433 review). An
+ * earlier version recorded every `ApiError` via a hook in the API client's
+ * constructor, which meant any failed request anywhere in the admin UI —
+ * including a secrets/vault-config PATCH on /admin/settings — silently fed
+ * this buffer, and an operator could later attach that unrelated captured
+ * content to a PUBLIC GitHub issue on a completely different bug report.
+ * `window` error/unhandledrejection events are page-level crashes, not the
+ * outcome of one specific admin action, so they don't have that problem.
+ * See api.ts's ApiError doc comment and api.test.ts for the invariant this
+ * enforces.
  *
  * In-memory only, never persisted, never sent anywhere on its own — it only
  * accumulates text that CreateIssueButton later offers, opt-in, as part of
@@ -25,7 +33,7 @@
  * recent errors" scenario the feature exists for.
  */
 
-export type DiagnosticSource = 'window-error' | 'unhandled-rejection' | 'api-error';
+export type DiagnosticSource = 'window-error' | 'unhandled-rejection';
 
 export interface DiagnosticEntry {
   timestamp: string;
@@ -90,25 +98,6 @@ export function initDiagnosticsCapture(): void {
           ? truncate(reason.stack, MAX_STACK_LEN)
           : undefined,
     });
-  });
-}
-
-/**
- * Records a failed API call. Called from the API client's `ApiError`
- * constructor so every failed request lands here regardless of whether the
- * caller re-throws, swallows, or maps it to a UI message.
- */
-export function recordApiErrorDiagnostic(input: {
-  status: number;
-  message: string;
-  detail?: string;
-}): void {
-  if (typeof window === 'undefined') return;
-  const text = input.detail ? `${input.message}\n${input.detail}` : input.message;
-  push({
-    timestamp: new Date().toISOString(),
-    source: 'api-error',
-    message: truncate(`${input.status} ${text}`, MAX_MESSAGE_LEN),
   });
 }
 

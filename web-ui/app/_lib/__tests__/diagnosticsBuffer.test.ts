@@ -53,21 +53,6 @@ describe('diagnosticsBuffer (#433)', () => {
     );
   });
 
-  it('records a failed API call via recordApiErrorDiagnostic', async () => {
-    const mod = await freshModule();
-    mod.recordApiErrorDiagnostic({
-      status: 503,
-      message: 'POST /v1/issues/create failed: 503',
-      detail: 'llm_unconfigured',
-    });
-
-    expect(mod.hasDiagnostics()).toBe(true);
-    expect(mod.formatDiagnosticsExcerpt()).toContain(
-      '503 POST /v1/issues/create failed: 503',
-    );
-    expect(mod.formatDiagnosticsExcerpt()).toContain('llm_unconfigured');
-  });
-
   it('is idempotent — registering capture twice does not double-record', async () => {
     const mod = await freshModule();
     mod.initDiagnosticsCapture();
@@ -81,8 +66,9 @@ describe('diagnosticsBuffer (#433)', () => {
 
   it('bounds the buffer to the newest 20 entries', async () => {
     const mod = await freshModule();
+    mod.initDiagnosticsCapture();
     for (let i = 0; i < 25; i++) {
-      mod.recordApiErrorDiagnostic({ status: 500, message: `err-${i}` });
+      window.dispatchEvent(new ErrorEvent('error', { message: `err-${i}` }));
     }
     const excerpt = mod.formatDiagnosticsExcerpt();
     expect(excerpt).not.toContain('err-0\n');
@@ -114,15 +100,19 @@ describe('diagnosticsBuffer (#433)', () => {
     // The scenario this feature exists for — several recent errors, not
     // pathologically large ones — should never hit the truncation path.
     const mod = await freshModule();
+    mod.initDiagnosticsCapture();
     for (let i = 0; i < 18; i++) {
-      mod.recordApiErrorDiagnostic({
-        status: 500,
-        message: `GET /v1/foo/${i} failed: 500`,
-        detail: 'internal_error',
-      });
+      window.dispatchEvent(
+        new ErrorEvent('error', { message: `GET /v1/foo/${i} failed: 500` }),
+      );
     }
     const excerpt = mod.formatDiagnosticsExcerpt();
     expect(excerpt).not.toContain('truncated');
     expect(excerpt).toContain('foo/17');
+  });
+
+  it('does not export an API-error capture path — only window error/unhandledrejection feed the buffer (#433 review — narrowed scope)', async () => {
+    const mod = await freshModule();
+    expect((mod as Record<string, unknown>)['recordApiErrorDiagnostic']).toBeUndefined();
   });
 });

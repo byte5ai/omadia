@@ -2446,7 +2446,7 @@
     "descriptionLabel": "Beschreibe es in eigenen Worten",
     "descriptionPlaceholder": "Was ist passiert oder was wünschst du dir? Jede Sprache ist okay — wir formulieren es auf Englisch.",
     "diagnosticsCheckboxLabel": "Aktuelle Fehler aus dieser Sitzung anhängen",
-    "diagnosticsCheckboxHint": "Enthält kürzliche clientseitige Fehler und fehlgeschlagene Anfragen. Bekannte Secrets werden vor dem Absenden geschwärzt — prüfe den Auszug unten und noch einmal auf dem nächsten Bildschirm.",
+    "diagnosticsCheckboxHint": "Enthält kürzliche unbehandelte clientseitige Fehler aus dieser Sitzung. Bekannte Secrets werden vor dem Absenden geschwärzt — prüfe den Auszug unten und noch einmal auf dem nächsten Bildschirm.",
     "diagnosticsPreviewLabel": "Vorschau des Anhangs",
     "diagnosticsSectionLabel": "Diagnose (angehängt)",
     "reformulate": "Weiter",

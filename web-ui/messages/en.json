@@ -2446,7 +2446,7 @@
     "descriptionLabel": "Describe it in your own words",
     "descriptionPlaceholder": "What happened, or what would you like to see? Any language is fine — we'll phrase it in English.",
     "diagnosticsCheckboxLabel": "Attach recent errors from this session",
-    "diagnosticsCheckboxHint": "Includes recent client-side errors and failed requests. Known secrets are redacted before filing — review the excerpt below and again on the next screen.",
+    "diagnosticsCheckboxHint": "Includes recent unhandled client-side errors from this session. Known secrets are redacted before filing — review the excerpt below and again on the next screen.",
     "diagnosticsPreviewLabel": "Preview what will be attached",
     "diagnosticsSectionLabel": "Diagnostics (attached)",
     "reformulate": "Continue",

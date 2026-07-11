@@ -41,7 +41,6 @@ import type {
   PreviewStreamEvent,
   TemplateSlotsResponse,
 } from './builderTypes';
-import { recordApiErrorDiagnostic } from './diagnosticsBuffer';
 
 /**
  * API client for the Harness Admin API v1.
@@ -168,6 +167,18 @@ async function postJson<T>(
   }
 }
 
+/**
+ * Deliberately does NOT feed the Create Issue diagnostics buffer (issue
+ * #433 review). An earlier version called `recordApiErrorDiagnostic` from
+ * this constructor, which made `ApiError` — used by every failed call
+ * anywhere in the admin UI, including secrets/vault-config PATCHes on
+ * /admin/settings — a silent, global source for a buffer an operator can
+ * later opt to attach to a PUBLIC GitHub issue on an unrelated bug report.
+ * The diagnostics feature only captures `window` `error` /
+ * `unhandledrejection` events (see diagnosticsBuffer.ts) — page-level
+ * crashes, not the outcome of a specific admin action. See
+ * api.test.ts for the regression test enforcing this invariant.
+ */
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -176,11 +187,6 @@ export class ApiError extends Error {
   ) {
     super(message);
     this.name = 'ApiError';
-    // Feeds the opt-in diagnostics excerpt on the Create Issue flow
-    // (issue #433) — records every failed API call, not just uncaught
-    // ones, since most callers catch ApiError and render an in-page
-    // message instead of letting it bubble. No-ops server-side.
-    recordApiErrorDiagnostic({ status, message, detail: body });
   }
 }
 

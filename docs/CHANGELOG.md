@@ -29,9 +29,9 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   attachment mechanism available. `/preview` returns the exact block the
   operator will see before `/create` files it; the excerpt never goes through
   the LLM reformulator. Web UI: `web-ui/app/_lib/diagnosticsBuffer.ts` buffers
-  the most recent `window` `error`/`unhandledrejection` events and API error
-  bodies; `CreateIssueButton` gained an opt-in toggle to include the buffered
-  excerpt in the preview/create request.
+  the most recent `window` `error`/`unhandledrejection` events;
+  `CreateIssueButton` gained an opt-in toggle to include the buffered excerpt
+  in the preview/create request.
 - The diagnostics fence delimiter is sized dynamically (one backtick longer
   than the longest backtick run found in the sanitized excerpt, the standard
   CommonMark technique) so diagnostics content containing its own ` ``` ` run
@@ -57,6 +57,23 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 - `CreateIssueButton` now maps the server's `invalid_diagnostics` code to a
   dedicated, translated error message on both `/preview` and `/create`
   (previously fell through to the generic error message).
+
+### Fixed — diagnostics attachment review round 2: narrow the capture scope (#433)
+
+- `ApiError` (`web-ui/app/_lib/api.ts`) no longer records a diagnostics
+  entry from its own constructor. That hook made `ApiError` — thrown by
+  every failed API call anywhere in the admin UI, including a secrets/vault
+  config `PATCH` on `/admin/settings` — a silent, global source for the
+  diagnostics ring buffer. If an operator later opted in to "attach recent
+  errors" on an unrelated bug report, that unrelated captured content
+  (only partially covered by the server's redaction) could ship to a
+  PUBLIC GitHub issue. The buffer now only ever captures `window`
+  `error`/`unhandledrejection` events — page-level crashes, not the
+  outcome of one specific admin action — so `diagnosticsBuffer.ts` no
+  longer exposes an `'api-error'` capture source or a
+  `recordApiErrorDiagnostic` export. A regression test
+  (`web-ui/app/_lib/__tests__/api.test.ts`) asserts constructing an
+  `ApiError` does not, by itself, add anything to the buffer.
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 

@@ -641,9 +641,22 @@ derselbe Secrets-Scanner (`sanitizeIssueBody`) wie für den Rest des Bodies.
 Das Excerpt geht **nie** durch den LLM-Reformulator — `/preview` liefert exakt
 den Block zurück, den `/create` anhängt, damit der Operator vor dem Filen
 sieht, was rausgeht. Web-UI-seitig puffert `web-ui/app/_lib/diagnosticsBuffer.ts`
-die letzten `window` `error`/`unhandledrejection`-Events und API-Fehlerbodies
-(`recordApiErrorDiagnostic` in `web-ui/app/_lib/api.ts`); `CreateIssueButton`
+die letzten `window` `error`/`unhandledrejection`-Events; `CreateIssueButton`
 hat einen Toggle, der den gepufferten Excerpt optional mitschickt.
+
+**Scope-Fix (Review Runde 2):** ursprünglich hookte `ApiError`s Constructor
+(`web-ui/app/_lib/api.ts`) in `recordApiErrorDiagnostic`, sodass **jeder**
+fehlgeschlagene API-Call irgendwo im Admin-UI — auch ein Secrets/Vault-Config-
+`PATCH` auf `/admin/settings` — still in den Diagnostics-Ring-Buffer floss.
+Opted ein Operator später bei einem unrelated Bug-Report "attach recent
+errors" ein, hätte genau dieser unrelated Capture (nur teilweise durch
+Server-Redaction abgedeckt) in einem PUBLIC GitHub-Issue landen können. Fix:
+der globale Hook ist aus dem `ApiError`-Constructor entfernt; der Buffer
+akzeptiert nur noch `window` `error`/`unhandledrejection` (Page-Level-Crashes,
+nicht eine spezifische Admin-Aktion). `diagnosticsBuffer.ts` exportiert kein
+`recordApiErrorDiagnostic` und keine `'api-error'`-Source mehr. Test:
+`web-ui/app/_lib/__tests__/api.test.ts` — Konstruktion eines `ApiError` fügt
+dem Buffer nichts hinzu.
 
 **Sicherheitsdetail (Review-Fix):** das Diagnostics-Excerpt ist
 attacker-influenceable (Fehlermeldungen, rohe Server-Response-Bodies) und

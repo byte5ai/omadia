@@ -2,15 +2,23 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../_lib/test-utils';
-import { recordApiErrorDiagnostic } from '../../_lib/diagnosticsBuffer';
+import { initDiagnosticsCapture } from '../../_lib/diagnosticsBuffer';
 import { CreateIssueButton } from '../CreateIssueButton';
 
 /**
  * Mocks the API client, not the diagnostics ring buffer — CreateIssueButton
- * imports `formatDiagnosticsExcerpt`/`hasDiagnostics`/`recordApiErrorDiagnostic`
+ * imports `formatDiagnosticsExcerpt`/`hasDiagnostics`/`initDiagnosticsCapture`
  * from the real module, which is what lets these tests simulate the buffer
  * changing between the /preview and /create calls (issue #433 review).
+ * Diagnostics entries are seeded via real `window` `error` events, not a
+ * direct buffer-write helper — the buffer only ever captures window
+ * error/unhandledrejection events, never individual failed API calls (see
+ * the #433 review narrowed-scope fix in diagnosticsBuffer.ts/api.ts).
  */
+function seedWindowError(message: string): void {
+  initDiagnosticsCapture();
+  window.dispatchEvent(new ErrorEvent('error', { message }));
+}
 const { mockPreview, mockCreate, mockStatus } = vi.hoisted(() => ({
   mockPreview: vi.fn(),
   mockCreate: vi.fn(),
@@ -52,7 +60,7 @@ describe('<CreateIssueButton /> diagnostics (#433 review)', () => {
   });
 
   it('sends the exact preview-time diagnostics snapshot to /create, unaffected by later buffer changes', async () => {
-    recordApiErrorDiagnostic({ status: 500, message: 'seed-error-before-preview' });
+    seedWindowError('seed-error-before-preview');
     mockStatus.mockResolvedValue({ connected: true, login: 'op', oauthConfigured: true });
     mockPreview.mockResolvedValue({
       title: 'A bug',
@@ -80,7 +88,7 @@ describe('<CreateIssueButton /> diagnostics (#433 review)', () => {
     // Simulate an unrelated error elsewhere in the app while the operator is
     // still looking at the preview screen — the live buffer now differs from
     // what /preview sanitized and echoed back.
-    recordApiErrorDiagnostic({ status: 500, message: 'drift-error-during-preview' });
+    seedWindowError('drift-error-during-preview');
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create issue' }));
 
