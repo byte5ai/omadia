@@ -314,8 +314,14 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
         deadlineIso: repo?.gateDeadlineIso,
       });
       // The apply gate fires while the job is `applying` (host-side; phase is
-      // review/pr, NOT await_human), so park on the status, not the phase.
-      await jobStore.parkForApplyGate(job.id);
+      // review/pr, NOT await_human) — or `failed` on a `POST /jobs/:id/apply`
+      // retry that gated. `parkForApplyGate` admits both; a false return means the
+      // job moved to an unexpected state under us, which would leave the gate
+      // dangling, so surface it loudly rather than silently strand the operator.
+      const parked = await jobStore.parkForApplyGate(job.id);
+      if (!parked) {
+        log(`[dev-platform] diff-policy gate ${gate.id}: parkForApplyGate found job '${job.id}' not parkable (status moved) — gate may dangle`);
+      }
       // The runner already exited (apply is host-side); revoke its scoped token.
       // Best-effort — a revoke failure must not un-park the now-`waiting` job.
       try {
@@ -339,6 +345,10 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     backends,
     applyService,
     policyGate,
+    // DURABLE operator-approval signal: any apply of a job with a resolved
+    // diff-policy gate (sweep, crash recovery, or the resume path) demotes gate
+    // findings — so the sweep can never re-gate an approved job (Forge audit #1).
+    hasApprovedApplyGate: (jobId) => gateStore.hasApprovedApplyGate(jobId),
     // Pin the base tree BEFORE the runner clones. `base_sha` is written once
     // (COALESCE), so a re-provision of the same job keeps the tree the agent
     // first saw. A forge that cannot answer must not silently produce an
@@ -497,15 +507,9 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
   // returns cleanly. Idempotent: `resumeApplyAfterGate` is CAS-fenced on
   // `waiting`, so a self-heal re-drive of an already-applied job is a no-op —
   // no second PR.
-  const onApprovedDiffPolicyGate = async (gate: DevJobGate, resolvedBy: string): Promise<void> => {
-    const resumed = await jobStore.resumeApplyAfterGate(gate.jobId);
-    if (!resumed) {
-      // Already re-applied (done/failed) or already applying — nothing to redo.
-      log(`[dev-platform] diff-policy gate ${gate.id}: resume skipped (job not waiting)`);
-      return;
-    }
+  const writeOverrideAudit = (gate: DevJobGate, resolvedBy: string): Promise<unknown> =>
     // Audit the operator override on the same trail the policy verdict uses.
-    await jobStore.addArtifact(
+    jobStore.addArtifact(
       gate.jobId,
       'review_verdict',
       JSON.stringify({
@@ -517,18 +521,34 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
       }),
       { source: 'diff_policy_override', gateId: gate.id, resolvedBy },
     );
+
+  const onApprovedDiffPolicyGate = async (gate: DevJobGate, resolvedBy: string): Promise<void> => {
+    // `resumeGatedApply` takes the worker's in-flight guard BEFORE the waiting→
+    // applying flip and holds it across the re-apply, so the periodic apply sweep
+    // can never re-apply the job WITHOUT the approval in the gap (Forge audit #1).
+    // It returns `{skipped}` for a self-heal re-drive of an already-resumed gate.
+    let result: ApplyJobOutcome | { skipped: true };
     try {
-      await worker.applyJob(gate.jobId, { operatorApprovedGate: true });
+      result = await worker.resumeGatedApply(gate.jobId);
     } catch (err) {
-      // A deny finding was hiding behind the gate — never overridable. applyJob has
-      // already persisted the deny audit and finalized the job `failed`; swallow so
-      // the operator's resolve does not surface a 500 for a correctly-failed job.
+      // A deny finding was hiding behind the gate — never overridable. applyJobInner
+      // already persisted the deny audit and finalized the job `failed`; record the
+      // operator's (denied) override and swallow so the resolve does not 500 for a
+      // correctly-failed job.
       if (err instanceof DiffApplyError && err.code === 'policy_deny') {
+        await writeOverrideAudit(gate, resolvedBy);
         log(`[dev-platform] diff-policy gate ${gate.id}: re-apply DENIED (deny finding not overridable); job failed`);
         return;
       }
       throw err;
     }
+    if ('skipped' in result) {
+      // Already re-applied (done/failed) or another caller holds it — nothing to redo.
+      log(`[dev-platform] diff-policy gate ${gate.id}: resume skipped (job not waiting)`);
+      return;
+    }
+    // The re-apply opened the PR — record the operator override.
+    await writeOverrideAudit(gate, resolvedBy);
   };
 
   // --- W2 human-gate admin router (spec §5) --------------------------------

@@ -95,6 +95,9 @@ export interface DevJobWorkerStore extends FinalizeStore {
   findStalled(cutoff: Date): Promise<DevJob[]>;
   /** Active jobs started before `startedBefore` — over wall-clock budget. */
   findOverWallClock(startedBefore: Date): Promise<DevJob[]>;
+  /** W3: CAS-resume a diff-policy-gate-parked job `waiting → applying` for the
+   *  host-side re-apply. False ⇒ not parkable/already resumed (see resumeGatedApply). */
+  resumeApplyAfterGate(jobId: string): Promise<boolean>;
 }
 
 /** Repo lookup — admission facts (runsTests) and apply targets (owner/name/base). */
@@ -150,6 +153,11 @@ export interface DevJobWorkerDeps {
   /** Disposes of a non-`allow` diff-policy verdict (gate → park; deny → audit).
    *  Absent ⇒ a policy gate/deny finalizes `failed` like any other apply error. */
   policyGate?: DiffPolicyGateHandler;
+  /** DURABLE "operator approved this job's diff-policy gate" signal (spec §6). Read
+   *  on EVERY apply so a re-apply driven by the periodic sweep or by crash recovery
+   *  demotes gate findings too — not only the in-process resume path. Absent ⇒ never
+   *  approved (unit tests without a gate store); the explicit resume opt still works. */
+  hasApprovedApplyGate?: (jobId: string) => Promise<boolean>;
   prepareProvision: PrepareProvision;
   /** The base url the runner phones home to (`DEV_PLATFORM_RUNNER_BASE_URL`). */
   baseUrl: string;
@@ -466,6 +474,29 @@ export class DevJobWorker {
     }
   }
 
+  /**
+   * Resume an operator-APPROVED diff-policy gate (spec §6): flip the parked job
+   * `waiting → applying` and re-apply the already-produced diff with gate findings
+   * demoted. The in-flight guard is taken BEFORE the status flip and held across
+   * it, so the periodic `applyReady` sweep sees `applying.has(jobId)` and skips —
+   * it can never grab the job in the window between the flip and the apply and
+   * re-apply it WITHOUT the approval (Forge audit #1). Returns `{ skipped: true }`
+   * when another caller already holds the job or the CAS finds it not `waiting`
+   * (a self-heal re-drive of an already-resumed gate), so no second PR is opened.
+   * A `deny` hiding behind the gate still throws `policy_deny` from `applyJobInner`.
+   */
+  async resumeGatedApply(jobId: string): Promise<ApplyJobOutcome | { skipped: true }> {
+    if (this.applying.has(jobId)) return { skipped: true };
+    this.applying.add(jobId);
+    try {
+      const resumed = await this.deps.store.resumeApplyAfterGate(jobId);
+      if (!resumed) return { skipped: true };
+      return await this.applyJobInner(jobId, { operatorApprovedGate: true });
+    } finally {
+      this.applying.delete(jobId);
+    }
+  }
+
   private async applyJobInner(
     jobId: string,
     opts?: { operatorApprovedGate?: boolean },
@@ -491,6 +522,12 @@ export class DevJobWorker {
 
       const { diff, numstat } = splitDiffBundle(artifact.content);
       const branch = job.branch ?? defaultBranchName(job);
+      // Derive the operator-approval durably: an explicit resume opt OR a resolved
+      // diff-policy gate on this job. Either source demotes ONLY gate-severity
+      // findings; a deny still denies (the engine checks deny first, unaffected).
+      const operatorApprovedGate =
+        opts?.operatorApprovedGate === true ||
+        (this.deps.hasApprovedApplyGate ? await this.deps.hasApprovedApplyGate(job.id) : false);
       const applied = await this.deps.applyService.apply({
         job: { id: job.id, branch, baseSha: job.baseSha ?? '' },
         repo: { owner: repo.owner, name: repo.name, defaultBranch: repo.defaultBranch },
@@ -501,9 +538,12 @@ export class DevJobWorker {
         // overrides, and the job's own tokens (see `jobTokensFor`).
         policyOverrides: repo.policyOverrides,
         jobTokens: jobTokensFor(job),
-        // W3: on an operator-approved diff-policy gate resume, demote gate findings
-        // (deny findings still block). Only set when explicitly approved.
-        ...(opts?.operatorApprovedGate ? { operatorApprovedGate: true } : {}),
+        // W3: demote gate-severity findings (deny findings still block) when an
+        // operator approved this job's diff-policy gate. The signal is taken from
+        // DURABLE gate state — not only the explicit resume opt — so a re-apply
+        // driven by the periodic sweep or by crash recovery carries the approval
+        // too and never re-gates it away (Forge audit #1).
+        ...(operatorApprovedGate ? { operatorApprovedGate: true } : {}),
       });
 
       await this.finalize(job.id, 'done', {

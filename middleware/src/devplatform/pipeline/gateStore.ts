@@ -174,6 +174,25 @@ export class DevJobGateStore {
   }
 
   /**
+   * True iff the job has a RESOLVED (operator-approved) diff-policy gate — the
+   * DURABLE signal that a re-apply must demote gate-severity findings. The worker
+   * reads this so a re-apply driven by the periodic apply sweep or by crash
+   * recovery carries the operator's approval too, not just the in-process resume
+   * path — otherwise a resumed job the sweep re-applies would re-gate and void the
+   * approval (Forge W3 gate-resume audit #1). Deny findings are unaffected either
+   * way; the flag only demotes gate-severity findings.
+   */
+  async hasApprovedApplyGate(jobId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `SELECT 1 FROM dev_job_gates
+        WHERE job_id = $1 AND gate_kind = 'diff_policy' AND status = 'resolved'
+        LIMIT 1`,
+      [jobId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
    * Resolve a gate. Compare-and-swap: only a WAITING gate flips, so a second
    * concurrent resolver gets rowCount 0 and this returns null → the route maps
    * that to 409 `gate_not_pending`. `resolvedBy` is the canonical responder sub.

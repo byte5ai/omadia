@@ -364,18 +364,22 @@ export class DevJobStore {
    * W3: park a job at the AUTHORITATIVE diff-policy apply gate. Unlike the W2
    * clarify gate, the apply gate fires host-side while the job is `applying` (the
    * runner already uploaded its diff and exited) — the phase is `review`/`pr`, not
-   * `await_human` — so this is fenced on `status = 'applying'`, NOT on the phase.
-   * The phase is left untouched: the resume re-applies the diff, it does not
-   * re-run a phase. `waiting` is outside the active set, so a parked job holds no
-   * runner slot and is never swept by the stall/wall-clock sweeps. Returns true iff
-   * a row was parked (a re-drive after the park already happened matches 0 rows).
+   * `await_human` — so this is fenced on the STATUS, NOT the phase. The apply also
+   * runs on a `failed`-after-diff retry (`POST /jobs/:id/apply`); if THAT re-apply
+   * gates, the job is `failed`, so the fence admits `applying` OR `failed` —
+   * otherwise the gate would dangle on a job that never parks and the operator's
+   * later approval silently no-ops (Forge W3 gate-resume audit #6). The phase is
+   * left untouched: the resume re-applies the diff, it does not re-run a phase.
+   * `waiting` is outside the active set, so a parked job holds no runner slot and
+   * is never swept by the stall/wall-clock sweeps. Returns true iff a row was
+   * parked (a re-drive after the park already happened matches 0 rows).
    */
   async parkForApplyGate(jobId: string): Promise<boolean> {
     const r = await this.pool.query(
       `UPDATE dev_jobs
           SET status = 'waiting', claimed_by = NULL, claimed_at = NULL,
               runner_handle = NULL, updated_at = now()
-        WHERE id = $1 AND status = 'applying'`,
+        WHERE id = $1 AND status IN ('applying', 'failed')`,
       [jobId],
     );
     return (r.rowCount ?? 0) > 0;
@@ -387,12 +391,16 @@ export class DevJobStore {
    * and the claim loop's `applyReady` sweep both pick it up. CAS-fenced on
    * `status = 'waiting'`: a self-heal re-drive of a gate whose job already
    * re-applied (now `done`/`failed`/`applying`) matches 0 rows and returns false,
-   * so the caller skips the re-apply and no second PR is opened.
+   * so the caller skips the re-apply and no second PR is opened. The `phase <>
+   * 'await_human'` guard makes this robust to a future caller: a REVIEW gate parks
+   * its job `waiting` AT `await_human` (no diff to apply), and resuming that into
+   * `applying` would fail with `no_diff` — only a diff-policy-parked job (phase
+   * `review`/`pr`) may be resumed here (Forge W3 gate-resume audit #6 defensive).
    */
   async resumeApplyAfterGate(jobId: string): Promise<boolean> {
     const r = await this.pool.query(
       `UPDATE dev_jobs SET status = 'applying', updated_at = now()
-        WHERE id = $1 AND status = 'waiting'`,
+        WHERE id = $1 AND status = 'waiting' AND phase <> 'await_human'`,
       [jobId],
     );
     return (r.rowCount ?? 0) > 0;
