@@ -196,6 +196,31 @@ describe('devplatform/installationTokens — JobTokenRegistry (finalizeDevJob re
     assert.match(skip?.reason ?? '', /revoke_failed: github down/);
   });
 
+  it('revokes LATER tokens even when the audit sink throws on an EXPIRED-token skip (Forge #3)', async () => {
+    // The expired-token skip appends OUTSIDE any try/catch. If that append throws
+    // and is not guarded, it aborts the loop and every later, still-live token is
+    // never revoked — leaked until GitHub's 1-hour self-expiry.
+    const revoked: string[] = [];
+    const reg = new JobTokenRegistry(
+      (_jobId, event) => {
+        if (event.action === 'revoke_skipped' && event.reason === 'already_expired') {
+          throw new Error('audit sink down');
+        }
+      },
+      () => 10_000,
+      async (token) => void revoked.push(token),
+    );
+    // Token 1 is EXPIRED (skip path); token 2 is live and must still be revoked.
+    await reg.record('job-x', { token: 'ghs_expired', expiresAt: new Date(1_000) }, {
+      installationId: '1', scope: 'contents:read', apiBaseUrl: 'https://api.github.com',
+    });
+    await reg.record('job-x', { token: 'ghs_live', expiresAt: new Date(999_999) }, {
+      installationId: '1', scope: 'contents:read', apiBaseUrl: 'https://api.github.com',
+    });
+    await assert.doesNotReject(() => reg.revoker(fakeJob('job-x')));
+    assert.deepEqual(revoked, ['ghs_live'], 'the live token is revoked despite the skip-event audit failure');
+  });
+
   it('is idempotent — a second revoke of the same job is a no-op', async () => {
     let revokeCalls = 0;
     const reg = new JobTokenRegistry(

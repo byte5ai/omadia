@@ -87,3 +87,23 @@ export async function listArtifacts(pool: Pool, jobId: string): Promise<DevJobAr
   );
   return r.rows.map(toArtifact);
 }
+
+/**
+ * The most recent artifact of a kind for a job, or null. W2's gate opens on the
+ * `clarify` phase but must pin the `plan` artifact — which was persisted a phase
+ * earlier — so it looks it up here rather than trusting the transient clarify
+ * result (which carries no plan). `DESC LIMIT 1` = the latest, which on a
+ * re-implement round is the plan the human actually approved.
+ */
+export async function getLatestArtifact(
+  pool: Pool,
+  jobId: string,
+  kind: string,
+): Promise<DevJobArtifact | null> {
+  const r = await pool.query<Row>(
+    `SELECT ${ARTIFACT_COLS} FROM dev_job_artifacts
+      WHERE job_id = $1 AND kind = $2 ORDER BY created_at DESC LIMIT 1`,
+    [jobId, kind],
+  );
+  return r.rows[0] ? toArtifact(r.rows[0]) : null;
+}

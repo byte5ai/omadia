@@ -364,4 +364,29 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
   it('releaseClaim rejects a non-UUID lease loudly', async () => {
     await assert.rejects(() => store.releaseClaim(randomUUID(), 'not-a-uuid'), TypeError);
   });
+
+  it('requeueAtPhase is FENCED on await_human — a job elsewhere is not re-queued (Forge #4)', async () => {
+    const { hash } = mintRunnerToken();
+    const job = await store.createJob({
+      repoId: repo.id, kind: 'fix_issue', brief: 'fence', source: 'admin',
+      backend: 'docker', createdBy: MARK, runnerTokenHash: hash,
+    });
+    // Job is at the default phase (implement/analyze), NOT await_human.
+    assert.equal(await store.requeueAtPhase(job.id, 'implement'), false, 'a non-parked job is not re-queued');
+    const still = await store.getJob(job.id);
+    assert.equal(still?.status, 'queued', 'and its status is untouched by the no-op');
+
+    // Park it at the gate, THEN requeue works exactly once.
+    const lease = randomUUID();
+    let claimed = await store.claimNextQueued(lease);
+    while (claimed && claimed.id !== job.id) claimed = await store.claimNextQueued(lease);
+    await store.advancePhase(job.id, 'implement', 'await_human');
+    await store.parkForGate(job.id);
+    assert.equal(await store.requeueAtPhase(job.id, 'implement'), true, 'a parked job re-queues');
+    const requeued = await store.getJob(job.id);
+    assert.equal(requeued?.status, 'queued');
+    assert.equal(requeued?.phase, 'implement');
+    // Idempotent: a second re-drive (self-heal) is a no-op — the job already moved.
+    assert.equal(await store.requeueAtPhase(job.id, 'implement'), false, 'the re-drive is idempotent');
+  });
 });

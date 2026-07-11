@@ -54,7 +54,7 @@ function job(over: Partial<DevJob> = {}): DevJob {
 interface Harness {
   engine: PhaseEngine;
   phase: { value: DevJobPhase };
-  artifacts: Array<{ kind: string; content: string }>;
+  artifacts: Array<{ kind: string; content: string; meta: Record<string, unknown>; id: string }>;
   readonly reviewState: { attempt: number; fingerprint: string | null };
   gatesOpened: OpenGateInput[];
   finalized: Array<{ status: string; reason?: string }>;
@@ -66,7 +66,7 @@ interface Harness {
 function harness(j: DevJob): Harness {
   const state = {
     phase: { value: j.phase },
-    artifacts: [] as Array<{ kind: string; content: string }>,
+    artifacts: [] as Array<{ kind: string; content: string; meta: Record<string, unknown>; id: string }>,
     reviewState: { attempt: j.reviewAttempt, fingerprint: j.reviewFingerprint },
     gatesOpened: [] as OpenGateInput[],
     finalized: [] as Array<{ status: string; reason?: string }>,
@@ -74,9 +74,14 @@ function harness(j: DevJob): Harness {
     parked: false,
   };
   const store: PhaseEngineStore = {
-    async addArtifact(_jobId, kind, content) {
-      state.artifacts.push({ kind, content });
+    async addArtifact(_jobId, kind, content, meta) {
+      state.artifacts.push({ kind, content, meta: meta ?? {}, id: `art-${state.artifacts.length + 1}` });
       return `art-${state.artifacts.length}`;
+    },
+    async getLatestArtifact(_jobId, kind) {
+      const matches = state.artifacts.filter((a) => a.kind === kind);
+      const last = matches[matches.length - 1];
+      return last ? { id: last.id, meta: last.meta } : null;
     },
     async advancePhase(_jobId, from, to) {
       if (state.phase.value !== from) return false;
@@ -141,10 +146,14 @@ describe('devplatform/phaseEngine — a full gated job, phase by phase', () => {
       directive: 'next',
       phase: 'plan',
     });
-    assert.deepEqual(await step(h, j, { phase: 'plan', ok: true, artifact: { kind: 'plan', content: 'the plan' } }), {
-      directive: 'next',
-      phase: 'clarify',
-    });
+    assert.deepEqual(
+      await step(h, j, {
+        phase: 'plan',
+        ok: true,
+        artifact: { kind: 'plan', content: 'the plan', meta: { planSha256: 'plan-hash-abc' } },
+      }),
+      { directive: 'next', phase: 'clarify' },
+    );
     // clarify → park: gate opens, token revoked, runner told to exit.
     assert.deepEqual(await step(h, j, { phase: 'clarify', ok: true, questions: [{ id: 'q1', text: 'which?' }] }), {
       directive: 'park',
@@ -155,6 +164,11 @@ describe('devplatform/phaseEngine — a full gated job, phase by phase', () => {
     assert.equal(h.gatesOpened.length, 1);
     assert.deepEqual(h.gatesOpened[0]!.questions, [{ id: 'q1', text: 'which?' }]);
     assert.equal(h.gatesOpened[0]!.baseSha, 'deadbeef', 'the gate pins the base tree');
+    // Forge #1: the gate must pin the PERSISTED plan (delivered in the plan phase,
+    // not the clarify result) — otherwise a resume implements against an
+    // unapproved plan.
+    assert.equal(h.gatesOpened[0]!.planSha256, 'plan-hash-abc', 'the gate pins the approved plan hash');
+    assert.ok(h.gatesOpened[0]!.planArtifactId, 'the gate references the plan artifact');
 
     // Provision B (after the gate resolves and the job re-queues at implement).
     h.phase.value = 'implement';

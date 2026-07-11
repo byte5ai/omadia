@@ -49,9 +49,18 @@ export class StalePhaseError extends Error {
   }
 }
 
+/** A persisted artifact, narrowed to what the gate pins. */
+export interface StoredArtifact {
+  id: string;
+  meta: Record<string, unknown>;
+}
+
 /** The store surface the engine needs (real DevJobStore satisfies it). */
 export interface PhaseEngineStore {
   addArtifact(jobId: string, kind: string, content: string, meta?: Record<string, unknown>): Promise<string>;
+  /** The latest artifact of a kind — the gate pins the persisted `plan`, not the
+   *  transient clarify input (which carries none). */
+  getLatestArtifact(jobId: string, kind: string): Promise<StoredArtifact | null>;
   advancePhase(jobId: string, from: DevJobPhase, to: DevJobPhase): Promise<boolean>;
   parkForGate(jobId: string): Promise<boolean>;
   setReviewState(jobId: string, attempt: number, fingerprint: string | null): Promise<void>;
@@ -86,15 +95,13 @@ export class PhaseEngine {
 
     // 2. Persist the artifact BEFORE the transition — the plan the gate references,
     //    the diff the pr applies, must exist when the next step reads them.
-    let planArtifactId: string | null = null;
     if (input.artifact) {
-      const id = await this.deps.store.addArtifact(
+      await this.deps.store.addArtifact(
         job.id,
         input.artifact.kind,
         input.artifact.content,
         input.artifact.meta ?? {},
       );
-      if (input.artifact.kind === 'plan') planArtifactId = id;
     }
 
     // 3. review has a loop decision that shapes the transition input.
@@ -169,10 +176,15 @@ export class PhaseEngine {
         const advanced = await this.deps.store.advancePhase(job.id, 'clarify', 'await_human');
         if (!advanced) throw new StalePhaseError(job.id, input.phase, job.phase);
         const principal = this.deps.gatePrincipal(job);
+        // Pin the PERSISTED plan (delivered a phase earlier), not the transient
+        // clarify input — otherwise the gate stores nothing and a resume could
+        // implement against a plan the human never approved (Forge #1). `planSha256`
+        // is stored in the plan artifact's meta by the plan phase.
+        const planArtifact = await this.deps.store.getLatestArtifact(job.id, 'plan');
         await this.deps.gates.open({
           jobId: job.id,
-          planArtifactId,
-          planSha256: input.artifact?.meta?.['planSha256'] as string | undefined,
+          planArtifactId: planArtifact?.id ?? null,
+          planSha256: (planArtifact?.meta?.['planSha256'] as string | undefined) ?? null,
           baseSha: job.baseSha,
           questions: input.questions ?? [],
           principalKind: principal.kind,

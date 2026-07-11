@@ -28,6 +28,13 @@ export interface DevPlatformGatesDeps {
   onApproved: (gate: DevJobGate, answers: GateAnswer[], resolvedBy: string) => Promise<void>;
   /** Called after a gate is rejected — cancel the job, record the note. */
   onRejected: (gate: DevJobGate, note: string | undefined, resolvedBy: string) => Promise<void>;
+  /**
+   * Is the gate's job STILL parked at the gate (status `waiting`, phase
+   * `await_human`)? Used to distinguish a crash that stranded the job (the gate
+   * resolved but the transition never ran → self-heal) from a normal concurrent
+   * resolve (the winner already moved the job → 409). Absent ⇒ no self-heal.
+   */
+  isJobStuckAtGate?: (jobId: string) => Promise<boolean>;
   log?: (msg: string) => void;
 }
 
@@ -49,6 +56,18 @@ export function createDevPlatformGatesRouter(deps: DevPlatformGatesDeps): Router
   const router = Router();
   router.use(expressJson({ limit: '256kb' }));
   const log = deps.log ?? (() => {});
+
+  /** Drive the approve/reject transition from a RESOLVED gate's durable state, so
+   *  a re-drive (self-heal) reproduces the winner's decision exactly. The reject
+   *  note lives only in the winner's request (the gate does not persist it), so a
+   *  self-heal re-drive passes undefined — the job is still cancelled. */
+  async function driveSideEffect(gate: DevJobGate, note?: string): Promise<void> {
+    if (gate.status === 'resolved') {
+      await deps.onApproved(gate, gate.answers ?? [], gate.resolvedBy ?? '');
+    } else {
+      await deps.onRejected(gate, note, gate.resolvedBy ?? '');
+    }
+  }
 
   /** The live holder set for a gate. */
   async function holdersOf(gate: DevJobGate): Promise<string[]> {
@@ -130,20 +149,38 @@ export function createDevPlatformGatesRouter(deps: DevPlatformGatesDeps): Router
       }
 
       // Compare-and-swap: only a WAITING gate flips. A second concurrent resolver
-      // gets null → 409, and only the winner advances the job.
-      const resolved = await deps.gates.resolve(gateId, approved, canonical(sub), answers);
-      if (!resolved) {
-        sendError(res, 409, 'devplatform.gate_not_pending', 'gate is no longer waiting');
+      // gets null. The gate flip and the job transition are two writes, so a crash
+      // BETWEEN them would leave the gate resolved while the job sits at
+      // `await_human` forever (Forge #2). The recovery below closes that window:
+      // a null CAS re-loads the gate, and if it is already resolved/rejected we
+      // re-drive the side effect from the GATE'S stored state. The side effects
+      // (`requeueAtPhase` fenced on await_human; a no-op if already moved) are
+      // idempotent, so re-driving the winner's transition is safe and self-heals a
+      // job stuck by a crash — while a genuine expired/cancelled gate still 409s.
+      const winner = await deps.gates.resolve(gateId, approved, canonical(sub), answers);
+      if (winner) {
+        // We flipped it. Drive the transition from the WINNER's stored state.
+        await driveSideEffect(winner, note);
+        res.json({ ok: true, jobId: winner.jobId, status: winner.status });
         return;
       }
 
-      // Side effects run for the WINNER only (the CAS guarantees one).
-      if (approved) {
-        await deps.onApproved(resolved, answers, canonical(sub));
-      } else {
-        await deps.onRejected(resolved, note, canonical(sub));
+      // CAS lost. Either the gate is expired/cancelled (a genuine 409), a normal
+      // concurrent resolver already moved the job (409), or a crash left the gate
+      // resolved while the job is still parked (self-heal).
+      const current = await deps.gates.get(gateId);
+      if (!current || (current.status !== 'resolved' && current.status !== 'rejected')) {
+        sendError(res, 409, 'devplatform.gate_not_pending', 'gate is no longer resolvable');
+        return;
       }
-      res.json({ ok: true, jobId: resolved.jobId, status: resolved.status });
+      const stuck = deps.isJobStuckAtGate ? await deps.isJobStuckAtGate(current.jobId) : false;
+      if (!stuck) {
+        sendError(res, 409, 'devplatform.gate_not_pending', 'gate is already resolved');
+        return;
+      }
+      // The winner's transition never landed — re-drive it, idempotently.
+      await driveSideEffect(current);
+      res.json({ ok: true, jobId: current.jobId, status: current.status, recovered: true });
     })().catch((err) => {
       log(`[dev-platform] gate resolve failed: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent) sendError(res, 500, 'devplatform.internal', 'internal error');

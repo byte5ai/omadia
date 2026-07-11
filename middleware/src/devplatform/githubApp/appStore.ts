@@ -85,6 +85,8 @@ export class DevGithubAppStore {
    */
   async saveApp(conv: AppConversion, apiBaseUrl: string, createdBy: string): Promise<DevGithubApp> {
     const client = await this.pool.connect();
+    const secretNames = ['private_key', 'webhook_secret', 'client_id', 'client_secret'] as const;
+    let vaultWritten = false;
     try {
       await client.query('BEGIN');
       const r = await client.query<AppRow>(
@@ -103,10 +105,23 @@ export class DevGithubAppStore {
         [secretKey(String(conv.id), 'client_id')]: conv.clientId,
         [secretKey(String(conv.id), 'client_secret')]: conv.clientSecret,
       });
+      vaultWritten = true;
       await client.query('COMMIT');
       return toApp(r.rows[0]!);
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
+      // A COMMIT that fails AFTER the Vault write rolls back the row but leaves the
+      // secrets — the mirror of the half-registered App the row-first order avoids
+      // (Forge #5). Best-effort remove them so no orphan secret survives. Keyed by
+      // the stable app_id, so a re-run overwrites them anyway; this just keeps the
+      // failed attempt from leaving credential material behind.
+      if (vaultWritten) {
+        await Promise.all(
+          secretNames.map((n) =>
+            this.vault.deleteKey(DEV_PLATFORM_AGENT_ID, secretKey(String(conv.id), n)).catch(() => {}),
+          ),
+        );
+      }
       throw err;
     } finally {
       client.release();

@@ -35,7 +35,7 @@ interface Fakes {
   roles: Map<string, string[]>;
 }
 
-async function harness(seed: DevJobGate[], roles: Record<string, string[]> = {}) {
+async function harness(seed: DevJobGate[], roles: Record<string, string[]> = {}, stuck = false) {
   const state: Fakes = {
     gates: new Map(seed.map((g) => [g.id, g])),
     resolveCalls: [],
@@ -59,6 +59,7 @@ async function harness(seed: DevJobGate[], roles: Record<string, string[]> = {})
     resolveRoleHolders: async (key: string) => state.roles.get(key) ?? [],
     onApproved: async (g, answers, by) => void state.approved.push({ gate: g, answers, by }),
     onRejected: async (g, note, by) => void state.rejected.push({ gate: g, note, by }),
+    isJobStuckAtGate: async () => stuck,
   };
 
   // A fake session: the x-test-sub header becomes req.session.sub.
@@ -178,5 +179,39 @@ describe('devPlatformGates — POST /gates/:id/resolve', () => {
       method: 'POST', headers: as('user-1'), body: JSON.stringify({ approved: true }),
     });
     assert.equal(res.status, 404);
+  });
+
+  it('self-heals a crash window: gate resolved but job still parked → re-drive, 200', async () => {
+    // Simulate the winner having flipped the gate (status resolved, answers stored)
+    // but crashed before the job transition ran. A retry must re-drive the side
+    // effect from the gate's stored state, not 409 the holder into a stuck job.
+    const alreadyResolved = gate({
+      status: 'resolved',
+      resolvedBy: 'user-1',
+      answers: [{ questionId: 'q1', text: 'the winning answer' }],
+    });
+    const h = await harness([alreadyResolved], {}, /* stuck */ true);
+    after(() => h.close());
+    const res = await fetch(`${h.base}/gates/gate-1/resolve`, {
+      method: 'POST',
+      headers: as('user-1'),
+      body: JSON.stringify({ approved: true }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json() as { recovered?: boolean }).recovered, true);
+    assert.equal(h.state.approved.length, 1, 'the stranded transition was re-driven');
+    assert.deepEqual(h.state.approved[0]!.answers, [{ questionId: 'q1', text: 'the winning answer' }],
+      'from the gate’s stored answers, not the retry’s empty body');
+  });
+
+  it('does NOT re-drive when the job already moved on (normal concurrent) → 409', async () => {
+    const alreadyResolved = gate({ status: 'resolved', resolvedBy: 'other' });
+    const h = await harness([alreadyResolved], {}, /* stuck */ false);
+    after(() => h.close());
+    const res = await fetch(`${h.base}/gates/gate-1/resolve`, {
+      method: 'POST', headers: as('user-1'), body: JSON.stringify({ approved: true }),
+    });
+    assert.equal(res.status, 409);
+    assert.equal(h.state.approved.length, 0, 'no double transition');
   });
 });

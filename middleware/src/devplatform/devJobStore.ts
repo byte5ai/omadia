@@ -312,16 +312,22 @@ export class DevJobStore {
   }
 
   /**
-   * W2: park a gated job at `await_human` and re-queue it for the next provision.
+   * W2: re-queue a gate-parked job for its next provision (the implement phase).
    * The runner has exited (park); the claim loop re-provisions at the pinned
    * base_sha once the gate resolves. Sets phase, clears the lease, status→queued.
+   *
+   * FENCED on `phase = 'await_human'` (Forge #4): only a job that is genuinely
+   * parked at the gate may be re-queued. Without the fence this would re-queue ANY
+   * non-terminal job, and — since a self-heal re-drive can call it more than once
+   * — the fence is also what makes the re-drive idempotent: the second call, on a
+   * job already moved to `implement`/`queued`, matches 0 rows and is a no-op.
    */
   async requeueAtPhase(jobId: string, phase: DevJobPhase): Promise<boolean> {
     const r = await this.pool.query(
       `UPDATE dev_jobs
           SET phase = $2, status = 'queued', claimed_by = NULL, claimed_at = NULL,
               runner_handle = NULL, provision = provision + 1, updated_at = now()
-        WHERE id = $1 AND status NOT IN (${TERMINAL_SET_SQL})`,
+        WHERE id = $1 AND phase = 'await_human' AND status NOT IN (${TERMINAL_SET_SQL})`,
       [jobId, phase],
     );
     return (r.rowCount ?? 0) > 0;
@@ -501,6 +507,11 @@ export class DevJobStore {
 
   async listArtifacts(jobId: string): Promise<DevJobArtifact[]> {
     return artifacts.listArtifacts(this.pool, jobId);
+  }
+
+  /** W2: the latest artifact of a kind — used to pin the plan at gate open. */
+  async getLatestArtifact(jobId: string, kind: string): Promise<DevJobArtifact | null> {
+    return artifacts.getLatestArtifact(this.pool, jobId, kind);
   }
 
   // --- tokens --------------------------------------------------------------

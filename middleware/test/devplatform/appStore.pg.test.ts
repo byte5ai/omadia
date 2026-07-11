@@ -122,3 +122,33 @@ describe('devplatform/DevGithubAppStore (pg)', { skip: !pgAvailable }, () => {
     assert.equal(await store.getAppByGithubId('1005'), null, 'the metadata row must not survive a secrets failure');
   });
 });
+
+describe('devplatform/DevGithubAppStore — COMMIT failure after the Vault write cleans up (Forge #5)', () => {
+  it('deletes the written Vault secrets when COMMIT throws', async () => {
+    const deleted: string[] = [];
+    const vault = {
+      setMany: async () => {},
+      deleteKey: async (_agentId: string, key: string) => void deleted.push(key),
+      set: async () => {},
+      get: async () => undefined,
+      listKeys: async () => [],
+      purge: async () => {},
+    };
+    // A fake pool whose client COMMITs with a failure AFTER setMany succeeded.
+    const client = {
+      query: async (sql: string) => {
+        if (typeof sql === 'string' && sql.startsWith('COMMIT')) throw new Error('commit failed');
+        if (typeof sql === 'string' && sql.startsWith('INSERT')) {
+          return { rows: [{ id: 'row-1', app_id: '9', slug: 's', owner_login: 'o', html_url: 'u', api_base_url: 'a', created_by: 'c' }] };
+        }
+        return { rows: [] };
+      },
+      release: () => {},
+    };
+    const pool = { connect: async () => client } as unknown as Pool;
+    const store = new DevGithubAppStore(pool, vault as unknown as InMemorySecretVault);
+    await assert.rejects(() => store.saveApp(conversion(9), 'https://api.github.com', 'me'), /commit failed/);
+    assert.equal(deleted.length, 4, 'all four secret keys were removed');
+    assert.ok(deleted.every((k) => k.startsWith('github-app/9/')), 'the right namespace');
+  });
+});

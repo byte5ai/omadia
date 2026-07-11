@@ -194,7 +194,7 @@ export class JobTokenRegistry {
       rec.revoked = true; // mark first: a revoke that throws must not be retried into a loop
       if (rec.expiresAt.getTime() <= this.now()) {
         // Already dead. Say so rather than pretend we revoked it.
-        await this.appendEvent(job.id, {
+        await this.safeAppend(job.id, {
           action: 'revoke_skipped',
           installationId: rec.installationId,
           scope: rec.scope,
@@ -204,14 +204,10 @@ export class JobTokenRegistry {
       }
       try {
         await this.revoke(rec.token, rec.apiBaseUrl);
-        await this.appendEvent(job.id, {
-          action: 'revoke',
-          installationId: rec.installationId,
-          scope: rec.scope,
-        });
+        await this.safeAppend(job.id, { action: 'revoke', installationId: rec.installationId, scope: rec.scope });
       } catch (err) {
         // The token self-expires within the hour; record the failed attempt.
-        await this.appendEvent(job.id, {
+        await this.safeAppend(job.id, {
           action: 'revoke_skipped',
           installationId: rec.installationId,
           scope: rec.scope,
@@ -222,6 +218,21 @@ export class JobTokenRegistry {
     // The job is terminal; drop its records so the map cannot grow unbounded.
     this.byJob.delete(job.id);
   };
+
+  /**
+   * Append an audit event, swallowing a sink failure. The audit trail is
+   * best-effort; a failed event write must NEVER abort the revocation loop and
+   * leave LATER tokens live (Forge #3) — the whole point of the loop is that
+   * every token dies.
+   */
+  private async safeAppend(jobId: string, event: TokenEvent): Promise<void> {
+    try {
+      await this.appendEvent(jobId, event);
+    } catch {
+      // Nothing to do — the token is already revoked (or being skipped); losing
+      // one audit line is strictly better than leaking a live credential.
+    }
+  }
 
   /** Test/introspection: how many unrevoked tokens a job currently holds. */
   liveCount(jobId: string): number {
