@@ -46,6 +46,7 @@ function evalDiff(diff: string, extra: Partial<DiffPolicyInput> = {}) {
   return evaluateDiffPolicy({
     diff,
     numstat: extra.numstat ?? truthfulNumstat(diff),
+    jobTokens: [],
     ...extra,
   });
 }
@@ -197,13 +198,71 @@ describe('diffPolicyEngine — override merge', () => {
   });
 });
 
+/** An "add new file" diff with an explicit mode (e.g. 120000 for a symlink). */
+function addFileDiffMode(path: string, lines: string[], mode: string): string {
+  const body = lines.map((l) => '+' + l).join('\n');
+  return [
+    `diff --git a/${path} b/${path}`,
+    `new file mode ${mode}`,
+    'index 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111',
+    '--- /dev/null',
+    `+++ b/${path}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    body,
+    '',
+  ].join('\n');
+}
+
+describe('diffPolicyEngine — Forge W3 deny-bypass regressions', () => {
+  it('a secret on an added line whose CONTENT starts with `++` is still DENY (not a header)', () => {
+    // git emits the hunk line as `+` + content; content `++ghp_...` → `+++ghp_...`.
+    // The old raw-string guard mistook it for the `+++ b/path` header and skipped it.
+    const secret = 'ghp_' + 'E'.repeat(36);
+    const diff = addFileDiff('src/x.ts', ['++' + secret]);
+    const v = evalDiff(diff);
+    assert.equal(v.decision, 'deny', 'the ++-prefixed secret line must not slip the credential deny');
+    assert.ok(ruleIds(v).includes('credential-content'));
+  });
+
+  it('git-internals is case-insensitive — .GIT/ is DENY', () => {
+    const v = evalDiff(addFileDiff('.GIT/config', ['[core]']));
+    assert.equal(v.decision, 'deny');
+    assert.ok(ruleIds(v).includes('git-internals'));
+  });
+
+  it('a symlink whose TARGET is .git/ (or escapes via ..) is DENY', () => {
+    const intoGit = evalDiff(addFileDiffMode('hook-link', ['.git/hooks/pre-commit'], '120000'));
+    assert.equal(intoGit.decision, 'deny', 'a symlink into .git/ is git-internals');
+    assert.ok(ruleIds(intoGit).includes('git-internals'));
+    const escape = evalDiff(addFileDiffMode('escape', ['../../../../etc/cron.d/pwn'], '120000'));
+    assert.equal(escape.decision, 'deny', 'a symlink escaping the tree is git-internals');
+  });
+
+  it('a secret split across two added lines is still caught (whitespace-joined scan)', () => {
+    const secret = 'ghp_' + 'F'.repeat(36);
+    const half = secret.length >> 1;
+    const diff = addFileDiff('src/y.ts', [secret.slice(0, half), secret.slice(half)]);
+    const v = evalDiff(diff);
+    assert.equal(v.decision, 'deny', 'a secret split across + lines must still deny');
+    assert.ok(ruleIds(v).includes('credential-content'));
+  });
+
+  it("scans the job's OWN token values (jobTokens is required, no fail-open)", () => {
+    const nonce = 'job-nonce-' + 'Z'.repeat(24);
+    const diff = addFileDiff('src/leak.ts', [`const x = "${nonce}";`]);
+    const v = evalDiff(diff, { jobTokens: [nonce] });
+    assert.equal(v.decision, 'deny', "the job's own token in the diff is a leak");
+    assert.ok(ruleIds(v).includes('credential-content'));
+  });
+});
+
 describe('diffPolicyEngine — determinism', () => {
   it('same input → identical verdict', () => {
     const diff =
       addFileDiff('.github/workflows/ci.yml', ['on: push']) +
       addFileDiff('package.json', ['{}']) +
       addFileDiff('src/foo.ts', ['const a = 1;']);
-    const input: DiffPolicyInput = { diff, numstat: truthfulNumstat(diff) };
+    const input: DiffPolicyInput = { diff, numstat: truthfulNumstat(diff), jobTokens: [] };
     assert.deepEqual(evaluateDiffPolicy(input), evaluateDiffPolicy(input));
   });
 });
