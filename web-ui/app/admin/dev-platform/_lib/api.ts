@@ -263,3 +263,100 @@ export function cancelJob(id: string): Promise<{ ok: boolean; status: string }> 
 export function retryJob(id: string): Promise<{ ok: boolean; jobId: string }> {
   return req(`/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST', body: JSON.stringify({}) });
 }
+
+/** Same-origin URL for an artifact's text content (the plan is a text artifact).
+ *  `GET /artifacts/:id` returns `text/plain`; opening it in a new tab shows the
+ *  plan the operator is being asked to approve. */
+export const DEV_ARTIFACT_PATH = (artifactId: string): string =>
+  `${BASE}/artifacts/${encodeURIComponent(artifactId)}`;
+
+// ── GitHub App — manifest flow + registry (W2, spec §2/§9) ───────────────────
+
+export interface DevGithubAppSummary {
+  appId: string;
+  slug: string;
+  ownerLogin: string;
+  htmlUrl: string;
+  /** COUNT of installations for this App — the browser API exposes the number,
+   *  never the installation ids (those come from the post-install redirect). */
+  installations: number;
+}
+
+/**
+ * The manifest-flow start payload. `action` is a github.com URL and `manifest`
+ * is the App manifest object. GitHub requires these to be delivered as a real
+ * browser FORM POST (single field `manifest`) — NOT a fetch — so the caller
+ * hands both to an auto-submitting hidden form (see GithubAppsPanel).
+ */
+export interface ManifestStart {
+  action: string;
+  manifest: Record<string, unknown>;
+}
+
+export function startGithubAppManifest(org?: string): Promise<ManifestStart> {
+  return req('/github-app/manifest/start', {
+    method: 'POST',
+    body: JSON.stringify(org && org.trim().length > 0 ? { org: org.trim() } : {}),
+  });
+}
+
+export function listGithubApps(): Promise<{ apps: DevGithubAppSummary[] }> {
+  return req('/github-apps');
+}
+
+/** Bind an existing repo to a `github_app` credential via a known installation.
+ *  The middleware proves the installation covers the repo before persisting;
+ *  `warnings` carries any branch-protection recheck notes. */
+export function bindGithubAppCredential(
+  repoId: string,
+  installationId: string,
+): Promise<{ ok: boolean; warnings: string[] }> {
+  return req(`/repos/${encodeURIComponent(repoId)}/credential`, {
+    method: 'POST',
+    body: JSON.stringify({ kind: 'github_app', installationId: installationId.trim() }),
+  });
+}
+
+// ── Human gates — the operator approval inbox (W2, spec §5) ───────────────────
+
+export interface DevGateQuestion {
+  id: string;
+  text: string;
+}
+
+export interface DevGateAnswer {
+  questionId: string;
+  text: string;
+}
+
+export interface DevGateView {
+  id: string;
+  jobId: string;
+  questions: DevGateQuestion[];
+  planArtifactId: string | null;
+  planSha256: string | null;
+  deadlineAt: string | null;
+  createdAt: string;
+  /** Subs currently authorized to resolve this gate (resolved LIVE server-side). */
+  resolvedHolders: string[];
+}
+
+export function listWaitingGates(): Promise<{ gates: DevGateView[] }> {
+  return req('/gates?status=waiting');
+}
+
+export interface ResolveGateInput {
+  approved: boolean;
+  answers?: DevGateAnswer[];
+  note?: string;
+}
+
+export function resolveGate(
+  gateId: string,
+  input: ResolveGateInput,
+): Promise<{ ok: boolean; jobId: string; status: string }> {
+  return req(`/gates/${encodeURIComponent(gateId)}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}

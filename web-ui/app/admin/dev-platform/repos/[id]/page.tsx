@@ -8,6 +8,7 @@ import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import { ProtectionCheckList } from '../../_components/ProtectionCheckList';
+import { BindGithubAppPanel } from '../../_components/BindGithubAppPanel';
 import { checkRepo, getRepo, type DevRepoView } from '../../_lib/api';
 
 /**
@@ -87,6 +88,16 @@ export default function RepoDetailPage(): React.ReactElement {
           </Button>
         </div>
         <ProtectionCheckList branch={repo.defaultBranch} ok={repo.branchProtectionOk} />
+      </div>
+
+      <div className="mt-6 rounded-lg border border-[color:var(--border)] p-4">
+        <h2 className="text-sm font-semibold text-[color:var(--fg-strong)]">{t('credentialHeading')}</h2>
+        <p className="mt-1 text-xs text-[color:var(--fg-muted)]">
+          {t('credentialCurrent', { kind: repo.credential.kind })}
+        </p>
+        <div className="mt-4">
+          <BindGithubAppPanel repoId={repo.id} onBound={load} />
+        </div>
       </div>
     </Shell>
   );

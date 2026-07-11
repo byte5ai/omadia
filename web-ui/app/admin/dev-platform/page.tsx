@@ -10,6 +10,8 @@ import { ApiError } from '@/app/_lib/api';
 import { RepoTable } from './_components/RepoTable';
 import { JobTable } from './_components/JobTable';
 import { NewJobDialog } from './_components/NewJobDialog';
+import { GithubAppsPanel } from './_components/GithubAppsPanel';
+import { GateInbox } from './_components/GateInbox';
 import {
   cancelJob,
   checkRepo,
@@ -28,13 +30,19 @@ import {
  * (the W0-sanctioned fallback to the SSE feed); rows patch in place, no toasts.
  */
 
-type Tab = 'repos' | 'jobs';
+type Tab = 'repos' | 'jobs' | 'apps' | 'gates';
+
+const TABS: readonly Tab[] = ['repos', 'jobs', 'apps', 'gates'];
+
+function tabFromParam(value: string | null | undefined): Tab {
+  return value === 'jobs' || value === 'apps' || value === 'gates' ? value : 'repos';
+}
 
 export default function DevPlatformPage(): React.ReactElement {
   const t = useTranslations('adminDevPlatform');
   const router = useRouter();
   const params = useSearchParams();
-  const tab: Tab = params?.get('tab') === 'jobs' ? 'jobs' : 'repos';
+  const tab: Tab = tabFromParam(params?.get('tab'));
 
   const setTab = useCallback(
     (next: Tab) => {
@@ -53,7 +61,7 @@ export default function DevPlatformPage(): React.ReactElement {
       <p className="mt-3 max-w-2xl text-[15px] leading-[1.55] text-[color:var(--fg-muted)]">{t('intro')}</p>
 
       <div className="mt-8 flex flex-wrap gap-2">
-        {(['repos', 'jobs'] as const).map((k) => (
+        {TABS.map((k) => (
           <Button
             key={k}
             size="sm"
@@ -67,7 +75,7 @@ export default function DevPlatformPage(): React.ReactElement {
       </div>
 
       <div className="mt-6">
-        {tab === 'repos' ? <ReposTab /> : <JobsTab />}
+        {tab === 'repos' ? <ReposTab /> : tab === 'jobs' ? <JobsTab /> : tab === 'apps' ? <GithubAppsPanel /> : <GateInbox />}
       </div>
     </div>
   );
