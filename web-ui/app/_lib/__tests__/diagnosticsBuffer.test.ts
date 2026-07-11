@@ -88,4 +88,41 @@ describe('diagnosticsBuffer (#433)', () => {
     expect(excerpt).not.toContain('err-0\n');
     expect(excerpt).toContain('err-24');
   });
+
+  it('caps the realistic worst case safely under the server input cap (#433 review)', async () => {
+    // MAX_DIAGNOSTICS_INPUT_LEN in middleware/src/issues/issuesRouter.ts is
+    // 20000 chars. This is the module's own worst case — MAX_ENTRIES (20)
+    // window-error captures, each with a max-length message AND stack —
+    // which would otherwise reach ~120000 chars and trip the server's
+    // invalid_diagnostics rejection on a well-formed request.
+    const SERVER_MAX_DIAGNOSTICS_INPUT_LEN = 20000;
+    const mod = await freshModule();
+    mod.initDiagnosticsCapture();
+    for (let i = 0; i < 25; i++) {
+      const err = new Error('x'.repeat(2000));
+      err.stack = `${err.message}\n${'y'.repeat(4000)}`;
+      window.dispatchEvent(new ErrorEvent('error', { message: 'x'.repeat(2000), error: err }));
+    }
+
+    const excerpt = mod.formatDiagnosticsExcerpt();
+    expect(excerpt.length).toBeLessThan(SERVER_MAX_DIAGNOSTICS_INPUT_LEN);
+    // Newest entry survives; the marker signals that older ones were cut.
+    expect(excerpt).toContain('…older diagnostics entries truncated…');
+  });
+
+  it('does not truncate a realistic session (12-20 small entries)', async () => {
+    // The scenario this feature exists for — several recent errors, not
+    // pathologically large ones — should never hit the truncation path.
+    const mod = await freshModule();
+    for (let i = 0; i < 18; i++) {
+      mod.recordApiErrorDiagnostic({
+        status: 500,
+        message: `GET /v1/foo/${i} failed: 500`,
+        detail: 'internal_error',
+      });
+    }
+    const excerpt = mod.formatDiagnosticsExcerpt();
+    expect(excerpt).not.toContain('truncated');
+    expect(excerpt).toContain('foo/17');
+  });
 });

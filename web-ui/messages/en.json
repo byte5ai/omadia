@@ -2482,6 +2482,7 @@
     "errorNotConnected": "Connect your GitHub account first.",
     "errorLlm": "No AI provider is connected to phrase the issue.",
     "errorRateLimited": "Your AI provider hit a rate or quota limit. Try again later, or switch the provider in Settings.",
+    "errorDiagnostics": "The attached diagnostics excerpt was rejected. Try again, or continue without attaching it.",
     "errorGeneric": "Something went wrong. Please try again."
   },
   "store": {

@@ -30,6 +30,18 @@ const MAX_TEXT = 5000;
 type Step = 'compose' | 'preview' | 'done';
 type BodyTab = 'edit' | 'preview';
 
+/** Extracts the server's `{ code }` from an ApiError body, or null if the
+ *  error isn't an ApiError or its body isn't the expected JSON shape. */
+function apiErrorCode(err: unknown): string | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed = JSON.parse(err.body) as { code?: unknown };
+    return typeof parsed.code === 'string' ? parsed.code : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Global header action: file a GitHub issue without leaving omadia.
  *
@@ -60,10 +72,16 @@ export function CreateIssueButton(): React.ReactElement {
   const [created, setCreated] = useState<CreatedIssue | null>(null);
   // Opt-in diagnostics attachment (issue #433) — default off. `diagnostics`
   // holds the sanitized `<details>` block echoed back by /preview, so the
-  // operator reviews the exact text /create will append.
+  // operator reviews the exact text /create will append. `diagnosticsRaw`
+  // freezes the raw excerpt sent WITH that preview request: window
+  // error/unhandledrejection/API-error capture keeps running while the
+  // dialog sits on the preview screen, so re-reading the live buffer at
+  // create-time could attach text the operator never reviewed. onCreate
+  // resends this exact captured value, never a fresh read of the buffer.
   const [diagnosticsAvailable, setDiagnosticsAvailable] = useState(false);
   const [attachDiagnostics, setAttachDiagnostics] = useState(false);
   const [diagnostics, setDiagnostics] = useState<string | null>(null);
+  const [diagnosticsRaw, setDiagnosticsRaw] = useState<string | null>(null);
   const textRef = useRef<HTMLTextAreaElement | null>(null);
   const cancelRef = useRef(false);
 
@@ -104,6 +122,7 @@ export function CreateIssueButton(): React.ReactElement {
     setCreated(null);
     setAttachDiagnostics(false);
     setDiagnostics(null);
+    setDiagnosticsRaw(null);
   }, [stopPolling]);
 
   // Fetch connection status when the dialog opens; focus the textarea;
@@ -140,6 +159,7 @@ export function CreateIssueButton(): React.ReactElement {
 
   const mapPreviewError = useCallback(
     (err: unknown): string => {
+      if (apiErrorCode(err) === 'invalid_diagnostics') return t('errorDiagnostics');
       if (err instanceof ApiError) {
         if (err.status === 429) return t('errorRateLimited');
         if (err.status === 503) return t('errorLlm');
@@ -155,15 +175,20 @@ export function CreateIssueButton(): React.ReactElement {
     if (!trimmed) return;
     setBusy(true);
     setError(null);
+    // Freeze the diagnostics excerpt now — this exact value is what /preview
+    // sanitizes/echoes back, and it is what onCreate resends, so the operator
+    // reviews and files byte-identical diagnostics (see state doc comment).
+    const diagnosticsSnapshot = attachDiagnostics ? formatDiagnosticsExcerpt() : null;
     try {
       const preview = await previewGithubIssue({
         text: trimmed,
         category,
-        diagnostics: attachDiagnostics ? formatDiagnosticsExcerpt() : undefined,
+        diagnostics: diagnosticsSnapshot ?? undefined,
       });
       setTitle(preview.title);
       setBody(preview.body);
       setDiagnostics(preview.diagnostics ?? null);
+      setDiagnosticsRaw(diagnosticsSnapshot);
       setStep('preview');
     } catch (err) {
       setError(mapPreviewError(err));
@@ -181,7 +206,9 @@ export function CreateIssueButton(): React.ReactElement {
         title: title.trim(),
         body: body.trim(),
         category,
-        diagnostics: attachDiagnostics ? formatDiagnosticsExcerpt() : undefined,
+        // Resend the SAME diagnostics text the operator reviewed at preview
+        // time — never a fresh read of the live buffer (issue #433 review).
+        diagnostics: attachDiagnostics ? (diagnosticsRaw ?? undefined) : undefined,
       });
       setCreated(issue);
       setStep('done');
@@ -189,13 +216,15 @@ export function CreateIssueButton(): React.ReactElement {
       if (err instanceof ApiError && err.status === 409) {
         setError(t('errorNotConnected'));
         void refreshStatus();
+      } else if (apiErrorCode(err) === 'invalid_diagnostics') {
+        setError(t('errorDiagnostics'));
       } else {
         setError(t('errorGeneric'));
       }
     } finally {
       setBusy(false);
     }
-  }, [title, body, category, attachDiagnostics, t, refreshStatus]);
+  }, [title, body, category, attachDiagnostics, diagnosticsRaw, t, refreshStatus]);
 
   const onConnect = useCallback(async (): Promise<void> => {
     setError(null);

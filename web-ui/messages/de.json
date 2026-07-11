@@ -2482,6 +2482,7 @@
     "errorNotConnected": "Verbinde zuerst dein GitHub-Konto.",
     "errorLlm": "Es ist kein KI-Provider verbunden, um das Issue zu formulieren.",
     "errorRateLimited": "Dein KI-Provider hat ein Raten- oder Kontingentlimit erreicht. Später erneut versuchen oder in den Einstellungen den Provider wechseln.",
+    "errorDiagnostics": "Der angehängte Diagnose-Auszug wurde abgelehnt. Versuch es erneut oder fahre ohne Anhang fort.",
     "errorGeneric": "Etwas ist schiefgelaufen. Bitte erneut versuchen."
   },
   "store": {

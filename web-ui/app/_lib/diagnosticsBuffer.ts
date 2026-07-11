@@ -15,6 +15,14 @@
  * whatever is submitted (see issuesRouter.ts `buildDiagnosticsBlock`), so
  * this module does not attempt redaction; it just keeps a readable,
  * bounded excerpt.
+ *
+ * `formatDiagnosticsExcerpt()` also caps its OWN output length
+ * (MAX_EXCERPT_LEN) safely under the server's `MAX_DIAGNOSTICS_INPUT_LEN`
+ * (20000 chars, issuesRouter.ts `parseDiagnosticsField`). A realistic worst
+ * case here — MAX_ENTRIES entries each near MAX_MESSAGE_LEN + MAX_STACK_LEN —
+ * can otherwise reach ~120000 chars, which the server would reject outright
+ * with `invalid_diagnostics` even though this is exactly the "lots of
+ * recent errors" scenario the feature exists for.
  */
 
 export type DiagnosticSource = 'window-error' | 'unhandled-rejection' | 'api-error';
@@ -29,6 +37,11 @@ export interface DiagnosticEntry {
 const MAX_ENTRIES = 20;
 const MAX_MESSAGE_LEN = 2000;
 const MAX_STACK_LEN = 4000;
+// Stays comfortably under the server's MAX_DIAGNOSTICS_INPUT_LEN (20000
+// chars) so a well-formed request built from this excerpt can never trip
+// the server's oversized-payload rejection — see the module doc comment.
+const MAX_EXCERPT_LEN = 18000;
+const TRUNCATION_MARKER = '[…older diagnostics entries truncated…]\n\n';
 
 const entries: DiagnosticEntry[] = [];
 let capturing = false;
@@ -104,16 +117,24 @@ export function hasDiagnostics(): boolean {
   return entries.length > 0;
 }
 
+function formatEntry(e: DiagnosticEntry): string {
+  const header = `[${e.timestamp}] ${e.source}: ${e.message}`;
+  return e.stack ? `${header}\n${e.stack}` : header;
+}
+
 /**
  * Formats the buffer into the plain-text excerpt sent to the server,
  * oldest first. The server independently truncates to its own byte cap and
  * redacts secrets; this only produces readable, chronological text.
+ *
+ * The result is additionally capped at MAX_EXCERPT_LEN, tail-truncated (the
+ * newest — most useful — entries are kept, the oldest are dropped) with a
+ * leading marker, so this module's own worst case never exceeds what the
+ * server accepts as input.
  */
 export function formatDiagnosticsExcerpt(): string {
-  return entries
-    .map((e) => {
-      const header = `[${e.timestamp}] ${e.source}: ${e.message}`;
-      return e.stack ? `${header}\n${e.stack}` : header;
-    })
-    .join('\n\n');
+  const full = entries.map(formatEntry).join('\n\n');
+  if (full.length <= MAX_EXCERPT_LEN) return full;
+  const budget = MAX_EXCERPT_LEN - TRUNCATION_MARKER.length;
+  return `${TRUNCATION_MARKER}${full.slice(full.length - budget)}`;
 }

@@ -38,6 +38,26 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   cannot break out of the fence and have its tail rendered as live
   markdown/HTML by GitHub.
 
+### Fixed — diagnostics attachment review round: client size cap and preview/create parity (#433)
+
+- `web-ui/app/_lib/diagnosticsBuffer.ts`'s `formatDiagnosticsExcerpt()` now
+  caps its own output at 18000 chars (tail-truncated, newest entries kept,
+  with a truncation marker). Its previous unbounded worst case — 20 buffered
+  entries at max message + stack length — could reach ~120000 chars, well
+  past the server's `MAX_DIAGNOSTICS_INPUT_LEN` (20000,
+  `middleware/src/issues/issuesRouter.ts`), so a well-formed "lots of recent
+  errors" request could trip the server's `invalid_diagnostics` rejection.
+- `CreateIssueButton` now freezes the diagnostics excerpt it sends to
+  `/preview` in component state and resends that exact value to `/create`,
+  instead of re-reading the live ring buffer at create-time. Window
+  error/unhandledrejection/API-error capture keeps running while the dialog
+  sits on the preview screen, so an unrelated error elsewhere in the app
+  could previously change what got attached between the operator's review
+  and the actual filing.
+- `CreateIssueButton` now maps the server's `invalid_diagnostics` code to a
+  dedicated, translated error message on both `/preview` and `/create`
+  (previously fell through to the generic error message).
+
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
 - The save-as-template dialog no longer reads the viewer's own template id as
