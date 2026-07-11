@@ -44,7 +44,7 @@ describe('deriveJobPolicy — pure derivation', () => {
   it('api_key job: LLM-proxy base url, no subscription flags, no Anthropic hosts', () => {
     const p = deriveJobPolicy(repoInput(), { authMode: 'api_key' }, CONFIG);
     assert.equal(p.image, CONFIG.image);
-    assert.deepEqual(p.env, { ANTHROPIC_BASE_URL: CONFIG.llmProxyBaseUrl });
+    assert.deepEqual(p.env, { ANTHROPIC_BASE_URL: CONFIG.llmProxyBaseUrl, OMADIA_PIPELINE_MODE: 'collapsed' });
     // middleware host + github forge hosts + base allowlist; no repo entries.
     assert.deepEqual(p.egressAllowlist, [
       'middleware',
@@ -61,6 +61,7 @@ describe('deriveJobPolicy — pure derivation', () => {
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
       DISABLE_AUTOUPDATER: '1',
       DISABLE_TELEMETRY: '1',
+      OMADIA_PIPELINE_MODE: 'collapsed',
     });
     assert.ok(!('ANTHROPIC_BASE_URL' in p.env), 'subscription jobs get no LLM-proxy base url');
     for (const h of ['api.anthropic.com', 'claude.ai', 'platform.claude.com']) {
@@ -281,7 +282,7 @@ describe('devRunnerApi — internal job-policy endpoint', () => {
     };
     assert.equal(body.jobId, 'job-1');
     assert.equal(body.image, CONFIG.image);
-    assert.deepEqual(body.env, { ANTHROPIC_BASE_URL: CONFIG.llmProxyBaseUrl });
+    assert.deepEqual(body.env, { ANTHROPIC_BASE_URL: CONFIG.llmProxyBaseUrl, OMADIA_PIPELINE_MODE: 'gated' });
     assert.ok(body.egressAllowlist.includes('artifactory.internal'), 'repo allowlist entry is present');
     assert.ok(body.egressAllowlist.includes('middleware'));
     assert.equal(hasCredentialKey(body.env), false, 'policy env carries no credential-like key');
