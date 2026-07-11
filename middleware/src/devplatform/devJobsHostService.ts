@@ -58,6 +58,7 @@ export interface DevJobsHostJobStore {
   getJob(id: string): Promise<DevJob | null>;
   listJobs(filter?: {
     repoId?: string;
+    repoIds?: readonly string[];
     status?: DevJobStatus;
     limit?: number;
   }): Promise<DevJob[]>;
@@ -153,13 +154,15 @@ export function createDevJobsHostService(
     }): Promise<readonly DevJobDescriptor[]> {
       const scope = new Set(filter.repoIds);
       if (scope.size === 0) return [];
-      // v1: list (optionally status-filtered) then narrow to the granted repo
-      // set in memory — mirrors the admin GET /jobs launcher-scoping. The store
-      // limit caps the scan; a per-repo fan-out can replace this if a plugin
-      // ever holds a large grant set.
-      const jobs = await deps.jobStore.listJobs(
-        filter.status ? { status: filter.status } : {},
-      );
+      // Scope to the granted repos IN SQL (before LIMIT), so a caller's own jobs
+      // can never be silently dropped behind other repos' rows under the store
+      // limit (Forge W3 — the earlier list-all-then-narrow could omit them). The
+      // in-memory `scope` filter is kept as defense-in-depth against a store that
+      // ignores the filter.
+      const jobs = await deps.jobStore.listJobs({
+        repoIds: [...scope],
+        ...(filter.status ? { status: filter.status } : {}),
+      });
       return jobs.filter((j) => scope.has(j.repoId)).map(toDescriptor);
     },
 

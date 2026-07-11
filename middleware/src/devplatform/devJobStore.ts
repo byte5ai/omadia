@@ -148,6 +148,10 @@ export interface DevJobStoreOptions {
 
 export interface ListJobsFilter {
   repoId?: string;
+  /** Scope to a SET of repos IN SQL (before LIMIT). Use this — not a post-query
+   *  filter — when the caller is only entitled to certain repos, so a LIMIT can
+   *  never silently drop the caller's own jobs behind other repos' rows. */
+  repoIds?: readonly string[];
   status?: DevJobStatus;
   limit?: number;
 }
@@ -199,6 +203,12 @@ export class DevJobStore {
     if (filter.repoId) {
       params.push(filter.repoId);
       where.push(`repo_id = $${params.length}`);
+    }
+    if (filter.repoIds) {
+      // Empty set ⇒ no repo can match; short-circuit rather than emit `= ANY('{}')`.
+      if (filter.repoIds.length === 0) return [];
+      params.push([...filter.repoIds]);
+      where.push(`repo_id = ANY($${params.length}::uuid[])`);
     }
     if (filter.status) {
       params.push(filter.status);

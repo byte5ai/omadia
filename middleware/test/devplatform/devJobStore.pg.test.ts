@@ -179,6 +179,27 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     );
   });
 
+  it('listJobs scopes repoIds IN SQL before LIMIT — a caller\'s own job is never dropped behind other repos', async () => {
+    // Fresh repos so the shared `repo` fixture's jobs don't perturb the assertion.
+    const mineRepo = await newRepo();
+    const other = await newRepo();
+    // My job is created FIRST (oldest → last under created_at DESC).
+    const mine = await newQueuedJob(mineRepo.id);
+    // Then several NEWER jobs in another repo that a post-query narrow surfaces first.
+    for (let i = 0; i < 4; i++) await newQueuedJob(other.id);
+    // Scope to my repo with a limit SMALLER than the other-repo job count.
+    const rows = await store.listJobs({ repoIds: [mineRepo.id], limit: 2 });
+    // COUNTER-PROOF: with list-all-LIMIT-then-narrow, the newest 2 rows are both
+    // other-repo → narrowed to [] → my job missing. `WHERE repo_id = ANY(...)`
+    // before LIMIT returns it. Revert the repoIds branch to see this fail.
+    assert.deepEqual(rows.map((j) => j.id), [mine.id]);
+  });
+
+  it('listJobs with an empty repoIds set returns [] (no `= ANY(\'{}\')` scan)', async () => {
+    await newQueuedJob(repo.id);
+    assert.deepEqual(await store.listJobs({ repoIds: [] }), []);
+  });
+
   it('appendEvents publishes newly stored events to the live bus', async () => {
     const job = await newQueuedJob(repo.id);
     const seen: number[] = [];
