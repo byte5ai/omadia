@@ -530,11 +530,31 @@ function truncateDiagnosticsTail(
   return { text: tail, truncatedBytes };
 }
 
+/** Longest run of consecutive backticks in `text`, or 0 if none. Used to
+ *  size the fence delimiter below — CommonMark closes a fenced code block
+ *  on the first line matching (or exceeding) the opening fence's backtick
+ *  count, so a fence no longer than a backtick run already present in the
+ *  content lets that run act as a premature closer. */
+function longestBacktickRun(text: string): number {
+  const runs = text.match(/`+/g);
+  if (!runs) return 0;
+  return runs.reduce((max, run) => Math.max(max, run.length), 0);
+}
+
 /** Compose the collapsed diagnostics block appended to a filed issue: tail-
  *  truncate to MAX_DIAGNOSTICS_BYTES, then run the builder's secrets
  *  scanner over it (logs are the highest-PII payload this flow ever
  *  posts). Shared by /preview (so the operator reviews the exact block
- *  before filing) and /create (which actually appends it). */
+ *  before filing) and /create (which actually appends it).
+ *
+ *  The excerpt is attacker-influenceable (window 'error'/'unhandledrejection'
+ *  messages, raw server response bodies) and sanitizeIssueBody() does no
+ *  backtick/HTML escaping — only secret redaction and size-truncation. A
+ *  fixed ` ```text ` fence is therefore breakable by content containing its
+ *  own ``` run, letting the tail of the diagnostics render as live markdown/
+ *  HTML instead of literal text. Fixed per the standard CommonMark technique:
+ *  the fence delimiter must be longer than the longest backtick run present
+ *  in the fenced content. */
 function buildDiagnosticsBlock(raw: string): string {
   const { text, truncatedBytes } = truncateDiagnosticsTail(
     raw,
@@ -545,5 +565,7 @@ function buildDiagnosticsBlock(raw: string): string {
     truncatedBytes > 0
       ? `[…] ${truncatedBytes} older bytes truncated — showing the most recent diagnostics.\n\n`
       : '';
-  return `\n\n<details>\n<summary>Diagnostics</summary>\n\n\`\`\`text\n${marker}${sanitized.body}\n\`\`\`\n\n</details>`;
+  const fenceLength = Math.max(3, longestBacktickRun(sanitized.body) + 1);
+  const fence = '`'.repeat(fenceLength);
+  return `\n\n<details>\n<summary>Diagnostics</summary>\n\n${fence}text\n${marker}${sanitized.body}\n${fence}\n\n</details>`;
 }

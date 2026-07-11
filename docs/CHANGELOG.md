@@ -18,6 +18,26 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — attach sanitized diagnostics excerpt to filed issues (#433)
+
+- The in-app Create Issue flow (`POST /api/v1/issues/preview` and `POST
+  /api/v1/issues/create`) accepts an optional, opt-in `diagnostics` field: a
+  client-captured stack-trace/log excerpt, tail-truncated (newest lines kept)
+  to `MAX_DIAGNOSTICS_BYTES`, run through the same secrets scanner as the rest
+  of the body, and appended as a collapsed `<details>` block — GitHub's REST
+  API has no file-attachment endpoint, so an inline fenced block is the only
+  attachment mechanism available. `/preview` returns the exact block the
+  operator will see before `/create` files it; the excerpt never goes through
+  the LLM reformulator. Web UI: `web-ui/app/_lib/diagnosticsBuffer.ts` buffers
+  the most recent `window` `error`/`unhandledrejection` events and API error
+  bodies; `CreateIssueButton` gained an opt-in toggle to include the buffered
+  excerpt in the preview/create request.
+- The diagnostics fence delimiter is sized dynamically (one backtick longer
+  than the longest backtick run found in the sanitized excerpt, the standard
+  CommonMark technique) so diagnostics content containing its own ` ``` ` run
+  cannot break out of the fence and have its tail rendered as live
+  markdown/HTML by GitHub.
+
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
 - The save-as-template dialog no longer reads the viewer's own template id as

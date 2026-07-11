@@ -361,6 +361,47 @@ describe('issuesRouter (device flow)', () => {
     }
   });
 
+  it('diagnostics fence widens so an embedded ``` run cannot break out of it', async () => {
+    const h = await boot();
+    try {
+      // Concrete failing input from the #433 review: a message containing
+      // its own ``` run followed by an HTML payload. A fixed ```text fence
+      // would let the embedded ``` close the block early, so GitHub's
+      // renderer would render the <img> tag as live markdown/HTML instead
+      // of literal diagnostics text.
+      const res = await fetch(`${h.base}/api/v1/issues/preview`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'app crashes on save',
+          category: 'bug',
+          diagnostics: 'boom\n```\n<img src=x onerror=alert(1)>\n```\nend',
+        }),
+      });
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(res.status, 200);
+      const diagnostics = String(body['diagnostics']);
+      const fenceMatch = diagnostics.match(/\n(`{3,})text\n/);
+      assert.ok(fenceMatch, 'expected a fenced code block opener');
+      const fence = fenceMatch![1];
+      // The fence must be strictly longer than the longest backtick run
+      // inside the fenced content — otherwise the embedded ``` acts as a
+      // premature closer per CommonMark fenced-code-block rules.
+      assert.ok(fence.length > 3, 'fence must widen past the embedded ``` run');
+      const contentStart = diagnostics.indexOf(fenceMatch![0]) + fenceMatch![0].length;
+      const closerIndex = diagnostics.indexOf(`\n${fence}\n`, contentStart);
+      assert.ok(closerIndex > contentStart, 'expected a matching fence closer');
+      const fencedContent = diagnostics.slice(contentStart, closerIndex);
+      const afterCloser = diagnostics.slice(closerIndex + fence.length + 2);
+      // The injected markup stays entirely inside the fence (rendered as
+      // literal text there) and never appears after the real closer.
+      assert.match(fencedContent, /<img src=x onerror=alert\(1\)>/);
+      assert.doesNotMatch(afterCloser, /<img/);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('preview omits diagnostics when none is submitted', async () => {
     const h = await boot();
     try {
