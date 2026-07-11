@@ -29,6 +29,11 @@ import {
   type LlmProvider,
   type McpAccessor,
   type McpAccessorToolDescriptor,
+  type DevJobsAccessor,
+  type DevJobCreateRequest,
+  type DevJobDescriptor,
+  type DevJobEventRecord,
+  type DevJobStatus,
   type MemoryAccessor,
   type MemoryStore,
   type MigrationContext,
@@ -727,6 +732,17 @@ export function createPluginContext(
     ? createPluginMcpAccessor(agentId, serviceRegistry)
     : undefined;
 
+  // Epic #470 W3 — ctx.devJobs: present iff the manifest declares
+  // permissions.devJobs. The backing host service ('devJobs') is resolved
+  // LAZILY per call (mirrors ctx.mcp); grants are read live so an operator
+  // revoke applies without re-activation. Scoped to operator-granted repos —
+  // fail-closed on everything else.
+  const devJobsAllowed =
+    catalog.get(agentId)?.plugin.permissions_summary.dev_jobs === true;
+  const devJobs: DevJobsAccessor | undefined = devJobsAllowed
+    ? createPluginDevJobsAccessor(agentId, serviceRegistry)
+    : undefined;
+
   const eventsAllowed = catalog.get(agentId)?.plugin.permissions_summary.events_emit === true;
   const events: EventsAccessor | undefined = eventsAllowed
     ? {
@@ -762,6 +778,7 @@ export function createPluginContext(
     ...(knowledgeGraph ? { knowledgeGraph } : {}),
     ...(llm ? { llm } : {}),
     ...(mcp ? { mcp } : {}),
+    ...(devJobs ? { devJobs } : {}),
     ...(flows ? { flows } : {}),
     ...(oauthTokens ? { oauthTokens } : {}),
     ...(events ? { events } : {}),
@@ -869,6 +886,127 @@ export function createPluginMcpAccessor(
         },
         () => host().callTool(cfg, toolName, args),
       );
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Epic #470 W3 — ctx.devJobs host service + plugin accessor.
+// ---------------------------------------------------------------------------
+
+/**
+ * Host service registered by the W0 dev-platform module under 'devJobs' (epic
+ * #470 W3). The plugin accessor resolves it lazily per call. Grant resolution
+ * (`listGrantedRepoIds`) and creator enforcement (`cancelJob`) live here
+ * because they need DB-level `dev_repo_plugin_grants` / `dev_jobs.created_by`
+ * access; the accessor layers the repo-scoping / no-oracle contract on top.
+ */
+export interface DevJobsHostService {
+  /** Repo ids the operator granted to this plugin (`dev_repo_plugin_grants`). */
+  listGrantedRepoIds(pluginId: string): Promise<readonly string[]>;
+  createJob(
+    input: DevJobCreateRequest & { createdBy: { kind: 'plugin'; id: string } },
+  ): Promise<DevJobDescriptor>;
+  getJob(jobId: string): Promise<DevJobDescriptor | undefined>;
+  /** Scope is already narrowed to `repoIds` by the accessor. */
+  listJobs(filter: {
+    repoIds: readonly string[];
+    status?: DevJobStatus;
+  }): Promise<readonly DevJobDescriptor[]>;
+  listJobEvents(jobId: string, afterId?: number): Promise<readonly DevJobEventRecord[]>;
+  /** Cancel a job created by `requestedByPluginId`. The host enforces the
+   *  creator match and throws when the job was created by another plugin. */
+  cancelJob(jobId: string, requestedByPluginId: string): Promise<void>;
+}
+
+/**
+ * Exported for direct unit testing (mirrors {@link createPluginMcpAccessor}).
+ *
+ * Fail-closed contract:
+ *   - `listRepos` returns only the operator-granted repo ids for this plugin.
+ *   - `create`/`list` on an ungranted repo throw.
+ *   - `get`/`listEvents`/`cancel` resolve the job first; a job that is missing
+ *     OR lives on an ungranted repo raises the SAME opaque error — no
+ *     existence oracle.
+ *   - `cancel` additionally forwards to `host.cancelJob(jobId, pluginId)`,
+ *     which rejects jobs this plugin did not create.
+ */
+export function createPluginDevJobsAccessor(
+  pluginId: string,
+  serviceRegistry: { get<T>(name: string): T | undefined },
+): DevJobsAccessor {
+  const host = (): DevJobsHostService => {
+    const service = serviceRegistry.get<DevJobsHostService>('devJobs');
+    if (!service) {
+      throw new Error(
+        'dev-platform host service unavailable — the core did not wire ctx.devJobs',
+      );
+    }
+    return service;
+  };
+  const grantedSet = async (): Promise<Set<string>> =>
+    new Set(await host().listGrantedRepoIds(pluginId));
+  const requireGrantedRepo = async (repoId: string): Promise<void> => {
+    if (!(await grantedSet()).has(repoId)) {
+      // Fail closed; the message never reveals whether the repo exists.
+      throw new Error(`dev repo "${repoId}" is not granted to plugin "${pluginId}"`);
+    }
+  };
+  // Resolve a job ONLY when it lives on a granted repo. A missing job and an
+  // out-of-scope job raise the SAME error, so a plugin cannot probe existence.
+  const requireAccessibleJob = async (jobId: string): Promise<DevJobDescriptor> => {
+    const svc = host();
+    const job = await svc.getJob(jobId);
+    const granted = await grantedSet();
+    if (!job || !granted.has(job.repoId)) {
+      throw new Error(`dev job "${jobId}" is not accessible to plugin "${pluginId}"`);
+    }
+    return job;
+  };
+  return {
+    async listRepos(): Promise<readonly string[]> {
+      return host().listGrantedRepoIds(pluginId);
+    },
+    async create(req: DevJobCreateRequest): Promise<DevJobDescriptor> {
+      await requireGrantedRepo(req.repoId);
+      return host().createJob({ ...req, createdBy: { kind: 'plugin', id: pluginId } });
+    },
+    async get(jobId: string): Promise<DevJobDescriptor> {
+      return requireAccessibleJob(jobId);
+    },
+    async list(filter?: {
+      repoId?: string;
+      status?: DevJobStatus;
+    }): Promise<readonly DevJobDescriptor[]> {
+      const granted = await grantedSet();
+      let repoIds: readonly string[];
+      if (filter?.repoId !== undefined) {
+        if (!granted.has(filter.repoId)) {
+          throw new Error(
+            `dev repo "${filter.repoId}" is not granted to plugin "${pluginId}"`,
+          );
+        }
+        repoIds = [filter.repoId];
+      } else {
+        repoIds = [...granted];
+      }
+      return host().listJobs({
+        repoIds,
+        ...(filter?.status ? { status: filter.status } : {}),
+      });
+    },
+    async listEvents(
+      jobId: string,
+      afterId?: number,
+    ): Promise<readonly DevJobEventRecord[]> {
+      await requireAccessibleJob(jobId);
+      return host().listJobEvents(jobId, afterId);
+    },
+    async cancel(jobId: string): Promise<void> {
+      // Repo-grant scoping first (no existence oracle); then the host enforces
+      // the "only jobs this plugin created" rule via created_by.
+      await requireAccessibleJob(jobId);
+      await host().cancelJob(jobId, pluginId);
     },
   };
 }

@@ -94,6 +94,10 @@ export const DEV_JOB_SOURCES = [
   'webhook',
   'schedule',
   'tracker',
+  // Epic #470 W3 — job started by a plugin via `ctx.devJobs.create`. Paired
+  // with `created_by = 'plugin:<pluginId>'` so cancel can enforce "only jobs
+  // this plugin created". CHECK relaxed in migration 0025.
+  'plugin',
 ] as const;
 export type DevJobSource = (typeof DEV_JOB_SOURCES)[number];
 export function isDevJobSource(x: unknown): x is DevJobSource {
