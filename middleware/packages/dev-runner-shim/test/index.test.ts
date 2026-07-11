@@ -124,6 +124,19 @@ setInterval(() => {}, 1000);
   await chmod(cliBin, 0o755);
 }
 
+async function writeSigtermIgnoringCli(): Promise<void> {
+  cliBin = path.join(ws, 'claude-stubborn.cjs');
+  await writeFile(
+    cliBin,
+    `#!${process.execPath}
+process.on('SIGTERM', () => {}); // trap SIGTERM — only SIGKILL can end this
+process.stdin.resume();
+setInterval(() => {}, 1000);
+`,
+  );
+  await chmod(cliBin, 0o755);
+}
+
 async function readEnvDump(): Promise<Record<string, string>> {
   const raw = await import('node:fs/promises').then((m) => m.readFile(path.join(ws, 'home', 'env-dump.json'), 'utf8'));
   return JSON.parse(raw) as Record<string, string>;
@@ -227,5 +240,18 @@ describe('runShim — wall-clock budget', () => {
     const budgetEvent = home.events.find((e) => e.payload['state'] === 'budget_exceeded');
     assert.ok(budgetEvent, 'a budget_exceeded event was streamed home');
     assert.equal(budgetEvent?.payload['limitMs'], 150);
+  });
+
+  it('ESCALATES to SIGKILL when the child traps SIGTERM (Forge #3 — shared by cancel)', async () => {
+    // A child that ignores SIGTERM must still die: the shim arms SIGKILL after the
+    // grace window. The cancel path shares this exact escalation helper, so proving
+    // it here proves both. Without escalation the child would hang and this test
+    // would time out.
+    await writeFakeGit(false);
+    await writeSigtermIgnoringCli();
+    const home = new FakeHome(makeSpec({ limits: { wallClockMs: 150 } }));
+    const code = await runShim({ ...env, cliBin }, { home, gitBin, log: () => {}, killGraceMs: 300 });
+    assert.equal(code, 1, 'the stubborn child was SIGKILLed and the job failed');
+    assert.match(home.results.at(-1)?.error ?? '', /wall-clock budget exceeded/);
   });
 });

@@ -9,7 +9,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdir, readFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import { HomeError } from './homeClient.js';
@@ -107,7 +107,7 @@ export class PhaseRunner {
     }
 
     if (!phaseWritesArtifactFile(phase)) return { phase, ok: true };
-    const content = await readArtifact(artifactFile);
+    const content = await readArtifact(artifactFile, this.c.env.workspace);
     if (content === null) {
       return { phase, ok: false, error: `${phase} produced no ${PHASE_ARTIFACT_ENV} artifact` };
     }
@@ -298,9 +298,34 @@ function bootstrapEnv(workspace: string): NodeJS.ProcessEnv {
   };
 }
 
-/** Read the artifact file a phase wrote; null if it is missing or empty. */
-async function readArtifact(file: string): Promise<string | null> {
+/** Max artifact size the shim will read back (Forge #2 — bound before the 4 MiB
+ *  HTTP cap so a hostile phase cannot exhaust memory here). */
+const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Read the artifact file a phase wrote; null if missing, empty, or UNSAFE.
+ *
+ * The phase session runs OVER HOSTILE REPO CONTENT and could try to turn the
+ * shim's read into an exfiltration primitive: replace the artifact path with a
+ * SYMLINK to an out-of-workspace file (e.g. the runner's credentials), or write a
+ * huge/binary blob to exhaust memory. So the read (Forge #2):
+ *   - lstat's the path (never follows a symlink) and REJECTS a symlink;
+ *   - rejects anything that is not a regular file;
+ *   - rejects a realpath outside the workspace (belt and braces);
+ *   - caps the size before reading a single byte.
+ */
+export async function readArtifact(file: string, workspace: string): Promise<string | null> {
   try {
+    const st = await lstat(file);
+    if (st.isSymbolicLink()) {
+      return null; // a symlink at the artifact path is an exfiltration attempt
+    }
+    if (!st.isFile()) return null;
+    if (st.size > MAX_ARTIFACT_BYTES) return null;
+    // Containment: the real path must sit under the workspace.
+    const real = await realpath(file);
+    const wsReal = await realpath(workspace);
+    if (real !== wsReal && !real.startsWith(wsReal + path.sep)) return null;
     const raw = (await readFile(file, 'utf8')).trim();
     return raw.length > 0 ? raw : null;
   } catch {

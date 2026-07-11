@@ -72,6 +72,13 @@ export async function runShim(env: ShimEnv = readShimEnv(), deps: ShimDeps = {})
   let killAgent: ((signal?: NodeJS.Signals) => void) | null = null;
   let wallTimer: NodeJS.Timeout | null = null;
   let graceTimer: NodeJS.Timeout | null = null;
+  // SIGTERM → SIGKILL after a grace window. Both cancel and wall-clock use it: a
+  // bare SIGTERM on the cancel path (Forge #3) let a child that ignores SIGTERM
+  // hang the provision until wall-clock expiry.
+  const terminateAgent = (): void => {
+    killAgent?.('SIGTERM');
+    if (!graceTimer) graceTimer = setTimeout(() => killAgent?.('SIGKILL'), deps.killGraceMs ?? 10_000);
+  };
   const heartbeat = setInterval(() => {
     void home
       .heartbeat()
@@ -79,7 +86,7 @@ export async function runShim(env: ShimEnv = readShimEnv(), deps: ShimDeps = {})
         if (reply.cancelRequested && !cancelled) {
           cancelled = true;
           log('cancel requested — terminating agent');
-          killAgent?.();
+          terminateAgent();
         }
       })
       .catch((err: unknown) => log(`heartbeat failed: ${errText(err)}`));
@@ -143,8 +150,7 @@ export async function runShim(env: ShimEnv = readShimEnv(), deps: ShimDeps = {})
             payload: { state: 'budget_exceeded', limit: 'wallClockMs', limitMs: wallClockMs },
           },
         ]);
-        killAgent?.('SIGTERM');
-        graceTimer = setTimeout(() => killAgent?.('SIGKILL'), deps.killGraceMs ?? 10_000);
+        terminateAgent();
       }, wallClockMs);
     }
 

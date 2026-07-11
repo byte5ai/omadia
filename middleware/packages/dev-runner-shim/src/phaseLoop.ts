@@ -84,6 +84,14 @@ export async function runPhasedShim(
   const setKill = (k: ((signal?: NodeJS.Signals) => void) | null): void => {
     killCurrent = k;
   };
+  // SIGTERM, then SIGKILL after a grace window — the ONLY way to guarantee a child
+  // that traps/ignores SIGTERM actually dies. Both the cancel path and the
+  // wall-clock path use it; a bare SIGTERM (the old cancel path, Forge #3) let a
+  // stubborn child hang the provision until wall-clock expiry.
+  const terminateWithEscalation = (): void => {
+    killCurrent?.('SIGTERM');
+    if (!graceTimer) graceTimer = setTimeout(() => killCurrent?.('SIGKILL'), deps.killGraceMs ?? 10_000);
+  };
   const heartbeat = setInterval(() => {
     void home
       .heartbeat()
@@ -91,7 +99,7 @@ export async function runPhasedShim(
         if (reply.cancelRequested && !cancelled) {
           cancelled = true;
           log('cancel requested — terminating current phase');
-          killCurrent?.();
+          terminateWithEscalation();
         }
       })
       .catch((err: unknown) => log(`heartbeat failed: ${errText(err)}`));
@@ -110,8 +118,7 @@ export async function runPhasedShim(
               payload: { state: 'budget_exceeded', limit: 'wallClockMs', limitMs: wallClockMs },
             },
           ]);
-          killCurrent?.('SIGTERM');
-          graceTimer = setTimeout(() => killCurrent?.('SIGKILL'), deps.killGraceMs ?? 10_000);
+          terminateWithEscalation();
         }, wallClockMs)
       : null;
 
