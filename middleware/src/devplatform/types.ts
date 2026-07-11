@@ -321,6 +321,16 @@ export interface DevRepo {
   /** W3 operator diff-policy overrides (`dev_repos.policy_overrides`, 0024).
    *  Empty object = code defaults; can never remove a `deny` rule. */
   policyOverrides: DiffPolicyOverrides;
+  /** W4 webhook trigger config (`0027`). The label whose application fires a job
+   *  (default `'omadia-dev'`). */
+  triggerLabel: string;
+  /** W4 per-repo webhook kill switch (`0027`, default true). Global switch is
+   *  `DEV_WEBHOOKS_ENABLED`; this is the repo-granular off. */
+  webhookEnabled: boolean;
+  /** W4 sender allowlist (`0027`, default `[]`). A `sender.login` MUST appear here
+   *  before a labeled-issue delivery can create a job; EMPTY means webhook triggers
+   *  are OFF for the repo (spec §3 finding S7). */
+  webhookSenders: string[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -416,6 +426,10 @@ export interface NewDevRepo {
   runsTests?: boolean;
   /** W3 diff-policy overrides; omitted = DB default `'{}'`. */
   policyOverrides?: DiffPolicyOverrides;
+  /** W4 webhook trigger config (`0027`); omitted = DB defaults. */
+  triggerLabel?: string;
+  webhookEnabled?: boolean;
+  webhookSenders?: string[];
   createdBy: string;
 }
 

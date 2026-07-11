@@ -188,6 +188,17 @@ const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(false),
 
+  // Epic #470 W4 — GitHub webhook trigger controls (spec §3). The global kill
+  // switch defaults ON (a per-repo `webhook_enabled` and an empty sender allowlist
+  // already keep it off until an operator opts a repo in). The two rate limits cap
+  // how many jobs a single repo / single sender can spawn per rolling hour.
+  DEV_WEBHOOKS_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(true),
+  DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR: z.coerce.number().int().positive().default(5),
+  DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR: z.coerce.number().int().positive().default(2),
+
   // Postgres connection string for the Neon-backed knowledge graph.
   // When set, `bootstrapKnowledgeGraphFromEnv` installs the
   // harness-knowledge-graph-neon sibling; when unset, the inmemory
