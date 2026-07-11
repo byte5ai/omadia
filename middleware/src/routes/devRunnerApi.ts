@@ -82,9 +82,12 @@ export interface DevRunnerRepoLookup {
 }
 
 /** Read-only clone-credential source. In W0 this resolves the repo's own stored
- *  device-flow/PAT token (spec §6); W2 swaps it for a scoped App token. */
+ *  device-flow/PAT token (spec §6); W2 mints a scoped, revocable `contents:read`
+ *  App token and registers it against the job. It therefore needs the JOB, not
+ *  just the repo — the token's lifetime is the job's, and the per-job registry is
+ *  what lets `finalizeDevJob` revoke it. */
 export interface DevRunnerScmTokens {
-  resolve(repoId: string): Promise<string | undefined>;
+  resolve(ctx: { jobId: string; repoId: string }): Promise<string | undefined>;
 }
 
 export interface DevRunnerRouterDeps {
@@ -335,7 +338,7 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
 
     let token: string | undefined;
     try {
-      token = await scmTokens.resolve(job.repoId);
+      token = await scmTokens.resolve({ jobId: job.id, repoId: job.repoId });
     } catch (err) {
       issuedScmTokens.delete(key);
       throw err;

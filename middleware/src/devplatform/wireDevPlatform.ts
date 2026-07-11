@@ -22,7 +22,9 @@ import { DevJobStore } from './devJobStore.js';
 import { DevJobWorker, type DevJobApplyService } from './devJobWorker.js';
 import { DevRepoCredentialStore } from './devRepoCredentials.js';
 import { DevRepoStore } from './devRepoStore.js';
-import { finalizeDevJob, type FinalizeContext } from './finalizeDevJob.js';
+import { finalizeDevJob, CredentialRevokerRegistry, type FinalizeContext } from './finalizeDevJob.js';
+import { DevGithubAppStore } from './githubApp/appStore.js';
+import { JobTokenRegistry, mintScopedInstallationToken, revokeInstallationToken } from './githubApp/installationTokens.js';
 import { GithubForgeClient, type ForgeFetch } from './githubForgeClient.js';
 import { GithubIssuesTracker } from './githubIssuesTracker.js';
 import { LocalProcessBackend } from './localProcessBackend.js';
@@ -118,6 +120,9 @@ export interface WireDevPlatformDeps {
   deviceFlow?: DevPlatformDeviceFlow;
   githubApiBaseUrl?: string;
   forgeFetch?: ForgeFetch;
+  /** Fetch seam for the scoped GitHub-App token mint/revoke (tests inject a fake).
+   *  Defaults to the global fetch. */
+  githubAppFetch?: import('./githubApp/installationTokens.js').TokenFetch;
   now?: () => Date;
   log?: (msg: string) => void;
 }
@@ -153,6 +158,66 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
   const jobStore = new DevJobStore(deps.pool, { eventBus });
   const repoStore = new DevRepoStore(deps.pool);
   const credentials = new DevRepoCredentialStore(deps.vault);
+  const githubAppStore = new DevGithubAppStore(deps.pool, deps.vault);
+
+  // W2 (Forge #: credential hardening): the per-job token registry. Every scoped
+  // App token minted for a runner is recorded here; `finalizeDevJob` revokes them
+  // (registered on the revoker registry below), and the phase engine's gate-park
+  // revokes them too — one registry, both paths. Audit events go to the job's
+  // event log (metadata only, never a token value).
+  const tokenRegistry = new JobTokenRegistry(
+    (jobId, event) => jobStore.appendHostEvent(jobId, 'token', { ...event }).then(() => undefined),
+    undefined,
+    deps.githubAppFetch
+      ? (token, base) => revokeInstallationToken(token, base, deps.githubAppFetch)
+      : undefined,
+  );
+
+  /**
+   * The clone credential the runner receives. For a `github_app` repo it is a
+   * freshly-minted, scoped `contents:read`, single-repo, REVOCABLE installation
+   * token registered against the job — never a write credential, so hostile repo
+   * code has nothing worth stealing and the token dies with the job. For a
+   * device-flow/PAT repo it falls back to the stored token (W0's weaker,
+   * documented scoping — those credentials are operator-provided and unchanged).
+   */
+  const scopedScmTokens = {
+    resolve: async ({ jobId, repoId }: { jobId: string; repoId: string }): Promise<string | undefined> => {
+      const repo = await repoStore.getRepo(repoId);
+      if (!repo) return undefined;
+      if (repo.credentialKind !== 'github_app') return credentials.resolve(repoId);
+
+      // credential_ref = 'github_app:<appRowId>:<installationId>' (set at bind).
+      const parts = repo.credentialRef.split(':');
+      if (parts[0] !== 'github_app' || !parts[1] || !parts[2]) {
+        throw new Error(`devplatform.bad_github_app_ref: ${repo.credentialRef}`);
+      }
+      const [, appRowId, installationId] = parts;
+      const app = await githubAppStore.getApp(appRowId);
+      if (!app) throw new Error(`devplatform.github_app_missing: ${appRowId}`);
+      const secrets = await githubAppStore.getSecrets(app.appId);
+      if (!secrets) throw new Error(`devplatform.github_app_secrets_missing: ${app.appId}`);
+
+      const scoped = await mintScopedInstallationToken(
+        {
+          appId: app.appId,
+          privateKey: secrets.privateKey,
+          installationId,
+          repositories: [repo.name],
+          permissions: { contents: 'read' }, // read ONLY — the apply is server-side
+          apiBaseUrl: app.apiBaseUrl,
+        },
+        deps.now ? () => deps.now!().getTime() : undefined,
+        deps.githubAppFetch,
+      );
+      await tokenRegistry.record(jobId, scoped, {
+        installationId,
+        scope: 'contents:read',
+        apiBaseUrl: app.apiBaseUrl,
+      });
+      return scoped.token;
+    },
+  };
 
   const forgeFactory =
     deps.forgeFactory ?? ((token: string) => new GithubForgeClient({ token, apiBaseUrl, fetch: deps.forgeFetch }));
@@ -209,6 +274,11 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
   });
 
   // The single terminal choke point, bound with the worker's terminate dispatch.
+  // W2: the token registry's revoker is registered here, so EVERY terminal path
+  // (worker stall/wall-clock, cancel, W1 reaper, phase-engine fail/done) revokes
+  // the job's scoped App tokens — Forge's "finalize has no revokers" gap.
+  const revokers = new CredentialRevokerRegistry();
+  revokers.register(tokenRegistry.revoker);
   const boundFinalize = (jobId: string, status: DevJobStatus, ctx?: FinalizeContext) =>
     finalizeDevJob(
       {
@@ -217,6 +287,7 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
           const backend = backends.find((b) => b.kind === handle.backend);
           return backend ? backend.terminate(handle) : undefined;
         },
+        revokers,
         onError: (err, phase) =>
           log(`[dev-platform] finalize(${jobId}→${status}) ${phase} failed: ${errText(err)}`),
       },
@@ -282,7 +353,7 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
   const runnerRouter = createDevRunnerRouter({
     store: jobStore,
     repos: repoStore,
-    scmTokens: credentials,
+    scmTokens: scopedScmTokens,
     finalizeDevJob: boundFinalize,
     wallClockMs: deps.wallClockMs,
     ...(deps.daemonToken ? { daemonToken: deps.daemonToken } : {}),
