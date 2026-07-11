@@ -24,7 +24,7 @@ import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
-import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError } from './conductor/index.js';
+import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore } from './conductor/index.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
@@ -2394,9 +2394,13 @@ async function main(): Promise<void> {
     // model allowlist). Entry-level validation happens in deriveJobPolicy.
     const csvList = (raw: string): string[] =>
       raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+    // W2: role-principal gates resolve their live holder set against the same
+    // conductor role store the conductor await gate uses.
+    const devPlatformRoleStore = new ConductorRoleStore(graphPool);
     const wiredDevPlatform = assembleDevPlatform({
       pool: graphPool,
       vault: secretVault,
+      resolveRoleHolders: (key) => devPlatformRoleStore.resolve(key),
       baseUrl: config.DEV_PLATFORM_RUNNER_BASE_URL ?? `http://127.0.0.1:${String(config.PORT)}`,
       cliBin: config.DEV_PLATFORM_CLI_BIN,
       wallClockMs: config.DEV_PLATFORM_JOB_WALL_CLOCK_MS,
@@ -2437,7 +2441,8 @@ async function main(): Promise<void> {
     // reap() can still see a job whose container the daemon has since lost. The
     // daemon rebuilds its own view from docker labels; ours lives only in memory.
     await wiredDevPlatform.start();
-    const stopDevPlatformWorker = (): void => wiredDevPlatform.worker.stop();
+    // `stop()` halts BOTH the claim worker and the W2 gate-deadline worker.
+    const stopDevPlatformWorker = (): void => wiredDevPlatform.stop();
     process.once('SIGTERM', stopDevPlatformWorker);
     process.once('SIGINT', stopDevPlatformWorker);
     console.log(

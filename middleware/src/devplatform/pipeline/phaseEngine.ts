@@ -66,6 +66,12 @@ export interface PhaseEngineStore {
   setReviewState(jobId: string, attempt: number, fingerprint: string | null): Promise<void>;
 }
 
+/** Who may resolve a job's plan gate. */
+export interface GatePrincipal {
+  kind: 'user' | 'role';
+  ref: string;
+}
+
 export interface PhaseEngineDeps {
   store: PhaseEngineStore;
   gates: DevJobGateStore;
@@ -73,10 +79,16 @@ export interface PhaseEngineDeps {
   finalize: (jobId: string, status: 'done' | 'failed' | 'cancelled', reason?: string) => Promise<void>;
   /** Revoke a parked job's tokens WITHOUT finalizing it (it stays `waiting`). */
   revokeTokensForPark: (job: DevJob) => Promise<void>;
-  /** The gate principal for a job — ('role', repo.approver_role_key) or ('user', created_by). */
-  gatePrincipal: (job: DevJob) => { kind: 'user' | 'role'; ref: string };
-  /** The repo's ISO gate deadline; undefined ⇒ store default. */
-  gateDeadlineIso?: (job: DevJob) => string | undefined;
+  /**
+   * The gate principal for a job — ('role', repo.approver_role_key) or
+   * ('user', created_by). May resolve asynchronously: the real wiring reads the
+   * repo row to decide, and the engine only calls this on the (rare) park, which
+   * is already an async path. Sync doubles (tests) remain valid.
+   */
+  gatePrincipal: (job: DevJob) => GatePrincipal | Promise<GatePrincipal>;
+  /** The repo's ISO gate deadline; undefined ⇒ store default. May be async (see
+   *  `gatePrincipal`). */
+  gateDeadlineIso?: (job: DevJob) => string | undefined | Promise<string | undefined>;
   log?: (msg: string) => void;
 }
 
@@ -175,7 +187,7 @@ export class PhaseEngine {
         // revoke the runner's token (it is exiting), tell the runner to exit.
         const advanced = await this.deps.store.advancePhase(job.id, 'clarify', 'await_human');
         if (!advanced) throw new StalePhaseError(job.id, input.phase, job.phase);
-        const principal = this.deps.gatePrincipal(job);
+        const principal = await this.deps.gatePrincipal(job);
         // Pin the PERSISTED plan (delivered a phase earlier), not the transient
         // clarify input — otherwise the gate stores nothing and a resume could
         // implement against a plan the human never approved (Forge #1). `planSha256`
@@ -189,7 +201,7 @@ export class PhaseEngine {
           questions: input.questions ?? [],
           principalKind: principal.kind,
           principalRef: principal.ref,
-          deadlineIso: this.deps.gateDeadlineIso?.(job),
+          deadlineIso: await this.deps.gateDeadlineIso?.(job),
         });
         await this.deps.store.parkForGate(job.id);
         await this.deps.revokeTokensForPark(job);

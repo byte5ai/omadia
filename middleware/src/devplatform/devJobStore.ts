@@ -350,6 +350,23 @@ export class DevJobStore {
     return (r.rowCount ?? 0) > 0;
   }
 
+  /**
+   * W2: append a delimited section to the job's brief, at most once (spec §5,
+   * "answers append to the brief"). The `marker` is a substring the caller
+   * guarantees is present in `section`; the append is skipped when the brief
+   * already contains it, so a gate self-heal re-drive (which calls the approve/
+   * reject side effect more than once) never double-appends. Terminal jobs are
+   * left untouched. Returns true iff this call actually wrote the section.
+   */
+  async appendToBrief(jobId: string, marker: string, section: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs SET brief = brief || $3, updated_at = now()
+        WHERE id = $1 AND position($2 in brief) = 0 AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [jobId, marker, section],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
   /** W2: record the review loop's attempt counter + fingerprint (same provision). */
   async setReviewState(jobId: string, attempt: number, fingerprint: string | null): Promise<void> {
     await this.pool.query(

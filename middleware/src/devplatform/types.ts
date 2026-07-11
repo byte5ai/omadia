@@ -264,6 +264,11 @@ export interface DevRepo {
   /** Tri-state: true/false/null — null means "could not verify" (spec §6). */
   branchProtectionOk: boolean | null;
   branchProtectionCheckedAt: string | null;
+  /** W2 gate principal: the role key whose holders approve the plan gate, or
+   *  null = only the job creator approves (spec §5). */
+  approverRoleKey: string | null;
+  /** W2 gate deadline as an ISO-8601 duration (`0023` default `'P7D'`). */
+  gateDeadlineIso: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;

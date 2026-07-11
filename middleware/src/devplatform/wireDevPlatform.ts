@@ -27,6 +27,9 @@ import { DevGithubAppStore } from './githubApp/appStore.js';
 import { JobTokenRegistry, mintScopedInstallationToken, revokeInstallationToken } from './githubApp/installationTokens.js';
 import { GithubForgeClient, type ForgeFetch } from './githubForgeClient.js';
 import { GithubIssuesTracker } from './githubIssuesTracker.js';
+import { DevJobGateStore, type DevJobGate, type GateAnswer } from './pipeline/gateStore.js';
+import { PhaseEngine } from './pipeline/phaseEngine.js';
+import { createDevPlatformGatesRouter } from '../routes/devPlatformGates.js';
 import { LocalProcessBackend } from './localProcessBackend.js';
 import { DockerBackend } from './dockerBackend.js';
 import type { ForgeClient } from './forgeClient.js';
@@ -108,6 +111,16 @@ export interface WireDevPlatformDeps {
     onAccountingError?: (err: unknown, ctx: { jobId: string; tokensIn: number; tokensOut: number }) => void;
   };
 
+  // --- W2 gate keystones (spec §5) ------------------------------------------
+  /** Live gate-holder resolution — the conductor roleStore's `resolve(roleKey)`.
+   *  Absent ⇒ role-principal gates resolve to an empty holder set (nobody can
+   *  approve, a fail-closed default); index.ts threads the real roleStore. */
+  resolveRoleHolders?: (roleKey: string) => Promise<string[]>;
+  /** Gate-deadline worker interval (ms). Default 60s. Injectable so a test can
+   *  drive expiry fast — or bypass the timer entirely via
+   *  `wired.gateDeadlineWorker.tick()`. */
+  gateDeadlineIntervalMs?: number;
+
   // --- optional / test seams ------------------------------------------------
   /** Override the backend list (tests inject a fake shim-driving backend). When
    *  omitted, the local backend is built iff `unsafeLocal` + `localUid`. */
@@ -143,9 +156,25 @@ export interface WiredDevPlatform {
   start: () => Promise<void>;
   adminRouter: ReturnType<typeof createDevPlatformRouter>;
   runnerRouter: ReturnType<typeof createDevRunnerRouter>;
+  /**
+   * W2 human-gate admin router (`GET /gates`, `POST /gates/:id/resolve`).
+   * `mountDevPlatform` attaches it behind `requireAuth` at the same admin prefix
+   * as `adminRouter`; index.ts needs no extra mount call.
+   */
+  gatesRouter: ReturnType<typeof createDevPlatformGatesRouter>;
+  /**
+   * W2 gate-deadline worker. `start()` begins the interval loop (also driven by
+   * `wired.start()`); `stop()` clears it (also driven by `wired.stop()`);
+   * `tick()` runs one scan-and-expire pass and returns the number of gates it
+   * expired — the deterministic seam a test drives instead of waiting on the timer.
+   */
+  gateDeadlineWorker: { tick: () => Promise<number>; start: () => void; stop: () => void };
   backends: readonly RunnerBackend[];
   finalizeDevJob: (jobId: string, status: DevJobStatus, ctx?: FinalizeContext) => Promise<DevJob | null>;
   applyJob: (jobId: string) => Promise<{ prUrl: string }>;
+  /** Stop every background loop this platform owns (claim worker + gate-deadline
+   *  worker). The counterpart to `start()`; index.ts calls it on shutdown. */
+  stop: () => void;
 }
 
 /** Build every dev-platform object from the shared pool + vault. Pure assembly —
@@ -298,6 +327,43 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
 
   const applyJob = (jobId: string) => worker.applyJob(jobId);
 
+  // --- W2 pipeline orchestration (spec §4/§5) -------------------------------
+  // The durable gate table + the stateful phase engine. The engine ties the pure
+  // transition table, the review loop, the gate store, and token revocation to
+  // persistence; the runner's POST /jobs/:id/phase-result routes into it.
+  const gateStore = new DevJobGateStore(deps.pool, deps.now ? () => deps.now!().getTime() : undefined);
+
+  const phaseEngine = new PhaseEngine({
+    // DevJobStore already satisfies PhaseEngineStore (addArtifact / getLatestArtifact
+    // / advancePhase / parkForGate / setReviewState).
+    store: jobStore,
+    gates: gateStore,
+    // PhaseEngine's terminal choke point is the SAME boundFinalize every other
+    // path uses — so a phase-driven fail/done revokes the job's scoped tokens too.
+    // Adapt the signature: the engine passes a bare `reason`, boundFinalize takes
+    // a FinalizeContext (`reason` lands in the status event payload).
+    finalize: (jobId, status, reason) =>
+      boundFinalize(jobId, status, reason !== undefined ? { reason } : undefined).then(() => undefined),
+    // A parked runner is exiting: revoke its scoped token WITHOUT finalizing the
+    // still-`waiting` job. Same registry revoker the terminal paths use.
+    revokeTokensForPark: async (job) => {
+      await tokenRegistry.revoker(job);
+    },
+    // The gate principal + deadline come from the repo row. gatePrincipal /
+    // gateDeadlineIso are declared awaitable precisely so the wiring can read the
+    // repo here (the engine only calls them on the rare clarify→park). Two reads
+    // per park is acceptable — park is infrequent and correctness beats a cache
+    // that could serve a stale approver after an operator edits the repo.
+    gatePrincipal: async (job) => {
+      const repo = await repoStore.getRepo(job.repoId);
+      return repo?.approverRoleKey
+        ? { kind: 'role', ref: repo.approverRoleKey }
+        : { kind: 'user', ref: job.createdBy };
+    },
+    gateDeadlineIso: async (job) => (await repoStore.getRepo(job.repoId))?.gateDeadlineIso,
+    log,
+  });
+
   const adminRouter = createDevPlatformRouter({
     repoStore,
     jobStore,
@@ -359,8 +425,86 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     ...(deps.daemonToken ? { daemonToken: deps.daemonToken } : {}),
     ...(jobPolicyConfig ? { jobPolicyConfig } : {}),
     llmProxyRouter,
+    // W2: the phase-result endpoint is mounted now that the engine exists.
+    handlePhaseResult: (job, input) => phaseEngine.handlePhaseResult(job, input),
     ...(deps.now ? { now: () => deps.now!().getTime() } : {}),
   });
+
+  // --- W2 human-gate admin router (spec §5) --------------------------------
+  const resolveRoleHolders = deps.resolveRoleHolders ?? (async () => []);
+  const gatesRouter = createDevPlatformGatesRouter({
+    gates: gateStore,
+    resolveRoleHolders,
+    // Approval: append the operator's answers to the brief (once), persist an
+    // `answers` artifact, then re-queue the job at `implement`. requeueAtPhase is
+    // fenced on `await_human`, and appendToBrief is marker-idempotent, so the
+    // gate router's crash self-heal can re-drive this safely.
+    onApproved: async (gate, answers, resolvedBy) => {
+      const wrote = await jobStore.appendToBrief(
+        gate.jobId,
+        briefMarker(gate),
+        answersBriefSection(gate, answers, resolvedBy),
+      );
+      if (wrote) {
+        await jobStore.addArtifact(gate.jobId, 'answers', JSON.stringify(answers), {
+          gateId: gate.id,
+          resolvedBy,
+        });
+      }
+      await jobStore.requeueAtPhase(gate.jobId, 'implement');
+    },
+    // Rejection: record the note on the brief the same way, then cancel the job
+    // through the choke point (reason `gate_rejected`). Both writes are idempotent
+    // (marker guard + finalize no-op on terminal), so a re-drive is safe.
+    onRejected: async (gate, note, resolvedBy) => {
+      await jobStore.appendToBrief(gate.jobId, briefMarker(gate), rejectionBriefSection(gate, note, resolvedBy));
+      await boundFinalize(gate.jobId, 'cancelled', { reason: 'gate_rejected' });
+    },
+    // A job is still parked iff it is `waiting` at `await_human` — the signal the
+    // gate router uses to distinguish a crash-stranded job (self-heal) from a
+    // normal concurrent resolve (409).
+    isJobStuckAtGate: async (jobId) => {
+      const j = await jobStore.getJob(jobId);
+      return j?.status === 'waiting' && j?.phase === 'await_human';
+    },
+    log,
+  });
+
+  // --- W2 gate-deadline worker (spec §5) -----------------------------------
+  // Expire overdue gates: claim each due gate with a CAS (`expire`), and only the
+  // winner cancels the job (reason `gate_expired`) through the choke point. A
+  // periodic interval that need only fire while the process is alive — safe to
+  // unref (unlike a one-shot deadline that must fire while idle; see the W1 lesson).
+  const gateDeadlineIntervalMs = deps.gateDeadlineIntervalMs ?? 60_000;
+  let gateTimer: ReturnType<typeof setInterval> | undefined;
+  const gateDeadlineTick = async (): Promise<number> => {
+    let expired = 0;
+    for (const due of await gateStore.listDue()) {
+      const won = await gateStore.expire(due.id);
+      if (!won) continue; // another worker claimed it first
+      expired += 1;
+      await boundFinalize(due.jobId, 'cancelled', { reason: 'gate_expired' });
+    }
+    return expired;
+  };
+  const gateDeadlineWorker = {
+    tick: gateDeadlineTick,
+    start: (): void => {
+      if (gateTimer) return;
+      gateTimer = setInterval(() => {
+        void gateDeadlineTick().catch((err) =>
+          log(`[dev-platform] gate deadline worker tick failed: ${errText(err)}`),
+        );
+      }, gateDeadlineIntervalMs);
+      gateTimer.unref?.();
+    },
+    stop: (): void => {
+      if (gateTimer) {
+        clearInterval(gateTimer);
+        gateTimer = undefined;
+      }
+    },
+  };
 
   const wired: WiredDevPlatform = {
     eventBus,
@@ -371,14 +515,47 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     start: async () => {
       await rehydrateDockerBackend(wired, log);
       worker.start();
+      gateDeadlineWorker.start();
+    },
+    stop: () => {
+      gateDeadlineWorker.stop();
+      worker.stop();
     },
     adminRouter,
     runnerRouter,
+    gatesRouter,
+    gateDeadlineWorker,
     backends,
     finalizeDevJob: boundFinalize,
     applyJob,
   };
   return wired;
+}
+
+/** The idempotency marker for a gate's brief section — present in every section
+ *  we append for that gate (approval or rejection), so `appendToBrief` skips a
+ *  self-heal re-drive. A gate resolves OR rejects exactly once, so one marker per
+ *  gate is sufficient. */
+function briefMarker(gate: DevJobGate): string {
+  return `(gate ${gate.id}`;
+}
+
+/** The `## Operator answers` brief section (spec §5). Questions are matched to
+ *  answers by id; an answer with no matching question still lists its text. */
+function answersBriefSection(gate: DevJobGate, answers: readonly GateAnswer[], resolvedBy: string): string {
+  const at = gate.resolvedAt ?? new Date().toISOString();
+  const lines = answers.map((a, i) => {
+    const q = gate.questions.find((qq) => qq.id === a.questionId);
+    return `Q${String(i + 1)}: ${q?.text ?? a.questionId}\nA${String(i + 1)}: ${a.text}`;
+  });
+  return `\n\n## Operator answers (gate ${gate.id}, resolved by ${resolvedBy} at ${at})\n${lines.join('\n')}\n`;
+}
+
+/** The `## Operator rejection` brief section — the note stored the same way on
+ *  the cancelled job (spec §5). */
+function rejectionBriefSection(gate: DevJobGate, note: string | undefined, resolvedBy: string): string {
+  const at = gate.resolvedAt ?? new Date().toISOString();
+  return `\n\n## Operator rejection (gate ${gate.id}, resolved by ${resolvedBy} at ${at})\nNote: ${note ?? '(none)'}\n`;
 }
 
 /**
@@ -401,6 +578,12 @@ export function mountDevPlatform(
   // Auth-gated operator admin surface.
   app.use('/api/v1/admin/dev-platform', requireAuth, wired.adminRouter);
   log('[dev-platform] admin router mounted at /api/v1/admin/dev-platform (requireAuth)');
+
+  // W2 human-gate surface — same admin prefix, same session guard. Express runs
+  // both routers for the prefix; their paths do not collide (`/gates*` vs the
+  // admin router's repo/job paths).
+  app.use('/api/v1/admin/dev-platform', requireAuth, wired.gatesRouter);
+  log('[dev-platform] gates router mounted at /api/v1/admin/dev-platform (requireAuth)');
 }
 
 // ---------------------------------------------------------------------------
