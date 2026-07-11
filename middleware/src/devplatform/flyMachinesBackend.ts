@@ -269,13 +269,28 @@ export class FlyMachinesBackend implements RunnerBackend {
 
     const createBody = this.buildCreateConfig(input, leaseExpiresAt);
 
+    if (!jobId || jobId.trim() === '') {
+      // An empty jobId writes empty `omadia_job_id` metadata, which reap treats as
+      // "not ours" → an un-reapable orphan if the handle is later lost (Forge W4 F4).
+      throw new FlyMachinesBackendError('devplatform.fly_job_id_required', 'provision requires a non-empty jobId');
+    }
+
     const created = await this.flyFetch('POST', `/apps/${enc(this.appName)}/machines`, {
       token,
       body: createBody,
       timeoutMs: this.provisionTimeoutMs,
     });
     if (!created.ok) {
-      throw this.mapFlyError(created.status, created.json, `provision job ${jobId}`);
+      const mapped = this.mapFlyError(created.status, created.json, `provision job ${jobId}`);
+      if (mapped.retryable) {
+        // Fly may have COMMITTED the machine before the 429/503 we see (a fronting
+        // proxy or a retry can turn a successful create into an error response).
+        // Requeuing blindly would run the hostile job on a SECOND VM (Forge W4 F2,
+        // the case DockerBackend.confirmAbsentOrAdopt guards). Prove absence or
+        // adopt the committed machine before letting the worker retry.
+        return await this.confirmAbsentOrAdopt(jobId, token, mapped, leaseExpiresAt);
+      }
+      throw mapped;
     }
     const machineId = machineIdOf(created.json);
     if (!machineId) {
@@ -285,24 +300,66 @@ export class FlyMachinesBackend implements RunnerBackend {
       );
     }
 
-    // Block until the machine reports `started` (or the bound elapses). A machine
-    // that never starts is destroyed so a failed provision never leaks a VM.
+    return this.waitStartedAndTrack(jobId, machineId, token, created.json, leaseExpiresAt, `provision job ${jobId}`);
+  }
+
+  /**
+   * Wait until a created machine reports `started`, then track + return its handle.
+   * A machine that never starts is force-destroyed so a failed provision leaks no VM.
+   * Shared by the normal create path and the F2 adopt path.
+   */
+  private async waitStartedAndTrack(
+    jobId: string,
+    machineId: string,
+    token: string,
+    machineJson: unknown,
+    leaseExpiresAt: string,
+    ctx: string,
+  ): Promise<RunnerHandle> {
     const waited = await this.flyFetch(
       'GET',
       `/apps/${enc(this.appName)}/machines/${enc(machineId)}/wait?state=started&timeout=${String(this.waitTimeoutSec)}`,
       { token, timeoutMs: (this.waitTimeoutSec + 5) * 1_000 },
     );
     if (!waited.ok) {
-      // Best-effort teardown of the machine that would not start, then surface the
-      // failure with the sibling's retryability convention.
       await this.destroyMachine(machineId, token).catch(() => {});
-      throw this.mapFlyError(waited.status, waited.json, `provision job ${jobId}: wait for started`);
+      throw this.mapFlyError(waited.status, waited.json, `${ctx}: wait for started`);
     }
-
-    const region = typeof (created.json as FlyMachine).region === 'string'
-      ? ((created.json as FlyMachine).region as string)
+    const region = typeof (machineJson as FlyMachine).region === 'string'
+      ? ((machineJson as FlyMachine).region as string)
       : this.region;
     return this.trackHandle({ jobId, machineId, image: this.image, region, leaseExpiresAt });
+  }
+
+  /**
+   * A retryable create error arrived (429/503) — the machine may or may not have
+   * committed. List the runner app's machines: if one already carries this job's
+   * `omadia_job_id`, the create DID commit → ADOPT it (never a second VM). If the
+   * list proves it absent → rethrow the retryable error (safe requeue). If the list
+   * FAILS, absence cannot be proven → fail CLOSED (strip `retryable`) so the worker
+   * fails the job rather than risk requeuing onto a live second VM (Forge W4 F2).
+   */
+  private async confirmAbsentOrAdopt(
+    jobId: string,
+    token: string,
+    retryableErr: FlyMachinesBackendError,
+    leaseExpiresAt: string,
+  ): Promise<RunnerHandle> {
+    let machines: FlyMachine[];
+    try {
+      machines = await this.listMachines(token);
+    } catch {
+      throw new FlyMachinesBackendError(
+        retryableErr.code,
+        `${retryableErr.message} (could not confirm machine absence — failing closed to avoid a duplicate VM)`,
+        { httpStatus: retryableErr.httpStatus, retryable: false },
+      );
+    }
+    const existing = machines.find((m) => jobIdOf(m) === jobId);
+    const existingId = existing ? machineIdOf(existing) : undefined;
+    if (!existing || !existingId) throw retryableErr; // genuinely absent → safe requeue
+    this.log(`[dev-platform] fly provision ${jobId}: adopting machine ${existingId} committed before the ${String(retryableErr.httpStatus)} response`);
+    return this.waitStartedAndTrack(jobId, existingId, token, existing, leaseExpiresAt, `adopt job ${jobId}`);
   }
 
   // -------------------------------------------------------------------------
@@ -333,12 +390,47 @@ export class FlyMachinesBackend implements RunnerBackend {
     }
     const token = await this.token();
 
+    // Ownership check BEFORE destroying by machineId (Forge W4 F3). The shared
+    // `id===jobId` guard protects DockerBackend because it tears down BY jobId; we
+    // tear down by `machineId`, a field OUTSIDE that invariant — a tampered handle
+    // (`id===jobId===A`, `machineId=B`) would otherwise stop+destroy job B's live
+    // machine. Reject a foreign runner app, and confirm the target machine's
+    // `omadia_job_id` matches this handle's job before we touch it.
+    if (fly.appName !== this.appName) {
+      throw new FlyMachinesBackendError(
+        'devplatform.wrong_backend',
+        `handle app '${fly.appName}' is not this backend's runner app '${this.appName}'`,
+        { keepHandle: true },
+      );
+    }
+    const owner = await this.flyFetch(
+      'GET',
+      `/apps/${enc(this.appName)}/machines/${enc(fly.machineId)}`,
+      { token, timeoutMs: this.callTimeoutMs },
+    ).catch(() => undefined);
+    if (owner && owner.status === 404) {
+      this.live.delete(fly.jobId); // already gone → idempotent success
+      return;
+    }
+    if (owner && owner.ok) {
+      const ownerJobId = jobIdOf(owner.json as FlyMachine);
+      if (ownerJobId && ownerJobId !== fly.jobId) {
+        throw new FlyMachinesBackendError(
+          'devplatform.malformed_handle',
+          `refusing to destroy machine ${fly.machineId}: its omadia_job_id '${ownerJobId}' != handle job '${fly.jobId}'`,
+          { keepHandle: true },
+        );
+      }
+    }
+    // owner undefined (transient GET failure) or ok-with-matching/absent metadata →
+    // proceed; reap (which reads metadata from the list) is the backstop.
+
     // Graceful stop first (best-effort: a 404 or a stop error still proceeds to the
     // authoritative force-destroy — the SIGTERM is a courtesy, the destroy is the kill).
     const stop = await this.flyFetch(
       'POST',
       `/apps/${enc(this.appName)}/machines/${enc(fly.machineId)}/stop`,
-      { token, body: { timeout: STOP_GRACE }, timeoutMs: this.callTimeoutMs },
+      { token, body: { timeout: STOP_GRACE, signal: 'SIGTERM' }, timeoutMs: this.callTimeoutMs },
     ).catch((err: unknown) => {
       this.log(`[dev-platform] fly stop for ${fly.jobId} failed (${errText(err)}); proceeding to destroy`);
       return undefined;
@@ -369,8 +461,8 @@ export class FlyMachinesBackend implements RunnerBackend {
 
   /**
    * Backstop kill layer: list every machine in the runner app and destroy the ones
-   * whose job is terminal/unknown (the injected `isJobActive` predicate says false)
-   * OR whose lease deadline has passed — leaving genuinely active jobs untouched.
+   * whose job is terminal/unknown (the injected `isJobActive` predicate says false),
+   * leaving genuinely active jobs untouched — even past their lease (Forge W4 F1).
    * Returns the handles it destroyed so the worker can settle those rows.
    *
    * A machine with no `omadia_job_id` metadata is NOT ours — we never touch it. A
@@ -395,10 +487,18 @@ export class FlyMachinesBackend implements RunnerBackend {
       // Not one of ours (missing the required metadata key) → never touch it.
       if (!jobId || !machineId) continue;
 
+      // An ACTIVE job is NEVER reaped — not even past its lease deadline (Forge W4
+      // F1). Fly's lease is a create-time stamp, not a renewed liveness heartbeat
+      // like Docker's, so lease-expiry cannot distinguish a healthy long-running
+      // job from a wedged one; killing on it force-destroys jobs that legitimately
+      // run longer than the TTL. A WEDGED active job is caught instead by the three
+      // kill layers that DO track liveness: the worker's heartbeat/wall-clock
+      // enforce sweep (flips it terminal → isJobActive false → reaped next pass),
+      // the shim wall-clock watchdog, and `auto_destroy`. Reap only cleans up
+      // machines whose job is already terminal/unknown.
       const active = await this.isJobActive(jobId);
       const leaseExpiresAt = leaseOf(machine);
-      const leaseExpired = leaseExpiresAt !== undefined && Date.parse(leaseExpiresAt) <= nowMs;
-      if (active && !leaseExpired) continue; // genuinely live — leave it running.
+      if (active) continue; // genuinely live — leave it running.
 
       const destroy = await this.destroyMachine(machineId, token).catch((err: unknown) => {
         this.log(`[dev-platform] fly reap: destroy ${machineId} failed (${errText(err)})`);

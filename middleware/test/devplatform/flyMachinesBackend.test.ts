@@ -186,17 +186,20 @@ describe('FlyMachinesBackend — provision', () => {
   });
 
   it('surfaces a create failure as a RunnerBackendError whose retryability matches the sibling convention', async () => {
-    // FAIL-IF-REVERTED: a 429 must be RETRYABLE (like DockerBackend's daemon 429),
-    // and a 422 spec-rejection must be terminal (retryable === false).
+    // FAIL-IF-REVERTED: a 429 with the machine CONFIRMED ABSENT (list=[]) stays
+    // RETRYABLE (like DockerBackend's daemon 429); a 422 spec-rejection is terminal.
     const jobId = randomUUID();
-    const capacity = makeFetch((call) =>
-      call.method === 'POST' ? { status: 429, body: { error: 'rate limited' } } : { status: 200, body: {} },
-    );
+    const capacity = makeFetch((call) => {
+      if (call.method === 'POST') return { status: 429, body: { error: 'rate limited' } };
+      // The F2 confirm-absent list: empty ⇒ the create truly did not commit.
+      if (call.method === 'GET' && call.path.endsWith('/machines')) return { status: 200, body: [] };
+      return { status: 200, body: {} };
+    });
     const back1 = new FlyMachinesBackend(options({ fetchImpl: capacity.fetchImpl }));
     await assert.rejects(back1.provision(input(jobId)), (e: unknown) => {
       assert.ok(e instanceof FlyMachinesBackendError);
       assert.equal(e.code, 'devplatform.fly_at_capacity');
-      assert.equal(e.retryable, true, '429 is retryable — a queue-depth condition, not a job failure');
+      assert.equal(e.retryable, true, '429 + machine absent is retryable — safe to requeue');
       return true;
     });
 
@@ -208,6 +211,59 @@ describe('FlyMachinesBackend — provision', () => {
       assert.ok(e instanceof FlyMachinesBackendError);
       assert.equal(e.code, 'devplatform.fly_spec_rejected');
       assert.equal(e.retryable, false, 'a spec rejection is terminal');
+      return true;
+    });
+  });
+
+  it('F2: a retryable create whose machine ALREADY COMMITTED is ADOPTED, not requeued (no second VM)', async () => {
+    const jobId = randomUUID();
+    let creates = 0;
+    const { fetchImpl, calls } = makeFetch((call) => {
+      if (call.method === 'POST' && call.path.split('?')[0]!.endsWith('/machines')) {
+        creates += 1;
+        return { status: 503, body: { error: 'proxy blip after commit' } };
+      }
+      // The machine DID commit despite the 503 — the list surfaces it by our jobId.
+      if (call.method === 'GET' && call.path.endsWith('/machines')) {
+        return { status: 200, body: [{ id: 'm-committed', region: 'fra', config: { metadata: { [JOB_ID_METADATA_KEY]: jobId } } }] };
+      }
+      if (call.method === 'GET' && call.path.includes('/wait')) return { status: 200, body: {} };
+      return { status: 200, body: {} };
+    });
+    const backend = new FlyMachinesBackend(options({ fetchImpl }));
+    const handle = (await backend.provision(input(jobId))) as FlyRunnerHandle;
+    // FAIL-IF-REVERTED: without confirm-absent-or-adopt, the 503 would throw retryable
+    // and the worker would requeue → a SECOND VM for the same hostile job. Adoption
+    // returns the committed machine's handle and issues NO second create.
+    assert.equal(handle.machineId, 'm-committed', 'the committed machine is adopted');
+    assert.equal(creates, 1, 'no second create was issued');
+    assert.ok(calls.some((c) => c.path.includes('/wait')), 'the adopted machine is waited to started');
+  });
+
+  it('F2: a retryable create whose absence CANNOT be proven fails CLOSED (retryable stripped)', async () => {
+    const jobId = randomUUID();
+    const { fetchImpl } = makeFetch((call) => {
+      if (call.method === 'POST') return { status: 503, body: { error: 'unreachable' } };
+      // The confirm-absent list ALSO fails — we cannot prove the machine is absent.
+      if (call.method === 'GET' && call.path.endsWith('/machines')) return { status: 500, body: { error: 'list down' } };
+      return { status: 200, body: {} };
+    });
+    const backend = new FlyMachinesBackend(options({ fetchImpl }));
+    await assert.rejects(backend.provision(input(jobId)), (e: unknown) => {
+      assert.ok(e instanceof FlyMachinesBackendError);
+      // FAIL-IF-REVERTED: unprovable absence must NOT stay retryable — requeuing could
+      // launch a second VM onto a machine that quietly committed.
+      assert.equal(e.retryable, false, 'unprovable absence fails closed, not retryable');
+      return true;
+    });
+  });
+
+  it('F4: provision refuses an empty jobId (an empty omadia_job_id is an un-reapable orphan)', async () => {
+    const { fetchImpl } = makeFetch(() => ({ status: 200, body: {} }));
+    const backend = new FlyMachinesBackend(options({ fetchImpl }));
+    await assert.rejects(backend.provision(input('  ')), (e: unknown) => {
+      assert.ok(e instanceof FlyMachinesBackendError);
+      assert.equal(e.code, 'devplatform.fly_job_id_required');
       return true;
     });
   });
@@ -238,11 +294,31 @@ describe('FlyMachinesBackend — terminate', () => {
     await backend.terminate(handle);
     const stop = calls.find((c) => c.method === 'POST' && c.path.includes('/stop'))!;
     assert.ok(stop, 'a stop was issued');
-    assert.deepEqual(stop.body, { timeout: '15s' }, 'stop carries the 15s graceful grace');
+    assert.deepEqual(stop.body, { timeout: '15s', signal: 'SIGTERM' }, 'stop carries the 15s SIGTERM grace');
     const destroy = calls.find((c) => c.method === 'DELETE')!;
     assert.ok(destroy, 'a destroy was issued');
     assert.match(destroy.path, /\?force=true$/, 'destroy is a force destroy');
     assert.match(destroy.path, /\/machines\/m-term\?/, 'destroy targets the created machine');
+  });
+
+  it('F3: refuses to destroy a machine whose omadia_job_id != the handle job (tampered handle)', async () => {
+    const { backend, handle, calls, setRoute } = await provisioned('m-term');
+    // The machine at handle.machineId actually belongs to a DIFFERENT job (a tampered
+    // runner_handle: id===jobId but machineId points at another job's live machine).
+    setRoute((call) => {
+      if (call.method === 'GET' && call.path.includes('/machines/m-term') && !call.path.includes('/wait')) {
+        return { status: 200, body: { id: 'm-term', config: { metadata: { [JOB_ID_METADATA_KEY]: 'SOMEONE-ELSES-JOB' } } } };
+      }
+      if (call.method === 'DELETE') return { status: 200, body: {} };
+      return { status: 200, body: {} };
+    });
+    await assert.rejects(backend.terminate(handle), (e: unknown) => {
+      assert.ok(e instanceof FlyMachinesBackendError);
+      assert.equal(e.code, 'devplatform.malformed_handle');
+      return true;
+    });
+    // FAIL-IF-REVERTED: no DELETE may be issued — we must NOT destroy another job's VM.
+    assert.ok(!calls.some((c) => c.method === 'DELETE'), 'no destroy was issued against the foreign machine');
   });
 
   it('treats a 404 on destroy as SUCCESS (idempotent — the machine is already gone)', async () => {
@@ -325,13 +401,13 @@ describe('FlyMachinesBackend — reap', () => {
     assert.equal(reaped[0]!.id, dead, 'reaped handle.id is the jobId — the worker join key');
   });
 
-  it('also destroys a lease-EXPIRED machine even if the job predicate still says active', async () => {
+  it('F1: does NOT reap an ACTIVE job even past its lease deadline (a healthy long job survives)', async () => {
     const job = randomUUID();
     const past = new Date(Date.now() - 60_000).toISOString();
     const destroyed: string[] = [];
     const { fetchImpl } = makeFetch((call) => {
       if (call.method === 'GET' && call.path.endsWith('/machines')) {
-        return { status: 200, body: [machine(job, 'm-expired', past)] };
+        return { status: 200, body: [machine(job, 'm-longrun', past)] };
       }
       if (call.method === 'DELETE') {
         destroyed.push(call.path);
@@ -341,8 +417,12 @@ describe('FlyMachinesBackend — reap', () => {
     });
     const backend = new FlyMachinesBackend(options({ fetchImpl, isJobActive: () => true }));
     const reaped = await backend.reap();
-    assert.equal(destroyed.length, 1, 'the lease-expired machine was destroyed despite an active predicate');
-    assert.equal(reaped.length, 1);
+    // FAIL-IF-REVERTED: Fly's lease is a create-time stamp, not a renewed heartbeat,
+    // so reaping on lease-expiry force-kills any job that legitimately runs past the
+    // TTL. An ACTIVE job must survive reap regardless of its lease (Forge W4 F1);
+    // wedged jobs are caught by the worker's enforce sweep + auto_destroy instead.
+    assert.equal(destroyed.length, 0, 'an active job past its lease is NOT destroyed');
+    assert.equal(reaped.length, 0);
   });
 
   it('never touches a machine that lacks the omadia_job_id metadata (not ours)', async () => {
