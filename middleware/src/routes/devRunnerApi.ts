@@ -86,7 +86,7 @@ export interface DevRunnerRepoLookup {
     id: string,
   ): Promise<Pick<
     DevRepo,
-    'cloneUrl' | 'defaultBranch' | 'runsTests' | 'egressAllowlist' | 'bootstrapCommand' | 'testCommand'
+    'cloneUrl' | 'defaultBranch' | 'runsTests' | 'egressAllowlist' | 'bootstrapCommand' | 'testCommand' | 'dockerInJob'
   > | null>;
 }
 
@@ -191,10 +191,15 @@ function bearerToken(req: Request): string | null {
 function deriveCapabilities(
   backend: DevJob['backend'],
   runsTests: boolean,
+  dockerInJob: boolean,
 ): DevJobSpec['capabilities'] {
-  // The jailed local backend executes neither install nor tests (spec §1/§5).
+  // The jailed local backend executes neither install nor tests (spec §1/§5), and
+  // has no container to run Docker in — dockerInJob is meaningless there.
   if (backend === 'local') return { installDeps: false, runTests: false };
-  return { installDeps: true, runTests: runsTests };
+  // W5 (spec §8): the Docker backend serves DinD via the daemon sidecar (the shim
+  // ignores the flag — its `DOCKER_HOST` is already wired); the Fly backend has no
+  // sidecar, so the shim reads this to start in-VM dockerd itself.
+  return { installDeps: true, runTests: runsTests, dockerInJob };
 }
 
 /**
@@ -382,7 +387,7 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
         ...(maxTurns !== undefined ? { maxTurns } : {}),
       },
       limits: { wallClockMs },
-      capabilities: deriveCapabilities(job.backend, repo.runsTests),
+      capabilities: deriveCapabilities(job.backend, repo.runsTests, repo.dockerInJob ?? false),
     };
 
     // W2: a gated job MUST receive the pipeline mode + its phase context, or the

@@ -198,8 +198,11 @@ export interface DevJobSpec {
   branch: string;
   agent: { kind: 'claude-cli'; model?: string; maxTurns?: number };
   limits: { wallClockMs: number };
-  /** Both false on the jailed local backend (no install, no test execution). */
-  capabilities: { installDeps: boolean; runTests: boolean };
+  /** Both false on the jailed local backend (no install, no test execution).
+   *  `dockerInJob` (W5, spec §8) is OPTIONAL so W0/W2 spec payloads keep
+   *  validating; the Docker backend serves it via the daemon sidecar and the Fly
+   *  backend via in-VM dockerd. */
+  capabilities: { installDeps: boolean; runTests: boolean; dockerInJob?: boolean };
   /**
    * W2 dispatch: 'gated' makes the shim run the phase loop; 'collapsed' (or
    * absent, for a W0 runner) runs the single-shot path. Without this the gated
@@ -335,6 +338,12 @@ export interface DevRepo {
    *  before a labeled-issue delivery can create a job; EMPTY means webhook triggers
    *  are OFF for the repo (spec §3 finding S7). */
   webhookSenders: string[];
+  /** W5 opt-in Docker-in-Docker (`0027 docker_in_job`, default false). When true a
+   *  job gets a per-job rootless DinD sidecar (Docker backend) or in-VM dockerd
+   *  (Fly backend). Weaker than the plain job baseline — see spec §8. OPTIONAL on
+   *  the type (absent ⇒ false) so pre-W5 fixtures keep compiling; the store always
+   *  populates it from the row. */
+  dockerInJob?: boolean;
   createdBy: string;
   createdAt: string;
   updatedAt: string;

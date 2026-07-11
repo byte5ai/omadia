@@ -17,6 +17,7 @@ import { HomeClient, HomeError, type HomeApi } from './homeClient.js';
 import { cloneAtBaseSha, collectDiff, type GitOptions } from './gitOps.js';
 import { bundleDiff } from './diffUpload.js';
 import { runAgent } from './agentRunner.js';
+import { maybeStartDockerd } from './dockerd.js';
 import { runPhasedShim } from './phaseLoop.js';
 import {
   RUNNER_PROTOCOL_VERSION,
@@ -101,6 +102,14 @@ export async function runShim(env: ShimEnv = readShimEnv(), deps: ShimDeps = {})
       logger: log,
     };
     const repoDir = await cloneAtBaseSha(gitOpts, spec.repo);
+
+    // 3b. W5 opt-in Docker-in-Docker (spec §8). On the Docker backend the daemon
+    // already wired DOCKER_HOST at a per-job sidecar (this is a no-op); on Fly the
+    // shim starts in-VM dockerd. Best-effort — a docker-less repo never opts in, so
+    // this returns immediately. A start failure must not sink the run.
+    await maybeStartDockerd(spec, { log }).catch((err: unknown) =>
+      log(`dockerInJob start error: ${errText(err)}`),
+    );
 
     // 4. Drive the agent.
     //

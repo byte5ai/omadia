@@ -44,7 +44,9 @@ export interface DevJobSpec {
   branch: string;
   agent: { kind: 'claude-cli'; model?: string; maxTurns?: number };
   limits: { wallClockMs: number };
-  capabilities: { installDeps: boolean; runTests: boolean };
+  /** `dockerInJob` (W5, spec §8) OPTIONAL so W0/W2 payloads keep validating.
+   *  Mirror of `middleware/src/devplatform/types.ts`. */
+  capabilities: { installDeps: boolean; runTests: boolean; dockerInJob?: boolean };
   /**
    * W2 gated pipeline (spec §4). All three are OPTIONAL so the W0 collapsed
    * `/spec` payload keeps validating unchanged; the collapsed path

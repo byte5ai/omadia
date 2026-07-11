@@ -19,7 +19,7 @@ const REPO_COLS =
   `tracker_kind, tracker_config, allowed_triggers, allowed_launchers, egress_allowlist, ` +
   `runs_tests, branch_protection_ok, branch_protection_checked_at, approver_role_key, ` +
   `gate_deadline_iso, bootstrap_command, test_command, policy_overrides, ` +
-  `trigger_label, webhook_enabled, webhook_senders, ` +
+  `trigger_label, webhook_enabled, webhook_senders, docker_in_job, ` +
   `created_by, created_at, updated_at`;
 
 function toRepo(r: Row): DevRepo {
@@ -48,6 +48,7 @@ function toRepo(r: Row): DevRepo {
     triggerLabel: r['trigger_label'] == null ? 'omadia-dev' : str(r['trigger_label']),
     webhookEnabled: r['webhook_enabled'] == null ? true : Boolean(r['webhook_enabled']),
     webhookSenders: asArr(r['webhook_senders']),
+    dockerInJob: r['docker_in_job'] == null ? false : Boolean(r['docker_in_job']),
     createdBy: str(r['created_by']),
     createdAt: iso(r['created_at']),
     updatedAt: iso(r['updated_at']),

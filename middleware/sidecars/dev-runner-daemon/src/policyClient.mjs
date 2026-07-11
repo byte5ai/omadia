@@ -70,6 +70,10 @@ const JobPolicyResponseSchema = z.object({
   image: z.string().min(1),
   env: z.record(z.string(), z.string()),
   egressAllowlist: z.array(z.string()),
+  // W5 opt-in DinD (spec §8). OPTIONAL so an older middleware that never sends it
+  // still validates; absent ⇒ false (no sidecar). Default is fail-safe: a job
+  // only gets the weaker-baseline DinD sidecar when the repo explicitly opted in.
+  dockerInJob: z.boolean().optional(),
 });
 
 /** Hard cap on the number of egress-allowlist entries the daemon will accept from
@@ -237,6 +241,9 @@ const DEFAULT_CLI_BIN = 'claude';
  * @property {string} image
  * @property {Record<string, string>} env
  * @property {string[]} egressAllowlist
+ * @property {boolean} [dockerInJob] W5 opt-in DinD (spec §8): the daemon starts a
+ *   per-job rootless dind sidecar and wires the job's `DOCKER_HOST` at it. Absent
+ *   ⇒ false (no sidecar).
  */
 
 /**

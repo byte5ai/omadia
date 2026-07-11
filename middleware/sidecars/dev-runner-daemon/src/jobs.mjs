@@ -38,10 +38,21 @@ import Docker from 'dockerode';
 
 import {
   buildContainerCreateOptions,
+  buildDindCertsVolumeOptions,
+  buildDindCreateOptions,
+  buildDindImageStoreVolumeOptions,
+  DEV_DOCKER_IN_JOB_LABEL,
+  DEV_ROLE_LABEL,
+  dindCertsVolumeName,
+  dindContainerName,
+  dindVolumeName,
   imageDigestOf,
   jobNetworkName,
   jobVolumeName,
   resolveClampLimits,
+  resolveDindDiskGb,
+  resolveDindImage,
+  ROLE_DIND,
   SpecRejectedError,
 } from './clamp.mjs';
 
@@ -69,6 +80,10 @@ export const LEASE_EXPIRES_LABEL = 'ai.omadia.dev.leaseExpiresAt';
  * @property {string} networkId
  * @property {string} volumeName
  * @property {string} imageDigest
+ * @property {string} [jobId] The job id, so teardown can reconstruct the
+ *   deterministically-named DinD sidecar resources without a second lookup.
+ * @property {boolean} [dockerInJob] True when this job runs a DinD sidecar; gates
+ *   sidecar teardown so a plain job's teardown is byte-identical to before W5.
  */
 
 /**
@@ -88,6 +103,8 @@ export const LEASE_EXPIRES_LABEL = 'ai.omadia.dev.leaseExpiresAt';
  * @property {string} imageDigest Best-effort digest of the running image; '' if unknown.
  * @property {boolean} running Docker's State === 'running'. A container that has
  *   exited is stale no matter what its lease label says.
+ * @property {boolean} dockerInJob From the `ai.omadia.dev.dockerInJob` label:
+ *   whether this job also ran a DinD sidecar that must be torn down with it.
  * @property {number} createdAtMs Docker's `Created` timestamp. The container's
  *   real age — the daemon's absolute lifetime is measured from THIS, not from
  *   the adoption, or a restart would hand every job a fresh lifetime and the
@@ -835,6 +852,9 @@ export function createDockerEngine(opts = {}) {
   const docker = opts.docker ?? new Docker(dockerOptionsFromEnv(env));
   const limits = resolveClampLimits(env);
   const createdBy = env.DEV_RUNNER_CREATED_BY?.trim() || 'omadia-middleware';
+  // W5 opt-in DinD (spec §8): daemon-owned sidecar image + nested-store disk cap.
+  const dindImage = resolveDindImage(env);
+  const dindDiskGb = resolveDindDiskGb(env);
 
   return {
     async ping() {
@@ -850,6 +870,7 @@ export function createDockerEngine(opts = {}) {
     async createJobContainer({ jobId, policy, leaseExpiresAt }) {
       const networkName = jobNetworkName(jobId);
       const volumeName = jobVolumeName(jobId);
+      const dockerInJob = policy.dockerInJob === true;
       // Build (and thereby VALIDATE) the create-options FIRST: a forbidden spec
       // (a floating-tag image) throws SpecRejectedError here, before any docker
       // resource is created — so a rejected job leaks nothing.
@@ -861,6 +882,7 @@ export function createDockerEngine(opts = {}) {
         volumeName,
         createdBy,
         limits,
+        dockerInJob,
       });
       const imageDigest = imageDigestOf(policy.image);
       if (imageDigest === undefined) {
@@ -878,6 +900,11 @@ export function createDockerEngine(opts = {}) {
       /** @type {import('dockerode').Network | undefined} */
       let network;
       let volumeCreated = false;
+      // DinD sidecar state, tracked for rollback (spec §8).
+      let dindImageVolCreated = false;
+      let dindCertsVolCreated = false;
+      /** @type {import('dockerode').Container | undefined} */
+      let sidecar;
       /** @type {import('dockerode').Container | undefined} */
       let container;
       try {
@@ -886,18 +913,39 @@ export function createDockerEngine(opts = {}) {
         network = await docker.createNetwork({ Name: networkName, Driver: 'bridge', Internal: false, Labels: labels });
         await docker.createVolume({ Name: volumeName, Labels: labels });
         volumeCreated = true;
+
+        if (dockerInJob) {
+          // The sidecar goes up FIRST, on the JOB's isolated network, so the job
+          // container can reach `tcp://dind:2376` the instant it boots (spec §8).
+          // Its nested-image store is a dedicated SIZE-CAPPED volume and its TLS
+          // material lands on the shared certs volume the job mounts read-only.
+          // Nested-container egress has no route but the job's egress proxy.
+          await docker.createVolume(buildDindImageStoreVolumeOptions({ jobId, createdBy, diskGb: dindDiskGb }));
+          dindImageVolCreated = true;
+          await docker.createVolume(buildDindCertsVolumeOptions({ jobId, createdBy }));
+          dindCertsVolCreated = true;
+          await ensureImage(docker, dindImage);
+          sidecar = await docker.createContainer(
+            buildDindCreateOptions({ jobId, networkName, createdBy, leaseExpiresAt, limits, image: dindImage }),
+          );
+          await sidecar.start();
+        }
+
         // Lesson (b): the object validated above is the object launched now.
         container = await docker.createContainer(createOptions);
         await container.start();
-        return { containerId: container.id, networkId: network.id, volumeName, imageDigest };
+        return { jobId, containerId: container.id, networkId: network.id, volumeName, imageDigest, dockerInJob };
       } catch (err) {
         // Roll back whatever this create managed to make, so a partial failure
-        // never strands a network/volume/container nobody tracks.
+        // never strands a network/volume/container/sidecar nobody tracks.
         /** @type {string[]} */
         const rollback = [];
         if (container) await removeContainer(docker, container.id, rollback);
+        if (sidecar) await removeContainer(docker, sidecar.id, rollback);
         if (network) await removeNetwork(docker, network.id, rollback);
         if (volumeCreated) await removeVolume(docker, volumeName, rollback);
+        if (dindImageVolCreated) await removeVolume(docker, dindVolumeName(jobId), rollback);
+        if (dindCertsVolCreated) await removeVolume(docker, dindCertsVolumeName(jobId), rollback);
         if (rollback.length > 0) {
           // The rollback itself failed. Nothing will hold a handle on these —
           // the job was never registered — so the ONLY way they get cleaned up
@@ -905,7 +953,10 @@ export function createDockerEngine(opts = {}) {
           // same lost-handle leak `destroy()` refuses to cause. The names are
           // deterministic (`omadia-job-<id>`), so an operator or the reaper can
           // find exactly what survived.
-          throw new CreateRollbackError(jobId, [networkName, volumeName], rollback, err);
+          const named = dockerInJob
+            ? [networkName, volumeName, dindContainerName(jobId), dindVolumeName(jobId), dindCertsVolumeName(jobId)]
+            : [networkName, volumeName];
+          throw new CreateRollbackError(jobId, named, rollback, err);
         }
         throw err;
       }
@@ -919,8 +970,20 @@ export function createDockerEngine(opts = {}) {
       /** @type {string[]} */
       const errors = [];
       await removeContainer(docker, container.containerId, errors);
+      // The DinD sidecar container + its two volumes are torn down WITH the job
+      // (spec §8), by DETERMINISTIC name so the reaper's label-only rebuild/orphan
+      // paths clean them too. Gated on the handle's `dockerInJob` flag so a plain
+      // job's teardown is byte-identical to before W5 (never touches a sidecar it
+      // never had — the existing teardown tests assert exactly that).
+      if (container.dockerInJob && container.jobId) {
+        await removeContainer(docker, dindContainerName(container.jobId), errors);
+      }
       await removeNetwork(docker, container.networkId, errors);
       await removeVolume(docker, container.volumeName, errors);
+      if (container.dockerInJob && container.jobId) {
+        await removeVolume(docker, dindVolumeName(container.jobId), errors);
+        await removeVolume(docker, dindCertsVolumeName(container.jobId), errors);
+      }
       if (errors.length > 0) {
         throw new Error(`destroyJobContainer failed to fully remove job resources: ${errors.join('; ')}`);
       }
@@ -1000,12 +1063,17 @@ export function createDockerEngine(opts = {}) {
         if (!jobLabels || jobLabels[CREATED_BY_LABEL] !== createdBy) continue;
         const jobId = jobLabels[JOB_ID_LABEL];
         if (!jobId) continue;
+        // The DinD sidecar carries the same jobId label; skip it so the reaper
+        // never adopts it as a second job container (which would clobber the real
+        // container's handle). It is torn down WITH the job by deterministic name.
+        if (jobLabels[DEV_ROLE_LABEL] === ROLE_DIND) continue;
         containers.push({
           jobId,
           containerId: String(c.Id ?? ''),
           leaseExpiresAt: jobLabels[LEASE_EXPIRES_LABEL] ?? '',
           imageDigest: imageDigestOf(String(c.Image ?? '')) ?? '',
           running: c.State === 'running',
+          dockerInJob: jobLabels[DEV_DOCKER_IN_JOB_LABEL] === 'true',
           // docker reports `Created` in unix seconds.
           createdAtMs: typeof c.Created === 'number' ? c.Created * 1000 : Date.now(),
         });
