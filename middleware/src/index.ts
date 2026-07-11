@@ -2441,8 +2441,11 @@ async function main(): Promise<void> {
     // reap() can still see a job whose container the daemon has since lost. The
     // daemon rebuilds its own view from docker labels; ours lives only in memory.
     await wiredDevPlatform.start();
-    // `stop()` halts BOTH the claim worker and the W2 gate-deadline worker.
-    const stopDevPlatformWorker = (): void => wiredDevPlatform.stop();
+    // `stop()` halts BOTH the claim worker and the W2 gate-deadline worker (and
+    // awaits an in-flight deadline tick — a fire-and-forget on the signal handler).
+    const stopDevPlatformWorker = (): void => {
+      void wiredDevPlatform.stop();
+    };
     process.once('SIGTERM', stopDevPlatformWorker);
     process.once('SIGINT', stopDevPlatformWorker);
     console.log(

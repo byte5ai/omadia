@@ -124,6 +124,12 @@ export class FakeStore implements DevRunnerJobStore {
     this.artifactOwner.set(id, jobId);
     return id;
   }
+  async getLatestArtifact(jobId: string, kind: string): Promise<{ content: string } | null> {
+    const matches = this.artifacts.filter((a) => a.jobId === jobId && a.kind === kind);
+    const last = matches[matches.length - 1];
+    return last ? { content: last.content } : null;
+  }
+
   async recordResult(jobId: string, result: DevJobResult): Promise<void> {
     this.recorded.push(result);
     const j = this.jobs.get(jobId);
@@ -139,6 +145,7 @@ export interface Harness {
   store: FakeStore;
   finalizeCalls: Array<{ jobId: string; status: DevJobStatus; ctx?: FinalizeContext }>;
   repoRunsTests: { value: boolean };
+  repoBootstrap: { value: string | null };
   cloneToken: { value: string | undefined };
   close(): Promise<void>;
 }
@@ -151,9 +158,11 @@ export async function makeHarness(overrides: Partial<DevRunnerRouterDeps> = {}):
   const repoRunsTests = { value: false };
   const cloneToken: { value: string | undefined } = { value: CLONE_TOKEN };
 
+  const repoBootstrap: { value: string | null } = { value: null };
   const repos = {
-    getRepo: async (): Promise<Pick<DevRepo, 'cloneUrl' | 'defaultBranch' | 'runsTests'> | null> => ({
+    getRepo: async (): Promise<Pick<DevRepo, 'cloneUrl' | 'defaultBranch' | 'runsTests' | 'bootstrapCommand' | 'testCommand'> | null> => ({
       cloneUrl: 'https://github.com/o/r.git', defaultBranch: 'main', runsTests: repoRunsTests.value,
+      bootstrapCommand: repoBootstrap.value, testCommand: null,
     }),
   };
   const scmTokens = { resolve: async (): Promise<string | undefined> => cloneToken.value };
@@ -191,6 +200,7 @@ export async function makeHarness(overrides: Partial<DevRunnerRouterDeps> = {}):
     store,
     finalizeCalls,
     repoRunsTests,
+    repoBootstrap,
     cloneToken,
     async close() {
       await new Promise<void>((resolve) => server.close(() => resolve()));

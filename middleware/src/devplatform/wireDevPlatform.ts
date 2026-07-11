@@ -168,13 +168,13 @@ export interface WiredDevPlatform {
    * `tick()` runs one scan-and-expire pass and returns the number of gates it
    * expired — the deterministic seam a test drives instead of waiting on the timer.
    */
-  gateDeadlineWorker: { tick: () => Promise<number>; start: () => void; stop: () => void };
+  gateDeadlineWorker: { tick: () => Promise<number>; start: () => void; stop: () => Promise<void> };
   backends: readonly RunnerBackend[];
   finalizeDevJob: (jobId: string, status: DevJobStatus, ctx?: FinalizeContext) => Promise<DevJob | null>;
   applyJob: (jobId: string) => Promise<{ prUrl: string }>;
   /** Stop every background loop this platform owns (claim worker + gate-deadline
    *  worker). The counterpart to `start()`; index.ts calls it on shutdown. */
-  stop: () => void;
+  stop: () => void | Promise<void>;
 }
 
 /** Build every dev-platform object from the shared pool + vault. Pure assembly —
@@ -477,9 +477,16 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
   // unref (unlike a one-shot deadline that must fire while idle; see the W1 lesson).
   const gateDeadlineIntervalMs = deps.gateDeadlineIntervalMs ?? 60_000;
   let gateTimer: ReturnType<typeof setInterval> | undefined;
+  let gateStopped = false;
+  let gateInFlight: Promise<number> | null = null;
   const gateDeadlineTick = async (): Promise<number> => {
+    // A tick that started before stop() must not go on expiring gates and
+    // cancelling jobs after shutdown was requested (Forge #4): shutdown is a hard
+    // boundary. Bail before each side effect once stopped.
+    if (gateStopped) return 0;
     let expired = 0;
     for (const due of await gateStore.listDue()) {
+      if (gateStopped) break;
       const won = await gateStore.expire(due.id);
       if (!won) continue; // another worker claimed it first
       expired += 1;
@@ -487,22 +494,31 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     }
     return expired;
   };
+  const runTick = (): Promise<number> => {
+    gateInFlight = gateDeadlineTick().finally(() => {
+      gateInFlight = null;
+    });
+    return gateInFlight;
+  };
   const gateDeadlineWorker = {
-    tick: gateDeadlineTick,
+    tick: runTick,
     start: (): void => {
       if (gateTimer) return;
+      gateStopped = false;
       gateTimer = setInterval(() => {
-        void gateDeadlineTick().catch((err) =>
-          log(`[dev-platform] gate deadline worker tick failed: ${errText(err)}`),
-        );
+        void runTick().catch((err) => log(`[dev-platform] gate deadline worker tick failed: ${errText(err)}`));
       }, gateDeadlineIntervalMs);
       gateTimer.unref?.();
     },
-    stop: (): void => {
+    /** Stop future ticks, tell an in-flight tick to bail, and await it so shutdown
+     *  is quiescent — no expire/finalize runs after stop() resolves (Forge #4). */
+    stop: async (): Promise<void> => {
+      gateStopped = true;
       if (gateTimer) {
         clearInterval(gateTimer);
         gateTimer = undefined;
       }
+      if (gateInFlight) await gateInFlight.catch(() => {});
     },
   };
 
@@ -518,8 +534,8 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
       gateDeadlineWorker.start();
     },
     stop: () => {
-      gateDeadlineWorker.stop();
       worker.stop();
+      return gateDeadlineWorker.stop();
     },
     adminRouter,
     runnerRouter,

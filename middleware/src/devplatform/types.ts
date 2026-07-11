@@ -190,6 +190,45 @@ export interface DevJobSpec {
   limits: { wallClockMs: number };
   /** Both false on the jailed local backend (no install, no test execution). */
   capabilities: { installDeps: boolean; runTests: boolean };
+  /**
+   * W2 dispatch: 'gated' makes the shim run the phase loop; 'collapsed' (or
+   * absent, for a W0 runner) runs the single-shot path. Without this the gated
+   * pipeline is dark — the shim silently collapses (Forge W2 blocker).
+   */
+  pipelineMode?: DevPipelineMode;
+  /** W2 gated: the phase the runner begins at + provision-B inputs. */
+  phaseContext?: DevPhaseContext;
+  /** W2 gated: the dependency-install command (a command, NOT a CLI session). */
+  bootstrap?: { command: string; timeoutMs?: number };
+}
+
+export type DevPipelineMode = 'gated' | 'collapsed';
+
+/** An operator answer collected at the gate. */
+export interface DevOperatorAnswer {
+  questionId: string;
+  text: string;
+}
+
+/** A prior review finding, replayed into an implement retry. */
+export interface DevReviewFinding {
+  severity: 'blocker' | 'major' | 'minor';
+  file: string;
+  line?: number;
+  issue: string;
+  suggestion?: string;
+}
+
+/** The W2 gated phase context handed to the runner via `/spec` (mirrors the
+ *  shim's `PhaseContext`). Provision A needs only `phase`; provision B
+ *  (implement/review) additionally carries the approved plan + gate answers, and
+ *  on a review→implement retry the prior findings + attempt. */
+export interface DevPhaseContext {
+  phase: DevJobPhase;
+  plan?: string;
+  answers?: DevOperatorAnswer[];
+  priorFindings?: DevReviewFinding[];
+  attempt?: number;
 }
 
 /** A live (or recently live) runner instance, persisted to `dev_jobs.runner_handle`. */
@@ -269,6 +308,10 @@ export interface DevRepo {
   approverRoleKey: string | null;
   /** W2 gate deadline as an ISO-8601 duration (`0023` default `'P7D'`). */
   gateDeadlineIso: string;
+  /** W2 bootstrap (dep-install) command; null = auto-detect at runtime. */
+  bootstrapCommand: string | null;
+  /** W2 test command; null = agent-detected during analyze. */
+  testCommand: string | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;

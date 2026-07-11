@@ -139,6 +139,12 @@ const ALLOWED_ENV_KEYS = new Set([
   // OMADIA_JOB_BASE_URL / OMADIA_JOB_ID / OMADIA_WORKSPACE / OMADIA_CLI_BIN are
   // deliberately ABSENT — they are daemon-owned (DAEMON_OWNED_ENV_KEYS), injected.
   'OMADIA_JOB_TOKEN',
+  // W2 pipeline dispatch (deriveJobPolicy → shim readShimEnv). An inert,
+  // non-secret 'gated'|'collapsed' flag that selects the shim's phase loop vs the
+  // W0 single-shot path. Without it on the allowlist the daemon drops it and a
+  // gated DOCKER job silently collapses — the value's absence is the whole
+  // Forge W2 blocker, so it must survive the clamp.
+  'OMADIA_PIPELINE_MODE',
   // gated LLM passthrough (index.ts)
   'OMADIA_LLM_ENV_ALLOWED',
   'OMADIA_ANTHROPIC_BASE_URL',

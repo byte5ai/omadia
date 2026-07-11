@@ -42,6 +42,9 @@ import {
   type DevJobResult,
   type DevJobSpec,
   type DevJobStatus,
+  type DevPhaseContext,
+  type DevOperatorAnswer,
+  type DevReviewFinding,
   type DevJobUsage,
   type DevRepo,
 } from '../devplatform/types.js';
@@ -70,6 +73,9 @@ export interface DevRunnerJobStore {
   /** Ownership check for a runner-named artifact id (see POST /result). */
   artifactBelongsToJob(jobId: string, artifactId: string): Promise<boolean>;
   recordResult(jobId: string, result: DevJobResult): Promise<void>;
+  /** W2 gated /spec: the latest artifact of a kind (plan/answers/review_verdict),
+   *  used to build the runner's phaseContext for provision B. */
+  getLatestArtifact(jobId: string, kind: string): Promise<{ content: string } | null>;
 }
 
 /** Repo lookup for spec assembly + policy derivation — clone URL + default
@@ -78,7 +84,10 @@ export interface DevRunnerJobStore {
 export interface DevRunnerRepoLookup {
   getRepo(
     id: string,
-  ): Promise<Pick<DevRepo, 'cloneUrl' | 'defaultBranch' | 'runsTests' | 'egressAllowlist'> | null>;
+  ): Promise<Pick<
+    DevRepo,
+    'cloneUrl' | 'defaultBranch' | 'runsTests' | 'egressAllowlist' | 'bootstrapCommand' | 'testCommand'
+  > | null>;
 }
 
 /** Read-only clone-credential source. In W0 this resolves the repo's own stored
@@ -186,6 +195,68 @@ function deriveCapabilities(
   // The jailed local backend executes neither install nor tests (spec §1/§5).
   if (backend === 'local') return { installDeps: false, runTests: false };
   return { installDeps: true, runTests: runsTests };
+}
+
+/**
+ * Assemble the runner's phase context (spec §4). Provision A (analyze/plan/clarify)
+ * needs only the phase — it produces the artifacts as it goes. Provision B
+ * (implement/review, after the gate) needs the human-APPROVED plan, the gate
+ * answers, and — on a review→implement retry — the prior findings + attempt count,
+ * all produced in provision A and living server-side as artifacts.
+ */
+async function buildPhaseContext(store: DevRunnerJobStore, job: DevJob): Promise<DevPhaseContext> {
+  const ctx: DevPhaseContext = { phase: job.phase };
+  // Only the post-gate phases consume the accumulated artifacts.
+  if (job.phase !== 'implement' && job.phase !== 'review') return ctx;
+
+  const plan = await store.getLatestArtifact(job.id, 'plan');
+  if (plan) ctx.plan = plan.content;
+
+  const answers = await store.getLatestArtifact(job.id, 'answers');
+  if (answers) {
+    const parsed = safeJsonArray(answers.content);
+    if (parsed) {
+      ctx.answers = parsed.filter(
+        (a): a is DevOperatorAnswer =>
+          !!a && typeof a === 'object' && typeof (a as Record<string, unknown>)['questionId'] === 'string' &&
+          typeof (a as Record<string, unknown>)['text'] === 'string',
+      );
+    }
+  }
+
+  if (job.reviewAttempt > 0) {
+    ctx.attempt = job.reviewAttempt;
+    const verdict = await store.getLatestArtifact(job.id, 'review_verdict');
+    if (verdict) {
+      const obj = safeJsonObject(verdict.content) as { findings?: unknown } | null;
+      if (obj && Array.isArray(obj.findings)) {
+        ctx.priorFindings = obj.findings.filter(
+          (f): f is DevReviewFinding =>
+            !!f && typeof f === 'object' && typeof (f as Record<string, unknown>)['file'] === 'string' &&
+            typeof (f as Record<string, unknown>)['issue'] === 'string',
+        );
+      }
+    }
+  }
+  return ctx;
+}
+
+function safeJsonArray(s: string): unknown[] | null {
+  try {
+    const v = JSON.parse(s) as unknown;
+    return Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeJsonObject(s: string): unknown | null {
+  try {
+    const v = JSON.parse(s) as unknown;
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 function sanitizeUsage(raw: unknown): DevJobUsage | undefined {
@@ -313,6 +384,16 @@ export function createDevRunnerRouter(deps: DevRunnerRouterDeps): Router {
       limits: { wallClockMs },
       capabilities: deriveCapabilities(job.backend, repo.runsTests),
     };
+
+    // W2: a gated job MUST receive the pipeline mode + its phase context, or the
+    // shim silently falls back to the W0 single-shot path and the whole gate/plan
+    // flow is dark in production (Forge W2 blocker). Collapsed jobs get the flag
+    // too so the shim's dispatch is explicit rather than defaulted.
+    spec.pipelineMode = job.pipelineMode;
+    if (job.pipelineMode === 'gated') {
+      spec.phaseContext = await buildPhaseContext(store, job);
+      if (repo.bootstrapCommand) spec.bootstrap = { command: repo.bootstrapCommand };
+    }
     res.json(spec);
   });
 

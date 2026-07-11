@@ -66,7 +66,7 @@ export interface DerivedJobPolicy {
 export type JobPolicyRepoInput = Pick<DevRepo, 'cloneUrl' | 'egressAllowlist'>;
 
 /** The job fields the derivation reads. */
-export type JobPolicyJobInput = Pick<DevJob, 'authMode'>;
+export type JobPolicyJobInput = Pick<DevJob, 'authMode' | 'pipelineMode'>;
 
 /** Raised when the policy cannot be derived (e.g. an unparseable `clone_url`).
  *  The caller maps it to an opaque 5xx — the message never carries a secret. */
@@ -240,6 +240,10 @@ export function deriveJobPolicy(
   const env: Record<string, string> = subscription
     ? { ...SUBSCRIPTION_ENV }
     : { ANTHROPIC_BASE_URL: config.llmProxyBaseUrl };
+  // W2: the shim dispatches on OMADIA_PIPELINE_MODE — without it a gated job runs
+  // the W0 single-shot path and the whole gate/plan flow is dark (Forge blocker).
+  // A structurally-known, non-secret value; safe to inject into the runner env.
+  env['OMADIA_PIPELINE_MODE'] = job.pipelineMode === 'gated' ? 'gated' : 'collapsed';
 
   // --- egress allowlist -----------------------------------------------------
   // Server-derived hosts (middleware + forge) are trusted; the two operator/repo

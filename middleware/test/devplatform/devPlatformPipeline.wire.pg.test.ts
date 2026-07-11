@@ -358,4 +358,28 @@ describe('dev-platform wiring — a real gated job, end to end through the assem
     const revokeCallsAfter = appCalls.filter((c) => c.method === 'DELETE').length;
     assert.ok(revokeCallsAfter > revokeCallsBefore, 'the scoped token was revoked on gate-expiry cancel');
   });
+
+  it('after stop(), a deadline tick expires nothing — shutdown is a hard boundary (Forge #4)', async () => {
+    const { hash } = mintRunnerToken();
+    const job = await wired.jobStore.createJob({
+      repoId,
+      kind: 'fix_issue',
+      brief: 'quiescent job',
+      source: 'admin',
+      sourceRef: null,
+      baseSha: 'basesha-quiescent',
+      phase: 'analyze',
+      backend: 'local',
+      createdBy: MARK,
+      runnerTokenHash: hash,
+    });
+    const gates = new DevJobGateStore(pool, () => nowMs);
+    const gate = await gates.open({ jobId: job.id, questions: [], principalKind: 'user', principalRef: MARK });
+    nowMs += 8 * 24 * 60 * 60 * 1000; // overdue (> P7D)
+
+    await wired.stop();
+    const expired = await wired.gateDeadlineWorker.tick();
+    assert.equal(expired, 0, 'a stopped worker expires nothing');
+    assert.equal((await gates.get(gate.id))?.status, 'waiting', 'the overdue gate is untouched after stop()');
+  });
 });
