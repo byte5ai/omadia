@@ -41,6 +41,7 @@ import type {
   PreviewStreamEvent,
   TemplateSlotsResponse,
 } from './builderTypes';
+import { recordApiErrorDiagnostic } from './diagnosticsBuffer';
 
 /**
  * API client for the Harness Admin API v1.
@@ -175,6 +176,11 @@ export class ApiError extends Error {
   ) {
     super(message);
     this.name = 'ApiError';
+    // Feeds the opt-in diagnostics excerpt on the Create Issue flow
+    // (issue #433) — records every failed API call, not just uncaught
+    // ones, since most callers catch ApiError and render an in-page
+    // message instead of letting it bubble. No-ops server-side.
+    recordApiErrorDiagnostic({ status, message, detail: body });
   }
 }
 
@@ -4174,6 +4180,10 @@ export interface IssuePreview {
   title: string;
   body: string;
   category: IssueCategory;
+  /** Sanitized/truncated `<details>` block, present only when a
+   *  `diagnostics` excerpt was submitted (issue #433) — the exact text
+   *  /create will append, for operator review before filing. */
+  diagnostics?: string;
 }
 
 export interface CreatedIssue {
@@ -4220,6 +4230,9 @@ export function disconnectGithub(): Promise<{ ok: boolean }> {
 export function previewGithubIssue(input: {
   text: string;
   category: IssueCategory;
+  /** Opt-in stack-trace/log excerpt (issue #433) — never sent to the LLM
+   *  reformulator, only echoed back sanitized as `IssuePreview.diagnostics`. */
+  diagnostics?: string;
 }): Promise<IssuePreview> {
   return postJson<IssuePreview>('/v1/issues/preview', input);
 }
@@ -4228,6 +4241,7 @@ export function createGithubIssue(input: {
   title: string;
   body: string;
   category: IssueCategory;
+  diagnostics?: string;
 }): Promise<CreatedIssue> {
   return postJson<CreatedIssue>('/v1/issues/create', input);
 }

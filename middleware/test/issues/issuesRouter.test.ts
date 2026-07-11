@@ -331,4 +331,174 @@ describe('issuesRouter (device flow)', () => {
       await h.close();
     }
   });
+
+  // ---- diagnostics attachment (#433) -----------------------------------
+
+  it('preview echoes a sanitized, collapsed diagnostics block without sending it to the LLM', async () => {
+    const h = await boot();
+    try {
+      const res = await fetch(`${h.base}/api/v1/issues/preview`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'app crashes on save',
+          category: 'bug',
+          diagnostics: 'TypeError: boom\n  at save (app.js:1:1)',
+        }),
+      });
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(res.status, 200);
+      // The reformulated body must be untouched by the diagnostics text —
+      // the fake LLM always returns the same fixture body regardless of
+      // input, so this also proves rawText did not carry the excerpt.
+      assert.equal(body['body'], '## Summary\nok');
+      const diagnostics = String(body['diagnostics']);
+      assert.match(diagnostics, /<details>/);
+      assert.match(diagnostics, /<summary>Diagnostics<\/summary>/);
+      assert.match(diagnostics, /TypeError: boom/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('preview omits diagnostics when none is submitted', async () => {
+    const h = await boot();
+    try {
+      const res = await fetch(`${h.base}/api/v1/issues/preview`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'app crashes on save', category: 'bug' }),
+      });
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(res.status, 200);
+      assert.equal(body['diagnostics'], undefined);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('preview rejects an oversized diagnostics payload', async () => {
+    const h = await boot();
+    try {
+      const res = await fetch(`${h.base}/api/v1/issues/preview`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'app crashes on save',
+          category: 'bug',
+          diagnostics: 'x'.repeat(20001),
+        }),
+      });
+      assert.equal(res.status, 400);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('create appends the diagnostics block after the body, redacted, and unchanged by sanitizeIssueText', async () => {
+    const vault = new InMemorySecretVault();
+    await vault.set(GITHUB_CONNECT_AGENT_ID, 'op-1/access_token', 'gho_seed');
+    let captured: { title: string; body: string } | null = null;
+    const h = await boot({
+      vault,
+      createIssueCreator: () => ({
+        createIssue: (input) => {
+          captured = { title: input.title, body: input.body };
+          return Promise.resolve({
+            ok: true as const,
+            number: 9,
+            url: 'https://github.com/byte5ai/omadia/issues/9',
+          });
+        },
+      }),
+    });
+    try {
+      const res = await fetch(`${h.base}/api/v1/issues/create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Crash on save',
+          body: 'It crashes.',
+          category: 'bug',
+          diagnostics:
+            'stack trace: contact me at ops@example.com or AKIAIOSFODNN7EXAMPLE',
+        }),
+      });
+      assert.equal(res.status, 200);
+      assert.ok(captured);
+      const c = captured as { title: string; body: string };
+      // Redacted by the shared secrets scanner.
+      assert.doesNotMatch(c.body, /ops@example\.com/);
+      assert.doesNotMatch(c.body, /AKIAIOSFODNN7EXAMPLE/);
+      assert.match(c.body, /\[REDACTED:email\]/);
+      assert.match(c.body, /\[REDACTED:aws-access-key\]/);
+      // Appended as a collapsed block AFTER the sanitized body, and the
+      // <details>/<summary> tags survive — proof it did not pass back
+      // through sanitizeIssueText's HTML-escaping pass.
+      assert.match(c.body, /It crashes\.\n\n<details>/);
+      assert.match(c.body, /<summary>Diagnostics<\/summary>/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('create is byte-identical to the no-diagnostics case when diagnostics is omitted', async () => {
+    const vault = new InMemorySecretVault();
+    await vault.set(GITHUB_CONNECT_AGENT_ID, 'op-1/access_token', 'gho_seed');
+    const bodies: string[] = [];
+    const h = await boot({
+      vault,
+      createIssueCreator: () => ({
+        createIssue: (input) => {
+          bodies.push(input.body);
+          return Promise.resolve({
+            ok: true as const,
+            number: 1,
+            url: 'https://github.com/byte5ai/omadia/issues/1',
+          });
+        },
+      }),
+    });
+    try {
+      const payload = { title: 'T', body: 'B', category: 'bug' as const };
+      const withoutField = await fetch(`${h.base}/api/v1/issues/create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      assert.equal(withoutField.status, 200);
+      const withEmptyField = await fetch(`${h.base}/api/v1/issues/create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...payload, diagnostics: '' }),
+      });
+      assert.equal(withEmptyField.status, 200);
+      assert.equal(bodies.length, 2);
+      assert.equal(bodies[0], bodies[1]);
+      assert.doesNotMatch(bodies[0] ?? '', /<details>/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('create rejects a non-string diagnostics field', async () => {
+    const vault = new InMemorySecretVault();
+    await vault.set(GITHUB_CONNECT_AGENT_ID, 'op-1/access_token', 'gho_seed');
+    const h = await boot({ vault });
+    try {
+      const res = await fetch(`${h.base}/api/v1/issues/create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: 'T',
+          body: 'B',
+          category: 'bug',
+          diagnostics: 12345,
+        }),
+      });
+      assert.equal(res.status, 400);
+    } finally {
+      await h.close();
+    }
+  });
 });
