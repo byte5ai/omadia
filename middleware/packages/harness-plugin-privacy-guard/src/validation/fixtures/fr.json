@@ -1,0 +1,1475 @@
+[
+  {
+    "text": "Guillaume de Villeneuve rejoint l'équipe commerciale le mois prochain.",
+    "spans": [
+      {
+        "value": "Guillaume de Villeneuve",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Anne d'Harcourt présidera le comité de pilotage à partir de septembre.",
+    "spans": [
+      {
+        "value": "Anne d'Harcourt",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Marie de la Roche et Julien Lefèvre partagent la responsabilité du site de Lyon.",
+    "spans": [
+      {
+        "value": "Marie de la Roche",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Julien Lefèvre",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Henri du Plessis attend toujours la réponse concernant sa demande de mutation.",
+    "spans": [
+      {
+        "value": "Henri du Plessis",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Madame Moreau n'a pas encore signé l'avenant — merci de la relancer.",
+    "spans": [
+      {
+        "value": "Madame Moreau",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Livrez le matériel à l'entrepôt derrière l'ancienne gare au 27 rue des Lilas, deuxième portail à gauche après le passage à niveau, 44000 Nantes.",
+    "spans": [
+      {
+        "value": "l'entrepôt derrière l'ancienne gare au 27 rue des Lilas, deuxième portail à gauche après le passage à niveau, 44000 Nantes",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Envoie le coursier au 8 avenue Victor Hugo avant midi.",
+    "spans": [
+      {
+        "value": "8 avenue Victor Hugo",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Le numéro de sécurité sociale de Camille Moreau est 1 84 12 75 123 456 78.",
+    "spans": [
+      {
+        "value": "Camille Moreau",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "1 84 12 75 123 456 78",
+        "type": "idnum",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Élodie Bernard est née le 17 septembre 1984 à Bordeaux.",
+    "spans": [
+      {
+        "value": "Élodie Bernard",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "17 septembre 1984",
+        "type": "date",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Contacte Thibault Marchand au 06 71 23 45 89 pour la visite médicale.",
+    "spans": [
+      {
+        "value": "Thibault Marchand",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "06 71 23 45 89",
+        "type": "phone",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Au séminaire participent Pauline Chevalier, Antoine Perrot et Margaux Lambert.",
+    "spans": [
+      {
+        "value": "Pauline Chevalier",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Antoine Perrot",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Margaux Lambert",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "La prime de Nicolas Girard, soit 2 400 €, sera versée avec la paie de mars.",
+    "spans": [
+      {
+        "value": "Nicolas Girard",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "2 400 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Merci de virer l'acompte sur le compte FR76 3000 6000 0112 3456 7890 189 de Claire Fontaine.",
+    "spans": [
+      {
+        "value": "FR76 3000 6000 0112 3456 7890 189",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "Claire Fontaine",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "La candidate Inès Blanchard-Torres a réussi le second entretien.",
+    "spans": [
+      {
+        "value": "Inès Blanchard-Torres",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "M. N'Diaye du service comptabilité demande un accès au module fournisseurs.",
+    "spans": [
+      {
+        "value": "M. N'Diaye",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Jean-Pierre Lemaire prend sa retraite le 30/06/2027.",
+    "spans": [
+      {
+        "value": "Jean-Pierre Lemaire",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "30/06/2027",
+        "type": "date",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Transmets le contrat signé à c.fontaine@societe-exemple.fr et préviens Claire Fontaine.",
+    "spans": [
+      {
+        "value": "c.fontaine@societe-exemple.fr",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "Claire Fontaine",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Que devrions-nous proposer à Damien Roche, dont le salaire actuel est de 899 € ?",
+    "spans": [
+      {
+        "value": "Damien Roche",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "899 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Que devrions-nous proposer à Romain Delacroix, dont le salaire actuel est de 3 499 € ?",
+    "spans": [
+      {
+        "value": "Romain Delacroix",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "3 499 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Que devrions-nous proposer à Amélie Dubois, dont le salaire actuel est de 12 750 € ?",
+    "spans": [
+      {
+        "value": "Amélie Dubois",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12 750 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Que devrions-nous proposer à Amélie Dubois, dont le salaire actuel est de 4 980 € ?",
+    "spans": [
+      {
+        "value": "Amélie Dubois",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "4 980 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Merci de virer l'acompte sur FR58 3000 6000 0148 9226 7411 707 et de mettre a.dubois@exemple-sarl.fr en copie.",
+    "spans": [
+      {
+        "value": "FR58 3000 6000 0148 9226 7411 707",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "a.dubois@exemple-sarl.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Merci de virer l'acompte sur FR33 3000 6000 0112 3456 7891 234 et de mettre n.girard@courriel-exemple.fr en copie.",
+    "spans": [
+      {
+        "value": "FR33 3000 6000 0112 3456 7891 234",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "n.girard@courriel-exemple.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Merci de virer l'acompte sur FR21 2004 1010 0505 8834 3M02 411 et de mettre camille.moreau@exemple-sarl.fr en copie.",
+    "spans": [
+      {
+        "value": "FR21 2004 1010 0505 8834 3M02 411",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "camille.moreau@exemple-sarl.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Merci de virer l'acompte sur FR47 2004 1010 0505 0001 3M02 585 et de mettre t.marchand@societe-exemple.fr en copie.",
+    "spans": [
+      {
+        "value": "FR47 2004 1010 0505 0001 3M02 585",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "t.marchand@societe-exemple.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Appelle Louise Prévost au +33 4 91 55 11 20 — date de naissance : 01/02/2023.",
+    "spans": [
+      {
+        "value": "Louise Prévost",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+33 4 91 55 11 20",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "01/02/2023",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Appelle Mathieu Rousseau au 01 45 67 89 23 — date de naissance : 12/11/1979.",
+    "spans": [
+      {
+        "value": "Mathieu Rousseau",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "01 45 67 89 23",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "12/11/1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Appelle Hugo Charpentier au 06 32 18 90 47 — date de naissance : 12/11/1979.",
+    "spans": [
+      {
+        "value": "Hugo Charpentier",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "06 32 18 90 47",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "12/11/1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Appelle Damien Roche au +33 7 60 12 34 56 — date de naissance : 17/09/1984.",
+    "spans": [
+      {
+        "value": "Damien Roche",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+33 7 60 12 34 56",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "17/09/1984",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La facture de 899 € doit être envoyée à l'adresse 3 boulevard Saint-Michel, 75005 Paris.",
+    "spans": [
+      {
+        "value": "899 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "3 boulevard Saint-Michel, 75005 Paris",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La facture de 899 € doit être envoyée à l'adresse 9 impasse des Acacias, 31000 Toulouse.",
+    "spans": [
+      {
+        "value": "899 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "9 impasse des Acacias, 31000 Toulouse",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La facture de 12 750 € doit être envoyée à l'adresse 8 avenue Victor Hugo, 69006 Lyon.",
+    "spans": [
+      {
+        "value": "12 750 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "8 avenue Victor Hugo, 69006 Lyon",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La facture de 64 000 € doit être envoyée à l'adresse 14 rue du Château, 67000 Strasbourg.",
+    "spans": [
+      {
+        "value": "64 000 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "14 rue du Château, 67000 Strasbourg",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Crée la fiche de Bastien Leroy avec l'adresse e-mail professionnelle j.lefevre@societe-exemple.fr.",
+    "spans": [
+      {
+        "value": "Bastien Leroy",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "j.lefevre@societe-exemple.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Crée la fiche de Romain Delacroix avec l'adresse e-mail professionnelle t.marchand@societe-exemple.fr.",
+    "spans": [
+      {
+        "value": "Romain Delacroix",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "t.marchand@societe-exemple.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Crée la fiche de Damien Roche avec l'adresse e-mail professionnelle rh@exemple-conseil.fr.",
+    "spans": [
+      {
+        "value": "Damien Roche",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "rh@exemple-conseil.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Crée la fiche de Chloé Vasseur avec l'adresse e-mail professionnelle j.lefevre@societe-exemple.fr.",
+    "spans": [
+      {
+        "value": "Chloé Vasseur",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "j.lefevre@societe-exemple.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Étienne Caron a quitté l'entreprise le 12/11/1979 — merci de lancer le processus de départ.",
+    "spans": [
+      {
+        "value": "Étienne Caron",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12/11/1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Margaux Lambert a quitté l'entreprise le 01/02/2023 — merci de lancer le processus de départ.",
+    "spans": [
+      {
+        "value": "Margaux Lambert",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "01/02/2023",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Amélie Dubois a quitté l'entreprise le 17/09/1984 — merci de lancer le processus de départ.",
+    "spans": [
+      {
+        "value": "Amélie Dubois",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "17/09/1984",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Damien Roche a quitté l'entreprise le 03/05/1991 — merci de lancer le processus de départ.",
+    "spans": [
+      {
+        "value": "Damien Roche",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "03/05/1991",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Mets à jour la fiche : Romain Delacroix habite désormais au 9 impasse des Acacias, 31000 Toulouse.",
+    "spans": [
+      {
+        "value": "Romain Delacroix",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "9 impasse des Acacias, 31000 Toulouse",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Mets à jour la fiche : Étienne Caron habite désormais au 8 avenue Victor Hugo, 69006 Lyon.",
+    "spans": [
+      {
+        "value": "Étienne Caron",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "8 avenue Victor Hugo, 69006 Lyon",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Mets à jour la fiche : Julien Lefèvre habite désormais au 5 place de la République, 34000 Montpellier.",
+    "spans": [
+      {
+        "value": "Julien Lefèvre",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "5 place de la République, 34000 Montpellier",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Mets à jour la fiche : Thibault Marchand habite désormais au 27 rue des Lilas, 44000 Nantes.",
+    "spans": [
+      {
+        "value": "Thibault Marchand",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "27 rue des Lilas, 44000 Nantes",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Rembourse les frais de déplacement de 4 980 € sur FR58 3000 6000 0148 9226 7411 707.",
+    "spans": [
+      {
+        "value": "4 980 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "FR58 3000 6000 0148 9226 7411 707",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Rembourse les frais de déplacement de 2 400 € sur FR21 2004 1010 0505 8834 3M02 411.",
+    "spans": [
+      {
+        "value": "2 400 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "FR21 2004 1010 0505 8834 3M02 411",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Rembourse les frais de déplacement de 58 900 € sur FR76 3000 6000 0112 3456 7890 189.",
+    "spans": [
+      {
+        "value": "58 900 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "FR76 3000 6000 0112 3456 7890 189",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Rembourse les frais de déplacement de 2 300 € sur FR33 3000 6000 0112 3456 7891 234.",
+    "spans": [
+      {
+        "value": "2 300 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "FR33 3000 6000 0112 3456 7891 234",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Envoie le bulletin de paie à t.marchand@societe-exemple.fr ; le brut s'élève à 4 980 €.",
+    "spans": [
+      {
+        "value": "t.marchand@societe-exemple.fr",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "4 980 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Envoie le bulletin de paie à c.fontaine@societe-exemple.fr ; le brut s'élève à 72 000 €.",
+    "spans": [
+      {
+        "value": "c.fontaine@societe-exemple.fr",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "72 000 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Envoie le bulletin de paie à paie@exemple-sarl.fr ; le brut s'élève à 72 000 €.",
+    "spans": [
+      {
+        "value": "paie@exemple-sarl.fr",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "72 000 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Envoie le bulletin de paie à facturation@exemple-conseil.fr ; le brut s'élève à 12 750 €.",
+    "spans": [
+      {
+        "value": "facturation@exemple-conseil.fr",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "12 750 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Pour la prise de références, tu peux joindre Margaux Lambert au +33 2 40 89 63 12.",
+    "spans": [
+      {
+        "value": "Margaux Lambert",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+33 2 40 89 63 12",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Pour la prise de références, tu peux joindre Camille Moreau au +33 4 91 55 11 20.",
+    "spans": [
+      {
+        "value": "Camille Moreau",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+33 4 91 55 11 20",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Pour la prise de références, tu peux joindre Pauline Chevalier au +33 1 42 68 53 00.",
+    "spans": [
+      {
+        "value": "Pauline Chevalier",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+33 1 42 68 53 00",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Pour la prise de références, tu peux joindre Manon Berger au +33 4 91 55 11 20.",
+    "spans": [
+      {
+        "value": "Manon Berger",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+33 4 91 55 11 20",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Prépare l'entretien annuel avec Damien Roche.",
+    "spans": [
+      {
+        "value": "Damien Roche",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Prépare l'entretien annuel avec Élodie Bernard.",
+    "spans": [
+      {
+        "value": "Élodie Bernard",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Prépare l'entretien annuel avec Pauline Chevalier.",
+    "spans": [
+      {
+        "value": "Pauline Chevalier",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Prépare l'entretien annuel avec Hugo Charpentier.",
+    "spans": [
+      {
+        "value": "Hugo Charpentier",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Margaux Lambert s'est déclaré malade le 01/02/2023 — enregistre-le dans le module RH.",
+    "spans": [
+      {
+        "value": "Margaux Lambert",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "01/02/2023",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Claire Fontaine s'est déclaré malade le 17/09/1984 — enregistre-le dans le module RH.",
+    "spans": [
+      {
+        "value": "Claire Fontaine",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "17/09/1984",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Florian Mercier s'est déclaré malade le 30/06/2026 — enregistre-le dans le module RH.",
+    "spans": [
+      {
+        "value": "Florian Mercier",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "30/06/2026",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Thibault Marchand s'est déclaré malade le 12/11/1979 — enregistre-le dans le module RH.",
+    "spans": [
+      {
+        "value": "Thibault Marchand",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12/11/1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Le fournisseur attend le règlement de 3 499 € sur FR47 2004 1010 0505 0001 3M02 585.",
+    "spans": [
+      {
+        "value": "3 499 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "FR47 2004 1010 0505 0001 3M02 585",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Le fournisseur attend le règlement de 12 750 € sur FR58 3000 6000 0148 9226 7411 707.",
+    "spans": [
+      {
+        "value": "12 750 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "FR58 3000 6000 0148 9226 7411 707",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Le fournisseur attend le règlement de 3 499 € sur FR58 3000 6000 0148 9226 7411 707.",
+    "spans": [
+      {
+        "value": "3 499 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "FR58 3000 6000 0148 9226 7411 707",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Le fournisseur attend le règlement de 4 980 € sur FR76 3000 6000 0112 3456 7890 189.",
+    "spans": [
+      {
+        "value": "4 980 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "FR76 3000 6000 0112 3456 7890 189",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Nouvelle candidature : Louise Prévost, joignable au 06 32 18 90 47 ou via facturation@exemple-conseil.fr.",
+    "spans": [
+      {
+        "value": "Louise Prévost",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "06 32 18 90 47",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "facturation@exemple-conseil.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nouvelle candidature : Camille Moreau, joignable au +33 2 40 89 63 12 ou via t.marchand@societe-exemple.fr.",
+    "spans": [
+      {
+        "value": "Camille Moreau",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+33 2 40 89 63 12",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "t.marchand@societe-exemple.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nouvelle candidature : Antoine Perrot, joignable au 01 45 67 89 23 ou via comptabilite@exemple-sarl.fr.",
+    "spans": [
+      {
+        "value": "Antoine Perrot",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "01 45 67 89 23",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "comptabilite@exemple-sarl.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nouvelle candidature : Inès Blanchard, joignable au 01 45 67 89 23 ou via m.rousseau@exemple-conseil.fr.",
+    "spans": [
+      {
+        "value": "Inès Blanchard",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "01 45 67 89 23",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "m.rousseau@exemple-conseil.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Envoie la proposition à Camille Moreau, 3 boulevard Saint-Michel, 75005 Paris.",
+    "spans": [
+      {
+        "value": "Camille Moreau",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "3 boulevard Saint-Michel, 75005 Paris",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Envoie la proposition à Nicolas Girard, 9 impasse des Acacias, 31000 Toulouse.",
+    "spans": [
+      {
+        "value": "Nicolas Girard",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "9 impasse des Acacias, 31000 Toulouse",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Envoie la proposition à Étienne Caron, 5 place de la République, 34000 Montpellier.",
+    "spans": [
+      {
+        "value": "Étienne Caron",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "5 place de la République, 34000 Montpellier",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Envoie la proposition à Solène Garnier, 22 quai des Belges, 13001 Marseille.",
+    "spans": [
+      {
+        "value": "Solène Garnier",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "22 quai des Belges, 13001 Marseille",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Le contrat de Élodie Bernard débute le 28/02/1995 avec un salaire annuel de 58 900 €.",
+    "spans": [
+      {
+        "value": "Élodie Bernard",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "28/02/1995",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "58 900 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Le contrat de Quentin Aubert débute le 01/02/2023 avec un salaire annuel de 12 750 €.",
+    "spans": [
+      {
+        "value": "Quentin Aubert",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "01/02/2023",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "12 750 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Le contrat de Julien Lefèvre débute le 28/02/1995 avec un salaire annuel de 2 400 €.",
+    "spans": [
+      {
+        "value": "Julien Lefèvre",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "28/02/1995",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "2 400 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Le contrat de Océane Faure débute le 12/11/1979 avec un salaire annuel de 64 000 €.",
+    "spans": [
+      {
+        "value": "Océane Faure",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12/11/1979",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "64 000 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Inscris Camille Moreau à la formation de la semaine prochaine et informe m.rousseau@exemple-conseil.fr.",
+    "spans": [
+      {
+        "value": "Camille Moreau",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "m.rousseau@exemple-conseil.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Inscris Étienne Caron à la formation de la semaine prochaine et informe t.marchand@societe-exemple.fr.",
+    "spans": [
+      {
+        "value": "Étienne Caron",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "t.marchand@societe-exemple.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Inscris Solène Garnier à la formation de la semaine prochaine et informe j.lefevre@societe-exemple.fr.",
+    "spans": [
+      {
+        "value": "Solène Garnier",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "j.lefevre@societe-exemple.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Inscris Océane Faure à la formation de la semaine prochaine et informe c.fontaine@societe-exemple.fr.",
+    "spans": [
+      {
+        "value": "Océane Faure",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "c.fontaine@societe-exemple.fr",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "À quelle adresse la dernière relance est-elle partie — 22 quai des Belges, 13001 Marseille, c'est bien ça ?",
+    "spans": [
+      {
+        "value": "22 quai des Belges, 13001 Marseille",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "À quelle adresse la dernière relance est-elle partie — 9 impasse des Acacias, 31000 Toulouse, c'est bien ça ?",
+    "spans": [
+      {
+        "value": "9 impasse des Acacias, 31000 Toulouse",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "À quelle adresse la dernière relance est-elle partie — 27 rue des Lilas, 44000 Nantes, c'est bien ça ?",
+    "spans": [
+      {
+        "value": "27 rue des Lilas, 44000 Nantes",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "À quelle adresse la dernière relance est-elle partie — 8 avenue Victor Hugo, 69006 Lyon, c'est bien ça ?",
+    "spans": [
+      {
+        "value": "8 avenue Victor Hugo, 69006 Lyon",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La Direction et le Comité Social et Économique se réunissent lundi matin.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Maladie et congés payés sont comptés séparément dans le rapport mensuel.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Explique la différence entre salaire brut et salaire net.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Rue, avenue et boulevard sont des types de voies distincts dans le module d'adresses.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "La Sécurité Sociale exige un justificatif pour tout arrêt de plus de trois jours.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Les Ressources Humaines publient la nouvelle grille interne demain.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Victor Hugo est au programme du séminaire littéraire de l'équipe communication.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Le Salon de l'Agriculture ferme ses portes dimanche — aucun stand ne reste ouvert.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Combien de jours de congé un salarié cumule-t-il après trois ans d'ancienneté ?",
+    "spans": []
+  },
+  {
+    "text": "Prépare un rapport d'avancement pour le projet du troisième trimestre, budget inchangé.",
+    "spans": []
+  },
+  {
+    "text": "Résume la politique de notes de frais en cinq points.",
+    "spans": []
+  },
+  {
+    "text": "Quelles étapes couvre le parcours d'intégration le premier mois ?",
+    "spans": []
+  },
+  {
+    "text": "Rédige un rappel amical concernant la saisie hebdomadaire des temps.",
+    "spans": []
+  },
+  {
+    "text": "Comment demander un nouvel ordinateur portable via l'outil de tickets ?",
+    "spans": []
+  },
+  {
+    "text": "Prépare un ordre du jour pour la prochaine réunion d'équipe avec trois priorités.",
+    "spans": []
+  },
+  {
+    "text": "Quels délais s'appliquent à la remise des notes de frais ?",
+    "spans": []
+  },
+  {
+    "text": "Résume les changements récents de la politique de télétravail.",
+    "spans": []
+  },
+  {
+    "text": "Comment fonctionne la validation des bons de commande dans le module achats ?",
+    "spans": []
+  },
+  {
+    "text": "Explique le circuit d'approbation des formations externes.",
+    "spans": []
+  },
+  {
+    "text": "Quels rapports le module comptable peut-il générer chaque mois ?",
+    "spans": []
+  },
+  {
+    "text": "Rédige une courte annonce pour la maintenance du système ce week-end.",
+    "spans": []
+  },
+  {
+    "text": "Comment créer un nouveau centre de coûts dans le système ?",
+    "spans": []
+  },
+  {
+    "text": "Quelle est la différence entre un devis et une confirmation de commande ?",
+    "spans": []
+  },
+  {
+    "text": "Prépare une liste de contrôle pour la clôture mensuelle en comptabilité.",
+    "spans": []
+  },
+  {
+    "text": "Comment exporter le récapitulatif des congés sous forme de tableau ?",
+    "spans": []
+  },
+  {
+    "text": "Quels rôles interviennent dans la validation des factures fournisseurs ?",
+    "spans": []
+  },
+  {
+    "text": "Rédige un refus poli pour un délai de livraison reporté.",
+    "spans": []
+  },
+  {
+    "text": "Résume les points clés de l'accord sur les horaires flexibles.",
+    "spans": []
+  },
+  {
+    "text": "Comment configurer un message d'absence pour les fêtes ?",
+    "spans": []
+  },
+  {
+    "text": "Quels champs sont obligatoires à la création d'un fournisseur ?",
+    "spans": []
+  },
+  {
+    "text": "Décris le déroulement de l'inventaire annuel de l'entrepôt.",
+    "spans": []
+  },
+  {
+    "text": "Comment générer automatiquement des factures récurrentes ?",
+    "spans": []
+  }
+]

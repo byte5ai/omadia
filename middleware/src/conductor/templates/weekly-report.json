@@ -1,0 +1,82 @@
+{
+  "id": "weekly-report",
+  "name": {
+    "en": "Weekly status report",
+    "de": "Wöchentlicher Statusbericht"
+  },
+  "description": {
+    "en": "Every Monday at 08:00 UTC a reporting agent composes a status report and delivers it to a recipient role for review. Publishing this workflow with the schedule enabled starts the weekly cadence.",
+    "de": "Jeden Montag um 08:00 UTC verfasst ein Reporting-Agent einen Statusbericht und stellt ihn einer Empfängerrolle zur Durchsicht zu. Wird der Workflow mit aktiviertem Zeitplan veröffentlicht, startet der wöchentliche Rhythmus."
+  },
+  "useCase": {
+    "en": "reporting",
+    "de": "Reporting"
+  },
+  "defaultSlug": "weekly-report",
+  "graph": {
+    "entryStepId": "compose",
+    "steps": [
+      {
+        "id": "compose",
+        "kind": "agent",
+        "agentId": "slot:agent:reporter",
+        "prompt": "Compose this week's status report for the team. Structure it as: highlights, in progress, risks, and plans for next week. Keep it concise and factual.",
+        "position": { "x": 80, "y": 160 }
+      },
+      {
+        "id": "review",
+        "kind": "human",
+        "human": {
+          "principal": { "kind": "role", "ref": "slot:role:recipient" },
+          "channel": "slot:channel:delivery",
+          "message": "The weekly status report is ready: {{steps.compose.text}}",
+          "quorum": "any"
+        },
+        "position": { "x": 340, "y": 160 }
+      }
+    ],
+    "transitions": [{ "id": "t-composed", "source": "compose", "target": "review" }],
+    "triggers": [{ "id": "trigger-weekly", "kind": "cron", "cron": "0 8 * * 1" }]
+  },
+  "slots": {
+    "agents": [
+      {
+        "key": "reporter",
+        "label": {
+          "en": "Reporting agent",
+          "de": "Reporting-Agent"
+        },
+        "description": {
+          "en": "Agent that gathers this week's updates and composes the report.",
+          "de": "Agent, der die Updates der Woche sammelt und den Bericht verfasst."
+        }
+      }
+    ],
+    "roles": [
+      {
+        "key": "recipient",
+        "label": {
+          "en": "Recipient role",
+          "de": "Empfängerrolle"
+        },
+        "description": {
+          "en": "Role whose holders receive and review the weekly report.",
+          "de": "Rolle, deren Mitglieder den Wochenbericht erhalten und durchsehen."
+        }
+      }
+    ],
+    "channels": [
+      {
+        "key": "delivery",
+        "label": {
+          "en": "Delivery channel",
+          "de": "Zustellkanal"
+        },
+        "description": {
+          "en": "Channel the report is delivered on.",
+          "de": "Kanal, über den der Bericht zugestellt wird."
+        }
+      }
+    ]
+  }
+}

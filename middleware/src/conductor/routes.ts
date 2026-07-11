@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import { validate } from '@omadia/conductor-core';
-import type { JsonObject, WorkflowGraph } from '@omadia/conductor-core';
+import type { JsonObject, KnownRefs, WorkflowGraph } from '@omadia/conductor-core';
 
 import { ConductorBuilderUnavailableError } from './builderAgent.js';
 import type { BuilderChatMessage, ConductorBuilderAgent } from './builderAgent.js';
@@ -21,6 +21,10 @@ import {
   WorkflowNotPublishedError,
 } from './runExecutor.js';
 import type { ConductorRunExecutor } from './runExecutor.js';
+import type { ConductorTemplateStore } from './templateStore.js';
+import type { TemplateSummary } from './templateCatalog.js';
+import { attachTemplateHints } from './templateHints.js';
+import { registerTemplateRoutes } from './templateRoutes.js';
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -52,6 +56,18 @@ export interface ConductorRouterDeps {
   actionCatalog?: () => string[];
   /** Conversational builder agent (US7) — co-design a draft graph by chat. Optional: absent on hosts without a registry. */
   builderAgent?: ConductorBuilderAgent;
+  /** Composite workflow-template catalog (#429 bundled + #478 user/plugin) —
+   *  viewer-scoped: pending/shared user templates are visible install-wide,
+   *  private ones only to their author. */
+  templateCatalog?: {
+    list(viewer: string): Promise<TemplateSummary[]>;
+    get(id: string, viewer: string): Promise<TemplateSummary | undefined>;
+    staticSource(id: string): 'bundled' | 'plugin' | undefined;
+  };
+  /** DB-backed user-template store (#478) — CRUD + immutable versions + telemetry. */
+  templateStore?: ConductorTemplateStore;
+  /** Live known-reference sets for strict template validation. */
+  templateKnownRefs?: () => Promise<KnownRefs>;
 }
 
 /**
@@ -70,10 +86,12 @@ const MAX_BUILDER_GRAPH_BYTES = 200_000;
 export function createConductorRouter(deps: ConductorRouterDeps): Router {
   const router = Router();
 
-  // List workflows.
-  router.get('/', async (_req: Request, res: Response): Promise<void> => {
+  // List workflows. Rows with template provenance carry the additive
+  // `template` update hint (#478) — viewer-scoped, one catalog read per request.
+  router.get('/', async (req: Request, res: Response): Promise<void> => {
     try {
-      res.json({ workflows: await deps.workflowStore.list() });
+      const workflows = await deps.workflowStore.list();
+      res.json({ workflows: await attachTemplateHints(workflows, deps, req.session?.sub ?? 'operator') });
     } catch (err) {
       res.status(500).json({ code: 'conductor.list_failed', message: errMsg(err) });
     }
@@ -162,8 +180,16 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
   });
 
+  // Workflow-template routes (#429 catalog/resolve/instantiate + #478 CRUD,
+  // versioning, telemetry) — split into templateRoutes.ts for file size. MUST
+  // register before the '/:slug' catch-all below.
+  registerTemplateRoutes(router, deps);
+
   // Conversational builder turn (US7): (draft graph + message) → patched draft + reply + validation.
   // Stateless — the draft lives client-side (parity with the visual Designer); this just transforms it.
+  // #478 B4 (additive): the response may carry `templateProposals` (≤3) — already filtered inside the
+  // agent seam to viewer-visible template ids with prefill vetted against live KnownRefs; the viewer
+  // is passed through so the prompt's catalog digest matches what this operator can see.
   router.post('/builder/turn', async (req: Request, res: Response): Promise<void> => {
     if (!deps.builderAgent) {
       res.status(503).json({ code: 'conductor.builder_unavailable', message: 'conversational builder is not wired (no orchestrator registry)' });
@@ -197,7 +223,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         return { role: r.role as 'user' | 'assistant', text: r.text as string };
       });
     try {
-      const result = await deps.builderAgent.runTurn({ graph, message, history });
+      const result = await deps.builderAgent.runTurn({ graph, message, history, viewer: req.session?.sub ?? 'operator' });
       res.json(result);
     } catch (err) {
       if (err instanceof ConductorBuilderUnavailableError) {
@@ -288,6 +314,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   });
 
   // Fetch a workflow + its active version graph (for the visual editor to load).
+  // Carries the same additive `template` update hint as the list (#478).
   router.get('/:slug', async (req: Request, res: Response): Promise<void> => {
     try {
       const wf = await deps.workflowStore.getBySlug(paramStr(req.params.slug));
@@ -296,7 +323,8 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         return;
       }
       const version = await deps.workflowStore.getVersion(wf.activeVersionId);
-      res.json({ workflow: wf, graph: version?.graph ?? null });
+      const [enriched] = await attachTemplateHints([wf], deps, req.session?.sub ?? 'operator');
+      res.json({ workflow: enriched, graph: version?.graph ?? null });
     } catch (err) {
       res.status(500).json({ code: 'conductor.get_failed', message: errMsg(err) });
     }

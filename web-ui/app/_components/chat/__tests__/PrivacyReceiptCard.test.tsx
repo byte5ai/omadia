@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { PrivacyReceipt } from '../../../_lib/chatSessions';
 import { renderWithIntl } from '../../../_lib/test-utils';
 import {
+  formatMaskedPromptSpans,
   PrivacyReceiptCard,
   summarisePrivacyReceipt,
 } from '../PrivacyReceiptCard';
@@ -40,6 +41,16 @@ const NAMED: PrivacyReceipt = {
   verbsExecuted: ['filter'],
   pseudonymProjectionUsed: false,
   identityValuesOnWire: 1,
+};
+
+/** #361 — three prompt spans were pseudonymised before the LLM wire. */
+const PROMPT_MASKED: PrivacyReceipt = {
+  ...RANKED,
+  maskedPromptSpans: [
+    { type: 'person', detector: 'c1-gliner' },
+    { type: 'person', detector: 'c1-gliner' },
+    { type: 'email', detector: 'c0-regex' },
+  ],
 };
 
 describe('<PrivacyReceiptCard />', () => {
@@ -113,6 +124,58 @@ describe('<PrivacyReceiptCard />', () => {
     expect(root?.className).not.toMatch(/danger/);
   });
 
+  it('shows the masked-prompt summary chunk and fact row when spans exist', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={PROMPT_MASKED} />, {
+      locale: 'de',
+    });
+    expect(screen.getByText(/Privacy Shield/).textContent).toContain(
+      'Prompt: 3 maskiert',
+    );
+    expect(
+      screen.getByText('Maskierte PII in deiner Nachricht'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('3 (2 × person, 1 × email)')).toBeInTheDocument();
+  });
+
+  it('shows the masked-prompt explainer only when the row is present', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={PROMPT_MASKED} />, {
+      locale: 'de',
+    });
+    expect(screen.getByText(/durch Pseudonyme ersetzt/)).toBeInTheDocument();
+  });
+
+  it('renders an unknown open-set span type as plain text', () => {
+    const receipt: PrivacyReceipt = {
+      ...RANKED,
+      maskedPromptSpans: [{ type: 'idnum', detector: 'c1-gliner' }],
+    };
+    renderWithIntl(<PrivacyReceiptCard receipt={receipt} />, { locale: 'de' });
+    expect(screen.getByText('1 (1 × idnum)')).toBeInTheDocument();
+  });
+
+  it('renders byte-identically to today when maskedPromptSpans is absent', () => {
+    const { container } = renderWithIntl(
+      <PrivacyReceiptCard receipt={RANKED} />,
+      { locale: 'de' },
+    );
+    expect(
+      screen.queryByText('Maskierte PII in deiner Nachricht'),
+    ).not.toBeInTheDocument();
+    expect(container.textContent).not.toContain('Prompt:');
+    expect(container.textContent).not.toContain('Pseudonyme ersetzt');
+  });
+
+  it('treats an empty maskedPromptSpans array as absent', () => {
+    const receipt: PrivacyReceipt = { ...RANKED, maskedPromptSpans: [] };
+    renderWithIntl(<PrivacyReceiptCard receipt={receipt} />, { locale: 'de' });
+    expect(
+      screen.queryByText('Maskierte PII in deiner Nachricht'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/Privacy Shield/).textContent).not.toContain(
+      'Prompt:',
+    );
+  });
+
   it('never leaks a PII-shaped value — the receipt carries only counts', () => {
     // The v4 receipt is PII-free by construction: counts and verb names
     // only. This pins the contract — if the schema ever regains a value
@@ -155,5 +218,42 @@ describe('summarisePrivacyReceipt()', () => {
     expect(summarisePrivacyReceipt(RANKED, t)).not.toContain(
       'summaryIdentityOnWire',
     );
+  });
+
+  it('adds the masked-prompt clause when prompt spans exist', () => {
+    expect(summarisePrivacyReceipt(PROMPT_MASKED, t)).toContain(
+      'summaryPromptMasked:3',
+    );
+  });
+
+  it('omits the masked-prompt clause when the field is absent or empty', () => {
+    expect(summarisePrivacyReceipt(RANKED, t)).not.toContain(
+      'summaryPromptMasked',
+    );
+    expect(
+      summarisePrivacyReceipt({ ...RANKED, maskedPromptSpans: [] }, t),
+    ).not.toContain('summaryPromptMasked');
+  });
+});
+
+describe('formatMaskedPromptSpans()', () => {
+  it('groups spans by type in first-seen order', () => {
+    expect(formatMaskedPromptSpans(PROMPT_MASKED.maskedPromptSpans ?? [])).toBe(
+      '3 (2 × person, 1 × email)',
+    );
+  });
+
+  it('renders unknown open-set types verbatim', () => {
+    expect(
+      formatMaskedPromptSpans([{ type: 'idnum', detector: 'c1-gliner' }]),
+    ).toBe('1 (1 × idnum)');
+  });
+
+  it('never includes detector ids in the rendered value', () => {
+    const value = formatMaskedPromptSpans(
+      PROMPT_MASKED.maskedPromptSpans ?? [],
+    );
+    expect(value).not.toContain('c1-gliner');
+    expect(value).not.toContain('c0-regex');
   });
 });

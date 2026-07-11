@@ -23,6 +23,9 @@ build/
 out/
 .next/
 *.tsbuildinfo
+# Python bytecode from the sidecar unit tests (middleware/sidecars/*)
+__pycache__/
+*.pyc
 
 # ─── Local-only dev state ─────────────────────────────────────────────────
 # Data pulled from production Fly volumes (never commit — user-specific + sensitive)

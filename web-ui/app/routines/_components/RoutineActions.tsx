@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
+  ApiError,
   deleteRoutine,
   setRoutineStatus,
   triggerRoutineNow,
@@ -64,6 +65,16 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
         }, 45000);
         router.refresh();
       } catch (err) {
+        // Issue #473: pre-key the middleware answers 503
+        // routines.chat_unavailable instead of accepting a run that is
+        // guaranteed to fail — name the fix instead of the raw error.
+        if (
+          err instanceof ApiError &&
+          err.body.includes('routines.chat_unavailable')
+        ) {
+          setError(t('triggerChatUnavailable'));
+          return;
+        }
         setError(err instanceof Error ? err.message : String(err));
       }
     });

@@ -21,9 +21,11 @@ import { routineTurnContext } from './routineTurnContext.js';
 
 /**
  * Single-call wiring for the routines feature. The kernel calls this once
- * after the Postgres pool, the JobScheduler, and the ChatAgent are
- * available; everything below the surface is created here so `index.ts`
- * stays thin.
+ * after the Postgres pool and the JobScheduler are available — the chat
+ * agent is NOT required at wiring time: the runner resolves it live per
+ * run via `getOrchestrator`, so routines hot-enable the moment the Setup
+ * Wizard key save publishes chatAgent@1 (issue #473). Everything below
+ * the surface is created here so `index.ts` stays thin.
  *
  * Lifecycle:
  *   - Runs DB migrations (idempotent — `_routine_migrations` tracks).
@@ -47,13 +49,15 @@ export interface InitRoutinesOptions {
   pool: Pool;
   scheduler: JobScheduler;
   /**
-   * Real `Orchestrator` (typically `chatAgentBundle.raw`). The runner
-   * needs the lower-level `runTurn` (not the higher-level `chat`) so it
-   * can persist the per-turn `runTrace` for the call-stack viewer. The
-   * structural type keeps this layer free of a hard import on the
+   * Live resolver for the real `Orchestrator` (typically
+   * `() => chatAgentBundle?.raw` over the service registry). Resolved per
+   * run, never captured — see `RoutineRunnerOptions.getOrchestrator`. The
+   * runner needs the lower-level `runTurn` (not the higher-level `chat`)
+   * so it can persist the per-turn `runTrace` for the call-stack viewer.
+   * The structural type keeps this layer free of a hard import on the
    * orchestrator package.
    */
-  orchestrator: OrchestratorLike;
+  getOrchestrator: () => OrchestratorLike | undefined;
   /**
    * Native-tool registration surface. Production passes the kernel-owned
    * `nativeToolRegistry`. The shape is the minimum used here so a stub
@@ -106,7 +110,7 @@ export async function initRoutines(
     store,
     runsStore,
     scheduler: opts.scheduler,
-    orchestrator: opts.orchestrator,
+    getOrchestrator: opts.getOrchestrator,
     senderRegistry,
     log,
     maxActivePerUser: opts.maxActivePerUser,

@@ -88,6 +88,15 @@ export class UnknownChannelError extends Error {
   }
 }
 
+export class ChatAgentUnavailableError extends Error {
+  constructor() {
+    super(
+      'chat agent unavailable — configure the LLM API key in Settings to enable routine runs',
+    );
+    this.name = 'ChatAgentUnavailableError';
+  }
+}
+
 export interface RoutineRunnerOptions {
   store: RoutineStore;
   runsStore: RoutineRunsStore;
@@ -98,13 +107,17 @@ export interface RoutineRunnerOptions {
    */
   scheduler: JobSchedulerLike;
   /**
-   * Production wiring passes `chatAgentBundle.raw` (the real
-   * `Orchestrator`); tests pass a stub that returns a synthetic
-   * `ChatTurnResult`. The runner needs `runTurn` (not the higher-level
-   * `chat`) so it can persist the per-turn `runTrace` for the
-   * call-stack viewer.
+   * Live resolver for the plugin-published chat agent — production wiring
+   * passes a closure over `serviceRegistry.get('chatAgent')?.raw`; tests
+   * pass `() => stub`. Resolved per run (never captured) so routines
+   * hot-enable the moment the Setup Wizard key save republishes
+   * chatAgent@1, and a key rotation swaps instances without a restart.
+   * A run that fires while it returns `undefined` records an `error`
+   * run via `ChatAgentUnavailableError`. The runner needs `runTurn`
+   * (not the higher-level `chat`) so it can persist the per-turn
+   * `runTrace` for the call-stack viewer.
    */
-  orchestrator: OrchestratorLike;
+  getOrchestrator: () => OrchestratorLike | undefined;
   senderRegistry: ProactiveSenderRegistry;
   log?: (msg: string) => void;
   /** Override the per-user active-routine cap. */
@@ -133,7 +146,7 @@ export class RoutineRunner {
   private readonly store: RoutineStore;
   private readonly runsStore: RoutineRunsStore;
   private readonly scheduler: JobSchedulerLike;
-  private readonly orchestrator: OrchestratorLike;
+  private readonly getOrchestrator: () => OrchestratorLike | undefined;
   private readonly senders: ProactiveSenderRegistry;
   private readonly log: (msg: string) => void;
   private readonly maxActivePerUser: number;
@@ -145,7 +158,7 @@ export class RoutineRunner {
     this.store = opts.store;
     this.runsStore = opts.runsStore;
     this.scheduler = opts.scheduler;
-    this.orchestrator = opts.orchestrator;
+    this.getOrchestrator = opts.getOrchestrator;
     this.senders = opts.senderRegistry;
     this.log = opts.log ?? ((msg) => console.log(msg));
     this.maxActivePerUser =
@@ -259,6 +272,17 @@ export class RoutineRunner {
   async peekRoutine(id: string): Promise<Routine | null> {
     const row = await this.store.get(id);
     return row ?? null;
+  }
+
+  /**
+   * Whether a chat agent currently resolves. The trigger endpoint checks
+   * this to return a synchronous 503 instead of accepting a manual run
+   * that is guaranteed to record `error` — cron fires still go through
+   * `runOnce` and record the failure, keeping the misconfiguration
+   * visible in run history.
+   */
+  chatAgentAvailable(): boolean {
+    return this.getOrchestrator() !== undefined;
   }
 
   /**
@@ -392,19 +416,30 @@ export class RoutineRunner {
     let userId = routine.userId;
 
     try {
-      const sender = this.senders.get(routine.channel);
-      if (!sender) {
-        throw new UnknownChannelError(routine.channel);
-      }
-
       // Re-read the row before invoking. A pause/delete that landed
       // between schedule and trigger should be honoured (the dispose was
-      // best-effort, not transactional).
+      // best-effort, not transactional). Checked first so a raced fire on
+      // a paused row never records a spurious availability error.
       const fresh = await this.store.get(routine.id);
       if (!fresh || fresh.status !== 'active') return;
       prompt = fresh.prompt;
       tenant = fresh.tenant;
       userId = fresh.userId;
+
+      // Resolve the chat agent per fire (issue #473) and BEFORE the
+      // sender lookup: pre-key, the channel plugins (which require
+      // chatAgent@^1) are dark too, so a sender-first check would record
+      // the misleading 'no proactive sender' error when the actual fix
+      // is configuring the key.
+      const orchestrator = this.getOrchestrator();
+      if (!orchestrator) {
+        throw new ChatAgentUnavailableError();
+      }
+
+      const sender = this.senders.get(routine.channel);
+      if (!sender) {
+        throw new UnknownChannelError(routine.channel);
+      }
 
       if (signal.aborted) {
         status = 'timeout';
@@ -424,7 +459,7 @@ export class RoutineRunner {
       // data sections directly from the tool handler's output instead
       // of letting the LLM author markdown rows. Non-templated routines
       // skip the wrap entirely — byte-identical to pre-C.2 behaviour.
-      const turn = await this.runTurnWithOptionalCapture(fresh);
+      const turn = await this.runTurnWithOptionalCapture(fresh, orchestrator);
       result = turn.result;
       cardBody = turn.cardBody;
 
@@ -530,12 +565,16 @@ export class RoutineRunner {
    */
   private async runTurnWithOptionalCapture(
     routine: Routine,
+    // The instance `runOnce` resolved for this fire — passed down (not
+    // re-resolved) so one run never straddles two orchestrator instances
+    // across a mid-run key rotation.
+    orchestrator: OrchestratorLike,
   ): Promise<{
     readonly result: ChatTurnResult;
     readonly cardBody?: readonly unknown[];
   }> {
     if (routine.outputTemplate === null) {
-      const result = await this.orchestrator.runTurn({
+      const result = await orchestrator.runTurn({
         userMessage: routine.prompt,
         userId: routine.userId,
         sessionScope: `routine:${routine.id}`,
@@ -570,7 +609,7 @@ export class RoutineRunner {
             captureRawToolResult,
           },
           () =>
-            this.orchestrator.runTurn({
+            orchestrator.runTurn({
               userMessage: augmentedPrompt,
               userId: routine.userId,
               sessionScope: `routine:${routine.id}`,

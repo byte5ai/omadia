@@ -200,6 +200,8 @@ import { PluginCatalog } from './plugins/manifestLoader.js';
 import { buildKgHealth } from './health/kgHealth.js';
 import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
+import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
+import type { PluginTemplateRegistrar } from './plugins/pluginTemplates.js';
 import {
   OAuthBrokerService,
   PendingFlowStore,
@@ -908,6 +910,14 @@ async function main(): Promise<void> {
   // eslint-disable-next-line prefer-const
   let channelRegistryRef: ChannelRegistry | undefined;
 
+  // Forward reference for the conductor's composite template catalog (#478) —
+  // wired inside the graphPool block far below, long after the install service
+  // is constructed. The install service resolves it lazily so plugin-borne
+  // workflow templates registered at runtime land in the catalog. Stays
+  // undefined on the in-memory backend (conductor inert); the install-time
+  // template VALIDATION gate runs regardless.
+  let conductorTemplateRegistrarRef: PluginTemplateRegistrar | undefined;
+
   // Forward refs — runtime propagation of a POST-BOOT agent-plugin
   // (de)activation into the per-Agent registry orchestrators + the fallback
   // Agent's enabled-plugin set. Assigned in the orchestrator-wiring block far
@@ -1045,6 +1055,10 @@ async function main(): Promise<void> {
     catalog: pluginCatalog,
     registry: installedRegistry,
     vault: secretVault,
+    // #478 — lazily resolved: the conductor's composite template catalog is
+    // wired ~1400 LOC below (graphPool block). Undefined until then / on the
+    // in-memory backend; the install-time template gate validates regardless.
+    conductorTemplates: () => conductorTemplateRegistrarRef,
     onInstalled: async (agentId) => {
       // A plugin may contribute an `llm_provider` block regardless of its kind
       // (provider plugins ship as `extension`). Register it FIRST — mirroring
@@ -1645,9 +1659,11 @@ async function main(): Promise<void> {
   // so chat goes live the moment the key is saved — no restart needed.
   //
   // The boot-only wiring guarded on `orchestrator` below (domain-tool
-  // hydration of per-Agent orchestrators, the routines feature) re-applies on
-  // the next restart for advanced stacks (sub-agents / routines). The default
-  // out-of-the-box stack has no domain tools, so chat is fully functional hot.
+  // hydration of per-Agent orchestrators) re-applies on the next restart for
+  // advanced stacks (sub-agents). The default out-of-the-box stack has no
+  // domain tools, so chat is fully functional hot. Routines follows the same
+  // live-resolution pattern as chat (issue #473): its runner resolves
+  // chatAgent per run, so it hot-enables on key save too.
   const chatAgentBundle = serviceRegistry.get<ChatAgentBundle>('chatAgent');
   const orchestrator = chatAgentBundle?.raw;
   if (!chatAgentBundle) {
@@ -1924,8 +1940,12 @@ async function main(): Promise<void> {
 
   // Routines feature (OB-NEW): persistent user-created scheduled agent
   // invocations. Requires Postgres for persistence; skipped in zero-config
-  // dev (in-memory KG backend, no DATABASE_URL). Channel adapters that want
-  // proactive delivery register their `ProactiveSender` into
+  // dev (in-memory KG backend, no DATABASE_URL). The chat agent is NOT
+  // required at wiring time — the runner resolves chatAgent@1 live per run
+  // (same pattern as the chat routes above), so routines hot-enable the
+  // moment the Setup Wizard key save publishes it; keyless fires record an
+  // `error` run naming the missing key (issue #473). Channel adapters that
+  // want proactive delivery register their `ProactiveSender` into
   // `routinesHandle.senderRegistry` after this call (Teams: wrap a
   // long-lived `CloudAdapter.continueConversationAsync` via
   // `createProactiveSender('teams', sendFn)`). Channel adapters MUST also
@@ -1934,11 +1954,11 @@ async function main(): Promise<void> {
   // `manage_routine` tool's `create`/`list` actions return a
   // model-friendly error string and the model degrades gracefully.
   let routinesHandle: RoutinesHandle | undefined;
-  if (graphPool && orchestrator) {
+  if (graphPool) {
     routinesHandle = await initRoutines({
       pool: graphPool,
       scheduler: jobScheduler,
-      orchestrator,
+      getOrchestrator: () => getChatAgentBundle()?.raw,
       registerNativeTool: (name, handler, options) =>
         nativeToolRegistry.register(name, {
           handler,
@@ -1973,15 +1993,11 @@ async function main(): Promise<void> {
       }),
     );
     console.log(
-      '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published)',
-    );
-  } else if (!graphPool) {
-    console.log(
-      '[middleware] routines feature SKIPPED — no graphPool (in-memory KG backend; set DATABASE_URL to enable)',
+      '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published, chat agent resolved live per run)',
     );
   } else {
     console.log(
-      '[middleware] routines feature SKIPPED — chatAgent not active (set ANTHROPIC_API_KEY via the Setup Wizard, then restart to enable routines)',
+      '[middleware] routines feature SKIPPED — no graphPool (in-memory KG backend; set DATABASE_URL to enable)',
     );
   }
 
@@ -2475,6 +2491,18 @@ async function main(): Promise<void> {
           throw err;
         }
       },
+    });
+    // #478 — plugin-borne workflow templates: hand the composite catalog's
+    // registrar to the install service (runtime installs/uninstalls) and
+    // re-register templates of already-installed plugins (registrations are
+    // in-memory and do not survive a restart). Boot sweep is fail-open per
+    // template with a loud log — the fail-closed gate ran at install time.
+    conductorTemplateRegistrarRef = conductorWiring.templateCatalog;
+    await registerInstalledPluginTemplates({
+      catalog: pluginCatalog,
+      registry: installedRegistry,
+      registrar: conductorWiring.templateCatalog,
+      log: (m) => console.log(m),
     });
     console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
     const userStore = new UserStore(graphPool);
