@@ -521,6 +521,36 @@ const ConfigSchema = z.object({
   DEV_PLATFORM_LLM_UPSTREAM_BASE_URL: z.string().url().default('https://api.anthropic.com'),
   DEV_PLATFORM_LLM_PROVIDER: z.string().min(1).default('anthropic'),
   DEV_PLATFORM_LLM_ALLOWED_MODELS: optionalNonEmpty(z.string().min(1)),
+
+  // Epic #470 W4 — LLM budget hard-enforcement ceiling (spec §5, Forge W4 #2).
+  // The proxy clamps a job's `max_tokens` to this so the buffered enforcement path
+  // can never overshoot the budget by an unbounded single response.
+  DEV_JOB_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(8192),
+
+  // Epic #470 W4 — FlyMachinesBackend (spec §2): one ephemeral Fly Machine per job
+  // in a DEDICATED runner app (NEVER odoo-bot-middleware). The backend is registered
+  // ONLY when DEV_FLY_RUNNER_APP is set (absent ⇒ not registered, like the docker
+  // backend keys on the daemon url). The operator MUST have run
+  // `flyctl apps create <app> --org <org>` and stored a deploy token in Vault at
+  // `core:dev-platform` key `fly/deploy_token` — the wiring logs a hint at boot.
+  DEV_FLY_RUNNER_APP: optionalNonEmpty(z.string().min(1)),
+  // Fly-injected env; presence is the on-Fly detector (picks the internal Machines
+  // API + `.internal` phone-home address). Absent off-Fly ⇒ public endpoints.
+  FLY_APP_NAME: optionalNonEmpty(z.string().min(1)),
+  // Digest-pinned runner image for Fly machines. Falls back to
+  // DEV_RUNNER_DEFAULT_IMAGE when unset (both must be digest-pinned, never a tag).
+  DEV_RUNNER_IMAGE: optionalNonEmpty(z.string().min(1)),
+  // Operator override for the shim phone-home URL. Default: on-Fly
+  // `http://$FLY_APP_NAME.internal:8080`, else PUBLIC_BASE_URL.
+  DEV_FLY_PHONE_HOME_URL: optionalNonEmpty(z.string().min(1)),
+  // Guest ceilings — a per-job request over these is CLAMPED, never honored.
+  DEV_FLY_MAX_CPUS: z.coerce.number().int().positive().default(4),
+  DEV_FLY_MAX_MEMORY_MB: z.coerce.number().int().positive().default(8192),
+  // Default guest size a Fly machine boots with (clamped to the ceilings above).
+  DEV_FLY_GUEST_CPUS: z.coerce.number().int().positive().default(1),
+  DEV_FLY_GUEST_MEMORY_MB: z.coerce.number().int().positive().default(1024),
+  // Optional Fly region placement (Fly picks one when unset).
+  DEV_FLY_REGION: optionalNonEmpty(z.string().min(1)),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

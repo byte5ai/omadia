@@ -37,8 +37,10 @@ import { PhaseEngine } from './pipeline/phaseEngine.js';
 import { createDevPlatformGatesRouter } from '../routes/devPlatformGates.js';
 import { LocalProcessBackend } from './localProcessBackend.js';
 import { DockerBackend } from './dockerBackend.js';
+import { FlyMachinesBackend, type FlyGuest } from './flyMachinesBackend.js';
 import type { ForgeClient } from './forgeClient.js';
 import type { DevJob, DevJobStatus, RunnerBackend } from './types.js';
+import { isTerminalDevJobStatus } from './types.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { createDevPlatformRouter } from '../routes/devPlatform.js';
 import type {
@@ -48,6 +50,8 @@ import type {
 } from '../routes/devPlatformShared.js';
 import { createDevRunnerRouter } from '../routes/devRunnerApi.js';
 import { createLlmProxyRouter, type LlmModelPolicy } from './llmProxy.js';
+import { createLlmProxyAccounting } from './llmProxyAccounting.js';
+import { priceForModel } from '@omadia/usage-telemetry';
 import type { DeriveJobPolicyConfig } from './deriveJobPolicy.js';
 import type { Pool } from 'pg';
 import type { Express, RequestHandler, Router as ExpressRouter } from 'express';
@@ -57,6 +61,15 @@ const DEFAULT_LLM_UPSTREAM_BASE_URL = 'https://api.anthropic.com';
 const DEFAULT_LLM_PROVIDER = 'anthropic';
 /** Vault namespace the dev-platform provider keys live under (spec §6b). */
 const DEV_PLATFORM_VAULT_AGENT = 'core:dev-platform';
+/** Vault key holding the Fly deploy token scoped to the runner app (W4). Read per
+ *  API call by the FlyMachinesBackend — never held on the instance. */
+const FLY_DEPLOY_TOKEN_VAULT_KEY = 'fly/deploy_token';
+/** Default LLM `max_tokens` clamp when the wiring does not supply one (W4 #2 —
+ *  the budget hook still bounds overshoot in the test-seam path). */
+const DEFAULT_LLM_MAX_OUTPUT_TOKENS = 8192;
+/** Default per-job LLM cost budget (USD) fallback for the test-seam path; the real
+ *  boot always threads `DEV_JOB_DEFAULT_BUDGET_USD`. */
+const DEFAULT_JOB_BUDGET_USD = 5;
 
 export interface WireDevPlatformDeps {
   pool: Pool;
@@ -109,11 +122,46 @@ export interface WireDevPlatformDeps {
     allowedModels?: readonly string[];
     /** `ANTHROPIC_BASE_URL` handed to api_key jobs. Defaults to `<baseUrl>/api/v1/dev-runner/llm`. */
     proxyBaseUrl?: string;
+    /** W4 (spec §5): per-job cost budget default applied when neither the job nor
+     *  its repo sets one (`DEV_JOB_DEFAULT_BUDGET_USD`). */
+    defaultBudgetCostUsd?: number;
+    /** W4 (spec §5, Forge #2): the `max_tokens` clamp ceiling the proxy enforces so
+     *  the buffered budget path cannot overshoot on a single response. */
+    maxOutputTokens?: number;
     /** Test seams. */
     fetchImpl?: typeof fetch;
     resolvePolicy?: (agentKind: string) => Promise<LlmModelPolicy | null>;
     resolveProviderKey?: (provider: string) => Promise<string | undefined>;
     onAccountingError?: (err: unknown, ctx: { jobId: string; tokensIn: number; tokensOut: number }) => void;
+  };
+
+  // --- W4 keystone: the Fly Machines runner backend (spec §2) ---------------
+  /** `FlyMachinesBackend` config. Present ⇒ the backend is registered (one
+   *  ephemeral Fly Machine per job in a DEDICATED runner app); absent ⇒ not
+   *  registered (like the DockerBackend keys on the daemon url). The apiBase +
+   *  phoneHomeUrl are RESOLVED by the caller (on-/off-Fly selection) and are
+   *  DELIBERATELY not SSRF-guarded — they are operator URLs (`.internal` on Fly). */
+  fly?: {
+    /** `DEV_FLY_RUNNER_APP` — the dedicated runner app, NEVER odoo-bot-middleware. */
+    runnerApp: string;
+    /** Machines API root, resolved on-/off-Fly by the caller. */
+    apiBase: string;
+    /** Digest-pinned runner image (`DEV_RUNNER_IMAGE`, fallback DEV_RUNNER_DEFAULT_IMAGE). */
+    image: string;
+    /** Shim phone-home URL, resolved on-/off-Fly by the caller. */
+    phoneHomeUrl: string;
+    /** Default guest size a machine boots with (clamped to the ceilings below). */
+    guest: FlyGuest;
+    /** `DEV_FLY_MAX_CPUS` ceiling. */
+    maxCpus: number;
+    /** `DEV_FLY_MAX_MEMORY_MB` ceiling. */
+    maxMemoryMb: number;
+    /** Optional Fly region placement. */
+    region?: string;
+    /** Test seams. */
+    fetchImpl?: typeof fetch;
+    /** Deploy-token provider override (tests inject; default reads Vault). */
+    resolveDeployToken?: () => Promise<string>;
   };
 
   // --- W2 gate keystones (spec §5) ------------------------------------------
@@ -277,7 +325,7 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
       },
     };
 
-  const backends = deps.backends ?? buildBackends(deps, log);
+  const backends = deps.backends ?? buildBackends(deps, log, jobStore);
 
   // The durable human-gate table (spec §5). Created BEFORE the worker so the
   // diff-policy gate handler can close over it; the W2 phase engine below reuses
@@ -474,11 +522,49 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     deps.llm?.resolveProviderKey ??
     ((provider: string) => deps.vault.get(DEV_PLATFORM_VAULT_AGENT, `llm/${provider}/api_key`));
 
+  // W4 (spec §5, Forge #3): every allowed model MUST have a price-table entry, else
+  // its cost budget silently NEVER fires (an unpriced model computes $0/call). We do
+  // not refuse boot (an operator may intentionally run a token-only budget), but the
+  // hole is made LOUD so it is caught in review/ops rather than in a runaway bill.
+  for (const model of llmAllowedModels) {
+    const price = priceForModel(model);
+    if (price.inputPerMTok === 0 && price.outputPerMTok === 0) {
+      log(
+        `[dev-platform] WARNING: LLM policy allows model '${model}' but usage-telemetry has NO price for it — ` +
+          `its cost budget will NEVER fire (every call costs $0). Add it to EXACT_PRICES/FAMILY_PRICES or ` +
+          `enforce a token budget for jobs using it.`,
+      );
+    }
+  }
+
+  // W4 (spec §5): the per-job LLM budget accounting + hard-enforcement hook. Wired
+  // into the proxy so every billable (2xx) response is metered against the job's
+  // effective budget (job → repo → config default) and a 100 %-crossing marks the
+  // job `budget_exceeded` through the finalize choke point (which terminates the
+  // backend handle) so the in-flight call is answered 402.
+  const budgetHook = createLlmProxyAccounting({
+    store: jobStore,
+    // The finalize choke point resolves the runner handle + terminates it; never
+    // double-dispatched (the accounting hook does not call terminate itself).
+    markBudgetExceeded: (jobId) =>
+      boundFinalize(jobId, 'budget_exceeded', { reason: 'llm_budget_exceeded' }).then(() => undefined),
+    // Once-per-job warn-line crossing → a `budget_warning` job event on the same
+    // event log the runner streams (metadata only, never a token/prompt).
+    emitBudgetWarning: (jobId, info) =>
+      jobStore.appendHostEvent(jobId, 'budget_warning', { ...info }).then(() => undefined),
+    defaultBudgetCostUsd: deps.llm?.defaultBudgetCostUsd ?? DEFAULT_JOB_BUDGET_USD,
+    // REQUIRED (Forge #2): clamp `max_tokens` so the buffered enforcement path is
+    // bounded; always supplied so the ceiling is never left open.
+    maxOutputTokens: deps.llm?.maxOutputTokens ?? DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+    log,
+  });
+
   const llmProxyRouter: ExpressRouter = createLlmProxyRouter({
     resolveJobByToken: (token) => jobStore.resolveJobByToken(token),
     resolvePolicy,
     resolveProviderKey,
     addJobUsage: (jobId, tokensIn, tokensOut) => jobStore.addJobUsage(jobId, tokensIn, tokensOut),
+    budget: budgetHook,
     ...(deps.llm?.fetchImpl ? { fetchImpl: deps.llm.fetchImpl } : {}),
     ...(deps.llm?.onAccountingError ? { onAccountingError: deps.llm.onAccountingError } : {}),
     log,
@@ -740,8 +826,62 @@ export function mountDevPlatform(
 // Internals.
 // ---------------------------------------------------------------------------
 
-function buildBackends(deps: WireDevPlatformDeps, log: (msg: string) => void): readonly RunnerBackend[] {
+function buildBackends(
+  deps: WireDevPlatformDeps,
+  log: (msg: string) => void,
+  jobStore: DevJobStore,
+): readonly RunnerBackend[] {
   const backends: RunnerBackend[] = [];
+
+  // W4 hosted path: the FlyMachinesBackend, registered ONLY when a dedicated runner
+  // app is configured (DEV_FLY_RUNNER_APP) — without it there is no app to launch
+  // machines in, so it stays unregistered rather than throwing at boot (same secure
+  // default as the DockerBackend keying on the daemon url). The deploy token is read
+  // from Vault per call; apiBase/phoneHomeUrl are resolved on-/off-Fly by the caller.
+  if (deps.fly) {
+    const fly = deps.fly;
+    backends.push(
+      new FlyMachinesBackend({
+        apiBase: fly.apiBase,
+        appName: fly.runnerApp,
+        // Read the deploy token from Vault per API operation — never held on the
+        // instance. A test may inject `resolveDeployToken` instead.
+        token:
+          fly.resolveDeployToken ??
+          (async () => {
+            const tok = await deps.vault.get(DEV_PLATFORM_VAULT_AGENT, FLY_DEPLOY_TOKEN_VAULT_KEY);
+            if (!tok) {
+              throw new Error(
+                `devplatform.fly_deploy_token_missing: store a Fly deploy token scoped to '${fly.runnerApp}' in Vault at ${DEV_PLATFORM_VAULT_AGENT} key ${FLY_DEPLOY_TOKEN_VAULT_KEY}`,
+              );
+            }
+            return tok;
+          }),
+        image: fly.image,
+        phoneHomeUrl: fly.phoneHomeUrl,
+        guest: fly.guest,
+        maxCpus: fly.maxCpus,
+        maxMemoryMb: fly.maxMemoryMb,
+        // reap()'s liveness oracle: a job the middleware still considers non-terminal
+        // must NEVER be reaped; a terminal/unknown job is an orphan to destroy.
+        // Mirrors how DockerBackend.reap learns liveness (there, from the daemon list).
+        isJobActive: async (jobId: string): Promise<boolean> => {
+          const job = await jobStore.getJob(jobId);
+          return job !== null && !isTerminalDevJobStatus(job.status);
+        },
+        ...(fly.region ? { region: fly.region } : {}),
+        ...(fly.fetchImpl ? { fetchImpl: fly.fetchImpl } : {}),
+        log,
+      }),
+    );
+    // One-time boot hint (NOT a boot failure): the runner app + deploy token are
+    // provisioned out-of-band. Make the operator prerequisite loud in the logs.
+    log(
+      `[dev-platform] FlyMachinesBackend registered (kind=fly, app='${fly.runnerApp}') — ` +
+        `ensure 'flyctl apps create ${fly.runnerApp} --org <org>' has been run and a deploy token ` +
+        `scoped to it is stored in Vault at ${DEV_PLATFORM_VAULT_AGENT} key ${FLY_DEPLOY_TOKEN_VAULT_KEY}`,
+    );
+  }
 
   // W1 shipping path: the DockerBackend, selected by DEV_PLATFORM_BACKEND=docker
   // (the default) and registered ONLY when a daemon URL + token are configured —

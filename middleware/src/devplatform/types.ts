@@ -118,6 +118,10 @@ export const DEV_JOB_EVENT_TYPES = [
   'gate',
   'phase',
   'approval',
+  // W4 (spec §5): the once-per-job LLM-budget warn-line crossing, emitted by the
+  // proxy budget hook. The `dev_job_events.type` column has no DB CHECK (open by
+  // design, validated here), so this is an additive, forward-compatible enum entry.
+  'budget_warning',
 ] as const;
 export type DevJobEventType = (typeof DEV_JOB_EVENT_TYPES)[number];
 export function isDevJobEventType(x: unknown): x is DevJobEventType {

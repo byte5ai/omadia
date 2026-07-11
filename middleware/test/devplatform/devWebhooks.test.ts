@@ -449,6 +449,53 @@ describe('devWebhooks route', () => {
       await new Promise<void>((r) => server.close(() => r()));
     }
   });
+
+  it('real boot order: router mounted BEFORE express.json → signed delivery verifies AND sibling json routes still parse', async () => {
+    // FAIL-IF-REVERTED: this mirrors the EXACT mount order index.ts uses — the raw-body
+    // webhook router first, the global express.json parser after. It proves both halves
+    // of the contract at once: (a) a correctly-signed delivery still reaches the raw
+    // parser and verifies (NOT 401); (b) the global json parser mounted AFTER the router
+    // still parses OTHER routes' bodies (the webhook mount must not starve them).
+    const del = fakeDeliveries();
+    const deps: DevWebhooksRouterDeps = {
+      listWebhookSecrets: async () => [SECRET],
+      repos: { getByFullName: async () => repo() },
+      deliveries: del.store,
+      hasActiveWebhookJob: async () => false,
+      createTriggerJob: async () => ({ decision: 'created', job: { id: 'j' } as unknown as DevJob, gated: false }),
+      mintRunnerToken: () => ({ token: 't', hash: 'h' }),
+      webhookBackend: 'docker',
+      webhooksEnabled: true,
+      maxJobsPerRepoHour: 5,
+      maxJobsPerSenderHour: 2,
+      log: () => {},
+    };
+    const app = express();
+    app.use(createDevWebhooksRouter(deps)); // CORRECT ORDER — raw body first.
+    app.use(express.json());
+    app.post('/echo', (req, res) => {
+      res.json({ got: (req.body as { n?: number }).n ?? null });
+    });
+    const server = app.listen(0);
+    await new Promise((r) => server.once('listening', r));
+    const port = (server.address() as AddressInfo).port;
+    const base = `http://127.0.0.1:${port}`;
+    try {
+      // (a) the signed webhook delivery verifies through the router's raw parser.
+      const r = await post(base, issuesBody());
+      assert.equal(r.status, 201, 'a correctly-signed delivery must verify when mounted before express.json');
+      assert.equal(r.json['outcome'], 'job_created');
+      // (b) the global json parser still parses a sibling route mounted after it.
+      const echo = await fetch(`${base}/echo`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ n: 7 }),
+      });
+      assert.equal(((await echo.json()) as { got: number }).got, 7);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

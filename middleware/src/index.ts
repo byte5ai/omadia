@@ -161,6 +161,17 @@ import {
 import { publicPaths } from './auth/publicPaths.js';
 import { createRequireAuth } from './auth/requireAuth.js';
 import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
+import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from './routes/devWebhooks.js';
+import { WebhookDeliveryStore } from './devplatform/triggers/webhookDeliveryStore.js';
+import { DevGithubAppStore } from './devplatform/githubApp/appStore.js';
+import { DevJobStore as DevJobStoreForWebhooks } from './devplatform/devJobStore.js';
+import { DevRepoStore as DevRepoStoreForWebhooks } from './devplatform/devRepoStore.js';
+import { DevJobGateStore as DevJobGateStoreForWebhooks } from './devplatform/pipeline/gateStore.js';
+import {
+  createTriggerJob as createDevTriggerJob,
+  hasActiveTriggerJob as hasActiveDevTriggerJob,
+} from './devplatform/triggers/triggerJobService.js';
+import { mintRunnerToken as mintDevRunnerToken } from './devplatform/jobToken.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -1972,6 +1983,76 @@ async function main(): Promise<void> {
   // (PayloadTooLargeError in the log). 10mb is well below the
   // turn-loop's risk profile (the agent's own per-tool input is bounded
   // by Anthropic-SDK token limits) but gives slot-heavy clones room.
+  // Epic #470 W4 — inbound GitHub webhook trigger (POST /api/webhooks/github).
+  // MOUNTED BEFORE express.json ON PURPOSE: HMAC verification needs the RAW request
+  // bytes, and the global express.json below would parse + re-serialise the body,
+  // destroying the signature. The router attaches its OWN route-level express.raw
+  // parser, so it consumes ONLY its one path and calls next() for everything else
+  // (which then reaches express.json normally). Gated on the same DEV_PLATFORM /
+  // graphPool preconditions as the platform assembly, plus the DEV_WEBHOOKS_ENABLED
+  // kill switch. The webhook stores are pool/vault-backed and stateless, so building
+  // them here (before the full platform assembly) is safe and keeps the mount order
+  // correct; the worker (assembled later) claims the created jobs from the DB.
+  if (config.DEV_PLATFORM_ENABLED && graphPool && config.DEV_WEBHOOKS_ENABLED) {
+    const webhookAppStore = new DevGithubAppStore(graphPool, secretVault);
+    const webhookRepoStore = new DevRepoStoreForWebhooks(graphPool);
+    const webhookJobStore = new DevJobStoreForWebhooks(graphPool);
+    const webhookGateStore = new DevJobGateStoreForWebhooks(graphPool);
+    const webhookDeliveries = new WebhookDeliveryStore(graphPool);
+
+    // SECURITY (Forge W4): cache the registered Apps' webhook secrets with a short
+    // TTL so an unauthenticated flood of deliveries cannot amplify into a Vault
+    // round-trip per request. 30s is short enough that a newly-registered App's
+    // secret starts verifying within one TTL.
+    const WEBHOOK_SECRETS_TTL_MS = 30_000;
+    let cachedWebhookSecrets: readonly string[] | null = null;
+    let cachedWebhookSecretsAt = 0;
+    const listWebhookSecrets = async (): Promise<readonly string[]> => {
+      const nowMs = Date.now();
+      if (cachedWebhookSecrets && nowMs - cachedWebhookSecretsAt < WEBHOOK_SECRETS_TTL_MS) {
+        return cachedWebhookSecrets;
+      }
+      const apps = await webhookAppStore.listApps();
+      const secrets: string[] = [];
+      for (const app of apps) {
+        const s = await webhookAppStore.getSecrets(app.appId);
+        if (s?.webhookSecret) secrets.push(s.webhookSecret);
+      }
+      cachedWebhookSecrets = secrets;
+      cachedWebhookSecretsAt = nowMs;
+      return secrets;
+    };
+
+    // Webhook jobs run on the non-local default backend: Fly when a runner app is
+    // configured, else the docker shipping path. `local` is structurally refused by
+    // the trigger job service, so it is never selected here.
+    const webhookBackend = config.DEV_FLY_RUNNER_APP ? ('fly' as const) : ('docker' as const);
+
+    const webhookDeps: DevWebhooksRouterDeps = {
+      listWebhookSecrets,
+      repos: {
+        getByFullName: async (fullName) =>
+          (await webhookRepoStore.listRepos()).find((r) => `${r.owner}/${r.name}` === fullName) ?? null,
+      },
+      deliveries: webhookDeliveries,
+      hasActiveWebhookJob: (repoId, sourceRef) =>
+        hasActiveDevTriggerJob(graphPool, repoId, sourceRef, 'webhook'),
+      createTriggerJob: (input) =>
+        createDevTriggerJob(
+          { jobStore: webhookJobStore, gateStore: webhookGateStore, log: (msg) => console.log(msg) },
+          input,
+        ),
+      mintRunnerToken: () => mintDevRunnerToken(),
+      webhookBackend,
+      webhooksEnabled: config.DEV_WEBHOOKS_ENABLED,
+      maxJobsPerRepoHour: config.DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR,
+      maxJobsPerSenderHour: config.DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR,
+      log: (msg) => console.log(msg),
+    };
+    app.use(createDevWebhooksRouter(webhookDeps));
+    console.log('[middleware] dev-platform GitHub webhook router mounted at /api/webhooks/github (raw-body, before express.json)');
+  }
+
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -2413,6 +2494,41 @@ async function main(): Promise<void> {
     // W2: role-principal gates resolve their live holder set against the same
     // conductor role store the conductor await gate uses.
     const devPlatformRoleStore = new ConductorRoleStore(graphPool);
+    // Epic #470 W4 — resolve the FlyMachinesBackend config when a dedicated runner
+    // app is set. The on-/off-Fly selection lives HERE so the assembly layer stays
+    // env-free: on Fly (FLY_APP_NAME injected) use the internal Machines API + a
+    // `.internal` 6PN phone-home address; off Fly use the public endpoints. Requires
+    // a digest-pinned image (DEV_RUNNER_IMAGE, falling back to DEV_RUNNER_DEFAULT_IMAGE).
+    // These operator URLs are DELIBERATELY not SSRF-guarded (`.internal` is valid here).
+    const flyRunnerImage = config.DEV_RUNNER_IMAGE ?? config.DEV_RUNNER_DEFAULT_IMAGE;
+    const flyConfig =
+      config.DEV_FLY_RUNNER_APP && flyRunnerImage
+        ? {
+            runnerApp: config.DEV_FLY_RUNNER_APP,
+            apiBase: config.FLY_APP_NAME
+              ? 'http://_api.internal:4280/v1'
+              : 'https://api.machines.dev/v1',
+            image: flyRunnerImage,
+            phoneHomeUrl:
+              config.DEV_FLY_PHONE_HOME_URL ??
+              (config.FLY_APP_NAME
+                ? `http://${config.FLY_APP_NAME}.internal:8080`
+                : config.PUBLIC_BASE_URL),
+            guest: {
+              cpus: config.DEV_FLY_GUEST_CPUS,
+              memoryMb: config.DEV_FLY_GUEST_MEMORY_MB,
+              cpuKind: 'shared',
+            },
+            maxCpus: config.DEV_FLY_MAX_CPUS,
+            maxMemoryMb: config.DEV_FLY_MAX_MEMORY_MB,
+            ...(config.DEV_FLY_REGION ? { region: config.DEV_FLY_REGION } : {}),
+          }
+        : undefined;
+    if (config.DEV_FLY_RUNNER_APP && !flyRunnerImage) {
+      console.warn(
+        '[middleware] DEV_FLY_RUNNER_APP set but no runner image (DEV_RUNNER_IMAGE / DEV_RUNNER_DEFAULT_IMAGE) — FlyMachinesBackend NOT registered',
+      );
+    }
     const wiredDevPlatform = assembleDevPlatform({
       pool: graphPool,
       vault: secretVault,
@@ -2448,7 +2564,13 @@ async function main(): Promise<void> {
         allowedModels: config.DEV_PLATFORM_LLM_ALLOWED_MODELS
           ? csvList(config.DEV_PLATFORM_LLM_ALLOWED_MODELS)
           : [],
+        // W4 (spec §5): the budget hook's config default + the max_tokens clamp ceiling.
+        defaultBudgetCostUsd: config.DEV_JOB_DEFAULT_BUDGET_USD,
+        maxOutputTokens: config.DEV_JOB_MAX_OUTPUT_TOKENS,
       },
+      // W4 (spec §2): the Fly Machines backend, present only when a dedicated runner
+      // app is configured (absent ⇒ not registered).
+      ...(flyConfig ? { fly: flyConfig } : {}),
       log: (msg) => console.log(msg),
     });
     mountDevPlatform(app, requireAuth, wiredDevPlatform, (msg) => console.log(msg));
