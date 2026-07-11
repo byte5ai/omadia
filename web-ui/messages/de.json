@@ -3040,6 +3040,10 @@
       "phase": "Phase",
       "status": "Status",
       "cost": "Kosten",
+      "costEstimatedTitle": "Geschätzte Kosten (Abo-CLI – nicht gemessen)",
+      "costEstimatedTag": "geschätzt",
+      "costNearTitle": "Nahe am Budget (≥80%)",
+      "costOverTitle": "Budget überschritten (≥100%)",
       "age": "Alter",
       "view": "Ansehen",
       "cancel": "Abbrechen",
@@ -3228,7 +3232,32 @@
       "no": "nein",
       "protectionHeading": "Branch Protection",
       "recheck": "Neu prüfen",
-      "rechecking": "Prüft"
+      "rechecking": "Prüft",
+      "budget": {
+        "heading": "Budget",
+        "help": "Begrenze die Kosten pro Job für dieses Repository. Leer lassen, um den Plattform-Standard zu verwenden.",
+        "costLabel": "Kostenbudget (USD pro Job)",
+        "costPlaceholder": "z. B. 5.00",
+        "costError": "Gib einen positiven Betrag ein oder lass das Feld für den Standard leer.",
+        "save": "Budget speichern",
+        "saving": "Speichert",
+        "saved": "Gespeichert",
+        "saveError": "Das Budget konnte nicht gespeichert werden."
+      },
+      "webhook": {
+        "heading": "Webhook-Auslöser",
+        "help": "Wenn aktiviert, startet das Anwenden des Trigger-Labels an einem Issue einen Job — aber nur für einen freigegebenen Absender. Eine leere Absenderliste hält den Webhook aus.",
+        "enable": "Aktivieren",
+        "disable": "Deaktivieren",
+        "saving": "Speichert",
+        "statusLabel": "Status",
+        "enabledStatus": "Aktiviert",
+        "disabledStatus": "Deaktiviert",
+        "triggerLabelLabel": "Trigger-Label",
+        "sendersLabel": "Erlaubte Absender",
+        "sendersEmpty": "Keine — Webhook-Auslöser sind aus, bis ein Absender hinzugefügt wird.",
+        "saveError": "Die Webhook-Einstellung konnte nicht gespeichert werden."
+      }
     }
   },
   "adminRegistries": {

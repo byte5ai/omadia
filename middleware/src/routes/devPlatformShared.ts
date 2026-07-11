@@ -237,6 +237,14 @@ export interface DevRepoView {
   runsTests: boolean;
   branchProtectionOk: boolean | null;
   branchProtectionCheckedAt: string | null;
+  /** W4 per-repo cost budget (`0027`); null ⇒ fall back to the config default. */
+  budgetCostUsd: number | null;
+  /** W4 webhook trigger config (`0027`). The label whose application fires a job. */
+  triggerLabel: string;
+  /** W4 per-repo webhook kill switch (`0027`). */
+  webhookEnabled: boolean;
+  /** W4 sender allowlist (`0027`); EMPTY ⇒ webhook triggers are OFF for the repo. */
+  webhookSenders: string[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -259,6 +267,10 @@ export function toRepoView(repo: DevRepo, conn: DevRepoConnection): DevRepoView 
     runsTests: repo.runsTests,
     branchProtectionOk: repo.branchProtectionOk,
     branchProtectionCheckedAt: repo.branchProtectionCheckedAt,
+    budgetCostUsd: repo.budgetCostUsd ?? null,
+    triggerLabel: repo.triggerLabel,
+    webhookEnabled: repo.webhookEnabled,
+    webhookSenders: repo.webhookSenders,
     createdBy: repo.createdBy,
     createdAt: repo.createdAt,
     updatedAt: repo.updatedAt,

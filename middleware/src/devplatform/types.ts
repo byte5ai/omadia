@@ -338,6 +338,11 @@ export interface DevRepo {
    *  before a labeled-issue delivery can create a job; EMPTY means webhook triggers
    *  are OFF for the repo (spec §3 finding S7). */
   webhookSenders: string[];
+  /** W4 per-repo cost budget (`0027 budget_cost_usd`); null ⇒ fall back to the
+   *  `DEV_JOB_DEFAULT_BUDGET_USD` config default (spec §5). OPTIONAL on the type
+   *  (absent ⇒ null) so pre-W4 fixtures keep compiling; the store always
+   *  populates it from the row. */
+  budgetCostUsd?: number | null;
   /** W5 opt-in Docker-in-Docker (`0027 docker_in_job`, default false). When true a
    *  job gets a per-job rootless DinD sidecar (Docker backend) or in-VM dockerd
    *  (Fly backend). Weaker than the plain job baseline — see spec §8. OPTIONAL on
@@ -452,6 +457,8 @@ export interface NewDevRepo {
   triggerLabel?: string;
   webhookEnabled?: boolean;
   webhookSenders?: string[];
+  /** W4 per-repo cost budget (`0027`); omitted = leave unchanged, null = clear. */
+  budgetCostUsd?: number | null;
   createdBy: string;
 }
 

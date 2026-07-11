@@ -3040,6 +3040,10 @@
       "phase": "Phase",
       "status": "Status",
       "cost": "Cost",
+      "costEstimatedTitle": "Estimated cost (subscription CLI — not metered)",
+      "costEstimatedTag": "est.",
+      "costNearTitle": "Near budget (≥80%)",
+      "costOverTitle": "Over budget (≥100%)",
       "age": "Age",
       "view": "View",
       "cancel": "Cancel",
@@ -3228,7 +3232,32 @@
       "no": "no",
       "protectionHeading": "Branch protection",
       "recheck": "Re-check",
-      "rechecking": "Checking"
+      "rechecking": "Checking",
+      "budget": {
+        "heading": "Budget",
+        "help": "Cap the spend per job for this repository. Leave empty to use the platform default.",
+        "costLabel": "Cost budget (USD per job)",
+        "costPlaceholder": "e.g. 5.00",
+        "costError": "Enter a positive amount, or leave empty for the default.",
+        "save": "Save budget",
+        "saving": "Saving",
+        "saved": "Saved",
+        "saveError": "The budget could not be saved."
+      },
+      "webhook": {
+        "heading": "Webhook triggers",
+        "help": "When enabled, applying the trigger label to an issue starts a job — but only for an allow-listed sender. An empty sender list keeps the webhook off.",
+        "enable": "Enable",
+        "disable": "Disable",
+        "saving": "Saving",
+        "statusLabel": "Status",
+        "enabledStatus": "Enabled",
+        "disabledStatus": "Disabled",
+        "triggerLabelLabel": "Trigger label",
+        "sendersLabel": "Allowed senders",
+        "sendersEmpty": "None — webhook triggers are off until a sender is added.",
+        "saveError": "The webhook setting could not be saved."
+      }
     }
   },
   "adminRegistries": {
