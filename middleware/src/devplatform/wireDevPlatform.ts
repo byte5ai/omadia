@@ -24,7 +24,7 @@ import { DevRepoCredentialStore } from './devRepoCredentials.js';
 import { DevRepoStore } from './devRepoStore.js';
 import { finalizeDevJob, CredentialRevokerRegistry, type FinalizeContext } from './finalizeDevJob.js';
 import { DevGithubAppStore } from './githubApp/appStore.js';
-import { JobTokenRegistry, mintScopedInstallationToken, revokeInstallationToken } from './githubApp/installationTokens.js';
+import { JobTokenRegistry, mintScopedInstallationToken, revokeInstallationToken, type TokenFetch } from './githubApp/installationTokens.js';
 import { GithubForgeClient, type ForgeFetch } from './githubForgeClient.js';
 import { GithubIssuesTracker } from './githubIssuesTracker.js';
 import { DevJobGateStore, type DevJobGate, type GateAnswer } from './pipeline/gateStore.js';
@@ -135,7 +135,7 @@ export interface WireDevPlatformDeps {
   forgeFetch?: ForgeFetch;
   /** Fetch seam for the scoped GitHub-App token mint/revoke (tests inject a fake).
    *  Defaults to the global fetch. */
-  githubAppFetch?: import('./githubApp/installationTokens.js').TokenFetch;
+  githubAppFetch?: TokenFetch;
   now?: () => Date;
   log?: (msg: string) => void;
 }

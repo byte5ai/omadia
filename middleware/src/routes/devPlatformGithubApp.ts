@@ -19,7 +19,6 @@ import {
   DevPlatformError,
   handler,
   requireCaller,
-  sendError,
 } from './devPlatformShared.js';
 
 /**
@@ -106,7 +105,7 @@ async function githubGet(
   jwt: string,
 ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
   const res = await fetchImpl(url, { method: 'GET', headers: apiHeaders(`Bearer ${jwt}`) });
-  let body: Record<string, unknown> = {};
+  let body: Record<string, unknown>;
   try {
     body = (await res.json()) as Record<string, unknown>;
   } catch {

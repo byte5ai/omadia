@@ -132,9 +132,6 @@ export class PhaseEngine {
         attempt: job.reviewAttempt,
         previousFingerprint: job.reviewFingerprint,
       });
-      reviewVerdict = parsed.verdict === 'request_changes' && decision.action === 'approve'
-        ? { ...parsed, verdict: 'approve' } // minor-only coerced
-        : parsed;
       if (decision.action === 'retry') {
         await this.deps.store.setReviewState(job.id, decision.nextAttempt, decision.fingerprint);
         reviewVerdict = { ...parsed, verdict: 'request_changes' };
