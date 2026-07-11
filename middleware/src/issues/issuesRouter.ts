@@ -18,13 +18,17 @@
  *
  * `diagnostics` (both routes, optional, issue #433): a client-captured
  * stack-trace/log excerpt. It is never sent to the LLM reformulator — logs
- * go verbatim (post-sanitization), not through the rephrasing pass. It gets
- * its own tail-truncation (newest lines kept — the opposite of the
- * sanitizer's head-preserving default, since the newest log lines are the
- * useful ones) and is redacted with the same secrets scanner as the rest of
- * the body before being appended as a collapsed `<details>` block. See
- * `buildDiagnosticsBlock` below. GitHub's REST API has no file-attachment
- * endpoint, so an inline collapsed block is the only mechanism available.
+ * go verbatim (post-sanitization), not through the rephrasing pass. It is
+ * redacted with the same secrets scanner as the rest of the body FIRST,
+ * over the full excerpt, and only then given its own tail-truncation
+ * (newest lines kept — the opposite of the sanitizer's head-preserving
+ * default, since the newest log lines are the useful ones) before being
+ * appended as a collapsed `<details>` block. Redaction must run before
+ * truncation, not after — truncating first can cut the prefix a secret
+ * pattern needs to match out of the kept window, letting the credential
+ * itself survive unredacted. See `buildDiagnosticsBlock` below. GitHub's
+ * REST API has no file-attachment endpoint, so an inline collapsed block
+ * is the only mechanism available.
  *
  * Express-4 caveat (see routes/adminProviders.ts): async handlers must
  * try/catch internally — Express 4 does not forward async rejections.
@@ -541,11 +545,28 @@ function longestBacktickRun(text: string): number {
   return runs.reduce((max, run) => Math.max(max, run.length), 0);
 }
 
-/** Compose the collapsed diagnostics block appended to a filed issue: tail-
- *  truncate to MAX_DIAGNOSTICS_BYTES, then run the builder's secrets
- *  scanner over it (logs are the highest-PII payload this flow ever
- *  posts). Shared by /preview (so the operator reviews the exact block
- *  before filing) and /create (which actually appends it).
+/** Compose the collapsed diagnostics block appended to a filed issue: run
+ *  the builder's secrets scanner over the FULL raw excerpt first, then
+ *  tail-truncate the already-redacted text to MAX_DIAGNOSTICS_BYTES (logs
+ *  are the highest-PII payload this flow ever posts). Shared by /preview
+ *  (so the operator reviews the exact block before filing) and /create
+ *  (which actually appends it).
+ *
+ *  Order matters here: redaction MUST run before truncation, not after.
+ *  Tail-truncating first and then redacting lets the cut point land inside
+ *  a secret pattern's required context — e.g. `Authorization: Bearer
+ *  <token>` where the truncation window starts partway through the value,
+ *  after the `Authorization: Bearer ` prefix the bearer-token regex needs
+ *  to match. The token itself would then survive truncation while its
+ *  prefix does not, so the pattern never matches and the credential ships
+ *  unredacted. Running sanitizeIssueBody() on the untruncated excerpt
+ *  guarantees every pattern sees its full match context; only the already-
+ *  redacted output is then trimmed to size. sanitizeIssueBody() is given a
+ *  byte budget generous enough that its own (head-truncating) size cap
+ *  cannot fire before our tail truncation runs below — note redaction can
+ *  make the text LONGER than the raw input (e.g. a bare AWS key match
+ *  expands to the longer `[REDACTED:aws-access-key]` marker), so the
+ *  budget must not be sized off the raw input's own byte length.
  *
  *  The excerpt is attacker-influenceable (window 'error'/'unhandledrejection'
  *  messages, raw server response bodies) and sanitizeIssueBody() does no
@@ -556,16 +577,20 @@ function longestBacktickRun(text: string): number {
  *  the fence delimiter must be longer than the longest backtick run present
  *  in the fenced content. */
 function buildDiagnosticsBlock(raw: string): string {
+  // MAX_DIAGNOSTICS_INPUT_LEN already bounds the raw (UTF-16) length;
+  // budget generously past its worst-case UTF-8 + redaction-expansion size
+  // so sanitizeIssueBody() never truncates ahead of our own tail cap.
+  const sanitizeBudget = MAX_DIAGNOSTICS_INPUT_LEN * 8;
+  const sanitized = sanitizeIssueBody(raw, { maxBytes: sanitizeBudget });
   const { text, truncatedBytes } = truncateDiagnosticsTail(
-    raw,
+    sanitized.body,
     MAX_DIAGNOSTICS_BYTES,
   );
-  const sanitized = sanitizeIssueBody(text);
   const marker =
     truncatedBytes > 0
       ? `[…] ${truncatedBytes} older bytes truncated — showing the most recent diagnostics.\n\n`
       : '';
-  const fenceLength = Math.max(3, longestBacktickRun(sanitized.body) + 1);
+  const fenceLength = Math.max(3, longestBacktickRun(text) + 1);
   const fence = '`'.repeat(fenceLength);
-  return `\n\n<details>\n<summary>Diagnostics</summary>\n\n${fence}text\n${marker}${sanitized.body}\n${fence}\n\n</details>`;
+  return `\n\n<details>\n<summary>Diagnostics</summary>\n\n${fence}text\n${marker}${text}\n${fence}\n\n</details>`;
 }

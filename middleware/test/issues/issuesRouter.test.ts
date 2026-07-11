@@ -483,6 +483,55 @@ describe('issuesRouter (device flow)', () => {
     }
   });
 
+  it('redacts a bearer token whose prefix falls outside the tail-truncation window', async () => {
+    const vault = new InMemorySecretVault();
+    await vault.set(GITHUB_CONNECT_AGENT_ID, 'op-1/access_token', 'gho_seed');
+    let captured: { title: string; body: string } | null = null;
+    const h = await boot({
+      vault,
+      createIssueCreator: () => ({
+        createIssue: (input) => {
+          captured = { title: input.title, body: input.body };
+          return Promise.resolve({
+            ok: true as const,
+            number: 10,
+            url: 'https://github.com/byte5ai/omadia/issues/10',
+          });
+        },
+      }),
+    });
+    try {
+      // Concrete failing input from the #433 review: the diagnostics block
+      // used to tail-truncate to MAX_DIAGNOSTICS_BYTES (8 KiB) BEFORE
+      // redaction. The 23-byte "Authorization: Bearer " prefix here sits
+      // exactly outside that 8 KiB tail window, so the bearer-token regex
+      // (which requires the prefix to match) never saw it and the 64-char
+      // token shipped unredacted. Total size (23 + 64 + 1 + 8127 = 8215
+      // bytes) is under MAX_DIAGNOSTICS_INPUT_LEN (20000) so it is accepted
+      // by validation, and over MAX_DIAGNOSTICS_BYTES (8192) so truncation
+      // still applies — redaction just has to run first.
+      const token = 'A'.repeat(64);
+      const diagnostics = `Authorization: Bearer ${token}\n${'x'.repeat(8127)}`;
+      const res = await fetch(`${h.base}/api/v1/issues/create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Crash on save',
+          body: 'It crashes.',
+          category: 'bug',
+          diagnostics,
+        }),
+      });
+      assert.equal(res.status, 200);
+      assert.ok(captured);
+      const c = captured as { title: string; body: string };
+      assert.doesNotMatch(c.body, new RegExp(token));
+      assert.match(c.body, /\[REDACTED:bearer-token\]/);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('create is byte-identical to the no-diagnostics case when diagnostics is omitted', async () => {
     const vault = new InMemorySecretVault();
     await vault.set(GITHUB_CONNECT_AGENT_ID, 'op-1/access_token', 'gho_seed');

@@ -75,6 +75,20 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   (`web-ui/app/_lib/__tests__/api.test.ts`) asserts constructing an
   `ApiError` does not, by itself, add anything to the buffer.
 
+### Fixed — diagnostics attachment review round 3: redact before truncating (#433)
+
+- `buildDiagnosticsBlock` (`middleware/src/issues/issuesRouter.ts`) now runs
+  the secrets scanner (`sanitizeIssueBody`) over the full raw diagnostics
+  excerpt BEFORE tail-truncating to `MAX_DIAGNOSTICS_BYTES`, not after. The
+  previous truncate-then-sanitize order could cut a secret pattern's
+  required prefix (e.g. `Authorization: Bearer `) out of the kept window
+  while leaving the credential value itself inside it, so the pattern never
+  matched and the token shipped unredacted into the public issue. A
+  regression test reproduces the concrete case from review — a bearer
+  token whose 23-byte `Authorization: Bearer ` prefix falls just outside
+  the 8 KiB tail-truncation window — and asserts the token is redacted in
+  the final block.
+
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
 - The save-as-template dialog no longer reads the viewer's own template id as

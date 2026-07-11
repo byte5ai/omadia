@@ -635,10 +635,11 @@ jetzt ein optionales, **opt-in** `diagnostics`-Feld auf beiden Routes: ein
 client-seitig gepuffertes Stack-Trace-/Log-Excerpt. GitHub's REST API hat
 keinen File-Attachment-Endpoint, daher wird das Excerpt als kollabierter
 `<details>`-Block inline an den Issue-Body angehängt (`buildDiagnosticsBlock`)
-— eigene, tail-truncation (neueste Zeilen bleiben, Gegenteil zu
-`sanitizeIssueBody`s Head-Truncation) auf `MAX_DIAGNOSTICS_BYTES`, danach
-derselbe Secrets-Scanner (`sanitizeIssueBody`) wie für den Rest des Bodies.
-Das Excerpt geht **nie** durch den LLM-Reformulator — `/preview` liefert exakt
+— zuerst derselbe Secrets-Scanner (`sanitizeIssueBody`) wie für den Rest des
+Bodies, über das volle rohe Excerpt, danach die eigene tail-truncation
+(neueste Zeilen bleiben, Gegenteil zu `sanitizeIssueBody`s Head-Truncation)
+auf `MAX_DIAGNOSTICS_BYTES`. Die Reihenfolge ist sicherheitskritisch — siehe
+Review Runde 3 unten. Das Excerpt geht **nie** durch den LLM-Reformulator — `/preview` liefert exakt
 den Block zurück, den `/create` anhängt, damit der Operator vor dem Filen
 sieht, was rausgeht. Web-UI-seitig puffert `web-ui/app/_lib/diagnosticsBuffer.ts`
 die letzten `window` `error`/`unhandledrejection`-Events; `CreateIssueButton`
@@ -669,6 +670,24 @@ sanitierten Content (Standard-CommonMark-Technik), siehe
 `longestBacktickRun`/`buildDiagnosticsBlock`. Test:
 `test/issues/issuesRouter.test.ts` → "diagnostics fence widens so an embedded
 ``` run cannot break out of it".
+
+**Sicherheitsdetail (Review Runde 3 — Reihenfolge Truncate/Sanitize):**
+`buildDiagnosticsBlock` truncatete ursprünglich zuerst auf
+`MAX_DIAGNOSTICS_BYTES` und sanitierte danach. Bei einem Excerpt wie
+`'Authorization: Bearer ' + 'A'.repeat(64) + '\n' + 'x'.repeat(8127)` (8215
+Bytes, unter `MAX_DIAGNOSTICS_INPUT_LEN` also akzeptiert, über
+`MAX_DIAGNOSTICS_BYTES` also getruncated) lag der Cut-Punkt genau hinter dem
+23-Byte-Prefix `Authorization: Bearer `. Der Bearer-Token-Pattern in
+`sanitizeIssueBody` braucht diesen Prefix, um zu matchen — nach dem
+Truncaten fehlte er, der 64-Zeichen-Token blieb im getruncateten Rest
+unredacted stehen und wäre unverschlüsselt in ein PUBLIC GitHub-Issue
+gegangen. Fix: Reihenfolge getauscht — `sanitizeIssueBody` läuft jetzt über
+das volle rohe Excerpt (mit einem Byte-Budget, das großzügig über der
+Redaction-Expansion liegt, damit `sanitizeIssueBody`s eigene, Head-
+truncating Size-Cap nicht vor unserer Tail-Truncation feuert), erst danach
+wird der bereits redigierte Text auf `MAX_DIAGNOSTICS_BYTES` gekürzt. Test:
+`test/issues/issuesRouter.test.ts` → "redacts a bearer token whose prefix
+falls outside the tail-truncation window".
 
 ---
 
