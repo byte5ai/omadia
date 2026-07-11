@@ -2501,8 +2501,20 @@ async function main(): Promise<void> {
     // a digest-pinned image (DEV_RUNNER_IMAGE, falling back to DEV_RUNNER_DEFAULT_IMAGE).
     // These operator URLs are DELIBERATELY not SSRF-guarded (`.internal` is valid here).
     const flyRunnerImage = config.DEV_RUNNER_IMAGE ?? config.DEV_RUNNER_DEFAULT_IMAGE;
+    // The runner app MUST be dedicated — NEVER this middleware's own Fly app, or a
+    // job's ephemeral machine (running hostile repo code) would be provisioned into
+    // the app that holds the middleware's machines, volumes, and app-level secrets
+    // (Forge W4 wiring audit — the "dedicated app" invariant was comment-only).
+    const flyAppIsSelf = Boolean(
+      config.DEV_FLY_RUNNER_APP && config.FLY_APP_NAME && config.DEV_FLY_RUNNER_APP === config.FLY_APP_NAME,
+    );
+    if (flyAppIsSelf) {
+      console.warn(
+        `[middleware] DEV_FLY_RUNNER_APP (${config.DEV_FLY_RUNNER_APP}) equals this app's FLY_APP_NAME — refusing to provision runners into the middleware's own app; FlyMachinesBackend NOT registered`,
+      );
+    }
     const flyConfig =
-      config.DEV_FLY_RUNNER_APP && flyRunnerImage
+      config.DEV_FLY_RUNNER_APP && flyRunnerImage && !flyAppIsSelf
         ? {
             runnerApp: config.DEV_FLY_RUNNER_APP,
             apiBase: config.FLY_APP_NAME
