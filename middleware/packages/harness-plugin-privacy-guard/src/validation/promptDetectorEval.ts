@@ -4,10 +4,22 @@
  * Run from `middleware/`:
  *   npx tsx packages/harness-plugin-privacy-guard/src/validation/promptDetectorEval.ts
  *
- * Scores each configured detector set against the fixture files using the
- * exact-match leak criterion (`findIdentityLeaks`): a PII instance counts as
- * masked only when its full real value is absent from the masked output.
- * Gates are documented in ./README.md and were committed before any run.
+ * Detector sets are built from the environment:
+ *   - always:                      `c0`      (regex baseline)
+ *   - with PII_DETECTOR_URL set:   `c0+c1`   (baseline + GLiNER sidecar)
+ *                                  `c1-solo` (ablation — reported, not gated)
+ *     e.g. PII_DETECTOR_URL=http://localhost:8812 when the
+ *     `docker-compose.pii-detector.yaml` sidecar is reachable locally.
+ *
+ * Flags:
+ *   --markdown   emit GitHub-flavored tables (for posting to issue #361)
+ *                instead of the default console format.
+ *
+ * Scoring uses the exact-match leak criterion (`findIdentityLeaks`): a PII
+ * instance counts as masked only when its full verbatim value is absent
+ * from the masked output. Gates are documented in ./README.md and were
+ * committed before any run; scoring/aggregation/rendering helpers live in
+ * ./report.ts.
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -16,110 +28,105 @@ import { fileURLToPath } from 'node:url';
 
 import type { PromptPiiDetector } from '@omadia/plugin-api';
 
+import { createC1HttpDetector } from '../c1Detector.js';
 import { createBaselineDetector, maskPrompt } from '../promptMask.js';
-import { findIdentityLeaks } from '../v4/onTheWire.js';
+import {
+  aggregateLocale,
+  evaluateGates,
+  lintFixtures,
+  renderConsoleLocale,
+  renderMarkdown,
+  type FixtureItem,
+  type ItemOutcome,
+  type LocaleResult,
+  type SetResults,
+} from './report.js';
 
-interface FixtureSpan {
-  readonly value: string;
-  readonly type: string;
-  readonly tier: 'critical' | 'high' | 'medium';
+/** Detector sets under evaluation, built from the environment. Without
+ *  `PII_DETECTOR_URL` this is the shipped c0-only run. The C1 timeout is
+ *  deliberately generous (10 s vs the runtime's 1500 ms): the harness
+ *  measures detection quality and REPORTS latency against the 400 ms gate —
+ *  it must not silently convert a slow sidecar into thrown timeouts. */
+function buildDetectorSets(): Array<[string, readonly PromptPiiDetector[]]> {
+  const sets: Array<[string, readonly PromptPiiDetector[]]> = [
+    ['c0', [createBaselineDetector()]],
+  ];
+  const c1Url = process.env['PII_DETECTOR_URL']?.trim();
+  if (c1Url !== undefined && c1Url !== '') {
+    const c1 = createC1HttpDetector({ resolveUrl: () => c1Url, timeoutMs: 10_000 });
+    sets.push(['c0+c1', [createBaselineDetector(), c1]]);
+    sets.push(['c1-solo', [c1]]);
+  }
+  return sets;
 }
 
-interface FixtureItem {
-  readonly text: string;
-  readonly spans: readonly FixtureSpan[];
-}
-
-/** Detector sets under evaluation. Add `['c0+c1', [baseline, c1]]` here
- *  once a real C1 transformer detector is wired. */
-const DETECTOR_SETS: ReadonlyArray<[string, readonly PromptPiiDetector[]]> = [
-  ['c0', [createBaselineDetector()]],
-];
-
-/** Types the C0 baseline is expected (and gated) to catch. `person` and
- *  other free-form entities are C1 territory — reported separately. */
-const STRUCTURED_TYPES = new Set(['email', 'iban', 'phone', 'address', 'amount', 'date']);
-
-function p95(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)]!;
-}
+/** PII-shaped warm-up text: primes regex JIT and, more importantly, the
+ *  sidecar's first-inference session so model warm-up never pollutes p95. */
+const WARMUP_TEXT =
+  'Warm-up only: contact Max Mustermann at Musterstraße 1, 12345 Berlin ' +
+  'or max.mustermann@example.com before 24.12.2026.';
 
 async function evalLocale(
-  locale: string,
   items: readonly FixtureItem[],
   detectors: readonly PromptPiiDetector[],
-): Promise<void> {
-  const byType = new Map<string, { total: number; masked: number }>();
-  let negatives = 0;
-  let cleanNegatives = 0;
-  const latencies: number[] = [];
-
+): Promise<ItemOutcome[]> {
+  const outcomes: ItemOutcome[] = [];
   for (const item of items) {
     const startedAt = performance.now();
     const result = await maskPrompt(item.text, detectors);
-    latencies.push(performance.now() - startedAt);
-
-    if (item.spans.length === 0) {
-      negatives += 1;
-      if (result.spans.length === 0) cleanNegatives += 1;
-      continue;
-    }
-    for (const span of item.spans) {
-      const bucket = byType.get(span.type) ?? { total: 0, masked: 0 };
-      bucket.total += 1;
-      // Exact-match criterion: the full real value must be gone.
-      if (findIdentityLeaks(result.maskedText, [span.value]).length === 0) {
-        bucket.masked += 1;
-      }
-      byType.set(span.type, bucket);
-    }
+    const latencyMs = performance.now() - startedAt;
+    outcomes.push({
+      maskedText: result.maskedText,
+      flaggedSpans: result.spans.length,
+      latencyMs,
+    });
   }
-
-  console.log(`\n=== ${locale} ===`);
-  let structuredTotal = 0;
-  let structuredMasked = 0;
-  for (const [type, { total, masked }] of [...byType.entries()].sort()) {
-    const recall = total === 0 ? 1 : masked / total;
-    const scope = STRUCTURED_TYPES.has(type) ? 'structured' : 'c1-scope';
-    console.log(
-      `  recall ${type.padEnd(8)} ${masked}/${total}  ${(recall * 100).toFixed(1)}%  (${scope})`,
-    );
-    if (STRUCTURED_TYPES.has(type)) {
-      structuredTotal += total;
-      structuredMasked += masked;
-    }
-  }
-  const structuredRecall = structuredTotal === 0 ? 1 : structuredMasked / structuredTotal;
-  const precisionProxy = negatives === 0 ? 1 : cleanNegatives / negatives;
-  const latencyP95 = p95(latencies);
-  console.log(`  structured recall     ${(structuredRecall * 100).toFixed(1)}%  (gate ≥ 97%)`);
-  console.log(`  negatives clean       ${cleanNegatives}/${negatives}  (gate ≥ 85%)`);
-  console.log(`  p95 latency           ${latencyP95.toFixed(1)} ms  (gate ≤ 400 ms)`);
-  const pass =
-    structuredRecall >= 0.97 && precisionProxy >= 0.85 && latencyP95 <= 400;
-  console.log(`  verdict (structured-identifier gates only): ${pass ? 'PASS' : 'FAIL'}`);
+  return outcomes;
 }
 
 async function main(): Promise<void> {
+  const markdown = process.argv.includes('--markdown');
   const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
   const locales = readdirSync(fixturesDir)
     .filter((f) => f.endsWith('.json'))
     .map((f) => f.replace(/\.json$/, ''))
     .sort();
-  for (const [setName, detectors] of DETECTOR_SETS) {
-    console.log(`\n########## detector set: ${setName} ##########`);
-    for (const locale of locales) {
-      const items = JSON.parse(
-        readFileSync(join(fixturesDir, `${locale}.json`), 'utf-8'),
-      ) as FixtureItem[];
-      await evalLocale(locale, items, detectors);
-    }
+
+  // Load + lint everything up-front: a malformed fixture file fails the
+  // whole run loudly before any numbers are printed.
+  const fixtures = new Map<string, FixtureItem[]>();
+  for (const locale of locales) {
+    const raw: unknown = JSON.parse(
+      readFileSync(join(fixturesDir, `${locale}.json`), 'utf-8'),
+    );
+    fixtures.set(locale, lintFixtures(locale, raw));
   }
-  console.log(
-    '\nNote: name/free-form (`person`) recall requires a C1 transformer detector — C0 alone must not gate those types. See README.md.',
-  );
+
+  const allResults: SetResults[] = [];
+  for (const [setName, detectors] of buildDetectorSets()) {
+    if (!markdown) console.log(`\n########## detector set: ${setName} ##########`);
+    // One un-timed warm-up call per set before measurement.
+    await maskPrompt(WARMUP_TEXT, detectors);
+    const perLocale: LocaleResult[] = [];
+    for (const [locale, items] of fixtures) {
+      const outcomes = await evalLocale(items, detectors);
+      const report = aggregateLocale(locale, items, outcomes);
+      const verdict = evaluateGates(setName, report);
+      perLocale.push({ report, verdict });
+      if (!markdown) console.log(renderConsoleLocale(report, verdict));
+    }
+    allResults.push({ set: setName, locales: perLocale });
+  }
+
+  if (markdown) {
+    console.log(renderMarkdown(allResults));
+  } else {
+    console.log(
+      '\nNote: `person` recall gates only on the c0+c1 set (C0 alone does not ' +
+        'detect names); run with PII_DETECTOR_URL pointing at the GLiNER ' +
+        'sidecar to evaluate it. See README.md.',
+    );
+  }
 }
 
 void main();

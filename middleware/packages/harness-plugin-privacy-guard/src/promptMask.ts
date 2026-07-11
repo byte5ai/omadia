@@ -148,16 +148,57 @@ function extendToWordBoundaries(
   return { start: s, end: e };
 }
 
+interface ExtendedSpan {
+  start: number;
+  end: number;
+  readonly type: string;
+  readonly detector: string;
+  readonly confidence: number;
+}
+
+/** The parts of `[candidate.start, candidate.end)` not covered by any of
+ *  `covering` (all overlapping the candidate, non-overlapping each other). */
+function uncoveredParts(
+  candidate: ExtendedSpan,
+  covering: readonly ExtendedSpan[],
+): Array<{ start: number; end: number }> {
+  const parts: Array<{ start: number; end: number }> = [];
+  let cursor = candidate.start;
+  for (const k of [...covering].sort((a, b) => a.start - b.start)) {
+    if (k.start > cursor) parts.push({ start: cursor, end: Math.min(k.start, candidate.end) });
+    cursor = Math.max(cursor, k.end);
+    if (cursor >= candidate.end) break;
+  }
+  if (cursor < candidate.end) parts.push({ start: cursor, end: candidate.end });
+  return parts;
+}
+
+/** True when the slice holds at least one word-like character — a remainder
+ *  of pure whitespace/punctuation carries nothing identifying and masking it
+ *  would substitute separators. */
+function hasWordChar(text: string, start: number, end: number): boolean {
+  for (let i = start; i < end; i++) {
+    if (WORD_CHAR.test(text[i]!)) return true;
+  }
+  return false;
+}
+
 /**
  * Merge detector outputs: extend to word boundaries, then resolve overlaps
- * by keeping the higher-confidence span (ties → the longer span). Output is
- * sorted by start offset and non-overlapping.
+ * by letting the higher-confidence span (ties → the longer span) own the
+ * contested characters. A losing span is NOT discarded wholesale: the parts
+ * of it no winning span covers are kept as masking spans of their own —
+ * otherwise a long low-confidence C1 span (e.g. a free-form address at
+ * score 0.8) that merely brushes a short confidence-1 C0 hit (the postal
+ * code inside it) would silently drop the rest of the address onto the
+ * wire (#361 review finding). Output is sorted by start offset and
+ * non-overlapping.
  */
 export function dedupSpans(
   text: string,
   detected: ReadonlyArray<{ span: PromptPiiSpan; detector: string }>,
 ): ResolvedSpan[] {
-  const extended = detected
+  const extended: ExtendedSpan[] = detected
     .filter(({ span }) => span.end > span.start && span.start >= 0 && span.end <= text.length)
     .map(({ span, detector }) => {
       const { start, end } = extendToWordBoundaries(text, span.start, span.end);
@@ -168,12 +209,27 @@ export function dedupSpans(
         b.confidence - a.confidence || b.end - b.start - (a.end - a.start) || a.start - b.start,
     );
 
-  const kept: typeof extended = [];
+  const kept: ExtendedSpan[] = [];
   for (const candidate of extended) {
-    const overlapping = kept.some(
+    const overlapping = kept.filter(
       (k) => candidate.start < k.end && k.start < candidate.end,
     );
-    if (!overlapping) kept.push(candidate);
+    if (overlapping.length === 0) {
+      kept.push(candidate);
+      continue;
+    }
+    // The candidate loses the contested characters, never its own coverage:
+    // keep every uncovered remainder (re-extended to word boundaries —
+    // kept-span edges already sit on word boundaries, so extension cannot
+    // re-enter a kept span; if it ever would, fall back to the exact
+    // remainder, which is non-overlapping by construction).
+    for (const part of uncoveredParts(candidate, overlapping)) {
+      if (!hasWordChar(text, part.start, part.end)) continue;
+      const grown = extendToWordBoundaries(text, part.start, part.end);
+      const collides = kept.some((k) => grown.start < k.end && k.start < grown.end);
+      const bounds = collides ? part : grown;
+      kept.push({ ...candidate, start: bounds.start, end: bounds.end });
+    }
   }
   return kept
     .sort((a, b) => a.start - b.start)
