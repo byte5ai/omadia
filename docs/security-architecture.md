@@ -92,6 +92,40 @@ discovered from public registries. This keeps the supply chain explicit:
   has a role model (same policy gap as skill-verdict suppression, see
   `agentBuilder.ts`).
 
+### Plugin-borne workflow templates (#478)
+
+Plugins may contribute Conductor workflow templates, and the capability is
+deliberately data-only:
+
+- **Templates are data, never code.** A plugin declares TemplateManifest
+  JSON files under `permissions.templates` (package-relative paths). That
+  declaration is the entire capability: there is no runtime template API
+  (`pluginContext.ts` gains no `ctx.templates`), nothing from these files is
+  ever executed, and no registration endpoint exists — the only ingestion
+  path is the plugin package itself.
+- **Fail-closed install gate** (`src/plugins/pluginTemplates.ts`, invoked by
+  `InstallService.configure()` before any persistent write): `.json` files
+  only; the declared path must resolve inside the package root *after
+  symlink unwrapping* (a confined-looking path whose file symlinks outside
+  the package is rejected); the template id must be namespaced
+  `plugin:<pluginId>:<name>` so a plugin can never shadow a bundled or
+  user template id; the manifest must pass
+  `checkTemplateManifest({ strict: true })` — undeclared concrete refs
+  (agents/actions/roles/events/channels) are rejected as
+  confusion/exfiltration vectors pointing at install-local entities — and
+  every cron trigger value must pass `isValidCron`. Any violation fails the
+  install with `install.template_invalid` and the per-template findings.
+- **Read-only in the catalog.** Accepted manifests register as
+  `source: 'plugin'` entries in the Conductor's composite template catalog;
+  PUT/DELETE/submit/approve refuse them (403), and they are unregistered on
+  uninstall. Boot re-registers templates of already-installed plugins
+  fail-open per template (the fail-closed gate already ran at install time;
+  a template problem must not brick boot).
+- **Instantiation stays gated.** Plugin templates run through the same
+  resolve/instantiate path as every other template, including live
+  `KnownRefs` validation — a template referencing entities this install
+  lacks fails visibly at mapping time, never silently.
+
 ## 5. Signed artefact URLs
 
 User-visible artefacts (rendered diagrams, attachments, exports) are stored

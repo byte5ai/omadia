@@ -200,6 +200,8 @@ import { PluginCatalog } from './plugins/manifestLoader.js';
 import { buildKgHealth } from './health/kgHealth.js';
 import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
+import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
+import type { PluginTemplateRegistrar } from './plugins/pluginTemplates.js';
 import {
   OAuthBrokerService,
   PendingFlowStore,
@@ -908,6 +910,14 @@ async function main(): Promise<void> {
   // eslint-disable-next-line prefer-const
   let channelRegistryRef: ChannelRegistry | undefined;
 
+  // Forward reference for the conductor's composite template catalog (#478) —
+  // wired inside the graphPool block far below, long after the install service
+  // is constructed. The install service resolves it lazily so plugin-borne
+  // workflow templates registered at runtime land in the catalog. Stays
+  // undefined on the in-memory backend (conductor inert); the install-time
+  // template VALIDATION gate runs regardless.
+  let conductorTemplateRegistrarRef: PluginTemplateRegistrar | undefined;
+
   // Forward refs — runtime propagation of a POST-BOOT agent-plugin
   // (de)activation into the per-Agent registry orchestrators + the fallback
   // Agent's enabled-plugin set. Assigned in the orchestrator-wiring block far
@@ -1045,6 +1055,10 @@ async function main(): Promise<void> {
     catalog: pluginCatalog,
     registry: installedRegistry,
     vault: secretVault,
+    // #478 — lazily resolved: the conductor's composite template catalog is
+    // wired ~1400 LOC below (graphPool block). Undefined until then / on the
+    // in-memory backend; the install-time template gate validates regardless.
+    conductorTemplates: () => conductorTemplateRegistrarRef,
     onInstalled: async (agentId) => {
       // A plugin may contribute an `llm_provider` block regardless of its kind
       // (provider plugins ship as `extension`). Register it FIRST — mirroring
@@ -2477,6 +2491,18 @@ async function main(): Promise<void> {
           throw err;
         }
       },
+    });
+    // #478 — plugin-borne workflow templates: hand the composite catalog's
+    // registrar to the install service (runtime installs/uninstalls) and
+    // re-register templates of already-installed plugins (registrations are
+    // in-memory and do not survive a restart). Boot sweep is fail-open per
+    // template with a loud log — the fail-closed gate ran at install time.
+    conductorTemplateRegistrarRef = conductorWiring.templateCatalog;
+    await registerInstalledPluginTemplates({
+      catalog: pluginCatalog,
+      registry: installedRegistry,
+      registrar: conductorWiring.templateCatalog,
+      log: (m) => console.log(m),
     });
     console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
     const userStore = new UserStore(graphPool);

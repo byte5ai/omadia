@@ -459,6 +459,173 @@ Fan-out; Turn vor Handshake wird verworfen; `localOperations`/`action` landen in
 Canvas synthetisieren, sobald Tier 2 (`omadia-ui-orchestrator`) `surface_*`
 emittiert** — der Transport ist vollständig.
 
+### Conductor Workflow-Templates (Operator-API, #429)
+
+Kuratierter, file-basierter Template-Katalog für Conductor: `TemplateManifest`s
+(kompletter `WorkflowGraph` mit `slot:<kind>:<key>`-Platzhaltern in den fünf
+Ref-Feldern + Slot-Deklarationen, Contract in `@omadia/conductor-core`;
+Name/Description/useCase und Slot-Label/-Beschreibungen sind **im Manifest
+lokalisierbar** — `LocalizedText` = plain string oder `{ en, de?, … }` mit
+Pflicht-`en`, Auflösung via `resolveLocalizedText`, UI löst client-seitig per
+`useLocale()` auf; `GET /templates` liefert weiterhin unaufgelöste volle
+Manifeste) liegen
+als JSON in `middleware/src/conductor/templates/` und werden beim Wiring einmal
+via `loadTemplateCatalog()` geladen (`templateCatalog.ts`; invalide Assets
+werden mit Log-Zeile übersprungen, CI-Gate ist
+`test/conductorTemplateCatalog.test.ts`). Drei neue Routes in
+`src/conductor/routes.ts`, gemountet unter dem auth-gated
+`/api/v1/operator/conductors`, **vor** dem `/:slug`-Catch-all registriert:
+
+- **`GET /templates`** → `200 { templates: TemplateManifest[] }` — volle
+  Manifeste inkl. Graph + Slots (maschinenlesbar für #330/Facilitator). Ohne
+  verdrahteten Katalog `{ templates: [] }`; Fehler →
+  `500 conductor.templates_failed`.
+- **`POST /templates/:id/resolve`** — Body `{ mapping }`. Ephemere
+  Instanziierung (der #330-Seam und "Open in designer" der UI): Slot-Mapping
+  substituieren, validieren, Graph zurückgeben, **nichts persistieren** →
+  `200 { graph }`. Fehler: `404 conductor.template_not_found`;
+  `400 conductor.template_slot_mapping_incomplete` mit
+  `missing: [{ kind, key, label }]` (fail-clear vor allem anderen);
+  `400 conductor.invalid_graph` mit den bekannten `unknown_*_ref`-Codes.
+- **`POST /templates/:id/instantiate`** — Body
+  `{ slug, name?, description?, mapping, enable? }`. Gleiche Fehlerpfade wie
+  `resolve`, plus: fehlender/leerer `slug` → `400 conductor.invalid_input`;
+  Slug-Kollision → `409 conductor.slug_exists` (**bewusste Abweichung** von der
+  Upsert-Semantik von `POST /` — Instanziieren heißt "neu anlegen", nie still
+  über einen bestehenden Workflow publishen). Die Kollision wird **atomar** im
+  Store erkannt: `createOrPublish({ expectNew: true })` →
+  `INSERT … ON CONFLICT (slug) DO NOTHING`, null Rows → Transaktion bricht mit
+  `WorkflowSlugExistsError` ab, Route mappt auf den 409 — kein racy
+  `getBySlug`-Pre-Check mehr; von zwei parallelen Instanziierungen desselben
+  frischen Slugs gewinnt genau eine. Publish sonst exakt wie
+  `POST /` inkl. atomarem Cron-Schedule-Reconcile (`onPublished` →
+  `scheduleStore.reconcileOnClient`); `enable` default `false`; `name`/
+  `description` defaulten aufs Manifest (en-aufgelöst) →
+  `201 { workflow, version }`.
+
+**Validierungs-Unterschied zu `POST /`:** beide Template-Routes validieren mit
+**live `KnownRefs`** (Agent-Slugs aus der Registry, Action-Ids, Role-Keys,
+Event-Katalog — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
+strukturell. Bewusst strenger: eine Template-Instanz muss lauffähig sein, nicht
+nur wohlgeformt. Ergebnis der Instanziierung ist ein gewöhnlicher versionierter
+Workflow ohne Rückverweis aufs Template (Copy, not Reference — seit #478 mit
+`template_id`/`template_version`-Provenance-Stempel auf der Workflow-Row, aber
+weiterhin nie zur Laufzeit dereferenziert).
+
+**Templates v2 (#478): DB-Store + Composite-Katalog + CRUD/Versionierung.**
+Conductor-Migration **`0006_templates.sql`** (eigene Chain,
+`_conductor_migrations`): `conductor_templates` (Owner, Review-`status`
+`private|pending|shared` ohne CHECK, `latest_version`, `reviewed_by`),
+`conductor_template_versions` (immutable JSONB-Manifeste, PK
+`(template_id, version)`), `conductor_template_instantiations` (append-only,
+anonym, denormalisierter `template_name`), plus Provenance-Spalten auf
+`conductor_workflows`. `src/conductor/templateStore.ts` =
+`createTemplateStore(pool, log)` (create/addVersion atomar per `FOR UPDATE`/
+get/list/delete/setStatus/listVersions/getVersion/recordInstantiation/
+instantiationCounts/stampWorkflowProvenance); die `version`-Spalte ist
+autoritativ und wird beim Lesen in `manifest.version` gestempelt.
+
+Der **Composite-Katalog** (`createCompositeTemplateCatalog` in
+`templateCatalog.ts`; Bundled-Files + DB-User-Templates + Plugin-Seam
+`registerPluginTemplates`/`unregisterPluginTemplates` für B3) ist
+viewer-scoped: `{ list(viewer), get(id, viewer) }`, Viewer =
+`req.session?.sub ?? 'operator'`. **Sichtbarkeitsregel (Review-Gate-Fix):**
+bundled/plugin für alle; User-Template sichtbar wenn `shared` ODER
+`createdBy = viewer` ODER **`pending`** (jeder Operator auf der single-tier
+Operator-API ist potenzieller Reviewer); nur fremde `private` bleiben
+verborgen. `get` wendet exakt die List-Regel an (kein 404-vs-List-Drift).
+
+Routes (in `src/conductor/templateRoutes.ts` ausgelagert, Registrierung
+unverändert **vor** `/:slug`): `GET /templates` liefert jetzt
+`TemplateSummary` = Manifest + **additive** Felder `source`
+(`bundled|user|plugin`), `status?`, `createdBy?`, `version`, `latestVersion`,
+`instantiationCount`, `updatedAt?` (v1-Felder unangetastet — #330 per
+Contract-Test gesichert). Neu: **`GET /templates/:id`** (`404
+conductor.template_not_found` wenn unsichtbar), **`POST /templates`** Body
+`{ manifest }` (validiert, erstellt `private` im Besitz des Viewers → `201
+{ template }`; `409 conductor.template_id_exists` bei Kollision mit
+bundled/plugin/DB; `400 conductor.template_invalid` mit Issues-Array),
+**`PUT /templates/:id`** (author-only `403 conductor.template_forbidden`;
+`manifest.id` muss `:id` sein → 400; hängt Version `latestVersion+1` an —
+Status bleibt bewusst unverändert: das Gate regelt das Teilen, nicht jede
+Version), **`DELETE /templates/:id`** (author-only, nur User-Source → 204),
+**`GET /templates/:id/versions`**. `resolve`/`instantiate` akzeptieren
+optional `version` im Body (Default: latest); `instantiate` stempelt die
+Provenance **in derselben Transaktion** wie den Publish (via `onPublished`)
+und schreibt best-effort eine Telemetry-Row. Tests:
+`test/conductorTemplateStore.test.ts` (stateful Fake-Pool) +
+`test/conductorTemplateRoutes.test.ts` (echter Composite-Katalog; explizite
+Reviewer-Reachability-Fälle: pending Template von A erscheint in Bs List/Get).
+
+**Templates v2 (#478 B3): Authoring, Review-Gate, Plugin-Templates, Update-Hint.**
+Neu in `templateRoutes.ts`: **`POST /:slug/save-as-template`** (der Router ist
+auf `/api/v1/operator/conductors` gemountet — es gibt keinen
+`/workflows`-Präfix) lädt die aktive publizierte Version und liefert per
+`inferTemplateManifest` einen **Draft** `{ draft, sourceWorkflow: { slug,
+version } }` — jede konkrete Ref wird deklarierter Slot (Label = ursprüngliche
+Ref), NICHTS wird persistiert; die UI editiert und publisht via
+`POST /templates` bzw. `PUT` (Body-Overrides `{ id?, name?, description?,
+useCase? }`; Default-Id = Slug, bei Kollision `-template`-Suffix; `404
+conductor.workflow_not_found` ohne publizierte Version). **Review-Gate**
+(Make-Shape `private → pending → shared`): `POST /templates/:id/submit`
+(author-only; `409 conductor.template_status_conflict` außer aus `private`),
+`POST /templates/:id/approve` / `reject` (**jeder Operator** — erreichbar,
+weil `pending` install-weit sichtbar ist; Auflösung über das viewer-scoped
+Katalog-`get`, `reviewed_by = viewer` wird protokolliert; Self-Approval bleibt
+erlaubt/auditierbar, Separation of Duties explizit deferred). Ein Reject durch
+einen Nicht-Autor macht das Template `private` und damit für den Reviewer
+unsichtbar — die Response trägt dann `template: null`. **Update-Hint:**
+Workflow-List (`GET /`) und -Detail (`GET /:slug`) liefern additiv
+`template?: { id, version, latestVersion, updateAvailable }` wenn die Row
+Provenance trägt (`attachTemplateHints` in `templateHints.ts`; ein
+Katalog-List-Read pro Request, viewer-scoped — ein unsichtbares Template
+degradiert zu `latestVersion = version, updateAvailable: false`, kein
+Existenz-Leak); `workflowStore` liest dafür `template_id`/`template_version`
+mit (additiv auf `ConductorWorkflow`). **Plugin-Templates** (Trust-Boundary
+dokumentiert in `docs/security-architecture.md` §4): Deklaration
+`permissions.templates` (package-relative `.json`-Pfade, Parsing
+`extractTemplateDeclarations` in `plugins/manifestLoader.ts`), Install-Gate
+**fail-closed** in `plugins/pluginTemplates.ts` (`loadPluginTemplates`:
+Pfad-Confinement nach Symlink-Unwrapping, Id-Namespace
+`plugin:<pluginId>:<name>`, `checkTemplateManifest({ strict: true })`,
+`isValidCron`); jeder Verstoß → `install.template_invalid`, Install
+verweigert, nichts wird ausgeführt. Akzeptierte Manifeste registrieren als
+read-only Source `plugin` im Composite-Katalog (InstallService-Dep
+`conductorTemplates`, lazy aufgelöst — Registrar-Forward-Ref in
+`src/index.ts`; Boot-Sweep `registerInstalledPluginTemplates` fail-open pro
+Template), Deregistrierung beim Uninstall. Tests:
+`test/pluginTemplates.test.ts` (Gate incl. Symlink-Escape,
+InstallService-Integration, Boot-Sweep) +
+`test/conductorTemplateRoutes.test.ts` (State-Machine incl.
+Non-Author-Approve, Inferenz-Roundtrip, Update-Hint, Plugin-Source read-only).
+
+**Templates v2 (#478 B4): Builder-Chat-Template-Awareness.** Der
+Conversational-Builder (`src/conductor/builderAgent.ts`) sieht jetzt den
+Template-Katalog: seine Deps bekommen den viewer-scoped Composite-Katalog
+(`templateCatalog.list(viewer)`) plus `templateKnownRefs` (dieselbe — jetzt in
+`src/conductor/index.ts` gehoistete — Funktion, gegen die auch
+`resolve`/`instantiate` validieren). Der System-Prompt trägt einen kompakten
+**Katalog-Digest** (pro sichtbarem Template: id, en-aufgelöste `name`/`useCase`
+via `resolveLocalizedText`, Version, Slot-Liste inkl. Text-Slots; Cap 30
+Templates mit Count-Note). Das Reply-Protokoll erlaubt zusätzlich zu
+`{ reply, patches }` einen `templateProposals`-Block; **`POST /builder/turn`**
+liefert ihn **additiv** durch (`templateProposals?: [{ templateId, version,
+reason, prefill }]`, Feld fehlt komplett ohne Proposals — v1-Wire-Shape
+byte-identisch). Serverseitiges Gate im Agent-Seam (defensiv, wirft nie):
+unbekannte/unsichtbare Template-Ids werden gegen den viewer-scoped Katalog
+gedroppt, Duplikate dedupliziert, max. 3 Proposals, `version` kommt
+autoritativ aus dem Katalog (nicht vom LLM), `prefill`-Guesses nur für
+deklarierte Slot-Keys und Ref-Kinds nur wenn sie gegen die live `KnownRefs`
+auflösen (`channels` hat kein KnownRefs-Set → strukturell akzeptiert, wie in
+`validate()`); gestrippte Guesses rendert das Formular leer statt kaputt. Ein
+kaputter Katalog/KnownRefs-Read degradiert zum templatelosen Turn statt zum
+500. Chat **proponiert und prefillt nur** — Instanziierung bleibt auf den
+bestehenden `resolve`/`instantiate`-Routen (Formular-Flow, keine
+Auto-Instanziierung). Der Viewer läuft als `req.session?.sub ?? 'operator'`
+durch `runTurn({ ..., viewer })`. Tests: `test/conductorBuilder.test.ts`
+(Digest-Sichtbarkeit inkl. pending/fremd-privat, Proposal-Vetting,
+Malformed-Blocks, No-Proposal-Regression).
+
 ---
 
 ## 4. Migration Managed Agents → Lokal
