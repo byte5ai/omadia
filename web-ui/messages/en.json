@@ -2445,6 +2445,10 @@
     },
     "descriptionLabel": "Describe it in your own words",
     "descriptionPlaceholder": "What happened, or what would you like to see? Any language is fine — we'll phrase it in English.",
+    "diagnosticsCheckboxLabel": "Attach recent errors from this session",
+    "diagnosticsCheckboxHint": "Includes recent unhandled client-side errors from this session. Known secrets are redacted before filing — review the excerpt below and again on the next screen.",
+    "diagnosticsPreviewLabel": "Preview what will be attached",
+    "diagnosticsSectionLabel": "Diagnostics (attached)",
     "reformulate": "Continue",
     "reformulating": "Phrasing …",
     "previewTitle": "Review the issue",
@@ -2478,6 +2482,7 @@
     "errorNotConnected": "Connect your GitHub account first.",
     "errorLlm": "No AI provider is connected to phrase the issue.",
     "errorRateLimited": "Your AI provider hit a rate or quota limit. Try again later, or switch the provider in Settings.",
+    "errorDiagnostics": "The attached diagnostics excerpt was rejected. Try again, or continue without attaching it.",
     "errorGeneric": "Something went wrong. Please try again."
   },
   "store": {

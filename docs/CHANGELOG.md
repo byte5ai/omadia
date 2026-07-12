@@ -18,6 +18,77 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — attach sanitized diagnostics excerpt to filed issues (#433)
+
+- The in-app Create Issue flow (`POST /api/v1/issues/preview` and `POST
+  /api/v1/issues/create`) accepts an optional, opt-in `diagnostics` field: a
+  client-captured stack-trace/log excerpt, tail-truncated (newest lines kept)
+  to `MAX_DIAGNOSTICS_BYTES`, run through the same secrets scanner as the rest
+  of the body, and appended as a collapsed `<details>` block — GitHub's REST
+  API has no file-attachment endpoint, so an inline fenced block is the only
+  attachment mechanism available. `/preview` returns the exact block the
+  operator will see before `/create` files it; the excerpt never goes through
+  the LLM reformulator. Web UI: `web-ui/app/_lib/diagnosticsBuffer.ts` buffers
+  the most recent `window` `error`/`unhandledrejection` events;
+  `CreateIssueButton` gained an opt-in toggle to include the buffered excerpt
+  in the preview/create request.
+- The diagnostics fence delimiter is sized dynamically (one backtick longer
+  than the longest backtick run found in the sanitized excerpt, the standard
+  CommonMark technique) so diagnostics content containing its own ` ``` ` run
+  cannot break out of the fence and have its tail rendered as live
+  markdown/HTML by GitHub.
+
+### Fixed — diagnostics attachment review round: client size cap and preview/create parity (#433)
+
+- `web-ui/app/_lib/diagnosticsBuffer.ts`'s `formatDiagnosticsExcerpt()` now
+  caps its own output at 18000 chars (tail-truncated, newest entries kept,
+  with a truncation marker). Its previous unbounded worst case — 20 buffered
+  entries at max message + stack length — could reach ~120000 chars, well
+  past the server's `MAX_DIAGNOSTICS_INPUT_LEN` (20000,
+  `middleware/src/issues/issuesRouter.ts`), so a well-formed "lots of recent
+  errors" request could trip the server's `invalid_diagnostics` rejection.
+- `CreateIssueButton` now freezes the diagnostics excerpt it sends to
+  `/preview` in component state and resends that exact value to `/create`,
+  instead of re-reading the live ring buffer at create-time. Window
+  error/unhandledrejection/API-error capture keeps running while the dialog
+  sits on the preview screen, so an unrelated error elsewhere in the app
+  could previously change what got attached between the operator's review
+  and the actual filing.
+- `CreateIssueButton` now maps the server's `invalid_diagnostics` code to a
+  dedicated, translated error message on both `/preview` and `/create`
+  (previously fell through to the generic error message).
+
+### Fixed — diagnostics attachment review round 2: narrow the capture scope (#433)
+
+- `ApiError` (`web-ui/app/_lib/api.ts`) no longer records a diagnostics
+  entry from its own constructor. That hook made `ApiError` — thrown by
+  every failed API call anywhere in the admin UI, including a secrets/vault
+  config `PATCH` on `/admin/settings` — a silent, global source for the
+  diagnostics ring buffer. If an operator later opted in to "attach recent
+  errors" on an unrelated bug report, that unrelated captured content
+  (only partially covered by the server's redaction) could ship to a
+  PUBLIC GitHub issue. The buffer now only ever captures `window`
+  `error`/`unhandledrejection` events — page-level crashes, not the
+  outcome of one specific admin action — so `diagnosticsBuffer.ts` no
+  longer exposes an `'api-error'` capture source or a
+  `recordApiErrorDiagnostic` export. A regression test
+  (`web-ui/app/_lib/__tests__/api.test.ts`) asserts constructing an
+  `ApiError` does not, by itself, add anything to the buffer.
+
+### Fixed — diagnostics attachment review round 3: redact before truncating (#433)
+
+- `buildDiagnosticsBlock` (`middleware/src/issues/issuesRouter.ts`) now runs
+  the secrets scanner (`sanitizeIssueBody`) over the full raw diagnostics
+  excerpt BEFORE tail-truncating to `MAX_DIAGNOSTICS_BYTES`, not after. The
+  previous truncate-then-sanitize order could cut a secret pattern's
+  required prefix (e.g. `Authorization: Bearer `) out of the kept window
+  while leaving the credential value itself inside it, so the pattern never
+  matched and the token shipped unredacted into the public issue. A
+  regression test reproduces the concrete case from review — a bearer
+  token whose 23-byte `Authorization: Bearer ` prefix falls just outside
+  the 8 KiB tail-truncation window — and asserts the token is redacted in
+  the final block.
+
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
 - The save-as-template dialog no longer reads the viewer's own template id as

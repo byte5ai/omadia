@@ -626,6 +626,69 @@ durch `runTurn({ ..., viewer })`. Tests: `test/conductorBuilder.test.ts`
 (Digest-Sichtbarkeit inkl. pending/fremd-privat, Proposal-Vetting,
 Malformed-Blocks, No-Proposal-Regression).
 
+### In-App Issue Reporting — Diagnostics-Attachment (#433)
+
+Der bestehende In-App-Issue-Reporter (`src/issues/issuesRouter.ts`, `POST
+/api/v1/issues/preview` + `POST /api/v1/issues/create`, Operator meldet ein
+Issue über die eigene, per Device-Flow verbundene GitHub-Identität) akzeptiert
+jetzt ein optionales, **opt-in** `diagnostics`-Feld auf beiden Routes: ein
+client-seitig gepuffertes Stack-Trace-/Log-Excerpt. GitHub's REST API hat
+keinen File-Attachment-Endpoint, daher wird das Excerpt als kollabierter
+`<details>`-Block inline an den Issue-Body angehängt (`buildDiagnosticsBlock`)
+— zuerst derselbe Secrets-Scanner (`sanitizeIssueBody`) wie für den Rest des
+Bodies, über das volle rohe Excerpt, danach die eigene tail-truncation
+(neueste Zeilen bleiben, Gegenteil zu `sanitizeIssueBody`s Head-Truncation)
+auf `MAX_DIAGNOSTICS_BYTES`. Die Reihenfolge ist sicherheitskritisch — siehe
+Review Runde 3 unten. Das Excerpt geht **nie** durch den LLM-Reformulator — `/preview` liefert exakt
+den Block zurück, den `/create` anhängt, damit der Operator vor dem Filen
+sieht, was rausgeht. Web-UI-seitig puffert `web-ui/app/_lib/diagnosticsBuffer.ts`
+die letzten `window` `error`/`unhandledrejection`-Events; `CreateIssueButton`
+hat einen Toggle, der den gepufferten Excerpt optional mitschickt.
+
+**Scope-Fix (Review Runde 2):** ursprünglich hookte `ApiError`s Constructor
+(`web-ui/app/_lib/api.ts`) in `recordApiErrorDiagnostic`, sodass **jeder**
+fehlgeschlagene API-Call irgendwo im Admin-UI — auch ein Secrets/Vault-Config-
+`PATCH` auf `/admin/settings` — still in den Diagnostics-Ring-Buffer floss.
+Opted ein Operator später bei einem unrelated Bug-Report "attach recent
+errors" ein, hätte genau dieser unrelated Capture (nur teilweise durch
+Server-Redaction abgedeckt) in einem PUBLIC GitHub-Issue landen können. Fix:
+der globale Hook ist aus dem `ApiError`-Constructor entfernt; der Buffer
+akzeptiert nur noch `window` `error`/`unhandledrejection` (Page-Level-Crashes,
+nicht eine spezifische Admin-Aktion). `diagnosticsBuffer.ts` exportiert kein
+`recordApiErrorDiagnostic` und keine `'api-error'`-Source mehr. Test:
+`web-ui/app/_lib/__tests__/api.test.ts` — Konstruktion eines `ApiError` fügt
+dem Buffer nichts hinzu.
+
+**Sicherheitsdetail (Review-Fix):** das Diagnostics-Excerpt ist
+attacker-influenceable (Fehlermeldungen, rohe Server-Response-Bodies) und
+`sanitizeIssueBody` escaped keine Backticks — nur Secrets-Redaction und
+Size-Truncation. Ein fixer ` ```text `-Fence wäre durch einen ` ``` `-Run im
+Excerpt-Content durchbrechbar (GitHub würde den Rest dann als live
+Markdown/HTML außerhalb des Fences rendern). Fix: die Fence-Länge wird
+dynamisch berechnet — eine Backtick mehr als der längste Backtick-Run im
+sanitierten Content (Standard-CommonMark-Technik), siehe
+`longestBacktickRun`/`buildDiagnosticsBlock`. Test:
+`test/issues/issuesRouter.test.ts` → "diagnostics fence widens so an embedded
+``` run cannot break out of it".
+
+**Sicherheitsdetail (Review Runde 3 — Reihenfolge Truncate/Sanitize):**
+`buildDiagnosticsBlock` truncatete ursprünglich zuerst auf
+`MAX_DIAGNOSTICS_BYTES` und sanitierte danach. Bei einem Excerpt wie
+`'Authorization: Bearer ' + 'A'.repeat(64) + '\n' + 'x'.repeat(8127)` (8215
+Bytes, unter `MAX_DIAGNOSTICS_INPUT_LEN` also akzeptiert, über
+`MAX_DIAGNOSTICS_BYTES` also getruncated) lag der Cut-Punkt genau hinter dem
+23-Byte-Prefix `Authorization: Bearer `. Der Bearer-Token-Pattern in
+`sanitizeIssueBody` braucht diesen Prefix, um zu matchen — nach dem
+Truncaten fehlte er, der 64-Zeichen-Token blieb im getruncateten Rest
+unredacted stehen und wäre unverschlüsselt in ein PUBLIC GitHub-Issue
+gegangen. Fix: Reihenfolge getauscht — `sanitizeIssueBody` läuft jetzt über
+das volle rohe Excerpt (mit einem Byte-Budget, das großzügig über der
+Redaction-Expansion liegt, damit `sanitizeIssueBody`s eigene, Head-
+truncating Size-Cap nicht vor unserer Tail-Truncation feuert), erst danach
+wird der bereits redigierte Text auf `MAX_DIAGNOSTICS_BYTES` gekürzt. Test:
+`test/issues/issuesRouter.test.ts` → "redacts a bearer token whose prefix
+falls outside the tail-truncation window".
+
 ---
 
 ## 4. Migration Managed Agents → Lokal

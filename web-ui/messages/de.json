@@ -2445,6 +2445,10 @@
     },
     "descriptionLabel": "Beschreibe es in eigenen Worten",
     "descriptionPlaceholder": "Was ist passiert oder was wünschst du dir? Jede Sprache ist okay — wir formulieren es auf Englisch.",
+    "diagnosticsCheckboxLabel": "Aktuelle Fehler aus dieser Sitzung anhängen",
+    "diagnosticsCheckboxHint": "Enthält kürzliche unbehandelte clientseitige Fehler aus dieser Sitzung. Bekannte Secrets werden vor dem Absenden geschwärzt — prüfe den Auszug unten und noch einmal auf dem nächsten Bildschirm.",
+    "diagnosticsPreviewLabel": "Vorschau des Anhangs",
+    "diagnosticsSectionLabel": "Diagnose (angehängt)",
     "reformulate": "Weiter",
     "reformulating": "Formuliere …",
     "previewTitle": "Issue prüfen",
@@ -2478,6 +2482,7 @@
     "errorNotConnected": "Verbinde zuerst dein GitHub-Konto.",
     "errorLlm": "Es ist kein KI-Provider verbunden, um das Issue zu formulieren.",
     "errorRateLimited": "Dein KI-Provider hat ein Raten- oder Kontingentlimit erreicht. Später erneut versuchen oder in den Einstellungen den Provider wechseln.",
+    "errorDiagnostics": "Der angehängte Diagnose-Auszug wurde abgelehnt. Versuch es erneut oder fahre ohne Anhang fort.",
     "errorGeneric": "Etwas ist schiefgelaufen. Bitte erneut versuchen."
   },
   "store": {

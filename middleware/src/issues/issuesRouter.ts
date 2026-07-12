@@ -13,8 +13,22 @@
  *   POST /github/connect/start   -> { userCode, verificationUri, expiresIn, interval }
  *   POST /github/connect/poll    -> { status: pending|authorized|expired|denied|error, login? }
  *   POST /github/disconnect      -> { ok }
- *   POST /preview                -> { title, body, category }
+ *   POST /preview                -> { title, body, category, diagnostics? }
  *   POST /create                 -> { number, htmlUrl }
+ *
+ * `diagnostics` (both routes, optional, issue #433): a client-captured
+ * stack-trace/log excerpt. It is never sent to the LLM reformulator — logs
+ * go verbatim (post-sanitization), not through the rephrasing pass. It is
+ * redacted with the same secrets scanner as the rest of the body FIRST,
+ * over the full excerpt, and only then given its own tail-truncation
+ * (newest lines kept — the opposite of the sanitizer's head-preserving
+ * default, since the newest log lines are the useful ones) before being
+ * appended as a collapsed `<details>` block. Redaction must run before
+ * truncation, not after — truncating first can cut the prefix a secret
+ * pattern needs to match out of the kept window, letting the credential
+ * itself survive unredacted. See `buildDiagnosticsBlock` below. GitHub's
+ * REST API has no file-attachment endpoint, so an inline collapsed block
+ * is the only mechanism available.
  *
  * Express-4 caveat (see routes/adminProviders.ts): async handlers must
  * try/catch internally — Express 4 does not forward async rejections.
@@ -35,6 +49,7 @@ import type {
   CreateIssueResult,
 } from '../plugins/builder/githubIssueCreator.js';
 import { loadUpstreamIssueConfig } from '../plugins/builder/upstreamIssueConfig.js';
+import { sanitizeIssueBody } from '../plugins/builder/issueBodySanitizer.js';
 
 import { GITHUB_ISSUE_SCOPES } from './githubOAuthProvider.js';
 import type { GitHubDeviceFlowProvider } from './githubOAuthProvider.js';
@@ -56,6 +71,12 @@ const DEFAULT_PROVIDER_ID = 'anthropic';
 const MAX_TEXT_LEN = 5000;
 const MAX_TITLE_LEN = 120;
 const MAX_BODY_LEN = 20000;
+// Diagnostics get their own, smaller cap so an attached log excerpt cannot
+// crowd out the description. MAX_DIAGNOSTICS_INPUT_LEN bounds what the
+// client may submit; MAX_DIAGNOSTICS_BYTES is the tail-truncated size that
+// actually ends up in the filed issue.
+const MAX_DIAGNOSTICS_INPUT_LEN = 20000;
+const MAX_DIAGNOSTICS_BYTES = 8 * 1024;
 
 const LABELS_BY_CATEGORY: Record<IssueCategory, readonly string[]> = {
   bug: ['bug'],
@@ -241,7 +262,11 @@ export function createIssuesRouter(deps: IssuesRouterDeps): Router {
         res.status(429).json({ code: 'rate_limited' });
         return;
       }
-      const body = (req.body ?? {}) as { text?: unknown; category?: unknown };
+      const body = (req.body ?? {}) as {
+        text?: unknown;
+        category?: unknown;
+        diagnostics?: unknown;
+      };
       const text = typeof body.text === 'string' ? body.text.trim() : '';
       const category = body.category;
       if (!text || text.length > MAX_TEXT_LEN) {
@@ -250,6 +275,11 @@ export function createIssuesRouter(deps: IssuesRouterDeps): Router {
       }
       if (!isIssueCategory(category)) {
         res.status(400).json({ code: 'invalid_category' });
+        return;
+      }
+      const diagnostics = parseDiagnosticsField(body.diagnostics);
+      if (!diagnostics.ok) {
+        res.status(400).json({ code: 'invalid_diagnostics' });
         return;
       }
       const llm = await resolveLlm();
@@ -279,7 +309,17 @@ export function createIssuesRouter(deps: IssuesRouterDeps): Router {
           .json({ code: rateLimited ? 'llm_rate_limited' : 'reformulate_failed' });
         return;
       }
-      res.json({ title: result.title, body: result.body, category });
+      res.json({
+        title: result.title,
+        body: result.body,
+        category,
+        // Sanitized/truncated up front so the operator reviews the exact
+        // block that /create will append — never round-tripped through the
+        // LLM above.
+        ...(diagnostics.value
+          ? { diagnostics: buildDiagnosticsBlock(diagnostics.value) }
+          : {}),
+      });
     } catch {
       res.status(500).json({ code: 'preview_failed' });
     }
@@ -301,6 +341,7 @@ export function createIssuesRouter(deps: IssuesRouterDeps): Router {
         title?: unknown;
         body?: unknown;
         category?: unknown;
+        diagnostics?: unknown;
       };
       const title = typeof body.title === 'string' ? body.title.trim() : '';
       const issueBody = typeof body.body === 'string' ? body.body.trim() : '';
@@ -317,6 +358,11 @@ export function createIssuesRouter(deps: IssuesRouterDeps): Router {
         res.status(400).json({ code: 'invalid_category' });
         return;
       }
+      const diagnostics = parseDiagnosticsField(body.diagnostics);
+      if (!diagnostics.ok) {
+        res.status(400).json({ code: 'invalid_diagnostics' });
+        return;
+      }
       const token = await getToken(deps.vault, sub);
       if (!token) {
         res.status(409).json({ code: 'github_not_connected' });
@@ -330,10 +376,18 @@ export function createIssuesRouter(deps: IssuesRouterDeps): Router {
       // trusted server content, so it is built AFTER sanitizing.
       const safeTitle = sanitizeIssueText(title);
       const safeBody = sanitizeIssueText(issueBody);
+      // The diagnostics block is server-generated markup (a `<details>`
+      // wrapper around already-sanitized text) — it must NOT go through
+      // sanitizeIssueText a second time, or that would escape our own
+      // `<details>`/`<summary>` tags the same way it defangs LLM-authored
+      // HTML.
+      const diagnosticsBlock = diagnostics.value
+        ? buildDiagnosticsBlock(diagnostics.value)
+        : '';
       const footer = `\n\n<sub>Filed via the omadia in-app issue reporter${
         conn.login ? ` by @${conn.login}` : ''
       }.</sub>`;
-      const fullBody = `**Type:** ${CATEGORY_LABEL[category]}\n\n${safeBody}${footer}`;
+      const fullBody = `**Type:** ${CATEGORY_LABEL[category]}\n\n${safeBody}${diagnosticsBlock}${footer}`;
       const creator = deps.createIssueCreator(() => Promise.resolve(token));
       const result = await creator.createIssue({
         owner: upstream.owner,
@@ -446,4 +500,97 @@ function sanitizeIssueText(input: string): string {
     .replace(/(^|[^\w`/])@([a-z\d])/gi, (_m, p1: string, p2: string) => `${p1}@${zwsp}${p2}`)
     .replace(/(^|[^\w`])#(\d)/g, (_m, p1: string, p2: string) => `${p1}#${zwsp}${p2}`)
     .replace(/<(\/?[a-zA-Z][^>]*)>/g, '&lt;$1&gt;');
+}
+
+type DiagnosticsField = { ok: true; value: string | null } | { ok: false };
+
+/** Validate the optional `diagnostics` field shared by /preview and
+ *  /create: absent/empty is fine (opt-in, default off), anything else must
+ *  be a string within MAX_DIAGNOSTICS_INPUT_LEN. */
+function parseDiagnosticsField(raw: unknown): DiagnosticsField {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false };
+  const trimmed = raw.trim();
+  if (!trimmed) return { ok: true, value: null };
+  if (trimmed.length > MAX_DIAGNOSTICS_INPUT_LEN) return { ok: false };
+  return { ok: true, value: trimmed };
+}
+
+/** Keep the newest `maxBytes` bytes of `raw`, dropping the oldest content.
+ *  This is the opposite of sanitizeIssueBody's own size cap (which keeps
+ *  the head) — a log/stack excerpt is most useful at its tail, where the
+ *  triggering error is. */
+function truncateDiagnosticsTail(
+  raw: string,
+  maxBytes: number,
+): { text: string; truncatedBytes: number } {
+  const encoded = new TextEncoder().encode(raw);
+  if (encoded.length <= maxBytes) {
+    return { text: raw, truncatedBytes: 0 };
+  }
+  const truncatedBytes = encoded.length - maxBytes;
+  const decoder = new TextDecoder('utf-8', { fatal: false });
+  const tail = decoder.decode(encoded.slice(encoded.length - maxBytes));
+  return { text: tail, truncatedBytes };
+}
+
+/** Longest run of consecutive backticks in `text`, or 0 if none. Used to
+ *  size the fence delimiter below — CommonMark closes a fenced code block
+ *  on the first line matching (or exceeding) the opening fence's backtick
+ *  count, so a fence no longer than a backtick run already present in the
+ *  content lets that run act as a premature closer. */
+function longestBacktickRun(text: string): number {
+  const runs = text.match(/`+/g);
+  if (!runs) return 0;
+  return runs.reduce((max, run) => Math.max(max, run.length), 0);
+}
+
+/** Compose the collapsed diagnostics block appended to a filed issue: run
+ *  the builder's secrets scanner over the FULL raw excerpt first, then
+ *  tail-truncate the already-redacted text to MAX_DIAGNOSTICS_BYTES (logs
+ *  are the highest-PII payload this flow ever posts). Shared by /preview
+ *  (so the operator reviews the exact block before filing) and /create
+ *  (which actually appends it).
+ *
+ *  Order matters here: redaction MUST run before truncation, not after.
+ *  Tail-truncating first and then redacting lets the cut point land inside
+ *  a secret pattern's required context — e.g. `Authorization: Bearer
+ *  <token>` where the truncation window starts partway through the value,
+ *  after the `Authorization: Bearer ` prefix the bearer-token regex needs
+ *  to match. The token itself would then survive truncation while its
+ *  prefix does not, so the pattern never matches and the credential ships
+ *  unredacted. Running sanitizeIssueBody() on the untruncated excerpt
+ *  guarantees every pattern sees its full match context; only the already-
+ *  redacted output is then trimmed to size. sanitizeIssueBody() is given a
+ *  byte budget generous enough that its own (head-truncating) size cap
+ *  cannot fire before our tail truncation runs below — note redaction can
+ *  make the text LONGER than the raw input (e.g. a bare AWS key match
+ *  expands to the longer `[REDACTED:aws-access-key]` marker), so the
+ *  budget must not be sized off the raw input's own byte length.
+ *
+ *  The excerpt is attacker-influenceable (window 'error'/'unhandledrejection'
+ *  messages, raw server response bodies) and sanitizeIssueBody() does no
+ *  backtick/HTML escaping — only secret redaction and size-truncation. A
+ *  fixed ` ```text ` fence is therefore breakable by content containing its
+ *  own ``` run, letting the tail of the diagnostics render as live markdown/
+ *  HTML instead of literal text. Fixed per the standard CommonMark technique:
+ *  the fence delimiter must be longer than the longest backtick run present
+ *  in the fenced content. */
+function buildDiagnosticsBlock(raw: string): string {
+  // MAX_DIAGNOSTICS_INPUT_LEN already bounds the raw (UTF-16) length;
+  // budget generously past its worst-case UTF-8 + redaction-expansion size
+  // so sanitizeIssueBody() never truncates ahead of our own tail cap.
+  const sanitizeBudget = MAX_DIAGNOSTICS_INPUT_LEN * 8;
+  const sanitized = sanitizeIssueBody(raw, { maxBytes: sanitizeBudget });
+  const { text, truncatedBytes } = truncateDiagnosticsTail(
+    sanitized.body,
+    MAX_DIAGNOSTICS_BYTES,
+  );
+  const marker =
+    truncatedBytes > 0
+      ? `[…] ${truncatedBytes} older bytes truncated — showing the most recent diagnostics.\n\n`
+      : '';
+  const fenceLength = Math.max(3, longestBacktickRun(text) + 1);
+  const fence = '`'.repeat(fenceLength);
+  return `\n\n<details>\n<summary>Diagnostics</summary>\n\n${fence}text\n${marker}${text}\n${fence}\n\n</details>`;
 }
