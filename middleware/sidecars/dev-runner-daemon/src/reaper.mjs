@@ -37,7 +37,7 @@
  * reap is observable.
  */
 
-import { jobNetworkName, jobVolumeName } from './clamp.mjs';
+import { dindCertsVolumeName, dindVolumeName, jobNetworkName, jobVolumeName } from './clamp.mjs';
 import { withDeadline } from './deadline.mjs';
 
 /**
@@ -214,20 +214,39 @@ export function createReaper(deps) {
     const groupFor = (jobId) => {
       let g = groups.get(jobId);
       if (!g) {
-        g = { containerId: '', networkId: '', volumeName: '' };
+        g = { containerId: '', networkId: '', volumeName: '', dockerInJob: false };
         groups.set(jobId, g);
       }
       return g;
     };
-    for (const c of inv.containers) groupFor(c.jobId).containerId = c.containerId;
+    for (const c of inv.containers) {
+      const g = groupFor(c.jobId);
+      g.containerId = c.containerId;
+      // The job container's label is the authoritative signal that a sidecar was
+      // provisioned; carry it so teardown sweeps the sidecar too (spec §8).
+      if (c.dockerInJob) g.dockerInJob = true;
+    }
     for (const n of inv.networks) groupFor(n.jobId).networkId = n.id || jobNetworkName(n.jobId);
-    for (const v of inv.volumes) groupFor(v.jobId).volumeName = v.id || jobVolumeName(v.jobId);
+    for (const v of inv.volumes) {
+      const g = groupFor(v.jobId);
+      // A sidecar-named volume proves this job had DinD even if its job container
+      // is already gone — so a stranded sidecar volume still triggers the sweep.
+      if (v.id === dindVolumeName(v.jobId) || v.id === dindCertsVolumeName(v.jobId)) g.dockerInJob = true;
+      else g.volumeName = v.id || jobVolumeName(v.jobId);
+    }
 
     for (const [jobId, handle] of groups) {
       // Live or mid-create → its resources are legitimately in use (lesson (a)).
       if (jobManager.tracks(jobId)) continue;
       /** @type {JobContainer} */
-      const container = { ...handle, imageDigest: '' };
+      const container = {
+        jobId,
+        containerId: handle.containerId,
+        networkId: handle.networkId || jobNetworkName(jobId),
+        volumeName: handle.volumeName || jobVolumeName(jobId),
+        imageDigest: '',
+        dockerInJob: handle.dockerInJob,
+      };
       try {
         await engine.destroyJobContainer(container);
         logReap(jobId, 'orphan');
@@ -250,13 +269,17 @@ export function createReaper(deps) {
     for (const c of inv.containers) {
       /** @type {JobContainer} */
       const container = {
+        jobId: c.jobId,
         containerId: c.containerId,
-        // The per-job network + volume are deterministically named, so the
-        // teardown handle is reconstructable from the job id alone even when the
-        // engine listing only carried the container.
+        // The per-job network + volume (and the DinD sidecar, if any) are
+        // deterministically named, so the teardown handle is reconstructable from
+        // the job id alone even when the engine listing only carried the container.
         networkId: jobNetworkName(c.jobId),
         volumeName: jobVolumeName(c.jobId),
         imageDigest: c.imageDigest,
+        // Carry the sidecar signal so a restarted daemon tears the sidecar down
+        // WITH the job (spec §8) on the lease/boot-stale path.
+        dockerInJob: c.dockerInJob,
       };
       // A container that is no longer RUNNING is stale whatever its lease says:
       // its runner exited and nobody is coming back for it. That, not the lease

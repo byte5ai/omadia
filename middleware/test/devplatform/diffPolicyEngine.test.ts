@@ -46,6 +46,7 @@ function evalDiff(diff: string, extra: Partial<DiffPolicyInput> = {}) {
   return evaluateDiffPolicy({
     diff,
     numstat: extra.numstat ?? truthfulNumstat(diff),
+    jobTokens: [],
     ...extra,
   });
 }
@@ -197,13 +198,119 @@ describe('diffPolicyEngine — override merge', () => {
   });
 });
 
+/** An "add new file" diff with an explicit mode (e.g. 120000 for a symlink). */
+function addFileDiffMode(path: string, lines: string[], mode: string): string {
+  const body = lines.map((l) => '+' + l).join('\n');
+  return [
+    `diff --git a/${path} b/${path}`,
+    `new file mode ${mode}`,
+    'index 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111',
+    '--- /dev/null',
+    `+++ b/${path}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    body,
+    '',
+  ].join('\n');
+}
+
+describe('diffPolicyEngine — Forge W3 deny-bypass regressions', () => {
+  it('a secret on an added line whose CONTENT starts with `++` is still DENY (not a header)', () => {
+    // git emits the hunk line as `+` + content; content `++ghp_...` → `+++ghp_...`.
+    // The old raw-string guard mistook it for the `+++ b/path` header and skipped it.
+    const secret = 'ghp_' + 'E'.repeat(36);
+    const diff = addFileDiff('src/x.ts', ['++' + secret]);
+    const v = evalDiff(diff);
+    assert.equal(v.decision, 'deny', 'the ++-prefixed secret line must not slip the credential deny');
+    assert.ok(ruleIds(v).includes('credential-content'));
+  });
+
+  it('git-internals is case-insensitive — .GIT/ is DENY', () => {
+    const v = evalDiff(addFileDiff('.GIT/config', ['[core]']));
+    assert.equal(v.decision, 'deny');
+    assert.ok(ruleIds(v).includes('git-internals'));
+  });
+
+  it('a symlink whose TARGET is .git/ (or escapes via ..) is DENY', () => {
+    const intoGit = evalDiff(addFileDiffMode('hook-link', ['.git/hooks/pre-commit'], '120000'));
+    assert.equal(intoGit.decision, 'deny', 'a symlink into .git/ is git-internals');
+    assert.ok(ruleIds(intoGit).includes('git-internals'));
+    const escape = evalDiff(addFileDiffMode('escape', ['../../../../etc/cron.d/pwn'], '120000'));
+    assert.equal(escape.decision, 'deny', 'a symlink escaping the tree is git-internals');
+  });
+
+  it('a secret split across two added lines is still caught (whitespace-joined scan)', () => {
+    const secret = 'ghp_' + 'F'.repeat(36);
+    const half = secret.length >> 1;
+    const diff = addFileDiff('src/y.ts', [secret.slice(0, half), secret.slice(half)]);
+    const v = evalDiff(diff);
+    assert.equal(v.decision, 'deny', 'a secret split across + lines must still deny');
+    assert.ok(ruleIds(v).includes('credential-content'));
+  });
+
+  it("scans the job's OWN token values (jobTokens is required, no fail-open)", () => {
+    const nonce = 'job-nonce-' + 'Z'.repeat(24);
+    const diff = addFileDiff('src/leak.ts', [`const x = "${nonce}";`]);
+    const v = evalDiff(diff, { jobTokens: [nonce] });
+    assert.equal(v.decision, 'deny', "the job's own token in the diff is a leak");
+    assert.ok(ruleIds(v).includes('credential-content'));
+  });
+});
+
 describe('diffPolicyEngine — determinism', () => {
   it('same input → identical verdict', () => {
     const diff =
       addFileDiff('.github/workflows/ci.yml', ['on: push']) +
       addFileDiff('package.json', ['{}']) +
       addFileDiff('src/foo.ts', ['const a = 1;']);
-    const input: DiffPolicyInput = { diff, numstat: truthfulNumstat(diff) };
+    const input: DiffPolicyInput = { diff, numstat: truthfulNumstat(diff), jobTokens: [] };
     assert.deepEqual(evaluateDiffPolicy(input), evaluateDiffPolicy(input));
+  });
+});
+
+describe('diffPolicyEngine — operator-approved gate override (W3, spec §6)', () => {
+  // A repo authority who approves a diff-policy gate demotes GATE-severity
+  // findings — but can NEVER override a DENY. These are the security counter-proofs
+  // for the `operatorApprovedGate` flag; the whole gate-resume path rests on them.
+
+  it('operatorApproved + gate-only findings → allow', () => {
+    const diff = addFileDiff('.github/workflows/ci.yml', ['on: push']); // protected-ci = gate
+    // Baseline: unattended → gate.
+    assert.equal(evalDiff(diff).decision, 'gate');
+    // Approved → the sole gate finding is demoted, decision becomes allow.
+    const v = evalDiff(diff, { operatorApprovedGate: true });
+    // COUNTER-PROOF: if `operatorApprovedGate` stopped demoting gate findings this
+    // stays 'gate' and the assertion fails.
+    assert.equal(v.decision, 'allow');
+  });
+
+  it('operatorApproved KEEPS the demoted gate finding in verdict.findings (audit trail)', () => {
+    const diff = addFileDiff('.github/workflows/ci.yml', ['on: push']);
+    const v = evalDiff(diff, { operatorApprovedGate: true });
+    // Demoted, not erased — the operator's override is auditable.
+    assert.ok(ruleIds(v).includes('protected-ci'), 'gate finding must remain recorded even when demoted');
+  });
+
+  it('operatorApproved + a DENY finding → STILL deny (a human cannot override a deny)', () => {
+    const secret = 'ghp_' + 'D'.repeat(36);
+    const diff = addFileDiff('src/config.ts', [`const t = "${secret}";`]); // credential = deny
+    const v = evalDiff(diff, { operatorApprovedGate: true });
+    // COUNTER-PROOF: if `operatorApprovedGate` ever touched the deny path this would
+    // become 'allow' — a credential laundered past the gate. It MUST stay 'deny'.
+    assert.equal(v.decision, 'deny');
+    assert.ok(ruleIds(v).includes('credential-content'));
+  });
+
+  it('operatorApproved + BOTH gate AND deny findings → STILL deny (the launder guard)', () => {
+    const secret = 'ghp_' + 'E'.repeat(36);
+    const diff =
+      addFileDiff('.github/workflows/ci.yml', ['on: push']) + // gate (protected-ci)
+      addFileDiff('src/config.ts', [`const t = "${secret}";`]); // deny (credential-content)
+    // Unattended this is a deny already (any deny dominates).
+    assert.equal(evalDiff(diff).decision, 'deny');
+    // Approving the gate must NOT let the co-located deny through.
+    const v = evalDiff(diff, { operatorApprovedGate: true });
+    assert.equal(v.decision, 'deny');
+    assert.ok(ruleIds(v).includes('credential-content'), 'the deny finding still stands');
+    assert.ok(ruleIds(v).includes('protected-ci'), 'the demoted gate finding is still recorded');
   });
 });

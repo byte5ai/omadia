@@ -18,6 +18,7 @@ import type { DevJobEventBus } from './devJobEventBus.js';
 import * as seams from './devJobWorkerSeams.js';
 import { hashRunnerToken, verifyRunnerToken as verifyToken } from './jobToken.js';
 import { asObj, iso, isoN, num, str, strN, type Row } from './pgMappers.js';
+import { isLowValueEventType, type ArtifactCeilingOptions } from './retention.js';
 import {
   isDevJobEventType,
   isTerminalDevJobStatus,
@@ -87,6 +88,7 @@ export const JOB_COLS =
   `provision, phase, pipeline_mode, review_attempt, review_fingerprint, retry_of, ` +
   `status, claimed_by, claimed_at, last_heartbeat_at, runner_handle, ` +
   `runner_token_hash, branch, pr_url, result, error, tokens_in, tokens_out, cost_usd, ` +
+  `budget_cost_usd, budget_tokens, usage_estimated, ` +
   `created_by, created_at, started_at, ended_at, updated_at`;
 const EVENT_COLS = `id, job_id, provision, seq, type, ts, payload`;
 
@@ -121,6 +123,9 @@ export function toJob(r: Row): DevJob {
     tokensIn: num(r['tokens_in']),
     tokensOut: num(r['tokens_out']),
     costUsd: num(r['cost_usd']),
+    budgetCostUsd: r['budget_cost_usd'] == null ? null : Number(r['budget_cost_usd']),
+    budgetTokens: r['budget_tokens'] == null ? null : Number(r['budget_tokens']),
+    usageEstimated: r['usage_estimated'] === true,
     createdBy: str(r['created_by']),
     createdAt: iso(r['created_at']),
     startedAt: isoN(r['started_at']),
@@ -144,29 +149,67 @@ function toEvent(r: Row): DevJobEvent {
 export interface DevJobStoreOptions {
   /** Live tail for SSE. When present, appended events are published to it. */
   eventBus?: DevJobEventBus;
+  /**
+   * W5 (spec §7): per-job event cap (`DEV_JOB_MAX_EVENTS`). Once a job holds this
+   * many events, `appendEvents` drops further LOW-VALUE telemetry (`log`/
+   * `heartbeat`) but keeps audit-grade events, recording the truncation as exactly
+   * one `events_truncated` status event. `<= 0` (default) disables the cap.
+   */
+  maxEvents?: number;
+  /**
+   * W5 (spec §7): artifact ceiling (`DEV_ARTIFACT_MAX_BYTES`). Threaded into
+   * `addArtifact`; absent ⇒ no ceiling (W0 behaviour). An `objectStore` here is
+   * the offload seam — absent, oversized content is marked and refused inline.
+   */
+  artifactCeiling?: ArtifactCeilingOptions;
 }
 
 export interface ListJobsFilter {
   repoId?: string;
+  /** Scope to a SET of repos IN SQL (before LIMIT). Use this — not a post-query
+   *  filter — when the caller is only entitled to certain repos, so a LIMIT can
+   *  never silently drop the caller's own jobs behind other repos' rows. */
+  repoIds?: readonly string[];
   status?: DevJobStatus;
   limit?: number;
+}
+
+/**
+ * The new position returned by {@link DevJobStore.accumulateJobUsage}: the job's
+ * counters AFTER this call's atomic increment, plus the EFFECTIVE budgets (the
+ * job override coalesced with the repo default) so the caller resolves job→repo
+ * budgets without a second query. The config default is applied by the caller
+ * only when `effectiveBudgetCostUsd` is null. `budget_tokens` has no default.
+ */
+export interface DevJobBudgetPosition {
+  costUsd: number;
+  tokensTotal: number;
+  effectiveBudgetCostUsd: number | null;
+  effectiveBudgetTokens: number | null;
 }
 
 export class DevJobStore {
   private readonly pool: Pool;
   private readonly bus?: DevJobEventBus;
+  private readonly maxEvents: number;
+  private readonly artifactCeiling?: ArtifactCeilingOptions;
 
   constructor(pool: Pool, opts: DevJobStoreOptions = {}) {
     this.pool = pool;
     this.bus = opts.eventBus;
+    this.maxEvents = opts.maxEvents ?? 0;
+    this.artifactCeiling = opts.artifactCeiling;
   }
 
   async createJob(input: NewDevJob & { runnerTokenHash: string }): Promise<DevJob> {
+    // `status` is threaded so a gated trigger job can be born `'waiting'` in this
+    // single INSERT (never transiently `'queued'` and therefore never claimable);
+    // omitted ⇒ `'queued'` (the DB default, kept explicit here for the same value).
     const r = await this.pool.query<Row>(
       `INSERT INTO dev_jobs
          (repo_id, kind, brief, source, source_ref, base_sha, backend, agent_kind, auth_mode,
-          provision, phase, branch, runner_token_hash, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+          provision, phase, status, branch, runner_token_hash, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
        RETURNING ${JOB_COLS}`,
       [
         input.repoId,
@@ -180,6 +223,7 @@ export class DevJobStore {
         input.authMode ?? 'api_key',
         input.provision ?? 1,
         input.phase ?? 'implement',
+        input.status ?? 'queued',
         input.branch ?? null,
         input.runnerTokenHash,
         input.createdBy,
@@ -199,6 +243,12 @@ export class DevJobStore {
     if (filter.repoId) {
       params.push(filter.repoId);
       where.push(`repo_id = $${params.length}`);
+    }
+    if (filter.repoIds) {
+      // Empty set ⇒ no repo can match; short-circuit rather than emit `= ANY('{}')`.
+      if (filter.repoIds.length === 0) return [];
+      params.push([...filter.repoIds]);
+      where.push(`repo_id = ANY($${params.length}::uuid[])`);
     }
     if (filter.status) {
       params.push(filter.status);
@@ -351,6 +401,52 @@ export class DevJobStore {
   }
 
   /**
+   * W3: park a job at the AUTHORITATIVE diff-policy apply gate. Unlike the W2
+   * clarify gate, the apply gate fires host-side while the job is `applying` (the
+   * runner already uploaded its diff and exited) — the phase is `review`/`pr`, not
+   * `await_human` — so this is fenced on the STATUS, NOT the phase. The apply also
+   * runs on a `failed`-after-diff retry (`POST /jobs/:id/apply`); if THAT re-apply
+   * gates, the job is `failed`, so the fence admits `applying` OR `failed` —
+   * otherwise the gate would dangle on a job that never parks and the operator's
+   * later approval silently no-ops (Forge W3 gate-resume audit #6). The phase is
+   * left untouched: the resume re-applies the diff, it does not re-run a phase.
+   * `waiting` is outside the active set, so a parked job holds no runner slot and
+   * is never swept by the stall/wall-clock sweeps. Returns true iff a row was
+   * parked (a re-drive after the park already happened matches 0 rows).
+   */
+  async parkForApplyGate(jobId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs
+          SET status = 'waiting', claimed_by = NULL, claimed_at = NULL,
+              runner_handle = NULL, updated_at = now()
+        WHERE id = $1 AND status IN ('applying', 'failed')`,
+      [jobId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * W3: resume a diff-policy-gate-parked job for the host-side re-apply. Moves it
+   * `waiting → applying` so `DevJobWorker.applyJob` (which requires `applying`)
+   * and the claim loop's `applyReady` sweep both pick it up. CAS-fenced on
+   * `status = 'waiting'`: a self-heal re-drive of a gate whose job already
+   * re-applied (now `done`/`failed`/`applying`) matches 0 rows and returns false,
+   * so the caller skips the re-apply and no second PR is opened. The `phase <>
+   * 'await_human'` guard makes this robust to a future caller: a REVIEW gate parks
+   * its job `waiting` AT `await_human` (no diff to apply), and resuming that into
+   * `applying` would fail with `no_diff` — only a diff-policy-parked job (phase
+   * `review`/`pr`) may be resumed here (Forge W3 gate-resume audit #6 defensive).
+   */
+  async resumeApplyAfterGate(jobId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs SET status = 'applying', updated_at = now()
+        WHERE id = $1 AND status = 'waiting' AND phase <> 'await_human'`,
+      [jobId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
    * W2: append a delimited section to the job's brief, at most once (spec §5,
    * "answers append to the brief"). The `marker` is a substring the caller
    * guarantees is present in `section`; the append is skipped when the brief
@@ -425,8 +521,8 @@ export class DevJobStore {
    */
   async appendEvents(jobId: string, provision: number, events: RunnerEventInput[]): Promise<number> {
     if (events.length === 0) return 0;
-    const params: unknown[] = [jobId, provision];
-    const tuples: string[] = [];
+    // Validate the WHOLE batch first (the throwing contract is unchanged: a bad
+    // seq/type rejects the batch even if that event would later be dropped).
     for (const e of events) {
       if (!Number.isInteger(e.seq) || e.seq < 0) {
         throw new TypeError(`appendEvents: seq must be a non-negative integer (got ${String(e.seq)})`);
@@ -434,26 +530,113 @@ export class DevJobStore {
       if (!isDevJobEventType(e.type)) {
         throw new TypeError(`appendEvents: invalid event type '${String(e.type)}'`);
       }
-      const b = params.length + 1;
-      params.push(e.seq, e.type, e.ts ?? null, JSON.stringify(e.payload ?? {}));
-      tuples.push(`($1, $2, $${b}, $${b + 1}, COALESCE($${b + 2}::timestamptz, now()), $${b + 3}::jsonb)`);
     }
-    const res = await this.pool.query<Row>(
-      `INSERT INTO dev_job_events (job_id, provision, seq, type, ts, payload)
-       VALUES ${tuples.join(', ')}
-       ON CONFLICT (job_id, provision, seq) DO NOTHING
-       RETURNING ${EVENT_COLS}`,
-      params,
-    );
+
+    // W5 per-job event cap (spec §7): once a job is at/over the cap, drop further
+    // LOW-VALUE telemetry (`log`/`heartbeat`) but STILL accept audit-grade events
+    // (status/tool/gate/token/approval/egress/phase). Silent truncation would make
+    // the log a liar, so the drop is recorded as exactly ONE `events_truncated`
+    // status event (idempotent below — never re-inserted on every over-cap append).
+    let toInsert = events;
+    let droppedByCap = 0;
+    if (this.maxEvents > 0) {
+      const count = await this.countEvents(jobId);
+      if (count >= this.maxEvents) {
+        const kept: RunnerEventInput[] = [];
+        for (const e of events) {
+          if (isLowValueEventType(e.type)) droppedByCap++;
+          else kept.push(e);
+        }
+        toInsert = kept;
+      }
+    }
+
+    let inserted = 0;
+    if (toInsert.length > 0) {
+      const params: unknown[] = [jobId, provision];
+      const tuples: string[] = [];
+      for (const e of toInsert) {
+        const b = params.length + 1;
+        params.push(e.seq, e.type, e.ts ?? null, JSON.stringify(e.payload ?? {}));
+        tuples.push(`($1, $2, $${b}, $${b + 1}, COALESCE($${b + 2}::timestamptz, now()), $${b + 3}::jsonb)`);
+      }
+      const res = await this.pool.query<Row>(
+        `INSERT INTO dev_job_events (job_id, provision, seq, type, ts, payload)
+         VALUES ${tuples.join(', ')}
+         ON CONFLICT (job_id, provision, seq) DO NOTHING
+         RETURNING ${EVENT_COLS}`,
+        params,
+      );
+      for (const row of res.rows) this.bus?.publish(jobId, toEvent(row));
+      inserted = res.rows.length;
+    }
+
+    if (droppedByCap > 0) await this.recordTruncationOnce(jobId, droppedByCap);
+
     // Heartbeat only while the job can still receive events (never resurrect a
-    // terminal job's timestamps).
+    // terminal job's timestamps). Bumped even when every event was capped — a
+    // batch arriving is itself a sign of life.
     await this.pool.query(
       `UPDATE dev_jobs SET last_heartbeat_at = now(), updated_at = now()
         WHERE id = $1 AND status NOT IN (${TERMINAL_SET_SQL})`,
       [jobId],
     );
-    for (const row of res.rows) this.bus?.publish(jobId, toEvent(row));
-    return res.rows.length;
+    return inserted;
+  }
+
+  /** Count of a job's events — the per-job cap check. Served by the
+   *  `dev_job_events(job_id, id)` index (0022). */
+  private async countEvents(jobId: string): Promise<number> {
+    const r = await this.pool.query<Row>(
+      `SELECT count(*)::bigint AS n FROM dev_job_events WHERE job_id = $1`,
+      [jobId],
+    );
+    return Number(r.rows[0]!['n']);
+  }
+
+  /**
+   * Record the once-per-job `events_truncated` status marker in the HOST provision
+   * namespace, but ONLY if the job has no such marker yet — the `NOT EXISTS` guard
+   * makes a re-drive past the cap a no-op (spec §7: recorded "exactly once, not
+   * re-inserted every append"). `dropped` is the count at the FIRST truncation.
+   */
+  private async recordTruncationOnce(jobId: string, dropped: number): Promise<void> {
+    const payload = JSON.stringify({ state: 'events_truncated', dropped });
+    // Retry the seq allocation on a collision, exactly like `appendHostEvent`
+    // (Forge W5 A3b — this method previously did NOT retry, so it lost the
+    // provision-0 seq race against the finalize `status` event and the marker
+    // vanished). `ON CONFLICT DO NOTHING` (no target) catches BOTH a seq collision
+    // AND the marker's partial-unique index (0030); the exists-recheck then tells
+    // the two apart: marker present ⇒ recorded (done), else ⇒ seq collision ⇒ retry.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const res = await this.pool.query<Row>(
+        `INSERT INTO dev_job_events (job_id, provision, seq, type, payload)
+         SELECT $1, ${HOST_EVENT_PROVISION},
+                (SELECT COALESCE(MAX(seq), -1) + 1 FROM dev_job_events
+                  WHERE job_id = $1 AND provision = ${HOST_EVENT_PROVISION}),
+                'status', $2::jsonb
+          WHERE NOT EXISTS (
+            SELECT 1 FROM dev_job_events
+             WHERE job_id = $1 AND type = 'status'
+               AND payload->>'state' = 'events_truncated'
+          )
+         ON CONFLICT DO NOTHING
+         RETURNING ${EVENT_COLS}`,
+        [jobId, payload],
+      );
+      if (res.rows[0]) {
+        this.bus?.publish(jobId, toEvent(res.rows[0]));
+        return;
+      }
+      // 0 rows ⇒ marker already exists (done) OR a seq collision (retry).
+      const exists = await this.pool.query(
+        `SELECT 1 FROM dev_job_events
+          WHERE job_id = $1 AND type = 'status' AND payload->>'state' = 'events_truncated'
+          LIMIT 1`,
+        [jobId],
+      );
+      if ((exists.rowCount ?? 0) > 0) return; // recorded (by us earlier or a concurrent writer)
+    }
   }
 
   /**
@@ -515,7 +698,10 @@ export class DevJobStore {
     content: string,
     meta: Record<string, unknown> = {},
   ): Promise<string> {
-    return artifacts.addArtifact(this.pool, jobId, kind, content, meta);
+    // W5: enforce the artifact ceiling (spec §7) when the store was constructed
+    // with one — oversized inline content is offloaded or marked, never stored
+    // unbounded. Absent ⇒ unchanged W0 behaviour.
+    return artifacts.addArtifact(this.pool, jobId, kind, content, meta, this.artifactCeiling);
   }
 
   async getArtifact(id: string): Promise<DevJobArtifact | null> {
@@ -569,7 +755,11 @@ export class DevJobStore {
     // indexed lookup already matched on the hash).
     if (!verifyToken(token, strN(row['runner_token_hash']))) return null;
     const status = str(row['status']) as DevJobStatus;
-    if (isTerminalDevJobStatus(status)) return null;
+    // W4: a `budget_exceeded` job (terminal) STILL resolves so the LLM proxy can
+    // answer the runner a fatal 402 and both sides converge (spec §5). Every
+    // OTHER terminal returns null so a stale-token holder gets no valid/terminal
+    // state oracle (the proxy answers 401 for both unknown and stale tokens).
+    if (isTerminalDevJobStatus(status) && status !== 'budget_exceeded') return null;
     return { id: str(row['id']), status, agentKind: str(row['agent_kind']) };
   }
 
@@ -582,6 +772,49 @@ export class DevJobStore {
         WHERE id = $1`,
       [jobId, Math.max(0, Math.trunc(tokensIn)), Math.max(0, Math.trunc(tokensOut))],
     );
+  }
+
+  /**
+   * W4 atomic accumulate-and-readback for budget enforcement (spec §5). ONE
+   * statement bumps the per-job counters and RETURNS the new position together
+   * with the effective budgets (job override coalesced with the repo default).
+   *
+   * Race-safe by construction: the increment is `SET x = x + $n` under the row
+   * lock the UPDATE takes, and the new value is read back via RETURNING — never
+   * read-modify-write — so two concurrent proxy calls cannot lose an update. The
+   * job→repo budget resolution is folded into the same statement so metering
+   * needs no second round trip. Returns null if the job row does not exist.
+   */
+  async accumulateJobUsage(
+    jobId: string,
+    tokensIn: number,
+    tokensOut: number,
+    costUsd: number,
+  ): Promise<DevJobBudgetPosition | null> {
+    const r = await this.pool.query<Row>(
+      `UPDATE dev_jobs AS j
+          SET tokens_in = tokens_in + $2,
+              tokens_out = tokens_out + $3,
+              cost_usd = cost_usd + $4,
+              updated_at = now()
+        WHERE j.id = $1
+        RETURNING
+          j.cost_usd AS cost_usd,
+          (j.tokens_in + j.tokens_out) AS tokens_total,
+          COALESCE(j.budget_cost_usd,
+                   (SELECT r.budget_cost_usd FROM dev_repos r WHERE r.id = j.repo_id)) AS eff_budget_cost_usd,
+          COALESCE(j.budget_tokens,
+                   (SELECT r.budget_tokens FROM dev_repos r WHERE r.id = j.repo_id)) AS eff_budget_tokens`,
+      [jobId, Math.max(0, Math.trunc(tokensIn)), Math.max(0, Math.trunc(tokensOut)), Math.max(0, costUsd)],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return {
+      costUsd: Number(row['cost_usd']),
+      tokensTotal: Number(row['tokens_total']),
+      effectiveBudgetCostUsd: row['eff_budget_cost_usd'] == null ? null : Number(row['eff_budget_cost_usd']),
+      effectiveBudgetTokens: row['eff_budget_tokens'] == null ? null : Number(row['eff_budget_tokens']),
+    };
   }
 
   // --- reaper / enforcement reads (worker calls finalizeDevJob on these) ----

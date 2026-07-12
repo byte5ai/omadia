@@ -16,6 +16,7 @@ import type { DevJobEventBus } from '../devplatform/devJobEventBus.js';
 import type { DevRepoConnection } from '../devplatform/devRepoCredentials.js';
 import type { ListJobsFilter } from '../devplatform/devJobStore.js';
 import type { FinalizeContext } from '../devplatform/finalizeDevJob.js';
+import type { ApplyJobOutcome } from '../devplatform/devJobWorker.js';
 import type { GitHubDeviceFlowProvider } from '../issues/githubOAuthProvider.js';
 import type { DeviceFlowStore } from '../issues/deviceFlowStore.js';
 import type { Ticket } from '../devplatform/githubIssuesTracker.js';
@@ -79,10 +80,13 @@ export interface RepoAccessResult {
   login?: string;
 }
 
-/** Read-only tracker bound to one repo + token. */
+/** Read-only tracker bound to one repo + token. A repo's bound tracker plugin
+ *  (Jira etc.) or the built-in GitHub Issues tracker both satisfy this shape;
+ *  the W3 `TrackerRegistry` resolves the right one per repo. */
 export interface DevPlatformTracker {
   getTicket(issueNumber: number): Promise<Ticket>;
-  listOpenTickets(opts: { limit: number }): Promise<Ticket[]>;
+  /** `label` narrows to tickets carrying it (W4 tracker poller, §4). */
+  listOpenTickets(opts: { limit: number; label?: string }): Promise<Ticket[]>;
 }
 
 /** Device-flow onboarding seam. Absent ⇒ the feature reports itself
@@ -105,8 +109,9 @@ export interface DevPlatformRouterDeps {
   makeIssuesTracker: (opts: { owner: string; name: string; token: string }) => DevPlatformTracker;
   /** Bound `finalizeDevJob` — the ONLY terminal-transition path (spec §4). */
   finalizeDevJob: (jobId: string, status: DevJobStatus, ctx?: FinalizeContext) => Promise<DevJob | null>;
-  /** Host-side apply retry (`POST /jobs/:id/apply`). */
-  applyJob: (jobId: string) => Promise<{ prUrl: string }>;
+  /** Host-side apply retry (`POST /jobs/:id/apply`). `gated` ⇒ the diff policy
+   *  parked the job for a human (spec §6) instead of opening a PR. */
+  applyJob: (jobId: string) => Promise<ApplyJobOutcome>;
   /** Q4 admission flag (`DEV_PLATFORM_SUBSCRIPTION_MODE`). */
   subscriptionModeEnabled: boolean;
   deviceFlow?: DevPlatformDeviceFlow;
@@ -232,6 +237,14 @@ export interface DevRepoView {
   runsTests: boolean;
   branchProtectionOk: boolean | null;
   branchProtectionCheckedAt: string | null;
+  /** W4 per-repo cost budget (`0027`); null ⇒ fall back to the config default. */
+  budgetCostUsd: number | null;
+  /** W4 webhook trigger config (`0027`). The label whose application fires a job. */
+  triggerLabel: string;
+  /** W4 per-repo webhook kill switch (`0027`). */
+  webhookEnabled: boolean;
+  /** W4 sender allowlist (`0027`); EMPTY ⇒ webhook triggers are OFF for the repo. */
+  webhookSenders: string[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -254,6 +267,10 @@ export function toRepoView(repo: DevRepo, conn: DevRepoConnection): DevRepoView 
     runsTests: repo.runsTests,
     branchProtectionOk: repo.branchProtectionOk,
     branchProtectionCheckedAt: repo.branchProtectionCheckedAt,
+    budgetCostUsd: repo.budgetCostUsd ?? null,
+    triggerLabel: repo.triggerLabel,
+    webhookEnabled: repo.webhookEnabled,
+    webhookSenders: repo.webhookSenders,
     createdBy: repo.createdBy,
     createdAt: repo.createdAt,
     updatedAt: repo.updatedAt,
@@ -285,7 +302,15 @@ export interface DevJobView {
   prUrl: string | null;
   result: { outcome: string; summary?: string; diffArtifactId?: string; error?: string } | null;
   error: string | null;
-  usage: { input: number; output: number; costUsd: number; estimated: boolean };
+  usage: {
+    input: number;
+    output: number;
+    costUsd: number;
+    /** W4 effective per-job cost budget override, or null when it falls back to
+     *  the repo budget / config default (spec §5). */
+    budgetCostUsd: number | null;
+    estimated: boolean;
+  };
   createdBy: string;
   createdAt: string;
   startedAt: string | null;
@@ -324,7 +349,11 @@ export function toJobView(job: DevJob): DevJobView {
       input: job.tokensIn,
       output: job.tokensOut,
       costUsd: job.costUsd,
-      estimated: r?.usage?.estimated ?? false,
+      budgetCostUsd: job.budgetCostUsd,
+      // W4: exact when metered from provider usage at the proxy; estimated only
+      // for subscription-CLI jobs (the shim sets `usage_estimated`). The result
+      // fallback preserves the pre-W4 self-declared flag.
+      estimated: job.usageEstimated || (r?.usage?.estimated ?? false),
     },
     createdBy: job.createdBy,
     createdAt: job.createdAt,

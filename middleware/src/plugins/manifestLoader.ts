@@ -635,6 +635,14 @@ function extractPermissions(
   const mcpBlock = permissions?.['mcp'];
   const mcpDeclared =
     mcpBlock === true || (typeof mcpBlock === 'object' && mcpBlock !== null);
+  // Epic #470 W3 — ctx.devJobs gate. `permissions.devJobs: true` or a block
+  // ({ repos_hint: [...] }) opts in; absent → no accessor. The repos_hint is
+  // documentation for the operator grant UI, not enforcement (the real grant
+  // lives in dev_repo_plugin_grants).
+  const devJobsBlock = permissions?.['devJobs'];
+  const devJobsDeclared =
+    devJobsBlock === true ||
+    (typeof devJobsBlock === 'object' && devJobsBlock !== null);
   return {
     memory_reads: extractStringArray(memory?.['reads']),
     memory_writes: extractStringArray(memory?.['writes']),
@@ -660,6 +668,8 @@ function extractPermissions(
     events_emit: asRecord(permissions?.['events'])?.['emit'] === true,
     mcp: mcpDeclared,
     mcp_servers_hint: extractStringArray(asRecord(mcpBlock)?.['servers_hint']),
+    dev_jobs: devJobsDeclared,
+    dev_jobs_repos_hint: extractStringArray(asRecord(devJobsBlock)?.['repos_hint']),
     // Spec 005 — overridden to true in adaptManifestV1 when the manifest
     // declares >=1 valid oauth_providers descriptor.
     acquires_oauth: false,

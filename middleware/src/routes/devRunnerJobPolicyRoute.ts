@@ -27,7 +27,7 @@ import type { DevJob, DevRepo } from '../devplatform/types.js';
 export interface JobPolicyRouteDeps {
   store: { getJob(jobId: string): Promise<DevJob | null> };
   repos: {
-    getRepo(id: string): Promise<Pick<DevRepo, 'cloneUrl' | 'egressAllowlist'> | null>;
+    getRepo(id: string): Promise<Pick<DevRepo, 'cloneUrl' | 'egressAllowlist' | 'dockerInJob'> | null>;
   };
   /** The daemon's shared bearer secret (`DEV_RUNNER_DAEMON_TOKEN`). Absent ⇒ 503. */
   daemonToken?: string | undefined;
@@ -129,6 +129,8 @@ export function mountJobPolicyRoute(router: Router, deps: JobPolicyRouteDeps): v
       image: policy.image,
       env: policy.env,
       egressAllowlist: policy.egressAllowlist,
+      // W5 (spec §8): the daemon reads this to decide whether to run a DinD sidecar.
+      dockerInJob: policy.dockerInJob,
     });
   });
 }

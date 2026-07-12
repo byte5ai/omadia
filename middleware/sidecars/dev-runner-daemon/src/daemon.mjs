@@ -45,6 +45,7 @@ import { parseCreateJobRequest, parseRenewLeaseRequest, WireProtocolMismatchErro
 import { createProxyClient } from './proxyClient.mjs';
 import { createReaper, resolveSweepIntervalMs } from './reaper.mjs';
 import { createImageWarmer } from './warmer.mjs';
+import { createCosignExec, resolveImageVerifyMode, verifyConfiguredImages } from './imageVerify.mjs';
 
 /** Default control-plane port (spec §4). */
 export const DEFAULT_DAEMON_PORT = 7411;
@@ -611,6 +612,24 @@ export async function main(env = process.env) {
     .split(',')
     .map((r) => r.trim())
     .filter((r) => r.length > 0);
+
+  // Verify-at-boot (spec §10): before anything provisions a job container, run
+  // `cosign verify` against every configured (digest-pinned) runner image with
+  // the pinned certificate identity + OIDC issuer. A verify failure THROWS here,
+  // which the entrypoint turns into a non-zero exit — the daemon refuses to
+  // start on an unverified image. Default `on`; DEV_IMAGE_VERIFY=off disables;
+  // with no identity/issuer configured there is nothing to check against, so it
+  // skips with a loud warning. See imageVerify.mjs for the Fly-path caveat (Fly
+  // pulls the image itself, so the guarantee there is digest-pinning + the
+  // CI-verified signature on that digest, not a pull-time verify).
+  await verifyConfiguredImages({
+    images: warmImageRefs,
+    identity: env.DEV_IMAGE_COSIGN_IDENTITY,
+    issuer: env.DEV_IMAGE_COSIGN_ISSUER,
+    mode: resolveImageVerifyMode(env.DEV_IMAGE_VERIFY),
+    exec: createCosignExec(env.DEV_IMAGE_COSIGN_BIN),
+    logger: console,
+  });
 
   // The warm loop owns the state `/v1/health` reports. Built here (not inside
   // createDaemon) so main() can stop it with the server — an unstopped interval

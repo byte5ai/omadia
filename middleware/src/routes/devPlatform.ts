@@ -222,8 +222,14 @@ export function createDevPlatformRouter(deps: DevPlatformRouterDeps): Router {
       if (job.status !== 'applying' && !failedAfterDiff) {
         throw new DevPlatformError(409, 'devplatform.apply_not_allowed', `cannot apply while job is '${job.status}'`);
       }
-      const { prUrl } = await deps.applyJob(job.id);
-      res.json({ prUrl });
+      const outcome = await deps.applyJob(job.id);
+      if ('gated' in outcome) {
+        // The AUTHORITATIVE diff policy parked the job for a human (spec §6): no
+        // PR was opened. 202 Accepted — the operator resolves it via the gate API.
+        res.status(202).json({ gated: true, gateId: outcome.gateId });
+        return;
+      }
+      res.json({ prUrl: outcome.prUrl });
     }),
   );
 

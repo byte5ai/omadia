@@ -34,7 +34,12 @@
  * rule ids are implemented verbatim.
  */
 
-import { parseUnifiedDiff, type DiffFileStat } from './parseUnifiedDiff.js';
+import {
+  parseUnifiedDiff,
+  parseUnifiedDiffDetailed,
+  type DiffFileChange,
+  type DiffFileStat,
+} from './parseUnifiedDiff.js';
 import { scanForSecrets } from './scanForSecrets.js';
 import { DEFAULT_PROTECTED_GLOBS, matchesAnyGlob, normalizePath } from './protectedGlobs.js';
 
@@ -83,8 +88,22 @@ export interface DiffPolicyInput {
   trackerComments?: string[];
   /** The repo's operator overrides. */
   policyOverrides?: DiffPolicyOverrides;
-  /** The job's own token/nonce values, for the secret scan. */
-  jobTokens?: string[];
+  /** The job's own token/nonce values, for the secret scan. REQUIRED (Forge W3):
+   *  an optional field failed OPEN — a caller that forgot it silently skipped the
+   *  job's-own-token detector. Pass `[]` only if the job genuinely has no tokens. */
+  jobTokens: string[];
+  /**
+   * A human with authority over this repo APPROVED the diff-policy gate (W3).
+   *
+   * When true, `gate`-severity findings are DEMOTED: they still appear in
+   * `verdict.findings` (the audit trail is intact), but they no longer contribute
+   * to the decision — so an operator-approved diff whose only findings are gates
+   * resolves to `allow`. `deny`-severity findings are UNTOUCHED: a deny still
+   * denies, with or without this flag. A human can never launder a credential (or
+   * any other deny) past the gate by approving it. Absent/false ⇒ the normal
+   * unattended verdict (any gate ⇒ gate).
+   */
+  operatorApprovedGate?: boolean;
 }
 
 export const DEFAULT_MAX_FILES = 50;
@@ -111,17 +130,25 @@ function pathsOf(f: DiffFileStat): string[] {
   return out;
 }
 
-/** A path is a git-internals violation: under `.git/`, or has a `..` segment. */
+/** A path is a git-internals violation: under `.git/`, or has a `..` segment.
+ *  Case-folded (Forge W3): `.GIT/` resolves into `.git/` on case-insensitive
+ *  filesystems, so a case-sensitive check let it through. */
 function isGitInternals(path: string): boolean {
   const segments = normalizePath(path).split('/');
-  return segments.includes('.git') || segments.includes('..');
+  return segments.some((s) => s.toLowerCase() === '.git') || segments.includes('..');
 }
 
 /**
  * Evaluate the diff policy. Deterministic: same input → same verdict.
  */
 export function evaluateDiffPolicy(input: DiffPolicyInput): PolicyVerdict {
-  const files = parseUnifiedDiff(input.diff);
+  // Parse ONCE, structured: the detailed parse separates the `+++ b/path` header
+  // from hunk body lines, so added content is read from the parser (Forge W3 —
+  // a raw `line.startsWith('+++')` guard mistook an added line whose content
+  // begins with `++` for the header and skipped the secret on it). It also
+  // carries file `mode`, needed for the symlink-target check.
+  const detailed = parseUnifiedDiffDetailed(input.diff);
+  const files: DiffFileStat[] = parseUnifiedDiff(input.diff);
   const stats = {
     filesTouched: files.length,
     additions: files.reduce((s, f) => s + f.additions, 0),
@@ -137,15 +164,22 @@ export function evaluateDiffPolicy(input: DiffPolicyInput): PolicyVerdict {
 
   // --- git-internals (deny, non-overridable) -------------------------------
   // Structurally separate from every override knob; nothing can disable it.
-  const gitInternalsPaths = files
-    .flatMap(pathsOf)
-    .filter(isGitInternals);
+  const gitInternalsPaths = files.flatMap(pathsOf).filter(isGitInternals);
+  // A symlink (mode 120000) at a benign PATH whose TARGET (its added content) is
+  // `.git/…` or escapes via `..` resolves into git internals / outside the tree
+  // on checkout (Forge W3). The path check alone misses it, so scan the target.
+  for (const f of detailed) {
+    if (f.mode === '120000') {
+      const target = addedLinesOf(f).join('').trim();
+      if (target && isGitInternals(target)) gitInternalsPaths.push(`${f.path} → ${target}`);
+    }
+  }
   if (gitInternalsPaths.length > 0) {
     findings.push({
       ruleId: 'git-internals',
       severity: 'deny',
       paths: unique(gitInternalsPaths),
-      detail: 'diff touches a path under .git/ or containing a `..` segment',
+      detail: 'diff touches — or symlinks into — a path under .git/ or containing a `..` segment',
     });
   }
 
@@ -156,8 +190,15 @@ export function evaluateDiffPolicy(input: DiffPolicyInput): PolicyVerdict {
   // `index <sha1>..<sha2>` line; removed lines are a deletion, not a leak.
   const credPaths = new Set<string>();
   const credKinds = new Set<string>();
-  const diffSecrets = scanForSecrets(addedContentOf(input.diff), input.jobTokens);
-  for (const s of diffSecrets) {
+  // Added content, per-line AND whitespace-collapsed-joined. The join catches a
+  // secret split across two `+` lines (Forge W3) that a per-line regex misses.
+  const addedLines = detailed.flatMap(addedLinesOf);
+  const addedContent = addedLines.join('\n');
+  const addedJoined = addedLines.join('').replace(/\s+/g, '');
+  for (const s of [
+    ...scanForSecrets(addedContent, input.jobTokens),
+    ...scanForSecrets(addedJoined, input.jobTokens),
+  ]) {
     credKinds.add(s.kind);
     credPaths.add('<diff>');
   }
@@ -248,9 +289,19 @@ export function evaluateDiffPolicy(input: DiffPolicyInput): PolicyVerdict {
     });
   }
 
-  const decision: PolicyDecision = findings.some((f) => f.severity === 'deny')
+  // Verdict precedence (spec §6), with the W3 operator-override folded in:
+  //   1. ANY deny finding ⇒ deny. This is checked FIRST and is NEVER affected by
+  //      `operatorApprovedGate` — a human cannot override a deny.
+  //   2. else ANY gate finding ⇒ gate, UNLESS the operator approved the gate, in
+  //      which case the gate findings are demoted (still in `findings`, but they
+  //      do not escalate the decision).
+  //   3. else allow.
+  const hasDeny = findings.some((f) => f.severity === 'deny');
+  const hasGate = findings.some((f) => f.severity === 'gate');
+  const operatorApproved = input.operatorApprovedGate === true;
+  const decision: PolicyDecision = hasDeny
     ? 'deny'
-    : findings.some((f) => f.severity === 'gate')
+    : hasGate && !operatorApproved
       ? 'gate'
       : 'allow';
 
@@ -296,13 +347,19 @@ function unique(arr: string[]): string[] {
  * This is what may leak to the branch; git metadata (`diff --git`, `index`,
  * `@@` hunk headers) and removed lines are deliberately not scanned.
  */
-function addedContentOf(diff: string): string {
+/**
+ * The added-content lines of a parsed file — from the STRUCTURED parser's hunk
+ * bodies, never a raw-string `startsWith('+++')` guard. The parser already split
+ * the `+++ b/path` header off, so a hunk line `+++<content>` is unambiguously an
+ * added line whose content is `++<content>` (Forge W3 — the string guard skipped
+ * exactly that line, letting a secret prefixed with `++` slip the credential deny).
+ */
+function addedLinesOf(f: DiffFileChange): string[] {
   const out: string[] = [];
-  for (const raw of diff.split('\n')) {
-    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
-    if (line.startsWith('+') && !line.startsWith('+++')) {
-      out.push(line.slice(1));
+  for (const h of f.hunks) {
+    for (const l of h.lines) {
+      if (l.charAt(0) === '+') out.push(l.slice(1));
     }
   }
-  return out.join('\n');
+  return out;
 }

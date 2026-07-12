@@ -465,6 +465,8 @@ describe('dev-platform golden fixture (pg + git)', { skip: !pgAvailable || !gitA
 
     // 4. The middleware applies the diff. This is the worker's `applying` step.
     const applied = await wired.applyJob(job.id);
+    // The benign one-line fix is ALLOWED by the real diff policy, not gated.
+    assert.ok(!('gated' in applied), 'the benign golden diff is applied, not gated');
     assert.equal(applied.prUrl, 'https://example.com/pr/42');
 
     // 5. THE assertion. The forge receives HUNKS, not file contents — it applies

@@ -179,6 +179,27 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     );
   });
 
+  it('listJobs scopes repoIds IN SQL before LIMIT — a caller\'s own job is never dropped behind other repos', async () => {
+    // Fresh repos so the shared `repo` fixture's jobs don't perturb the assertion.
+    const mineRepo = await newRepo();
+    const other = await newRepo();
+    // My job is created FIRST (oldest → last under created_at DESC).
+    const mine = await newQueuedJob(mineRepo.id);
+    // Then several NEWER jobs in another repo that a post-query narrow surfaces first.
+    for (let i = 0; i < 4; i++) await newQueuedJob(other.id);
+    // Scope to my repo with a limit SMALLER than the other-repo job count.
+    const rows = await store.listJobs({ repoIds: [mineRepo.id], limit: 2 });
+    // COUNTER-PROOF: with list-all-LIMIT-then-narrow, the newest 2 rows are both
+    // other-repo → narrowed to [] → my job missing. `WHERE repo_id = ANY(...)`
+    // before LIMIT returns it. Revert the repoIds branch to see this fail.
+    assert.deepEqual(rows.map((j) => j.id), [mine.id]);
+  });
+
+  it('listJobs with an empty repoIds set returns [] (no `= ANY(\'{}\')` scan)', async () => {
+    await newQueuedJob(repo.id);
+    assert.deepEqual(await store.listJobs({ repoIds: [] }), []);
+  });
+
   it('appendEvents publishes newly stored events to the live bus', async () => {
     const job = await newQueuedJob(repo.id);
     const seen: number[] = [];
@@ -249,6 +270,35 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     assert.equal(after?.tokensIn, 10);
     assert.equal(after?.tokensOut, 20);
     assert.equal(after?.costUsd, 0.5);
+  });
+
+  it('parkForApplyGate admits a FAILED-after-diff job (retry that gates), not just applying (Forge #6)', async () => {
+    // A failed job (a POST /jobs/:id/apply retry that then gated) must be parkable,
+    // else the gate dangles and the operator's later approval silently no-ops.
+    const failed = await newQueuedJob(repo.id);
+    await store.finishTerminal(TERMINAL_FINISH_BRAND, failed.id, 'failed', { error: 'apply blip' });
+    // COUNTER-PROOF: with the old `status = 'applying'` fence this returns false and
+    // the job stays `failed` (dangling gate). The widened `IN ('applying','failed')`
+    // fence parks it.
+    assert.equal(await store.parkForApplyGate(failed.id), true, 'a failed-after-diff job parks');
+    assert.equal((await store.getJob(failed.id))?.status, 'waiting');
+
+    // A queued job is NOT parkable — the fence is exactly {applying, failed}.
+    const queued = await newQueuedJob(repo.id);
+    assert.equal(await store.parkForApplyGate(queued.id), false, 'a queued job is not an apply-gate candidate');
+  });
+
+  it('resumeApplyAfterGate refuses a review-parked job (waiting AT await_human) — no cross-kind resume', async () => {
+    // A diff-policy park leaves the phase at review/pr; a REVIEW gate parks at
+    // await_human with no diff. resumeApplyAfterGate must only resume the former.
+    const job = await newQueuedJob(repo.id);
+    // A review gate parks only at phase await_human — put the job there first.
+    await pool.query(`UPDATE dev_jobs SET phase = 'await_human' WHERE id = $1`, [job.id]);
+    assert.equal(await store.parkForGate(job.id), true, 'review park lands'); // → waiting @ await_human
+    // COUNTER-PROOF: without the `phase <> 'await_human'` guard this resumes a
+    // diff-less job into `applying`, which then fails `no_diff`.
+    assert.equal(await store.resumeApplyAfterGate(job.id), false, 'a review-parked job is not resumed into applying');
+    assert.equal((await store.getJob(job.id))?.status, 'waiting', 'still parked');
   });
 
   it('finishTerminal is the only terminal write, is brand-gated, and is idempotent', async () => {

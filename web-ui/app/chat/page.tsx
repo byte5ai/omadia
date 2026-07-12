@@ -50,6 +50,8 @@ import {
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import { useStreamStore } from '../_lib/streamStore';
 import { ChoiceCard } from '../_components/ChoiceCard';
+import { DevJobChatCard } from '../_components/devjobs/DevJobChatCard';
+import { parseDevJobStartResult } from '../_components/devjobs/devJobChatCardState';
 import { KgWalkPane } from '../_components/KgWalkPane';
 import { PlanDagPane } from '../_components/PlanDagPane';
 import type { KgWalkPayload, PlanSnapshot } from '../_lib/chatSessions';
@@ -1016,9 +1018,17 @@ function ToolTrace({ tools }: { tools: ToolEvent[] }): React.ReactElement {
         {t('toolTraceHeading', { count: tools.length })}
       </summary>
       <div className="flex flex-col gap-1 px-2 pb-2">
-        {tools.map((t) => (
-          <ToolRow key={t.id} tool={t} />
-        ))}
+        {tools.map((tool) => {
+          // Epic #470 W3 — a `dev_job_start` call renders a live dev-job card
+          // (seeded from its tool result) instead of the generic tool row.
+          const seed =
+            tool.name === 'dev_job_start' ? parseDevJobStartResult(tool.output) : null;
+          return seed ? (
+            <DevJobChatCard key={tool.id} seed={seed} />
+          ) : (
+            <ToolRow key={tool.id} tool={tool} />
+          );
+        })}
       </div>
     </details>
   );

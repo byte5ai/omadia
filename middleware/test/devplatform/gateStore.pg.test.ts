@@ -90,6 +90,34 @@ describe('devplatform/DevJobGateStore (pg)', { skip: !pgAvailable }, () => {
     assert.equal(g1.planSha256, 'abc');
   });
 
+  it('hasApprovedApplyGate is true ONLY for a resolved diff_policy gate (durable approval signal)', async () => {
+    const store = new DevJobGateStore(pool);
+
+    // No gate → false.
+    const jobNone = await newJob();
+    assert.equal(await store.hasApprovedApplyGate(jobNone), false, 'no gate → false');
+
+    // A WAITING diff_policy gate → false (not yet approved).
+    const jobWaiting = await newJob();
+    await store.open({ jobId: jobWaiting, gateKind: 'diff_policy', questions: [], principalKind: 'user', principalRef: 'u' });
+    assert.equal(await store.hasApprovedApplyGate(jobWaiting), false, 'waiting diff_policy → false');
+
+    // A RESOLVED diff_policy gate → true.
+    const jobApproved = await newJob();
+    const g = await store.open({ jobId: jobApproved, gateKind: 'diff_policy', questions: [], principalKind: 'user', principalRef: 'u' });
+    await store.resolve(g.id, true, 'u');
+    // COUNTER-PROOF: this is the durable signal the worker reads so the apply sweep
+    // re-applies an approved job WITH the flag; if hasApprovedApplyGate stopped
+    // keying on gate_kind='diff_policy' AND status='resolved' this would be wrong.
+    assert.equal(await store.hasApprovedApplyGate(jobApproved), true, 'resolved diff_policy → true');
+
+    // A RESOLVED *review* gate → false (only diff_policy approvals demote apply gates).
+    const jobReview = await newJob();
+    const gr = await store.open({ jobId: jobReview, gateKind: 'review', questions: [], principalKind: 'user', principalRef: 'u' });
+    await store.resolve(gr.id, true, 'u');
+    assert.equal(await store.hasApprovedApplyGate(jobReview), false, 'resolved review gate → false');
+  });
+
   it('resolves via compare-and-swap: the second concurrent resolver gets null (409)', async () => {
     const jobId = await newJob();
     const store = new DevJobGateStore(pool);
