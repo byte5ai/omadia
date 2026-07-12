@@ -479,7 +479,6 @@ export class FlyMachinesBackend implements RunnerBackend {
       return [];
     }
 
-    const nowMs = this.now().getTime();
     const reaped: RunnerHandle[] = [];
     for (const machine of machines) {
       const jobId = jobIdOf(machine);

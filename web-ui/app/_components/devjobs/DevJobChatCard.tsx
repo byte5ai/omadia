@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
@@ -48,10 +48,9 @@ export function DevJobChatCard({ seed }: { seed: DevJobCardSeed }): React.ReactE
   const [resolveError, setResolveError] = useState(false);
   const [connLost, setConnLost] = useState(false);
 
-  const terminalRef = useRef(false);
-  useEffect(() => {
-    terminalRef.current = job ? isTerminalStatus(job.status) : false;
-  }, [job]);
+  // Derived during render (not a ref) — reading a ref's .current in render is a
+  // react-hooks/refs violation, and this is a pure function of `job` state anyway.
+  const isTerminal = job ? isTerminalStatus(job.status) : false;
 
   const refresh = useCallback(() => {
     void getJob(seed.jobId).then(
@@ -75,10 +74,10 @@ export function DevJobChatCard({ seed }: { seed: DevJobCardSeed }): React.ReactE
   );
 
   useDevJobEvents(seed.jobId, handleEvent, {
-    enabled: !terminalRef.current,
+    enabled: !isTerminal,
     onStatus: (s) => {
       if (s === 'open') setConnLost(false);
-      else if (s === 'error' && !terminalRef.current) setConnLost(true);
+      else if (s === 'error' && !isTerminal) setConnLost(true);
     },
   });
 
