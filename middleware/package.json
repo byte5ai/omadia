@@ -56,7 +56,7 @@
     "@types/yauzl": "^2.10.3",
     "argon2": "^0.43.1",
     "better-sqlite3": "^12.11.1",
-    "bonjour-service": "^1.4.2",
+    "bonjour-service": "^1.4.3",
     "botbuilder": "^4.23.3",
     "cookie-parser": "^1.4.7",
     "croner": "^9.1.0",
