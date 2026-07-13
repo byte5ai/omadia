@@ -46,7 +46,7 @@
   "description": "Omadia kernel: Anthropic Messages API orchestrator with plugin runtime, persistent memory, multi-channel ingress, and vault-backed credentials.",
   "license": "MIT",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.110.0",
+    "@anthropic-ai/sdk": "^0.111.0",
     "@aws-sdk/client-s3": "^3.1075.0",
     "@azure/msal-node": "^5.3.1",
     "@microsoft/microsoft-graph-client": "^3.0.7",
