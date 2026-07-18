@@ -120,6 +120,7 @@ import { BuilderTriageLog } from './plugins/builder/builderTriageLog.js';
 import { GithubIssueCache } from './plugins/builder/githubIssueCache.js';
 import { GithubIssueCreator } from './plugins/builder/githubIssueCreator.js';
 import { createGitHubDeviceProvider } from './issues/githubOAuthProvider.js';
+import { DeviceFlowStore } from './issues/deviceFlowStore.js';
 import { createIssuesRouter } from './issues/issuesRouter.js';
 import { GitHubAppTokenProvider } from './plugins/builder/githubAppAuth.js';
 import { UserChoiceCoordinator } from './plugins/builder/userChoiceCoordinator.js';
@@ -175,6 +176,7 @@ import {
 } from './devplatform/triggers/triggerJobService.js';
 import { mintRunnerToken as mintDevRunnerToken } from './devplatform/jobToken.js';
 import { DevRetentionRunner } from './devplatform/retention.js';
+import { ManifestFlowStore } from './devplatform/githubApp/manifestFlow.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -218,6 +220,7 @@ import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
 import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
 import type { PluginTemplateRegistrar } from './plugins/pluginTemplates.js';
+import { createDevPlatformGithubAppRouter } from './routes/devPlatformGithubApp.js';
 import {
   OAuthBrokerService,
   PendingFlowStore,
@@ -2487,6 +2490,9 @@ async function main(): Promise<void> {
   // persist a durable queue. The two safety-critical modes (subscription auth,
   // unsafe-local backend) already refused boot in config.ts if misconfigured.
   if (config.DEV_PLATFORM_ENABLED && graphPool) {
+    const devPlatformGithubDeviceProvider = createGitHubDeviceProvider(
+      config.DEV_PLATFORM_GITHUB_CLIENT_ID ?? config.GITHUB_OAUTH_CLIENT_ID,
+    );
     const shimEntry = fileURLToPath(
       new URL('../packages/dev-runner-shim/dist/src/index.js', import.meta.url),
     );
@@ -2586,9 +2592,42 @@ async function main(): Promise<void> {
       // W4 (spec §2): the Fly Machines backend, present only when a dedicated runner
       // app is configured (absent ⇒ not registered).
       ...(flyConfig ? { fly: flyConfig } : {}),
+      ...(devPlatformGithubDeviceProvider
+        ? {
+            deviceFlow: {
+              provider: devPlatformGithubDeviceProvider,
+              store: new DeviceFlowStore(),
+            },
+          }
+        : {}),
       log: (msg) => console.log(msg),
     });
     mountDevPlatform(app, requireAuth, wiredDevPlatform, (msg) => console.log(msg));
+
+    const devPlatformGithubAppStore = new DevGithubAppStore(graphPool, secretVault);
+    const devPlatformGithubAppRouter = createDevPlatformGithubAppRouter({
+      flowStore: new ManifestFlowStore(),
+      appStore: devPlatformGithubAppStore,
+      bindRepoCredential: async (repoId, binding): Promise<void> => {
+        const boundRepo = await wiredDevPlatform.repoStore.updateRepo(repoId, {
+          credentialKind: 'github_app',
+          credentialRef: `github_app:${binding.appRowId}:${binding.installationId}`,
+        });
+        if (!boundRepo) {
+          throw new Error(`dev-platform repo not found while binding GitHub App credential: ${repoId}`);
+        }
+      },
+      getRepo: async (repoId): Promise<{ owner: string; name: string } | null> => {
+        const repo = await wiredDevPlatform.repoStore.getRepo(repoId);
+        return repo ? { owner: repo.owner, name: repo.name } : null;
+      },
+      publicBaseUrl: config.PUBLIC_BASE_URL,
+      log: (msg) => console.log(msg),
+    });
+    app.use('/api/v1/admin/dev-platform', requireAuth, devPlatformGithubAppRouter.admin);
+    console.log('[dev-platform] github-app admin router mounted at /api/v1/admin/dev-platform (requireAuth)');
+    app.use('/api/v1/dev-platform', devPlatformGithubAppRouter.public);
+    console.log('[dev-platform] github-app public router mounted at /api/v1/dev-platform (state-token auth only, no session guard)');
 
     // Epic #470 W3 — register the chat orchestrator dev-job tools globally on
     // the native-tool registry (mirrors `requestSelfExtensionTool`). ONE global
