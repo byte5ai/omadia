@@ -100,7 +100,7 @@ jobs:
       # node-gyp's bundled gyp imports Python's `distutils`, removed in Python
       # 3.12. The macOS/Windows runners default to 3.12+ (Ubuntu still ships
       # 3.11), so pin 3.11 everywhere to keep native rebuilds working.
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
