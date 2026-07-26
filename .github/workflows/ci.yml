@@ -205,4 +205,11 @@ jobs:
         run: npm ci --include=optional --no-audit --no-fund
 
       - name: npm audit (--audit-level=high)
-        run: npm audit --audit-level=high
+        # npm 10.x (bundled with Node 22) calls the registry's legacy "quick
+        # audit" endpoint, which npm's registry has started hard-rejecting
+        # with a misleading 400 "Invalid package tree" error (reproduces even
+        # against a pristine, untouched lockfile -- confirmed 2026-07-26).
+        # A current npm CLI calls the newer bulk-advisory endpoint instead.
+        run: |
+          npm install -g npm@latest
+          npm audit --audit-level=high
