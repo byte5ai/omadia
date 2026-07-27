@@ -27,4 +27,23 @@ export class PluginStatusRegistry {
   get(pluginId: string): PluginActionStatus | undefined {
     return this.statuses.get(pluginId);
   }
+
+  /** Issue #474 — true when the plugin has no pending `needs_action` /
+   *  `error` status, i.e. its own `activate()`/auth-completion code has not
+   *  flagged a required setup/connection step as outstanding. Used to gate
+   *  whether a plugin's `ctx.tools.register()`-contributed tools may be
+   *  surfaced to and invoked by the orchestrator. A plugin that never calls
+   *  `ctx.status.report(...)` at all (the common case — most plugins have no
+   *  connection step) is always ready.
+   *
+   *  Checks the stored entry's `state` directly rather than only its
+   *  presence: `StatusAccessor.report()` in pluginContext.ts normalizes
+   *  `state: 'ok'` into `clear()` before it reaches `set()`, but `set()`
+   *  itself is public and does not enforce that normalization. Deciding
+   *  readiness from `state` keeps this correct even for a caller that
+   *  stores `{state: 'ok'}` directly via `set()`. */
+  isReady(pluginId: string): boolean {
+    const entry = this.statuses.get(pluginId);
+    return !entry || (entry.state !== 'needs_action' && entry.state !== 'error');
+  }
 }

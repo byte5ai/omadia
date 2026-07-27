@@ -407,6 +407,22 @@ export interface OrchestratorOptions {
     configKey: string,
   ) => unknown | undefined;
   /**
+   * Issue #474 — per-plugin tool-readiness gate. Given the `agentId` of a
+   * plugin that contributed a native tool (via `ctx.tools.register`),
+   * returns whether that plugin's connection/auth setup is complete and its
+   * tools may be exposed to and invoked by the orchestrator. Checked both in
+   * `buildToolsList()` (tool-list assembly) and `dispatchToolInner()`
+   * (tool-invocation time) — auth can complete or expire between the two, so
+   * list-time filtering alone is not enough. Kernel-internal tools (no
+   * `agentId` on the registration) are never gated.
+   *
+   * Caller wires this from the harness runtime's `PluginStatusRegistry`
+   * (spec 004): `(agentId) => pluginStatusRegistry.isReady(agentId)`.
+   * Absent ⇒ every plugin's tools are always available (pre-#474 behaviour,
+   * and the correct default for test/migration contexts).
+   */
+  isPluginToolsReady?: (agentId: string) => boolean;
+  /**
    * Palaia Phase 8 (OB-77) — Nudge-Pipeline registry. Plugin-contributed
    * `NudgeProvider`s register against this registry; the orchestrator
    * iterates them after every tool_result. Absent → pipeline is a no-op
@@ -1296,6 +1312,10 @@ export class Orchestrator {
   private readonly pluginConfigGet:
     | ((agentId: string, configKey: string) => unknown | undefined)
     | undefined;
+  /** Issue #474 — per-plugin tool-readiness gate (see OrchestratorOptions). */
+  private readonly isPluginToolsReady:
+    | ((agentId: string) => boolean)
+    | undefined;
   private readonly nudgeRegistry: NudgeRegistry | undefined;
   private readonly nudgeStateStore: NudgeStateStore | undefined;
   private readonly nudgeProcessMemory: ProcessMemoryService | undefined;
@@ -1361,6 +1381,7 @@ export class Orchestrator {
     this.responseGuard = options.responseGuard;
     this.privacyGuard = options.privacyGuard;
     this.pluginConfigGet = options.pluginConfigGet;
+    this.isPluginToolsReady = options.isPluginToolsReady;
     this.nudgeRegistry = options.nudgeRegistry;
     this.nudgeStateStore = options.nudgeStateStore;
     this.nudgeProcessMemory = options.nudgeProcessMemory;
@@ -2319,7 +2340,14 @@ export class Orchestrator {
 
     const candidate = resolution.candidate;
     const tool = this.domainToolsByName.get(candidate.toolName);
-    if (!tool) {
+    // Issue #474 (round 4) — a not-ready plugin's domain tool must resolve
+    // the same as a deleted one: `dispatchToolInner` already blocks the
+    // handler safely (no capability leak), but without this check its raw
+    // `Error: tool … is unavailable …` string would be wrapped into a
+    // delegatedAnswer and shown to the user as if the specialist itself had
+    // answered. Reuse the SAME notice as the deleted-tool branch above
+    // instead of surfacing that internal dispatch-error string.
+    if (!tool || !this.isToolAvailable(tool.agentId)) {
       return this.directLineNotice(
         `Specialist "${candidate.label}" is no longer available.`,
       );
@@ -2523,8 +2551,16 @@ export class Orchestrator {
     // (if configured), so the forced-delegation primitive has a real,
     // opt-in producer beyond a caller wiring it per turn.
     const requested = input.expectedDomainTool ?? this.requiredConsultToolName;
+    const requestedEntry = requested
+      ? this.domainToolsByName.get(requested)
+      : undefined;
+    // Issue #474 (round 3 self-audit) — a not-ready plugin's domain tool must
+    // not become an obligation: `tool_choice` would then force the model onto
+    // a tool name that buildToolsList() has already excluded from tools[],
+    // which the API rejects. Same isToolAvailable gate as the roster/tools[]
+    // paths above.
     const tool =
-      requested && this.domainToolsByName.has(requested)
+      requestedEntry && this.isToolAvailable(requestedEntry.agentId)
         ? requested
         : undefined;
     return {
@@ -4816,7 +4852,22 @@ export class Orchestrator {
     // handler (which wraps the unscoped FilesystemMemoryStore). Checked
     // before the generic `reg?.handler` dispatch below, since `memory` is a
     // plugin-registered native tool and would otherwise win here unscoped.
+    //
+    // Issue #474 (review round 10) — this fast path bypassed the readiness
+    // gate entirely: a plugin that contributes `memory` via
+    // `ctx.tools.registerHandler('memory', ...)` (e.g. harness-memory /
+    // harness-memory-postgres) still has its own `agentId` recorded on the
+    // NativeToolRegistry entry, so re-derive that agentId here and run it
+    // through the same `isToolAvailable` gate the generic `reg?.handler`
+    // path below already uses. A marker-only / agentId-less entry (nothing
+    // registered `memory` via a plugin) keeps its `agentId === undefined ⇒
+    // always-available` default, so the two current always-ready memory
+    // plugins are unaffected as long as they haven't reported not-ready.
     if (name === MEMORY_TOOL_NAME && this.memoryToolHandler) {
+      const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
+      if (!this.isToolAvailable(memoryAgentId)) {
+        return `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`;
+      }
       return this.memoryToolHandler.handle(input);
     }
     // Plugin-contributed handlers win first. Kernel branches below are the
@@ -4825,6 +4876,16 @@ export class Orchestrator {
     // migrates, its hardcoded branch disappears.
     const reg = this.nativeTools.get(name);
     if (reg?.handler) {
+      // Issue #474 — re-check readiness at invocation time, not just at
+      // list-assembly time: a plugin's connection/auth state can complete
+      // or expire between the two, so list-time filtering alone leaves a
+      // race window. Returned (not thrown) as an `Error:`-prefixed string,
+      // matching the `unknown tool` fallback below — both the streaming and
+      // non-streaming dispatch loops key `is_error` off that prefix, and
+      // only the non-streaming one also catches thrown rejections.
+      if (!this.isToolAvailable(reg.agentId)) {
+        return `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`;
+      }
       return reg.handler(input);
     }
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
@@ -4849,7 +4910,17 @@ export class Orchestrator {
       return this.bookMeetingTool.handle(input);
     }
     const domainTool = this.domainToolsByName.get(name);
-    if (domainTool) return domainTool.handle(input, observer);
+    if (domainTool) {
+      // Issue #474 — same re-check-at-invocation-time gate as the native-tool
+      // branch above, applied to the second tool-registration path (domain
+      // tools contributed by dynamic agent plugins via DomainTool.agentId).
+      // Without this, a not-ready plugin's domain tool was still invocable
+      // even though its native tools and promptDoc were already hidden.
+      if (!this.isToolAvailable(domainTool.agentId)) {
+        return `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`;
+      }
+      return domainTool.handle(input, observer);
+    }
     return `Error: unknown tool \`${name}\`.`;
   }
 
@@ -4869,13 +4940,26 @@ export class Orchestrator {
     // kernel's hardcoded blocks (graph/diagram/…) remain in buildSystemPrompt
     // for their tools; plugin docs land in a separate bullet list so both
     // paths coexist cleanly during the extraction transition.
+    // Issue #474 — mirror the same isToolAvailable gate applied in
+    // buildToolsList(): a plugin whose connection/auth setup hasn't
+    // completed must not have its promptDoc advertised here either,
+    // otherwise the model is told about a capability that buildToolsList()
+    // has already hidden from its `tools[]` for this same turn.
     const extraDocs = this.nativeTools
       .listWithHandler()
+      .filter((e) => this.isToolAvailable(e.agentId))
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
+    // Issue #474 (round 3) — same isToolAvailable gate as buildToolsList()'s
+    // domain-tool loop above: a not-ready plugin's DomainTool must not be
+    // advertised in the 'Fach-Agenten' roster either, otherwise the model is
+    // told to route to a tool that tools[] has already hidden this turn.
+    const availableDomainTools = Array.from(this.domainToolsByName.values()).filter((tool) =>
+      this.isToolAvailable(tool.agentId),
+    );
     return buildSystemPrompt(
       personaOverride ?? this.assistantIdentity,
-      Array.from(this.domainToolsByName.values()),
+      availableDomainTools,
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.
       false,
@@ -5225,10 +5309,32 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Issue #474 — true when a plugin-contributed native tool may be exposed
+   * to / invoked by the orchestrator. Kernel-internal registrations (no
+   * `agentId`) are always available; a plugin-owned one is gated on
+   * `isPluginToolsReady`, which defaults to "ready" when the gate was never
+   * wired (byte-identical pre-#474 behaviour).
+   */
+  private isToolAvailable(agentId: string | undefined): boolean {
+    if (agentId === undefined) return true;
+    if (!this.isPluginToolsReady) return true;
+    return this.isPluginToolsReady(agentId);
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildToolsList(): any[] {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tools: any[] = [{ type: MEMORY_TOOL_TYPE, name: MEMORY_TOOL_NAME }];
+    const tools: any[] = [];
+    // Issue #474 (review round 10) — the hardcoded `memory` tool spec used
+    // to be pushed unconditionally, bypassing the readiness gate applied to
+    // every other plugin-contributed tool below. Mirror `isToolAvailable`'s
+    // `dispatchToolInner` check: gate on the `agentId` of whichever plugin
+    // (if any) registered `memory` via `ctx.tools.registerHandler('memory')`.
+    const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
+    if (this.isToolAvailable(memoryAgentId)) {
+      tools.push({ type: MEMORY_TOOL_TYPE, name: MEMORY_TOOL_NAME });
+    }
     if (this.knowledgeGraphTool) tools.push(knowledgeGraphToolSpec);
     // Diagrams + enrich_company tool specs come from nativeTools registry (plugin-contributed).
     if (this.chatParticipantsTool) tools.push(chatParticipantsToolSpec);
@@ -5240,13 +5346,24 @@ export class Orchestrator {
     // Plugin-contributed native tools (registered via ctx.tools.register).
     // Live-ingested: activating a tool-kind plugin makes its spec appear on
     // the next iteration without requiring an orchestrator rebuild.
+    // Issue #474 — a plugin that hasn't finished its own connection/auth
+    // setup is excluded here so the orchestrator never offers a tool it
+    // knows will fail, instead of discovering that via a wasted round-trip.
     for (const entry of this.nativeTools.listWithHandler()) {
-      if (entry.spec) tools.push(entry.spec);
+      if (entry.spec && this.isToolAvailable(entry.agentId)) {
+        tools.push(entry.spec);
+      }
     }
     // DomainTools dynamically from the map — so hot-registered uploaded
     // agents become visible from the next iteration without reboot.
+    // Issue #474 — same gate as the native-tools loop above: a domain tool
+    // whose owning plugin hasn't completed its connection/auth setup must
+    // not be offered either, otherwise the model discovers the missing
+    // access via a failing dispatch instead of the tool being absent.
     for (const tool of this.domainToolsByName.values()) {
-      tools.push(tool.spec);
+      if (this.isToolAvailable(tool.agentId)) {
+        tools.push(tool.spec);
+      }
     }
     // Privacy-Shield v4 — verb + render tools, offered only when the v4
     // data-plane boundary is active for this turn.

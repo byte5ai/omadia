@@ -18,6 +18,153 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
+
+- A native plugin (`ctx.tools.register` from `activate()`) whose own
+  connection/auth setup is still pending — reported via the existing
+  `ctx.status.report({state: 'needs_action' | 'error'})` — is now excluded
+  from the tool list the orchestrator offers the model
+  (`Orchestrator.buildToolsList`), instead of being offered and failing on
+  the first call. The same check runs again at invocation time
+  (`Orchestrator.dispatchToolInner` and the standalone
+  `ToolDispatchService` used by the subscription-CLI provider), so a status
+  change between list-assembly and the actual call can't slip through
+  either. Plugins that never report a status (the common case — no
+  connection step) are unaffected. Deliberately separate from the
+  MCP-server-specific auth-gap flow (`mcpOAuthService`), which already
+  handles that case for MCP servers.
+- Follow-up (review round 2): `Orchestrator.getSystemPrompt()` now applies
+  the same `isToolAvailable` gate to the plugin `promptDoc` collection that
+  `buildToolsList()` already applied to the tool specs — a gated plugin's
+  documentation is no longer spliced into the system prompt while its tool
+  is simultaneously hidden from `tools[]`. Previously the model would still
+  be told about a capability whose spec had just been removed, replacing a
+  clean "tool not offered" state with a confusing "documented but missing
+  tool" one.
+- Follow-up (review round 3): the gate only covered native tools registered
+  via `ctx.tools.register()` — `Orchestrator.buildToolsList()` still
+  appended every `DomainTool` (the dynamic-agent-plugin tools, e.g.
+  `query_<slug>`) unconditionally, and `dispatchToolInner()` still invoked
+  a matching one without any readiness check. Both call sites now apply
+  the same `isToolAvailable(agentId)` gate `DomainTool.agentId` already
+  carries, so a not-ready plugin's domain tool is excluded from `tools[]`
+  and refused (`Error:`-prefixed, handler never invoked) at dispatch time,
+  matching the native-tool path exactly.
+- Follow-up (review round 4): two remaining gaps of the same kind. First,
+  `Orchestrator.buildSystemPrompt()`'s "Fach-Agenten" roster block — the
+  human-readable list of domain tools rendered ahead of the tool specs —
+  still listed every `DomainTool` unconditionally, so a not-ready plugin's
+  tool was hidden from `tools[]` but the model was still told to route to it
+  by name. `Orchestrator.getSystemPrompt()` now filters the roster through
+  the same `isToolAvailable(agentId)` gate before it reaches
+  `buildSystemPrompt()`. Second, `PluginStatusRegistry.isReady()` only
+  returned `true` when there was no stored status entry at all — correctness
+  depended entirely on every caller normalizing `state: 'ok'` into `clear()`
+  before it reached the registry's own `set()`, which only the higher-level
+  `StatusAccessor.report()` in `pluginContext.ts` did. `isReady()` now
+  checks the stored entry's `state` directly (`!entry ||
+  (entry.state !== 'needs_action' && entry.state !== 'error')`), so it stays
+  correct even for a caller that stores `{state: 'ok'}` via `set()` directly.
+  Also closed during the same audit: `Orchestrator.directLineObligationState()`
+  (the `#332` forced-delegation primitive) could still resolve a not-ready
+  plugin's domain tool as the turn's forced `tool_choice`, which would name a
+  tool `buildToolsList()` had already excluded from `tools[]` — now gated the
+  same way.
+- Follow-up (review round 4/final): the last unguarded consumer of
+  `domainToolsByName` — the DirectLine (`#token`) candidate resolution in
+  `Orchestrator.executeDirectLine()` — still let a not-ready plugin's
+  `#token` resolve successfully. `dispatchToolInner()` already refused the
+  handler safely, but its raw `Error: tool … is unavailable …` string was
+  then wrapped into a `delegatedAnswer` and shown to the user as though the
+  specialist itself had answered. The resolved candidate's readiness is now
+  checked against the same `isToolAvailable(agentId)` gate right after
+  resolution, reusing the existing "Specialist … is no longer available."
+  notice already used for a deleted tool, instead of surfacing the internal
+  dispatch-error string.
+- Follow-up (review round 5): every gate above depended on the plugin's own
+  code calling `ctx.status.report(...)`. The generic install/Connect flow
+  never does this automatically — `installService.ts` activates a
+  `type:'oauth'` plugin (registering its tools) the moment `configure()`
+  completes, which is BEFORE the operator has clicked "Connect" and the
+  kernel OAuth broker has stored any tokens. A plugin author who never wrote
+  an explicit status-report call for this (the common case) still had its
+  tools offered and invoked, failing with `OAuthTokenError('not_connected')`
+  on the first call — the exact round-trip #474 was filed to eliminate. A
+  new `OAuthReadinessTracker` derives connection state from the same vault
+  state `ctx.oauthTokens` reads, refreshed on every `ToolPluginRuntime` /
+  `DynamicAgentRuntime` `activate()` (fresh install, boot reactivation, and
+  post-Connect reactivation all funnel through this single choke point per
+  runtime). The orchestrator's readiness gate now ANDs this automatic signal
+  with the existing `PluginStatusRegistry` one — either can withhold
+  readiness — kept as two separate caches rather than one merged into the
+  other, so neither can silently clobber the other's verdict.
+- Follow-up (review round 8): every gate above only covered
+  `ctx.tools.register()` — `NativeToolRegistry.registerHandler()` (used by
+  `ctx.tools.registerHandler()` for tools whose wire-spec the kernel emits
+  itself, e.g. the Anthropic-native `memory` tool used today by
+  `harness-memory` / `harness-memory-postgres`) never stored an `agentId` on
+  its entry at all, so `isToolAvailable`'s `agentId === undefined ⇒
+  always-available` default — correct for a genuinely kernel-internal
+  registration — incorrectly also applied to ANY plugin using this path
+  instead of `register()`, leaving its `promptDoc` in the system prompt and
+  its handler dispatchable regardless of the plugin's own readiness.
+  `NativeToolHandlerRegistrationOptions` and the stored
+  `NativeToolRegistration` entry both gained the same optional `agentId` the
+  `register()` path already carries, and `ctx.tools.registerHandler()` in
+  `pluginContext.ts` now passes the calling plugin's own id, mirroring
+  `ctx.tools.register()`'s existing wiring exactly — no new gate logic, the
+  entry just flows through the same `isToolAvailable(agentId)` check every
+  other path already uses. The two current `registerHandler()` callers
+  (`harness-memory`, `harness-memory-postgres`) are unaffected in practice:
+  neither reports a connection status, so `PluginStatusRegistry.isReady()`
+  defaults them to ready, exactly as before this fix.
+- Follow-up (review round 10), two remaining gaps: (1)
+  `OAuthReadinessTracker.refresh()` treated `tokens !== undefined` alone as
+  "connected" — it only checked that SOME token bundle was stored in the
+  vault, not that it was actually usable. `ctx.oauthTokens.get()`
+  (`pluginContext.ts`) throws `OAuthTokenError('refresh_failed')` for a
+  token that's expired AND has no refresh token to renew it with, so a
+  plugin in that state was still reported ready, offered, and dispatched —
+  failing on the first real call with the exact wasted round-trip #474 was
+  filed to eliminate. The "still fresh" expiry check `ctx.oauthTokens.get()`
+  already computes is now factored out into `tokenStore.ts`'s
+  `isTokenStillFresh`/`isTokenRefreshable` and reused by both call sites, so
+  the two can never drift on what counts as expired; a token that's expired
+  but HAS a refresh token still counts as ready (a refresh is expected to
+  succeed transparently). (2) The built-in Anthropic `memory` tool
+  (`{type:'memory_20250818', name:'memory'}`) is special-cased in both
+  `buildToolsList()` and `dispatchToolInner()` and dispatched via the
+  orchestrator's own per-Agent-scoped `memoryToolHandler` BEFORE the general
+  `NativeToolRegistry`/`isToolAvailable(agentId)` gate is ever consulted —
+  so a plugin contributing `memory` via `ctx.tools.registerHandler('memory',
+  ...)` (the same path `harness-memory`/`harness-memory-postgres` use) with
+  `isPluginToolsReady(pluginId) === false` still had it offered and
+  dispatched, completely bypassing round 8's fix. Both call sites now look
+  up the `memory` entry's own `agentId` (if any plugin registered it) and
+  run it through the same `isToolAvailable` gate before taking the fast
+  path. A marker-only / agentId-less entry (nothing registered `memory` via
+  a plugin) keeps the existing "no agentId ⇒ always-available" default, so
+  the two current always-ready memory plugins are unaffected as long as they
+  haven't reported not-ready — covered by a new test alongside the
+  gated-plugin case.
+- Follow-up (review round 12): `OAuthReadinessTracker.isConnected()` read a
+  boolean cached once inside `refresh()` — activation time — instead of
+  re-checking freshness against the current wall clock. A plugin activating
+  with, say, 10 minutes of token freshness left and no refresh token cached
+  as "ready" and stayed that way until the NEXT activation, even after
+  crossing `tokenStore.ts`'s 5-minute `OAUTH_REFRESH_MARGIN_MS`, where a real
+  `ctx.oauthTokens.get()` call would already throw
+  `OAuthTokenError('refresh_failed')` — reproducing the exact wasted
+  round-trip #474 exists to prevent, just shifted into the gap between
+  activations instead of at activation time. `refresh()` now caches only the
+  raw per-field `StoredOAuthTokens` (the genuinely async vault read), and
+  `isConnected()` recomputes `isTokenRefreshable()`/`isTokenStillFresh()`
+  fresh on every call against `Date.now()` — both are pure, synchronous,
+  in-memory checks, so recomputing per read has no latency cost. Mirrors how
+  `ctx.oauthTokens.get()` itself never caches a verdict either. Covered by a
+  new test using `t.mock.timers` to advance the clock past the refresh
+  margin without a new `refresh()` call.
+
 ### Fixed — streamed turns no longer report a bare error after a tool already committed (#506)
 
 - Root-cause fix for issue #506's actual one-click repro (the earlier
