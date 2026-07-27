@@ -18,6 +18,166 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — streamed turns no longer report a bare error after a tool already committed (#506)
+
+- Root-cause fix for issue #506's actual one-click repro (the earlier
+  reconciliation work below only helped on a *retry*). `chatStreamInner`
+  in `middleware/packages/harness-orchestrator/src/orchestrator.ts` wraps
+  its whole per-turn iteration loop — tool dispatch and every subsequent
+  `streamMessageEvents` call — in a single `try`/`catch`. Any exception
+  caught there unconditionally yielded a bare `{ type: 'error' }` event,
+  even when it happened in a LATER iteration (e.g. the model call that
+  generates the natural-language confirmation), after an EARLIER
+  iteration's tool call had already committed its side effect and already
+  yielded a successful `tool_result`. A user who clicked a create action
+  exactly once would have it created server-side and still see a generic
+  "Etwas ist schief gegangen" with zero diagnostic value — the false
+  negative the issue was filed against. The streaming iteration loop now
+  tracks, generically and tool-agnostically (by name only, no per-tool
+  special-casing), whether at least one `tool_result` succeeded
+  (`isError` falsy) this turn. When the catch block is reached with at
+  least one such committed result recorded, it now yields a `done` event
+  instead — `ChatStreamEvent`'s existing normal-completion shape,
+  already rendered correctly by every channel adapter — with an honest
+  answer naming the tool(s) that completed and stating that the turn
+  itself could not finish generating a follow-up response. It does not
+  claim the whole turn succeeded, and it does not fabricate tool-specific
+  detail it doesn't generically have. The underlying error is still
+  `console.error`-logged exactly as before for server-side diagnostics;
+  only the event yielded to the caller changes. A turn where nothing
+  committed yet (the genuine-failure case — e.g. the very first model
+  call fails, or the tool call itself errored) still yields `{ type:
+  'error' }` unchanged. Together with the reconciliation fix below, this
+  closes #506 for both the one-click repro and the retry-duplication
+  case; the correlation-id/error-token secondary ask remains explicitly
+  out of scope (see below).
+- Review follow-up: the emergency `done` yielded from the catch block above
+  did not call `this.sessionLogger.log(...)` first — the ONE thing every
+  other `done`-emission site in `chatStreamInner` does before yielding (see
+  `SessionLogger`'s doc comment: the transcript is what lets a follow-up
+  turn recall prior discussion, and what survives a mid-turn crash). For a
+  tool whose side effect isn't idempotently reconciled the way routine-create
+  now is (e.g. `send_email`, `book_meeting`), an unlogged commit meant the
+  *next* turn had no record it happened and could re-invoke the same tool —
+  the exact duplicate-side-effect class of bug this fix exists to prevent,
+  reintroduced by the fix's own new code path. The emergency-`done` path now
+  calls `sessionLogger.log(...)` with the same argument shape as the other
+  sites (`scope`, `userMessage`, `assistantAnswer`, `toolCalls`,
+  `iterations`, `entityRefs`, optional `userId`/`runTrace`), best-effort
+  (a logging failure is caught and logged, never swallows the `done`), and
+  surfaces `turnId`/`runTrace` on the yielded event when persistence
+  succeeded. `committedToolReporting.test.ts` now constructs the test
+  orchestrator WITH a recording `sessionLogger` (the prior 2 tests built one
+  without any logger at all, which is why the gap was invisible) and asserts
+  the log call happened, with matching `scope`/`userMessage`/
+  `assistantAnswer`/`toolCalls`/`iterations`, plus that a genuine failure
+  (nothing committed) still does not log.
+- Review follow-up: the fix above tracks `committedToolNames` generically —
+  ANY successful `tool_result` this turn counts as "committed," with no
+  distinction between a read-only tool and a mutating one. A reviewer raised
+  the concrete scenario where a read-only tool (e.g. `list_routines`)
+  succeeds and a LATER, more consequential tool call then never runs because
+  of a transient failure in the model call that would have requested it —
+  the turn still reports `done`. This tradeoff — generic-across-all-tools
+  vs. narrowed-to-routine-create-only vs. dropping the orchestrator fix
+  entirely — was weighed and resolved in favor of keeping the current
+  generic, tool-agnostic behavior across all tools, accepting the residual
+  risk described above in exchange for fixing the false-negative-on-success
+  bug for every side-effecting tool, not just routine creation. This is now
+  documented as a deliberate decision (not an oversight) directly in the
+  code, on both `committedToolNames`'s
+  declaration and the catch block's done-vs-error branch in
+  `orchestrator.ts`, and pinned by a new `committedToolReporting.test.ts`
+  case (`reports done even when a later intended action never ran (accepted
+  tradeoff, see code comment)`) that exercises exactly this multi-tool
+  scenario. No production logic changed in this round.
+
+### Fixed — routine create no longer reports failure for a retry that already succeeded (#506)
+
+- `RoutineRunner.createRoutine` previously let a retried `create` (e.g. after
+  the turn's own confirmation never made it back over the channel) fall
+  through to `RoutineNameConflictError` — a message with no diagnostic value
+  that nudged the caller toward trying again under a different name and
+  actually duplicating the routine. It now reconciles: on a name conflict it
+  looks up the existing row (`RoutineStore.getByName`, new) and, if the
+  `cron`/`prompt`/`channel`/`timeoutMs` match what was just requested,
+  returns that row instead of raising — the earlier call already succeeded,
+  so the retry now sees success too. Reconciliation only fires against an
+  `active` existing row: a paused/inactive same-name row with otherwise
+  identical fields still raises `RoutineNameConflictError`, because that is
+  a genuine, separate collision (e.g. a paused "demo" routine plus a new,
+  deliberate create under the same name), not the caller's own in-flight
+  retry — silently reconciling there would report a successful create with
+  no active schedule, which is a worse instance of the exact
+  false-negative/false-positive problem this issue was filed to fix.
+  Reconciliation deliberately does not additionally gate on the existing
+  row's age/`createdAt`; see the code comment in `createRoutine` for why. A
+  conflict with genuinely different fields still raises
+  `RoutineNameConflictError` as before. Threading a
+  request/trace correlation id through routine-turn error responses
+  end-to-end (the issue's secondary ask) remains open — it would require a
+  new field on the shared `ChatTurnInput`/`ChatTurnResult` contract
+  (`@omadia/channel-sdk`) plus support in every channel adapter, which is
+  broader than this fix. The literal error wording shown in Teams
+  ("Etwas ist schief gegangen …") lives in the external Teams-channel
+  adapter plugin and is out of scope for this repo.
+  `isSameRoutineRequest`'s field comparison omitted `outputTemplate` — an
+  independently-settable object field on both `Routine` and
+  `CreateRoutineInput` (Phase C structured-output templates). A retried
+  create that agreed on `cron`/`prompt`/`channel`/`timeoutMs` but carried a
+  *different* `outputTemplate` (e.g. the caller adding or changing the
+  structured template on an existing schedule) would reconcile to the old
+  row and silently discard the new template while reporting success — the
+  exact class of bug this issue exists to eliminate, on a field the fix's
+  own comparison had missed. `isSameRoutineRequest` now compares
+  `outputTemplate` too, via `node:util`'s `isDeepStrictEqual` (it is an
+  object, so reference/`===` equality is not sufficient); an identical
+  template (including the `null`/`null` case) still reconciles as before.
+  The reconciliation check also ran too late: `createRoutine` evaluated the
+  per-user quota (`countActiveForUser`) *before* attempting `store.create()`,
+  so a retry from a user already sitting at `maxActivePerUser` — exactly the
+  state their own successful-but-unconfirmed first call left them in — was
+  rejected with `RoutineQuotaExceededError` before it ever reached the
+  conflict-reconciliation logic, resurfacing the same false-negative under a
+  different exception type. `createRoutine` now looks up
+  `RoutineStore.getByName` and reconciles a same-request, `active` retry
+  *before* the quota check and before calling `store.create()` at all — no
+  new row is needed for a retry that already succeeded. The quota check
+  still applies to every genuinely new routine request. The reconciliation
+  logic in the `store.create()` catch block is unchanged and remains the
+  necessary race-safety net for a concurrent request that creates the
+  matching row between this proactive lookup and the insert.
+  `isSameRoutineRequest` also excluded `conversationRef` from its
+  comparison, reasoning it was a delivery-mechanism detail the caller
+  doesn't control byte-for-byte. That's wrong on the cold-start outreach
+  path: `ManageRoutineTool.handleCreate` resolves `conversationRef` from
+  a caller-supplied `targetEmail` via `buildEmailColdStartTarget` before
+  calling `createRoutine`, so it *is* caller-specified there. A create for
+  a new `targetEmail` that otherwise matched an existing active routine
+  (same tenant/user/name/cron/prompt/channel/timeoutMs/`outputTemplate`)
+  would silently reconcile to the existing row and report success, while
+  the new recipient was never set up and the routine kept messaging the
+  original one — a silent-wrong-recipient bug. `isSameRoutineRequest` now
+  compares `conversationRef` too, via `isDeepStrictEqual` (same rationale
+  as `outputTemplate`: it is an object, and `buildEmailColdStartTarget`
+  resolves deterministically per email, so deep equality correctly
+  distinguishes a true retry from a different-recipient request).
+- Review follow-up: `RoutineStore.create()` normalizes an omitted
+  `conversationRef` to `{}` before persisting it (and reads it back the
+  same way — `JSON.stringify(input.conversationRef ?? {})`), but
+  `isSameRoutineRequest`'s new `conversationRef` comparison above compared
+  the stored (normalized) value against the RAW retry input with no
+  equivalent `?? {}` default, unlike `timeoutMs` and `outputTemplate`,
+  which already apply the same default the store itself uses. On the
+  ordinary (non-cold-start) create path — where `conversationRef` is
+  legitimately `undefined`/omitted both on the original call and the retry,
+  since only the `targetEmail` cold-start branch sets a non-default value —
+  the stored `{}` never matched the retry's raw `undefined`, so the retry
+  fell through to `RoutineNameConflictError`, reintroducing the exact
+  false-negative issue #506 exists to fix for that path.
+  `isSameRoutineRequest` now applies the same `?? {}` normalization the
+  store uses: `isDeepStrictEqual(existing.conversationRef, input.conversationRef ?? {})`.
+
 ### Fixed — Teams-uploaded images now reach the model as vision input (#504, #505)
 
 - Teams delivers inbound images via a Tigris `storage_key` + `[attachments-info]`
@@ -149,7 +309,6 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 - Purely additive — `computeHealthScore` (the diff-based drift score
   `driftWorker.ts` persists) is untouched. Builder UI wiring and
   `driftWorker.ts` snapshot wiring are deferred to follow-up work; see #499.
-
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
 - The save-as-template dialog no longer reads the viewer's own template id as
