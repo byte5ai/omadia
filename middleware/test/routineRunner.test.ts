@@ -119,7 +119,7 @@ class InMemoryRoutineStore implements RoutineStore {
       cron: input.cron,
       prompt: input.prompt,
       channel: input.channel,
-      conversationRef: input.conversationRef,
+      conversationRef: input.conversationRef ?? {},
       status: 'active',
       timeoutMs: input.timeoutMs ?? 600_000,
       createdAt: now,
@@ -581,6 +581,30 @@ describe('RoutineRunner — createRoutine', () => {
     const retry = await h.runner.createRoutine({
       ...baseInput,
       conversationRef: { conversation: { id: 'conv-alice' } },
+    });
+    assert.equal(retry.id, first.id, 'retry must resolve to the original row');
+    assert.equal(h.store.rows.size, 1, 'no duplicate row was created');
+  });
+
+  // Reviewer-confirmed bug fix: `store.create()` normalizes an omitted
+  // `conversationRef` to `{}` before persisting (routineStore.ts stores
+  // `JSON.stringify(input.conversationRef ?? {})`, and reads it back the
+  // same way), but `isSameRoutineRequest` used to compare the stored `{}`
+  // against the RAW retry input with no equivalent `?? {}` normalization —
+  // unlike `timeoutMs` and `outputTemplate`, which already apply the same
+  // default the store itself uses. A genuine retry of the ordinary
+  // (non-cold-start) create path — where `conversationRef` is legitimately
+  // `undefined` both times — must still reconcile to the existing row
+  // rather than falling through to `RoutineNameConflictError`.
+  it('reconciles a retry whose conversationRef is omitted both times', async () => {
+    const h = makeHarness();
+    const first = await h.runner.createRoutine({
+      ...baseInput,
+      conversationRef: undefined,
+    });
+    const retry = await h.runner.createRoutine({
+      ...baseInput,
+      conversationRef: undefined,
     });
     assert.equal(retry.id, first.id, 'retry must resolve to the original row');
     assert.equal(h.store.rows.size, 1, 'no duplicate row was created');

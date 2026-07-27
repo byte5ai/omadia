@@ -111,7 +111,7 @@ class InMemoryRoutineStore {
       cron: input.cron,
       prompt: input.prompt,
       channel: input.channel,
-      conversationRef: input.conversationRef,
+      conversationRef: input.conversationRef ?? {},
       status: 'active',
       timeoutMs: input.timeoutMs ?? 600_000,
       createdAt: now,

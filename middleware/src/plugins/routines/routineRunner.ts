@@ -829,7 +829,7 @@ function isSameRoutineRequest(
     existing.channel === input.channel &&
     existing.timeoutMs === (input.timeoutMs ?? 600_000) &&
     isDeepStrictEqual(existing.outputTemplate, input.outputTemplate ?? null) &&
-    isDeepStrictEqual(existing.conversationRef, input.conversationRef)
+    isDeepStrictEqual(existing.conversationRef, input.conversationRef ?? {})
   );
 }
 

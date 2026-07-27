@@ -143,6 +143,21 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   as `outputTemplate`: it is an object, and `buildEmailColdStartTarget`
   resolves deterministically per email, so deep equality correctly
   distinguishes a true retry from a different-recipient request).
+- Review follow-up: `RoutineStore.create()` normalizes an omitted
+  `conversationRef` to `{}` before persisting it (and reads it back the
+  same way — `JSON.stringify(input.conversationRef ?? {})`), but
+  `isSameRoutineRequest`'s new `conversationRef` comparison above compared
+  the stored (normalized) value against the RAW retry input with no
+  equivalent `?? {}` default, unlike `timeoutMs` and `outputTemplate`,
+  which already apply the same default the store itself uses. On the
+  ordinary (non-cold-start) create path — where `conversationRef` is
+  legitimately `undefined`/omitted both on the original call and the retry,
+  since only the `targetEmail` cold-start branch sets a non-default value —
+  the stored `{}` never matched the retry's raw `undefined`, so the retry
+  fell through to `RoutineNameConflictError`, reintroducing the exact
+  false-negative issue #506 exists to fix for that path.
+  `isSameRoutineRequest` now applies the same `?? {}` normalization the
+  store uses: `isDeepStrictEqual(existing.conversationRef, input.conversationRef ?? {})`.
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
