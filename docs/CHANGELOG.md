@@ -70,6 +70,17 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   plugin's domain tool as the turn's forced `tool_choice`, which would name a
   tool `buildToolsList()` had already excluded from `tools[]` — now gated the
   same way.
+- Follow-up (review round 4/final): the last unguarded consumer of
+  `domainToolsByName` — the DirectLine (`#token`) candidate resolution in
+  `Orchestrator.executeDirectLine()` — still let a not-ready plugin's
+  `#token` resolve successfully. `dispatchToolInner()` already refused the
+  handler safely, but its raw `Error: tool … is unavailable …` string was
+  then wrapped into a `delegatedAnswer` and shown to the user as though the
+  specialist itself had answered. The resolved candidate's readiness is now
+  checked against the same `isToolAvailable(agentId)` gate right after
+  resolution, reusing the existing "Specialist … is no longer available."
+  notice already used for a deleted tool, instead of surfacing the internal
+  dispatch-error string.
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 

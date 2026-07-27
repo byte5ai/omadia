@@ -2235,7 +2235,14 @@ export class Orchestrator {
 
     const candidate = resolution.candidate;
     const tool = this.domainToolsByName.get(candidate.toolName);
-    if (!tool) {
+    // Issue #474 (round 4) — a not-ready plugin's domain tool must resolve
+    // the same as a deleted one: `dispatchToolInner` already blocks the
+    // handler safely (no capability leak), but without this check its raw
+    // `Error: tool … is unavailable …` string would be wrapped into a
+    // delegatedAnswer and shown to the user as if the specialist itself had
+    // answered. Reuse the SAME notice as the deleted-tool branch above
+    // instead of surfacing that internal dispatch-error string.
+    if (!tool || !this.isToolAvailable(tool.agentId)) {
       return this.directLineNotice(
         `Specialist "${candidate.label}" is no longer available.`,
       );

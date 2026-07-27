@@ -408,6 +408,31 @@ describe('#332 Layer 2 — Direct Line (strict passthrough, non-streaming/Teams)
     assert.equal(sa.text, 'normal LLM answer'); // handled by the LLM, not hijacked
   });
 
+  it('issue #474 round-4 fix — a NOT-READY plugin\'s token surfaces the "no longer available" notice, never a raw dispatch-error string', async () => {
+    let asked = false;
+    const tool = strategistTool(async () => {
+      asked = true;
+      return 'should not run';
+    });
+    const orch = new Orchestrator({
+      provider: neverCalledProvider(),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      isPluginToolsReady: (agentId) => agentId !== 'de.byte5.agent.strategist',
+    });
+    const sa = await orch.chat({
+      userMessage: '#strategist What are three risks in plan A?',
+      sessionScope: 's2c',
+    });
+    assert.equal(asked, false, 'the not-ready tool must never be invoked');
+    assert.equal(sa.delegatedAnswer, undefined);
+    assert.doesNotMatch(sa.text, /^Error:/);
+    assert.match(sa.text, /no longer available/i);
+  });
+
   it('an AMBIGUOUS token disambiguates, never a silent wrong route', async () => {
     const a = createDomainTool({
       name: 'ask_twin_a',
