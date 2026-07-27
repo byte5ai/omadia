@@ -111,7 +111,7 @@ class InMemoryRoutineStore {
       cron: input.cron,
       prompt: input.prompt,
       channel: input.channel,
-      conversationRef: input.conversationRef,
+      conversationRef: input.conversationRef ?? {},
       status: 'active',
       timeoutMs: input.timeoutMs ?? 600_000,
       createdAt: now,
@@ -127,6 +127,18 @@ class InMemoryRoutineStore {
 
   async get(id: string): Promise<Routine | null> {
     return this.rows.get(id) ?? null;
+  }
+
+  async getByName(
+    tenant: string,
+    userId: string,
+    name: string,
+  ): Promise<Routine | null> {
+    return (
+      [...this.rows.values()].find(
+        (r) => r.tenant === tenant && r.userId === userId && r.name === name,
+      ) ?? null
+    );
   }
 
   async listForUser(): Promise<Routine[]> {

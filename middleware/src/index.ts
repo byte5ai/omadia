@@ -255,6 +255,7 @@ import { installProcessGuards } from './platform/processGuards.js';
 import { PluginRouteRegistry } from './platform/pluginRouteRegistry.js';
 import { NotificationRouter } from './platform/notificationRouter.js';
 import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
+import { OAuthReadinessTracker } from './plugins/oauth/oauthReadinessTracker.js';
 import { UiRouteCatalog } from './platform/uiRouteCatalog.js';
 import { CanvasOutputRegistry } from './platform/canvasOutputRegistry.js';
 import { EventCatalogRegistry } from './platform/eventCatalogRegistry.js';
@@ -441,6 +442,11 @@ async function main(): Promise<void> {
   // Spec 004 — kernel store of plugin action statuses (ctx.status). Read by the
   // admin API to surface "Aktion erforderlich" badges/banners in the store UI.
   const pluginStatusRegistry = new PluginStatusRegistry();
+
+  // Issue #474 (round 5) — automatic OAuth-connection readiness signal,
+  // separate from pluginStatusRegistry above. See OAuthReadinessTracker's
+  // doc comment for why the two stay separate caches ANDed at the gate.
+  const oauthConnectionTracker = new OAuthReadinessTracker();
 
   // Shared Anthropic client used by sub-agents (LocalSubAgent inner Claude
   // calls) and the Teams channel (anthropicClient dep). The orchestrator-
@@ -746,6 +752,30 @@ async function main(): Promise<void> {
     },
   );
 
+  // Issue #474 — per-plugin tool-readiness gate for the orchestrator. Two
+  // independent signals are ANDed, either can withhold readiness:
+  //   (a) PluginStatusRegistry (spec 004) — the plugin's own, explicit
+  //       `ctx.status.report(...)`: `needs_action` / `error` means a
+  //       required setup/connection step is pending per the plugin's OWN
+  //       code.
+  //   (b) OAuthReadinessTracker (round 5) — automatic: a `type:'oauth'`
+  //       setup field whose Connect flow has not completed yet, derived
+  //       from the same vault state `ctx.oauthTokens` reads, WITHOUT
+  //       requiring the plugin author to write an explicit status.report()
+  //       call for the common OAuth case (installService.ts installs and
+  //       activates a `type:'oauth'` plugin — registering its tools —
+  //       before the operator has clicked Connect).
+  // Either "not ready" keeps the plugin's `ctx.tools.register()`-contributed
+  // tools out of the orchestrator's tool list and refuses them at dispatch.
+  // Deliberately separate from the MCP-server-specific auth flow
+  // (mcpOAuthService) — this only gates native-plugin tool registrations.
+  serviceRegistry.provide(
+    'installedPluginToolsReadyReader',
+    (agentId: string): boolean =>
+      pluginStatusRegistry.isReady(agentId) &&
+      oauthConnectionTracker.isConnected(agentId),
+  );
+
   // Kernel-wide background-job scheduler. Plugin-contributed jobs (cron or
   // interval) register here via `ctx.jobs.register(...)`. Bulk teardown on
   // plugin deactivate is owned by each runtime, so a leaked dispose handle
@@ -788,6 +818,7 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    oauthConnectionTracker,
     canvasOutputRegistry,
     eventCatalogRegistry,
     deterministicActionRegistry,
@@ -860,6 +891,7 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    oauthConnectionTracker,
     selfExtendRegistry,
     extensionStore,
     eventCatalogRegistry,

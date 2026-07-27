@@ -1,6 +1,6 @@
 import yaml from 'yaml';
 
-import { type AgentSpec, validateSpecForCodegen } from './agentSpec.js';
+import { type AgentSpec, type ToolSpec, validateSpecForCodegen } from './agentSpec.js';
 import {
   loadBoilerplate,
   type BoilerplateBundle,
@@ -549,24 +549,29 @@ function reproduceManifestCapabilities(
     return doc.toString();
   }
 
-  if (spec.tools.length <= 1) {
-    // 0 tools: clear the array (placeholder cap is meaningless without a tool).
-    // 1 tool:  default boilerplate already shapes one cap; placeholder
-    //          substitution finishes the job.
-    if (spec.tools.length === 0) capsNode.items = [];
+  if (spec.tools.length === 0) {
+    // Placeholder cap is meaningless without a tool.
+    capsNode.items = [];
     return doc.toString();
   }
 
-  // Multi-tool: clone the first cap once per tool, baking each tool's id +
-  // description into the per-clone copy. Placeholder substitution still runs
-  // afterwards over the resulting YAML to handle anything else in the block.
+  // #507 — one capability entry per spec.tools[i], synthesised from the
+  // tool's own fields rather than cloning the boilerplate's `search`
+  // template verbatim. This used to only trigger for spec.tools.length > 1
+  // (the single-tool case relied on the boilerplate's static defaults +
+  // placeholder substitution), which meant a single write-tool agent
+  // shipped `side_effects: read` / `autonomous: true` in manifest.yaml
+  // regardless of the spec, even though toolkit.ts had the correct
+  // per-tool schema. Applying the same synthesis uniformly to 1-tool
+  // agents makes the manifest's declared metadata match the spec in
+  // every case. Mirrors the per-item synthesis pattern in
+  // buildExternalReadsArtifacts below: fields the tool spec doesn't
+  // declare fall back to the boilerplate template's static defaults.
   const templateNode = capsNode.items[0] as yaml.Node;
-  const templateJson = templateNode.toJSON() as unknown;
-  const newItems = spec.tools.map((tool) => {
-    const cloneJson = JSON.parse(JSON.stringify(templateJson)) as unknown;
-    const baked = bakePerToolPlaceholders(cloneJson, tool.id, tool.description);
-    return doc.createNode(baked);
-  });
+  const templateJson = templateNode.toJSON() as Record<string, unknown>;
+  const newItems = spec.tools.map((tool) =>
+    doc.createNode(synthesizeCapabilityEntry(templateJson, tool)),
+  );
   capsNode.items = newItems as typeof capsNode.items;
   return doc.toString();
 }
@@ -642,6 +647,49 @@ function bakePerToolPlaceholders(
     return out;
   }
   return node;
+}
+
+/**
+ * #507 — builds one `capabilities[]` entry from a boilerplate template
+ * clone + a single `spec.tools[i]`. `input_schema` is always taken from
+ * `tool.input` (ToolSpecSchema defaults it to `{}`, so it's never
+ * undefined — an explicit "no args" schema, not a missing one).
+ * `output_schema`/`side_effects`/`idempotent`/`autonomous`/`timeout_ms`
+ * are genuinely optional on ToolSpec, so a tool that omits one falls
+ * back to whatever the boilerplate template shipped for that field.
+ *
+ * `side_effects` is already the manifest's own `'read' | 'write' | 'none'`
+ * string enum on ToolSpec (see ToolSpecSchema in agentSpec.ts) and is
+ * passed straight through, never mapped from a boolean. Getting this
+ * right matters: anything that reads manifest.yaml's declared
+ * side_effects/autonomous flags to decide whether a tool call needs
+ * confirmation depends on these values actually matching the tool's
+ * real behavior, and a write tool falling through to the template
+ * default would misreport itself as read-only/autonomous instead.
+ */
+function synthesizeCapabilityEntry(
+  templateJson: Record<string, unknown>,
+  tool: ToolSpec,
+): Record<string, unknown> {
+  const cloneJson = JSON.parse(JSON.stringify(templateJson)) as Record<string, unknown>;
+  // Bake any stray {{CAPABILITY_ID}}/{{CAPABILITY_DESCRIPTION_DE}} usage
+  // elsewhere in the template clone (e.g. inside output_schema docs)
+  // before the explicit field overrides below take precedence.
+  const baked = bakePerToolPlaceholders(cloneJson, tool.id, tool.description) as Record<
+    string,
+    unknown
+  >;
+  return {
+    ...baked,
+    id: tool.id,
+    description: tool.description,
+    input_schema: tool.input,
+    output_schema: tool.output ?? baked['output_schema'],
+    side_effects: tool.side_effects ?? baked['side_effects'],
+    idempotent: tool.idempotent ?? baked['idempotent'],
+    autonomous: tool.autonomous ?? baked['autonomous'],
+    timeout_ms: tool.timeout_ms ?? baked['timeout_ms'],
+  };
 }
 
 const RESIDUE_RE = /\{\{[A-Z][A-Z0-9_]*\}\}/g;

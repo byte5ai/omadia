@@ -54,3 +54,5 @@ export {
   resolveOAuthProvider,
   type ResolvedOAuthProvider,
 } from './providerResolve.js';
+
+export { OAuthReadinessTracker } from './oauthReadinessTracker.js';

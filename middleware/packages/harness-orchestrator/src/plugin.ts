@@ -363,6 +363,14 @@ export async function activate(
     (agentId: string, configKey: string) => unknown | undefined
   >('installedPluginConfigReader');
 
+  // Issue #474 — per-plugin tool-readiness gate. Published by the kernel at
+  // boot (`middleware/src/index.ts:installedPluginToolsReadyReader`), backed
+  // by `PluginStatusRegistry`. Absent (legacy hosts, unit tests) → every
+  // plugin's tools stay available exactly as before #474.
+  const isPluginToolsReady = ctx.services.get<
+    (agentId: string) => boolean
+  >('installedPluginToolsReadyReader');
+
   // Setup-field config (with defaults)
   const model =
     (ctx.config.get<string>('orchestrator_model') ?? '').trim() ||
@@ -549,6 +557,7 @@ export async function activate(
     responseGuard: responseGuardGetter,
     privacyGuard: privacyGuardGetter,
     ...(pluginConfigGet ? { pluginConfigGet } : {}),
+    ...(isPluginToolsReady ? { isPluginToolsReady } : {}),
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),

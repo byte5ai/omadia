@@ -18,6 +18,444 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
+
+- A native plugin (`ctx.tools.register` from `activate()`) whose own
+  connection/auth setup is still pending — reported via the existing
+  `ctx.status.report({state: 'needs_action' | 'error'})` — is now excluded
+  from the tool list the orchestrator offers the model
+  (`Orchestrator.buildToolsList`), instead of being offered and failing on
+  the first call. The same check runs again at invocation time
+  (`Orchestrator.dispatchToolInner` and the standalone
+  `ToolDispatchService` used by the subscription-CLI provider), so a status
+  change between list-assembly and the actual call can't slip through
+  either. Plugins that never report a status (the common case — no
+  connection step) are unaffected. Deliberately separate from the
+  MCP-server-specific auth-gap flow (`mcpOAuthService`), which already
+  handles that case for MCP servers.
+- Follow-up (review round 2): `Orchestrator.getSystemPrompt()` now applies
+  the same `isToolAvailable` gate to the plugin `promptDoc` collection that
+  `buildToolsList()` already applied to the tool specs — a gated plugin's
+  documentation is no longer spliced into the system prompt while its tool
+  is simultaneously hidden from `tools[]`. Previously the model would still
+  be told about a capability whose spec had just been removed, replacing a
+  clean "tool not offered" state with a confusing "documented but missing
+  tool" one.
+- Follow-up (review round 3): the gate only covered native tools registered
+  via `ctx.tools.register()` — `Orchestrator.buildToolsList()` still
+  appended every `DomainTool` (the dynamic-agent-plugin tools, e.g.
+  `query_<slug>`) unconditionally, and `dispatchToolInner()` still invoked
+  a matching one without any readiness check. Both call sites now apply
+  the same `isToolAvailable(agentId)` gate `DomainTool.agentId` already
+  carries, so a not-ready plugin's domain tool is excluded from `tools[]`
+  and refused (`Error:`-prefixed, handler never invoked) at dispatch time,
+  matching the native-tool path exactly.
+- Follow-up (review round 4): two remaining gaps of the same kind. First,
+  `Orchestrator.buildSystemPrompt()`'s "Fach-Agenten" roster block — the
+  human-readable list of domain tools rendered ahead of the tool specs —
+  still listed every `DomainTool` unconditionally, so a not-ready plugin's
+  tool was hidden from `tools[]` but the model was still told to route to it
+  by name. `Orchestrator.getSystemPrompt()` now filters the roster through
+  the same `isToolAvailable(agentId)` gate before it reaches
+  `buildSystemPrompt()`. Second, `PluginStatusRegistry.isReady()` only
+  returned `true` when there was no stored status entry at all — correctness
+  depended entirely on every caller normalizing `state: 'ok'` into `clear()`
+  before it reached the registry's own `set()`, which only the higher-level
+  `StatusAccessor.report()` in `pluginContext.ts` did. `isReady()` now
+  checks the stored entry's `state` directly (`!entry ||
+  (entry.state !== 'needs_action' && entry.state !== 'error')`), so it stays
+  correct even for a caller that stores `{state: 'ok'}` via `set()` directly.
+  Also closed during the same audit: `Orchestrator.directLineObligationState()`
+  (the `#332` forced-delegation primitive) could still resolve a not-ready
+  plugin's domain tool as the turn's forced `tool_choice`, which would name a
+  tool `buildToolsList()` had already excluded from `tools[]` — now gated the
+  same way.
+- Follow-up (review round 4/final): the last unguarded consumer of
+  `domainToolsByName` — the DirectLine (`#token`) candidate resolution in
+  `Orchestrator.executeDirectLine()` — still let a not-ready plugin's
+  `#token` resolve successfully. `dispatchToolInner()` already refused the
+  handler safely, but its raw `Error: tool … is unavailable …` string was
+  then wrapped into a `delegatedAnswer` and shown to the user as though the
+  specialist itself had answered. The resolved candidate's readiness is now
+  checked against the same `isToolAvailable(agentId)` gate right after
+  resolution, reusing the existing "Specialist … is no longer available."
+  notice already used for a deleted tool, instead of surfacing the internal
+  dispatch-error string.
+- Follow-up (review round 5): every gate above depended on the plugin's own
+  code calling `ctx.status.report(...)`. The generic install/Connect flow
+  never does this automatically — `installService.ts` activates a
+  `type:'oauth'` plugin (registering its tools) the moment `configure()`
+  completes, which is BEFORE the operator has clicked "Connect" and the
+  kernel OAuth broker has stored any tokens. A plugin author who never wrote
+  an explicit status-report call for this (the common case) still had its
+  tools offered and invoked, failing with `OAuthTokenError('not_connected')`
+  on the first call — the exact round-trip #474 was filed to eliminate. A
+  new `OAuthReadinessTracker` derives connection state from the same vault
+  state `ctx.oauthTokens` reads, refreshed on every `ToolPluginRuntime` /
+  `DynamicAgentRuntime` `activate()` (fresh install, boot reactivation, and
+  post-Connect reactivation all funnel through this single choke point per
+  runtime). The orchestrator's readiness gate now ANDs this automatic signal
+  with the existing `PluginStatusRegistry` one — either can withhold
+  readiness — kept as two separate caches rather than one merged into the
+  other, so neither can silently clobber the other's verdict.
+- Follow-up (review round 8): every gate above only covered
+  `ctx.tools.register()` — `NativeToolRegistry.registerHandler()` (used by
+  `ctx.tools.registerHandler()` for tools whose wire-spec the kernel emits
+  itself, e.g. the Anthropic-native `memory` tool used today by
+  `harness-memory` / `harness-memory-postgres`) never stored an `agentId` on
+  its entry at all, so `isToolAvailable`'s `agentId === undefined ⇒
+  always-available` default — correct for a genuinely kernel-internal
+  registration — incorrectly also applied to ANY plugin using this path
+  instead of `register()`, leaving its `promptDoc` in the system prompt and
+  its handler dispatchable regardless of the plugin's own readiness.
+  `NativeToolHandlerRegistrationOptions` and the stored
+  `NativeToolRegistration` entry both gained the same optional `agentId` the
+  `register()` path already carries, and `ctx.tools.registerHandler()` in
+  `pluginContext.ts` now passes the calling plugin's own id, mirroring
+  `ctx.tools.register()`'s existing wiring exactly — no new gate logic, the
+  entry just flows through the same `isToolAvailable(agentId)` check every
+  other path already uses. The two current `registerHandler()` callers
+  (`harness-memory`, `harness-memory-postgres`) are unaffected in practice:
+  neither reports a connection status, so `PluginStatusRegistry.isReady()`
+  defaults them to ready, exactly as before this fix.
+- Follow-up (review round 10), two remaining gaps: (1)
+  `OAuthReadinessTracker.refresh()` treated `tokens !== undefined` alone as
+  "connected" — it only checked that SOME token bundle was stored in the
+  vault, not that it was actually usable. `ctx.oauthTokens.get()`
+  (`pluginContext.ts`) throws `OAuthTokenError('refresh_failed')` for a
+  token that's expired AND has no refresh token to renew it with, so a
+  plugin in that state was still reported ready, offered, and dispatched —
+  failing on the first real call with the exact wasted round-trip #474 was
+  filed to eliminate. The "still fresh" expiry check `ctx.oauthTokens.get()`
+  already computes is now factored out into `tokenStore.ts`'s
+  `isTokenStillFresh`/`isTokenRefreshable` and reused by both call sites, so
+  the two can never drift on what counts as expired; a token that's expired
+  but HAS a refresh token still counts as ready (a refresh is expected to
+  succeed transparently). (2) The built-in Anthropic `memory` tool
+  (`{type:'memory_20250818', name:'memory'}`) is special-cased in both
+  `buildToolsList()` and `dispatchToolInner()` and dispatched via the
+  orchestrator's own per-Agent-scoped `memoryToolHandler` BEFORE the general
+  `NativeToolRegistry`/`isToolAvailable(agentId)` gate is ever consulted —
+  so a plugin contributing `memory` via `ctx.tools.registerHandler('memory',
+  ...)` (the same path `harness-memory`/`harness-memory-postgres` use) with
+  `isPluginToolsReady(pluginId) === false` still had it offered and
+  dispatched, completely bypassing round 8's fix. Both call sites now look
+  up the `memory` entry's own `agentId` (if any plugin registered it) and
+  run it through the same `isToolAvailable` gate before taking the fast
+  path. A marker-only / agentId-less entry (nothing registered `memory` via
+  a plugin) keeps the existing "no agentId ⇒ always-available" default, so
+  the two current always-ready memory plugins are unaffected as long as they
+  haven't reported not-ready — covered by a new test alongside the
+  gated-plugin case.
+- Follow-up (review round 12): `OAuthReadinessTracker.isConnected()` read a
+  boolean cached once inside `refresh()` — activation time — instead of
+  re-checking freshness against the current wall clock. A plugin activating
+  with, say, 10 minutes of token freshness left and no refresh token cached
+  as "ready" and stayed that way until the NEXT activation, even after
+  crossing `tokenStore.ts`'s 5-minute `OAUTH_REFRESH_MARGIN_MS`, where a real
+  `ctx.oauthTokens.get()` call would already throw
+  `OAuthTokenError('refresh_failed')` — reproducing the exact wasted
+  round-trip #474 exists to prevent, just shifted into the gap between
+  activations instead of at activation time. `refresh()` now caches only the
+  raw per-field `StoredOAuthTokens` (the genuinely async vault read), and
+  `isConnected()` recomputes `isTokenRefreshable()`/`isTokenStillFresh()`
+  fresh on every call against `Date.now()` — both are pure, synchronous,
+  in-memory checks, so recomputing per read has no latency cost. Mirrors how
+  `ctx.oauthTokens.get()` itself never caches a verdict either. Covered by a
+  new test using `t.mock.timers` to advance the clock past the refresh
+  margin without a new `refresh()` call.
+
+### Fixed — streamed turns no longer report a bare error after a tool already committed (#506)
+
+- Root-cause fix for issue #506's actual one-click repro (the earlier
+  reconciliation work below only helped on a *retry*). `chatStreamInner`
+  in `middleware/packages/harness-orchestrator/src/orchestrator.ts` wraps
+  its whole per-turn iteration loop — tool dispatch and every subsequent
+  `streamMessageEvents` call — in a single `try`/`catch`. Any exception
+  caught there unconditionally yielded a bare `{ type: 'error' }` event,
+  even when it happened in a LATER iteration (e.g. the model call that
+  generates the natural-language confirmation), after an EARLIER
+  iteration's tool call had already committed its side effect and already
+  yielded a successful `tool_result`. A user who clicked a create action
+  exactly once would have it created server-side and still see a generic
+  "Etwas ist schief gegangen" with zero diagnostic value — the false
+  negative the issue was filed against. The streaming iteration loop now
+  tracks, generically and tool-agnostically (by name only, no per-tool
+  special-casing), whether at least one `tool_result` succeeded
+  (`isError` falsy) this turn. When the catch block is reached with at
+  least one such committed result recorded, it now yields a `done` event
+  instead — `ChatStreamEvent`'s existing normal-completion shape,
+  already rendered correctly by every channel adapter — with an honest
+  answer naming the tool(s) that completed and stating that the turn
+  itself could not finish generating a follow-up response. It does not
+  claim the whole turn succeeded, and it does not fabricate tool-specific
+  detail it doesn't generically have. The underlying error is still
+  `console.error`-logged exactly as before for server-side diagnostics;
+  only the event yielded to the caller changes. A turn where nothing
+  committed yet (the genuine-failure case — e.g. the very first model
+  call fails, or the tool call itself errored) still yields `{ type:
+  'error' }` unchanged. Together with the reconciliation fix below, this
+  closes #506 for both the one-click repro and the retry-duplication
+  case; the correlation-id/error-token secondary ask remains explicitly
+  out of scope (see below).
+- Review follow-up: the emergency `done` yielded from the catch block above
+  did not call `this.sessionLogger.log(...)` first — the ONE thing every
+  other `done`-emission site in `chatStreamInner` does before yielding (see
+  `SessionLogger`'s doc comment: the transcript is what lets a follow-up
+  turn recall prior discussion, and what survives a mid-turn crash). For a
+  tool whose side effect isn't idempotently reconciled the way routine-create
+  now is (e.g. `send_email`, `book_meeting`), an unlogged commit meant the
+  *next* turn had no record it happened and could re-invoke the same tool —
+  the exact duplicate-side-effect class of bug this fix exists to prevent,
+  reintroduced by the fix's own new code path. The emergency-`done` path now
+  calls `sessionLogger.log(...)` with the same argument shape as the other
+  sites (`scope`, `userMessage`, `assistantAnswer`, `toolCalls`,
+  `iterations`, `entityRefs`, optional `userId`/`runTrace`), best-effort
+  (a logging failure is caught and logged, never swallows the `done`), and
+  surfaces `turnId`/`runTrace` on the yielded event when persistence
+  succeeded. `committedToolReporting.test.ts` now constructs the test
+  orchestrator WITH a recording `sessionLogger` (the prior 2 tests built one
+  without any logger at all, which is why the gap was invisible) and asserts
+  the log call happened, with matching `scope`/`userMessage`/
+  `assistantAnswer`/`toolCalls`/`iterations`, plus that a genuine failure
+  (nothing committed) still does not log.
+- Review follow-up: the fix above tracks `committedToolNames` generically —
+  ANY successful `tool_result` this turn counts as "committed," with no
+  distinction between a read-only tool and a mutating one. A reviewer raised
+  the concrete scenario where a read-only tool (e.g. `list_routines`)
+  succeeds and a LATER, more consequential tool call then never runs because
+  of a transient failure in the model call that would have requested it —
+  the turn still reports `done`. This tradeoff — generic-across-all-tools
+  vs. narrowed-to-routine-create-only vs. dropping the orchestrator fix
+  entirely — was weighed and resolved in favor of keeping the current
+  generic, tool-agnostic behavior across all tools, accepting the residual
+  risk described above in exchange for fixing the false-negative-on-success
+  bug for every side-effecting tool, not just routine creation. This is now
+  documented as a deliberate decision (not an oversight) directly in the
+  code, on both `committedToolNames`'s
+  declaration and the catch block's done-vs-error branch in
+  `orchestrator.ts`, and pinned by a new `committedToolReporting.test.ts`
+  case (`reports done even when a later intended action never ran (accepted
+  tradeoff, see code comment)`) that exercises exactly this multi-tool
+  scenario. No production logic changed in this round.
+
+### Fixed — routine create no longer reports failure for a retry that already succeeded (#506)
+
+- `RoutineRunner.createRoutine` previously let a retried `create` (e.g. after
+  the turn's own confirmation never made it back over the channel) fall
+  through to `RoutineNameConflictError` — a message with no diagnostic value
+  that nudged the caller toward trying again under a different name and
+  actually duplicating the routine. It now reconciles: on a name conflict it
+  looks up the existing row (`RoutineStore.getByName`, new) and, if the
+  `cron`/`prompt`/`channel`/`timeoutMs` match what was just requested,
+  returns that row instead of raising — the earlier call already succeeded,
+  so the retry now sees success too. Reconciliation only fires against an
+  `active` existing row: a paused/inactive same-name row with otherwise
+  identical fields still raises `RoutineNameConflictError`, because that is
+  a genuine, separate collision (e.g. a paused "demo" routine plus a new,
+  deliberate create under the same name), not the caller's own in-flight
+  retry — silently reconciling there would report a successful create with
+  no active schedule, which is a worse instance of the exact
+  false-negative/false-positive problem this issue was filed to fix.
+  Reconciliation deliberately does not additionally gate on the existing
+  row's age/`createdAt`; see the code comment in `createRoutine` for why. A
+  conflict with genuinely different fields still raises
+  `RoutineNameConflictError` as before. Threading a
+  request/trace correlation id through routine-turn error responses
+  end-to-end (the issue's secondary ask) remains open — it would require a
+  new field on the shared `ChatTurnInput`/`ChatTurnResult` contract
+  (`@omadia/channel-sdk`) plus support in every channel adapter, which is
+  broader than this fix. The literal error wording shown in Teams
+  ("Etwas ist schief gegangen …") lives in the external Teams-channel
+  adapter plugin and is out of scope for this repo.
+  `isSameRoutineRequest`'s field comparison omitted `outputTemplate` — an
+  independently-settable object field on both `Routine` and
+  `CreateRoutineInput` (Phase C structured-output templates). A retried
+  create that agreed on `cron`/`prompt`/`channel`/`timeoutMs` but carried a
+  *different* `outputTemplate` (e.g. the caller adding or changing the
+  structured template on an existing schedule) would reconcile to the old
+  row and silently discard the new template while reporting success — the
+  exact class of bug this issue exists to eliminate, on a field the fix's
+  own comparison had missed. `isSameRoutineRequest` now compares
+  `outputTemplate` too, via `node:util`'s `isDeepStrictEqual` (it is an
+  object, so reference/`===` equality is not sufficient); an identical
+  template (including the `null`/`null` case) still reconciles as before.
+  The reconciliation check also ran too late: `createRoutine` evaluated the
+  per-user quota (`countActiveForUser`) *before* attempting `store.create()`,
+  so a retry from a user already sitting at `maxActivePerUser` — exactly the
+  state their own successful-but-unconfirmed first call left them in — was
+  rejected with `RoutineQuotaExceededError` before it ever reached the
+  conflict-reconciliation logic, resurfacing the same false-negative under a
+  different exception type. `createRoutine` now looks up
+  `RoutineStore.getByName` and reconciles a same-request, `active` retry
+  *before* the quota check and before calling `store.create()` at all — no
+  new row is needed for a retry that already succeeded. The quota check
+  still applies to every genuinely new routine request. The reconciliation
+  logic in the `store.create()` catch block is unchanged and remains the
+  necessary race-safety net for a concurrent request that creates the
+  matching row between this proactive lookup and the insert.
+  `isSameRoutineRequest` also excluded `conversationRef` from its
+  comparison, reasoning it was a delivery-mechanism detail the caller
+  doesn't control byte-for-byte. That's wrong on the cold-start outreach
+  path: `ManageRoutineTool.handleCreate` resolves `conversationRef` from
+  a caller-supplied `targetEmail` via `buildEmailColdStartTarget` before
+  calling `createRoutine`, so it *is* caller-specified there. A create for
+  a new `targetEmail` that otherwise matched an existing active routine
+  (same tenant/user/name/cron/prompt/channel/timeoutMs/`outputTemplate`)
+  would silently reconcile to the existing row and report success, while
+  the new recipient was never set up and the routine kept messaging the
+  original one — a silent-wrong-recipient bug. `isSameRoutineRequest` now
+  compares `conversationRef` too, via `isDeepStrictEqual` (same rationale
+  as `outputTemplate`: it is an object, and `buildEmailColdStartTarget`
+  resolves deterministically per email, so deep equality correctly
+  distinguishes a true retry from a different-recipient request).
+- Review follow-up: `RoutineStore.create()` normalizes an omitted
+  `conversationRef` to `{}` before persisting it (and reads it back the
+  same way — `JSON.stringify(input.conversationRef ?? {})`), but
+  `isSameRoutineRequest`'s new `conversationRef` comparison above compared
+  the stored (normalized) value against the RAW retry input with no
+  equivalent `?? {}` default, unlike `timeoutMs` and `outputTemplate`,
+  which already apply the same default the store itself uses. On the
+  ordinary (non-cold-start) create path — where `conversationRef` is
+  legitimately `undefined`/omitted both on the original call and the retry,
+  since only the `targetEmail` cold-start branch sets a non-default value —
+  the stored `{}` never matched the retry's raw `undefined`, so the retry
+  fell through to `RoutineNameConflictError`, reintroducing the exact
+  false-negative issue #506 exists to fix for that path.
+  `isSameRoutineRequest` now applies the same `?? {}` normalization the
+  store uses: `isDeepStrictEqual(existing.conversationRef, input.conversationRef ?? {})`.
+
+### Fixed — Teams-uploaded images now reach the model as vision input (#504, #505)
+
+- Teams delivers inbound images via a Tigris `storage_key` + `[attachments-info]`
+  manifest, never inline `bytesBase64`. The attachment auto-ingest path fetched
+  those bytes but handed them to the text extractor, which correctly refuses
+  images — so the fetched image was silently dropped and never reached the
+  model, leaving the agent to falsely claim it couldn't see the image.
+  `ingestAttachments` now routes image candidates through a new
+  `checkVisionEmbeddable` guard (supported type + size cap) and embeds them
+  as Anthropic vision content-blocks via `buildUserContent`, the same path
+  Telegram's inline `bytesBase64` attachments already use (#504).
+- Also implemented the `url`-fetch fallback that `chatAgent.ts` / `incoming.ts`
+  document but the orchestrator never honored: an image attachment with a
+  `url` and no pre-fetched `bytesBase64` is now fetched and embedded the same
+  way. Latent today (no in-repo channel triggers it yet), but closes the gap
+  before a future url-only channel (Slack, Discord, WhatsApp) ships broken
+  vision silently (#505).
+- Review round 2: neither path checked whether the active provider/model
+  actually supports vision before building an image content-block, so a
+  turn routed through a non-vision provider could still get an image block
+  the API might reject or silently drop — reintroducing the same "agent
+  can't see the image, nothing indicates why" failure. Both call sites now
+  read `this.provider.capabilities.vision` and thread it through
+  `ingestAttachments`/`buildUserContent`: when unsupported, no image
+  content-block is built (avoids the provider rejecting the whole request),
+  and image candidates aren't even fetched — but the attachment is never
+  silently dropped either. A visible note (`[N image attachment(s) received
+  but the active model does not support image input]`) is folded into the
+  turn's text instead, so the model — and the user — knows an image existed
+  and why it wasn't seen. `claude-cli`-routed turns (`CliChatAgent`, swapped
+  in by `buildOrchestrator.ts` on `provider.id === 'claude-cli'`) take a
+  separate code path that never calls `buildUserContent`/`ingestAttachments`
+  at all; this change does not touch, fix, or regress that path.
+- Review round 4: a fetched image candidate that failed the
+  `checkVisionEmbeddable` guard (oversized, or an unsupported format
+  such as SVG/BMP/TIFF) under a VISION-CAPABLE provider was only logged via
+  `console.warn` and silently dropped otherwise — the same silent-drop
+  failure #504 exists to close, just triggered by size/format instead of
+  provider capability. `ingestAttachments` now also collects each
+  rejection's reason, and `buildUserContent` folds a visible
+  `[N image attachment(s) could not be shown: <reason(s)>]` note into the
+  turn's text alongside (never instead of) the existing non-vision-provider
+  note.
+- Review round 6 (cross-vendor): the vision guard read
+  `this.provider.capabilities.vision` — a flag on the PROVIDER CONNECTION,
+  not the active MODEL. This is wrong whenever one connection serves
+  multiple models with different vision support, which is not hypothetical:
+  the bundled `mistral` openai-compatible connection serves
+  `mistral-large-latest` and `mistral-medium-latest` (vision) alongside
+  `mistral-small-latest` (no vision), yet `llm-adapter-openai`'s
+  `openaiProvider.ts` hardcodes `capabilities.vision = true` on the
+  connection regardless of the active model — so a turn on
+  `mistral-small-latest` would still build an image block for a model that
+  can't use it. `OrchestratorOptions` gained a new optional
+  `visionSupported?: boolean` — the ACTIVE model's vision capability, meant
+  to be resolved by the caller the same way `maxTokens` is already resolved
+  per-model, since `harness-orchestrator` deliberately has no dependency on
+  `@omadia/llm-provider`/`@omadia/llm-provider-api` and does not resolve the
+  model registry itself. Both call sites now read `this.visionSupported ??
+  this.provider.capabilities.vision` — an explicit per-model value would win
+  if one were passed; omitting it preserves the exact prior provider-level
+  behavior. **This is a mechanism, not an end-to-end fix**: as of this PR no
+  real caller (`buildOrchestrator.ts`, `plugin.ts`, or any bundled config)
+  sets `visionSupported` yet, so the concrete `mistral-small` scenario above
+  is made fixable, not actually resolved in production today — a future
+  change still needs to wire the active model's real vision capability
+  through to `OrchestratorOptions` for any given connection. Backward
+  compatible either way: no caller passing it is a no-op, not a regression.
+- Review round 7: `checkVisionEmbeddable` compared the fetched image's RAW
+  byte length against a 5MB cap, but that cap is Anthropic's documented
+  per-image *base64-encoded* payload limit — comparing raw bytes against a
+  base64-payload limit is the wrong unit, and rejected valid images (e.g. a
+  ~5.5MB raw screenshot, ~7.3MB once base64-encoded) that were well under the
+  real limit. The 5MB figure was also wrong for this deployment: the bundled
+  Anthropic provider (`builtinLlmProviders.ts`) uses
+  `https://api.anthropic.com` — the direct API, whose documented limit is
+  10MB base64-encoded (5MB base64 applies only to Bedrock/Vertex). The guard
+  now computes the base64-encoded size (`Math.ceil(rawBytes / 3) * 4`) and
+  compares it against a corrected `MAX_VISION_IMAGE_BASE64_BYTES = 10MB`
+  constant.
+
+### Fixed — codegen: manifest capabilities[] now reflect per-tool spec flags (#507)
+
+- `reproduceManifestCapabilities` (builder codegen) used to clone the
+  boilerplate's `search` capability (`input_schema:{query}`,
+  `side_effects:'read'`, `idempotent:true`, `autonomous:true`,
+  `timeout_ms:20000`) onto every tool, substituting only id/description.
+  `toolkit.ts` was generated correctly per-tool from the real Zod schemas,
+  but `manifest.yaml`'s declared metadata was not: write tools shipped as
+  `side_effects:'read'` + `autonomous:true`, misrepresenting their real
+  behavior to anything that reads the manifest (marketplace listings,
+  human reviewers, or any orchestrator-side consumer of these flags).
+  `ToolSpecSchema` gained explicit `output`, `side_effects`, `idempotent`,
+  `autonomous`, and `timeout_ms` fields (previously stripped silently by
+  Zod's non-strict mode) so codegen can synthesise each `capabilities[]`
+  entry from the real per-tool spec, falling back to the boilerplate
+  defaults only for fields a tool omits. Applies uniformly to single- and
+  multi-tool specs. `side_effects` is declared and passed through as the
+  manifest's own `'read' | 'write' | 'none'` string enum (matching
+  `agent-integration/manifest.yaml` and `agent-reference-maximum/manifest.yaml`),
+  not a boolean — an earlier draft of this fix used a boolean field with a
+  boolean-to-string mapping in codegen, which rejected valid spec/patch
+  payloads shaped like the manifest's real contract.
+
+### Added — Builder health score: context-quality decomposition, first slice (#499)
+
+- `middleware/src/profileSnapshots/healthScore.ts` gained
+  `computeContextQualityScore`, decomposing Builder agent-spec quality into
+  the seven context-quality criteria from arXiv:2607.14275 ("AI Agents Do Not
+  Fail Alone: The Context Fails First"): role clarity, guardrail coverage,
+  instruction consistency, tool schema quality, grounding sufficiency,
+  injection hardening, token efficiency. Each criterion carries a score (or
+  `null` when not yet evaluated), a rationale, the failure mode it predicts,
+  and a fix hint.
+- Four criteria are deterministic and wired to existing subsystems:
+  guardrail coverage (`boundaryPresets.ts` category coverage), tool schema
+  quality (`manifestLinter.validateSpec` tool-id checks plus
+  `agentSpec.validateSpecForCodegen`'s tools/external_reads namespace
+  collision + reserved-id checks), grounding sufficiency (a knowledge-source
+  attached-and-resolvable proxy on `permissions.graph.entity_systems` /
+  `external_reads`, cross-checked against manifestLinter's
+  `external_read_unknown_service` / `external_read_integration_missing`
+  violations so an unregistered service doesn't score as "grounded"), and
+  token efficiency (a persona-delta token budget via `personaCompose.ts`).
+- Role clarity, instruction consistency, and the domain-coverage half of
+  grounding sufficiency need judgment a deterministic check can't provide;
+  they're returned as `evaluated: false` pending a future LLM-juror pass
+  rather than faked with a proxy.
+- Purely additive — `computeHealthScore` (the diff-based drift score
+  `driftWorker.ts` persists) is untouched. Builder UI wiring and
+  `driftWorker.ts` snapshot wiring are deferred to follow-up work; see #499.
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
 - The save-as-template dialog no longer reads the viewer's own template id as
