@@ -14,8 +14,13 @@ describe('passwordHasher (argon2id)', () => {
       hash.startsWith('$argon2id$'),
       `expected argon2id prefix, got: ${hash.slice(0, 16)}`,
     );
-    // Parameters tuple should match passwordHasher.HASH_OPTIONS.
-    assert.match(hash, /m=19456,t=2,p=1/);
+    // Parameters should match passwordHasher.HASH_OPTIONS. Checked
+    // independently (not as a fixed-order tuple) because argon2 0.45
+    // reordered the PHC-string fields from `m=,t=,p=` to `m=,p=,t=`
+    // without changing the actual parameter values.
+    assert.match(hash, /m=19456/);
+    assert.match(hash, /t=2/);
+    assert.match(hash, /p=1/);
   });
 
   it('verify roundtrips a correct password', async () => {
