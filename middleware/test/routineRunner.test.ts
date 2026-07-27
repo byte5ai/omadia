@@ -397,6 +397,34 @@ describe('RoutineRunner — createRoutine', () => {
     );
   });
 
+  // Issue #506 (reviewer-confirmed gap) — the quota check must not run
+  // before the reconciliation check for a user already at capacity. A user
+  // at `maxActivePerUser` who retries the identical `createRoutine` call
+  // that already brought them there (e.g. their turn's own confirmation
+  // was dropped) must reconcile to the existing row, not be told they're
+  // out of quota — that's the exact false-negative issue #506 was filed
+  // over, just re-surfaced as a different exception type.
+  it('reconciles a same-request retry even when the user is already at quota', async () => {
+    const h = makeHarness({ maxActivePerUser: 1 });
+    const first = await h.runner.createRoutine(baseInput);
+    const retry = await h.runner.createRoutine(baseInput);
+    assert.equal(retry.id, first.id, 'retry must resolve to the original row');
+    assert.equal(h.store.rows.size, 1, 'no duplicate row was created');
+  });
+
+  // The quota gate must still apply to a genuinely new routine request —
+  // reconciliation is only for retries of an already-existing, already-
+  // active routine. A different `name` is a real new-routine request and
+  // must not silently bypass the quota check.
+  it('still enforces the per-user quota for a genuinely new routine name', async () => {
+    const h = makeHarness({ maxActivePerUser: 1 });
+    await h.runner.createRoutine(baseInput);
+    await assert.rejects(
+      () => h.runner.createRoutine({ ...baseInput, name: 'a-different-name' }),
+      RoutineQuotaExceededError,
+    );
+  });
+
   it('rolls the row back when scheduler.register throws', async () => {
     // Production: JobScheduler validates cron via croner and throws
     // JobValidationError on malformed input. We simulate that here so the

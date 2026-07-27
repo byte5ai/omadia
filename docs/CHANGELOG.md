@@ -59,6 +59,20 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `outputTemplate` too, via `node:util`'s `isDeepStrictEqual` (it is an
   object, so reference/`===` equality is not sufficient); an identical
   template (including the `null`/`null` case) still reconciles as before.
+  The reconciliation check also ran too late: `createRoutine` evaluated the
+  per-user quota (`countActiveForUser`) *before* attempting `store.create()`,
+  so a retry from a user already sitting at `maxActivePerUser` — exactly the
+  state their own successful-but-unconfirmed first call left them in — was
+  rejected with `RoutineQuotaExceededError` before it ever reached the
+  conflict-reconciliation logic, resurfacing the same false-negative under a
+  different exception type. `createRoutine` now looks up
+  `RoutineStore.getByName` and reconciles a same-request, `active` retry
+  *before* the quota check and before calling `store.create()` at all — no
+  new row is needed for a retry that already succeeded. The quota check
+  still applies to every genuinely new routine request. The reconciliation
+  logic in the `store.create()` catch block is unchanged and remains the
+  necessary race-safety net for a concurrent request that creates the
+  matching row between this proactive lookup and the insert.
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 

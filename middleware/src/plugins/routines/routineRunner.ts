@@ -302,6 +302,34 @@ export class RoutineRunner {
     if (!this.senders.get(input.channel)) {
       throw new UnknownChannelError(input.channel);
     }
+
+    // Issue #506: check for a reconcile-eligible retry BEFORE the quota
+    // gate. A retried `createRoutine` call for a routine that already
+    // exists and is already active doesn't need a fresh slot — it needs
+    // nothing at all, because the work is already done. Without this
+    // proactive check, a user sitting exactly at `maxActivePerUser` whose
+    // confirmation got dropped (the scenario issue #506 targets) would
+    // have their retry rejected by the quota check below before it ever
+    // reaches the `RoutineNameConflictError` reconciliation in the
+    // `store.create()` catch block, surfacing a different but equally
+    // wrong "you're at capacity" error instead of the routine they already
+    // created. The `catch` block's reconciliation stays as-is: it remains
+    // the necessary race-safety net for a concurrent request that creates
+    // the matching row between this lookup and the `store.create()` call
+    // below.
+    const existing = await this.store.getByName(
+      input.tenant,
+      input.userId,
+      input.name,
+    );
+    if (
+      existing &&
+      existing.status === 'active' &&
+      isSameRoutineRequest(existing, input)
+    ) {
+      return existing;
+    }
+
     const active = await this.store.countActiveForUser(
       input.tenant,
       input.userId,
