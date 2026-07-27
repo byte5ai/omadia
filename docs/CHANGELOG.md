@@ -99,6 +99,138 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   readiness — kept as two separate caches rather than one merged into the
   other, so neither can silently clobber the other's verdict.
 
+### Fixed — Teams-uploaded images now reach the model as vision input (#504, #505)
+
+- Teams delivers inbound images via a Tigris `storage_key` + `[attachments-info]`
+  manifest, never inline `bytesBase64`. The attachment auto-ingest path fetched
+  those bytes but handed them to the text extractor, which correctly refuses
+  images — so the fetched image was silently dropped and never reached the
+  model, leaving the agent to falsely claim it couldn't see the image.
+  `ingestAttachments` now routes image candidates through a new
+  `checkVisionEmbeddable` guard (supported type + size cap) and embeds them
+  as Anthropic vision content-blocks via `buildUserContent`, the same path
+  Telegram's inline `bytesBase64` attachments already use (#504).
+- Also implemented the `url`-fetch fallback that `chatAgent.ts` / `incoming.ts`
+  document but the orchestrator never honored: an image attachment with a
+  `url` and no pre-fetched `bytesBase64` is now fetched and embedded the same
+  way. Latent today (no in-repo channel triggers it yet), but closes the gap
+  before a future url-only channel (Slack, Discord, WhatsApp) ships broken
+  vision silently (#505).
+- Review round 2: neither path checked whether the active provider/model
+  actually supports vision before building an image content-block, so a
+  turn routed through a non-vision provider could still get an image block
+  the API might reject or silently drop — reintroducing the same "agent
+  can't see the image, nothing indicates why" failure. Both call sites now
+  read `this.provider.capabilities.vision` and thread it through
+  `ingestAttachments`/`buildUserContent`: when unsupported, no image
+  content-block is built (avoids the provider rejecting the whole request),
+  and image candidates aren't even fetched — but the attachment is never
+  silently dropped either. A visible note (`[N image attachment(s) received
+  but the active model does not support image input]`) is folded into the
+  turn's text instead, so the model — and the user — knows an image existed
+  and why it wasn't seen. `claude-cli`-routed turns (`CliChatAgent`, swapped
+  in by `buildOrchestrator.ts` on `provider.id === 'claude-cli'`) take a
+  separate code path that never calls `buildUserContent`/`ingestAttachments`
+  at all; this change does not touch, fix, or regress that path.
+- Review round 4: a fetched image candidate that failed the
+  `checkVisionEmbeddable` guard (oversized, or an unsupported format
+  such as SVG/BMP/TIFF) under a VISION-CAPABLE provider was only logged via
+  `console.warn` and silently dropped otherwise — the same silent-drop
+  failure #504 exists to close, just triggered by size/format instead of
+  provider capability. `ingestAttachments` now also collects each
+  rejection's reason, and `buildUserContent` folds a visible
+  `[N image attachment(s) could not be shown: <reason(s)>]` note into the
+  turn's text alongside (never instead of) the existing non-vision-provider
+  note.
+- Review round 6 (cross-vendor): the vision guard read
+  `this.provider.capabilities.vision` — a flag on the PROVIDER CONNECTION,
+  not the active MODEL. This is wrong whenever one connection serves
+  multiple models with different vision support, which is not hypothetical:
+  the bundled `mistral` openai-compatible connection serves
+  `mistral-large-latest` and `mistral-medium-latest` (vision) alongside
+  `mistral-small-latest` (no vision), yet `llm-adapter-openai`'s
+  `openaiProvider.ts` hardcodes `capabilities.vision = true` on the
+  connection regardless of the active model — so a turn on
+  `mistral-small-latest` would still build an image block for a model that
+  can't use it. `OrchestratorOptions` gained a new optional
+  `visionSupported?: boolean` — the ACTIVE model's vision capability, meant
+  to be resolved by the caller the same way `maxTokens` is already resolved
+  per-model, since `harness-orchestrator` deliberately has no dependency on
+  `@omadia/llm-provider`/`@omadia/llm-provider-api` and does not resolve the
+  model registry itself. Both call sites now read `this.visionSupported ??
+  this.provider.capabilities.vision` — an explicit per-model value would win
+  if one were passed; omitting it preserves the exact prior provider-level
+  behavior. **This is a mechanism, not an end-to-end fix**: as of this PR no
+  real caller (`buildOrchestrator.ts`, `plugin.ts`, or any bundled config)
+  sets `visionSupported` yet, so the concrete `mistral-small` scenario above
+  is made fixable, not actually resolved in production today — a future
+  change still needs to wire the active model's real vision capability
+  through to `OrchestratorOptions` for any given connection. Backward
+  compatible either way: no caller passing it is a no-op, not a regression.
+- Review round 7: `checkVisionEmbeddable` compared the fetched image's RAW
+  byte length against a 5MB cap, but that cap is Anthropic's documented
+  per-image *base64-encoded* payload limit — comparing raw bytes against a
+  base64-payload limit is the wrong unit, and rejected valid images (e.g. a
+  ~5.5MB raw screenshot, ~7.3MB once base64-encoded) that were well under the
+  real limit. The 5MB figure was also wrong for this deployment: the bundled
+  Anthropic provider (`builtinLlmProviders.ts`) uses
+  `https://api.anthropic.com` — the direct API, whose documented limit is
+  10MB base64-encoded (5MB base64 applies only to Bedrock/Vertex). The guard
+  now computes the base64-encoded size (`Math.ceil(rawBytes / 3) * 4`) and
+  compares it against a corrected `MAX_VISION_IMAGE_BASE64_BYTES = 10MB`
+  constant.
+
+### Fixed — codegen: manifest capabilities[] now reflect per-tool spec flags (#507)
+
+- `reproduceManifestCapabilities` (builder codegen) used to clone the
+  boilerplate's `search` capability (`input_schema:{query}`,
+  `side_effects:'read'`, `idempotent:true`, `autonomous:true`,
+  `timeout_ms:20000`) onto every tool, substituting only id/description.
+  `toolkit.ts` was generated correctly per-tool from the real Zod schemas,
+  but `manifest.yaml`'s declared metadata was not: write tools shipped as
+  `side_effects:'read'` + `autonomous:true`, misrepresenting their real
+  behavior to anything that reads the manifest (marketplace listings,
+  human reviewers, or any orchestrator-side consumer of these flags).
+  `ToolSpecSchema` gained explicit `output`, `side_effects`, `idempotent`,
+  `autonomous`, and `timeout_ms` fields (previously stripped silently by
+  Zod's non-strict mode) so codegen can synthesise each `capabilities[]`
+  entry from the real per-tool spec, falling back to the boilerplate
+  defaults only for fields a tool omits. Applies uniformly to single- and
+  multi-tool specs. `side_effects` is declared and passed through as the
+  manifest's own `'read' | 'write' | 'none'` string enum (matching
+  `agent-integration/manifest.yaml` and `agent-reference-maximum/manifest.yaml`),
+  not a boolean — an earlier draft of this fix used a boolean field with a
+  boolean-to-string mapping in codegen, which rejected valid spec/patch
+  payloads shaped like the manifest's real contract.
+
+### Added — Builder health score: context-quality decomposition, first slice (#499)
+
+- `middleware/src/profileSnapshots/healthScore.ts` gained
+  `computeContextQualityScore`, decomposing Builder agent-spec quality into
+  the seven context-quality criteria from arXiv:2607.14275 ("AI Agents Do Not
+  Fail Alone: The Context Fails First"): role clarity, guardrail coverage,
+  instruction consistency, tool schema quality, grounding sufficiency,
+  injection hardening, token efficiency. Each criterion carries a score (or
+  `null` when not yet evaluated), a rationale, the failure mode it predicts,
+  and a fix hint.
+- Four criteria are deterministic and wired to existing subsystems:
+  guardrail coverage (`boundaryPresets.ts` category coverage), tool schema
+  quality (`manifestLinter.validateSpec` tool-id checks plus
+  `agentSpec.validateSpecForCodegen`'s tools/external_reads namespace
+  collision + reserved-id checks), grounding sufficiency (a knowledge-source
+  attached-and-resolvable proxy on `permissions.graph.entity_systems` /
+  `external_reads`, cross-checked against manifestLinter's
+  `external_read_unknown_service` / `external_read_integration_missing`
+  violations so an unregistered service doesn't score as "grounded"), and
+  token efficiency (a persona-delta token budget via `personaCompose.ts`).
+- Role clarity, instruction consistency, and the domain-coverage half of
+  grounding sufficiency need judgment a deterministic check can't provide;
+  they're returned as `evaluated: false` pending a future LLM-juror pass
+  rather than faked with a proxy.
+- Purely additive — `computeHealthScore` (the diff-based drift score
+  `driftWorker.ts` persists) is untouched. Builder UI wiring and
+  `driftWorker.ts` snapshot wiring are deferred to follow-up work; see #499.
+
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
 - The save-as-template dialog no longer reads the viewer's own template id as
