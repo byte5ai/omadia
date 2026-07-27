@@ -99,6 +99,34 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   compares it against a corrected `MAX_VISION_IMAGE_BASE64_BYTES = 10MB`
   constant.
 
+### Added — Builder health score: context-quality decomposition, first slice (#499)
+
+- `middleware/src/profileSnapshots/healthScore.ts` gained
+  `computeContextQualityScore`, decomposing Builder agent-spec quality into
+  the seven context-quality criteria from arXiv:2607.14275 ("AI Agents Do Not
+  Fail Alone: The Context Fails First"): role clarity, guardrail coverage,
+  instruction consistency, tool schema quality, grounding sufficiency,
+  injection hardening, token efficiency. Each criterion carries a score (or
+  `null` when not yet evaluated), a rationale, the failure mode it predicts,
+  and a fix hint.
+- Four criteria are deterministic and wired to existing subsystems:
+  guardrail coverage (`boundaryPresets.ts` category coverage), tool schema
+  quality (`manifestLinter.validateSpec` tool-id checks plus
+  `agentSpec.validateSpecForCodegen`'s tools/external_reads namespace
+  collision + reserved-id checks), grounding sufficiency (a knowledge-source
+  attached-and-resolvable proxy on `permissions.graph.entity_systems` /
+  `external_reads`, cross-checked against manifestLinter's
+  `external_read_unknown_service` / `external_read_integration_missing`
+  violations so an unregistered service doesn't score as "grounded"), and
+  token efficiency (a persona-delta token budget via `personaCompose.ts`).
+- Role clarity, instruction consistency, and the domain-coverage half of
+  grounding sufficiency need judgment a deterministic check can't provide;
+  they're returned as `evaluated: false` pending a future LLM-juror pass
+  rather than faked with a proxy.
+- Purely additive — `computeHealthScore` (the diff-based drift score
+  `driftWorker.ts` persists) is untouched. Builder UI wiring and
+  `driftWorker.ts` snapshot wiring are deferred to follow-up work; see #499.
+
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
 - The save-as-template dialog no longer reads the viewer's own template id as
