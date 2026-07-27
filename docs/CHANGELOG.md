@@ -28,8 +28,18 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   looks up the existing row (`RoutineStore.getByName`, new) and, if the
   `cron`/`prompt`/`channel`/`timeoutMs` match what was just requested,
   returns that row instead of raising — the earlier call already succeeded,
-  so the retry now sees success too. A conflict with genuinely different
-  fields still raises `RoutineNameConflictError` as before. Threading a
+  so the retry now sees success too. Reconciliation only fires against an
+  `active` existing row: a paused/inactive same-name row with otherwise
+  identical fields still raises `RoutineNameConflictError`, because that is
+  a genuine, separate collision (e.g. a paused "demo" routine plus a new,
+  deliberate create under the same name), not the caller's own in-flight
+  retry — silently reconciling there would report a successful create with
+  no active schedule, which is a worse instance of the exact
+  false-negative/false-positive problem this issue was filed to fix.
+  Reconciliation deliberately does not additionally gate on the existing
+  row's age/`createdAt`; see the code comment in `createRoutine` for why. A
+  conflict with genuinely different fields still raises
+  `RoutineNameConflictError` as before. Threading a
   request/trace correlation id through routine-turn error responses
   end-to-end (the issue's secondary ask) remains open — it would require a
   new field on the shared `ChatTurnInput`/`ChatTurnResult` contract

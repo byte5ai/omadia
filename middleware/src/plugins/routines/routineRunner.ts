@@ -321,14 +321,37 @@ export class RoutineRunner {
       // different name), reconcile: if the existing row is the same
       // request, treat this call as already-succeeded and return it. A
       // conflicting row with different cron/prompt/channel is a genuine
-      // name collision and still surfaces as an error.
+      // name collision and still surfaces as an error. We deliberately do
+      // NOT additionally gate on `existing.createdAt` recency: the
+      // `status === 'active'` check below plus the field-by-field
+      // comparison in `isSameRoutineRequest` already narrow this to "an
+      // active routine with byte-for-byte identical cron/prompt/channel/
+      // timeout" — a false-positive reconciliation on an old-but-still-
+      // active routine is the caller re-issuing an identical create, which
+      // is the same "already succeeded" case regardless of age. Adding a
+      // time window would only reintroduce a class of false negatives
+      // (rejecting a legitimate late retry) without closing any real gap.
       if (err instanceof RoutineNameConflictError) {
         const existing = await this.store.getByName(
           input.tenant,
           input.userId,
           input.name,
         );
-        if (existing && isSameRoutineRequest(existing, input)) {
+        // Only reconcile against an `active` row. A paused/inactive row
+        // with matching fields is not "my own in-flight retry" — it's a
+        // genuine, separate collision (e.g. the user paused an earlier
+        // "demo" routine and is now deliberately creating a new one under
+        // the same name). Reconciling there would silently hand back a
+        // routine that has no active schedule, which is a worse version of
+        // the exact false-negative/false-positive problem issue #506 was
+        // filed to fix. Only an `active` existing row can plausibly be
+        // "the create that already succeeded", so only that case skips the
+        // error.
+        if (
+          existing &&
+          existing.status === 'active' &&
+          isSameRoutineRequest(existing, input)
+        ) {
           return existing;
         }
       }

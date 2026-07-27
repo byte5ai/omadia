@@ -442,6 +442,36 @@ describe('RoutineRunner — createRoutine', () => {
     );
     assert.equal(h.store.rows.size, 1, 'the conflicting attempt created nothing');
   });
+
+  // Reviewer-confirmed bug fix: reconciliation must not fire against a
+  // paused (or otherwise non-active) existing row, even when every other
+  // field matches byte-for-byte. A paused routine is not "my own in-flight
+  // retry" — it's a separate, deliberate create call that happens to share
+  // a name with something the user already paused. Silently returning the
+  // paused row would report `status: 'paused'` as a successful create with
+  // no active schedule, which is a worse instance of the exact
+  // false-negative/false-positive problem issue #506 was filed to fix.
+  it('still reports a conflict when the existing same-name routine is paused', async () => {
+    const h = makeHarness();
+    const first = await h.runner.createRoutine(baseInput);
+    await h.runner.pauseRoutine(first.id);
+
+    await assert.rejects(
+      () => h.runner.createRoutine(baseInput),
+      RoutineNameConflictError,
+    );
+    assert.equal(h.store.rows.size, 1, 'no new row was created');
+    assert.equal(
+      h.store.rows.get(first.id)?.status,
+      'paused',
+      'the existing paused row must be left untouched',
+    );
+    assert.equal(
+      h.scheduler.list().length,
+      0,
+      'no scheduler registration should have happened',
+    );
+  });
 });
 
 describe('RoutineRunner — start (boot scan)', () => {
