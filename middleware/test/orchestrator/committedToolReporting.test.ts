@@ -8,7 +8,11 @@ import type {
   LlmStreamEvent,
 } from '@omadia/llm-provider';
 import type { ChatStreamEvent } from '@omadia/channel-sdk';
-import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
+import {
+  NativeToolRegistry,
+  Orchestrator,
+  type SessionLogEntry,
+} from '@omadia/orchestrator';
 
 /**
  * Issue #506 — the one-click repro. `chatStreamInner` wraps its whole
@@ -20,7 +24,30 @@ import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
  * succeeded. These tests exercise the fix: a committed tool result changes
  * the catch block's outcome to a `done` event; a genuine failure with no
  * prior committed tool result is unaffected.
+ *
+ * Review follow-up: the original version of this file never constructed a
+ * `sessionLogger`, so it couldn't have caught the emergency-`done` path
+ * skipping `sessionLogger.log()` — the ONE thing every other `done`
+ * emission site in `chatStreamInner` does before yielding. Every test here
+ * now builds the orchestrator WITH a recording session logger and asserts
+ * on what it did (or didn't) receive.
  */
+
+/** Records every `SessionLogEntry` passed to `log()`, mirroring the stub
+ *  pattern from turnHooks.test.ts (`{ turnExternalId }` return shape). */
+function recordingSessionLogger(): {
+  sessionLogger: ConstructorParameters<typeof Orchestrator>[0]['sessionLogger'];
+  calls: SessionLogEntry[];
+} {
+  const calls: SessionLogEntry[] = [];
+  const sessionLogger = {
+    log: async (entry: SessionLogEntry): Promise<{ turnExternalId: string }> => {
+      calls.push(entry);
+      return { turnExternalId: `turn:${entry.scope}:stub` };
+    },
+  } as unknown as ConstructorParameters<typeof Orchestrator>[0]['sessionLogger'];
+  return { sessionLogger, calls };
+}
 
 interface ScriptedStream {
   events: LlmStreamEvent[];
@@ -120,6 +147,7 @@ function streamWithTools(
 function buildOrchestrator(
   provider: LlmProvider,
   registry: NativeToolRegistry,
+  sessionLogger: ConstructorParameters<typeof Orchestrator>[0]['sessionLogger'],
 ): Orchestrator {
   return new Orchestrator({
     provider,
@@ -128,6 +156,7 @@ function buildOrchestrator(
     maxToolIterations: 5,
     domainTools: [],
     nativeToolRegistry: registry,
+    sessionLogger,
   });
 }
 
@@ -160,10 +189,14 @@ describe('Issue #506 — report success when a tool already committed', () => {
       }),
     };
     const provider = fakeStreamProvider([stream0, stream1]);
-    const orchestrator = buildOrchestrator(provider, registry);
+    const { sessionLogger, calls } = recordingSessionLogger();
+    const orchestrator = buildOrchestrator(provider, registry, sessionLogger);
 
     const events: ChatStreamEvent[] = [];
-    for await (const ev of orchestrator.chatStream({ userMessage: 'create a widget' })) {
+    for await (const ev of orchestrator.chatStream({
+      userMessage: 'create a widget',
+      sessionScope: 'sess-506-committed',
+    })) {
       events.push(ev);
     }
 
@@ -185,6 +218,23 @@ describe('Issue #506 — report success when a tool already committed', () => {
       // Two iterations were entered (0 and 1) before the failure.
       assert.equal(done.iterations, 2);
     }
+
+    // Review follow-up: the emergency-`done` path must persist the
+    // exchange exactly like every other `done` emission site does —
+    // otherwise the committed `manage_widget` call is invisible to the
+    // next turn and the model could re-invoke it, duplicating the side
+    // effect. Assert the logger actually ran, with fields matching what
+    // was yielded to the caller.
+    assert.equal(calls.length, 1, 'expected sessionLogger.log to be called once');
+    const logged = calls[0];
+    assert.ok(logged);
+    if (logged) {
+      assert.equal(logged.scope, 'sess-506-committed');
+      assert.equal(logged.userMessage, 'create a widget');
+      assert.equal(logged.assistantAnswer, done && done.type === 'done' ? done.answer : undefined);
+      assert.equal(logged.toolCalls, 1);
+      assert.equal(logged.iterations, 2);
+    }
   });
 
   it('still ends with `error` when no tool committed before the failure (genuine failure, unchanged behavior)', async () => {
@@ -197,10 +247,14 @@ describe('Issue #506 — report success when a tool already committed', () => {
       }),
     };
     const provider = fakeStreamProvider([stream0]);
-    const orchestrator = buildOrchestrator(provider, registry);
+    const { sessionLogger, calls } = recordingSessionLogger();
+    const orchestrator = buildOrchestrator(provider, registry, sessionLogger);
 
     const events: ChatStreamEvent[] = [];
-    for await (const ev of orchestrator.chatStream({ userMessage: 'do something' })) {
+    for await (const ev of orchestrator.chatStream({
+      userMessage: 'do something',
+      sessionScope: 'sess-506-genuine-failure',
+    })) {
       events.push(ev);
     }
 
@@ -213,5 +267,14 @@ describe('Issue #506 — report success when a tool already committed', () => {
     if (error && error.type === 'error') {
       assert.match(error.message, /boom: provider hard-failed/);
     }
+
+    // A genuine failure with nothing committed must NOT persist a session
+    // log entry — unchanged behavior, same as every other `error` emission
+    // site in chatStreamInner.
+    assert.equal(
+      calls.length,
+      0,
+      'expected sessionLogger.log NOT to be called on a genuine failure',
+    );
   });
 });

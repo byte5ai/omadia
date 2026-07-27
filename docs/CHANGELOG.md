@@ -51,6 +51,27 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   closes #506 for both the one-click repro and the retry-duplication
   case; the correlation-id/error-token secondary ask remains explicitly
   out of scope (see below).
+- Review follow-up: the emergency `done` yielded from the catch block above
+  did not call `this.sessionLogger.log(...)` first — the ONE thing every
+  other `done`-emission site in `chatStreamInner` does before yielding (see
+  `SessionLogger`'s doc comment: the transcript is what lets a follow-up
+  turn recall prior discussion, and what survives a mid-turn crash). For a
+  tool whose side effect isn't idempotently reconciled the way routine-create
+  now is (e.g. `send_email`, `book_meeting`), an unlogged commit meant the
+  *next* turn had no record it happened and could re-invoke the same tool —
+  the exact duplicate-side-effect class of bug this fix exists to prevent,
+  reintroduced by the fix's own new code path. The emergency-`done` path now
+  calls `sessionLogger.log(...)` with the same argument shape as the other
+  sites (`scope`, `userMessage`, `assistantAnswer`, `toolCalls`,
+  `iterations`, `entityRefs`, optional `userId`/`runTrace`), best-effort
+  (a logging failure is caught and logged, never swallows the `done`), and
+  surfaces `turnId`/`runTrace` on the yielded event when persistence
+  succeeded. `committedToolReporting.test.ts` now constructs the test
+  orchestrator WITH a recording `sessionLogger` (the prior 2 tests built one
+  without any logger at all, which is why the gap was invisible) and asserts
+  the log call happened, with matching `scope`/`userMessage`/
+  `assistantAnswer`/`toolCalls`/`iterations`, plus that a genuine failure
+  (nothing committed) still does not log.
 
 ### Fixed — routine create no longer reports failure for a retry that already succeeded (#506)
 

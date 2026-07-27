@@ -4140,11 +4140,54 @@ export class Orchestrator {
           committedToolNames.length === 1
             ? `The requested action (${toolList}) completed successfully, but the turn could not finish generating a follow-up response.`
             : `The requested actions (${toolList}) completed successfully, but the turn could not finish generating a follow-up response.`;
+        const iterations = lastIterationIndex + 1;
+        // Issue #506 (review follow-up) — every OTHER `done`-emission site
+        // in this function persists the exchange via `sessionLogger.log()`
+        // BEFORE yielding (see the success path above, the choice-card
+        // path, and direct-line). This emergency path is specifically for
+        // the case where a tool already committed a real side effect, so
+        // skipping the log here would be the one `done` path that leaves
+        // that commitment unrecorded — the next turn's model would have no
+        // memory of it and could re-invoke the same tool, reintroducing the
+        // duplicate-side-effect bug issue #506 exists to prevent. Same
+        // call shape as the other sites; best-effort like all of them.
+        const restoredAnswer = await restorePromptForPersistence(
+          privacyForPrompt,
+          answer,
+        );
+        const runTrace = traceCollector?.finish({
+          iterations,
+          status: 'success',
+        });
+        let persistedTurnId: string | undefined;
+        if (this.sessionLogger && input.sessionScope) {
+          const entityRefs = entityCollection?.drain() ?? [];
+          try {
+            const logged = await this.sessionLogger.log({
+              scope: input.sessionScope,
+              userMessage: input.userMessage,
+              assistantAnswer: restoredAnswer,
+              toolCalls,
+              iterations,
+              entityRefs,
+              ...(input.userId ? { userId: input.userId } : {}),
+              ...(runTrace ? { runTrace } : {}),
+            });
+            persistedTurnId = logged.turnExternalId;
+          } catch (logErr) {
+            console.error(
+              '[orchestrator] session log failed (continuing with emergency done):',
+              logErr instanceof Error ? logErr.message : logErr,
+            );
+          }
+        }
         yield {
           type: 'done',
-          answer,
+          answer: restoredAnswer,
           toolCalls,
-          iterations: lastIterationIndex + 1,
+          iterations,
+          ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+          ...(runTrace ? { runTrace } : {}),
         };
       } else {
         yield {
