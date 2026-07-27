@@ -258,9 +258,9 @@ describe('computeContextQualityScore', () => {
     assert.ok(score(fourCategories) > score(oneCategory));
   });
 
-  it('tool_schema_quality is 100 with no tools, and penalized on manifestLinter violations', () => {
+  it('tool_schema_quality is 100 with no tools or a single valid tool, and penalized on manifestLinter violations', () => {
     const noTools = computeContextQualityScore(baseSpec());
-    const badTool = computeContextQualityScore(
+    const validTool = computeContextQualityScore(
       baseSpec({
         tools: [{ id: 'valid_tool', description: 'ok' }],
       }),
@@ -270,7 +270,7 @@ describe('computeContextQualityScore', () => {
       out.criteria.find((c) => c.id === 'tool_schema_quality')!.score!;
 
     assert.equal(score(noTools), 100);
-    assert.equal(score(badTool), 100);
+    assert.equal(score(validTool), 100);
 
     // Two tools sharing the same id → tool_id_duplicate violation.
     const dup = computeContextQualityScore(

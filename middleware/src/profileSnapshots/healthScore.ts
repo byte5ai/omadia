@@ -500,7 +500,7 @@ function scoreTokenEfficiency(
         `critical ≥ ${String(thresholds.critical)}).`;
 
   const fixHint =
-    tokens < thresholds.warning
+    tokens <= thresholds.target
       ? 'Persona-section token budget is healthy.'
       : 'Trim persona.custom_notes or reduce the number of significant axis deltas — every ' +
         'persona token is paid on every turn.';
