@@ -322,6 +322,27 @@ describe('computeContextQualityScore', () => {
     assert.ok(criterion.rationale.includes('external_read_id_collides_with_tool'));
   });
 
+  it('tool_schema_quality is penalized when two external_reads entries share an id (with zero tools[])', () => {
+    // Second codex review round: validateSpecForCodegen's 'duplicate_tool_id'
+    // code fires both for spec.tools[]-internal dupes (already caught above
+    // via manifestLinter) and spec.external_reads[]-internal dupes (which
+    // manifestLinter never checks). This spec has NO tools[] at all, so if
+    // the external_reads-side duplicate isn't cross-checked, this would
+    // wrongly score 100 despite codegen registering the same tool name twice.
+    const dupExternalReads = computeContextQualityScore(
+      baseSpec({
+        depends_on: ['de.byte5.integration.odoo'],
+        external_reads: [
+          { id: 'fetch', description: 'a', service: 'odoo.client', method: 'read' },
+          { id: 'fetch', description: 'b', service: 'odoo.client', method: 'read' },
+        ],
+      }),
+    );
+    const criterion = dupExternalReads.criteria.find((c) => c.id === 'tool_schema_quality')!;
+    assert.equal(criterion.score, 75);
+    assert.ok(criterion.rationale.includes('duplicate_tool_id'));
+  });
+
   it('grounding_sufficiency: attached via graph entity_systems or a resolvable external_reads binding, else 0', () => {
     const none = computeContextQualityScore(baseSpec());
     const viaGraph = computeContextQualityScore(

@@ -399,9 +399,20 @@ function scoreToolSchemaQuality(spec: AgentSpec): ContextQualityCriterionResult 
     (v) => v.kind === 'tool_id_duplicate' || v.kind === 'tool_id_invalid_syntax',
   );
 
+  // validateSpecForCodegen's 'duplicate_tool_id' code is reused for two
+  // distinct checks: spec.tools[]-internal duplicates (already counted above
+  // via manifestLinter's tool_id_duplicate -- including it here would double
+  // count) and spec.external_reads[]-internal duplicates (which manifestLinter
+  // never checks at all -- dropping it here would silently miss a real
+  // "last write wins" collision). Distinguish by the issue's own reason text,
+  // the only signal validateSpecForCodegen exposes for this (see
+  // agentSpec.ts's erSeen loop: reason starts with "external_reads id").
   const codegenIssues = validateSpecForCodegen(spec);
   const namespaceViolations = codegenIssues.filter(
-    (i) => i.code === 'external_read_id_collides_with_tool' || i.code === 'reserved_tool_id',
+    (i) =>
+      i.code === 'external_read_id_collides_with_tool' ||
+      i.code === 'reserved_tool_id' ||
+      (i.code === 'duplicate_tool_id' && i.reason.startsWith('external_reads id ')),
   );
 
   const totalViolations = toolViolations.length + namespaceViolations.length;
