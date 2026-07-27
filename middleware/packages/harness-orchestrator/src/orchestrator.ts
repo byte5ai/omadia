@@ -3714,6 +3714,32 @@ export class Orchestrator {
     const textParts: string[] = [];
     // One forced file-build retry per turn (see fileAnnouncedButNotBuilt).
     let fileForceRetried = false;
+    // Issue #506 — generic, tool-agnostic record of which tool(s) already
+    // committed a successful side effect THIS turn (a `tool_result` yielded
+    // with `isError` falsy). If a LATER exception (a subsequent model call,
+    // the nudge pipeline, ...) lands in the catch below, this lets it report
+    // an honest `done` instead of discarding a real, already-committed
+    // action behind a bare `error`. Never special-cases a tool by name.
+    //
+    // Deliberate tradeoff (issue #506) — not an oversight: this list is
+    // populated by ANY successful `tool_result`, with no distinction
+    // between a read-only tool (e.g. `list_routines`) and a mutating one
+    // (e.g. `manage_routine` create/update). Concrete residual risk: a
+    // read-only tool succeeds early in the turn, then a LATER, more
+    // consequential tool call never runs because a transient failure hits
+    // the model call that would have requested it — the turn is still
+    // reported `done` (see the catch block below), even though the user's
+    // actual intended mutating action may never have happened.
+    // Two narrower alternatives were considered and rejected: (a) scoping
+    // this tracking to routine-create only sidesteps the residual risk but
+    // leaves the same false-negative bug unfixed for every other mutating
+    // tool (send_email, book_meeting, ...); (b) dropping this fix and
+    // always reporting `error` here regresses to issue #506's original,
+    // reported symptom for every tool. Kept generic and tool-agnostic
+    // across all tools as the better tradeoff; re-evaluate before
+    // narrowing it.
+    const committedToolNames: string[] = [];
+    let lastIterationIndex = 0;
 
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
@@ -3775,6 +3801,7 @@ export class Orchestrator {
     }
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+        lastIterationIndex = iteration;
         yield { type: 'iteration_start', iteration };
         // Mirror BuilderAgent: the per-iteration boundary is also when the
         // observer's iteration counter resets, so its consumers (heartbeat
@@ -4125,6 +4152,14 @@ export class Orchestrator {
             s.isError = winner.output.startsWith('Error:');
             s.durationMs = Date.now() - s.started;
             this.finishSlotInvocation(s, traceCollector);
+            // Issue #506 — record the committed side effect before yielding,
+            // generically (name only, no tool-specific payload inspection).
+            if (!s.isError) {
+              const name = s.use.name;
+              if (typeof name === 'string' && !committedToolNames.includes(name)) {
+                committedToolNames.push(name);
+              }
+            }
             yield {
               type: 'tool_result',
               id: s.use.id,
@@ -4300,10 +4335,89 @@ export class Orchestrator {
         '[orchestrator] turn failed:',
         err instanceof Error ? (err.stack ?? err.message) : err,
       );
-      yield {
-        type: 'error',
-        message: err instanceof Error ? err.message : String(err),
-      };
+      // Issue #506 — a tool call earlier in this turn may have already
+      // committed a real side effect (e.g. created a record) even though a
+      // LATER step of the SAME turn (a subsequent model call, the nudge
+      // pipeline, ...) then threw. Reporting a bare `error` in that case is
+      // a false negative: the action succeeded, only the turn's own
+      // bookkeeping failed afterwards. Report `done` instead — honest that
+      // the action(s) completed but the turn itself didn't finish cleanly.
+      // Generic across every tool; no tool-specific detail is fabricated.
+      // A genuine failure (nothing committed yet) still yields `error`,
+      // unchanged from today.
+      //
+      // Deliberate tradeoff — not an oversight: this done-vs-error branch
+      // trusts ANY entry in `committedToolNames` equally, read-only or
+      // mutating (see the fuller tradeoff comment on `committedToolNames`'s
+      // declaration above). Accepted residual risk: a benign read-only
+      // success earlier in the turn can mask a later, more consequential
+      // mutation that was silently skipped, and this branch will still
+      // report `done`. Kept generic across all tools rather than narrowed
+      // to routine-create only or dropped entirely, because reverting to
+      // always-`error` here would leave issue #506's reported
+      // false-negative-on-success bug unfixed for every side-effecting
+      // tool, not just routine creation.
+      if (committedToolNames.length > 0) {
+        const toolList = committedToolNames.join(', ');
+        const answer =
+          committedToolNames.length === 1
+            ? `The requested action (${toolList}) completed successfully, but the turn could not finish generating a follow-up response.`
+            : `The requested actions (${toolList}) completed successfully, but the turn could not finish generating a follow-up response.`;
+        const iterations = lastIterationIndex + 1;
+        // Issue #506 (review follow-up) — every OTHER `done`-emission site
+        // in this function persists the exchange via `sessionLogger.log()`
+        // BEFORE yielding (see the success path above, the choice-card
+        // path, and direct-line). This emergency path is specifically for
+        // the case where a tool already committed a real side effect, so
+        // skipping the log here would be the one `done` path that leaves
+        // that commitment unrecorded — the next turn's model would have no
+        // memory of it and could re-invoke the same tool, reintroducing the
+        // duplicate-side-effect bug issue #506 exists to prevent. Same
+        // call shape as the other sites; best-effort like all of them.
+        const restoredAnswer = await restorePromptForPersistence(
+          privacyForPrompt,
+          answer,
+        );
+        const runTrace = traceCollector?.finish({
+          iterations,
+          status: 'success',
+        });
+        let persistedTurnId: string | undefined;
+        if (this.sessionLogger && input.sessionScope) {
+          const entityRefs = entityCollection?.drain() ?? [];
+          try {
+            const logged = await this.sessionLogger.log({
+              scope: input.sessionScope,
+              userMessage: input.userMessage,
+              assistantAnswer: restoredAnswer,
+              toolCalls,
+              iterations,
+              entityRefs,
+              ...(input.userId ? { userId: input.userId } : {}),
+              ...(runTrace ? { runTrace } : {}),
+            });
+            persistedTurnId = logged.turnExternalId;
+          } catch (logErr) {
+            console.error(
+              '[orchestrator] session log failed (continuing with emergency done):',
+              logErr instanceof Error ? logErr.message : logErr,
+            );
+          }
+        }
+        yield {
+          type: 'done',
+          answer: restoredAnswer,
+          toolCalls,
+          iterations,
+          ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+          ...(runTrace ? { runTrace } : {}),
+        };
+      } else {
+        yield {
+          type: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
     } finally {
       entityCollection?.drain();
     }
