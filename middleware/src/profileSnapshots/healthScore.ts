@@ -30,7 +30,7 @@
  * compat; the new function is a separate pure function on the agent spec.
  */
 
-import type { AgentSpec } from '../plugins/builder/agentSpec.js';
+import { validateSpecForCodegen, type AgentSpec } from '../plugins/builder/agentSpec.js';
 import {
   BOUNDARY_PRESETS,
   getBoundaryPreset,
@@ -379,38 +379,61 @@ function scoreGuardrailCoverage(spec: AgentSpec): ContextQualityCriterionResult 
 }
 
 /** Tool schema quality — manifestLinter.validateSpec's tool-id checks
- *  (uniqueness + snake_case syntax). Deterministic proxy for correct
- *  tool use: a malformed or colliding tool id crashes codegen or install,
- *  which is a direct precursor to tool-misuse at runtime. */
+ *  (uniqueness + snake_case syntax) PLUS agentSpec.validateSpecForCodegen's
+ *  cross-namespace checks. manifestLinter only looks at spec.tools[] in
+ *  isolation; spec.external_reads[] shares the same toolkit id namespace at
+ *  runtime, so a tools[] id colliding with an external_reads id (or an
+ *  external_reads id in the reserved namespace) passes manifestLinter clean
+ *  but breaks at codegen/install (last-write-wins tool registration). This
+ *  is exactly the codegen gate the builder actually runs before activation,
+ *  so cross-checking it here keeps the score honest about what will really
+ *  fail. Deterministic proxy for correct tool use: a malformed or colliding
+ *  tool id is a direct precursor to tool-misuse at runtime. */
 function scoreToolSchemaQuality(spec: AgentSpec): ContextQualityCriterionResult {
   const tools = spec.tools ?? [];
+  const externalReads = spec.external_reads ?? [];
+  const totalEntries = tools.length + externalReads.length;
+
   const lint = validateSpec(spec);
   const toolViolations = lint.violations.filter(
     (v) => v.kind === 'tool_id_duplicate' || v.kind === 'tool_id_invalid_syntax',
   );
 
+  const codegenIssues = validateSpecForCodegen(spec);
+  const namespaceViolations = codegenIssues.filter(
+    (i) => i.code === 'external_read_id_collides_with_tool' || i.code === 'reserved_tool_id',
+  );
+
+  const totalViolations = toolViolations.length + namespaceViolations.length;
+
   let score: number;
   let rationale: string;
-  if (tools.length === 0) {
+  if (totalEntries === 0) {
     score = 100;
-    rationale = 'No tools declared — nothing to validate.';
-  } else if (toolViolations.length === 0) {
+    rationale = 'No tools or external_reads declared — nothing to validate.';
+  } else if (totalViolations === 0) {
     score = 100;
     rationale =
-      `${String(tools.length)} tool(s) declared, all pass manifestLinter's tool-id checks ` +
-      '(unique, snake_case).';
+      `${String(tools.length)} tool(s) and ${String(externalReads.length)} external_reads ` +
+      "entry(ies) declared, all pass manifestLinter's tool-id checks (unique, snake_case) " +
+      'and the codegen namespace/reserved-id checks.';
   } else {
-    score = Math.max(0, 100 - toolViolations.length * 25);
+    score = Math.max(0, 100 - totalViolations * 25);
+    const descriptions = [
+      ...toolViolations.map((v) => `${v.kind} (${v.path})`),
+      ...namespaceViolations.map((v) => `${v.code} (${v.toolId ?? 'unknown id'})`),
+    ];
     rationale =
-      `${String(toolViolations.length)} of ${String(tools.length)} tool(s) fail ` +
-      `manifestLinter's schema checks: ${toolViolations.map((v) => `${v.kind} (${v.path})`).join('; ')}.`;
+      `${String(totalViolations)} of ${String(totalEntries)} tool/external_reads entries fail ` +
+      `schema or namespace checks: ${descriptions.join('; ')}.`;
   }
 
   const fixHint =
-    toolViolations.length > 0
-      ? "Fix the tool-id syntax/duplicate violations from manifestLinter.validateSpec — " +
-        'malformed ids crash codegen or collide at install.'
-      : 'Tool schemas are clean.';
+    totalViolations > 0
+      ? 'Fix the tool-id syntax/duplicate violations from manifestLinter.validateSpec and the ' +
+        'namespace-collision/reserved-id violations from agentSpec.validateSpecForCodegen — ' +
+        'malformed or colliding ids crash codegen or collide at install.'
+      : 'Tool and external_reads schemas are clean.';
 
   return {
     id: 'tool_schema_quality',
@@ -424,34 +447,66 @@ function scoreToolSchemaQuality(spec: AgentSpec): ContextQualityCriterionResult 
 }
 
 /** Grounding sufficiency — deterministic "is a knowledge source attached
- *  at all" proxy (permissions.graph.entity_systems / external_reads).
- *  This checks attachment, not whether the attached source actually
+ *  AND actually resolvable" proxy (permissions.graph.entity_systems /
+ *  external_reads). An external_reads entry whose service isn't in
+ *  serviceTypeRegistry, or whose providing plugin is missing from
+ *  depends_on, throws at codegen time (see manifestLinter's
+ *  external_read_unknown_service / external_read_integration_missing) —
+ *  such an entry isn't a real grounding source, so it's excluded from the
+ *  attachment count rather than trusted at face value. This still only
+ *  checks attachment/resolvability, not whether the source actually
  *  covers the agent's domain — that judgment is deferred to the
  *  LLM-juror pass (issue #499 item 3). */
 function scoreGroundingAttached(spec: AgentSpec): ContextQualityCriterionResult {
   const entitySystems = spec.permissions?.graph?.entity_systems ?? [];
   const externalReads = spec.external_reads ?? [];
   const hasGraph = entitySystems.length > 0;
-  const hasExternalReads = externalReads.length > 0;
-  const attached = hasGraph || hasExternalReads;
+
+  const lint = validateSpec(spec);
+  const brokenExternalReadPaths = new Set(
+    lint.violations
+      .filter(
+        (v) =>
+          v.kind === 'external_read_unknown_service' ||
+          v.kind === 'external_read_integration_missing',
+      )
+      .map((v) => v.path),
+  );
+  const workingExternalReads = externalReads.filter(
+    (_, i) => !brokenExternalReadPaths.has(`/external_reads/${String(i)}/service`),
+  );
+  const brokenCount = externalReads.length - workingExternalReads.length;
+  const hasWorkingExternalReads = workingExternalReads.length > 0;
+  const attached = hasGraph || hasWorkingExternalReads;
 
   const sources: string[] = [];
   if (hasGraph) sources.push(`knowledge-graph entity systems (${entitySystems.join(', ')})`);
-  if (hasExternalReads) {
-    sources.push(`${String(externalReads.length)} external_reads binding(s)`);
+  if (hasWorkingExternalReads) {
+    sources.push(`${String(workingExternalReads.length)} working external_reads binding(s)`);
   }
 
   const rationale = attached
-    ? `Knowledge source attached: ${sources.join(' + ')}. This checks attachment only, not ` +
-      'sufficiency of coverage.'
-    : 'No knowledge source attached — permissions.graph.entity_systems and external_reads ' +
-      'are both empty. The agent has nothing to ground answers in beyond model priors.';
+    ? `Knowledge source attached: ${sources.join(' + ')}` +
+      (brokenCount > 0
+        ? `; ${String(brokenCount)} external_reads binding(s) reference an unresolvable ` +
+          "service and don't count."
+        : '.') +
+      ' This checks attachment/resolvability only, not sufficiency of domain coverage.'
+    : brokenCount > 0
+      ? `${String(brokenCount)} external_reads binding(s) reference an unknown service or a ` +
+        'missing depends_on entry — none of them resolve, so no knowledge source is actually ' +
+        'attached (see manifestLinter.validateSpec for details).'
+      : 'No knowledge source attached — permissions.graph.entity_systems and external_reads ' +
+        'are both empty. The agent has nothing to ground answers in beyond model priors.';
 
   const fixHint = attached
-    ? 'A grounding source is attached. Whether it actually covers the agent\'s domain ' +
-      'requires the LLM-juror pass.'
-    : 'Attach a knowledge-graph entity system (permissions.graph.entity_systems) or an ' +
-      'external_reads binding so the agent can ground answers in real data.';
+    ? 'A grounding source is attached and resolves. Whether it actually covers the agent\'s ' +
+      'domain requires the LLM-juror pass.'
+    : brokenCount > 0
+      ? "Fix the external_reads service name(s) or add the missing plugin to depends_on " +
+        '(see manifestLinter.validateSpec violations) so the binding actually resolves.'
+      : 'Attach a knowledge-graph entity system (permissions.graph.entity_systems) or an ' +
+        'external_reads binding so the agent can ground answers in real data.';
 
   return {
     id: 'grounding_sufficiency',

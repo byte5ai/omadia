@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import { AgentSpecSchema, type AgentSpec } from '../src/plugins/builder/agentSpec.js';
+import { registerServiceType } from '../src/plugins/builder/serviceTypeRegistry.js';
 import {
   DEFAULT_ASSET_WEIGHTS,
   FALLBACK_ASSET_WEIGHT,
@@ -10,6 +11,16 @@ import {
   type ContextQualityCriterionId,
 } from '../src/profileSnapshots/healthScore.js';
 import type { AssetDiff } from '../src/profileSnapshots/snapshotService.js';
+
+// Phase 5B: serviceTypeRegistry is empty by default (OSS-decoupled). Seed
+// the one entry the grounding_sufficiency tests below rely on, mirroring
+// test/builder/manifestLinter.test.ts's seedServiceTypeRegistry pattern.
+// Registered once at module scope -- node:test runs each file in its own
+// process, so this doesn't leak into or depend on other test files.
+registerServiceType('odoo.client', {
+  providedBy: 'de.byte5.integration.odoo',
+  typeImport: { from: '@omadia/integration-odoo', name: 'OdooClient' },
+});
 
 /**
  * Phase 2.3 Slice 1 — healthScore pure-function coverage.
@@ -286,13 +297,39 @@ describe('computeContextQualityScore', () => {
     assert.ok(dupCriterion.rationale.includes('tool_id_duplicate'));
   });
 
-  it('grounding_sufficiency: attached via graph entity_systems or external_reads, else 0', () => {
+  it('tool_schema_quality is penalized when an external_reads id collides with a tools[] id', () => {
+    // manifestLinter.validateSpec only looks at spec.tools[] in isolation and
+    // would score this 100; external_reads[] shares the same toolkit id
+    // namespace at runtime (agentSpec.validateSpecForCodegen's
+    // external_read_id_collides_with_tool), so a naive tools-only check
+    // misses a real "last write wins" registration bug.
+    const colliding = computeContextQualityScore(
+      baseSpec({
+        depends_on: ['de.byte5.integration.odoo'],
+        tools: [{ id: 'fetch_customer', description: 'manual tool' }],
+        external_reads: [
+          {
+            id: 'fetch_customer',
+            description: 'fetch customer via odoo',
+            service: 'odoo.client',
+            method: 'read',
+          },
+        ],
+      }),
+    );
+    const criterion = colliding.criteria.find((c) => c.id === 'tool_schema_quality')!;
+    assert.equal(criterion.score, 75);
+    assert.ok(criterion.rationale.includes('external_read_id_collides_with_tool'));
+  });
+
+  it('grounding_sufficiency: attached via graph entity_systems or a resolvable external_reads binding, else 0', () => {
     const none = computeContextQualityScore(baseSpec());
     const viaGraph = computeContextQualityScore(
       baseSpec({ permissions: { graph: { entity_systems: ['odoo'] } } }),
     );
     const viaExternalReads = computeContextQualityScore(
       baseSpec({
+        depends_on: ['de.byte5.integration.odoo'],
         external_reads: [
           {
             id: 'get_something',
@@ -310,6 +347,46 @@ describe('computeContextQualityScore', () => {
     assert.equal(score(none), 0);
     assert.equal(score(viaGraph), 100);
     assert.equal(score(viaExternalReads), 100);
+  });
+
+  it('grounding_sufficiency: an external_reads binding that cannot resolve does not count as attached', () => {
+    // Same shape as the "attached" case above, but service is unregistered
+    // (manifestLinter -> external_read_unknown_service) and, separately, the
+    // registered service's plugin is missing from depends_on (manifestLinter
+    // -> external_read_integration_missing). Neither is a real grounding
+    // source: codegen throws on both before the agent could ever query it.
+    const unknownService = computeContextQualityScore(
+      baseSpec({
+        external_reads: [
+          {
+            id: 'get_something',
+            description: 'fetch something',
+            service: 'totally.unregistered.service',
+            method: 'read',
+          },
+        ],
+      }),
+    );
+    const missingDependsOn = computeContextQualityScore(
+      baseSpec({
+        // depends_on deliberately omits 'de.byte5.integration.odoo'.
+        external_reads: [
+          {
+            id: 'get_something',
+            description: 'fetch something',
+            service: 'odoo.client',
+            method: 'read',
+          },
+        ],
+      }),
+    );
+
+    const criterion = (out: ReturnType<typeof computeContextQualityScore>) =>
+      out.criteria.find((c) => c.id === 'grounding_sufficiency')!;
+
+    assert.equal(criterion(unknownService).score, 0);
+    assert.ok(criterion(unknownService).rationale.includes('unresolvable') || criterion(unknownService).rationale.includes('unknown'));
+    assert.equal(criterion(missingDependsOn).score, 0);
   });
 
   it('token_efficiency: no persona delta scores 100, a large persona delta drags it down', () => {
