@@ -77,6 +77,13 @@ updates:
       # still flow; revisit when the whole stack moves to the next Node LTS.
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
+      # typescript 7.x is the Go-native compiler rewrite (tsgo), a breaking
+      # architectural change from the 5.x TS-in-TS compiler, not a routine
+      # semver bump. PR #495 (5.9.3 -> 7.0.2) failed build + typecheck + vitest
+      # CI outright. Revisit once the ecosystem (next.js, vitest, our own
+      # tsconfig usage) has validated support for TS7.
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
 
   # GitHub Actions versions in workflow files
   - package-ecosystem: 'github-actions'
