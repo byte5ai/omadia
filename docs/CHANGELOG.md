@@ -18,6 +18,40 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — streamed turns no longer report a bare error after a tool already committed (#506)
+
+- Root-cause fix for issue #506's actual one-click repro (the earlier
+  reconciliation work below only helped on a *retry*). `chatStreamInner`
+  in `middleware/packages/harness-orchestrator/src/orchestrator.ts` wraps
+  its whole per-turn iteration loop — tool dispatch and every subsequent
+  `streamMessageEvents` call — in a single `try`/`catch`. Any exception
+  caught there unconditionally yielded a bare `{ type: 'error' }` event,
+  even when it happened in a LATER iteration (e.g. the model call that
+  generates the natural-language confirmation), after an EARLIER
+  iteration's tool call had already committed its side effect and already
+  yielded a successful `tool_result`. A user who clicked a create action
+  exactly once would have it created server-side and still see a generic
+  "Etwas ist schief gegangen" with zero diagnostic value — the false
+  negative the issue was filed against. The streaming iteration loop now
+  tracks, generically and tool-agnostically (by name only, no per-tool
+  special-casing), whether at least one `tool_result` succeeded
+  (`isError` falsy) this turn. When the catch block is reached with at
+  least one such committed result recorded, it now yields a `done` event
+  instead — `ChatStreamEvent`'s existing normal-completion shape,
+  already rendered correctly by every channel adapter — with an honest
+  answer naming the tool(s) that completed and stating that the turn
+  itself could not finish generating a follow-up response. It does not
+  claim the whole turn succeeded, and it does not fabricate tool-specific
+  detail it doesn't generically have. The underlying error is still
+  `console.error`-logged exactly as before for server-side diagnostics;
+  only the event yielded to the caller changes. A turn where nothing
+  committed yet (the genuine-failure case — e.g. the very first model
+  call fails, or the tool call itself errored) still yields `{ type:
+  'error' }` unchanged. Together with the reconciliation fix below, this
+  closes #506 for both the one-click repro and the retry-duplication
+  case; the correlation-id/error-token secondary ask remains explicitly
+  out of scope (see below).
+
 ### Fixed — routine create no longer reports failure for a retry that already succeeded (#506)
 
 - `RoutineRunner.createRoutine` previously let a retried `create` (e.g. after

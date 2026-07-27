@@ -3521,6 +3521,14 @@ export class Orchestrator {
     const textParts: string[] = [];
     // One forced file-build retry per turn (see fileAnnouncedButNotBuilt).
     let fileForceRetried = false;
+    // Issue #506 — generic, tool-agnostic record of which tool(s) already
+    // committed a successful side effect THIS turn (a `tool_result` yielded
+    // with `isError` falsy). If a LATER exception (a subsequent model call,
+    // the nudge pipeline, ...) lands in the catch below, this lets it report
+    // an honest `done` instead of discarding a real, already-committed
+    // action behind a bare `error`. Never special-cases a tool by name.
+    const committedToolNames: string[] = [];
+    let lastIterationIndex = 0;
 
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
@@ -3582,6 +3590,7 @@ export class Orchestrator {
     }
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+        lastIterationIndex = iteration;
         yield { type: 'iteration_start', iteration };
         // Mirror BuilderAgent: the per-iteration boundary is also when the
         // observer's iteration counter resets, so its consumers (heartbeat
@@ -3932,6 +3941,14 @@ export class Orchestrator {
             s.isError = winner.output.startsWith('Error:');
             s.durationMs = Date.now() - s.started;
             this.finishSlotInvocation(s, traceCollector);
+            // Issue #506 — record the committed side effect before yielding,
+            // generically (name only, no tool-specific payload inspection).
+            if (!s.isError) {
+              const name = s.use.name;
+              if (typeof name === 'string' && !committedToolNames.includes(name)) {
+                committedToolNames.push(name);
+              }
+            }
             yield {
               type: 'tool_result',
               id: s.use.id,
@@ -4107,10 +4124,34 @@ export class Orchestrator {
         '[orchestrator] turn failed:',
         err instanceof Error ? (err.stack ?? err.message) : err,
       );
-      yield {
-        type: 'error',
-        message: err instanceof Error ? err.message : String(err),
-      };
+      // Issue #506 — a tool call earlier in this turn may have already
+      // committed a real side effect (e.g. created a record) even though a
+      // LATER step of the SAME turn (a subsequent model call, the nudge
+      // pipeline, ...) then threw. Reporting a bare `error` in that case is
+      // a false negative: the action succeeded, only the turn's own
+      // bookkeeping failed afterwards. Report `done` instead — honest that
+      // the action(s) completed but the turn itself didn't finish cleanly.
+      // Generic across every tool; no tool-specific detail is fabricated.
+      // A genuine failure (nothing committed yet) still yields `error`,
+      // unchanged from today.
+      if (committedToolNames.length > 0) {
+        const toolList = committedToolNames.join(', ');
+        const answer =
+          committedToolNames.length === 1
+            ? `The requested action (${toolList}) completed successfully, but the turn could not finish generating a follow-up response.`
+            : `The requested actions (${toolList}) completed successfully, but the turn could not finish generating a follow-up response.`;
+        yield {
+          type: 'done',
+          answer,
+          toolCalls,
+          iterations: lastIterationIndex + 1,
+        };
+      } else {
+        yield {
+          type: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
     } finally {
       entityCollection?.drain();
     }
