@@ -41,6 +41,15 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   be told about a capability whose spec had just been removed, replacing a
   clean "tool not offered" state with a confusing "documented but missing
   tool" one.
+- Follow-up (review round 3): the gate only covered native tools registered
+  via `ctx.tools.register()` — `Orchestrator.buildToolsList()` still
+  appended every `DomainTool` (the dynamic-agent-plugin tools, e.g.
+  `query_<slug>`) unconditionally, and `dispatchToolInner()` still invoked
+  a matching one without any readiness check. Both call sites now apply
+  the same `isToolAvailable(agentId)` gate `DomainTool.agentId` already
+  carries, so a not-ready plugin's domain tool is excluded from `tools[]`
+  and refused (`Error:`-prefixed, handler never invoked) at dispatch time,
+  matching the native-tool path exactly.
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 

@@ -78,6 +78,15 @@ export class ToolDispatchService {
 
     const domainTool = this.domainTools().find((t) => t.name === name);
     if (domainTool) {
+      // Issue #474 follow-up — same gate as the native-handler branch above;
+      // DomainTools carry an `agentId` too and were previously dispatchable
+      // through this bridge regardless of the owning plugin's readiness.
+      if (!this.isToolAvailable(domainTool.agentId)) {
+        return {
+          content: `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`,
+          isError: true,
+        };
+      }
       try {
         return { content: await domainTool.handle(input) };
       } catch (error) {
@@ -113,6 +122,10 @@ export class ToolDispatchService {
     for (const tool of this.domainTools()) {
       // Native tools keep precedence on collisions to mirror dispatch order.
       if (advertised.has(tool.name)) {
+        continue;
+      }
+      // Issue #474 follow-up — same gate as the native-tool loop above.
+      if (!this.isToolAvailable(tool.agentId)) {
         continue;
       }
       advertised.set(tool.name, {

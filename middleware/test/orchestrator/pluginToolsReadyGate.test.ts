@@ -14,7 +14,11 @@ import type {
   LlmStreamEvent,
 } from '@omadia/llm-provider';
 import type { ChatStreamEvent } from '@omadia/channel-sdk';
-import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
+import {
+  createDomainTool,
+  NativeToolRegistry,
+  Orchestrator,
+} from '@omadia/orchestrator';
 
 interface ScriptedStream {
   events: LlmStreamEvent[];
@@ -281,6 +285,127 @@ describe('Orchestrator — issue #474 plugin tool-readiness gate', () => {
     assert.ok(
       !systemText?.includes('GATED_TOOL_PROMPT_DOC_MARKER'),
       'expected the gated plugin promptDoc to be excluded from the system prompt',
+    );
+  });
+});
+
+/**
+ * Issue #474 follow-up — the same readiness gate applies to the *second*
+ * tool-registration path: DomainTools contributed by dynamic agent plugins
+ * (`domainToolsByName`), as distinct from native tools registered via
+ * `ctx.tools.register()`. Both paths carry an `agentId` and must be gated
+ * identically, otherwise a not-ready plugin's domain tool (e.g.
+ * `query_<slug>`) stays offered and invocable even though its native tools
+ * are already hidden.
+ */
+describe('Orchestrator — issue #474 plugin tool-readiness gate (domain tools)', () => {
+  const makeDomainTool = (
+    name: string,
+    agentId: string,
+    onCall: () => void,
+  ) =>
+    createDomainTool({
+      name,
+      description: `${name} for testing`,
+      domain: 'test.domain',
+      agentId,
+      agent: {
+        ask: async (): Promise<string> => {
+          onCall();
+          return `${name}-output`;
+        },
+      },
+    });
+
+  it('excludes a not-ready plugin domain tool from the offered tool list, keeps a ready one', async () => {
+    const readyTool = makeDomainTool('query_ready', 'ready-plugin', () => {});
+    const gatedTool = makeDomainTool('query_gated', 'gated-plugin', () => {});
+
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [readyTool, gatedTool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      isPluginToolsReady: (agentId) => agentId !== 'gated-plugin',
+    });
+
+    for await (const _ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      // drain
+    }
+
+    const offered = (seenRequests[0]?.tools ?? []).map((t) => t.name);
+    assert.ok(
+      offered.includes('query_ready'),
+      `expected query_ready in offered tools, got ${JSON.stringify(offered)}`,
+    );
+    assert.ok(
+      !offered.includes('query_gated'),
+      `expected query_gated to be excluded, got ${JSON.stringify(offered)}`,
+    );
+  });
+
+  it('still offers every domain tool when isPluginToolsReady is not wired (pre-#474 behaviour)', async () => {
+    const plainTool = makeDomainTool('query_plain', 'some-plugin', () => {});
+
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [plainTool],
+      nativeToolRegistry: new NativeToolRegistry(),
+    });
+
+    for await (const _ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      // drain
+    }
+
+    const offered = (seenRequests[0]?.tools ?? []).map((t) => t.name);
+    assert.ok(offered.includes('query_plain'));
+  });
+
+  it('refuses to invoke a not-ready plugin domain tool even if a call for it arrives (dispatch-time re-check)', async () => {
+    let handlerCalled = false;
+    const gatedTool = makeDomainTool('query_gated', 'gated-plugin', () => {
+      handlerCalled = true;
+    });
+
+    const stream0 = streamWithTools([
+      { id: 'use-1', name: 'query_gated', input: { question: 'hi' } },
+    ]);
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([stream0, finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [gatedTool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      isPluginToolsReady: () => false,
+    });
+
+    const events: ChatStreamEvent[] = [];
+    for await (const ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      events.push(ev);
+    }
+
+    assert.equal(handlerCalled, false, 'the gated domain tool must never run');
+    const result = events.find(
+      (e) => e.type === 'tool_result' && e.id === 'use-1',
+    );
+    assert.ok(result, 'expected a tool_result for the gated call');
+    assert.ok(
+      result?.type === 'tool_result' &&
+        result.isError === true &&
+        /Error:/.test(result.output),
+      `expected an Error: result, got ${JSON.stringify(result)}`,
     );
   });
 });

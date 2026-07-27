@@ -224,6 +224,41 @@ describe('ToolDispatchService', () => {
     );
   });
 
+  it('issue #474 follow-up: refuses to dispatch a not-ready plugin domain tool and excludes it from the list', async () => {
+    const nativeTools = new NativeToolRegistry();
+    let handlerCalled = false;
+    const gatedDomainTool: DomainTool = {
+      name: 'query_gated',
+      spec: {
+        name: 'query_gated',
+        description: 'gated domain tool',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'test.domain',
+      agentId: 'gated-plugin',
+      async handle() {
+        handlerCalled = true;
+        return 'should never run';
+      },
+    };
+
+    const service = new ToolDispatchService({
+      nativeTools,
+      domainTools: [gatedDomainTool],
+      isPluginToolsReady: (agentId) => agentId !== 'gated-plugin',
+    });
+
+    const result = await service.dispatch('query_gated', {});
+    assert.equal(handlerCalled, false);
+    assert.equal(result.isError, true);
+    assert.match(result.content, /query_gated/);
+
+    assert.deepEqual(
+      service.listDispatchableToolSpecs().map((s) => s.name),
+      [],
+    );
+  });
+
   it('issue #474: still dispatches every tool when isPluginToolsReady is not wired', async () => {
     const nativeTools = new NativeToolRegistry();
     nativeTools.register('plain_tool', {

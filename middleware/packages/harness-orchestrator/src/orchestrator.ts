@@ -4609,7 +4609,17 @@ export class Orchestrator {
       return this.bookMeetingTool.handle(input);
     }
     const domainTool = this.domainToolsByName.get(name);
-    if (domainTool) return domainTool.handle(input, observer);
+    if (domainTool) {
+      // Issue #474 — same re-check-at-invocation-time gate as the native-tool
+      // branch above, applied to the second tool-registration path (domain
+      // tools contributed by dynamic agent plugins via DomainTool.agentId).
+      // Without this, a not-ready plugin's domain tool was still invocable
+      // even though its native tools and promptDoc were already hidden.
+      if (!this.isToolAvailable(domainTool.agentId)) {
+        return `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`;
+      }
+      return domainTool.handle(input, observer);
+    }
     return `Error: unknown tool \`${name}\`.`;
   }
 
@@ -4898,8 +4908,14 @@ export class Orchestrator {
     }
     // DomainTools dynamically from the map — so hot-registered uploaded
     // agents become visible from the next iteration without reboot.
+    // Issue #474 — same gate as the native-tools loop above: a domain tool
+    // whose owning plugin hasn't completed its connection/auth setup must
+    // not be offered either, otherwise the model discovers the missing
+    // access via a failing dispatch instead of the tool being absent.
     for (const tool of this.domainToolsByName.values()) {
-      tools.push(tool.spec);
+      if (this.isToolAvailable(tool.agentId)) {
+        tools.push(tool.spec);
+      }
     }
     // Privacy-Shield v4 — verb + render tools, offered only when the v4
     // data-plane boundary is active for this turn.
