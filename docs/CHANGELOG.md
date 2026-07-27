@@ -18,6 +18,22 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
+
+- A native plugin (`ctx.tools.register` from `activate()`) whose own
+  connection/auth setup is still pending — reported via the existing
+  `ctx.status.report({state: 'needs_action' | 'error'})` — is now excluded
+  from the tool list the orchestrator offers the model
+  (`Orchestrator.buildToolsList`), instead of being offered and failing on
+  the first call. The same check runs again at invocation time
+  (`Orchestrator.dispatchToolInner` and the standalone
+  `ToolDispatchService` used by the subscription-CLI provider), so a status
+  change between list-assembly and the actual call can't slip through
+  either. Plugins that never report a status (the common case — no
+  connection step) are unaffected. Deliberately separate from the
+  MCP-server-specific auth-gap flow (`mcpOAuthService`), which already
+  handles that case for MCP servers.
+
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
 - The save-as-template dialog no longer reads the viewer's own template id as

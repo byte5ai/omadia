@@ -383,6 +383,22 @@ export interface OrchestratorOptions {
     configKey: string,
   ) => unknown | undefined;
   /**
+   * Issue #474 — per-plugin tool-readiness gate. Given the `agentId` of a
+   * plugin that contributed a native tool (via `ctx.tools.register`),
+   * returns whether that plugin's connection/auth setup is complete and its
+   * tools may be exposed to and invoked by the orchestrator. Checked both in
+   * `buildToolsList()` (tool-list assembly) and `dispatchToolInner()`
+   * (tool-invocation time) — auth can complete or expire between the two, so
+   * list-time filtering alone is not enough. Kernel-internal tools (no
+   * `agentId` on the registration) are never gated.
+   *
+   * Caller wires this from the harness runtime's `PluginStatusRegistry`
+   * (spec 004): `(agentId) => pluginStatusRegistry.isReady(agentId)`.
+   * Absent ⇒ every plugin's tools are always available (pre-#474 behaviour,
+   * and the correct default for test/migration contexts).
+   */
+  isPluginToolsReady?: (agentId: string) => boolean;
+  /**
    * Palaia Phase 8 (OB-77) — Nudge-Pipeline registry. Plugin-contributed
    * `NudgeProvider`s register against this registry; the orchestrator
    * iterates them after every tool_result. Absent → pipeline is a no-op
@@ -1192,6 +1208,10 @@ export class Orchestrator {
   private readonly pluginConfigGet:
     | ((agentId: string, configKey: string) => unknown | undefined)
     | undefined;
+  /** Issue #474 — per-plugin tool-readiness gate (see OrchestratorOptions). */
+  private readonly isPluginToolsReady:
+    | ((agentId: string) => boolean)
+    | undefined;
   private readonly nudgeRegistry: NudgeRegistry | undefined;
   private readonly nudgeStateStore: NudgeStateStore | undefined;
   private readonly nudgeProcessMemory: ProcessMemoryService | undefined;
@@ -1256,6 +1276,7 @@ export class Orchestrator {
     this.responseGuard = options.responseGuard;
     this.privacyGuard = options.privacyGuard;
     this.pluginConfigGet = options.pluginConfigGet;
+    this.isPluginToolsReady = options.isPluginToolsReady;
     this.nudgeRegistry = options.nudgeRegistry;
     this.nudgeStateStore = options.nudgeStateStore;
     this.nudgeProcessMemory = options.nudgeProcessMemory;
@@ -4554,6 +4575,16 @@ export class Orchestrator {
     // migrates, its hardcoded branch disappears.
     const reg = this.nativeTools.get(name);
     if (reg?.handler) {
+      // Issue #474 — re-check readiness at invocation time, not just at
+      // list-assembly time: a plugin's connection/auth state can complete
+      // or expire between the two, so list-time filtering alone leaves a
+      // race window. Returned (not thrown) as an `Error:`-prefixed string,
+      // matching the `unknown tool` fallback below — both the streaming and
+      // non-streaming dispatch loops key `is_error` off that prefix, and
+      // only the non-streaming one also catches thrown rejections.
+      if (!this.isToolAvailable(reg.agentId)) {
+        return `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`;
+      }
       return reg.handler(input);
     }
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
@@ -4823,6 +4854,19 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Issue #474 — true when a plugin-contributed native tool may be exposed
+   * to / invoked by the orchestrator. Kernel-internal registrations (no
+   * `agentId`) are always available; a plugin-owned one is gated on
+   * `isPluginToolsReady`, which defaults to "ready" when the gate was never
+   * wired (byte-identical pre-#474 behaviour).
+   */
+  private isToolAvailable(agentId: string | undefined): boolean {
+    if (agentId === undefined) return true;
+    if (!this.isPluginToolsReady) return true;
+    return this.isPluginToolsReady(agentId);
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildToolsList(): any[] {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -4838,8 +4882,13 @@ export class Orchestrator {
     // Plugin-contributed native tools (registered via ctx.tools.register).
     // Live-ingested: activating a tool-kind plugin makes its spec appear on
     // the next iteration without requiring an orchestrator rebuild.
+    // Issue #474 — a plugin that hasn't finished its own connection/auth
+    // setup is excluded here so the orchestrator never offers a tool it
+    // knows will fail, instead of discovering that via a wasted round-trip.
     for (const entry of this.nativeTools.listWithHandler()) {
-      if (entry.spec) tools.push(entry.spec);
+      if (entry.spec && this.isToolAvailable(entry.agentId)) {
+        tools.push(entry.spec);
+      }
     }
     // DomainTools dynamically from the map — so hot-registered uploaded
     // agents become visible from the next iteration without reboot.

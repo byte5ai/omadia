@@ -128,3 +128,31 @@ describe('Spec 004 — ctx.status', () => {
     assert.equal(reg.get('plugin-b')?.state, 'needs_action');
   });
 });
+
+describe('Issue #474 — PluginStatusRegistry.isReady', () => {
+  it('is ready when the plugin never reported a status', () => {
+    const reg = new PluginStatusRegistry();
+    assert.equal(reg.isReady('never-reported'), true);
+  });
+
+  it('is not ready after ctx.status.report({state: "needs_action"})', () => {
+    const reg = new PluginStatusRegistry();
+    makeCtx('caller', reg).status.report({ state: 'needs_action' });
+    assert.equal(reg.isReady('caller'), false);
+  });
+
+  it('is not ready after ctx.status.report({state: "error"})', () => {
+    const reg = new PluginStatusRegistry();
+    makeCtx('caller', reg).status.report({ state: 'error' });
+    assert.equal(reg.isReady('caller'), false);
+  });
+
+  it('becomes ready again after ctx.status.clear() / report({state: "ok"})', () => {
+    const reg = new PluginStatusRegistry();
+    const ctx = makeCtx('caller', reg);
+    ctx.status.report({ state: 'needs_action' });
+    assert.equal(reg.isReady('caller'), false);
+    ctx.status.clear();
+    assert.equal(reg.isReady('caller'), true);
+  });
+});

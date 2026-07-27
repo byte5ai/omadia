@@ -27,4 +27,15 @@ export class PluginStatusRegistry {
   get(pluginId: string): PluginActionStatus | undefined {
     return this.statuses.get(pluginId);
   }
+
+  /** Issue #474 — true when the plugin has no pending `needs_action` /
+   *  `error` status, i.e. its own `activate()`/auth-completion code has not
+   *  flagged a required setup/connection step as outstanding. Used to gate
+   *  whether a plugin's `ctx.tools.register()`-contributed tools may be
+   *  surfaced to and invoked by the orchestrator. A plugin that never calls
+   *  `ctx.status.report(...)` at all (the common case — most plugins have no
+   *  connection step) is always ready. */
+  isReady(pluginId: string): boolean {
+    return this.statuses.get(pluginId) === undefined;
+  }
 }

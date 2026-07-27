@@ -190,6 +190,63 @@ describe('ToolDispatchService', () => {
     assert.equal(specs[1]?.description, 'native shared');
   });
 
+  it('issue #474: refuses to dispatch a not-ready plugin tool and excludes it from the list', async () => {
+    const nativeTools = new NativeToolRegistry();
+    let handlerCalled = false;
+    nativeTools.register('gated_tool', {
+      handler: async () => {
+        handlerCalled = true;
+        return 'should never run';
+      },
+      spec: {
+        name: 'gated_tool',
+        description: 'gated',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'test.x',
+      agentId: 'gated-plugin',
+    });
+
+    const service = new ToolDispatchService({
+      nativeTools,
+      domainTools: [],
+      isPluginToolsReady: (agentId) => agentId !== 'gated-plugin',
+    });
+
+    const result = await service.dispatch('gated_tool', {});
+    assert.equal(handlerCalled, false);
+    assert.equal(result.isError, true);
+    assert.match(result.content, /gated_tool/);
+
+    assert.deepEqual(
+      service.listDispatchableToolSpecs().map((s) => s.name),
+      [],
+    );
+  });
+
+  it('issue #474: still dispatches every tool when isPluginToolsReady is not wired', async () => {
+    const nativeTools = new NativeToolRegistry();
+    nativeTools.register('plain_tool', {
+      handler: async () => 'ok',
+      spec: {
+        name: 'plain_tool',
+        description: 'plain',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'test.x',
+      agentId: 'some-plugin',
+    });
+
+    const service = new ToolDispatchService({ nativeTools, domainTools: [] });
+    const result = await service.dispatch('plain_tool', {});
+    assert.equal(result.content, 'ok');
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(
+      service.listDispatchableToolSpecs().map((s) => s.name),
+      ['plain_tool'],
+    );
+  });
+
   it('does not advertise handler-only native entries but still dispatches them', async () => {
     const nativeTools = new NativeToolRegistry();
     nativeTools.registerHandler('mem', {

@@ -743,6 +743,20 @@ async function main(): Promise<void> {
     },
   );
 
+  // Issue #474 — per-plugin tool-readiness gate for the orchestrator. Reuses
+  // the existing, plugin-authored PluginStatusRegistry (spec 004): a plugin
+  // whose latest `ctx.status.report(...)` is `needs_action` / `error` has a
+  // required setup/connection step still pending, so its
+  // `ctx.tools.register()`-contributed tools must stay out of the
+  // orchestrator's tool list and refuse to execute until it reports back
+  // `ok` (or calls `ctx.status.clear()`). Deliberately separate from the
+  // MCP-server-specific auth flow (mcpOAuthService) — this only gates
+  // native-plugin tool registrations.
+  serviceRegistry.provide(
+    'installedPluginToolsReadyReader',
+    (agentId: string): boolean => pluginStatusRegistry.isReady(agentId),
+  );
+
   // Kernel-wide background-job scheduler. Plugin-contributed jobs (cron or
   // interval) register here via `ctx.jobs.register(...)`. Bulk teardown on
   // plugin deactivate is owned by each runtime, so a leaked dispose handle

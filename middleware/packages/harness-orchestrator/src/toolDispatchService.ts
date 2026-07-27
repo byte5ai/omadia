@@ -36,6 +36,15 @@ export class ToolDispatchService {
        *  flow via `registerDomainTool`) are reachable. Takes precedence over the
        *  static list when present. */
       readonly domainToolsProvider?: () => readonly DomainTool[];
+      /**
+       * Issue #474 — per-plugin tool-readiness gate, mirroring
+       * `OrchestratorOptions.isPluginToolsReady`. This dispatcher is a
+       * SEPARATE entry point from `Orchestrator.dispatchTool` (used by the
+       * subscription-CLI provider), so the gate must be repeated here too —
+       * relying on `Orchestrator`'s own check alone would leave this path
+       * ungated. Absent ⇒ every plugin's tools are always available.
+       */
+      readonly isPluginToolsReady?: (agentId: string) => boolean;
     },
   ) {}
 
@@ -43,10 +52,23 @@ export class ToolDispatchService {
     return this.deps.domainToolsProvider?.() ?? this.deps.domainTools ?? [];
   }
 
+  /** Issue #474 — see `Orchestrator.isToolAvailable`; kept in sync with it. */
+  private isToolAvailable(agentId: string | undefined): boolean {
+    if (agentId === undefined) return true;
+    if (!this.deps.isPluginToolsReady) return true;
+    return this.deps.isPluginToolsReady(agentId);
+  }
+
   async dispatch(name: string, input: unknown): Promise<ToolDispatchResult> {
     const nativeRegistration = this.deps.nativeTools.get(name);
     // Mirrors Orchestrator ordering: plugin/native handlers win first.
     if (nativeRegistration?.handler) {
+      if (!this.isToolAvailable(nativeRegistration.agentId)) {
+        return {
+          content: `Error: tool \`${name}\` is unavailable — plugin \`${nativeRegistration.agentId}\` has not completed its connection/auth setup.`,
+          isError: true,
+        };
+      }
       try {
         return { content: await nativeRegistration.handler(input) };
       } catch (error) {
@@ -73,6 +95,11 @@ export class ToolDispatchService {
       if (!registration.spec) {
         // Handler-only registrations remain dispatchable by name, but cannot be
         // advertised without a stable tool spec.
+        continue;
+      }
+      // Issue #474 — same gate as `dispatch()`; a not-yet-ready plugin's
+      // tools are excluded from the advertised list too.
+      if (!this.isToolAvailable(registration.agentId)) {
         continue;
       }
 
