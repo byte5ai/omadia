@@ -223,4 +223,58 @@ describe('OAuthReadinessTracker', () => {
 
     assert.equal(tracker.isConnected(ID), true);
   });
+
+  /**
+   * Issue #474 (review round 12) — `isConnected()` must re-evaluate
+   * freshness against the CURRENT wall clock on every call, not read a
+   * boolean verdict computed once inside `refresh()`. Concrete failing
+   * input the review gave: a token with 10 minutes of freshness left and no
+   * refresh token activates (caches "ready"); 6 minutes later — no new
+   * activate()/refresh() call — the token is inside `ctx.oauthTokens.get()`'s
+   * 5-minute refresh margin, where a real call would throw
+   * `OAuthTokenError('refresh_failed')`. A purely activation-cached boolean
+   * would still report ready for that entire window; this test proves the
+   * tracker doesn't. Uses `t.mock.timers` (already the repo convention — see
+   * office.test.ts) instead of a real sleep so the assertion is
+   * deterministic.
+   */
+  it('isConnected() flips to false once the cached token crosses into its refresh margin — WITHOUT a new refresh() call', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    try {
+      const tracker = new OAuthReadinessTracker();
+      const entry = entryWithFields([
+        { key: 'connection', type: 'oauth', label: 'Connect', provider: 'github' },
+      ]);
+      const vault = new FakeVault();
+      // 10 minutes of freshness left, no refresh token — exactly the review's
+      // concrete failing input.
+      await writeStoredTokens(vault, ID, 'connection', {
+        accessToken: 'tok',
+        refreshToken: '',
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        scope: '',
+      });
+
+      // Single activation — mirrors ToolPluginRuntime/DynamicAgentRuntime's
+      // activate() calling refresh() once.
+      await tracker.refresh(ID, entry, vault);
+      assert.equal(
+        tracker.isConnected(ID),
+        true,
+        'ready immediately after activation, 10 minutes of freshness left',
+      );
+
+      // Advance the clock 6 minutes — now inside tokenStore.ts's 5-minute
+      // OAUTH_REFRESH_MARGIN_MS — WITHOUT calling refresh() again.
+      t.mock.timers.tick(6 * 60_000);
+
+      assert.equal(
+        tracker.isConnected(ID),
+        false,
+        'must recompute freshness at read time, not serve the activation-time verdict',
+      );
+    } finally {
+      t.mock.timers.reset();
+    }
+  });
 });

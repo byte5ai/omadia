@@ -1,6 +1,10 @@
 import type { PluginCatalogEntry } from '../manifestLoader.js';
 import type { SecretVault } from '../../secrets/vault.js';
-import { isTokenRefreshable, readStoredTokens } from './tokenStore.js';
+import {
+  isTokenRefreshable,
+  readStoredTokens,
+  type StoredOAuthTokens,
+} from './tokenStore.js';
 
 /**
  * Issue #474 (review round 5) — automatic OAuth-connection readiness signal.
@@ -27,29 +31,45 @@ import { isTokenRefreshable, readStoredTokens } from './tokenStore.js';
  * must not clear an explicit `error`/`needs_action` the plugin reported for
  * an unrelated reason.
  *
- * Synchronous cache, like `PluginStatusRegistry`: the readiness gate is
+ * Semi-synchronous cache, like `PluginStatusRegistry`: the readiness gate is
  * consulted synchronously on every tool-list build / dispatch, but OAuth
- * connection state lives in the (async) vault. `refresh()` re-derives the
- * cached value from the vault and is called once per plugin activation —
- * the single choke point shared by fresh install, boot-time reactivation,
- * and post-Connect reactivation (`ToolPluginRuntime.activate` /
- * `DynamicAgentRuntime.activate`) — so the cache self-heals on every
- * activation, including a restart.
+ * connection state lives in the (async) vault. `refresh()` re-reads the
+ * vault and is called once per plugin activation — the single choke point
+ * shared by fresh install, boot-time reactivation, and post-Connect
+ * reactivation (`ToolPluginRuntime.activate` / `DynamicAgentRuntime.activate`)
+ * — so the cached RAW token data self-heals on every activation, including a
+ * restart.
+ *
+ * Issue #474 (review round 12) — `refresh()` caches the vault I/O result
+ * (genuinely async, so it must stay activation-triggered), but it must NOT
+ * additionally cache a pre-computed "is it fresh" boolean: freshness is a
+ * function of wall-clock time, which keeps moving between activations. A
+ * plugin that activates with, say, 10 minutes of token freshness left and no
+ * refresh token would otherwise read as connected for the tracker's entire
+ * lifetime, even 6 minutes later when `ctx.oauthTokens.get()` has crossed
+ * `OAUTH_REFRESH_MARGIN_MS` and started throwing `OAuthTokenError
+ * ('refresh_failed')` — exactly the wasted round-trip #474 exists to
+ * prevent, just deferred from activation time to a few minutes later. So
+ * `refresh()` stores the raw `StoredOAuthTokens` per declared oauth field,
+ * and `isConnected()` recomputes `isTokenRefreshable()` (which itself calls
+ * `isTokenStillFresh()` against `Date.now()`) fresh on every call — mirroring
+ * how `ctx.oauthTokens.get()` itself never caches a verdict either. Both
+ * helpers are pure and synchronous (no I/O), so recomputing per read is
+ * cheap.
  */
 export class OAuthReadinessTracker {
-  private readonly disconnected = new Set<string>();
+  /** Raw per-field token data from the last `refresh()`, keyed by plugin id.
+   *  `undefined` for a field means no tokens are stored for it yet (Connect
+   *  never completed). Absent from the map entirely means the plugin
+   *  declares no `type:'oauth'` setup field (always connected) or was never
+   *  activated. */
+  private readonly fieldTokens = new Map<
+    string,
+    Array<StoredOAuthTokens | undefined>
+  >();
 
-  /** Re-derive `pluginId`'s connection state from the vault and cache the
-   *  result. Connected (cache cleared) when the plugin declares no
-   *  `type:'oauth'` setup field, or when every declared oauth field has
-   *  stored tokens that are either still fresh or expired-with-a-refresh-
-   *  token (mirroring `ctx.oauthTokens.get()`'s own refreshability check via
-   *  `isTokenRefreshable` — see tokenStore.ts); not-connected otherwise.
-   *
-   *  Issue #474 (review round 10) — a token bundle existing in the vault is
-   *  NOT enough: `ctx.oauthTokens.get()` throws `OAuthTokenError
-   *  ('refresh_failed')` for an expired token with no refresh token to renew
-   *  it, so a plugin in that state must not be reported ready either. */
+  /** Re-read `pluginId`'s declared oauth fields from the vault and cache the
+   *  raw token bundles (not a pre-computed verdict — see class doc). */
   async refresh(
     pluginId: string,
     entry: PluginCatalogEntry | undefined,
@@ -59,32 +79,32 @@ export class OAuthReadinessTracker {
       .filter((field) => field.type === 'oauth')
       .map((field) => field.key);
     if (fieldKeys.length === 0) {
-      this.disconnected.delete(pluginId);
+      this.fieldTokens.delete(pluginId);
       return;
     }
     const stored = await Promise.all(
       fieldKeys.map((fieldKey) => readStoredTokens(vault, pluginId, fieldKey)),
     );
-    const allUsable = stored.every(
-      (tokens) => tokens !== undefined && isTokenRefreshable(tokens),
-    );
-    if (allUsable) {
-      this.disconnected.delete(pluginId);
-    } else {
-      this.disconnected.add(pluginId);
-    }
+    this.fieldTokens.set(pluginId, stored);
   }
 
   /** Drop any cached state for `pluginId` — called on deactivate so an
    *  uninstalled/torn-down plugin leaves no stale signal behind (mirrors
    *  `PluginStatusRegistry.clear`). */
   clear(pluginId: string): void {
-    this.disconnected.delete(pluginId);
+    this.fieldTokens.delete(pluginId);
   }
 
-  /** True unless `pluginId` declares a `type:'oauth'` setup field that has
-   *  not completed the Connect flow yet. */
+  /** True unless `pluginId` declares a `type:'oauth'` setup field whose
+   *  stored tokens are, AS OF THIS CALL, either missing or not usable
+   *  (mirroring `ctx.oauthTokens.get()`'s own refreshability check via
+   *  `isTokenRefreshable` — see tokenStore.ts). Recomputed against the
+   *  current wall clock on every call — see class doc for why. */
   isConnected(pluginId: string): boolean {
-    return !this.disconnected.has(pluginId);
+    const stored = this.fieldTokens.get(pluginId);
+    if (stored === undefined) return true;
+    return stored.every(
+      (tokens) => tokens !== undefined && isTokenRefreshable(tokens),
+    );
   }
 }

@@ -147,6 +147,23 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   the two current always-ready memory plugins are unaffected as long as they
   haven't reported not-ready — covered by a new test alongside the
   gated-plugin case.
+- Follow-up (review round 12): `OAuthReadinessTracker.isConnected()` read a
+  boolean cached once inside `refresh()` — activation time — instead of
+  re-checking freshness against the current wall clock. A plugin activating
+  with, say, 10 minutes of token freshness left and no refresh token cached
+  as "ready" and stayed that way until the NEXT activation, even after
+  crossing `tokenStore.ts`'s 5-minute `OAUTH_REFRESH_MARGIN_MS`, where a real
+  `ctx.oauthTokens.get()` call would already throw
+  `OAuthTokenError('refresh_failed')` — reproducing the exact wasted
+  round-trip #474 exists to prevent, just shifted into the gap between
+  activations instead of at activation time. `refresh()` now caches only the
+  raw per-field `StoredOAuthTokens` (the genuinely async vault read), and
+  `isConnected()` recomputes `isTokenRefreshable()`/`isTokenStillFresh()`
+  fresh on every call against `Date.now()` — both are pure, synchronous,
+  in-memory checks, so recomputing per read has no latency cost. Mirrors how
+  `ctx.oauthTokens.get()` itself never caches a verdict either. Covered by a
+  new test using `t.mock.timers` to advance the clock past the refresh
+  margin without a new `refresh()` call.
 
 ### Fixed — Teams-uploaded images now reach the model as vision input (#504, #505)
 
