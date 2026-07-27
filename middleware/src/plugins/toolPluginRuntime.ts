@@ -10,6 +10,7 @@ import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
+import type { OAuthReadinessTracker } from './oauth/oauthReadinessTracker.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
 import type { ApprovedExtension, ExtensionTemplate } from '@omadia/plugin-api';
 import type { BuiltInPackageStore } from './builtInPackageStore.js';
@@ -87,6 +88,11 @@ export interface ToolPluginRuntimeDeps {
   flowPublicBaseUrl?: string;
   /** Spec 004 — backing store for `ctx.status`; cleared on deactivate. */
   pluginStatusRegistry?: PluginStatusRegistry;
+  /** Issue #474 (round 5) — automatic OAuth-connection readiness signal,
+   *  refreshed from the vault on every activate() and cleared on
+   *  deactivate(). Separate from `pluginStatusRegistry` — see
+   *  `OAuthReadinessTracker`'s doc comment for why. */
+  oauthConnectionTracker?: OAuthReadinessTracker;
   /** Event-catalog autodiscovery (US4 Conductor Surface): capability entries declaring
    *  `event_emit: true` are resolved into this registry on (de)activation. This runtime is the
    *  ONLY resolve site for built-in/static tool plugins (landmine K — the dynamic runtime has its
@@ -225,6 +231,20 @@ export class ToolPluginRuntime {
     const catalogEntry = this.deps.catalog.get(agentId);
     if (!catalogEntry) {
       throw new Error(`tool-runtime: ${agentId} not in plugin catalog`);
+    }
+
+    // Issue #474 (round 5) — refresh the automatic OAuth-connection signal
+    // BEFORE the plugin's own activate() runs, so a plugin that separately
+    // calls `ctx.status.report(...)` inside activate() lays its own signal
+    // on top rather than this one overwriting it (the two are ANDed at the
+    // gate, not merged into one entry). No-op when the plugin declares no
+    // `type:'oauth'` field.
+    if (this.deps.oauthConnectionTracker) {
+      await this.deps.oauthConnectionTracker.refresh(
+        agentId,
+        catalogEntry,
+        this.deps.vault,
+      );
     }
 
     const entryRel = extractEntryPath(catalogEntry) ?? 'dist/plugin.js';
@@ -366,6 +386,7 @@ export class ToolPluginRuntime {
     this.deps.jobScheduler.stopForPlugin(agentId);
     this.deps.uiRouteCatalog.disposeBySource(agentId);
     this.deps.pluginStatusRegistry?.clear(agentId);
+    this.deps.oauthConnectionTracker?.clear(agentId);
     this.active.delete(agentId);
 
     if (this.deps.onDeactivated) {

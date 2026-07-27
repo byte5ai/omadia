@@ -14,6 +14,12 @@ import type {
   LlmStreamEvent,
 } from '@omadia/llm-provider';
 import type { ChatStreamEvent } from '@omadia/channel-sdk';
+import { adaptManifestV1 } from '../../src/plugins/manifestLoader.js';
+import type { PluginCatalogEntry } from '../../src/plugins/manifestLoader.js';
+import { PluginStatusRegistry } from '../../src/platform/pluginStatusRegistry.js';
+import { OAuthReadinessTracker } from '../../src/plugins/oauth/oauthReadinessTracker.js';
+import { writeStoredTokens } from '../../src/plugins/oauth/tokenStore.js';
+import type { SecretVault } from '../../src/secrets/vault.js';
 import {
   createDomainTool,
   NativeToolRegistry,
@@ -448,5 +454,251 @@ describe('Orchestrator — issue #474 plugin tool-readiness gate (domain tools)'
       !systemText?.includes('query_gated'),
       'expected the gated domain tool to be excluded from the Fach-Agenten roster',
     );
+  });
+});
+
+/**
+ * Issue #474 review round 5 — the generic install/Connect flow never calls
+ * `ctx.status.report(...)` on the plugin's behalf: `installService.ts`
+ * activates a `type:'oauth'` plugin (registering its tools) BEFORE the
+ * operator has completed the Connect flow. This block proves the automatic
+ * OAuth-connection signal (`OAuthReadinessTracker`) gates the orchestrator's
+ * tool list and dispatch by itself, with NO `ctx.status.report(...)` call
+ * anywhere in the test — mirroring the explicit-report tests above but
+ * exercising only the new automatic path — and that composing it with
+ * `PluginStatusRegistry` (as `index.ts` wires the real gate) is a true AND:
+ * either signal alone can withhold readiness.
+ */
+class FakeVault implements SecretVault {
+  readonly store = new Map<string, string>();
+  async get(agentId: string, key: string): Promise<string | undefined> {
+    return this.store.get(`${agentId}::${key}`);
+  }
+  async set(agentId: string, key: string, value: string): Promise<void> {
+    this.store.set(`${agentId}::${key}`, value);
+  }
+  async setMany(agentId: string, entries: Record<string, string>): Promise<void> {
+    for (const [k, v] of Object.entries(entries)) await this.set(agentId, k, v);
+  }
+  async listKeys(): Promise<string[]> {
+    return [];
+  }
+  async purge(): Promise<void> {}
+  async deleteKey(agentId: string, key: string): Promise<void> {
+    this.store.delete(`${agentId}::${key}`);
+  }
+}
+
+function oauthPluginEntry(pluginId: string): PluginCatalogEntry {
+  const plugin = adaptManifestV1({
+    schema_version: '1',
+    identity: {
+      id: pluginId,
+      kind: 'tool',
+      domain: 'test',
+      name: 'OAuth Tool Plugin',
+      version: '0.1.0',
+    },
+    setup: {
+      fields: [
+        { key: 'connection', type: 'oauth', label: 'Connect', provider: 'github' },
+      ],
+    },
+  })!;
+  return { plugin, manifest: {}, source_path: '/dev/null', source_kind: 'manifest-v1' };
+}
+
+describe('Orchestrator — issue #474 round 5: automatic OAuth-connection signal', () => {
+  it('excludes an installed-but-not-connected oauth plugin tool from the offered tool list — no ctx.status.report() involved', async () => {
+    const oauthTracker = new OAuthReadinessTracker();
+    const vault = new FakeVault();
+    // The concrete repro: activate() ran (tools registered) but Connect was
+    // never completed, so the vault has no tokens for the declared field.
+    await oauthTracker.refresh('gated-plugin', oauthPluginEntry('gated-plugin'), vault);
+
+    const registry = new NativeToolRegistry();
+    registry.register('ready_tool', {
+      handler: async () => 'ready-output',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      spec: minimalSpec('ready_tool') as any,
+      agentId: 'ready-plugin',
+    });
+    registry.register('github_search', {
+      handler: async () => 'gated-output',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      spec: minimalSpec('github_search') as any,
+      agentId: 'gated-plugin',
+    });
+
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      // Composed exactly like index.ts's `installedPluginToolsReadyReader` —
+      // but pluginStatusRegistry never received a report() call for either
+      // plugin, so readiness here comes ENTIRELY from oauthTracker.
+      isPluginToolsReady: (agentId) => oauthTracker.isConnected(agentId),
+    });
+
+    for await (const _ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      // drain
+    }
+
+    const offered = (seenRequests[0]?.tools ?? []).map((t) => t.name);
+    assert.ok(
+      offered.includes('ready_tool'),
+      `expected ready_tool in offered tools, got ${JSON.stringify(offered)}`,
+    );
+    assert.ok(
+      !offered.includes('github_search'),
+      `expected github_search to be excluded (not connected), got ${JSON.stringify(offered)}`,
+    );
+  });
+
+  it('refuses to invoke an installed-but-not-connected oauth plugin tool even if a call for it arrives', async () => {
+    const oauthTracker = new OAuthReadinessTracker();
+    const vault = new FakeVault();
+    await oauthTracker.refresh('gated-plugin', oauthPluginEntry('gated-plugin'), vault);
+
+    const registry = new NativeToolRegistry();
+    let handlerCalled = false;
+    registry.register('github_search', {
+      handler: async () => {
+        handlerCalled = true;
+        return 'should never run';
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      spec: minimalSpec('github_search') as any,
+      agentId: 'gated-plugin',
+    });
+
+    const stream0 = streamWithTools([
+      { id: 'use-1', name: 'github_search', input: {} },
+    ]);
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([stream0, finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      isPluginToolsReady: (agentId) => oauthTracker.isConnected(agentId),
+    });
+
+    const events: ChatStreamEvent[] = [];
+    for await (const ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      events.push(ev);
+    }
+
+    assert.equal(handlerCalled, false, 'the not-connected oauth tool must never run');
+    const result = events.find(
+      (e) => e.type === 'tool_result' && e.id === 'use-1',
+    );
+    assert.ok(result, 'expected a tool_result for the gated call');
+    assert.ok(
+      result?.type === 'tool_result' &&
+        result.isError === true &&
+        /Error:/.test(result.output),
+      `expected an Error: result, got ${JSON.stringify(result)}`,
+    );
+  });
+
+  it('becomes ready again once the oauth field connects — an explicit ctx.status.report() is not required', async () => {
+    const oauthTracker = new OAuthReadinessTracker();
+    const vault = new FakeVault();
+    const entry = oauthPluginEntry('reconnected-plugin');
+    // First activation: not connected yet.
+    await oauthTracker.refresh('reconnected-plugin', entry, vault);
+    assert.equal(oauthTracker.isConnected('reconnected-plugin'), false);
+
+    // Connect flow completes (brokerService.callback → writeStoredTokens),
+    // then reactivate() re-runs activate() → refresh() picks it up.
+    await writeStoredTokens(vault, 'reconnected-plugin', 'connection', {
+      accessToken: 'tok',
+      refreshToken: '',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      scope: '',
+    });
+    await oauthTracker.refresh('reconnected-plugin', entry, vault);
+
+    const registry = new NativeToolRegistry();
+    registry.register('github_search', {
+      handler: async () => 'now-connected-output',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      spec: minimalSpec('github_search') as any,
+      agentId: 'reconnected-plugin',
+    });
+
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      isPluginToolsReady: (agentId) => oauthTracker.isConnected(agentId),
+    });
+
+    for await (const _ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      // drain
+    }
+
+    const offered = (seenRequests[0]?.tools ?? []).map((t) => t.name);
+    assert.ok(
+      offered.includes('github_search'),
+      `expected github_search back in offered tools once connected, got ${JSON.stringify(offered)}`,
+    );
+  });
+
+  it('composed gate (as wired in index.ts) is a true AND — either signal alone withholds readiness', async () => {
+    const statusRegistry = new PluginStatusRegistry();
+    const oauthTracker = new OAuthReadinessTracker();
+    const vault = new FakeVault();
+    const isReady = (agentId: string): boolean =>
+      statusRegistry.isReady(agentId) && oauthTracker.isConnected(agentId);
+
+    // Neither signal reported anything — ready by default (most plugins).
+    assert.equal(isReady('plain-plugin'), true);
+
+    // Explicit report says needs_action; oauth signal never touched (no
+    // oauth field on this plugin) — must stay not-ready.
+    statusRegistry.set('explicit-only', {
+      state: 'needs_action',
+      title: 'Nicht verbunden',
+    });
+    assert.equal(isReady('explicit-only'), false);
+
+    // Explicit report says OK, but the automatic oauth signal says
+    // not-connected — the explicit 'ok' must NOT hide the real oauth gap.
+    statusRegistry.set('explicit-ok-oauth-pending', { state: 'ok' });
+    await oauthTracker.refresh(
+      'explicit-ok-oauth-pending',
+      oauthPluginEntry('explicit-ok-oauth-pending'),
+      vault,
+    );
+    assert.equal(isReady('explicit-ok-oauth-pending'), false);
+
+    // Connect the oauth field — both signals now agree ready.
+    await writeStoredTokens(vault, 'explicit-ok-oauth-pending', 'connection', {
+      accessToken: 'tok',
+      refreshToken: '',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      scope: '',
+    });
+    await oauthTracker.refresh(
+      'explicit-ok-oauth-pending',
+      oauthPluginEntry('explicit-ok-oauth-pending'),
+      vault,
+    );
+    assert.equal(isReady('explicit-ok-oauth-pending'), true);
   });
 });

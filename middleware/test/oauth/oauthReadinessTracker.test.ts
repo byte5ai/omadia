@@ -1,0 +1,163 @@
+/**
+ * Issue #474 (review round 5) — OAuthReadinessTracker.refresh() derives
+ * automatic OAuth-connection readiness from the vault, mirroring what
+ * `ctx.oauthTokens.get()` (pluginContext.ts) already reads, without
+ * requiring the plugin to call `ctx.status.report(...)` itself.
+ */
+import { strict as assert } from 'node:assert';
+import { describe, it } from 'node:test';
+
+import { adaptManifestV1 } from '../../src/plugins/manifestLoader.js';
+import type { PluginCatalogEntry } from '../../src/plugins/manifestLoader.js';
+import { OAuthReadinessTracker } from '../../src/plugins/oauth/oauthReadinessTracker.js';
+import { writeStoredTokens } from '../../src/plugins/oauth/tokenStore.js';
+import type { SecretVault } from '../../src/secrets/vault.js';
+
+const ID = '@test/oauth-readiness';
+
+class FakeVault implements SecretVault {
+  readonly store = new Map<string, string>();
+  async get(agentId: string, key: string): Promise<string | undefined> {
+    return this.store.get(`${agentId}::${key}`);
+  }
+  async set(agentId: string, key: string, value: string): Promise<void> {
+    this.store.set(`${agentId}::${key}`, value);
+  }
+  async setMany(agentId: string, entries: Record<string, string>): Promise<void> {
+    for (const [k, v] of Object.entries(entries)) await this.set(agentId, k, v);
+  }
+  async listKeys(): Promise<string[]> {
+    return [];
+  }
+  async purge(): Promise<void> {}
+  async deleteKey(agentId: string, key: string): Promise<void> {
+    this.store.delete(`${agentId}::${key}`);
+  }
+}
+
+function entryWithFields(fields: Array<Record<string, unknown>>): PluginCatalogEntry {
+  const plugin = adaptManifestV1({
+    schema_version: '1',
+    identity: {
+      id: ID,
+      kind: 'tool',
+      domain: 'test',
+      name: 'OAuth Readiness Test Plugin',
+      version: '0.1.0',
+    },
+    setup: { fields },
+  })!;
+  return { plugin, manifest: {}, source_path: '/dev/null', source_kind: 'manifest-v1' };
+}
+
+describe('OAuthReadinessTracker', () => {
+  it('stays connected for a plugin with no oauth field', async () => {
+    const tracker = new OAuthReadinessTracker();
+    const entry = entryWithFields([
+      { key: 'api_key', type: 'secret', label: 'API Key' },
+    ]);
+    const vault = new FakeVault();
+
+    await tracker.refresh(ID, entry, vault);
+
+    assert.equal(tracker.isConnected(ID), true);
+  });
+
+  it('marks a plugin with an unconnected oauth field as not-ready', async () => {
+    const tracker = new OAuthReadinessTracker();
+    const entry = entryWithFields([
+      { key: 'connection', type: 'oauth', label: 'Connect', provider: 'github' },
+    ]);
+    const vault = new FakeVault();
+
+    // No tokens ever written — mirrors the exact repro: install completes,
+    // activate() runs and registers tools, but Connect was never clicked.
+    await tracker.refresh(ID, entry, vault);
+
+    assert.equal(tracker.isConnected(ID), false);
+  });
+
+  it('marks a plugin ready once its oauth field has stored tokens', async () => {
+    const tracker = new OAuthReadinessTracker();
+    const entry = entryWithFields([
+      { key: 'connection', type: 'oauth', label: 'Connect', provider: 'github' },
+    ]);
+    const vault = new FakeVault();
+    await writeStoredTokens(vault, ID, 'connection', {
+      accessToken: 'tok',
+      refreshToken: '',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      scope: '',
+    });
+
+    await tracker.refresh(ID, entry, vault);
+
+    assert.equal(tracker.isConnected(ID), true);
+  });
+
+  it('requires EVERY declared oauth field to be connected', async () => {
+    const tracker = new OAuthReadinessTracker();
+    const entry = entryWithFields([
+      { key: 'primary', type: 'oauth', label: 'Primary', provider: 'github' },
+      { key: 'secondary', type: 'oauth', label: 'Secondary', provider: 'slack' },
+    ]);
+    const vault = new FakeVault();
+    await writeStoredTokens(vault, ID, 'primary', {
+      accessToken: 'tok',
+      refreshToken: '',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      scope: '',
+    });
+    // 'secondary' never connected.
+
+    await tracker.refresh(ID, entry, vault);
+
+    assert.equal(tracker.isConnected(ID), false);
+  });
+
+  it('re-derives on every refresh (self-heals after Connect completes)', async () => {
+    const tracker = new OAuthReadinessTracker();
+    const entry = entryWithFields([
+      { key: 'connection', type: 'oauth', label: 'Connect', provider: 'github' },
+    ]);
+    const vault = new FakeVault();
+
+    await tracker.refresh(ID, entry, vault);
+    assert.equal(tracker.isConnected(ID), false);
+
+    // Simulate the Connect flow completing, then the post-callback
+    // reactivate() re-running activate() → refresh().
+    await writeStoredTokens(vault, ID, 'connection', {
+      accessToken: 'tok',
+      refreshToken: '',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      scope: '',
+    });
+    await tracker.refresh(ID, entry, vault);
+
+    assert.equal(tracker.isConnected(ID), true);
+  });
+
+  it('clear() resets a plugin back to connected', async () => {
+    const tracker = new OAuthReadinessTracker();
+    const entry = entryWithFields([
+      { key: 'connection', type: 'oauth', label: 'Connect', provider: 'github' },
+    ]);
+    const vault = new FakeVault();
+    await tracker.refresh(ID, entry, vault);
+    assert.equal(tracker.isConnected(ID), false);
+
+    tracker.clear(ID);
+
+    assert.equal(tracker.isConnected(ID), true);
+  });
+
+  it('treats an unknown plugin (no catalog entry) as connected — nothing to gate', async () => {
+    const tracker = new OAuthReadinessTracker();
+    const vault = new FakeVault();
+
+    await tracker.refresh(ID, undefined, vault);
+
+    assert.equal(tracker.isConnected(ID), true);
+  });
+});

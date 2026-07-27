@@ -81,6 +81,23 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   resolution, reusing the existing "Specialist … is no longer available."
   notice already used for a deleted tool, instead of surfacing the internal
   dispatch-error string.
+- Follow-up (review round 5): every gate above depended on the plugin's own
+  code calling `ctx.status.report(...)`. The generic install/Connect flow
+  never does this automatically — `installService.ts` activates a
+  `type:'oauth'` plugin (registering its tools) the moment `configure()`
+  completes, which is BEFORE the operator has clicked "Connect" and the
+  kernel OAuth broker has stored any tokens. A plugin author who never wrote
+  an explicit status-report call for this (the common case) still had its
+  tools offered and invoked, failing with `OAuthTokenError('not_connected')`
+  on the first call — the exact round-trip #474 was filed to eliminate. A
+  new `OAuthReadinessTracker` derives connection state from the same vault
+  state `ctx.oauthTokens` reads, refreshed on every `ToolPluginRuntime` /
+  `DynamicAgentRuntime` `activate()` (fresh install, boot reactivation, and
+  post-Connect reactivation all funnel through this single choke point per
+  runtime). The orchestrator's readiness gate now ANDs this automatic signal
+  with the existing `PluginStatusRegistry` one — either can withhold
+  readiness — kept as two separate caches rather than one merged into the
+  other, so neither can silently clobber the other's verdict.
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
