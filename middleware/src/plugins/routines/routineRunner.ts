@@ -801,15 +801,23 @@ function emptySlotsFor(
  * asked to create. Compared on the fields the user/model actually
  * specified — `cron`, `prompt`, `channel`, the resolved `timeoutMs`
  * (matching `store.create`'s own default so an omitted vs. explicit
- * default value doesn't defeat the comparison), and `outputTemplate`
+ * default value doesn't defeat the comparison), `outputTemplate`
  * (Phase C structured-output template — an independently-settable object,
  * so it needs a structural/deep comparison rather than `===`; two calls
  * that agree on everything else but differ on `outputTemplate` are the
  * caller asking to change the template on an existing schedule, not a
- * retry, and must still surface as a name conflict). `conversationRef` is
- * deliberately excluded: it is a delivery-mechanism detail the caller
- * doesn't control byte-for-byte (e.g. cold-start target resolution), not
- * part of "what routine was requested".
+ * retry, and must still surface as a name conflict), and `conversationRef`.
+ * `conversationRef` is also caller-specified on the cold-start outreach
+ * path: `ManageRoutineTool.handleCreate` derives it from `targetEmail` via
+ * `buildEmailColdStartTarget`, which resolves deterministically per email —
+ * same `targetEmail` on both calls produces the same `conversationRef`
+ * structure (a true retry), while a different `targetEmail` produces a
+ * different one (a genuine new request, e.g. the same routine name aimed
+ * at a different recipient). Excluding it would let a create for a new
+ * recipient silently reconcile to — and return as "created" — an existing
+ * row still routed to the *original* recipient, a silent-wrong-recipient
+ * bug. Deep comparison (not `===`) for the same reason as `outputTemplate`:
+ * it is `unknown`/an object, not a primitive.
  */
 function isSameRoutineRequest(
   existing: Routine,
@@ -820,7 +828,8 @@ function isSameRoutineRequest(
     existing.prompt === input.prompt &&
     existing.channel === input.channel &&
     existing.timeoutMs === (input.timeoutMs ?? 600_000) &&
-    isDeepStrictEqual(existing.outputTemplate, input.outputTemplate ?? null)
+    isDeepStrictEqual(existing.outputTemplate, input.outputTemplate ?? null) &&
+    isDeepStrictEqual(existing.conversationRef, input.conversationRef)
   );
 }
 

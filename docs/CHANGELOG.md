@@ -73,6 +73,21 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   logic in the `store.create()` catch block is unchanged and remains the
   necessary race-safety net for a concurrent request that creates the
   matching row between this proactive lookup and the insert.
+  `isSameRoutineRequest` also excluded `conversationRef` from its
+  comparison, reasoning it was a delivery-mechanism detail the caller
+  doesn't control byte-for-byte. That's wrong on the cold-start outreach
+  path: `ManageRoutineTool.handleCreate` resolves `conversationRef` from
+  a caller-supplied `targetEmail` via `buildEmailColdStartTarget` before
+  calling `createRoutine`, so it *is* caller-specified there. A create for
+  a new `targetEmail` that otherwise matched an existing active routine
+  (same tenant/user/name/cron/prompt/channel/timeoutMs/`outputTemplate`)
+  would silently reconcile to the existing row and report success, while
+  the new recipient was never set up and the routine kept messaging the
+  original one — a silent-wrong-recipient bug. `isSameRoutineRequest` now
+  compares `conversationRef` too, via `isDeepStrictEqual` (same rationale
+  as `outputTemplate`: it is an object, and `buildEmailColdStartTarget`
+  resolves deterministically per email, so deep equality correctly
+  distinguishes a true retry from a different-recipient request).
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 

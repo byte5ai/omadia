@@ -543,6 +543,49 @@ describe('RoutineRunner — createRoutine', () => {
     assert.equal(h.store.rows.size, 1, 'no duplicate row was created');
   });
 
+  // Reviewer-confirmed bug fix: `conversationRef` is caller-specified on the
+  // cold-start outreach path (`ManageRoutineTool.handleCreate` resolves it
+  // from `targetEmail` via `buildEmailColdStartTarget` before calling
+  // `createRoutine`), so it must be compared like `outputTemplate`, not
+  // ignored. A create that agrees on cron/prompt/channel/timeoutMs/
+  // outputTemplate but resolves a DIFFERENT `conversationRef` (e.g. a
+  // different `targetEmail`) is a genuine new request aimed at a different
+  // recipient — silently reconciling to the existing row would report
+  // "created" while the new recipient never gets set up and the routine
+  // keeps messaging the original one.
+  it('still reports a conflict when the retry resolves a different conversationRef', async () => {
+    const h = makeHarness();
+    await h.runner.createRoutine({
+      ...baseInput,
+      conversationRef: { conversation: { id: 'conv-alice' } },
+    });
+    await assert.rejects(
+      () =>
+        h.runner.createRoutine({
+          ...baseInput,
+          conversationRef: { conversation: { id: 'conv-bob' } },
+        }),
+      RoutineNameConflictError,
+    );
+    assert.equal(h.store.rows.size, 1, 'the conflicting attempt created nothing');
+  });
+
+  it('reconciles a retry whose conversationRef is structurally identical', async () => {
+    const h = makeHarness();
+    const first = await h.runner.createRoutine({
+      ...baseInput,
+      conversationRef: { conversation: { id: 'conv-alice' } },
+    });
+    // A structurally-equal but distinct object — not the same reference —
+    // must still reconcile; the comparison is deep, not reference equality.
+    const retry = await h.runner.createRoutine({
+      ...baseInput,
+      conversationRef: { conversation: { id: 'conv-alice' } },
+    });
+    assert.equal(retry.id, first.id, 'retry must resolve to the original row');
+    assert.equal(h.store.rows.size, 1, 'no duplicate row was created');
+  });
+
   // Reviewer-confirmed bug fix: reconciliation must not fire against a
   // paused (or otherwise non-active) existing row, even when every other
   // field matches byte-for-byte. A paused routine is not "my own in-flight
