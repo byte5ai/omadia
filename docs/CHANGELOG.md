@@ -18,6 +18,29 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — codegen: manifest capabilities[] now reflect per-tool spec flags (#507)
+
+- `reproduceManifestCapabilities` (builder codegen) used to clone the
+  boilerplate's `search` capability (`input_schema:{query}`,
+  `side_effects:'read'`, `idempotent:true`, `autonomous:true`,
+  `timeout_ms:20000`) onto every tool, substituting only id/description.
+  `toolkit.ts` was generated correctly per-tool from the real Zod schemas,
+  but `manifest.yaml`'s declared metadata was not: write tools shipped as
+  `side_effects:'read'` + `autonomous:true`, misrepresenting their real
+  behavior to anything that reads the manifest (marketplace listings,
+  human reviewers, or any orchestrator-side consumer of these flags).
+  `ToolSpecSchema` gained explicit `output`, `side_effects`, `idempotent`,
+  `autonomous`, and `timeout_ms` fields (previously stripped silently by
+  Zod's non-strict mode) so codegen can synthesise each `capabilities[]`
+  entry from the real per-tool spec, falling back to the boilerplate
+  defaults only for fields a tool omits. Applies uniformly to single- and
+  multi-tool specs. `side_effects` is declared and passed through as the
+  manifest's own `'read' | 'write' | 'none'` string enum (matching
+  `agent-integration/manifest.yaml` and `agent-reference-maximum/manifest.yaml`),
+  not a boolean — an earlier draft of this fix used a boolean field with a
+  boolean-to-string mapping in codegen, which rejected valid spec/patch
+  payloads shaped like the manifest's real contract.
+
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
 - The save-as-template dialog no longer reads the viewer's own template id as
