@@ -35,6 +35,32 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   way. Latent today (no in-repo channel triggers it yet), but closes the gap
   before a future url-only channel (Slack, Discord, WhatsApp) ships broken
   vision silently (#505).
+- Review round 2: neither path checked whether the active provider/model
+  actually supports vision before building an image content-block, so a
+  turn routed through a non-vision provider could still get an image block
+  the API might reject or silently drop — reintroducing the same "agent
+  can't see the image, nothing indicates why" failure. Both call sites now
+  read `this.provider.capabilities.vision` and thread it through
+  `ingestAttachments`/`buildUserContent`: when unsupported, no image
+  content-block is built (avoids the provider rejecting the whole request),
+  and image candidates aren't even fetched — but the attachment is never
+  silently dropped either. A visible note (`[N image attachment(s) received
+  but the active model does not support image input]`) is folded into the
+  turn's text instead, so the model — and the user — knows an image existed
+  and why it wasn't seen. `claude-cli`-routed turns (`CliChatAgent`, swapped
+  in by `buildOrchestrator.ts` on `provider.id === 'claude-cli'`) take a
+  separate code path that never calls `buildUserContent`/`ingestAttachments`
+  at all; this change does not touch, fix, or regress that path.
+- Review round 4: a fetched image candidate that failed the
+  `checkVisionEmbeddable` guard (oversized >5MB, or an unsupported format
+  such as SVG/BMP/TIFF) under a VISION-CAPABLE provider was only logged via
+  `console.warn` and silently dropped otherwise — the same silent-drop
+  failure #504 exists to close, just triggered by size/format instead of
+  provider capability. `ingestAttachments` now also collects each
+  rejection's reason, and `buildUserContent` folds a visible
+  `[N image attachment(s) could not be shown: <reason(s)>]` note into the
+  turn's text alongside (never instead of) the existing non-vision-provider
+  note.
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 

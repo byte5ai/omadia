@@ -1,7 +1,10 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { extractAttachmentText } from '../packages/harness-orchestrator/src/attachmentExtract.js';
+import {
+  checkVisionEmbeddable,
+  extractAttachmentText,
+} from '../packages/harness-orchestrator/src/attachmentExtract.js';
 
 describe('extractAttachmentText', () => {
   it('passes through markdown via contentType', async () => {
@@ -128,5 +131,50 @@ describe('extractAttachmentText', () => {
     );
     assert.equal(r.ok, false);
     assert.ok(!r.ok && r.reason.length > 0);
+  });
+});
+
+// #504/#505 — the vision-embed guard used by `Orchestrator.ingestAttachments`
+// to decide whether a fetched image can become a base64 vision content-block.
+describe('checkVisionEmbeddable', () => {
+  const ONE_KB = 1024;
+
+  for (const mediaType of ['image/jpeg', 'image/png', 'image/gif', 'image/webp']) {
+    it(`accepts ${mediaType} under the size cap`, () => {
+      const r = checkVisionEmbeddable(mediaType, ONE_KB);
+      assert.equal(r.ok, true);
+      assert.ok(r.ok && r.mediaType === mediaType);
+    });
+  }
+
+  it('normalizes contentType params (charset/case) before matching', () => {
+    const r = checkVisionEmbeddable('IMAGE/PNG; charset=binary', ONE_KB);
+    assert.equal(r.ok, true);
+    assert.ok(r.ok && r.mediaType === 'image/png');
+  });
+
+  it('rejects an unsupported image type (e.g. svg — not vision-safe)', () => {
+    const r = checkVisionEmbeddable('image/svg+xml', ONE_KB);
+    assert.equal(r.ok, false);
+    assert.ok(!r.ok && /unsupported/i.test(r.reason));
+  });
+
+  it('rejects a non-image contentType', () => {
+    const r = checkVisionEmbeddable('application/pdf', ONE_KB);
+    assert.equal(r.ok, false);
+    assert.ok(!r.ok && /unsupported/i.test(r.reason));
+  });
+
+  it('rejects an oversized image (>5MB) of an otherwise-supported type', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const r = checkVisionEmbeddable('image/png', FIVE_MB + 1);
+    assert.equal(r.ok, false);
+    assert.ok(!r.ok && /too large/i.test(r.reason));
+  });
+
+  it('accepts an image exactly at the size cap', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const r = checkVisionEmbeddable('image/png', FIVE_MB);
+    assert.equal(r.ok, true);
   });
 });
