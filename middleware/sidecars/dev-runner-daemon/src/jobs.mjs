@@ -752,12 +752,45 @@ function errMessage(err) {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Pull an image ref to completion (a pull is a progress STREAM — resolving the
- *  call is not resolving the pull, so we drain `followProgress`). Digest-pinned
- *  refs resolve to exactly that content; tags resolve at the registry.
- * @param {Docker} docker @param {string} ref @returns {Promise<void>} */
-function ensureImage(docker, ref) {
-  return new Promise((resolve, reject) => {
+/** True when `ref` is already present in the engine — a LOCAL inspect, no registry
+ *  contact. A 404 means "not present, must pull"; any other error is a real engine
+ *  fault and PROPAGATES. An ambiguous failure is never coerced into "present" (which
+ *  would skip a genuinely-needed pull) nor "absent" (which would force a doomed
+ *  registry round-trip and mask the real fault).
+ * @param {Docker} docker @param {string} ref @returns {Promise<boolean>} */
+async function imageIsPresent(docker, ref) {
+  try {
+    await docker.getImage(ref).inspect();
+    return true;
+  } catch (err) {
+    if (isNotFound(err)) return false;
+    throw err;
+  }
+}
+
+/** Ensure an image ref is available to create a container from, honouring the pull
+ *  policy. A pull is a progress STREAM — resolving the `pull` call is not resolving
+ *  the pull, so we drain `followProgress`. Digest-pinned refs resolve to exactly
+ *  that content; tags resolve at the registry.
+ *
+ *  `pullPolicy`:
+ *    - `always` (default — the prod posture): pull unconditionally, so every
+ *      provision re-fetches the pinned digest the boot-time cosign step vetted.
+ *    - `if-not-present`: skip the pull — and the registry contact it requires —
+ *      when the ref is ALREADY cached in the engine. This is for local dev, where
+ *      the image was `docker load`ed into dind and the default-deny egress proxy
+ *      answers a registry pull with 407. It ONLY changes whether a PRESENT image is
+ *      re-pulled; it does NOT touch the image allowlist or the digest requirement
+ *      (both enforced against the job policy in policyClient, long before this runs),
+ *      so a job naming an unlisted image is still refused whether or not it is cached.
+ * @param {Docker} docker @param {string} ref
+ * @param {'always' | 'if-not-present'} [pullPolicy]
+ * @returns {Promise<void>} */
+async function ensureImage(docker, ref, pullPolicy = 'always') {
+  if (pullPolicy === 'if-not-present' && (await imageIsPresent(docker, ref))) {
+    return;
+  }
+  await new Promise((resolve, reject) => {
     docker.pull(
       ref,
       /** @param {Error | null} err @param {NodeJS.ReadableStream} [stream] */ (err, stream) => {
@@ -834,6 +867,24 @@ async function removeVolume(docker, name, errors) {
   }
 }
 
+/** Resolve the image pull policy from the daemon env. `always` (the default, and
+ *  the value for prod where the runner image lives on GHCR) re-pulls every image on
+ *  every provision so the boot-time digest-pin + cosign vetting is enforced each
+ *  time. `if-not-present` skips a re-pull when the image is already cached in the
+ *  engine — for local dev where the image was `docker load`ed into dind and the
+ *  default-deny egress proxy answers a registry pull with 407. An unknown value is
+ *  a boot-time error rather than a silent fallback: a misconfiguration must be loud,
+ *  never quietly weaken (or quietly harden) the pull behaviour.
+ * @param {NodeJS.ProcessEnv} env @returns {'always' | 'if-not-present'} */
+export function resolvePullPolicy(env) {
+  const raw = (env.DEV_RUNNER_PULL_POLICY ?? '').trim().toLowerCase();
+  if (raw === '' || raw === 'always') return 'always';
+  if (raw === 'if-not-present') return 'if-not-present';
+  throw new Error(
+    `DEV_RUNNER_PULL_POLICY must be 'always' or 'if-not-present' (got ${JSON.stringify(env.DEV_RUNNER_PULL_POLICY)})`,
+  );
+}
+
 /**
  * A real dockerode-backed engine implementing the full §4 container lifecycle
  * behind the `ContainerEngine` seam. `createJobContainer` builds the create-options
@@ -855,6 +906,9 @@ export function createDockerEngine(opts = {}) {
   // W5 opt-in DinD (spec §8): daemon-owned sidecar image + nested-store disk cap.
   const dindImage = resolveDindImage(env);
   const dindDiskGb = resolveDindDiskGb(env);
+  // Resolved once at engine construction: the same policy governs the per-job image
+  // pull, the DinD sidecar image pull, and the warm loop, so all three agree.
+  const pullPolicy = resolvePullPolicy(env);
 
   return {
     async ping() {
@@ -891,7 +945,7 @@ export function createDockerEngine(opts = {}) {
       }
       // Resolve the image BY DIGEST (never a floating tag) so the container is
       // created from exactly the vetted content.
-      await ensureImage(docker, policy.image);
+      await ensureImage(docker, policy.image, pullPolicy);
 
       const labels = {
         [JOB_ID_LABEL]: jobId,
@@ -924,7 +978,7 @@ export function createDockerEngine(opts = {}) {
           dindImageVolCreated = true;
           await docker.createVolume(buildDindCertsVolumeOptions({ jobId, createdBy }));
           dindCertsVolCreated = true;
-          await ensureImage(docker, dindImage);
+          await ensureImage(docker, dindImage, pullPolicy);
           sidecar = await docker.createContainer(
             buildDindCreateOptions({ jobId, networkName, createdBy, leaseExpiresAt, limits, image: dindImage }),
           );
@@ -1024,7 +1078,7 @@ export function createDockerEngine(opts = {}) {
       /** @type {string[]} */
       const digests = [];
       for (const ref of refs) {
-        await ensureImage(docker, ref);
+        await ensureImage(docker, ref, pullPolicy);
         const info = await docker.getImage(ref).inspect();
         const repoDigests = Array.isArray(info.RepoDigests) ? info.RepoDigests : [];
         // An image pulled under several names carries one RepoDigest per

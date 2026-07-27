@@ -19,7 +19,7 @@ import { describe, it } from 'node:test';
 import Docker from 'dockerode';
 
 import { SpecRejectedError } from '../src/clamp.mjs';
-import { createDockerEngine, JobCancelledError, JobCapacityError, JobCleanupError, JobManager } from '../src/jobs.mjs';
+import { createDockerEngine, JobCancelledError, JobCapacityError, JobCleanupError, JobManager, resolvePullPolicy } from '../src/jobs.mjs';
 
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -485,6 +485,9 @@ function makeFakeDocker(opts = {}) {
     pull(ref, cb) {
       if (opts.pullFail) return cb(opts.pullFail);
       events.pulled.push(ref);
+      // A real pull makes the image present. When the test tracks presence
+      // (`opts.presentImages`), record it so a subsequent inspect resolves.
+      if (opts.presentImages) opts.presentImages.add(ref);
       cb(null, {});
     },
     async createNetwork(o) {
@@ -509,6 +512,10 @@ function makeFakeDocker(opts = {}) {
     getVolume: (name) => volumeHandle(name),
     getImage: (ref) => ({
       async inspect() {
+        // When the test tracks presence, an absent image inspects as 404 — the
+        // signal `if-not-present` uses to decide it must pull. Without tracking
+        // (every pre-existing test), inspect always resolves, as before.
+        if (opts.presentImages && !opts.presentImages.has(ref)) throw notFound('image');
         // Real docker reports `repository@sha256:…` — never with a tag.
         const repo = (ref.split('@')[0] ?? ref).replace(/:[^:/]+$/, '');
         return { RepoDigests: [`${repo}@${DIGEST}`], Id: 'sha256:imgid' };
@@ -694,6 +701,70 @@ describe('createDockerEngine — streamLogs and warmImages', () => {
     const digests = await engine.warmImages(['ghcr.io/byte5ai/omadia-dev-runner:v1', 'registry.npmjs.org/x:2']);
     assert.deepEqual(digests, [DIGEST, DIGEST]);
     assert.equal(docker.state.events.pulled.length, 2, 'both refs were pulled');
+  });
+});
+
+describe('resolvePullPolicy — the local-dev pull knob (epic #470 local deploy)', () => {
+  it('defaults to always, accepts the two valid values case-insensitively, and rejects anything else', () => {
+    assert.equal(resolvePullPolicy({}), 'always', 'unset ⇒ prod posture');
+    assert.equal(resolvePullPolicy({ DEV_RUNNER_PULL_POLICY: '' }), 'always', 'empty ⇒ prod posture');
+    assert.equal(resolvePullPolicy({ DEV_RUNNER_PULL_POLICY: 'always' }), 'always');
+    assert.equal(resolvePullPolicy({ DEV_RUNNER_PULL_POLICY: '  IF-NOT-PRESENT  ' }), 'if-not-present');
+    // A misconfiguration is loud, never a silent weakening (or hardening) of pulls.
+    assert.throws(
+      () => resolvePullPolicy({ DEV_RUNNER_PULL_POLICY: 'never' }),
+      /must be 'always' or 'if-not-present'/,
+    );
+  });
+});
+
+describe('createDockerEngine — image pull policy (epic #470 local deploy #4)', () => {
+  it("'if-not-present' SKIPS the pull for an already-cached image — no registry round-trip", async () => {
+    const presentImages = new Set([DIGEST_IMAGE]); // already `docker load`ed into the engine
+    const docker = makeFakeDocker({ presentImages });
+    const engine = createDockerEngine({ docker, env: { DEV_RUNNER_PULL_POLICY: 'if-not-present' } });
+
+    const digests = await engine.warmImages([DIGEST_IMAGE]);
+
+    assert.deepEqual(docker.state.events.pulled, [], 'a present image is NOT re-pulled (the 407 the default-deny proxy would return is never triggered)');
+    assert.deepEqual(digests, [DIGEST], 'the digest is still resolved from the cached image');
+  });
+
+  it("'if-not-present' STILL pulls an image that is absent from the engine", async () => {
+    const presentImages = new Set(); // nothing cached yet
+    const docker = makeFakeDocker({ presentImages });
+    const engine = createDockerEngine({ docker, env: { DEV_RUNNER_PULL_POLICY: 'if-not-present' } });
+
+    const digests = await engine.warmImages([DIGEST_IMAGE]);
+
+    assert.deepEqual(docker.state.events.pulled, [DIGEST_IMAGE], 'an absent image is pulled even under if-not-present');
+    assert.deepEqual(digests, [DIGEST]);
+  });
+
+  it("the default policy ('always') re-pulls even a cached image — prod posture is unchanged", async () => {
+    const presentImages = new Set([DIGEST_IMAGE]);
+    const docker = makeFakeDocker({ presentImages });
+    const engine = createDockerEngine({ docker, env: {} });
+
+    await engine.warmImages([DIGEST_IMAGE]);
+
+    assert.deepEqual(docker.state.events.pulled, [DIGEST_IMAGE], 'always contacts the registry even when the image is cached');
+  });
+
+  it("createJobContainer under 'if-not-present' skips the pull when the job image is already cached", async () => {
+    const presentImages = new Set([DIGEST_IMAGE]);
+    const docker = makeFakeDocker({ presentImages });
+    const engine = createDockerEngine({ docker, env: { DEV_RUNNER_PULL_POLICY: 'if-not-present' } });
+
+    const handle = await engine.createJobContainer({
+      jobId: JOB_ID,
+      policy: enginePolicy(),
+      leaseExpiresAt: '2026-07-10T12:00:00.000Z',
+    });
+
+    assert.deepEqual(docker.state.events.pulled, [], 'no registry pull for a cached job image');
+    assert.equal(handle.imageDigest, DIGEST, 'the container is still created from the vetted digest');
+    assert.equal(docker.state.containers.size, 1, 'the job container was created from the cached image');
   });
 });
 
