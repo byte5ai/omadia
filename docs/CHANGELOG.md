@@ -78,14 +78,14 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   the concrete scenario where a read-only tool (e.g. `list_routines`)
   succeeds and a LATER, more consequential tool call then never runs because
   of a transient failure in the model call that would have requested it —
-  the turn still reports `done`. The maintainer was presented with this
-  exact tradeoff — generic-across-all-tools vs. narrowed-to-routine-create-
-  only vs. dropping the orchestrator fix entirely — and explicitly signed
-  off on keeping the current generic, tool-agnostic behavior across all
-  tools, accepting the residual risk described above in exchange for fixing
-  the false-negative-on-success bug for every side-effecting tool, not just
-  routine creation. This is now documented as a deliberate decision (not an
-  oversight) directly in the code, on both `committedToolNames`'s
+  the turn still reports `done`. This tradeoff — generic-across-all-tools
+  vs. narrowed-to-routine-create-only vs. dropping the orchestrator fix
+  entirely — was weighed and resolved in favor of keeping the current
+  generic, tool-agnostic behavior across all tools, accepting the residual
+  risk described above in exchange for fixing the false-negative-on-success
+  bug for every side-effecting tool, not just routine creation. This is now
+  documented as a deliberate decision (not an oversight) directly in the
+  code, on both `committedToolNames`'s
   declaration and the catch block's done-vs-error branch in
   `orchestrator.ts`, and pinned by a new `committedToolReporting.test.ts`
   case (`reports done even when a later intended action never ran (accepted

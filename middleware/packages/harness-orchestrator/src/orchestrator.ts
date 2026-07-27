@@ -3528,23 +3528,23 @@ export class Orchestrator {
     // an honest `done` instead of discarding a real, already-committed
     // action behind a bare `error`. Never special-cases a tool by name.
     //
-    // Maintainer-reviewed tradeoff (issue #506, deliberate — not an
-    // oversight): this list is populated by ANY successful `tool_result`,
-    // with no distinction between a read-only tool (e.g. `list_routines`)
-    // and a mutating one (e.g. `manage_routine` create/update). Concrete
-    // residual risk: a read-only tool succeeds early in the turn, then a
-    // LATER, more consequential tool call never runs because a transient
-    // failure hits the model call that would have requested it — the turn
-    // is still reported `done` (see the catch block below), even though
-    // the user's actual intended mutating action may never have happened.
-    // The alternative — narrowing this tracking to routine-create only, or
-    // dropping this fix and always reporting `error` here — was presented
-    // to the maintainer as an explicit choice and rejected: reverting to
-    // always-`error` would leave the issue's actual reported bug (a
-    // successful action reported as a generic, zero-diagnostic-value
-    // failure) unfixed for every tool except the one narrowed case, which
-    // was judged the worse tradeoff. Kept generic and tool-agnostic across
-    // all tools; do not narrow this without a fresh maintainer decision.
+    // Deliberate tradeoff (issue #506) — not an oversight: this list is
+    // populated by ANY successful `tool_result`, with no distinction
+    // between a read-only tool (e.g. `list_routines`) and a mutating one
+    // (e.g. `manage_routine` create/update). Concrete residual risk: a
+    // read-only tool succeeds early in the turn, then a LATER, more
+    // consequential tool call never runs because a transient failure hits
+    // the model call that would have requested it — the turn is still
+    // reported `done` (see the catch block below), even though the user's
+    // actual intended mutating action may never have happened.
+    // Two narrower alternatives were considered and rejected: (a) scoping
+    // this tracking to routine-create only sidesteps the residual risk but
+    // leaves the same false-negative bug unfixed for every other mutating
+    // tool (send_email, book_meeting, ...); (b) dropping this fix and
+    // always reporting `error` here regresses to issue #506's original,
+    // reported symptom for every tool. Kept generic and tool-agnostic
+    // across all tools as the better tradeoff; re-evaluate before
+    // narrowing it.
     const committedToolNames: string[] = [];
     let lastIterationIndex = 0;
 
@@ -4153,18 +4153,17 @@ export class Orchestrator {
       // A genuine failure (nothing committed yet) still yields `error`,
       // unchanged from today.
       //
-      // Deliberate, maintainer-reviewed decision — not an oversight: this
-      // done-vs-error branch trusts ANY entry in `committedToolNames`
-      // equally, read-only or mutating (see the fuller tradeoff comment on
-      // `committedToolNames`'s declaration above). Accepted residual risk:
-      // a benign read-only success earlier in the turn can mask a later,
-      // more consequential mutation that was silently skipped, and this
-      // branch will still report `done`. The maintainer was presented with
-      // generic-across-all-tools vs. narrowed-to-routine-create-only vs.
-      // drop-the-fix-entirely and chose to keep this generic behavior,
-      // because reverting to always-`error` here would leave issue #506's
-      // reported false-negative-on-success bug unfixed for every
-      // side-effecting tool, not just routine creation.
+      // Deliberate tradeoff — not an oversight: this done-vs-error branch
+      // trusts ANY entry in `committedToolNames` equally, read-only or
+      // mutating (see the fuller tradeoff comment on `committedToolNames`'s
+      // declaration above). Accepted residual risk: a benign read-only
+      // success earlier in the turn can mask a later, more consequential
+      // mutation that was silently skipped, and this branch will still
+      // report `done`. Kept generic across all tools rather than narrowed
+      // to routine-create only or dropped entirely, because reverting to
+      // always-`error` here would leave issue #506's reported
+      // false-negative-on-success bug unfixed for every side-effecting
+      // tool, not just routine creation.
       if (committedToolNames.length > 0) {
         const toolList = committedToolNames.join(', ');
         const answer =
