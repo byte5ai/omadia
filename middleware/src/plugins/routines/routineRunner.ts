@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import type {
   ChatTurnInput,
   ChatTurnResult,
@@ -769,9 +771,14 @@ function emptySlotsFor(
  * Whether `existing` (the row that already holds the unique-name slot) is
  * indistinguishable, from the caller's point of view, from what `input`
  * asked to create. Compared on the fields the user/model actually
- * specified — `cron`, `prompt`, `channel`, and the resolved `timeoutMs`
+ * specified — `cron`, `prompt`, `channel`, the resolved `timeoutMs`
  * (matching `store.create`'s own default so an omitted vs. explicit
- * default value doesn't defeat the comparison). `conversationRef` is
+ * default value doesn't defeat the comparison), and `outputTemplate`
+ * (Phase C structured-output template — an independently-settable object,
+ * so it needs a structural/deep comparison rather than `===`; two calls
+ * that agree on everything else but differ on `outputTemplate` are the
+ * caller asking to change the template on an existing schedule, not a
+ * retry, and must still surface as a name conflict). `conversationRef` is
  * deliberately excluded: it is a delivery-mechanism detail the caller
  * doesn't control byte-for-byte (e.g. cold-start target resolution), not
  * part of "what routine was requested".
@@ -784,7 +791,8 @@ function isSameRoutineRequest(
     existing.cron === input.cron &&
     existing.prompt === input.prompt &&
     existing.channel === input.channel &&
-    existing.timeoutMs === (input.timeoutMs ?? 600_000)
+    existing.timeoutMs === (input.timeoutMs ?? 600_000) &&
+    isDeepStrictEqual(existing.outputTemplate, input.outputTemplate ?? null)
   );
 }
 

@@ -443,6 +443,78 @@ describe('RoutineRunner — createRoutine', () => {
     assert.equal(h.store.rows.size, 1, 'the conflicting attempt created nothing');
   });
 
+  // Reviewer-confirmed bug fix: `outputTemplate` is an independently-settable
+  // object field on both `Routine` and `CreateRoutineInput` (Phase C output
+  // templates) and must be compared, not ignored. A create that agrees on
+  // cron/prompt/channel/timeoutMs but asks for a different `outputTemplate`
+  // is the caller changing the structured-output template on an existing
+  // schedule, not a retry — silently reconciling to the old row would
+  // discard the caller's new template while reporting success.
+  it('still reports a conflict when the retry differs only in outputTemplate', async () => {
+    const h = makeHarness();
+    const template: RoutineOutputTemplate = {
+      format: 'markdown',
+      sections: [
+        {
+          kind: 'static-markdown',
+          text: 'Original',
+        },
+      ],
+    };
+    const otherTemplate: RoutineOutputTemplate = {
+      format: 'markdown',
+      sections: [
+        {
+          kind: 'static-markdown',
+          text: 'Different',
+        },
+      ],
+    };
+    await h.runner.createRoutine({ ...baseInput, outputTemplate: template });
+    await assert.rejects(
+      () =>
+        h.runner.createRoutine({
+          ...baseInput,
+          outputTemplate: otherTemplate,
+        }),
+      RoutineNameConflictError,
+    );
+    assert.equal(h.store.rows.size, 1, 'the conflicting attempt created nothing');
+  });
+
+  it('reconciles a retry whose outputTemplate is structurally identical', async () => {
+    const h = makeHarness();
+    const template: RoutineOutputTemplate = {
+      format: 'markdown',
+      sections: [
+        {
+          kind: 'static-markdown',
+          text: 'Same',
+        },
+      ],
+    };
+    const first = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: template,
+    });
+    // A structurally-equal but distinct object — not the same reference —
+    // must still reconcile; the comparison is deep, not reference equality.
+    const retry = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: {
+        format: 'markdown',
+        sections: [
+          {
+            kind: 'static-markdown',
+            text: 'Same',
+          },
+        ],
+      },
+    });
+    assert.equal(retry.id, first.id, 'retry must resolve to the original row');
+    assert.equal(h.store.rows.size, 1, 'no duplicate row was created');
+  });
+
   // Reviewer-confirmed bug fix: reconciliation must not fire against a
   // paused (or otherwise non-active) existing row, even when every other
   // field matches byte-for-byte. A paused routine is not "my own in-flight

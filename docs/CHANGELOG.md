@@ -47,6 +47,18 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   broader than this fix. The literal error wording shown in Teams
   ("Etwas ist schief gegangen …") lives in the external Teams-channel
   adapter plugin and is out of scope for this repo.
+  `isSameRoutineRequest`'s field comparison omitted `outputTemplate` — an
+  independently-settable object field on both `Routine` and
+  `CreateRoutineInput` (Phase C structured-output templates). A retried
+  create that agreed on `cron`/`prompt`/`channel`/`timeoutMs` but carried a
+  *different* `outputTemplate` (e.g. the caller adding or changing the
+  structured template on an existing schedule) would reconcile to the old
+  row and silently discard the new template while reporting success — the
+  exact class of bug this issue exists to eliminate, on a field the fix's
+  own comparison had missed. `isSameRoutineRequest` now compares
+  `outputTemplate` too, via `node:util`'s `isDeepStrictEqual` (it is an
+  object, so reference/`===` equality is not sufficient); an identical
+  template (including the `null`/`null` case) still reconciles as before.
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
