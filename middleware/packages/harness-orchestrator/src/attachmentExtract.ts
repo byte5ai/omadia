@@ -11,6 +11,12 @@
  * `pdf-parse`, imported dynamically so a missing/odd dependency can never
  * crash module load. Images are deliberately NOT text-extracted here — they
  * flow through the existing brand:// / vision path untouched.
+ *
+ * `pdf-parse` v2+ replaced the v1 callable-default-export API
+ * (`pdf(buffer) -> { text }`) with a class-based API
+ * (`new PDFParse({ data }).getText() -> { text }`); see the `PDFParse`
+ * usage below. The parser must be `destroy()`-ed after use to release the
+ * underlying pdf.js worker/canvas resources.
  */
 
 /** Hard cap on extracted text to protect the turn's token budget. */
@@ -166,10 +172,18 @@ export async function extractAttachmentText(
 
     // 3. .pdf via pdf-parse (dynamic import — historically runs debug code on
     //    top-level import, so we only touch it inside the function + guarded).
+    //    v2+ API: `new PDFParse({ data }).getText()`, must `destroy()` after.
     if (ct === PDF_TYPE || ext === 'pdf') {
-      const pdfParse = (await import('pdf-parse')).default;
-      const result = await pdfParse(bytes);
-      return finalize(result.text ?? '');
+      const { PDFParse } = await import('pdf-parse');
+      const parser = new PDFParse({ data: bytes });
+      try {
+        const result = await parser.getText();
+        return finalize(result.text ?? '');
+      } finally {
+        await parser.destroy().catch(() => {
+          /* best-effort cleanup — never let it mask the real result/error */
+        });
+      }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

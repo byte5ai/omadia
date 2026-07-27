@@ -46,15 +46,15 @@
   "description": "Omadia kernel: Anthropic Messages API orchestrator with plugin runtime, persistent memory, multi-channel ingress, and vault-backed credentials.",
   "license": "MIT",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.111.0",
+    "@anthropic-ai/sdk": "^0.115.0",
     "@aws-sdk/client-s3": "^3.1075.0",
     "@azure/msal-node": "^5.3.1",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@types/better-sqlite3": "^7.6.13",
     "@types/cookie-parser": "^1.4.10",
     "@types/multer": "^2.1.0",
-    "@types/yauzl": "^2.10.3",
-    "argon2": "^0.43.1",
+    "@types/yauzl": "^3.4.0",
+    "argon2": "^0.45.1",
     "better-sqlite3": "^12.11.1",
     "bonjour-service": "^1.4.3",
     "botbuilder": "^4.23.3",
@@ -63,7 +63,7 @@
     "dotenv": "^17.4.2",
     "eslint": "^10.6.0",
     "express": "^5.2.1",
-    "jose": "^6.2.3",
+    "jose": "^6.2.4",
     "multer": "^2.1.1",
     "openai": "^6.46.0",
     "pg": "^8.21.0",
@@ -81,7 +81,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/express": "^5.0.6",
-    "@types/node": "^25.9.1",
+    "@types/node": "^26.1.1",
     "@types/pg": "^8.11.10",
     "@types/ws": "^8.5.13",
     "@types/yazl": "^3.3.1",
@@ -92,6 +92,10 @@
     "typescript": "^6.0.2"
   },
   "overrides": {
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "axios": "1.18.1",
+    "fast-uri": "3.1.4",
+    "postcss": "8.5.23",
+    "brace-expansion": "5.0.8"
   }
 }
