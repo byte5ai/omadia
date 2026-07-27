@@ -27,6 +27,35 @@ export type ExtractResult =
   | { ok: true; text: string }
   | { ok: false; reason: string };
 
+/** Anthropic's vision API only accepts these four raster formats via a
+ *  base64 image content-block. */
+const SUPPORTED_VISION_IMAGE_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+]);
+
+/** Anthropic's documented per-image cap for the *base64-encoded* payload
+ *  when calling the direct API (`https://api.anthropic.com`, which is what
+ *  `builtinLlmProviders.ts` uses): 10 MB base64-encoded. (Bedrock and Vertex
+ *  enforce a stricter 5 MB base64 cap — irrelevant today since this deployment
+ *  only talks to the direct API, but worth remembering if that ever changes.)
+ *  Oversized images are dropped before the API call rather than risking a
+ *  4xx that fails the whole turn. */
+const MAX_VISION_IMAGE_BASE64_BYTES = 10 * 1024 * 1024;
+
+/** Size of `rawBytes` once base64-encoded, without actually allocating the
+ *  base64 string: base64 emits 4 output chars per 3 input bytes, rounded up
+ *  to the next multiple of 4 (padding). */
+function base64EncodedLength(rawBytes: number): number {
+  return Math.ceil(rawBytes / 3) * 4;
+}
+
+export type VisionEmbedCheck =
+  | { ok: true; mediaType: string }
+  | { ok: false; reason: string };
+
 /** Lowercased file extension (without the dot), or '' when absent. */
 function extOf(fileName: string | undefined): string {
   if (!fileName) return '';
@@ -79,6 +108,33 @@ const PLAIN_TEXT_EXTS = new Set([
 const DOCX_TYPE =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const PDF_TYPE = 'application/pdf';
+
+/**
+ * Guard for the attachment auto-ingest path's image branch (issues #504,
+ * #505): decides whether a fetched attachment (Tigris `storage_key` or
+ * `url`) can be embedded as an Anthropic vision content-block, as opposed to
+ * being silently dropped after fetch. Never throws.
+ */
+export function checkVisionEmbeddable(
+  contentType: string | undefined,
+  byteLength: number,
+): VisionEmbedCheck {
+  const ct = normalizeContentType(contentType);
+  if (!SUPPORTED_VISION_IMAGE_TYPES.has(ct)) {
+    return {
+      ok: false,
+      reason: `unsupported image type for vision (contentType=${ct || 'unknown'})`,
+    };
+  }
+  const encodedLength = base64EncodedLength(byteLength);
+  if (encodedLength > MAX_VISION_IMAGE_BASE64_BYTES) {
+    return {
+      ok: false,
+      reason: `image too large for vision (${encodedLength} base64-encoded bytes > ${MAX_VISION_IMAGE_BASE64_BYTES} byte cap)`,
+    };
+  }
+  return { ok: true, mediaType: ct };
+}
 
 /**
  * Extract plain text from an attachment's bytes. Never throws — any failure

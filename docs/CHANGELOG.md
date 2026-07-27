@@ -18,6 +18,87 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — Teams-uploaded images now reach the model as vision input (#504, #505)
+
+- Teams delivers inbound images via a Tigris `storage_key` + `[attachments-info]`
+  manifest, never inline `bytesBase64`. The attachment auto-ingest path fetched
+  those bytes but handed them to the text extractor, which correctly refuses
+  images — so the fetched image was silently dropped and never reached the
+  model, leaving the agent to falsely claim it couldn't see the image.
+  `ingestAttachments` now routes image candidates through a new
+  `checkVisionEmbeddable` guard (supported type + size cap) and embeds them
+  as Anthropic vision content-blocks via `buildUserContent`, the same path
+  Telegram's inline `bytesBase64` attachments already use (#504).
+- Also implemented the `url`-fetch fallback that `chatAgent.ts` / `incoming.ts`
+  document but the orchestrator never honored: an image attachment with a
+  `url` and no pre-fetched `bytesBase64` is now fetched and embedded the same
+  way. Latent today (no in-repo channel triggers it yet), but closes the gap
+  before a future url-only channel (Slack, Discord, WhatsApp) ships broken
+  vision silently (#505).
+- Review round 2: neither path checked whether the active provider/model
+  actually supports vision before building an image content-block, so a
+  turn routed through a non-vision provider could still get an image block
+  the API might reject or silently drop — reintroducing the same "agent
+  can't see the image, nothing indicates why" failure. Both call sites now
+  read `this.provider.capabilities.vision` and thread it through
+  `ingestAttachments`/`buildUserContent`: when unsupported, no image
+  content-block is built (avoids the provider rejecting the whole request),
+  and image candidates aren't even fetched — but the attachment is never
+  silently dropped either. A visible note (`[N image attachment(s) received
+  but the active model does not support image input]`) is folded into the
+  turn's text instead, so the model — and the user — knows an image existed
+  and why it wasn't seen. `claude-cli`-routed turns (`CliChatAgent`, swapped
+  in by `buildOrchestrator.ts` on `provider.id === 'claude-cli'`) take a
+  separate code path that never calls `buildUserContent`/`ingestAttachments`
+  at all; this change does not touch, fix, or regress that path.
+- Review round 4: a fetched image candidate that failed the
+  `checkVisionEmbeddable` guard (oversized, or an unsupported format
+  such as SVG/BMP/TIFF) under a VISION-CAPABLE provider was only logged via
+  `console.warn` and silently dropped otherwise — the same silent-drop
+  failure #504 exists to close, just triggered by size/format instead of
+  provider capability. `ingestAttachments` now also collects each
+  rejection's reason, and `buildUserContent` folds a visible
+  `[N image attachment(s) could not be shown: <reason(s)>]` note into the
+  turn's text alongside (never instead of) the existing non-vision-provider
+  note.
+- Review round 6 (cross-vendor): the vision guard read
+  `this.provider.capabilities.vision` — a flag on the PROVIDER CONNECTION,
+  not the active MODEL. This is wrong whenever one connection serves
+  multiple models with different vision support, which is not hypothetical:
+  the bundled `mistral` openai-compatible connection serves
+  `mistral-large-latest` and `mistral-medium-latest` (vision) alongside
+  `mistral-small-latest` (no vision), yet `llm-adapter-openai`'s
+  `openaiProvider.ts` hardcodes `capabilities.vision = true` on the
+  connection regardless of the active model — so a turn on
+  `mistral-small-latest` would still build an image block for a model that
+  can't use it. `OrchestratorOptions` gained a new optional
+  `visionSupported?: boolean` — the ACTIVE model's vision capability, meant
+  to be resolved by the caller the same way `maxTokens` is already resolved
+  per-model, since `harness-orchestrator` deliberately has no dependency on
+  `@omadia/llm-provider`/`@omadia/llm-provider-api` and does not resolve the
+  model registry itself. Both call sites now read `this.visionSupported ??
+  this.provider.capabilities.vision` — an explicit per-model value would win
+  if one were passed; omitting it preserves the exact prior provider-level
+  behavior. **This is a mechanism, not an end-to-end fix**: as of this PR no
+  real caller (`buildOrchestrator.ts`, `plugin.ts`, or any bundled config)
+  sets `visionSupported` yet, so the concrete `mistral-small` scenario above
+  is made fixable, not actually resolved in production today — a future
+  change still needs to wire the active model's real vision capability
+  through to `OrchestratorOptions` for any given connection. Backward
+  compatible either way: no caller passing it is a no-op, not a regression.
+- Review round 7: `checkVisionEmbeddable` compared the fetched image's RAW
+  byte length against a 5MB cap, but that cap is Anthropic's documented
+  per-image *base64-encoded* payload limit — comparing raw bytes against a
+  base64-payload limit is the wrong unit, and rejected valid images (e.g. a
+  ~5.5MB raw screenshot, ~7.3MB once base64-encoded) that were well under the
+  real limit. The 5MB figure was also wrong for this deployment: the bundled
+  Anthropic provider (`builtinLlmProviders.ts`) uses
+  `https://api.anthropic.com` — the direct API, whose documented limit is
+  10MB base64-encoded (5MB base64 applies only to Bedrock/Vertex). The guard
+  now computes the base64-encoded size (`Math.ceil(rawBytes / 3) * 4`) and
+  compares it against a corrected `MAX_VISION_IMAGE_BASE64_BYTES = 10MB`
+  constant.
+
 ### Fixed — codegen: manifest capabilities[] now reflect per-tool spec flags (#507)
 
 - `reproduceManifestCapabilities` (builder codegen) used to clone the

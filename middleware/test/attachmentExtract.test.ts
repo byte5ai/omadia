@@ -1,7 +1,10 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { extractAttachmentText } from '../packages/harness-orchestrator/src/attachmentExtract.js';
+import {
+  checkVisionEmbeddable,
+  extractAttachmentText,
+} from '../packages/harness-orchestrator/src/attachmentExtract.js';
 
 describe('extractAttachmentText', () => {
   it('passes through markdown via contentType', async () => {
@@ -128,5 +131,65 @@ describe('extractAttachmentText', () => {
     );
     assert.equal(r.ok, false);
     assert.ok(!r.ok && r.reason.length > 0);
+  });
+});
+
+// #504/#505 — the vision-embed guard used by `Orchestrator.ingestAttachments`
+// to decide whether a fetched image can become a base64 vision content-block.
+describe('checkVisionEmbeddable', () => {
+  const ONE_KB = 1024;
+
+  for (const mediaType of ['image/jpeg', 'image/png', 'image/gif', 'image/webp']) {
+    it(`accepts ${mediaType} under the size cap`, () => {
+      const r = checkVisionEmbeddable(mediaType, ONE_KB);
+      assert.equal(r.ok, true);
+      assert.ok(r.ok && r.mediaType === mediaType);
+    });
+  }
+
+  it('normalizes contentType params (charset/case) before matching', () => {
+    const r = checkVisionEmbeddable('IMAGE/PNG; charset=binary', ONE_KB);
+    assert.equal(r.ok, true);
+    assert.ok(r.ok && r.mediaType === 'image/png');
+  });
+
+  it('rejects an unsupported image type (e.g. svg — not vision-safe)', () => {
+    const r = checkVisionEmbeddable('image/svg+xml', ONE_KB);
+    assert.equal(r.ok, false);
+    assert.ok(!r.ok && /unsupported/i.test(r.reason));
+  });
+
+  it('rejects a non-image contentType', () => {
+    const r = checkVisionEmbeddable('application/pdf', ONE_KB);
+    assert.equal(r.ok, false);
+    assert.ok(!r.ok && /unsupported/i.test(r.reason));
+  });
+
+  // The cap applies to the *base64-encoded* size (Anthropic's documented
+  // direct-API limit: 10 MB base64), not raw bytes. base64 encoding inflates
+  // size by ceil(rawBytes / 3) * 4, so the raw-byte boundary sits at
+  // 7,864,320 bytes (7.5 MB) — exactly 10 MB once encoded.
+  const RAW_BYTES_AT_BASE64_CAP = 7_864_320; // encodes to exactly 10 MB base64
+  const TEN_MB = 10 * 1024 * 1024;
+
+  it('rejects an image whose base64-encoded size exceeds the 10MB direct-API cap', () => {
+    const r = checkVisionEmbeddable('image/png', RAW_BYTES_AT_BASE64_CAP + 1);
+    assert.equal(r.ok, false);
+    assert.ok(!r.ok && /too large/i.test(r.reason));
+    assert.ok(!r.ok && r.reason.includes(String(TEN_MB)));
+  });
+
+  it('accepts an image whose base64-encoded size is exactly at the 10MB cap', () => {
+    const r = checkVisionEmbeddable('image/png', RAW_BYTES_AT_BASE64_CAP);
+    assert.equal(r.ok, true);
+  });
+
+  it('accepts a ~5.5MB raw image (base64 ~7.3MB) that the old 5MB-raw-byte check wrongly rejected', () => {
+    // Regression for the round-7 finding: the old guard compared RAW bytes
+    // against a base64-payload cap, so a perfectly valid ~5.5MB screenshot
+    // (well under the real 10MB base64 limit) was wrongly rejected.
+    const FIVE_POINT_FIVE_MB = 5.5 * 1024 * 1024;
+    const r = checkVisionEmbeddable('image/png', FIVE_POINT_FIVE_MB);
+    assert.equal(r.ok, true);
   });
 });
