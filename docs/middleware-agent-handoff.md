@@ -136,6 +136,51 @@ src/
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
 
+### Plugin-Tool-Readiness-Gate (#474)
+
+`Orchestrator.isToolAvailable(agentId)` entscheidet pro Tool, ob es dem
+Modell angeboten und bei Dispatch ausgeführt wird. Ohne `agentId`
+(kernel-interne Registrierungen wie `render_diagram`) oder ohne
+verdrahtetes `isPluginToolsReady` (Legacy-Hosts, Unit-Tests) bleibt das
+Verhalten exakt wie vor #474 — immer verfügbar. Konsultiert an jeder Stelle,
+die ein Tool-Name→Handler-Mapping liest: `buildToolsList()` (Tool-Specs,
+inkl. des Anthropic-`memory`-Fast-Path, falls ein Plugin ihn via
+`ctx.tools.registerHandler('memory', …)` registriert hat),
+`dispatchToolInner()` (derselbe Fast-Path plus die generischen
+`NativeToolRegistry`- und `DomainTool`-Handler), `getSystemPrompt()`
+(promptDoc-Splice + Fach-Agenten-Roster — ein gegatetes Tool taucht weder in
+den Specs noch in Doku/Roster auf), `directLineObligationState()` (#332
+Forced-`tool_choice`) und `executeDirectLine()` (`#token`-Kandidatenauflösung,
+degradiert auf die bestehende "Specialist … is no longer available."-Notiz
+statt den internen Dispatch-Fehler zu zeigen). Die parallele
+`ToolDispatchService` (Subscription-CLI-Bridge) trägt dieselbe Gate-Logik
+unabhängig nach, da sie ohne Orchestrator-Instanz läuft.
+
+Zwei unabhängige Readiness-Signale werden UND-verknüpft (jedes kann
+Verfügbarkeit allein verweigern) — bewusst zwei getrennte Caches statt einem
+gemergten, damit keins das Urteil des anderen stillschweigend überschreiben
+kann:
+
+- **`PluginStatusRegistry`** (`middleware/src/platform/pluginStatusRegistry.ts`)
+  — explizit, vom Plugin selbst via
+  `ctx.status.report({state:'needs_action'|'error'})` gesetzt.
+- **`OAuthReadinessTracker`** (`middleware/src/plugins/oauth/oauthReadinessTracker.ts`)
+  — automatisch, aus demselben Vault-Token-State abgeleitet, den
+  `ctx.oauthTokens` liest; refreshed bei jedem
+  `ToolPluginRuntime`/`DynamicAgentRuntime.activate()` (Install,
+  Boot-Reaktivierung, Post-Connect). Deckt den Fall, dass
+  `installService.ts` ein `type:'oauth'`-Plugin schon beim `configure()`
+  aktiviert — bevor der Operator "Connect" geklickt hat —, ohne dass der
+  Plugin-Autor dafür einen eigenen `status.report()`-Call schreiben muss.
+
+Beide werden am Boot hinter dem Service-Registry-Key
+`installedPluginToolsReadyReader` (`middleware/src/index.ts`)
+veröffentlicht und von `harness-orchestrator/src/plugin.ts` als
+`OrchestratorOptions.isPluginToolsReady` verdrahtet. Bewusst getrennt von
+der MCP-Server-spezifischen Auth-Lücke (`mcpOAuthService`), die für
+MCP-Server bereits existiert — dieses Gate deckt nur native
+Plugin-Tool-Registrierungen ab.
+
 ### Sub-Agents (lokal, in-process)
 
 - **Datei:** `services/localSubAgent.ts` (`LocalSubAgent`-Klasse).
