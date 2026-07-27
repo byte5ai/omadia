@@ -215,10 +215,14 @@ export interface OrchestratorOptions {
    * (no vision) while the openai adapter hardcodes
    * `capabilities.vision = true` on the connection regardless of model.
    *
-   * Omitted (the common case) → `resolveTurnVisionSupported` resolves the
-   * routed model against the registry per turn, falling back to
-   * `this.provider.capabilities.vision` only when the routed model id is
-   * not registered.
+   * Omitted (the common case) → `resolveTurnVisionSupported` combines
+   * `this.provider.capabilities.vision` and the routed model's
+   * registry-resolved `ModelInfo.vision` with a logical AND: the connection
+   * flag is a hard floor/veto (a connection that reports no vision support
+   * can never be granted it by the registry), and the per-model registry
+   * lookup can only narrow — never widen — vision support on top of that,
+   * falling back to trusting `this.provider.capabilities.vision` alone when
+   * the routed model id is not registered.
    */
   visionSupported?: boolean;
   maxToolIterations: number;
@@ -2738,18 +2742,34 @@ export class Orchestrator {
    * Precedence:
    *  1. `this.visionSupported` (explicit `OrchestratorOptions.visionSupported`
    *     override) — wins unconditionally when set.
-   *  2. the model registry's `ModelInfo.vision` for `turnModel`, resolved the
-   *     same way `registry/agentRuntime.ts`'s `resolveModelIdForProvider`
+   *  2. Otherwise, the PROVIDER CONNECTION's `capabilities.vision` flag is a
+   *     hard floor/veto: a connection that reports it cannot accept images
+   *     (e.g. a restricted/on-prem/vision-disabled Anthropic connection)
+   *     never gets vision for this turn, no matter what the model registry
+   *     says about the routed model in general. When the connection-level
+   *     flag is `false`, this returns `false` immediately — the registry is
+   *     never even consulted, because registry metadata about what a model
+   *     GENERALLY supports must never manufacture vision capability the
+   *     actual connection lacks.
+   *  3. Only when the connection reports `capabilities.vision === true` does
+   *     the model registry's `ModelInfo.vision` for `turnModel` get a say —
+   *     and only to NARROW, never widen: it can catch a routed model that is
+   *     LESS capable than its connection (e.g. the bundled `mistral`
+   *     openai-compatible connection hardcodes `capabilities.vision = true`
+   *     on the connection while `mistral-small-latest` itself has no vision,
+   *     unlike `mistral-large-latest` / `mistral-medium-latest`). Resolved
+   *     the same way `registry/agentRuntime.ts`'s `resolveModelIdForProvider`
    *     resolves model refs (`resolveModelRef` with `defaultProvider` bound
    *     to this provider, so a bare vendor id like `mistral-small-latest`
-   *     resolves against the right provider's models).
-   *  3. `this.provider.capabilities.vision` (the provider-connection-level
-   *     flag) — used when `turnModel` isn't in the registry (a fully custom
-   *     / unregistered model id). Never throws, so an unknown model id can
-   *     never crash a turn.
+   *     resolves against the right provider's models). A registry miss
+   *     (`turnModel` not registered) falls back to trusting the
+   *     connection-level flag alone, per the existing fallback-on-miss
+   *     behaviour. Never throws, so an unknown model id can never crash a
+   *     turn.
    */
   private resolveTurnVisionSupported(turnModel: string): boolean {
     if (this.visionSupported !== undefined) return this.visionSupported;
+    if (!this.provider.capabilities.vision) return false;
     const info = resolveModelRef(turnModel, { defaultProvider: this.provider.id });
     return info?.vision ?? this.provider.capabilities.vision;
   }

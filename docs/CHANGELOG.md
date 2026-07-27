@@ -105,6 +105,30 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   caller-override escape hatch (still checked first) but is no longer the
   only mechanism; the common case (omitted) now resolves correctly per turn
   without any caller wiring.
+- Review round 9 (#524, cross-vendor codex review of round 8): round 8's
+  `resolveTurnVisionSupported` let a registry HIT on the routed model
+  OVERRIDE `this.provider.capabilities.vision` outright — `info?.vision ??
+  this.provider.capabilities.vision`, evaluated as "registry wins whenever it
+  has an opinion". That regressed the pre-existing guard from round 2: a
+  non-vision-capable PROVIDER CONNECTION was supposed to be a hard stop
+  regardless of which model string was in play. Concrete failing case: an
+  `anthropic` connection with `capabilities.vision = false` (e.g. a
+  restricted/on-prem/vision-disabled connection) paired with
+  `claude-opus-4-8`, a model id the bundled registry lists as `vision:
+  true` — the registry hit resolved the turn as vision-capable and embedded
+  the image, silently omitting the non-vision note even though the active
+  CONNECTION explicitly cannot accept images. `resolveTurnVisionSupported`
+  now combines the two sources with a logical AND instead of an override:
+  the provider-connection flag is checked first and is a hard floor/veto —
+  `false` short-circuits to `false` before the registry is even consulted;
+  only when the connection reports `true` does the routed model's
+  registry-resolved `ModelInfo.vision` get a say, and only to NARROW
+  support (catching a model that is less capable than its connection, the
+  mistral small/large case round 8 introduced), never to WIDEN it. Registry
+  metadata about what a model generally supports must never manufacture
+  vision capability the actual connection lacks. The `visionSupported`
+  explicit caller-override and the registry-miss fallback (trust the
+  connection-level flag alone) are unchanged.
 - Review round 7: `checkVisionEmbeddable` compared the fetched image's RAW
   byte length against a 5MB cap, but that cap is Anthropic's documented
   per-image *base64-encoded* payload limit — comparing raw bytes against a

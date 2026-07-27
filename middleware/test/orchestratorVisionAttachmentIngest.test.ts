@@ -836,6 +836,83 @@ describe('#524 — per-turn vision resolution under modelRouting (the real mistr
   });
 });
 
+describe('#524 (codex cross-vendor review) — provider capability is a floor, the model registry can only narrow, never widen', () => {
+  // Codex's exact failing example: an `anthropic` PROVIDER CONNECTION with
+  // `capabilities.vision = false` (e.g. a restricted/on-prem/vision-disabled
+  // Anthropic connection) paired with `claude-opus-4-8`, a model id the
+  // bundled registry lists as `vision: true`. The round-1 fix let a registry
+  // HIT override the connection-level flag whenever one was found — which
+  // let a non-vision CONNECTION embed an image just because the ROUTED MODEL
+  // is generally vision-capable. The connection-level flag must stay a hard
+  // veto: the registry may only narrow vision support (catch a model that is
+  // LESS capable than its connection — the mistral small/large case below),
+  // never widen it (grant vision to a connection that says it can't).
+  const CLAUDE_OPUS_VISION: ModelInfo = {
+    id: 'anthropic:claude-opus-4-8',
+    provider: 'anthropic',
+    modelId: 'claude-opus-4-8',
+    label: 'Claude Opus 4.8',
+    class: 'frontier',
+    maxTokens: 8192,
+    contextWindow: 200000,
+    vision: true,
+  };
+
+  beforeEach(() => {
+    clearExternalModels();
+    registerExternalModels([CLAUDE_OPUS_VISION]);
+  });
+  afterEach(() => {
+    clearExternalModels();
+  });
+
+  it('a non-vision anthropic CONNECTION never embeds an image for a registry-vision-capable model, and still shows the non-vision note', async () => {
+    const requests: LlmRequest[] = [];
+    const reader = fakeAttachmentReader({
+      byStorageKey: {
+        'tigris:photo-1': {
+          bytes: PNG_BYTES,
+          contentType: 'image/png',
+          fileName: 'photo.png',
+        },
+      },
+    });
+    const orch = new Orchestrator({
+      // provider.id === 'anthropic', capabilities.vision === false — the
+      // CONNECTION reports it cannot accept images at all.
+      provider: recordingProvider(requests, nonVisionProviderCapabilities),
+      // A model the bundled/external registry resolves to `vision: true`.
+      model: 'claude-opus-4-8',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      attachmentReader: reader,
+    });
+
+    const userMessage =
+      'Was ist auf dem Bild?\n\n' +
+      '[attachments-info] 1 Datei(en) in diesem Turn hochgeladen + persistiert:\n' +
+      '- photo.png (image/png, 4 KB) · storage_key=tigris:photo-1';
+
+    await orch.runTurn({ userMessage, sessionScope: 'sess-1', userId: 'u1' });
+
+    assert.equal(requests.length, 1);
+    assert.equal(
+      imagePartsOf(requests[0]!).length,
+      0,
+      'the non-vision PROVIDER CONNECTION must veto vision even though the registry says the routed model supports it',
+    );
+    assert.deepEqual(reader.calls.storageKeys, []);
+    const text = textOf(requests[0]!);
+    assert.match(
+      text,
+      /1 image attachment.*received but the active model does not support image input/,
+      'the connection-level hard-stop must still produce the visible non-vision note',
+    );
+  });
+});
+
 describe('#504 — chatStream() production entry point (Teams/Telegram/HTTP connectors)', () => {
   // Round-8 review: every prior test in this file drives the orchestrator via
   // `runTurn()`, which calls the private `chatInContextInner()`. But channel
