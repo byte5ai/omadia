@@ -408,4 +408,45 @@ describe('Orchestrator — issue #474 plugin tool-readiness gate (domain tools)'
       `expected an Error: result, got ${JSON.stringify(result)}`,
     );
   });
+
+  it('round-3 fix: excludes a not-ready plugin domain tool from the Fach-Agenten roster in the system prompt, keeps a ready one', async () => {
+    const readyTool = makeDomainTool(
+      'query_ready',
+      'ready-plugin',
+      () => {},
+    );
+    const gatedTool = makeDomainTool(
+      'query_gated',
+      'gated-plugin',
+      () => {},
+    );
+
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [readyTool, gatedTool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      isPluginToolsReady: (agentId) => agentId !== 'gated-plugin',
+    });
+
+    for await (const _ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      // drain
+    }
+
+    const system = seenRequests[0]?.system;
+    const systemText =
+      typeof system === 'string' ? system : JSON.stringify(system);
+    assert.ok(
+      systemText?.includes('query_ready'),
+      'expected the ready domain tool in the Fach-Agenten roster',
+    );
+    assert.ok(
+      !systemText?.includes('query_gated'),
+      'expected the gated domain tool to be excluded from the Fach-Agenten roster',
+    );
+  });
 });

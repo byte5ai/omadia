@@ -687,6 +687,28 @@ describe('#332 gap-closure — standing requiredConsultToolName (L3 real produce
     assert.equal(sa.text, 'plain answer');
   });
 
+  it('issue #474 round-3 fix — a standing obligation for a not-ready plugin domain tool is ignored (never forces tool_choice onto a tool excluded from tools[])', async () => {
+    let asked = false;
+    const tool = strategistTool(async () => {
+      asked = true;
+      return 'x';
+    });
+    const { provider } = scriptedCompleteProvider([textResponse('plain answer')]);
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 6,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      requiredConsultToolName: 'ask_strategist',
+      isPluginToolsReady: (agentId) => agentId !== 'de.byte5.agent.strategist',
+    });
+    const sa = await orch.chat({ userMessage: 'hello', sessionScope: 's7-gated' });
+    assert.equal(asked, false, 'the not-ready tool must never be forced/invoked');
+    assert.equal(sa.text, 'plain answer');
+  });
+
   it('a per-turn expectedDomainTool overrides the standing requiredConsultToolName', async () => {
     const captured: { strategist?: string; twin?: string } = {};
     const strategist = strategistTool(async (q) => {

@@ -155,4 +155,21 @@ describe('Issue #474 — PluginStatusRegistry.isReady', () => {
     ctx.status.clear();
     assert.equal(reg.isReady('caller'), true);
   });
+
+  it('round-3 fix: is ready when a caller stores {state: "ok"} via the ' +
+    'class\'s own set() directly, bypassing the StatusAccessor.report() ' +
+    'normalization that turns "ok" into clear()', () => {
+    const reg = new PluginStatusRegistry();
+    reg.set('gated-plugin', { state: 'ok' });
+    assert.equal(reg.isReady('gated-plugin'), true);
+  });
+
+  it('round-3 fix: stays not-ready when set() is called directly with ' +
+    'needs_action/error, independent of the StatusAccessor', () => {
+    const reg = new PluginStatusRegistry();
+    reg.set('gated-plugin', { state: 'needs_action' });
+    assert.equal(reg.isReady('gated-plugin'), false);
+    reg.set('gated-plugin', { state: 'error' });
+    assert.equal(reg.isReady('gated-plugin'), false);
+  });
 });

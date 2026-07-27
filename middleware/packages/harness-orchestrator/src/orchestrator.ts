@@ -2439,8 +2439,16 @@ export class Orchestrator {
     // (if configured), so the forced-delegation primitive has a real,
     // opt-in producer beyond a caller wiring it per turn.
     const requested = input.expectedDomainTool ?? this.requiredConsultToolName;
+    const requestedEntry = requested
+      ? this.domainToolsByName.get(requested)
+      : undefined;
+    // Issue #474 (round 3 self-audit) — a not-ready plugin's domain tool must
+    // not become an obligation: `tool_choice` would then force the model onto
+    // a tool name that buildToolsList() has already excluded from tools[],
+    // which the API rejects. Same isToolAvailable gate as the roster/tools[]
+    // paths above.
     const tool =
-      requested && this.domainToolsByName.has(requested)
+      requestedEntry && this.isToolAvailable(requestedEntry.agentId)
         ? requested
         : undefined;
     return {
@@ -4649,9 +4657,16 @@ export class Orchestrator {
       .filter((e) => this.isToolAvailable(e.agentId))
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
+    // Issue #474 (round 3) — same isToolAvailable gate as buildToolsList()'s
+    // domain-tool loop above: a not-ready plugin's DomainTool must not be
+    // advertised in the 'Fach-Agenten' roster either, otherwise the model is
+    // told to route to a tool that tools[] has already hidden this turn.
+    const availableDomainTools = Array.from(this.domainToolsByName.values()).filter((tool) =>
+      this.isToolAvailable(tool.agentId),
+    );
     return buildSystemPrompt(
       personaOverride ?? this.assistantIdentity,
-      Array.from(this.domainToolsByName.values()),
+      availableDomainTools,
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.
       false,

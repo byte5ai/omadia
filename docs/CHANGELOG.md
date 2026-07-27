@@ -50,6 +50,26 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   carries, so a not-ready plugin's domain tool is excluded from `tools[]`
   and refused (`Error:`-prefixed, handler never invoked) at dispatch time,
   matching the native-tool path exactly.
+- Follow-up (review round 4): two remaining gaps of the same kind. First,
+  `Orchestrator.buildSystemPrompt()`'s "Fach-Agenten" roster block — the
+  human-readable list of domain tools rendered ahead of the tool specs —
+  still listed every `DomainTool` unconditionally, so a not-ready plugin's
+  tool was hidden from `tools[]` but the model was still told to route to it
+  by name. `Orchestrator.getSystemPrompt()` now filters the roster through
+  the same `isToolAvailable(agentId)` gate before it reaches
+  `buildSystemPrompt()`. Second, `PluginStatusRegistry.isReady()` only
+  returned `true` when there was no stored status entry at all — correctness
+  depended entirely on every caller normalizing `state: 'ok'` into `clear()`
+  before it reached the registry's own `set()`, which only the higher-level
+  `StatusAccessor.report()` in `pluginContext.ts` did. `isReady()` now
+  checks the stored entry's `state` directly (`!entry ||
+  (entry.state !== 'needs_action' && entry.state !== 'error')`), so it stays
+  correct even for a caller that stores `{state: 'ok'}` via `set()` directly.
+  Also closed during the same audit: `Orchestrator.directLineObligationState()`
+  (the `#332` forced-delegation primitive) could still resolve a not-ready
+  plugin's domain tool as the turn's forced `tool_choice`, which would name a
+  tool `buildToolsList()` had already excluded from `tools[]` — now gated the
+  same way.
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
