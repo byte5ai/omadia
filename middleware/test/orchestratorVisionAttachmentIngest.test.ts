@@ -329,8 +329,13 @@ describe('#504/#505 — vision attachment auto-ingest', () => {
     const requests: LlmRequest[] = [];
     const reader = fakeAttachmentReader({
       byStorageKey: {
+        // The guard's cap is on the *base64-encoded* size (10MB, Anthropic's
+        // direct-API limit) — 8MB raw bytes encode to ~10.67MB base64, well
+        // over the cap. (A 5MB+1 raw buffer, as this test used before the
+        // round-7 fix, encodes to only ~6.67MB base64 and is now correctly
+        // ACCEPTED, not rejected.)
         'tigris:huge-1': {
-          bytes: Buffer.alloc(5 * 1024 * 1024 + 1),
+          bytes: Buffer.alloc(8 * 1024 * 1024),
           contentType: 'image/png',
           fileName: 'huge.png',
         },
@@ -341,7 +346,7 @@ describe('#504/#505 — vision attachment auto-ingest', () => {
     const userMessage =
       'Bild anbei.\n\n' +
       '[attachments-info] 1 Datei(en) in diesem Turn hochgeladen + persistiert:\n' +
-      '- huge.png (image/png, 5121 KB) · storage_key=tigris:huge-1';
+      '- huge.png (image/png, 8192 KB) · storage_key=tigris:huge-1';
 
     await orch.runTurn({ userMessage, sessionScope: 'sess-1', userId: 'u1' });
 

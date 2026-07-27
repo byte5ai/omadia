@@ -4910,7 +4910,8 @@ export class Orchestrator {
    *
    * `rejectedImageReasons` (#504/#505 review round 4): a candidate IS
    * fetched (vision is supported) but fails {@link checkVisionEmbeddable}
-   * — oversized (>5MB) or an unsupported format (SVG/BMP/TIFF/…). That used
+   * — oversized (>10MB base64-encoded) or an unsupported format
+   * (SVG/BMP/TIFF/…). That used
    * to be a server-only `console.warn` with no trace in the turn's text,
    * reproducing the exact silent-drop failure #504 exists to close via a
    * different trigger (size/format instead of provider capability). Each

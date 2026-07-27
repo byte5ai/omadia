@@ -26,7 +26,7 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   images — so the fetched image was silently dropped and never reached the
   model, leaving the agent to falsely claim it couldn't see the image.
   `ingestAttachments` now routes image candidates through a new
-  `checkVisionEmbeddable` guard (supported type + 5MB size cap) and embeds them
+  `checkVisionEmbeddable` guard (supported type + size cap) and embeds them
   as Anthropic vision content-blocks via `buildUserContent`, the same path
   Telegram's inline `bytesBase64` attachments already use (#504).
 - Also implemented the `url`-fetch fallback that `chatAgent.ts` / `incoming.ts`
@@ -52,7 +52,7 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   separate code path that never calls `buildUserContent`/`ingestAttachments`
   at all; this change does not touch, fix, or regress that path.
 - Review round 4: a fetched image candidate that failed the
-  `checkVisionEmbeddable` guard (oversized >5MB, or an unsupported format
+  `checkVisionEmbeddable` guard (oversized, or an unsupported format
   such as SVG/BMP/TIFF) under a VISION-CAPABLE provider was only logged via
   `console.warn` and silently dropped otherwise — the same silent-drop
   failure #504 exists to close, just triggered by size/format instead of
@@ -80,6 +80,18 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `this.visionSupported ?? this.provider.capabilities.vision` — an explicit
   per-model value wins; omitting it preserves the exact prior
   provider-level behavior for callers not yet updated to pass it.
+- Review round 7: `checkVisionEmbeddable` compared the fetched image's RAW
+  byte length against a 5MB cap, but that cap is Anthropic's documented
+  per-image *base64-encoded* payload limit — comparing raw bytes against a
+  base64-payload limit is the wrong unit, and rejected valid images (e.g. a
+  ~5.5MB raw screenshot, ~7.3MB once base64-encoded) that were well under the
+  real limit. The 5MB figure was also wrong for this deployment: the bundled
+  Anthropic provider (`builtinLlmProviders.ts`) uses
+  `https://api.anthropic.com` — the direct API, whose documented limit is
+  10MB base64-encoded (5MB base64 applies only to Bedrock/Vertex). The guard
+  now computes the base64-encoded size (`Math.ceil(rawBytes / 3) * 4`) and
+  compares it against a corrected `MAX_VISION_IMAGE_BASE64_BYTES = 10MB`
+  constant.
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 

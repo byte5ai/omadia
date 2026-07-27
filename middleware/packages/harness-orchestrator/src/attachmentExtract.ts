@@ -30,10 +30,21 @@ const SUPPORTED_VISION_IMAGE_TYPES = new Set([
   'image/webp',
 ]);
 
-/** Anthropic's documented per-image base64 payload cap. Oversized images are
- *  dropped before the API call rather than risking a 4xx that fails the
- *  whole turn. */
-const MAX_VISION_IMAGE_BYTES = 5 * 1024 * 1024;
+/** Anthropic's documented per-image cap for the *base64-encoded* payload
+ *  when calling the direct API (`https://api.anthropic.com`, which is what
+ *  `builtinLlmProviders.ts` uses): 10 MB base64-encoded. (Bedrock and Vertex
+ *  enforce a stricter 5 MB base64 cap — irrelevant today since this deployment
+ *  only talks to the direct API, but worth remembering if that ever changes.)
+ *  Oversized images are dropped before the API call rather than risking a
+ *  4xx that fails the whole turn. */
+const MAX_VISION_IMAGE_BASE64_BYTES = 10 * 1024 * 1024;
+
+/** Size of `rawBytes` once base64-encoded, without actually allocating the
+ *  base64 string: base64 emits 4 output chars per 3 input bytes, rounded up
+ *  to the next multiple of 4 (padding). */
+function base64EncodedLength(rawBytes: number): number {
+  return Math.ceil(rawBytes / 3) * 4;
+}
 
 export type VisionEmbedCheck =
   | { ok: true; mediaType: string }
@@ -109,10 +120,11 @@ export function checkVisionEmbeddable(
       reason: `unsupported image type for vision (contentType=${ct || 'unknown'})`,
     };
   }
-  if (byteLength > MAX_VISION_IMAGE_BYTES) {
+  const encodedLength = base64EncodedLength(byteLength);
+  if (encodedLength > MAX_VISION_IMAGE_BASE64_BYTES) {
     return {
       ok: false,
-      reason: `image too large for vision (${byteLength} bytes > ${MAX_VISION_IMAGE_BYTES} byte cap)`,
+      reason: `image too large for vision (${encodedLength} base64-encoded bytes > ${MAX_VISION_IMAGE_BASE64_BYTES} byte cap)`,
     };
   }
   return { ok: true, mediaType: ct };
