@@ -22,6 +22,7 @@ import { isLowValueEventType, type ArtifactCeilingOptions } from './retention.js
 import {
   isDevJobEventType,
   isTerminalDevJobStatus,
+  TERMINAL_DEV_JOB_STATUSES,
   type DevJob,
   type DevJobArtifact,
   type DevJobEvent,
@@ -235,6 +236,23 @@ export class DevJobStore {
   async getJob(id: string): Promise<DevJob | null> {
     const r = await this.pool.query<Row>(`SELECT ${JOB_COLS} FROM dev_jobs WHERE id = $1`, [id]);
     return r.rows[0] ? toJob(r.rows[0]) : null;
+  }
+
+  /**
+   * Delete one job's row — `ON DELETE CASCADE` (0022) removes its events and
+   * artifacts in the same statement, same as `retention.purgeTerminalJobs`
+   * (spec §7), just for a single operator-named job instead of an age sweep.
+   * Scoped to terminal statuses only: an active job still has a live backend
+   * handle (container, Fly Machine) that deleting the row would orphan —
+   * terminate it first (which finalizes the job), then delete.
+   */
+  async deleteJob(id: string): Promise<'deleted' | 'not_terminal' | 'not_found'> {
+    const r = await this.pool.query(
+      `DELETE FROM dev_jobs WHERE id = $1 AND status = ANY($2::text[])`,
+      [id, [...TERMINAL_DEV_JOB_STATUSES]],
+    );
+    if ((r.rowCount ?? 0) > 0) return 'deleted';
+    return (await this.getJob(id)) ? 'not_terminal' : 'not_found';
   }
 
   async listJobs(filter: ListJobsFilter = {}): Promise<DevJob[]> {

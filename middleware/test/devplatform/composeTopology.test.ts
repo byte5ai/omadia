@@ -272,3 +272,28 @@ describe('dev-platform compose overlay — the MERGED config, not just the overl
     }
   });
 });
+
+describe('dev-platform compose overlay — the middleware can actually derive a job policy', () => {
+  // Without a runner image, `wireDevPlatform`'s jobPolicyConfig never builds and
+  // GET /internal/job-policy/:jobId 503s forever — every DockerBackend provision
+  // fails at the first real container (the implement phase; analyze/plan/clarify
+  // don't need one, so this gap is invisible until a real job actually runs).
+  // This was true of the shipped overlay for the whole life of the epic.
+  it('gives the middleware a runner image, not just the daemon', () => {
+    const env = overlay.services['middleware']?.environment ?? {};
+    assert.ok(
+      env['DEV_RUNNER_DEFAULT_IMAGE'] || env['DEV_RUNNER_IMAGE'],
+      'middleware needs DEV_RUNNER_DEFAULT_IMAGE (or DEV_RUNNER_IMAGE) or every job dies at implement with a 502',
+    );
+  });
+
+  it('agrees with the daemon on which image that is', () => {
+    // Same source var (DEV_RUNNER_IMAGE) feeds both sides, so an operator who
+    // sets it once cannot end up with the daemon allowing image A while the
+    // middleware's policy names image B.
+    const middlewareImage = overlay.services['middleware']?.environment?.['DEV_RUNNER_DEFAULT_IMAGE'];
+    const daemonImages = overlay.services['dev-runner-daemon']?.environment?.['DEV_RUNNER_IMAGES'];
+    assert.ok(middlewareImage, 'middleware image must be set to compare');
+    assert.ok(daemonImages?.includes(middlewareImage as string), 'daemon and middleware must name the same image');
+  });
+});

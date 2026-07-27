@@ -18,6 +18,7 @@ import {
   Harness,
   PAT_TOKEN,
   authHeaders,
+  deleteReq,
   hasLeakedSecret,
   makeHarness,
   makeJob,
@@ -238,6 +239,39 @@ describe('devPlatform — cancel routes through finalizeDevJob', () => {
     assert.equal(res.status, 202);
     assert.equal(h.finalizeCalls.length, 1);
     assert.equal(h.finalizeCalls[0]?.status, 'cancelled');
+  });
+});
+
+describe('devPlatform — DELETE /jobs/:id', () => {
+  let h: Harness;
+  afterEach(async () => { if (h) await h.close(); });
+
+  it('204 and removes a terminal job', async () => {
+    h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice' }));
+    h.jobStore.add(makeJob({ id: 'job-1', repoId: 'repo-1', status: 'failed' }));
+    const res = await deleteReq(`${h.baseUrl}/jobs/job-1`, authHeaders());
+    assert.equal(res.status, 204);
+    assert.equal(await h.jobStore.getJob('job-1'), null);
+  });
+
+  it('409 for an active job — never orphans a live backend handle', async () => {
+    h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice' }));
+    h.jobStore.add(makeJob({ id: 'job-1', repoId: 'repo-1', status: 'running' }));
+    const res = await deleteReq(`${h.baseUrl}/jobs/job-1`, authHeaders());
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as { code: string }).code, 'devplatform.job_not_terminal');
+    assert.ok(await h.jobStore.getJob('job-1'), 'the job survives the refused delete');
+  });
+
+  it('404 for a job on a repo the caller may not launch (same as GET /jobs/:id)', async () => {
+    h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice', allowedLaunchers: [] }));
+    h.jobStore.add(makeJob({ id: 'job-1', repoId: 'repo-1', status: 'done' }));
+    const res = await deleteReq(`${h.baseUrl}/jobs/job-1`, authHeaders('bob', 'viewer'));
+    assert.equal(res.status, 404);
+    assert.ok(await h.jobStore.getJob('job-1'), 'unauthorized delete never touches the row');
   });
 });
 

@@ -211,6 +211,30 @@ export function createDevPlatformRouter(deps: DevPlatformRouterDeps): Router {
     }),
   );
 
+  // --- DELETE /jobs/:id -------------------------------------------------
+  // Removes a terminal job's row (and its events/artifacts, via CASCADE) so it
+  // stops cluttering the operator's job list. Refuses an active job (409) —
+  // it still has a live backend handle; cancel it first, which finalizes it.
+  router.delete(
+    '/jobs/:id',
+    handler(async (req, res) => {
+      const caller = requireCaller(req);
+      const job = await loadAuthorizedJob(deps, req, caller);
+      const outcome = await deps.jobStore.deleteJob(job.id);
+      if (outcome === 'not_terminal') {
+        throw new DevPlatformError(
+          409,
+          'devplatform.job_not_terminal',
+          'the job is still active — cancel it before deleting',
+        );
+      }
+      // 'not_found' here means it was deleted between the authorize-load above
+      // and this call (e.g. the daily retention sweep); still a success from
+      // the caller's point of view — the job is gone either way.
+      res.status(204).end();
+    }),
+  );
+
   // --- POST /jobs/:id/apply -------------------------------------------------
   // Retry of the host-side apply. 409 unless `applying` or failed-after-diff.
   router.post(

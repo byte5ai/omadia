@@ -324,6 +324,27 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     assert.equal(again?.error, null, 'the no-op did not write the failure error');
   });
 
+  it('deleteJob refuses an active job, deletes a terminal one, and reports a missing id', async () => {
+    // Active (queued) — never deleted, it still has (or will have) a live backend
+    // handle; deleting the row out from under it would orphan a container/Machine.
+    const active = await newQueuedJob(repo.id);
+    assert.equal(await store.deleteJob(active.id), 'not_terminal');
+    assert.ok(await store.getJob(active.id), 'the active job row is untouched');
+
+    // Terminal — deleted, and CASCADE (0022) takes its events with it.
+    const terminal = await newQueuedJob(repo.id);
+    await store.appendEvents(terminal.id, 1, [{ seq: 0, type: 'log', payload: { line: 'hi' } }]);
+    await store.finishTerminal(TERMINAL_FINISH_BRAND, terminal.id, 'failed', { error: 'x' });
+    assert.equal(await store.deleteJob(terminal.id), 'deleted');
+    assert.equal(await store.getJob(terminal.id), null, 'the row is gone');
+    const events = await pool.query('SELECT 1 FROM dev_job_events WHERE job_id = $1', [terminal.id]);
+    assert.equal(events.rowCount, 0, 'its events cascaded away with it');
+
+    // Unknown id — distinct outcome from "exists but active", so the route can
+    // answer 404 instead of a misleading 409.
+    assert.equal(await store.deleteJob(randomUUID()), 'not_found');
+  });
+
   it('findStalled surfaces active jobs past the heartbeat cutoff', async () => {
     const localRepo = await newRepo();
     const job = await newQueuedJob(localRepo.id);

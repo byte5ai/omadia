@@ -3060,6 +3060,7 @@
       "age": "Alter",
       "view": "Ansehen",
       "cancel": "Abbrechen",
+      "delete": "Löschen",
       "empty": "Noch keine Jobs. Starte einen aus einer Repository-Zeile.",
       "live": "live",
       "liveLost": "Verbindung verloren — versucht erneut",
@@ -3089,6 +3090,12 @@
         "body": "Der Runner wird beendet. Branch, Log und ein bereits hochgeladener Diff bleiben erhalten.",
         "confirm": "Job abbrechen",
         "cancel": "Weiterlaufen lassen"
+      },
+      "deleteConfirm": {
+        "title": "Job löschen?",
+        "body": "Der Job, sein Log und seine Artefakte werden endgültig entfernt. Ein bereits erstellter Branch oder PR bleibt erhalten.",
+        "confirm": "Job löschen",
+        "cancel": "Behalten"
       }
     },
     "newJob": {
@@ -3220,6 +3227,13 @@
         "body": "Der Runner wird beendet, der Branch bleibt erhalten.",
         "confirm": "Job abbrechen",
         "cancelLabel": "Weiterlaufen lassen"
+      },
+      "delete": {
+        "action": "Löschen",
+        "title": "Job löschen?",
+        "body": "Der Job, sein Log und seine Artefakte werden endgültig entfernt. Ein bereits erstellter Branch oder PR bleibt erhalten.",
+        "confirm": "Job löschen",
+        "cancelLabel": "Behalten"
       },
       "sidebar": {
         "backend": "Backend",

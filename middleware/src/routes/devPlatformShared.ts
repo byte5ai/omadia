@@ -58,6 +58,7 @@ export interface DevPlatformJobStore {
   listEvents(jobId: string, afterId?: number, limit?: number): Promise<DevJobEvent[]>;
   listArtifacts(jobId: string): Promise<DevJobArtifact[]>;
   getArtifact(id: string): Promise<DevJobArtifact | null>;
+  deleteJob(id: string): Promise<'deleted' | 'not_terminal' | 'not_found'>;
 }
 
 /** The `DevRepoCredentialStore` surface. Never returns a token to the browser —

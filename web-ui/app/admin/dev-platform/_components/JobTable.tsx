@@ -30,15 +30,18 @@ export function JobTable({
   jobs,
   repos,
   onCancel,
+  onDelete,
 }: {
   jobs: DevJobView[];
   repos: DevRepoView[];
   onCancel: (job: DevJobView) => void;
+  onDelete: (job: DevJobView) => void;
 }): React.ReactElement {
   const t = useTranslations('adminDevPlatform.jobs');
   const tKind = useTranslations('adminDevPlatform.jobs.kinds');
   const format = useFormatter();
   const [pendingCancel, setPendingCancel] = useState<DevJobView | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<DevJobView | null>(null);
 
   const repoName = (repoId: string): string => {
     const r = repos.find((x) => x.id === repoId);
@@ -96,7 +99,11 @@ export function JobTable({
                           {t('view')}
                         </Button>
                       </Link>
-                      {isTerminalStatus(job.status) ? null : (
+                      {isTerminalStatus(job.status) ? (
+                        <Button size="sm" variant="danger" onClick={() => setPendingDelete(job)}>
+                          {t('delete')}
+                        </Button>
+                      ) : (
                         <Button size="sm" variant="danger" onClick={() => setPendingCancel(job)}>
                           {t('cancel')}
                         </Button>
@@ -121,6 +128,20 @@ export function JobTable({
         onConfirm={() => {
           if (pendingCancel) onCancel(pendingCancel);
           setPendingCancel(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        tone="danger"
+        title={t('deleteConfirm.title')}
+        body={t('deleteConfirm.body')}
+        confirmLabel={t('deleteConfirm.confirm')}
+        cancelLabel={t('deleteConfirm.cancel')}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          if (pendingDelete) onDelete(pendingDelete);
+          setPendingDelete(null);
         }}
       />
     </div>

@@ -18,7 +18,7 @@ import {
 } from '@/app/_components/devjobs/DevJobPhaseRail';
 import { useDevJobEvents, type DevJobEventMessage } from '@/app/_lib/useDevJobEvents';
 import { JobLogPane, type LogConnection, type LogLine } from '../../_components/JobLogPane';
-import { cancelJob, getJob, isTerminalStatus, type DevJobView } from '../../_lib/api';
+import { cancelJob, deleteJob, getJob, isTerminalStatus, type DevJobView } from '../../_lib/api';
 
 /**
  * Epic #470 W0 — the job-detail signature screen (UI spec §5). Header, the
@@ -68,6 +68,7 @@ export default function JobDetailPage(): React.ReactElement {
   const [agoSec, setAgoSec] = useState<number | null>(null);
   const [closedOnce, setClosedOnce] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const terminalRef = useRef(false);
   useEffect(() => {
@@ -178,6 +179,11 @@ export default function JobDetailPage(): React.ReactElement {
             {t('cancel.action')}
           </Button>
         ) : null}
+        {job && isTerminalStatus(job.status) ? (
+          <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)}>
+            {t('delete.action')}
+          </Button>
+        ) : null}
       </div>
 
       {/* Phase rail */}
@@ -222,6 +228,23 @@ export default function JobDetailPage(): React.ReactElement {
           setConfirmCancel(false);
           void cancelJob(id).then(
             () => getJob(id).then((j) => setJob(j), () => {}),
+            () => {},
+          );
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmDelete}
+        tone="danger"
+        title={t('delete.title')}
+        body={t('delete.body')}
+        confirmLabel={t('delete.confirm')}
+        cancelLabel={t('delete.cancelLabel')}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={() => {
+          setConfirmDelete(false);
+          void deleteJob(id).then(
+            () => router.push('/admin/dev-platform?tab=jobs'),
             () => {},
           );
         }}

@@ -14,13 +14,14 @@ import {
 import { DevJobEventBus } from '../../src/devplatform/devJobEventBus.js';
 import type { Ticket } from '../../src/devplatform/githubIssuesTracker.js';
 import type { FinalizeContext } from '../../src/devplatform/finalizeDevJob.js';
-import type {
-  DevJob,
-  DevJobEvent,
-  DevJobStatus,
-  DevRepo,
-  NewDevJob,
-  NewDevRepo,
+import {
+  TERMINAL_DEV_JOB_STATUSES,
+  type DevJob,
+  type DevJobEvent,
+  type DevJobStatus,
+  type DevRepo,
+  type NewDevJob,
+  type NewDevRepo,
 } from '../../src/devplatform/types.js';
 
 /**
@@ -139,6 +140,13 @@ export class FakeJobStore {
   async getArtifact(id: string) { return this.artifacts.get(id) ?? null; }
   addArtifact(a: { id: string; jobId: string; kind: string; content: string }): void {
     this.artifacts.set(a.id, { ...a, meta: {}, createdAt: new Date().toISOString() });
+  }
+  async deleteJob(id: string): Promise<'deleted' | 'not_terminal' | 'not_found'> {
+    const job = this.jobs.get(id);
+    if (!job) return 'not_found';
+    if (!(TERMINAL_DEV_JOB_STATUSES as readonly DevJobStatus[]).includes(job.status)) return 'not_terminal';
+    this.jobs.delete(id);
+    return 'deleted';
   }
 }
 
@@ -259,6 +267,10 @@ export function authHeaders(sub = 'alice', role = 'admin'): Record<string, strin
 
 export async function postJson(url: string, headers: Record<string, string>, body: unknown) {
   return fetch(url, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+}
+
+export async function deleteReq(url: string, headers: Record<string, string>) {
+  return fetch(url, { method: 'DELETE', headers });
 }
 
 /** Assert that `fn` throws a DevPlatformError carrying the given code. */

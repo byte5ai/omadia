@@ -286,6 +286,11 @@ export function cancelJob(id: string): Promise<{ ok: boolean; status: string }> 
   return req(`/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: JSON.stringify({}) });
 }
 
+/** Terminal jobs only — the route answers 409 for an active job (cancel it first). */
+export function deleteJob(id: string): Promise<void> {
+  return req(`/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export function retryJob(id: string): Promise<{ ok: boolean; jobId: string }> {
   return req(`/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST', body: JSON.stringify({}) });
 }

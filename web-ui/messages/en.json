@@ -3060,6 +3060,7 @@
       "age": "Age",
       "view": "View",
       "cancel": "Cancel",
+      "delete": "Delete",
       "empty": "No jobs yet. Start one from a repository row.",
       "live": "live",
       "liveLost": "connection lost — retrying",
@@ -3089,6 +3090,12 @@
         "body": "The runner is terminated. The branch, the log, and any uploaded diff are kept.",
         "confirm": "Cancel job",
         "cancel": "Keep running"
+      },
+      "deleteConfirm": {
+        "title": "Delete job?",
+        "body": "The job, its log, and its artifacts are removed permanently. Any branch or PR it created is kept.",
+        "confirm": "Delete job",
+        "cancel": "Keep it"
       }
     },
     "newJob": {
@@ -3220,6 +3227,13 @@
         "body": "The runner is terminated and the branch is kept.",
         "confirm": "Cancel job",
         "cancelLabel": "Keep running"
+      },
+      "delete": {
+        "action": "Delete",
+        "title": "Delete job?",
+        "body": "The job, its log, and its artifacts are removed permanently. Any branch or PR it created is kept.",
+        "confirm": "Delete job",
+        "cancelLabel": "Keep it"
       },
       "sidebar": {
         "backend": "Backend",
