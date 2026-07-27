@@ -72,20 +72,39 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   connection regardless of the active model — so a turn on
   `mistral-small-latest` would still build an image block for a model that
   can't use it. `OrchestratorOptions` gained a new optional
-  `visionSupported?: boolean` — the ACTIVE model's vision capability, meant
-  to be resolved by the caller the same way `maxTokens` is already resolved
-  per-model, since `harness-orchestrator` deliberately has no dependency on
-  `@omadia/llm-provider`/`@omadia/llm-provider-api` and does not resolve the
-  model registry itself. Both call sites now read `this.visionSupported ??
-  this.provider.capabilities.vision` — an explicit per-model value would win
-  if one were passed; omitting it preserves the exact prior provider-level
-  behavior. **This is a mechanism, not an end-to-end fix**: as of this PR no
-  real caller (`buildOrchestrator.ts`, `plugin.ts`, or any bundled config)
-  sets `visionSupported` yet, so the concrete `mistral-small` scenario above
-  is made fixable, not actually resolved in production today — a future
-  change still needs to wire the active model's real vision capability
-  through to `OrchestratorOptions` for any given connection. Backward
-  compatible either way: no caller passing it is a no-op, not a regression.
+  `visionSupported?: boolean` — an explicit per-model override, checked
+  before any other source. Both call sites at the time read
+  `this.visionSupported ?? this.provider.capabilities.vision`; omitting it
+  preserved the prior provider-level behavior. (Superseded by round 8/#524
+  below — this override alone could not reflect model routing, and no real
+  caller ever set it.)
+- Review round 8 (#524, cross-vendor codex review of round 6): the round-6
+  `visionSupported` mechanism had two gaps. First, nothing in production set
+  it — `buildOrchestratorForAgent` never passed it, so every turn still fell
+  back to `this.provider.capabilities.vision`, the exact `mistral-small`
+  case round 6 diagnosed but did not close. Second, even a correctly-wired
+  static `visionSupported` would be wrong under `modelRouting`: the
+  image-embed decision (`ingestAttachments`/`buildUserContent`, inside
+  `chatInContextInner`/`chatStreamInner`) ran BEFORE `resolveTurnModel`
+  resolved which model this specific turn actually routes to, so a turn
+  configured with `modelRouting.simpleModel`/`complexModel` of different
+  vision support could send the image to the wrong model regardless of any
+  static override. Both call sites now resolve `resolveTurnModel` FIRST,
+  then gate the vision decision on the ROUTED model via a new
+  `resolveTurnVisionSupported(turnModel)`: `resolveModelRef(turnModel, {
+  defaultProvider: this.provider.id })` (the model registry's per-model
+  `ModelInfo.vision`, resolved the same way `registry/agentRuntime.ts`'s
+  `resolveModelIdForProvider` already resolves model refs) falls back to
+  `this.provider.capabilities.vision` only when the routed model id isn't
+  registered — never throws, so an unknown model id can't crash a turn.
+  Correction to round 6's own claim: `harness-orchestrator` DOES depend on
+  `@omadia/llm-provider` (a `peerDependency`, already imported by
+  `registry/agentRuntime.ts` and `registry/configStore.ts`) — there was no
+  architectural boundary preventing this lookup from living in
+  `orchestrator.ts` itself. `visionSupported` remains as an explicit
+  caller-override escape hatch (still checked first) but is no longer the
+  only mechanism; the common case (omitted) now resolves correctly per turn
+  without any caller wiring.
 - Review round 7: `checkVisionEmbeddable` compared the fetched image's RAW
   byte length against a 5MB cap, but that cap is Anthropic's documented
   per-image *base64-encoded* payload limit — comparing raw bytes against a
