@@ -46,11 +46,12 @@ import type {
   RoutineRunsStore,
   RoutineRunTrigger,
 } from './routineRunsStore.js';
-import type {
-  CreateRoutineInput,
-  Routine,
-  RoutineRunStatus,
-  RoutineStore,
+import {
+  RoutineNameConflictError,
+  type CreateRoutineInput,
+  type Routine,
+  type RoutineRunStatus,
+  type RoutineStore,
 } from './routineStore.js';
 
 /**
@@ -307,7 +308,33 @@ export class RoutineRunner {
       throw new RoutineQuotaExceededError(this.maxActivePerUser);
     }
 
-    const row = await this.store.create(input);
+    let row: Routine;
+    try {
+      row = await this.store.create(input);
+    } catch (err) {
+      // Issue #506: a retried `create` for the same (tenant, user, name) —
+      // e.g. the model or user retrying after the turn's own confirmation
+      // never made it back over the channel — hits the unique-name
+      // constraint here rather than actually duplicating anything. Rather
+      // than reporting that retry as a failure (which the caller can only
+      // read as "try again", pushing toward a real duplicate under a
+      // different name), reconcile: if the existing row is the same
+      // request, treat this call as already-succeeded and return it. A
+      // conflicting row with different cron/prompt/channel is a genuine
+      // name collision and still surfaces as an error.
+      if (err instanceof RoutineNameConflictError) {
+        const existing = await this.store.getByName(
+          input.tenant,
+          input.userId,
+          input.name,
+        );
+        if (existing && isSameRoutineRequest(existing, input)) {
+          return existing;
+        }
+      }
+      throw err;
+    }
+
     try {
       this.registerInScheduler(row);
     } catch (err) {
@@ -713,6 +740,29 @@ function emptySlotsFor(
     slots[id] = '';
   }
   return slots;
+}
+
+/**
+ * Whether `existing` (the row that already holds the unique-name slot) is
+ * indistinguishable, from the caller's point of view, from what `input`
+ * asked to create. Compared on the fields the user/model actually
+ * specified — `cron`, `prompt`, `channel`, and the resolved `timeoutMs`
+ * (matching `store.create`'s own default so an omitted vs. explicit
+ * default value doesn't defeat the comparison). `conversationRef` is
+ * deliberately excluded: it is a delivery-mechanism detail the caller
+ * doesn't control byte-for-byte (e.g. cold-start target resolution), not
+ * part of "what routine was requested".
+ */
+function isSameRoutineRequest(
+  existing: Routine,
+  input: CreateRoutineInput,
+): boolean {
+  return (
+    existing.cron === input.cron &&
+    existing.prompt === input.prompt &&
+    existing.channel === input.channel &&
+    existing.timeoutMs === (input.timeoutMs ?? 600_000)
+  );
 }
 
 function errMsg(err: unknown): string {

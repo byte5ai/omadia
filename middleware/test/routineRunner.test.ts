@@ -26,6 +26,7 @@ import {
   type JobSchedulerLike,
   type OrchestratorLike,
 } from '../src/plugins/routines/routineRunner.js';
+import { RoutineNameConflictError } from '../src/plugins/routines/routineStore.js';
 import { routineTurnContext } from '../src/plugins/routines/routineTurnContext.js';
 import { turnContext } from '@omadia/orchestrator';
 import type { RoutineOutputTemplate } from '../src/plugins/routines/routineOutputTemplate.js';
@@ -96,6 +97,18 @@ class InMemoryRoutineStore implements RoutineStore {
   // pg pool field is required by TS — this stub just satisfies the
   // structural shape the runner relies on (duck-typed via the import).
   async create(input: CreateRoutineInput): Promise<Routine> {
+    // Mirror the real store's `routines_user_name_unique` constraint so
+    // tests can exercise the runner's conflict-reconciliation path
+    // (issue #506) without a real Postgres pool.
+    const collision = [...this.rows.values()].find(
+      (r) =>
+        r.tenant === input.tenant &&
+        r.userId === input.userId &&
+        r.name === input.name,
+    );
+    if (collision) {
+      throw new RoutineNameConflictError(input.name);
+    }
     const id = `routine-${this.nextId++}`;
     const now = new Date();
     const routine: Routine = {
@@ -122,6 +135,18 @@ class InMemoryRoutineStore implements RoutineStore {
 
   async get(id: string): Promise<Routine | null> {
     return this.rows.get(id) ?? null;
+  }
+
+  async getByName(
+    tenant: string,
+    userId: string,
+    name: string,
+  ): Promise<Routine | null> {
+    return (
+      [...this.rows.values()].find(
+        (r) => r.tenant === tenant && r.userId === userId && r.name === name,
+      ) ?? null
+    );
   }
 
   async listForUser(tenant: string, userId: string): Promise<Routine[]> {
@@ -389,6 +414,33 @@ describe('RoutineRunner — createRoutine', () => {
       1,
       'delete() should be invoked exactly once on rollback',
     );
+  });
+
+  // Issue #506 — a retry that lands on the same (tenant, user, name) unique
+  // key must reconcile against the row that already exists rather than
+  // reporting a failure (the row from the FIRST call already committed;
+  // only the confirmation leg back to the caller was ever in doubt).
+  it('reconciles a same-request retry instead of reporting a conflict', async () => {
+    const h = makeHarness();
+    const first = await h.runner.createRoutine(baseInput);
+    const retry = await h.runner.createRoutine(baseInput);
+    assert.equal(retry.id, first.id, 'retry must resolve to the original row');
+    assert.equal(h.store.rows.size, 1, 'no duplicate row was created');
+    // Only one scheduler registration — the reconciled retry does not
+    // re-register (would throw JobAlreadyRegisteredError against the real
+    // scheduler if it tried).
+    assert.equal(h.scheduler.list().length, 1);
+  });
+
+  it('still reports a conflict when the retry disagrees with the existing routine', async () => {
+    const h = makeHarness();
+    await h.runner.createRoutine(baseInput);
+    await assert.rejects(
+      () =>
+        h.runner.createRoutine({ ...baseInput, prompt: 'Sag etwas anderes' }),
+      RoutineNameConflictError,
+    );
+    assert.equal(h.store.rows.size, 1, 'the conflicting attempt created nothing');
   });
 });
 

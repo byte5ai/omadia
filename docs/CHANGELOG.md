@@ -18,6 +18,26 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — routine create no longer reports failure for a retry that already succeeded (#506)
+
+- `RoutineRunner.createRoutine` previously let a retried `create` (e.g. after
+  the turn's own confirmation never made it back over the channel) fall
+  through to `RoutineNameConflictError` — a message with no diagnostic value
+  that nudged the caller toward trying again under a different name and
+  actually duplicating the routine. It now reconciles: on a name conflict it
+  looks up the existing row (`RoutineStore.getByName`, new) and, if the
+  `cron`/`prompt`/`channel`/`timeoutMs` match what was just requested,
+  returns that row instead of raising — the earlier call already succeeded,
+  so the retry now sees success too. A conflict with genuinely different
+  fields still raises `RoutineNameConflictError` as before. Threading a
+  request/trace correlation id through routine-turn error responses
+  end-to-end (the issue's secondary ask) remains open — it would require a
+  new field on the shared `ChatTurnInput`/`ChatTurnResult` contract
+  (`@omadia/channel-sdk`) plus support in every channel adapter, which is
+  broader than this fix. The literal error wording shown in Teams
+  ("Etwas ist schief gegangen …") lives in the external Teams-channel
+  adapter plugin and is out of scope for this repo.
+
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
 - The save-as-template dialog no longer reads the viewer's own template id as
