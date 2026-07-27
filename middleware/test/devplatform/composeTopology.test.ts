@@ -116,7 +116,16 @@ describe('dev-platform compose overlay — the middleware never holds a docker s
 
   it('gives the daemon — and only the daemon — the engine credentials', () => {
     const daemon = overlay.services['dev-runner-daemon']!;
-    assert.equal(daemon.environment?.['DOCKER_HOST'], 'tcp://dev-dind:2376');
+    // The daemon addresses dind by its PINNED dev-engine IP, not the `dev-dind`
+    // hostname: dind's auto-generated server cert carries its IPs but never the
+    // service name, so a name-based DOCKER_HOST fails --tlsverify's hostname
+    // check. Deriving the expected value from dind's own pinned network config
+    // (rather than a literal) keeps this test honest if the subnet ever moves.
+    const dindEngineIp = (
+      overlay.services['dev-dind']?.networks as Record<string, { ipv4_address?: string }> | undefined
+    )?.['dev-engine']?.ipv4_address;
+    assert.ok(dindEngineIp, 'dev-dind must have a pinned dev-engine address');
+    assert.equal(daemon.environment?.['DOCKER_HOST'], `tcp://${dindEngineIp}:2376`);
     assert.equal(daemon.environment?.['DOCKER_TLS_VERIFY'], '1', 'the daemon refuses a plaintext engine');
     for (const [name, svc] of Object.entries(overlay.services)) {
       if (name === 'dev-runner-daemon') continue;
