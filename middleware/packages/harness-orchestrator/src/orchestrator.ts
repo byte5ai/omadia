@@ -4629,8 +4629,14 @@ export class Orchestrator {
     // kernel's hardcoded blocks (graph/diagram/…) remain in buildSystemPrompt
     // for their tools; plugin docs land in a separate bullet list so both
     // paths coexist cleanly during the extraction transition.
+    // Issue #474 — mirror the same isToolAvailable gate applied in
+    // buildToolsList(): a plugin whose connection/auth setup hasn't
+    // completed must not have its promptDoc advertised here either,
+    // otherwise the model is told about a capability that buildToolsList()
+    // has already hidden from its `tools[]` for this same turn.
     const extraDocs = this.nativeTools
       .listWithHandler()
+      .filter((e) => this.isToolAvailable(e.agentId))
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
     return buildSystemPrompt(

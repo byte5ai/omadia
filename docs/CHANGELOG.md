@@ -33,6 +33,14 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   connection step) are unaffected. Deliberately separate from the
   MCP-server-specific auth-gap flow (`mcpOAuthService`), which already
   handles that case for MCP servers.
+- Follow-up (review round 2): `Orchestrator.getSystemPrompt()` now applies
+  the same `isToolAvailable` gate to the plugin `promptDoc` collection that
+  `buildToolsList()` already applied to the tool specs — a gated plugin's
+  documentation is no longer spliced into the system prompt while its tool
+  is simultaneously hidden from `tools[]`. Previously the model would still
+  be told about a capability whose spec had just been removed, replacing a
+  clean "tool not offered" state with a confusing "documented but missing
+  tool" one.
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 

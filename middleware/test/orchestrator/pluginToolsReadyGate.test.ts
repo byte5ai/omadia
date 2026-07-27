@@ -238,4 +238,49 @@ describe('Orchestrator — issue #474 plugin tool-readiness gate', () => {
       `expected an Error: result, got ${JSON.stringify(result)}`,
     );
   });
+
+  it('excludes a not-ready plugin tool promptDoc from the system prompt, keeps a ready one', async () => {
+    const registry = new NativeToolRegistry();
+    registry.register('ready_tool', {
+      handler: async () => 'ready-output',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      spec: minimalSpec('ready_tool') as any,
+      agentId: 'ready-plugin',
+      promptDoc: 'READY_TOOL_PROMPT_DOC_MARKER',
+    });
+    registry.register('gated_tool', {
+      handler: async () => 'gated-output',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      spec: minimalSpec('gated_tool') as any,
+      agentId: 'gated-plugin',
+      promptDoc: 'GATED_TOOL_PROMPT_DOC_MARKER',
+    });
+
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      isPluginToolsReady: (agentId) => agentId !== 'gated-plugin',
+    });
+
+    for await (const _ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      // drain
+    }
+
+    const system = seenRequests[0]?.system;
+    const systemText = typeof system === 'string' ? system : JSON.stringify(system);
+    assert.ok(
+      systemText?.includes('READY_TOOL_PROMPT_DOC_MARKER'),
+      'expected the ready plugin promptDoc in the system prompt',
+    );
+    assert.ok(
+      !systemText?.includes('GATED_TOOL_PROMPT_DOC_MARKER'),
+      'expected the gated plugin promptDoc to be excluded from the system prompt',
+    );
+  });
 });
