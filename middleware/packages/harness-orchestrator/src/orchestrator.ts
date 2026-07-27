@@ -193,6 +193,30 @@ export interface OrchestratorOptions {
    */
   modelRouting?: ModelRoutingConfig;
   maxTokens: number;
+  /**
+   * #504/#505 (round-6 codex review) — the ACTIVE model's vision capability
+   * (the registry's per-model `ModelInfo.vision`, e.g. from
+   * `@omadia/llm-provider-api`), resolved by the caller the same way it
+   * already resolves `maxTokens` for the model. harness-orchestrator has no
+   * dependency on `@omadia/llm-provider` / `@omadia/llm-provider-api` (by
+   * design — it never imports the model registry itself, exactly like
+   * `maxTokens` above arrives pre-resolved instead of being looked up
+   * internally), so this cannot be derived in here; the caller must pass it.
+   *
+   * Deliberately NOT `this.provider.capabilities.vision` (a property of the
+   * PROVIDER CONNECTION, not the model): one provider connection can serve
+   * several models with different vision support — e.g. the bundled
+   * `mistral` openai-compatible connection serves `mistral-large-latest`
+   * and `mistral-medium-latest` (vision) alongside `mistral-small-latest`
+   * (no vision), yet the openai adapter hardcodes
+   * `capabilities.vision = true` on the connection regardless of which
+   * model is actually selected for the turn.
+   *
+   * Omitted → falls back to `this.provider.capabilities.vision` (today's
+   * behaviour), for backward compatibility with callers that haven't been
+   * updated to pass the more precise per-model value yet.
+   */
+  visionSupported?: boolean;
   maxToolIterations: number;
   /**
    * Round-loop guard thresholds (see {@link LoopGuard}). When the model
@@ -1225,6 +1249,10 @@ export class Orchestrator {
   /** Wave 8 — direct-answer persona candidates; empty when none attached. */
   private readonly personaSkills: readonly OrchestratorPersonaSkill[];
   private readonly maxTokens: number;
+  /** #504/#505 — active model's vision support, if the caller resolved it
+   *  (see OrchestratorOptions.visionSupported). Undefined → callers fall
+   *  back to `this.provider.capabilities.vision` at each read site. */
+  private readonly visionSupported: boolean | undefined;
   private readonly maxIterations: number;
   /** Round-loop guard thresholds (see {@link LoopGuard}). */
   private readonly loopRepeatSoft: number | undefined;
@@ -1303,6 +1331,7 @@ export class Orchestrator {
     this.modelRouting = options.modelRouting;
     this.personaSkills = options.personaSkills ?? [];
     this.maxTokens = options.maxTokens;
+    this.visionSupported = options.visionSupported;
     this.maxIterations = options.maxToolIterations;
     this.loopRepeatSoft = options.loopRepeatSoft;
     this.loopRepeatHard = options.loopRepeatHard;
@@ -2787,13 +2816,18 @@ export class Orchestrator {
     // #504/#505 — the same pass also resolves image attachments (Teams
     // Tigris storage_key, or a bare url for channels without a pre-fetch)
     // into vision content-blocks; `ingestedImages` rides separately from the
-    // text since it never crosses the PII-masking wire. Gated on the active
-    // provider's vision capability (review round 2) — a non-vision model
-    // never gets an image content-block, and `buildUserContent` below
-    // surfaces a visible note instead of silently dropping the attachment.
+    // text since it never crosses the PII-masking wire. Gated on the ACTIVE
+    // MODEL's vision capability (round-6 codex review) — `visionSupported`
+    // wins when the caller resolved it (see OrchestratorOptions), otherwise
+    // this falls back to the provider connection's own capability flag,
+    // which is imprecise whenever one connection serves several models with
+    // different vision support. Either way, a non-vision model never gets
+    // an image content-block, and `buildUserContent` below surfaces a
+    // visible note instead of silently dropping the attachment.
     // #361 — the ingested verbatim tail crosses the wire alongside the
     // message, so it is masked through the SAME turn map (stable surrogates).
-    const visionSupported = this.provider.capabilities.vision;
+    const visionSupported =
+      this.visionSupported ?? this.provider.capabilities.vision;
     const {
       text: ingestedRawText,
       images: ingestedImages,
@@ -3591,9 +3625,10 @@ export class Orchestrator {
     // #268 — pre-fetch + extract any uploaded document text for this turn.
     // #504/#505 — same pass also resolves image attachments into vision
     // content-blocks; see chatInContextInner for the full rationale,
-    // including the vision-capability gate (review round 2).
+    // including the per-model vision-capability gate (round-6 codex review).
     // #361 — masked through the same turn map as the message (see above).
-    const visionSupported = this.provider.capabilities.vision;
+    const visionSupported =
+      this.visionSupported ?? this.provider.capabilities.vision;
     const {
       text: ingestedRawText,
       images: ingestedImages,

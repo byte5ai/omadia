@@ -126,6 +126,7 @@ function baseOrchestratorOptions(
   requests: LlmRequest[],
   attachmentReader: AttachmentReader,
   capabilities: typeof providerCapabilities = providerCapabilities,
+  visionSupported?: boolean,
 ): OrchestratorOptions {
   return {
     provider: recordingProvider(requests, capabilities),
@@ -135,6 +136,7 @@ function baseOrchestratorOptions(
     domainTools: [],
     nativeToolRegistry: new NativeToolRegistry(),
     attachmentReader,
+    ...(visionSupported === undefined ? {} : { visionSupported }),
   };
 }
 
@@ -495,6 +497,119 @@ describe('#504/#505 review round 2 — vision-capability guard', () => {
     assert.ok(
       !text.includes('does not support image input'),
       'a vision-capable provider must never see the guard note',
+    );
+  });
+});
+
+describe('round-6 codex review — per-model visionSupported override', () => {
+  it('OrchestratorOptions.visionSupported=false wins over a vision-capable provider connection (the real bundled mistral-small-on-openai-compatible-connection case)', async () => {
+    // Simulates exactly the case codex flagged: `mistral` is a single
+    // openai-compatible provider CONNECTION whose adapter hardcodes
+    // `capabilities.vision = true` regardless of which model is active
+    // (see llm-adapter-openai/src/openaiProvider.ts:104), even though the
+    // bundled `mistral-small-latest` MODEL does not support vision
+    // (builtinLlmProviders.ts). The caller resolves the active model's real
+    // vision support and passes it as `visionSupported: false`; that must
+    // win over `provider.capabilities.vision === true`.
+    const requests: LlmRequest[] = [];
+    const reader = fakeAttachmentReader({
+      byStorageKey: {
+        'tigris:photo-1': {
+          bytes: PNG_BYTES,
+          contentType: 'image/png',
+          fileName: 'photo.png',
+        },
+      },
+    });
+    const orch = new Orchestrator(
+      // provider.capabilities.vision = true (the connection-level flag),
+      // but visionSupported = false (the active model's real capability).
+      baseOrchestratorOptions(requests, reader, providerCapabilities, false),
+    );
+
+    const userMessage =
+      'Was ist auf dem Bild?\n\n' +
+      '[attachments-info] 1 Datei(en) in diesem Turn hochgeladen + persistiert:\n' +
+      '- photo.png (image/png, 4 KB) · storage_key=tigris:photo-1';
+
+    await orch.runTurn({ userMessage, sessionScope: 'sess-1', userId: 'u1' });
+
+    assert.equal(requests.length, 1);
+    assert.equal(
+      imagePartsOf(requests[0]!).length,
+      0,
+      'no image content-block may be built when the ACTIVE MODEL lacks vision, even if the provider connection claims it',
+    );
+    // Never even fetched — same short-circuit as the provider-level guard.
+    assert.deepEqual(reader.calls.storageKeys, []);
+    const text = textOf(requests[0]!);
+    assert.match(
+      text,
+      /1 image attachment.*received but the active model does not support image input/,
+      'must take the same visible-note path as the provider-level non-vision case',
+    );
+  });
+
+  it('omitting visionSupported preserves exact current behaviour (falls back to provider.capabilities.vision)', async () => {
+    // No existing caller has been updated to pass `visionSupported` yet, so
+    // this must be byte-identical to pre-fix behaviour: a vision-capable
+    // provider still embeds images with no note.
+    const requestsVisionCapable: LlmRequest[] = [];
+    const readerVisionCapable = fakeAttachmentReader({
+      byStorageKey: {
+        'tigris:photo-1': {
+          bytes: PNG_BYTES,
+          contentType: 'image/png',
+          fileName: 'photo.png',
+        },
+      },
+    });
+    const orchVisionCapable = new Orchestrator(
+      baseOrchestratorOptions(requestsVisionCapable, readerVisionCapable),
+    );
+    const userMessage =
+      'Was ist auf dem Bild?\n\n' +
+      '[attachments-info] 1 Datei(en) in diesem Turn hochgeladen + persistiert:\n' +
+      '- photo.png (image/png, 4 KB) · storage_key=tigris:photo-1';
+    await orchVisionCapable.runTurn({ userMessage, sessionScope: 'sess-1', userId: 'u1' });
+
+    assert.equal(requestsVisionCapable.length, 1);
+    assert.equal(imagePartsOf(requestsVisionCapable[0]!).length, 1);
+    assert.ok(!textOf(requestsVisionCapable[0]!).includes('does not support image input'));
+
+    // And a non-vision provider still shows the note — with `visionSupported`
+    // omitted (undefined), not merely falsy.
+    const requestsNonVision: LlmRequest[] = [];
+    const readerNonVision = fakeAttachmentReader({
+      byStorageKey: {
+        'tigris:photo-2': {
+          bytes: PNG_BYTES,
+          contentType: 'image/png',
+          fileName: 'photo.png',
+        },
+      },
+    });
+    const orchNonVision = new Orchestrator(
+      baseOrchestratorOptions(
+        requestsNonVision,
+        readerNonVision,
+        nonVisionProviderCapabilities,
+        // visionSupported intentionally omitted (undefined), not passed as
+        // false — this exercises the `??` fallback operator itself, not
+        // just an explicit false override.
+      ),
+    );
+    const userMessage2 =
+      'Was ist auf dem Bild?\n\n' +
+      '[attachments-info] 1 Datei(en) in diesem Turn hochgeladen + persistiert:\n' +
+      '- photo.png (image/png, 4 KB) · storage_key=tigris:photo-2';
+    await orchNonVision.runTurn({ userMessage: userMessage2, sessionScope: 'sess-1', userId: 'u1' });
+
+    assert.equal(requestsNonVision.length, 1);
+    assert.equal(imagePartsOf(requestsNonVision[0]!).length, 0);
+    assert.match(
+      textOf(requestsNonVision[0]!),
+      /1 image attachment.*received but the active model does not support image input/,
     );
   });
 });

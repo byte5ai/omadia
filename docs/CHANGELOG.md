@@ -61,6 +61,25 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `[N image attachment(s) could not be shown: <reason(s)>]` note into the
   turn's text alongside (never instead of) the existing non-vision-provider
   note.
+- Review round 6 (cross-vendor): the vision guard read
+  `this.provider.capabilities.vision` — a flag on the PROVIDER CONNECTION,
+  not the active MODEL. This is wrong whenever one connection serves
+  multiple models with different vision support, which is not hypothetical:
+  the bundled `mistral` openai-compatible connection serves
+  `mistral-large-latest` and `mistral-medium-latest` (vision) alongside
+  `mistral-small-latest` (no vision), yet `llm-adapter-openai`'s
+  `openaiProvider.ts` hardcodes `capabilities.vision = true` on the
+  connection regardless of the active model — so a turn on
+  `mistral-small-latest` would have passed the old check and still built an
+  image block for a model that can't use it. `OrchestratorOptions` gained a
+  new optional `visionSupported?: boolean` — the ACTIVE model's vision
+  capability, resolved by the caller the same way `maxTokens` is already
+  resolved per-model, since `harness-orchestrator` deliberately has no
+  dependency on `@omadia/llm-provider`/`@omadia/llm-provider-api` and does
+  not resolve the model registry itself. Both call sites now read
+  `this.visionSupported ?? this.provider.capabilities.vision` — an explicit
+  per-model value wins; omitting it preserves the exact prior
+  provider-level behavior for callers not yet updated to pass it.
 
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
