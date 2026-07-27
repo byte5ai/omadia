@@ -277,4 +277,78 @@ describe('Issue #506 — report success when a tool already committed', () => {
       'expected sessionLogger.log NOT to be called on a genuine failure',
     );
   });
+
+  it('reports done even when a later intended action never ran (accepted tradeoff, see code comment)', async () => {
+    // This test PINS the maintainer-reviewed, deliberate tradeoff documented
+    // on `committedToolNames` and the catch-block done-vs-error branch in
+    // orchestrator.ts — it does NOT assert that this behavior is correct in
+    // all cases. A read-only-style tool (`list_routines`) succeeds in
+    // iteration 0. Iteration 1's model call — which, had it succeeded, would
+    // have requested a SECOND, different, mutating tool call (e.g. a
+    // `manage_routine` create) — throws before it can request that second
+    // tool call at all. The committed-tool tracking is tool-agnostic: it
+    // cannot distinguish "a harmless read succeeded" from "the consequential
+    // write the user actually wanted never ran." The turn still reports
+    // `done`, naming only the read-only tool that actually committed — this
+    // is the accepted residual risk, not a guarantee that the user's
+    // intended action happened.
+    const registry = new NativeToolRegistry();
+    registry.register('list_routines', {
+      handler: async (): Promise<string> => 'routine-a, routine-b',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      spec: minimalSpec('list_routines') as any,
+    });
+
+    // Iteration 0: model calls the read-only tool, which succeeds and
+    // commits (per the generic, tool-agnostic tracking).
+    const stream0 = streamWithTools([
+      { id: 'use-1', name: 'list_routines', input: {} },
+    ]);
+    // Iteration 1: the model call that would have gone on to request a
+    // second, mutating tool call (never scripted here — it never gets that
+    // far) fails hard instead.
+    const stream1: ThrowingStream = {
+      throws: Object.assign(
+        new Error('boom: provider hard-failed before requesting the mutating tool'),
+        { status: 400 },
+      ),
+    };
+    const provider = fakeStreamProvider([stream0, stream1]);
+    const { sessionLogger, calls } = recordingSessionLogger();
+    const orchestrator = buildOrchestrator(provider, registry, sessionLogger);
+
+    const events: ChatStreamEvent[] = [];
+    for await (const ev of orchestrator.chatStream({
+      userMessage: 'list my routines, then create a new one',
+      sessionScope: 'sess-506-later-action-skipped',
+    })) {
+      events.push(ev);
+    }
+
+    const errorEvents = events.filter((e) => e.type === 'error');
+    const doneEvents = events.filter((e) => e.type === 'done');
+    assert.equal(
+      errorEvents.length,
+      0,
+      `expected no error event (accepted tradeoff), got ${JSON.stringify(errorEvents)}`,
+    );
+    assert.equal(doneEvents.length, 1, 'expected exactly one done event');
+
+    const done = doneEvents[0];
+    assert.ok(done && done.type === 'done');
+    if (done && done.type === 'done') {
+      // Only the read-only tool that actually committed is named — the
+      // never-requested mutating tool is (correctly, per the generic
+      // tracking) absent from the answer. Nothing here claims the intended
+      // create actually happened.
+      assert.match(done.answer, /list_routines/);
+      assert.equal(done.toolCalls, 1);
+      assert.equal(done.iterations, 2);
+    }
+
+    // The emergency-done path still persists the (partial) exchange, same
+    // as the single-tool case above — that part of the behavior is not
+    // being challenged by this test.
+    assert.equal(calls.length, 1, 'expected sessionLogger.log to be called once');
+  });
 });
