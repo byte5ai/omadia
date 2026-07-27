@@ -53,7 +53,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/cookie-parser": "^1.4.10",
     "@types/multer": "^2.1.0",
-    "@types/yauzl": "^2.10.3",
+    "@types/yauzl": "^3.4.0",
     "argon2": "^0.43.1",
     "better-sqlite3": "^12.11.1",
     "bonjour-service": "^1.4.3",
