@@ -13,7 +13,7 @@ import {
   type SemanticAnswer,
 } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
-import type { LlmProvider } from '@omadia/llm-provider';
+import { resolveModelRef, type LlmProvider } from '@omadia/llm-provider';
 import type {
   ContextRetriever,
   FactExtractor,
@@ -194,27 +194,35 @@ export interface OrchestratorOptions {
   modelRouting?: ModelRoutingConfig;
   maxTokens: number;
   /**
-   * #504/#505 (round-6 codex review) — the ACTIVE model's vision capability
-   * (the registry's per-model `ModelInfo.vision`, e.g. from
-   * `@omadia/llm-provider-api`), resolved by the caller the same way it
-   * already resolves `maxTokens` for the model. harness-orchestrator has no
-   * dependency on `@omadia/llm-provider` / `@omadia/llm-provider-api` (by
-   * design — it never imports the model registry itself, exactly like
-   * `maxTokens` above arrives pre-resolved instead of being looked up
-   * internally), so this cannot be derived in here; the caller must pass it.
+   * #504/#505 (round-6 codex review) — explicit caller override for the
+   * ACTIVE model's vision capability. Optional: since #524, every turn
+   * resolves the same thing itself (see `resolveTurnVisionSupported`) from
+   * the model registry's per-model `ModelInfo.vision`, keyed off whichever
+   * model {@link resolveTurnModel} actually routes THIS turn to — so this
+   * field is no longer required for correctness under `modelRouting`, it
+   * only remains as a way for a caller to force a value the registry
+   * wouldn't otherwise produce (e.g. a model id the registry doesn't know
+   * about yet). `harness-orchestrator` DOES depend on `@omadia/llm-provider`
+   * (see `registry/agentRuntime.ts`'s `resolveModelIdForProvider`, which
+   * uses the same `resolveModelRef` call) — there is no architectural
+   * boundary preventing the per-turn lookup from happening in here.
    *
-   * Deliberately NOT `this.provider.capabilities.vision` (a property of the
-   * PROVIDER CONNECTION, not the model): one provider connection can serve
-   * several models with different vision support — e.g. the bundled
-   * `mistral` openai-compatible connection serves `mistral-large-latest`
+   * Precedence when set: wins over BOTH the registry lookup and
+   * `this.provider.capabilities.vision` (the PROVIDER CONNECTION's coarser
+   * flag) — useful for the case that motivated this field, the bundled
+   * `mistral` openai-compatible connection serving `mistral-large-latest`
    * and `mistral-medium-latest` (vision) alongside `mistral-small-latest`
-   * (no vision), yet the openai adapter hardcodes
-   * `capabilities.vision = true` on the connection regardless of which
-   * model is actually selected for the turn.
+   * (no vision) while the openai adapter hardcodes
+   * `capabilities.vision = true` on the connection regardless of model.
    *
-   * Omitted → falls back to `this.provider.capabilities.vision` (today's
-   * behaviour), for backward compatibility with callers that haven't been
-   * updated to pass the more precise per-model value yet.
+   * Omitted (the common case) → `resolveTurnVisionSupported` combines
+   * `this.provider.capabilities.vision` and the routed model's
+   * registry-resolved `ModelInfo.vision` with a logical AND: the connection
+   * flag is a hard floor/veto (a connection that reports no vision support
+   * can never be granted it by the registry), and the per-model registry
+   * lookup can only narrow — never widen — vision support on top of that,
+   * falling back to trusting `this.provider.capabilities.vision` alone when
+   * the routed model id is not registered.
    */
   visionSupported?: boolean;
   maxToolIterations: number;
@@ -1249,9 +1257,10 @@ export class Orchestrator {
   /** Wave 8 — direct-answer persona candidates; empty when none attached. */
   private readonly personaSkills: readonly OrchestratorPersonaSkill[];
   private readonly maxTokens: number;
-  /** #504/#505 — active model's vision support, if the caller resolved it
-   *  (see OrchestratorOptions.visionSupported). Undefined → callers fall
-   *  back to `this.provider.capabilities.vision` at each read site. */
+  /** #504/#505/#524 — explicit caller override for the active model's vision
+   *  support (see OrchestratorOptions.visionSupported). Undefined (the
+   *  common case) → each turn resolves it itself via
+   *  {@link resolveTurnVisionSupported}. */
   private readonly visionSupported: boolean | undefined;
   private readonly maxIterations: number;
   /** Round-loop guard thresholds (see {@link LoopGuard}). */
@@ -2724,6 +2733,48 @@ export class Orchestrator {
   }
 
   /**
+   * #524 — resolves whether the model ROUTED for this turn (`turnModel`,
+   * from {@link resolveTurnModel}) supports vision. Runs per turn so
+   * `modelRouting` (different `simpleModel`/`complexModel` vision support)
+   * is reflected correctly, instead of a value fixed at Orchestrator-
+   * construction time or the provider connection's coarser flag.
+   *
+   * Precedence:
+   *  1. `this.visionSupported` (explicit `OrchestratorOptions.visionSupported`
+   *     override) — wins unconditionally when set.
+   *  2. Otherwise, the PROVIDER CONNECTION's `capabilities.vision` flag is a
+   *     hard floor/veto: a connection that reports it cannot accept images
+   *     (e.g. a restricted/on-prem/vision-disabled Anthropic connection)
+   *     never gets vision for this turn, no matter what the model registry
+   *     says about the routed model in general. When the connection-level
+   *     flag is `false`, this returns `false` immediately — the registry is
+   *     never even consulted, because registry metadata about what a model
+   *     GENERALLY supports must never manufacture vision capability the
+   *     actual connection lacks.
+   *  3. Only when the connection reports `capabilities.vision === true` does
+   *     the model registry's `ModelInfo.vision` for `turnModel` get a say —
+   *     and only to NARROW, never widen: it can catch a routed model that is
+   *     LESS capable than its connection (e.g. the bundled `mistral`
+   *     openai-compatible connection hardcodes `capabilities.vision = true`
+   *     on the connection while `mistral-small-latest` itself has no vision,
+   *     unlike `mistral-large-latest` / `mistral-medium-latest`). Resolved
+   *     the same way `registry/agentRuntime.ts`'s `resolveModelIdForProvider`
+   *     resolves model refs (`resolveModelRef` with `defaultProvider` bound
+   *     to this provider, so a bare vendor id like `mistral-small-latest`
+   *     resolves against the right provider's models). A registry miss
+   *     (`turnModel` not registered) falls back to trusting the
+   *     connection-level flag alone, per the existing fallback-on-miss
+   *     behaviour. Never throws, so an unknown model id can never crash a
+   *     turn.
+   */
+  private resolveTurnVisionSupported(turnModel: string): boolean {
+    if (this.visionSupported !== undefined) return this.visionSupported;
+    if (!this.provider.capabilities.vision) return false;
+    const info = resolveModelRef(turnModel, { defaultProvider: this.provider.id });
+    return info?.vision ?? this.provider.capabilities.vision;
+  }
+
+  /**
    * Wave 8 — resolves the direct-answer persona for a single turn. With
    * persona skills attached, a Haiku classifier picks at most one candidate;
    * its `body` should replace `assistantIdentity` for this turn only. Empty
@@ -2812,22 +2863,43 @@ export class Orchestrator {
       privacyForPrompt,
       rawPriorContext,
     );
+    // #524 — resolve the model ROUTED for this turn BEFORE any
+    // attachment/vision-ingest work below: the image-embed decision must
+    // reflect the model this turn actually runs on. Per-turn model routing
+    // (no-op unless configured) + Wave 8 persona routing (no-op unless
+    // persona skills are attached) are resolved together — independent
+    // classifier calls, run in parallel so persona routing adds no serial
+    // latency on top of model routing. Both resolved once so the whole turn
+    // — every tool-loop iteration — is stable. The non-streaming path has no
+    // event channel, so both decisions are simply applied (channels that
+    // want to surface them use chatStream). Safe to run ahead of
+    // `resolvePrependRules(messages)` below: that helper only ever reads
+    // `messages[].content` as a string (`typeof m.content === 'string' ? …
+    // : ''`), discarding the `ContentBlock[]` array `buildUserContent`
+    // returns whenever attachments are present, so it has no dependency on
+    // the image blocks or on which model gets routed.
+    const [turnModelResolved, turnPersonaResolved] = await Promise.all([
+      this.resolveTurnModel(wireUserMessage),
+      this.resolveTurnPersona(wireUserMessage),
+    ]);
+    const turnModel = turnModelResolved.model;
+    const turnPersonaBody = turnPersonaResolved.skillBody;
+
     // #268 — pre-fetch + extract any uploaded document text for this turn.
     // #504/#505 — the same pass also resolves image attachments (Teams
     // Tigris storage_key, or a bare url for channels without a pre-fetch)
     // into vision content-blocks; `ingestedImages` rides separately from the
-    // text since it never crosses the PII-masking wire. Gated on the ACTIVE
-    // MODEL's vision capability (round-6 codex review) — `visionSupported`
-    // wins when the caller resolved it (see OrchestratorOptions), otherwise
-    // this falls back to the provider connection's own capability flag,
-    // which is imprecise whenever one connection serves several models with
-    // different vision support. Either way, a non-vision model never gets
-    // an image content-block, and `buildUserContent` below surfaces a
-    // visible note instead of silently dropping the attachment.
+    // text since it never crosses the PII-masking wire. #524 — gated on the
+    // ROUTED model's vision capability (`resolveTurnVisionSupported`,
+    // resolved from `turnModel` above via the model registry), not the
+    // provider connection's coarser flag, which is imprecise whenever one
+    // connection serves several models with different vision support.
+    // Either way, a non-vision model never gets an image content-block, and
+    // `buildUserContent` below surfaces a visible note instead of silently
+    // dropping the attachment.
     // #361 — the ingested verbatim tail crosses the wire alongside the
     // message, so it is masked through the SAME turn map (stable surrogates).
-    const visionSupported =
-      this.visionSupported ?? this.provider.capabilities.vision;
+    const visionSupported = this.resolveTurnVisionSupported(turnModel);
     const {
       text: ingestedRawText,
       images: ingestedImages,
@@ -2922,20 +2994,6 @@ export class Orchestrator {
     let obligationMet = obligationTool === undefined;
     let obligationEscalationsUsed = 0;
     let forceObligationNext = false;
-
-    // Per-turn model routing (no-op unless configured) + Wave 8 persona
-    // routing (no-op unless persona skills are attached), resolved together
-    // — independent classifier calls, run in parallel so persona routing
-    // adds no serial latency on top of model routing. Both resolved once so
-    // the whole turn — every tool-loop iteration — is stable. The
-    // non-streaming path has no event channel, so both decisions are simply
-    // applied (channels that want to surface them use chatStream).
-    const [turnModelResolved, turnPersonaResolved] = await Promise.all([
-      this.resolveTurnModel(wireUserMessage),
-      this.resolveTurnPersona(wireUserMessage),
-    ]);
-    const turnModel = turnModelResolved.model;
-    const turnPersonaBody = turnPersonaResolved.skillBody;
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -3622,13 +3680,28 @@ export class Orchestrator {
     // recalled KG neighbourhood. Best-effort & guarded inside the helper so it
     // can never break or delay the turn; additive/opaque to the model.
     yield* await this.toKgGraphAnnotationEvents(recalled);
+    // #524 — resolve the model ROUTED for this turn BEFORE any
+    // attachment/vision-ingest work below; see chatInContextInner for the
+    // full rationale (safe to run ahead of `resolvePrependRules(messages)`
+    // further down). Per-turn model routing (no-op unless configured) +
+    // Wave 8 persona routing (no-op unless persona skills are attached) are
+    // independent classifier calls, run in parallel so persona routing adds
+    // no serial latency. Resolved once so the whole streamed turn runs on
+    // one model. The `turn_routing`/`turn_persona` events stay below, right
+    // before the tool loop, unchanged — only the resolution moved earlier.
+    const [resolved, resolvedPersona] = await Promise.all([
+      this.resolveTurnModel(wireUserMessage),
+      this.resolveTurnPersona(wireUserMessage),
+    ]);
+    const turnModel = resolved.model;
+    const turnPersonaBody = resolvedPersona.skillBody;
     // #268 — pre-fetch + extract any uploaded document text for this turn.
     // #504/#505 — same pass also resolves image attachments into vision
-    // content-blocks; see chatInContextInner for the full rationale,
-    // including the per-model vision-capability gate (round-6 codex review).
+    // content-blocks; see chatInContextInner for the full rationale. #524 —
+    // gated on the ROUTED model's vision capability
+    // (`resolveTurnVisionSupported`, resolved from `turnModel` above).
     // #361 — masked through the same turn map as the message (see above).
-    const visionSupported =
-      this.visionSupported ?? this.provider.capabilities.vision;
+    const visionSupported = this.resolveTurnVisionSupported(turnModel);
     const {
       text: ingestedRawText,
       images: ingestedImages,
@@ -3704,16 +3777,10 @@ export class Orchestrator {
     // Mid-turn steering — same key the route enqueues under (see chatStream:
     // `sessionId`). Drained at the top of every iteration below.
     const steerKey = input.sessionScope ?? turnId;
-    // Per-turn model routing (no-op unless configured) + Wave 8 persona
-    // routing (no-op unless persona skills are attached). Independent
-    // classifier calls — run in parallel so persona routing adds no serial
-    // latency. Resolved once so the whole streamed turn runs on one model.
-    const [resolved, resolvedPersona] = await Promise.all([
-      this.resolveTurnModel(wireUserMessage),
-      this.resolveTurnPersona(wireUserMessage),
-    ]);
-    const turnModel = resolved.model;
-    const turnPersonaBody = resolvedPersona.skillBody;
+    // `resolved`/`resolvedPersona` (and the `turnModel`/`turnPersonaBody`
+    // derived from them) were already resolved above, ahead of the
+    // vision-ingest step (#524) — only the routing/persona EVENTS are
+    // surfaced here, at the same point in the turn as before.
     // Surface the Haiku-triage decision inline, before the first model call —
     // the UI renders it at the top of the turn card so the operator sees the
     // classifier's verdict (simple/complex → model) as soon as it lands.

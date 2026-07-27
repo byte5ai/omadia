@@ -8,19 +8,23 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import type { ChatStreamEvent } from '@omadia/channel-sdk';
-import type {
-  ContentPart,
-  LlmProvider,
-  LlmRequest,
-  LlmResponse,
-  LlmStreamEvent,
+import {
+  clearExternalModels,
+  registerExternalModels,
+  type ContentPart,
+  type LlmProvider,
+  type LlmRequest,
+  type LlmResponse,
+  type LlmStreamEvent,
+  type ModelInfo,
 } from '@omadia/llm-provider';
 import {
   type AttachmentReader,
   type ChatTurnAttachment,
+  type ModelRoutingConfig,
   NativeToolRegistry,
   Orchestrator,
 } from '@omadia/orchestrator';
@@ -671,6 +675,240 @@ describe('round-6 codex review — per-model visionSupported override', () => {
     assert.match(
       textOf(requestsNonVision[0]!),
       /1 image attachment.*received but the active model does not support image input/,
+    );
+  });
+});
+
+describe('#524 — per-turn vision resolution under modelRouting (the real mistral small/large case)', () => {
+  // The bundled `mistral` openai-compatible connection reports
+  // `capabilities.vision = true` on the CONNECTION regardless of which
+  // model is active (llm-adapter-openai/src/openaiProvider.ts) — exactly the
+  // case #524 exists to fix. `simpleModel`/`complexModel` are two DIFFERENT
+  // registered models through that SAME connection with different `vision`
+  // flags, so only a per-turn, per-model registry lookup (not the provider-
+  // level flag) can tell them apart.
+  const MISTRAL_SMALL: ModelInfo = {
+    id: 'mistral:mistral-small-latest',
+    provider: 'mistral',
+    modelId: 'mistral-small-latest',
+    label: 'Mistral Small',
+    class: 'fast',
+    maxTokens: 8192,
+    contextWindow: 32000,
+    vision: false,
+  };
+  const MISTRAL_LARGE: ModelInfo = {
+    id: 'mistral:mistral-large-latest',
+    provider: 'mistral',
+    modelId: 'mistral-large-latest',
+    label: 'Mistral Large',
+    class: 'frontier',
+    maxTokens: 8192,
+    contextWindow: 128000,
+    vision: true,
+  };
+  const modelRouting: ModelRoutingConfig = {
+    classifierModel: 'mistral-classifier-latest',
+    simpleModel: 'mistral-small-latest',
+    complexModel: 'mistral-large-latest',
+  };
+
+  beforeEach(() => {
+    clearExternalModels();
+    registerExternalModels([MISTRAL_SMALL, MISTRAL_LARGE]);
+  });
+  afterEach(() => {
+    clearExternalModels();
+  });
+
+  /** Records every non-classifier request; answers the classifier call with
+   *  the scripted verdict so the routing decision is deterministic, and
+   *  every other call with a fixed text answer. Provider id `mistral`, with
+   *  `capabilities.vision = true` at the CONNECTION level — the coarse flag
+   *  that must NOT be what decides vision for these turns. */
+  function mistralRoutingProvider(
+    requests: LlmRequest[],
+    verdict: 'SIMPLE' | 'COMPLEX',
+  ): LlmProvider {
+    const provider = {
+      id: 'mistral',
+      capabilities: providerCapabilities,
+      complete: async (req: LlmRequest): Promise<LlmResponse> => {
+        if (req.model === modelRouting.classifierModel) {
+          return textResponse(verdict);
+        }
+        requests.push(req);
+        return textResponse('ok');
+      },
+      stream: (): AsyncIterable<LlmStreamEvent> => {
+        throw new Error('mistralRoutingProvider: stream() not scripted');
+      },
+      classifyError: () => ({ retryable: false, kind: 'other' as const }),
+    };
+    return provider as unknown as LlmProvider;
+  }
+
+  it('a turn routed to the SIMPLE (non-vision) model does not embed the image and surfaces the non-vision note, even though the provider connection reports capabilities.vision=true', async () => {
+    const requests: LlmRequest[] = [];
+    const reader = fakeAttachmentReader({
+      byStorageKey: {
+        'tigris:photo-1': {
+          bytes: PNG_BYTES,
+          contentType: 'image/png',
+          fileName: 'photo.png',
+        },
+      },
+    });
+    const orch = new Orchestrator({
+      provider: mistralRoutingProvider(requests, 'SIMPLE'),
+      model: 'mistral-large-latest',
+      modelRouting,
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      attachmentReader: reader,
+    });
+
+    const userMessage =
+      'Was ist auf dem Bild?\n\n' +
+      '[attachments-info] 1 Datei(en) in diesem Turn hochgeladen + persistiert:\n' +
+      '- photo.png (image/png, 4 KB) · storage_key=tigris:photo-1';
+
+    await orch.runTurn({ userMessage, sessionScope: 'sess-1', userId: 'u1' });
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]!.model, 'mistral-small-latest');
+    assert.equal(
+      imagePartsOf(requests[0]!).length,
+      0,
+      'the SIMPLE-routed (non-vision) model must never receive an image content-block',
+    );
+    assert.deepEqual(reader.calls.storageKeys, []);
+    const text = textOf(requests[0]!);
+    assert.match(
+      text,
+      /1 image attachment.*received but the active model does not support image input/,
+    );
+  });
+
+  it('a turn routed to the COMPLEX (vision-capable) model embeds the image', async () => {
+    const requests: LlmRequest[] = [];
+    const reader = fakeAttachmentReader({
+      byStorageKey: {
+        'tigris:photo-1': {
+          bytes: PNG_BYTES,
+          contentType: 'image/png',
+          fileName: 'photo.png',
+        },
+      },
+    });
+    const orch = new Orchestrator({
+      provider: mistralRoutingProvider(requests, 'COMPLEX'),
+      model: 'mistral-large-latest',
+      modelRouting,
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      attachmentReader: reader,
+    });
+
+    const userMessage =
+      'Was ist auf dem Bild?\n\n' +
+      '[attachments-info] 1 Datei(en) in diesem Turn hochgeladen + persistiert:\n' +
+      '- photo.png (image/png, 4 KB) · storage_key=tigris:photo-1';
+
+    await orch.runTurn({ userMessage, sessionScope: 'sess-1', userId: 'u1' });
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]!.model, 'mistral-large-latest');
+    const images = imagePartsOf(requests[0]!);
+    assert.equal(
+      images.length,
+      1,
+      'the COMPLEX-routed (vision-capable) model must receive the image content-block',
+    );
+    const img = images[0]! as Extract<ContentPart, { type: 'image' }>;
+    assert.equal(img.mediaType, 'image/png');
+    assert.equal(img.data, PNG_BYTES.toString('base64'));
+    assert.ok(!textOf(requests[0]!).includes('does not support image input'));
+  });
+});
+
+describe('#524 (codex cross-vendor review) — provider capability is a floor, the model registry can only narrow, never widen', () => {
+  // Codex's exact failing example: an `anthropic` PROVIDER CONNECTION with
+  // `capabilities.vision = false` (e.g. a restricted/on-prem/vision-disabled
+  // Anthropic connection) paired with `claude-opus-4-8`, a model id the
+  // bundled registry lists as `vision: true`. The round-1 fix let a registry
+  // HIT override the connection-level flag whenever one was found — which
+  // let a non-vision CONNECTION embed an image just because the ROUTED MODEL
+  // is generally vision-capable. The connection-level flag must stay a hard
+  // veto: the registry may only narrow vision support (catch a model that is
+  // LESS capable than its connection — the mistral small/large case below),
+  // never widen it (grant vision to a connection that says it can't).
+  const CLAUDE_OPUS_VISION: ModelInfo = {
+    id: 'anthropic:claude-opus-4-8',
+    provider: 'anthropic',
+    modelId: 'claude-opus-4-8',
+    label: 'Claude Opus 4.8',
+    class: 'frontier',
+    maxTokens: 8192,
+    contextWindow: 200000,
+    vision: true,
+  };
+
+  beforeEach(() => {
+    clearExternalModels();
+    registerExternalModels([CLAUDE_OPUS_VISION]);
+  });
+  afterEach(() => {
+    clearExternalModels();
+  });
+
+  it('a non-vision anthropic CONNECTION never embeds an image for a registry-vision-capable model, and still shows the non-vision note', async () => {
+    const requests: LlmRequest[] = [];
+    const reader = fakeAttachmentReader({
+      byStorageKey: {
+        'tigris:photo-1': {
+          bytes: PNG_BYTES,
+          contentType: 'image/png',
+          fileName: 'photo.png',
+        },
+      },
+    });
+    const orch = new Orchestrator({
+      // provider.id === 'anthropic', capabilities.vision === false — the
+      // CONNECTION reports it cannot accept images at all.
+      provider: recordingProvider(requests, nonVisionProviderCapabilities),
+      // A model the bundled/external registry resolves to `vision: true`.
+      model: 'claude-opus-4-8',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      attachmentReader: reader,
+    });
+
+    const userMessage =
+      'Was ist auf dem Bild?\n\n' +
+      '[attachments-info] 1 Datei(en) in diesem Turn hochgeladen + persistiert:\n' +
+      '- photo.png (image/png, 4 KB) · storage_key=tigris:photo-1';
+
+    await orch.runTurn({ userMessage, sessionScope: 'sess-1', userId: 'u1' });
+
+    assert.equal(requests.length, 1);
+    assert.equal(
+      imagePartsOf(requests[0]!).length,
+      0,
+      'the non-vision PROVIDER CONNECTION must veto vision even though the registry says the routed model supports it',
+    );
+    assert.deepEqual(reader.calls.storageKeys, []);
+    const text = textOf(requests[0]!);
+    assert.match(
+      text,
+      /1 image attachment.*received but the active model does not support image input/,
+      'the connection-level hard-stop must still produce the visible non-vision note',
     );
   });
 });
