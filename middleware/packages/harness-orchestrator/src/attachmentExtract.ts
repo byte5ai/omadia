@@ -21,6 +21,24 @@ export type ExtractResult =
   | { ok: true; text: string }
   | { ok: false; reason: string };
 
+/** Anthropic's vision API only accepts these four raster formats via a
+ *  base64 image content-block. */
+const SUPPORTED_VISION_IMAGE_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+]);
+
+/** Anthropic's documented per-image base64 payload cap. Oversized images are
+ *  dropped before the API call rather than risking a 4xx that fails the
+ *  whole turn. */
+const MAX_VISION_IMAGE_BYTES = 5 * 1024 * 1024;
+
+export type VisionEmbedCheck =
+  | { ok: true; mediaType: string }
+  | { ok: false; reason: string };
+
 /** Lowercased file extension (without the dot), or '' when absent. */
 function extOf(fileName: string | undefined): string {
   if (!fileName) return '';
@@ -73,6 +91,32 @@ const PLAIN_TEXT_EXTS = new Set([
 const DOCX_TYPE =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const PDF_TYPE = 'application/pdf';
+
+/**
+ * Guard for the attachment auto-ingest path's image branch (issues #504,
+ * #505): decides whether a fetched attachment (Tigris `storage_key` or
+ * `url`) can be embedded as an Anthropic vision content-block, as opposed to
+ * being silently dropped after fetch. Never throws.
+ */
+export function checkVisionEmbeddable(
+  contentType: string | undefined,
+  byteLength: number,
+): VisionEmbedCheck {
+  const ct = normalizeContentType(contentType);
+  if (!SUPPORTED_VISION_IMAGE_TYPES.has(ct)) {
+    return {
+      ok: false,
+      reason: `unsupported image type for vision (contentType=${ct || 'unknown'})`,
+    };
+  }
+  if (byteLength > MAX_VISION_IMAGE_BYTES) {
+    return {
+      ok: false,
+      reason: `image too large for vision (${byteLength} bytes > ${MAX_VISION_IMAGE_BYTES} byte cap)`,
+    };
+  }
+  return { ok: true, mediaType: ct };
+}
 
 /**
  * Extract plain text from an attachment's bytes. Never throws — any failure

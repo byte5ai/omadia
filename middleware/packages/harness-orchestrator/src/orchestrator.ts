@@ -75,7 +75,7 @@ import {
   readAttachmentToolSpec,
 } from './tools/readAttachmentTool.js';
 import { parseAttachmentsInfo } from './attachmentsInfo.js';
-import { extractAttachmentText } from './attachmentExtract.js';
+import { checkVisionEmbeddable, extractAttachmentText } from './attachmentExtract.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -478,20 +478,36 @@ type ContentBlock = any;
 type Message = any;
 
 /**
- * Build the user-message content for the Anthropic API. When the channel
- * supplied image attachments with `bytesBase64`, return a multimodal
- * content array (image source-blocks first, then text); otherwise just
- * pass the plain string for the simple text case (so existing callers
- * without attachments don't pay an array allocation).
+ * A base64-encoded image resolved by {@link ingestAttachments}'s async
+ * pre-fetch pass (issues #504, #505) — Teams `[attachments-info]`
+ * storage_key images and url-only image attachments from any channel that
+ * doesn't pre-fetch bytes. Same wire shape `buildUserContent` already
+ * builds for inline `bytesBase64` attachments below, just sourced from a
+ * fetch instead of the channel payload.
+ */
+interface IngestedImageBlock {
+  mediaType: string;
+  bytesBase64: string;
+}
+
+/**
+ * Build the user-message content for the Anthropic API. Returns a
+ * multimodal content array (image source-blocks first, then text) when
+ * there is at least one image to embed; otherwise just the plain string
+ * (so existing callers without attachments don't pay an array allocation).
  *
- * S+7.7+ — wired in for Telegram channel's photo/image-document path.
- * Teams calendar/diagram channels don't populate `attachments` today,
- * so this stays a no-op for them.
+ * Images come from two sources, both folded into the same block list:
+ *   - `input.attachments[]` entries with `bytesBase64` already set —
+ *     wired in for Telegram's photo/image-document path (S+7.7+).
+ *   - `ingestedImages`, resolved by `ingestAttachments`'s async pre-fetch —
+ *     Teams' Tigris `storage_key` images (#504) and url-only image
+ *     attachments from channels that don't pre-fetch bytes (#505).
  */
 function buildUserContent(
   input: ChatTurnInput,
   extraText?: string,
   wireUserMessage?: string,
+  ingestedImages?: IngestedImageBlock[],
 ): ContentBlock[] | string {
   // #361 — when prompt masking is on, the caller passes the pseudonym-
   // substituted variant for the LLM wire; `input.userMessage` stays the
@@ -505,7 +521,7 @@ function buildUserContent(
   const imageAtts = (input.attachments ?? []).filter(
     (a) => a.kind === 'image' && typeof a.bytesBase64 === 'string',
   );
-  if (imageAtts.length === 0) {
+  if (imageAtts.length === 0 && (ingestedImages?.length ?? 0) === 0) {
     if (!ingested) return message;
     return message.length > 0 ? `${message}${ingested}` : ingested;
   }
@@ -517,6 +533,16 @@ function buildUserContent(
         type: 'base64',
         media_type: att.mediaType,
         data: att.bytesBase64,
+      },
+    });
+  }
+  for (const img of ingestedImages ?? []) {
+    blocks.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: img.mediaType,
+        data: img.bytesBase64,
       },
     });
   }
@@ -2708,11 +2734,17 @@ export class Orchestrator {
       rawPriorContext,
     );
     // #268 — pre-fetch + extract any uploaded document text for this turn.
+    // #504/#505 — the same pass also resolves image attachments (Teams
+    // Tigris storage_key, or a bare url for channels without a pre-fetch)
+    // into vision content-blocks; `ingestedImages` rides separately from the
+    // text since it never crosses the PII-masking wire.
     // #361 — the ingested verbatim tail crosses the wire alongside the
     // message, so it is masked through the SAME turn map (stable surrogates).
+    const { text: ingestedRawText, images: ingestedImages } =
+      await this.ingestAttachments(input);
     const ingestedText = await maskIngestedForWire(
       privacyForPrompt,
-      await this.ingestAttachments(input),
+      ingestedRawText,
     );
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — per-turn nudge counter (shared across all
@@ -2743,7 +2775,15 @@ export class Orchestrator {
       // same shape the Anthropic API expects for a multi-turn conversation.
       // Empty pairs are filtered so a failed prior turn can't poison context.
       ...priorTurnMessages,
-      { role: 'user', content: buildUserContent(input, ingestedText, wireUserMessage) },
+      {
+        role: 'user',
+        content: buildUserContent(
+          input,
+          ingestedText,
+          wireUserMessage,
+          ingestedImages,
+        ),
+      },
     ];
 
     // Open an EntityRef collection keyed to this turn. Tool handlers that
@@ -3488,10 +3528,14 @@ export class Orchestrator {
     // can never break or delay the turn; additive/opaque to the model.
     yield* await this.toKgGraphAnnotationEvents(recalled);
     // #268 — pre-fetch + extract any uploaded document text for this turn.
+    // #504/#505 — same pass also resolves image attachments into vision
+    // content-blocks; see chatInContextInner for the full rationale.
     // #361 — masked through the same turn map as the message (see above).
+    const { text: ingestedRawText, images: ingestedImages } =
+      await this.ingestAttachments(input);
     const ingestedText = await maskIngestedForWire(
       privacyForPrompt,
-      await this.ingestAttachments(input),
+      ingestedRawText,
     );
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — see chatInContextInner for rationale.
@@ -3513,7 +3557,15 @@ export class Orchestrator {
     const messages: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] | string }> = [
       // Same in-memory history injection as chat() — see chatInContext().
       ...priorTurnMessages,
-      { role: 'user', content: buildUserContent(input, ingestedText, wireUserMessage) },
+      {
+        role: 'user',
+        content: buildUserContent(
+          input,
+          ingestedText,
+          wireUserMessage,
+          ingestedImages,
+        ),
+      },
     ];
 
     const entityCollection = this.entityRefBus?.beginCollection(turnId);
@@ -4723,24 +4775,37 @@ export class Orchestrator {
 
   /**
    * #268 sub-problem 2 — server-side attachment auto-ingest.
+   * #504/#505 — extended to also resolve image attachments into vision
+   * content-blocks instead of silently dropping them after fetch.
    *
-   * Pre-fetches and text-extracts the user's current-turn document uploads so
-   * the model can read them WITHOUT a tool call. Candidates come from BOTH
-   * sources:
+   * Pre-fetches the user's current-turn uploads so the model can read/see
+   * them WITHOUT a tool call. Candidates come from THREE sources:
    *   - the `[attachments-info]` block Teams appends to `input.userMessage`
-   *     (preferred: read by storage_key, since signed URLs expire);
+   *     (preferred: read by storage_key, since signed URLs expire) — files
+   *     AND images alike;
    *   - `input.attachments[]` non-image file entries from other channels
-   *     (read by url).
-   * De-duplicated by storageKey/url. Images and unsupported types are skipped
-   * silently (brand:// / vision handles images). Ingested regardless of
-   * `freshCheck` — these are the user's current message, not recalled context.
+   *     (read by url);
+   *   - `input.attachments[]` image entries that lack `bytesBase64` (read by
+   *     url) — the documented fallback for channels that don't pre-fetch
+   *     (`chatAgent.ts` / `incoming.ts`); images WITH `bytesBase64` are
+   *     already handled inline by `buildUserContent` and are skipped here.
+   * De-duplicated by storageKey/url. Text is extracted for non-image
+   * candidates; images are guarded by {@link checkVisionEmbeddable}
+   * (supported type + size cap) and turned into base64 image blocks —
+   * neither path throws, both just skip the candidate on failure. Ingested
+   * regardless of `freshCheck` — these are the user's current message, not
+   * recalled context.
    *
-   * Returns a concatenation of `[attachment-content: …]` blocks (leading
-   * with `\n\n`), or '' when there is nothing to ingest or no reader is
-   * configured. NEVER throws — any failure logs a warning and returns ''.
+   * Returns `text` (a concatenation of `[attachment-content: …]` blocks,
+   * leading with `\n\n`, or '' when there is no document text) and `images`
+   * (base64 blocks for `buildUserContent` to embed, or `[]`). NEVER throws —
+   * any failure logs a warning and returns the empty shape.
    */
-  private async ingestAttachments(input: ChatTurnInput): Promise<string> {
-    if (!this.attachmentReader) return '';
+  private async ingestAttachments(
+    input: ChatTurnInput,
+  ): Promise<{ text: string; images: IngestedImageBlock[] }> {
+    const empty = { text: '', images: [] as IngestedImageBlock[] };
+    if (!this.attachmentReader) return empty;
     try {
       type Candidate = {
         fileName: string | undefined;
@@ -4748,6 +4813,11 @@ export class Orchestrator {
         storageKey?: string;
         url?: string;
         dedupe: string;
+        /** #504/#505 — route to the vision branch below instead of
+         *  `extractAttachmentText`. Set from the manifest/attachment kind at
+         *  candidate time; re-checked against the fetched content-type since
+         *  a signed URL or Tigris object can disagree with the caller's claim. */
+        isImage: boolean;
       };
       const candidates: Candidate[] = [];
       const seen = new Set<string>();
@@ -4757,7 +4827,8 @@ export class Orchestrator {
         candidates.push(c);
       };
 
-      // 1. Teams `[attachments-info]` manifest (storage_key-bearing).
+      // 1. Teams `[attachments-info]` manifest (storage_key-bearing) — files
+      //    and images alike (#504).
       for (const info of parseAttachmentsInfo(input.userMessage)) {
         push({
           fileName: info.fileName,
@@ -4765,6 +4836,7 @@ export class Orchestrator {
           storageKey: info.storageKey,
           ...(info.signedUrl ? { url: info.signedUrl } : {}),
           dedupe: `key:${info.storageKey}`,
+          isImage: info.contentType.toLowerCase().startsWith('image/'),
         });
       }
       // 2. Non-image file attachments from other channels (url-bearing).
@@ -4776,11 +4848,29 @@ export class Orchestrator {
           contentType: att.mediaType,
           url: att.url,
           dedupe: `url:${att.url}`,
+          isImage: false,
         });
       }
-      if (candidates.length === 0) return '';
+      // 3. Image attachments without pre-fetched bytes (url-bearing) — the
+      //    documented url-fetch fallback for channels that don't pre-fetch
+      //    (#505). Images WITH `bytesBase64` are already handled inline by
+      //    `buildUserContent`, so they're excluded here to avoid double-embedding.
+      for (const att of input.attachments ?? []) {
+        if (att.kind !== 'image') continue;
+        if (typeof att.bytesBase64 === 'string') continue;
+        if (typeof att.url !== 'string' || att.url.length === 0) continue;
+        push({
+          fileName: att.name,
+          contentType: att.mediaType,
+          url: att.url,
+          dedupe: `url:${att.url}`,
+          isImage: true,
+        });
+      }
+      if (candidates.length === 0) return empty;
 
-      const blocks: string[] = [];
+      const textBlocks: string[] = [];
+      const images: IngestedImageBlock[] = [];
       for (const c of candidates) {
         try {
           // Prefer storage_key (durable) over url (Teams signed urls expire).
@@ -4790,18 +4880,36 @@ export class Orchestrator {
               ? await this.attachmentReader.readByUrl(c.url)
               : undefined;
           if (!fetched) continue;
+          const contentType = fetched.contentType ?? c.contentType;
+          if (c.isImage) {
+            const guard = checkVisionEmbeddable(
+              contentType,
+              fetched.bytes.length,
+            );
+            if (!guard.ok) {
+              console.warn(
+                `[harness-orchestrator] ingestAttachments: skipped image — ${guard.reason}`,
+              );
+              continue;
+            }
+            images.push({
+              mediaType: guard.mediaType,
+              bytesBase64: fetched.bytes.toString('base64'),
+            });
+            continue;
+          }
           const fetchedFileName =
             'fileName' in fetched
               ? (fetched as { fileName?: string }).fileName
               : undefined;
           const result = await extractAttachmentText(
             fetched.bytes,
-            fetched.contentType ?? c.contentType,
+            contentType,
             fetchedFileName ?? c.fileName,
           );
           if (!result.ok) continue;
           const label = c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
-          blocks.push(
+          textBlocks.push(
             `\n\n[attachment-content: ${label}]\n${result.text}\n[/attachment-content]`,
           );
         } catch (err) {
@@ -4812,14 +4920,14 @@ export class Orchestrator {
           );
         }
       }
-      return blocks.join('');
+      return { text: textBlocks.join(''), images };
     } catch (err) {
       console.warn(
         `[harness-orchestrator] ingestAttachments failed (non-fatal) — ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      return '';
+      return empty;
     }
   }
 

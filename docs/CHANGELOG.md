@@ -18,6 +18,24 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — Teams-uploaded images now reach the model as vision input (#504, #505)
+
+- Teams delivers inbound images via a Tigris `storage_key` + `[attachments-info]`
+  manifest, never inline `bytesBase64`. The attachment auto-ingest path fetched
+  those bytes but handed them to the text extractor, which correctly refuses
+  images — so the fetched image was silently dropped and never reached the
+  model, leaving the agent to falsely claim it couldn't see the image.
+  `ingestAttachments` now routes image candidates through a new
+  `checkVisionEmbeddable` guard (supported type + 5MB size cap) and embeds them
+  as Anthropic vision content-blocks via `buildUserContent`, the same path
+  Telegram's inline `bytesBase64` attachments already use (#504).
+- Also implemented the `url`-fetch fallback that `chatAgent.ts` / `incoming.ts`
+  document but the orchestrator never honored: an image attachment with a
+  `url` and no pre-fetched `bytesBase64` is now fetched and embedded the same
+  way. Latent today (no in-repo channel triggers it yet), but closes the gap
+  before a future url-only channel (Slack, Discord, WhatsApp) ships broken
+  vision silently (#505).
+
 ### Fixed — templates v2 review round 3: owner-aware publish vs. auth timing (#478)
 
 - The save-as-template dialog no longer reads the viewer's own template id as
