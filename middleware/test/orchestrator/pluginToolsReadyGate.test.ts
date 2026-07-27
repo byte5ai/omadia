@@ -702,3 +702,154 @@ describe('Orchestrator — issue #474 round 5: automatic OAuth-connection signal
     assert.equal(isReady('explicit-ok-oauth-pending'), true);
   });
 });
+
+/**
+ * Issue #474 review round 8 — `NativeToolRegistry.registerHandler()` (the
+ * handler-only path used for tools whose spec the kernel emits itself, e.g.
+ * the Anthropic-native `memory` tool that `harness-memory` /
+ * `harness-memory-postgres` register via `ctx.tools.registerHandler()`)
+ * never stored an `agentId` on its entry, so the `agentId === undefined ⇒
+ * always-available` default meant for genuinely kernel-internal
+ * registrations silently applied to ANY plugin using this path instead of
+ * `register()`. Mirrors the `register()` gate tests above, but exercises
+ * `registerHandler()` specifically.
+ */
+describe('Orchestrator — issue #474 round 8: registerHandler() readiness gate', () => {
+  it('excludes a not-ready plugin registerHandler() tool promptDoc from the system prompt, keeps a ready one', async () => {
+    const registry = new NativeToolRegistry();
+    registry.registerHandler('ready_handler_tool', {
+      handler: async () => 'ready-output',
+      agentId: 'ready-plugin',
+      promptDoc: 'READY_HANDLER_TOOL_PROMPT_DOC_MARKER',
+    });
+    registry.registerHandler('gated_handler_tool', {
+      handler: async () => 'gated-output',
+      agentId: 'gated-plugin',
+      promptDoc: 'GATED_HANDLER_TOOL_PROMPT_DOC_MARKER',
+    });
+
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      isPluginToolsReady: (agentId) => agentId !== 'gated-plugin',
+    });
+
+    for await (const _ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      // drain
+    }
+
+    const system = seenRequests[0]?.system;
+    const systemText = typeof system === 'string' ? system : JSON.stringify(system);
+    assert.ok(
+      systemText?.includes('READY_HANDLER_TOOL_PROMPT_DOC_MARKER'),
+      'expected the ready plugin registerHandler() promptDoc in the system prompt',
+    );
+    assert.ok(
+      !systemText?.includes('GATED_HANDLER_TOOL_PROMPT_DOC_MARKER'),
+      'expected the gated plugin registerHandler() promptDoc to be excluded from the system prompt',
+    );
+  });
+
+  it('refuses to invoke a not-ready plugin registerHandler() tool even if a call for it arrives (dispatch-time re-check)', async () => {
+    const registry = new NativeToolRegistry();
+    let handlerCalled = false;
+    registry.registerHandler('gated_handler_tool', {
+      handler: async () => {
+        handlerCalled = true;
+        return 'should never run';
+      },
+      agentId: 'gated-plugin',
+    });
+
+    const stream0 = streamWithTools([
+      { id: 'use-1', name: 'gated_handler_tool', input: {} },
+    ]);
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([stream0, finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      isPluginToolsReady: () => false,
+    });
+
+    const events: ChatStreamEvent[] = [];
+    for await (const ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      events.push(ev);
+    }
+
+    assert.equal(handlerCalled, false, 'the gated registerHandler() handler must never run');
+    const result = events.find(
+      (e) => e.type === 'tool_result' && e.id === 'use-1',
+    );
+    assert.ok(result, 'expected a tool_result for the gated call');
+    assert.ok(
+      result?.type === 'tool_result' &&
+        result.isError === true &&
+        /Error:/.test(result.output),
+      `expected an Error: result, got ${JSON.stringify(result)}`,
+    );
+  });
+
+  it('a kernel-internal registerHandler() call (no agentId) stays always-available regardless of isPluginToolsReady', async () => {
+    const registry = new NativeToolRegistry();
+    let handlerCalled = false;
+    // No `agentId` — the genuinely kernel-internal convention `register()`
+    // already follows for marker-only entries.
+    registry.registerHandler('kernel_internal_handler_tool', {
+      handler: async () => {
+        handlerCalled = true;
+        return 'kernel-output';
+      },
+      promptDoc: 'KERNEL_INTERNAL_HANDLER_TOOL_PROMPT_DOC_MARKER',
+    });
+
+    const stream0 = streamWithTools([
+      { id: 'use-1', name: 'kernel_internal_handler_tool', input: {} },
+    ]);
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([stream0, finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      // Would gate every plugin-owned tool — must NOT affect this
+      // agentId-less, kernel-internal entry.
+      isPluginToolsReady: () => false,
+    });
+
+    const events: ChatStreamEvent[] = [];
+    for await (const ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      events.push(ev);
+    }
+
+    assert.equal(handlerCalled, true, 'the kernel-internal handler must still run');
+    const result = events.find(
+      (e) => e.type === 'tool_result' && e.id === 'use-1',
+    );
+    assert.ok(result, 'expected a tool_result for the kernel-internal call');
+    assert.ok(
+      result?.type === 'tool_result' && result.isError !== true,
+      `expected a successful result, got ${JSON.stringify(result)}`,
+    );
+
+    const system = seenRequests[0]?.system;
+    const systemText = typeof system === 'string' ? system : JSON.stringify(system);
+    assert.ok(
+      systemText?.includes('KERNEL_INTERNAL_HANDLER_TOOL_PROMPT_DOC_MARKER'),
+      'expected the kernel-internal registerHandler() promptDoc in the system prompt',
+    );
+  });
+});

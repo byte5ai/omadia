@@ -98,6 +98,26 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   with the existing `PluginStatusRegistry` one — either can withhold
   readiness — kept as two separate caches rather than one merged into the
   other, so neither can silently clobber the other's verdict.
+- Follow-up (review round 8): every gate above only covered
+  `ctx.tools.register()` — `NativeToolRegistry.registerHandler()` (used by
+  `ctx.tools.registerHandler()` for tools whose wire-spec the kernel emits
+  itself, e.g. the Anthropic-native `memory` tool used today by
+  `harness-memory` / `harness-memory-postgres`) never stored an `agentId` on
+  its entry at all, so `isToolAvailable`'s `agentId === undefined ⇒
+  always-available` default — correct for a genuinely kernel-internal
+  registration — incorrectly also applied to ANY plugin using this path
+  instead of `register()`, leaving its `promptDoc` in the system prompt and
+  its handler dispatchable regardless of the plugin's own readiness.
+  `NativeToolHandlerRegistrationOptions` and the stored
+  `NativeToolRegistration` entry both gained the same optional `agentId` the
+  `register()` path already carries, and `ctx.tools.registerHandler()` in
+  `pluginContext.ts` now passes the calling plugin's own id, mirroring
+  `ctx.tools.register()`'s existing wiring exactly — no new gate logic, the
+  entry just flows through the same `isToolAvailable(agentId)` check every
+  other path already uses. The two current `registerHandler()` callers
+  (`harness-memory`, `harness-memory-postgres`) are unaffected in practice:
+  neither reports a connection status, so `PluginStatusRegistry.isReady()`
+  defaults them to ready, exactly as before this fix.
 
 ### Fixed — Teams-uploaded images now reach the model as vision input (#504, #505)
 
