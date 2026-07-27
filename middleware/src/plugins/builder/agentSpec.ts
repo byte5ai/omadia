@@ -84,13 +84,35 @@ export const ToolSpecSchema = z.object({
   // omits the field. The lint_spec pass (B.4) still flags missing
   // schemas as warnings for tools that look like they should have args.
   input: InputJsonSchemaShape.default({} as JsonSchema),
+  // Optional JSON-Schema for the tool's return value. Mirrors `input`
+  // shape-wise; codegen falls back to the boilerplate's default
+  // `output_schema` when a tool omits this (see codegen.ts
+  // reproduceManifestCapabilities).
+  output: InputJsonSchemaShape.optional(),
+  // #507 — these four used to be advisory-only: the Builder LLM emitted
+  // them from training memory, Zod's non-strict mode silently dropped
+  // them, and codegen cloned the boilerplate's static `search`-template
+  // values (side_effects:'read', idempotent:true, autonomous:true,
+  // timeout_ms:20000) onto every tool regardless of what the LLM wrote
+  // here. Declaring them explicitly lets codegen synthesise each
+  // capability entry per-tool instead. `side_effects` mirrors the
+  // manifest's own `'read' | 'write' | 'none'` string enum (see
+  // middleware/assets/boilerplate/agent-integration/manifest.yaml and
+  // middleware/packages/agent-reference-maximum/manifest.yaml) — it is
+  // passed straight through by codegen, not mapped from a boolean.
+  // Undefined fields fall back to the boilerplate default per-tool,
+  // same as `output` above.
+  side_effects: z.enum(['read', 'write', 'none']).optional(),
+  idempotent: z.boolean().optional(),
+  autonomous: z.boolean().optional(),
+  timeout_ms: z.number().int().positive().optional(),
 });
 // Note: NOT `.strict()` — the Builder LLM frequently adds advisory
-// metadata fields it learned from other tool schemas (`side_effects`,
-// `idempotent`, `autonomous`, `timeout_ms`, etc.). Zod's default
-// behaviour silently strips unrecognized keys, which is the right
-// trade-off: we'd rather move forward with a clean spec than block the
-// build on metadata that nothing downstream consumes.
+// metadata fields it learned from other tool schemas beyond the ones
+// declared above. Zod's default behaviour silently strips unrecognized
+// keys, which is the right trade-off: we'd rather move forward with a
+// clean spec than block the build on metadata that nothing downstream
+// consumes.
 
 export type ToolSpec = z.infer<typeof ToolSpecSchema>;
 

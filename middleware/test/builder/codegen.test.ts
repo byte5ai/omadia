@@ -392,22 +392,111 @@ describe('codegen.generate', () => {
   });
 
   it('reproduces manifest capabilities for multi-tool specs', async () => {
+    // #507 regression test — the old codegen cloned the boilerplate's
+    // `search` capability (input_schema:{query}, side_effects:'read',
+    // idempotent:true, autonomous:true, timeout_ms:20000) onto every tool
+    // and only substituted id/description. This spec mixes a read tool, a
+    // write tool with fully-specified flags, and a third tool that omits
+    // the optional flags entirely (must fall back to the boilerplate
+    // template's defaults, not silently disappear).
     const { spec: base, slots } = loadFixture();
     const spec = parseAgentSpec({
       ...base,
       tools: [
-        { id: 'get_forecast', description: 'Wetter-Forecast', input: { type: 'object' } },
-        { id: 'get_alerts', description: 'Wetterwarnungen', input: { type: 'object' } },
+        {
+          id: 'list_teams',
+          description: 'Listet Teams',
+          input: { type: 'object', properties: {} },
+          side_effects: 'read',
+          idempotent: true,
+          autonomous: true,
+          timeout_ms: 15000,
+        },
+        {
+          id: 'create_issue',
+          description: 'Legt ein Issue an',
+          input: {
+            type: 'object',
+            required: ['team_id', 'title'],
+            properties: {
+              team_id: { type: 'string' },
+              title: { type: 'string' },
+            },
+          },
+          output: { type: 'object', properties: { id: { type: 'string' } } },
+          side_effects: 'write',
+          idempotent: false,
+          autonomous: false,
+          timeout_ms: 15000,
+        },
+        {
+          id: 'get_forecast',
+          description: 'Wetter-Forecast',
+          input: { type: 'object' },
+          // No side_effects/idempotent/autonomous/timeout_ms — must fall
+          // back to the boilerplate template's static defaults.
+        },
       ],
     });
     const out = await generate({ spec, slots });
 
     const manifestYaml = out.get('manifest.yaml')!.toString('utf-8');
-    const parsed = yaml.parse(manifestYaml) as { capabilities: Array<{ id: string }> };
-    assert.equal(parsed.capabilities.length, 2);
-    const ids = parsed.capabilities.map((c) => c.id);
-    assert.ok(ids.includes('get_forecast'));
-    assert.ok(ids.includes('get_alerts'));
+    const parsed = yaml.parse(manifestYaml) as {
+      capabilities: Array<{
+        id: string;
+        input_schema: unknown;
+        output_schema: unknown;
+        side_effects: string;
+        idempotent: boolean;
+        autonomous: boolean;
+        timeout_ms: number;
+      }>;
+    };
+    assert.equal(parsed.capabilities.length, 3);
+    const byId = new Map(parsed.capabilities.map((c) => [c.id, c]));
+
+    const listTeams = byId.get('list_teams')!;
+    assert.deepEqual(listTeams.input_schema, { type: 'object', properties: {} });
+    assert.equal(listTeams.side_effects, 'read');
+    assert.equal(listTeams.idempotent, true);
+    assert.equal(listTeams.autonomous, true);
+    assert.equal(listTeams.timeout_ms, 15000);
+
+    const createIssue = byId.get('create_issue')!;
+    assert.deepEqual(createIssue.input_schema, {
+      type: 'object',
+      required: ['team_id', 'title'],
+      properties: {
+        team_id: { type: 'string' },
+        title: { type: 'string' },
+      },
+    });
+    assert.deepEqual(createIssue.output_schema, {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+    });
+    // Security-critical: a write tool must NEVER surface as side_effects:
+    // 'read' or autonomous:true — that's what let mutations skip the
+    // orchestrator's confirm-gate.
+    assert.equal(createIssue.side_effects, 'write');
+    assert.equal(createIssue.idempotent, false);
+    assert.equal(createIssue.autonomous, false);
+    assert.equal(createIssue.timeout_ms, 15000);
+
+    // Tool with no explicit flags falls back to the boilerplate template's
+    // defaults (the same values the `search` capability ships with).
+    const getForecast = byId.get('get_forecast')!;
+    assert.deepEqual(getForecast.input_schema, { type: 'object' });
+    assert.equal(getForecast.side_effects, 'read');
+    assert.equal(getForecast.idempotent, true);
+    assert.equal(getForecast.autonomous, true);
+    assert.equal(getForecast.timeout_ms, 20000);
+
+    // The three tools must not have converged on identical input_schema —
+    // this is the exact bug: every tool cloned {query} from the `search`
+    // template.
+    assert.notDeepEqual(listTeams.input_schema, createIssue.input_schema);
+    assert.notDeepEqual(listTeams.input_schema, getForecast.input_schema);
   });
 
   it('throws CodegenError when a required slot is missing', async () => {

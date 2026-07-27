@@ -97,6 +97,13 @@ export interface NativeToolHandlerRegistrationOptions {
   handler: NativeToolHandler;
   promptDoc?: string;
   attachmentSink?: NativeToolAttachmentSink;
+  /** Issue #474 (round 8) — see `NativeToolRegistration.agentId`. Set by
+   *  `ToolsAccessor.registerHandler` from the activating plugin's context,
+   *  mirroring `NativeToolRegistrationOptions.agentId` on the `register()`
+   *  path. Absent for a genuinely kernel-internal `registerHandler()` call —
+   *  such an entry stays always-available, matching `register()`'s
+   *  kernel-internal (marker-only) convention. */
+  agentId?: string;
 }
 
 export class NativeToolRegistry {
@@ -147,10 +154,14 @@ export class NativeToolRegistry {
   /**
    * Handler-only registration. Used for tools whose spec the kernel emits
    * itself (e.g. `memory_20250818`). The registry stores the handler,
-   * promptDoc, and attachmentSink — dispatch finds the handler by name but
-   * the system-prompt tool list picks up `spec` only from full registrations,
-   * so this entry never contributes an `input_schema` tool. Throws on
-   * duplicate.
+   * promptDoc, attachmentSink, and (Issue #474 round 8) `agentId` —
+   * dispatch finds the handler by name but the system-prompt tool list
+   * picks up `spec` only from full registrations, so this entry never
+   * contributes an `input_schema` tool. `agentId` still flows through the
+   * exact same `isToolAvailable(agentId)` gate `register()`-contributed
+   * entries use, so a plugin-originated `registerHandler()` tool cannot
+   * bypass the readiness gate just because it took this path instead of
+   * `register()`. Throws on duplicate.
    */
   registerHandler(
     name: string,
@@ -170,6 +181,7 @@ export class NativeToolRegistry {
       ...(options.attachmentSink
         ? { attachmentSink: options.attachmentSink }
         : {}),
+      ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
     };
     this.entries.set(name, entry);
     return () => {
