@@ -5,6 +5,7 @@ import { after, describe, it } from 'node:test';
 
 import express, { type RequestHandler } from 'express';
 
+import { publicPaths } from '../../src/auth/publicPaths.js';
 import {
   createDevPlatformGithubAppRouter,
   type DevPlatformGithubAppDeps,
@@ -154,6 +155,41 @@ async function harness(opts: HarnessOpts = {}) {
 }
 
 const authed = (sub: string): Record<string, string> => ({ 'x-test-sub': sub, 'content-type': 'application/json' });
+
+async function mountLikeIndex(deps: DevPlatformGithubAppDeps): Promise<{
+  admin: string;
+  publicBase: string;
+  close: () => Promise<void>;
+}> {
+  const routers = createDevPlatformGithubAppRouter(deps);
+  const allowlist = publicPaths({ devEndpointsEnabled: false });
+  const requireAuth: RequestHandler = (req, res, next) => {
+    if (allowlist.some((pattern) => pattern.test(req.originalUrl))) {
+      next();
+      return;
+    }
+    const sub = req.header('x-test-sub');
+    if (!sub) {
+      res.status(401).json({ code: 'auth.missing', message: 'no session' });
+      return;
+    }
+    (req as unknown as { session: { sub: string } }).session = { sub };
+    next();
+  };
+
+  const app = express();
+  app.use('/api', requireAuth, (_req, _res, next) => next());
+  app.use('/api/v1/admin/dev-platform', requireAuth, routers.admin);
+  app.use('/api/v1/dev-platform', routers.public);
+  const server = app.listen(0);
+  await new Promise<void>((r) => server.once('listening', r));
+  const port = String((server.address() as AddressInfo).port);
+  return {
+    admin: `http://127.0.0.1:${port}/api/v1/admin/dev-platform`,
+    publicBase: `http://127.0.0.1:${port}/api/v1/dev-platform`,
+    close: () => new Promise<void>((r) => server.close(() => r())),
+  };
+}
 
 // ---------------------------------------------------------------------------
 
@@ -309,6 +345,35 @@ describe('devPlatformGithubApp — callback (public /bot-api)', () => {
     assert.match(text, /delete the orphan/i);
     assert.match(text, /omadia-dev/, 'the orphan html_url is surfaced');
     assert.equal(h.state.saved.length, 0);
+  });
+});
+
+describe('devPlatformGithubApp — index.ts mount topology', () => {
+  it('resolves the admin and public routes on the exact prefixes index.ts mounts', async () => {
+    const state: StoreState = {
+      apps: new Map(),
+      installations: new Map(),
+      secrets: new Map(),
+      saved: [],
+      upserts: [],
+    };
+    const mounted = await mountLikeIndex({
+      flowStore: new ManifestFlowStore(),
+      appStore: makeStore(state),
+      bindRepoCredential: async () => undefined,
+      getRepo: async () => ({ owner: 'acme', name: 'omadia' }),
+      publicBaseUrl: 'https://ops.example.com',
+      fetchImpl: (async () => jsonResponse(404, {})) as unknown as typeof fetch,
+    });
+    after(() => mounted.close());
+
+    const adminRes = await fetch(`${mounted.admin}/github-apps`, { headers: authed('user-1') });
+    assert.equal(adminRes.status, 200, 'the auth-gated admin prefix resolves');
+
+    const publicRes = await fetch(`${mounted.publicBase}/github-app/setup`, { redirect: 'manual' });
+    assert.equal(publicRes.status, 400, 'the public callback/setup prefix bypasses the broad /api auth gate');
+    assert.notEqual(publicRes.status, 404, 'the public router is mounted on /api/v1/dev-platform');
+    assert.equal(publicRes.headers.get('content-type'), 'text/plain; charset=utf-8');
   });
 });
 
