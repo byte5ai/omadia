@@ -10,6 +10,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
+import type { ChatStreamEvent } from '@omadia/channel-sdk';
 import type {
   ContentPart,
   LlmProvider,
@@ -76,6 +77,39 @@ function recordingProvider(
   return provider as unknown as LlmProvider;
 }
 
+/**
+ * Records every request the orchestrator sends through `provider.stream()`
+ * (the real production entry point for channel connectors — Teams, Telegram,
+ * HTTP — which all consume `agent.chatStream()`, not `agent.chat()`) and
+ * answers with a scripted single-chunk text stream. Follows the same
+ * fake-`LlmProvider.stream()` pattern as `middleware/test/orchestrator/
+ * parallelTool.test.ts`.
+ */
+function recordingStreamProvider(
+  requests: LlmRequest[],
+  capabilities: typeof providerCapabilities = providerCapabilities,
+): LlmProvider {
+  const provider = {
+    id: 'anthropic',
+    capabilities,
+    complete: async (): Promise<LlmResponse> => {
+      throw new Error('recordingStreamProvider: complete() not scripted');
+    },
+    stream: (req: LlmRequest): AsyncIterable<LlmStreamEvent> => {
+      requests.push(req);
+      const response = textResponse('ok');
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'text_delta', text: 'ok' } as LlmStreamEvent;
+          yield { type: 'final', response } as LlmStreamEvent;
+        },
+      };
+    },
+    classifyError: () => ({ retryable: false, kind: 'other' as const }),
+  };
+  return provider as unknown as LlmProvider;
+}
+
 /** Image content-parts of the FIRST user message the provider saw. */
 function imagePartsOf(req: LlmRequest): ContentPart[] {
   const first = req.messages[0];
@@ -130,6 +164,28 @@ function baseOrchestratorOptions(
 ): OrchestratorOptions {
   return {
     provider: recordingProvider(requests, capabilities),
+    model: 'test',
+    maxTokens: 1024,
+    maxToolIterations: 3,
+    domainTools: [],
+    nativeToolRegistry: new NativeToolRegistry(),
+    attachmentReader,
+    ...(visionSupported === undefined ? {} : { visionSupported }),
+  };
+}
+
+/** Same as {@link baseOrchestratorOptions} but wires the
+ *  `provider.stream()`-driven fake — for tests that exercise `chatStream()`
+ *  (the real Teams/Telegram/HTTP connector entry point) instead of
+ *  `runTurn()`. */
+function baseStreamingOrchestratorOptions(
+  requests: LlmRequest[],
+  attachmentReader: AttachmentReader,
+  capabilities: typeof providerCapabilities = providerCapabilities,
+  visionSupported?: boolean,
+): OrchestratorOptions {
+  return {
+    provider: recordingStreamProvider(requests, capabilities),
     model: 'test',
     maxTokens: 1024,
     maxToolIterations: 3,
@@ -616,5 +672,66 @@ describe('round-6 codex review — per-model visionSupported override', () => {
       textOf(requestsNonVision[0]!),
       /1 image attachment.*received but the active model does not support image input/,
     );
+  });
+});
+
+describe('#504 — chatStream() production entry point (Teams/Telegram/HTTP connectors)', () => {
+  // Round-8 review: every prior test in this file drives the orchestrator via
+  // `runTurn()`, which calls the private `chatInContextInner()`. But channel
+  // plugins (Teams, Telegram, HTTP — see
+  // `middleware/packages/harness-orchestrator/manifest.yaml`) consume
+  // `agent.chatStream()`, which calls the SEPARATE private `chatStreamInner()`
+  // — the actual path #504 was reported and reproduced on (Teams). Both inner
+  // methods thread `visionSupported` through the identical `ingestAttachments`
+  // / `buildUserContent` wiring, but nothing proved that on the streaming
+  // path until now. This mirrors the '#504: a Teams-manifest image candidate
+  // is embedded' `runTurn()` test above, driven through `chatStream()`
+  // instead.
+  it('a Teams-manifest image candidate is embedded via images when driven through chatStream(), not runTurn()', async () => {
+    const requests: LlmRequest[] = [];
+    const reader = fakeAttachmentReader({
+      byStorageKey: {
+        'tigris:photo-1': {
+          bytes: PNG_BYTES,
+          contentType: 'image/png',
+          fileName: 'photo.png',
+        },
+      },
+    });
+    const orch = new Orchestrator(baseStreamingOrchestratorOptions(requests, reader));
+
+    const userMessage =
+      'Was ist auf dem Bild?\n\n' +
+      '[attachments-info] 1 Datei(en) in diesem Turn hochgeladen + persistiert:\n' +
+      '- photo.png (image/png, 4 KB) · storage_key=tigris:photo-1';
+
+    const events: ChatStreamEvent[] = [];
+    for await (const ev of orch.chatStream({
+      userMessage,
+      sessionScope: 'sess-1',
+      userId: 'u1',
+    })) {
+      events.push(ev);
+    }
+
+    assert.ok(
+      events.some((e) => e.type === 'done'),
+      'the stream must terminate with a done event',
+    );
+    assert.equal(requests.length, 1);
+    const images = imagePartsOf(requests[0]!);
+    assert.equal(
+      images.length,
+      1,
+      'the manifest image must reach the model as a vision block via chatStream(), the real Teams connector path',
+    );
+    const img = images[0]! as Extract<ContentPart, { type: 'image' }>;
+    assert.equal(img.mediaType, 'image/png');
+    assert.equal(img.data, PNG_BYTES.toString('base64'));
+
+    // No `[attachment-content: …]` text block — same vision-branch check as
+    // the runTurn() counterpart.
+    const text = textOf(requests[0]!);
+    assert.ok(!text.includes('[attachment-content:'));
   });
 });

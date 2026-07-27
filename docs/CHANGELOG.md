@@ -70,16 +70,22 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `mistral-small-latest` (no vision), yet `llm-adapter-openai`'s
   `openaiProvider.ts` hardcodes `capabilities.vision = true` on the
   connection regardless of the active model — so a turn on
-  `mistral-small-latest` would have passed the old check and still built an
-  image block for a model that can't use it. `OrchestratorOptions` gained a
-  new optional `visionSupported?: boolean` — the ACTIVE model's vision
-  capability, resolved by the caller the same way `maxTokens` is already
-  resolved per-model, since `harness-orchestrator` deliberately has no
-  dependency on `@omadia/llm-provider`/`@omadia/llm-provider-api` and does
-  not resolve the model registry itself. Both call sites now read
-  `this.visionSupported ?? this.provider.capabilities.vision` — an explicit
-  per-model value wins; omitting it preserves the exact prior
-  provider-level behavior for callers not yet updated to pass it.
+  `mistral-small-latest` would still build an image block for a model that
+  can't use it. `OrchestratorOptions` gained a new optional
+  `visionSupported?: boolean` — the ACTIVE model's vision capability, meant
+  to be resolved by the caller the same way `maxTokens` is already resolved
+  per-model, since `harness-orchestrator` deliberately has no dependency on
+  `@omadia/llm-provider`/`@omadia/llm-provider-api` and does not resolve the
+  model registry itself. Both call sites now read `this.visionSupported ??
+  this.provider.capabilities.vision` — an explicit per-model value would win
+  if one were passed; omitting it preserves the exact prior provider-level
+  behavior. **This is a mechanism, not an end-to-end fix**: as of this PR no
+  real caller (`buildOrchestrator.ts`, `plugin.ts`, or any bundled config)
+  sets `visionSupported` yet, so the concrete `mistral-small` scenario above
+  is made fixable, not actually resolved in production today — a future
+  change still needs to wire the active model's real vision capability
+  through to `OrchestratorOptions` for any given connection. Backward
+  compatible either way: no caller passing it is a no-op, not a regression.
 - Review round 7: `checkVisionEmbeddable` compared the fetched image's RAW
   byte length against a 5MB cap, but that cap is Anthropic's documented
   per-image *base64-encoded* payload limit — comparing raw bytes against a
