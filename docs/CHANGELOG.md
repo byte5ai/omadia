@@ -118,6 +118,35 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   (`harness-memory`, `harness-memory-postgres`) are unaffected in practice:
   neither reports a connection status, so `PluginStatusRegistry.isReady()`
   defaults them to ready, exactly as before this fix.
+- Follow-up (review round 10), two remaining gaps: (1)
+  `OAuthReadinessTracker.refresh()` treated `tokens !== undefined` alone as
+  "connected" — it only checked that SOME token bundle was stored in the
+  vault, not that it was actually usable. `ctx.oauthTokens.get()`
+  (`pluginContext.ts`) throws `OAuthTokenError('refresh_failed')` for a
+  token that's expired AND has no refresh token to renew it with, so a
+  plugin in that state was still reported ready, offered, and dispatched —
+  failing on the first real call with the exact wasted round-trip #474 was
+  filed to eliminate. The "still fresh" expiry check `ctx.oauthTokens.get()`
+  already computes is now factored out into `tokenStore.ts`'s
+  `isTokenStillFresh`/`isTokenRefreshable` and reused by both call sites, so
+  the two can never drift on what counts as expired; a token that's expired
+  but HAS a refresh token still counts as ready (a refresh is expected to
+  succeed transparently). (2) The built-in Anthropic `memory` tool
+  (`{type:'memory_20250818', name:'memory'}`) is special-cased in both
+  `buildToolsList()` and `dispatchToolInner()` and dispatched via the
+  orchestrator's own per-Agent-scoped `memoryToolHandler` BEFORE the general
+  `NativeToolRegistry`/`isToolAvailable(agentId)` gate is ever consulted —
+  so a plugin contributing `memory` via `ctx.tools.registerHandler('memory',
+  ...)` (the same path `harness-memory`/`harness-memory-postgres` use) with
+  `isPluginToolsReady(pluginId) === false` still had it offered and
+  dispatched, completely bypassing round 8's fix. Both call sites now look
+  up the `memory` entry's own `agentId` (if any plugin registered it) and
+  run it through the same `isToolAvailable` gate before taking the fast
+  path. A marker-only / agentId-less entry (nothing registered `memory` via
+  a plugin) keeps the existing "no agentId ⇒ always-available" default, so
+  the two current always-ready memory plugins are unaffected as long as they
+  haven't reported not-ready — covered by a new test alongside the
+  gated-plugin case.
 
 ### Fixed — Teams-uploaded images now reach the model as vision input (#504, #505)
 

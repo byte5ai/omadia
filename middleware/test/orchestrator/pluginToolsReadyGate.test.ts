@@ -14,6 +14,8 @@ import type {
   LlmStreamEvent,
 } from '@omadia/llm-provider';
 import type { ChatStreamEvent } from '@omadia/channel-sdk';
+import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
+import { MemoryToolHandler } from '@omadia/memory';
 import { adaptManifestV1 } from '../../src/plugins/manifestLoader.js';
 import type { PluginCatalogEntry } from '../../src/plugins/manifestLoader.js';
 import { PluginStatusRegistry } from '../../src/platform/pluginStatusRegistry.js';
@@ -850,6 +852,218 @@ describe('Orchestrator — issue #474 round 8: registerHandler() readiness gate'
     assert.ok(
       systemText?.includes('KERNEL_INTERNAL_HANDLER_TOOL_PROMPT_DOC_MARKER'),
       'expected the kernel-internal registerHandler() promptDoc in the system prompt',
+    );
+  });
+});
+
+/**
+ * Issue #474 (review round 10) — the built-in Anthropic `memory` tool
+ * (`{type: 'memory_20250818', name: 'memory'}`) is special-cased in both
+ * `buildToolsList()` and `dispatchToolInner()`, dispatched via
+ * `this.memoryToolHandler` (the orchestrator's own per-Agent-scoped memory
+ * store — see buildOrchestrator.ts) BEFORE the generic
+ * `NativeToolRegistry`/`isToolAvailable(agentId)` path is ever consulted.
+ * A plugin that contributes `memory` via `ctx.tools.registerHandler(...)`
+ * (harness-memory / harness-memory-postgres, or any future one) must be
+ * gated exactly like every other `registerHandler()`-registered tool.
+ */
+class NullMemoryStore implements MemoryStore {
+  async list(): Promise<MemoryEntry[]> {
+    return [];
+  }
+  async fileExists(): Promise<boolean> {
+    return false;
+  }
+  async directoryExists(): Promise<boolean> {
+    return false;
+  }
+  async readFile(): Promise<string> {
+    throw new Error('not implemented in test double');
+  }
+  async createFile(): Promise<void> {}
+  async writeFile(): Promise<void> {}
+  async delete(): Promise<void> {}
+  async rename(): Promise<void> {}
+}
+
+describe('Orchestrator — issue #474 round 10: hardcoded memory-tool fast path', () => {
+  it('excludes the memory tool from the offered tool list when its registering plugin is not ready', async () => {
+    const registry = new NativeToolRegistry();
+    registry.registerHandler('memory', {
+      handler: async () => 'should never run',
+      agentId: 'gated-memory-plugin',
+    });
+
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      memoryToolHandler: new MemoryToolHandler(new NullMemoryStore()),
+      isPluginToolsReady: (agentId) => agentId !== 'gated-memory-plugin',
+    });
+
+    for await (const _ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      // drain
+    }
+
+    const offered = (seenRequests[0]?.tools ?? []).map((t) => t.name);
+    assert.ok(
+      !offered.includes('memory'),
+      `expected memory to be excluded from offered tools, got ${JSON.stringify(offered)}`,
+    );
+  });
+
+  it('refuses to dispatch the memory tool via the hardcoded fast path when its registering plugin is not ready', async () => {
+    const registry = new NativeToolRegistry();
+    let registryHandlerCalled = false;
+    registry.registerHandler('memory', {
+      handler: async () => {
+        registryHandlerCalled = true;
+        return 'should never run';
+      },
+      agentId: 'gated-memory-plugin',
+    });
+    let scopedHandlerCalled = false;
+    const memoryToolHandler = new MemoryToolHandler(new NullMemoryStore());
+    const originalHandle = memoryToolHandler.handle.bind(memoryToolHandler);
+    memoryToolHandler.handle = async (input: unknown) => {
+      scopedHandlerCalled = true;
+      return originalHandle(input);
+    };
+
+    const stream0 = streamWithTools([
+      { id: 'use-1', name: 'memory', input: { command: 'view', path: '/' } },
+    ]);
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([stream0, finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      memoryToolHandler,
+      isPluginToolsReady: (agentId) => agentId !== 'gated-memory-plugin',
+    });
+
+    const events: ChatStreamEvent[] = [];
+    for await (const ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      events.push(ev);
+    }
+
+    assert.equal(
+      registryHandlerCalled,
+      false,
+      'the registerHandler()-contributed memory handler must never run',
+    );
+    assert.equal(
+      scopedHandlerCalled,
+      false,
+      'the per-orchestrator scoped memoryToolHandler must never run either — the fast path must refuse before reaching it',
+    );
+    const result = events.find(
+      (e) => e.type === 'tool_result' && e.id === 'use-1',
+    );
+    assert.ok(result, 'expected a tool_result for the gated memory call');
+    assert.ok(
+      result?.type === 'tool_result' &&
+        result.isError === true &&
+        /Error:/.test(result.output),
+      `expected an Error: result, got ${JSON.stringify(result)}`,
+    );
+  });
+
+  it('keeps the memory tool available and dispatching when no plugin registered it (kernel marker-only entry)', async () => {
+    // Mirrors production: `Orchestrator`'s own constructor registers a
+    // marker-only 'memory' entry (no agentId) when nothing else did.
+    const registry = new NativeToolRegistry();
+
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      memoryToolHandler: new MemoryToolHandler(new NullMemoryStore()),
+      // Would gate every plugin-owned tool — must NOT affect the
+      // agentId-less, kernel-internal memory entry.
+      isPluginToolsReady: () => false,
+    });
+
+    for await (const _ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      // drain
+    }
+
+    const offered = (seenRequests[0]?.tools ?? []).map((t) => t.name);
+    assert.ok(
+      offered.includes('memory'),
+      `expected memory to stay offered with no registering plugin, got ${JSON.stringify(offered)}`,
+    );
+  });
+
+  it('keeps the memory tool available when contributed by a plugin that never reports a connection status (harness-memory / harness-memory-postgres today)', async () => {
+    const registry = new NativeToolRegistry();
+    let handlerCalled = false;
+    registry.registerHandler('memory', {
+      handler: async (input: unknown) => {
+        handlerCalled = true;
+        return `handled:${JSON.stringify(input)}`;
+      },
+      agentId: '@omadia/harness-memory',
+    });
+
+    const stream0 = streamWithTools([
+      { id: 'use-1', name: 'memory', input: { command: 'view', path: '/' } },
+    ]);
+    const seenRequests: LlmRequest[] = [];
+    const provider = fakeStreamProvider([stream0, finalTextStream], seenRequests);
+    const orchestrator = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      memoryToolHandler: new MemoryToolHandler(new NullMemoryStore()),
+      // Matches production wiring: only plugins that explicitly reported
+      // not-ready (via status/oauth signals) are excluded — harness-memory
+      // never calls ctx.status.report(...) and has no oauth field, so it
+      // stays ready by default.
+      isPluginToolsReady: (agentId) => agentId !== 'some-other-gated-plugin',
+    });
+
+    const events: ChatStreamEvent[] = [];
+    for await (const ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      events.push(ev);
+    }
+
+    const offered = (seenRequests[0]?.tools ?? []).map((t) => t.name);
+    assert.ok(
+      offered.includes('memory'),
+      `expected memory to stay offered for an always-ready plugin, got ${JSON.stringify(offered)}`,
+    );
+
+    const result = events.find(
+      (e) => e.type === 'tool_result' && e.id === 'use-1',
+    );
+    assert.ok(result, 'expected a tool_result for the memory call');
+    assert.ok(
+      result?.type === 'tool_result' && result.isError !== true,
+      `expected a successful result, got ${JSON.stringify(result)}`,
+    );
+    assert.equal(
+      handlerCalled,
+      false,
+      'the per-orchestrator scoped memoryToolHandler must win (per-orchestrator isolation), not the registry handler',
     );
   });
 });

@@ -4738,7 +4738,22 @@ export class Orchestrator {
     // handler (which wraps the unscoped FilesystemMemoryStore). Checked
     // before the generic `reg?.handler` dispatch below, since `memory` is a
     // plugin-registered native tool and would otherwise win here unscoped.
+    //
+    // Issue #474 (review round 10) — this fast path bypassed the readiness
+    // gate entirely: a plugin that contributes `memory` via
+    // `ctx.tools.registerHandler('memory', ...)` (e.g. harness-memory /
+    // harness-memory-postgres) still has its own `agentId` recorded on the
+    // NativeToolRegistry entry, so re-derive that agentId here and run it
+    // through the same `isToolAvailable` gate the generic `reg?.handler`
+    // path below already uses. A marker-only / agentId-less entry (nothing
+    // registered `memory` via a plugin) keeps its `agentId === undefined ⇒
+    // always-available` default, so the two current always-ready memory
+    // plugins are unaffected as long as they haven't reported not-ready.
     if (name === MEMORY_TOOL_NAME && this.memoryToolHandler) {
+      const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
+      if (!this.isToolAvailable(memoryAgentId)) {
+        return `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`;
+      }
       return this.memoryToolHandler.handle(input);
     }
     // Plugin-contributed handlers win first. Kernel branches below are the
@@ -5196,7 +5211,16 @@ export class Orchestrator {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildToolsList(): any[] {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tools: any[] = [{ type: MEMORY_TOOL_TYPE, name: MEMORY_TOOL_NAME }];
+    const tools: any[] = [];
+    // Issue #474 (review round 10) — the hardcoded `memory` tool spec used
+    // to be pushed unconditionally, bypassing the readiness gate applied to
+    // every other plugin-contributed tool below. Mirror `isToolAvailable`'s
+    // `dispatchToolInner` check: gate on the `agentId` of whichever plugin
+    // (if any) registered `memory` via `ctx.tools.registerHandler('memory')`.
+    const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
+    if (this.isToolAvailable(memoryAgentId)) {
+      tools.push({ type: MEMORY_TOOL_TYPE, name: MEMORY_TOOL_NAME });
+    }
     if (this.knowledgeGraphTool) tools.push(knowledgeGraphToolSpec);
     // Diagrams + enrich_company tool specs come from nativeTools registry (plugin-contributed).
     if (this.chatParticipantsTool) tools.push(chatParticipantsToolSpec);

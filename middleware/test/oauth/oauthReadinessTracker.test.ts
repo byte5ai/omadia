@@ -160,4 +160,67 @@ describe('OAuthReadinessTracker', () => {
 
     assert.equal(tracker.isConnected(ID), true);
   });
+
+  /**
+   * Issue #474 (review round 10) — `refresh()` previously treated
+   * `tokens !== undefined` alone as "connected", i.e. it only checked that
+   * SOME token bundle was stored, not that it was actually usable.
+   * `ctx.oauthTokens.get()` (pluginContext.ts) throws
+   * `OAuthTokenError('refresh_failed')` for an expired token with no refresh
+   * token — that plugin's tool must not be reported ready either.
+   */
+  it('marks a plugin with an expired, non-refreshable token as NOT ready', async () => {
+    const tracker = new OAuthReadinessTracker();
+    const entry = entryWithFields([
+      { key: 'connection', type: 'oauth', label: 'Connect', provider: 'github' },
+    ]);
+    const vault = new FakeVault();
+    // Concrete failing input from the review: expired, empty refresh token.
+    await writeStoredTokens(vault, ID, 'connection', {
+      accessToken: 'old',
+      refreshToken: '',
+      expiresAt: '2020-01-01T00:00:00.000Z',
+      scope: '',
+    });
+
+    await tracker.refresh(ID, entry, vault);
+
+    assert.equal(tracker.isConnected(ID), false);
+  });
+
+  it('keeps a plugin with an expired BUT refreshable token ready (refresh is expected to succeed transparently)', async () => {
+    const tracker = new OAuthReadinessTracker();
+    const entry = entryWithFields([
+      { key: 'connection', type: 'oauth', label: 'Connect', provider: 'github' },
+    ]);
+    const vault = new FakeVault();
+    await writeStoredTokens(vault, ID, 'connection', {
+      accessToken: 'old',
+      refreshToken: 'has-a-refresh-token',
+      expiresAt: '2020-01-01T00:00:00.000Z',
+      scope: '',
+    });
+
+    await tracker.refresh(ID, entry, vault);
+
+    assert.equal(tracker.isConnected(ID), true);
+  });
+
+  it('keeps a plugin with a valid, unexpired token ready', async () => {
+    const tracker = new OAuthReadinessTracker();
+    const entry = entryWithFields([
+      { key: 'connection', type: 'oauth', label: 'Connect', provider: 'github' },
+    ]);
+    const vault = new FakeVault();
+    await writeStoredTokens(vault, ID, 'connection', {
+      accessToken: 'fresh',
+      refreshToken: '',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      scope: '',
+    });
+
+    await tracker.refresh(ID, entry, vault);
+
+    assert.equal(tracker.isConnected(ID), true);
+  });
 });

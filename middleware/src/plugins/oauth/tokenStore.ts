@@ -28,6 +28,42 @@ export function oauthVaultKey(fieldKey: string): string {
   return `oauth.${fieldKey}`;
 }
 
+/**
+ * Issue #474 (review round 10) — the refresh margin `ctx.oauthTokens.get()`
+ * (pluginContext.ts) uses to decide whether a stored access token still
+ * needs renewing. Exported so `isTokenRefreshable` below can mirror the
+ * exact same "expired" definition instead of inventing a second one that
+ * could drift from the real consumer's behaviour.
+ */
+export const OAUTH_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+
+/** True when `stored`'s access token has more than the refresh margin left
+ *  before `expiresAt` (an unparseable/missing `expiresAt` counts as NOT
+ *  fresh). Shared by pluginContext.ts's `ctx.oauthTokens.get()` (refreshes
+ *  when this is false) and `OAuthReadinessTracker` (treats "not fresh AND no
+ *  refresh token" as not-ready) so the two can never disagree on what counts
+ *  as expired. */
+export function isTokenStillFresh(
+  stored: Pick<StoredOAuthTokens, 'expiresAt'>,
+): boolean {
+  const expiresMs = Date.parse(stored.expiresAt);
+  return (
+    Number.isFinite(expiresMs) && expiresMs - Date.now() > OAUTH_REFRESH_MARGIN_MS
+  );
+}
+
+/**
+ * Issue #474 (review round 10) — true when `stored` can currently produce a
+ * usable access token: either it's still fresh, or it's expired but has a
+ * refresh token to renew it with (a refresh is expected to succeed
+ * transparently). False only when it's expired/unparseable AND has no
+ * refresh token — the exact case where `ctx.oauthTokens.get()` throws
+ * `OAuthTokenError('refresh_failed')` with no way to recover automatically.
+ */
+export function isTokenRefreshable(stored: StoredOAuthTokens): boolean {
+  return isTokenStillFresh(stored) || stored.refreshToken !== '';
+}
+
 export async function writeStoredTokens(
   vault: SecretVault,
   pluginId: string,

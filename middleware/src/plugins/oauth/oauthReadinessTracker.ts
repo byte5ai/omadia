@@ -1,6 +1,6 @@
 import type { PluginCatalogEntry } from '../manifestLoader.js';
 import type { SecretVault } from '../../secrets/vault.js';
-import { readStoredTokens } from './tokenStore.js';
+import { isTokenRefreshable, readStoredTokens } from './tokenStore.js';
 
 /**
  * Issue #474 (review round 5) — automatic OAuth-connection readiness signal.
@@ -42,7 +42,14 @@ export class OAuthReadinessTracker {
   /** Re-derive `pluginId`'s connection state from the vault and cache the
    *  result. Connected (cache cleared) when the plugin declares no
    *  `type:'oauth'` setup field, or when every declared oauth field has
-   *  stored tokens; not-connected otherwise. */
+   *  stored tokens that are either still fresh or expired-with-a-refresh-
+   *  token (mirroring `ctx.oauthTokens.get()`'s own refreshability check via
+   *  `isTokenRefreshable` — see tokenStore.ts); not-connected otherwise.
+   *
+   *  Issue #474 (review round 10) — a token bundle existing in the vault is
+   *  NOT enough: `ctx.oauthTokens.get()` throws `OAuthTokenError
+   *  ('refresh_failed')` for an expired token with no refresh token to renew
+   *  it, so a plugin in that state must not be reported ready either. */
   async refresh(
     pluginId: string,
     entry: PluginCatalogEntry | undefined,
@@ -58,8 +65,10 @@ export class OAuthReadinessTracker {
     const stored = await Promise.all(
       fieldKeys.map((fieldKey) => readStoredTokens(vault, pluginId, fieldKey)),
     );
-    const allConnected = stored.every((tokens) => tokens !== undefined);
-    if (allConnected) {
+    const allUsable = stored.every(
+      (tokens) => tokens !== undefined && isTokenRefreshable(tokens),
+    );
+    if (allUsable) {
       this.disconnected.delete(pluginId);
     } else {
       this.disconnected.add(pluginId);

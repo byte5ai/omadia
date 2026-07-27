@@ -79,6 +79,7 @@ import {
   resolveOAuthProvider,
 } from '../plugins/oauth/providerResolve.js';
 import {
+  isTokenStillFresh,
   readStoredTokens,
   writeStoredTokens,
 } from '../plugins/oauth/tokenStore.js';
@@ -552,7 +553,10 @@ export function createPluginContext(
   // rotating the stored refresh token. The refresh token NEVER leaves this
   // closure — only the access token is returned. Resolution shares
   // `resolveOAuthProvider` with the broker so the two can't drift.
-  const REFRESH_MARGIN_MS = 5 * 60 * 1000;
+  //
+  // Issue #474 (round 10) — the "still fresh" check is factored out to
+  // `tokenStore.ts`'s `isTokenStillFresh` so `OAuthReadinessTracker` can
+  // mirror this exact expiry rule instead of inventing its own.
   const hasOAuthField =
     catalog
       .get(agentId)
@@ -567,11 +571,7 @@ export function createPluginContext(
               `oauth field '${fieldKey}' is not connected — complete the Connect flow first`,
             );
           }
-          const expiresMs = Date.parse(stored.expiresAt);
-          const stillFresh =
-            Number.isFinite(expiresMs) &&
-            expiresMs - Date.now() > REFRESH_MARGIN_MS;
-          if (stillFresh) return stored.accessToken;
+          if (isTokenStillFresh(stored)) return stored.accessToken;
 
           if (!stored.refreshToken) {
             throw new OAuthTokenError(
