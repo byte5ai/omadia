@@ -47,6 +47,7 @@ import type {
   OrchestratorRegistry as MultiOrchestratorRegistry,
 } from '@omadia/orchestrator';
 import { createMemoryRouter } from './routes/memory.js';
+import { createDatasetsRouter } from './routes/datasets.js';
 import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
 import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createDuplicatesRouter } from './routes/duplicates.js';
@@ -2234,6 +2235,15 @@ async function main(): Promise<void> {
     createMemoryRouter({ graph: knowledgeGraph }),
   );
   console.log('[middleware] memory endpoint ready at /api/v1/memory (auth-gated)');
+
+  // #430 — structured dataset ingestion (CSV import) REST surface. Same
+  // requireAuth + per-route session-user ACL pattern as /api/v1/memory.
+  app.use(
+    '/api/v1/datasets',
+    requireAuth,
+    createDatasetsRouter({ graph: knowledgeGraph }),
+  );
+  console.log('[middleware] datasets endpoint ready at /api/v1/datasets (auth-gated)');
 
   // Slice 8 — bulk score + promote admin endpoint. Mounted only when
   // the orchestrator-extras plugin published the bulkPromotion service
