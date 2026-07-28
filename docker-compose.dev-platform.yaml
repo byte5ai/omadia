@@ -133,8 +133,21 @@ services:
       # The daemon refuses to boot on a half-configuration.
       DEV_RUNNER_EGRESS_PROXY_URL: http://172.28.5.3:3128
       DEV_RUNNER_EGRESS_PROXY_CONTROL_URL: http://172.28.4.3:3129
-      # The runner reaches the middleware directly, not through the proxy.
-      DEV_RUNNER_NO_PROXY: middleware,localhost,127.0.0.1
+      # The runner does NOT reach the middleware directly -- it CANNOT: job
+      # containers are created by dind on their own per-job network, which has
+      # no route to dev-control (where `middleware` actually lives). Only the
+      # proxy is dual-homed onto both dev-egress (job-reachable) and dev-control
+      # (middleware-reachable), so phone-home traffic must go THROUGH it, not
+      # around it. The proxy's own egress policy (egressPolicy.mjs) already
+      # special-cases exactly this: a request whose host+port equals
+      # OMADIA_INTERNAL_API_URL (this same dev-egress-proxy's own env, set to
+      # http://middleware:8080) is allowed regardless of path -- so listing
+      # "middleware" here to bypass the proxy doesn't skip an unnecessary hop,
+      # it routes phone-home into a dead end: `getaddrinfo ENOTFOUND middleware`
+      # from inside the job's network, which is where every real job died after
+      # the runner-image/digest/token gates were fixed. Only localhost/127.0.0.1
+      # (traffic that never leaves the container) belong on this bypass list.
+      DEV_RUNNER_NO_PROXY: localhost,127.0.0.1
 
       # A lease says "still working"; it can never say "run forever".
       DEV_RUNNER_MAX_JOB_LIFETIME_MS: ${DEV_RUNNER_MAX_JOB_LIFETIME_MS:-21600000}

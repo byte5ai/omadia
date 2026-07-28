@@ -310,4 +310,19 @@ describe('dev-platform compose overlay — the middleware can actually derive a 
     assert.ok(middlewareImage, 'middleware image must be set to compare');
     assert.ok(daemonImages?.includes(middlewareImage as string), 'daemon and middleware must name the same image');
   });
+
+  it('never tells the runner to bypass the proxy for the middleware', () => {
+    // Job containers are created by dind on their own per-job network, which has
+    // NO route to dev-control -- the network `middleware` actually lives on.
+    // Only the proxy is dual-homed onto dev-egress (job-reachable) and
+    // dev-control (middleware-reachable). Bypassing the proxy for "middleware"
+    // routes phone-home into `getaddrinfo ENOTFOUND middleware` from inside the
+    // job's network -- exactly where every real job died after the
+    // runner-image/digest/token gates were fixed. The proxy's own egress policy
+    // already allows this host+port through (egressPolicy.mjs's `allowInternal`
+    // match against OMADIA_INTERNAL_API_URL), so there is no reason to bypass it.
+    const noProxy = overlay.services['dev-runner-daemon']?.environment?.['DEV_RUNNER_NO_PROXY'] ?? '';
+    const entries = noProxy.split(',').map((s) => s.trim());
+    assert.ok(!entries.includes('middleware'), 'middleware must route THROUGH the proxy, never around it');
+  });
 });
