@@ -35,6 +35,25 @@ Wenn die Zuordnung unklar ist: lieber in CHANGELOG notieren als gar nicht — sp
 
 Ohne mindestens Punkte 1–3 darf kein Code geändert werden.
 
+## Task-Routing: welches Werkzeug für welche Aufgabengröße
+
+Bevor eine Aufgabe begonnen wird: welche Größenordnung hat sie, und passt eines der vorhandenen `scripts/*.workflow.mjs`-Pipelines besser als Ad-hoc-Arbeit in der aktuellen Session?
+
+| Umfang | Beispiel | Werkzeug |
+|---|---|---|
+| Einzeldatei / triviale Änderung | Typo-Fix, eine Funktion anpassen | Inline in der aktuellen Session — kein Workflow nötig |
+| Ein Issue, wenige Dateien, ein Package | Bugfix in einem `middleware/packages/@omadia/*`-Package | `issue-triage.workflow.mjs` (Plan/Checklist) → `issue-implement.workflow.mjs` (Umsetzung, worktree-isoliert, zwei unabhängige Reviewer) |
+| Mehrere zusammenhängende Issues / Epic | Cross-Package-Feature | `issue-cluster.workflow.mjs` (Gruppierung nach Datei-Overlap) → `wave-decompose.workflow.mjs` → `wave-implement.workflow.mjs` (cross-family adversarial review, Cato für Security) → `wave-verify.workflow.mjs` |
+| Feature von woanders adaptieren | Existierendes Muster aus anderem Projekt übernehmen | `issue-adapt-plan.workflow.mjs` → `issue-adapt-build.workflow.mjs` |
+
+Alle Skripte in `scripts/*.workflow.mjs` laufen über das `Workflow`-Tool (`Workflow({ scriptPath: "scripts/<name>.workflow.mjs", args: {...} })`), nicht als eigenständige Node-Prozesse. Keines von ihnen pusht oder merged selbstständig nach GitHub — "PR erstellen" bzw. "mergen" bleibt immer ein expliziter, von einer Top-Level-Session oder einem Menschen ausgelöster Schritt.
+
+**Review-Kriterien referenzieren statt duplizieren:**
+- Plugin-Contract (PluginContext, 10-Punkte-Package-Checklist): `middleware/assets/boilerplate/{agent-integration,agent-pure-llm}/CLAUDE.md` — das ist die kanonische Quelle; `docs/harness-platform/` ist nur lokales, gitignored Scratch und darf nicht als Referenz zitiert werden.
+- i18n-Regeln für Frontend-Komponenten: `web-ui/CLAUDE.md`.
+
+**Bekannte offene Baustelle beim Testen:** `middleware/test/builder/builderPreviewRoutes.test.ts:735` — dokumentierte Cross-File-Test-Pollution (Test ist isoliert grün, im vollen `npm run test`-Lauf liefert er 404 statt 401 wegen State-Leak aus einer anderen Testdatei). Bevor Build-/Test-Caching (z. B. Turborepo) für die 28 `middleware/packages/@omadia/*`-Packages eingeführt wird, sollte diese Bug-Klasse behoben werden — sonst wird nur unzuverlässiges Grün schneller ausgeliefert.
+
 ## Working in a multi-session repo
 
 **Convention (enforced):** the main clone never receives commits. Every change — even a single-line typo fix — lands in a worktree. This is branch-agnostic: an agent whose HEAD got switched to `main` by a parallel session is caught here too, not just one that created a feature branch in the wrong tree. Enforced by the `.hooks/pre-commit` hook shipped via the engineering-standards skill.
