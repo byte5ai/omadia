@@ -115,7 +115,7 @@ async function writeFakeCli(): Promise<void> {
 const fs = require('fs'); const path = require('path');
 process.stdin.resume(); process.stdin.on('end', () => {
   const artifact = process.env.OMADIA_PHASE_ARTIFACT;
-  try { fs.writeFileSync(path.join(process.env.HOME, 'ran.json'), JSON.stringify({ home: process.env.HOME, artifact: artifact || null })); } catch {}
+  try { fs.writeFileSync(path.join(process.env.HOME, 'ran.json'), JSON.stringify({ home: process.env.HOME, artifact: artifact || null, anthropicAuthToken: process.env.ANTHROPIC_AUTH_TOKEN || null, anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || null })); } catch {}
   if (artifact) {
     const m = /artifact-(.+?)-\\d+\\.json$/.exec(path.basename(artifact));
     const phase = m ? m[1] : '';
@@ -267,5 +267,39 @@ describe('runPhasedShim — bootstrap runs as a command, not a CLI session', () 
     assert.ok(ran, 'the bootstrap command executed on the job volume');
     const homes = await listSessionHomes();
     assert.deepEqual(homes, [], 'bootstrap starts no agent session');
+  });
+});
+
+describe('runPhasedShim — W1 LLM auth passthrough (the docker backend\'s real path)', () => {
+  afterEach(() => {
+    delete process.env['ANTHROPIC_BASE_URL'];
+  });
+
+  it('forwards the policy-supplied ANTHROPIC_BASE_URL + ShimEnv.jobToken into each phase session, with NO jail acknowledgment', async () => {
+    // deriveJobPolicy.ts sets plain ANTHROPIC_BASE_URL (no OMADIA_ prefix) on
+    // the container; there is no OMADIA_ANTHROPIC_AUTH_TOKEN at all for a real
+    // docker job — the per-job jobToken already on ShimEnv is the bearer the
+    // LLM proxy resolves the calling job from (llmProxy.ts). llmEnvAllowed
+    // stays false in the fixture: the short-lived per-job token stands in for
+    // the W0 jail acknowledgment rather than requiring it.
+    process.env['ANTHROPIC_BASE_URL'] = 'http://middleware:8080/api/v1/dev-runner/llm';
+    const home = new ScriptedHome(makeSpec(), [
+      { directive: 'next', phase: 'plan' },
+      { directive: 'next', phase: 'clarify' },
+      { directive: 'park' },
+    ]);
+    const code = await runPhasedShim({ ...env, jobToken: 'djr_w1-gated-token' }, { home, gitBin, log: () => {} });
+    assert.equal(code, 0, 'park exits 0');
+
+    const homes = await listSessionHomes();
+    assert.equal(homes.length, 3, 'one fresh HOME per phase');
+    for (const h of homes) {
+      const ran = JSON.parse(await readFile(path.join(ws, 'home', h, 'ran.json'), 'utf8')) as {
+        anthropicAuthToken: string | null;
+        anthropicBaseUrl: string | null;
+      };
+      assert.equal(ran.anthropicAuthToken, 'djr_w1-gated-token', `${h}: the per-job bearer, not a middleware secret`);
+      assert.equal(ran.anthropicBaseUrl, 'http://middleware:8080/api/v1/dev-runner/llm', `${h}`);
+    }
   });
 });

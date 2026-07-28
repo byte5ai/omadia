@@ -194,14 +194,25 @@ export class PhaseRunner {
     const homeDir = path.join(this.c.env.workspace, 'home', `${phase}-${sessionIdx}`);
     await mkdir(homeDir, { recursive: true });
 
-    const proxyBaseUrl = process.env['OMADIA_ANTHROPIC_BASE_URL']?.trim();
-    const proxyToken = process.env['OMADIA_ANTHROPIC_AUTH_TOKEN']?.trim();
+    // W1: `ANTHROPIC_BASE_URL` (policy-supplied, deriveJobPolicy.ts) plus the
+    // per-job bearer already on ShimEnv (`jobToken`, required, sourced from
+    // `OMADIA_JOB_TOKEN`) ARE the "W1's per-job, short-lived LLM-proxy tokens"
+    // ShimEnv.llmEnvAllowed's own doc comment says replace the W0 passthrough
+    // entirely -- a short-lived, per-job token is a different threat model
+    // from W0's long-lived middleware secret, so its presence stands in for
+    // the W0 jail acknowledgment rather than requiring it. Falls back to the
+    // legacy OMADIA_ANTHROPIC_* pair (still gated behind llmEnvAllowed) only
+    // when there is no W1 base URL, i.e. genuinely running under W0.
+    const w1BaseUrl = process.env['ANTHROPIC_BASE_URL']?.trim();
+    const proxyBaseUrl = w1BaseUrl || process.env['OMADIA_ANTHROPIC_BASE_URL']?.trim();
+    const proxyToken = w1BaseUrl ? this.c.env.jobToken : process.env['OMADIA_ANTHROPIC_AUTH_TOKEN']?.trim();
+    const llmEnvAllowed = this.c.env.llmEnvAllowed || Boolean(w1BaseUrl);
     const agent = runAgent({
       cliBin: this.c.env.cliBin,
       cwd: this.c.repoDir,
       homeDir,
       spec: this.c.spec,
-      llmEnvAllowed: this.c.env.llmEnvAllowed,
+      llmEnvAllowed,
       ...(proxyBaseUrl ? { proxyBaseUrl } : {}),
       ...(proxyToken ? { proxyToken } : {}),
       promptOverride: prompt,
