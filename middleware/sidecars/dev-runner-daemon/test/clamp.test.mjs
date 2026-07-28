@@ -84,6 +84,24 @@ describe('buildContainerCreateOptions — REQUIRED clamp fields present', () => 
   });
 });
 
+describe('buildContainerCreateOptions — ExtraHosts (pre-resolved allowlist entries)', () => {
+  it('defaults to an empty array when no extraHosts are given', () => {
+    const hc = build().HostConfig ?? {};
+    assert.deepEqual(hc.ExtraHosts, []);
+  });
+
+  it('passes the given entries through verbatim — this function derives nothing itself', () => {
+    const entries = ['registry.npmjs.org:104.16.0.35', 'github.com:140.82.121.3'];
+    const hc = build({ extraHosts: entries }).HostConfig ?? {};
+    assert.deepEqual(hc.ExtraHosts, entries);
+  });
+
+  it('is still distinct from the forbidden Dns field — a resolver override stays refused', () => {
+    const hc = build({ extraHosts: ['registry.npmjs.org:104.16.0.35'] }).HostConfig ?? {};
+    assert.equal(hc.Dns, undefined);
+  });
+});
+
 describe('buildContainerCreateOptions — FORBIDDEN options are absent by construction', () => {
   const o = build();
   const hc = /** @type {Record<string, unknown>} */ (o.HostConfig ?? {});
@@ -94,6 +112,7 @@ describe('buildContainerCreateOptions — FORBIDDEN options are absent by constr
     const allowed = [
       'Binds',
       'CapDrop',
+      'ExtraHosts',
       'Memory',
       'MemorySwap',
       'NanoCpus',

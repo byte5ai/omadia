@@ -30,7 +30,9 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { lookup as dnsLookup } from 'node:dns/promises';
 import { readFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { PassThrough, Readable } from 'node:stream';
 import { join } from 'node:path';
 
@@ -916,6 +918,52 @@ export function resolvePullPolicy(env) {
 }
 
 /**
+ * Pre-resolve a job's egress allowlist using the DAEMON's own DNS (this
+ * process runs with normal internet access, unlike the job's isolated
+ * per-job network, which has no route to a real resolver by design — spec
+ * §6's "DNS-exfil defence"). The result feeds `buildContainerCreateOptions`'s
+ * `extraHosts`, giving the job container static `/etc/hosts` entries for
+ * hosts it can ALREADY reach through the CONNECT proxy — this adds no new
+ * egress capability, it only makes LOCAL name resolution of those SAME
+ * already-permitted hosts succeed.
+ *
+ * Root cause this exists for (2026-07-28, epic #470): npm's own HTTP client
+ * (`@npmcli/agent`) resolves its target hostname locally before/alongside
+ * the CONNECT tunnel. Confirmed live: a direct `dns.lookup()` inside a job
+ * container fails in 4ms with `EAI_AGAIN` — Docker's embedded resolver
+ * (127.0.0.11) has no upstream for external names. Hit for every concurrent
+ * package fetch, this triggers npm's own confirmed ExitHandler re-entrancy
+ * race (npm/cli#9751, "Exit handler never called!"). Any tool doing local
+ * resolution of an allowlisted host hits the same wall — this fixes it at
+ * the root rather than chasing npm's specific internal behavior.
+ *
+ * A host that fails to resolve here is skipped, not fatal — the CONNECT
+ * tunnel path (the proxy's own, independent resolution) still works for it
+ * regardless; this is a best-effort improvement to LOCAL resolution, not a
+ * new correctness requirement for egress itself.
+ *
+ * @param {readonly string[]} allowlist
+ * @param {(host: string) => Promise<{ address: string }>} [lookup] DNS seam (tests inject a fake).
+ * @returns {Promise<string[]>} `host:ip` entries, Docker's `ExtraHosts` format.
+ */
+export async function resolveAllowlistHosts(allowlist, lookup = dnsLookup) {
+  const entries = await Promise.all(
+    allowlist.map(async (host) => {
+      // Already a literal — nothing to pre-resolve, and it would be a
+      // malformed ExtraHosts entry (Docker expects a NAME on the left).
+      if (isIP(host) !== 0) return null;
+      try {
+        const { address } = await lookup(host);
+        return `${host}:${address}`;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return entries.filter((entry) => entry !== null);
+}
+
+/**
  * A real dockerode-backed engine implementing the full §4 container lifecycle
  * behind the `ContainerEngine` seam. `createJobContainer` builds the create-options
  * via the PURE `buildContainerCreateOptions` and hands THAT EXACT object to
@@ -926,10 +974,12 @@ export function resolvePullPolicy(env) {
  * @param {object} [opts]
  * @param {Docker} [opts.docker] Injected client (else built from env).
  * @param {NodeJS.ProcessEnv} [opts.env]
+ * @param {(host: string) => Promise<{ address: string }>} [opts.resolveHost] DNS seam for `resolveAllowlistHosts` (tests inject a fake).
  * @returns {ContainerEngine}
  */
 export function createDockerEngine(opts = {}) {
   const env = opts.env ?? process.env;
+  const resolveHost = opts.resolveHost ?? dnsLookup;
   const docker = opts.docker ?? new Docker(dockerOptionsFromEnv(env));
   const limits = resolveClampLimits(env);
   const createdBy = env.DEV_RUNNER_CREATED_BY?.trim() || 'omadia-middleware';
@@ -959,6 +1009,9 @@ export function createDockerEngine(opts = {}) {
       const networkName = jobNetworkName(jobId);
       const volumeName = jobVolumeName(jobId);
       const dockerInJob = policy.dockerInJob === true;
+      // Pre-resolve the allowlist with the DAEMON's own working DNS — the job's
+      // isolated network has none (see resolveAllowlistHosts's own doc comment).
+      const extraHosts = await resolveAllowlistHosts(policy.egressAllowlist, resolveHost);
       // Build (and thereby VALIDATE) the create-options FIRST: a forbidden spec
       // (a floating-tag image) throws SpecRejectedError here, before any docker
       // resource is created — so a rejected job leaks nothing.
@@ -970,6 +1023,7 @@ export function createDockerEngine(opts = {}) {
         volumeName,
         createdBy,
         limits,
+        extraHosts,
         requireDigest,
         dockerInJob,
       });

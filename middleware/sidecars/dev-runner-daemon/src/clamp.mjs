@@ -230,7 +230,7 @@ export function jobVolumeName(jobId) {
  * @returns {import('dockerode').ContainerCreateOptions}
  */
 export function buildContainerCreateOptions(args) {
-  const { jobId, policy, leaseExpiresAt, networkName, volumeName, createdBy, limits } = args;
+  const { jobId, policy, leaseExpiresAt, networkName, volumeName, createdBy, limits, extraHosts } = args;
   const dockerInJob = args.dockerInJob === true;
   // Fail closed: only an explicit `false` relaxes the digest requirement.
   const requireDigest = args.requireDigest !== false;
@@ -319,6 +319,24 @@ export function buildContainerCreateOptions(args) {
       Ulimits: [{ Name: 'nofile', Soft: limits.nofile, Hard: limits.nofile }],
       // A job container never restarts — a dead job is a dead job.
       RestartPolicy: { Name: 'no' },
+      // Static `host:ip` entries the DAEMON pre-resolved for this job's OWN
+      // egress allowlist (jobs.mjs's resolveAllowlistHosts, using the daemon's
+      // real internet DNS — the job's isolated network has none by design).
+      // This is NOT a general DNS override: unlike the forbidden `Dns` field
+      // (which would let a policy point resolution at an arbitrary server and
+      // escape the allowlist entirely), every entry here names a host the job
+      // could already reach through the CONNECT proxy — it only makes LOCAL
+      // resolution of that SAME already-permitted host succeed too. Root
+      // cause (2026-07-28): npm's own HTTP client (@npmcli/agent) resolves
+      // its target hostname locally before/alongside the CONNECT tunnel; the
+      // job network's embedded resolver (127.0.0.11) has no upstream route
+      // for external names and returns EAI_AGAIN instantly, which — hit for
+      // every concurrent package fetch — triggers npm's own confirmed
+      // ExitHandler re-entrancy race (npm/cli#9751, "Exit handler never
+      // called!"). Always present (possibly empty) so the clamp's own
+      // "exactly these keys" invariant holds regardless of whether this
+      // job's policy allowlisted anything.
+      ExtraHosts: extraHosts ?? [],
     },
   };
 }

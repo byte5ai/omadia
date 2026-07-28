@@ -19,7 +19,7 @@ import { describe, it } from 'node:test';
 import Docker from 'dockerode';
 
 import { SpecRejectedError } from '../src/clamp.mjs';
-import { createDockerEngine, JobCancelledError, JobCapacityError, JobCleanupError, JobManager, resolvePullPolicy } from '../src/jobs.mjs';
+import { createDockerEngine, JobCancelledError, JobCapacityError, JobCleanupError, JobManager, resolveAllowlistHosts, resolvePullPolicy } from '../src/jobs.mjs';
 
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -501,8 +501,9 @@ function makeFakeDocker(opts = {}) {
       volumes.add(o.Name);
       return { Name: o.Name };
     },
-    async createContainer(_o) {
+    async createContainer(o) {
       if (opts.containerCreateFail) throw opts.containerCreateFail;
+      if (opts.createContainerCalls) opts.createContainerCalls.push(o);
       const id = `ctr-${++seq}`;
       containers.add(id);
       return containerHandle(id);
@@ -530,6 +531,45 @@ function makeFakeDocker(opts = {}) {
   };
 }
 
+describe('resolveAllowlistHosts — pre-resolves an allowlist for ExtraHosts', () => {
+  it('resolves each host and formats Docker\'s host:ip ExtraHosts entries', async () => {
+    const lookup = async (host) => {
+      if (host === 'registry.npmjs.org') return { address: '104.16.0.35' };
+      if (host === 'github.com') return { address: '140.82.121.3' };
+      throw new Error(`unexpected lookup for ${host}`);
+    };
+    const result = await resolveAllowlistHosts(['registry.npmjs.org', 'github.com'], lookup);
+    assert.deepEqual(result.sort(), ['github.com:140.82.121.3', 'registry.npmjs.org:104.16.0.35'].sort());
+  });
+
+  it('skips a host that fails to resolve — non-fatal, the CONNECT path still works for it', async () => {
+    const lookup = async (host) => {
+      if (host === 'flaky.example.com') throw Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' });
+      return { address: '203.0.113.10' };
+    };
+    const result = await resolveAllowlistHosts(['flaky.example.com', 'good.example.com'], lookup);
+    assert.deepEqual(result, ['good.example.com:203.0.113.10']);
+  });
+
+  it('skips an already-literal IP entry — nothing to pre-resolve, and it is not a valid ExtraHosts name', async () => {
+    let called = false;
+    const lookup = async () => {
+      called = true;
+      return { address: '0.0.0.0' };
+    };
+    const result = await resolveAllowlistHosts(['203.0.113.5'], lookup);
+    assert.deepEqual(result, []);
+    assert.equal(called, false, 'an IP literal is never handed to the lookup seam');
+  });
+
+  it('an empty allowlist resolves to an empty array', async () => {
+    const result = await resolveAllowlistHosts([], async () => {
+      throw new Error('must not be called');
+    });
+    assert.deepEqual(result, []);
+  });
+});
+
 describe('createDockerEngine — createJobContainer applies the clamp and provisions cleanly', () => {
   it('pulls by digest, creates the per-job network+volume+container, starts it, returns the handle', async () => {
     const docker = makeFakeDocker();
@@ -550,6 +590,39 @@ describe('createDockerEngine — createJobContainer applies the clamp and provis
     assert.equal(docker.state.volumes.size, 1, 'one per-job volume');
     assert.equal(docker.state.containers.size, 1, 'one container');
     assert.equal(docker.state.events.started.length, 1, 'the container was started');
+  });
+
+  it('pre-resolves the egress allowlist and passes host:ip entries as HostConfig.ExtraHosts', async () => {
+    const createContainerCalls = [];
+    const docker = makeFakeDocker({ createContainerCalls });
+    const lookup = async (host) => {
+      if (host === 'registry.npmjs.org') return { address: '104.16.0.35' };
+      throw new Error(`unexpected lookup for ${host}`);
+    };
+    const engine = createDockerEngine({ docker, env: {}, resolveHost: lookup });
+
+    await engine.createJobContainer({
+      jobId: JOB_ID,
+      policy: { ...enginePolicy(), egressAllowlist: ['registry.npmjs.org'] },
+      leaseExpiresAt: '2026-07-10T12:00:00.000Z',
+    });
+
+    assert.equal(createContainerCalls.length, 1);
+    assert.deepEqual(createContainerCalls[0].HostConfig.ExtraHosts, ['registry.npmjs.org:104.16.0.35']);
+  });
+
+  it('an empty egress allowlist yields an empty ExtraHosts array — no change for a repo with none', async () => {
+    const createContainerCalls = [];
+    const docker = makeFakeDocker({ createContainerCalls });
+    const engine = createDockerEngine({ docker, env: {} });
+
+    await engine.createJobContainer({
+      jobId: JOB_ID,
+      policy: enginePolicy(),
+      leaseExpiresAt: '2026-07-10T12:00:00.000Z',
+    });
+
+    assert.deepEqual(createContainerCalls[0].HostConfig.ExtraHosts, []);
   });
 
   it('refuses a floating-tag image with spec_rejected BEFORE creating any resource', async () => {
