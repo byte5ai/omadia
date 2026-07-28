@@ -55,6 +55,16 @@ services:
       # one). Same source var as the daemon's own DEV_RUNNER_IMAGES below, so
       # both sides always agree on which image a job runs.
       DEV_RUNNER_DEFAULT_IMAGE: ${DEV_RUNNER_IMAGE:-ghcr.io/byte5ai/omadia-dev-runner:latest}
+      # The LLM proxy's model allowlist (spec §5, wireDevPlatform.ts). An empty
+      # list is a deliberate fail-closed default (config.ts: "always mounted;
+      # an empty allowlist ⇒ it answers 500 'no LLM policy'"), so this is a
+      # real per-deployment setting, not a wiring bug -- but its absence looks
+      # EXACTLY like every earlier gate in this chain from the runner's side:
+      # the CLI reaches the proxy fine (gates 6/10 fixed that) and gets an
+      # instant, silent-to-the-runner 500 with zero tokens spent. Comma-separated,
+      # exact string match (llmProxy.ts: `policy.allowedModels.includes(model)`)
+      # against whatever `--model` the CLI actually reports in its init message.
+      DEV_PLATFORM_LLM_ALLOWED_MODELS: ${DEV_PLATFORM_LLM_ALLOWED_MODELS:-claude-opus-4-8[1m],claude-opus-4-8,claude-sonnet-4-8[1m],claude-sonnet-4-8}
       # Neutralise any docker engine address a stray `middleware/.env` (loaded via
       # the base file's env_file) might inject. `environment` wins over env_file,
       # so these empty values are the last word: the middleware CANNOT be handed a

@@ -2091,7 +2091,21 @@ async function main(): Promise<void> {
     console.log('[middleware] dev-platform GitHub webhook router mounted at /api/webhooks/github (raw-body, before express.json)');
   }
 
-  app.use(express.json({ limit: '10mb' }));
+  // The LLM proxy (`/api/v1/dev-runner/llm/*`, mounted later at `mountDevPlatform`)
+  // owns its own route-level `express.raw()` so it can canonicalise the exact bytes
+  // it validates before forwarding (see llmProxy.ts). A global body parser that runs
+  // BEFORE that route is reached would drain the request stream first: body-parser's
+  // `read()` bails out via `onFinished.isFinished(req)` on an already-consumed stream
+  // and never touches `req.body` again, so the route's own raw() would then see a
+  // pre-parsed object instead of a Buffer. Skip this one path here, mirroring the
+  // GitHub-webhook router's raw-body-before-json pattern above.
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/v1/dev-runner/llm/')) {
+      next();
+      return;
+    }
+    express.json({ limit: '10mb' })(req, res, next);
+  });
   app.use(cookieParser());
 
   app.get('/health', (_req, res) => {
