@@ -153,12 +153,16 @@ export function createProxy(deps) {
     });
   });
   dataServer.on('connect', (req, socket, head) => {
-    void handleConnect(req, socket, head).catch(() => {
+    void handleConnect(req, socket, head).catch((err) => {
+      logger.warn?.(`[dev-egress-proxy] handleConnect threw: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
       destroySocket(socket);
     });
   });
   // A client that errors before/after the CONNECT upgrade must not throw globally.
-  dataServer.on('clientError', (_err, socket) => destroySocket(socket));
+  dataServer.on('clientError', (err, socket) => {
+    logger.warn?.(`[dev-egress-proxy] clientError: ${err instanceof Error ? err.message : String(err)}`);
+    destroySocket(socket);
+  });
 
   /**
    * CONNECT tunnel: authorise → decide → (only now) resolve → classify → pin →
@@ -287,7 +291,10 @@ export function createProxy(deps) {
       armIdle();
     });
 
-    upstream.on('error', teardown);
+    upstream.on('error', (err) => {
+      logger.warn?.(`[dev-egress-proxy] upstream connection to ${host}:${port} (${pinnedIp}) failed: ${err instanceof Error ? err.message : String(err)}`);
+      teardown();
+    });
     upstream.on('close', teardown);
     clientSocket.on('error', teardown);
     clientSocket.on('close', teardown);

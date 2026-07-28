@@ -326,3 +326,31 @@ describe('dev-platform compose overlay — the middleware can actually derive a 
     assert.ok(!entries.includes('middleware'), 'middleware must route THROUGH the proxy, never around it');
   });
 });
+
+describe('dev-platform compose overlay — the egress proxy can actually reach the internet', () => {
+  // Every job-egress network (dev-control, dev-engine, dev-egress) is
+  // deliberately `internal: true` -- correctly, none of them may reach
+  // outside. But dev-egress-proxy's ONLY job is being the one path a job
+  // container has to the real internet, and its `networks:` list used to name
+  // ONLY those internal ones -- so the proxy itself had no route out either,
+  // and every job's egress (git clone, npm install, ...) failed DNS resolution
+  // before the allowlist/CONNECT logic ever ran (verified live:
+  // `getaddrinfo EAI_AGAIN github.com` from inside the proxy container).
+  it('joins at least one network that is not internal: true', () => {
+    const proxyNetNames = networkNames(overlay.services['dev-egress-proxy']);
+    const external = proxyNetNames.filter((n) => overlay.networks?.[n]?.internal !== true);
+    assert.ok(
+      external.length > 0,
+      `dev-egress-proxy's networks (${proxyNetNames.join(', ')}) are ALL internal -- it has no path to the real internet`,
+    );
+  });
+
+  it('does not reach that network by sharing `omadia` with the app services', () => {
+    // Sharing the app's own bridge would make the proxy reachable from (and
+    // able to reach) middleware/web-ui laterally -- exactly what a separate
+    // egress plane exists to avoid. Its external route must be a network
+    // dedicated to it alone.
+    const proxyNetNames = networkNames(overlay.services['dev-egress-proxy']);
+    assert.ok(!proxyNetNames.includes('omadia'), 'the proxy must not join the app network for its egress route');
+  });
+});

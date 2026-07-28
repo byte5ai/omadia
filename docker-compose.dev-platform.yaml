@@ -235,6 +235,17 @@ services:
         # reach the DATA plane at 172.28.5.3 (dev-egress). Two planes, two networks,
         # and the daemon never joins the one the jobs are on.
         ipv4_address: 172.28.4.3
+      # The proxy's OWN route to the real internet. dev-egress and dev-control
+      # are BOTH `internal: true` -- correctly, they must never reach outside --
+      # but that left the proxy itself with no path out either, so every job's
+      # egress request failed DNS resolution before the allowlist/CONNECT logic
+      # ever ran (`getaddrinfo EAI_AGAIN github.com` from inside this very
+      # container). The proxy deliberately does NOT join `omadia` for this --
+      # sharing the app's own network would make it reachable from (and able to
+      # reach) middleware/web-ui laterally, which the whole point of a separate
+      # egress plane exists to avoid -- so this is a THIRD, dedicated network
+      # whose only member is the proxy.
+      dev-egress-external: {}
     # No `ports:` — the proxy is not reachable from the host.
 
 volumes:
@@ -270,3 +281,9 @@ networks:
     ipam:
       config:
         - subnet: 172.28.5.0/24
+  # The proxy's real path to the internet — deliberately NOT internal, and
+  # deliberately NOT `omadia` (see the service comment above). No pinned
+  # subnet/address: dev-egress-proxy is this network's only member, and
+  # nothing else ever needs to address it here.
+  dev-egress-external:
+    driver: bridge
