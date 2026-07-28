@@ -216,7 +216,11 @@ import {
 import { createAdminUsersRouter } from './routes/adminUsers.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
-import { buildKgHealth } from './health/kgHealth.js';
+import {
+  EMBEDDING_GATE_STATUS_SERVICE,
+  buildKgHealth,
+  type EmbeddingGateStatus,
+} from './health/kgHealth.js';
 import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
 import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
@@ -2100,7 +2104,15 @@ async function main(): Promise<void> {
     // embeddings/semantic-recall/durable-tier/process-reuse availability) so a
     // silently-degraded deployment is observable here instead of only in boot
     // logs. Non-sensitive: capability states only, no secrets/URLs.
-    res.json({ status: 'ok', kg: buildKgHealth(installedRegistry) });
+    //
+    // #440 — the installed registry alone cannot see whether the embedding
+    // model/dimension gate actually let the knowledge-graph write vectors, so
+    // the gate outcome is read here too. Resolved per request rather than
+    // captured at boot: plugins can be toggled at runtime.
+    const gate = serviceRegistry.get<EmbeddingGateStatus>(
+      EMBEDDING_GATE_STATUS_SERVICE,
+    );
+    res.json({ status: 'ok', kg: buildKgHealth(installedRegistry, gate) });
   });
 
   // Friction-free pairing discovery (#293). Public-by-design (lives outside

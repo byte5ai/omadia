@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import { buildKgHealth } from '../src/health/kgHealth.js';
+import type { EmbeddingGateStatus } from '../src/health/kgHealth.js';
 import type { InstalledRegistry } from '../src/plugins/installedRegistry.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 
@@ -99,13 +100,24 @@ describe('buildKgHealth', () => {
     assert.equal(h.embeddings, false, 'inactive embeddings plugin is not active');
   });
 
-  it('an alternative embeddingClient provider counts as embeddings-on (#440)', async () => {
-    const h = buildKgHealth(
-      await reg([{ id: KG_NEON }, { id: EMBEDDINGS_OPENAI }]),
-    );
+  it('an alternative embeddingClient provider counts as embeddings-on when the gate passed (#440)', async () => {
+    const h = buildKgHealth(await reg([{ id: KG_NEON }, { id: EMBEDDINGS_OPENAI }]), {
+      vectorWritesAllowed: true,
+      status: 'match',
+      activeModelId: 'openai:text-embedding-3-small',
+    });
     assert.equal(h.embeddings, true, 'Ollama is no longer the only provider');
     assert.equal(h.semanticRecall, true);
     assert.equal(h.processReuse, true);
+    assert.deepEqual(h.warnings, []);
+  });
+  it('with no gate opinion at all, the registry projection stands alone (#440)', async () => {
+    // No neon backend published a gate outcome — e.g. the plugin never got
+    // that far. Nothing to add, nothing to subtract.
+    const h = buildKgHealth(
+      await reg([{ id: KG_NEON }, { id: EMBEDDINGS_OPENAI }]),
+    );
+    assert.equal(h.embeddings, true);
     assert.deepEqual(h.warnings, []);
   });
 
@@ -114,6 +126,111 @@ describe('buildKgHealth', () => {
       await reg([{ id: KG_NEON }, { id: EMBEDDINGS_OPENAI, status: 'inactive' }]),
     );
     assert.equal(h.embeddings, false);
+    assert.ok(h.warnings.some((w) => w.includes('embeddings disabled')));
+  });
+
+  // -------------------------------------------------------------------------
+  // #440 — the model/dimension gate. The registry cannot see any of this: an
+  // adapter is installed and active in every case below, yet no vector is
+  // written in any of them.
+  // -------------------------------------------------------------------------
+
+  const blockedGate = (over: Partial<EmbeddingGateStatus> = {}): EmbeddingGateStatus => ({
+    vectorWritesAllowed: false,
+    status: 'blocked',
+    reason: 'column-width-mismatch',
+    activeModelId: 'openai:text-embedding-3-small (1536d)',
+    detail: 'graph_nodes.embedding is vector(768), processes.embedding is vector(768)',
+    ...over,
+  });
+
+  it('a gate-blocked provider reports embeddings OFF, not healthy (#440)', async () => {
+    // The exact failing case: vector(768) columns, operator activates the
+    // OpenAI adapter with a 1536d model. The gate blocks, the plugin activates
+    // with embeddingClient=undefined, nothing is ever embedded — and the
+    // registry-only projection used to answer `embeddings: true,
+    // semanticRecall: true, durableTier: true, processReuse: true,
+    // warnings: []`.
+    const h = buildKgHealth(
+      await reg([{ id: KG_NEON }, { id: EMBEDDINGS_OPENAI }]),
+      blockedGate(),
+    );
+    assert.equal(h.backend, 'neon');
+    assert.equal(h.durable, true, 'the STORE is still durable');
+    assert.equal(h.embeddings, false);
+    assert.equal(h.semanticRecall, false);
+    assert.equal(h.durableTier, false);
+    assert.equal(
+      h.processReuse,
+      false,
+      'NeonProcessMemoryStore has no client, so every write returns embedding-unavailable',
+    );
+    assert.notDeepEqual(h.warnings, []);
+    const warning = h.warnings.join(' | ');
+    assert.match(warning, /model\/dimension gate/);
+    assert.match(warning, /column-width-mismatch/);
+    assert.match(warning, /text-embedding-3-small/);
+  });
+
+  it('names stored vs active model when the corpus disagrees (#440)', async () => {
+    const h = buildKgHealth(
+      await reg([{ id: KG_NEON }, { id: EMBEDDINGS_OPENAI }]),
+      blockedGate({
+        reason: 'dimension-mismatch',
+        activeModelId: 'openai:text-embedding-3-small (1536d)',
+        storedModelId: 'ollama:nomic-embed-text (768d)',
+        detail: undefined,
+      }),
+    );
+    assert.equal(h.embeddings, false);
+    const warning = h.warnings.join(' | ');
+    assert.match(warning, /openai:text-embedding-3-small/);
+    assert.match(warning, /ollama:nomic-embed-text/);
+  });
+
+  it('a pending stale-vector clear also reads as embeddings OFF (#440)', async () => {
+    // Writes are refused for the duration of the clear, so no vector reaches
+    // the corpus. Reporting semantic recall as available would be the same lie
+    // in a different costume.
+    const h = buildKgHealth(
+      await reg([
+        { id: KG_NEON },
+        { id: EMBEDDINGS, config: { ollama_base_url: 'http://ollama:11434' } },
+      ]),
+      {
+        vectorWritesAllowed: false,
+        status: 're-embedding',
+        reason: 'stale-vector-clear-pending',
+        activeModelId: 'ollama:nomic-embed-text',
+        storedModelId: 'openai:some-768-model',
+      },
+    );
+    assert.equal(h.embeddings, false);
+    assert.equal(h.semanticRecall, false);
+    assert.equal(h.processReuse, false);
+    assert.ok(h.warnings.some((w) => w.includes('stale-vector-clear-pending')));
+  });
+
+  it('a passing gate leaves the registry projection untouched (#440)', async () => {
+    const h = buildKgHealth(
+      await reg([
+        { id: KG_NEON },
+        { id: EMBEDDINGS, config: { ollama_base_url: 'http://ollama:11434' } },
+      ]),
+      { vectorWritesAllowed: true, status: 'recorded', activeModelId: 'ollama:nomic-embed-text' },
+    );
+    assert.equal(h.embeddings, true);
+    assert.deepEqual(h.warnings, []);
+  });
+
+  it('a gate block does not invent embeddings where no provider is installed', async () => {
+    const h = buildKgHealth(await reg([{ id: KG_NEON }]), blockedGate());
+    assert.equal(h.embeddings, false);
+    assert.equal(
+      h.warnings.length,
+      1,
+      'one warning, not two — the operator has no provider to un-block',
+    );
     assert.ok(h.warnings.some((w) => w.includes('embeddings disabled')));
   });
 });

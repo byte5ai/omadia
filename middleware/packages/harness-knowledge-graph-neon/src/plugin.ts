@@ -11,6 +11,7 @@ import { runGraphMigrations } from './migrator.js';
 import {
   allowsVectorWrites,
   evaluateEmbeddingModelGate,
+  requiresStaleVectorClearResume,
   type EmbeddingModelGateOutcome,
 } from './embeddingModelGate.js';
 import {
@@ -75,6 +76,9 @@ const GRAPH_LIFECYCLE_SERVICE = 'graphLifecycle';
 const AGENT_PRIORITIES_SERVICE = 'agentPriorities';
 const PROCESS_MEMORY_SERVICE = 'processMemory';
 const NUDGE_STATE_SERVICE = 'nudgeStateStore';
+/** #440 — read by the kernel's /health route (see src/health/kgHealth.ts).
+ *  Structural contract: a plain object, no shared type import either way. */
+const EMBEDDING_GATE_STATUS_SERVICE = 'embeddingModelGateStatus';
 
 /** Kernel-side AsyncLocalStorage accessor (structural type — published by the
  *  middleware kernel via ServiceRegistry). Inlined locally because the type
@@ -220,11 +224,30 @@ export async function activate(
   const embeddingClient = vectorWritesAllowed
     ? resolvedEmbeddingClient
     : undefined;
+  // A capped or interrupted stale-vector clear still owes work. Vector writes
+  // stay refused for the duration (that is what makes "non-NULL ⇒ old model"
+  // true), but the backfill sweep is the ONLY thing that can finish the clear
+  // and lower the flag — so it gets armed even though nothing may be embedded
+  // yet. Once the flag drops, the same sweep re-embeds every NULL vector,
+  // including whatever was ingested while writes were off.
+  const clearResumeOwed = requiresStaleVectorClearResume(gateOutcome);
   if (!vectorWritesAllowed) {
     ctx.log(
-      '[harness-knowledge-graph-neon] embedding provider rejected by the model/dimension gate — knowledge-graph vector writes disabled until the provider or the vector columns are migrated',
+      clearResumeOwed
+        ? '[harness-knowledge-graph-neon] a stale-vector clear from an embedding-model switch is still owed — vector writes stay disabled until the backfill sweep finishes it'
+        : '[harness-knowledge-graph-neon] embedding provider rejected by the model/dimension gate — knowledge-graph vector writes disabled until the provider or the vector columns are migrated',
     );
   }
+
+  // Publish what the gate decided. Without this, /health projects the plugin
+  // REGISTRY (an embeddings adapter is installed and active) and reports
+  // `embeddings: true, semanticRecall: true, processReuse: true, warnings: []`
+  // for a boot where no vector is ever written and every processMemory write
+  // returns `embedding-unavailable`.
+  const disposeGateStatus = ctx.services.provide(
+    EMBEDDING_GATE_STATUS_SERVICE,
+    describeGateOutcome(gateOutcome, vectorWritesAllowed, clearResumeOwed),
+  );
 
   // OB-73 (Phase 4 / Slice B) — read-path access tracker. Reads queue
   // touches into an in-memory map; the decay-job tick flushes them into a
@@ -262,7 +285,12 @@ export async function activate(
       process.env['GRAPH_EMBEDDING_BACKFILL_ENABLED'],
     true,
   );
-  if (backfillEnabled && embeddingClient) {
+  // `embeddingClient` is undefined while a clear is owed, but the sweep still
+  // has to run — see clearResumeOwed above. It only clears until the flag
+  // drops; the client it holds is used afterwards, on the next tick.
+  const backfillClient =
+    embeddingClient ?? (clearResumeOwed ? resolvedEmbeddingClient : undefined);
+  if (backfillEnabled && backfillClient) {
     const intervalMinutes = parsePositiveInt(
       ctx.config.get<string>('graph_embedding_backfill_interval_minutes') ??
         process.env['GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES'],
@@ -280,7 +308,7 @@ export async function activate(
     );
     backfill = startEmbeddingBackfill({
       pool: graphPool,
-      embeddingClient,
+      embeddingClient: backfillClient,
       tenantId,
       intervalMs: intervalMinutes * 60 * 1000,
       batchSize,
@@ -539,6 +567,7 @@ export async function activate(
       ctx.log('[harness-knowledge-graph-neon] deactivating');
       disposeGcJob?.();
       disposeDecayJob?.();
+      disposeGateStatus();
       disposeNudgeStateStore();
       disposeProcessMemory();
       disposeAgentPriorities();
@@ -553,5 +582,64 @@ export async function activate(
         // process exit path — pool draining is best-effort
       }
     },
+  };
+}
+
+/**
+ * Flatten a gate outcome into the shape `/health` consumes
+ * (`EmbeddingGateStatus` in middleware/src/health/kgHealth.ts). Kept here
+ * rather than in the gate module because it is a presentation concern, and
+ * kept structural rather than typed because the kernel and this plugin do not
+ * import each other.
+ */
+function describeGateOutcome(
+  outcome: EmbeddingModelGateOutcome,
+  vectorWritesAllowed: boolean,
+  clearResumeOwed: boolean,
+): {
+  vectorWritesAllowed: boolean;
+  status: string;
+  reason?: string;
+  activeModelId?: string;
+  storedModelId?: string;
+  detail?: string;
+} {
+  const base = { vectorWritesAllowed, status: outcome.status };
+  if (outcome.status === 'unknown-provider') return base;
+  if (outcome.status === 'blocked') {
+    if (outcome.reason === 'column-width-mismatch') {
+      return {
+        ...base,
+        reason: outcome.reason,
+        activeModelId: `${outcome.modelId} (${String(outcome.dimensions)}d)`,
+        detail: outcome.mismatches
+          .map(
+            (m) =>
+              `${m.table}.${m.column} is vector(${String(m.declaredDimensions ?? 0)})`,
+          )
+          .join(', '),
+      };
+    }
+    return {
+      ...base,
+      reason: outcome.reason,
+      activeModelId: `${outcome.modelId} (${String(outcome.dimensions)}d)`,
+      storedModelId: `${outcome.storedModelId} (${String(outcome.storedDimensions)}d)`,
+      ...(outcome.reason === 'registry-conflict' ? { detail: outcome.detail } : {}),
+    };
+  }
+  return {
+    ...base,
+    activeModelId: outcome.modelId,
+    ...(outcome.status === 're-embedding'
+      ? { storedModelId: outcome.previousModelId }
+      : {}),
+    ...(clearResumeOwed
+      ? {
+          reason: 'stale-vector-clear-pending',
+          detail:
+            'a same-width embedding-model switch is still dropping old vectors; writes resume when the backfill sweep finishes',
+        }
+      : {}),
   };
 }

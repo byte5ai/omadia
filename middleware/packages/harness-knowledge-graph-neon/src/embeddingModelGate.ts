@@ -1,6 +1,24 @@
 import type { EmbeddingProviderMetadata } from '@omadia/plugin-api';
 import type { Pool, PoolClient } from 'pg';
 
+import {
+  CLEARABLE_COLUMNS,
+  clearStaleVectors,
+  type ClearOptions,
+} from './staleVectorClear.js';
+
+// The clear machinery lives in `staleVectorClear.ts`; re-exported here so
+// `embeddingBackfill.ts`, the package index and existing callers keep their
+// import path.
+export {
+  clearStaleVectors,
+  isStaleVectorClearPending,
+} from './staleVectorClear.js';
+export type {
+  ClearOptions,
+  StaleVectorClearResult,
+} from './staleVectorClear.js';
+
 /**
  * #440 — the dimension/model safety gate.
  *
@@ -38,7 +56,40 @@ import type { Pool, PoolClient } from 'pg';
  *     pace. The clear is resumable: `clear_pending` on the registry row
  *     survives the boot, and `embeddingBackfill` finishes the work;
  *   - recorded dimensions ≠ provider dimensions → BLOCK, same reasoning as
- *     the column check.
+ *     the column check;
+ *   - the registry says something this instance did not write (lost insert
+ *     race, another instance that switched moments ago) → BLOCK, see
+ *     `'registry-conflict'`.
+ *
+ * CONCURRENCY. Two things here are destructive (the model flip and the
+ * vector clear) and the middleware runs multi-instance during a rolling
+ * deploy, so both are serialised:
+ *   - read → decide → flip runs inside ONE transaction holding
+ *     `pg_advisory_xact_lock(tenant)`, and the flip itself carries a CAS
+ *     predicate on the model/dimensions it read. Losing either means the
+ *     registry moved underneath us — the gate blocks instead of guessing;
+ *   - the clear holds a session-level `pg_try_advisory_lock(tenant)`. A
+ *     second clearer (other instance, or the backfill sweep racing an
+ *     activation) does not run concurrently; it reports "still pending" so
+ *     nobody lowers `clear_pending` on work it did not do;
+ *   - a model switch is refused when the registry row was written within
+ *     `switchCooldownMs` AND the corpus still holds vectors. That is the
+ *     rolling-deploy oscillation guard: two machine versions with different
+ *     adapters would otherwise take turns switching and wiping each other's
+ *     re-embedded corpus, with no error surfaced anywhere. The cooldown does
+ *     not make such a deploy correct — it makes it loud and non-destructive.
+ *
+ * WRITES ARE REFUSED WHILE A CLEAR IS PENDING. `clear_pending = TRUE` means
+ * "some governed vectors are still old-model, and something will come along
+ * and NULL every non-NULL vector it finds". The clear has no model or
+ * timestamp discriminator, so any vector written in that window would be
+ * destroyed by the resumed pass — and under sustained ingest the pass would
+ * never drain. `allowsVectorWrites()` therefore returns false until the
+ * clear completes, which makes the documented invariant ("a non-NULL vector
+ * is an old-model vector") true by construction rather than by hope. The
+ * plugin still arms the backfill in that state so the clear finishes, and
+ * once `clear_pending` drops the same sweep re-embeds everything NULL —
+ * including whatever was ingested during the window.
  *
  * SCOPE OF THE GATE — read this before claiming "it degrades to FTS-only".
  * The gate governs the knowledge-graph plugin's own embedding client, i.e.
@@ -51,6 +102,9 @@ import type { Pool, PoolClient } from 'pg';
  * no recall — the observable behaviour is FTS-only, at the cost of one wasted
  * embed call and one error log per attempt. Withdrawing the capability
  * centrally would need a kernel-side revoke hook that does not exist today.
+ * What the gate DOES publish is its outcome (the `embeddingModelGateStatus`
+ * service), so `/health` reports `embeddings: false` plus the stored-vs-active
+ * model instead of the registry-only guess it used to print.
  */
 
 export interface EmbeddingModelGateOptions {
@@ -67,6 +121,10 @@ export interface EmbeddingModelGateOptions {
   clearMaxRowsPerActivation?: number;
   /** `statement_timeout` applied to each clear batch. Default 15000. */
   clearStatementTimeoutMs?: number;
+  /** Refuse a destructive model switch when the registry row was written
+   *  this recently AND vectors still exist. Anti-oscillation guard for
+   *  rolling deploys. Default 10 min; 0 disables. */
+  switchCooldownMs?: number;
   log?: (msg: string) => void;
 }
 
@@ -78,19 +136,18 @@ export interface GovernedVectorColumn {
   declaredDimensions: number | undefined;
 }
 
-/** Per-column tally of a stale-vector clear pass. */
-export interface StaleVectorClearResult {
-  clearedByTable: Record<string, number>;
-  totalCleared: number;
-  /** `true` when the cap was hit and rows are still waiting. */
-  pending: boolean;
-}
-
 export type EmbeddingModelGateOutcome =
   /** No provider metadata — nothing to compare, writes stay allowed. */
   | { status: 'unknown-provider' }
-  /** Active model equals the recorded one. */
-  | { status: 'match'; modelId: string; dimensions: number }
+  /** Active model equals the recorded one. `clearPending` is true when an
+   *  earlier switch never finished clearing — writes stay refused until it
+   *  does, and this activation resumed as much of it as its cap allowed. */
+  | {
+      status: 'match';
+      modelId: string;
+      dimensions: number;
+      clearPending: boolean;
+    }
   /** First record for this tenant (empty corpus, or an adopted pre-#440 one). */
   | { status: 'recorded'; modelId: string; dimensions: number }
   /** Same vector size, different model — stored vectors cleared for re-embed. */
@@ -117,6 +174,17 @@ export type EmbeddingModelGateOutcome =
       modelId: string;
       dimensions: number;
       mismatches: GovernedVectorColumn[];
+    }
+  /** Another instance owns the registry row and disagrees about the model.
+   *  Switching would destroy the corpus it is busy re-embedding. */
+  | {
+      status: 'blocked';
+      reason: 'registry-conflict';
+      modelId: string;
+      dimensions: number;
+      storedModelId: string;
+      storedDimensions: number;
+      detail: string;
     };
 
 /** Pre-#440 corpora have vectors but no recorded model identity. */
@@ -125,43 +193,57 @@ const UNKNOWN_STORED_MODEL_ID = '(unrecorded, pre-#440 corpus)';
 const DEFAULT_CLEAR_BATCH_SIZE = 500;
 const DEFAULT_CLEAR_MAX_ROWS = 5_000;
 const DEFAULT_CLEAR_STATEMENT_TIMEOUT_MS = 15_000;
+const DEFAULT_SWITCH_COOLDOWN_MS = 10 * 60 * 1000;
+
+/** Advisory-lock namespaces (first key of the two-int form). Arbitrary but
+ *  stable — collisions with other subsystems are what the namespace avoids. */
+const LOCK_NS_REGISTRY = 4_400;
 
 /**
- * Columns reset on a same-dimension model switch, and the extra bookkeeping
- * each one needs. Discovery (below) is the authority on which vector columns
- * EXIST; this list says which ones we know how to clear. A column that shows
- * up in discovery but not here is reported loudly rather than silently left
- * with foreign-model vectors.
+ * May this boot's embedding client write vectors?
+ *
+ * `blocked` is the obvious no. `clear_pending` is the less obvious one: the
+ * resumed clear NULLs every non-NULL governed vector it finds, with no model
+ * or timestamp discriminator, so anything written while it is owed gets
+ * destroyed — and a steady write rate keeps the clear from ever draining.
+ * Refusing writes for the duration is what makes "non-NULL ⇒ old model" an
+ * invariant instead of a comment.
  */
-const CLEARABLE_COLUMNS: ReadonlyArray<{
-  table: string;
-  column: string;
-  /** Extra SET fragments, e.g. resetting the backfill attempt counter. */
-  extraSet: string;
-}> = [
-  {
-    table: 'graph_nodes',
-    column: 'embedding',
-    // Reset the attempt counter too, otherwise nodes that had exhausted
-    // their retries under the old provider would never be picked up again.
-    extraSet:
-      ', embedding_attempts = 0, embedding_last_error = NULL, embedding_last_error_at = NULL',
-  },
-  // `processes.embedding` (migration 0009) is a second cosine space, used for
-  // the write-path dedup pre-check AND for hybrid recall. It has to be
-  // cleared on the same switch, otherwise process recall silently scores
-  // old-model vectors against new-model queries forever.
-  { table: 'processes', column: 'embedding', extraSet: '' },
-];
-
 export function allowsVectorWrites(outcome: EmbeddingModelGateOutcome): boolean {
-  return outcome.status !== 'blocked';
+  if (outcome.status === 'blocked') return false;
+  if (outcome.status === 'match' || outcome.status === 're-embedding') {
+    return !outcome.clearPending;
+  }
+  return true;
+}
+
+/**
+ * Is a stale-vector clear still owed after this activation? The plugin arms
+ * the backfill sweep on this even though vector writes are refused — the
+ * sweep is the only thing that can finish the clear and lower the flag.
+ */
+export function requiresStaleVectorClearResume(
+  outcome: EmbeddingModelGateOutcome,
+): boolean {
+  return (
+    (outcome.status === 'match' || outcome.status === 're-embedding') &&
+    outcome.clearPending
+  );
 }
 
 interface StoredModelRow {
   model_id: string;
   dimensions: number;
+  clear_pending: boolean;
+  age_ms: string | number;
 }
+
+/** Outcome of the advisory-locked read/decide/flip transaction. */
+type RegistryDecision =
+  | { kind: 'recorded' }
+  | { kind: 'match'; clearPending: boolean }
+  | { kind: 'switched'; previousModelId: string }
+  | { kind: 'blocked'; outcome: EmbeddingModelGateOutcome };
 
 export async function evaluateEmbeddingModelGate(
   opts: EmbeddingModelGateOptions,
@@ -209,30 +291,18 @@ export async function evaluateEmbeddingModelGate(
     log(
       `[graph-embedding-gate] WARNING: ${ungoverned
         .map((c) => `${c.table}.${c.column}`)
-        .join(', ')} is a vector column this gate cannot clear — a model switch will leave foreign-model vectors there. Add it to CLEARABLE_COLUMNS in embeddingModelGate.ts.`,
+        .join(', ')} is a vector column this gate cannot clear — a model switch will leave foreign-model vectors there. Add it to CLEARABLE_COLUMNS in staleVectorClear.ts.`,
     );
   }
 
-  // (2) Recorded model identity.
-  const stored = await pool.query<StoredModelRow>(
-    'SELECT model_id, dimensions FROM graph_embedding_model WHERE tenant_id = $1',
-    [tenantId],
-  );
-  const row = stored.rows[0];
+  // (2) Recorded model identity — read/decide/flip under one tenant lock.
+  const decision = await decideRegistry(pool, tenantId, provider, {
+    switchCooldownMs: opts.switchCooldownMs ?? DEFAULT_SWITCH_COOLDOWN_MS,
+    log,
+  });
 
-  if (!row) {
-    const hasVectors = await hasStoredVectors(pool, tenantId);
-    await pool.query(
-      `INSERT INTO graph_embedding_model (tenant_id, model_id, dimensions)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (tenant_id) DO NOTHING`,
-      [tenantId, provider.modelId, provider.dimensions],
-    );
-    log(
-      hasVectors
-        ? `[graph-embedding-gate] adopted '${provider.modelId}' (${String(provider.dimensions)}d) for the existing corpus — column width matches, no re-embed needed (previously ${UNKNOWN_STORED_MODEL_ID})`
-        : `[graph-embedding-gate] recorded '${provider.modelId}' (${String(provider.dimensions)}d) as this tenant's embedding model (empty corpus)`,
-    );
+  if (decision.kind === 'blocked') return decision.outcome;
+  if (decision.kind === 'recorded') {
     return {
       status: 'recorded',
       modelId: provider.modelId,
@@ -240,38 +310,50 @@ export async function evaluateEmbeddingModelGate(
     };
   }
 
-  if (row.model_id === provider.modelId && row.dimensions === provider.dimensions) {
-    return {
-      status: 'match',
-      modelId: provider.modelId,
-      dimensions: provider.dimensions,
-    };
-  }
-
-  if (row.dimensions !== provider.dimensions) {
-    log(
-      `[graph-embedding-gate] BLOCKED: corpus was embedded with '${row.model_id}' (${String(row.dimensions)}d), active provider is '${provider.modelId}' (${String(provider.dimensions)}d) — vector writes disabled to keep the similarity space intact. Migrate the vector columns to the new size (see migration 0005) or switch back.`,
-    );
-    return {
-      status: 'blocked',
-      reason: 'dimension-mismatch',
-      modelId: provider.modelId,
-      dimensions: provider.dimensions,
-      storedModelId: row.model_id,
-      storedDimensions: row.dimensions,
-    };
-  }
-
-  // Same vector size, different model: recoverable without a schema change.
-  // Drop the vectors, record the new model, let the backfill sweep re-embed.
-  const cleared = await switchModelAndClearVectors(pool, tenantId, provider, {
+  const clearOpts: ClearOptions = {
     batchSize: opts.clearBatchSize ?? DEFAULT_CLEAR_BATCH_SIZE,
     maxRows: opts.clearMaxRowsPerActivation ?? DEFAULT_CLEAR_MAX_ROWS,
     statementTimeoutMs:
       opts.clearStatementTimeoutMs ?? DEFAULT_CLEAR_STATEMENT_TIMEOUT_MS,
-  });
+  };
+
+  if (decision.kind === 'match') {
+    if (!decision.clearPending) {
+      return {
+        status: 'match',
+        modelId: provider.modelId,
+        dimensions: provider.dimensions,
+        clearPending: false,
+      };
+    }
+    // `switchModelAndClearVectors` flips the registry row BEFORE clearing, so
+    // a boot after an interrupted switch lands HERE, not on the switch path —
+    // the row already names our model. Resuming from here matters because the
+    // only other resumer is conditional: the backfill is skipped when
+    // `graph_embedding_backfill_enabled=false` or when the embeddings plugin
+    // is deactivated, and `clear_pending` would then stay TRUE forever with
+    // nobody reading it while two models share one cosine space.
+    log(
+      `[graph-embedding-gate] '${provider.modelId}' matches the recorded model but a stale-vector clear is still owed — resuming it now; vector writes stay disabled until it completes`,
+    );
+    const resumed = await clearStaleVectors(pool, tenantId, clearOpts);
+    log(
+      `[graph-embedding-gate] resumed clear: ${String(resumed.totalCleared)} vector(s) dropped, ${String(resumed.attemptsReset)} retry counter(s) reset, stillPending=${String(resumed.pending)}`,
+    );
+    return {
+      status: 'match',
+      modelId: provider.modelId,
+      dimensions: provider.dimensions,
+      clearPending: resumed.pending,
+    };
+  }
+
+  // Same vector size, different model: recoverable without a schema change.
+  // The registry flip already happened (durably, under the lock); drop the
+  // vectors and let the backfill sweep re-embed.
+  const cleared = await clearStaleVectors(pool, tenantId, clearOpts);
   log(
-    `[graph-embedding-gate] embedding model switched '${row.model_id}' → '${provider.modelId}' (both ${String(provider.dimensions)}d); cleared ${String(cleared.totalCleared)} stored vector(s)${
+    `[graph-embedding-gate] embedding model switched '${decision.previousModelId}' → '${provider.modelId}' (both ${String(provider.dimensions)}d); cleared ${String(cleared.totalCleared)} stored vector(s), reset ${String(cleared.attemptsReset)} exhausted retry counter(s)${
       cleared.pending
         ? ' — activation cap reached, the embedding backfill sweep clears the rest before it re-embeds anything'
         : ''
@@ -280,10 +362,208 @@ export async function evaluateEmbeddingModelGate(
   return {
     status: 're-embedding',
     modelId: provider.modelId,
-    previousModelId: row.model_id,
+    previousModelId: decision.previousModelId,
     clearedVectors: cleared.totalCleared,
     clearPending: cleared.pending,
   };
+}
+
+/**
+ * Read the registry row, decide, and (for a switch) flip it — all inside one
+ * transaction holding `pg_advisory_xact_lock(tenant)`.
+ *
+ * Everything destructive is decided here, so this is the only place that can
+ * race. The lock serialises instances; the CAS predicate on the UPDATE and
+ * the `RETURNING` check on the INSERT catch anything that changed the row
+ * without taking the lock (an older build, a manual `psql` edit).
+ */
+async function decideRegistry(
+  pool: Pool,
+  tenantId: string,
+  provider: EmbeddingProviderMetadata,
+  opts: { switchCooldownMs: number; log: (msg: string) => void },
+): Promise<RegistryDecision> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    try {
+      await client.query(
+        'SELECT pg_advisory_xact_lock($1::int, hashtext($2)::int)',
+        [LOCK_NS_REGISTRY, tenantId],
+      );
+
+      let row = await readStoredModel(client, tenantId);
+      let lostInsertRace = false;
+
+      if (!row) {
+        const hasVectors = await hasStoredVectors(client, tenantId);
+        // `ON CONFLICT DO NOTHING` is a no-op on a lost race, and a no-op
+        // that reports success would let this instance write into a vector
+        // space the registry says belongs to somebody else. RETURNING is what
+        // makes the difference observable.
+        const inserted = await client.query<StoredModelRow>(
+          `INSERT INTO graph_embedding_model (tenant_id, model_id, dimensions)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (tenant_id) DO NOTHING
+           RETURNING model_id, dimensions, clear_pending, 0 AS age_ms`,
+          [tenantId, provider.modelId, provider.dimensions],
+        );
+        if (inserted.rows.length > 0) {
+          await client.query('COMMIT');
+          opts.log(
+            hasVectors
+              ? `[graph-embedding-gate] adopted '${provider.modelId}' (${String(provider.dimensions)}d) for the existing corpus — column width matches, no re-embed needed (previously ${UNKNOWN_STORED_MODEL_ID})`
+              : `[graph-embedding-gate] recorded '${provider.modelId}' (${String(provider.dimensions)}d) as this tenant's embedding model (empty corpus)`,
+          );
+          return { kind: 'recorded' };
+        }
+        row = await readStoredModel(client, tenantId);
+        lostInsertRace = true;
+        if (!row) {
+          // Insert lost AND the row is gone again — somebody is actively
+          // rewriting the registry. Refuse rather than guess.
+          await client.query('ROLLBACK');
+          const detail =
+            'the registry row was deleted while this activation was recording its provider';
+          opts.log(`[graph-embedding-gate] BLOCKED: ${detail}.`);
+          return {
+            kind: 'blocked',
+            outcome: registryConflict(provider, '(vanished)', 0, detail),
+          };
+        }
+      }
+
+      if (row.dimensions !== provider.dimensions) {
+        await client.query('ROLLBACK');
+        opts.log(
+          `[graph-embedding-gate] BLOCKED: corpus was embedded with '${row.model_id}' (${String(row.dimensions)}d), active provider is '${provider.modelId}' (${String(provider.dimensions)}d) — vector writes disabled to keep the similarity space intact. Migrate the vector columns to the new size (see migration 0005) or switch back.`,
+        );
+        return {
+          kind: 'blocked',
+          outcome: {
+            status: 'blocked',
+            reason: 'dimension-mismatch',
+            modelId: provider.modelId,
+            dimensions: provider.dimensions,
+            storedModelId: row.model_id,
+            storedDimensions: row.dimensions,
+          },
+        };
+      }
+
+      if (row.model_id === provider.modelId) {
+        const clearPending = row.clear_pending === true;
+        await client.query('COMMIT');
+        return { kind: 'match', clearPending };
+      }
+
+      // Same width, different model — a switch. Destructive: every stored
+      // vector goes away. Two guards before we do it.
+      if (lostInsertRace) {
+        await client.query('ROLLBACK');
+        const detail = `another instance recorded '${row.model_id}' for this tenant while this one was starting up`;
+        opts.log(
+          `[graph-embedding-gate] BLOCKED: ${detail}; '${provider.modelId}' will NOT claim the corpus. Run one embedding provider per deployment, then restart.`,
+        );
+        return {
+          kind: 'blocked',
+          outcome: registryConflict(provider, row.model_id, row.dimensions, detail),
+        };
+      }
+
+      const ageMs = Number(row.age_ms);
+      if (
+        opts.switchCooldownMs > 0 &&
+        Number.isFinite(ageMs) &&
+        ageMs < opts.switchCooldownMs &&
+        (await hasStoredVectors(client, tenantId))
+      ) {
+        await client.query('ROLLBACK');
+        const detail = `the registry was last written ${String(Math.round(ageMs / 1000))}s ago (cooldown ${String(Math.round(opts.switchCooldownMs / 1000))}s) and the corpus still holds vectors`;
+        opts.log(
+          `[graph-embedding-gate] BLOCKED: refusing to switch '${row.model_id}' → '${provider.modelId}' — ${detail}. This is the rolling-deploy guard: two machine versions with different adapters would otherwise take turns clearing each other's re-embedded corpus, with no error anywhere. Settle on one provider and restart.`,
+        );
+        return {
+          kind: 'blocked',
+          outcome: registryConflict(provider, row.model_id, row.dimensions, detail),
+        };
+      }
+
+      // Flip the registry FIRST, inside this transaction: `clear_pending` is
+      // what makes the clear resumable, so it must be durable before any row
+      // is touched. A crash halfway through then resumes on the next boot /
+      // the next backfill tick instead of leaving a half-cleared corpus that
+      // nothing knows about. The CAS predicate makes the flip conditional on
+      // the row still being exactly what we read.
+      const flipped = await client.query(
+        `UPDATE graph_embedding_model
+            SET model_id = $2, dimensions = $3, clear_pending = TRUE, updated_at = now()
+          WHERE tenant_id = $1
+            AND model_id = $4
+            AND dimensions = $5`,
+        [
+          tenantId,
+          provider.modelId,
+          provider.dimensions,
+          row.model_id,
+          row.dimensions,
+        ],
+      );
+      if ((flipped.rowCount ?? 0) !== 1) {
+        await client.query('ROLLBACK');
+        const detail = `the registry row changed between read and switch (expected '${row.model_id}'/${String(row.dimensions)}d)`;
+        opts.log(`[graph-embedding-gate] BLOCKED: ${detail} — no vectors were touched.`);
+        return {
+          kind: 'blocked',
+          outcome: registryConflict(provider, row.model_id, row.dimensions, detail),
+        };
+      }
+      await client.query('COMMIT');
+      return { kind: 'switched', previousModelId: row.model_id };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // the transaction is already gone — nothing to undo
+      }
+      throw err;
+    }
+  } finally {
+    client.release();
+  }
+}
+
+function registryConflict(
+  provider: EmbeddingProviderMetadata,
+  storedModelId: string,
+  storedDimensions: number,
+  detail: string,
+): EmbeddingModelGateOutcome {
+  return {
+    status: 'blocked',
+    reason: 'registry-conflict',
+    modelId: provider.modelId,
+    dimensions: provider.dimensions,
+    storedModelId,
+    storedDimensions,
+    detail,
+  };
+}
+
+async function readStoredModel(
+  client: PoolClient,
+  tenantId: string,
+): Promise<StoredModelRow | undefined> {
+  const stored = await client.query<StoredModelRow>(
+    `SELECT model_id,
+            dimensions,
+            clear_pending,
+            EXTRACT(EPOCH FROM (now() - updated_at)) * 1000 AS age_ms
+       FROM graph_embedding_model
+      WHERE tenant_id = $1`,
+    [tenantId],
+  );
+  return stored.rows[0];
 }
 
 /**
@@ -346,9 +626,12 @@ function parseDeclaredDimensions(
   return Number.isInteger(raw) && raw > 0 ? raw : undefined;
 }
 
-/** Cheap existence probe — only used to phrase the log line. */
-async function hasStoredVectors(pool: Pool, tenantId: string): Promise<boolean> {
-  const result = await pool.query(
+/** Cheap existence probe — phrases the log line and arms the switch cooldown. */
+async function hasStoredVectors(
+  client: PoolClient,
+  tenantId: string,
+): Promise<boolean> {
+  const result = await client.query(
     `SELECT 1
        FROM graph_nodes
       WHERE tenant_id = $1 AND embedding IS NOT NULL
@@ -356,130 +639,4 @@ async function hasStoredVectors(pool: Pool, tenantId: string): Promise<boolean> 
     [tenantId],
   );
   return (result.rowCount ?? result.rows.length) > 0;
-}
-
-interface ClearOptions {
-  batchSize: number;
-  maxRows: number;
-  statementTimeoutMs: number;
-}
-
-async function switchModelAndClearVectors(
-  pool: Pool,
-  tenantId: string,
-  provider: EmbeddingProviderMetadata,
-  opts: ClearOptions,
-): Promise<StaleVectorClearResult> {
-  // Flip the registry FIRST, in its own small transaction: `clear_pending`
-  // is what makes the clear resumable, so it must be durable before any row
-  // is touched. A crash halfway through then resumes on the next boot / on
-  // the next backfill tick instead of leaving a half-cleared corpus that
-  // nothing knows about.
-  await pool.query(
-    `UPDATE graph_embedding_model
-        SET model_id = $2, dimensions = $3, clear_pending = TRUE, updated_at = now()
-      WHERE tenant_id = $1`,
-    [tenantId, provider.modelId, provider.dimensions],
-  );
-  return clearStaleVectors(pool, tenantId, opts);
-}
-
-/** Is a stale-vector clear still owed for this tenant? */
-export async function isStaleVectorClearPending(
-  pool: Pool,
-  tenantId: string,
-): Promise<boolean> {
-  const result = await pool.query<{ clear_pending: boolean }>(
-    'SELECT clear_pending FROM graph_embedding_model WHERE tenant_id = $1',
-    [tenantId],
-  );
-  return result.rows[0]?.clear_pending === true;
-}
-
-/**
- * Clear foreign-model vectors in bounded batches.
- *
- * Called twice: once from the gate during activation (capped, so activate()
- * cannot stall on a large corpus and cannot hold one transaction open across
- * a full HNSW-index rewrite), and again from the backfill sweep until
- * `clear_pending` flips back to false. The sweep does NOT re-embed while a
- * clear is pending, which is what keeps "non-NULL means old model" true for
- * the duration.
- */
-export async function clearStaleVectors(
-  pool: Pool,
-  tenantId: string,
-  opts: ClearOptions,
-): Promise<StaleVectorClearResult> {
-  const clearedByTable: Record<string, number> = {};
-  let totalCleared = 0;
-  let pending = false;
-
-  const client: PoolClient = await pool.connect();
-  try {
-    for (const target of CLEARABLE_COLUMNS) {
-      let clearedHere = 0;
-      for (;;) {
-        if (clearedHere >= opts.maxRows) {
-          pending = true;
-          break;
-        }
-        const limit = Math.min(opts.batchSize, opts.maxRows - clearedHere);
-        const affected = await clearOneBatch(client, target, tenantId, limit, opts);
-        clearedHere += affected;
-        if (affected < limit) break;
-      }
-      clearedByTable[target.table] = clearedHere;
-      totalCleared += clearedHere;
-    }
-    if (!pending) {
-      await client.query(
-        `UPDATE graph_embedding_model
-            SET clear_pending = FALSE, updated_at = now()
-          WHERE tenant_id = $1`,
-        [tenantId],
-      );
-    }
-  } finally {
-    client.release();
-  }
-
-  return { clearedByTable, totalCleared, pending };
-}
-
-/**
- * One bounded UPDATE, in its own transaction with its own statement timeout.
- * `ctid IN (SELECT … LIMIT n)` is the standard bounded-update idiom; the
- * table/column names come from the module-local constant above, never from
- * user input.
- */
-async function clearOneBatch(
-  client: PoolClient,
-  target: { table: string; column: string; extraSet: string },
-  tenantId: string,
-  limit: number,
-  opts: ClearOptions,
-): Promise<number> {
-  await client.query('BEGIN');
-  try {
-    await client.query(
-      `SET LOCAL statement_timeout = ${String(Math.max(1, Math.floor(opts.statementTimeoutMs)))}`,
-    );
-    const result = await client.query(
-      `UPDATE ${target.table}
-          SET ${target.column} = NULL${target.extraSet}
-        WHERE ctid IN (
-                SELECT ctid
-                  FROM ${target.table}
-                 WHERE tenant_id = $1 AND ${target.column} IS NOT NULL
-                 LIMIT ${String(Math.max(1, Math.floor(limit)))}
-              )`,
-      [tenantId],
-    );
-    await client.query('COMMIT');
-    return result.rowCount ?? 0;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  }
 }

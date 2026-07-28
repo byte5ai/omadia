@@ -4,7 +4,7 @@ import type { Pool } from 'pg';
 import {
   clearStaleVectors,
   isStaleVectorClearPending,
-} from './embeddingModelGate.js';
+} from './staleVectorClear.js';
 import { buildEmbeddingBody } from './processMemoryStore.js';
 
 /**
@@ -43,8 +43,11 @@ export interface EmbeddingBackfillOptions {
    *  provider switch. */
   includeProcesses?: boolean;
   /** #440 — finish a stale-vector clear the gate started but capped. While
-   *  one is pending the sweep clears instead of embedding, so a non-NULL
-   *  vector always means "old model". Off by default, on in the KG plugin. */
+   *  one is pending the sweep clears instead of embedding, AND the gate
+   *  refuses hot-path vector writes, so "a non-NULL vector is an old-model
+   *  vector" holds for the whole transition. Off by default, on in the KG
+   *  plugin — which arms the sweep even when writes are refused, because the
+   *  sweep is the only thing that can finish the clear and lower the flag. */
   resumeStaleVectorClear?: boolean;
   log?: (msg: string) => void;
 }
@@ -59,6 +62,8 @@ export interface EmbeddingBackfillStats {
   tried: number;
   succeeded: number;
   failed: number;
+  /** Exhausted retry counters the resumed clear reset (#440). */
+  attemptsReset?: number;
   /** Vectors dropped by the resumed stale-vector clear (#440). Non-zero only
    *  while a provider switch is still being worked off. */
   cleared?: number;
@@ -248,25 +253,32 @@ export function startEmbeddingBackfill(
   const sweepProcesses = async (
     stats: EmbeddingBackfillStats,
   ): Promise<void> => {
+    // The exclusion has to happen INSIDE the query. Filtering after `LIMIT`
+    // starves the sweep: once `batchSize` poison rows exist they fill every
+    // page of the result forever, the post-filter empties it, and healthy rows
+    // behind them are never reached again for the lifetime of the handle.
+    const poisoned = [...processFailures.entries()]
+      .filter(([, n]) => n >= opts.maxAttempts)
+      .map(([id]) => id);
     const result = await opts.pool.query<PendingProcessRow>(
       `
       SELECT id, title, steps
         FROM processes
        WHERE tenant_id = $1
          AND embedding IS NULL
+         AND id <> ALL($3::text[])
        ORDER BY updated_at ASC
        LIMIT $2
       `,
-      [opts.tenantId, opts.batchSize],
+      [opts.tenantId, opts.batchSize, poisoned],
     );
-    const pending = result.rows.filter(
-      (r) => (processFailures.get(r.id) ?? 0) < opts.maxAttempts,
-    );
+    const pending = result.rows;
     if (pending.length === 0) return;
 
     log(
-      `[graph-embedding-backfill] process sweep start pending=${String(pending.length)}`,
+      `[graph-embedding-backfill] process sweep start pending=${String(pending.length)} skipped=${String(poisoned.length)}`,
     );
+    const before = { ok: stats.succeeded, fail: stats.failed };
     for (const row of pending) {
       stats.tried++;
       const steps = Array.isArray(row.steps) ? row.steps.map((s) => String(s)) : [];
@@ -296,7 +308,7 @@ export function startEmbeddingBackfill(
       }
     }
     log(
-      `[graph-embedding-backfill] process sweep done ok=${String(stats.succeeded)} fail=${String(stats.failed)}`,
+      `[graph-embedding-backfill] process sweep done ok=${String(stats.succeeded - before.ok)} fail=${String(stats.failed - before.fail)}`,
     );
   };
 
@@ -312,7 +324,10 @@ export function startEmbeddingBackfill(
     try {
       // #440 — finish what the gate capped. Embedding anything while stale
       // vectors are still around would break the invariant the clear relies
-      // on ("non-NULL ⇒ old model"), so this tick does nothing else.
+      // on ("non-NULL ⇒ old model"), so this tick does nothing else. The
+      // other half of that invariant is the gate refusing hot-path writes
+      // for as long as `clear_pending` is TRUE; together they make the
+      // predicate `embedding IS NOT NULL` an exact match for "old model".
       if (opts.resumeStaleVectorClear === true) {
         const clearPending = await isStaleVectorClearPending(
           opts.pool,
@@ -325,8 +340,9 @@ export function startEmbeddingBackfill(
             statementTimeoutMs: STALE_CLEAR_STATEMENT_TIMEOUT_MS,
           });
           stats.cleared = cleared.totalCleared;
+          stats.attemptsReset = cleared.attemptsReset;
           log(
-            `[graph-embedding-backfill] stale-vector clear cleared=${String(cleared.totalCleared)} stillPending=${String(cleared.pending)}`,
+            `[graph-embedding-backfill] stale-vector clear cleared=${String(cleared.totalCleared)} attemptsReset=${String(cleared.attemptsReset)} stillPending=${String(cleared.pending)}`,
           );
           return stats;
         }

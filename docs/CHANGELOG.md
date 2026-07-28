@@ -93,11 +93,87 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   FTS-only) instead of throwing out of `activate()` — the kernel treats
   `knowledgeGraph` as a required service, so a throw there is a boot loop.
 - The `/health` KG snapshot no longer equates "embeddings configured" with
-  "Ollama base URL set" — an active alternative provider counts as well.
+  "Ollama base URL set" — an active alternative provider counts as well, and
+  it reads the gate outcome rather than the registry alone (see the fixup
+  below).
 - Unchanged for existing deployments: `bootstrapEmbeddingsFromEnv()` still
   seeds only the Ollama adapter from `OLLAMA_BASE_URL` /
   `OLLAMA_EMBEDDING_MODEL`, and a deployment with no embedding provider still
   boots into the FTS-only path.
+- Fixup (round 2, two independent adversarial reviews). Eight blocking
+  findings, all in the gate's failure modes rather than its happy path:
+  - **`/health` no longer reports a blocked gate as healthy.** The KG snapshot
+    was a registry-only projection: with `vector(768)` columns and an active
+    1536-dimensional adapter it answered `embeddings: true, semanticRecall:
+    true, durableTier: true, processReuse: true, warnings: []` for a boot
+    where the gate had refused every vector write and `NeonProcessMemoryStore`
+    was rejecting every `write()`/`edit()` with `embedding-unavailable`. The
+    knowledge-graph plugin now publishes its gate outcome as an
+    `embeddingModelGateStatus` service; `/health` reads it and reports
+    `embeddings: false` plus a warning naming the active model against the
+    recorded one.
+  - **Vector writes are refused while a stale-vector clear is pending.** This
+    changes the write semantics of a same-width model switch. Previously
+    `status: 're-embedding'` kept the live embedding client, so fresh
+    new-model vectors were written while `clear_pending` was still TRUE — and
+    the resumed clear, which selects on `embedding IS NOT NULL` with no model
+    or timestamp discriminator, then destroyed them. On a large corpus (≈21 h
+    of clearing at the defaults) that meant a Turn ingested at T+1min was
+    embedded and wiped at T+5min, and sustained ingest could keep the clear
+    from ever draining. `allowsVectorWrites()` now returns false until the
+    clear completes, which makes the documented invariant ("a non-NULL
+    governed vector is an old-model vector") true by construction. The
+    backfill sweep is still armed in that state — it is the only thing that
+    can finish the clear — and once the flag drops the same sweep re-embeds
+    every NULL vector, including whatever was ingested during the window.
+  - **The `match` path consults `clear_pending`.** A switch flips the registry
+    row *before* clearing, so the boot after an interrupted switch matches and
+    used to return early. The only resumer was the backfill, which is skipped
+    when `graph_embedding_backfill_enabled=false` or when the embeddings
+    plugin is later deactivated — leaving `clear_pending` TRUE forever with
+    two models mixed in one cosine space and nobody reading the flag. The
+    match path now resumes the clear itself.
+  - **The `embedding_attempts = 0` reset got its own statement.** It rode
+    along with `SET embedding = NULL … WHERE embedding IS NOT NULL`, which by
+    construction can never match a row that exhausted its retries — those have
+    `embedding IS NULL`, which is *why* they are exhausted. Such rows stayed
+    at `attempts = maxAttempts` and the backfill's `embedding_attempts <
+    maxAttempts` predicate skipped them forever. A dedicated bounded UPDATE
+    over `embedding IS NULL AND embedding_attempts > 0` now rescues them.
+  - **The process sweep no longer starves itself.** The poison-row filter ran
+    *after* `LIMIT`, so `batchSize` permanently-failing rows filled every page
+    and the healthy rows behind them were unreachable for the lifetime of the
+    handle. The exclusion moved into the SQL (`AND id <> ALL($3::text[])`).
+  - **`INSERT … ON CONFLICT DO NOTHING` is checked with `RETURNING`.** A lost
+    race is a no-op that used to be reported as `{status: 'recorded',
+    modelId: <this instance's model>}`, letting the loser write into a vector
+    space the registry says belongs to the winner. The insert now reports
+    whether it won; a loser that disagrees about the model is blocked with the
+    new `registry-conflict` reason.
+  - **Clear termination is sound.** `rowCount < limit` was treated as "done",
+    but under READ COMMITTED a concurrent updater makes rows drop out of the
+    predicate after the LIMIT was applied — an incomplete clear then lowered
+    `clear_pending`. Batches now use `FOR UPDATE SKIP LOCKED`, the loop only
+    stops on a batch that changed nothing, and a residual probe decides
+    whether the clear may be declared finished. A session-level
+    `pg_try_advisory_lock` keeps two clearers (activation vs. backfill sweep,
+    or two instances) off the same tenant; a clearer that cannot take the lock
+    reports the work as still owed rather than doing nothing quietly.
+  - **The registry flip is serialised and conditional.** Read → decide → flip
+    now runs in one transaction holding `pg_advisory_xact_lock(tenant)`, and
+    the `UPDATE` carries a CAS predicate on the model/dimensions it read.
+    Additionally a switch is refused when the registry row was written within
+    a 10-minute cooldown *and* the corpus still holds vectors: during a
+    rolling deploy where the two machine versions carry different same-width
+    adapters, each side would otherwise switch, clear, and wipe what the other
+    had just re-embedded, oscillating with no error surfaced anywhere.
+  - The clear machinery moved to `staleVectorClear.ts`;
+    `embeddingModelGate.ts` re-exports it, so no import path changed.
+  - New `middleware/test/embeddingModelGate.pg.test.ts` exercises the SQL
+    against a real Postgres + pgvector (catalog width read on an actual
+    `vector(n)` column, the `ON CONFLICT` race, a switch → capped clear →
+    resume cycle, advisory-lock exclusion). It self-skips when no database is
+    reachable, same convention as `test/devplatform/*.pg.test.ts`.
 
 ### Added — structured dataset ingestion (CSV import) for the Knowledge Graph (#430)
 

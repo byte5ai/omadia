@@ -36,8 +36,10 @@ export {
   discoverGovernedVectorColumns,
   evaluateEmbeddingModelGate,
   isStaleVectorClearPending,
+  requiresStaleVectorClearResume,
 } from './embeddingModelGate.js';
 export type {
+  ClearOptions,
   EmbeddingModelGateOptions,
   EmbeddingModelGateOutcome,
   GovernedVectorColumn,
