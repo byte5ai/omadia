@@ -105,9 +105,18 @@ services:
 
       # The image allowlist is the boundary a compromised middleware cannot cross:
       # it may name a job, never an image. The daemon REFUSES TO BOOT without it.
-      # Digest-pinned by default (DEV_RUNNER_REQUIRE_DIGEST=0 to relax, locally).
       DEV_RUNNER_ALLOWED_IMAGES: ${DEV_RUNNER_ALLOWED_IMAGES:-ghcr.io/byte5ai/omadia-dev-runner}
       DEV_RUNNER_IMAGES: ${DEV_RUNNER_IMAGE:-ghcr.io/byte5ai/omadia-dev-runner:latest}
+      # Digest-pinned by default (true) — the comment above used to be the ONLY
+      # place this knob existed; the var was never actually forwarded into the
+      # container, so `env.DEV_RUNNER_REQUIRE_DIGEST` was always undefined and
+      # `parseRequireDigest` silently fell back to true. Every locally-built
+      # image is a floating tag (no digest, no registry to have digest-pinned
+      # it from), so EVERY provision was refused with the same generic
+      # "the middleware could not supply the job policy" 502 the runner-image
+      # gap produced — a second, distinct cause behind the identical symptom.
+      # Set DEV_RUNNER_REQUIRE_DIGEST=0 in .env to relax this, locally only.
+      DEV_RUNNER_REQUIRE_DIGEST: ${DEV_RUNNER_REQUIRE_DIGEST:-true}
 
       # Pull policy. `always` (the default, and prod on GHCR) re-pulls + digest-pins
       # + cosign-verifies every image on every provision. `if-not-present` skips the

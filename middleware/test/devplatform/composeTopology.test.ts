@@ -251,6 +251,20 @@ describe('dev-platform compose overlay — one image, two services, two commands
     // never an image. `parseAllowedImages` throws when this is absent.
     assert.ok(overlay.services['dev-runner-daemon']!.environment!['DEV_RUNNER_ALLOWED_IMAGES']);
   });
+
+  it('actually forwards DEV_RUNNER_REQUIRE_DIGEST into the daemon container', () => {
+    // A var that only exists in a comment is not configuration. Before this key
+    // was added to `environment:`, `env.DEV_RUNNER_REQUIRE_DIGEST` was always
+    // undefined inside the container regardless of what .env said, and
+    // `parseRequireDigest` silently defaults undefined to `true` — so every
+    // locally-built, non-digest-pinned image was refused, no matter how the
+    // operator set the var. The key must be PRESENT (any value, incl. the
+    // default 'true'); its absence is the actual bug this guards.
+    assert.ok(
+      'DEV_RUNNER_REQUIRE_DIGEST' in (overlay.services['dev-runner-daemon']!.environment ?? {}),
+      'DEV_RUNNER_REQUIRE_DIGEST must be forwarded, not just documented in a comment',
+    );
+  });
 });
 
 describe('dev-platform compose overlay — the MERGED config, not just the overlay map', { skip: !merged }, () => {
