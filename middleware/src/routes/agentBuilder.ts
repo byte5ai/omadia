@@ -29,7 +29,13 @@ import {
   type SubAgentRow,
   type ToolGrantRow,
 } from '@omadia/orchestrator';
-import { McpManager, mcpToolNameFromRef, type McpCallLogEntry } from '@omadia/orchestrator';
+import {
+  McpManager,
+  mcpToolNameFromRef,
+  turnContext,
+  today,
+  type McpCallLogEntry,
+} from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
 import {
@@ -214,7 +220,13 @@ export function createAgentBuilderRouter(
           ? (await graph.listMcpServers()).find((s) => s.id === cfg.id)
           : undefined;
         if (!server) return null;
-        return options.mcpOAuth.getValidAccessToken(server, options.mcpOAuthUserKey ?? 'operator');
+        // Per-user token (bugfix, mirrors the runtime McpManager in index.ts):
+        // tokens are STORED under the request's session-derived key
+        // (oauthUserKey below) at connect time, so lookup must use the same
+        // key. The static `options.mcpOAuthUserKey` fallback only applies
+        // outside any turn context (no session identity available).
+        const userKey = turnContext.current()?.mcpUserKey ?? options.mcpOAuthUserKey ?? 'operator';
+        return options.mcpOAuth.getValidAccessToken(server, userKey);
       },
       // Discover/test-call surface needs-auth via the route's describeAuth path,
       // so the manager itself doesn't need to synthesize a prompt here.
@@ -1051,6 +1063,17 @@ export function createAgentBuilderRouter(
   router.post('/mcp-servers/:id/discover', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
+    // Establish the per-request MCP OAuth identity (bugfix): the shared
+    // McpManager's getToken reads turnContext.mcpUserKey to look up the token
+    // under the SAME key it was stored under (oauthUserKey(req) — see
+    // auth-status/authorize below), instead of silently falling back to the
+    // static 'operator' default and missing it. `enter` (not `run`) because
+    // this scope is naturally bounded by the request's own async chain.
+    turnContext.enter({
+      turnId: `mcp-discover-${str(req.params.id)}`,
+      turnDate: today(),
+      mcpUserKey: oauthUserKey(req),
+    });
     try {
       const servers = await l.graph.listMcpServers();
       const row = servers.find((s) => s.id === str(req.params.id));
