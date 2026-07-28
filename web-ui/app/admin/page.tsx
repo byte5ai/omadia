@@ -51,6 +51,8 @@ const GROUPS: readonly GroupDef[] = [
       { href: '/admin/mcp', key: 'mcp' },
       // Dev platform (epic #470) — isolated per-job code runners.
       { href: '/admin/dev-platform', key: 'devPlatform' },
+      // Conductor generic webhooks (issue #437) — inbound endpoints + outbound subscriptions.
+      { href: '/admin/webhooks', key: 'webhooks' },
     ],
   },
   {

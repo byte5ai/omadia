@@ -144,7 +144,60 @@ history are convenience layers, not security layers. They:
 - Do not extend a credential's lifetime beyond the originating request.
 - Are flushed on process restart; they are not a substitute for persistence.
 
-## 7. What lives in the vault
+## 7. Conductor generic webhooks (#437)
+
+Inbound endpoints (`POST /api/hooks/:endpointId`) and outbound subscriptions
+(HMAC-signed deliveries to an operator-supplied URL) are the one place in the
+codebase with a deliberately **unauthenticated** ingress route, so the
+security model is documented explicitly rather than left to code comments
+alone.
+
+**Secret placement.** Both an inbound endpoint's HMAC signing secret and an
+outbound subscription's signing secret live in the secret vault under the
+`core:conductor` namespace (`webhookEndpointStore.ts` /
+`webhookSubscriptionStore.ts`) — the same metadata-in-Postgres /
+secret-in-Vault split `DevGithubAppStore` uses for GitHub App credentials.
+A secret is returned to the operator **exactly once**, on creation or
+rotation; every list/get response omits it. Nothing under
+`conductor_webhook_endpoints` or `conductor_webhook_subscriptions` ever
+carries a secret column.
+
+**Inbound route auth model.** `POST /api/hooks/:endpointId` has no
+`requireAuth` — the per-endpoint HMAC signature (`X-Webhook-Signature:
+sha256=<hex>`, computed over the raw, pre-`express.json()` request body) IS
+the authentication, verified with a constant-time comparison
+(`crypto.timingSafeEqual`). Two invariants the reviewer checklist below
+should re-verify on any change to this route:
+
+- **Identical 401 for unknown-endpoint vs. wrong-secret.** The signature is
+  checked BEFORE anything about the endpoint (existence, enabled state) is
+  trusted; an unknown `endpointId` and a known one with a wrong secret
+  answer byte-for-byte the same `401 {"code":"webhook.bad_signature"}` — a
+  caller can never use the response to probe which endpoint ids are real.
+- **Always 2xx on noise.** Once the signature verifies and the delivery id
+  is claimed, every remaining branch (disabled endpoint, malformed JSON, no
+  subscribed workflow) answers `2xx`. Only a bad signature (401) or the
+  per-endpoint rate limit (429) are non-2xx — so a well-behaved sender's
+  retry policy never turns an ignorable delivery into a redelivery storm.
+
+Delivery-id dedupe and the per-endpoint rolling-window rate limit are
+enforced atomically in one transaction (`ConductorWebhookEndpointStore.claim`)
+before any workflow run starts, closing the gap a correctly-signed sender
+minting a fresh delivery id per call would otherwise open.
+
+**Outbound SSRF guard.** Both outbound paths — the run-lifecycle dispatcher
+(`webhookDispatcher.ts`) and the ad-hoc `webhook.post` Designer action
+(`webhookPostAction.ts`) — route every request through
+`conductor/webhookOutbound.ts`, which reuses the existing
+`platform/ssrfGuard.ts` mechanism: a literal-IP precheck rejects a private /
+loopback / link-local / cloud-metadata target before any DNS lookup, and the
+actual request goes through a guarded `undici` `Agent` that re-checks the
+resolved address to defend against DNS-rebinding between the precheck and
+the connection. A subscription URL is also checked at creation time
+(`assertOutboundUrlAllowed`), so an operator gets an immediate 400 rather
+than only discovering the block on the first delivery attempt.
+
+## 8. What lives in the vault
 
 At a minimum, your deployment vault holds:
 
@@ -159,7 +212,7 @@ At a minimum, your deployment vault holds:
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
 
-## 8. Reviewer checklist
+## 9. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
 
