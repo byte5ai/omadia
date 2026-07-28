@@ -117,6 +117,7 @@ export class FakeJobStore {
       id, repoId: input.repoId, kind: input.kind, brief: input.brief, source: input.source,
       sourceRef: input.sourceRef ?? null, backend: input.backend, authMode: input.authMode ?? 'api_key',
       createdBy: input.createdBy, runnerTokenHash: input.runnerTokenHash, status: 'queued',
+      phase: input.phase ?? 'analyze',
     });
     this.jobs.set(id, job);
     return job;
@@ -138,8 +139,10 @@ export class FakeJobStore {
     return [...this.artifacts.values()].filter((a) => a.jobId === jobId);
   }
   async getArtifact(id: string) { return this.artifacts.get(id) ?? null; }
-  addArtifact(a: { id: string; jobId: string; kind: string; content: string }): void {
-    this.artifacts.set(a.id, { ...a, meta: {}, createdAt: new Date().toISOString() });
+  async addArtifact(jobId: string, kind: string, content: string, meta: Record<string, unknown> = {}): Promise<string> {
+    const id = `artifact-${String(++this.seq)}`;
+    this.artifacts.set(id, { id, jobId, kind, content, meta, createdAt: new Date().toISOString() });
+    return id;
   }
   async deleteJob(id: string): Promise<'deleted' | 'not_terminal' | 'not_found'> {
     const job = this.jobs.get(id);

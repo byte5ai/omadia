@@ -261,6 +261,23 @@ export function createDevPlatformRouter(deps: DevPlatformRouterDeps): Router {
   // W0: re-queue by cloning the job into a fresh queued row (a new runner token;
   // the row's one-time-token invariant forbids reusing the old one). Allowed
   // only once the source job has finished.
+  //
+  // `?resumeFromPhase=true` starts the clone at the SOURCE job's own `phase`
+  // (wherever it was when it failed) instead of always restarting at `analyze`.
+  // This is safe by construction: `dev_jobs.phase` is exactly the value the
+  // dev-runner-shim reads to decide where to begin (protocol.ts's own
+  // `ProvisionSpec.phase` doc: "Phase the runner begins at"), so handing a new
+  // job the old job's last-attempted phase reproduces the same starting point
+  // the runner already knows how to execute — no new runner-side code path.
+  // The one thing the runner-shim assumes that a fresh job wouldn't otherwise
+  // have is the artifacts EARLIER phases already produced (e.g. `plan` reads
+  // the `analysis` artifact by job id) — those are copied onto the new job's
+  // own row so any later phase finds them under its own id, same as if this
+  // job had produced them itself. Bootstrap-only failures (this feature's
+  // primary motivation — a real dev job costs ~$1-2 in `analyze` LLM tokens
+  // before ever reaching the free, no-LLM `bootstrap` shell step) need no
+  // artifact at all; this still copies whatever exists so it generalizes to
+  // any later phase without special-casing which phase needs which artifact.
   router.post(
     '/jobs/:id/retry',
     handler(async (req, res) => {
@@ -274,6 +291,7 @@ export function createDevPlatformRouter(deps: DevPlatformRouterDeps): Router {
       if (!isPermittedLauncher(repo, caller)) {
         throw new DevPlatformError(403, 'devplatform.not_launcher', 'not a permitted launcher for this repository');
       }
+      const resumeFromPhase = req.query['resumeFromPhase'] === 'true';
       const minted = mintRunnerToken();
       const next = await deps.jobStore.createJob({
         repoId: job.repoId,
@@ -285,8 +303,15 @@ export function createDevPlatformRouter(deps: DevPlatformRouterDeps): Router {
         authMode: job.authMode,
         createdBy: caller.sub,
         runnerTokenHash: minted.hash,
+        ...(resumeFromPhase ? { phase: job.phase } : {}),
       });
-      res.status(202).json({ ok: true, jobId: next.id });
+      if (resumeFromPhase) {
+        const priorArtifacts = await deps.jobStore.listArtifacts(job.id);
+        for (const artifact of priorArtifacts) {
+          await deps.jobStore.addArtifact(next.id, artifact.kind, artifact.content, artifact.meta);
+        }
+      }
+      res.status(202).json({ ok: true, jobId: next.id, ...(resumeFromPhase ? { resumedAtPhase: next.phase } : {}) });
     }),
   );
 
