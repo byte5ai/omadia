@@ -111,7 +111,9 @@ function basicAuth(jobId = JOB_ID, token = PROXY_TOKEN) {
 
 /**
  * Send a raw CONNECT through the proxy and resolve once the status line is parsed.
- * @returns {Promise<{ statusCode: number, socket: import('node:net').Socket, buffered: Buffer }>}
+ * `headers` is the lowercased response header block — a CONNECT reply has no
+ * `res` object, so the raw text is the only place its framing is observable.
+ * @returns {Promise<{ statusCode: number, socket: import('node:net').Socket, buffered: Buffer, headers: string }>}
  */
 function sendConnect(dataPort, authority, authHeader) {
   return new Promise((resolve, reject) => {
@@ -124,7 +126,7 @@ function sendConnect(dataPort, authority, authHeader) {
       socket.removeListener('data', onData);
       const headerText = buf.subarray(0, idx).toString('utf8');
       const statusCode = Number(/^HTTP\/1\.1 (\d+)/.exec(headerText)?.[1] ?? 0);
-      resolve({ statusCode, socket, buffered: buf.subarray(idx + 4) });
+      resolve({ statusCode, socket, buffered: buf.subarray(idx + 4), headers: headerText.toLowerCase() });
     };
     socket.on('data', onData);
     socket.on('error', reject);
@@ -221,6 +223,72 @@ describe('egress proxy — CONNECT default-deny + DNS-exfil defence', () => {
       wrong.socket.destroy();
       assert.equal(wrong.statusCode, 407);
       assert.deepEqual(p.resolveCalls, []);
+    } finally {
+      await p.close();
+    }
+  });
+
+  // The 407 is a CHALLENGE, and a challenge the client cannot answer is a wall.
+  // libcurl (so `git`, whose `http.proxyAuthMethod` defaults to `anyauth`) sends an
+  // unauthenticated CONNECT, reads the 407, then re-sends it WITH credentials. This
+  // proxy cannot serve that retry on the same socket — node detaches its HTTP parser
+  // at the `connect` event — so it closes, and it MUST say so. When it did not, the
+  // client wrote its authenticated retry into an already-FIN'd socket, read EOF, and
+  // every real job's `git clone` died with "Proxy CONNECT aborted".
+  it('announces the close on a 407 so a challenged client can retry authenticated', async () => {
+    // A real tunnel target, so the retry is verified all the way to 200 rather than
+    // stopping at the decision — same internal-destination shape the end-to-end
+    // tunnel test uses (loopback is legitimately internal there).
+    const upstream = await startTcpEcho();
+    const p = await startProxy({
+      internalHost: 'mw.internal',
+      internalPort: upstream.port,
+      jobs: [{ jobId: JOB_ID, allowlist: [], proxyToken: PROXY_TOKEN }],
+      resolveMap: { 'mw.internal': [{ address: '127.0.0.1', family: 4 }] },
+    });
+    const authority = `mw.internal:${upstream.port}`;
+    try {
+      const challenge = await sendConnect(p.dataPort, authority, null);
+      assert.equal(challenge.statusCode, 407);
+      assert.match(challenge.headers, /proxy-authenticate: basic/);
+      // Both spellings: `Connection` is the standard one, `Proxy-Connection` the
+      // legacy hop-by-hop one libcurl also honours.
+      assert.match(challenge.headers, /\r\nconnection: close/);
+      assert.match(challenge.headers, /\r\nproxy-connection: close/);
+      assert.match(challenge.headers, /\r\ncontent-length: 0/);
+      // The announcement must match the behaviour: the proxy really does close.
+      await new Promise((resolve) => challenge.socket.once('end', resolve));
+      challenge.socket.destroy();
+
+      // The retry libcurl then makes on a FRESH connection must reach the upstream.
+      const retry = await sendConnect(p.dataPort, authority, basicAuth());
+      assert.equal(retry.statusCode, 200, 'the authenticated retry establishes the tunnel');
+      // A 2xx must NOT carry the close — it is the tunnel, not a terminal reply.
+      assert.doesNotMatch(retry.headers, /connection: close/);
+      retry.socket.write('ping-after-challenge');
+      const echoed = await nextChunk(retry.socket);
+      assert.equal(echoed.toString('utf8'), 'ping-after-challenge');
+      retry.socket.destroy();
+    } finally {
+      await p.close();
+      await upstream.close();
+    }
+  });
+
+  // Same trap, non-auth path: every non-2xx CONNECT reply is terminal here, so each
+  // one has to announce it rather than only the 407 that happened to be reported.
+  it('announces the close on every non-2xx CONNECT reply, not just the 407', async () => {
+    const p = await startProxy({ jobs: [{ jobId: JOB_ID, allowlist: ['good.test'], proxyToken: PROXY_TOKEN }] });
+    try {
+      const denied = await sendConnect(p.dataPort, 'notallowed.test:443', basicAuth());
+      assert.equal(denied.statusCode, 403);
+      assert.match(denied.headers, /\r\nconnection: close/);
+      denied.socket.destroy();
+
+      const badPort = await sendConnect(p.dataPort, 'good.test:22', basicAuth());
+      assert.equal(badPort.statusCode, 403);
+      assert.match(badPort.headers, /\r\nconnection: close/);
+      badPort.socket.destroy();
     } finally {
       await p.close();
     }

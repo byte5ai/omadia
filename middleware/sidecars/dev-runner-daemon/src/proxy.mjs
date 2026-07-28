@@ -467,12 +467,38 @@ export function createProxy(deps) {
 }
 
 /** Write a raw HTTP status line to a CONNECT client socket (no res object here).
+ *
+ *  ANNOUNCE THE CLOSE. Every non-2xx reply on this path is terminal — the caller
+ *  `end()`s the socket the moment this returns, because node has already detached
+ *  its HTTP parser from the socket at the `connect` event and hands it to us raw,
+ *  so there is no second request to serve on it.
+ *
+ *  That matters most for the 407. Proxy auth over CONNECT is a CHALLENGE-RESPONSE
+ *  ON ONE CONNECTION: libcurl (and therefore `git`, whose default
+ *  `http.proxyAuthMethod` is `anyauth`) sends an unauthenticated CONNECT first,
+ *  reads the 407 + `Proxy-Authenticate`, then re-sends the CONNECT with
+ *  `Proxy-Authorization` ON THAT SAME SOCKET. A 407 that FINs the socket without
+ *  saying so leaves the client writing its authenticated retry into a connection
+ *  we already closed; it reads EOF and reports `Proxy CONNECT aborted`, so auth
+ *  can never succeed and every job's clone fails. `Connection: close` — plus the
+ *  legacy `Proxy-Connection` spelling libcurl also honours — tells it to reconnect
+ *  for the retry instead. `Content-Length: 0` keeps the (absent) body framed
+ *  rather than delimited by the close.
+ *
+ *  Clients that send credentials preemptively (node's `EnvHttpProxyAgent`, a
+ *  hand-rolled CONNECT) never reach the 407 at all, which is exactly why this hid
+ *  behind a working phone-home path.
+ *
  *  @param {import('node:stream').Duplex} socket @param {number} code
  *  @param {string} message @param {Record<string, string>} [headers] */
 function writeConnectStatus(socket, code, message, headers = {}) {
   if (socket.destroyed || socket.writableEnded) return;
+  const isTerminal = code < 200 || code >= 300;
+  const effective = isTerminal
+    ? { ...headers, 'Content-Length': '0', Connection: 'close', 'Proxy-Connection': 'close' }
+    : headers;
   let head = `HTTP/1.1 ${code} ${message}\r\n`;
-  for (const [k, v] of Object.entries(headers)) head += `${k}: ${v}\r\n`;
+  for (const [k, v] of Object.entries(effective)) head += `${k}: ${v}\r\n`;
   head += '\r\n';
   try {
     socket.write(head);
