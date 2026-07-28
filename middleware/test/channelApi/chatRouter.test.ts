@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 
 import express from 'express';
-import type { IncomingTurn } from '@omadia/channel-sdk';
+import type { CoreApi, IncomingTurn } from '@omadia/channel-sdk';
 
 import { createApiKeyStore } from '../../packages/harness-channel-api/src/apiKeyStore.js';
 import { createAuditLog } from '../../packages/harness-channel-api/src/auditLog.js';
@@ -99,7 +99,9 @@ describe('channelApi/chatRouter — wiring (auth, rate limit, audit, NDJSON fram
 
     assert.equal(capturedTurns.length, 1);
     assert.equal(capturedTurns[0]?.channelId, '@omadia/channel-api');
-    assert.equal(capturedTurns[0]?.conversationId, 'conv-1');
+    // Namespaced by key identity (cross-key isolation fix) — never the raw
+    // caller-supplied conversationId on its own.
+    assert.equal(capturedTurns[0]?.conversationId, `${created.record.id}:conv-1`);
     assert.equal(capturedTurns[0]?.text, 'ping');
     // Design decision (issue #438): the key IS its own identity.
     assert.deepEqual(capturedTurns[0]?.userRef, {
@@ -160,5 +162,175 @@ describe('channelApi/chatRouter — wiring (auth, rate limit, audit, NDJSON fram
       body: JSON.stringify({ message: '' }),
     });
     assert.equal(res.status, 400);
+  });
+});
+
+/** Spins up a fresh router + server backed by its own store/log/limiter, for
+ *  tests that need to control the `core.handleTurnStream` behavior per case
+ *  (throwing, capturing turns) without cross-contaminating the shared
+ *  `before()` fixture above. */
+function startTestServer(core: Pick<CoreApi, 'handleTurnStream'>): {
+  baseUrl: string;
+  apiKeys: ReturnType<typeof createApiKeyStore>;
+  auditLog: ReturnType<typeof createAuditLog>;
+  close: () => Promise<void>;
+} {
+  const secrets = createFakeSecrets();
+  const apiKeys = createApiKeyStore(secrets);
+  const auditLog = createAuditLog(secrets);
+  const rateLimiter = createRateLimiter();
+
+  const app = express();
+  app.use(express.json());
+  app.use(createApiChatRouter({ channelId: '@omadia/channel-api', apiKeys, auditLog, rateLimiter, core }));
+  const server = app.listen(0);
+  const addr = server.address() as AddressInfo;
+  return {
+    baseUrl: `http://127.0.0.1:${String(addr.port)}/chat`,
+    apiKeys,
+    auditLog,
+    close: () => new Promise<void>((r) => server.close(() => r())),
+  };
+}
+
+describe('channelApi/chatRouter — cross-key conversationId isolation (finding #1)', () => {
+  it('two different keys sending the identical caller-supplied conversationId never collide on the internal conversationId', async () => {
+    const capturedTurns: IncomingTurn[] = [];
+    const harness = startTestServer({
+      async *handleTurnStream(turn) {
+        capturedTurns.push(turn);
+        yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 };
+      },
+    });
+
+    const keyA = await harness.apiKeys.create({ label: 'A' });
+    const keyB = await harness.apiKeys.create({ label: 'B' });
+
+    await fetch(harness.baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${keyA.token}` },
+      body: JSON.stringify({ message: 'hi from A', conversationId: 'shared-thread' }),
+    });
+    await fetch(harness.baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${keyB.token}` },
+      body: JSON.stringify({ message: 'hi from B', conversationId: 'shared-thread' }),
+    });
+
+    assert.equal(capturedTurns.length, 2);
+    assert.notEqual(
+      capturedTurns[0]?.conversationId,
+      capturedTurns[1]?.conversationId,
+      'identical caller-supplied conversationId must still map to distinct internal scopes per key',
+    );
+    assert.equal(capturedTurns[0]?.conversationId, `${keyA.record.id}:shared-thread`);
+    assert.equal(capturedTurns[1]?.conversationId, `${keyB.record.id}:shared-thread`);
+
+    await harness.close();
+  });
+});
+
+describe('channelApi/chatRouter — audit-log accuracy for every authenticated outcome (finding #2)', () => {
+  it('does NOT audit an unauthenticated call (missing key)', async () => {
+    const harness = startTestServer({
+      async *handleTurnStream() {
+        yield { type: 'done', answer: 'x', toolCalls: 0, iterations: 1 };
+      },
+    });
+
+    const res = await fetch(harness.baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+    assert.equal(res.status, 401);
+    assert.equal(
+      (await harness.auditLog.list()).length,
+      0,
+      'a call that never authenticated must not produce an audit entry',
+    );
+    await harness.close();
+  });
+
+  it('audits status "rate_limited" for an authenticated call over quota — never "ok"', async () => {
+    const harness = startTestServer({
+      async *handleTurnStream() {
+        yield { type: 'done', answer: 'x', toolCalls: 0, iterations: 1 };
+      },
+    });
+    const created = await harness.apiKeys.create({ label: 'quota', rateLimitPerMinute: 1 });
+
+    await fetch(harness.baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${created.token}` },
+      body: JSON.stringify({ message: 'one' }),
+    });
+    const res = await fetch(harness.baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${created.token}` },
+      body: JSON.stringify({ message: 'two' }),
+    });
+    assert.equal(res.status, 429);
+
+    const entries = await harness.auditLog.list();
+    assert.equal(entries.length, 2, 'both the accepted and the rejected call are audited');
+    assert.equal(entries[0]?.status, 'ok');
+    assert.equal(entries[1]?.status, 'rate_limited');
+    assert.equal(entries[1]?.keyId, created.record.id);
+
+    await harness.close();
+  });
+
+  it('audits status "invalid_request" for a schema-invalid body — never "ok"', async () => {
+    const harness = startTestServer({
+      async *handleTurnStream() {
+        yield { type: 'done', answer: 'x', toolCalls: 0, iterations: 1 };
+      },
+    });
+    const created = await harness.apiKeys.create({ label: 'validator' });
+
+    const res = await fetch(harness.baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${created.token}` },
+      body: JSON.stringify({ message: '' }),
+    });
+    assert.equal(res.status, 400);
+
+    const entries = await harness.auditLog.list();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.status, 'invalid_request');
+
+    await harness.close();
+  });
+
+  it('audits status "error" — never "ok" — when the orchestrator throws mid-turn', async () => {
+    const harness = startTestServer({
+      async *handleTurnStream() {
+        await Promise.resolve();
+        throw new Error('orchestrator exploded');
+      },
+    });
+    const created = await harness.apiKeys.create({ label: 'crasher' });
+
+    const res = await fetch(harness.baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${created.token}` },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+    // Headers are already flushed (200) before dispatch starts — the error
+    // surfaces as an NDJSON event on the wire, not an HTTP error status.
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.ok(body.includes('orchestrator exploded'));
+
+    const entries = await harness.auditLog.list();
+    assert.equal(entries.length, 1, 'exactly one audit row for this authenticated call');
+    assert.equal(
+      entries[0]?.status,
+      'error',
+      'a mid-turn throw must be audited as "error", not optimistically as "ok"',
+    );
+
+    await harness.close();
   });
 });

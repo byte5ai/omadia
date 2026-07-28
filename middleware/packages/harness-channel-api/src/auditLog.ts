@@ -11,12 +11,24 @@
 
 import type { SecretsAccessor } from '@omadia/plugin-api';
 
+/**
+ * `ok` — the turn was dispatched and the stream ended without the handler
+ *   catching an error.
+ * `rate_limited` — the key authenticated but was over its per-minute quota;
+ *   the orchestrator was never invoked.
+ * `invalid_request` — the key authenticated but the request body failed
+ *   schema validation; the orchestrator was never invoked.
+ * `error` — the key authenticated, dispatch was attempted, and the
+ *   orchestrator (or the stream) threw.
+ */
+export type AuditStatus = 'ok' | 'rate_limited' | 'error' | 'invalid_request';
+
 export interface AuditEntry {
   readonly keyId: string;
   readonly route: string;
   readonly method: string;
   readonly at: number;
-  readonly status: 'ok' | 'error';
+  readonly status: AuditStatus;
 }
 
 export interface AuditLog {

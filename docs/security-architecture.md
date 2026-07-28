@@ -159,7 +159,65 @@ At a minimum, your deployment vault holds:
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
 
-## 8. Reviewer checklist
+## 8. Public API ingress (`@omadia/channel-api`, issue #438)
+
+`POST /api/public/v1/chat` is the first ingress this app exposes that is
+**not** cookie- or provider-JWT-gated: it authenticates its own callers with
+a bearer API key, so it is explicitly exempted from the session middleware
+(`middleware/src/auth/publicPaths.ts`, `${API_PREFIX}/chat` only — key
+administration under `/api/public/v1/admin/keys` stays behind the normal
+operator session cookie, same as every other admin surface).
+
+**Credential model — per-key service identity.** Each API key *is* its own
+identity, not a delegate for a human end-user: `ChannelUserRef{ kind:
+'custom', id: 'key:<keyId>' }`. Every action traces to exactly one key;
+there is no impersonation trust boundary to design or police, and no
+"act on behalf of a user" surface in v1.
+
+**Storage — vault-backed, hash-only-at-rest.** Keys are minted as
+`omk_<32 random bytes, base64url>` (`apiKeyToken.ts`). The plaintext is
+returned to the operator exactly once, at creation time, and is never
+persisted; only its sha256 hex digest is written to this plugin's own
+`ctx.secrets` vault namespace (`apiKeyStore.ts`, one vault entry per key —
+no DB migration for v1). Hashing is deliberately unsalted: the key itself
+is a 256-bit high-entropy random value, not a low-entropy human-chosen
+secret, so there is no dictionary/rainbow-table surface for a salt to
+defend against — the same reasoning applies to GitHub PATs and Stripe API
+keys, which are also hashed unsalted.
+
+**Verification — constant-time.** `verify()` walks every stored,
+non-revoked key and compares each one's hash against the presented token's
+hash with `crypto.timingSafeEqual`, deliberately without an early return on
+the first match, so total work (and the timing signal) never depends on
+which key, if any, matched.
+
+**Rate limiting — fixed-window, per key.** Each key gets its own in-memory
+fixed-window counter (`rateLimiter.ts`, 60s window, capacity =
+`rateLimitPerMinute` set at key-creation time). In-memory and per-process:
+a restart clears every counter, which is an accepted v1 trade-off (a burst
+right after deploy is not the threat this defends against).
+
+**Revocation.** `POST /api/public/v1/admin/keys/:id/revoke` sets
+`revokedAt` on the key's vault record (idempotent — revoking an
+already-revoked key is a no-op that returns its unchanged view). `verify()`
+skips any record with `revokedAt` set, so a revoked key starts failing
+immediately on its very next call — no propagation delay, no cache to
+invalidate.
+
+**Usage audit.** Every call that gets *past key verification* — i.e. every
+authenticated call, regardless of what happens next — is recorded as one
+entry (`auditLog.ts`) with a status reflecting the real outcome: `ok`,
+`rate_limited`, `invalid_request`, or `error` (the orchestrator threw
+mid-turn). Unauthenticated calls (missing/invalid/revoked key) are not
+audited here — they never got the caller identity that makes an audit
+entry meaningful.
+
+**PII masking.** Chat turns from this ingress go through the exact same
+`CoreApi.handleTurnStream` dispatch as every other channel (Teams,
+Telegram, Omadia UI) — no second, parallel response path — so
+privacy-guard's prompt masking and receipt behavior apply identically.
+
+## 9. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
 

@@ -44,6 +44,15 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   to `middleware/src/auth/publicPaths.ts`'s exemption list — only `.../chat`
   is public. Key management stays behind the normal operator session cookie,
   like every other admin surface in this app.
+- Review fixups: the internal `conversationId` handed to `CoreApi` is now
+  namespaced by key id (`${key.id}:${callerConversationId}`) so two
+  different API keys can never collide on the same core-side scope, even
+  when they send an identical caller-supplied `conversationId` — closes a
+  cross-key transcript/context leak. The usage audit log now records one
+  entry for every authenticated call (not just the success path) with a
+  status reflecting the real outcome — `ok` | `rate_limited` |
+  `invalid_request` | `error` — instead of writing `status: 'ok'`
+  optimistically before dispatch.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 

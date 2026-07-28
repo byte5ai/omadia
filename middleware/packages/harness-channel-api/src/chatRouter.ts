@@ -23,7 +23,7 @@ import { z } from 'zod';
 import type { CoreApi, IncomingTurn } from '@omadia/channel-sdk';
 
 import type { ApiKeyStore } from './apiKeyStore.js';
-import type { AuditLog } from './auditLog.js';
+import type { AuditLog, AuditStatus } from './auditLog.js';
 import type { RateLimiter } from './rateLimiter.js';
 
 /** Relative to the router's mount prefix (`/api/public/v1`). */
@@ -78,7 +78,25 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
       return;
     }
 
+    // From here on the caller is AUTHENTICATED (a valid, non-revoked key was
+    // presented). Every code path below records exactly one audit entry with
+    // the status that actually happened — rate-limited and invalid-request
+    // rejections never dispatch, so they are audited immediately in place;
+    // the dispatch path audits once, after the stream ends, reflecting
+    // whether the handler threw. Fire-and-forget: a logging failure must
+    // never block or fail the caller's chat turn.
+    const audit = (status: AuditStatus): void => {
+      void deps.auditLog.record({
+        keyId: key.id,
+        route: CHAT_ROUTE,
+        method: 'POST',
+        at: Date.now(),
+        status,
+      });
+    };
+
     if (!deps.rateLimiter.tryConsume(key.id, key.rateLimitPerMinute)) {
+      audit('rate_limited');
       res.status(429).json({
         error: 'rate_limited',
         message: `this key is limited to ${key.rateLimitPerMinute} requests/minute`,
@@ -88,20 +106,10 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
 
     const parsed = ChatRequestSchema.safeParse(req.body);
     if (!parsed.success) {
+      audit('invalid_request');
       res.status(400).json({ error: 'invalid_request', issues: parsed.error.issues });
       return;
     }
-
-    // Every AUTHENTICATED call is audited, before dispatch — a crash mid-turn
-    // still leaves a record that the call happened. Fire-and-forget: a
-    // logging failure must never block or fail the caller's chat turn.
-    void deps.auditLog.record({
-      keyId: key.id,
-      route: CHAT_ROUTE,
-      method: 'POST',
-      at: Date.now(),
-      status: 'ok',
-    });
 
     // NDJSON streaming — see the doc comment at the top of this file.
     res.status(200);
@@ -121,7 +129,16 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
     try {
       const turn: IncomingTurn = {
         channelId: deps.channelId,
-        conversationId: parsed.data.conversationId ?? randomUUID(),
+        // Namespaced by key identity: CoreApi derives its scope as
+        // `${channelId}::${conversationId}` (same channelId for every key
+        // hitting this plugin), and same-scope recall does NOT check
+        // userRef. An unnamespaced caller-supplied conversationId would let
+        // two different API keys collide on the exact same core-side scope
+        // by sending the same conversationId — cross-key context/transcript
+        // leakage. Prefixing with `key.id` (a per-key UUID, never
+        // caller-controlled) makes that collision structurally impossible,
+        // even when two different keys send identical conversationId values.
+        conversationId: `${key.id}:${parsed.data.conversationId ?? randomUUID()}`,
         // Design decision (issue #438): the key IS its own identity — not a
         // delegate for a human end-user. No impersonation surface.
         userRef: {
@@ -134,9 +151,11 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
       for await (const event of deps.core.handleTurnStream(turn)) {
         safeWrite(event);
       }
+      audit('ok');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!clientGone) writeEvent(res, { type: 'error', message });
+      audit('error');
     } finally {
       res.end();
     }
