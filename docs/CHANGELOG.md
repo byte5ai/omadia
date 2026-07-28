@@ -83,6 +83,24 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   upload/schema/delete UI, which is deliberately not part of this change —
   see Phase 14 in `docs/middleware-agent-handoff.md` §13 for the tracked
   follow-up.
+- Fixup (round 3, adversarial review): `InMemoryKnowledgeGraph`'s
+  `matchesDatasetFilter` compared `eq`/`neq`/`contains` filter values with
+  no type coercion (`value === filter.value`), while
+  `NeonKnowledgeGraph`'s `buildDatasetFilterClause` already coerced
+  `filter.value` to the target column's declared type
+  (`::numeric`/`::text`) before comparing. Concrete failing case: a
+  `number` column `amount` storing `250` (a JS number) with
+  `query_dataset` filter `{column:'amount', op:'eq', value:'250'}` (a JSON
+  string — the tool's Zod schema permits this regardless of column type or
+  op) matched on Neon but silently returned `totalMatched: 0` on the
+  in-memory backend for the identical logical query. Fixed by coercing
+  `filter.value` against the row value using the column's schema-declared
+  type, mirroring Neon's cast choice exactly (`Number(...)` for a
+  `number` column, `String(...)` otherwise; `contains` now also coerces a
+  non-string `filter.value` to a string before the substring check instead
+  of rejecting it). Regression test added in
+  `middleware/test/inMemoryKnowledgeGraph.test.ts` reproducing the exact
+  case above plus the `neq`/`contains` mirrors.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 

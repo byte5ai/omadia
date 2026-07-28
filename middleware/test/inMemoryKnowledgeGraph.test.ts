@@ -220,6 +220,58 @@ describe('InMemoryKnowledgeGraph — datasets (#430)', () => {
     assert.equal(contains?.totalMatched, 2);
   });
 
+  // #430 review fixup — `matchesDatasetFilter`'s `eq`/`neq`/`contains` cases
+  // must coerce `filter.value` to the column's declared type BEFORE
+  // comparing, exactly like `buildDatasetFilterClause` does for the Neon
+  // backend (`(data->>col)::numeric = $1::numeric` for a `number` column).
+  // Without that coercion, a `number` column storing a JS `number` row value
+  // silently failed to match a filter value that arrived as a JSON string
+  // (the tool's Zod schema allows `string | number | boolean` regardless of
+  // the target column's type or op) — the exact same logical query matched
+  // on the Neon backend but returned `totalMatched: 0` here.
+  it('coerces a string filter value against a number column for eq (backend parity, #430 fixup)', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'Sales',
+      sourceFileName: 'sales.csv',
+      columns: [
+        { name: 'region', type: 'string' },
+        { name: 'amount', type: 'number' },
+        { name: 'label', type: 'string' },
+      ],
+      rows: [
+        { region: 'North', amount: 100, label: 'Order-100' },
+        { region: 'South', amount: 250, label: 'Order-250' },
+        { region: 'North', amount: 400, label: 'Order-400' },
+      ],
+    });
+
+    // `amount` is a `number` column storing `250` as a JS number; the filter
+    // value arrives as the string `'250'` — must still match.
+    const eqCoerced = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'amount', op: 'eq', value: '250' }],
+    });
+    assert.equal(eqCoerced?.totalMatched, 1);
+    assert.equal(eqCoerced?.rows?.[0]?.['region'], 'South');
+
+    // Mirror case for `neq`: everything except the coerced match.
+    const neqCoerced = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'amount', op: 'neq', value: '250' }],
+    });
+    assert.equal(neqCoerced?.totalMatched, 2);
+
+    // Mirror case for `contains`: `filter.value` arrives as a number even
+    // though the target column (`label`) is `string` — must be coerced to
+    // a string before the substring check instead of being rejected
+    // outright (the old code required `typeof filter.value === 'string'`).
+    const containsCoerced = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'label', op: 'contains', value: 400 as unknown as string }],
+    });
+    assert.equal(containsCoerced?.totalMatched, 1);
+    assert.equal(containsCoerced?.rows?.[0]?.['label'], 'Order-400');
+  });
+
   it('clamps an explicit limit:0 to 1 row instead of silently falling back to the default (#430 fixup)', async () => {
     const g = new InMemoryKnowledgeGraph();
     const { datasetId } = await g.ingestDataset({

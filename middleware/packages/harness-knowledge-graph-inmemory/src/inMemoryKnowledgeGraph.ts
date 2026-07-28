@@ -20,6 +20,7 @@ import {
   type ChannelIdentityIngest,
   type CreateMergeCandidateInput,
   type DatasetAggregate,
+  type DatasetColumnType,
   type DatasetFilter,
   type DatasetIngest,
   type DatasetIngestResult,
@@ -123,15 +124,39 @@ function matchesAgentScopePrefix(
  *  Mirrors the SQL semantics `NeonKnowledgeGraph` builds over the JSONB
  *  column: numeric comparisons coerce both sides to `Number`, `contains`
  *  is a case-insensitive substring match on strings only. */
-function matchesDatasetFilter(value: unknown, filter: DatasetFilter): boolean {
+function matchesDatasetFilter(
+  value: unknown,
+  filter: DatasetFilter,
+  columnType: DatasetColumnType,
+): boolean {
   switch (filter.op) {
     case 'eq':
-      return value === filter.value;
-    case 'neq':
-      return value !== filter.value;
+    case 'neq': {
+      // #430 fixup — coerce `filter.value` to the COLUMN's declared type
+      // before comparing, exactly mirroring `buildDatasetFilterClause` in
+      // `neonKnowledgeGraph.ts` (`(data->>col)::numeric = $1::numeric` for
+      // a `number` column, plain text equality otherwise). The
+      // `query_dataset` tool's Zod schema accepts a `string | number |
+      // boolean` filter value regardless of the target column's type or
+      // op, so `{ column: 'amount', op: 'eq', value: '250' }` against a
+      // `number` column storing `250` must still match — comparing
+      // `value === filter.value` with no coercion silently returned
+      // `totalMatched: 0` here while Neon matched correctly on the same
+      // input (#430 review finding).
+      const isNumeric = columnType === 'number';
+      const a = isNumeric ? Number(value) : String(value);
+      const b = isNumeric ? Number(filter.value) : String(filter.value);
+      return filter.op === 'eq' ? a === b : a !== b;
+    }
     case 'contains':
-      return typeof value === 'string' && typeof filter.value === 'string'
-        ? value.toLowerCase().includes(filter.value.toLowerCase())
+      // #430 fixup — same reasoning as eq/neq: `filter.value` can arrive
+      // as a non-string even though `contains` only targets `string`
+      // columns (validated by `validateDatasetQueryOptions`, but that
+      // validation doesn't touch `filter.value`'s own JS type). Coerce it
+      // to a string before the substring check instead of requiring
+      // `typeof filter.value === 'string'` and returning `false` otherwise.
+      return typeof value === 'string'
+        ? value.toLowerCase().includes(String(filter.value).toLowerCase())
         : false;
     case 'gt':
     case 'gte':
@@ -2924,8 +2949,15 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     const d = this.datasets.get(datasetId);
     if (!d || d.ownerOmadiaUserId !== viewerOmadiaUserId) return null;
     const normalized = validateDatasetQueryOptions(d.columns, opts);
+    const columnTypeByName = new Map(d.columns.map((c) => [c.name, c.type]));
     const matched = d.rows.filter((row) =>
-      normalized.filters.every((f) => matchesDatasetFilter(row[f.column], f)),
+      normalized.filters.every((f) =>
+        matchesDatasetFilter(
+          row[f.column],
+          f,
+          columnTypeByName.get(f.column) ?? 'string',
+        ),
+      ),
     );
     if (!normalized.aggregate) {
       const page = matched.slice(
