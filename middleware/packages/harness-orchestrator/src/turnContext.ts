@@ -52,6 +52,22 @@ export interface TurnContextValue {
    * owner. Undefined for system/ad-hoc turns.
    */
   userId?: string;
+  /**
+   * #430 fixup (reviewer round 5) — the turn caller's CANONICAL `omadiaUserId`
+   * uuid, resolved ONCE by `resolveTurnOwnerIdentity` at turn start (see
+   * `orchestrator.ts`'s `runTurn`/`chatStream`) and reused by every
+   * turn-scoped consumer that needs it for a KnowledgeGraph dataset ACL
+   * check — currently `QueryDatasetTool` (viewer/owner filtering) and
+   * `ingestAttachments` (dataset ownership on CSV import).
+   *
+   * Unlike `userId` above (which is the RAW turn input — a Teams AAD oid for
+   * a channel turn, already-canonical for HTTP/CLI turns), this field is
+   * ALWAYS the canonical uuid when set. Undefined when resolution wasn't
+   * possible (no `KnowledgeGraph` wired up for a channel turn, or resolution
+   * failed) — callers must treat that as "no identity available", never fall
+   * back to the raw `userId` for an ACL decision.
+   */
+  resolvedOmadiaUserId?: string;
   chatParticipants?: ChatParticipantsProvider;
   /**
    * Privacy-Proxy Slice 2.1: per-turn privacy handle threaded through the

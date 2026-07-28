@@ -18,6 +18,132 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — structured dataset ingestion (CSV import) for the Knowledge Graph (#430)
+
+- New `KnowledgeGraph` surface (`ingestDataset`, `listDatasets`, `getDataset`,
+  `queryDatasetRows`, `deleteDataset`) backed by a relational sidecar —
+  `datasets` + `dataset_rows` tables (migration `0029_datasets.sql`) — NOT a
+  graph-node explosion: individual rows never become graph nodes, only one
+  `Dataset` node (`PluginEntity`, `system='dataset'`) is created per dataset
+  for recall/citation linking. Implemented in both `@omadia/knowledge-graph-neon`
+  (real SQL, parameterized JSONB filters/aggregates) and
+  `@omadia/knowledge-graph-inmemory` (full parity, not a stub).
+- `POST /api/v1/datasets` (multipart CSV upload), `GET /api/v1/datasets`,
+  `GET /api/v1/datasets/:id`, `GET /api/v1/datasets/:id/rows`,
+  `DELETE /api/v1/datasets/:id` — ACL pattern mirrors `/api/v1/memory`
+  (session-derived owner, no anonymous access).
+- CSV attachments in chat now import as a queryable dataset instead of being
+  silently truncated at the existing 20,000-char text cap
+  (`attachmentExtract.ts`'s `MAX_TEXT_CHARS`).
+- New `query_dataset` native tool: `list_datasets` / `get_schema` /
+  `query_rows` (a constrained filter+aggregate DSL — never raw SQL from the
+  model), always paginated/aggregated server-side.
+- Every imported row runs through the existing C0 regex PII-detector
+  baseline (`@omadia/plugin-privacy-guard`) before being persisted — the
+  same masking pipeline that already protects free-text user prompts.
+- Admin UI (upload/schema/delete page under `web-ui/app/admin/`) is
+  intentionally NOT part of this change — see the PR description.
+- Fixup: `inferColumnType` (`datasetImport.ts`) no longer types a column as
+  `'number'` when any value has a leading zero (`'0301234567'`, `'01234'`) —
+  such columns are zero-padded identifiers (phone numbers, postal codes),
+  not numbers. Previously `Number()` silently dropped the leading zero
+  (data corruption) AND the column skipped the mandatory C0 privacy scan
+  because number-typed columns are assumed to have no free-text surface.
+  Both bugs are fixed by keeping such columns `'string'`-typed, which
+  restores the scan and preserves the value verbatim.
+- Fixup (round 2, adversarial cross-vendor review): the chat-attachment CSV
+  auto-ingest path (`orchestrator.ts`'s `ingestAttachments`) was writing
+  `ownerOmadiaUserId` from the turn's raw channel-native id (Teams AAD oid,
+  …) instead of the canonical `omadiaUserId` uuid the KG's ACL routes
+  filter on. `ChatTurnInput` gains an optional `channelIdentity` field
+  (`{ channelKind, channelUserId }`, populated only by
+  `createOrchestratorDispatcher` for channel kinds the KG model has a
+  mapping for); the CSV-import call site now resolves it via
+  `KnowledgeGraph.resolveOrCreateChannelIdentity` before using it as the
+  dataset owner, and declines the KG-import branch (falling back to the
+  plain-text attachment path) rather than guess for a channel it can't map.
+- Fixup (round 2): per-cell CSV truncation (`MAX_CELL_CHARS` in
+  `datasetImport.ts`) is still applied but is no longer silent —
+  `parseCsv`/`buildDatasetFromCsv`/`importCsvDataset` now return a
+  `truncation: { truncatedCellCount, truncatedColumns }` alongside
+  `privacyScan`, surfaced in the `POST /api/v1/datasets` response and in the
+  chat-ingest tool-result note.
+- Fixup (round 2): `NeonKnowledgeGraph`'s `contains` dataset filter now
+  escapes `%`, `_`, and `\` in the filter value before wrapping it for
+  `ILIKE ... ESCAPE '\'`, so a literal `%`/`_` in the value matches literally
+  instead of being treated as a SQL wildcard — matching the in-memory
+  backend's literal substring `.includes()` semantics.
+- Fixup (round 2): `InMemoryKnowledgeGraph`'s grouped dataset query now caps
+  results at 200 groups (sorted by aggregate value descending, nulls last),
+  matching `NeonKnowledgeGraph`'s existing `LIMIT 200` — an unbounded
+  group-by could otherwise blow the turn token budget through the
+  in-memory backend only.
+- Scope correction: this change addresses #430's CSV import/query path.
+  #430's own triage acceptance criteria also call for an admin
+  upload/schema/delete UI, which is deliberately not part of this change —
+  see Phase 14 in `docs/middleware-agent-handoff.md` §13 for the tracked
+  follow-up.
+- Fixup (round 3, adversarial review): `InMemoryKnowledgeGraph`'s
+  `matchesDatasetFilter` compared `eq`/`neq`/`contains` filter values with
+  no type coercion (`value === filter.value`), while
+  `NeonKnowledgeGraph`'s `buildDatasetFilterClause` already coerced
+  `filter.value` to the target column's declared type
+  (`::numeric`/`::text`) before comparing. Concrete failing case: a
+  `number` column `amount` storing `250` (a JS number) with
+  `query_dataset` filter `{column:'amount', op:'eq', value:'250'}` (a JSON
+  string — the tool's Zod schema permits this regardless of column type or
+  op) matched on Neon but silently returned `totalMatched: 0` on the
+  in-memory backend for the identical logical query. Fixed by coercing
+  `filter.value` against the row value using the column's schema-declared
+  type, mirroring Neon's cast choice exactly (`Number(...)` for a
+  `number` column, `String(...)` otherwise; `contains` now also coerces a
+  non-string `filter.value` to a string before the substring check instead
+  of rejecting it). Regression test added in
+  `middleware/test/inMemoryKnowledgeGraph.test.ts` reproducing the exact
+  case above plus the `neq`/`contains` mirrors.
+- Fixup (round 5, adversarial review): round 2's channel-identity fix only
+  covered the IMPORT path (`ingestAttachments`) — `QueryDatasetTool.handle`
+  still resolved the viewer as `turnContext.current()?.userId`, the RAW
+  channel-native id, never the canonical `omadiaUserId` a channel turn's
+  dataset was actually stored under. Net effect: a dataset imported via
+  Teams/Slack/Telegram chat could never be found again by `list_datasets` /
+  `get_schema` / `query_rows` from that same chat — the exact "query
+  ingested datasets" requirement #430 exists for. Fixed by resolving the
+  canonical id ONCE per turn (`resolveTurnOwnerIdentity`, new
+  `TurnContextValue.resolvedOmadiaUserId`) in both `runTurn` and
+  `chatStream` (the latter is what channel adapters actually call —
+  previously it never populated any per-turn user identity at all for the
+  `query_dataset`/dataset-ACL purpose), and pointing both `QueryDatasetTool`
+  and `ingestAttachments` at that single shared value instead of each
+  re-deriving it. Regression test in `queryDatasetTool.test.ts` simulates a
+  channel turn's raw-id-at-write-vs-read mismatch end-to-end.
+- Fixup (round 6, adversarial review): round 1's `LEADING_ZERO_RE` fix only
+  matched an UNSIGNED leading zero (`/^0\d/`), so a signed zero-padded value
+  like `-0123`/`-0456` still passed `NUMBER_RE` (which allows an optional
+  leading `-`) without tripping the leading-zero guard — the exact same
+  corruption-plus-scan-bypass defect as round 1, just missed for the signed
+  case. Fixed by widening the pattern to `/^-?0\d/`, which still correctly
+  excludes a bare `0`/`-0` or a `0.x`/`-0.x` decimal (those are followed by
+  nothing or a `.`, not another digit). Regression test added in
+  `datasetImport.test.ts` with signed zero-padded values proving the column
+  types as `'string'`, the value round-trips with sign and leading zero
+  intact, and the privacy scan runs on it.
+- Fixup (round 7, adversarial review): `POST /api/v1/datasets` was the only
+  one of the five dataset route handlers (`middleware/src/routes/datasets.ts`)
+  with no `try/catch` around its core call (`importCsvDataset`). Since
+  Express 5 auto-forwards async rejections to its default error handler and
+  this app registers no global JSON error middleware, an unexpected THROWN
+  error during import (e.g. a transient Postgres error inside
+  `NeonKnowledgeGraph.ingestDataset`) fell through to Express's default
+  handler and returned an HTML error page instead of the `{code, message}`
+  JSON envelope every other dataset endpoint already returns via
+  `mapErrorToHttp`. Fixed by wrapping the handler's `importCsvDataset` call
+  in the same `try/catch` + `mapErrorToHttp` pattern the other four
+  handlers use — the existing, already-handled `{ok: false, reason}`
+  not-ok/privacy-rejection return path is unchanged. Regression test added
+  in `datasetsRoute.test.ts` with a graph whose `ingestDataset` throws,
+  asserting the route returns a JSON `{code, message}` body.
+
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 
 - A native plugin (`ctx.tools.register` from `activate()`) whose own

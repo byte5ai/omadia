@@ -254,4 +254,63 @@ describe('createOrchestratorDispatcher', () => {
     assert.equal(bindingConsulted, false);
     assert.deepEqual(asked, ['chatAgent']);
   });
+
+  // ── #430 fixup — channelIdentity threading ─────────────────────────────
+
+  it('threads a resolvable channelIdentity for a teams-aad userRef', async () => {
+    const seen: unknown[] = [];
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => undefined,
+      getAgentBundle: () => ({
+        agent: {
+          chat: () => Promise.resolve({ text: '' }),
+          async *chatStream(input) {
+            seen.push(input);
+            await Promise.resolve();
+            yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 } as ChatStreamEvent;
+          },
+        },
+      }),
+    });
+    await collect(
+      dispatcher.streamTurn({
+        ...turn,
+        userRef: { kind: 'teams-aad', id: 'aad-oid-123' },
+        channelId: 'de.byte5.channel.teams',
+      }),
+    );
+    const input = seen[0] as {
+      userId?: string;
+      channelIdentity?: { channelKind: string; channelUserId: string };
+    };
+    // `userId` stays the raw channel-native id (unchanged, documented
+    // behaviour) — `channelIdentity` is the NEW, typed, resolvable signal.
+    assert.equal(input.userId, 'aad-oid-123');
+    assert.deepEqual(input.channelIdentity, {
+      channelKind: 'teams',
+      channelUserId: 'aad-oid-123',
+    });
+  });
+
+  it('omits channelIdentity for a userRef kind the KG ChannelKind model has no mapping for (custom)', async () => {
+    const seen: unknown[] = [];
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => undefined,
+      getAgentBundle: () => ({
+        agent: {
+          chat: () => Promise.resolve({ text: '' }),
+          async *chatStream(input) {
+            seen.push(input);
+            await Promise.resolve();
+            yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 } as ChatStreamEvent;
+          },
+        },
+      }),
+    });
+    // The shared `turn` fixture uses `kind: 'custom'` (e.g. the canvas
+    // channel) — no ChannelKind counterpart, so no identity is guessed.
+    await collect(dispatcher.streamTurn({ ...turn, channelId: 'de.byte5.channel.omadia-ui' }));
+    const input = seen[0] as { channelIdentity?: unknown };
+    assert.equal(input.channelIdentity, undefined);
+  });
 });
