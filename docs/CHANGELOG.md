@@ -18,6 +18,48 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — Conductor generic webhook support, inbound + outbound (#437)
+
+- **Inbound**: `POST /api/hooks/:endpointId` (unauthenticated mount, raw-body
+  HMAC verification ahead of the global `express.json()` — same pattern as
+  `routes/devWebhooks.ts`). An endpoint maps to a Conductor `eventId`; a
+  verified delivery calls the existing `ConductorEventRouter.emit()`, so any
+  workflow with a matching `event` **or** `webhook` trigger starts a run — the
+  previously declared-but-dead `'webhook'` `TriggerKind`
+  (`conductor-core/src/types.ts`) is now implemented as `event`'s sibling, not
+  a separate mechanism. Every claimed delivery id lands in
+  `conductor_webhook_inbound_deliveries` with a terminal outcome (dedupe +
+  audit ledger); noise (disabled endpoint, malformed JSON, no subscriber)
+  always answers 2xx to avoid a redelivery storm, while a bad/absent signature
+  and an unknown endpoint id answer byte-for-byte the same 401.
+- **Outbound**: `ConductorWebhookDispatcher` fires an HMAC-signed delivery to
+  every enabled `conductor_webhook_subscriptions` row matching an internal
+  event (`run.completed` / `run.failed`, wired via a new
+  `ConductorRunExecutor` terminal-run hook), with exponential backoff up to a
+  configurable attempt cap and a persisted `conductor_webhook_deliveries` log
+  (`ConductorWebhookRetryWorker` re-attempts anything still `pending` on a
+  poll loop, so a delivery survives a process restart).
+- **Designer action**: a new built-in `webhook.post` action lets a workflow
+  step fire an ad-hoc outbound POST to an operator-supplied URL.
+- **Security**: inbound endpoint secrets and outbound subscription signing
+  secrets live in the secret vault (`core:conductor` namespace, metadata in
+  Postgres / secret in Vault split, modeled on `DevGithubAppStore`) — never in
+  graph JSON or an API response beyond their one-time creation/rotation
+  reply. Both the dispatcher and `webhook.post` share one SSRF guard
+  (`conductor/webhookOutbound.ts`, reusing the existing
+  `platform/ssrfGuard.ts` guarded-`Agent` defence) that rejects a private /
+  loopback / link-local / cloud-metadata target before a request is ever
+  attempted.
+- New config: `CONDUCTOR_WEBHOOKS_ENABLED` (global inbound kill switch,
+  default `true`) — see `middleware/.env.example`.
+- New migration: `middleware/src/conductor/migrations/0007_webhooks.sql`
+  (`conductor_webhook_endpoints`, `conductor_webhook_inbound_deliveries`,
+  `conductor_webhook_subscriptions`, `conductor_webhook_deliveries`).
+- Admin CRUD (list/create/rotate-secret/enable-disable/delivery-log) is
+  exposed under the existing auth-gated
+  `/api/v1/operator/conductors/webhooks/*`; an admin UI page is a follow-up,
+  not part of this change.
+
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 
 - A native plugin (`ctx.tools.register` from `activate()`) whose own

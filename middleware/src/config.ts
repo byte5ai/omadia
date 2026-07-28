@@ -199,6 +199,15 @@ const ConfigSchema = z.object({
   DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR: z.coerce.number().int().positive().default(5),
   DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR: z.coerce.number().int().positive().default(2),
 
+  // Issue #437 — Conductor's generic inbound webhook route (`POST /api/hooks/:endpointId`).
+  // Per-endpoint secrets already gate every request (Vault-backed, see webhookEndpointStore.ts);
+  // this is the same operator-facing global kill switch DEV_WEBHOOKS_ENABLED is for the
+  // dev-platform's GitHub route, kept separate because the two features are unrelated.
+  CONDUCTOR_WEBHOOKS_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(true),
+
   // Epic #470 W4 — default per-job LLM cost budget (USD) applied when neither the
   // job nor its repo sets one (spec §5). Token budgets have NO default: they are
   // enforced only when explicitly set on the job or repo.
