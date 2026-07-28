@@ -5297,37 +5297,76 @@ export class Orchestrator {
           const label = c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
           // #430 — CSV attachments become a queryable dataset instead of a
           // truncated `[attachment-content]` text blob, whenever a
-          // KnowledgeGraph AND a resolved user identity are both available
-          // (dataset ownership needs an omadiaUserId — same identity source
-          // the MCP-ingest path above uses for `aclOwners`). Falls back to
-          // the plain-text path otherwise, so CSV ingest degrades instead of
-          // silently failing on a channel without either.
-          if (
-            isCsvAttachment(contentType, attachmentFileName) &&
-            this.knowledgeGraph &&
-            input.userId
-          ) {
-            const imported = await importCsvDataset({
-              graph: this.knowledgeGraph,
-              bytes: fetched.bytes,
-              datasetName: attachmentFileName ?? label,
-              sourceFileName: attachmentFileName ?? label,
-              ownerOmadiaUserId: input.userId,
-              ...(c.storageKey ? { sourceStorageKey: c.storageKey } : {}),
-            });
-            if (imported.ok) {
-              textBlocks.push(
-                `\n\n[dataset-imported: ${label}]\ndataset_id=${imported.result.datasetId}, rows=${String(imported.result.rowCount)}. ` +
-                  `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with this dataset_id to filter/aggregate this data — do not ask the user to re-paste it, and do not claim the content was truncated.\n[/dataset-imported]`,
+          // KnowledgeGraph AND a resolved user identity are both available.
+          // Falls back to the plain-text path otherwise, so CSV ingest
+          // degrades instead of silently failing on a channel without
+          // either.
+          //
+          // #430 fixup (reviewer round 2) — dataset ownership needs the
+          // canonical `omadiaUserId` uuid, NOT the raw channel-native id
+          // `input.userId` carries for channel turns (Teams AAD oid, …; see
+          // `ChatTurnInput.userId`'s doc comment). `input.channelIdentity`
+          // (set only by `createOrchestratorDispatcher`) tells us which case
+          // we're in: present → resolve via
+          // `resolveOrCreateChannelIdentity` (same primitive the web-login
+          // path in `index.ts` uses); absent → this is an HTTP/CLI turn
+          // where `input.userId` already IS the canonical uuid (resolved
+          // from `req.session.omadia_user_id` / a validated `x-user-id` in
+          // `routes/chat.ts`), so it's used as-is. A channel turn whose kind
+          // the KG model doesn't cover yet (discord, whatsapp, canvas'
+          // `custom`) has no `channelIdentity` either — resolution is
+          // skipped rather than guessed, so the CSV falls through to the
+          // plain-text path below (same degrade-gracefully behaviour as a
+          // missing KnowledgeGraph).
+          if (isCsvAttachment(contentType, attachmentFileName) && this.knowledgeGraph) {
+            const ownerOmadiaUserId = input.channelIdentity
+              ? await this.knowledgeGraph
+                  .resolveOrCreateChannelIdentity({
+                    channelKind: input.channelIdentity.channelKind,
+                    channelUserId: input.channelIdentity.channelUserId,
+                  })
+                  .then((r) => r.omadiaUserId)
+                  .catch((err: unknown) => {
+                    console.warn(
+                      `[harness-orchestrator] ingestAttachments: channel identity resolution failed for ${label} — ${
+                        err instanceof Error ? err.message : String(err)
+                      }`,
+                    );
+                    return undefined;
+                  })
+              : input.userId;
+            if (ownerOmadiaUserId) {
+              const imported = await importCsvDataset({
+                graph: this.knowledgeGraph,
+                bytes: fetched.bytes,
+                datasetName: attachmentFileName ?? label,
+                sourceFileName: attachmentFileName ?? label,
+                ownerOmadiaUserId,
+                ...(c.storageKey ? { sourceStorageKey: c.storageKey } : {}),
+              });
+              if (imported.ok) {
+                // #430 fixup — per-cell truncation (MAX_CELL_CHARS) still
+                // happens (see datasetImport.ts module doc); only tell the
+                // model "not truncated" when that's actually true this time,
+                // rather than making a blanket claim the PR no longer backs.
+                const { truncatedCellCount, truncatedColumns } = imported.truncation;
+                const truncationNote =
+                  truncatedCellCount > 0
+                    ? `Note: ${String(truncatedCellCount)} cell(s) in column(s) [${truncatedColumns.join(', ')}] exceeded the per-cell length cap and were truncated on import.`
+                    : 'No cells were truncated on import.';
+                textBlocks.push(
+                  `\n\n[dataset-imported: ${label}]\ndataset_id=${imported.result.datasetId}, rows=${String(imported.result.rowCount)}. ` +
+                    `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with this dataset_id to filter/aggregate this data — do not ask the user to re-paste it. ${truncationNote}\n[/dataset-imported]`,
+                );
+                continue;
+              }
+              console.warn(
+                `[harness-orchestrator] ingestAttachments: CSV dataset import failed for ${label} — ${imported.reason}`,
               );
-              continue;
+              // Fall through to the plain-text path below so the CSV's raw
+              // text (even if capped) still reaches the model rather than
+              // vanishing silently.
             }
-            console.warn(
-              `[harness-orchestrator] ingestAttachments: CSV dataset import failed for ${label} — ${imported.reason}`,
-            );
-            // Fall through to the plain-text path below so the CSV's raw
-            // text (even if capped) still reaches the model rather than
-            // vanishing silently.
           }
           const result = await extractAttachmentText(
             fetched.bytes,

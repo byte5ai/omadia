@@ -51,6 +51,38 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   because number-typed columns are assumed to have no free-text surface.
   Both bugs are fixed by keeping such columns `'string'`-typed, which
   restores the scan and preserves the value verbatim.
+- Fixup (round 2, adversarial cross-vendor review): the chat-attachment CSV
+  auto-ingest path (`orchestrator.ts`'s `ingestAttachments`) was writing
+  `ownerOmadiaUserId` from the turn's raw channel-native id (Teams AAD oid,
+  …) instead of the canonical `omadiaUserId` uuid the KG's ACL routes
+  filter on. `ChatTurnInput` gains an optional `channelIdentity` field
+  (`{ channelKind, channelUserId }`, populated only by
+  `createOrchestratorDispatcher` for channel kinds the KG model has a
+  mapping for); the CSV-import call site now resolves it via
+  `KnowledgeGraph.resolveOrCreateChannelIdentity` before using it as the
+  dataset owner, and declines the KG-import branch (falling back to the
+  plain-text attachment path) rather than guess for a channel it can't map.
+- Fixup (round 2): per-cell CSV truncation (`MAX_CELL_CHARS` in
+  `datasetImport.ts`) is still applied but is no longer silent —
+  `parseCsv`/`buildDatasetFromCsv`/`importCsvDataset` now return a
+  `truncation: { truncatedCellCount, truncatedColumns }` alongside
+  `privacyScan`, surfaced in the `POST /api/v1/datasets` response and in the
+  chat-ingest tool-result note.
+- Fixup (round 2): `NeonKnowledgeGraph`'s `contains` dataset filter now
+  escapes `%`, `_`, and `\` in the filter value before wrapping it for
+  `ILIKE ... ESCAPE '\'`, so a literal `%`/`_` in the value matches literally
+  instead of being treated as a SQL wildcard — matching the in-memory
+  backend's literal substring `.includes()` semantics.
+- Fixup (round 2): `InMemoryKnowledgeGraph`'s grouped dataset query now caps
+  results at 200 groups (sorted by aggregate value descending, nulls last),
+  matching `NeonKnowledgeGraph`'s existing `LIMIT 200` — an unbounded
+  group-by could otherwise blow the turn token budget through the
+  in-memory backend only.
+- Scope correction: this change addresses #430's CSV import/query path.
+  #430's own triage acceptance criteria also call for an admin
+  upload/schema/delete UI, which is deliberately not part of this change —
+  see Phase 14 in `docs/middleware-agent-handoff.md` §13 for the tracked
+  follow-up.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 

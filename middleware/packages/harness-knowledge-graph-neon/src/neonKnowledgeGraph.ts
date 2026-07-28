@@ -307,8 +307,16 @@ function buildDatasetFilterClause(
       return `${lhs} ${opSql} $${String(params.length)}::numeric`;
     }
     case 'contains': {
-      params.push(`%${String(filter.value)}%`);
-      return `${lhs} ILIKE $${String(params.length)}`;
+      // #430 fixup — a literal `%`/`_` (or backslash) in `filter.value` would
+      // otherwise be interpreted as a SQL wildcard/escape char instead of a
+      // literal character once wrapped for ILIKE, diverging from the
+      // in-memory backend's literal `.includes()` substring match (see
+      // `matchesDatasetFilter` in `inMemoryKnowledgeGraph.ts`). Escaping the
+      // escape character itself FIRST is required — otherwise a value
+      // containing a literal backslash would double-escape.
+      const escaped = String(filter.value).replace(/[\\%_]/g, '\\$&');
+      params.push(`%${escaped}%`);
+      return `${lhs} ILIKE $${String(params.length)} ESCAPE '\\'`;
     }
   }
 }

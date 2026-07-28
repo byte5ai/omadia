@@ -55,8 +55,26 @@ export const MAX_DATASET_ROWS = 50_000;
  *  the scan's cost for no import-quality benefit. */
 const MAX_CELL_CHARS = 4_000;
 
+/** #430 fixup — per-cell truncation stats. `MAX_CELL_CHARS` still caps every
+ *  cell (protects the privacy scan + storage from an absurd single-cell
+ *  blob), but silently cutting a 4000+-char cell with no signal contradicted
+ *  the PR's "no more silent CSV truncation" claim — this makes the cut
+ *  visible instead of removing it (removing it would let one pathological
+ *  cell blow the scan/storage budget). */
+export interface CsvTruncationStats {
+  /** Total cells whose raw value exceeded `MAX_CELL_CHARS` and was cut. */
+  truncatedCellCount: number;
+  /** Column names that had at least one truncated cell, in header order. */
+  truncatedColumns: string[];
+}
+
 export type CsvParseResult =
-  | { ok: true; headers: string[]; rows: Array<Record<string, string>> }
+  | {
+      ok: true;
+      headers: string[];
+      rows: Array<Record<string, string>>;
+      truncation: CsvTruncationStats;
+    }
   | { ok: false; reason: string };
 
 /** Parse CSV bytes into header-keyed string rows. Never throws — a
@@ -95,15 +113,30 @@ export function parseCsv(bytes: Buffer): CsvParseResult {
       reason: `CSV has ${String(records.length)} rows, exceeding the ${String(MAX_DATASET_ROWS)}-row import cap`,
     };
   }
+  let truncatedCellCount = 0;
+  const truncatedColumnSet = new Set<string>();
   const rows = (records as Array<Record<string, unknown>>).map((record) => {
     const row: Record<string, string> = {};
     for (const h of headers) {
       const v = record[h];
-      row[h] = v === undefined || v === null ? '' : String(v).slice(0, MAX_CELL_CHARS);
+      const full = v === undefined || v === null ? '' : String(v);
+      if (full.length > MAX_CELL_CHARS) {
+        truncatedCellCount += 1;
+        truncatedColumnSet.add(h);
+      }
+      row[h] = full.slice(0, MAX_CELL_CHARS);
     }
     return row;
   });
-  return { ok: true, headers, rows };
+  return {
+    ok: true,
+    headers,
+    rows,
+    truncation: {
+      truncatedCellCount,
+      truncatedColumns: headers.filter((h) => truncatedColumnSet.has(h)),
+    },
+  };
 }
 
 const NUMBER_RE = /^-?\d+(?:\.\d+)?$/;
@@ -158,6 +191,7 @@ export async function buildDatasetFromCsv(bytes: Buffer): Promise<
       columns: DatasetColumnSchema[];
       rows: Array<Record<string, unknown>>;
       privacyScan: PrivacyScanStats;
+      truncation: CsvTruncationStats;
     }
   | { ok: false; reason: string }
 > {
@@ -220,6 +254,7 @@ export async function buildDatasetFromCsv(bytes: Buffer): Promise<
     columns,
     rows: scrubbedRows,
     privacyScan: { scannedCells, maskedCells },
+    truncation: parsed.truncation,
   };
 }
 
@@ -233,7 +268,12 @@ export interface ImportCsvDatasetInput {
 }
 
 export type ImportCsvDatasetResult =
-  | { ok: true; result: DatasetIngestResult; privacyScan: PrivacyScanStats }
+  | {
+      ok: true;
+      result: DatasetIngestResult;
+      privacyScan: PrivacyScanStats;
+      truncation: CsvTruncationStats;
+    }
   | { ok: false; reason: string };
 
 /** End-to-end: CSV bytes → privacy-scrubbed rows → persisted dataset. The
@@ -255,5 +295,5 @@ export async function importCsvDataset(
     columns: built.columns,
     rows: built.rows,
   });
-  return { ok: true, result, privacyScan: built.privacyScan };
+  return { ok: true, result, privacyScan: built.privacyScan, truncation: built.truncation };
 }

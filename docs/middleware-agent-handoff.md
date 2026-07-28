@@ -671,6 +671,31 @@ durch `runTurn({ ..., viewer })`. Tests: `test/conductorBuilder.test.ts`
 (Digest-Sichtbarkeit inkl. pending/fremd-privat, Proposal-Vetting,
 Malformed-Blocks, No-Proposal-Regression).
 
+### Dataset-Routen + `query_dataset`-Tool (#430)
+
+Neue REST-Oberfläche `src/routes/datasets.ts`, gemountet unter
+`/api/v1/datasets` (ACL-Pattern wie `/api/v1/memory` —
+`req.session.omadia_user_id`, kein anonymer Zugriff):
+
+- `POST /api/v1/datasets` — multipart CSV-Upload (`multer`, ein File pro
+  Request, `MAX_UPLOAD_BYTES` = 25 MB).
+- `GET /api/v1/datasets` — Liste der eigenen Datasets.
+- `GET /api/v1/datasets/:id` — Schema + Metadaten eines Datasets.
+- `GET /api/v1/datasets/:id/rows` — paginierte Roh-Zeilen.
+- `DELETE /api/v1/datasets/:id` — Dataset löschen.
+
+Dieselbe Pipeline (`importCsvDataset` aus
+`harness-orchestrator/src/datasetImport.ts`) läuft auch automatisch beim
+CSV-Chat-Attachment-Pfad in `orchestrator.ts`'s `ingestAttachments` (ersetzt
+dort den bisherigen 20.000-Zeichen-Text-Cutoff für CSVs) — siehe §7 für die
+Knowledge-Graph-seitige Implementierung.
+
+Neues natives Tool **`query_dataset`** (`tools/queryDatasetTool.ts`),
+registriert wie die übrigen Orchestrator-Tools in §3's Orchestrator-Setup:
+`list_datasets` / `get_schema` / `query_rows` gegen eine eingeschränkte
+Filter/Aggregat-DSL (nie rohes SQL vom Modell), Ergebnisse immer
+server-seitig paginiert/aggregiert bzw. auf 200 Gruppen gecappt.
+
 ---
 
 ## 4. Migration Managed Agents → Lokal
@@ -948,6 +973,14 @@ Migration. Statt dessen überschreibt der Preamble in
 
 Funktioniert in der Praxis. Falls ein Sub-Agent dennoch curl-Muster
 produziert, Skill selbst anpassen.
+
+### Cross-Referenz: `query_dataset` (#430) ist kein Skill
+
+AGENTS.md's Doku-Regel ordnet "Neue Route / Tool / Sub-Agent" §3 **und**
+§8 zu. #430's `query_dataset`-Tool ist ein natives Orchestrator-Tool ohne
+eigenen `skills/<name>/SKILL.md`-Ordner — es gehört also inhaltlich nicht
+in "Aktuelle Skills" oben. Referenz statt Duplikat: volle Doku in §3
+("Dataset-Routen + `query_dataset`-Tool") und §7 (Knowledge-Graph-Schicht).
 
 ---
 
@@ -1330,6 +1363,18 @@ gekettet, weil `requires` beim Boot enforced wird): docs-RFC (diese PR)
 (plus `TurnContextValue`-Extension) → vier Per-Channel-Opt-in-PRs →
 omadia-ui-Orchestrator-Consumer. Details + per-PR-Doc-Pflichten in §15
 des RFC.
+
+### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up)
+
+Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckt
+absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete bleibt
+API-only (`POST/GET/DELETE /api/v1/datasets*`, siehe §3). #430's eigene
+Triage-Acceptance-Criteria verlangen aber genau diese UI; der Branch
+schließt das Issue deshalb NICHT, sondern "addresses" es — ein
+Folge-Issue für die Admin-UI-Seite (`web-ui/app/admin/datasets/` o.ä.,
+Upload-Dropzone + Schema-Tabelle + Zeilen-Preview + Delete-Bestätigung,
+Pattern analog zur bestehenden Package-Upload-Seite) ist offen zu
+erfassen.
 
 ---
 

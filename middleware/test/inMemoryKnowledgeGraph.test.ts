@@ -271,6 +271,42 @@ describe('InMemoryKnowledgeGraph — datasets (#430)', () => {
     assert.equal(count?.aggregateValue, 3);
   });
 
+  it('#430 fixup — caps grouped results at 200, matching the Neon backend LIMIT, sorted by value descending', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const rows = Array.from({ length: 250 }, (_, i) => ({
+      key: `k${String(i)}`,
+      amount: i, // distinct value per group so the sort order is unambiguous
+    }));
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'ManyGroups',
+      sourceFileName: 'many.csv',
+      columns: [
+        { name: 'key', type: 'string' },
+        { name: 'amount', type: 'number' },
+      ],
+      rows,
+    });
+
+    const result = await g.queryDatasetRows(datasetId, 'user-1', {
+      groupBy: 'key',
+      aggregate: { fn: 'sum', column: 'amount' },
+    });
+    assert.equal(result?.groups?.length, 200, 'must cap at 200 groups even though 250 unique keys exist');
+    // `totalMatched` still reflects every row, not just the returned groups.
+    assert.equal(result?.totalMatched, 250);
+    // Deterministic: sorted by value descending, so the 200 HIGHEST-amount
+    // groups survive (k249..k50), not the first 200 inserted (k0..k199).
+    const values = (result?.groups ?? []).map((gr) => gr.value);
+    assert.deepEqual(values, [...values].sort((a, b) => (b ?? 0) - (a ?? 0)));
+    assert.equal(result?.groups?.[0]?.key, 'k249');
+    assert.equal(
+      result?.groups?.some((gr) => gr.key === 'k0'),
+      false,
+      'the lowest-value group must be truncated away, not the last-inserted one',
+    );
+  });
+
   it('rejects an unknown filter column and an aggregate on a non-number column', async () => {
     const g = new InMemoryKnowledgeGraph();
     const { datasetId } = await g.ingestDataset({

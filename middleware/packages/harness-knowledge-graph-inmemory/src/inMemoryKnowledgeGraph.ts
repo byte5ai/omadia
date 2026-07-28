@@ -2946,10 +2946,25 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         if (bucket) bucket.push(row);
         else buckets.set(key, [row]);
       }
-      const groups = [...buckets.entries()].map(([key, rowsInGroup]) => ({
-        key,
-        value: computeDatasetAggregate(rowsInGroup, normalized.aggregate!),
-      }));
+      // #430 fixup — cap at 200 groups, same as the Neon backend's
+      // `LIMIT 200` (neonKnowledgeGraph.ts). Uncapped, a dataset with many
+      // unique group keys could blow the turn token budget through this
+      // backend even though Neon is safe. Sorted by value (desc, nulls
+      // last) BEFORE truncating — same order as Neon's
+      // `ORDER BY value DESC NULLS LAST LIMIT 200` — so which 200 survive is
+      // deterministic, not insertion-order-dependent.
+      const MAX_GROUPS = 200;
+      const groups = [...buckets.entries()]
+        .map(([key, rowsInGroup]) => ({
+          key,
+          value: computeDatasetAggregate(rowsInGroup, normalized.aggregate!),
+        }))
+        .sort((a, b) => {
+          if (a.value === null) return b.value === null ? 0 : 1;
+          if (b.value === null) return -1;
+          return b.value - a.value;
+        })
+        .slice(0, MAX_GROUPS);
       return { groups, totalMatched: matched.length };
     }
     return {

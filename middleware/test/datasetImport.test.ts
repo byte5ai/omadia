@@ -36,6 +36,26 @@ describe('parseCsv', () => {
     if (result.ok) return;
     assert.match(result.reason, /row/i);
   });
+
+  it('reports zero truncation for a CSV with no over-limit cells', () => {
+    const result = parseCsv(Buffer.from('name,age\nAda,36\n', 'utf8'));
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.truncation.truncatedCellCount, 0);
+    assert.deepEqual(result.truncation.truncatedColumns, []);
+  });
+
+  it('#430 fixup — surfaces truncatedCellCount + truncatedColumns instead of silently cutting an over-limit cell', () => {
+    const longValue = 'x'.repeat(5000);
+    const csv = `name,notes\nAda,${longValue}\nGrace,short\n`;
+    const result = parseCsv(Buffer.from(csv, 'utf8'));
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.truncation.truncatedCellCount, 1);
+    assert.deepEqual(result.truncation.truncatedColumns, ['notes']);
+    // The cell is still cut (protects storage/scan) — just no longer silent.
+    assert.equal(result.rows[0]?.['notes']?.length, 4000);
+  });
 });
 
 describe('buildDatasetFromCsv — column type inference', () => {
@@ -171,6 +191,23 @@ describe('importCsvDataset', () => {
     assert.ok(dataset);
     assert.equal(dataset?.name, 'People');
     assert.equal(dataset?.rowCount, 2);
+    assert.equal(imported.truncation.truncatedCellCount, 0);
+  });
+
+  it('#430 fixup — threads truncation stats through to the top-level import result', async () => {
+    const graph = new InMemoryKnowledgeGraph();
+    const longValue = 'y'.repeat(4500);
+    const imported = await importCsvDataset({
+      graph,
+      bytes: Buffer.from(`name,bio\nAda,${longValue}\n`, 'utf8'),
+      datasetName: 'Bios',
+      sourceFileName: 'bios.csv',
+      ownerOmadiaUserId: 'user-1',
+    });
+    assert.equal(imported.ok, true);
+    if (!imported.ok) return;
+    assert.equal(imported.truncation.truncatedCellCount, 1);
+    assert.deepEqual(imported.truncation.truncatedColumns, ['bio']);
   });
 
   it('surfaces a clean failure reason for a malformed CSV instead of throwing', async () => {

@@ -111,6 +111,10 @@ export function createDatasetsRouter(deps: { graph: KnowledgeGraph }): Router {
       res.status(201).json({
         dataset: imported.result,
         privacyScan: imported.privacyScan,
+        // #430 fixup — cells over MAX_CELL_CHARS are still cut (protects the
+        // scan + storage from one pathological cell), but the cut is no
+        // longer silent: callers can see it happened and which columns.
+        truncation: imported.truncation,
       });
     },
   );
