@@ -18,6 +18,7 @@ import {
   startEmbeddingBackfill,
   type EmbeddingBackfillHandle,
 } from './embeddingBackfill.js';
+import { createEmbeddingGateStatus } from './gateStatusPublication.js';
 import { runDecaySweep } from './decayJob.js';
 import { AccessTracker } from './accessTracker.js';
 import { runGcSweep } from './gc.js';
@@ -244,9 +245,18 @@ export async function activate(
   // `embeddings: true, semanticRecall: true, processReuse: true, warnings: []`
   // for a boot where no vector is ever written and every processMemory write
   // returns `embedding-unavailable`.
+  // Live rather than a snapshot: the gate runs once at activation, but the
+  // state it describes changes underneath it when the backfill sweep drains
+  // the owed clear. A frozen object would keep reporting
+  // `stale-vector-clear-pending` on /health until the next restart.
+  const gateStatus = createEmbeddingGateStatus(
+    gateOutcome,
+    vectorWritesAllowed,
+    clearResumeOwed,
+  );
   const disposeGateStatus = ctx.services.provide(
     EMBEDDING_GATE_STATUS_SERVICE,
-    describeGateOutcome(gateOutcome, vectorWritesAllowed, clearResumeOwed),
+    gateStatus.status,
   );
 
   // OB-73 (Phase 4 / Slice B) — read-path access tracker. Reads queue
@@ -322,7 +332,19 @@ export async function activate(
       // the sweep is also what finishes a stale-vector clear the gate capped
       // at activation time.
       includeProcesses: true,
+      // Unconditionally on, even when THIS boot's gate found no owed clear:
+      // another instance can raise `clear_pending` at any time (a rolling
+      // deploy that switches models), and the sweep re-checks the flag every
+      // tick, so leaving it armed is the multi-instance-safe setting. What
+      // makes it safe is the gate refusing writes whenever the flag is up —
+      // including on the `unknown-provider` path, which used to skip the
+      // registry read entirely.
       resumeStaleVectorClear: true,
+      // Republish the gate status the moment the clear drains, so /health
+      // stops reporting a pending clear without waiting for a restart.
+      onStaleVectorClearComplete: () => {
+        gateStatus.markStaleVectorClearComplete();
+      },
       log: (msg) => { console.error(msg); },
     });
     console.error(
@@ -582,64 +604,5 @@ export async function activate(
         // process exit path — pool draining is best-effort
       }
     },
-  };
-}
-
-/**
- * Flatten a gate outcome into the shape `/health` consumes
- * (`EmbeddingGateStatus` in middleware/src/health/kgHealth.ts). Kept here
- * rather than in the gate module because it is a presentation concern, and
- * kept structural rather than typed because the kernel and this plugin do not
- * import each other.
- */
-function describeGateOutcome(
-  outcome: EmbeddingModelGateOutcome,
-  vectorWritesAllowed: boolean,
-  clearResumeOwed: boolean,
-): {
-  vectorWritesAllowed: boolean;
-  status: string;
-  reason?: string;
-  activeModelId?: string;
-  storedModelId?: string;
-  detail?: string;
-} {
-  const base = { vectorWritesAllowed, status: outcome.status };
-  if (outcome.status === 'unknown-provider') return base;
-  if (outcome.status === 'blocked') {
-    if (outcome.reason === 'column-width-mismatch') {
-      return {
-        ...base,
-        reason: outcome.reason,
-        activeModelId: `${outcome.modelId} (${String(outcome.dimensions)}d)`,
-        detail: outcome.mismatches
-          .map(
-            (m) =>
-              `${m.table}.${m.column} is vector(${String(m.declaredDimensions ?? 0)})`,
-          )
-          .join(', '),
-      };
-    }
-    return {
-      ...base,
-      reason: outcome.reason,
-      activeModelId: `${outcome.modelId} (${String(outcome.dimensions)}d)`,
-      storedModelId: `${outcome.storedModelId} (${String(outcome.storedDimensions)}d)`,
-      ...(outcome.reason === 'registry-conflict' ? { detail: outcome.detail } : {}),
-    };
-  }
-  return {
-    ...base,
-    activeModelId: outcome.modelId,
-    ...(outcome.status === 're-embedding'
-      ? { storedModelId: outcome.previousModelId }
-      : {}),
-    ...(clearResumeOwed
-      ? {
-          reason: 'stale-vector-clear-pending',
-          detail:
-            'a same-width embedding-model switch is still dropping old vectors; writes resume when the backfill sweep finishes',
-        }
-      : {}),
   };
 }

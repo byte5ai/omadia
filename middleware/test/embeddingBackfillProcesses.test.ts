@@ -305,4 +305,92 @@ describe('embedding backfill — processes + stale-vector clear (#440)', () => {
       'an unfinished clear must keep the flag raised for the next tick',
     );
   });
+
+  it('announces a drained clear so the published gate status can catch up', async () => {
+    // The gate publishes its verdict once, at activation. Nothing else knows
+    // when the clear actually finishes, so /health would keep reporting
+    // `stale-vector-clear-pending` until the next restart.
+    const { pool } = makeFakePool({
+      clearPending: true,
+      vectorRows: { graph_nodes: 3, processes: 3 },
+    });
+    let announced = 0;
+
+    const handle = startEmbeddingBackfill({
+      pool,
+      embeddingClient: embedder([0.1]),
+      tenantId: 't1',
+      intervalMs: 60_000,
+      batchSize: 10,
+      maxAttempts: 3,
+      includeProcesses: true,
+      resumeStaleVectorClear: true,
+      onStaleVectorClearComplete: () => {
+        announced++;
+      },
+      log: silent,
+    });
+    await handle.runOnce();
+    handle.stop();
+
+    assert.equal(announced, 1);
+  });
+
+  it('stays silent while the clear still owes rows', async () => {
+    const { pool } = makeFakePool({
+      clearPending: true,
+      vectorRows: { graph_nodes: 5_000, processes: 5_000 },
+    });
+    let announced = 0;
+
+    const handle = startEmbeddingBackfill({
+      pool,
+      embeddingClient: embedder([0.1]),
+      tenantId: 't1',
+      intervalMs: 60_000,
+      batchSize: 10,
+      maxAttempts: 3,
+      includeProcesses: true,
+      resumeStaleVectorClear: true,
+      onStaleVectorClearComplete: () => {
+        announced++;
+      },
+      log: silent,
+    });
+    await handle.runOnce();
+    handle.stop();
+
+    assert.equal(
+      announced,
+      0,
+      'announcing a clear that still owes rows would re-enable the false-green reading',
+    );
+  });
+
+  it('survives a listener that throws', async () => {
+    const { pool, queries } = makeFakePool({
+      clearPending: true,
+      vectorRows: { graph_nodes: 1, processes: 1 },
+    });
+
+    const handle = startEmbeddingBackfill({
+      pool,
+      embeddingClient: embedder([0.1]),
+      tenantId: 't1',
+      intervalMs: 60_000,
+      batchSize: 10,
+      maxAttempts: 3,
+      includeProcesses: true,
+      resumeStaleVectorClear: true,
+      onStaleVectorClearComplete: () => {
+        throw new Error('listener blew up');
+      },
+      log: silent,
+    });
+    const stats = await handle.runOnce();
+    handle.stop();
+
+    assert.equal(stats.cleared, 2, 'the clear itself still counts');
+    assert.ok(queries.some((q) => /clear_pending = FALSE/i.test(q.sql)));
+  });
 });

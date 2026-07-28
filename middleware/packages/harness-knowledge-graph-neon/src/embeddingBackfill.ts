@@ -49,6 +49,11 @@ export interface EmbeddingBackfillOptions {
    *  plugin — which arms the sweep even when writes are refused, because the
    *  sweep is the only thing that can finish the clear and lower the flag. */
   resumeStaleVectorClear?: boolean;
+  /** #440 — invoked once, on the tick where the resumed clear finally drains
+   *  (`pending === false`). The gate's published status is a boot-time
+   *  verdict; without this hook it would keep telling `/health` a clear is
+   *  pending long after this sweep finished it, until the next restart. */
+  onStaleVectorClearComplete?: () => void;
   log?: (msg: string) => void;
 }
 
@@ -344,6 +349,19 @@ export function startEmbeddingBackfill(
           log(
             `[graph-embedding-backfill] stale-vector clear cleared=${String(cleared.totalCleared)} attemptsReset=${String(cleared.attemptsReset)} stillPending=${String(cleared.pending)}`,
           );
+          if (!cleared.pending) {
+            // The flag is down and the corpus is drained. Tell whoever
+            // published the gate's boot-time verdict, so /health stops
+            // reporting a clear that is finished. A throwing listener must not
+            // take the sweep down with it.
+            try {
+              opts.onStaleVectorClearComplete?.();
+            } catch (err) {
+              log(
+                `[graph-embedding-backfill] stale-vector-clear completion listener failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
           return stats;
         }
       }

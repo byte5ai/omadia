@@ -31,8 +31,15 @@ interface FakePoolScript {
      *  the switch cooldown does not fire in tests that are not about it. */
     ageMs?: number;
   };
-  /** Whether the corpus already holds vectors. */
+  /** Whether the corpus already holds vectors (any governed table). */
   hasVectors?: boolean;
+  /** Per-table override of the above — the existence probe spans EVERY
+   *  governed vector table, so "only `processes` still holds vectors" has to
+   *  be expressible. Takes precedence over `hasVectors` when set. */
+  hasVectorsByTable?: Record<string, boolean>;
+  /** Make every bounded clear UPDATE fail, the way a per-batch
+   *  `statement_timeout` (SQLSTATE 57014) or a cancelled backend does. */
+  clearThrows?: boolean;
   /** Non-NULL vectors per governed column, drained batch by batch. */
   vectorRows?: Record<string, number>;
   /** Rows matching the exhausted-`embedding_attempts` reset predicate. */
@@ -163,10 +170,26 @@ function makeFakePool(script: FakePoolScript = {}): {
         : (vectors[table] ?? 0);
       return result(left > 0 ? [{ residual: 1 }] : []);
     }
-    if (/SELECT 1\s+FROM graph_nodes/i.test(sql)) {
-      return result(script.hasVectors === true ? [{ '?column?': 1 }] : []);
+    if (/AS has_vectors/i.test(sql)) {
+      // One statement, one EXISTS per governed table — mirror that instead of
+      // answering for graph_nodes alone.
+      const probed = [...sql.matchAll(/FROM (\w+)/g)].map((m) => m[1] ?? '');
+      const byTable = script.hasVectorsByTable;
+      return result([
+        {
+          has_vectors:
+            byTable !== undefined
+              ? probed.some((t) => byTable[t] === true)
+              : script.hasVectors === true,
+        },
+      ]);
     }
     if (/^\s*UPDATE (graph_nodes|processes)/i.test(sql)) {
+      if (script.clearThrows === true && !/embedding_attempts > 0/.test(sql)) {
+        const err = new Error('canceling statement due to statement timeout');
+        (err as Error & { code?: string }).code = '57014';
+        throw err;
+      }
       if (/embedding IS NULL AND embedding_attempts > 0/.test(sql)) {
         const n = Math.min(attempts, limitOf());
         attempts -= n;
@@ -222,7 +245,88 @@ describe('evaluateEmbeddingModelGate', () => {
 
     assert.equal(outcome.status, 'unknown-provider');
     assert.equal(allowsVectorWrites(outcome), true);
-    assert.equal(queries.length, 0);
+    assert.equal(requiresStaleVectorClearResume(outcome), false);
+    // Nothing is compared and nothing is claimed — but `clear_pending` IS
+    // consulted, because an owed clear governs the corpus no matter who is
+    // writing to it (see the clear_pending test below).
+    assert.ok(
+      queries.some((q) => /SELECT clear_pending/i.test(q.sql)),
+      'the registry has to be read even without provider metadata',
+    );
+    assert.ok(
+      !queries.some((q) => /^\s*(UPDATE|INSERT)/i.test(q.sql)),
+      'a provider it cannot identify must not write anything',
+    );
+    assert.ok(
+      !queries.some((q) => /FROM pg_attribute/i.test(q.sql)),
+      'without provider dimensions there is nothing to compare the catalog to',
+    );
+  });
+
+  it('REFUSES writes for an unidentifiable provider while a clear is owed', async () => {
+    // The regression this exists for: `clear_pending = TRUE` from an
+    // interrupted switch, plus a boot whose embedding client carries no
+    // metadata (a pre-#440 or third-party adapter — an operator rolling the
+    // adapter back mid-switch). The gate used to return before reading the
+    // registry, so writes were allowed: the backfill sweep NULLed vectors
+    // every tick, the hot path refilled them, `clear_pending` never dropped
+    // and /health reported `embeddings: true` throughout.
+    const { pool, queries } = makeFakePool({
+      storedModel: {
+        model_id: OLLAMA.modelId,
+        dimensions: 768,
+        clear_pending: true,
+      },
+      vectorRows: { graph_nodes: 5_000, processes: 5_000 },
+    });
+
+    const outcome = await evaluateEmbeddingModelGate({
+      pool,
+      tenantId: 't1',
+      provider: undefined,
+      clearBatchSize: 5,
+      clearMaxRowsPerActivation: 10,
+      log: silent,
+    });
+
+    assert.equal(outcome.status, 'unknown-provider');
+    assert.equal(
+      allowsVectorWrites(outcome),
+      false,
+      'the resumed clear NULLs everything non-NULL; writes into that window are destroyed',
+    );
+    assert.equal(
+      requiresStaleVectorClearResume(outcome),
+      true,
+      'and the sweep that finishes the clear has to stay armed',
+    );
+    assert.ok(
+      !queries.some((q) => /clear_pending = FALSE/i.test(q.sql)),
+      'a capped resume must not report itself as done',
+    );
+  });
+
+  it('re-allows writes for an unidentifiable provider once the owed clear drains', async () => {
+    const { pool, queries } = makeFakePool({
+      storedModel: {
+        model_id: OLLAMA.modelId,
+        dimensions: 768,
+        clear_pending: true,
+      },
+      vectorRows: { graph_nodes: 2, processes: 1 },
+    });
+
+    const outcome = await evaluateEmbeddingModelGate({
+      pool,
+      tenantId: 't1',
+      provider: undefined,
+      log: silent,
+    });
+
+    assert.equal(outcome.status, 'unknown-provider');
+    assert.equal(allowsVectorWrites(outcome), true);
+    assert.equal(requiresStaleVectorClearResume(outcome), false);
+    assert.ok(queries.some((q) => /clear_pending = FALSE/i.test(q.sql)));
   });
 
   it('blocks a provider wider than the declared column on an EMPTY corpus', async () => {
@@ -682,5 +786,132 @@ describe('evaluateEmbeddingModelGate', () => {
     });
 
     assert.equal(outcome.status, 're-embedding');
+  });
+
+  it('arms the cooldown on a corpus whose vectors live only in processes', async () => {
+    // The existence probe used to look at graph_nodes alone. A tenant whose
+    // vectors are all in `processes` — or whose graph_nodes were already
+    // drained by a partial clear — then read as "nothing to lose" and was
+    // handed straight to the destructive switch during a rolling deploy.
+    const { pool, queries } = makeFakePool({
+      storedModel: {
+        model_id: OLLAMA.modelId,
+        dimensions: 768,
+        ageMs: 5_000,
+      },
+      hasVectorsByTable: { graph_nodes: false, processes: true },
+    });
+
+    const outcome = await evaluateEmbeddingModelGate({
+      pool,
+      tenantId: 't1',
+      provider: OTHER_768,
+      log: silent,
+    });
+
+    assert.equal(outcome.status, 'blocked');
+    if (outcome.status === 'blocked') assert.equal(outcome.reason, 'registry-conflict');
+    const probe = queries.find((q) => /AS has_vectors/i.test(q.sql));
+    assert.ok(probe, 'expected an existence probe');
+    assert.match(probe.sql, /FROM graph_nodes/);
+    assert.match(probe.sql, /FROM processes/);
+    assert.ok(
+      !queries.some((q) => /^\s*UPDATE (graph_nodes|processes)/i.test(q.sql)),
+      'a refused switch touches no vector, in either table',
+    );
+  });
+
+  it('keeps the resumer armed when the owed clear THROWS on the match path', async () => {
+    // A per-batch `statement_timeout` on one 500-row UPDATE is enough. The
+    // throw used to escape the gate entirely; plugin.ts caught it and
+    // substituted `{status:'blocked'}`, for which requiresStaleVectorClearResume
+    // is false — so the backfill sweep, the ONLY thing that can finish the
+    // clear and lower clear_pending, was never armed. Writes stayed refused
+    // forever and every later boot reproduced the same state.
+    const { pool, queries } = makeFakePool({
+      storedModel: {
+        model_id: OLLAMA.modelId,
+        dimensions: 768,
+        clear_pending: true,
+      },
+      vectorRows: { graph_nodes: 100, processes: 100 },
+      clearThrows: true,
+    });
+
+    const outcome = await evaluateEmbeddingModelGate({
+      pool,
+      tenantId: 't1',
+      provider: OLLAMA,
+      log: silent,
+    });
+
+    assert.equal(outcome.status, 'match', 'a failed clear is not a blocked provider');
+    assert.equal(allowsVectorWrites(outcome), false);
+    assert.equal(
+      requiresStaleVectorClearResume(outcome),
+      true,
+      'a failed clear degrades to "still owed, resumer armed", never to "blocked with no resumer"',
+    );
+    assert.ok(
+      !queries.some((q) => /clear_pending = FALSE/i.test(q.sql)),
+      'a clear that failed has finished nothing',
+    );
+  });
+
+  it('keeps the resumer armed when the clear THROWS after the registry flip', async () => {
+    // Worse than the match path: decideRegistry has already COMMITted the flip
+    // with clear_pending = TRUE, so the registry names the new model while the
+    // corpus still holds old-model vectors. Losing the resumer here strands
+    // two models in one cosine space.
+    const { pool, queries } = makeFakePool({
+      storedModel: { model_id: OLLAMA.modelId, dimensions: 768 },
+      vectorRows: { graph_nodes: 100, processes: 100 },
+      clearThrows: true,
+    });
+
+    const outcome = await evaluateEmbeddingModelGate({
+      pool,
+      tenantId: 't1',
+      provider: OTHER_768,
+      log: silent,
+    });
+
+    assert.equal(outcome.status, 're-embedding');
+    if (outcome.status === 're-embedding') {
+      assert.equal(outcome.clearPending, true);
+      assert.equal(outcome.clearedVectors, 0);
+    }
+    assert.equal(allowsVectorWrites(outcome), false);
+    assert.equal(requiresStaleVectorClearResume(outcome), true);
+    assert.ok(
+      queries.some((q) =>
+        /UPDATE graph_embedding_model[\s\S]*clear_pending = TRUE/i.test(q.sql),
+      ),
+      'the flip is durable, which is exactly why the resumer must survive',
+    );
+    assert.ok(!queries.some((q) => /clear_pending = FALSE/i.test(q.sql)));
+  });
+
+  it('keeps the resumer armed when the clear throws for an unidentifiable provider', async () => {
+    const { pool } = makeFakePool({
+      storedModel: {
+        model_id: OLLAMA.modelId,
+        dimensions: 768,
+        clear_pending: true,
+      },
+      vectorRows: { graph_nodes: 10, processes: 10 },
+      clearThrows: true,
+    });
+
+    const outcome = await evaluateEmbeddingModelGate({
+      pool,
+      tenantId: 't1',
+      provider: undefined,
+      log: silent,
+    });
+
+    assert.equal(outcome.status, 'unknown-provider');
+    assert.equal(allowsVectorWrites(outcome), false);
+    assert.equal(requiresStaleVectorClearResume(outcome), true);
   });
 });

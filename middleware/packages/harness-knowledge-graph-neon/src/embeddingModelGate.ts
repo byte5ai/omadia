@@ -4,7 +4,9 @@ import type { Pool, PoolClient } from 'pg';
 import {
   CLEARABLE_COLUMNS,
   clearStaleVectors,
+  isStaleVectorClearPending,
   type ClearOptions,
+  type StaleVectorClearResult,
 } from './staleVectorClear.js';
 
 // The clear machinery lives in `staleVectorClear.ts`; re-exported here so
@@ -91,6 +93,27 @@ export type {
  * once `clear_pending` drops the same sweep re-embeds everything NULL —
  * including whatever was ingested during the window.
  *
+ * Two consequences of that invariant, both of which cost a regression to
+ * learn, so they are spelled out rather than implied:
+ *
+ *  - `clear_pending` is consulted BEFORE the "provider reports no metadata"
+ *    early return. An adapter that predates #440 (or a third-party one) hands
+ *    `readEmbeddingProviderMetadata` nothing, and a blind pass-through there
+ *    would allow hot-path writes into exactly the window the resumed sweep
+ *    NULLs — the sweep would clear every tick, the hot path would refill every
+ *    tick, `clear_pending` would never drop and `/health` would report
+ *    `embeddings: true` throughout. Unknown provider therefore still reads the
+ *    registry and still refuses writes while a clear is owed;
+ *  - a clear that THROWS (per-batch `statement_timeout`, a transient
+ *    `pool.connect()` failure) must degrade to "still owed, resumer armed",
+ *    never to a `blocked` outcome. `requiresStaleVectorClearResume()` is what
+ *    arms the backfill sweep, and it is false for `blocked` — so a thrown
+ *    clear that escaped to the plugin's catch-all would permanently disarm the
+ *    only thing that can finish the work, with `clear_pending` stuck TRUE and
+ *    writes stuck off until an operator noticed. Every `clearStaleVectors`
+ *    call here goes through `resumeClear()`, which converts a throw into
+ *    `pending: true`.
+ *
  * SCOPE OF THE GATE — read this before claiming "it degrades to FTS-only".
  * The gate governs the knowledge-graph plugin's own embedding client, i.e.
  * every vector WRITE into `graph_nodes` and `processes` plus the backfill
@@ -137,8 +160,11 @@ export interface GovernedVectorColumn {
 }
 
 export type EmbeddingModelGateOutcome =
-  /** No provider metadata — nothing to compare, writes stay allowed. */
-  | { status: 'unknown-provider' }
+  /** No provider metadata — nothing to compare against, so the vector-space
+   *  identity check is skipped and writes stay allowed. `clearPending` is the
+   *  one thing still checked: an owed clear governs the corpus regardless of
+   *  which provider is active, so it refuses writes here too. */
+  | { status: 'unknown-provider'; clearPending: boolean }
   /** Active model equals the recorded one. `clearPending` is true when an
    *  earlier switch never finished clearing — writes stay refused until it
    *  does, and this activation resumed as much of it as its cap allowed. */
@@ -211,10 +237,23 @@ const LOCK_NS_REGISTRY = 4_400;
  */
 export function allowsVectorWrites(outcome: EmbeddingModelGateOutcome): boolean {
   if (outcome.status === 'blocked') return false;
-  if (outcome.status === 'match' || outcome.status === 're-embedding') {
-    return !outcome.clearPending;
-  }
+  if (hasClearPendingFlag(outcome)) return !outcome.clearPending;
   return true;
+}
+
+/** The outcomes that carry an owed-clear flag. `recorded` cannot: it is only
+ *  reached by an INSERT that just created the row with `clear_pending` false. */
+function hasClearPendingFlag(
+  outcome: EmbeddingModelGateOutcome,
+): outcome is Extract<
+  EmbeddingModelGateOutcome,
+  { status: 'match' | 're-embedding' | 'unknown-provider' }
+> {
+  return (
+    outcome.status === 'match' ||
+    outcome.status === 're-embedding' ||
+    outcome.status === 'unknown-provider'
+  );
 }
 
 /**
@@ -225,10 +264,7 @@ export function allowsVectorWrites(outcome: EmbeddingModelGateOutcome): boolean 
 export function requiresStaleVectorClearResume(
   outcome: EmbeddingModelGateOutcome,
 ): boolean {
-  return (
-    (outcome.status === 'match' || outcome.status === 're-embedding') &&
-    outcome.clearPending
-  );
+  return hasClearPendingFlag(outcome) && outcome.clearPending;
 }
 
 interface StoredModelRow {
@@ -250,12 +286,31 @@ export async function evaluateEmbeddingModelGate(
 ): Promise<EmbeddingModelGateOutcome> {
   const log = opts.log ?? ((msg: string) => { console.error(msg); });
   const { pool, tenantId, provider } = opts;
+  const clearOpts: ClearOptions = {
+    batchSize: opts.clearBatchSize ?? DEFAULT_CLEAR_BATCH_SIZE,
+    maxRows: opts.clearMaxRowsPerActivation ?? DEFAULT_CLEAR_MAX_ROWS,
+    statementTimeoutMs:
+      opts.clearStatementTimeoutMs ?? DEFAULT_CLEAR_STATEMENT_TIMEOUT_MS,
+  };
 
   if (!provider) {
+    // No metadata means the vector-space IDENTITY check cannot run. An owed
+    // clear is a property of the CORPUS rather than of whoever is writing to
+    // it, so it still governs this boot: returning early here without reading
+    // the registry let the hot path refill, every tick, exactly the vectors
+    // the resumed sweep had just NULLed. See the header note.
+    const owed = await readClearPending(pool, tenantId, log);
+    if (!owed) {
+      log(
+        '[graph-embedding-gate] active embedding client reports no model metadata — cannot verify the vector space; writes allowed unchanged',
+      );
+      return { status: 'unknown-provider', clearPending: false };
+    }
     log(
-      '[graph-embedding-gate] active embedding client reports no model metadata — cannot verify the vector space; writes allowed unchanged',
+      '[graph-embedding-gate] active embedding client reports no model metadata AND a stale-vector clear is still owed — resuming it now; vector writes stay disabled until it completes',
     );
-    return { status: 'unknown-provider' };
+    const resumed = await resumeClear(pool, tenantId, clearOpts, log);
+    return { status: 'unknown-provider', clearPending: resumed.pending };
   }
 
   // (1) Declared column width — the check that works on an empty corpus.
@@ -310,13 +365,6 @@ export async function evaluateEmbeddingModelGate(
     };
   }
 
-  const clearOpts: ClearOptions = {
-    batchSize: opts.clearBatchSize ?? DEFAULT_CLEAR_BATCH_SIZE,
-    maxRows: opts.clearMaxRowsPerActivation ?? DEFAULT_CLEAR_MAX_ROWS,
-    statementTimeoutMs:
-      opts.clearStatementTimeoutMs ?? DEFAULT_CLEAR_STATEMENT_TIMEOUT_MS,
-  };
-
   if (decision.kind === 'match') {
     if (!decision.clearPending) {
       return {
@@ -336,7 +384,7 @@ export async function evaluateEmbeddingModelGate(
     log(
       `[graph-embedding-gate] '${provider.modelId}' matches the recorded model but a stale-vector clear is still owed — resuming it now; vector writes stay disabled until it completes`,
     );
-    const resumed = await clearStaleVectors(pool, tenantId, clearOpts);
+    const resumed = await resumeClear(pool, tenantId, clearOpts, log);
     log(
       `[graph-embedding-gate] resumed clear: ${String(resumed.totalCleared)} vector(s) dropped, ${String(resumed.attemptsReset)} retry counter(s) reset, stillPending=${String(resumed.pending)}`,
     );
@@ -350,8 +398,11 @@ export async function evaluateEmbeddingModelGate(
 
   // Same vector size, different model: recoverable without a schema change.
   // The registry flip already happened (durably, under the lock); drop the
-  // vectors and let the backfill sweep re-embed.
-  const cleared = await clearStaleVectors(pool, tenantId, clearOpts);
+  // vectors and let the backfill sweep re-embed. A throw from the clear is
+  // especially bad HERE — the registry already names the new model while the
+  // corpus still holds old vectors — so `resumeClear` degrades it to
+  // `pending: true`, which keeps the resumer armed.
+  const cleared = await resumeClear(pool, tenantId, clearOpts, log);
   log(
     `[graph-embedding-gate] embedding model switched '${decision.previousModelId}' → '${provider.modelId}' (both ${String(provider.dimensions)}d); cleared ${String(cleared.totalCleared)} stored vector(s), reset ${String(cleared.attemptsReset)} exhausted retry counter(s)${
       cleared.pending
@@ -366,6 +417,69 @@ export async function evaluateEmbeddingModelGate(
     clearedVectors: cleared.totalCleared,
     clearPending: cleared.pending,
   };
+}
+
+/**
+ * Run a stale-vector clear that CANNOT throw at the caller.
+ *
+ * The clear reaches Postgres in several ways that fail transiently: the
+ * per-batch `SET LOCAL statement_timeout` firing on one 500-row UPDATE
+ * (SQLSTATE 57014), a `pool.connect()` that cannot get a connection, a
+ * cancelled backend during a failover. `runBoundedUpdate` rethrows and neither
+ * `drain` nor `clearStaleVectors` catches, so before this wrapper existed the
+ * throw escaped the gate entirely — and the plugin's catch-all turned it into
+ * `{status:'blocked'}`, for which `requiresStaleVectorClearResume()` is false.
+ * The backfill sweep, the ONLY thing that can finish the clear and lower
+ * `clear_pending`, was then never armed: writes stayed refused, the flag
+ * stayed TRUE, and the next boot reproduced the same state forever.
+ *
+ * A failed clear is "the clear is still owed", which is exactly `pending:
+ * true`. Nothing was lowered, nothing was lost — the work just did not finish
+ * this pass, same as hitting the activation cap.
+ */
+async function resumeClear(
+  pool: Pool,
+  tenantId: string,
+  clearOpts: ClearOptions,
+  log: (msg: string) => void,
+): Promise<StaleVectorClearResult> {
+  try {
+    return await clearStaleVectors(pool, tenantId, clearOpts);
+  } catch (err) {
+    log(
+      `[graph-embedding-gate] the stale-vector clear FAILED (${err instanceof Error ? err.message : String(err)}) — clear_pending stays TRUE, vector writes stay refused, and the backfill sweep resumes the work on its next tick`,
+    );
+    return {
+      clearedByTable: {},
+      totalCleared: 0,
+      pending: true,
+      attemptsReset: 0,
+    };
+  }
+}
+
+/**
+ * Is a clear owed, for a boot that cannot identify its own provider?
+ *
+ * Unreadable registry (migration race, permissions) reads as "no clear owed":
+ * that is the pre-#440 behaviour of this path, and blocking a boot on a
+ * probe that the very next path (`decideRegistry`) would run anyway would
+ * trade a narrow risk for a wide one. It is logged loudly rather than
+ * swallowed.
+ */
+async function readClearPending(
+  pool: Pool,
+  tenantId: string,
+  log: (msg: string) => void,
+): Promise<boolean> {
+  try {
+    return await isStaleVectorClearPending(pool, tenantId);
+  } catch (err) {
+    log(
+      `[graph-embedding-gate] could not read graph_embedding_model.clear_pending (${err instanceof Error ? err.message : String(err)}) — proceeding as if no stale-vector clear were owed`,
+    );
+    return false;
+  }
 }
 
 /**
@@ -626,17 +740,30 @@ function parseDeclaredDimensions(
   return Number.isInteger(raw) && raw > 0 ? raw : undefined;
 }
 
-/** Cheap existence probe — phrases the log line and arms the switch cooldown. */
+/**
+ * Cheap existence probe — phrases the log line and, more importantly, arms the
+ * anti-oscillation switch cooldown.
+ *
+ * It spans EVERY governed vector table, not just `graph_nodes`. "The corpus
+ * still holds vectors" is the whole predicate the cooldown rests on, and a
+ * tenant whose vectors live only in `processes` — or whose `graph_nodes` were
+ * already drained by a partially-completed clear — would otherwise read as
+ * "nothing to lose" and be handed straight to the destructive switch path.
+ * Derived from `CLEARABLE_COLUMNS` so a future governed table is covered
+ * without touching this function; the identifiers are module-local constants,
+ * never user input.
+ */
 async function hasStoredVectors(
   client: PoolClient,
   tenantId: string,
 ): Promise<boolean> {
-  const result = await client.query(
-    `SELECT 1
-       FROM graph_nodes
-      WHERE tenant_id = $1 AND embedding IS NOT NULL
-      LIMIT 1`,
+  const probes = CLEARABLE_COLUMNS.map(
+    (c) =>
+      `EXISTS (SELECT 1 FROM ${c.table} WHERE tenant_id = $1 AND ${c.column} IS NOT NULL)`,
+  ).join('\n          OR ');
+  const result = await client.query<{ has_vectors: boolean }>(
+    `SELECT (${probes}) AS has_vectors`,
     [tenantId],
   );
-  return (result.rowCount ?? result.rows.length) > 0;
+  return result.rows[0]?.has_vectors === true;
 }

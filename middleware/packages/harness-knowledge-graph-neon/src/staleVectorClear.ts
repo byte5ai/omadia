@@ -11,11 +11,14 @@ import type { Pool, PoolClient } from 'pg';
  * Three callers: knowledge-graph activation (capped, so activate() cannot
  * stall on a large corpus), the gate's "recorded model matches but a clear is
  * still owed" resume path, and the backfill sweep. All three run while vector
- * writes are REFUSED (`allowsVectorWrites` returns false for
- * `clear_pending`), which is what makes the invariant this module depends on —
- * "a non-NULL governed vector is an old-model vector" — true by construction.
+ * writes are REFUSED, which is what makes the invariant this module depends on
+ * — "a non-NULL governed vector is an old-model vector" — true by
+ * construction. That refusal covers every gate outcome that can coexist with
+ * `clear_pending`, INCLUDING `unknown-provider`: an adapter carrying no model
+ * metadata used to short-circuit the gate before the registry was read, and
+ * the hot path then refilled each tick exactly what the sweep had NULLed.
  *
- * Soundness notes, both learned the hard way:
+ * Soundness notes, all learned the hard way:
  *   - a session-level advisory lock keeps two clearers off the same tenant. A
  *     clearer that cannot take the lock reports `pending: true` and does
  *     nothing, so it can never lower `clear_pending` over rows it never saw;
@@ -23,7 +26,12 @@ import type { Pool, PoolClient } from 'pg';
  *     concurrent updater makes rows drop out of the predicate after the LIMIT
  *     was applied, so a short batch is ambiguous. The loop only stops on a
  *     batch that changed nothing, and then re-probes for residual rows before
- *     anybody may declare the clear finished.
+ *     anybody may declare the clear finished;
+ *   - a connection whose ROLLBACK failed is DESTROYED rather than returned to
+ *     the pool. It is stuck in an aborted transaction, so the advisory-unlock
+ *     on the way out fails too, and reuse would keep the tenant's clear lock
+ *     held for the connection's lifetime — after which every later clearer
+ *     reports "still pending" and the flag never drops.
  */
 
 /** Advisory-lock namespace (first key of the two-int form). */
@@ -127,6 +135,7 @@ export async function clearStaleVectors(
   let pending = false;
 
   const client: PoolClient = await pool.connect();
+  const session: ClearSession = { poisoned: false };
   try {
     if (!(await tryAcquireClearLock(client, tenantId))) {
       // Somebody else is clearing this tenant right now. Report the work as
@@ -141,7 +150,7 @@ export async function clearStaleVectors(
           set: `${target.column} = NULL${target.extraSet}`,
           where: `${target.column} IS NOT NULL`,
         };
-        const run = await drain(client, step, tenantId, opts);
+        const run = await drain(client, step, tenantId, opts, session);
         clearedByTable[target.table] = run.affected;
         totalCleared += run.affected;
         if (run.pending) pending = true;
@@ -150,7 +159,7 @@ export async function clearStaleVectors(
       // Rows that were already NULL but out of retry budget — the clear above
       // structurally cannot reach them.
       for (const reset of ATTEMPT_RESETS) {
-        const run = await drain(client, reset, tenantId, opts);
+        const run = await drain(client, reset, tenantId, opts, session);
         attemptsReset += run.affected;
         if (run.pending) pending = true;
       }
@@ -167,7 +176,14 @@ export async function clearStaleVectors(
       await releaseClearLock(client, tenantId);
     }
   } finally {
-    client.release();
+    // `release(true)` DESTROYS the connection instead of returning it to the
+    // pool. That is what a poisoned client needs: it sits inside an aborted
+    // transaction, so the `pg_advisory_unlock` above already failed (silently,
+    // by design), and the session-scoped clear lock would stay held for as
+    // long as the pool kept reusing that connection — after which every later
+    // clearer for this tenant reports `pending: true` forever and the flag
+    // never drops. Destroying the connection releases the lock with it.
+    client.release(session.poisoned);
   }
 
   return { clearedByTable, totalCleared, pending, attemptsReset };
@@ -177,6 +193,12 @@ interface ClearStep {
   table: string;
   set: string;
   where: string;
+}
+
+/** Per-`clearStaleVectors` connection state. `poisoned` means the connection
+ *  is stuck inside an aborted transaction and must not go back to the pool. */
+interface ClearSession {
+  poisoned: boolean;
 }
 
 /**
@@ -190,6 +212,7 @@ async function drain(
   step: ClearStep,
   tenantId: string,
   opts: ClearOptions,
+  session: ClearSession,
 ): Promise<{ affected: number; pending: boolean }> {
   let done = 0;
   for (;;) {
@@ -197,7 +220,14 @@ async function drain(
     // may have drained the table exactly. The residual probe below decides.
     if (done >= opts.maxRows) break;
     const limit = Math.min(opts.batchSize, opts.maxRows - done);
-    const affected = await runBoundedUpdate(client, step, tenantId, limit, opts);
+    const affected = await runBoundedUpdate(
+      client,
+      step,
+      tenantId,
+      limit,
+      opts,
+      session,
+    );
     done += affected;
     // A zero batch means we reached everything reachable — rows another
     // session holds locked included, which is why the probe below still runs.
@@ -269,6 +299,7 @@ async function runBoundedUpdate(
   tenantId: string,
   limit: number,
   opts: ClearOptions,
+  session: ClearSession,
 ): Promise<number> {
   await client.query('BEGIN');
   try {
@@ -291,7 +322,17 @@ async function runBoundedUpdate(
     await client.query('COMMIT');
     return result.rowCount ?? 0;
   } catch (err) {
-    await client.query('ROLLBACK');
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // The ROLLBACK itself failed, so the connection is still inside an
+      // aborted transaction and every further statement on it errors out —
+      // including the `pg_advisory_unlock` on the way out, whose failure is
+      // swallowed on purpose. Returning such a connection to the pool leaks
+      // the session-scoped clear lock for its whole lifetime. Mark it so the
+      // caller destroys it instead.
+      session.poisoned = true;
+    }
     throw err;
   }
 }

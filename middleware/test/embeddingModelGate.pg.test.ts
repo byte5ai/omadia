@@ -8,6 +8,7 @@ import {
   clearStaleVectors,
   discoverGovernedVectorColumns,
   evaluateEmbeddingModelGate,
+  requiresStaleVectorClearResume,
 } from '@omadia/knowledge-graph-neon/dist/embeddingModelGate.js';
 
 /**
@@ -179,6 +180,53 @@ describe('embeddingModelGate against real Postgres', { skip: !pgAvailable }, () 
       [tenant],
     );
     return r.rows[0];
+  };
+
+  /**
+   * Is the session-scoped clear lock (namespace 4401) free right now?
+   *
+   * Probed from a SEPARATE connection on purpose: `pg_try_advisory_lock` is
+   * re-entrant within a session, so asking on a connection that might still be
+   * the leaking one would answer "free" for the exact case under test. A leaked
+   * lock is invisible until somebody else tries to take it — which is precisely
+   * the failure mode (every later clearer reports `pending: true` forever).
+   */
+  const clearLockFree = async (tenant: string): Promise<boolean> => {
+    const probe = new Pool({ connectionString: PG_URL, max: 1 });
+    try {
+      const r = await probe.query<{ locked: boolean }>(
+        'SELECT pg_try_advisory_lock(4401, hashtext($1)::int) AS locked',
+        [tenant],
+      );
+      const acquired = r.rows[0]?.locked === true;
+      if (acquired) {
+        await probe.query('SELECT pg_advisory_unlock(4401, hashtext($1)::int)', [
+          tenant,
+        ]);
+      }
+      return acquired;
+    } finally {
+      await probe.end();
+    }
+  };
+
+  /** Make every UPDATE on `graph_nodes` fail, the way a cancelled statement or
+   *  a constraint blowing up mid-clear does — deterministically. */
+  const withFailingUpdates = async (body: () => Promise<void>): Promise<void> => {
+    await pool.query(
+      `CREATE OR REPLACE FUNCTION clear_boom() RETURNS trigger AS $fn$
+         BEGIN RAISE EXCEPTION 'clear exploded'; END;
+       $fn$ LANGUAGE plpgsql`,
+    );
+    await pool.query(
+      `CREATE TRIGGER clear_boom_trg BEFORE UPDATE ON graph_nodes
+         FOR EACH ROW EXECUTE FUNCTION clear_boom()`,
+    );
+    try {
+      await body();
+    } finally {
+      await pool.query('DROP TRIGGER IF EXISTS clear_boom_trg ON graph_nodes');
+    }
   };
 
   // -------------------------------------------------------------------------
@@ -423,5 +471,140 @@ describe('embeddingModelGate against real Postgres', { skip: !pgAvailable }, () 
     assert.equal(outcome.status, 'blocked');
     if (outcome.status === 'blocked') assert.equal(outcome.reason, 'dimension-mismatch');
     assert.equal(await countVectors('graph_nodes', tenant), 3);
+  });
+
+  it('releases the clear advisory lock after a clear that succeeds', async () => {
+    const tenant = 'pg-lock-ok';
+    await seed(tenant, {
+      nodesWithVectors: 6,
+      processesWithVectors: 3,
+      registry: { modelId: OLLAMA.modelId, dimensions: 768, clearPending: true, ageDays: 2 },
+    });
+
+    const res = await clearStaleVectors(pool, tenant, {
+      batchSize: 100,
+      maxRows: 10_000,
+      statementTimeoutMs: 15_000,
+    });
+
+    assert.equal(res.pending, false);
+    assert.equal((await registryRow(tenant))?.clear_pending, false);
+    assert.equal(
+      await clearLockFree(tenant),
+      true,
+      'a session-scoped lock that outlives its clear makes every later clearer report "still pending" forever',
+    );
+  });
+
+  it('releases the clear advisory lock when the clear FAILS mid-flight', async () => {
+    const tenant = 'pg-lock-fail';
+    await seed(tenant, {
+      nodesWithVectors: 6,
+      registry: { modelId: OLLAMA.modelId, dimensions: 768, clearPending: true, ageDays: 2 },
+    });
+
+    await withFailingUpdates(async () => {
+      await assert.rejects(
+        clearStaleVectors(pool, tenant, {
+          batchSize: 2,
+          maxRows: 10_000,
+          statementTimeoutMs: 15_000,
+        }),
+        /clear exploded/,
+      );
+
+      assert.equal(
+        (await registryRow(tenant))?.clear_pending,
+        true,
+        'a failed clear finished nothing and must not lower the flag',
+      );
+      assert.equal(await countVectors('graph_nodes', tenant), 6, 'nothing was destroyed');
+      assert.equal(
+        await clearLockFree(tenant),
+        true,
+        'the lock has to come off the failure path too',
+      );
+    });
+  });
+
+  it('a clear that fails at the database leaves the resumer armed, not a blocked gate', async () => {
+    // The regression: the throw escaped the gate, plugin.ts caught it and
+    // substituted {status:'blocked'} — for which requiresStaleVectorClearResume
+    // is false, so the backfill sweep (the only thing that can finish the clear
+    // and lower clear_pending) was never armed. Nothing could ever recover.
+    const tenant = 'pg-clear-throws';
+    await seed(tenant, {
+      nodesWithVectors: 6,
+      registry: { modelId: OLLAMA.modelId, dimensions: 768, clearPending: true, ageDays: 2 },
+    });
+
+    await withFailingUpdates(async () => {
+      const outcome = await evaluateEmbeddingModelGate({
+        pool,
+        tenantId: tenant,
+        provider: OLLAMA,
+        log: silent,
+      });
+
+      assert.equal(outcome.status, 'match', 'a failed clear is not a blocked provider');
+      assert.equal(allowsVectorWrites(outcome), false);
+      assert.equal(
+        requiresStaleVectorClearResume(outcome),
+        true,
+        'the sweep must stay armed so the clear can still be finished',
+      );
+      assert.equal((await registryRow(tenant))?.clear_pending, true);
+      assert.equal(await clearLockFree(tenant), true);
+    });
+  });
+
+  it('refuses writes for an unidentifiable provider while a clear is owed', async () => {
+    // An adapter that predates #440 reports no metadata. The gate used to
+    // return before reading the registry, so the hot path kept refilling
+    // exactly what the sweep NULLed, every tick, forever.
+    const tenant = 'pg-unknown-owed';
+    await seed(tenant, {
+      nodesWithVectors: 30,
+      registry: { modelId: OLLAMA.modelId, dimensions: 768, clearPending: true, ageDays: 2 },
+    });
+
+    const outcome = await evaluateEmbeddingModelGate({
+      pool,
+      tenantId: tenant,
+      provider: undefined,
+      clearBatchSize: 5,
+      clearMaxRowsPerActivation: 10,
+      log: silent,
+    });
+
+    assert.equal(outcome.status, 'unknown-provider');
+    assert.equal(allowsVectorWrites(outcome), false);
+    assert.equal(requiresStaleVectorClearResume(outcome), true);
+    assert.equal(await countVectors('graph_nodes', tenant), 20, 'capped at 10 this pass');
+    assert.equal((await registryRow(tenant))?.clear_pending, true);
+    assert.equal(await clearLockFree(tenant), true);
+  });
+
+  it('the anti-oscillation cooldown sees vectors that live only in processes', async () => {
+    // The existence probe used to read graph_nodes alone, so a tenant whose
+    // vectors sit in `processes` (or whose graph_nodes a partial clear already
+    // drained) bypassed the guard and took the destructive switch.
+    const tenant = 'pg-cooldown-proc';
+    await seed(tenant, {
+      processesWithVectors: 4,
+      registry: { modelId: OLLAMA.modelId, dimensions: 768, ageDays: 0 },
+    });
+
+    const outcome = await evaluateEmbeddingModelGate({
+      pool,
+      tenantId: tenant,
+      provider: OTHER_768,
+      log: silent,
+    });
+
+    assert.equal(outcome.status, 'blocked');
+    if (outcome.status === 'blocked') assert.equal(outcome.reason, 'registry-conflict');
+    assert.equal(await countVectors('processes', tenant), 4, 'no vector may be destroyed');
+    assert.equal((await registryRow(tenant))?.model_id, OLLAMA.modelId);
   });
 });

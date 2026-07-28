@@ -34,6 +34,14 @@ const EMBEDDINGS_OPENAI_ID = '@omadia/embedding-adapter-openai';
  */
 export const EMBEDDING_GATE_STATUS_SERVICE = 'embeddingModelGateStatus';
 
+/**
+ * `reason` the gate publishes once a stale-vector clear has finished but the
+ * process that started it is still running without an embedding client on the
+ * hot path. Same structural contract as the service name above — the plugin
+ * spells it in `gateStatusPublication.ts`; keep the two in sync.
+ */
+const CLEAR_COMPLETE_REASON = 'stale-vector-clear-complete';
+
 /** What the #440 model/dimension gate decided on the last activation. */
 export interface EmbeddingGateStatus {
   /** Did the gate let this boot's knowledge-graph write vectors? */
@@ -157,6 +165,16 @@ export function buildKgHealth(
  * openai:text-embedding-3-small (1536d) vs stored ollama:nomic-embed-text" is.
  */
 function describeGateBlock(gate: EmbeddingGateStatus | undefined): string {
+  if (gate?.reason === CLEAR_COMPLETE_REASON) {
+    // Vectors ARE being written again — by the backfill sweep. Only the hot
+    // path is still off, and only until this process restarts. The generic
+    // "no vectors are being written" wording below would be wrong here.
+    return (
+      `embedding-model switch finished: the stale-vector clear has drained and the backfill sweep is ` +
+      `re-embedding the corpus, but this middleware process still has hot-path vector writes disabled ` +
+      `(new turns store no vector and process-reuse writes are rejected) — restart it to re-enable them`
+    );
+  }
   const active = gate?.activeModelId ?? '(unknown)';
   const stored = gate?.storedModelId;
   const reason = gate?.reason ?? gate?.status ?? 'blocked';
