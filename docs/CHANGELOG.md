@@ -43,6 +43,14 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   same masking pipeline that already protects free-text user prompts.
 - Admin UI (upload/schema/delete page under `web-ui/app/admin/`) is
   intentionally NOT part of this change — see the PR description.
+- Fixup: `inferColumnType` (`datasetImport.ts`) no longer types a column as
+  `'number'` when any value has a leading zero (`'0301234567'`, `'01234'`) —
+  such columns are zero-padded identifiers (phone numbers, postal codes),
+  not numbers. Previously `Number()` silently dropped the leading zero
+  (data corruption) AND the column skipped the mandatory C0 privacy scan
+  because number-typed columns are assumed to have no free-text surface.
+  Both bugs are fixed by keeping such columns `'string'`-typed, which
+  restores the scan and preserves the value verbatim.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 

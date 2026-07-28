@@ -220,6 +220,21 @@ describe('InMemoryKnowledgeGraph — datasets (#430)', () => {
     assert.equal(contains?.totalMatched, 2);
   });
 
+  it('clamps an explicit limit:0 to 1 row instead of silently falling back to the default (#430 fixup)', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'Sales',
+      sourceFileName: 'sales.csv',
+      columns: [{ name: 'region', type: 'string' }],
+      rows: [{ region: 'North' }, { region: 'South' }],
+    });
+
+    const zeroLimit = await g.queryDatasetRows(datasetId, 'user-1', { limit: 0 });
+    assert.equal(zeroLimit?.rows?.length, 1, 'limit:0 must clamp to 1, not fall back to the default');
+    assert.equal(zeroLimit?.totalMatched, 2);
+  });
+
   it('aggregates with and without groupBy', async () => {
     const g = new InMemoryKnowledgeGraph();
     const { datasetId } = await g.ingestDataset({

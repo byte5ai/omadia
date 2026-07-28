@@ -109,15 +109,30 @@ export function parseCsv(bytes: Buffer): CsvParseResult {
 const NUMBER_RE = /^-?\d+(?:\.\d+)?$/;
 const BOOLEAN_RE = /^(?:true|false)$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}(?::\d{2})?)?$|^\d{1,2}[./]\d{1,2}[./]\d{2,4}$/i;
+/** A pure-digit value with a leading zero (`'0301234567'`, `'01234'`) is a
+ *  zero-padded identifier — phone number, postal code, account number —
+ *  not a number. `Number()` silently drops the leading zero, corrupting the
+ *  value, and a column typed `'number'` skips the mandatory privacy scan
+ *  (see module doc), so such a column must NOT be inferred as `'number'`.
+ *  A bare `'0'` or a `'0.x'` decimal is still a legitimate number and is
+ *  intentionally excluded from this pattern. */
+const LEADING_ZERO_RE = /^0\d/;
 
 /** Infer one column's type from every non-empty value across all rows —
  *  ALL values must agree for a type to win; a single non-conforming cell
  *  falls the column back to `'string'` (the safe default that never
- *  mis-parses). Empty-only columns default to `'string'`. */
+ *  mis-parses). Empty-only columns default to `'string'`. A column that
+ *  otherwise looks numeric but contains any zero-padded value (leading
+ *  zero) is also forced to `'string'` — see `LEADING_ZERO_RE`. */
 function inferColumnType(values: readonly string[]): DatasetColumnType {
   const nonEmpty = values.map((v) => v.trim()).filter((v) => v.length > 0);
   if (nonEmpty.length === 0) return 'string';
-  if (nonEmpty.every((v) => NUMBER_RE.test(v))) return 'number';
+  if (
+    nonEmpty.every((v) => NUMBER_RE.test(v)) &&
+    !nonEmpty.some((v) => LEADING_ZERO_RE.test(v))
+  ) {
+    return 'number';
+  }
   if (nonEmpty.every((v) => BOOLEAN_RE.test(v))) return 'boolean';
   if (nonEmpty.every((v) => DATE_RE.test(v))) return 'date';
   return 'string';

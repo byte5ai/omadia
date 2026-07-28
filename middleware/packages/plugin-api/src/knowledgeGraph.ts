@@ -2276,7 +2276,10 @@ export function validateDatasetQueryOptions(
   const rawLimit = opts?.limit ?? DATASET_QUERY_LIMIT_DEFAULT;
   const limit = Math.min(
     DATASET_QUERY_LIMIT_MAX,
-    Math.max(DATASET_QUERY_LIMIT_MIN, Math.trunc(rawLimit) || DATASET_QUERY_LIMIT_DEFAULT),
+    Math.max(
+      DATASET_QUERY_LIMIT_MIN,
+      rawLimit === 0 ? 1 : Math.trunc(rawLimit) || DATASET_QUERY_LIMIT_DEFAULT,
+    ),
   );
   const rawOffset = opts?.offset ?? 0;
   const offset = Math.max(0, Math.trunc(rawOffset));
