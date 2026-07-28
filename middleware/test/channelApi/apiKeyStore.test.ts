@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
+import { hasScope } from '../../packages/harness-api-key-auth/src/apiKeyScopes.js';
 import { createApiKeyStore } from '../../packages/harness-api-key-auth/src/apiKeyStore.js';
 import { createFakeSecrets } from './testSecrets.js';
 
@@ -101,7 +102,10 @@ describe('channelApi/apiKeyStore — scopes', () => {
     assert.deepEqual(resolved?.scopes, ['memory:read', 'chat:write']);
   });
 
-  it('treats an explicitly empty scope array as "unspecified", matching what a re-read returns', async () => {
+  it('treats an explicitly empty scope array at CREATE time as "unspecified", and persists the resolved set explicitly', async () => {
+    // Not a silent grant: the create result echoes the scope set that was
+    // actually assigned, and the vault entry holds it verbatim — which is
+    // what keeps "no scopes field at all" meaning "pre-#439" on read.
     const store = createApiKeyStore(createFakeSecrets());
     const created = await store.create({ scopes: [] });
     assert.deepEqual(created.record.scopes, ['chat:write']);
@@ -127,5 +131,31 @@ describe('channelApi/apiKeyStore — scopes', () => {
     assert.ok(resolved, 'a pre-scopes key must keep authenticating');
     assert.deepEqual(resolved?.scopes, ['chat:write']);
     assert.deepEqual((await store.list())[0]?.scopes, ['chat:write']);
+  });
+
+  it('a key whose persisted scopes field is MALFORMED authenticates but is authorized for nothing', async () => {
+    // The fail-open this replaced: a `scopes` field that is present and
+    // unreadable used to hydrate to the legacy default, so a key an operator
+    // had restricted away from chat came back chat-capable. Absent means
+    // "pre-#439"; malformed means "we cannot tell", and we must not guess in
+    // the direction of a grant.
+    for (const corrupt of ['memory:read', ['Chat:Write'], [], ['chat:write', 'nonsense'], null]) {
+      const secrets = createFakeSecrets();
+      const store = createApiKeyStore(secrets);
+      const key = await store.create({ label: 'restricted', scopes: ['memory:read'] });
+      const raw = await secrets.get(`key:${key.record.id}`);
+      assert.ok(raw);
+      const record = JSON.parse(raw) as Record<string, unknown>;
+      await secrets.set?.(
+        `key:${key.record.id}`,
+        JSON.stringify({ ...record, scopes: corrupt }),
+      );
+
+      const resolved = await store.verify(key.token);
+      assert.ok(resolved, 'the credential itself is still valid — only its authorization is gone');
+      assert.deepEqual(resolved?.scopes, [], `scopes=${JSON.stringify(corrupt)} must grant nothing`);
+      assert.equal(hasScope(resolved?.scopes, 'chat:write'), false);
+      assert.equal(hasScope(resolved?.scopes, 'memory:read'), false);
+    }
   });
 });

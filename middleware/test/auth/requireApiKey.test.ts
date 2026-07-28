@@ -24,6 +24,7 @@ function startGuardedServer(opts: {
   baseUrl: string;
   apiKeys: ReturnType<typeof createApiKeyStore>;
   auditLog: ReturnType<typeof createAuditLog>;
+  secrets: ReturnType<typeof createFakeSecrets>;
   close: () => Promise<void>;
 } {
   const secrets = createFakeSecrets();
@@ -52,6 +53,7 @@ function startGuardedServer(opts: {
     baseUrl: `http://127.0.0.1:${String(addr.port)}/guarded`,
     apiKeys,
     auditLog,
+    secrets,
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
 }
@@ -178,6 +180,34 @@ describe('auth/requireApiKey — scopes', () => {
     });
     assert.equal(res.status, 200);
     await local.close();
+  });
+
+  it('403s a key whose PERSISTED scopes field is malformed, instead of granting it the legacy default', async () => {
+    // The end-to-end shape of the fail-open this replaced: a vault record
+    // whose `scopes` is a bare string (or wrong-cased, or partially valid)
+    // used to hydrate to `['chat:write']`, so a key deliberately restricted
+    // away from chat authenticated against a `chat:write` route.
+    for (const corrupt of ['memory:read', ['Chat:Write'], ['chat:write', 'nonsense'], []]) {
+      const local = startGuardedServer({ scope: 'chat:write' });
+      const created = await local.apiKeys.create({ label: 'restricted', scopes: ['memory:read'] });
+      const raw = await local.secrets.get(`key:${created.record.id}`);
+      assert.ok(raw);
+      await local.secrets.set?.(
+        `key:${created.record.id}`,
+        JSON.stringify({ ...(JSON.parse(raw) as Record<string, unknown>), scopes: corrupt }),
+      );
+
+      const res = await fetch(local.baseUrl, {
+        headers: { authorization: `Bearer ${created.token}` },
+      });
+      assert.equal(res.status, 403, `scopes=${JSON.stringify(corrupt)} must not reach the handler`);
+      assert.deepEqual(
+        (await local.auditLog.list()).map((e) => e.status),
+        ['forbidden'],
+        'the denial is attributable to the key',
+      );
+      await local.close();
+    }
   });
 });
 

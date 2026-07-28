@@ -20,6 +20,7 @@ export {
 export {
   assertValidScopes,
   CHAT_WRITE_SCOPE,
+  DENY_ALL_SCOPES,
   hasScope,
   isValidScope,
   LEGACY_DEFAULT_SCOPES,

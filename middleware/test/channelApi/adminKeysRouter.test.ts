@@ -221,6 +221,39 @@ describe('channelApi/adminKeysRouter — operator-session auth (real verificatio
     });
     assert.equal(res.status, 401);
   });
+
+  it('the #439 scopes surface is BEHIND the gate too — an anonymous POST with scopes mints nothing', async () => {
+    // Guards the rebase of #439 onto this gate: the scoped create/list path
+    // must sit on top of the operator-session check, never beside it. A
+    // caller that can mint `scopes: ['*']` without a session would be the
+    // worst possible version of this router.
+    const anonymous = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'anonymous-wildcard', scopes: ['*'] }),
+    });
+    assert.equal(anonymous.status, 401);
+    assert.equal(((await anonymous.json()) as { code: string }).code, 'auth.missing');
+
+    const token = await signSession(
+      {
+        sub: 'operator-1',
+        email: 'operator@example.com',
+        display_name: 'Operator',
+        provider: 'local',
+        role: 'admin',
+      },
+      signingKey,
+    );
+    const listed = (await (
+      await fetch(baseUrl, { headers: { cookie: `omadia_session=${token}` } })
+    ).json()) as { keys: Array<{ label?: string }> };
+    assert.equal(
+      listed.keys.some((k) => k.label === 'anonymous-wildcard'),
+      false,
+      'the rejected POST must not have created a key',
+    );
+  });
 });
 
 /**

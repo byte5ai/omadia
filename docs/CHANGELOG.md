@@ -55,6 +55,21 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   whatever scoped surface lands next, so it is not what we do.
   `POST /api/public/v1/admin/keys` accepts a `scopes` array (validated, 400
   on a malformed scope) and `GET` lists it.
+- `normalizeScopes` distinguishes an **absent** `scopes` field from a
+  **malformed** one, because collapsing the two turns a read error into a
+  capability grant. Absent (`undefined`) → the legacy `['chat:write']`.
+  Present but unreadable — not an array (`"memory:read"` stored as a bare
+  string), an empty array, or an array with any invalid entry
+  (`['Chat:Write']`, `['chat:write','nonsense']`) → the **empty** scope set:
+  the key still authenticates, and every scope check on it fails closed with
+  `403`. A malformed record is at least as likely to be a key an operator
+  deliberately restricted *away* from chat as it is to be a lost pre-#439
+  key, and defaulting it to `chat:write` would hand back exactly the access
+  that was removed. Partially-valid arrays deny rather than silently narrow.
+  Every such case logs `[api-key-auth] malformed persisted scopes` so an
+  operator can tell a corrupt record from a revoked key. The scope set is
+  always persisted explicitly at `create()` time, so nothing this store
+  writes can be mistaken for a pre-#439 record.
 - `@omadia/channel-api` now consumes the shared package instead of owning
   the code: `chatRouter.ts` mounts `requireApiKey` with `scope: 'chat:write'`
   rather than parsing bearer headers itself. Behaviour and wire format of
@@ -63,6 +78,11 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 - `middleware/src/auth/publicPaths.ts` is deliberately **not** broadened —
   `/api/public/v1/chat` is still the only exempted API-key route. Its comment
   now records what a future route that mounts `requireApiKey` has to do.
+- The `scopes` additions to `/api/public/v1/admin/keys` sit **on top of** the
+  kernel-level `ctx.operatorAuth` session gate that the entry below adds to
+  that router, not beside it: an anonymous `POST` carrying `scopes: ['*']`
+  is rejected `401` before any handler runs, covered by its own regression
+  test in `adminKeysRouter.test.ts`.
 - Tests: `test/auth/requireApiKey.test.ts`, `test/auth/apiKeyScopes.test.ts`,
   and `test/channelApi/apiKeyAuthReuseSeam.test.ts` — the last one is a
   structural guard on the seam itself (the plugin holds no second copy of the
