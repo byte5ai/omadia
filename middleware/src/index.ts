@@ -161,6 +161,7 @@ import {
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
 import { createRequireAuth } from './auth/requireAuth.js';
+import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
 import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
 import { createChatDevJobOrchestratorTools } from './devplatform/chatDevJobToolWiring.js';
 import { isPermittedLauncher } from './routes/devPlatformShared.js';
@@ -639,6 +640,24 @@ async function main(): Promise<void> {
   const flowPublicBaseUrl =
     config.FLOW_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL;
 
+  // Admin email whitelist — resolved here (ahead of its original A.1 spot
+  // below) because it's now ALSO a dependency of `operatorAuth`
+  // (`ctx.operatorAuth`, issue #438 follow-up), which the plugin runtimes
+  // constructed further down need at construction time. The `requireAuth`
+  // Express middleware built at the original A.1 site still uses this same
+  // instance — nothing there changes.
+  const emailWhitelist = new EmailWhitelist(config.ADMIN_ALLOWED_EMAILS);
+  // Issue #438 follow-up — kernel-published `ctx.operatorAuth`. Wraps the
+  // EXACT SAME session-verification logic `requireAuth` uses (see
+  // `operatorAuthAccessor.ts`), so a plugin's admin-only HTTP surface (e.g.
+  // `@omadia/channel-api`'s `/admin/keys`) can check the real operator
+  // session without re-implementing it. Threaded into every plugin runtime
+  // below so any plugin — not just channel plugins — can use it.
+  const operatorAuth = createOperatorAuthAccessor({
+    signingKey: sessionSigningKey,
+    whitelist: emailWhitelist,
+  });
+
   const installedRegistry = new FileInstalledRegistry(
     INSTALLED_REGISTRY_PATH,
   );
@@ -818,6 +837,7 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    operatorAuth,
     oauthConnectionTracker,
     canvasOutputRegistry,
     eventCatalogRegistry,
@@ -891,6 +911,7 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    operatorAuth,
     oauthConnectionTracker,
     selfExtendRegistry,
     extensionStore,
@@ -1313,9 +1334,10 @@ async function main(): Promise<void> {
   });
 
   // ── Admin auth (A.1) ──────────────────────────────────────────────────────
-  // `sessionSigningKey` is resolved earlier (right after the vault loads) so
-  // the plugin runtimes can also use it for `ctx.flows` state signing.
-  const emailWhitelist = new EmailWhitelist(config.ADMIN_ALLOWED_EMAILS);
+  // `sessionSigningKey` (and `emailWhitelist`) are resolved earlier (right
+  // after the vault loads) so the plugin runtimes can also use them —
+  // `sessionSigningKey` for `ctx.flows` state signing, both together for
+  // `ctx.operatorAuth` (issue #438 follow-up).
   if (emailWhitelist.isEmpty()) {
     console.warn(
       '[middleware] ⚠ ADMIN_ALLOWED_EMAILS is empty — every sign-in will 403 until the secret is set',
@@ -4158,6 +4180,7 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    operatorAuth,
     eventCatalogRegistry,
     resolver: channelPluginResolver,
     coreApi: channelCoreApi,

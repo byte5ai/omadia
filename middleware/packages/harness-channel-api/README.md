@@ -25,6 +25,11 @@ UI/API and hand you the plaintext token; it is shown to the operator exactly
 once, at creation time, and is never recoverable afterwards (only its hash is
 stored).
 
+Mechanically, that session check is enforced by `adminKeysRouter.ts` itself
+via the kernel-published `ctx.operatorAuth` accessor (`@omadia/plugin-api`),
+not by an absence from `publicPaths.ts` — see `docs/security-architecture.md`
+§ 8 for why that distinction matters and the full mechanism.
+
 ## Authentication
 
 Every call to `/api/public/v1/chat` must carry the key as a bearer token:

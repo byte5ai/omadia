@@ -707,8 +707,23 @@ Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
   /api/public/v1/admin/keys/:id/revoke`) liegt bewusst unter demselben
   `/api/public/v1`-Prefix, ist aber **nicht** in
   `src/auth/publicPaths.ts`s Exemption-Liste — nur `.../chat` ist public.
-  Key-Verwaltung bleibt hinter dem normalen Operator-Session-Cookie, wie
-  jede andere Admin-Fläche in dieser App (Modell: `routes/adminSettings.ts`).
+  Das allein war aber NICHT der Auth-Mechanismus (ein früherer Stand dieser
+  Notiz behauptete das fälschlich): `core.registerRouter` — der Weg, über
+  den dieses Plugin mountet — prüft nur active/inactive, nie Auth
+  (`requireAuth` hängt ausschließlich an expliziten `app.use(path,
+  requireAuth, handler)`-Stellen in `src/index.ts`, nie um einen
+  Plugin-Router herum). Der reale Fix (Kernel-Ebene, Security-Nachbesserung):
+  `PluginContext` bekommt ein optionales `ctx.operatorAuth`
+  (`OperatorAuthAccessor`), vom Kernel published und in jede
+  Plugin-Runtime durchgereicht (`ToolPluginRuntime`, `DynamicAgentRuntime`,
+  `DefaultChannelRegistry`). `hasValidSession(cookieHeader)` nutzt exakt
+  dieselbe Verifikationslogik wie `requireAuth`
+  (`evaluateSessionToken` in `src/auth/requireAuth.ts`) — ein Code-Pfad,
+  keine zwei, die auseinanderlaufen können. `adminKeysRouter.ts` wendet das
+  jetzt als Router-Middleware VOR jedem Handler an: fehlende/ungültige
+  Session → `401`; kein `ctx.operatorAuth` verfügbar → `503` (fail closed,
+  nie stillschweigend offen). Siehe `docs/security-architecture.md` § 8 für
+  die volle Mechanik.
 - **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
   extend to other flows" — weitere Flows sind Folge-Issues).
 
@@ -716,6 +731,7 @@ Tests: `test/channelApi/` — u.a. eine echte Orchestrator- + echte
 Privacy-Guard-Integration (`chatRouterPrivacyIntegration.test.ts`, spiegelt
 `test/orchestrator/promptMaskPipeline.test.ts`s "realer Turn, gefakter LLM"-
 Muster), Auth/Rate-Limit/Revoke/Audit-Wiring (`chatRouter.test.ts`), Key-CRUD
++ die reale `ctx.operatorAuth`-Verifikation inkl. Fail-closed-Pfad
 (`adminKeysRouter.test.ts`), und die `publicPaths`-Exemption
 (`publicPathsExemption.test.ts`).
 

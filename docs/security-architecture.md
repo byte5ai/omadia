@@ -164,9 +164,40 @@ If it does, that is a bug — file an issue and rotate.
 `POST /api/public/v1/chat` is the first ingress this app exposes that is
 **not** cookie- or provider-JWT-gated: it authenticates its own callers with
 a bearer API key, so it is explicitly exempted from the session middleware
-(`middleware/src/auth/publicPaths.ts`, `${API_PREFIX}/chat` only — key
-administration under `/api/public/v1/admin/keys` stays behind the normal
-operator session cookie, same as every other admin surface).
+(`middleware/src/auth/publicPaths.ts`, `${API_PREFIX}/chat` only).
+
+**Key administration (`/api/public/v1/admin/keys`) — kernel-published
+`ctx.operatorAuth`, not `publicPaths.ts`.** An earlier revision of this
+document claimed key administration "stays behind the normal operator
+session cookie, same as every other admin surface" purely by virtue of NOT
+being in `publicPaths.ts`'s exemption list. That claim was false and left
+the admin routes completely unauthenticated: this plugin mounts its router
+via `core.registerRouter` (`middleware/src/channels/routeRegistry.ts`), which
+gates only on the channel's active/inactive state, never authentication —
+`requireAuth` is applied per-route via `app.use(path, requireAuth, handler)`
+call sites in `middleware/src/index.ts`, and is never injected around a
+plugin-contributed router (see the `RoutesAccessor` doc comment on
+`PluginContext`: "the kernel does not inject middleware around the
+contributed router").
+
+The real fix: `PluginContext` now exposes an optional `ctx.operatorAuth`
+(`OperatorAuthAccessor`, `middleware/packages/plugin-api/src/pluginContext.ts`),
+published by the kernel (`middleware/src/auth/operatorAuthAccessor.ts`) and
+wired into every plugin-context factory
+(`middleware/src/platform/pluginContext.ts`, threaded through
+`ToolPluginRuntime`, `DynamicAgentRuntime`, and `DefaultChannelRegistry`).
+`hasValidSession(cookieHeader)` reuses `evaluateSessionToken` — the EXACT
+SAME session-verification logic `requireAuth` runs (same cookie name, same
+signing key, same Entra-whitelist rule) — extracted into
+`middleware/src/auth/requireAuth.ts` so there is exactly one code path that
+decides session validity, never two that can drift apart.
+`adminKeysRouter.ts` applies this as router-level middleware ahead of every
+route: missing/invalid session → `401` (same `{code, message}` shape as
+`requireAuth`); `ctx.operatorAuth` itself unavailable (an older host that
+never wired it) → `503`, so the router **fails closed** rather than
+silently mounting unauthenticated. See `adminKeysRouter.test.ts`'s
+"operator-session auth" and "fails closed" test blocks for the coverage
+that was missing before this fix.
 
 **Credential model — per-key service identity.** Each API key *is* its own
 identity, not a delegate for a human end-user: `ChannelUserRef{ kind:

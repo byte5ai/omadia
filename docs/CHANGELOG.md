@@ -42,8 +42,10 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 - Key lifecycle (`GET`/`POST /api/public/v1/admin/keys`, revoke) is
   deliberately mounted under the SAME `/api/public/v1` prefix but NOT added
   to `middleware/src/auth/publicPaths.ts`'s exemption list — only `.../chat`
-  is public. Key management stays behind the normal operator session cookie,
-  like every other admin surface in this app.
+  is public. Key management stays behind the normal operator session, like
+  every other admin surface in this app — see the security-fixup entry below
+  for how that's actually enforced (an earlier note here claimed the
+  publicPaths omission alone was sufficient; it wasn't).
 - Review fixups: the internal `conversationId` handed to `CoreApi` is now
   namespaced by key id (`${key.id}:${callerConversationId}`) so two
   different API keys can never collide on the same core-side scope, even
@@ -70,6 +72,27 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `peerDependencies` on `@omadia/channel-sdk` / `@omadia/plugin-api` are now
   pinned to `^0.1.0` instead of `"*"`, per `CONTRIBUTING.md`'s dependency
   hardening policy.
+- Security fixup: `/api/public/v1/admin/keys` was, in fact, completely
+  unauthenticated — mounting via `core.registerRouter` applies only an
+  active/inactive gate, never `requireAuth`, and NOT being in
+  `publicPaths.ts` does nothing to change that (any anonymous caller could
+  mint, list, or revoke API keys). Fixed at the kernel level, not just in
+  this plugin: `PluginContext` gains an optional `ctx.operatorAuth`
+  (`OperatorAuthAccessor`, `packages/plugin-api/src/pluginContext.ts`),
+  published by the kernel and threaded into every plugin runtime
+  (`ToolPluginRuntime`, `DynamicAgentRuntime`, `DefaultChannelRegistry`) so
+  any future plugin needing an operator-only admin surface can reuse it.
+  `hasValidSession(cookieHeader)` reuses the EXACT SAME session-verification
+  logic `requireAuth` runs (extracted to `evaluateSessionToken` in
+  `src/auth/requireAuth.ts`) — one code path, not two that can drift apart.
+  `adminKeysRouter.ts` now applies it as router-level middleware ahead of
+  every route: missing/invalid session → `401`; `ctx.operatorAuth` itself
+  unavailable → `503` (fail closed, never silently unauthenticated). New
+  end-to-end coverage in `adminKeysRouter.test.ts` mounts the router behind
+  the REAL accessor (not a stub) and asserts the no-cookie / invalid-cookie
+  / valid-cookie and fail-closed paths. `docs/security-architecture.md` § 8,
+  this package's `README.md`, and `docs/middleware-agent-handoff.md` are
+  corrected to describe the real mechanism.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 

@@ -12,7 +12,11 @@ import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { OAuthReadinessTracker } from './oauth/oauthReadinessTracker.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
-import type { ApprovedExtension, ExtensionTemplate } from '@omadia/plugin-api';
+import type {
+  ApprovedExtension,
+  ExtensionTemplate,
+  OperatorAuthAccessor,
+} from '@omadia/plugin-api';
 import type { BuiltInPackageStore } from './builtInPackageStore.js';
 import type { SelfExtendRegistry } from './selfExtension/selfExtendRegistry.js';
 import type { ExtensionStore } from './selfExtension/extensionStore.js';
@@ -88,6 +92,10 @@ export interface ToolPluginRuntimeDeps {
   flowPublicBaseUrl?: string;
   /** Spec 004 — backing store for `ctx.status`; cleared on deactivate. */
   pluginStatusRegistry?: PluginStatusRegistry;
+  /** Issue #438 follow-up — kernel-published `ctx.operatorAuth`, threaded
+   *  straight into every `createPluginContext`. Optional so narrow test
+   *  contexts can omit it (an admin router relying on it then fails closed). */
+  operatorAuth?: OperatorAuthAccessor;
   /** Issue #474 (round 5) — automatic OAuth-connection readiness signal,
    *  refreshed from the vault on every activate() and cleared on
    *  deactivate(). Separate from `pluginStatusRegistry` — see
@@ -280,6 +288,7 @@ export class ToolPluginRuntime {
       flowSigningKey: this.deps.flowSigningKey,
       flowPublicBaseUrl: this.deps.flowPublicBaseUrl,
       pluginStatusRegistry: this.deps.pluginStatusRegistry,
+      operatorAuth: this.deps.operatorAuth,
       logger: (...args) => console.log(`[${agentId}]`, ...args),
     });
 

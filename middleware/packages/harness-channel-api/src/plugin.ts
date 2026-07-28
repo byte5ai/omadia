@@ -6,9 +6,12 @@
  *                            path `publicPaths.ts` exempts from the session
  *                            gate for this plugin.
  *   - `/admin/keys`        — key lifecycle (create/list/revoke). NOT
- *                            exempted — stays behind the operator's normal
- *                            session cookie, same as every other admin
- *                            surface in this app.
+ *                            exempted in `publicPaths.ts`, and (as of the
+ *                            issue #438 follow-up) actually enforced: gated
+ *                            by `ctx.operatorAuth` inside
+ *                            `adminKeysRouter.ts` itself, since
+ *                            `core.registerRouter` applies no auth of its
+ *                            own — see that file's doc comment.
  *
  * Follows the same "built-in package, activate(ctx, core)" shape as
  * `@omadia/ui-channel` — see that package for the template this mirrors.
@@ -62,7 +65,7 @@ export async function activate(
       auditLog,
     }),
   );
-  router.use('/admin/keys', createAdminKeysRouter(apiKeys));
+  router.use('/admin/keys', createAdminKeysRouter(apiKeys, ctx.operatorAuth));
 
   core.registerRouter(ctx.agentId, API_PREFIX, router);
   ctx.log(
