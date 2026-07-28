@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { MAX_ENTRIES, createAuditLog } from '../../packages/harness-channel-api/src/auditLog.js';
+import { MAX_ENTRIES, createAuditLog } from '../../packages/harness-api-key-auth/src/auditLog.js';
 import { createFakeSecrets } from './testSecrets.js';
 
 describe('channelApi/auditLog', () => {

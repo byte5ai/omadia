@@ -1,5 +1,6 @@
 /**
- * Issue #438 — usage audit log: who (which key) called what, when.
+ * Usage audit log: who (which key) called what, when. Introduced by issue
+ * #438 inside `@omadia/channel-api`, moved here by issue #439.
  *
  * Vault-backed like `apiKeyStore.ts` (no DB migration for v1), stored as one
  * JSON array under a single fixed vault key. Capped at `MAX_ENTRIES` — this
@@ -9,19 +10,19 @@
  * requests append rather than clobber each other's read-modify-write.
  */
 
-import type { SecretsAccessor } from '@omadia/plugin-api';
+import type { ApiKeySecretStorage } from './secretStorage.js';
 
 /**
- * `ok` — the turn was dispatched and the stream ended without the handler
- *   catching an error.
+ * `ok` — the request was handled and the handler reported success.
  * `rate_limited` — the key authenticated but was over its per-minute quota;
- *   the orchestrator was never invoked.
+ *   the handler was never invoked.
+ * `forbidden` — the key authenticated but lacked the scope the route
+ *   requires (issue #439); the handler was never invoked.
  * `invalid_request` — the key authenticated but the request body failed
- *   schema validation; the orchestrator was never invoked.
- * `error` — the key authenticated, dispatch was attempted, and the
- *   orchestrator (or the stream) threw.
+ *   schema validation; the handler was never invoked.
+ * `error` — the key authenticated, the handler ran, and it failed.
  */
-export type AuditStatus = 'ok' | 'rate_limited' | 'error' | 'invalid_request';
+export type AuditStatus = 'ok' | 'rate_limited' | 'forbidden' | 'error' | 'invalid_request';
 
 export interface AuditEntry {
   readonly keyId: string;
@@ -40,7 +41,7 @@ const VAULT_KEY = 'usage-audit-log';
 /** Exported so tests can assert the cap without hardcoding a magic number. */
 export const MAX_ENTRIES = 200;
 
-export function createAuditLog(secrets: SecretsAccessor): AuditLog {
+export function createAuditLog(secrets: ApiKeySecretStorage): AuditLog {
   const write = secrets.set;
   if (!write) {
     throw new Error(

@@ -919,6 +919,54 @@ Muster), Auth/Rate-Limit/Revoke/Audit-Wiring (`chatRouter.test.ts`), Key-CRUD
 
 ---
 
+### API-Keys als eigenständige Auth-Methode (issue #439)
+
+Issue #438 hatte die Bearer-Auth plugin-intern gebaut und genau **eine** Route
+abgesichert. #439 macht daraus eine allgemeine Authentifizierungs-Methode
+neben dem Session-Cookie — Zielfall: eine Laravel/PHP-Integration, die omadia
+vom eigenen Server aus aufruft, ohne menschliche Session.
+
+- **Neues Workspace-Package `packages/harness-api-key-auth/`
+  (`@omadia/api-key-auth`).** `apiKeyToken.ts`, `apiKeyStore.ts`,
+  `rateLimiter.ts` und `auditLog.ts` sind aus `harness-channel-api/`
+  hierher gezogen; es gibt danach **genau eine** Implementierung von
+  Mint/Hash/Verify/Store. Warum ein Package und nicht `src/auth/`: der Kernel
+  darf nie aus einem Channel-Plugin importieren, und ein Plugin kann keinen
+  Kernel-Source importieren (eigenes `tsconfig` mit `rootDir: src`, Auflösung
+  ausschließlich über `@omadia/*`). Ein Workspace-Package ist die einzige
+  Stelle, die beide Richtungen bedient — dieselbe Rolle, die
+  `@omadia/plugin-api` und `@omadia/channel-sdk` schon spielen.
+  Das Package ist bewusst dependency-frei (nur `express` als Peer): die
+  Storage-Abhängigkeit ist ein strukturelles Subset (`ApiKeySecretStorage` in
+  `secretStorage.ts`), das `SecretsAccessor` ohne Adapter erfüllt.
+- **`requireApiKey(...)`** (`requireApiKey.ts`) ist die mountbare
+  Express-Middleware: Bearer-Parsing → `verify()` → Rate-Limit → Scope-Check,
+  danach `req.apiKey: ApiKeyPrincipal`. Sie setzt **nicht** `req.session` —
+  `SessionClaims.role` ist hart `'admin'`, eine synthetische Session würde
+  jeden session-lesenden Downstream-Handler einen Key für einen Operator
+  halten lassen. Fehlerform `{ error, message }` wie in #438 (nicht
+  `{ code, message }` wie `createRequireAuth`), damit die Wire-Form von
+  `POST /api/public/v1/chat` unverändert bleibt.
+- **Scopes** (`apiKeyScopes.ts`): `<resource>:<action>` oder globales `*`,
+  exakter Match, keine Prefix-Wildcards. Keys ohne persistiertes `scopes`-Feld
+  (alles aus #438) werden auf `['chat:write']` normalisiert — genau die eine
+  Fähigkeit, die sie beim Minten hatten. `*` als Default wäre eine per Upgrade
+  ausgelieferte Rechteausweitung. Admin-Route nimmt `scopes` bei `POST`
+  entgegen (Zod-validiert → 400 statt 500) und zeigt sie im `GET`.
+- **`publicPaths.ts` bleibt unverändert eng:** weiterhin nur
+  `/api/public/v1/chat`. Wer `requireApiKey` auf eine neue Route mountet,
+  braucht dort einen eigenen, möglichst engen Eintrag.
+
+Tests: `test/auth/requireApiKey.test.ts` (Auth/Scope/Rate-Limit/Audit der
+Middleware), `test/auth/apiKeyScopes.test.ts` (Scope-Modell inkl.
+Legacy-Default), `test/channelApi/apiKeyAuthReuseSeam.test.ts` (strukturelle
+Zusicherung, dass das Plugin keine zweite Kopie der Primitive hält und der
+Kernel kein Channel-Plugin importiert). Die bestehenden `test/channelApi/`-
+Suites laufen inhaltlich unverändert weiter, nur die Importpfade der
+verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
+
+---
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert

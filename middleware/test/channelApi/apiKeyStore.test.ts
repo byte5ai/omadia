@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { createApiKeyStore } from '../../packages/harness-channel-api/src/apiKeyStore.js';
+import { createApiKeyStore } from '../../packages/harness-api-key-auth/src/apiKeyStore.js';
 import { createFakeSecrets } from './testSecrets.js';
 
 describe('channelApi/apiKeyStore', () => {
@@ -79,5 +79,53 @@ describe('channelApi/apiKeyStore', () => {
     await store.revoke(a.record.id);
     assert.equal(await store.verify(a.token), undefined, 'a is revoked');
     assert.ok(await store.verify(b.token), 'b is untouched');
+  });
+});
+
+/** Issue #439 — per-key scopes, with the backward-compat contract for keys
+ *  written to the vault before the field existed. */
+describe('channelApi/apiKeyStore — scopes', () => {
+  it('defaults to the legacy scope set when none is given, and exposes it on create/list', async () => {
+    const store = createApiKeyStore(createFakeSecrets());
+    const created = await store.create({ label: 'default-scoped' });
+    assert.deepEqual(created.record.scopes, ['chat:write']);
+    const listed = await store.list();
+    assert.deepEqual(listed[0]?.scopes, ['chat:write']);
+  });
+
+  it('persists an explicit scope set and returns it on verify()', async () => {
+    const store = createApiKeyStore(createFakeSecrets());
+    const created = await store.create({ scopes: ['memory:read', 'chat:write'] });
+    assert.deepEqual(created.record.scopes, ['memory:read', 'chat:write']);
+    const resolved = await store.verify(created.token);
+    assert.deepEqual(resolved?.scopes, ['memory:read', 'chat:write']);
+  });
+
+  it('treats an explicitly empty scope array as "unspecified", matching what a re-read returns', async () => {
+    const store = createApiKeyStore(createFakeSecrets());
+    const created = await store.create({ scopes: [] });
+    assert.deepEqual(created.record.scopes, ['chat:write']);
+    assert.deepEqual((await store.verify(created.token))?.scopes, ['chat:write']);
+  });
+
+  it('rejects a malformed scope rather than silently dropping it', async () => {
+    const store = createApiKeyStore(createFakeSecrets());
+    await assert.rejects(() => store.create({ scopes: ['not a scope'] }), /invalid API-key scope/);
+  });
+
+  it('a key persisted BEFORE scopes existed still authenticates, with the legacy scope set', async () => {
+    // Exactly the JSON shape issue #438 wrote: no `scopes` field at all.
+    const secrets = createFakeSecrets();
+    const store = createApiKeyStore(secrets);
+    const legacy = await store.create({ label: 'pre-scopes' });
+    const raw = await secrets.get(`key:${legacy.record.id}`);
+    assert.ok(raw);
+    const { scopes: _dropped, ...withoutScopes } = JSON.parse(raw) as Record<string, unknown>;
+    await secrets.set?.(`key:${legacy.record.id}`, JSON.stringify(withoutScopes));
+
+    const resolved = await store.verify(legacy.token);
+    assert.ok(resolved, 'a pre-scopes key must keep authenticating');
+    assert.deepEqual(resolved?.scopes, ['chat:write']);
+    assert.deepEqual((await store.list())[0]?.scopes, ['chat:write']);
   });
 });

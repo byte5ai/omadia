@@ -6,7 +6,7 @@ import type { Server } from 'node:http';
 import express from 'express';
 
 import { createAdminKeysRouter } from '../../packages/harness-channel-api/src/adminKeysRouter.js';
-import { createApiKeyStore } from '../../packages/harness-channel-api/src/apiKeyStore.js';
+import { createApiKeyStore } from '../../packages/harness-api-key-auth/src/apiKeyStore.js';
 import type { OperatorAuthAccessor } from '../../packages/plugin-api/src/index.js';
 import { createOperatorAuthAccessor } from '../../src/auth/operatorAuthAccessor.js';
 import { signSession } from '../../src/auth/sessionJwt.js';
@@ -80,6 +80,45 @@ describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
     const body = (await res.json()) as { keys: Array<Record<string, unknown>> };
     assert.ok(body.keys.some((k) => k['label'] === 'listed'));
     assert.ok(body.keys.every((k) => !('hash' in k)));
+  });
+
+  it('POST / accepts a scope set, and GET / shows it (issue #439)', async () => {
+    const created = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'scoped', scopes: ['chat:write', 'memory:read'] }),
+    });
+    assert.equal(created.status, 201);
+    const body = (await created.json()) as { key: { id: string; scopes: string[] } };
+    assert.deepEqual(body.key.scopes, ['chat:write', 'memory:read']);
+
+    const listed = (await (await fetch(baseUrl)).json()) as {
+      keys: Array<{ id: string; scopes: string[] }>;
+    };
+    assert.deepEqual(
+      listed.keys.find((k) => k.id === body.key.id)?.scopes,
+      ['chat:write', 'memory:read'],
+    );
+  });
+
+  it('POST / without scopes still mints a working, chat-capable key (backward compatible)', async () => {
+    const res = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'unscoped' }),
+    });
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as { key: { scopes: string[] } };
+    assert.deepEqual(body.key.scopes, ['chat:write']);
+  });
+
+  it('POST / 400s on a malformed scope instead of 500-ing out of the store', async () => {
+    const res = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scopes: ['nope'] }),
+    });
+    assert.equal(res.status, 400);
   });
 
   it('POST /:id/revoke revokes an existing key and 404s for an unknown one', async () => {

@@ -9,7 +9,7 @@ import {
   mintApiKey,
   sha256Hex,
   verifyApiKey,
-} from '../../packages/harness-channel-api/src/apiKeyToken.js';
+} from '../../packages/harness-api-key-auth/src/apiKeyToken.js';
 
 /**
  * Issue #438 — pure-unit coverage for the API-key token, mirroring
@@ -84,7 +84,7 @@ describe('channelApi/apiKeyToken', () => {
     // buffer compare rather than a hand-rolled loop that could short-circuit
     // on the first differing byte.
     const src = readFileSync(
-      fileURLToPath(new URL('../../packages/harness-channel-api/src/apiKeyToken.ts', import.meta.url)),
+      fileURLToPath(new URL('../../packages/harness-api-key-auth/src/apiKeyToken.ts', import.meta.url)),
       'utf8',
     );
     assert.match(src, /timingSafeEqual\(actual, expected\)/, 'verifyApiKey must call timingSafeEqual');

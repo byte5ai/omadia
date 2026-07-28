@@ -6,9 +6,9 @@ import type { Server } from 'node:http';
 import express from 'express';
 import type { CoreApi, IncomingTurn } from '@omadia/channel-sdk';
 
-import { createApiKeyStore } from '../../packages/harness-channel-api/src/apiKeyStore.js';
-import { createAuditLog } from '../../packages/harness-channel-api/src/auditLog.js';
-import { createRateLimiter } from '../../packages/harness-channel-api/src/rateLimiter.js';
+import { createApiKeyStore } from '../../packages/harness-api-key-auth/src/apiKeyStore.js';
+import { createAuditLog } from '../../packages/harness-api-key-auth/src/auditLog.js';
+import { createRateLimiter } from '../../packages/harness-api-key-auth/src/rateLimiter.js';
 import {
   createApiChatRouter,
   internalConversationId,

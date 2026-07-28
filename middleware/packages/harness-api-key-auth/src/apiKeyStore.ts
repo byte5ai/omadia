@@ -1,10 +1,12 @@
 /**
- * Issue #438 — vault-backed API-key store.
+ * Vault-backed API-key store. Introduced by issue #438 inside
+ * `@omadia/channel-api`, moved here by issue #439 (plus per-key scopes) so
+ * there is exactly ONE key store in the codebase.
  *
- * Design decision (locked on the issue): API keys are vault-backed via this
- * plugin's OWN `ctx.secrets` namespace — no DB migration for v1. Only the
- * sha256 hash of a key ever lands in the vault (see `apiKeyToken.ts`); the
- * plaintext is returned to the caller exactly once, at `create()` time.
+ * Design decision (locked on issue #438): API keys are vault-backed via the
+ * owning plugin's OWN `ctx.secrets` namespace — no DB migration for v1. Only
+ * the sha256 hash of a key ever lands in the vault (see `apiKeyToken.ts`);
+ * the plaintext is returned to the caller exactly once, at `create()` time.
  *
  * Each key is its own vault entry (`key:<uuid>` → JSON `ApiKeyRecord`) rather
  * than one growing blob, so create/revoke touch only their own entry. Reads
@@ -16,9 +18,10 @@
 
 import { randomUUID } from 'node:crypto';
 
-import type { SecretsAccessor } from '@omadia/plugin-api';
-
+import type { ApiKeyScope } from './apiKeyScopes.js';
+import { assertValidScopes, LEGACY_DEFAULT_SCOPES, normalizeScopes } from './apiKeyScopes.js';
 import { mintApiKey, verifyApiKey } from './apiKeyToken.js';
+import type { ApiKeySecretStorage } from './secretStorage.js';
 
 export interface ApiKeyRecord {
   readonly id: string;
@@ -26,6 +29,10 @@ export interface ApiKeyRecord {
   /** sha256 hex of the plaintext key. Never exposed outside this module. */
   readonly hash: string;
   readonly rateLimitPerMinute: number;
+  /** Capabilities this key may exercise. Always populated on read — a record
+   *  persisted before scopes existed is normalized to
+   *  `LEGACY_DEFAULT_SCOPES`, so consumers never have to handle `undefined`. */
+  readonly scopes: readonly ApiKeyScope[];
   readonly createdAt: number;
   readonly revokedAt?: number;
 }
@@ -37,6 +44,10 @@ export type ApiKeyPublicView = Omit<ApiKeyRecord, 'hash'>;
 export interface CreateApiKeyOptions {
   readonly label?: string;
   readonly rateLimitPerMinute?: number;
+  /** Omitted → `LEGACY_DEFAULT_SCOPES`, i.e. exactly what a pre-scopes key
+   *  could do. Throws on a malformed scope rather than dropping it silently
+   *  (see `assertValidScopes`). */
+  readonly scopes?: readonly ApiKeyScope[];
 }
 
 export interface CreatedApiKey {
@@ -80,6 +91,16 @@ function toPublicView(record: ApiKeyRecord): ApiKeyPublicView {
 }
 
 /**
+ * Every path that deserializes a vault entry funnels through here, so a
+ * record written before scopes existed comes back with the legacy default
+ * filled in instead of `undefined` leaking into scope checks.
+ */
+function hydrate(raw: unknown): ApiKeyRecord {
+  const record = raw as ApiKeyRecord;
+  return { ...record, scopes: normalizeScopes((record as { scopes?: unknown }).scopes) };
+}
+
+/**
  * Narrows an optional `SecretsAccessor` write method to its non-optional
  * function type. A plain `if (!fn) throw` guard on a captured variable does
  * NOT narrow that variable's type inside nested closures defined afterwards
@@ -97,13 +118,13 @@ function requireWriter<T>(fn: T | undefined, name: string): T {
 }
 
 /**
- * Builds the store. `secrets` must be write-capable (the manifest declares
- * `permissions.secrets.runtime_write`) — the plugin checks this once at
- * activate-time and never mounts the routes at all otherwise, so this
- * throwing here is a programmer error, not a runtime condition callers need
- * to handle.
+ * Builds the store. `secrets` must be write-capable (for a plugin, the
+ * manifest declares `permissions.secrets.runtime_write`) — the caller checks
+ * this once at wiring time and never mounts the routes at all otherwise, so
+ * this throwing here is a programmer error, not a runtime condition callers
+ * need to handle.
  */
-export function createApiKeyStore(secrets: SecretsAccessor): ApiKeyStore {
+export function createApiKeyStore(secrets: ApiKeySecretStorage): ApiKeyStore {
   const write = requireWriter(secrets.set, 'set');
   requireWriter(secrets.delete, 'delete');
 
@@ -111,7 +132,7 @@ export function createApiKeyStore(secrets: SecretsAccessor): ApiKeyStore {
     const raw = await secrets.get(VAULT_KEY_PREFIX + id);
     if (!raw) return undefined;
     try {
-      return JSON.parse(raw) as ApiKeyRecord;
+      return hydrate(JSON.parse(raw));
     } catch {
       return undefined;
     }
@@ -129,7 +150,7 @@ export function createApiKeyStore(secrets: SecretsAccessor): ApiKeyStore {
       const raw = await secrets.get(vaultKey);
       if (!raw) continue;
       try {
-        records.push(JSON.parse(raw) as ApiKeyRecord);
+        records.push(hydrate(JSON.parse(raw)));
       } catch {
         // Corrupt entry — skip it rather than fail the whole listing.
       }
@@ -145,6 +166,14 @@ export function createApiKeyStore(secrets: SecretsAccessor): ApiKeyStore {
         ...(opts.label ? { label: opts.label } : {}),
         hash,
         rateLimitPerMinute: clampRateLimit(opts.rateLimitPerMinute),
+        // An empty array is treated as "not specified", matching what
+        // `normalizeScopes` does on read — otherwise a key created with `[]`
+        // would come back from the vault with the legacy default and the
+        // create response would have lied about it.
+        scopes:
+          opts.scopes && opts.scopes.length > 0
+            ? assertValidScopes(opts.scopes)
+            : LEGACY_DEFAULT_SCOPES,
         createdAt: Date.now(),
       };
       await writeRecord(record);

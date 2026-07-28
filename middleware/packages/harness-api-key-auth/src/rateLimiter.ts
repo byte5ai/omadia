@@ -1,5 +1,6 @@
 /**
- * Issue #438 — per-key rate limiting.
+ * Per-key rate limiting. Introduced by issue #438 inside
+ * `@omadia/channel-api`, moved here unchanged by issue #439.
  *
  * Fixed-window token bucket, mirroring `middleware/src/platform/httpAccessor.ts`'s
  * `TokenBucket` (same "not wall-clock accurate, good enough to stop a runaway

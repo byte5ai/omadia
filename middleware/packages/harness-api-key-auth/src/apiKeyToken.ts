@@ -1,5 +1,8 @@
 /**
- * Issue #438 — public API key: mint / hash / verify.
+ * API key: mint / hash / verify. Introduced by issue #438 inside
+ * `@omadia/channel-api`, moved here unchanged by issue #439 so the kernel and
+ * any plugin can share the SAME implementation (core must never import from a
+ * channel plugin).
  *
  * Mirrors `middleware/src/devplatform/jobToken.ts` (the dev-runner's one-time
  * job token), the closest existing precedent for a bearer credential this
