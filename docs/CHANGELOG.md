@@ -18,6 +18,32 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — structured dataset ingestion (CSV import) for the Knowledge Graph (#430)
+
+- New `KnowledgeGraph` surface (`ingestDataset`, `listDatasets`, `getDataset`,
+  `queryDatasetRows`, `deleteDataset`) backed by a relational sidecar —
+  `datasets` + `dataset_rows` tables (migration `0029_datasets.sql`) — NOT a
+  graph-node explosion: individual rows never become graph nodes, only one
+  `Dataset` node (`PluginEntity`, `system='dataset'`) is created per dataset
+  for recall/citation linking. Implemented in both `@omadia/knowledge-graph-neon`
+  (real SQL, parameterized JSONB filters/aggregates) and
+  `@omadia/knowledge-graph-inmemory` (full parity, not a stub).
+- `POST /api/v1/datasets` (multipart CSV upload), `GET /api/v1/datasets`,
+  `GET /api/v1/datasets/:id`, `GET /api/v1/datasets/:id/rows`,
+  `DELETE /api/v1/datasets/:id` — ACL pattern mirrors `/api/v1/memory`
+  (session-derived owner, no anonymous access).
+- CSV attachments in chat now import as a queryable dataset instead of being
+  silently truncated at the existing 20,000-char text cap
+  (`attachmentExtract.ts`'s `MAX_TEXT_CHARS`).
+- New `query_dataset` native tool: `list_datasets` / `get_schema` /
+  `query_rows` (a constrained filter+aggregate DSL — never raw SQL from the
+  model), always paginated/aggregated server-side.
+- Every imported row runs through the existing C0 regex PII-detector
+  baseline (`@omadia/plugin-privacy-guard`) before being persisted — the
+  same masking pipeline that already protects free-text user prompts.
+- Admin UI (upload/schema/delete page under `web-ui/app/admin/`) is
+  intentionally NOT part of this change — see the PR description.
+
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 
 - A native plugin (`ctx.tools.register` from `activate()`) whose own

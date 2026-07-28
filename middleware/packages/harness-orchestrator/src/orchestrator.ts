@@ -74,8 +74,18 @@ import {
   ReadAttachmentTool,
   readAttachmentToolSpec,
 } from './tools/readAttachmentTool.js';
+import {
+  QUERY_DATASET_TOOL_NAME,
+  QueryDatasetTool,
+  queryDatasetToolSpec,
+} from './tools/queryDatasetTool.js';
 import { parseAttachmentsInfo } from './attachmentsInfo.js';
-import { checkVisionEmbeddable, extractAttachmentText } from './attachmentExtract.js';
+import {
+  checkVisionEmbeddable,
+  extractAttachmentText,
+  isCsvAttachment,
+} from './attachmentExtract.js';
+import { importCsvDataset } from './datasetImport.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -1303,6 +1313,8 @@ export class Orchestrator {
   private readonly attachmentReader: AttachmentReader | undefined;
   /** #268 — lazily built `read_attachment` handler (only when reader present). */
   private readonly readAttachmentTool: ReadAttachmentTool | undefined;
+  /** #430 — `query_dataset` native tool; only needs the KnowledgeGraph handle. */
+  private readonly queryDatasetTool: QueryDatasetTool | undefined;
   private readonly chatParticipantsTool: ChatParticipantsTool | undefined;
   private readonly findFreeSlotsTool: FindFreeSlotsTool | undefined;
   private readonly bookMeetingTool: BookMeetingTool | undefined;
@@ -1367,6 +1379,9 @@ export class Orchestrator {
     this.knowledgeGraph = options.knowledgeGraph;
     this.knowledgeGraphTool = options.knowledgeGraph
       ? new KnowledgeGraphTool(options.knowledgeGraph, options.embeddingClient)
+      : undefined;
+    this.queryDatasetTool = options.knowledgeGraph
+      ? new QueryDatasetTool(options.knowledgeGraph)
       : undefined;
     this.factExtractor = options.factExtractor;
     this.chatParticipantsTool = options.chatParticipantsTool;
@@ -4891,6 +4906,9 @@ export class Orchestrator {
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
       return this.knowledgeGraphTool.handle(input);
     }
+    if (name === QUERY_DATASET_TOOL_NAME && this.queryDatasetTool) {
+      return this.queryDatasetTool.handle(input);
+    }
     if (name === CHAT_PARTICIPANTS_TOOL_NAME && this.chatParticipantsTool) {
       return this.chatParticipantsTool.handle();
     }
@@ -5275,13 +5293,48 @@ export class Orchestrator {
             'fileName' in fetched
               ? (fetched as { fileName?: string }).fileName
               : undefined;
+          const attachmentFileName = fetchedFileName ?? c.fileName;
+          const label = c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
+          // #430 — CSV attachments become a queryable dataset instead of a
+          // truncated `[attachment-content]` text blob, whenever a
+          // KnowledgeGraph AND a resolved user identity are both available
+          // (dataset ownership needs an omadiaUserId — same identity source
+          // the MCP-ingest path above uses for `aclOwners`). Falls back to
+          // the plain-text path otherwise, so CSV ingest degrades instead of
+          // silently failing on a channel without either.
+          if (
+            isCsvAttachment(contentType, attachmentFileName) &&
+            this.knowledgeGraph &&
+            input.userId
+          ) {
+            const imported = await importCsvDataset({
+              graph: this.knowledgeGraph,
+              bytes: fetched.bytes,
+              datasetName: attachmentFileName ?? label,
+              sourceFileName: attachmentFileName ?? label,
+              ownerOmadiaUserId: input.userId,
+              ...(c.storageKey ? { sourceStorageKey: c.storageKey } : {}),
+            });
+            if (imported.ok) {
+              textBlocks.push(
+                `\n\n[dataset-imported: ${label}]\ndataset_id=${imported.result.datasetId}, rows=${String(imported.result.rowCount)}. ` +
+                  `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with this dataset_id to filter/aggregate this data — do not ask the user to re-paste it, and do not claim the content was truncated.\n[/dataset-imported]`,
+              );
+              continue;
+            }
+            console.warn(
+              `[harness-orchestrator] ingestAttachments: CSV dataset import failed for ${label} — ${imported.reason}`,
+            );
+            // Fall through to the plain-text path below so the CSV's raw
+            // text (even if capped) still reaches the model rather than
+            // vanishing silently.
+          }
           const result = await extractAttachmentText(
             fetched.bytes,
             contentType,
-            fetchedFileName ?? c.fileName,
+            attachmentFileName,
           );
           if (!result.ok) continue;
-          const label = c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
           textBlocks.push(
             `\n\n[attachment-content: ${label}]\n${result.text}\n[/attachment-content]`,
           );
@@ -5336,6 +5389,7 @@ export class Orchestrator {
       tools.push({ type: MEMORY_TOOL_TYPE, name: MEMORY_TOOL_NAME });
     }
     if (this.knowledgeGraphTool) tools.push(knowledgeGraphToolSpec);
+    if (this.queryDatasetTool) tools.push(queryDatasetToolSpec);
     // Diagrams + enrich_company tool specs come from nativeTools registry (plugin-contributed).
     if (this.chatParticipantsTool) tools.push(chatParticipantsToolSpec);
     if (this.askUserChoiceTool) tools.push(askUserChoiceToolSpec);

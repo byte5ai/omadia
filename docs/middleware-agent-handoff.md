@@ -883,6 +883,35 @@ Wird vom Orchestrator aufgerufen, wenn der User auf prior art verweist.
 End-to-End verifiziert: der Orchestrator nutzt das Tool von selbst, ohne
 dass man ihn zwingt.
 
+### Structured Datasets — CSV Import (#430)
+
+Separate Ablage neben dem eigentlichen Graph — bewusst KEINE Graph-Node-
+Explosion pro Zeile (Node-Properties sind GIN-indexiert, siehe
+`ingestEntities`-Doku). Relationale Sidecar-Tabellen `datasets` +
+`dataset_rows` (Migration `packages/harness-knowledge-graph-neon/src/
+migrations/0029_datasets.sql`); pro Dataset genau EIN `Dataset`-Graph-Node
+(`PluginEntity`, `system='dataset'`) für Recall/Zitation.
+
+- **Interface:** `KnowledgeGraph.{ingestDataset,listDatasets,getDataset,
+  queryDatasetRows,deleteDataset}` (`plugin-api/src/knowledgeGraph.ts`),
+  implementiert in `@omadia/knowledge-graph-neon` (echtes SQL) UND
+  `@omadia/knowledge-graph-inmemory` (volle Parität, kein Stub).
+- **Import:** `POST /api/v1/datasets` (multipart CSV, `src/routes/
+  datasets.ts`) sowie automatisch bei CSV-Chat-Attachments
+  (`attachmentExtract.ts`'s `isCsvAttachment` branch in `orchestrator.ts`'s
+  `ingestAttachments` — ersetzt den bisherigen 20.000-Zeichen-Text-Cutoff
+  für CSVs).
+- **Privacy:** jede importierte Zeile läuft vor dem Schreiben durch den
+  bestehenden C0-Regex-Baseline-Detector (`@omadia/plugin-privacy-guard`'s
+  `createBaselineDetector`/`maskPrompt`) — dieselbe Pipeline, die
+  Freitext-User-Prompts schützt. Nur `string`/`date`-Spalten werden
+  gescannt (Details + Kosten-Hinweis in `datasetImport.ts`'s Modul-Doc).
+- **Query:** `query_dataset`-Tool (`tools/queryDatasetTool.ts`) — eine
+  eingeschränkte Filter/Aggregat-DSL (nie rohes SQL vom Modell), immer
+  server-seitig paginiert/aggregiert.
+- **Admin-UI:** bewusst NICHT Teil dieser Änderung — siehe PR-Beschreibung
+  von #430 für die Begründung; offener Folge-Task.
+
 ---
 
 ## 8. Skills

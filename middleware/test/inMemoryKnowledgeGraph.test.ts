@@ -140,3 +140,160 @@ describe('InMemoryKnowledgeGraph.ingestTurn', () => {
     assert.equal(await g.getSession('nonexistent'), null);
   });
 });
+
+// #430 — structured dataset ingestion.
+describe('InMemoryKnowledgeGraph — datasets (#430)', () => {
+  it('ingests a dataset, creates exactly one Dataset graph node, and is listable/gettable by owner', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const result = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'People',
+      sourceFileName: 'people.csv',
+      columns: [
+        { name: 'name', type: 'string' },
+        { name: 'age', type: 'number' },
+      ],
+      rows: [
+        { name: 'Ada', age: 36 },
+        { name: 'Grace', age: 85 },
+      ],
+    });
+    assert.equal(result.rowCount, 2);
+
+    const stats = await g.stats();
+    assert.equal(stats.byNodeType.PluginEntity, 1);
+
+    const listed = await g.listDatasets({ ownerOmadiaUserId: 'user-1' });
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0]?.id, result.datasetId);
+
+    const fetched = await g.getDataset(result.datasetId, 'user-1');
+    assert.ok(fetched);
+    assert.equal(fetched?.rowCount, 2);
+  });
+
+  it('hides a dataset from a non-owner (getDataset/listDatasets/queryDatasetRows all return null/empty)', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const result = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'Secret',
+      sourceFileName: 's.csv',
+      columns: [{ name: 'v', type: 'number' }],
+      rows: [{ v: 1 }],
+    });
+    assert.equal(await g.getDataset(result.datasetId, 'user-2'), null);
+    assert.deepEqual(await g.listDatasets({ ownerOmadiaUserId: 'user-2' }), []);
+    assert.equal(await g.queryDatasetRows(result.datasetId, 'user-2'), null);
+  });
+
+  it('filters rows via the constrained DSL (eq / contains / numeric comparisons)', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'Sales',
+      sourceFileName: 'sales.csv',
+      columns: [
+        { name: 'region', type: 'string' },
+        { name: 'amount', type: 'number' },
+      ],
+      rows: [
+        { region: 'North', amount: 100 },
+        { region: 'South', amount: 250 },
+        { region: 'North', amount: 400 },
+      ],
+    });
+
+    const north = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'region', op: 'eq', value: 'North' }],
+    });
+    assert.equal(north?.totalMatched, 2);
+    assert.equal(north?.rows?.length, 2);
+
+    const big = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'amount', op: 'gt', value: 200 }],
+    });
+    assert.equal(big?.totalMatched, 2);
+
+    const contains = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'region', op: 'contains', value: 'orth' }],
+    });
+    assert.equal(contains?.totalMatched, 2);
+  });
+
+  it('aggregates with and without groupBy', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'Sales',
+      sourceFileName: 'sales.csv',
+      columns: [
+        { name: 'region', type: 'string' },
+        { name: 'amount', type: 'number' },
+      ],
+      rows: [
+        { region: 'North', amount: 100 },
+        { region: 'South', amount: 250 },
+        { region: 'North', amount: 400 },
+      ],
+    });
+
+    const total = await g.queryDatasetRows(datasetId, 'user-1', {
+      aggregate: { fn: 'sum', column: 'amount' },
+    });
+    assert.equal(total?.aggregateValue, 750);
+
+    const byRegion = await g.queryDatasetRows(datasetId, 'user-1', {
+      groupBy: 'region',
+      aggregate: { fn: 'sum', column: 'amount' },
+    });
+    const asMap = new Map(byRegion?.groups?.map((gr) => [gr.key, gr.value]));
+    assert.equal(asMap.get('North'), 500);
+    assert.equal(asMap.get('South'), 250);
+
+    const count = await g.queryDatasetRows(datasetId, 'user-1', {
+      aggregate: { fn: 'count' },
+    });
+    assert.equal(count?.aggregateValue, 3);
+  });
+
+  it('rejects an unknown filter column and an aggregate on a non-number column', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'D',
+      sourceFileName: 'd.csv',
+      columns: [{ name: 'name', type: 'string' }],
+      rows: [{ name: 'Ada' }],
+    });
+    await assert.rejects(
+      g.queryDatasetRows(datasetId, 'user-1', {
+        filters: [{ column: 'nope', op: 'eq', value: 1 }],
+      }),
+    );
+    await assert.rejects(
+      g.queryDatasetRows(datasetId, 'user-1', {
+        aggregate: { fn: 'sum', column: 'name' },
+      }),
+    );
+  });
+
+  it('deletes a dataset (owner-only) and drops its graph node', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'D',
+      sourceFileName: 'd.csv',
+      columns: [{ name: 'v', type: 'number' }],
+      rows: [{ v: 1 }],
+    });
+    assert.equal(
+      await g.deleteDataset(datasetId, { actorOmadiaUserId: 'user-2' }),
+      false,
+      'non-owner delete is a no-op',
+    );
+    assert.equal(await g.deleteDataset(datasetId, { actorOmadiaUserId: 'user-1' }), true);
+    assert.equal(await g.getDataset(datasetId, 'user-1'), null);
+    const stats = await g.stats();
+    assert.equal(stats.byNodeType.PluginEntity ?? 0, 0);
+  });
+});

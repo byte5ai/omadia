@@ -82,6 +82,11 @@ import type {
   TurnIngest,
   TurnIngestResult,
   TurnSearchHit,
+  DatasetIngest,
+  DatasetIngestResult,
+  DatasetQueryOptions,
+  DatasetQueryResult,
+  DatasetSummary,
 } from '@omadia/plugin-api';
 
 export interface MergeTriggeringKnowledgeGraphOptions {
@@ -582,5 +587,36 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   }
   markPalaiaExcerptMergeChecked(excerptExternalId: string): Promise<void> {
     return this.inner.markPalaiaExcerptMergeChecked(excerptExternalId);
+  }
+
+  // #430 — structured dataset ingestion. Not turn-shaped and not something
+  // the merge-candidate detector inspects; forwards verbatim.
+  ingestDataset(input: DatasetIngest): Promise<DatasetIngestResult> {
+    return this.inner.ingestDataset(input);
+  }
+  listDatasets(opts: {
+    ownerOmadiaUserId: string;
+    limit?: number;
+  }): Promise<DatasetSummary[]> {
+    return this.inner.listDatasets(opts);
+  }
+  getDataset(
+    datasetId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<DatasetSummary | null> {
+    return this.inner.getDataset(datasetId, viewerOmadiaUserId);
+  }
+  queryDatasetRows(
+    datasetId: string,
+    viewerOmadiaUserId: string,
+    opts?: DatasetQueryOptions,
+  ): Promise<DatasetQueryResult | null> {
+    return this.inner.queryDatasetRows(datasetId, viewerOmadiaUserId, opts);
+  }
+  deleteDataset(
+    datasetId: string,
+    actor: AclMutationOptions,
+  ): Promise<boolean> {
+    return this.inner.deleteDataset(datasetId, actor);
   }
 }
