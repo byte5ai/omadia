@@ -3213,6 +3213,15 @@
       },
       "phaseSkipped": "übersprungen — keine Fragen",
       "noArtifact": "Für diese Phase gibt es noch kein Artefakt.",
+      "toolCall": {
+        "pending": "läuft",
+        "failed": "fehlgeschlagen",
+        "noOutput": "(keine Ausgabe)",
+        "prompt": "Prompt",
+        "result": "Ergebnis",
+        "output": "Ausgabe",
+        "moreDiffLines": "… {count, plural, one {# weitere Zeile} other {# weitere Zeilen}}"
+      },
       "openPr": "Pull Request öffnen",
       "logEmpty": "Noch keine Log-Ausgabe.",
       "scrollToBottom": "Nach unten scrollen",

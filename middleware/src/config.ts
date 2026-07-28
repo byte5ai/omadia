@@ -202,7 +202,7 @@ const ConfigSchema = z.object({
   // Epic #470 W4 — default per-job LLM cost budget (USD) applied when neither the
   // job nor its repo sets one (spec §5). Token budgets have NO default: they are
   // enforced only when explicitly set on the job or repo.
-  DEV_JOB_DEFAULT_BUDGET_USD: z.coerce.number().positive().default(5),
+  DEV_JOB_DEFAULT_BUDGET_USD: z.coerce.number().positive().default(100),
 
   // Postgres connection string for the Neon-backed knowledge graph.
   // When set, `bootstrapKnowledgeGraphFromEnv` installs the

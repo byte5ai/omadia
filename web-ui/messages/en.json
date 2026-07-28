@@ -3213,6 +3213,15 @@
       },
       "phaseSkipped": "skipped — no questions",
       "noArtifact": "No artifact for this phase yet.",
+      "toolCall": {
+        "pending": "running",
+        "failed": "failed",
+        "noOutput": "(no output)",
+        "prompt": "Prompt",
+        "result": "Result",
+        "output": "Output",
+        "moreDiffLines": "… {count, plural, one {# more line} other {# more lines}}"
+      },
       "openPr": "Open pull request",
       "logEmpty": "No log output yet.",
       "scrollToBottom": "Scroll to bottom",

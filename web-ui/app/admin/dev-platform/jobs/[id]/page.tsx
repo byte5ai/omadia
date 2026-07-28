@@ -17,8 +17,9 @@ import {
   type DevJobUiPhase,
 } from '@/app/_components/devjobs/DevJobPhaseRail';
 import { useDevJobEvents, type DevJobEventMessage } from '@/app/_lib/useDevJobEvents';
-import { JobLogPane, type LogConnection, type LogLine } from '../../_components/JobLogPane';
+import { JobLogPane, type LogConnection } from '../../_components/JobLogPane';
 import { cancelJob, deleteJob, getJob, isTerminalStatus, type DevJobView } from '../../_lib/api';
+import { foldDevJobEvent, type LogItem } from '../../_lib/toolCallLog';
 
 /**
  * Epic #470 W0 — the job-detail signature screen (UI spec §5). Header, the
@@ -33,26 +34,6 @@ function shortHash(id: string): string {
   return id.replace(/-/g, '').slice(0, 6);
 }
 
-function eventToLine(ev: DevJobEventMessage): LogLine | null {
-  const p = ev.payload as Record<string, unknown>;
-  if (ev.type === 'tool') {
-    const name = typeof p['name'] === 'string' ? p['name'] : 'tool';
-    const preview =
-      typeof p['inputPreview'] === 'string'
-        ? p['inputPreview']
-        : typeof p['outputPreview'] === 'string'
-          ? p['outputPreview']
-          : '';
-    return { id: String(ev.id), stream: 'tool', text: preview ? `${name} ${preview}` : name };
-  }
-  if (ev.type === 'log') {
-    const text = typeof p['text'] === 'string' ? p['text'] : '';
-    if (!text) return null;
-    return { id: String(ev.id), stream: p['stream'] === 'stderr' ? 'stderr' : 'agent', text };
-  }
-  return null;
-}
-
 export default function JobDetailPage(): React.ReactElement {
   const t = useTranslations('adminDevPlatform.detail');
   const params = useParams<{ id: string }>();
@@ -62,7 +43,7 @@ export default function JobDetailPage(): React.ReactElement {
 
   const [job, setJob] = useState<DevJobView | null>(null);
   const [notFound, setNotFound] = useState(false);
-  const [lines, setLines] = useState<LogLine[]>([]);
+  const [items, setItems] = useState<LogItem[]>([]);
   const [conn, setConn] = useState<LogConnection>('reconnecting');
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
   const [agoSec, setAgoSec] = useState<number | null>(null);
@@ -86,8 +67,7 @@ export default function JobDetailPage(): React.ReactElement {
 
   const handleEvent = useCallback((ev: DevJobEventMessage) => {
     setLastEventAt(Date.now());
-    const line = eventToLine(ev);
-    if (line) setLines((prev) => [...prev, line]);
+    setItems((prev) => foldDevJobEvent(prev, ev));
     if (ev.type === 'status' || ev.type === 'phase') {
       // Re-sync the authoritative view on lifecycle transitions.
       void getJob(ev.jobId).then(
@@ -195,7 +175,7 @@ export default function JobDetailPage(): React.ReactElement {
       <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_320px]">
         <div>
           {effective === 'implement' ? (
-            <JobLogPane lines={lines} connection={conn} lastEventAgoSec={agoSec} />
+            <JobLogPane items={items} connection={conn} lastEventAgoSec={agoSec} />
           ) : effective === 'pr' && job?.prUrl ? (
             <div className="rounded-lg border border-[color:var(--border)] p-4 text-sm">
               <a href={job.prUrl} target="_blank" rel="noreferrer" className="text-[color:var(--accent)] underline">
