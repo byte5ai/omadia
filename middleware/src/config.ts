@@ -66,6 +66,16 @@ const ConfigSchema = z.object({
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
     .default(false),
+  // #445 — sticky Direct Line. When on, a bare `#<agent>` binds the
+  // conversation to that specialist until the user sends `#end` /
+  // `#orchestrator`. Default OFF: not every channel can show which specialist
+  // is answering (Telegram renders neither the consulted footer nor the
+  // delegated-answer attribution today), and an invisible sticky mode would
+  // break the "never ambiguous who is answering" requirement this exists for.
+  ORCHESTRATOR_DIRECT_LINE_STICKY: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(false),
   MODEL_ROUTING_CLASSIFIER_MODEL: z.string().min(1).optional(),
   MODEL_ROUTING_SIMPLE_MODEL: z.string().min(1).optional(),
   MODEL_ROUTING_COMPLEX_MODEL: z.string().min(1).optional(),

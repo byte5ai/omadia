@@ -5,6 +5,7 @@ import type {
   ChatSession,
   DelegatedAnswer,
   DiagramAttachment,
+  DirectLineSessionState,
   FollowUpOption,
   KgWalkEdge,
   KgWalkNode,
@@ -135,6 +136,8 @@ export type ChatStreamEvent =
       agentsConsulted?: AgentConsultation[];
       /** #332 Layer 2 (gap-closure) — see `Message.delegatedAnswer`. */
       delegatedAnswer?: DelegatedAnswer;
+      /** #445 — see `Message.directLineSession`. */
+      directLineSession?: DirectLineSessionState;
     }
   /** #133 (E9) — opaque turn annotation the orchestrator forwarded from a
    *  turn-hook. `channel: 'plan'` carries a live PlanSnapshot. */
@@ -367,6 +370,13 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           : {}),
         ...(event.delegatedAnswer
           ? { delegatedAnswer: event.delegatedAnswer }
+          : {}),
+        // #445 — guard on PRESENCE, never on `.active`. `{active:false}` is
+        // precisely the payload that tells the banner a binding has ended;
+        // dropping it would leave a stale "you are talking to X" on screen
+        // after a restart, a registry rebuild or a TTL expiry.
+        ...(event.directLineSession
+          ? { directLineSession: event.directLineSession }
           : {}),
         finishedAt: Date.now(),
         streaming: false,

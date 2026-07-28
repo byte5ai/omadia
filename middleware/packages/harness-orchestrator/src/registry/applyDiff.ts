@@ -243,6 +243,10 @@ export function buildForAgent(
       ...(runtime.maxTurnSeconds !== undefined
         ? { maxTurnSeconds: runtime.maxTurnSeconds }
         : {}),
+      // #445 — registry-managed Agents inherit the platform sticky flag, so
+      // the knob means the same thing for the legacy default Agent and for
+      // every Agent the registry builds.
+      ...(runtime.directLineSticky ? { directLineSticky: true } : {}),
       ...(personaSkills?.length ? { personaSkills } : {}),
     },
     deps,
