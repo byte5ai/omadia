@@ -66,6 +66,18 @@ export async function runGit(opts: GitOptions, args: string[], cwd: string): Pro
     GIT_CONFIG_GLOBAL: '/dev/null',
     LANG: 'C',
   };
+  // Deployment topology, not a secret -- same category as PATH/HOME above, so
+  // it belongs on this explicit allowlist too. The job's network has no route
+  // to a forge host (github.com) except through the daemon's egress proxy;
+  // without these, git falls back to a direct DNS lookup that always fails
+  // ("Could not resolve host"). Both spellings: curl (git's HTTPS transport)
+  // historically only trusts lowercase http_proxy/https_proxy/no_proxy by
+  // default, but the daemon injects both cases (see policyClient.mjs), so
+  // forwarding both here keeps this in step with whichever it actually reads.
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy']) {
+    const value = process.env[key];
+    if (value) env[key] = value;
+  }
   return new Promise<GitRunResult>((resolve, reject) => {
     const child = spawn(gitBin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     const out: Buffer[] = [];
