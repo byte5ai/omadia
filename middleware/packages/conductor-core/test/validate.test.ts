@@ -139,4 +139,39 @@ describe('validate', () => {
     };
     expect(codes(g, { eventIds: ['a.b'] })).toContain('unknown_event_ref');
   });
+
+  // Issue #437 review finding: a webhook trigger with no/invalid eventId was
+  // accepted and published but could never actually fire — eventRouter.ts#emit
+  // matches a trigger by `(kind === 'event' || kind === 'webhook') && eventId ===
+  // <emitted id>`, so a webhook trigger needs the exact same eventId validation an
+  // event trigger gets.
+  it('rejects a webhook trigger with no eventId', () => {
+    const g: WorkflowGraph = {
+      entryStepId: 's1',
+      steps: [{ id: 's1', kind: 'agent', agentId: 'a1' }],
+      transitions: [],
+      triggers: [{ id: 'tr1', kind: 'webhook' }],
+    };
+    expect(codes(g)).toContain('unknown_event_ref');
+  });
+
+  it('rejects a webhook trigger with an unknown event id', () => {
+    const g: WorkflowGraph = {
+      entryStepId: 's1',
+      steps: [{ id: 's1', kind: 'agent', agentId: 'a1' }],
+      transitions: [],
+      triggers: [{ id: 'tr1', kind: 'webhook', eventId: 'x.y' }],
+    };
+    expect(codes(g, { eventIds: ['a.b'] })).toContain('unknown_event_ref');
+  });
+
+  it('accepts a webhook trigger with a known eventId', () => {
+    const g: WorkflowGraph = {
+      entryStepId: 's1',
+      steps: [{ id: 's1', kind: 'agent', agentId: 'a1' }],
+      transitions: [],
+      triggers: [{ id: 'tr1', kind: 'webhook', eventId: 'a.b' }],
+    };
+    expect(codes(g, { eventIds: ['a.b'] })).not.toContain('unknown_event_ref');
+  });
 });
