@@ -457,9 +457,15 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     // PhaseEngine's terminal choke point is the SAME boundFinalize every other
     // path uses — so a phase-driven fail/done revokes the job's scoped tokens too.
     // Adapt the signature: the engine passes a bare `reason`, boundFinalize takes
-    // a FinalizeContext (`reason` lands in the status event payload).
+    // a FinalizeContext. `reason` lands in the status event payload (`ctx.reason`)
+    // AND `dev_jobs.error` (`ctx.error`) — two distinct FinalizeContext fields;
+    // populating only `reason` left `dev_jobs.error` silently empty on every
+    // gated-pipeline phase failure (the real reason was only ever visible in the
+    // event trail, never on the job row itself).
     finalize: (jobId, status, reason) =>
-      boundFinalize(jobId, status, reason !== undefined ? { reason } : undefined).then(() => undefined),
+      boundFinalize(jobId, status, reason !== undefined ? { reason, error: reason } : undefined).then(
+        () => undefined,
+      ),
     // A parked runner is exiting: revoke its scoped token WITHOUT finalizing the
     // still-`waiting` job. Same registry revoker the terminal paths use.
     revokeTokensForPark: async (job) => {

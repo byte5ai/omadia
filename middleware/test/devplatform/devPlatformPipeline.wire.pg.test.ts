@@ -302,6 +302,40 @@ describe('dev-platform wiring — a real gated job, end to end through the assem
     assert.equal(res.status, 409, 'a stale phase result is rejected');
   });
 
+  it('a gated phase failure populates dev_jobs.error, not just the status event payload', async () => {
+    // Regression: found live when bootstrap correctly reported ok:false (no
+    // bootstrap_command configured for the repo) — dev_jobs.error stayed empty
+    // because the PhaseEngine→boundFinalize adapter (wireDevPlatform.ts) only
+    // ever passed the reason as FinalizeContext.reason (→ the status event
+    // payload), never as FinalizeContext.error (→ the dev_jobs.error column).
+    const BASE_SHA = 'basesha-failreason';
+    const { hash } = mintRunnerToken();
+    const job = await wired.jobStore.createJob({
+      repoId,
+      kind: 'fix_issue',
+      brief: 'a job whose analyze phase fails',
+      source: 'admin',
+      sourceRef: null,
+      baseSha: BASE_SHA,
+      phase: 'analyze',
+      backend: 'local',
+      createdBy: MARK,
+      runnerTokenHash: hash,
+    });
+    const token = await provision(job.id, BASE_SHA);
+    assert.equal(await getSpec(job.id, token), 200);
+
+    const REASON = 'no bootstrap command provisioned for this repo';
+    assert.deepEqual(await postPhase(job.id, token, { phase: 'analyze', ok: false, error: REASON }), {
+      directive: 'failed',
+      reason: REASON,
+    });
+
+    const failed = await wired.jobStore.getJob(job.id);
+    assert.equal(failed?.status, 'failed');
+    assert.equal(failed?.error, REASON, 'the real failure reason lands on the job row, not just the event trail');
+  });
+
   it('the gate-deadline worker expires an overdue gate and cancels the job (reason gate_expired), revoking its token', async () => {
     const BASE_SHA = 'basesha-expire';
     const { hash } = mintRunnerToken();
