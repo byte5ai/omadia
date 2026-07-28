@@ -16,7 +16,7 @@ import type { Pool } from 'pg';
 import * as artifacts from './devJobArtifactStore.js';
 import type { DevJobEventBus } from './devJobEventBus.js';
 import * as seams from './devJobWorkerSeams.js';
-import { hashRunnerToken, verifyRunnerToken as verifyToken } from './jobToken.js';
+import { hashRunnerToken, mintRunnerToken, verifyRunnerToken as verifyToken } from './jobToken.js';
 import { asObj, iso, isoN, num, str, strN, type Row } from './pgMappers.js';
 import { isLowValueEventType, type ArtifactCeilingOptions } from './retention.js';
 import {
@@ -736,6 +736,35 @@ export class DevJobStore {
   }
 
   // --- tokens --------------------------------------------------------------
+  /**
+   * Mint a fresh runner token for a job whose container the DockerBackend path
+   * has not yet spawned, and persist only its hash — same one-time-plaintext
+   * contract `mintRunnerToken` documents for every backend, just exercised at a
+   * different moment.
+   *
+   * Why this exists: `createJob` already stamps a `runner_token_hash` for every
+   * job, but for the docker backend that first token's plaintext is discarded
+   * unused — `DockerBackend.provision()` deliberately posts only
+   * `{ protocol, jobId, leaseTtlSec }` to the daemon (spec §4/§5, review finding
+   * S3: "a caller never dictates policy"), so the token can never ride that
+   * call. The daemon fetches the job's policy itself, later, on its own clock
+   * (`GET /internal/job-policy/:jobId`) — THAT is this backend's actual
+   * provision moment, so this reissues the token right there, replacing the
+   * unused original hash, and the plaintext rides the policy response's `env`
+   * (the daemon's own `ALLOWED_ENV_KEYS` already special-cases `OMADIA_JOB_TOKEN`
+   * as policy-supplied — see `policyClient.mjs`). One reissue per policy fetch,
+   * which is one per container spawn, so the token a runner receives always
+   * matches the runner_token_hash a `verifyRunnerToken` call against it will see.
+   */
+  async reissueRunnerToken(jobId: string): Promise<string> {
+    const { token, hash } = mintRunnerToken();
+    await this.pool.query(`UPDATE dev_jobs SET runner_token_hash = $2, updated_at = now() WHERE id = $1`, [
+      jobId,
+      hash,
+    ]);
+    return token;
+  }
+
   /** sha256 + timing-safe check of a presented runner token against the stored
    *  hash. Unknown job ⇒ false. */
   async verifyRunnerToken(jobId: string, token: string): Promise<boolean> {

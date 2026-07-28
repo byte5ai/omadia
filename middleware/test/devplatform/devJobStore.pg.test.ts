@@ -230,6 +230,19 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     assert.equal(await store.verifyRunnerToken(randomUUID(), token), false, 'unknown job → false');
   });
 
+  it('reissueRunnerToken mints a fresh token and invalidates the one it replaces', async () => {
+    const job = await newQueuedJob(repo.id);
+    const original = mintRunnerToken().token; // the token createJob's hash matched, never a docker container's
+    // newQueuedJob mints its own; overwrite the row to a known original for this test.
+    await pool.query('UPDATE dev_jobs SET runner_token_hash = $2 WHERE id = $1', [job.id, hashRunnerToken(original)]);
+    assert.equal(await store.verifyRunnerToken(job.id, original), true, 'precondition: original verifies');
+
+    const reissued = await store.reissueRunnerToken(job.id);
+    assert.notEqual(reissued, original, 'a genuinely new token, not the input echoed back');
+    assert.equal(await store.verifyRunnerToken(job.id, reissued), true, 'the reissued token verifies');
+    assert.equal(await store.verifyRunnerToken(job.id, original), false, 'the replaced token no longer verifies');
+  });
+
   it('resolveJobByToken verifies constant-time and excludes terminal jobs (no state oracle)', async () => {
     const { token } = mintRunnerToken();
     const hash = hashRunnerToken(token);
