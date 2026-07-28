@@ -18,6 +18,46 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — pluggable embedding provider (#440)
+
+- The `EmbeddingClient` contract moved from `@omadia/embeddings` (the Ollama
+  adapter) to `@omadia/plugin-api`, extended with provider metadata
+  (`modelId`, `dimensions`) via the new `EmbeddingProvider` type — the same
+  split the LLM side already has between `llm-provider-api` and the adapter
+  packages. `@omadia/embeddings` re-exports the contract, so out-of-repo
+  plugins compiled against its `dist/` keep working. The capability name
+  stays `embeddingClient@1`; no consumer manifest changed.
+- New adapter `@omadia/embedding-adapter-openai` provides the same
+  `embeddingClient@1` capability over the OpenAI wire format
+  (`POST {base_url}/v1/embeddings` — OpenAI, Azure behind a gateway, vLLM, LM
+  Studio, LiteLLM). Base URL, model, dimensions, timeout and concurrency are
+  manifest `setup.fields`; the API key is a `secret`-typed field and lives in
+  the vault, never in `installed.json`. Because it declares a secret field the
+  built-in catch-all bootstrap does not auto-install it — installing a second
+  embedding provider stays an explicit operator act, and
+  `ctx.services.provide` still throws if two ever end up active.
+- Migration `0030_embedding_model_registry.sql` (KG-neon chain): new
+  `graph_embedding_model` table, one row per tenant, recording the model id
+  and vector size the stored embeddings were produced with.
+- Knowledge-graph activation now runs a model/dimension gate against that
+  record. Empty corpus or an unrecorded pre-#440 corpus of matching size →
+  the active model is recorded. Same dimensions, different model → stored
+  vectors are set to NULL (attempt counters reset) and the existing
+  `embeddingBackfill` sweep re-embeds them. Different dimensions → vector
+  writes are refused for the boot with a log line naming stored vs active
+  model, and the graph degrades to FTS-only instead of mixing two models in
+  one cosine space; recovering requires a column migration in the style of
+  `0005_turn_embeddings_768.sql` (drop index → drop column → re-add at the
+  new size → re-create index).
+- The `/health` KG snapshot no longer equates "embeddings configured" with
+  "Ollama base URL set" — an active alternative provider counts as well.
+- Unchanged for existing deployments: `bootstrapEmbeddingsFromEnv()` still
+  seeds only the Ollama adapter from `OLLAMA_BASE_URL` /
+  `OLLAMA_EMBEDDING_MODEL`, and a deployment with no embedding provider still
+  boots into the FTS-only path. The Ollama adapter gained one optional
+  setting, `embedding_dimensions` (default 768, nomic-embed-text) — operators
+  running a different Ollama model must set it so the gate can do its job.
+
 ### Added — structured dataset ingestion (CSV import) for the Knowledge Graph (#430)
 
 - New `KnowledgeGraph` surface (`ingestDataset`, `listDatasets`, `getDataset`,

@@ -1,9 +1,9 @@
 import type { Pool } from 'pg';
 
-import type { EmbeddingClient } from '@omadia/embeddings';
 import type {
   EditProcessInput,
   EditProcessResult,
+  EmbeddingClient,
   ProcessMemoryService,
   ProcessQueryHit,
   ProcessRecord,

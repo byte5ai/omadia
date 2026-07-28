@@ -14,6 +14,7 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 const KG_NEON_ID = '@omadia/knowledge-graph-neon';
 const KG_INMEMORY_ID = '@omadia/knowledge-graph-inmemory';
 const EMBEDDINGS_ID = '@omadia/embeddings';
+const EMBEDDINGS_OPENAI_ID = '@omadia/embedding-adapter-openai';
 
 export interface KgHealth {
   /** Active knowledge-graph backend. `none` means recall is fully unavailable. */
@@ -50,10 +51,15 @@ export function buildKgHealth(registry: InstalledRegistry): KgHealth {
   // unvalidated UI config PATCH) publishes nothing, so .trim() here avoids a
   // false-healthy reading — the very lie this snapshot exists to prevent.
   const embUrl = registry.get(EMBEDDINGS_ID)?.config?.['ollama_base_url'];
-  const embeddings =
+  const ollamaEmbeddings =
     isActive(EMBEDDINGS_ID) &&
     typeof embUrl === 'string' &&
     embUrl.trim().length > 0;
+  // #440: the Ollama plugin is one adapter among several. The OpenAI-compatible
+  // adapter gates on a VAULT-stored api_key, which this registry-only projection
+  // cannot read — installing it already requires filling that secret in the
+  // setup flow, so "active" is the closest honest signal available here.
+  const embeddings = ollamaEmbeddings || isActive(EMBEDDINGS_OPENAI_ID);
 
   const durable = backend === 'neon';
   // Both semantic recall and the durable tier need an embedding client to query.
@@ -74,7 +80,7 @@ export function buildKgHealth(registry: InstalledRegistry): KgHealth {
   }
   if (backend !== 'none' && !embeddings) {
     warnings.push(
-      'embeddings disabled: semantic recall, the durable tier and process-reuse are all inactive (FTS-only) — set OLLAMA_BASE_URL / enable the embeddings overlay',
+      'embeddings disabled: semantic recall, the durable tier and process-reuse are all inactive (FTS-only) — set OLLAMA_BASE_URL / enable the embeddings overlay, or install an alternative embeddingClient provider',
     );
   }
   if (backend === 'inmemory' && embeddings) {

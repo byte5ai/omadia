@@ -8,6 +8,7 @@ import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 const KG_NEON = '@omadia/knowledge-graph-neon';
 const KG_INMEMORY = '@omadia/knowledge-graph-inmemory';
 const EMBEDDINGS = '@omadia/embeddings';
+const EMBEDDINGS_OPENAI = '@omadia/embedding-adapter-openai';
 
 async function reg(
   entries: Array<{ id: string; status?: 'active' | 'inactive' | 'errored'; config?: Record<string, unknown> }>,
@@ -96,5 +97,23 @@ describe('buildKgHealth', () => {
       ]),
     );
     assert.equal(h.embeddings, false, 'inactive embeddings plugin is not active');
+  });
+
+  it('an alternative embeddingClient provider counts as embeddings-on (#440)', async () => {
+    const h = buildKgHealth(
+      await reg([{ id: KG_NEON }, { id: EMBEDDINGS_OPENAI }]),
+    );
+    assert.equal(h.embeddings, true, 'Ollama is no longer the only provider');
+    assert.equal(h.semanticRecall, true);
+    assert.equal(h.processReuse, true);
+    assert.deepEqual(h.warnings, []);
+  });
+
+  it('an inactive alternative provider does not count as embeddings-on', async () => {
+    const h = buildKgHealth(
+      await reg([{ id: KG_NEON }, { id: EMBEDDINGS_OPENAI, status: 'inactive' }]),
+    );
+    assert.equal(h.embeddings, false);
+    assert.ok(h.warnings.some((w) => w.includes('embeddings disabled')));
   });
 });

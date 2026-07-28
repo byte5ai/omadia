@@ -1,6 +1,5 @@
-import type { PluginContext } from '@omadia/plugin-api';
-import { EntityRefBus } from '@omadia/plugin-api';
-import type { EmbeddingClient } from '@omadia/embeddings';
+import type { EmbeddingClient, PluginContext } from '@omadia/plugin-api';
+import { EntityRefBus, readEmbeddingProviderMetadata } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 
 import {
@@ -9,6 +8,10 @@ import {
   waitForPostgres,
 } from './neonKnowledgeGraph.js';
 import { runGraphMigrations } from './migrator.js';
+import {
+  allowsVectorWrites,
+  evaluateEmbeddingModelGate,
+} from './embeddingModelGate.js';
 import {
   startEmbeddingBackfill,
   type EmbeddingBackfillHandle,
@@ -141,7 +144,8 @@ export async function activate(
     };
   }
 
-  const embeddingClient = ctx.services.get<EmbeddingClient>(EMBEDDING_CLIENT_SERVICE);
+  const resolvedEmbeddingClient =
+    ctx.services.get<EmbeddingClient>(EMBEDDING_CLIENT_SERVICE);
   const turnContextAccessor = ctx.services.get<TurnContextAccessor>(TURN_CONTEXT_SERVICE);
 
   const tenantId =
@@ -170,6 +174,28 @@ export async function activate(
   await waitForPostgres(graphPool, { log: (msg) => { ctx.log(msg); } });
   await runGraphMigrations(graphPool, (msg) => { console.log(msg); });
 
+  // #440 — dimension/model gate. An embedding provider that disagrees with
+  // the corpus recorded in `graph_embedding_model` must not write vectors:
+  // mixing two models in one cosine space is silent recall rot, not an error
+  // anyone would see. When the gate blocks, we simply proceed as if no
+  // embedding client were resolved — ingest stores NULL embeddings, the
+  // retriever falls back to FTS, the backfill stays disarmed. Same shape as
+  // the long-standing no-Ollama degradation, so nothing else needs to know.
+  const gateOutcome = await evaluateEmbeddingModelGate({
+    pool: graphPool,
+    tenantId,
+    provider: readEmbeddingProviderMetadata(resolvedEmbeddingClient),
+    log: (msg) => { console.error(msg); },
+  });
+  const embeddingClient = allowsVectorWrites(gateOutcome)
+    ? resolvedEmbeddingClient
+    : undefined;
+  if (!allowsVectorWrites(gateOutcome)) {
+    ctx.log(
+      '[harness-knowledge-graph-neon] embedding provider rejected by the model/dimension gate — running FTS-only until the provider or the vector column is migrated',
+    );
+  }
+
   // OB-73 (Phase 4 / Slice B) — read-path access tracker. Reads queue
   // touches into an in-memory map; the decay-job tick flushes them into a
   // single batched UPDATE (access_count, accessed_at, COLD→WARM promotion).
@@ -186,7 +212,7 @@ export async function activate(
   console.log(
     embeddingClient
       ? '[graph] Neon knowledge graph ready (embeddings enabled)'
-      : '[graph] Neon knowledge graph ready (embeddings disabled — set ollama_base_url on @omadia/embeddings)',
+      : '[graph] Neon knowledge graph ready (embeddings disabled — configure an embeddingClient@1 provider, or check the model/dimension gate above)',
   );
 
   const entityRefBus = new EntityRefBus({

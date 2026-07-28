@@ -1,9 +1,12 @@
-import type { PluginContext } from '@omadia/plugin-api';
+import {
+  withConcurrencyLimit,
+  type EmbeddingProvider,
+  type PluginContext,
+} from '@omadia/plugin-api';
 
 import {
+  DEFAULT_OLLAMA_EMBEDDING_DIMENSIONS,
   createEmbeddingClient,
-  withConcurrencyLimit,
-  type EmbeddingClient,
 } from './embeddingClient.js';
 
 /**
@@ -23,6 +26,9 @@ import {
  *   - `ollama_model`        default 'nomic-embed-text'
  *   - `ollama_timeout_ms`   default 30000
  *   - `max_concurrent`      default 4 (0 disables the limiter)
+ *   - `embedding_dimensions` default 768 (nomic-embed-text) — reported as
+ *     provider metadata; the KG dimension gate (#440) compares it against
+ *     the model the stored corpus was embedded with.
  *
  * Empty `ollama_base_url` → plugin activates without publishing a
  * client. The capability-resolver still sees `provides: embeddingClient@1`
@@ -53,6 +59,10 @@ export async function activate(
     ctx.config.get<unknown>('max_concurrent'),
     4,
   );
+  const dimensions = parsePositiveInt(
+    ctx.config.get<unknown>('embedding_dimensions'),
+    DEFAULT_OLLAMA_EMBEDDING_DIMENSIONS,
+  );
 
   if (!baseUrl) {
     ctx.log(
@@ -65,16 +75,17 @@ export async function activate(
     };
   }
 
-  const raw: EmbeddingClient = createEmbeddingClient({
+  const raw: EmbeddingProvider = createEmbeddingClient({
     baseUrl,
     model,
     timeoutMs,
+    dimensions,
   });
-  const client: EmbeddingClient = withConcurrencyLimit(raw, maxConcurrent);
+  const client: EmbeddingProvider = withConcurrencyLimit(raw, maxConcurrent);
 
   const dispose = ctx.services.provide(EMBEDDING_CLIENT_SERVICE, client);
   ctx.log(
-    `[harness-embeddings] ready (baseUrl=${baseUrl}, model=${model}, timeoutMs=${String(timeoutMs)}, maxConcurrent=${String(maxConcurrent)})`,
+    `[harness-embeddings] ready (baseUrl=${baseUrl}, model=${model}, modelId=${client.modelId}, dimensions=${String(dimensions)}, timeoutMs=${String(timeoutMs)}, maxConcurrent=${String(maxConcurrent)})`,
   );
 
   return {

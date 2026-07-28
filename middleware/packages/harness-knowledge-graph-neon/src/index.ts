@@ -27,6 +27,18 @@ export type {
   EmbeddingBackfillStats,
 } from './embeddingBackfill.js';
 
+// #440 — model/dimension gate. Compares the active embedding provider
+// against the model the stored vectors were produced with and blocks vector
+// writes on an unrecoverable mismatch.
+export {
+  allowsVectorWrites,
+  evaluateEmbeddingModelGate,
+} from './embeddingModelGate.js';
+export type {
+  EmbeddingModelGateOptions,
+  EmbeddingModelGateOutcome,
+} from './embeddingModelGate.js';
+
 // Palaia-Phase-5 (OB-74) — Per-Agent Block/Boost-Store. Backs the
 // `agentPriorities@1` capability published by activate(). The InMemory
 // sibling falls back to the NoopAgentPrioritiesStore from plugin-api.

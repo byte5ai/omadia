@@ -60,6 +60,12 @@ setup:
       help: "Hard-cancel pro embed()-Call. Cold-start nomic-embed-text auf Fly braucht 2-5s; 30000 ist großzügig."
       required: false
       default: 30000
+    - key: "embedding_dimensions"
+      type: "integer"
+      label: "Vektor-Dimensionen des Modells"
+      help: "Wird als Provider-Metadatum veröffentlicht; der Knowledge-Graph vergleicht es mit dem Modell, mit dem der bestehende Korpus embedded wurde (#440). Default 768 = nomic-embed-text. Bei anderem Modell zwingend anpassen."
+      required: false
+      default: 768
     - key: "max_concurrent"
       type: "integer"
       label: "Max. parallele Embeddings"

@@ -32,6 +32,13 @@ export * from './entityRef.js';
 export * from './entityRefBus.js';
 export * from './knowledgeGraph.js';
 
+// #440: provider-neutral `embeddingClient@1` contract. Lives here for the same
+// reason the KG contract does — every adapter (`@omadia/embeddings` for Ollama,
+// `@omadia/embedding-adapter-openai` for OpenAI-compatible servers) and every
+// consumer (KG, orchestrator, orchestrator-extras) needs it without depending
+// on a sibling adapter package.
+export * from './embeddingClient.js';
+
 // Phase-1 of the Kemia integration: opt-in `responseGuard@1` capability.
 // Lives on the plugin-api surface so both the provider plugin
 // (`harness-plugin-quality-guard`) and the orchestrator hook reach the

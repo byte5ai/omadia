@@ -1,0 +1,99 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/embedding-adapter-openai"
+  name: "Embeddings (OpenAI-compatible)"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.embeddings"
+  description: "Embedding-Adapter für OpenAI-kompatible Server (POST /v1/embeddings — OpenAI, Azure via Gateway, vLLM, LM Studio, LiteLLM). Alternative zum Ollama-Adapter @omadia/embeddings; beide liefern die Capability 'embeddingClient@1', es darf immer nur einer aktiv sein."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "ml"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+setup:
+  fields:
+    - key: "api_key"
+      type: "secret"
+      label: "API-Key"
+      help: "Bearer-Token für den Embedding-Endpoint. Liegt im Vault, nie in installed.json. Ohne Key aktiviert sich das Plugin, published aber keinen Client (Konsumenten degraden auf no-embedding-Pfade). Der secret-Typ sorgt zusätzlich dafür, dass der Built-in-Katalog dieses Plugin NICHT automatisch installiert — der Operator entscheidet bewusst, welcher Embedding-Provider aktiv ist."
+      required: false
+    - key: "base_url"
+      type: "string"
+      label: "Base-URL"
+      help: "Basis-URL des Endpoints, mit oder ohne '/v1' (kein trailing slash nötig). Default: https://api.openai.com"
+      required: false
+      default: "https://api.openai.com"
+    - key: "model"
+      type: "string"
+      label: "Embedding-Modell"
+      help: "Modellname, den der Endpoint kennt. Default: text-embedding-3-small."
+      required: false
+      default: "text-embedding-3-small"
+    - key: "dimensions"
+      type: "integer"
+      label: "Vektor-Dimensionen des Modells"
+      help: "Wird als Provider-Metadatum veröffentlicht und gegen jede Antwort geprüft. Für text-embedding-3-small (1536), -3-large (3072) und ada-002 (1536) automatisch gesetzt; bei unbekanntem Modell zwingend erforderlich, sonst published das Plugin keinen Client."
+      required: false
+      default: 1536
+    - key: "timeout_ms"
+      type: "integer"
+      label: "Embed-Timeout (ms)"
+      help: "Hard-cancel pro embed()-Call. Default 30000."
+      required: false
+      default: 30000
+    - key: "max_concurrent"
+      type: "integer"
+      label: "Max. parallele Embeddings"
+      help: "FIFO-Limit gegen Rate-Limits und Kostenspitzen (boot replay + backfill + live ingest). Default 4. 0 oder negativ → kein Limit."
+      required: false
+      default: 4
+
+playbook:
+  when_to_use: |
+    Alternative zum Ollama-Adapter, wenn Embeddings über einen
+    OpenAI-kompatiblen Dienst laufen sollen (Hosted-API oder selbst
+    betriebener vLLM-/LM-Studio-/LiteLLM-Server). Vor der Installation den
+    Ollama-Adapter deaktivieren bzw. dessen `ollama_base_url` leeren — zwei
+    aktive `embeddingClient@1`-Provider sind ein Datenkorruptions-Bug, nicht
+    ein Feature, und `ctx.services.provide` wirft beim zweiten Provider.
+    Beim Wechsel greift zusätzlich das Dimensions-Gate im Knowledge-Graph:
+    gleiche Dimension → bestehende Vektoren werden auf NULL gesetzt und vom
+    Embedding-Backfill neu berechnet; andere Dimension → Vektor-Writes werden
+    blockiert, bis die Spalte migriert ist (siehe docs/CHANGELOG.md, #440).
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound:
+      - "openai-compatible-embeddings"
+  filesystem:
+    scratch: false
+
+integrations:
+  - id: "openai_compatible_embeddings"
+    kind: "http"
+    target: "POST {base_url}/v1/embeddings"
+    auth_from: "api_key"
+    docs: "https://platform.openai.com/docs/api-reference/embeddings"
+
+provides:
+  - "embeddingClient@1"
+requires: []

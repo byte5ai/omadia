@@ -1,5 +1,5 @@
+import type { EmbeddingClient } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
-import type { EmbeddingClient } from '@omadia/embeddings';
 
 /**
  * Slice 7 — node types the backfill knows how to embed. Adding a new

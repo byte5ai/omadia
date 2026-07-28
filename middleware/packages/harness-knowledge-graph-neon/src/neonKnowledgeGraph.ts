@@ -104,8 +104,8 @@ import {
   type TurnIngestResult,
   type TurnSearchHit,
   type Visibility,
+  type EmbeddingClient,
 } from '@omadia/plugin-api';
-import type { EmbeddingClient } from '@omadia/embeddings';
 import {
   GRAPH_EDGE_TYPES,
   GRAPH_NODE_TYPES,
