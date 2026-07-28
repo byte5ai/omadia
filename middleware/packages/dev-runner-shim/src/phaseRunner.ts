@@ -180,6 +180,7 @@ export class PhaseRunner {
       exitCode: result.code,
       timedOut: result.timedOut,
       durationMs,
+      outputTail: result.outputTail,
     });
     if (result.code !== 0) {
       return {
@@ -287,12 +288,27 @@ export function absorb(acc: Accumulated, phase: DevJobPhase, body: PhaseResultBo
 // Small helpers.
 // ---------------------------------------------------------------------------
 
+/** Cap on captured command output — the tail is what matters for diagnosing
+ *  a failure (npm/pip/etc. print their actual error at the end, not the
+ *  start), and unbounded capture risks a memory/artifact-size blowup on a
+ *  verbose or runaway command. */
+const MAX_COMMAND_OUTPUT_BYTES = 4096;
+
 interface CommandResult {
   code: number;
   timedOut: boolean;
+  /** Last MAX_COMMAND_OUTPUT_BYTES of combined stdout+stderr. */
+  outputTail: string;
 }
 
-/** Run a shell command with its own timeout. Used only for `bootstrap`. */
+/** Run a shell command with its own timeout. Used only for `bootstrap`.
+ *
+ *  Found live: this used to spawn with `stdio: ['ignore','pipe','pipe']` and
+ *  never read either pipe — a failed bootstrap command (e.g. `npm ci`
+ *  exiting 1 after 70s of real, successful-looking network activity)
+ *  reported only an exit code, with the actual reason (npm's own error
+ *  output) silently discarded and unrecoverable, not even via `docker logs`
+ *  (piped streams never reach the container's own stdout/stderr). */
 function runCommand(
   command: string,
   opts: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number; setKill: SetKill },
@@ -303,19 +319,31 @@ function runCommand(
       env: opts.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    let output = '';
+    const appendOutput = (chunk: Buffer): void => {
+      output += chunk.toString('utf8');
+      // Keep memory bounded while the command is STILL RUNNING, not just at
+      // the end — a runaway command must not accumulate unboundedly.
+      if (output.length > MAX_COMMAND_OUTPUT_BYTES * 2) {
+        output = output.slice(-MAX_COMMAND_OUTPUT_BYTES);
+      }
+    };
+    child.stdout?.on('data', appendOutput);
+    child.stderr?.on('data', appendOutput);
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill('SIGKILL');
     }, opts.timeoutMs);
     opts.setKill((signal: NodeJS.Signals = 'SIGTERM') => child.kill(signal));
-    child.once('error', () => {
+    child.once('error', (err) => {
       clearTimeout(timer);
-      resolve({ code: -1, timedOut });
+      appendOutput(Buffer.from(`\n[spawn error] ${err.message}`));
+      resolve({ code: -1, timedOut, outputTail: output.slice(-MAX_COMMAND_OUTPUT_BYTES) });
     });
     child.once('close', (code) => {
       clearTimeout(timer);
-      resolve({ code: code ?? -1, timedOut });
+      resolve({ code: code ?? -1, timedOut, outputTail: output.slice(-MAX_COMMAND_OUTPUT_BYTES) });
     });
   });
 }

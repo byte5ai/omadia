@@ -269,6 +269,50 @@ describe('runPhasedShim — bootstrap runs as a command, not a CLI session', () 
     assert.deepEqual(homes, [], 'bootstrap starts no agent session');
   });
 
+  it('captures the command\'s own stdout+stderr into the report, not just its exit code', async () => {
+    // Regression: found live -- a real `npm ci` failure inside a job
+    // container reported only `exitCode:1` with zero further detail; the
+    // command's own output was silently discarded (piped but never read),
+    // unrecoverable even via `docker logs` (piped streams never reach the
+    // container's own stdout/stderr).
+    const spec = makeSpec({
+      phaseContext: { phase: 'bootstrap' },
+      bootstrap: {
+        command: 'echo "line one to stdout"; echo "line two to stderr" 1>&2; exit 1',
+        timeoutMs: 30_000,
+      },
+    });
+    const home = new ScriptedHome(spec, [{ directive: 'failed', reason: 'x' }]);
+    await runPhasedShim(env, { home, gitBin, log: () => {} });
+
+    const boot = home.phaseResults[0];
+    assert.equal(boot?.ok, false);
+    const content = boot?.artifact?.content ?? '';
+    assert.match(content, /"exitCode":1/);
+    assert.match(content, /line one to stdout/, 'stdout was captured');
+    assert.match(content, /line two to stderr/, 'stderr was captured too');
+  });
+
+  it('caps captured output to a bounded tail rather than growing unboundedly', async () => {
+    const spec = makeSpec({
+      phaseContext: { phase: 'bootstrap' },
+      bootstrap: {
+        // Print well past the cap, then a distinctive marker at the very
+        // end -- the tail (not the head) is what a real npm/pip failure
+        // needs, since the actual error line comes last.
+        command: 'for i in $(seq 1 20000); do printf "x"; done; printf "\\nTHE-ACTUAL-ERROR-IS-HERE\\n"',
+        timeoutMs: 30_000,
+      },
+    });
+    const home = new ScriptedHome(spec, [{ directive: 'done' }]);
+    await runPhasedShim(env, { home, gitBin, log: () => {} });
+
+    const boot = home.phaseResults[0];
+    const parsed = JSON.parse(boot?.artifact?.content ?? '{}');
+    assert.ok(parsed.outputTail.length < 20000, 'the captured tail is bounded, not the full 20k+ bytes');
+    assert.match(parsed.outputTail, /THE-ACTUAL-ERROR-IS-HERE/, 'the end of the output (where the real error lives) survives truncation');
+  });
+
   it('auto-detects a command from the cloned repo root when none is provisioned', async () => {
     // repoDir is `<workspace>/repo` (gitOps.ts REPO_DIRNAME) — pre-seed it
     // before the fake clone step runs; clone only adds `.git`, it never wipes
