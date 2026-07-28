@@ -138,6 +138,46 @@ describe('buildDatasetFromCsv — privacy scan', () => {
     assert.equal(decimalBuilt.columns[0]?.type, 'number');
   });
 
+  it('types a signed, zero-padded column as string — not number — so a negative zero-padded code round-trips without corruption (#430 fixup round 6)', async () => {
+    // Before this fix, LEADING_ZERO_RE only matched an unsigned leading
+    // zero ('0123'), so a signed zero-padded value like '-012' still
+    // passed NUMBER_RE (which allows an optional leading '-') without
+    // tripping the leading-zero guard. That silently mistyped the column
+    // as 'number' (Number('-012') === -12, dropping the leading zero) and
+    // skipped the mandatory privacy scan. '012'/'019' (as opposed to a
+    // longer digit run) are short enough that the baseline PII detector's
+    // phone pattern does not also fire, isolating the type-inference fix.
+    const csv = 'name,code\nAda,-012\nGrace,-019\n';
+    const built = await buildDatasetFromCsv(Buffer.from(csv, 'utf8'));
+    assert.equal(built.ok, true);
+    if (!built.ok) return;
+
+    const byName = new Map(built.columns.map((c) => [c.name, c]));
+    assert.equal(
+      byName.get('code')?.type,
+      'string',
+      'a signed leading-zero digit string must not be typed number',
+    );
+    // Value round-trips with its sign and leading zero intact — Number()
+    // would have silently dropped the zero (e.g. '-012' -> -12).
+    assert.equal(built.rows[0]?.['code'], '-012');
+    assert.equal(built.rows[1]?.['code'], '-019');
+    // The column is string-typed, so the mandatory privacy scan actually
+    // runs over it instead of being bypassed the way a number-typed
+    // column is.
+    assert.ok(
+      built.privacyScan.scannedCells >= 2,
+      `expected the signed leading-zero column to be scanned, got scannedCells=${String(built.privacyScan.scannedCells)}`,
+    );
+
+    // A bare '0'/'-0.x' decimal is still a legitimate number column.
+    const decimalCsv = 'ratio\n-0\n-0.5\n';
+    const decimalBuilt = await buildDatasetFromCsv(Buffer.from(decimalCsv, 'utf8'));
+    assert.equal(decimalBuilt.ok, true);
+    if (!decimalBuilt.ok) return;
+    assert.equal(decimalBuilt.columns[0]?.type, 'number');
+  });
+
   it('a zero-padded phone number no longer bypasses the mandatory privacy scan (#430 fixup — the exact scenario from the reviewer report)', async () => {
     // Before the fix, '0301234567' was inferred as type 'number': the raw
     // digits were stored via `Number()` (silently dropping the leading

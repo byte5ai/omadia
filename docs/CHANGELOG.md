@@ -117,6 +117,17 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   and `ingestAttachments` at that single shared value instead of each
   re-deriving it. Regression test in `queryDatasetTool.test.ts` simulates a
   channel turn's raw-id-at-write-vs-read mismatch end-to-end.
+- Fixup (round 6, adversarial review): round 1's `LEADING_ZERO_RE` fix only
+  matched an UNSIGNED leading zero (`/^0\d/`), so a signed zero-padded value
+  like `-0123`/`-0456` still passed `NUMBER_RE` (which allows an optional
+  leading `-`) without tripping the leading-zero guard — the exact same
+  corruption-plus-scan-bypass defect as round 1, just missed for the signed
+  case. Fixed by widening the pattern to `/^-?0\d/`, which still correctly
+  excludes a bare `0`/`-0` or a `0.x`/`-0.x` decimal (those are followed by
+  nothing or a `.`, not another digit). Regression test added in
+  `datasetImport.test.ts` with signed zero-padded values proving the column
+  types as `'string'`, the value round-trips with sign and leading zero
+  intact, and the privacy scan runs on it.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 
