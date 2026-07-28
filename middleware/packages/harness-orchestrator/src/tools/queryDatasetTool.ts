@@ -12,9 +12,15 @@ import { turnContext } from '../turnContext.js';
  * pattern (one tool, a `query` discriminator picks the operation) rather
  * than three separate tool specs — keeps the tool list short.
  *
- * ACL: every operation resolves the caller's `omadiaUserId` from
- * `turnContext.current()` (same source the MCP-ingest path in
- * `orchestrator.ts` uses for `aclOwners`) — there is no anonymous dataset
+ * ACL: every operation resolves the caller's CANONICAL `omadiaUserId` from
+ * `turnContext.current()?.resolvedOmadiaUserId` — the same per-turn value
+ * `ingestAttachments` uses to set `ownerOmadiaUserId` on CSV import (see
+ * `resolveTurnOwnerIdentity`). This is deliberately NOT `turnContext.current()
+ * ?.userId`: for a channel turn (Teams/Slack/Telegram) that field is the RAW
+ * channel-native id (Teams AAD oid, …), which never matches the canonical
+ * uuid a dataset was actually stored under — reading it here would make
+ * every channel-native user's own just-imported datasets permanently
+ * unfindable (#430 fixup, reviewer round 5). There is no anonymous dataset
  * access, and a dataset the caller doesn't own is indistinguishable from a
  * missing one (`not_found_or_not_owned`), matching the `/api/v1/memory`
  * ACL convention of never leaking existence to non-owners.
@@ -113,7 +119,7 @@ export class QueryDatasetTool {
         .join('; ')}`;
     }
     const args = parsed.data;
-    const viewerOmadiaUserId = turnContext.current()?.userId;
+    const viewerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
     if (!viewerOmadiaUserId) {
       return 'Error: query_dataset requires a resolved user identity — not available for this channel/turn.';
     }

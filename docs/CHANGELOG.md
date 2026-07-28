@@ -101,6 +101,22 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   of rejecting it). Regression test added in
   `middleware/test/inMemoryKnowledgeGraph.test.ts` reproducing the exact
   case above plus the `neq`/`contains` mirrors.
+- Fixup (round 5, adversarial review): round 2's channel-identity fix only
+  covered the IMPORT path (`ingestAttachments`) — `QueryDatasetTool.handle`
+  still resolved the viewer as `turnContext.current()?.userId`, the RAW
+  channel-native id, never the canonical `omadiaUserId` a channel turn's
+  dataset was actually stored under. Net effect: a dataset imported via
+  Teams/Slack/Telegram chat could never be found again by `list_datasets` /
+  `get_schema` / `query_rows` from that same chat — the exact "query
+  ingested datasets" requirement #430 exists for. Fixed by resolving the
+  canonical id ONCE per turn (`resolveTurnOwnerIdentity`, new
+  `TurnContextValue.resolvedOmadiaUserId`) in both `runTurn` and
+  `chatStream` (the latter is what channel adapters actually call —
+  previously it never populated any per-turn user identity at all for the
+  `query_dataset`/dataset-ACL purpose), and pointing both `QueryDatasetTool`
+  and `ingestAttachments` at that single shared value instead of each
+  re-deriving it. Regression test in `queryDatasetTool.test.ts` simulates a
+  channel turn's raw-id-at-write-vs-read mismatch end-to-end.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 

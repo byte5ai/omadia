@@ -696,6 +696,22 @@ registriert wie die übrigen Orchestrator-Tools in §3's Orchestrator-Setup:
 Filter/Aggregat-DSL (nie rohes SQL vom Modell), Ergebnisse immer
 server-seitig paginiert/aggregiert bzw. auf 200 Gruppen gecappt.
 
+**Identity-Resolution (Fixup Runde 5):** für einen Channel-Turn (Teams/
+Slack/Telegram) ist `ChatTurnInput.userId` die RAW channel-native id, NICHT
+die kanonische `omadiaUserId` uuid. `resolveTurnOwnerIdentity`
+(`resolveTurnOwnerIdentity.ts`) löst sie EINMAL pro Turn auf (via
+`KnowledgeGraph.resolveOrCreateChannelIdentity`, wenn `input.channelIdentity`
+gesetzt ist — sonst fällt sie auf `input.userId` zurück, das für HTTP/CLI-
+Turns bereits kanonisch ist) und legt sie in
+`TurnContextValue.resolvedOmadiaUserId` ab — einmal in `runTurn` (non-
+streaming) und einmal in `chatStream` (der Pfad, den
+`createOrchestratorDispatcher` für Channel-Turns tatsächlich aufruft).
+`QueryDatasetTool` und `ingestAttachments` lesen beide ausschließlich dieses
+Feld für die Dataset-ACL (niemals das rohe `TurnContextValue.userId`) — vorher
+schrieb der Import-Pfad unter der kanonischen id, während der Query-Pfad die
+rohe id las, sodass ein Channel-User sein eigenes gerade importiertes Dataset
+nie wiederfinden konnte.
+
 ---
 
 ## 4. Migration Managed Agents → Lokal

@@ -146,6 +146,7 @@ import type {
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
+import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
 
@@ -2196,6 +2197,15 @@ export class Orchestrator {
     const privacyHandle = privacyService
       ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
       : undefined;
+    // #430 fixup (reviewer round 5) — resolve the canonical omadiaUserId ONCE
+    // for the whole turn; see `resolveTurnOwnerIdentity` for the fallback
+    // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
+    // `turnContext.current()?.resolvedOmadiaUserId` instead of each
+    // re-deriving it independently.
+    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
+      this.knowledgeGraph,
+      input,
+    );
 
     return turnContext.run(
       {
@@ -2207,6 +2217,7 @@ export class Orchestrator {
         // Human user id — dispatch-time consumers (MCP→KG ingestion) attribute
         // per-user data with it.
         ...(input.userId ? { userId: input.userId } : {}),
+        ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -3435,12 +3446,22 @@ export class Orchestrator {
     const privacyHandle = privacyService
       ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
       : undefined;
+    // #430 fixup (reviewer round 5) — same per-turn resolution as `runTurn`
+    // above. This streaming entry point is what channel adapters (Teams/
+    // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
+    // without this the resolved identity would never reach a channel turn's
+    // tool dispatch at all — see `resolveTurnOwnerIdentity`.
+    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
+      this.knowledgeGraph,
+      input,
+    );
 
     turnContext.enter({
       turnId,
       turnDate: today(),
       // Per-orchestrator isolation: see the matching `turnContext.run` above.
       agentSlug: this.agentId,
+      ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
@@ -5305,36 +5326,21 @@ export class Orchestrator {
           // #430 fixup (reviewer round 2) — dataset ownership needs the
           // canonical `omadiaUserId` uuid, NOT the raw channel-native id
           // `input.userId` carries for channel turns (Teams AAD oid, …; see
-          // `ChatTurnInput.userId`'s doc comment). `input.channelIdentity`
-          // (set only by `createOrchestratorDispatcher`) tells us which case
-          // we're in: present → resolve via
-          // `resolveOrCreateChannelIdentity` (same primitive the web-login
-          // path in `index.ts` uses); absent → this is an HTTP/CLI turn
-          // where `input.userId` already IS the canonical uuid (resolved
-          // from `req.session.omadia_user_id` / a validated `x-user-id` in
-          // `routes/chat.ts`), so it's used as-is. A channel turn whose kind
-          // the KG model doesn't cover yet (discord, whatsapp, canvas'
-          // `custom`) has no `channelIdentity` either — resolution is
-          // skipped rather than guessed, so the CSV falls through to the
-          // plain-text path below (same degrade-gracefully behaviour as a
-          // missing KnowledgeGraph).
+          // `ChatTurnInput.userId`'s doc comment).
+          //
+          // #430 fixup (reviewer round 5) — this used to re-resolve
+          // `input.channelIdentity` independently, right here, on every CSV
+          // attachment. That was the ONLY place the canonical id got
+          // computed — `QueryDatasetTool` had no way to read it and fell
+          // back to the raw `turnContext.current()?.userId`, so a dataset a
+          // channel user just imported could never be found again by that
+          // same user. Now reads the ONE per-turn resolution both the
+          // import and query paths share — see
+          // `resolveTurnOwnerIdentity`/`TurnContextValue.resolvedOmadiaUserId`
+          // for the resolution + fallback rules (still idempotent, still
+          // degrades to the plain-text path below when unresolved).
           if (isCsvAttachment(contentType, attachmentFileName) && this.knowledgeGraph) {
-            const ownerOmadiaUserId = input.channelIdentity
-              ? await this.knowledgeGraph
-                  .resolveOrCreateChannelIdentity({
-                    channelKind: input.channelIdentity.channelKind,
-                    channelUserId: input.channelIdentity.channelUserId,
-                  })
-                  .then((r) => r.omadiaUserId)
-                  .catch((err: unknown) => {
-                    console.warn(
-                      `[harness-orchestrator] ingestAttachments: channel identity resolution failed for ${label} — ${
-                        err instanceof Error ? err.message : String(err)
-                      }`,
-                    );
-                    return undefined;
-                  })
-              : input.userId;
+            const ownerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
             if (ownerOmadiaUserId) {
               const imported = await importCsvDataset({
                 graph: this.knowledgeGraph,
