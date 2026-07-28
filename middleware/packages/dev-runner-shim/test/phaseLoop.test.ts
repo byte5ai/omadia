@@ -8,7 +8,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtemp, rm, writeFile, chmod, readdir, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile, chmod, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -267,6 +267,60 @@ describe('runPhasedShim — bootstrap runs as a command, not a CLI session', () 
     assert.ok(ran, 'the bootstrap command executed on the job volume');
     const homes = await listSessionHomes();
     assert.deepEqual(homes, [], 'bootstrap starts no agent session');
+  });
+
+  it('auto-detects a command from the cloned repo root when none is provisioned', async () => {
+    // repoDir is `<workspace>/repo` (gitOps.ts REPO_DIRNAME) — pre-seed it
+    // before the fake clone step runs; clone only adds `.git`, it never wipes
+    // the directory, so this file is still there when bootstrap reads it.
+    const repoDir = path.join(ws, 'repo');
+    await mkdir(repoDir, { recursive: true });
+    await writeFile(path.join(repoDir, 'package-lock.json'), '{}');
+    // The detected command runs with repoDir as cwd — prove that by having it
+    // write a marker INSIDE repoDir via a real shell command substituted in
+    // for the real package manager (this test only proves detection + exec,
+    // not that npm itself is installed in the test sandbox).
+    await writeFile(path.join(repoDir, 'npm'), `#!${process.execPath}\nrequire('fs').writeFileSync('bootstrap-detected-ran', '');\n`);
+    await chmod(path.join(repoDir, 'npm'), 0o755);
+
+    const spec = makeSpec({ phaseContext: { phase: 'bootstrap' } }); // no explicit `bootstrap` field
+    const home = new ScriptedHome(spec, [{ directive: 'done' }]);
+    // bootstrapEnv() (phaseRunner.ts) reads PATH from the real process env at
+    // call time — prepend repoDir so the detected `npm ci` resolves to our fake
+    // npm, then restore it so this doesn't leak into other tests.
+    const originalPath = process.env['PATH'];
+    process.env['PATH'] = `${repoDir}:${originalPath ?? ''}`;
+    let code: number;
+    try {
+      code = await runPhasedShim(env, { home, gitBin, log: () => {} });
+    } finally {
+      process.env['PATH'] = originalPath;
+    }
+    assert.equal(code, 0);
+
+    const boot = home.phaseResults[0];
+    assert.equal(boot?.phase, 'bootstrap');
+    assert.equal(boot?.ok, true);
+    assert.match(boot?.artifact?.content ?? '', /"command":"npm ci"/, 'detected npm ci from package-lock.json');
+    assert.match(boot?.artifact?.content ?? '', /"detected":true/);
+    const ran = await readFile(path.join(repoDir, 'bootstrap-detected-ran'), 'utf8').then(() => true).catch(() => false);
+    assert.ok(ran, 'the auto-detected command actually ran with repoDir as cwd');
+  });
+
+  it('skips gracefully (ok:true) when nothing is provisioned and nothing is detectable', async () => {
+    const repoDir = path.join(ws, 'repo');
+    await mkdir(repoDir, { recursive: true }); // empty — no manifest of any kind
+
+    const spec = makeSpec({ phaseContext: { phase: 'bootstrap' } });
+    const home = new ScriptedHome(spec, [{ directive: 'done' }]);
+    const code = await runPhasedShim(env, { home, gitBin, log: () => {} });
+    assert.equal(code, 0);
+
+    const boot = home.phaseResults[0];
+    assert.equal(boot?.phase, 'bootstrap');
+    assert.equal(boot?.ok, true, 'an undetectable bootstrap is a skip, not a failure');
+    assert.match(boot?.artifact?.content ?? '', /"command":null/);
+    assert.match(boot?.artifact?.content ?? '', /"skipped":true/);
   });
 });
 

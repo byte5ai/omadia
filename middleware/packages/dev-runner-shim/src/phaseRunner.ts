@@ -9,12 +9,13 @@
  */
 
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, readFile, realpath } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import { HomeError } from './homeClient.js';
 import { runGit, type GitOptions } from './gitOps.js';
 import { runAgent } from './agentRunner.js';
+import { detectBootstrapCommand } from './bootstrapDetect.js';
 import { buildPhasePrompt, PHASE_ARTIFACT_ENV, phaseWritesArtifactFile } from './phasePrompts.js';
 import {
   isAgentSessionPhase,
@@ -149,15 +150,24 @@ export class PhaseRunner {
     };
   }
 
-  /** bootstrap — dependency install as a COMMAND (spec §4), not a CLI session. */
+  /** bootstrap — dependency install as a COMMAND (spec §4), not a CLI session.
+   *  An explicit `spec.bootstrap.command` always wins; absent that, auto-detect
+   *  from the cloned repo root (`bootstrapDetect.ts`). Nothing explicit AND
+   *  nothing detectable is not itself a failure — many repos have no separate
+   *  install step — so bootstrap reports `ok: true` and moves on. */
   private async runBootstrap(): Promise<PhaseResultBody> {
-    const boot = this.c.spec.bootstrap;
-    if (!boot?.command) {
-      return { phase: 'bootstrap', ok: false, error: 'no bootstrap command provisioned for this repo' };
+    const explicit = this.c.spec.bootstrap?.command;
+    const command = explicit ?? (await this.detectBootstrapCommandAtRoot());
+    if (!command) {
+      return {
+        phase: 'bootstrap',
+        ok: true,
+        artifact: { kind: 'bootstrap_report', content: JSON.stringify({ command: null, skipped: true }) },
+      };
     }
-    const timeoutMs = boot.timeoutMs ?? DEV_BOOTSTRAP_TIMEOUT_MS;
+    const timeoutMs = this.c.spec.bootstrap?.timeoutMs ?? DEV_BOOTSTRAP_TIMEOUT_MS;
     const started = Date.now();
-    const result = await runCommand(boot.command, {
+    const result = await runCommand(command, {
       cwd: this.c.repoDir,
       env: bootstrapEnv(this.c.env.workspace),
       timeoutMs,
@@ -165,7 +175,8 @@ export class PhaseRunner {
     });
     const durationMs = Date.now() - started;
     const report = JSON.stringify({
-      command: boot.command,
+      command,
+      detected: explicit === undefined,
       exitCode: result.code,
       timedOut: result.timedOut,
       durationMs,
@@ -181,6 +192,15 @@ export class PhaseRunner {
       };
     }
     return { phase: 'bootstrap', ok: true, artifact: { kind: 'bootstrap_report', content: report } };
+  }
+
+  private async detectBootstrapCommandAtRoot(): Promise<string | null> {
+    try {
+      const entries = await readdir(this.c.repoDir);
+      return detectBootstrapCommand(entries);
+    } catch {
+      return null;
+    }
   }
 
   /** Spawn a fresh `claude -p` session with a FRESH per-phase HOME (no session
