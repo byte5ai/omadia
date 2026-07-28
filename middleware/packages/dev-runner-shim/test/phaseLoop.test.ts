@@ -275,6 +275,10 @@ describe('runPhasedShim — bootstrap runs as a command, not a CLI session', () 
     // the directory, so this file is still there when bootstrap reads it.
     const repoDir = path.join(ws, 'repo');
     await mkdir(repoDir, { recursive: true });
+    // A lockfile alone is not enough (bootstrapDetect.ts requires package.json
+    // too — `npm ci` needs both, found live as a real crash against a repo
+    // with a stray root lockfile and no root manifest).
+    await writeFile(path.join(repoDir, 'package.json'), '{}');
     await writeFile(path.join(repoDir, 'package-lock.json'), '{}');
     // The detected command runs with repoDir as cwd — prove that by having it
     // write a marker INSIDE repoDir via a real shell command substituted in

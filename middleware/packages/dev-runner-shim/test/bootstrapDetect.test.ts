@@ -52,6 +52,21 @@ describe('detectBootstrapCommand', () => {
     assert.equal(detectBootstrapCommand(['go.mod']), 'go mod download');
   });
 
+  it('does not run npm ci from a lockfile with no matching package.json', () => {
+    // Regression: found live against byte5ai/omadia's actual repo root — a
+    // stray, empty-packages package-lock.json survives from before the repo
+    // moved to per-workspace-directory manifests (middleware/package.json,
+    // web-ui/package.json), with no root package.json at all. `npm ci`
+    // fundamentally requires both files; running it anyway failed with a
+    // real, reported exit code (254) instead of gracefully skipping.
+    assert.equal(detectBootstrapCommand(['package-lock.json', 'README.md']), null);
+  });
+
+  it('does not run yarn/pnpm from a lockfile with no matching package.json either', () => {
+    assert.equal(detectBootstrapCommand(['yarn.lock']), null);
+    assert.equal(detectBootstrapCommand(['pnpm-lock.yaml']), null);
+  });
+
   it('does not detect a manifest sitting in a subdirectory — root only', () => {
     // Directory listings are flat (one level), so this case is really "the
     // caller only passed root entries" — documented behavior, not a bug to
