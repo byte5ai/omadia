@@ -17,9 +17,19 @@ import {
   statusIsLive,
   type DevJobUiPhase,
 } from '@/app/_components/devjobs/DevJobPhaseRail';
+import { findGateForJob } from '@/app/_components/devjobs/devJobChatCardState';
 import { useDevJobEvents, type DevJobEventMessage } from '@/app/_lib/useDevJobEvents';
+import { GateCard } from '../../_components/GateInbox';
 import { JobLogPane, type LogConnection } from '../../_components/JobLogPane';
-import { cancelJob, deleteJob, getJob, isTerminalStatus, type DevJobView } from '../../_lib/api';
+import {
+  cancelJob,
+  deleteJob,
+  getJob,
+  isTerminalStatus,
+  listWaitingGates,
+  type DevGateView,
+  type DevJobView,
+} from '../../_lib/api';
 import { INITIAL_LOG_STATE, foldDevJobEvent, type LogState } from '../../_lib/toolCallLog';
 
 /**
@@ -109,6 +119,38 @@ export default function JobDetailPage(): React.ReactElement {
     return () => clearInterval(timer);
   }, [conn, lastEventAt]);
 
+  // Fetch the waiting gate for this job whenever it parks at the human gate —
+  // shown inline on the GATE stop instead of sending the operator to a
+  // separate tab to approve/reject (mirrors DevJobChatCard.tsx's pattern).
+  // `gate` is derived from the fetch + the job's live status rather than
+  // reset via a synchronous setState in the effect's early return: once the
+  // job leaves `waiting` this naturally reads as null without a second write.
+  const isWaiting = job?.status === 'waiting';
+  const [fetchedGate, setFetchedGate] = useState<DevGateView | null>(null);
+  const gate = isWaiting ? fetchedGate : null;
+
+  useEffect(() => {
+    if (!isWaiting) return;
+    let cancelled = false;
+    void listWaitingGates().then(
+      (res) => {
+        if (!cancelled) setFetchedGate(findGateForJob(res.gates, id));
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [isWaiting, id]);
+
+  const onGateResolved = useCallback(() => {
+    setFetchedGate(null);
+    void getJob(id).then(
+      (j) => setJob(j),
+      () => {},
+    );
+  }, [id]);
+
   // Deep-link: the viewed phase comes from `?phase=`.
   const rawPhase = search?.get('phase') ?? null;
   const selected: DevJobUiPhase | null =
@@ -177,7 +219,11 @@ export default function JobDetailPage(): React.ReactElement {
       {/* Body */}
       <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_320px]">
         <div>
-          {effective === 'pr' && job?.prUrl ? (
+          {effective === 'gate' && gate ? (
+            <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
+              <GateCard gate={gate} onResolved={onGateResolved} compact />
+            </div>
+          ) : effective === 'pr' && job?.prUrl ? (
             <div className="rounded-lg border border-[color:var(--border)] p-4 text-sm">
               <a href={job.prUrl} target="_blank" rel="noreferrer" className="text-[color:var(--accent)] underline">
                 {t('openPr')}

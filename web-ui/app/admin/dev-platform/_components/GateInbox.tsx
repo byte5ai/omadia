@@ -8,6 +8,7 @@ import { Button } from '@/app/_components/ui/Button';
 import { ApiError } from '@/app/_lib/api';
 import {
   DEV_ARTIFACT_PATH,
+  getArtifactText,
   listWaitingGates,
   resolveGate,
   type DevGateAnswer,
@@ -92,12 +93,46 @@ type ResolveState =
   | { kind: 'conflict' }
   | { kind: 'error' };
 
-function GateCard({ gate, onResolved }: { gate: DevGateView; onResolved: () => void }): React.ReactElement {
+type PlanTextState = { kind: 'loading' } | { kind: 'ready'; text: string } | { kind: 'error' } | { kind: 'none' };
+
+/** `compact`: drop the deadline/job-id header (the job-detail page already
+ *  shows both) and the outer bordered card — used to embed the gate inline in
+ *  the job's own phase flow instead of only in the standalone gate inbox. */
+export function GateCard({
+  gate,
+  onResolved,
+  compact = false,
+}: {
+  gate: DevGateView;
+  onResolved: () => void;
+  compact?: boolean;
+}): React.ReactElement {
   const t = useTranslations('adminDevPlatform.gates');
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState<'approve' | 'reject' | null>(null);
   const [resolveState, setResolveState] = useState<ResolveState>({ kind: 'idle' });
+  const [fetchedPlanText, setFetchedPlanText] = useState<PlanTextState>({ kind: 'loading' });
+  // No artifact ⇒ no fetch ever happens — derive 'none' rather than storing it,
+  // so the effect below never needs a synchronous setState in its early return.
+  const planText: PlanTextState = gate.planArtifactId ? fetchedPlanText : { kind: 'none' };
+
+  useEffect(() => {
+    if (!gate.planArtifactId) return;
+    let cancelled = false;
+    setFetchedPlanText({ kind: 'loading' });
+    void getArtifactText(gate.planArtifactId).then(
+      (text) => {
+        if (!cancelled) setFetchedPlanText({ kind: 'ready', text });
+      },
+      () => {
+        if (!cancelled) setFetchedPlanText({ kind: 'error' });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [gate.planArtifactId]);
 
   const resolve = useCallback(
     (approved: boolean) => {
@@ -134,42 +169,64 @@ function GateCard({ gate, onResolved }: { gate: DevGateView; onResolved: () => v
   );
 
   return (
-    <section className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
+    <section
+      className={
+        compact ? '' : 'rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4'
+      }
+    >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div className="text-sm text-[color:var(--fg-strong)]">
-          {t('job')} <span className="font-mono text-xs text-[color:var(--fg)]">{gate.jobId}</span>
-        </div>
+        {compact ? null : (
+          <div className="text-sm text-[color:var(--fg-strong)]">
+            {t('job')} <span className="font-mono text-xs text-[color:var(--fg)]">{gate.jobId}</span>
+          </div>
+        )}
         <div className="text-xs text-[color:var(--fg-subtle)]">
           {gate.deadlineAt ? t('deadline', { at: formatTs(gate.deadlineAt) }) : t('noDeadline')}
         </div>
       </div>
 
       <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-xs">
-        <dt className="text-[color:var(--fg-subtle)]">{t('plan')}</dt>
-        <dd>
-          {gate.planArtifactId ? (
-            <a
-              href={DEV_ARTIFACT_PATH(gate.planArtifactId)}
-              target="_blank"
-              rel="noreferrer"
-              className="text-[color:var(--accent)] underline"
-            >
-              {t('viewPlan')}
-            </a>
-          ) : (
-            <span className="text-[color:var(--fg-muted)]">{t('noPlan')}</span>
-          )}
-          {gate.planSha256 ? (
-            <span className="ml-2 font-mono text-[11px] text-[color:var(--fg-subtle)]">
-              {gate.planSha256.slice(0, 12)}
-            </span>
-          ) : null}
-        </dd>
         <dt className="text-[color:var(--fg-subtle)]">{t('holders')}</dt>
         <dd className="font-mono text-[11px] text-[color:var(--fg-muted)]">
           {gate.resolvedHolders.length > 0 ? gate.resolvedHolders.join(', ') : t('noHolders')}
         </dd>
       </dl>
+
+      <div className="mt-3">
+        <div className="flex items-baseline justify-between gap-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--fg-muted)]">
+            {t('plan')}
+          </h3>
+          <div className="flex items-center gap-2">
+            {gate.planSha256 ? (
+              <span className="font-mono text-[11px] text-[color:var(--fg-subtle)]">
+                {gate.planSha256.slice(0, 12)}
+              </span>
+            ) : null}
+            {gate.planArtifactId ? (
+              <a
+                href={DEV_ARTIFACT_PATH(gate.planArtifactId)}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[11px] text-[color:var(--accent)] underline"
+              >
+                {t('viewPlan')}
+              </a>
+            ) : null}
+          </div>
+        </div>
+        {planText.kind === 'none' ? (
+          <p className="mt-1 text-xs text-[color:var(--fg-muted)]">{t('noPlan')}</p>
+        ) : planText.kind === 'loading' ? (
+          <p className="mt-1 text-xs text-[color:var(--fg-muted)]">{t('planLoading')}</p>
+        ) : planText.kind === 'error' ? (
+          <p className="mt-1 text-xs text-[color:var(--danger)]">{t('planLoadError')}</p>
+        ) : (
+          <pre className="mt-1 max-h-[40vh] overflow-y-auto whitespace-pre-wrap rounded-lg border border-[color:var(--border)] lume-surface-sunken p-3 font-mono text-xs leading-[1.5] text-[color:var(--fg)]">
+            {planText.text}
+          </pre>
+        )}
+      </div>
 
       {gate.questions.length > 0 ? (
         <div className="mt-4 flex flex-col gap-3">

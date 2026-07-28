@@ -2970,6 +2970,8 @@
       "plan": "Plan",
       "viewPlan": "View plan",
       "noPlan": "No plan artifact",
+      "planLoading": "Loading plan…",
+      "planLoadError": "The plan could not be loaded.",
       "holders": "Holders",
       "noHolders": "none",
       "questions": "Questions",

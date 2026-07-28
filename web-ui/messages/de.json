@@ -2970,6 +2970,8 @@
       "plan": "Plan",
       "viewPlan": "Plan ansehen",
       "noPlan": "Kein Plan-Artefakt",
+      "planLoading": "Plan wird geladen…",
+      "planLoadError": "Der Plan konnte nicht geladen werden.",
       "holders": "Holder",
       "noHolders": "keine",
       "questions": "Rückfragen",

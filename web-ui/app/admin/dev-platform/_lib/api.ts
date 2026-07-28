@@ -301,6 +301,17 @@ export function retryJob(id: string): Promise<{ ok: boolean; jobId: string }> {
 export const DEV_ARTIFACT_PATH = (artifactId: string): string =>
   `${BASE}/artifacts/${encodeURIComponent(artifactId)}`;
 
+/** Fetch an artifact's raw text content (e.g. the plan shown inline at the
+ *  gate) — `req()` above assumes a JSON body, `GET /artifacts/:id` does not. */
+export async function getArtifactText(artifactId: string): Promise<string> {
+  const res = await fetch(DEV_ARTIFACT_PATH(artifactId), { credentials: 'include', cache: 'no-store' });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new ApiError(res.status, `GET /artifacts/${artifactId} failed: ${res.status}`, text);
+  }
+  return text;
+}
+
 // ── GitHub App — manifest flow + registry (W2, spec §2/§9) ───────────────────
 
 export interface DevGithubAppSummary {
