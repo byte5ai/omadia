@@ -39,7 +39,20 @@ const CreateKeyRequestSchema = z.object({
   rateLimitPerMinute: z.number().int().positive().max(6000).optional(),
   // Validated here (400 on a typo) rather than letting the store's
   // `assertValidScopes` throw into a 500 — operator input is user input.
-  scopes: z.array(z.string().refine(isValidScope, 'must be `<resource>:<action>` or `*`')).optional(),
+  //
+  // `.min(1)`: an explicitly-supplied empty array is rejected, never resolved
+  // to a default. A zero-capability key is not a useful thing to mint, so `[]`
+  // is far more likely an operator slip or a buggy client than a deliberate
+  // request — and the alternatives are both worse. Granting the legacy default
+  // would hand chat access to someone who asked for none, while minting a key
+  // with no scopes would produce a credential that silently 403s forever,
+  // because `normalizeScopes` in `@omadia/api-key-auth` reads a persisted `[]`
+  // back as corruption and denies everything. Omit the field to accept the
+  // default.
+  scopes: z
+    .array(z.string().refine(isValidScope, 'must be `<resource>:<action>` or `*`'))
+    .min(1, 'scopes must not be empty; omit the field entirely to accept the default')
+    .optional(),
 });
 
 export function createAdminKeysRouter(

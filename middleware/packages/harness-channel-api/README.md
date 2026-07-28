@@ -59,6 +59,11 @@ current and future capability.
 Matching is exact: `chat:write` grants `chat:write` and nothing else. There
 are no prefix wildcards (`chat:*`).
 
+Omit `scopes` entirely to accept the default. Sending `"scopes": []` is a
+`400`, not a key with no capabilities — a zero-capability key can never do
+anything, so an empty array is treated as a mistake rather than silently
+resolved in either direction.
+
 ```json
 { "error": "forbidden", "message": "this API key is not scoped for 'memory:read'" }
 ```

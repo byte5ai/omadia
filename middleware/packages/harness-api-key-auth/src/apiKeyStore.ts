@@ -170,17 +170,21 @@ export function createApiKeyStore(secrets: ApiKeySecretStorage): ApiKeyStore {
         ...(opts.label ? { label: opts.label } : {}),
         hash,
         rateLimitPerMinute: clampRateLimit(opts.rateLimitPerMinute),
-        // At CREATE time an empty array is treated as "not specified" and
-        // resolves to the legacy default — and, unlike the read path, that is
-        // not a silent grant: the 201 response echoes the scope set that was
-        // actually assigned, so an operator sees it immediately. The scope set
-        // is then always persisted EXPLICITLY, which is what lets `hydrate`
-        // read a missing `scopes` field as "genuinely pre-#439" rather than
-        // "written by us and lost".
+        // OMITTED (`undefined`) is the only input that resolves to the legacy
+        // default. Anything explicitly supplied — including `[]` — goes through
+        // `assertValidScopes`, which throws on an empty array. That keeps this
+        // path in agreement with `normalizeScopes` on the read side, where a
+        // persisted `[]` is corruption and denies everything: the same value
+        // must never mean "deny" coming out and "grant chat" going in. Callers
+        // taking HTTP input reject `[]` at their own boundary first (see
+        // `adminKeysRouter.ts`, which answers 400) so this throw stays a
+        // programmer error rather than a 500.
+        //
+        // The scope set is always persisted EXPLICITLY, which is what lets
+        // `hydrate` read a missing `scopes` field as "genuinely pre-#439"
+        // rather than "written by us and lost".
         scopes:
-          opts.scopes && opts.scopes.length > 0
-            ? assertValidScopes(opts.scopes)
-            : LEGACY_DEFAULT_SCOPES,
+          opts.scopes === undefined ? LEGACY_DEFAULT_SCOPES : assertValidScopes(opts.scopes),
         createdAt: Date.now(),
       };
       await writeRecord(record);
