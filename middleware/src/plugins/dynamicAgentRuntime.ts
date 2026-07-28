@@ -23,6 +23,7 @@ import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
+import type { OAuthReadinessTracker } from './oauth/oauthReadinessTracker.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
 import {
   createCliSubAgent,
@@ -168,6 +169,11 @@ export interface DynamicAgentRuntimeDeps {
   flowPublicBaseUrl?: string;
   /** Spec 004 — backing store for `ctx.status`; cleared on deactivate. */
   pluginStatusRegistry?: PluginStatusRegistry;
+  /** Issue #474 (round 5) — automatic OAuth-connection readiness signal,
+   *  refreshed from the vault on every activate() and cleared on
+   *  deactivate(). Separate from `pluginStatusRegistry` — see
+   *  `OAuthReadinessTracker`'s doc comment for why. */
+  oauthConnectionTracker?: OAuthReadinessTracker;
   /** Canvas-output autodiscovery: manifest capability entries declaring
    *  `canvas_output: true` are resolved into this registry on (de)activation
    *  so the ui-orchestrator can derive its sentinel allow-set without
@@ -341,6 +347,20 @@ export class DynamicAgentRuntime {
     if (catalogEntry.plugin.is_reference_only === true) {
       throw new Error(
         `dynamic-runtime: cannot activate '${agentId}' — plugin is marked is_reference_only=true (Builder-Reference, read_reference-only)`,
+      );
+    }
+
+    // Issue #474 (round 5) — refresh the automatic OAuth-connection signal
+    // BEFORE the plugin's own activate() runs, so a plugin that separately
+    // calls `ctx.status.report(...)` inside activate() lays its own signal
+    // on top rather than this one overwriting it (the two are ANDed at the
+    // gate, not merged into one entry). No-op when the plugin declares no
+    // `type:'oauth'` field.
+    if (this.deps.oauthConnectionTracker) {
+      await this.deps.oauthConnectionTracker.refresh(
+        agentId,
+        catalogEntry,
+        this.deps.vault,
       );
     }
 
@@ -649,6 +669,7 @@ export class DynamicAgentRuntime {
     this.deps.jobScheduler.stopForPlugin(agentId);
     this.deps.uiRouteCatalog.disposeBySource(agentId);
     this.deps.pluginStatusRegistry?.clear(agentId);
+    this.deps.oauthConnectionTracker?.clear(agentId);
     this.active.delete(agentId);
     log(`[dynamic-runtime] DEACTIVATED ${agentId}`);
     return true;

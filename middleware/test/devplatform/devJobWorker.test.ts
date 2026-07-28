@@ -206,6 +206,14 @@ class FakeStore implements DevJobWorkerStore {
     );
   }
 
+  /** CAS `waiting → applying`, mirroring the real store's diff-policy resume. */
+  async resumeApplyAfterGate(jobId: string): Promise<boolean> {
+    const j = this.jobs.get(jobId);
+    if (!j || j.status !== 'waiting') return false;
+    this.jobs.set(jobId, { ...j, status: 'applying' });
+    return true;
+  }
+
   async finishTerminal(
     brand: typeof TERMINAL_FINISH_BRAND,
     jobId: string,
@@ -316,6 +324,7 @@ function makeWorker(opts: {
   heartbeatTimeoutMs?: number;
   subscriptionModeEnabled?: boolean;
   now?: () => Date;
+  hasApprovedApplyGate?: (jobId: string) => Promise<boolean>;
 }): Harness {
   const backend = new FakeBackend();
   const apply = new FakeApplyService();
@@ -326,6 +335,7 @@ function makeWorker(opts: {
     repoStore: new FakeRepoStore(opts.repo === undefined ? makeRepo() : opts.repo),
     backends: [backend],
     applyService: apply,
+    ...(opts.hasApprovedApplyGate ? { hasApprovedApplyGate: opts.hasApprovedApplyGate } : {}),
     prepareProvision: async (job, lease) => {
       prepared.push({ jobId: job.id, lease });
       return { token: 'djr_test-token', job };
@@ -510,6 +520,46 @@ describe('devplatform/devJobWorker — apply', () => {
     store.add(makeJob({ id: 'j', status: 'running' }));
     const h = makeWorker({ store });
     await assert.rejects(() => h.worker.applyJob('j'), (e) => e instanceof DevJobWorkerError && /apply_not_allowed/.test(e.code));
+  });
+
+  it('an apply DERIVES operatorApprovedGate from a resolved diff-policy gate (durable, sweep-safe)', async () => {
+    const store = new FakeStore();
+    seedApplyable(store);
+    // The durable approval signal — as if a resolved diff_policy gate exists.
+    const h = makeWorker({ store, hasApprovedApplyGate: async () => true });
+    // A plain sweep apply (NO opts) — exactly what applyReady does.
+    await h.worker.applyReady();
+    // COUNTER-PROOF (Forge #1): if applyJobInner didn't derive the flag from durable
+    // gate state, a sweep-driven re-apply would run WITHOUT it and re-gate the
+    // approved job. The flag must reach the engine input.
+    assert.equal(h.apply.calls[0]?.operatorApprovedGate, true, 'sweep apply carries the approval');
+  });
+
+  it('an apply of a job WITHOUT an approved gate does not set operatorApprovedGate', async () => {
+    const store = new FakeStore();
+    seedApplyable(store);
+    const h = makeWorker({ store, hasApprovedApplyGate: async () => false });
+    await h.worker.applyReady();
+    assert.ok(!h.apply.calls[0]?.operatorApprovedGate, 'no approval → no demotion');
+  });
+
+  it('resumeGatedApply holds the in-flight guard across the waiting→applying flip (sweep cannot race it)', async () => {
+    const store = new FakeStore();
+    seedApplyable(store);
+    // Park the seeded job as a diff-policy gate would (waiting), approval durable.
+    const seeded = await store.getJob('j');
+    store.add({ ...seeded!, status: 'waiting' });
+    const h = makeWorker({ store, hasApprovedApplyGate: async () => true });
+
+    // Race the resume against a concurrent sweep — the guard must serialize them so
+    // the job is applied exactly once, and WITH the approval.
+    await Promise.all([h.worker.resumeGatedApply('j'), h.worker.applyReady()]);
+    // COUNTER-PROOF (Forge #1): without the guard spanning the status flip, the
+    // sweep would grab the now-`applying` job and apply it a second time (and
+    // without the flag). Exactly one apply, carrying the approval.
+    assert.equal(h.apply.calls.length, 1, 'applied exactly once');
+    assert.equal(h.apply.calls[0]?.operatorApprovedGate, true, 'and with the approval');
+    assert.equal((await store.getJob('j'))?.status, 'done');
   });
 });
 

@@ -59,11 +59,15 @@ export interface DerivedJobPolicy {
   readonly image: string;
   readonly env: Record<string, string>;
   readonly egressAllowlist: string[];
+  /** W5 opt-in DinD (spec §8): the daemon runs a per-job rootless dind sidecar and
+   *  wires the job's `DOCKER_HOST` at it. Server-derived from `dev_repos`, never
+   *  caller-supplied — same S3 guarantee as image/env/egress. */
+  readonly dockerInJob: boolean;
 }
 
 /** The repo fields the derivation reads. A `Pick` so both the endpoint (holding
  *  a full `DevRepo`) and `DockerBackend` can call with the minimal shape. */
-export type JobPolicyRepoInput = Pick<DevRepo, 'cloneUrl' | 'egressAllowlist'>;
+export type JobPolicyRepoInput = Pick<DevRepo, 'cloneUrl' | 'egressAllowlist' | 'dockerInJob'>;
 
 /** The job fields the derivation reads. */
 export type JobPolicyJobInput = Pick<DevJob, 'authMode' | 'pipelineMode'>;
@@ -258,5 +262,5 @@ export function deriveJobPolicy(
   pushValidatedHosts(allowlist, seen, repo.egressAllowlist, 'dev_repos.egress_allowlist', log);
   if (subscription) pushHosts(allowlist, seen, SUBSCRIPTION_HOSTS);
 
-  return { image: config.image, env, egressAllowlist: allowlist };
+  return { image: config.image, env, egressAllowlist: allowlist, dockerInJob: repo.dockerInJob ?? false };
 }

@@ -46,7 +46,7 @@ services:
       DEV_RUNNER_DAEMON_TOKEN: ${DEV_RUNNER_DAEMON_TOKEN:?set DEV_RUNNER_DAEMON_TOKEN}
       # Where the runner phones home. The daemon injects this into every job; the
       # runner reaches it across dev-control, never over the public internet.
-      DEV_PLATFORM_RUNNER_BASE_URL: http://middleware:3000
+      DEV_PLATFORM_RUNNER_BASE_URL: http://middleware:8080
       # Neutralise any docker engine address a stray `middleware/.env` (loaded via
       # the base file's env_file) might inject. `environment` wins over env_file,
       # so these empty values are the last word: the middleware CANNOT be handed a
@@ -79,19 +79,36 @@ services:
       DEV_RUNNER_DAEMON_TOKEN: ${DEV_RUNNER_DAEMON_TOKEN:?set DEV_RUNNER_DAEMON_TOKEN}
 
       # The nested engine. TLS is mandatory — the daemon refuses tcp://…:2375.
-      DOCKER_HOST: tcp://dev-dind:2376
+      # Addressed by dind's PINNED dev-engine IP (172.28.6.2, fixed in the
+      # `dev-engine` network below), NOT by the `dev-dind` name: dind's server cert
+      # carries its IPs, `docker`, `localhost` — never `dev-dind` — so a name-based
+      # DOCKER_HOST fails --tlsverify's hostname check. dind regenerates that server
+      # cert from its ACTUAL IPs on every boot (only /certs/client is persisted;
+      # /certs/{ca,server} are ephemeral), so a pinned IP is always in the fresh
+      # cert and survives a recreate — unlike a docker-pool-assigned IP, which a
+      # recreate can move out from under the cert.
+      DOCKER_HOST: tcp://172.28.6.2:2376
       DOCKER_TLS_VERIFY: '1'
       DOCKER_CERT_PATH: /certs/client
 
       # Policy source. The daemon fetches each job's policy ITSELF; it never takes
       # one from its caller.
-      OMADIA_INTERNAL_API_URL: http://middleware:3000
+      OMADIA_INTERNAL_API_URL: http://middleware:8080
 
       # The image allowlist is the boundary a compromised middleware cannot cross:
       # it may name a job, never an image. The daemon REFUSES TO BOOT without it.
       # Digest-pinned by default (DEV_RUNNER_REQUIRE_DIGEST=0 to relax, locally).
       DEV_RUNNER_ALLOWED_IMAGES: ${DEV_RUNNER_ALLOWED_IMAGES:-ghcr.io/byte5ai/omadia-dev-runner}
       DEV_RUNNER_IMAGES: ${DEV_RUNNER_IMAGE:-ghcr.io/byte5ai/omadia-dev-runner:latest}
+
+      # Pull policy. `always` (the default, and prod on GHCR) re-pulls + digest-pins
+      # + cosign-verifies every image on every provision. `if-not-present` skips the
+      # pull ONLY when the image is already cached in dind — for local dev, where the
+      # runner image is built + `docker load`ed straight into dind and the
+      # default-deny egress proxy would answer a registry pull with 407. It changes
+      # NOTHING about the image allowlist (DEV_RUNNER_ALLOWED_IMAGES) or the digest
+      # requirement — both are enforced against the job policy before any pull.
+      DEV_RUNNER_PULL_POLICY: ${DEV_RUNNER_PULL_POLICY:-if-not-present}
 
       # Egress. These two are configured TOGETHER or not at all: a job routed
       # through the proxy that the daemon cannot register with it is answered 407
@@ -109,7 +126,9 @@ services:
     networks:
       dev-control:
         ipv4_address: 172.28.4.2
-      dev-engine: {}
+      # Pinned so the daemon's dev-engine address is deterministic across recreates.
+      dev-engine:
+        ipv4_address: 172.28.6.3
     # No `ports:` — the daemon is unreachable from the host and from `omadia`.
     depends_on:
       dev-dind:
@@ -141,7 +160,16 @@ services:
     # dev-engine reaches the daemon; dev-egress carries the job containers' traffic
     # to the proxy. Both are `internal: true`, so this privileged container has no
     # route to the host network and no route out except through the proxy.
-    networks: [dev-engine, dev-egress]
+    #
+    # Both IPs are PINNED. The daemon's DOCKER_HOST is dind's dev-engine address, and
+    # dind bakes its actual IPs into the TLS server cert it regenerates on every boot
+    # — pinning keeps the cert's SAN and the daemon's target the same address forever,
+    # so a recreate can never move the IP out from under --tlsverify.
+    networks:
+      dev-engine:
+        ipv4_address: 172.28.6.2
+      dev-egress:
+        ipv4_address: 172.28.5.2
     # No `ports:` — nothing outside dev-engine may speak to a privileged docker API.
     healthcheck:
       test: ['CMD', 'docker', 'info']
@@ -166,7 +194,7 @@ services:
       # The one deliberate internal destination: the middleware's LLM proxy. Every
       # other internal address is refused, including an allowlisted name that
       # resolves to one (the rebinding defence).
-      OMADIA_INTERNAL_API_URL: http://middleware:3000
+      OMADIA_INTERNAL_API_URL: http://middleware:8080
     networks:
       dev-egress:
         # Pinned: job containers are created by dind, not compose, so they cannot
@@ -192,10 +220,17 @@ networks:
     ipam:
       config:
         - subnet: 172.28.4.0/24
-  # The daemon ↔ dind engine path. Nothing else joins it.
+  # The daemon ↔ dind engine path. Nothing else joins it. The subnet is PINNED so
+  # dind's dev-engine IP (172.28.6.2) is stable — the daemon's DOCKER_HOST targets it
+  # and dind's regenerated TLS server cert carries it, so --tlsverify holds across
+  # recreates. Without a fixed subnet, docker draws this IP from its default pool and
+  # a recreate can reassign it, breaking the cert's hostname match.
   dev-engine:
     driver: bridge
     internal: true
+    ipam:
+      config:
+        - subnet: 172.28.6.0/24
   # Job containers ↔ the egress proxy. Job containers are attached to a per-job
   # network by the daemon's clamp; this network exists so the proxy has a stable,
   # pinned address that those per-job networks can be bridged to.

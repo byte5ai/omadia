@@ -13,6 +13,7 @@
 import type { Pool } from 'pg';
 
 import { asObj, iso, str, type Row } from './pgMappers.js';
+import { applyArtifactCeiling, type ArtifactCeilingOptions } from './retention.js';
 import { isDevJobArtifactKind, type DevJobArtifact, type DevJobArtifactKind } from './types.js';
 
 const ARTIFACT_COLS = 'id, job_id, kind, content, meta, created_at';
@@ -60,14 +61,25 @@ export async function addArtifact(
   kind: string,
   content: string,
   meta: Record<string, unknown> = {},
+  ceiling?: ArtifactCeilingOptions,
 ): Promise<string> {
   if (!isDevJobArtifactKind(kind)) {
     throw new TypeError(`addArtifact: invalid artifact kind '${kind}'`);
   }
+  // W5 (spec §7): oversized inline content is offloaded (with an ObjectStore) or
+  // MARKED and refused inline (without one) — never stored unbounded. Absent
+  // `ceiling` ⇒ no limit (backward-compatible with the W0 callers).
+  let storedContent = content;
+  let storedMeta = meta;
+  if (ceiling) {
+    const applied = await applyArtifactCeiling(jobId, kind, content, meta, ceiling);
+    storedContent = applied.content;
+    storedMeta = applied.meta;
+  }
   const r = await pool.query<Row>(
     `INSERT INTO dev_job_artifacts (job_id, kind, content, meta)
      VALUES ($1, $2, $3, $4::jsonb) RETURNING id`,
-    [jobId, kind, content, JSON.stringify(meta)],
+    [jobId, kind, storedContent, JSON.stringify(storedMeta)],
   );
   return str(r.rows[0]!['id']);
 }

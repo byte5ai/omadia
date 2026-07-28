@@ -15,7 +15,7 @@ import * as argon2 from 'argon2';
  * makes a future swap to scrypt/bcrypt or a re-tuning trivial.
  */
 
-const HASH_OPTIONS: argon2.Options = {
+const HASH_OPTIONS: argon2.HashOptions = {
   type: argon2.argon2id,
   memoryCost: 19_456, // 19 MiB
   timeCost: 2,

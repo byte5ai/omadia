@@ -8,7 +8,8 @@ import { useFormatter, useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
 import { DevJobStatusText, statusRowEdge } from '@/app/_components/devjobs/DevJobStatusText';
-import { isTerminalStatus, type DevJobView, type DevRepoView } from '../_lib/api';
+import { budgetState } from '../_lib/budget';
+import { isTerminalStatus, type DevJobStatus, type DevJobView, type DevRepoView } from '../_lib/api';
 
 /**
  * Epic #470 W0 — the job list (UI spec §4). Same table-panel recipe as the repo
@@ -85,7 +86,7 @@ export function JobTable({
                     <DevJobStatusText status={job.status} />
                   </td>
                   <td className={`${tdCls} text-right font-mono tabular-nums`}>
-                    {format.number(job.usage.costUsd, { style: 'currency', currency: 'USD' })}
+                    <CostCell usage={job.usage} status={job.status} />
                   </td>
                   <td className={tdCls}>{format.relativeTime(new Date(job.createdAt))}</td>
                   <td className={tdCls}>
@@ -129,4 +130,55 @@ export function JobTable({
 function kindKey(kind: DevJobView['kind']): 'analyze' | 'fixIssue' | 'implement' {
   if (kind === 'fix_issue') return 'fixIssue';
   return kind;
+}
+
+/**
+ * Cost cell (spec §5) — the spend, and when a budget applies, `spent / budget`
+ * with a text-only state: warning at ≥80%, error at ≥100% (or a
+ * `budget_exceeded` job). Estimated cost carries a `~` and an "est." tag so the
+ * operator never mistakes a subscription-CLI estimate for a metered charge.
+ * State is text color only — Lume forbids filled chips (§4/§13).
+ */
+function CostCell({
+  usage,
+  status,
+}: {
+  usage: DevJobView['usage'];
+  status: DevJobStatus;
+}): React.ReactElement {
+  const t = useTranslations('adminDevPlatform.jobs');
+  const format = useFormatter();
+  const { costUsd, budgetCostUsd, estimated } = usage;
+  const state = status === 'budget_exceeded' ? 'over' : budgetState(costUsd, budgetCostUsd);
+  const colorCls =
+    state === 'over'
+      ? 'text-[color:var(--danger)]'
+      : state === 'near'
+        ? 'text-[color:var(--warning)]'
+        : 'text-[color:var(--fg-strong)]';
+  const asMoney = (n: number): string => format.number(n, { style: 'currency', currency: 'USD' });
+  const title = estimated
+    ? t('costEstimatedTitle')
+    : state === 'over'
+      ? t('costOverTitle')
+      : state === 'near'
+        ? t('costNearTitle')
+        : undefined;
+
+  return (
+    <span className={`inline-flex items-baseline justify-end gap-1 ${colorCls}`} title={title}>
+      <span>
+        {estimated ? <span aria-hidden>~</span> : null}
+        {asMoney(costUsd)}
+      </span>
+      {budgetCostUsd != null ? (
+        <span className="text-[color:var(--fg-subtle)]">/ {asMoney(budgetCostUsd)}</span>
+      ) : null}
+      {estimated ? (
+        <span className="text-[10px] uppercase tracking-[0.08em] text-[color:var(--fg-subtle)]">
+          {t('costEstimatedTag')}
+        </span>
+      ) : null}
+    </span>
+  );
 }

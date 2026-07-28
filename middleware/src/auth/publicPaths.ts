@@ -30,6 +30,18 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // cookie. Every request is authenticated against the job-token hash in
   // routes/devRunnerApi.ts — that IS its authentication.
   /^\/api\/v1\/dev-runner(?:\/|$|\?)/,
+  // Epic #470 — GitHub redirects finish the dev-platform GitHub-App setup on a
+  // signed state token / installation ownership check, not on an operator session.
+  /^\/api\/v1\/dev-platform\/github-app\/(?:callback|setup)(?:\/|$|\?)/,
+  // Epic #459 W9 — generic MCP-server OAuth callback (bugfix). Same shape as
+  // the spec-005 kernel OAuth broker callback above: the provider (Notion,
+  // etc.) redirects the operator's browser back here after consent, and the
+  // session cookie may be absent or expired by the time the round-trip
+  // completes. The route self-secures via the signed, single-use `state`
+  // param (see completeAuthorization in agentBuilder.ts) — it was simply
+  // never added to this list when the feature shipped, so it 401'd before
+  // ever reaching the handler that validates that state token.
+  /^\/api\/v1\/operator\/mcp-oauth\/callback(?:\/|$|\?)/,
   // Plugin-served UI surfaces (`/p/<pluginId>/...`), iframed by Teams where
   // only a Teams SSO token exists. Plugins exposing sensitive data validate
   // that token themselves.

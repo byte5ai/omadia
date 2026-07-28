@@ -188,6 +188,22 @@ const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(false),
 
+  // Epic #470 W4 — GitHub webhook trigger controls (spec §3). The global kill
+  // switch defaults ON (a per-repo `webhook_enabled` and an empty sender allowlist
+  // already keep it off until an operator opts a repo in). The two rate limits cap
+  // how many jobs a single repo / single sender can spawn per rolling hour.
+  DEV_WEBHOOKS_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(true),
+  DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR: z.coerce.number().int().positive().default(5),
+  DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR: z.coerce.number().int().positive().default(2),
+
+  // Epic #470 W4 — default per-job LLM cost budget (USD) applied when neither the
+  // job nor its repo sets one (spec §5). Token budgets have NO default: they are
+  // enforced only when explicitly set on the job or repo.
+  DEV_JOB_DEFAULT_BUDGET_USD: z.coerce.number().positive().default(5),
+
   // Postgres connection string for the Neon-backed knowledge graph.
   // When set, `bootstrapKnowledgeGraphFromEnv` installs the
   // harness-knowledge-graph-neon sibling; when unset, the inmemory
@@ -469,6 +485,18 @@ const ConfigSchema = z.object({
   DEV_PLATFORM_GITHUB_CLIENT_ID: optionalNonEmpty(z.string().min(1)),
   DEV_PLATFORM_COMMIT_AUTHOR: z.string().min(1).default('omadia-dev <dev-platform@omadia.ai>'),
   DEV_PLATFORM_EVENT_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
+  // Epic #470 W5 — data lifecycle (spec §7). Two-tier event retention: low-value
+  // telemetry (heartbeat/log) is pruned at EVENT_RETENTION_DAYS above; audit-grade
+  // events (status/tool/gate/token/approval/egress/phase) are kept until this outer
+  // bound. The daily retention job also purges terminal jobs older than it.
+  DEV_PLATFORM_AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(365),
+  // Per-job event cap: once a job holds this many events, the append path drops
+  // further low-value telemetry (keeps audit-grade events) and records one
+  // `events_truncated` status event. Bounds a runaway agent's event stream.
+  DEV_JOB_MAX_EVENTS: z.coerce.number().int().positive().default(50_000),
+  // Artifact ceiling: inline content larger than this is offloaded to object
+  // storage (when wired) or marked and refused inline (default 5 MiB).
+  DEV_ARTIFACT_MAX_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
   // Q4 decision: subscription-mode jobs run the CLI on the operator's Claude
   // login, so the credential is IN the runner. It is off by default and boot
   // REFUSES the flag unless the operator also sets the explicit acknowledgment
@@ -505,6 +533,36 @@ const ConfigSchema = z.object({
   DEV_PLATFORM_LLM_UPSTREAM_BASE_URL: z.string().url().default('https://api.anthropic.com'),
   DEV_PLATFORM_LLM_PROVIDER: z.string().min(1).default('anthropic'),
   DEV_PLATFORM_LLM_ALLOWED_MODELS: optionalNonEmpty(z.string().min(1)),
+
+  // Epic #470 W4 — LLM budget hard-enforcement ceiling (spec §5, Forge W4 #2).
+  // The proxy clamps a job's `max_tokens` to this so the buffered enforcement path
+  // can never overshoot the budget by an unbounded single response.
+  DEV_JOB_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(8192),
+
+  // Epic #470 W4 — FlyMachinesBackend (spec §2): one ephemeral Fly Machine per job
+  // in a DEDICATED runner app (NEVER odoo-bot-middleware). The backend is registered
+  // ONLY when DEV_FLY_RUNNER_APP is set (absent ⇒ not registered, like the docker
+  // backend keys on the daemon url). The operator MUST have run
+  // `flyctl apps create <app> --org <org>` and stored a deploy token in Vault at
+  // `core:dev-platform` key `fly/deploy_token` — the wiring logs a hint at boot.
+  DEV_FLY_RUNNER_APP: optionalNonEmpty(z.string().min(1)),
+  // Fly-injected env; presence is the on-Fly detector (picks the internal Machines
+  // API + `.internal` phone-home address). Absent off-Fly ⇒ public endpoints.
+  FLY_APP_NAME: optionalNonEmpty(z.string().min(1)),
+  // Digest-pinned runner image for Fly machines. Falls back to
+  // DEV_RUNNER_DEFAULT_IMAGE when unset (both must be digest-pinned, never a tag).
+  DEV_RUNNER_IMAGE: optionalNonEmpty(z.string().min(1)),
+  // Operator override for the shim phone-home URL. Default: on-Fly
+  // `http://$FLY_APP_NAME.internal:8080`, else PUBLIC_BASE_URL.
+  DEV_FLY_PHONE_HOME_URL: optionalNonEmpty(z.string().min(1)),
+  // Guest ceilings — a per-job request over these is CLAMPED, never honored.
+  DEV_FLY_MAX_CPUS: z.coerce.number().int().positive().default(4),
+  DEV_FLY_MAX_MEMORY_MB: z.coerce.number().int().positive().default(8192),
+  // Default guest size a Fly machine boots with (clamped to the ceilings above).
+  DEV_FLY_GUEST_CPUS: z.coerce.number().int().positive().default(1),
+  DEV_FLY_GUEST_MEMORY_MB: z.coerce.number().int().positive().default(1024),
+  // Optional Fly region placement (Fly picks one when unset).
+  DEV_FLY_REGION: optionalNonEmpty(z.string().min(1)),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

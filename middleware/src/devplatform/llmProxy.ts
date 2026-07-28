@@ -68,6 +68,41 @@ export interface LlmProxyUsageRecord {
   readonly sessionId?: string;
 }
 
+/** W4 metered usage for a single upstream response, handed to the budget hook. */
+export interface LlmProxyMeteredUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+}
+
+/** The budget hook's per-call verdict. */
+export interface LlmProxyBudgetDecision {
+  /** THIS call's accumulation crossed the cap ⇒ the proxy answers 402 and the
+   *  job has already been marked `budget_exceeded` + terminated by the hook. */
+  readonly exceeded: boolean;
+}
+
+/**
+ * W4 budget metering + enforcement hook (implemented by `llmProxyAccounting.ts`).
+ * When wired, every billable (2xx) response is routed through `meter` for an
+ * atomic accumulate-and-readback with post-hoc enforcement; a job already
+ * `budget_exceeded` is pre-gated to 402 by the proxy's auth step. Absent ⇒ the
+ * W1 `addJobUsage` + `recordUsage` metering path runs unchanged (no enforcement).
+ */
+export interface LlmProxyBudgetHook {
+  /** Optional ceiling clamped into the forwarded body's `max_tokens`, bounding a
+   *  single post-hoc overshoot to one response (spec §5). */
+  readonly maxOutputTokens?: number;
+  /** Meter one response's usage, enforce the budget, and report whether THIS call
+   *  crossed the cap. Never throws into the proxy. */
+  meter(input: {
+    jobId: string;
+    model: string;
+    usage: LlmProxyMeteredUsage;
+  }): Promise<LlmProxyBudgetDecision>;
+}
+
 export interface LlmProxyDeps {
   /** Resolve a job from its phone-home bearer token (sha256-hash match) or null. */
   resolveJobByToken(token: string): Promise<LlmProxyJob | null>;
@@ -80,6 +115,10 @@ export interface LlmProxyDeps {
   addJobUsage(jobId: string, tokensIn: number, tokensOut: number): Promise<void>;
   /** Ledger writer. Defaults to the shared `@omadia/usage-telemetry` recorder. */
   recordUsage?: (record: LlmProxyUsageRecord) => void;
+  /** W4 budget metering + enforcement (see {@link LlmProxyBudgetHook}). Optional:
+   *  absent ⇒ the W1 metering path (`addJobUsage` + `recordUsage`) runs unchanged
+   *  with no budget enforcement. */
+  budget?: LlmProxyBudgetHook;
   /** Called when the authoritative `addJobUsage` write fails — the accounting
    *  loss is surfaced (and counted) rather than swallowed. Default: no-op (the
    *  error is still logged at error level). */
@@ -97,6 +136,10 @@ export interface LlmProxyDeps {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MAX_BODY_BYTES = 25 * 1024 * 1024;
+/** Hard ceiling on the response the ENFORCED (buffered) path holds in memory before
+ *  committing it — the OOM backstop that does not depend on the optional max_tokens
+ *  clamp being wired (Forge W4 audit #2). A real LLM response is far under this. */
+const MAX_ENFORCED_BUFFER_BYTES = 32 * 1024 * 1024;
 const USAGE_SOURCE = 'dev-job';
 
 /**
@@ -288,6 +331,7 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
     resolvePolicy,
     resolveProviderKey,
     addJobUsage,
+    budget,
     recordUsage = defaultRecordUsage,
     onAccountingError = () => {},
     fetchImpl = fetch,
@@ -324,7 +368,14 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
       fail(res, 401, 'devplatform.unauthorized', 'invalid job token');
       return;
     }
-    // 2. Terminal jobs may not call the model.
+    // 2. A `budget_exceeded` job answers the runner a fatal 402 (spec §5, W4) so
+    //    it converges by exiting; every OTHER terminal answers 410. The store's
+    //    `resolveJobByToken` deliberately surfaces `budget_exceeded` (and only it)
+    //    among terminals for exactly this signal — see its note.
+    if (job.status === 'budget_exceeded') {
+      fail(res, 402, 'dev.budget_exceeded', 'job LLM budget exhausted');
+      return;
+    }
     if (isTerminalDevJobStatus(job.status)) {
       fail(res, 410, 'devplatform.job_terminal', 'job has reached a terminal state');
       return;
@@ -368,6 +419,17 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
     if (!policy.allowedModels.includes(model)) {
       fail(res, 403, 'dev.model_not_allowed', 'requested model is not permitted for this repository');
       return;
+    }
+
+    // 4b. W4: clamp `max_tokens` to the budget hook's ceiling so a single
+    //    post-hoc-metered response can overshoot the cap by at most one bounded
+    //    request (spec §5). The proxy canonicalises the body (step 6), so this
+    //    clamp is guaranteed to reach upstream.
+    if (budget?.maxOutputTokens !== undefined) {
+      const ceiling = budget.maxOutputTokens;
+      const requested = parsedObj['max_tokens'];
+      parsedObj['max_tokens'] =
+        typeof requested === 'number' && requested > 0 ? Math.min(requested, ceiling) : ceiling;
     }
 
     // 5. Attach the provider key from Vault. Never surfaced to the caller.
@@ -432,13 +494,19 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
       return;
     }
 
-    // Status + headers pass through verbatim (Retry-After on 429 included).
-    res.status(upstream.status);
-    upstream.headers.forEach((value, key) => {
-      if (!STRIPPED_RESPONSE_HEADERS.has(key.toLowerCase())) res.setHeader(key, value);
-    });
+    // Status + headers pass through verbatim (Retry-After on 429 included). Under
+    // W4 budget enforcement a billable (2xx) body is metered BEFORE it is
+    // committed, so header/status writes are deferred to `copyStatusHeaders`,
+    // called only once the budget decision is known.
+    const copyStatusHeaders = (): void => {
+      res.status(upstream!.status);
+      upstream!.headers.forEach((value, key) => {
+        if (!STRIPPED_RESPONSE_HEADERS.has(key.toLowerCase())) res.setHeader(key, value);
+      });
+    };
 
     if (!upstream.body) {
+      copyStatusHeaders();
       res.end();
       return;
     }
@@ -449,8 +517,10 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
     // Non-stream ERROR bodies are buffered and defensively scrubbed of the
     // provider key before they reach the container: an upstream/intermediary
     // that reflects the request (incl. the injected key) into an error payload
-    // must not hand it to the job. Success bodies stream verbatim (below).
+    // must not hand it to the job. Not metered (no usage), so budget enforcement
+    // never engages here. Success bodies stream/deliver verbatim (below).
     if (!isSse && upstream.status >= 400) {
+      copyStatusHeaders();
       let errBody = Buffer.from(await upstream.arrayBuffer());
       if (providerKey.length > 0) {
         const scrubbed = errBody.toString('utf8').split(providerKey).join('[REDACTED]');
@@ -461,6 +531,23 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
       return;
     }
 
+    // W4: a billable (2xx) response under an active budget hook is metered and
+    // enforced BEFORE delivery, so the call that crosses the cap can itself
+    // answer 402 (spec §5). Without a budget hook the W1 stream-through path runs.
+    if (budget !== undefined) {
+      await proxyMeteredEnforced({
+        res,
+        job,
+        model,
+        body: upstream.body as AsyncIterable<Uint8Array>,
+        providerKey,
+        isSse,
+        copyStatusHeaders,
+      });
+      return;
+    }
+
+    copyStatusHeaders();
     const acc = newUsage();
     const decoder = new TextDecoder();
     let sseBuffer = '';
@@ -549,6 +636,116 @@ export function createLlmProxyRouter(deps: LlmProxyDeps): Router {
       sessionId: `devjob:${job.id}`,
     });
     if (truncated) log(`[dev-llm] recorded partial usage for truncated job ${job.id}`);
+  }
+
+  /**
+   * W4 metered + enforced delivery of a billable (2xx) response. The upstream
+   * body is fully consumed and redacted into a bounded buffer (the `max_tokens`
+   * clamp caps its size), usage is accumulated, then the budget hook meters and
+   * enforces BEFORE anything is written to the client:
+   *
+   *   - crossed  ⇒ the buffered body is discarded and the in-flight call is
+   *     answered `402 dev.budget_exceeded`. The hook has already marked the job
+   *     `budget_exceeded` (finalize) and terminated the backend. The provider was
+   *     still billed for this one request — the accepted single-request overshoot.
+   *   - under budget ⇒ the redacted body is delivered verbatim.
+   *
+   * A mid-stream upstream disconnect meters the partial usage and delivers the
+   * partial bytes when not over budget (matching the W1 truncation contract).
+   */
+  async function proxyMeteredEnforced(args: {
+    res: Response;
+    job: LlmProxyJob;
+    model: string;
+    body: AsyncIterable<Uint8Array>;
+    providerKey: string;
+    isSse: boolean;
+    copyStatusHeaders: () => void;
+  }): Promise<void> {
+    const { res, job, model, body, isSse, copyStatusHeaders } = args;
+    const acc = newUsage();
+    const decoder = new TextDecoder();
+    let sseBuffer = '';
+    let jsonBuffer = '';
+    let truncated = false;
+    const redactor = new StreamRedactor(args.providerKey);
+    const chunks: Buffer[] = [];
+    let bytesRead = 0;
+
+    try {
+      for await (const chunk of body) {
+        const buf = Buffer.from(chunk);
+        // Hard independent byte ceiling (Forge W4 audit #2): the enforced path
+        // BUFFERS the whole response to meter it before committing, so a hostile job
+        // that sets a huge `max_tokens` could OOM the middleware. The `max_tokens`
+        // clamp normally bounds this, but it is an OPTIONAL wire dep — this ceiling
+        // is the defense-in-depth backstop that does NOT depend on wire discipline.
+        bytesRead += buf.length;
+        if (bytesRead > MAX_ENFORCED_BUFFER_BYTES) {
+          truncated = true;
+          log(`[dev-llm] enforced response for job ${job.id} exceeded ${String(MAX_ENFORCED_BUFFER_BYTES)}B; truncating to bound memory`);
+          break;
+        }
+        // Meter on the RAW upstream bytes; buffer the REDACTED bytes for delivery.
+        const text = decoder.decode(buf, { stream: true });
+        if (isSse) sseBuffer = drainSse(acc, sseBuffer + text);
+        else jsonBuffer += text;
+        const safe = redactor.push(buf);
+        if (safe.length > 0) chunks.push(safe);
+      }
+      const tail = redactor.flush();
+      if (tail.length > 0) chunks.push(tail);
+    } catch (err) {
+      truncated = true;
+      log(`[dev-llm] stream truncated for job ${job.id}: ${errText(err)}`);
+      try {
+        const tail = redactor.flush();
+        if (tail.length > 0) chunks.push(tail);
+      } catch {
+        /* nothing retained */
+      }
+    }
+
+    if (!isSse && jsonBuffer.length > 0) {
+      try {
+        const parsed = JSON.parse(jsonBuffer) as Record<string, unknown>;
+        applyUsage(acc, parsed['usage']);
+      } catch {
+        /* non-JSON / partial body — nothing to meter */
+      }
+    }
+
+    // Meter + enforce (post-hoc, but BEFORE the response is committed). The hook
+    // never throws into the proxy; a metering failure fails OPEN (delivers the
+    // response) rather than 402-ing a legitimate call.
+    let decision: LlmProxyBudgetDecision = { exceeded: false };
+    if (acc.seen) {
+      decision = await budget!.meter({
+        jobId: job.id,
+        model,
+        usage: {
+          inputTokens: acc.inputTokens,
+          outputTokens: acc.outputTokens,
+          cacheReadTokens: acc.cacheReadTokens,
+          cacheCreationTokens: acc.cacheCreationTokens,
+        },
+      });
+    }
+
+    if (decision.exceeded) {
+      fail(res, 402, 'dev.budget_exceeded', 'job LLM budget exhausted');
+      return;
+    }
+
+    copyStatusHeaders();
+    try {
+      for (const c of chunks) await writeChunk(res, c);
+    } catch (err) {
+      // Client vanished mid-delivery — nothing more to do; usage is already metered.
+      log(`[dev-llm] client write failed for job ${job.id}: ${errText(err)}`);
+    }
+    res.end();
+    if (truncated) log(`[dev-llm] delivered partial (truncated) metered response for job ${job.id}`);
   }
 
   return router;

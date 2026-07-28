@@ -194,6 +194,14 @@ export interface PluginPermissionsSummary {
    *  descriptions of the servers the plugin expects, shown in the grant UI.
    *  Granting is ALWAYS an explicit operator action. */
   mcp_servers_hint?: string[];
+  /** Epic #470 W3: plugin declares `permissions.devJobs` (true or a block) and
+   *  receives `ctx.devJobs`, scoped to operator-granted repos
+   *  (`dev_repo_plugin_grants`). Loader defaults to `false`. */
+  dev_jobs?: boolean;
+  /** Optional author hint (`permissions.devJobs.repos_hint`): repos the plugin
+   *  expects to drive, shown in the operator grant UI. Documentation only —
+   *  granting a repo is ALWAYS an explicit operator action. */
+  dev_jobs_repos_hint?: string[];
   /** Spec 005: true when the manifest declares >=1 `oauth_providers`
    *  descriptor — the plugin acquires standard authorization-code credentials
    *  through the kernel OAuth broker (tokens stored + refreshed kernel-side;

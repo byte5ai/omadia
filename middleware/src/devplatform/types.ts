@@ -94,6 +94,10 @@ export const DEV_JOB_SOURCES = [
   'webhook',
   'schedule',
   'tracker',
+  // Epic #470 W3 — job started by a plugin via `ctx.devJobs.create`. Paired
+  // with `created_by = 'plugin:<pluginId>'` so cancel can enforce "only jobs
+  // this plugin created". CHECK relaxed in migration 0025.
+  'plugin',
 ] as const;
 export type DevJobSource = (typeof DEV_JOB_SOURCES)[number];
 export function isDevJobSource(x: unknown): x is DevJobSource {
@@ -114,6 +118,10 @@ export const DEV_JOB_EVENT_TYPES = [
   'gate',
   'phase',
   'approval',
+  // W4 (spec §5): the once-per-job LLM-budget warn-line crossing, emitted by the
+  // proxy budget hook. The `dev_job_events.type` column has no DB CHECK (open by
+  // design, validated here), so this is an additive, forward-compatible enum entry.
+  'budget_warning',
 ] as const;
 export type DevJobEventType = (typeof DEV_JOB_EVENT_TYPES)[number];
 export function isDevJobEventType(x: unknown): x is DevJobEventType {
@@ -190,8 +198,11 @@ export interface DevJobSpec {
   branch: string;
   agent: { kind: 'claude-cli'; model?: string; maxTurns?: number };
   limits: { wallClockMs: number };
-  /** Both false on the jailed local backend (no install, no test execution). */
-  capabilities: { installDeps: boolean; runTests: boolean };
+  /** Both false on the jailed local backend (no install, no test execution).
+   *  `dockerInJob` (W5, spec §8) is OPTIONAL so W0/W2 spec payloads keep
+   *  validating; the Docker backend serves it via the daemon sidecar and the Fly
+   *  backend via in-VM dockerd. */
+  capabilities: { installDeps: boolean; runTests: boolean; dockerInJob?: boolean };
   /**
    * W2 dispatch: 'gated' makes the shim run the phase loop; 'collapsed' (or
    * absent, for a W0 runner) runs the single-shot path. Without this the gated
@@ -317,6 +328,27 @@ export interface DevRepo {
   /** W3 operator diff-policy overrides (`dev_repos.policy_overrides`, 0024).
    *  Empty object = code defaults; can never remove a `deny` rule. */
   policyOverrides: DiffPolicyOverrides;
+  /** W4 webhook trigger config (`0027`). The label whose application fires a job
+   *  (default `'omadia-dev'`). */
+  triggerLabel: string;
+  /** W4 per-repo webhook kill switch (`0027`, default true). Global switch is
+   *  `DEV_WEBHOOKS_ENABLED`; this is the repo-granular off. */
+  webhookEnabled: boolean;
+  /** W4 sender allowlist (`0027`, default `[]`). A `sender.login` MUST appear here
+   *  before a labeled-issue delivery can create a job; EMPTY means webhook triggers
+   *  are OFF for the repo (spec §3 finding S7). */
+  webhookSenders: string[];
+  /** W4 per-repo cost budget (`0027 budget_cost_usd`); null ⇒ fall back to the
+   *  `DEV_JOB_DEFAULT_BUDGET_USD` config default (spec §5). OPTIONAL on the type
+   *  (absent ⇒ null) so pre-W4 fixtures keep compiling; the store always
+   *  populates it from the row. */
+  budgetCostUsd?: number | null;
+  /** W5 opt-in Docker-in-Docker (`0027 docker_in_job`, default false). When true a
+   *  job gets a per-job rootless DinD sidecar (Docker backend) or in-VM dockerd
+   *  (Fly backend). Weaker than the plain job baseline — see spec §8. OPTIONAL on
+   *  the type (absent ⇒ false) so pre-W5 fixtures keep compiling; the store always
+   *  populates it from the row. */
+  dockerInJob?: boolean;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -360,6 +392,15 @@ export interface DevJob {
   tokensIn: number;
   tokensOut: number;
   costUsd: number;
+  /** W4 per-job cost budget override (`0027`); null ⇒ fall back to the repo
+   *  budget, then the `DEV_JOB_DEFAULT_BUDGET_USD` config default (spec §5). */
+  budgetCostUsd: number | null;
+  /** W4 per-job token budget override (`0027`); null ⇒ repo budget, then
+   *  unenforced (there is no token-budget default). */
+  budgetTokens: number | null;
+  /** W4: true when cost is a self-declared estimate (subscription-CLI jobs),
+   *  false when metered exactly from provider usage at the proxy (`0027`). */
+  usageEstimated: boolean;
   createdBy: string;
   createdAt: string;
   startedAt: string | null;
@@ -412,6 +453,12 @@ export interface NewDevRepo {
   runsTests?: boolean;
   /** W3 diff-policy overrides; omitted = DB default `'{}'`. */
   policyOverrides?: DiffPolicyOverrides;
+  /** W4 webhook trigger config (`0027`); omitted = DB defaults. */
+  triggerLabel?: string;
+  webhookEnabled?: boolean;
+  webhookSenders?: string[];
+  /** W4 per-repo cost budget (`0027`); omitted = leave unchanged, null = clear. */
+  budgetCostUsd?: number | null;
   createdBy: string;
 }
 
@@ -432,6 +479,14 @@ export interface NewDevJob {
   authMode?: DevJobAuthMode;
   provision?: number;
   phase?: DevJobPhase;
+  /**
+   * Initial lifecycle status. Omitted ⇒ the DB default `'queued'` (claimable).
+   * Set to `'waiting'` ONLY by the trigger service's first-source gate, so a
+   * gated job is born parked at `await_human` and `claimNextQueued` (which
+   * requires `status='queued'`) can never provision a runner for it before the
+   * gate holds (Epic #470 W4 concurrency fix #2).
+   */
+  status?: DevJobStatus;
   branch?: string | null;
   createdBy: string;
 }

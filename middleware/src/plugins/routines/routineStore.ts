@@ -215,6 +215,28 @@ export class RoutineStore {
   }
 
   /**
+   * Look up a single routine by its (tenant, user_id, name) unique key —
+   * the same triple `create()` enforces via `routines_user_name_unique`.
+   * Used by the runner to reconcile a `RoutineNameConflictError` against
+   * the row that already won the race (see issue #506: a retried create
+   * after an ambiguous confirmation must not be told it failed).
+   */
+  async getByName(
+    tenant: string,
+    userId: string,
+    name: string,
+  ): Promise<Routine | null> {
+    const result = await this.pool.query<RoutineRow>(
+      `SELECT ${SELECT_COLUMNS}
+         FROM routines
+        WHERE tenant = $1 AND user_id = $2 AND name = $3`,
+      [tenant, userId, name],
+    );
+    const row = result.rows[0];
+    return row ? rowToRoutine(row) : null;
+  }
+
+  /**
    * List a user's routines, newest-updated first. Includes paused rows so
    * the user can see and resume them via the tool.
    */

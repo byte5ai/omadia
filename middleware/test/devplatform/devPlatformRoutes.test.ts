@@ -124,6 +124,20 @@ describe('devPlatform — POST /repos onboarding', () => {
     assert.equal(await h.credentials.resolve(created!.id), DEVICE_TOKEN);
     assert.equal(await h.credentials.resolvePending('alice'), undefined);
   });
+
+  it('keeps the staged device-flow token when the probe denies access (retry without re-auth)', async () => {
+    h = await makeHarness({ probeRepoAccess: async () => ({ ok: false, defaultBranch: '' }) });
+    await h.credentials.stashPending('alice', DEVICE_TOKEN);
+    const res = await postJson(`${h.baseUrl}/repos`, authHeaders('alice'), {
+      owner: 'o', name: 'r', credential: { kind: 'device_flow' },
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { code: string }).code, 'devplatform.repo_access_failed');
+    // Regression: a probe denial must NOT drop the parked authorization — the
+    // operator fixes access (org approval, correct name) and retries without
+    // re-running the whole device flow. Reverting the fix makes this fail.
+    assert.equal(await h.credentials.resolvePending('alice'), DEVICE_TOKEN);
+  });
 });
 
 describe('devPlatform — POST /jobs brief composition', () => {

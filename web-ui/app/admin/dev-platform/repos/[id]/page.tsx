@@ -9,6 +9,8 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import { ProtectionCheckList } from '../../_components/ProtectionCheckList';
 import { BindGithubAppPanel } from '../../_components/BindGithubAppPanel';
+import { RepoBudgetPanel } from '../../_components/RepoBudgetPanel';
+import { RepoWebhookPanel } from '../../_components/RepoWebhookPanel';
 import { checkRepo, getRepo, type DevRepoView } from '../../_lib/api';
 
 /**
@@ -47,6 +49,7 @@ export default function RepoDetailPage(): React.ReactElement {
   }
 
   const { repo } = state;
+  const onSaved = (updated: DevRepoView): void => setState({ kind: 'ready', repo: updated });
   return (
     <Shell>
       <h1 className="font-display text-[clamp(1.5rem,3vw,2.25rem)] leading-[1.1] text-[color:var(--fg-strong)]">
@@ -88,6 +91,14 @@ export default function RepoDetailPage(): React.ReactElement {
           </Button>
         </div>
         <ProtectionCheckList branch={repo.defaultBranch} ok={repo.branchProtectionOk} />
+      </div>
+
+      <div className="mt-6">
+        <RepoBudgetPanel repo={repo} onSaved={onSaved} />
+      </div>
+
+      <div className="mt-6">
+        <RepoWebhookPanel repo={repo} onSaved={onSaved} />
       </div>
 
       <div className="mt-6 rounded-lg border border-[color:var(--border)] p-4">

@@ -103,6 +103,14 @@ export interface DevRepoView {
   runsTests: boolean;
   branchProtectionOk: boolean | null;
   branchProtectionCheckedAt: string | null;
+  /** W4 per-repo cost budget (spec §5); null = fall back to the config default. */
+  budgetCostUsd: number | null;
+  /** W4 webhook trigger label — applying it to an issue fires a job. */
+  triggerLabel: string;
+  /** W4 per-repo webhook kill switch. */
+  webhookEnabled: boolean;
+  /** W4 sender allowlist; EMPTY = webhook triggers are OFF for the repo. */
+  webhookSenders: string[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -127,7 +135,15 @@ export interface DevJobView {
   prUrl: string | null;
   result: { outcome: string; summary?: string; diffArtifactId?: string; error?: string } | null;
   error: string | null;
-  usage: { input: number; output: number; costUsd: number; estimated: boolean };
+  usage: {
+    input: number;
+    output: number;
+    costUsd: number;
+    /** W4 effective per-job cost budget, or null when it falls back to the repo
+     *  budget / config default (spec §5). */
+    budgetCostUsd: number | null;
+    estimated: boolean;
+  };
   createdBy: string;
   createdAt: string;
   startedAt: string | null;
@@ -212,7 +228,17 @@ export function createRepo(body: CreateRepoInput): Promise<DevRepoView> {
 
 export function patchRepo(
   id: string,
-  patch: Partial<Pick<DevRepoView, 'runsTests' | 'defaultBranch' | 'trackerKind' | 'allowedLaunchers'>>,
+  patch: Partial<
+    Pick<
+      DevRepoView,
+      | 'runsTests'
+      | 'defaultBranch'
+      | 'trackerKind'
+      | 'allowedLaunchers'
+      | 'budgetCostUsd'
+      | 'webhookEnabled'
+    >
+  >,
 ): Promise<DevRepoView> {
   return req(`/repos/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) });
 }

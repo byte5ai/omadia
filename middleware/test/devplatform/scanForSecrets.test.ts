@@ -37,6 +37,36 @@ describe('scanForSecrets — credential prefixes', () => {
     const f = scanForSecrets(`k=${secret}`);
     assert.ok(f.some((x) => x.kind === 'prefix:djr_'));
   });
+
+  // The runner's real clone credentials. Before the Forge W3 apply-gate audit
+  // these had NO prefix detector — a hostile runner could leak its own ghs_/gho_
+  // clone token onto the target branch (the one channel the egress proxy cannot
+  // police). Reverting any of these four prefixes makes the matching test fail.
+  it('detects a ghs_ installation token (runner clone credential)', () => {
+    const secret = 'ghs_' + ALNUM(36);
+    const f = scanForSecrets(`git clone https://x:${secret}@github.com/o/r`);
+    assert.ok(f.some((x) => x.kind === 'prefix:ghs_'), 'ghs_ prefix should fire');
+  });
+
+  it('detects a gho_ device-flow token (non-app repo clone credential)', () => {
+    const secret = 'gho_' + ALNUM(36);
+    const f = scanForSecrets(`remote=${secret}`);
+    assert.ok(f.some((x) => x.kind === 'prefix:gho_'), 'gho_ prefix should fire');
+  });
+
+  it('catches a ghs_ token the entropy heuristic MISSES (Forge dilution bypass)', () => {
+    // A hostile runner surrounds its token with a long low-entropy filler run so
+    // the whole contiguous alnum token's Shannon entropy sits below 4.5 — evading
+    // the base64 entropy detector. The deterministic prefix rule must still fire.
+    const secret = 'ghs_' + ALNUM(36);
+    const dilutedRun = ALNUM(200) + secret + ALNUM(200); // one contiguous alnum run
+    assert.ok(
+      shannonEntropy(dilutedRun) < 4.5,
+      'sanity: the diluted run must be below the base64 entropy threshold',
+    );
+    const f = scanForSecrets(`const x = "${dilutedRun}";`);
+    assert.ok(f.some((x) => x.kind === 'prefix:ghs_'), 'prefix must catch what entropy cannot');
+  });
 });
 
 describe('scanForSecrets — PEM banner (assembled fixture, no literal in source)', () => {

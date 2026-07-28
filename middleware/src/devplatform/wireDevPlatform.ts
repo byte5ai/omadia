@@ -16,10 +16,15 @@
  */
 
 import { parseGitIdentity } from './diffApplyService.js';
-import { DiffApplyService, type ApplyInput, type ApplyResult } from './diffApplyService.js';
+import { DiffApplyError, DiffApplyService, type ApplyInput, type ApplyResult } from './diffApplyService.js';
 import { DevJobEventBus } from './devJobEventBus.js';
 import { DevJobStore } from './devJobStore.js';
-import { DevJobWorker, type DevJobApplyService } from './devJobWorker.js';
+import {
+  DevJobWorker,
+  type ApplyJobOutcome,
+  type DevJobApplyService,
+  type DiffPolicyGateHandler,
+} from './devJobWorker.js';
 import { DevRepoCredentialStore } from './devRepoCredentials.js';
 import { DevRepoStore } from './devRepoStore.js';
 import { finalizeDevJob, CredentialRevokerRegistry, type FinalizeContext } from './finalizeDevJob.js';
@@ -32,8 +37,10 @@ import { PhaseEngine } from './pipeline/phaseEngine.js';
 import { createDevPlatformGatesRouter } from '../routes/devPlatformGates.js';
 import { LocalProcessBackend } from './localProcessBackend.js';
 import { DockerBackend } from './dockerBackend.js';
+import { FlyMachinesBackend, type FlyGuest } from './flyMachinesBackend.js';
 import type { ForgeClient } from './forgeClient.js';
 import type { DevJob, DevJobStatus, RunnerBackend } from './types.js';
+import { isTerminalDevJobStatus } from './types.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { createDevPlatformRouter } from '../routes/devPlatform.js';
 import type {
@@ -43,6 +50,8 @@ import type {
 } from '../routes/devPlatformShared.js';
 import { createDevRunnerRouter } from '../routes/devRunnerApi.js';
 import { createLlmProxyRouter, type LlmModelPolicy } from './llmProxy.js';
+import { createLlmProxyAccounting } from './llmProxyAccounting.js';
+import { priceForModel } from '@omadia/usage-telemetry';
 import type { DeriveJobPolicyConfig } from './deriveJobPolicy.js';
 import type { Pool } from 'pg';
 import type { Express, RequestHandler, Router as ExpressRouter } from 'express';
@@ -52,6 +61,15 @@ const DEFAULT_LLM_UPSTREAM_BASE_URL = 'https://api.anthropic.com';
 const DEFAULT_LLM_PROVIDER = 'anthropic';
 /** Vault namespace the dev-platform provider keys live under (spec §6b). */
 const DEV_PLATFORM_VAULT_AGENT = 'core:dev-platform';
+/** Vault key holding the Fly deploy token scoped to the runner app (W4). Read per
+ *  API call by the FlyMachinesBackend — never held on the instance. */
+const FLY_DEPLOY_TOKEN_VAULT_KEY = 'fly/deploy_token';
+/** Default LLM `max_tokens` clamp when the wiring does not supply one (W4 #2 —
+ *  the budget hook still bounds overshoot in the test-seam path). */
+const DEFAULT_LLM_MAX_OUTPUT_TOKENS = 8192;
+/** Default per-job LLM cost budget (USD) fallback for the test-seam path; the real
+ *  boot always threads `DEV_JOB_DEFAULT_BUDGET_USD`. */
+const DEFAULT_JOB_BUDGET_USD = 5;
 
 export interface WireDevPlatformDeps {
   pool: Pool;
@@ -104,11 +122,46 @@ export interface WireDevPlatformDeps {
     allowedModels?: readonly string[];
     /** `ANTHROPIC_BASE_URL` handed to api_key jobs. Defaults to `<baseUrl>/api/v1/dev-runner/llm`. */
     proxyBaseUrl?: string;
+    /** W4 (spec §5): per-job cost budget default applied when neither the job nor
+     *  its repo sets one (`DEV_JOB_DEFAULT_BUDGET_USD`). */
+    defaultBudgetCostUsd?: number;
+    /** W4 (spec §5, Forge #2): the `max_tokens` clamp ceiling the proxy enforces so
+     *  the buffered budget path cannot overshoot on a single response. */
+    maxOutputTokens?: number;
     /** Test seams. */
     fetchImpl?: typeof fetch;
     resolvePolicy?: (agentKind: string) => Promise<LlmModelPolicy | null>;
     resolveProviderKey?: (provider: string) => Promise<string | undefined>;
     onAccountingError?: (err: unknown, ctx: { jobId: string; tokensIn: number; tokensOut: number }) => void;
+  };
+
+  // --- W4 keystone: the Fly Machines runner backend (spec §2) ---------------
+  /** `FlyMachinesBackend` config. Present ⇒ the backend is registered (one
+   *  ephemeral Fly Machine per job in a DEDICATED runner app); absent ⇒ not
+   *  registered (like the DockerBackend keys on the daemon url). The apiBase +
+   *  phoneHomeUrl are RESOLVED by the caller (on-/off-Fly selection) and are
+   *  DELIBERATELY not SSRF-guarded — they are operator URLs (`.internal` on Fly). */
+  fly?: {
+    /** `DEV_FLY_RUNNER_APP` — the dedicated runner app, NEVER odoo-bot-middleware. */
+    runnerApp: string;
+    /** Machines API root, resolved on-/off-Fly by the caller. */
+    apiBase: string;
+    /** Digest-pinned runner image (`DEV_RUNNER_IMAGE`, fallback DEV_RUNNER_DEFAULT_IMAGE). */
+    image: string;
+    /** Shim phone-home URL, resolved on-/off-Fly by the caller. */
+    phoneHomeUrl: string;
+    /** Default guest size a machine boots with (clamped to the ceilings below). */
+    guest: FlyGuest;
+    /** `DEV_FLY_MAX_CPUS` ceiling. */
+    maxCpus: number;
+    /** `DEV_FLY_MAX_MEMORY_MB` ceiling. */
+    maxMemoryMb: number;
+    /** Optional Fly region placement. */
+    region?: string;
+    /** Test seams. */
+    fetchImpl?: typeof fetch;
+    /** Deploy-token provider override (tests inject; default reads Vault). */
+    resolveDeployToken?: () => Promise<string>;
   };
 
   // --- W2 gate keystones (spec §5) ------------------------------------------
@@ -171,7 +224,7 @@ export interface WiredDevPlatform {
   gateDeadlineWorker: { tick: () => Promise<number>; start: () => void; stop: () => Promise<void> };
   backends: readonly RunnerBackend[];
   finalizeDevJob: (jobId: string, status: DevJobStatus, ctx?: FinalizeContext) => Promise<DevJob | null>;
-  applyJob: (jobId: string) => Promise<{ prUrl: string }>;
+  applyJob: (jobId: string) => Promise<ApplyJobOutcome>;
   /** Stop every background loop this platform owns (claim worker + gate-deadline
    *  worker). The counterpart to `start()`; index.ts calls it on shutdown. */
   stop: () => void | Promise<void>;
@@ -272,13 +325,78 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
       },
     };
 
-  const backends = deps.backends ?? buildBackends(deps, log);
+  const backends = deps.backends ?? buildBackends(deps, log, jobStore);
+
+  // The durable human-gate table (spec §5). Created BEFORE the worker so the
+  // diff-policy gate handler can close over it; the W2 phase engine below reuses
+  // the same instance.
+  const gateStore = new DevJobGateStore(deps.pool, deps.now ? () => deps.now!().getTime() : undefined);
+
+  // The AUTHORITATIVE apply gate's non-`allow` disposition (spec §6). The engine
+  // runs INSIDE DiffApplyService; this decides what happens to its verdict:
+  //   gate → persist findings, open a `diff_policy` human gate, park `waiting`;
+  //   deny → persist findings for the audit trail (the worker then fails the job).
+  const policyGate: DiffPolicyGateHandler = {
+    onGate: async (job, verdict) => {
+      await jobStore.addArtifact(job.id, 'review_verdict', JSON.stringify(verdict), {
+        source: 'diff_policy',
+        decision: verdict.decision,
+      });
+      const repo = await repoStore.getRepo(job.repoId);
+      const principal: { kind: 'user' | 'role'; ref: string } = repo?.approverRoleKey
+        ? { kind: 'role', ref: repo.approverRoleKey }
+        : { kind: 'user', ref: job.createdBy };
+      const gate = await gateStore.open({
+        jobId: job.id,
+        // Mark this a diff-policy gate so an APPROVAL re-applies the already-produced
+        // diff (the runner has exited) instead of re-running the runner at implement.
+        gateKind: 'diff_policy',
+        baseSha: job.baseSha,
+        // The findings ARE the gate's questions, so the operator sees exactly why.
+        questions: verdict.findings.map((f, i) => ({
+          id: `diff_policy:${f.ruleId}:${String(i)}`,
+          text: `[${f.severity}] ${f.ruleId} (${f.paths.join(', ') || 'diff'}): ${f.detail}`,
+        })),
+        principalKind: principal.kind,
+        principalRef: principal.ref,
+        deadlineIso: repo?.gateDeadlineIso,
+      });
+      // The apply gate fires while the job is `applying` (host-side; phase is
+      // review/pr, NOT await_human) — or `failed` on a `POST /jobs/:id/apply`
+      // retry that gated. `parkForApplyGate` admits both; a false return means the
+      // job moved to an unexpected state under us, which would leave the gate
+      // dangling, so surface it loudly rather than silently strand the operator.
+      const parked = await jobStore.parkForApplyGate(job.id);
+      if (!parked) {
+        log(`[dev-platform] diff-policy gate ${gate.id}: parkForApplyGate found job '${job.id}' not parkable (status moved) — gate may dangle`);
+      }
+      // The runner already exited (apply is host-side); revoke its scoped token.
+      // Best-effort — a revoke failure must not un-park the now-`waiting` job.
+      try {
+        await tokenRegistry.revoker(job);
+      } catch (err) {
+        log(`[dev-platform] diff-policy gate ${gate.id}: token revoke failed: ${errText(err)}`);
+      }
+      return { gateId: gate.id };
+    },
+    onDeny: async (job, verdict) => {
+      await jobStore.addArtifact(job.id, 'review_verdict', JSON.stringify(verdict), {
+        source: 'diff_policy',
+        decision: verdict.decision,
+      });
+    },
+  };
 
   const worker = new DevJobWorker({
     store: jobStore,
     repoStore,
     backends,
     applyService,
+    policyGate,
+    // DURABLE operator-approval signal: any apply of a job with a resolved
+    // diff-policy gate (sweep, crash recovery, or the resume path) demotes gate
+    // findings — so the sweep can never re-gate an approved job (Forge audit #1).
+    hasApprovedApplyGate: (jobId) => gateStore.hasApprovedApplyGate(jobId),
     // Pin the base tree BEFORE the runner clones. `base_sha` is written once
     // (COALESCE), so a re-provision of the same job keeps the tree the agent
     // first saw. A forge that cannot answer must not silently produce an
@@ -328,11 +446,9 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
   const applyJob = (jobId: string) => worker.applyJob(jobId);
 
   // --- W2 pipeline orchestration (spec §4/§5) -------------------------------
-  // The durable gate table + the stateful phase engine. The engine ties the pure
-  // transition table, the review loop, the gate store, and token revocation to
-  // persistence; the runner's POST /jobs/:id/phase-result routes into it.
-  const gateStore = new DevJobGateStore(deps.pool, deps.now ? () => deps.now!().getTime() : undefined);
-
+  // The stateful phase engine ties the pure transition table, the review loop, the
+  // gate store (created above), and token revocation to persistence; the runner's
+  // POST /jobs/:id/phase-result routes into it.
   const phaseEngine = new PhaseEngine({
     // DevJobStore already satisfies PhaseEngineStore (addArtifact / getLatestArtifact
     // / advancePhase / parkForGate / setReviewState).
@@ -406,11 +522,49 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     deps.llm?.resolveProviderKey ??
     ((provider: string) => deps.vault.get(DEV_PLATFORM_VAULT_AGENT, `llm/${provider}/api_key`));
 
+  // W4 (spec §5, Forge #3): every allowed model MUST have a price-table entry, else
+  // its cost budget silently NEVER fires (an unpriced model computes $0/call). We do
+  // not refuse boot (an operator may intentionally run a token-only budget), but the
+  // hole is made LOUD so it is caught in review/ops rather than in a runaway bill.
+  for (const model of llmAllowedModels) {
+    const price = priceForModel(model);
+    if (price.inputPerMTok === 0 && price.outputPerMTok === 0) {
+      log(
+        `[dev-platform] WARNING: LLM policy allows model '${model}' but usage-telemetry has NO price for it — ` +
+          `its cost budget will NEVER fire (every call costs $0). Add it to EXACT_PRICES/FAMILY_PRICES or ` +
+          `enforce a token budget for jobs using it.`,
+      );
+    }
+  }
+
+  // W4 (spec §5): the per-job LLM budget accounting + hard-enforcement hook. Wired
+  // into the proxy so every billable (2xx) response is metered against the job's
+  // effective budget (job → repo → config default) and a 100 %-crossing marks the
+  // job `budget_exceeded` through the finalize choke point (which terminates the
+  // backend handle) so the in-flight call is answered 402.
+  const budgetHook = createLlmProxyAccounting({
+    store: jobStore,
+    // The finalize choke point resolves the runner handle + terminates it; never
+    // double-dispatched (the accounting hook does not call terminate itself).
+    markBudgetExceeded: (jobId) =>
+      boundFinalize(jobId, 'budget_exceeded', { reason: 'llm_budget_exceeded' }).then(() => undefined),
+    // Once-per-job warn-line crossing → a `budget_warning` job event on the same
+    // event log the runner streams (metadata only, never a token/prompt).
+    emitBudgetWarning: (jobId, info) =>
+      jobStore.appendHostEvent(jobId, 'budget_warning', { ...info }).then(() => undefined),
+    defaultBudgetCostUsd: deps.llm?.defaultBudgetCostUsd ?? DEFAULT_JOB_BUDGET_USD,
+    // REQUIRED (Forge #2): clamp `max_tokens` so the buffered enforcement path is
+    // bounded; always supplied so the ceiling is never left open.
+    maxOutputTokens: deps.llm?.maxOutputTokens ?? DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+    log,
+  });
+
   const llmProxyRouter: ExpressRouter = createLlmProxyRouter({
     resolveJobByToken: (token) => jobStore.resolveJobByToken(token),
     resolvePolicy,
     resolveProviderKey,
     addJobUsage: (jobId, tokensIn, tokensOut) => jobStore.addJobUsage(jobId, tokensIn, tokensOut),
+    budget: budgetHook,
     ...(deps.llm?.fetchImpl ? { fetchImpl: deps.llm.fetchImpl } : {}),
     ...(deps.llm?.onAccountingError ? { onAccountingError: deps.llm.onAccountingError } : {}),
     log,
@@ -430,16 +584,77 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     ...(deps.now ? { now: () => deps.now!().getTime() } : {}),
   });
 
+  // --- W3 diff-policy gate resume (spec §6) --------------------------------
+  // An operator with authority over the repo approved a diff-policy apply gate.
+  // Move the parked job `waiting → applying` and re-apply the ALREADY-PRODUCED
+  // diff with gate findings demoted. A deny finding hiding behind the gate is
+  // NEVER overridable: the re-apply throws `policy_deny`, applyJob finalizes the
+  // job `failed`, and this swallows only that (expected) error so the resolve
+  // returns cleanly. Idempotent: `resumeApplyAfterGate` is CAS-fenced on
+  // `waiting`, so a self-heal re-drive of an already-applied job is a no-op —
+  // no second PR.
+  const writeOverrideAudit = (gate: DevJobGate, resolvedBy: string): Promise<unknown> =>
+    // Audit the operator override on the same trail the policy verdict uses.
+    jobStore.addArtifact(
+      gate.jobId,
+      'review_verdict',
+      JSON.stringify({
+        source: 'diff_policy_override',
+        gateId: gate.id,
+        resolvedBy,
+        resolvedAt: gate.resolvedAt,
+        note: 'operator approved the diff-policy gate; gate-severity findings demoted, deny findings still block',
+      }),
+      { source: 'diff_policy_override', gateId: gate.id, resolvedBy },
+    );
+
+  const onApprovedDiffPolicyGate = async (gate: DevJobGate, resolvedBy: string): Promise<void> => {
+    // `resumeGatedApply` takes the worker's in-flight guard BEFORE the waiting→
+    // applying flip and holds it across the re-apply, so the periodic apply sweep
+    // can never re-apply the job WITHOUT the approval in the gap (Forge audit #1).
+    // It returns `{skipped}` for a self-heal re-drive of an already-resumed gate.
+    let result: ApplyJobOutcome | { skipped: true };
+    try {
+      result = await worker.resumeGatedApply(gate.jobId);
+    } catch (err) {
+      // A deny finding was hiding behind the gate — never overridable. applyJobInner
+      // already persisted the deny audit and finalized the job `failed`; record the
+      // operator's (denied) override and swallow so the resolve does not 500 for a
+      // correctly-failed job.
+      if (err instanceof DiffApplyError && err.code === 'policy_deny') {
+        await writeOverrideAudit(gate, resolvedBy);
+        log(`[dev-platform] diff-policy gate ${gate.id}: re-apply DENIED (deny finding not overridable); job failed`);
+        return;
+      }
+      throw err;
+    }
+    if ('skipped' in result) {
+      // Already re-applied (done/failed) or another caller holds it — nothing to redo.
+      log(`[dev-platform] diff-policy gate ${gate.id}: resume skipped (job not waiting)`);
+      return;
+    }
+    // The re-apply opened the PR — record the operator override.
+    await writeOverrideAudit(gate, resolvedBy);
+  };
+
   // --- W2 human-gate admin router (spec §5) --------------------------------
   const resolveRoleHolders = deps.resolveRoleHolders ?? (async () => []);
   const gatesRouter = createDevPlatformGatesRouter({
     gates: gateStore,
     resolveRoleHolders,
-    // Approval: append the operator's answers to the brief (once), persist an
-    // `answers` artifact, then re-queue the job at `implement`. requeueAtPhase is
-    // fenced on `await_human`, and appendToBrief is marker-idempotent, so the
-    // gate router's crash self-heal can re-drive this safely.
+    // Approval branches on the gate KIND:
+    //   'diff_policy' → re-apply the already-produced diff with gate findings
+    //     demoted (a deny still blocks). See onApprovedDiffPolicyGate.
+    //   'review' (or undefined) → the W2 path: append the operator's answers to
+    //     the brief (once), persist an `answers` artifact, then re-queue at
+    //     `implement`. requeueAtPhase is fenced on `await_human`, and appendToBrief
+    //     is marker-idempotent, so the gate router's crash self-heal re-drives it
+    //     safely.
     onApproved: async (gate, answers, resolvedBy) => {
+      if (gate.gateKind === 'diff_policy') {
+        await onApprovedDiffPolicyGate(gate, resolvedBy);
+        return;
+      }
       const wrote = await jobStore.appendToBrief(
         gate.jobId,
         briefMarker(gate),
@@ -460,12 +675,17 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
       await jobStore.appendToBrief(gate.jobId, briefMarker(gate), rejectionBriefSection(gate, note, resolvedBy));
       await boundFinalize(gate.jobId, 'cancelled', { reason: 'gate_rejected' });
     },
-    // A job is still parked iff it is `waiting` at `await_human` — the signal the
-    // gate router uses to distinguish a crash-stranded job (self-heal) from a
-    // normal concurrent resolve (409).
+    // A job is still parked iff it is `waiting` — the signal the gate router uses
+    // to distinguish a crash-stranded job (self-heal) from a normal concurrent
+    // resolve (409). `waiting` is used ONLY for gate parking (parkForGate /
+    // parkForApplyGate), so it covers BOTH kinds: a review gate parks at
+    // `await_human`, a diff-policy gate parks while `applying` (phase review/pr).
+    // After a successful resolve, a review gate's job is `queued` and a diff-policy
+    // gate's job is `applying`/`done`/`failed` — never `waiting` — so this stays a
+    // precise stuck signal for either kind.
     isJobStuckAtGate: async (jobId) => {
       const j = await jobStore.getJob(jobId);
-      return j?.status === 'waiting' && j?.phase === 'await_human';
+      return j?.status === 'waiting';
     },
     log,
   });
@@ -606,8 +826,62 @@ export function mountDevPlatform(
 // Internals.
 // ---------------------------------------------------------------------------
 
-function buildBackends(deps: WireDevPlatformDeps, log: (msg: string) => void): readonly RunnerBackend[] {
+function buildBackends(
+  deps: WireDevPlatformDeps,
+  log: (msg: string) => void,
+  jobStore: DevJobStore,
+): readonly RunnerBackend[] {
   const backends: RunnerBackend[] = [];
+
+  // W4 hosted path: the FlyMachinesBackend, registered ONLY when a dedicated runner
+  // app is configured (DEV_FLY_RUNNER_APP) — without it there is no app to launch
+  // machines in, so it stays unregistered rather than throwing at boot (same secure
+  // default as the DockerBackend keying on the daemon url). The deploy token is read
+  // from Vault per call; apiBase/phoneHomeUrl are resolved on-/off-Fly by the caller.
+  if (deps.fly) {
+    const fly = deps.fly;
+    backends.push(
+      new FlyMachinesBackend({
+        apiBase: fly.apiBase,
+        appName: fly.runnerApp,
+        // Read the deploy token from Vault per API operation — never held on the
+        // instance. A test may inject `resolveDeployToken` instead.
+        token:
+          fly.resolveDeployToken ??
+          (async () => {
+            const tok = await deps.vault.get(DEV_PLATFORM_VAULT_AGENT, FLY_DEPLOY_TOKEN_VAULT_KEY);
+            if (!tok) {
+              throw new Error(
+                `devplatform.fly_deploy_token_missing: store a Fly deploy token scoped to '${fly.runnerApp}' in Vault at ${DEV_PLATFORM_VAULT_AGENT} key ${FLY_DEPLOY_TOKEN_VAULT_KEY}`,
+              );
+            }
+            return tok;
+          }),
+        image: fly.image,
+        phoneHomeUrl: fly.phoneHomeUrl,
+        guest: fly.guest,
+        maxCpus: fly.maxCpus,
+        maxMemoryMb: fly.maxMemoryMb,
+        // reap()'s liveness oracle: a job the middleware still considers non-terminal
+        // must NEVER be reaped; a terminal/unknown job is an orphan to destroy.
+        // Mirrors how DockerBackend.reap learns liveness (there, from the daemon list).
+        isJobActive: async (jobId: string): Promise<boolean> => {
+          const job = await jobStore.getJob(jobId);
+          return job !== null && !isTerminalDevJobStatus(job.status);
+        },
+        ...(fly.region ? { region: fly.region } : {}),
+        ...(fly.fetchImpl ? { fetchImpl: fly.fetchImpl } : {}),
+        log,
+      }),
+    );
+    // One-time boot hint (NOT a boot failure): the runner app + deploy token are
+    // provisioned out-of-band. Make the operator prerequisite loud in the logs.
+    log(
+      `[dev-platform] FlyMachinesBackend registered (kind=fly, app='${fly.runnerApp}') — ` +
+        `ensure 'flyctl apps create ${fly.runnerApp} --org <org>' has been run and a deploy token ` +
+        `scoped to it is stored in Vault at ${DEV_PLATFORM_VAULT_AGENT} key ${FLY_DEPLOY_TOKEN_VAULT_KEY}`,
+    );
+  }
 
   // W1 shipping path: the DockerBackend, selected by DEV_PLATFORM_BACKEND=docker
   // (the default) and registered ONLY when a daemon URL + token are configured —

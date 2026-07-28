@@ -74,8 +74,18 @@ import {
   ReadAttachmentTool,
   readAttachmentToolSpec,
 } from './tools/readAttachmentTool.js';
+import {
+  QUERY_DATASET_TOOL_NAME,
+  QueryDatasetTool,
+  queryDatasetToolSpec,
+} from './tools/queryDatasetTool.js';
 import { parseAttachmentsInfo } from './attachmentsInfo.js';
-import { extractAttachmentText } from './attachmentExtract.js';
+import {
+  checkVisionEmbeddable,
+  extractAttachmentText,
+  isCsvAttachment,
+} from './attachmentExtract.js';
+import { importCsvDataset } from './datasetImport.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -136,6 +146,7 @@ import type {
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
+import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
 
@@ -193,6 +204,30 @@ export interface OrchestratorOptions {
    */
   modelRouting?: ModelRoutingConfig;
   maxTokens: number;
+  /**
+   * #504/#505 (round-6 codex review) — the ACTIVE model's vision capability
+   * (the registry's per-model `ModelInfo.vision`, e.g. from
+   * `@omadia/llm-provider-api`), resolved by the caller the same way it
+   * already resolves `maxTokens` for the model. harness-orchestrator has no
+   * dependency on `@omadia/llm-provider` / `@omadia/llm-provider-api` (by
+   * design — it never imports the model registry itself, exactly like
+   * `maxTokens` above arrives pre-resolved instead of being looked up
+   * internally), so this cannot be derived in here; the caller must pass it.
+   *
+   * Deliberately NOT `this.provider.capabilities.vision` (a property of the
+   * PROVIDER CONNECTION, not the model): one provider connection can serve
+   * several models with different vision support — e.g. the bundled
+   * `mistral` openai-compatible connection serves `mistral-large-latest`
+   * and `mistral-medium-latest` (vision) alongside `mistral-small-latest`
+   * (no vision), yet the openai adapter hardcodes
+   * `capabilities.vision = true` on the connection regardless of which
+   * model is actually selected for the turn.
+   *
+   * Omitted → falls back to `this.provider.capabilities.vision` (today's
+   * behaviour), for backward compatibility with callers that haven't been
+   * updated to pass the more precise per-model value yet.
+   */
+  visionSupported?: boolean;
   maxToolIterations: number;
   /**
    * Round-loop guard thresholds (see {@link LoopGuard}). When the model
@@ -383,6 +418,22 @@ export interface OrchestratorOptions {
     configKey: string,
   ) => unknown | undefined;
   /**
+   * Issue #474 — per-plugin tool-readiness gate. Given the `agentId` of a
+   * plugin that contributed a native tool (via `ctx.tools.register`),
+   * returns whether that plugin's connection/auth setup is complete and its
+   * tools may be exposed to and invoked by the orchestrator. Checked both in
+   * `buildToolsList()` (tool-list assembly) and `dispatchToolInner()`
+   * (tool-invocation time) — auth can complete or expire between the two, so
+   * list-time filtering alone is not enough. Kernel-internal tools (no
+   * `agentId` on the registration) are never gated.
+   *
+   * Caller wires this from the harness runtime's `PluginStatusRegistry`
+   * (spec 004): `(agentId) => pluginStatusRegistry.isReady(agentId)`.
+   * Absent ⇒ every plugin's tools are always available (pre-#474 behaviour,
+   * and the correct default for test/migration contexts).
+   */
+  isPluginToolsReady?: (agentId: string) => boolean;
+  /**
    * Palaia Phase 8 (OB-77) — Nudge-Pipeline registry. Plugin-contributed
    * `NudgeProvider`s register against this registry; the orchestrator
    * iterates them after every tool_result. Absent → pipeline is a no-op
@@ -478,20 +529,63 @@ type ContentBlock = any;
 type Message = any;
 
 /**
- * Build the user-message content for the Anthropic API. When the channel
- * supplied image attachments with `bytesBase64`, return a multimodal
- * content array (image source-blocks first, then text); otherwise just
- * pass the plain string for the simple text case (so existing callers
- * without attachments don't pay an array allocation).
+ * A base64-encoded image resolved by {@link ingestAttachments}'s async
+ * pre-fetch pass (issues #504, #505) — Teams `[attachments-info]`
+ * storage_key images and url-only image attachments from any channel that
+ * doesn't pre-fetch bytes. Same wire shape `buildUserContent` already
+ * builds for inline `bytesBase64` attachments below, just sourced from a
+ * fetch instead of the channel payload.
+ */
+interface IngestedImageBlock {
+  mediaType: string;
+  bytesBase64: string;
+}
+
+/**
+ * Build the user-message content for the Anthropic API. Returns a
+ * multimodal content array (image source-blocks first, then text) when
+ * there is at least one image to embed; otherwise just the plain string
+ * (so existing callers without attachments don't pay an array allocation).
  *
- * S+7.7+ — wired in for Telegram channel's photo/image-document path.
- * Teams calendar/diagram channels don't populate `attachments` today,
- * so this stays a no-op for them.
+ * Images come from two sources, both folded into the same block list:
+ *   - `input.attachments[]` entries with `bytesBase64` already set —
+ *     wired in for Telegram's photo/image-document path (S+7.7+).
+ *   - `ingestedImages`, resolved by `ingestAttachments`'s async pre-fetch —
+ *     Teams' Tigris `storage_key` images (#504) and url-only image
+ *     attachments from channels that don't pre-fetch bytes (#505).
+ *
+ * `visionSupported` gates BOTH sources at once (#504/#505 review round 2):
+ * a provider/model without vision capability can reject the whole request
+ * or silently drop an unsupported content block, reintroducing the "agent
+ * cannot see the image, nothing indicates why" failure these issues exist
+ * to close. When `false`, no image content-blocks are built at all — but
+ * the fact that image(s) were received is never silently dropped either:
+ * a visible `[N image attachment(s) received but the active model does not
+ * support image input]` note is folded into the text instead, combining
+ * the caller-supplied `skippedVisionImageCount` (images `ingestAttachments`
+ * didn't even bother fetching, see there) with the inline `bytesBase64`
+ * attachments this function would otherwise have embedded itself.
+ *
+ * Separately, `rejectedImageReasons` (#504/#505 review round 4) covers image
+ * candidates that WERE fetched by `ingestAttachments` under a vision-capable
+ * provider but failed {@link checkVisionEmbeddable} (oversized, or an
+ * unsupported format such as SVG/BMP/TIFF). That guard rejection used to be
+ * a server-only `console.warn` with no trace in the turn's text — the exact
+ * silent-drop failure #504 exists to close, just triggered by size/format
+ * instead of provider capability. A visible `[N image attachment(s) could
+ * not be shown: <reason(s)>]` note now covers it. The two notes cannot
+ * describe the same image (a guard rejection only happens when vision IS
+ * supported, since `ingestAttachments` skips fetching entirely otherwise),
+ * so they are simply concatenated when both are non-empty.
  */
 function buildUserContent(
   input: ChatTurnInput,
   extraText?: string,
   wireUserMessage?: string,
+  ingestedImages?: IngestedImageBlock[],
+  visionSupported = true,
+  skippedVisionImageCount = 0,
+  rejectedImageReasons: string[] = [],
 ): ContentBlock[] | string {
   // #361 — when prompt masking is on, the caller passes the pseudonym-
   // substituted variant for the LLM wire; `input.userMessage` stays the
@@ -502,12 +596,35 @@ function buildUserContent(
   // additive to the existing image/bytesBase64 multimodal path.
   const ingested =
     extraText && extraText.trim().length > 0 ? extraText : undefined;
-  const imageAtts = (input.attachments ?? []).filter(
+  const rawImageAtts = (input.attachments ?? []).filter(
     (a) => a.kind === 'image' && typeof a.bytesBase64 === 'string',
   );
-  if (imageAtts.length === 0) {
-    if (!ingested) return message;
-    return message.length > 0 ? `${message}${ingested}` : ingested;
+
+  // #504/#505 vision-capability guard — see doc comment above. Zero out
+  // both image sources up front so nothing below ever builds an image
+  // content-block for a non-vision provider.
+  const imageAtts = visionSupported ? rawImageAtts : [];
+  const effectiveIngestedImages = visionSupported ? ingestedImages : undefined;
+  const visionNoteCount = visionSupported
+    ? 0
+    : rawImageAtts.length + skippedVisionImageCount;
+  const visionNote =
+    visionNoteCount > 0
+      ? `\n\n[${visionNoteCount} image attachment${visionNoteCount === 1 ? '' : 's'} received but the active model does not support image input]`
+      : '';
+  // #504/#505 review round 4 — a fetched image candidate that failed
+  // checkVisionEmbeddable (oversized / unsupported format) must still leave
+  // a visible trace, not just a server-side console.warn.
+  const guardRejectedCount = rejectedImageReasons.length;
+  const guardNote =
+    guardRejectedCount > 0
+      ? `\n\n[${guardRejectedCount} image attachment${guardRejectedCount === 1 ? '' : 's'} could not be shown: ${rejectedImageReasons.join('; ')}]`
+      : '';
+
+  if (imageAtts.length === 0 && (effectiveIngestedImages?.length ?? 0) === 0) {
+    const trailing = `${ingested ?? ''}${visionNote}${guardNote}`;
+    if (trailing.length === 0) return message;
+    return message.length > 0 ? `${message}${trailing}` : trailing;
   }
   const blocks: ContentBlock[] = [];
   for (const att of imageAtts) {
@@ -520,7 +637,17 @@ function buildUserContent(
       },
     });
   }
-  const trailingText = `${message}${ingested ?? ''}`;
+  for (const img of effectiveIngestedImages ?? []) {
+    blocks.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: img.mediaType,
+        data: img.bytesBase64,
+      },
+    });
+  }
+  const trailingText = `${message}${ingested ?? ''}${visionNote}${guardNote}`;
   if (trailingText.trim().length > 0) {
     blocks.push({ type: 'text', text: trailingText });
   }
@@ -1149,6 +1276,10 @@ export class Orchestrator {
   /** Wave 8 — direct-answer persona candidates; empty when none attached. */
   private readonly personaSkills: readonly OrchestratorPersonaSkill[];
   private readonly maxTokens: number;
+  /** #504/#505 — active model's vision support, if the caller resolved it
+   *  (see OrchestratorOptions.visionSupported). Undefined → callers fall
+   *  back to `this.provider.capabilities.vision` at each read site. */
+  private readonly visionSupported: boolean | undefined;
   private readonly maxIterations: number;
   /** Round-loop guard thresholds (see {@link LoopGuard}). */
   private readonly loopRepeatSoft: number | undefined;
@@ -1183,6 +1314,8 @@ export class Orchestrator {
   private readonly attachmentReader: AttachmentReader | undefined;
   /** #268 — lazily built `read_attachment` handler (only when reader present). */
   private readonly readAttachmentTool: ReadAttachmentTool | undefined;
+  /** #430 — `query_dataset` native tool; only needs the KnowledgeGraph handle. */
+  private readonly queryDatasetTool: QueryDatasetTool | undefined;
   private readonly chatParticipantsTool: ChatParticipantsTool | undefined;
   private readonly findFreeSlotsTool: FindFreeSlotsTool | undefined;
   private readonly bookMeetingTool: BookMeetingTool | undefined;
@@ -1191,6 +1324,10 @@ export class Orchestrator {
   /** Slice 2.5 — cross-plugin runtime-config lookup (see OrchestratorOptions). */
   private readonly pluginConfigGet:
     | ((agentId: string, configKey: string) => unknown | undefined)
+    | undefined;
+  /** Issue #474 — per-plugin tool-readiness gate (see OrchestratorOptions). */
+  private readonly isPluginToolsReady:
+    | ((agentId: string) => boolean)
     | undefined;
   private readonly nudgeRegistry: NudgeRegistry | undefined;
   private readonly nudgeStateStore: NudgeStateStore | undefined;
@@ -1227,6 +1364,7 @@ export class Orchestrator {
     this.modelRouting = options.modelRouting;
     this.personaSkills = options.personaSkills ?? [];
     this.maxTokens = options.maxTokens;
+    this.visionSupported = options.visionSupported;
     this.maxIterations = options.maxToolIterations;
     this.loopRepeatSoft = options.loopRepeatSoft;
     this.loopRepeatHard = options.loopRepeatHard;
@@ -1243,6 +1381,9 @@ export class Orchestrator {
     this.knowledgeGraphTool = options.knowledgeGraph
       ? new KnowledgeGraphTool(options.knowledgeGraph, options.embeddingClient)
       : undefined;
+    this.queryDatasetTool = options.knowledgeGraph
+      ? new QueryDatasetTool(options.knowledgeGraph)
+      : undefined;
     this.factExtractor = options.factExtractor;
     this.chatParticipantsTool = options.chatParticipantsTool;
     this.askUserChoiceTool = options.askUserChoiceTool;
@@ -1256,6 +1397,7 @@ export class Orchestrator {
     this.responseGuard = options.responseGuard;
     this.privacyGuard = options.privacyGuard;
     this.pluginConfigGet = options.pluginConfigGet;
+    this.isPluginToolsReady = options.isPluginToolsReady;
     this.nudgeRegistry = options.nudgeRegistry;
     this.nudgeStateStore = options.nudgeStateStore;
     this.nudgeProcessMemory = options.nudgeProcessMemory;
@@ -2055,6 +2197,15 @@ export class Orchestrator {
     const privacyHandle = privacyService
       ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
       : undefined;
+    // #430 fixup (reviewer round 5) — resolve the canonical omadiaUserId ONCE
+    // for the whole turn; see `resolveTurnOwnerIdentity` for the fallback
+    // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
+    // `turnContext.current()?.resolvedOmadiaUserId` instead of each
+    // re-deriving it independently.
+    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
+      this.knowledgeGraph,
+      input,
+    );
 
     return turnContext.run(
       {
@@ -2066,6 +2217,7 @@ export class Orchestrator {
         // Human user id — dispatch-time consumers (MCP→KG ingestion) attribute
         // per-user data with it.
         ...(input.userId ? { userId: input.userId } : {}),
+        ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -2214,7 +2366,14 @@ export class Orchestrator {
 
     const candidate = resolution.candidate;
     const tool = this.domainToolsByName.get(candidate.toolName);
-    if (!tool) {
+    // Issue #474 (round 4) — a not-ready plugin's domain tool must resolve
+    // the same as a deleted one: `dispatchToolInner` already blocks the
+    // handler safely (no capability leak), but without this check its raw
+    // `Error: tool … is unavailable …` string would be wrapped into a
+    // delegatedAnswer and shown to the user as if the specialist itself had
+    // answered. Reuse the SAME notice as the deleted-tool branch above
+    // instead of surfacing that internal dispatch-error string.
+    if (!tool || !this.isToolAvailable(tool.agentId)) {
       return this.directLineNotice(
         `Specialist "${candidate.label}" is no longer available.`,
       );
@@ -2418,8 +2577,16 @@ export class Orchestrator {
     // (if configured), so the forced-delegation primitive has a real,
     // opt-in producer beyond a caller wiring it per turn.
     const requested = input.expectedDomainTool ?? this.requiredConsultToolName;
+    const requestedEntry = requested
+      ? this.domainToolsByName.get(requested)
+      : undefined;
+    // Issue #474 (round 3 self-audit) — a not-ready plugin's domain tool must
+    // not become an obligation: `tool_choice` would then force the model onto
+    // a tool name that buildToolsList() has already excluded from tools[],
+    // which the API rejects. Same isToolAvailable gate as the roster/tools[]
+    // paths above.
     const tool =
-      requested && this.domainToolsByName.has(requested)
+      requestedEntry && this.isToolAvailable(requestedEntry.agentId)
         ? requested
         : undefined;
     return {
@@ -2708,11 +2875,30 @@ export class Orchestrator {
       rawPriorContext,
     );
     // #268 — pre-fetch + extract any uploaded document text for this turn.
+    // #504/#505 — the same pass also resolves image attachments (Teams
+    // Tigris storage_key, or a bare url for channels without a pre-fetch)
+    // into vision content-blocks; `ingestedImages` rides separately from the
+    // text since it never crosses the PII-masking wire. Gated on the ACTIVE
+    // MODEL's vision capability (round-6 codex review) — `visionSupported`
+    // wins when the caller resolved it (see OrchestratorOptions), otherwise
+    // this falls back to the provider connection's own capability flag,
+    // which is imprecise whenever one connection serves several models with
+    // different vision support. Either way, a non-vision model never gets
+    // an image content-block, and `buildUserContent` below surfaces a
+    // visible note instead of silently dropping the attachment.
     // #361 — the ingested verbatim tail crosses the wire alongside the
     // message, so it is masked through the SAME turn map (stable surrogates).
+    const visionSupported =
+      this.visionSupported ?? this.provider.capabilities.vision;
+    const {
+      text: ingestedRawText,
+      images: ingestedImages,
+      skippedVisionImageCount,
+      rejectedImageReasons,
+    } = await this.ingestAttachments(input, visionSupported);
     const ingestedText = await maskIngestedForWire(
       privacyForPrompt,
-      await this.ingestAttachments(input),
+      ingestedRawText,
     );
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — per-turn nudge counter (shared across all
@@ -2743,7 +2929,18 @@ export class Orchestrator {
       // same shape the Anthropic API expects for a multi-turn conversation.
       // Empty pairs are filtered so a failed prior turn can't poison context.
       ...priorTurnMessages,
-      { role: 'user', content: buildUserContent(input, ingestedText, wireUserMessage) },
+      {
+        role: 'user',
+        content: buildUserContent(
+          input,
+          ingestedText,
+          wireUserMessage,
+          ingestedImages,
+          visionSupported,
+          skippedVisionImageCount,
+          rejectedImageReasons,
+        ),
+      },
     ];
 
     // Open an EntityRef collection keyed to this turn. Tool handlers that
@@ -3249,12 +3446,22 @@ export class Orchestrator {
     const privacyHandle = privacyService
       ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
       : undefined;
+    // #430 fixup (reviewer round 5) — same per-turn resolution as `runTurn`
+    // above. This streaming entry point is what channel adapters (Teams/
+    // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
+    // without this the resolved identity would never reach a channel turn's
+    // tool dispatch at all — see `resolveTurnOwnerIdentity`.
+    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
+      this.knowledgeGraph,
+      input,
+    );
 
     turnContext.enter({
       turnId,
       turnDate: today(),
       // Per-orchestrator isolation: see the matching `turnContext.run` above.
       agentSlug: this.agentId,
+      ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
@@ -3488,10 +3695,21 @@ export class Orchestrator {
     // can never break or delay the turn; additive/opaque to the model.
     yield* await this.toKgGraphAnnotationEvents(recalled);
     // #268 — pre-fetch + extract any uploaded document text for this turn.
+    // #504/#505 — same pass also resolves image attachments into vision
+    // content-blocks; see chatInContextInner for the full rationale,
+    // including the per-model vision-capability gate (round-6 codex review).
     // #361 — masked through the same turn map as the message (see above).
+    const visionSupported =
+      this.visionSupported ?? this.provider.capabilities.vision;
+    const {
+      text: ingestedRawText,
+      images: ingestedImages,
+      skippedVisionImageCount,
+      rejectedImageReasons,
+    } = await this.ingestAttachments(input, visionSupported);
     const ingestedText = await maskIngestedForWire(
       privacyForPrompt,
-      await this.ingestAttachments(input),
+      ingestedRawText,
     );
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — see chatInContextInner for rationale.
@@ -3513,7 +3731,18 @@ export class Orchestrator {
     const messages: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] | string }> = [
       // Same in-memory history injection as chat() — see chatInContext().
       ...priorTurnMessages,
-      { role: 'user', content: buildUserContent(input, ingestedText, wireUserMessage) },
+      {
+        role: 'user',
+        content: buildUserContent(
+          input,
+          ingestedText,
+          wireUserMessage,
+          ingestedImages,
+          visionSupported,
+          skippedVisionImageCount,
+          rejectedImageReasons,
+        ),
+      },
     ];
 
     const entityCollection = this.entityRefBus?.beginCollection(turnId);
@@ -3521,6 +3750,32 @@ export class Orchestrator {
     const textParts: string[] = [];
     // One forced file-build retry per turn (see fileAnnouncedButNotBuilt).
     let fileForceRetried = false;
+    // Issue #506 — generic, tool-agnostic record of which tool(s) already
+    // committed a successful side effect THIS turn (a `tool_result` yielded
+    // with `isError` falsy). If a LATER exception (a subsequent model call,
+    // the nudge pipeline, ...) lands in the catch below, this lets it report
+    // an honest `done` instead of discarding a real, already-committed
+    // action behind a bare `error`. Never special-cases a tool by name.
+    //
+    // Deliberate tradeoff (issue #506) — not an oversight: this list is
+    // populated by ANY successful `tool_result`, with no distinction
+    // between a read-only tool (e.g. `list_routines`) and a mutating one
+    // (e.g. `manage_routine` create/update). Concrete residual risk: a
+    // read-only tool succeeds early in the turn, then a LATER, more
+    // consequential tool call never runs because a transient failure hits
+    // the model call that would have requested it — the turn is still
+    // reported `done` (see the catch block below), even though the user's
+    // actual intended mutating action may never have happened.
+    // Two narrower alternatives were considered and rejected: (a) scoping
+    // this tracking to routine-create only sidesteps the residual risk but
+    // leaves the same false-negative bug unfixed for every other mutating
+    // tool (send_email, book_meeting, ...); (b) dropping this fix and
+    // always reporting `error` here regresses to issue #506's original,
+    // reported symptom for every tool. Kept generic and tool-agnostic
+    // across all tools as the better tradeoff; re-evaluate before
+    // narrowing it.
+    const committedToolNames: string[] = [];
+    let lastIterationIndex = 0;
 
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
@@ -3582,6 +3837,7 @@ export class Orchestrator {
     }
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+        lastIterationIndex = iteration;
         yield { type: 'iteration_start', iteration };
         // Mirror BuilderAgent: the per-iteration boundary is also when the
         // observer's iteration counter resets, so its consumers (heartbeat
@@ -3932,6 +4188,14 @@ export class Orchestrator {
             s.isError = winner.output.startsWith('Error:');
             s.durationMs = Date.now() - s.started;
             this.finishSlotInvocation(s, traceCollector);
+            // Issue #506 — record the committed side effect before yielding,
+            // generically (name only, no tool-specific payload inspection).
+            if (!s.isError) {
+              const name = s.use.name;
+              if (typeof name === 'string' && !committedToolNames.includes(name)) {
+                committedToolNames.push(name);
+              }
+            }
             yield {
               type: 'tool_result',
               id: s.use.id,
@@ -4107,10 +4371,89 @@ export class Orchestrator {
         '[orchestrator] turn failed:',
         err instanceof Error ? (err.stack ?? err.message) : err,
       );
-      yield {
-        type: 'error',
-        message: err instanceof Error ? err.message : String(err),
-      };
+      // Issue #506 — a tool call earlier in this turn may have already
+      // committed a real side effect (e.g. created a record) even though a
+      // LATER step of the SAME turn (a subsequent model call, the nudge
+      // pipeline, ...) then threw. Reporting a bare `error` in that case is
+      // a false negative: the action succeeded, only the turn's own
+      // bookkeeping failed afterwards. Report `done` instead — honest that
+      // the action(s) completed but the turn itself didn't finish cleanly.
+      // Generic across every tool; no tool-specific detail is fabricated.
+      // A genuine failure (nothing committed yet) still yields `error`,
+      // unchanged from today.
+      //
+      // Deliberate tradeoff — not an oversight: this done-vs-error branch
+      // trusts ANY entry in `committedToolNames` equally, read-only or
+      // mutating (see the fuller tradeoff comment on `committedToolNames`'s
+      // declaration above). Accepted residual risk: a benign read-only
+      // success earlier in the turn can mask a later, more consequential
+      // mutation that was silently skipped, and this branch will still
+      // report `done`. Kept generic across all tools rather than narrowed
+      // to routine-create only or dropped entirely, because reverting to
+      // always-`error` here would leave issue #506's reported
+      // false-negative-on-success bug unfixed for every side-effecting
+      // tool, not just routine creation.
+      if (committedToolNames.length > 0) {
+        const toolList = committedToolNames.join(', ');
+        const answer =
+          committedToolNames.length === 1
+            ? `The requested action (${toolList}) completed successfully, but the turn could not finish generating a follow-up response.`
+            : `The requested actions (${toolList}) completed successfully, but the turn could not finish generating a follow-up response.`;
+        const iterations = lastIterationIndex + 1;
+        // Issue #506 (review follow-up) — every OTHER `done`-emission site
+        // in this function persists the exchange via `sessionLogger.log()`
+        // BEFORE yielding (see the success path above, the choice-card
+        // path, and direct-line). This emergency path is specifically for
+        // the case where a tool already committed a real side effect, so
+        // skipping the log here would be the one `done` path that leaves
+        // that commitment unrecorded — the next turn's model would have no
+        // memory of it and could re-invoke the same tool, reintroducing the
+        // duplicate-side-effect bug issue #506 exists to prevent. Same
+        // call shape as the other sites; best-effort like all of them.
+        const restoredAnswer = await restorePromptForPersistence(
+          privacyForPrompt,
+          answer,
+        );
+        const runTrace = traceCollector?.finish({
+          iterations,
+          status: 'success',
+        });
+        let persistedTurnId: string | undefined;
+        if (this.sessionLogger && input.sessionScope) {
+          const entityRefs = entityCollection?.drain() ?? [];
+          try {
+            const logged = await this.sessionLogger.log({
+              scope: input.sessionScope,
+              userMessage: input.userMessage,
+              assistantAnswer: restoredAnswer,
+              toolCalls,
+              iterations,
+              entityRefs,
+              ...(input.userId ? { userId: input.userId } : {}),
+              ...(runTrace ? { runTrace } : {}),
+            });
+            persistedTurnId = logged.turnExternalId;
+          } catch (logErr) {
+            console.error(
+              '[orchestrator] session log failed (continuing with emergency done):',
+              logErr instanceof Error ? logErr.message : logErr,
+            );
+          }
+        }
+        yield {
+          type: 'done',
+          answer: restoredAnswer,
+          toolCalls,
+          iterations,
+          ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+          ...(runTrace ? { runTrace } : {}),
+        };
+      } else {
+        yield {
+          type: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
     } finally {
       entityCollection?.drain();
     }
@@ -4545,7 +4888,22 @@ export class Orchestrator {
     // handler (which wraps the unscoped FilesystemMemoryStore). Checked
     // before the generic `reg?.handler` dispatch below, since `memory` is a
     // plugin-registered native tool and would otherwise win here unscoped.
+    //
+    // Issue #474 (review round 10) — this fast path bypassed the readiness
+    // gate entirely: a plugin that contributes `memory` via
+    // `ctx.tools.registerHandler('memory', ...)` (e.g. harness-memory /
+    // harness-memory-postgres) still has its own `agentId` recorded on the
+    // NativeToolRegistry entry, so re-derive that agentId here and run it
+    // through the same `isToolAvailable` gate the generic `reg?.handler`
+    // path below already uses. A marker-only / agentId-less entry (nothing
+    // registered `memory` via a plugin) keeps its `agentId === undefined ⇒
+    // always-available` default, so the two current always-ready memory
+    // plugins are unaffected as long as they haven't reported not-ready.
     if (name === MEMORY_TOOL_NAME && this.memoryToolHandler) {
+      const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
+      if (!this.isToolAvailable(memoryAgentId)) {
+        return `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`;
+      }
       return this.memoryToolHandler.handle(input);
     }
     // Plugin-contributed handlers win first. Kernel branches below are the
@@ -4554,10 +4912,23 @@ export class Orchestrator {
     // migrates, its hardcoded branch disappears.
     const reg = this.nativeTools.get(name);
     if (reg?.handler) {
+      // Issue #474 — re-check readiness at invocation time, not just at
+      // list-assembly time: a plugin's connection/auth state can complete
+      // or expire between the two, so list-time filtering alone leaves a
+      // race window. Returned (not thrown) as an `Error:`-prefixed string,
+      // matching the `unknown tool` fallback below — both the streaming and
+      // non-streaming dispatch loops key `is_error` off that prefix, and
+      // only the non-streaming one also catches thrown rejections.
+      if (!this.isToolAvailable(reg.agentId)) {
+        return `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`;
+      }
       return reg.handler(input);
     }
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
       return this.knowledgeGraphTool.handle(input);
+    }
+    if (name === QUERY_DATASET_TOOL_NAME && this.queryDatasetTool) {
+      return this.queryDatasetTool.handle(input);
     }
     if (name === CHAT_PARTICIPANTS_TOOL_NAME && this.chatParticipantsTool) {
       return this.chatParticipantsTool.handle();
@@ -4578,7 +4949,17 @@ export class Orchestrator {
       return this.bookMeetingTool.handle(input);
     }
     const domainTool = this.domainToolsByName.get(name);
-    if (domainTool) return domainTool.handle(input, observer);
+    if (domainTool) {
+      // Issue #474 — same re-check-at-invocation-time gate as the native-tool
+      // branch above, applied to the second tool-registration path (domain
+      // tools contributed by dynamic agent plugins via DomainTool.agentId).
+      // Without this, a not-ready plugin's domain tool was still invocable
+      // even though its native tools and promptDoc were already hidden.
+      if (!this.isToolAvailable(domainTool.agentId)) {
+        return `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`;
+      }
+      return domainTool.handle(input, observer);
+    }
     return `Error: unknown tool \`${name}\`.`;
   }
 
@@ -4598,13 +4979,26 @@ export class Orchestrator {
     // kernel's hardcoded blocks (graph/diagram/…) remain in buildSystemPrompt
     // for their tools; plugin docs land in a separate bullet list so both
     // paths coexist cleanly during the extraction transition.
+    // Issue #474 — mirror the same isToolAvailable gate applied in
+    // buildToolsList(): a plugin whose connection/auth setup hasn't
+    // completed must not have its promptDoc advertised here either,
+    // otherwise the model is told about a capability that buildToolsList()
+    // has already hidden from its `tools[]` for this same turn.
     const extraDocs = this.nativeTools
       .listWithHandler()
+      .filter((e) => this.isToolAvailable(e.agentId))
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
+    // Issue #474 (round 3) — same isToolAvailable gate as buildToolsList()'s
+    // domain-tool loop above: a not-ready plugin's DomainTool must not be
+    // advertised in the 'Fach-Agenten' roster either, otherwise the model is
+    // told to route to a tool that tools[] has already hidden this turn.
+    const availableDomainTools = Array.from(this.domainToolsByName.values()).filter((tool) =>
+      this.isToolAvailable(tool.agentId),
+    );
     return buildSystemPrompt(
       personaOverride ?? this.assistantIdentity,
-      Array.from(this.domainToolsByName.values()),
+      availableDomainTools,
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.
       false,
@@ -4723,24 +5117,68 @@ export class Orchestrator {
 
   /**
    * #268 sub-problem 2 — server-side attachment auto-ingest.
+   * #504/#505 — extended to also resolve image attachments into vision
+   * content-blocks instead of silently dropping them after fetch.
    *
-   * Pre-fetches and text-extracts the user's current-turn document uploads so
-   * the model can read them WITHOUT a tool call. Candidates come from BOTH
-   * sources:
+   * Pre-fetches the user's current-turn uploads so the model can read/see
+   * them WITHOUT a tool call. Candidates come from THREE sources:
    *   - the `[attachments-info]` block Teams appends to `input.userMessage`
-   *     (preferred: read by storage_key, since signed URLs expire);
+   *     (preferred: read by storage_key, since signed URLs expire) — files
+   *     AND images alike;
    *   - `input.attachments[]` non-image file entries from other channels
-   *     (read by url).
-   * De-duplicated by storageKey/url. Images and unsupported types are skipped
-   * silently (brand:// / vision handles images). Ingested regardless of
-   * `freshCheck` — these are the user's current message, not recalled context.
+   *     (read by url);
+   *   - `input.attachments[]` image entries that lack `bytesBase64` (read by
+   *     url) — the documented fallback for channels that don't pre-fetch
+   *     (`chatAgent.ts` / `incoming.ts`); images WITH `bytesBase64` are
+   *     already handled inline by `buildUserContent` and are skipped here.
+   * De-duplicated by storageKey/url. Text is extracted for non-image
+   * candidates; images are guarded by {@link checkVisionEmbeddable}
+   * (supported type + size cap) and turned into base64 image blocks —
+   * neither path throws, both just skip the candidate on failure. Ingested
+   * regardless of `freshCheck` — these are the user's current message, not
+   * recalled context.
    *
-   * Returns a concatenation of `[attachment-content: …]` blocks (leading
-   * with `\n\n`), or '' when there is nothing to ingest or no reader is
-   * configured. NEVER throws — any failure logs a warning and returns ''.
+   * `visionSupported` (#504/#505 review round 2 — `this.provider.capabilities
+   * .vision` at both call sites): when `false`, image candidates are never
+   * fetched at all (fetching bytes the provider can't accept would just
+   * waste the round-trip) — they're counted into `skippedVisionImageCount`
+   * instead so `buildUserContent` can still surface a visible note that
+   * image(s) existed, rather than silently acting as if none did.
+   *
+   * `rejectedImageReasons` (#504/#505 review round 4): a candidate IS
+   * fetched (vision is supported) but fails {@link checkVisionEmbeddable}
+   * — oversized (>10MB base64-encoded) or an unsupported format
+   * (SVG/BMP/TIFF/…). That used
+   * to be a server-only `console.warn` with no trace in the turn's text,
+   * reproducing the exact silent-drop failure #504 exists to close via a
+   * different trigger (size/format instead of provider capability). Each
+   * rejection's `guard.reason` is collected here so `buildUserContent` can
+   * surface a visible note instead.
+   *
+   * Returns `text` (a concatenation of `[attachment-content: …]` blocks,
+   * leading with `\n\n`, or '' when there is no document text), `images`
+   * (base64 blocks for `buildUserContent` to embed, or `[]`),
+   * `skippedVisionImageCount` (image candidates found but not fetched
+   * because vision is unsupported), and `rejectedImageReasons` (reasons for
+   * fetched image candidates the vision-embeddability guard rejected).
+   * NEVER throws — any failure logs a warning and returns the empty shape.
    */
-  private async ingestAttachments(input: ChatTurnInput): Promise<string> {
-    if (!this.attachmentReader) return '';
+  private async ingestAttachments(
+    input: ChatTurnInput,
+    visionSupported: boolean,
+  ): Promise<{
+    text: string;
+    images: IngestedImageBlock[];
+    skippedVisionImageCount: number;
+    rejectedImageReasons: string[];
+  }> {
+    const empty = {
+      text: '',
+      images: [] as IngestedImageBlock[],
+      skippedVisionImageCount: 0,
+      rejectedImageReasons: [] as string[],
+    };
+    if (!this.attachmentReader) return empty;
     try {
       type Candidate = {
         fileName: string | undefined;
@@ -4748,6 +5186,11 @@ export class Orchestrator {
         storageKey?: string;
         url?: string;
         dedupe: string;
+        /** #504/#505 — route to the vision branch below instead of
+         *  `extractAttachmentText`. Set from the manifest/attachment kind at
+         *  candidate time; re-checked against the fetched content-type since
+         *  a signed URL or Tigris object can disagree with the caller's claim. */
+        isImage: boolean;
       };
       const candidates: Candidate[] = [];
       const seen = new Set<string>();
@@ -4757,14 +5200,41 @@ export class Orchestrator {
         candidates.push(c);
       };
 
-      // 1. Teams `[attachments-info]` manifest (storage_key-bearing).
+      // De-dup guard for source 1 below: filenames already embedded inline
+      // by `buildUserContent` from `input.attachments[]` entries that carry
+      // `bytesBase64`. Today Teams (the manifest's only producer) never
+      // populates `attachments[].bytesBase64` and the channels that DO
+      // (Telegram) never emit an `[attachments-info]` manifest, so this set
+      // is empty in practice — but it's the one place this invariant is
+      // actually checked, not just documented, so a future channel that
+      // violates it can't silently double-send an image to the model.
+      const inlineImageFileNames = new Set(
+        (input.attachments ?? [])
+          .filter(
+            (a): a is typeof a & { name: string } =>
+              a.kind === 'image' &&
+              typeof a.bytesBase64 === 'string' &&
+              typeof a.name === 'string',
+          )
+          .map((a) => a.name.trim().toLowerCase()),
+      );
+
+      // 1. Teams `[attachments-info]` manifest (storage_key-bearing) — files
+      //    and images alike (#504).
       for (const info of parseAttachmentsInfo(input.userMessage)) {
+        const isImage = info.contentType.toLowerCase().startsWith('image/');
+        if (isImage && inlineImageFileNames.has(info.fileName.trim().toLowerCase())) {
+          // Already embedded inline via `bytesBase64` — skip to avoid
+          // sending the same image to the model twice in one turn.
+          continue;
+        }
         push({
           fileName: info.fileName,
           contentType: info.contentType,
           storageKey: info.storageKey,
           ...(info.signedUrl ? { url: info.signedUrl } : {}),
           dedupe: `key:${info.storageKey}`,
+          isImage,
         });
       }
       // 2. Non-image file attachments from other channels (url-bearing).
@@ -4776,13 +5246,42 @@ export class Orchestrator {
           contentType: att.mediaType,
           url: att.url,
           dedupe: `url:${att.url}`,
+          isImage: false,
         });
       }
-      if (candidates.length === 0) return '';
+      // 3. Image attachments without pre-fetched bytes (url-bearing) — the
+      //    documented url-fetch fallback for channels that don't pre-fetch
+      //    (#505). Images WITH `bytesBase64` are already handled inline by
+      //    `buildUserContent`, so they're excluded here to avoid double-embedding.
+      for (const att of input.attachments ?? []) {
+        if (att.kind !== 'image') continue;
+        if (typeof att.bytesBase64 === 'string') continue;
+        if (typeof att.url !== 'string' || att.url.length === 0) continue;
+        push({
+          fileName: att.name,
+          contentType: att.mediaType,
+          url: att.url,
+          dedupe: `url:${att.url}`,
+          isImage: true,
+        });
+      }
+      if (candidates.length === 0) return empty;
 
-      const blocks: string[] = [];
+      const textBlocks: string[] = [];
+      const images: IngestedImageBlock[] = [];
+      const rejectedImageReasons: string[] = [];
+      let skippedVisionImageCount = 0;
       for (const c of candidates) {
         try {
+          // #504/#505 review round 2 — don't even fetch an image candidate
+          // when the active provider/model has no vision capability; the
+          // bytes would just be discarded. Count it instead so
+          // `buildUserContent` can surface a visible note rather than
+          // silently acting as if the image never existed.
+          if (c.isImage && !visionSupported) {
+            skippedVisionImageCount += 1;
+            continue;
+          }
           // Prefer storage_key (durable) over url (Teams signed urls expire).
           const fetched = c.storageKey
             ? await this.attachmentReader.readByStorageKey(c.storageKey)
@@ -4790,18 +5289,98 @@ export class Orchestrator {
               ? await this.attachmentReader.readByUrl(c.url)
               : undefined;
           if (!fetched) continue;
+          const contentType = fetched.contentType ?? c.contentType;
+          if (c.isImage) {
+            const guard = checkVisionEmbeddable(
+              contentType,
+              fetched.bytes.length,
+            );
+            if (!guard.ok) {
+              console.warn(
+                `[harness-orchestrator] ingestAttachments: skipped image — ${guard.reason}`,
+              );
+              // #504/#505 review round 4 — a guard rejection must leave a
+              // visible trace in the turn's text, not just this server log.
+              rejectedImageReasons.push(guard.reason);
+              continue;
+            }
+            images.push({
+              mediaType: guard.mediaType,
+              bytesBase64: fetched.bytes.toString('base64'),
+            });
+            continue;
+          }
           const fetchedFileName =
             'fileName' in fetched
               ? (fetched as { fileName?: string }).fileName
               : undefined;
+          const attachmentFileName = fetchedFileName ?? c.fileName;
+          const label = c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
+          // #430 — CSV attachments become a queryable dataset instead of a
+          // truncated `[attachment-content]` text blob, whenever a
+          // KnowledgeGraph AND a resolved user identity are both available.
+          // Falls back to the plain-text path otherwise, so CSV ingest
+          // degrades instead of silently failing on a channel without
+          // either.
+          //
+          // #430 fixup (reviewer round 2) — dataset ownership needs the
+          // canonical `omadiaUserId` uuid, NOT the raw channel-native id
+          // `input.userId` carries for channel turns (Teams AAD oid, …; see
+          // `ChatTurnInput.userId`'s doc comment).
+          //
+          // #430 fixup (reviewer round 5) — this used to re-resolve
+          // `input.channelIdentity` independently, right here, on every CSV
+          // attachment. That was the ONLY place the canonical id got
+          // computed — `QueryDatasetTool` had no way to read it and fell
+          // back to the raw `turnContext.current()?.userId`, so a dataset a
+          // channel user just imported could never be found again by that
+          // same user. Now reads the ONE per-turn resolution both the
+          // import and query paths share — see
+          // `resolveTurnOwnerIdentity`/`TurnContextValue.resolvedOmadiaUserId`
+          // for the resolution + fallback rules (still idempotent, still
+          // degrades to the plain-text path below when unresolved).
+          if (isCsvAttachment(contentType, attachmentFileName) && this.knowledgeGraph) {
+            const ownerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
+            if (ownerOmadiaUserId) {
+              const imported = await importCsvDataset({
+                graph: this.knowledgeGraph,
+                bytes: fetched.bytes,
+                datasetName: attachmentFileName ?? label,
+                sourceFileName: attachmentFileName ?? label,
+                ownerOmadiaUserId,
+                ...(c.storageKey ? { sourceStorageKey: c.storageKey } : {}),
+              });
+              if (imported.ok) {
+                // #430 fixup — per-cell truncation (MAX_CELL_CHARS) still
+                // happens (see datasetImport.ts module doc); only tell the
+                // model "not truncated" when that's actually true this time,
+                // rather than making a blanket claim the PR no longer backs.
+                const { truncatedCellCount, truncatedColumns } = imported.truncation;
+                const truncationNote =
+                  truncatedCellCount > 0
+                    ? `Note: ${String(truncatedCellCount)} cell(s) in column(s) [${truncatedColumns.join(', ')}] exceeded the per-cell length cap and were truncated on import.`
+                    : 'No cells were truncated on import.';
+                textBlocks.push(
+                  `\n\n[dataset-imported: ${label}]\ndataset_id=${imported.result.datasetId}, rows=${String(imported.result.rowCount)}. ` +
+                    `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with this dataset_id to filter/aggregate this data — do not ask the user to re-paste it. ${truncationNote}\n[/dataset-imported]`,
+                );
+                continue;
+              }
+              console.warn(
+                `[harness-orchestrator] ingestAttachments: CSV dataset import failed for ${label} — ${imported.reason}`,
+              );
+              // Fall through to the plain-text path below so the CSV's raw
+              // text (even if capped) still reaches the model rather than
+              // vanishing silently.
+            }
+          }
           const result = await extractAttachmentText(
             fetched.bytes,
-            fetched.contentType ?? c.contentType,
-            fetchedFileName ?? c.fileName,
+            contentType,
+            attachmentFileName,
           );
           if (!result.ok) continue;
-          const label = c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
-          blocks.push(
+          textBlocks.push(
             `\n\n[attachment-content: ${label}]\n${result.text}\n[/attachment-content]`,
           );
         } catch (err) {
@@ -4812,22 +5391,50 @@ export class Orchestrator {
           );
         }
       }
-      return blocks.join('');
+      return {
+        text: textBlocks.join(''),
+        images,
+        skippedVisionImageCount,
+        rejectedImageReasons,
+      };
     } catch (err) {
       console.warn(
         `[harness-orchestrator] ingestAttachments failed (non-fatal) — ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      return '';
+      return empty;
     }
+  }
+
+  /**
+   * Issue #474 — true when a plugin-contributed native tool may be exposed
+   * to / invoked by the orchestrator. Kernel-internal registrations (no
+   * `agentId`) are always available; a plugin-owned one is gated on
+   * `isPluginToolsReady`, which defaults to "ready" when the gate was never
+   * wired (byte-identical pre-#474 behaviour).
+   */
+  private isToolAvailable(agentId: string | undefined): boolean {
+    if (agentId === undefined) return true;
+    if (!this.isPluginToolsReady) return true;
+    return this.isPluginToolsReady(agentId);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildToolsList(): any[] {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tools: any[] = [{ type: MEMORY_TOOL_TYPE, name: MEMORY_TOOL_NAME }];
+    const tools: any[] = [];
+    // Issue #474 (review round 10) — the hardcoded `memory` tool spec used
+    // to be pushed unconditionally, bypassing the readiness gate applied to
+    // every other plugin-contributed tool below. Mirror `isToolAvailable`'s
+    // `dispatchToolInner` check: gate on the `agentId` of whichever plugin
+    // (if any) registered `memory` via `ctx.tools.registerHandler('memory')`.
+    const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
+    if (this.isToolAvailable(memoryAgentId)) {
+      tools.push({ type: MEMORY_TOOL_TYPE, name: MEMORY_TOOL_NAME });
+    }
     if (this.knowledgeGraphTool) tools.push(knowledgeGraphToolSpec);
+    if (this.queryDatasetTool) tools.push(queryDatasetToolSpec);
     // Diagrams + enrich_company tool specs come from nativeTools registry (plugin-contributed).
     if (this.chatParticipantsTool) tools.push(chatParticipantsToolSpec);
     if (this.askUserChoiceTool) tools.push(askUserChoiceToolSpec);
@@ -4838,13 +5445,24 @@ export class Orchestrator {
     // Plugin-contributed native tools (registered via ctx.tools.register).
     // Live-ingested: activating a tool-kind plugin makes its spec appear on
     // the next iteration without requiring an orchestrator rebuild.
+    // Issue #474 — a plugin that hasn't finished its own connection/auth
+    // setup is excluded here so the orchestrator never offers a tool it
+    // knows will fail, instead of discovering that via a wasted round-trip.
     for (const entry of this.nativeTools.listWithHandler()) {
-      if (entry.spec) tools.push(entry.spec);
+      if (entry.spec && this.isToolAvailable(entry.agentId)) {
+        tools.push(entry.spec);
+      }
     }
     // DomainTools dynamically from the map — so hot-registered uploaded
     // agents become visible from the next iteration without reboot.
+    // Issue #474 — same gate as the native-tools loop above: a domain tool
+    // whose owning plugin hasn't completed its connection/auth setup must
+    // not be offered either, otherwise the model discovers the missing
+    // access via a failing dispatch instead of the tool being absent.
     for (const tool of this.domainToolsByName.values()) {
-      tools.push(tool.spec);
+      if (this.isToolAvailable(tool.agentId)) {
+        tools.push(tool.spec);
+      }
     }
     // Privacy-Shield v4 — verb + render tools, offered only when the v4
     // data-plane boundary is active for this turn.

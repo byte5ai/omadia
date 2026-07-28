@@ -136,6 +136,51 @@ src/
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
 
+### Plugin-Tool-Readiness-Gate (#474)
+
+`Orchestrator.isToolAvailable(agentId)` entscheidet pro Tool, ob es dem
+Modell angeboten und bei Dispatch ausgeführt wird. Ohne `agentId`
+(kernel-interne Registrierungen wie `render_diagram`) oder ohne
+verdrahtetes `isPluginToolsReady` (Legacy-Hosts, Unit-Tests) bleibt das
+Verhalten exakt wie vor #474 — immer verfügbar. Konsultiert an jeder Stelle,
+die ein Tool-Name→Handler-Mapping liest: `buildToolsList()` (Tool-Specs,
+inkl. des Anthropic-`memory`-Fast-Path, falls ein Plugin ihn via
+`ctx.tools.registerHandler('memory', …)` registriert hat),
+`dispatchToolInner()` (derselbe Fast-Path plus die generischen
+`NativeToolRegistry`- und `DomainTool`-Handler), `getSystemPrompt()`
+(promptDoc-Splice + Fach-Agenten-Roster — ein gegatetes Tool taucht weder in
+den Specs noch in Doku/Roster auf), `directLineObligationState()` (#332
+Forced-`tool_choice`) und `executeDirectLine()` (`#token`-Kandidatenauflösung,
+degradiert auf die bestehende "Specialist … is no longer available."-Notiz
+statt den internen Dispatch-Fehler zu zeigen). Die parallele
+`ToolDispatchService` (Subscription-CLI-Bridge) trägt dieselbe Gate-Logik
+unabhängig nach, da sie ohne Orchestrator-Instanz läuft.
+
+Zwei unabhängige Readiness-Signale werden UND-verknüpft (jedes kann
+Verfügbarkeit allein verweigern) — bewusst zwei getrennte Caches statt einem
+gemergten, damit keins das Urteil des anderen stillschweigend überschreiben
+kann:
+
+- **`PluginStatusRegistry`** (`middleware/src/platform/pluginStatusRegistry.ts`)
+  — explizit, vom Plugin selbst via
+  `ctx.status.report({state:'needs_action'|'error'})` gesetzt.
+- **`OAuthReadinessTracker`** (`middleware/src/plugins/oauth/oauthReadinessTracker.ts`)
+  — automatisch, aus demselben Vault-Token-State abgeleitet, den
+  `ctx.oauthTokens` liest; refreshed bei jedem
+  `ToolPluginRuntime`/`DynamicAgentRuntime.activate()` (Install,
+  Boot-Reaktivierung, Post-Connect). Deckt den Fall, dass
+  `installService.ts` ein `type:'oauth'`-Plugin schon beim `configure()`
+  aktiviert — bevor der Operator "Connect" geklickt hat —, ohne dass der
+  Plugin-Autor dafür einen eigenen `status.report()`-Call schreiben muss.
+
+Beide werden am Boot hinter dem Service-Registry-Key
+`installedPluginToolsReadyReader` (`middleware/src/index.ts`)
+veröffentlicht und von `harness-orchestrator/src/plugin.ts` als
+`OrchestratorOptions.isPluginToolsReady` verdrahtet. Bewusst getrennt von
+der MCP-Server-spezifischen Auth-Lücke (`mcpOAuthService`), die für
+MCP-Server bereits existiert — dieses Gate deckt nur native
+Plugin-Tool-Registrierungen ab.
+
 ### Sub-Agents (lokal, in-process)
 
 - **Datei:** `services/localSubAgent.ts` (`LocalSubAgent`-Klasse).
@@ -626,68 +671,46 @@ durch `runTurn({ ..., viewer })`. Tests: `test/conductorBuilder.test.ts`
 (Digest-Sichtbarkeit inkl. pending/fremd-privat, Proposal-Vetting,
 Malformed-Blocks, No-Proposal-Regression).
 
-### In-App Issue Reporting — Diagnostics-Attachment (#433)
+### Dataset-Routen + `query_dataset`-Tool (#430)
 
-Der bestehende In-App-Issue-Reporter (`src/issues/issuesRouter.ts`, `POST
-/api/v1/issues/preview` + `POST /api/v1/issues/create`, Operator meldet ein
-Issue über die eigene, per Device-Flow verbundene GitHub-Identität) akzeptiert
-jetzt ein optionales, **opt-in** `diagnostics`-Feld auf beiden Routes: ein
-client-seitig gepuffertes Stack-Trace-/Log-Excerpt. GitHub's REST API hat
-keinen File-Attachment-Endpoint, daher wird das Excerpt als kollabierter
-`<details>`-Block inline an den Issue-Body angehängt (`buildDiagnosticsBlock`)
-— zuerst derselbe Secrets-Scanner (`sanitizeIssueBody`) wie für den Rest des
-Bodies, über das volle rohe Excerpt, danach die eigene tail-truncation
-(neueste Zeilen bleiben, Gegenteil zu `sanitizeIssueBody`s Head-Truncation)
-auf `MAX_DIAGNOSTICS_BYTES`. Die Reihenfolge ist sicherheitskritisch — siehe
-Review Runde 3 unten. Das Excerpt geht **nie** durch den LLM-Reformulator — `/preview` liefert exakt
-den Block zurück, den `/create` anhängt, damit der Operator vor dem Filen
-sieht, was rausgeht. Web-UI-seitig puffert `web-ui/app/_lib/diagnosticsBuffer.ts`
-die letzten `window` `error`/`unhandledrejection`-Events; `CreateIssueButton`
-hat einen Toggle, der den gepufferten Excerpt optional mitschickt.
+Neue REST-Oberfläche `src/routes/datasets.ts`, gemountet unter
+`/api/v1/datasets` (ACL-Pattern wie `/api/v1/memory` —
+`req.session.omadia_user_id`, kein anonymer Zugriff):
 
-**Scope-Fix (Review Runde 2):** ursprünglich hookte `ApiError`s Constructor
-(`web-ui/app/_lib/api.ts`) in `recordApiErrorDiagnostic`, sodass **jeder**
-fehlgeschlagene API-Call irgendwo im Admin-UI — auch ein Secrets/Vault-Config-
-`PATCH` auf `/admin/settings` — still in den Diagnostics-Ring-Buffer floss.
-Opted ein Operator später bei einem unrelated Bug-Report "attach recent
-errors" ein, hätte genau dieser unrelated Capture (nur teilweise durch
-Server-Redaction abgedeckt) in einem PUBLIC GitHub-Issue landen können. Fix:
-der globale Hook ist aus dem `ApiError`-Constructor entfernt; der Buffer
-akzeptiert nur noch `window` `error`/`unhandledrejection` (Page-Level-Crashes,
-nicht eine spezifische Admin-Aktion). `diagnosticsBuffer.ts` exportiert kein
-`recordApiErrorDiagnostic` und keine `'api-error'`-Source mehr. Test:
-`web-ui/app/_lib/__tests__/api.test.ts` — Konstruktion eines `ApiError` fügt
-dem Buffer nichts hinzu.
+- `POST /api/v1/datasets` — multipart CSV-Upload (`multer`, ein File pro
+  Request, `MAX_UPLOAD_BYTES` = 25 MB).
+- `GET /api/v1/datasets` — Liste der eigenen Datasets.
+- `GET /api/v1/datasets/:id` — Schema + Metadaten eines Datasets.
+- `GET /api/v1/datasets/:id/rows` — paginierte Roh-Zeilen.
+- `DELETE /api/v1/datasets/:id` — Dataset löschen.
 
-**Sicherheitsdetail (Review-Fix):** das Diagnostics-Excerpt ist
-attacker-influenceable (Fehlermeldungen, rohe Server-Response-Bodies) und
-`sanitizeIssueBody` escaped keine Backticks — nur Secrets-Redaction und
-Size-Truncation. Ein fixer ` ```text `-Fence wäre durch einen ` ``` `-Run im
-Excerpt-Content durchbrechbar (GitHub würde den Rest dann als live
-Markdown/HTML außerhalb des Fences rendern). Fix: die Fence-Länge wird
-dynamisch berechnet — eine Backtick mehr als der längste Backtick-Run im
-sanitierten Content (Standard-CommonMark-Technik), siehe
-`longestBacktickRun`/`buildDiagnosticsBlock`. Test:
-`test/issues/issuesRouter.test.ts` → "diagnostics fence widens so an embedded
-``` run cannot break out of it".
+Dieselbe Pipeline (`importCsvDataset` aus
+`harness-orchestrator/src/datasetImport.ts`) läuft auch automatisch beim
+CSV-Chat-Attachment-Pfad in `orchestrator.ts`'s `ingestAttachments` (ersetzt
+dort den bisherigen 20.000-Zeichen-Text-Cutoff für CSVs) — siehe §7 für die
+Knowledge-Graph-seitige Implementierung.
 
-**Sicherheitsdetail (Review Runde 3 — Reihenfolge Truncate/Sanitize):**
-`buildDiagnosticsBlock` truncatete ursprünglich zuerst auf
-`MAX_DIAGNOSTICS_BYTES` und sanitierte danach. Bei einem Excerpt wie
-`'Authorization: Bearer ' + 'A'.repeat(64) + '\n' + 'x'.repeat(8127)` (8215
-Bytes, unter `MAX_DIAGNOSTICS_INPUT_LEN` also akzeptiert, über
-`MAX_DIAGNOSTICS_BYTES` also getruncated) lag der Cut-Punkt genau hinter dem
-23-Byte-Prefix `Authorization: Bearer `. Der Bearer-Token-Pattern in
-`sanitizeIssueBody` braucht diesen Prefix, um zu matchen — nach dem
-Truncaten fehlte er, der 64-Zeichen-Token blieb im getruncateten Rest
-unredacted stehen und wäre unverschlüsselt in ein PUBLIC GitHub-Issue
-gegangen. Fix: Reihenfolge getauscht — `sanitizeIssueBody` läuft jetzt über
-das volle rohe Excerpt (mit einem Byte-Budget, das großzügig über der
-Redaction-Expansion liegt, damit `sanitizeIssueBody`s eigene, Head-
-truncating Size-Cap nicht vor unserer Tail-Truncation feuert), erst danach
-wird der bereits redigierte Text auf `MAX_DIAGNOSTICS_BYTES` gekürzt. Test:
-`test/issues/issuesRouter.test.ts` → "redacts a bearer token whose prefix
-falls outside the tail-truncation window".
+Neues natives Tool **`query_dataset`** (`tools/queryDatasetTool.ts`),
+registriert wie die übrigen Orchestrator-Tools in §3's Orchestrator-Setup:
+`list_datasets` / `get_schema` / `query_rows` gegen eine eingeschränkte
+Filter/Aggregat-DSL (nie rohes SQL vom Modell), Ergebnisse immer
+server-seitig paginiert/aggregiert bzw. auf 200 Gruppen gecappt.
+
+**Identity-Resolution (Fixup Runde 5):** für einen Channel-Turn (Teams/
+Slack/Telegram) ist `ChatTurnInput.userId` die RAW channel-native id, NICHT
+die kanonische `omadiaUserId` uuid. `resolveTurnOwnerIdentity`
+(`resolveTurnOwnerIdentity.ts`) löst sie EINMAL pro Turn auf (via
+`KnowledgeGraph.resolveOrCreateChannelIdentity`, wenn `input.channelIdentity`
+gesetzt ist — sonst fällt sie auf `input.userId` zurück, das für HTTP/CLI-
+Turns bereits kanonisch ist) und legt sie in
+`TurnContextValue.resolvedOmadiaUserId` ab — einmal in `runTurn` (non-
+streaming) und einmal in `chatStream` (der Pfad, den
+`createOrchestratorDispatcher` für Channel-Turns tatsächlich aufruft).
+`QueryDatasetTool` und `ingestAttachments` lesen beide ausschließlich dieses
+Feld für die Dataset-ACL (niemals das rohe `TurnContextValue.userId`) — vorher
+schrieb der Import-Pfad unter der kanonischen id, während der Query-Pfad die
+rohe id las, sodass ein Channel-User sein eigenes gerade importiertes Dataset
+nie wiederfinden konnte.
 
 ---
 
@@ -901,6 +924,35 @@ Wird vom Orchestrator aufgerufen, wenn der User auf prior art verweist.
 End-to-End verifiziert: der Orchestrator nutzt das Tool von selbst, ohne
 dass man ihn zwingt.
 
+### Structured Datasets — CSV Import (#430)
+
+Separate Ablage neben dem eigentlichen Graph — bewusst KEINE Graph-Node-
+Explosion pro Zeile (Node-Properties sind GIN-indexiert, siehe
+`ingestEntities`-Doku). Relationale Sidecar-Tabellen `datasets` +
+`dataset_rows` (Migration `packages/harness-knowledge-graph-neon/src/
+migrations/0029_datasets.sql`); pro Dataset genau EIN `Dataset`-Graph-Node
+(`PluginEntity`, `system='dataset'`) für Recall/Zitation.
+
+- **Interface:** `KnowledgeGraph.{ingestDataset,listDatasets,getDataset,
+  queryDatasetRows,deleteDataset}` (`plugin-api/src/knowledgeGraph.ts`),
+  implementiert in `@omadia/knowledge-graph-neon` (echtes SQL) UND
+  `@omadia/knowledge-graph-inmemory` (volle Parität, kein Stub).
+- **Import:** `POST /api/v1/datasets` (multipart CSV, `src/routes/
+  datasets.ts`) sowie automatisch bei CSV-Chat-Attachments
+  (`attachmentExtract.ts`'s `isCsvAttachment` branch in `orchestrator.ts`'s
+  `ingestAttachments` — ersetzt den bisherigen 20.000-Zeichen-Text-Cutoff
+  für CSVs).
+- **Privacy:** jede importierte Zeile läuft vor dem Schreiben durch den
+  bestehenden C0-Regex-Baseline-Detector (`@omadia/plugin-privacy-guard`'s
+  `createBaselineDetector`/`maskPrompt`) — dieselbe Pipeline, die
+  Freitext-User-Prompts schützt. Nur `string`/`date`-Spalten werden
+  gescannt (Details + Kosten-Hinweis in `datasetImport.ts`'s Modul-Doc).
+- **Query:** `query_dataset`-Tool (`tools/queryDatasetTool.ts`) — eine
+  eingeschränkte Filter/Aggregat-DSL (nie rohes SQL vom Modell), immer
+  server-seitig paginiert/aggregiert.
+- **Admin-UI:** bewusst NICHT Teil dieser Änderung — siehe PR-Beschreibung
+  von #430 für die Begründung; offener Folge-Task.
+
 ---
 
 ## 8. Skills
@@ -937,6 +989,14 @@ Migration. Statt dessen überschreibt der Preamble in
 
 Funktioniert in der Praxis. Falls ein Sub-Agent dennoch curl-Muster
 produziert, Skill selbst anpassen.
+
+### Cross-Referenz: `query_dataset` (#430) ist kein Skill
+
+AGENTS.md's Doku-Regel ordnet "Neue Route / Tool / Sub-Agent" §3 **und**
+§8 zu. #430's `query_dataset`-Tool ist ein natives Orchestrator-Tool ohne
+eigenen `skills/<name>/SKILL.md`-Ordner — es gehört also inhaltlich nicht
+in "Aktuelle Skills" oben. Referenz statt Duplikat: volle Doku in §3
+("Dataset-Routen + `query_dataset`-Tool") und §7 (Knowledge-Graph-Schicht).
 
 ---
 
@@ -1319,6 +1379,18 @@ gekettet, weil `requires` beim Boot enforced wird): docs-RFC (diese PR)
 (plus `TurnContextValue`-Extension) → vier Per-Channel-Opt-in-PRs →
 omadia-ui-Orchestrator-Consumer. Details + per-PR-Doc-Pflichten in §15
 des RFC.
+
+### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up)
+
+Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckt
+absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete bleibt
+API-only (`POST/GET/DELETE /api/v1/datasets*`, siehe §3). #430's eigene
+Triage-Acceptance-Criteria verlangen aber genau diese UI; der Branch
+schließt das Issue deshalb NICHT, sondern "addresses" es — ein
+Folge-Issue für die Admin-UI-Seite (`web-ui/app/admin/datasets/` o.ä.,
+Upload-Dropzone + Schema-Tabelle + Zeilen-Preview + Delete-Bestätigung,
+Pattern analog zur bestehenden Package-Upload-Seite) ist offen zu
+erfassen.
 
 ---
 

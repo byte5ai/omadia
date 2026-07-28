@@ -52,7 +52,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
 
@@ -118,6 +118,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless cosign signing of the dev-runner release image (spec §10): the
+      # reusable workflow signs with the workflow's GitHub OIDC token, so the
+      # CALLER must grant id-token here — a reusable workflow cannot self-grant it.
+      id-token: write
     uses: ./.github/workflows/publish-images.yml
     with:
       ref: ${{ needs.release.outputs.new_tag }}

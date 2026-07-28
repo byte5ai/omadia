@@ -113,6 +113,13 @@ export interface OrchestratorDeps {
     agentId: string,
     configKey: string,
   ) => unknown | undefined;
+  /**
+   * Issue #474 — per-plugin tool-readiness gate (see
+   * `OrchestratorOptions.isPluginToolsReady`). Wired from the harness
+   * runtime's `PluginStatusRegistry`. Optional — when absent every
+   * plugin's tools are always available (pre-#474 behaviour).
+   */
+  readonly isPluginToolsReady?: (agentId: string) => boolean;
   readonly contextRetriever?: ContextRetriever;
   readonly sessionBriefing?: SessionBriefingService;
   readonly factExtractor?: FactExtractor;
@@ -283,6 +290,9 @@ export function buildOrchestratorForAgent(
     ...(deps.pluginConfigGet
       ? { pluginConfigGet: deps.pluginConfigGet }
       : {}),
+    ...(deps.isPluginToolsReady
+      ? { isPluginToolsReady: deps.isPluginToolsReady }
+      : {}),
     nudgeRegistry: deps.nudgeRegistry,
     ...(deps.nudgeStateStore ? { nudgeStateStore: deps.nudgeStateStore } : {}),
     ...(deps.processMemory ? { nudgeProcessMemory: deps.processMemory } : {}),
@@ -333,6 +343,12 @@ export function buildOrchestratorForAgent(
       // sub-agents fail GRACEFULLY (dispatch returns an error result) until they
       // also run on the CLI (recursive Shape 3 — follow-up); tool-less ones work.
       domainToolsProvider: () => orchestrator.listDomainTools(),
+      // Issue #474 — this dispatcher bypasses `Orchestrator.dispatchTool`
+      // entirely (the CLI reaches tools over the loopback MCP server), so
+      // the readiness gate must be repeated here too.
+      ...(deps.isPluginToolsReady
+        ? { isPluginToolsReady: deps.isPluginToolsReady }
+        : {}),
     });
     return {
       orchestrator,

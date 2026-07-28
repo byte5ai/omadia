@@ -1,4 +1,4 @@
-import type { PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
+import type { ChannelKind, PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
 import type {
   AgentConsultation,
   DelegatedAnswer,
@@ -223,6 +223,23 @@ export interface ChatTurnInput {
    * "only this user's history". Never reaches the model prompt.
    */
   userId?: string;
+  /**
+   * #430 fixup — the turn's channel-native identity, when the dispatcher can
+   * map one. Populated ONLY for channel turns whose `ChannelUserRef.kind`
+   * maps to a {@link ChannelKind} the `KnowledgeGraph` ACL model understands
+   * (`createOrchestratorDispatcher` in `middleware/src/channels/
+   * orchestratorDispatcher.ts` is the sole producer). When present, `userId`
+   * above is a RAW channel-native id (Teams AAD oid, …) — NOT the canonical
+   * `omadiaUserId` uuid the KG's ACL routes filter on — and any code that
+   * needs to write an `ownerOmadiaUserId` (dataset ingest, MK ACLs, …) must
+   * resolve it first via `KnowledgeGraph.resolveOrCreateChannelIdentity`.
+   * Absent for HTTP/CLI turns, where `userId` (resolved from
+   * `req.session.omadia_user_id` or a validated `x-user-id`) already IS the
+   * canonical uuid, and for channel kinds the KG model doesn't have a
+   * `ChannelKind` for yet (discord, whatsapp, canvas' `'custom'` userRef) —
+   * deliberately not guessed at.
+   */
+  channelIdentity?: { channelKind: ChannelKind; channelUserId: string };
   /**
    * Chronologically ordered previous turns of this chat (oldest first), as
    * maintained by an in-memory store outside the orchestrator. When present,

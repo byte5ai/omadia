@@ -83,11 +83,19 @@ export function registerDevPlatformRepoRoutes(router: Router, deps: DevPlatformR
       // Validate access + capture the default branch (spec §6).
       const access = await deps.probeRepoAccess({ owner, name, token });
       if (!access.ok) {
-        // Drop the staged device-flow token: it was parked under pending/<sub>
-        // and, without this, a failed repo add leaves a live credential in the
-        // vault staging slot with no owning repo to clean it up.
-        if (kind === 'device_flow') await deps.credentials.clearPending(caller.sub);
-        throw new DevPlatformError(400, 'devplatform.repo_access_failed', 'could not access the repository with the supplied credential');
+        // Keep the staged device-flow token parked under pending/<sub>. A probe
+        // failure is usually fixable WITHOUT re-authorizing — a mistyped owner/name,
+        // or a private repo the credential cannot yet reach (the OAuth App is not
+        // approved for the org, or the account lacks access). Dropping the parked
+        // token here forced a full device-flow re-auth on every retry and surfaced a
+        // misleading `no_pending_device_flow` on the next attempt. The parked token is
+        // the operator's own credential, encrypted under their sub; it is overwritten
+        // by the next connect and consumed by the next successful add.
+        throw new DevPlatformError(
+          400,
+          'devplatform.repo_access_failed',
+          'could not access the repository with the supplied credential — check the owner/name, and that the credential can reach it (a private repo may need the OAuth App approved for the org, a PAT with repo scope, or the GitHub App installed)',
+        );
       }
 
       const credentialKind: DevRepoCredentialKind = kind === 'device_flow' ? 'device_flow' : 'pat';
@@ -166,6 +174,8 @@ export function registerDevPlatformRepoRoutes(router: Router, deps: DevPlatformR
       if (typeof body['defaultBranch'] === 'string' && body['defaultBranch'].trim()) {
         patch.defaultBranch = body['defaultBranch'].trim();
       }
+      if (typeof body['webhookEnabled'] === 'boolean') patch.webhookEnabled = body['webhookEnabled'];
+      if ('budgetCostUsd' in body) patch.budgetCostUsd = parseNullableBudget(body['budgetCostUsd']);
       const updated = (await deps.repoStore.updateRepo(repo.id, patch)) ?? repo;
       res.json(toRepoView(updated, await deps.credentials.getConnection(updated.id)));
     }),
@@ -329,6 +339,23 @@ async function loadRepo(deps: DevPlatformRouterDeps, req: Request): Promise<DevR
 
 function asString(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';
+}
+
+/** The per-repo cost budget knob (W4 spec §5): a strictly-positive number, or
+ *  null to clear (fall back to the config default). Rejects zero/negative/NaN so
+ *  an operator typo cannot silently disable a cap. */
+function parseNullableBudget(v: unknown): number | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'string' && v.trim() === '') return null;
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new DevPlatformError(
+      400,
+      'devplatform.invalid_budget',
+      'budget must be a positive number or null',
+    );
+  }
+  return n;
 }
 
 function asStringArray(v: unknown): string[] | undefined {
