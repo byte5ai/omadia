@@ -154,11 +154,19 @@ export class ConductorWebhookSubscriptionStore {
     return secret;
   }
 
+  /** Enabling bumps `enabled_since` (review finding — see migration 0007's comment):
+   *  `listMissingRunDeliveries` uses it to bound reconciliation to runs that ended
+   *  while the subscription was actually active, so re-enabling a long-disabled
+   *  subscription never backfills events from its disabled window. Disabling leaves
+   *  `enabled_since` untouched — it only ever records the most recent transition
+   *  INTO the enabled state. */
   async setEnabled(id: string, enabled: boolean): Promise<void> {
-    await this.pool.query(`UPDATE conductor_webhook_subscriptions SET enabled = $2, updated_at = now() WHERE id = $1`, [
-      id,
-      enabled,
-    ]);
+    await this.pool.query(
+      `UPDATE conductor_webhook_subscriptions
+          SET enabled = $2, updated_at = now(), enabled_since = CASE WHEN $2 THEN now() ELSE enabled_since END
+        WHERE id = $1`,
+      [id, enabled],
+    );
   }
 
   async delete(id: string): Promise<void> {
@@ -168,14 +176,39 @@ export class ConductorWebhookSubscriptionStore {
 
   // ── outbound delivery ledger (retry + audit) ──────────────────────────────
 
+  /**
+   * Insert a delivery row. Conflict-safe on `(subscription_id, run_id)` (review
+   * finding — migration 0007's `conductor_webhook_deliveries_run_subscription_uidx`):
+   * the live terminal-run hook and the reconciliation pass can race to create the
+   * "missing" delivery for the same run, and two reconciliation passes on different
+   * replicas can race each other. `ON CONFLICT DO NOTHING` makes at most one delivery
+   * ever exist per (subscription, run) pair; on a conflict this returns the row that
+   * already won instead of erroring or silently returning nothing, so every caller —
+   * including ones that don't check for a conflict — stays idempotent.
+   */
   async createDelivery(input: { subscriptionId: string; event: string; payload: JsonObject }): Promise<ConductorWebhookDelivery> {
-    const r = await this.pool.query<DeliveryRow>(
+    const inserted = await this.pool.query<DeliveryRow>(
       `INSERT INTO conductor_webhook_deliveries (subscription_id, event, payload)
        VALUES ($1, $2, $3::jsonb)
+       ON CONFLICT (subscription_id, run_id) WHERE run_id IS NOT NULL DO NOTHING
        RETURNING id, subscription_id, event, payload, status, attempts, last_error, next_attempt_at, delivered_at, created_at`,
       [input.subscriptionId, input.event, JSON.stringify(input.payload)],
     );
-    return toDelivery(r.rows[0]!);
+    if (inserted.rows[0]) return toDelivery(inserted.rows[0]);
+
+    // Conflict: a delivery for this (subscription, run) pair already exists.
+    const runId = typeof input.payload['runId'] === 'string' ? input.payload['runId'] : null;
+    const existing = await this.pool.query<DeliveryRow>(
+      `SELECT id, subscription_id, event, payload, status, attempts, last_error, next_attempt_at, delivered_at, created_at
+         FROM conductor_webhook_deliveries WHERE subscription_id = $1 AND run_id = $2`,
+      [input.subscriptionId, runId],
+    );
+    if (!existing.rows[0]) {
+      // Should be unreachable (the conflict just proved a matching row exists), but
+      // never leave the caller without a row to act on.
+      throw new Error(`webhook delivery conflict for subscription ${input.subscriptionId}, run ${runId ?? '(none)'} could not be resolved`);
+    }
+    return toDelivery(existing.rows[0]);
   }
 
   /** Deliveries due for an attempt now (status='pending' and next_attempt_at <= now).
@@ -265,8 +298,17 @@ export class ConductorWebhookSubscriptionStore {
    * "this run ended" to "a delivery row was created" for it. This finds terminal,
    * non-dry-run runs (within `sinceIso`) that have NO delivery row for a given
    * enabled subscription yet, and returns what's missing so the caller can create
-   * it. `payload->>'runId'` is how a delivery is tied back to its run — `createDelivery`
-   * always includes `runId` in the payload (see `index.ts`'s `notifyRunEnded` hook).
+   * it. `run_id` (generated from `payload->>'runId'`) is how a delivery is tied back
+   * to its run — `createDelivery` always includes `runId` in the payload (see
+   * `index.ts`'s `notifyRunEnded` hook).
+   *
+   * Bounded by BOTH `sinceIso` (the caller's lookback window) AND each subscription's
+   * own `enabled_since` (review finding): without the latter, creating a brand-new
+   * subscription — or re-enabling one that was disabled — would backfill every
+   * matching run in the whole `sinceIso` window, including runs that ended before the
+   * subscription existed or while it was disabled. `enabled_since` defaults to
+   * creation time and is bumped on every transition into the enabled state, so this
+   * only ever reconciles runs that ended while the subscription was genuinely active.
    */
   async listMissingRunDeliveries(
     sinceIso: string,
@@ -277,13 +319,14 @@ export class ConductorWebhookSubscriptionStore {
          JOIN conductor_webhook_subscriptions s
            ON s.enabled = true
           AND s.event = ('run.' || r.status)
+          AND r.ended_at >= s.enabled_since
         WHERE r.is_dry_run = false
           AND r.status IN ('completed', 'failed')
           AND r.ended_at >= $1
           AND NOT EXISTS (
                 SELECT 1 FROM conductor_webhook_deliveries d
                  WHERE d.subscription_id = s.id
-                   AND d.payload->>'runId' = r.id::text
+                   AND d.run_id = r.id::text
               )`,
       [sinceIso],
     );

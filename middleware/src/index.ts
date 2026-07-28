@@ -2794,6 +2794,12 @@ async function main(): Promise<void> {
       vault: secretVault,
       webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
       webhookInboundMaxPerMinute: config.CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE,
+      // Review finding — the operator UI must display an inbound endpoint URL it can
+      // actually reach; PUBLIC_BASE_URL alone isn't reliable here since it may
+      // deliberately point at the Next.js dev-server origin (browser-facing), which
+      // doesn't proxy /api/hooks/*. CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL overrides it
+      // when the two must differ.
+      webhookInboundBaseUrl: config.CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL,
       log: (m) => console.log(m),
     });
     // Issue #437 — resolve the inbound-webhook forward reference mounted earlier

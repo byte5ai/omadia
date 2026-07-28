@@ -46,15 +46,24 @@ CREATE INDEX IF NOT EXISTS conductor_webhook_inbound_deliveries_endpoint_idx
 -- HMAC-signed delivery whenever the named internal event fires. `event` is
 -- 'run.completed' / 'run.failed' (the run-lifecycle events this issue wires) but is
 -- a free-text column so a future emit id can subscribe the same way.
+--
+-- `enabled_since` (review finding): the timestamp of the subscription's most recent
+-- transition INTO the enabled state (defaults to creation time; `setEnabled(id, true)`
+-- bumps it). `listMissingRunDeliveries` bounds its reconciliation JOIN by this column
+-- so that creating a new subscription, or re-enabling a previously-disabled one, only
+-- ever backfills runs that ended while the subscription was actually active — not
+-- every matching run in the whole lookback window, which would otherwise resurrect
+-- events from before the subscription existed or from its disabled period.
 CREATE TABLE IF NOT EXISTS conductor_webhook_subscriptions (
-  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  url          TEXT NOT NULL,
-  event        TEXT NOT NULL,
-  description  TEXT,
-  enabled      BOOLEAN NOT NULL DEFAULT true,
-  created_by   TEXT NOT NULL,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  url            TEXT NOT NULL,
+  event          TEXT NOT NULL,
+  description    TEXT,
+  enabled        BOOLEAN NOT NULL DEFAULT true,
+  created_by     TEXT NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  enabled_since  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS conductor_webhook_subscriptions_event_idx
   ON conductor_webhook_subscriptions(event) WHERE enabled;
@@ -62,11 +71,22 @@ CREATE INDEX IF NOT EXISTS conductor_webhook_subscriptions_event_idx
 -- Outbound delivery log — one row per delivery, retried with backoff until
 -- `max_attempts` (enforced in code) is exhausted. `next_attempt_at` is the retry
 -- worker's poll key; the row is the durable audit trail an admin surface reads.
+--
+-- `run_id` (review finding): generated from `payload->>'runId'` (every run-lifecycle
+-- delivery's payload carries it — see `buildRunEventPayload` in index.ts) so a plain
+-- uniqueness constraint can enforce "at most one delivery per run per subscription"
+-- without an application-level lock. NULL for any future non-run-linked delivery
+-- (e.g. a payload with no `runId`), which the partial unique index below excludes —
+-- those never collide on this key. Without this constraint, reconciliation racing the
+-- live terminal-run hook (or two concurrent replicas both reconciling) could each pass
+-- an unlocked NOT EXISTS check and both insert a delivery for the same run, sending
+-- the same webhook twice.
 CREATE TABLE IF NOT EXISTS conductor_webhook_deliveries (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   subscription_id  UUID NOT NULL REFERENCES conductor_webhook_subscriptions(id) ON DELETE CASCADE,
   event            TEXT NOT NULL,
   payload          JSONB NOT NULL,
+  run_id           TEXT GENERATED ALWAYS AS (payload->>'runId') STORED,
   status           TEXT NOT NULL DEFAULT 'pending', -- pending | delivered | failed | exhausted
   attempts         INTEGER NOT NULL DEFAULT 0,
   last_error       TEXT,
@@ -78,6 +98,8 @@ CREATE INDEX IF NOT EXISTS conductor_webhook_deliveries_due_idx
   ON conductor_webhook_deliveries(next_attempt_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS conductor_webhook_deliveries_subscription_idx
   ON conductor_webhook_deliveries(subscription_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS conductor_webhook_deliveries_run_subscription_uidx
+  ON conductor_webhook_deliveries(subscription_id, run_id) WHERE run_id IS NOT NULL;
 
 -- Reconciliation support: `notifyRunEnded` (runExecutor.ts) fires the outbound
 -- dispatcher fire-and-forget AFTER a run's terminal status is already committed to

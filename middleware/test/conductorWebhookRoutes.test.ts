@@ -20,6 +20,8 @@ import type {
 } from '../src/conductor/webhookSubscriptionStore.js';
 import { WebhookUrlNotAllowedError } from '../src/conductor/webhookOutbound.js';
 
+type EndpointWithUrl = ConductorWebhookEndpoint & { inboundUrl?: string };
+
 // Issue #437 review finding: the admin CRUD HTTP surface for both inbound endpoints
 // and outbound subscriptions (registerWebhookRoutes) had ZERO route-level test
 // coverage — only the underlying stores were unit-tested. Express harness over an
@@ -172,7 +174,7 @@ interface Harness {
 
 const servers: Server[] = [];
 
-async function makeHarness(opts?: { wired?: boolean; rejectUrl?: string }): Promise<Harness> {
+async function makeHarness(opts?: { wired?: boolean; rejectUrl?: string; webhookInboundBaseUrl?: string }): Promise<Harness> {
   const wired = opts?.wired ?? true;
   const endpoints = fakeEndpointStore();
   const subscriptions = fakeSubscriptionStore();
@@ -187,6 +189,7 @@ async function makeHarness(opts?: { wired?: boolean; rejectUrl?: string }): Prom
     executor: {},
     eventRouter: {},
     ...(wired ? { webhookEndpoints: endpoints.store, webhookSubscriptions: subscriptions.store } : {}),
+    ...(opts?.webhookInboundBaseUrl ? { webhookInboundBaseUrl: opts.webhookInboundBaseUrl } : {}),
     assertOutboundUrlAllowed: (url: string) => {
       urlChecks.push(url);
       if (opts?.rejectUrl && url === opts.rejectUrl) {
@@ -259,6 +262,28 @@ describe('inbound webhook endpoints admin routes (#437)', () => {
     const listed = ((await list.json()) as { endpoints: Array<Record<string, unknown>> }).endpoints;
     assert.equal(listed.length, 1);
     assert.equal(listed[0]!.secret, undefined);
+  });
+
+  // Review finding (issue #437): the admin UI must display an inbound URL it can
+  // actually reach, not one derived from window.location.origin. The route computes
+  // it server-side from `deps.webhookInboundBaseUrl` — absent entirely when that's
+  // not configured, rather than guessing.
+  it('create AND list attach an absolute inboundUrl when webhookInboundBaseUrl is configured', async () => {
+    const h = await makeHarness({ webhookInboundBaseUrl: 'http://localhost:3979/' });
+    const created = await post(`${h.baseUrl}/webhooks/endpoints`, { eventId: 'orders.created' });
+    const { endpoint } = (await created.json()) as { endpoint: EndpointWithUrl };
+    assert.equal(endpoint.inboundUrl, `http://localhost:3979/api/hooks/${endpoint.endpointId}`);
+
+    const list = await get(`${h.baseUrl}/webhooks/endpoints`);
+    const listed = ((await list.json()) as { endpoints: EndpointWithUrl[] }).endpoints;
+    assert.equal(listed[0]?.inboundUrl, `http://localhost:3979/api/hooks/${endpoint.endpointId}`);
+  });
+
+  it('omits inboundUrl when webhookInboundBaseUrl is not configured', async () => {
+    const h = await makeHarness();
+    const created = await post(`${h.baseUrl}/webhooks/endpoints`, { eventId: 'orders.created' });
+    const { endpoint } = (await created.json()) as { endpoint: EndpointWithUrl };
+    assert.equal(endpoint.inboundUrl, undefined);
   });
 
   it('400s a create with a missing eventId', async () => {

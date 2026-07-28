@@ -10,6 +10,7 @@ import type { Request, Response, Router } from 'express';
 
 import type { JsonObject } from '@omadia/conductor-core';
 import type { ConductorRouterDeps } from './routes.js';
+import type { ConductorWebhookEndpoint } from './webhookEndpointStore.js';
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -25,6 +26,14 @@ function paramStr(v: string | string[] | undefined): string {
   return '';
 }
 
+/** Review finding (issue #437): the operator UI must display the inbound endpoint URL
+ *  it can actually reach — computed here from the middleware's own configured base
+ *  URL, never from the browser's origin. `baseUrl` absent (no config wired) omits the
+ *  field rather than guessing; the admin UI falls back to a relative path in that case. */
+function withInboundUrl(endpoint: ConductorWebhookEndpoint, baseUrl: string | undefined): ConductorWebhookEndpoint & { inboundUrl?: string } {
+  return baseUrl ? { ...endpoint, inboundUrl: `${baseUrl.replace(/\/+$/, '')}/api/hooks/${endpoint.endpointId}` } : endpoint;
+}
+
 export function registerWebhookRoutes(router: Router, deps: ConductorRouterDeps): void {
   const creatorOf = (req: Request): string => req.session?.sub ?? 'operator';
 
@@ -36,7 +45,8 @@ export function registerWebhookRoutes(router: Router, deps: ConductorRouterDeps)
       return;
     }
     try {
-      res.json({ endpoints: await deps.webhookEndpoints.list() });
+      const endpoints = await deps.webhookEndpoints.list();
+      res.json({ endpoints: endpoints.map((ep) => withInboundUrl(ep, deps.webhookInboundBaseUrl)) });
     } catch (err) {
       res.status(500).json({ code: 'conductor.webhook_endpoints_failed', message: errMsg(err) });
     }
@@ -60,7 +70,7 @@ export function registerWebhookRoutes(router: Router, deps: ConductorRouterDeps)
         createdBy: creatorOf(req),
       });
       // secret is returned ONCE — the operator must copy it now.
-      res.status(201).json({ endpoint, secret });
+      res.status(201).json({ endpoint: withInboundUrl(endpoint, deps.webhookInboundBaseUrl), secret });
     } catch (err) {
       res.status(500).json({ code: 'conductor.webhook_endpoint_create_failed', message: errMsg(err) });
     }

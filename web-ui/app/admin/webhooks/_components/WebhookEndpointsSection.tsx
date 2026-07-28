@@ -139,8 +139,14 @@ export function WebhookEndpointsSection(): React.ReactElement {
     [expanded],
   );
 
-  const inboundUrl = (endpointId: string): string =>
-    typeof window !== 'undefined' ? `${window.location.origin}/api/hooks/${endpointId}` : `/api/hooks/${endpointId}`;
+  // Review finding (issue #437): this must be the middleware's own base URL, not
+  // `window.location.origin` — in the standard local dev setup that's the Next.js
+  // dev server, which only proxies `/bot-api/*` (see web-ui/next.config.ts), not
+  // `/api/hooks/*`, so a copied window.location.origin URL 404s. The backend now
+  // computes the absolute URL server-side (`ep.inboundUrl`, from
+  // CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL / PUBLIC_BASE_URL); fall back to a relative
+  // path only if that's somehow absent, rather than guessing an origin.
+  const inboundUrl = (ep: ConductorWebhookEndpoint): string => ep.inboundUrl ?? `/api/hooks/${ep.endpointId}`;
 
   return (
     <section className="mb-10">
@@ -177,7 +183,7 @@ export function WebhookEndpointsSection(): React.ReactElement {
                     <span className="text-[15px] font-semibold text-[color:var(--fg-strong)]">{ep.eventId}</span>
                     <StatusBadge enabled={ep.enabled} />
                   </div>
-                  <code className="text-[12px] text-[color:var(--fg-muted)]">{inboundUrl(ep.endpointId)}</code>
+                  <code className="text-[12px] text-[color:var(--fg-muted)]">{inboundUrl(ep)}</code>
                   {ep.description && <span className="text-[13px] text-[color:var(--fg-muted)]">{ep.description}</span>}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">

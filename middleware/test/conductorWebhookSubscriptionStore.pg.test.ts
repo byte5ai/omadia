@@ -247,6 +247,85 @@ describe('ConductorWebhookSubscriptionStore (pg)', { skip: !pgAvailable }, () =>
       const missing = await store.listMissingRunDeliveries(futureSinceIso);
       assert.ok(!missing.some((m) => m.runId === runId), 'a run that ended before the window start must be excluded');
     });
+
+    // Review finding: reconciliation must also be bounded by the subscription's OWN
+    // lifecycle (`enabled_since`), not just the caller's sinceIso lookback — otherwise
+    // creating a new subscription, or re-enabling a disabled one, backfills every
+    // matching run from the whole lookback window, including ones that ended before
+    // the subscription ever existed or while it was disabled.
+    it('excludes a run that ended BEFORE the subscription was created, even though it is inside the sinceIso window', async () => {
+      const runId = await terminalRun('completed');
+      const subscriptionId = await newSubscription('run.completed'); // created strictly AFTER the run ended
+      const sinceIso = new Date(Date.now() - 60_000).toISOString();
+
+      const missing = await store.listMissingRunDeliveries(sinceIso);
+      assert.ok(
+        !missing.some((m) => m.runId === runId && m.subscriptionId === subscriptionId),
+        'a run that ended before the subscription existed must never be backfilled',
+      );
+    });
+
+    it('excludes a run that ended while the subscription was disabled, even after it is later re-enabled', async () => {
+      const subscriptionId = await newSubscription('run.completed');
+      await store.setEnabled(subscriptionId, false);
+      const runId = await terminalRun('completed'); // ends during the disabled window
+      await store.setEnabled(subscriptionId, true); // re-enabled AFTER the run already ended
+      const sinceIso = new Date(Date.now() - 60_000).toISOString();
+
+      const missing = await store.listMissingRunDeliveries(sinceIso);
+      assert.ok(
+        !missing.some((m) => m.runId === runId && m.subscriptionId === subscriptionId),
+        'a run that ended during the disabled window must not be resurrected just because the subscription was later re-enabled',
+      );
+    });
+
+    it('includes a run that ends AFTER the subscription is re-enabled', async () => {
+      const subscriptionId = await newSubscription('run.completed');
+      await store.setEnabled(subscriptionId, false);
+      await store.setEnabled(subscriptionId, true);
+      const runId = await terminalRun('completed'); // ends after the re-enable transition
+      const sinceIso = new Date(Date.now() - 60_000).toISOString();
+
+      const missing = await store.listMissingRunDeliveries(sinceIso);
+      assert.ok(missing.some((m) => m.runId === runId && m.subscriptionId === subscriptionId), 'a run ending after re-enable must still be reconciled normally');
+    });
+  });
+
+  // Review finding: without a uniqueness constraint on (subscription_id, run_id),
+  // reconciliation racing the live terminal-run hook (or two concurrent replicas both
+  // reconciling) could each pass an unlocked NOT EXISTS check and both create a
+  // delivery for the same run — sending the same webhook twice. createDelivery must
+  // be conflict-safe: at most one delivery per (subscription, run) pair, ever.
+  describe('createDelivery uniqueness on (subscription, run)', () => {
+    it('a second createDelivery for the same (subscription, run) pair returns the EXISTING row, not a new one', async () => {
+      const subscriptionId = await newSubscription();
+      const runId = randomUUID();
+
+      const first = await store.createDelivery({ subscriptionId, event: 'run.completed', payload: { runId } });
+      const second = await store.createDelivery({ subscriptionId, event: 'run.completed', payload: { runId } });
+
+      assert.equal(second.id, first.id, 'a duplicate create for the same run+subscription must return the row that already won, not create a second one');
+      const rows = await store.listForSubscription(subscriptionId, 10);
+      assert.equal(rows.filter((r) => r.payload['runId'] === runId).length, 1);
+    });
+
+    it('concurrent createDelivery calls for the same (subscription, run) pair converge on exactly one row', async () => {
+      const subscriptionId = await newSubscription();
+      const runId = randomUUID();
+
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () => store.createDelivery({ subscriptionId, event: 'run.completed', payload: { runId } })),
+      );
+
+      assert.equal(new Set(results.map((d) => d.id)).size, 1, 'concurrent races for the same run+subscription must never create more than one delivery row');
+    });
+
+    it('deliveries with no runId in the payload are never deduped against each other', async () => {
+      const subscriptionId = await newSubscription();
+      const a = await store.createDelivery({ subscriptionId, event: 'run.completed', payload: {} });
+      const b = await store.createDelivery({ subscriptionId, event: 'run.completed', payload: {} });
+      assert.notEqual(a.id, b.id, 'a delivery with no runId must never collide with another no-runId delivery for the same subscription');
+    });
   });
 
   describe('recordSuccess / recordFailure', () => {

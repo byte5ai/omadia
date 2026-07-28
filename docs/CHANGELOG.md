@@ -80,6 +80,55 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   uses) before sending, so the inline path and a concurrent retry-worker
   tick can never attempt — and duplicate-report the outcome of — the same
   delivery.
+- **Second-review fixups (#437):**
+  - **Inbound claim/emit ordering**: `ConductorWebhookEndpointStore.claim()`
+    inserts the delivery row (`outcome='received'`) BEFORE the route calls
+    `emit()`, so a crash between the two (e.g. `emit()` throwing on a
+    Postgres error) used to strand the row at `'received'` forever — a
+    retry with the same `X-Webhook-Delivery-Id` then got a cached
+    `'duplicate'` 200 without `emit()` ever running again, losing the event
+    permanently. `claim()` now treats a still-`'received'` row older than
+    `IN_FLIGHT_CLAIM_STALE_MS` (30s) as an abandoned claim and lets a
+    legitimate retry re-attempt processing, while a genuinely concurrent
+    redelivery within that window is still reported `'duplicate'` as
+    before.
+  - **Outbound reconciliation lifecycle bound**: `listMissingRunDeliveries`
+    previously only bounded its backfill by the caller's lookback window,
+    so creating a subscription — or re-enabling a disabled one — resurrected
+    every matching run in that whole window, including runs that ended
+    before the subscription existed or while it was disabled. A new
+    `conductor_webhook_subscriptions.enabled_since` column (defaults to
+    creation time, bumped on every transition into the enabled state) now
+    also bounds the reconciliation JOIN, so only runs that ended while the
+    subscription was genuinely active are ever backfilled.
+  - **Outbound delivery uniqueness**: reconciliation's unlocked `NOT EXISTS`
+    read followed by an unconstrained insert could race the live
+    terminal-run hook (or a second replica's reconciliation pass) into
+    creating two deliveries for the same run+subscription. A generated
+    `conductor_webhook_deliveries.run_id` column (from `payload->>'runId'`)
+    plus a partial unique index on `(subscription_id, run_id)` now cap this
+    at one delivery per run per subscription; `createDelivery` is
+    conflict-safe (`ON CONFLICT ... DO NOTHING`, returning the row that
+    already won on a race) instead of erroring or silently returning
+    nothing.
+  - **Admin UI inbound URL**: the endpoint list/create response now includes
+    a server-computed `inboundUrl` (`CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL` —
+    new, optional — falling back to `PUBLIC_BASE_URL`) and the admin UI
+    displays that instead of building the URL from
+    `window.location.origin`. In the standard local dev setup that origin is
+    the Next.js dev server, which only proxies `/bot-api/*`
+    (`web-ui/next.config.ts`) — a copied `window.location.origin` URL 404s
+    instead of reaching the middleware.
+  - **Webhook trigger validation**: `conductor-core/src/validate.ts` now
+    requires `eventId` for `kind === 'webhook'` triggers, the same
+    validation `kind === 'event'` already had. `eventRouter.ts#emit` matches
+    a trigger by `(kind === 'event' || kind === 'webhook') && eventId ===
+    <emitted id>`, so a `webhook` trigger with no/invalid `eventId` used to
+    publish successfully but could never actually fire.
+  - **Docs**: added a webhook section to `docs/security-architecture.md`
+    (secret placement, inbound auth model, outbound SSRF guard) and fixed
+    the stale "admin UI is not part of this change" claim in
+    `docs/middleware-agent-handoff.md`.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 

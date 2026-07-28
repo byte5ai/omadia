@@ -728,7 +728,15 @@ einer List/Get-Response (nur einmalig bei Create/Rotate). SSRF-Guard
 **Admin-API:** CRUD + Secret-Rotation + Delivery-Logs unter dem bestehenden
 auth-gated `/api/v1/operator/conductors/webhooks/*`
 (`webhookRoutes.ts`, registriert **vor** `/:slug` wie die Template-Routes).
-Eine Admin-UI-Seite ist bewusst **kein** Teil dieser Änderung (Follow-up).
+Eine minimale Admin-UI-Seite (`web-ui/app/admin/webhooks/`, Endpoints +
+Subscriptions, Secret-Rotation, Delivery-History) **ist** Teil dieser
+Änderung — sie erfüllt das Issue-Akzeptanzkriterium einer Admin-Oberfläche.
+Die inbound-Endpoint-URL wird server-seitig aus `webhookInboundBaseUrl`
+(`CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL`, fällt zurück auf `PUBLIC_BASE_URL`)
+gebaut und als `inboundUrl`-Feld zurückgegeben — die UI zeigt diesen Wert an,
+nie `window.location.origin` (im lokalen Standard-Dev-Setup ist das der
+Next.js-Dev-Server, der nur `/bot-api/*` proxied, nicht `/api/hooks/*`,
+siehe `web-ui/next.config.ts`).
 
 Tests: `test/conductorWebhookInbound.test.ts` (Route, Signatur/Dedupe/2xx-
 Noise), `test/conductorWebhookDispatcher.test.ts` (Signing/Retry/Backoff),

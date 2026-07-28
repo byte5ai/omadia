@@ -80,6 +80,12 @@ export interface ConductorRouterDeps {
   /** SSRF pre-check applied to a subscription URL at creation time — fails fast with a
    *  400 rather than only discovering the block on the first delivery attempt. */
   assertOutboundUrlAllowed?: (url: string) => void;
+  /** Review finding (issue #437): the middleware's own externally-reachable base URL,
+   *  used to build the ABSOLUTE inbound endpoint URL (`<base>/api/hooks/:endpointId`)
+   *  returned to the operator UI. Never derived from the request's Host header or
+   *  `window.location.origin` client-side — in the standard local dev setup those
+   *  resolve to the Next.js dev server, which does not proxy `/api/hooks/*`. */
+  webhookInboundBaseUrl?: string;
 }
 
 /**

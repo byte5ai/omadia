@@ -4248,6 +4248,12 @@ export interface ConductorWebhookEndpoint {
   enabled: boolean;
   createdBy: string;
   createdAt: string;
+  /** Absolute inbound URL (`<middleware base>/api/hooks/:endpointId`), computed
+   *  server-side from the middleware's configured base URL — review finding: the
+   *  admin UI must never build this from `window.location.origin`, which in the
+   *  standard local dev setup is the Next.js dev server (does not proxy
+   *  `/api/hooks/*`). Absent only if the middleware has no base URL configured. */
+  inboundUrl?: string;
 }
 
 export interface ConductorWebhookInboundDelivery {

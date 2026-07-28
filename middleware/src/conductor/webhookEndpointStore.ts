@@ -42,6 +42,23 @@ export type WebhookInboundOutcome =
  *  full and no row was inserted (rejected before dedupe, no delivery id is consumed). */
 export type WebhookClaimResult = 'claimed' | 'duplicate' | 'rate_limited';
 
+/**
+ * Issue #437 review finding: a delivery row is inserted with outcome `'received'`
+ * BEFORE the caller runs `emit()`. If the caller crashes (e.g. `emit()` throws) before
+ * it can call `setOutcome()`, the row is stuck at `'received'` forever — and without
+ * this staleness window, a legitimate retry with the same `X-Webhook-Delivery-Id`
+ * would see that row, be told `'duplicate'`, and `emit()` would never run again for
+ * that event (permanent loss). A row still at `'received'` after this many ms is
+ * treated as an ABANDONED claim (the process that owned it crashed or hung) rather
+ * than a terminal duplicate, and `claim()` lets a fresh call re-attempt processing.
+ *
+ * The window must stay comfortably above how long a real `handle()` invocation takes
+ * end to end (DB round-trips + `emit()`), so a genuinely concurrent redelivery of the
+ * same id — arriving while the first attempt is still legitimately in flight — is
+ * still reported as `'duplicate'` and does not trigger a second `emit()`.
+ */
+export const IN_FLIGHT_CLAIM_STALE_MS = 30_000;
+
 export interface ConductorWebhookInboundDelivery {
   deliveryId: string;
   endpointId: string;
@@ -176,7 +193,13 @@ export class ConductorWebhookEndpointStore {
    *      redelivery of an id THIS endpoint already claimed is `'duplicate'`
    *      regardless of the current rate — it consumes no new slot, so it must never
    *      be misreported as `'rate_limited'` just because the endpoint is currently
-   *      busy with OTHER (unique) deliveries.
+   *      busy with OTHER (unique) deliveries. EXCEPTION: if the existing row is still
+   *      at outcome `'received'` (never reached a terminal outcome — see
+   *      {@link IN_FLIGHT_CLAIM_STALE_MS}) AND it has been stuck there longer than the
+   *      staleness window, the owning process almost certainly crashed before it
+   *      could call `setOutcome()`. Re-claiming that row (bumping `received_at`, NOT
+   *      inserting a new one) lets a legitimate retry actually re-run `emit()`
+   *      instead of being told the event was already handled when it never was.
    *   3. Only for a genuinely NEW id: count this endpoint's delivery rows in the
    *      rolling window. Over the cap ⇒ COMMIT and refuse as `'rate_limited'` — no
    *      row is inserted, so a rate-limited request never consumes a delivery id.
@@ -197,13 +220,27 @@ export class ConductorWebhookEndpointStore {
       await client.query('BEGIN');
       // int4 from hashtext widens to the bigint pg_advisory_xact_lock(bigint) overload.
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [endpointId]);
-      const existsRes = await client.query(
-        `SELECT 1 FROM conductor_webhook_inbound_deliveries WHERE endpoint_id = $1 AND delivery_id = $2`,
+      const existsRes = await client.query<{ outcome: WebhookInboundOutcome; received_at: Date }>(
+        `SELECT outcome, received_at FROM conductor_webhook_inbound_deliveries
+          WHERE endpoint_id = $1 AND delivery_id = $2`,
         [endpointId, deliveryId],
       );
-      if ((existsRes.rowCount ?? 0) > 0) {
+      const existing = existsRes.rows[0];
+      if (existing) {
+        const abandonedInFlightClaim =
+          existing.outcome === 'received' &&
+          Date.now() - existing.received_at.getTime() > IN_FLIGHT_CLAIM_STALE_MS;
+        if (!abandonedInFlightClaim) {
+          await client.query('COMMIT');
+          return 'duplicate';
+        }
+        await client.query(
+          `UPDATE conductor_webhook_inbound_deliveries SET outcome = 'received', received_at = now()
+            WHERE endpoint_id = $1 AND delivery_id = $2`,
+          [endpointId, deliveryId],
+        );
         await client.query('COMMIT');
-        return 'duplicate';
+        return 'claimed';
       }
       const sinceIso = new Date(Date.now() - rateLimit.windowMs).toISOString();
       const countRes = await client.query<{ n: string }>(

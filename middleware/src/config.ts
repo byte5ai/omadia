@@ -212,6 +212,16 @@ const ConfigSchema = z.object({
   // would otherwise start an unbounded number of workflow runs). Enforced atomically
   // in ConductorWebhookEndpointStore.claim(), same transaction as the dedupe insert.
   CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE: z.coerce.number().int().positive().default(60),
+  // Review finding: the operator UI must show the inbound endpoint URL
+  // (`/api/hooks/:endpointId`) as an address the sender can ACTUALLY reach — the
+  // middleware's own base URL, not `window.location.origin` (in the standard local
+  // dev setup that's the Next.js dev server, which only proxies `/bot-api/*` per
+  // `web-ui/next.config.ts`; `/api/hooks/*` there 404s). Same fallback shape as
+  // `FLOW_PUBLIC_BASE_URL ?? PUBLIC_BASE_URL`: set this only when the inbound
+  // webhook route must be advertised on a different origin than the rest of the
+  // admin UI (e.g. PUBLIC_BASE_URL is deliberately the browser-facing Next.js
+  // origin in dev, while the webhook route only ever lives on the middleware).
+  CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL: z.string().url().optional(),
 
   // Epic #470 W4 — default per-job LLM cost budget (USD) applied when neither the
   // job nor its repo sets one (spec §5). Token budgets have NO default: they are

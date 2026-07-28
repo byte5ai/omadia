@@ -135,6 +135,62 @@ describe('ConductorWebhookEndpointStore (pg)', { skip: !pgAvailable }, () => {
     assert.equal(deliveries.length, N, 'no more rows than the cap were ever inserted, even under concurrency');
   });
 
+  // Review finding: a delivery is claimed (row inserted, outcome='received') BEFORE
+  // the caller runs emit(). If the caller crashes before it can call setOutcome(), a
+  // retry with the SAME delivery id must eventually be allowed to re-attempt emit() —
+  // not be told 'duplicate' forever, which would lose the event permanently.
+  describe('claim() recovery from an abandoned in-flight claim', () => {
+    it('a retry within the staleness window is still a duplicate (protects a genuinely concurrent redelivery)', async () => {
+      const endpointId = await newEndpoint();
+      const cap = { limit: 1_000, windowMs: 60_000 };
+
+      assert.equal(await store.claim('d-crash', endpointId, cap), 'claimed');
+      // No setOutcome() call — simulates a crash right after claim(), before finish().
+      // Immediately retrying (well within the staleness window) must still see a
+      // duplicate: this is what protects against a truly concurrent redelivery
+      // double-processing the same event.
+      assert.equal(await store.claim('d-crash', endpointId, cap), 'duplicate');
+    });
+
+    it('a retry after the staleness window re-claims an abandoned (still-received) row instead of reporting it as a duplicate', async () => {
+      const endpointId = await newEndpoint();
+      const cap = { limit: 1_000, windowMs: 60_000 };
+
+      assert.equal(await store.claim('d-abandoned', endpointId, cap), 'claimed');
+      // Simulate the staleness window having elapsed without a terminal outcome ever
+      // being recorded (the crash scenario) by backdating received_at directly —
+      // faster and more deterministic than actually waiting IN_FLIGHT_CLAIM_STALE_MS.
+      await pool.query(
+        `UPDATE conductor_webhook_inbound_deliveries
+            SET received_at = now() - interval '31 seconds'
+          WHERE endpoint_id = $1 AND delivery_id = $2`,
+        [endpointId, 'd-abandoned'],
+      );
+
+      const retried = await store.claim('d-abandoned', endpointId, cap);
+      assert.equal(retried, 'claimed', 'a stale, never-finished claim must be re-claimable, not a terminal duplicate');
+
+      // Still exactly one row — re-claiming must not insert a second delivery row.
+      const deliveries = await store.listDeliveries(endpointId, 10);
+      assert.equal(deliveries.length, 1);
+    });
+
+    it('a row that DID reach a terminal outcome is always a duplicate, no matter how old', async () => {
+      const endpointId = await newEndpoint();
+      const cap = { limit: 1_000, windowMs: 60_000 };
+
+      assert.equal(await store.claim('d-done', endpointId, cap), 'claimed');
+      await store.setOutcome('d-done', endpointId, 'started');
+      await pool.query(
+        `UPDATE conductor_webhook_inbound_deliveries SET received_at = now() - interval '1 hour'
+          WHERE endpoint_id = $1 AND delivery_id = $2`,
+        [endpointId, 'd-done'],
+      );
+
+      assert.equal(await store.claim('d-done', endpointId, cap), 'duplicate', 'a delivery that actually completed must never be re-processed');
+    });
+  });
+
   it('claim() rate limit is scoped per endpoint under concurrency — a saturated endpoint never throttles another', async () => {
     const busy = await newEndpoint();
     const other = await newEndpoint();

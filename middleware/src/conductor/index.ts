@@ -148,6 +148,10 @@ export async function wireConductor(deps: {
   /** Per-endpoint inbound rate limit (`CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE`),
    *  enforced atomically alongside the delivery-id dedupe. Default 60/minute. */
   webhookInboundMaxPerMinute?: number;
+  /** Review finding — the middleware's own externally-reachable base URL
+   *  (`CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL` falling back to `PUBLIC_BASE_URL`), used to
+   *  build the absolute inbound endpoint URL the operator UI displays. */
+  webhookInboundBaseUrl?: string;
   log?: (msg: string) => void;
 }): Promise<ConductorWiring> {
   const log = deps.log ?? (() => undefined);
@@ -335,6 +339,7 @@ export async function wireConductor(deps: {
       assertOutboundUrlAllowed: (url) => {
         assertOutboundUrlAllowed(url); // throws WebhookUrlNotAllowedError — route catches + 400s it
       },
+      ...(deps.webhookInboundBaseUrl ? { webhookInboundBaseUrl: deps.webhookInboundBaseUrl } : {}),
     }),
   );
 
