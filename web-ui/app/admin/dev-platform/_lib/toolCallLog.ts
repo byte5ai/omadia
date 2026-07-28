@@ -99,6 +99,17 @@ export interface ToolCallSummary {
 }
 
 export function summarizeToolCall(entry: ToolCallEntry): ToolCallSummary {
+  // `inputPreview === undefined` means the start event was never captured
+  // client-side (e.g. dropped at an SSE reconnect boundary while the result
+  // still arrived) — NOT "the tool had no arguments" (a real start event
+  // always carries a JSON object, even if empty: `{}`). Per-tool summarizers
+  // below assume a present-but-possibly-empty input and would otherwise
+  // render a misleading zero-diff/empty headline for a call whose real
+  // arguments were simply never seen. Fall back to the same raw/output-only
+  // rendering used for unknown tool names instead.
+  if (entry.inputPreview === undefined) {
+    return { headline: entry.name, detail: { kind: 'raw', output: entry.outputPreview } };
+  }
   const input = parseJsonObject(entry.inputPreview);
   switch (entry.name) {
     case 'Read':

@@ -180,4 +180,14 @@ describe('summarizeToolCall', () => {
     const summary = summarizeToolCall(entry({ name: 'Read', inputPreview: 'not json' }));
     expect(summary.headline).toBe('?');
   });
+
+  it('renders an orphan result (no captured start) as raw/output-only, not a misleading zero-diff', () => {
+    // Regression: a start event dropped at an SSE reconnect boundary leaves
+    // inputPreview undefined; summarizeEdit must not be reached — it would
+    // silently compute file_path '?' and a 0-line diff, looking like a
+    // legitimate empty edit rather than "input never captured".
+    const summary = summarizeToolCall(entry({ name: 'Edit', inputPreview: undefined, outputPreview: 'ok' }));
+    expect(summary.headline).toBe('Edit');
+    expect(summary.detail).toEqual({ kind: 'raw', output: 'ok' });
+  });
 });
