@@ -57,8 +57,29 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `conductor_webhook_subscriptions`, `conductor_webhook_deliveries`).
 - Admin CRUD (list/create/rotate-secret/enable-disable/delivery-log) is
   exposed under the existing auth-gated
-  `/api/v1/operator/conductors/webhooks/*`; an admin UI page is a follow-up,
-  not part of this change.
+  `/api/v1/operator/conductors/webhooks/*`, with a minimal admin UI at
+  `/admin/webhooks` (endpoints + subscriptions, secret rotation, delivery
+  history) satisfying the issue's admin-surface acceptance criterion.
+- **Rate limiting**: the inbound route enforces a per-endpoint cap over a
+  rolling minute (`CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE`, default 60),
+  atomically alongside the delivery-id dedupe claim — a correctly-signed
+  sender minting a fresh delivery id on every call can no longer start an
+  unbounded number of workflow runs.
+- **Dedupe fix**: the inbound delivery ledger's dedupe key is scoped per
+  `(endpoint_id, delivery_id)`, not globally on `delivery_id` alone — two
+  endpoints can now each process their own delivery id '1' without one
+  shadowing the other.
+- **Outbound durability fix**: a periodic reconciliation pass (run by the
+  existing retry worker) finds terminal, non-dry-run runs from the last 24h
+  with no delivery row yet for an enabled subscription and creates the
+  missing one — closing the gap where a process kill between a run's
+  terminal-status commit and its fire-and-forget delivery-row creation lost
+  the webhook permanently.
+- **Outbound race fix**: the first, inline delivery attempt now claims its
+  row (`FOR UPDATE SKIP LOCKED`, same claim the retry worker's poll loop
+  uses) before sending, so the inline path and a concurrent retry-worker
+  tick can never attempt — and duplicate-report the outcome of — the same
+  delivery.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 

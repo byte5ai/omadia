@@ -21,7 +21,12 @@
  *      An unknown endpoint id and a known endpoint with a wrong signature answer
  *      byte-for-byte the same 401 — the acceptance criterion ("invalid secret
  *      returns 401 without leaking endpoint existence").
- *   2. Atomically CLAIM the delivery id (dedupe) before doing any work.
+ *   2. Atomically CLAIM the delivery id (dedupe) AND enforce the per-endpoint
+ *      rolling-window rate limit, before doing any work. A correctly-signed sender
+ *      can mint a fresh delivery id on every call, so dedupe alone would not bound
+ *      how many workflow runs one endpoint can start — a request over the cap gets
+ *      429 and consumes no delivery id (nothing is recorded, so it costs the sender
+ *      nothing to retry once the window rolls forward).
  *   3. From there every branch finalizes exactly one terminal outcome — a silent
  *      drop is impossible — and noise (disabled endpoint, malformed JSON, no
  *      subscribed workflow) always answers 2xx so a well-behaved sender's retry
@@ -34,7 +39,7 @@ import express, { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import type { JsonObject } from '@omadia/conductor-core';
-import type { WebhookInboundOutcome } from '../conductor/webhookEndpointStore.js';
+import type { WebhookClaimResult, WebhookInboundOutcome } from '../conductor/webhookEndpointStore.js';
 import { generateInboundDeliveryId } from '../conductor/webhookEndpointStore.js';
 
 const RAW_BODY_LIMIT = '256kb';
@@ -53,8 +58,12 @@ export interface ConductorWebhookInboundDeps {
   enabled: boolean;
   getEndpoint: (endpointId: string) => Promise<ConductorWebhookInboundEndpoint | null>;
   getSecret: (endpointId: string) => Promise<string | undefined>;
-  claim: (deliveryId: string, endpointId: string) => Promise<boolean>;
-  setOutcome: (deliveryId: string, outcome: WebhookInboundOutcome) => Promise<void>;
+  /** Atomically dedupes AND enforces the per-endpoint rate limit — see
+   *  `ConductorWebhookEndpointStore.claim` for the security rationale (issue #437:
+   *  a correctly-signed sender can mint a fresh delivery id per call, so dedupe
+   *  alone doesn't bound how many runs an endpoint can start). */
+  claim: (deliveryId: string, endpointId: string) => Promise<WebhookClaimResult>;
+  setOutcome: (deliveryId: string, endpointId: string, outcome: WebhookInboundOutcome) => Promise<void>;
   emit: (eventId: string, payload: JsonObject, source: string) => Promise<ConductorWebhookEmitResult>;
   log?: (msg: string) => void;
 }
@@ -122,19 +131,25 @@ async function handle(getDeps: () => ConductorWebhookInboundDeps | undefined, re
   // which only `getSecret` for a real endpoint can supply.
   const ep = endpoint!;
 
-  // 2. Atomically claim the delivery id (dedupe). A caller that sends
-  //    X-Webhook-Delivery-Id gets true idempotency; one that doesn't gets a fresh
-  //    id every call (no dedupe, but still logged — never a silent drop).
+  // 2. Atomically claim the delivery id (dedupe) AND enforce the per-endpoint rate
+  //    limit, in one call. A caller that sends X-Webhook-Delivery-Id gets true
+  //    idempotency; one that doesn't gets a fresh id every call (no dedupe, but
+  //    still logged — never a silent drop, unless it's rate-limited, in which case
+  //    nothing is recorded at all — see the store's claim() doc comment).
   const deliveryId = req.header('x-webhook-delivery-id') || generateInboundDeliveryId();
-  const claimed = await deps.claim(deliveryId, endpointId);
-  if (!claimed) {
+  const claimResult = await deps.claim(deliveryId, endpointId);
+  if (claimResult === 'rate_limited') {
+    res.status(429).json({ code: 'webhook.rate_limited' });
+    return;
+  }
+  if (claimResult === 'duplicate') {
     res.status(200).json({ ok: true, outcome: 'duplicate' });
     return;
   }
 
   // From here we own the row: every branch finalizes exactly one outcome.
   const finish = async (outcome: WebhookInboundOutcome, status = 200, extra: Record<string, unknown> = {}): Promise<void> => {
-    await deps.setOutcome(deliveryId, outcome);
+    await deps.setOutcome(deliveryId, endpointId, outcome);
     if (!res.headersSent) res.status(status).json({ ok: true, outcome, ...extra });
   };
 

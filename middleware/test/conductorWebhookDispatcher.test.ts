@@ -49,6 +49,7 @@ function delivery(over: Partial<ConductorWebhookDelivery> = {}): ConductorWebhoo
 interface FakeStore {
   store: ConductorWebhookSubscriptionStore;
   createCalls: Array<{ subscriptionId: string; event: string; payload: JsonObject }>;
+  claimOneCalls: string[];
   successes: string[];
   failures: Array<{ id: string; error: string; nextAttemptAt: Date | null }>;
   /** Resolves once `deliverEvent`'s fire-and-forget attempt(s) have all settled — the
@@ -57,17 +58,38 @@ interface FakeStore {
   settled: () => Promise<void>;
 }
 
-function fakeStore(opts: { subscriptions?: ConductorWebhookSubscription[]; secret?: string | undefined } = {}): FakeStore {
+function fakeStore(
+  opts: {
+    subscriptions?: ConductorWebhookSubscription[];
+    secret?: string | undefined;
+    /** Simulates the retry worker winning the claimOne race for this many of the
+     *  created deliveries, in creation order (`claimOne` resolves `null` for them). */
+    loseClaimRaceFor?: number;
+  } = {},
+): FakeStore {
   const createCalls: FakeStore['createCalls'] = [];
+  const claimOneCalls: string[] = [];
   const successes: string[] = [];
   const failures: FakeStore['failures'] = [];
   const subs = opts.subscriptions ?? [subscription()];
+  const deliveriesById = new Map<string, ConductorWebhookDelivery>();
   const pending: Array<Promise<unknown>> = [];
+  const loseRaceFor = opts.loseClaimRaceFor ?? 0;
+  let created = 0;
   const store = {
     listEnabledForEvent: async (event: string) => subs.filter((s) => s.enabled && s.event === event),
     createDelivery: async (input: { subscriptionId: string; event: string; payload: JsonObject }) => {
       createCalls.push(input);
-      return delivery({ subscriptionId: input.subscriptionId, event: input.event, payload: input.payload });
+      created += 1;
+      const d = delivery({ id: `del-${String(created)}`, subscriptionId: input.subscriptionId, event: input.event, payload: input.payload });
+      deliveriesById.set(d.id, d);
+      return d;
+    },
+    claimOne: async (id: string) => {
+      claimOneCalls.push(id);
+      const idx = Number(id.replace('del-', ''));
+      if (idx <= loseRaceFor) return null; // the retry worker's tick claimed it first
+      return deliveriesById.get(id) ?? null;
     },
     getSecret: async () => opts.secret,
     recordSuccess: async (id: string) => {
@@ -86,7 +108,7 @@ function fakeStore(opts: { subscriptions?: ConductorWebhookSubscription[]; secre
     }
     void pending;
   };
-  return { store: store as unknown as ConductorWebhookSubscriptionStore, createCalls, successes, failures, settled };
+  return { store: store as unknown as ConductorWebhookSubscriptionStore, createCalls, claimOneCalls, successes, failures, settled };
 }
 
 describe('ConductorWebhookDispatcher', () => {
@@ -189,5 +211,42 @@ describe('ConductorWebhookDispatcher', () => {
 
     assert.equal(called, false);
     assert.equal(fake.failures[0]?.nextAttemptAt, null);
+  });
+
+  it('deliverEvent claims the row before attempting inline (closes the retry-worker race)', async () => {
+    const fake = fakeStore({ secret: SECRET });
+    const dispatcher = new ConductorWebhookDispatcher({
+      store: fake.store,
+      sendRequest: async () => ({ ok: true, status: 200, bodySnippet: '' }),
+    });
+
+    await dispatcher.deliverEvent('run.completed', { runId: 'r-1' });
+    await fake.settled();
+
+    assert.deepEqual(fake.claimOneCalls, ['del-1']); // claimOne called before any attempt
+    assert.equal(fake.successes.length, 1); // the claim succeeded, so the inline attempt ran
+  });
+
+  it('deliverEvent does NOT attempt when the retry worker wins the claimOne race', async () => {
+    // Regression for the finding: an unconditional inline attempt racing the retry
+    // worker's claimDue could send the same delivery twice and, on a later-landing
+    // failure, flip an already-delivered row back to pending. If claimOne returns
+    // null (the worker's tick claimed it first), the inline path must not attempt.
+    const fake = fakeStore({ secret: SECRET, loseClaimRaceFor: 1 });
+    let attempted = false;
+    const dispatcher = new ConductorWebhookDispatcher({
+      store: fake.store,
+      sendRequest: async () => {
+        attempted = true;
+        return { ok: true, status: 200, bodySnippet: '' };
+      },
+    });
+
+    await dispatcher.deliverEvent('run.completed', { runId: 'r-1' });
+    await fake.settled();
+
+    assert.equal(attempted, false);
+    assert.equal(fake.successes.length, 0);
+    assert.equal(fake.failures.length, 0);
   });
 });

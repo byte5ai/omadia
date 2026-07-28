@@ -3,11 +3,12 @@ import { randomUUID } from 'node:crypto';
 import type { Express, RequestHandler } from 'express';
 import type { Pool } from 'pg';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
-import type { KnownRefs } from '@omadia/conductor-core';
+import type { JsonObject, KnownRefs } from '@omadia/conductor-core';
 
 import { runConductorMigrations } from './migrator.js';
 import { ConductorWorkflowStore } from './workflowStore.js';
 import { ConductorRunStore } from './runStore.js';
+import type { ConductorRun } from './runStore.js';
 import { ConductorAwaitStore } from './awaitStore.js';
 import type { ConductorAwait } from './awaitStore.js';
 import type { ApprovalReminder } from '@omadia/plugin-api';
@@ -34,6 +35,24 @@ import { ConductorWebhookDispatcher } from './webhookDispatcher.js';
 import { ConductorWebhookRetryWorker } from './webhookRetryWorker.js';
 import { assertOutboundUrlAllowed } from './webhookOutbound.js';
 import type { ConductorWebhookInboundDeps } from '../routes/conductorWebhooksInbound.js';
+
+/** Issue #437 — the run.completed/run.failed webhook payload shape. Shared between
+ *  `notifyRunEnded`'s inline hook and the retry worker's reconciliation pass (below)
+ *  so the two paths can never drift into delivering differently-shaped payloads for
+ *  the same event. Best-effort workflow-slug/name enrichment: a lookup miss still
+ *  delivers the bare run fields rather than dropping the event. */
+async function buildRunEventPayload(run: ConductorRun, workflowStore: ConductorWorkflowStore): Promise<JsonObject> {
+  const version = await workflowStore.getVersion(run.workflowVersionId).catch(() => null);
+  const workflow = version ? await workflowStore.getById(version.workflowId).catch(() => null) : null;
+  return {
+    runId: run.id,
+    status: run.status,
+    workflowSlug: workflow?.slug ?? null,
+    workflowName: workflow?.name ?? null,
+    triggerKind: run.triggerKind,
+    context: run.context,
+  };
+}
 
 export { runConductorMigrations } from './migrator.js';
 export { ConductorWorkflowStore } from './workflowStore.js';
@@ -126,6 +145,9 @@ export async function wireConductor(deps: {
   /** Outbound delivery attempt cap + per-attempt timeout — defaults live in webhookDispatcher.ts. */
   webhookMaxAttempts?: number;
   webhookTimeoutMs?: number;
+  /** Per-endpoint inbound rate limit (`CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE`),
+   *  enforced atomically alongside the delivery-id dedupe. Default 60/minute. */
+  webhookInboundMaxPerMinute?: number;
   log?: (msg: string) => void;
 }): Promise<ConductorWiring> {
   const log = deps.log ?? (() => undefined);
@@ -148,7 +170,36 @@ export async function wireConductor(deps: {
     ...(deps.webhookTimeoutMs !== undefined ? { timeoutMs: deps.webhookTimeoutMs } : {}),
     log,
   });
-  const webhookRetryWorker = new ConductorWebhookRetryWorker({ store: webhookSubscriptions, dispatcher: webhookDispatcher, log });
+  // Issue #437 finding — `notifyRunEnded` below dispatches fire-and-forget AFTER the
+  // run's terminal status is already committed; a process kill in that exact window
+  // loses the webhook permanently (no delivery row is ever created for it). This
+  // reconciliation pass finds terminal, non-dry-run runs from the last 24h with no
+  // delivery row yet for an enabled subscription and creates the missing one(s) —
+  // the already-running retry worker then delivers it on its next `claimDue` poll.
+  // 24h is a generous restart-recovery window; the gap this closes is normally only
+  // open for the length of a process restart.
+  const WEBHOOK_RECONCILE_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const reconcileMissingWebhookDeliveries = async (): Promise<void> => {
+    const sinceIso = new Date(Date.now() - WEBHOOK_RECONCILE_WINDOW_MS).toISOString();
+    const missing = await webhookSubscriptions.listMissingRunDeliveries(sinceIso);
+    for (const m of missing) {
+      const run = await runStore.get(m.runId).catch(() => null);
+      if (!run) continue; // shouldn't happen — the run this delivery would describe is gone
+      const payload = await buildRunEventPayload(run, workflowStore);
+      await webhookSubscriptions
+        .createDelivery({ subscriptionId: m.subscriptionId, event: `run.${m.status}`, payload })
+        .catch((err: unknown) => {
+          log(`[conductor] webhook reconciliation: creating delivery for run ${m.runId} failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+    }
+  };
+
+  const webhookRetryWorker = new ConductorWebhookRetryWorker({
+    store: webhookSubscriptions,
+    dispatcher: webhookDispatcher,
+    reconcile: reconcileMissingWebhookDeliveries,
+    log,
+  });
   webhookRetryWorker.start();
 
   const executor = new ConductorRunExecutor({
@@ -161,22 +212,14 @@ export async function wireConductor(deps: {
       log,
     }),
     resolveRoleHolders: (key) => roleStore.resolve(key), // quorum='all' required-responder resolution
-    // Issue #437 — run-lifecycle outbound webhooks. Enriches the payload with the
-    // workflow's slug/name (best-effort; a lookup miss still delivers the bare run
-    // fields) so a receiver doesn't have to resolve workflowVersionId itself.
+    // Issue #437 — run-lifecycle outbound webhooks. Best-effort and fire-and-forget;
+    // a delivery lost to a crash in this exact window is recovered by
+    // `reconcileMissingWebhookDeliveries` above (issue #437 finding).
     notifyRunEnded: (run) => {
       const event = run.status === 'completed' ? 'run.completed' : 'run.failed';
       void (async () => {
-        const version = await workflowStore.getVersion(run.workflowVersionId).catch(() => null);
-        const workflow = version ? await workflowStore.getById(version.workflowId).catch(() => null) : null;
-        await webhookDispatcher.deliverEvent(event, {
-          runId: run.id,
-          status: run.status,
-          workflowSlug: workflow?.slug ?? null,
-          workflowName: workflow?.name ?? null,
-          triggerKind: run.triggerKind,
-          context: run.context,
-        });
+        const payload = await buildRunEventPayload(run, workflowStore);
+        await webhookDispatcher.deliverEvent(event, payload);
       })().catch((err: unknown) => {
         log(`[conductor] webhook dispatch for run ${run.id} failed: ${err instanceof Error ? err.message : String(err)}`);
       });
@@ -297,6 +340,7 @@ export async function wireConductor(deps: {
 
   // Issue #437 — deps for the unauthenticated inbound router mounted early in
   // `index.ts` (before `express.json()`, via a forward reference this wiring assigns).
+  const webhookInboundRateLimit = { limit: deps.webhookInboundMaxPerMinute ?? 60, windowMs: 60_000 };
   const webhookInboundDeps: ConductorWebhookInboundDeps = {
     enabled: deps.webhooksEnabled ?? true,
     getEndpoint: async (endpointId) => {
@@ -304,8 +348,8 @@ export async function wireConductor(deps: {
       return ep ? { eventId: ep.eventId, enabled: ep.enabled } : null;
     },
     getSecret: (endpointId) => webhookEndpoints.getSecret(endpointId),
-    claim: (deliveryId, endpointId) => webhookEndpoints.claim(deliveryId, endpointId),
-    setOutcome: (deliveryId, outcome) => webhookEndpoints.setOutcome(deliveryId, outcome),
+    claim: (deliveryId, endpointId) => webhookEndpoints.claim(deliveryId, endpointId, webhookInboundRateLimit),
+    setOutcome: (deliveryId, endpointId, outcome) => webhookEndpoints.setOutcome(deliveryId, endpointId, outcome),
     emit: (eventId, payload, source) => eventRouter.emit(eventId, payload, source),
     log,
   };

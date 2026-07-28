@@ -221,6 +221,10 @@
           "title": "Dev Platform",
           "description": "Register repositories and launch isolated code-runner jobs that open a pull request from a reviewed diff."
         },
+        "webhooks": {
+          "title": "Conductor Webhooks",
+          "description": "Inbound endpoints and outbound subscriptions, with secret rotation and delivery history."
+        },
         "auth": {
           "title": "Authentication Providers",
           "description": "Enable or disable local login and Entra ID sign-in; changes apply without a restart."
@@ -3309,6 +3313,73 @@
       "notFound": "Registry not found — list reloaded.",
       "missingFields": "Name and URL are required.",
       "generic": "Error {status}."
+    }
+  },
+  "adminWebhooks": {
+    "title": "Conductor Webhooks",
+    "intro": "Inbound endpoints start subscribed workflow runs; outbound subscriptions receive an HMAC-signed delivery on run completion or failure. A created or rotated secret is shown once — it is never returned again.",
+    "badge": {
+      "enabled": "enabled",
+      "disabled": "disabled"
+    },
+    "endpoints": {
+      "heading": "Inbound endpoints",
+      "hint": "POST to the endpoint's URL with a valid HMAC signature to start every workflow subscribed to its event.",
+      "fields": {
+        "eventId": "Event id",
+        "description": "Description (optional)"
+      },
+      "create": "Create endpoint",
+      "loading": "Loading …",
+      "empty": "No inbound endpoints configured.",
+      "viewHistory": "View history",
+      "hideHistory": "Hide history",
+      "enable": "Enable",
+      "disable": "Disable",
+      "rotateSecret": "Rotate secret",
+      "rotating": "Rotating",
+      "delete": "Delete",
+      "deleting": "Deleting",
+      "secretRevealed": "New secret — copy it now, it will not be shown again:",
+      "dismiss": "Dismiss",
+      "noDeliveries": "No deliveries recorded yet.",
+      "confirmDelete": "Really delete this endpoint? Any sender using it will start getting 401s.",
+      "table": {
+        "deliveryId": "Delivery id",
+        "outcome": "Outcome",
+        "receivedAt": "Received"
+      }
+    },
+    "subscriptions": {
+      "heading": "Outbound subscriptions",
+      "hint": "Receives an HMAC-signed POST whenever the subscribed event fires. Failed deliveries retry with backoff until the attempt cap is reached.",
+      "fields": {
+        "url": "URL",
+        "event": "Event",
+        "description": "Description (optional)"
+      },
+      "create": "Create subscription",
+      "loading": "Loading …",
+      "empty": "No outbound subscriptions configured.",
+      "viewHistory": "View history",
+      "hideHistory": "Hide history",
+      "enable": "Enable",
+      "disable": "Disable",
+      "rotateSecret": "Rotate secret",
+      "rotating": "Rotating",
+      "delete": "Delete",
+      "deleting": "Deleting",
+      "secretRevealed": "New secret — copy it now, it will not be shown again:",
+      "dismiss": "Dismiss",
+      "noDeliveries": "No deliveries recorded yet.",
+      "confirmDelete": "Really delete this subscription?",
+      "table": {
+        "status": "Status",
+        "attempts": "Attempts",
+        "lastError": "Last error",
+        "nextAttemptAt": "Next attempt",
+        "createdAt": "Created"
+      }
     }
   },
   "adminDomains": {

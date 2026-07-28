@@ -213,6 +213,83 @@ export class ConductorWebhookSubscriptionStore {
     }
   }
 
+  /**
+   * Claim exactly ONE delivery row for an immediate inline attempt — the seam that
+   * closes the race between `ConductorWebhookDispatcher.deliverEvent`'s first,
+   * inline attempt and `ConductorWebhookRetryWorker`'s poll loop. `createDelivery`
+   * leaves a row `pending` with `next_attempt_at = now()`, i.e. immediately "due";
+   * without this claim, the inline attempt and a concurrent `claimDue` tick could
+   * both send the same delivery, and whichever `recordFailure` lands LAST would
+   * unconditionally flip an already-`delivered` row back to `pending` (issue #437
+   * finding). Same `FOR UPDATE SKIP LOCKED` claim `claimDue` uses, scoped to one id
+   * — so the two paths compete for the same row lock and only one of them wins.
+   * Returns `null` if the row is no longer claimable (already claimed elsewhere, or
+   * no longer pending) — the caller must NOT attempt in that case; whichever path
+   * won the race owns it.
+   */
+  async claimOne(deliveryId: string): Promise<ConductorWebhookDelivery | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const r = await client.query<DeliveryRow>(
+        `SELECT id, subscription_id, event, payload, status, attempts, last_error, next_attempt_at, delivered_at, created_at
+           FROM conductor_webhook_deliveries
+          WHERE id = $1 AND status = 'pending' AND next_attempt_at <= now()
+          FOR UPDATE SKIP LOCKED`,
+        [deliveryId],
+      );
+      if (r.rows.length === 0) {
+        await client.query('COMMIT');
+        return null;
+      }
+      // Same push-forward `claimDue` does — a slow inline HTTP call must not leave
+      // the row eligible for a concurrent claim before this attempt records a result.
+      await client.query(
+        `UPDATE conductor_webhook_deliveries SET next_attempt_at = now() + interval '5 minutes' WHERE id = $1`,
+        [deliveryId],
+      );
+      await client.query('COMMIT');
+      return toDelivery(r.rows[0]!);
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Reconciliation pass (issue #437 finding): `notifyRunEnded` fires the dispatcher
+   * fire-and-forget AFTER the run's terminal status is already committed — a process
+   * kill in that window loses the webhook permanently, since nothing durable links
+   * "this run ended" to "a delivery row was created" for it. This finds terminal,
+   * non-dry-run runs (within `sinceIso`) that have NO delivery row for a given
+   * enabled subscription yet, and returns what's missing so the caller can create
+   * it. `payload->>'runId'` is how a delivery is tied back to its run — `createDelivery`
+   * always includes `runId` in the payload (see `index.ts`'s `notifyRunEnded` hook).
+   */
+  async listMissingRunDeliveries(
+    sinceIso: string,
+  ): Promise<Array<{ runId: string; status: 'completed' | 'failed'; subscriptionId: string }>> {
+    const r = await this.pool.query<{ run_id: string; status: 'completed' | 'failed'; subscription_id: string }>(
+      `SELECT r.id AS run_id, r.status AS status, s.id AS subscription_id
+         FROM conductor_runs r
+         JOIN conductor_webhook_subscriptions s
+           ON s.enabled = true
+          AND s.event = ('run.' || r.status)
+        WHERE r.is_dry_run = false
+          AND r.status IN ('completed', 'failed')
+          AND r.ended_at >= $1
+          AND NOT EXISTS (
+                SELECT 1 FROM conductor_webhook_deliveries d
+                 WHERE d.subscription_id = s.id
+                   AND d.payload->>'runId' = r.id::text
+              )`,
+      [sinceIso],
+    );
+    return r.rows.map((row) => ({ runId: row.run_id, status: row.status, subscriptionId: row.subscription_id }));
+  }
+
   async recordSuccess(deliveryId: string): Promise<void> {
     await this.pool.query(
       `UPDATE conductor_webhook_deliveries

@@ -50,9 +50,17 @@ export class ConductorWebhookDispatcher {
     }
     for (const sub of subs) {
       try {
-        const delivery = await this.deps.store.createDelivery({ subscriptionId: sub.id, event, payload });
-        void this.attempt(delivery, sub).catch((err) => {
-          this.log(`[conductor] webhook delivery ${delivery.id} attempt crashed: ${errMsg(err)}`);
+        const created = await this.deps.store.createDelivery({ subscriptionId: sub.id, event, payload });
+        // Claim the row before attempting inline — closes the race with the retry
+        // worker's poll loop, which sees this same row as immediately due (issue #437
+        // finding: an unclaimed inline attempt and a concurrent worker tick could both
+        // send it, and whichever recordFailure lands last would flip an already
+        // `delivered` row back to `pending`). `null` means the worker's tick already
+        // won the race for this row — it, not us, now owns the attempt.
+        const claimed = await this.deps.store.claimOne(created.id);
+        if (!claimed) continue;
+        void this.attempt(claimed, sub).catch((err) => {
+          this.log(`[conductor] webhook delivery ${created.id} attempt crashed: ${errMsg(err)}`);
         });
       } catch (err) {
         this.log(`[conductor] webhook dispatcher: creating delivery for subscription ${sub.id} failed: ${errMsg(err)}`);

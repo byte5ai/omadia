@@ -23,15 +23,21 @@ CREATE TABLE IF NOT EXISTS conductor_webhook_endpoints (
 );
 
 -- Inbound delivery ledger — one row per inbound call whose signature verified.
--- Keyed on the caller-supplied delivery id (`X-Webhook-Delivery-Id`) when present, so
--- a redelivery is a dedupe no-op; a caller that never sends the header still gets a
--- server-generated id recorded here (no dedupe, but no silent drop either — mirrors
--- the terminal-outcome ledger `dev_webhook_deliveries` established in Epic #470 W4).
+-- Keyed on (endpoint_id, delivery_id) — the caller-supplied delivery id
+-- (`X-Webhook-Delivery-Id`) is only unique WITHIN one sender's own id space, so a
+-- global PRIMARY KEY on delivery_id alone would let endpoint B's delivery '1' be
+-- misread as a dupe of endpoint A's delivery '1' and silently swallow B's run.
+-- Scoping the key per-endpoint fixes that while keeping the same dedupe semantics: a
+-- redelivery of the SAME endpoint's id is still a no-op; a caller that never sends
+-- the header still gets a server-generated id recorded here (no dedupe, but no
+-- silent drop either — mirrors the terminal-outcome ledger `dev_webhook_deliveries`
+-- established in Epic #470 W4).
 CREATE TABLE IF NOT EXISTS conductor_webhook_inbound_deliveries (
-  delivery_id  TEXT PRIMARY KEY,
+  delivery_id  TEXT NOT NULL,
   endpoint_id  TEXT NOT NULL,
   outcome      TEXT NOT NULL DEFAULT 'received',
-  received_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (endpoint_id, delivery_id)
 );
 CREATE INDEX IF NOT EXISTS conductor_webhook_inbound_deliveries_endpoint_idx
   ON conductor_webhook_inbound_deliveries(endpoint_id, received_at DESC);
@@ -72,3 +78,17 @@ CREATE INDEX IF NOT EXISTS conductor_webhook_deliveries_due_idx
   ON conductor_webhook_deliveries(next_attempt_at) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS conductor_webhook_deliveries_subscription_idx
   ON conductor_webhook_deliveries(subscription_id, created_at DESC);
+
+-- Reconciliation support: `notifyRunEnded` (runExecutor.ts) fires the outbound
+-- dispatcher fire-and-forget AFTER a run's terminal status is already committed to
+-- `conductor_runs` — a process kill in that window commits the run 'completed'/
+-- 'failed' but never creates its `conductor_webhook_deliveries` row(s), losing the
+-- webhook permanently (the resume worker only re-drives runs still 'running'). The
+-- webhook retry worker also runs a periodic reconciliation pass (see
+-- `webhookSubscriptionStore.ts#listMissingRunDeliveries`) that finds terminal,
+-- non-dry-run runs with no matching delivery row and creates the missing one(s).
+-- This partial index is that pass's read path — `conductor_runs` predates this
+-- migration (0001_conductor.sql) and had no index over ended_at.
+CREATE INDEX IF NOT EXISTS conductor_runs_terminal_ended_idx
+  ON conductor_runs(ended_at)
+  WHERE status IN ('completed', 'failed') AND is_dry_run = false;

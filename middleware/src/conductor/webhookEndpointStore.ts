@@ -31,9 +31,16 @@ export type WebhookInboundOutcome =
   | 'received'
   | 'started'
   | 'duplicate'
+  | 'rate_limited'
   | 'disabled'
   | 'invalid_payload'
   | 'no_subscribers';
+
+/** Result of {@link ConductorWebhookEndpointStore.claim}: `'claimed'` means THIS call
+ *  owns processing the delivery; `'duplicate'` means the id was already recorded (a
+ *  redelivery); `'rate_limited'` means the endpoint's rolling-window cap is already
+ *  full and no row was inserted (rejected before dedupe, no delivery id is consumed). */
+export type WebhookClaimResult = 'claimed' | 'duplicate' | 'rate_limited';
 
 export interface ConductorWebhookInboundDelivery {
   deliveryId: string;
@@ -155,27 +162,82 @@ export class ConductorWebhookEndpointStore {
   // ── inbound delivery ledger (dedupe + audit) ──────────────────────────────
 
   /**
-   * Atomically claim a delivery id. Returns `true` iff THIS call inserted the row —
-   * i.e. we own processing this delivery; `false` means it was already recorded (a
-   * redelivery), so the caller must not start a second run. Mirrors
-   * `WebhookDeliveryStore.claim` (Epic #470 W4) — `INSERT … ON CONFLICT DO NOTHING`
-   * closes the check-then-act race two concurrent redeliveries would otherwise open.
+   * Atomically claim a delivery id AND enforce the per-endpoint rate limit in one
+   * transaction. A correctly-signed sender can mint a fresh `X-Webhook-Delivery-Id`
+   * on every call, so dedupe alone doesn't bound how many workflow runs an endpoint
+   * can start — this is the gate that does (issue #437 security gate).
+   *
+   * ONE transaction, in order (mirrors `WebhookDeliveryStore.reserveJobSlot`,
+   * Epic #470 W4, adapted to a single-endpoint cap instead of repo+sender):
+   *   1. `pg_advisory_xact_lock(hashtext(endpointId))` — serialises admission PER
+   *      ENDPOINT, so a concurrent delivery for the same endpoint blocks here until
+   *      we COMMIT (closing the count→insert TOCTOU a bare `COUNT` check would open).
+   *   2. Dedupe FIRST: does this (endpoint_id, delivery_id) row already exist? A
+   *      redelivery of an id THIS endpoint already claimed is `'duplicate'`
+   *      regardless of the current rate — it consumes no new slot, so it must never
+   *      be misreported as `'rate_limited'` just because the endpoint is currently
+   *      busy with OTHER (unique) deliveries.
+   *   3. Only for a genuinely NEW id: count this endpoint's delivery rows in the
+   *      rolling window. Over the cap ⇒ COMMIT and refuse as `'rate_limited'` — no
+   *      row is inserted, so a rate-limited request never consumes a delivery id.
+   *   4. Otherwise `INSERT … ON CONFLICT (endpoint_id, delivery_id) DO NOTHING` —
+   *      scoped per-endpoint (not globally on `delivery_id`) so endpoint B's
+   *      delivery '1' is never misread as a dupe of endpoint A's delivery '1'. The
+   *      conflict branch can't actually fire here (step 2 already ruled it out
+   *      inside the same locked transaction) — `ON CONFLICT DO NOTHING` stays as a
+   *      belt-and-braces guard, not the primary dedupe path.
    */
-  async claim(deliveryId: string, endpointId: string): Promise<boolean> {
-    const r = await this.pool.query(
-      `INSERT INTO conductor_webhook_inbound_deliveries (delivery_id, endpoint_id, outcome)
-       VALUES ($1, $2, 'received')
-       ON CONFLICT (delivery_id) DO NOTHING`,
-      [deliveryId, endpointId],
-    );
-    return (r.rowCount ?? 0) > 0;
+  async claim(
+    deliveryId: string,
+    endpointId: string,
+    rateLimit: { limit: number; windowMs: number },
+  ): Promise<WebhookClaimResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // int4 from hashtext widens to the bigint pg_advisory_xact_lock(bigint) overload.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [endpointId]);
+      const existsRes = await client.query(
+        `SELECT 1 FROM conductor_webhook_inbound_deliveries WHERE endpoint_id = $1 AND delivery_id = $2`,
+        [endpointId, deliveryId],
+      );
+      if ((existsRes.rowCount ?? 0) > 0) {
+        await client.query('COMMIT');
+        return 'duplicate';
+      }
+      const sinceIso = new Date(Date.now() - rateLimit.windowMs).toISOString();
+      const countRes = await client.query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM conductor_webhook_inbound_deliveries
+          WHERE endpoint_id = $1 AND received_at >= $2`,
+        [endpointId, sinceIso],
+      );
+      if (Number(countRes.rows[0]?.n ?? '0') >= rateLimit.limit) {
+        await client.query('COMMIT');
+        return 'rate_limited';
+      }
+      const insertRes = await client.query(
+        `INSERT INTO conductor_webhook_inbound_deliveries (delivery_id, endpoint_id, outcome)
+         VALUES ($1, $2, 'received')
+         ON CONFLICT (endpoint_id, delivery_id) DO NOTHING`,
+        [deliveryId, endpointId],
+      );
+      await client.query('COMMIT');
+      return (insertRes.rowCount ?? 0) > 0 ? 'claimed' : 'duplicate';
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
-  async setOutcome(deliveryId: string, outcome: WebhookInboundOutcome): Promise<void> {
-    await this.pool.query(`UPDATE conductor_webhook_inbound_deliveries SET outcome = $2 WHERE delivery_id = $1`, [
-      deliveryId,
-      outcome,
-    ]);
+  /** Scoped by (endpointId, deliveryId) — matching the composite PK the row was
+   *  claimed under, so this can never touch a different endpoint's same-named id. */
+  async setOutcome(deliveryId: string, endpointId: string, outcome: WebhookInboundOutcome): Promise<void> {
+    await this.pool.query(
+      `UPDATE conductor_webhook_inbound_deliveries SET outcome = $3 WHERE endpoint_id = $2 AND delivery_id = $1`,
+      [deliveryId, endpointId, outcome],
+    );
   }
 
   async listDeliveries(endpointId: string, limit = 50): Promise<ConductorWebhookInboundDelivery[]> {

@@ -10,13 +10,13 @@ import {
   type ConductorWebhookInboundDeps,
   type ConductorWebhookEmitResult,
 } from '../src/routes/conductorWebhooksInbound.js';
-import type { WebhookInboundOutcome } from '../src/conductor/webhookEndpointStore.js';
+import type { WebhookClaimResult, WebhookInboundOutcome } from '../src/conductor/webhookEndpointStore.js';
 
 // Issue #437 — inbound Conductor webhook route: signature-first verification
 // (unknown endpoint and wrong secret must answer byte-for-byte the same 401),
-// atomic delivery-id dedupe, a terminal outcome recorded for every claimed
-// delivery, and 2xx-on-noise so a sender's retry policy never turns an
-// ignorable delivery into a redelivery storm.
+// atomic delivery-id dedupe scoped per endpoint, a per-endpoint rate limit, a
+// terminal outcome recorded for every claimed delivery, and 2xx-on-noise so a
+// sender's retry policy never turns an ignorable delivery into a redelivery storm.
 
 const SECRET = 'whsec_unit_test_secret';
 const ENDPOINT_ID = 'ep-1';
@@ -32,22 +32,36 @@ interface Harness {
   close: () => Promise<void>;
 }
 
-async function harness(over: Partial<ConductorWebhookInboundDeps> = {}): Promise<Harness> {
+async function harness(
+  over: Partial<ConductorWebhookInboundDeps> = {},
+  opts: { rateLimit?: number } = {},
+): Promise<Harness> {
+  // Keyed `${endpointId}::${deliveryId}` — mirrors the store's composite PK scoping
+  // (finding: a global key would misread endpoint B's id '1' as a dupe of A's).
   const claimed = new Set<string>();
+  const perEndpointCount = new Map<string, number>();
   const outcomes = new Map<string, WebhookInboundOutcome>();
   const emitCalls: Array<{ eventId: string; source: string }> = [];
+  const rateLimit = opts.rateLimit ?? Number.POSITIVE_INFINITY;
 
   const deps: ConductorWebhookInboundDeps = {
     enabled: true,
     getEndpoint: async (endpointId) =>
       endpointId === ENDPOINT_ID ? { eventId: 'orders.created', enabled: true } : null,
     getSecret: async (endpointId) => (endpointId === ENDPOINT_ID ? SECRET : undefined),
-    claim: async (deliveryId) => {
-      if (claimed.has(deliveryId)) return false;
-      claimed.add(deliveryId);
-      return true;
+    claim: async (deliveryId, endpointId): Promise<WebhookClaimResult> => {
+      // Dedupe BEFORE the rate check — a redelivery of an id already claimed by
+      // this endpoint must never be misreported as rate-limited just because the
+      // endpoint is currently busy with other (unique) deliveries.
+      const key = `${endpointId}::${deliveryId}`;
+      if (claimed.has(key)) return 'duplicate';
+      const count = perEndpointCount.get(endpointId) ?? 0;
+      if (count >= rateLimit) return 'rate_limited';
+      claimed.add(key);
+      perEndpointCount.set(endpointId, count + 1);
+      return 'claimed';
     },
-    setOutcome: async (deliveryId, outcome) => {
+    setOutcome: async (deliveryId, _endpointId, outcome) => {
       outcomes.set(deliveryId, outcome);
     },
     emit: async (eventId, _payload, source): Promise<ConductorWebhookEmitResult> => {
@@ -192,6 +206,36 @@ describe('conductor webhook inbound route', () => {
       const r = await post(h.base, '{}', { deliveryId: 'd-8' });
       assert.equal(r.status, 200);
       assert.equal(r.json['outcome'], 'no_subscribers');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('repeated correctly-signed requests with unique delivery ids are rate-limited (429), not unbounded', async () => {
+    const h = await harness({}, { rateLimit: 2 });
+    try {
+      const first = await post(h.base, '{}', { deliveryId: 'd-rl-1' });
+      const second = await post(h.base, '{}', { deliveryId: 'd-rl-2' });
+      const third = await post(h.base, '{}', { deliveryId: 'd-rl-3' });
+      assert.equal(first.status, 202);
+      assert.equal(second.status, 202);
+      assert.equal(third.status, 429);
+      assert.equal(third.json['code'], 'webhook.rate_limited');
+      assert.equal(h.emitCalls.length, 2); // the rate-limited request never reached emit()
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('a redelivery of the SAME delivery id is a duplicate, not a rate-limit hit', async () => {
+    const h = await harness({}, { rateLimit: 1 });
+    try {
+      const first = await post(h.base, '{}', { deliveryId: 'd-same' });
+      const second = await post(h.base, '{}', { deliveryId: 'd-same' });
+      assert.equal(first.status, 202);
+      assert.equal(second.status, 200);
+      assert.equal(second.json['outcome'], 'duplicate'); // not rate_limited
+      assert.equal(h.emitCalls.length, 1);
     } finally {
       await h.close();
     }

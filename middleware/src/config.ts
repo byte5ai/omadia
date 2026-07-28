@@ -207,6 +207,11 @@ const ConfigSchema = z.object({
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
     .default(true),
+  // Per-endpoint cap over a rolling minute — closes the gap dedupe alone leaves open
+  // (a correctly-signed sender can mint a fresh delivery id on every call, so it
+  // would otherwise start an unbounded number of workflow runs). Enforced atomically
+  // in ConductorWebhookEndpointStore.claim(), same transaction as the dedupe insert.
+  CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE: z.coerce.number().int().positive().default(60),
 
   // Epic #470 W4 — default per-job LLM cost budget (USD) applied when neither the
   // job nor its repo sets one (spec §5). Token budgets have NO default: they are

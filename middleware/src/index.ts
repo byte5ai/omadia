@@ -2793,6 +2793,7 @@ async function main(): Promise<void> {
       // live in the same per-agent-scoped vault as every other subsystem's credentials.
       vault: secretVault,
       webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
+      webhookInboundMaxPerMinute: config.CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE,
       log: (m) => console.log(m),
     });
     // Issue #437 — resolve the inbound-webhook forward reference mounted earlier
