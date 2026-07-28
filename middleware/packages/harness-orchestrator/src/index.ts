@@ -345,6 +345,24 @@ export type { AttachmentReader } from './tools/readAttachmentTool.js';
 export { createAttachmentReader } from './attachmentReaderFactory.js';
 export type { AttachmentByteStore } from './attachmentReaderFactory.js';
 export {
+  QUERY_DATASET_TOOL_NAME,
+  QueryDatasetTool,
+  queryDatasetToolSpec,
+} from './tools/queryDatasetTool.js';
+export { isCsvAttachment } from './attachmentExtract.js';
+export {
+  buildDatasetFromCsv,
+  importCsvDataset,
+  parseCsv,
+  MAX_DATASET_ROWS,
+} from './datasetImport.js';
+export type {
+  CsvParseResult,
+  ImportCsvDatasetInput,
+  ImportCsvDatasetResult,
+  PrivacyScanStats,
+} from './datasetImport.js';
+export {
   FindFreeSlotsTool,
   FIND_FREE_SLOTS_TOOL_NAME,
   findFreeSlotsToolSpec,

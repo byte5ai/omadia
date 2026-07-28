@@ -744,6 +744,46 @@ Noise), `test/conductorWebhookDispatcher.test.ts` (Signing/Retry/Backoff),
 `test/conductorWebhookPostAction.test.ts` + SSRF-Guard-Unit-Tests,
 `test/conductorEventRouterWebhookTrigger.test.ts` (`webhook`-Trigger-Kind
 Matching, keine Regression auf `event`).
+### Dataset-Routen + `query_dataset`-Tool (#430)
+
+Neue REST-Oberfläche `src/routes/datasets.ts`, gemountet unter
+`/api/v1/datasets` (ACL-Pattern wie `/api/v1/memory` —
+`req.session.omadia_user_id`, kein anonymer Zugriff):
+
+- `POST /api/v1/datasets` — multipart CSV-Upload (`multer`, ein File pro
+  Request, `MAX_UPLOAD_BYTES` = 25 MB).
+- `GET /api/v1/datasets` — Liste der eigenen Datasets.
+- `GET /api/v1/datasets/:id` — Schema + Metadaten eines Datasets.
+- `GET /api/v1/datasets/:id/rows` — paginierte Roh-Zeilen.
+- `DELETE /api/v1/datasets/:id` — Dataset löschen.
+
+Dieselbe Pipeline (`importCsvDataset` aus
+`harness-orchestrator/src/datasetImport.ts`) läuft auch automatisch beim
+CSV-Chat-Attachment-Pfad in `orchestrator.ts`'s `ingestAttachments` (ersetzt
+dort den bisherigen 20.000-Zeichen-Text-Cutoff für CSVs) — siehe §7 für die
+Knowledge-Graph-seitige Implementierung.
+
+Neues natives Tool **`query_dataset`** (`tools/queryDatasetTool.ts`),
+registriert wie die übrigen Orchestrator-Tools in §3's Orchestrator-Setup:
+`list_datasets` / `get_schema` / `query_rows` gegen eine eingeschränkte
+Filter/Aggregat-DSL (nie rohes SQL vom Modell), Ergebnisse immer
+server-seitig paginiert/aggregiert bzw. auf 200 Gruppen gecappt.
+
+**Identity-Resolution (Fixup Runde 5):** für einen Channel-Turn (Teams/
+Slack/Telegram) ist `ChatTurnInput.userId` die RAW channel-native id, NICHT
+die kanonische `omadiaUserId` uuid. `resolveTurnOwnerIdentity`
+(`resolveTurnOwnerIdentity.ts`) löst sie EINMAL pro Turn auf (via
+`KnowledgeGraph.resolveOrCreateChannelIdentity`, wenn `input.channelIdentity`
+gesetzt ist — sonst fällt sie auf `input.userId` zurück, das für HTTP/CLI-
+Turns bereits kanonisch ist) und legt sie in
+`TurnContextValue.resolvedOmadiaUserId` ab — einmal in `runTurn` (non-
+streaming) und einmal in `chatStream` (der Pfad, den
+`createOrchestratorDispatcher` für Channel-Turns tatsächlich aufruft).
+`QueryDatasetTool` und `ingestAttachments` lesen beide ausschließlich dieses
+Feld für die Dataset-ACL (niemals das rohe `TurnContextValue.userId`) — vorher
+schrieb der Import-Pfad unter der kanonischen id, während der Query-Pfad die
+rohe id las, sodass ein Channel-User sein eigenes gerade importiertes Dataset
+nie wiederfinden konnte.
 
 ---
 
@@ -957,6 +997,35 @@ Wird vom Orchestrator aufgerufen, wenn der User auf prior art verweist.
 End-to-End verifiziert: der Orchestrator nutzt das Tool von selbst, ohne
 dass man ihn zwingt.
 
+### Structured Datasets — CSV Import (#430)
+
+Separate Ablage neben dem eigentlichen Graph — bewusst KEINE Graph-Node-
+Explosion pro Zeile (Node-Properties sind GIN-indexiert, siehe
+`ingestEntities`-Doku). Relationale Sidecar-Tabellen `datasets` +
+`dataset_rows` (Migration `packages/harness-knowledge-graph-neon/src/
+migrations/0029_datasets.sql`); pro Dataset genau EIN `Dataset`-Graph-Node
+(`PluginEntity`, `system='dataset'`) für Recall/Zitation.
+
+- **Interface:** `KnowledgeGraph.{ingestDataset,listDatasets,getDataset,
+  queryDatasetRows,deleteDataset}` (`plugin-api/src/knowledgeGraph.ts`),
+  implementiert in `@omadia/knowledge-graph-neon` (echtes SQL) UND
+  `@omadia/knowledge-graph-inmemory` (volle Parität, kein Stub).
+- **Import:** `POST /api/v1/datasets` (multipart CSV, `src/routes/
+  datasets.ts`) sowie automatisch bei CSV-Chat-Attachments
+  (`attachmentExtract.ts`'s `isCsvAttachment` branch in `orchestrator.ts`'s
+  `ingestAttachments` — ersetzt den bisherigen 20.000-Zeichen-Text-Cutoff
+  für CSVs).
+- **Privacy:** jede importierte Zeile läuft vor dem Schreiben durch den
+  bestehenden C0-Regex-Baseline-Detector (`@omadia/plugin-privacy-guard`'s
+  `createBaselineDetector`/`maskPrompt`) — dieselbe Pipeline, die
+  Freitext-User-Prompts schützt. Nur `string`/`date`-Spalten werden
+  gescannt (Details + Kosten-Hinweis in `datasetImport.ts`'s Modul-Doc).
+- **Query:** `query_dataset`-Tool (`tools/queryDatasetTool.ts`) — eine
+  eingeschränkte Filter/Aggregat-DSL (nie rohes SQL vom Modell), immer
+  server-seitig paginiert/aggregiert.
+- **Admin-UI:** bewusst NICHT Teil dieser Änderung — siehe PR-Beschreibung
+  von #430 für die Begründung; offener Folge-Task.
+
 ---
 
 ## 8. Skills
@@ -993,6 +1062,14 @@ Migration. Statt dessen überschreibt der Preamble in
 
 Funktioniert in der Praxis. Falls ein Sub-Agent dennoch curl-Muster
 produziert, Skill selbst anpassen.
+
+### Cross-Referenz: `query_dataset` (#430) ist kein Skill
+
+AGENTS.md's Doku-Regel ordnet "Neue Route / Tool / Sub-Agent" §3 **und**
+§8 zu. #430's `query_dataset`-Tool ist ein natives Orchestrator-Tool ohne
+eigenen `skills/<name>/SKILL.md`-Ordner — es gehört also inhaltlich nicht
+in "Aktuelle Skills" oben. Referenz statt Duplikat: volle Doku in §3
+("Dataset-Routen + `query_dataset`-Tool") und §7 (Knowledge-Graph-Schicht).
 
 ---
 
@@ -1378,6 +1455,18 @@ gekettet, weil `requires` beim Boot enforced wird): docs-RFC (diese PR)
 (plus `TurnContextValue`-Extension) → vier Per-Channel-Opt-in-PRs →
 omadia-ui-Orchestrator-Consumer. Details + per-PR-Doc-Pflichten in §15
 des RFC.
+
+### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up)
+
+Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckt
+absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete bleibt
+API-only (`POST/GET/DELETE /api/v1/datasets*`, siehe §3). #430's eigene
+Triage-Acceptance-Criteria verlangen aber genau diese UI; der Branch
+schließt das Issue deshalb NICHT, sondern "addresses" es — ein
+Folge-Issue für die Admin-UI-Seite (`web-ui/app/admin/datasets/` o.ä.,
+Upload-Dropzone + Schema-Tabelle + Zeilen-Preview + Delete-Bestätigung,
+Pattern analog zur bestehenden Package-Upload-Seite) ist offen zu
+erfassen.
 
 ---
 
