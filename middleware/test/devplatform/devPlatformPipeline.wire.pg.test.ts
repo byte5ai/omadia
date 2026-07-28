@@ -194,7 +194,7 @@ describe('dev-platform wiring — a real gated job, end to end through the assem
       source: 'admin',
       sourceRef: 'gh-issue:1',
       baseSha: BASE_SHA,
-      phase: 'analyze', // a gated pipeline starts at analyze (createJob defaults to implement)
+      phase: 'analyze', // explicit for clarity — matches createJob's own default now
       backend: 'local',
       createdBy: MARK,
       runnerTokenHash: hash,

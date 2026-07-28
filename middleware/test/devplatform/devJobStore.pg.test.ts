@@ -92,11 +92,14 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     await pool.end();
   });
 
-  it('createJob defaults: queued, provision 1, phase implement, api_key', async () => {
+  it('createJob defaults: queued, provision 1, phase analyze, api_key', async () => {
     const job = await newQueuedJob(repo.id);
     assert.equal(job.status, 'queued');
     assert.equal(job.provision, 1);
-    assert.equal(job.phase, 'implement');
+    // Every pipeline_mode starts at 'analyze' (transitions.ts's own test suite:
+    // even collapsed mode begins `analyze → implement`); an explicit `phase`
+    // override (e.g. the gated-webhook trigger parking at `await_human`) wins.
+    assert.equal(job.phase, 'analyze');
     assert.equal(job.authMode, 'api_key');
     // Only the sha256 hash is stored — never the plaintext token.
     assert.match(job.runnerTokenHash ?? '', /^[0-9a-f]{64}$/);
@@ -455,7 +458,7 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
       repoId: repo.id, kind: 'fix_issue', brief: 'fence', source: 'admin',
       backend: 'docker', createdBy: MARK, runnerTokenHash: hash,
     });
-    // Job is at the default phase (implement/analyze), NOT await_human.
+    // Job is at its default starting phase ('analyze'), NOT await_human.
     assert.equal(await store.requeueAtPhase(job.id, 'implement'), false, 'a non-parked job is not re-queued');
     const still = await store.getJob(job.id);
     assert.equal(still?.status, 'queued', 'and its status is untouched by the no-op');
@@ -464,7 +467,7 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     const lease = randomUUID();
     let claimed = await store.claimNextQueued(lease);
     while (claimed && claimed.id !== job.id) claimed = await store.claimNextQueued(lease);
-    await store.advancePhase(job.id, 'implement', 'await_human');
+    await store.advancePhase(job.id, job.phase, 'await_human');
     await store.parkForGate(job.id);
     assert.equal(await store.requeueAtPhase(job.id, 'implement'), true, 'a parked job re-queues');
     const requeued = await store.getJob(job.id);

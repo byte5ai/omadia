@@ -206,6 +206,16 @@ export class DevJobStore {
     // `status` is threaded so a gated trigger job can be born `'waiting'` in this
     // single INSERT (never transiently `'queued'` and therefore never claimable);
     // omitted ⇒ `'queued'` (the DB default, kept explicit here for the same value).
+    //
+    // `phase` defaults to `'analyze'`, not `'implement'`: every pipeline_mode
+    // (gated AND collapsed) is designed to start there per transitions.ts's own
+    // test suite ("collapsed mode skips THE GATE" still begins `analyze →
+    // implement`) and the dev-runner-shim's own default
+    // (`phaseLoop.ts`: `ctx?.phase ?? 'analyze'`). Only `kind === 'analyze'`
+    // jobs terminate immediately after that phase; `fix_issue` and `implement`
+    // jobs continue through bootstrap/plan/clarify/gate exactly like any other
+    // gated job — an explicit `phase` override (e.g. the gated-webhook trigger
+    // parking straight at `'await_human'`) still wins.
     const r = await this.pool.query<Row>(
       `INSERT INTO dev_jobs
          (repo_id, kind, brief, source, source_ref, base_sha, backend, agent_kind, auth_mode,
@@ -223,7 +233,7 @@ export class DevJobStore {
         input.agentKind ?? 'claude-cli',
         input.authMode ?? 'api_key',
         input.provision ?? 1,
-        input.phase ?? 'implement',
+        input.phase ?? 'analyze',
         input.status ?? 'queued',
         input.branch ?? null,
         input.runnerTokenHash,
