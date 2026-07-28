@@ -168,6 +168,11 @@ import { isPermittedLauncher } from './routes/devPlatformShared.js';
 import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from './routes/devWebhooks.js';
 import { WebhookDeliveryStore } from './devplatform/triggers/webhookDeliveryStore.js';
 import { DevGithubAppStore } from './devplatform/githubApp/appStore.js';
+import {
+  createConductorWebhooksInboundRouter,
+  type ConductorWebhookInboundDeps,
+} from './routes/conductorWebhooksInbound.js';
+import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
 import { DevJobStore as DevJobStoreForWebhooks } from './devplatform/devJobStore.js';
 import { DevRepoStore as DevRepoStoreForWebhooks } from './devplatform/devRepoStore.js';
 import { DevJobGateStore as DevJobGateStoreForWebhooks } from './devplatform/pipeline/gateStore.js';
@@ -981,6 +986,14 @@ async function main(): Promise<void> {
   // undefined on the in-memory backend (conductor inert); the install-time
   // template VALIDATION gate runs regardless.
   let conductorTemplateRegistrarRef: PluginTemplateRegistrar | undefined;
+
+  // Forward reference for the Conductor inbound-webhook router deps (issue #437) —
+  // same pattern as the template registrar above. The router itself is mounted
+  // further down, BEFORE express.json() (raw-body HMAC verification needs the
+  // untouched bytes); the real deps (endpoint store, event router, vault) are only
+  // built later inside the graphPool block's `wireConductor` call. By the time a real
+  // request arrives, the assignment there has already run.
+  let conductorWebhookInboundDepsRef: ConductorWebhookInboundDeps | undefined;
 
   // Forward refs — runtime propagation of a POST-BOOT agent-plugin
   // (de)activation into the per-Agent registry orchestrators + the fallback
@@ -2104,6 +2117,15 @@ async function main(): Promise<void> {
     console.log('[middleware] dev-platform GitHub webhook router mounted at /api/webhooks/github (raw-body, before express.json)');
   }
 
+  // Issue #437 — Conductor's generic inbound webhook route. Mounted unconditionally
+  // (mirrors the forward-reference pattern, not the `if (graphPool)` gate above): on
+  // the in-memory backend `conductorWebhookInboundDepsRef` never gets assigned, so the
+  // handler's `getDeps()` resolves undefined and every call answers 503 — the router
+  // itself must still be registered here, before express.json(), for the raw-body HMAC
+  // verification to ever see real request bytes once Conductor IS wired.
+  app.use(createConductorWebhooksInboundRouter(() => conductorWebhookInboundDepsRef));
+  console.log('[middleware] conductor webhook inbound router mounted at /api/hooks/:endpointId (raw-body, before express.json)');
+
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -2813,8 +2835,12 @@ async function main(): Promise<void> {
       app,
       requireAuth,
       getRegistry,
-      invokeAction: (toolId, input) => dynamicAgentRuntime.invokeAgentTool(toolId, input),
-      listActions: () => deterministicActionRegistry.list(),
+      // `webhook.post` (issue #437) is a built-in action, not a plugin tool — special-cased
+      // ahead of the dynamicAgentRuntime dispatch so a Designer action step can fire an
+      // ad-hoc outbound webhook without an installed connector.
+      invokeAction: (toolId, input) =>
+        toolId === WEBHOOK_POST_ACTION_ID ? invokeWebhookPostAction(input) : dynamicAgentRuntime.invokeAgentTool(toolId, input),
+      listActions: () => [WEBHOOK_POST_ACTION_ID, ...deterministicActionRegistry.list()],
       eventCatalog: eventCatalogRegistry,
       // US5 reminders: resolve a channel's proactive sender from the routines senderRegistry. Adapt
       // ProactiveSender → the worker's minimal shape ({ text } is a valid SemanticAnswer).
@@ -2822,8 +2848,22 @@ async function main(): Promise<void> {
         const sender = routinesHandle?.senderRegistry.get(channel);
         return sender ? { send: (opts) => sender.send(opts) } : undefined;
       },
+      // Issue #437 — inbound endpoint secrets + outbound subscription signing secrets
+      // live in the same per-agent-scoped vault as every other subsystem's credentials.
+      vault: secretVault,
+      webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
+      webhookInboundMaxPerMinute: config.CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE,
+      // Review finding — the operator UI must display an inbound endpoint URL it can
+      // actually reach; PUBLIC_BASE_URL alone isn't reliable here since it may
+      // deliberately point at the Next.js dev-server origin (browser-facing), which
+      // doesn't proxy /api/hooks/*. CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL overrides it
+      // when the two must differ.
+      webhookInboundBaseUrl: config.CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL,
       log: (m) => console.log(m),
     });
+    // Issue #437 — resolve the inbound-webhook forward reference mounted earlier
+    // (before express.json()); requests arriving from here on reach the real deps.
+    conductorWebhookInboundDepsRef = conductorWiring.webhookInboundDeps;
     // Expose the event router so plugin contexts (ctx.events.emit) resolve it lazily — US4.
     serviceRegistry.provide('conductorEventRouter', conductorWiring.eventRouter);
     // Expose the channel-binding store so the routines turn-capture hook can populate it — US5.

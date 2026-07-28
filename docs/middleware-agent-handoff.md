@@ -671,6 +671,79 @@ durch `runTurn({ ..., viewer })`. Tests: `test/conductorBuilder.test.ts`
 (Digest-Sichtbarkeit inkl. pending/fremd-privat, Proposal-Vetting,
 Malformed-Blocks, No-Proposal-Regression).
 
+### Conductor Webhooks — Inbound + Outbound (#437)
+
+Generischer Webhook-Mechanismus für Conductor, symmetrisch zum bisher
+declared-but-dead `'webhook'`-`TriggerKind` (`conductor-core/src/types.ts`).
+
+**Inbound:** `POST /api/hooks/:endpointId` — unauthenticated Mount **vor**
+`app.use(express.json(...))` in `src/index.ts` (Forward-Reference-Pattern wie
+`conductorTemplateRegistrarRef`: `conductorWebhookInboundDepsRef` wird früh
+deklariert, der Router (`src/routes/conductorWebhooksInbound.ts`) mountet
+sofort mit einem `getDeps()`-Getter darauf, die echten Deps werden erst tief
+im `graphPool`-Block nach `wireConductor(...)` zugewiesen — by request time
+immer aufgelöst). Raw-Body-HMAC (`x-webhook-signature: sha256=<hex>`) gegen
+das per-Endpoint-Secret aus dem Vault (`webhookEndpointStore.ts`,
+`core:conductor`-Namespace); unbekannte Endpoint-Id und falsches Secret
+antworten **byte-identisch** mit `401` (kein Existenz-Leak). Verifizierte
+Delivery → atomarer Claim der Delivery-Id (`x-webhook-delivery-id`, sonst
+Server-generiert = kein Dedupe, aber kein stiller Drop) in
+`conductor_webhook_inbound_deliveries`, dann `ConductorEventRouter.emit(
+endpoint.eventId, payload, 'webhook:<endpointId>')` — jeder Workflow mit
+passendem `event`- **oder** `webhook`-Trigger (`eventRouter.ts` matcht jetzt
+beide Kinds identisch) startet einen Run. Jede geclaimte Delivery landet mit
+genau einem terminalen `outcome`; Noise (disabled, malformed JSON, kein
+Subscriber) antwortet immer `2xx` (Redelivery-Storm-Vermeidung), der globale
+Kill-Switch ist `CONDUCTOR_WEBHOOKS_ENABLED` (§10).
+
+**Outbound:** `ConductorWebhookDispatcher` (`webhookDispatcher.ts`) — ein
+neuer `notifyRunEnded`-Hook in `ConductorRunExecutor` (feuert exakt an jedem
+Punkt, an dem ein echter, nicht-Dry-Run-Run terminal wird — `driveFrom`s
+Loop-Exit UND die drei direkten Terminal-Returns in `resolveAwait`/
+`resolveDevJobAwait`/`expireAwait`, zentralisiert in `finalizeIfEnded`) löst
+`run.completed`/`run.failed` aus. Der Dispatcher fächert an jede enabled
+`conductor_webhook_subscriptions`-Row für das Event auf, signiert HMAC
+(`x-omadia-signature`), und retried mit exponentiellem Backoff (Default 6
+Attempts, 30s verdoppelnd bis 30min Cap) — `conductor_webhook_deliveries` ist
+das persistente Delivery-Log; `ConductorWebhookRetryWorker` pollt fällige
+Retries (überlebt Prozess-Restart). Zusätzlich: ein Built-in-Action
+`webhook.post` (`webhookPostAction.ts`, special-cased in `src/index.ts`s
+`invokeAction`-Wiring VOR dem `dynamicAgentRuntime`-Dispatch, kein Plugin
+nötig) für Ad-hoc-Outbound-POST aus einem Workflow-Step.
+
+**Security:** Secrets (Inbound-Endpoint + Outbound-Subscription) leben
+ausschließlich im Vault (`core:conductor`, Split Metadata-in-Postgres /
+Secret-in-Vault nach `DevGithubAppStore`-Vorbild) — nie in Graph-JSON, nie in
+einer List/Get-Response (nur einmalig bei Create/Rotate). SSRF-Guard
+(`webhookOutbound.ts`) wiederverwendet den bestehenden
+`platform/ssrfGuard.ts`-Mechanismus (Literal-IP-Precheck + guarded undici
+`Agent` gegen DNS-Rebinding) für **beide** Outbound-Pfade (Dispatcher +
+`webhook.post`).
+
+**Migration:** `src/conductor/migrations/0007_webhooks.sql` (eigene
+`_conductor_migrations`-Chain, nächste freie Nummer nach `0006_templates.sql`)
+— `conductor_webhook_endpoints`, `conductor_webhook_inbound_deliveries`,
+`conductor_webhook_subscriptions`, `conductor_webhook_deliveries`.
+
+**Admin-API:** CRUD + Secret-Rotation + Delivery-Logs unter dem bestehenden
+auth-gated `/api/v1/operator/conductors/webhooks/*`
+(`webhookRoutes.ts`, registriert **vor** `/:slug` wie die Template-Routes).
+Eine minimale Admin-UI-Seite (`web-ui/app/admin/webhooks/`, Endpoints +
+Subscriptions, Secret-Rotation, Delivery-History) **ist** Teil dieser
+Änderung — sie erfüllt das Issue-Akzeptanzkriterium einer Admin-Oberfläche.
+Die inbound-Endpoint-URL wird server-seitig aus `webhookInboundBaseUrl`
+(`CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL`, fällt zurück auf `PUBLIC_BASE_URL`)
+gebaut und als `inboundUrl`-Feld zurückgegeben — die UI zeigt diesen Wert an,
+nie `window.location.origin` (im lokalen Standard-Dev-Setup ist das der
+Next.js-Dev-Server, der nur `/bot-api/*` proxied, nicht `/api/hooks/*`,
+siehe `web-ui/next.config.ts`).
+
+Tests: `test/conductorWebhookInbound.test.ts` (Route, Signatur/Dedupe/2xx-
+Noise), `test/conductorWebhookDispatcher.test.ts` (Signing/Retry/Backoff),
+`test/conductorWebhookEndpointStore.test.ts` (Vault-Split, Dedupe-Claim),
+`test/conductorWebhookPostAction.test.ts` + SSRF-Guard-Unit-Tests,
+`test/conductorEventRouterWebhookTrigger.test.ts` (`webhook`-Trigger-Kind
+Matching, keine Regression auf `event`).
 ### Dataset-Routen + `query_dataset`-Tool (#430)
 
 Neue REST-Oberfläche `src/routes/datasets.ts`, gemountet unter
@@ -1130,6 +1203,9 @@ DIAGRAM_MAX_SOURCE_BYTES=64000             # Quellcode-Cap
 DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
 # Object-storage (Tigris auf Fly, MinIO lokal — auto-provisioniert via `fly storage create`)
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# Conductor generic webhooks (issue #437) — Kill-Switch für POST /api/hooks/:endpointId
+CONDUCTOR_WEBHOOKS_ENABLED=true
+CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE=60   # Rate-Limit pro Endpoint (rolling minute)
 # Tenant-Scope (auch für Diagramm-Cache-Keys genutzt)
 GRAPH_TENANT_ID=byte5
 # Prompt-PII C1-Detector (GLiNER-Sidecar, #361) — optional

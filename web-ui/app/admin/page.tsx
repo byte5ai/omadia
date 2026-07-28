@@ -73,6 +73,8 @@ const GROUPS: readonly GroupDef[] = [
         key: 'devPlatform',
         requiresNavFrom: 'core:dev-platform',
       },
+      // Conductor generic webhooks (issue #437) — inbound endpoints + outbound subscriptions.
+      { href: '/admin/webhooks', key: 'webhooks' },
     ],
   },
   {

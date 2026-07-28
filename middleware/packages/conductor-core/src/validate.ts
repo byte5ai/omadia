@@ -180,13 +180,18 @@ export function validate(graph: WorkflowGraph, knownRefs?: KnownRefs): Validatio
     }
   }
 
-  // 5. triggers: event triggers need an eventId (and a known one if refs supplied)
+  // 5. triggers: event AND webhook triggers need an eventId (and a known one if refs
+  //    supplied). `webhook` triggers require the same eventId as `event` triggers
+  //    (review finding, issue #437): `eventRouter.ts#emit` matches a trigger by
+  //    `(tr.kind === 'event' || tr.kind === 'webhook') && tr.eventId === eventId` — a
+  //    `webhook` trigger with no/invalid eventId can never match, so it would be
+  //    accepted and published but silently unreachable at runtime.
   for (const tr of graph.triggers ?? []) {
-    if (tr.kind === 'event') {
+    if (tr.kind === 'event' || tr.kind === 'webhook') {
       if (!tr.eventId) {
-        errors.push({ code: 'unknown_event_ref', message: `event trigger '${tr.id}' has no eventId`, nodeIds: [tr.id] });
+        errors.push({ code: 'unknown_event_ref', message: `${tr.kind} trigger '${tr.id}' has no eventId`, nodeIds: [tr.id] });
       } else if (knownRefs?.eventIds && !knownRefs.eventIds.includes(tr.eventId)) {
-        errors.push({ code: 'unknown_event_ref', message: `event trigger '${tr.id}' references unknown event '${tr.eventId}'`, nodeIds: [tr.id] });
+        errors.push({ code: 'unknown_event_ref', message: `${tr.kind} trigger '${tr.id}' references unknown event '${tr.eventId}'`, nodeIds: [tr.id] });
       }
     }
   }
