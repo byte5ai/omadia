@@ -167,6 +167,18 @@ async function postJson<T>(
   }
 }
 
+/**
+ * Deliberately does NOT feed the Create Issue diagnostics buffer (issue
+ * #433 review). An earlier version called `recordApiErrorDiagnostic` from
+ * this constructor, which made `ApiError` — used by every failed call
+ * anywhere in the admin UI, including secrets/vault-config PATCHes on
+ * /admin/settings — a silent, global source for a buffer an operator can
+ * later opt to attach to a PUBLIC GitHub issue on an unrelated bug report.
+ * The diagnostics feature only captures `window` `error` /
+ * `unhandledrejection` events (see diagnosticsBuffer.ts) — page-level
+ * crashes, not the outcome of a specific admin action. See
+ * api.test.ts for the regression test enforcing this invariant.
+ */
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -4174,6 +4186,10 @@ export interface IssuePreview {
   title: string;
   body: string;
   category: IssueCategory;
+  /** Sanitized/truncated `<details>` block, present only when a
+   *  `diagnostics` excerpt was submitted (issue #433) — the exact text
+   *  /create will append, for operator review before filing. */
+  diagnostics?: string;
 }
 
 export interface CreatedIssue {
@@ -4220,6 +4236,9 @@ export function disconnectGithub(): Promise<{ ok: boolean }> {
 export function previewGithubIssue(input: {
   text: string;
   category: IssueCategory;
+  /** Opt-in stack-trace/log excerpt (issue #433) — never sent to the LLM
+   *  reformulator, only echoed back sanitized as `IssuePreview.diagnostics`. */
+  diagnostics?: string;
 }): Promise<IssuePreview> {
   return postJson<IssuePreview>('/v1/issues/preview', input);
 }
@@ -4228,6 +4247,7 @@ export function createGithubIssue(input: {
   title: string;
   body: string;
   category: IssueCategory;
+  diagnostics?: string;
 }): Promise<CreatedIssue> {
   return postJson<CreatedIssue>('/v1/issues/create', input);
 }
