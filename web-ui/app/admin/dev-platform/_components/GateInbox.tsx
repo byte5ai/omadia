@@ -14,6 +14,7 @@ import {
   type DevGateAnswer,
   type DevGateView,
 } from '../_lib/api';
+import { PrettyArtifact } from './PrettyArtifact';
 
 /**
  * Epic #470 W2 — the operator gate inbox (UI spec §5). Lists every job parked at
@@ -222,9 +223,9 @@ export function GateCard({
         ) : planText.kind === 'error' ? (
           <p className="mt-1 text-xs text-[color:var(--danger)]">{t('planLoadError')}</p>
         ) : (
-          <pre className="mt-1 max-h-[40vh] overflow-y-auto whitespace-pre-wrap rounded-lg border border-[color:var(--border)] lume-surface-sunken p-3 font-mono text-xs leading-[1.5] text-[color:var(--fg)]">
-            {planText.text}
-          </pre>
+          <div className="mt-1 max-h-[50vh] overflow-y-auto">
+            <PrettyArtifact text={planText.text} />
+          </div>
         )}
       </div>
 
