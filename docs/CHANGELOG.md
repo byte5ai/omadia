@@ -18,6 +18,33 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — public API channel: chat over HTTP with per-key auth (#438)
+
+- New built-in channel package `@omadia/channel-api`
+  (`middleware/packages/harness-channel-api/`) exposes `POST
+  /api/public/v1/chat` — a documented, self-authenticating HTTP entry point
+  external systems can drive without a channel adapter or the operator UI.
+  Streams the SAME NDJSON event framing as `/chat/stream` and dispatches
+  through `CoreApi.handleTurnStream`, so PII masking (privacy-guard), memory,
+  and the knowledge graph all apply exactly as they do for every other
+  channel — no second response-masking path.
+- Credential model (locked design decision on the issue): each API key **is**
+  its own identity — `ChannelUserRef{ channel: 'api', id: 'key:<id>' }` —
+  not a delegate for a human end-user. No impersonation surface.
+- Full v1 security posture, not deferred: API keys are vault-backed (this
+  plugin's own `ctx.secrets` namespace, no DB migration) and verified with
+  `crypto.timingSafeEqual` against a sha256 hash — the plaintext is shown
+  exactly once, at creation; per-key configurable rate limits (fixed-window,
+  429 on overage); an explicit revoke endpoint (`POST
+  /api/public/v1/admin/keys/:id/revoke`) that fails the next request
+  immediately; and a usage audit log (who/what/when) recorded on every
+  authenticated call.
+- Key lifecycle (`GET`/`POST /api/public/v1/admin/keys`, revoke) is
+  deliberately mounted under the SAME `/api/public/v1` prefix but NOT added
+  to `middleware/src/auth/publicPaths.ts`'s exemption list — only `.../chat`
+  is public. Key management stays behind the normal operator session cookie,
+  like every other admin surface in this app.
+
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 
 - A native plugin (`ctx.tools.register` from `activate()`) whose own

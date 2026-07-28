@@ -37,6 +37,15 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // only a Teams SSO token exists. Plugins exposing sensitive data validate
   // that token themselves.
   /^\/p\/[^/]+(?:\/|$|\?)/,
+  // Issue #438 — the public API channel's chat ingress. A caller presents a
+  // per-key API key (Authorization: Bearer) instead of a session cookie; the
+  // `@omadia/channel-api` plugin's own router validates it (constant-time
+  // hash compare) before dispatching a turn — that IS its authentication.
+  // Deliberately narrow to `/chat` only: the sibling `/admin/keys` key-
+  // lifecycle routes under the same `/api/public/v1` prefix are NOT listed
+  // here, so they stay behind this same session gate like every other admin
+  // surface (see `src/routes/adminSettings.ts`).
+  /^\/api\/public\/v1\/chat(?:\/|$|\?)/,
 ];
 
 /**

@@ -673,6 +673,54 @@ Malformed-Blocks, No-Proposal-Regression).
 
 ---
 
+### Public API Channel (issue #438)
+
+Neues Built-in-Channel-Plugin `packages/harness-channel-api/`
+(`@omadia/channel-api`, `kind: channel`), erster nicht-Session-Cookie-Ingress
+für externe Systeme: **`POST /api/public/v1/chat`** treibt einen Turn genau
+wie jeder andere Channel — über `core.registerRouter` +
+`CoreApi.handleTurnStream` —, authentifiziert aber per **API-Key**
+(`Authorization: Bearer omk_…`) statt Session-Cookie. NDJSON-Framing
+identisch zu `/chat/stream` (`src/routes/chat.ts`); da der Turn über
+`CoreApi.handleTurnStream` läuft, greifen PII-Masking (Privacy-Guard),
+Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
+
+- **Credential-Modell** (geklärte Design-Entscheidung im Issue): ein API-Key
+  **ist** seine eigene Identität — `ChannelUserRef{ kind: 'custom', id:
+  'key:<id>' }` —, kein Delegat für einen menschlichen Endnutzer. Keine
+  Impersonation-Fläche.
+- **Storage:** vault-backed über `ctx.secrets` (eigener Plugin-Namespace,
+  `permissions.secrets.runtime_write: true`) — kein DB-Migration nötig. Nur
+  der sha256-Hash landet im Vault; der Klartext-Key wird genau einmal beim
+  `create()` zurückgegeben (`packages/harness-channel-api/src/apiKeyToken.ts`,
+  spiegelt `src/devplatform/jobToken.ts`s Mint/Hash/Verify-Muster —
+  `crypto.timingSafeEqual`, kein früh-abbrechender String-Vergleich).
+- **Rate-Limiting:** Fixed-Window-Token-Bucket pro Key
+  (`rateLimiter.ts`, spiegelt `platform/httpAccessor.ts`s `TokenBucket`),
+  Kapazität pro Key konfigurierbar (`create({ rateLimitPerMinute })`),
+  Default 60/min. Über Budget → `429`.
+- **Audit-Log:** jeder authentifizierte Call schreibt einen Eintrag
+  (`keyId`, `route`, `method`, `at`, `status`) — vault-backed, auf die
+  letzten `MAX_ENTRIES` (200) gedeckelt, Writes seriell über eine interne
+  Promise-Queue (`auditLog.ts`).
+- **Key-Lifecycle** (`GET`/`POST /api/public/v1/admin/keys`, `POST
+  /api/public/v1/admin/keys/:id/revoke`) liegt bewusst unter demselben
+  `/api/public/v1`-Prefix, ist aber **nicht** in
+  `src/auth/publicPaths.ts`s Exemption-Liste — nur `.../chat` ist public.
+  Key-Verwaltung bleibt hinter dem normalen Operator-Session-Cookie, wie
+  jede andere Admin-Fläche in dieser App (Modell: `routes/adminSettings.ts`).
+- **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
+  extend to other flows" — weitere Flows sind Folge-Issues).
+
+Tests: `test/channelApi/` — u.a. eine echte Orchestrator- + echte
+Privacy-Guard-Integration (`chatRouterPrivacyIntegration.test.ts`, spiegelt
+`test/orchestrator/promptMaskPipeline.test.ts`s "realer Turn, gefakter LLM"-
+Muster), Auth/Rate-Limit/Revoke/Audit-Wiring (`chatRouter.test.ts`), Key-CRUD
+(`adminKeysRouter.test.ts`), und die `publicPaths`-Exemption
+(`publicPathsExemption.test.ts`).
+
+---
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert

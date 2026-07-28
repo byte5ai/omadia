@@ -1,0 +1,23 @@
+{
+  "name": "@omadia/channel-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Public API channel for the byte5 Harness (issue #438). Exposes chat (and later other flows) over a documented HTTP API at /api/public/v1, authenticated by per-key vault-backed API keys instead of an operator session cookie. kind: channel; drives turns via CoreApi.handleTurnStream so responses go through the same orchestrator + privacy-guard pipeline every other channel uses.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/channel-sdk": "*",
+    "@omadia/plugin-api": "*",
+    "express": "^5.1.0",
+    "zod": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
