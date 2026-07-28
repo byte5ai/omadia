@@ -153,6 +153,23 @@ export function createProxy(deps) {
     });
   });
   dataServer.on('connect', (req, socket, head) => {
+    // `socket` is the raw net.Socket the CONNECT upgrade hands us — an
+    // EventEmitter with NO listener for 'error' until handleConnect's success
+    // path reaches `clientSocket.on('error', teardown)`, well after DNS
+    // resolution / the allowlist decision. A client that resets the
+    // connection (ECONNRESET) at ANY point before that — observed live —
+    // fires an unhandled 'error' event, and Node's default for a
+    // listener-less EventEmitter 'error' is to throw, which crashed this
+    // entire process (taking down egress control-plane calls for every OTHER
+    // concurrent job until the container restarted). Attach a listener
+    // covering the socket's full lifetime, unconditionally, before anything
+    // else touches it; handleConnect's own later listener simply becomes a
+    // second listener on the same event once the tunnel exists — both firing
+    // is harmless, `destroySocket` is idempotent.
+    socket.on('error', (err) => {
+      logger.warn?.(`[dev-egress-proxy] client socket error: ${err instanceof Error ? err.message : String(err)}`);
+      destroySocket(socket);
+    });
     void handleConnect(req, socket, head).catch((err) => {
       logger.warn?.(`[dev-egress-proxy] handleConnect threw: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
       destroySocket(socket);

@@ -489,6 +489,71 @@ describe('proxy — a tarpit nameserver cannot park connections before the limit
   });
 });
 
+describe('proxy — a client socket reset before the tunnel exists must not crash the process', () => {
+  it('an ECONNRESET during the DNS-resolution window is handled, not thrown as an unhandled socket error', async () => {
+    // Found live: `clientSocket` (the raw net.Socket a CONNECT upgrade hands
+    // over) has NO 'error' listener attached until handleConnect's success
+    // path reaches `clientSocket.on('error', teardown)` -- well after the
+    // allowlist decision AND the `await resolve(host)` call. A client
+    // resetting the connection during that window fires an unhandled
+    // 'error' event; Node's default for a listener-less EventEmitter
+    // 'error' is to throw, which crashed the ENTIRE egress proxy process --
+    // taking every OTHER concurrent job's egress down with it, restarted
+    // only by the container's own restart policy.
+    //
+    // resolveHangs keeps the CONNECT stuck in exactly that vulnerable
+    // pre-tunnel window indefinitely, so the reset below is guaranteed to
+    // land while it's still open.
+    const p = await startProxy({
+      jobs: [{ jobId: JOB_ID, allowlist: ['good.test'], proxyToken: PROXY_TOKEN }],
+      resolveHangs: true,
+    });
+    try {
+      const socket = netConnect({ host: '127.0.0.1', port: p.dataPort });
+      await new Promise((resolve, reject) => {
+        socket.once('connect', resolve);
+        socket.once('error', reject);
+      });
+      socket.write(`CONNECT good.test:443 HTTP/1.1\r\nHost: good.test:443\r\nProxy-Authorization: ${basicAuth()}\r\n\r\n`);
+      // Give the proxy a moment to receive the CONNECT and enter
+      // handleConnect's `await resolve(host)` (resolveHangs keeps it
+      // pending forever, so this window stays open indefinitely).
+      await new Promise((r) => setTimeout(r, 50));
+      // resetAndDestroy sends a real TCP RST (Node 16.17+) rather than a
+      // clean FIN, so the SERVER side observes an 'error' event (ECONNRESET),
+      // not just 'close' -- the actual crash-reproducing case, not a milder
+      // graceful-disconnect one `socket.destroy()` alone wouldn't exercise.
+      if (typeof socket.resetAndDestroy === 'function') socket.resetAndDestroy();
+      else socket.destroy(new Error('simulated reset'));
+
+      // If the bug were present, the proxy process would have thrown an
+      // uncaught exception and died right about now — no further code in
+      // this process would ever run again. Reaching this assertion at all
+      // (on a freshly-issued, unrelated request) is itself the proof; a
+      // dead process cannot answer it. (internalHost/resolveMap mirrors the
+      // "end-to-end tunnel" test above — a real upstream + allowInternal so
+      // the loopback resolution isn't itself rejected as a rebind.)
+      const upstream = await startTcpEcho();
+      const other = await startProxy({
+        internalHost: 'still-alive.internal',
+        internalPort: upstream.port,
+        jobs: [{ jobId: JOB_ID, allowlist: [], proxyToken: PROXY_TOKEN }],
+        resolveMap: { 'still-alive.internal': [{ address: '127.0.0.1', family: 4 }] },
+      });
+      try {
+        const res = await sendConnect(other.dataPort, `still-alive.internal:${upstream.port}`, basicAuth());
+        assert.equal(res.statusCode, 200, 'the process survived the reset and can still serve a normal request');
+        res.socket.destroy();
+      } finally {
+        await other.close();
+        await upstream.close();
+      }
+    } finally {
+      await p.close();
+    }
+  });
+});
+
 /**
  * Epic #470 W1 — the whole egress chain, end to end, over real sockets.
  *
