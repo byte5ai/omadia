@@ -55,6 +55,7 @@ import {
   ROLE_DIND,
   SpecRejectedError,
 } from './clamp.mjs';
+import { parseRequireDigest } from './policyClient.mjs';
 
 /**
  * @typedef {import('./policyClient.mjs').DerivedJobPolicy} DerivedJobPolicy
@@ -802,6 +803,35 @@ async function ensureImage(docker, ref, pullPolicy = 'always') {
   });
 }
 
+/**
+ * Read an image's content address back FROM THE ENGINE — what actually got
+ * resolved, not what the reference claimed. Preference order:
+ *   1. the RepoDigest belonging to the repository in `ref` — an image pulled under
+ *      several names carries one RepoDigest per repository and they are NOT
+ *      interchangeable, so `[0]` can hand back a digest from another registry;
+ *   2. a digest carried by `ref` itself;
+ *   3. the local image `Id` — the ONLY content address a `docker load`ed image has,
+ *      since it never came from a registry to be assigned a RepoDigest.
+ *
+ * Step 3 is not a weakening: it is reached only for a floating tag, which the clamp
+ * admits only under an explicit `DEV_RUNNER_REQUIRE_DIGEST=0`. It exists because
+ * `imageDigest` is a REQUIRED daemon↔middleware wire field (`z.string().min(1)`),
+ * so an empty one fails the protocol rather than the job — and because an audit
+ * chain wants the content address of what ran even when no registry vouched for it.
+ *
+ * @param {Docker} docker
+ * @param {string} ref
+ * @returns {Promise<string>} '' only if the engine reports neither digest nor Id.
+ */
+async function resolveImageDigest(docker, ref) {
+  const info = await docker.getImage(ref).inspect();
+  const repoDigests = Array.isArray(info.RepoDigests) ? info.RepoDigests : [];
+  const repository = repositoryOf(ref);
+  const match = repoDigests.find((rd) => typeof rd === 'string' && rd.startsWith(`${repository}@`));
+  if (typeof match === 'string') return match.slice(match.indexOf('@') + 1);
+  return imageDigestOf(ref) ?? String(info.Id ?? '');
+}
+
 /** Remove a container after a graceful SIGTERM/10s/SIGKILL stop, then VERIFY it is
  *  gone (lesson (c): a remove call returning is not proof of removal). A 404 at any
  *  step means already-gone (idempotent). Any surviving container or hard error is
@@ -909,6 +939,10 @@ export function createDockerEngine(opts = {}) {
   // Resolved once at engine construction: the same policy governs the per-job image
   // pull, the DinD sidecar image pull, and the warm loop, so all three agree.
   const pullPolicy = resolvePullPolicy(env);
+  // The SAME posture the policy client is constructed with, parsed by the SAME
+  // function — the clamp is a second enforcement point for one operator decision,
+  // not a second (contradicting) decision. Defaults to prod posture when unset.
+  const requireDigest = parseRequireDigest(env.DEV_RUNNER_REQUIRE_DIGEST);
 
   return {
     async ping() {
@@ -936,16 +970,25 @@ export function createDockerEngine(opts = {}) {
         volumeName,
         createdBy,
         limits,
+        requireDigest,
         dockerInJob,
       });
-      const imageDigest = imageDigestOf(policy.image);
-      if (imageDigest === undefined) {
-        // Unreachable: buildContainerCreateOptions already rejected a tag-only image.
-        throw new SpecRejectedError('image_not_digest_pinned', 'the job image resolved to no digest');
-      }
       // Resolve the image BY DIGEST (never a floating tag) so the container is
       // created from exactly the vetted content.
       await ensureImage(docker, policy.image, pullPolicy);
+      // A pinned ref already IS the content address — the prod path resolves it
+      // without touching the engine, exactly as before. Only a floating tag (which
+      // the clamp admitted, so DEV_RUNNER_REQUIRE_DIGEST is explicitly off) has to
+      // be read back from the engine, which is why this runs AFTER ensureImage:
+      // an image that is not present yet has no Id to report.
+      const imageDigest = imageDigestOf(policy.image) ?? (await resolveImageDigest(docker, policy.image));
+      if (imageDigest === '') {
+        // Reachable: the engine knows the image but reports neither RepoDigest nor
+        // Id. `imageDigest` is a required wire field, so an empty one would fail
+        // the middleware's response parse with an opaque protocol error instead of
+        // this named one — and would do it AFTER the container was already running.
+        throw new SpecRejectedError('image_not_digest_pinned', 'the job image resolved to no digest');
+      }
 
       const labels = {
         [JOB_ID_LABEL]: jobId,
@@ -1079,19 +1122,7 @@ export function createDockerEngine(opts = {}) {
       const digests = [];
       for (const ref of refs) {
         await ensureImage(docker, ref, pullPolicy);
-        const info = await docker.getImage(ref).inspect();
-        const repoDigests = Array.isArray(info.RepoDigests) ? info.RepoDigests : [];
-        // An image pulled under several names carries one RepoDigest per
-        // repository, and they are NOT interchangeable — taking [0] can hand
-        // back a digest that belongs to a different registry than the ref we
-        // were asked to warm. Match on the repository we actually pulled.
-        const repository = repositoryOf(ref);
-        const match = repoDigests.find((rd) => typeof rd === 'string' && rd.startsWith(`${repository}@`));
-        const resolved =
-          typeof match === 'string'
-            ? match.slice(match.indexOf('@') + 1)
-            : (imageDigestOf(ref) ?? String(info.Id ?? ''));
-        digests.push(resolved);
+        digests.push(await resolveImageDigest(docker, ref));
       }
       return digests;
     },

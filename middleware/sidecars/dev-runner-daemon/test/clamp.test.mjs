@@ -161,6 +161,50 @@ describe('buildContainerCreateOptions — a forbidden image fails with spec_reje
   });
 });
 
+// The clamp used to hardcode the digest requirement ON, which made the documented
+// `DEV_RUNNER_REQUIRE_DIGEST=0` local escape hatch a NO-OP: the policy client was
+// told to allow a floating tag and the clamp refused it anyway, one gate later.
+describe('buildContainerCreateOptions — the DEV_RUNNER_REQUIRE_DIGEST posture', () => {
+  const FLOATING = 'omadia-dev-runner:latest';
+
+  it('fails CLOSED — an omitted posture refuses a floating tag (prod default)', () => {
+    assert.throws(
+      () => build({ policy: policy({ image: FLOATING }) }),
+      (err) => err instanceof SpecRejectedError && err.reason === 'image_not_digest_pinned',
+    );
+  });
+
+  it('an explicit requireDigest: true refuses a floating tag', () => {
+    assert.throws(
+      () => build({ policy: policy({ image: FLOATING }), requireDigest: true }),
+      (err) => err instanceof SpecRejectedError && err.reason === 'image_not_digest_pinned',
+    );
+  });
+
+  it('admits a floating tag ONLY when the operator explicitly relaxes the posture', () => {
+    const o = build({ policy: policy({ image: FLOATING }), requireDigest: false });
+    assert.equal(o.Image, FLOATING, 'the locally-loaded image is launched verbatim');
+  });
+
+  it('relaxing the posture relaxes NOTHING else — the full clamp still applies', () => {
+    const o = build({ policy: policy({ image: FLOATING }), requireDigest: false });
+    const hc = o.HostConfig ?? {};
+    assert.equal(o.User, '1000:1000');
+    assert.equal(hc.ReadonlyRootfs, true);
+    assert.deepEqual(hc.CapDrop, ['ALL']);
+    assert.deepEqual(hc.SecurityOpt, ['no-new-privileges:true']);
+    assert.equal(hc.Privileged, false);
+    assert.deepEqual(hc.Binds, [`${jobVolumeName(JOB_ID)}:/workspace`]);
+  });
+
+  it('still refuses a MALFORMED digest with the posture relaxed — a knob about whether a digest is required never tolerates garbage', () => {
+    assert.throws(
+      () => build({ policy: policy({ image: 'ghcr.io/x/y@sha256:abc' }), requireDigest: false }),
+      (err) => err instanceof SpecRejectedError && err.reason === 'image_bad_digest',
+    );
+  });
+});
+
 describe('resolveClampLimits — resource bounds are always present and env-tunable', () => {
   it('defaults to the §4 floor when nothing is set', () => {
     assert.deepEqual(resolveClampLimits({}), {

@@ -518,7 +518,13 @@ function makeFakeDocker(opts = {}) {
         if (opts.presentImages && !opts.presentImages.has(ref)) throw notFound('image');
         // Real docker reports `repository@sha256:…` — never with a tag.
         const repo = (ref.split('@')[0] ?? ref).replace(/:[^:/]+$/, '');
-        return { RepoDigests: [`${repo}@${DIGEST}`], Id: 'sha256:imgid' };
+        // `noRepoDigests` models a `docker load`ed image: it never came from a
+        // registry, so docker reports NO RepoDigests and the Id is its only
+        // content address. That is the local-dev shape, not a hypothetical.
+        return {
+          RepoDigests: opts.noRepoDigests ? [] : [`${repo}@${DIGEST}`],
+          Id: opts.imageId ?? 'sha256:imgid',
+        };
       },
     }),
   };
@@ -765,6 +771,69 @@ describe('createDockerEngine — image pull policy (epic #470 local deploy #4)',
     assert.deepEqual(docker.state.events.pulled, [], 'no registry pull for a cached job image');
     assert.equal(handle.imageDigest, DIGEST, 'the container is still created from the vetted digest');
     assert.equal(docker.state.containers.size, 1, 'the job container was created from the cached image');
+  });
+});
+
+// The local-dev image is `docker load`ed straight into the nested dind engine:
+// a floating tag, no registry, therefore no digest to pin and no RepoDigest to
+// resolve. `DEV_RUNNER_REQUIRE_DIGEST=0` is the documented escape hatch for that
+// shape; these prove the whole provision path honours it end-to-end, and that the
+// prod path is untouched.
+describe('createDockerEngine — DEV_RUNNER_REQUIRE_DIGEST and the locally-loaded image', () => {
+  const FLOATING = 'omadia-dev-runner:latest';
+  /** A real `docker image inspect .Id` — the only content address a loaded image has. */
+  const LOCAL_ID = 'sha256:697ba6492dcec1c6aa49dfc4a8891e81c7caad11636905a610123c01df790f46';
+  const LEASE = '2026-07-10T12:00:00.000Z';
+
+  it('refuses a floating tag when the posture is unset — prod is unchanged, and nothing is created', async () => {
+    const docker = makeFakeDocker();
+    const engine = createDockerEngine({ docker, env: {} });
+
+    await assert.rejects(
+      engine.createJobContainer({ jobId: JOB_ID, policy: enginePolicy(FLOATING), leaseExpiresAt: LEASE }),
+      (err) => err instanceof SpecRejectedError && err.reason === 'image_not_digest_pinned',
+    );
+    assert.equal(docker.state.containers.size, 0, 'a refused spec creates no container');
+    assert.equal(docker.state.networks.size, 0, 'a refused spec creates no network');
+    assert.equal(docker.state.volumes.size, 0, 'a refused spec creates no volume');
+  });
+
+  it('provisions a loaded floating tag under DEV_RUNNER_REQUIRE_DIGEST=0 and records the image Id as the content address', async () => {
+    const docker = makeFakeDocker({
+      noRepoDigests: true,
+      imageId: LOCAL_ID,
+      presentImages: new Set([FLOATING]),
+    });
+    const engine = createDockerEngine({
+      docker,
+      env: { DEV_RUNNER_REQUIRE_DIGEST: '0', DEV_RUNNER_PULL_POLICY: 'if-not-present' },
+    });
+
+    const handle = await engine.createJobContainer({
+      jobId: JOB_ID,
+      policy: enginePolicy(FLOATING),
+      leaseExpiresAt: LEASE,
+    });
+
+    assert.equal(docker.state.containers.size, 1, 'the job container was created');
+    assert.deepEqual(docker.state.events.pulled, [], 'a loaded image is never pulled (the proxy would 407)');
+    // `imageDigest` is a REQUIRED wire field (z.string().min(1)) — an empty one
+    // fails the middleware's response parse AFTER the container is already up.
+    assert.equal(handle.imageDigest, LOCAL_ID, 'the local image Id is the recorded content address');
+    assert.notEqual(handle.imageDigest, '', 'the required wire field is never empty');
+  });
+
+  it('a digest-pinned ref still resolves from the ref itself — no engine round-trip, prod behaviour byte-identical', async () => {
+    const docker = makeFakeDocker({ noRepoDigests: true, imageId: LOCAL_ID });
+    const engine = createDockerEngine({ docker, env: { DEV_RUNNER_REQUIRE_DIGEST: '0' } });
+
+    const handle = await engine.createJobContainer({
+      jobId: JOB_ID,
+      policy: enginePolicy(),
+      leaseExpiresAt: LEASE,
+    });
+
+    assert.equal(handle.imageDigest, DIGEST, 'the pinned digest wins over anything the engine reports');
   });
 });
 
