@@ -30,8 +30,10 @@ export interface ApiKeyRecord {
   readonly hash: string;
   readonly rateLimitPerMinute: number;
   /** Capabilities this key may exercise. Always populated on read — a record
-   *  persisted before scopes existed is normalized to
-   *  `LEGACY_DEFAULT_SCOPES`, so consumers never have to handle `undefined`. */
+   *  persisted before scopes existed (no `scopes` field at all) is normalized
+   *  to `LEGACY_DEFAULT_SCOPES`, and a record whose `scopes` field is present
+   *  but malformed is normalized to the EMPTY set, so consumers never have to
+   *  handle `undefined` and a corrupt record never yields a grant. */
   readonly scopes: readonly ApiKeyScope[];
   readonly createdAt: number;
   readonly revokedAt?: number;
@@ -93,7 +95,9 @@ function toPublicView(record: ApiKeyRecord): ApiKeyPublicView {
 /**
  * Every path that deserializes a vault entry funnels through here, so a
  * record written before scopes existed comes back with the legacy default
- * filled in instead of `undefined` leaking into scope checks.
+ * filled in instead of `undefined` leaking into scope checks — and a record
+ * whose `scopes` field is present but unreadable comes back denying
+ * everything rather than falling back to a grant (see `normalizeScopes`).
  */
 function hydrate(raw: unknown): ApiKeyRecord {
   const record = raw as ApiKeyRecord;
@@ -166,10 +170,13 @@ export function createApiKeyStore(secrets: ApiKeySecretStorage): ApiKeyStore {
         ...(opts.label ? { label: opts.label } : {}),
         hash,
         rateLimitPerMinute: clampRateLimit(opts.rateLimitPerMinute),
-        // An empty array is treated as "not specified", matching what
-        // `normalizeScopes` does on read — otherwise a key created with `[]`
-        // would come back from the vault with the legacy default and the
-        // create response would have lied about it.
+        // At CREATE time an empty array is treated as "not specified" and
+        // resolves to the legacy default — and, unlike the read path, that is
+        // not a silent grant: the 201 response echoes the scope set that was
+        // actually assigned, so an operator sees it immediately. The scope set
+        // is then always persisted EXPLICITLY, which is what lets `hydrate`
+        // read a missing `scopes` field as "genuinely pre-#439" rather than
+        // "written by us and lost".
         scopes:
           opts.scopes && opts.scopes.length > 0
             ? assertValidScopes(opts.scopes)

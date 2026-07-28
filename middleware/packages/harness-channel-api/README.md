@@ -63,6 +63,12 @@ are no prefix wildcards (`chat:*`).
 { "error": "forbidden", "message": "this API key is not scoped for 'memory:read'" }
 ```
 
+If a key suddenly answers `403` on a route it used to reach, ask your operator
+to check the server log for `[api-key-auth] malformed persisted scopes`. A key
+whose stored scope set cannot be read is denied every capability rather than
+falling back to a default — it still authenticates, so `401` versus `403`
+tells you which of the two happened.
+
 ## Server-to-server integration
 
 This API is designed for calls from *your server*, not from a browser: the

@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   assertValidScopes,
   CHAT_WRITE_SCOPE,
+  DENY_ALL_SCOPES,
   hasScope,
   isValidScope,
   LEGACY_DEFAULT_SCOPES,
@@ -12,11 +13,16 @@ import {
 } from '../../packages/harness-api-key-auth/src/apiKeyScopes.js';
 
 /**
- * Issue #439 — per-key scopes. The load-bearing property here is backward
- * compatibility: a key persisted before scopes existed carries no `scopes`
- * field, and must keep working with exactly the capability it used to have —
- * not more (a `*` default would be a privilege escalation shipped by an
- * upgrade) and not less (an empty default would break live integrations).
+ * Issue #439 — per-key scopes. Two load-bearing properties:
+ *
+ * 1. Backward compatibility: a key persisted before scopes existed carries no
+ *    `scopes` field, and must keep working with exactly the capability it used
+ *    to have — not more (a `*` default would be a privilege escalation shipped
+ *    by an upgrade) and not less (an empty default would break live
+ *    integrations).
+ * 2. Fail-closed on corruption: a `scopes` field that is PRESENT but
+ *    unreadable is not the same situation, and must never resolve to a
+ *    capability grant. `absent` and `malformed` are decided separately.
  */
 describe('auth/apiKeyScopes', () => {
   it('accepts `<resource>:<action>` and the bare wildcard, rejects everything else', () => {
@@ -35,12 +41,51 @@ describe('auth/apiKeyScopes', () => {
     assert.equal(isValidScope(undefined), false);
   });
 
-  it('normalizeScopes falls back to the legacy default for a missing/corrupt field', () => {
+  it('normalizeScopes gives an ABSENT scopes field the legacy default', () => {
+    // The only input that means "genuinely minted before #439": the field was
+    // never written at all. `create()` always persists an explicit array, so
+    // nothing this store writes can land here.
     assert.deepEqual(normalizeScopes(undefined), LEGACY_DEFAULT_SCOPES);
-    assert.deepEqual(normalizeScopes(null), LEGACY_DEFAULT_SCOPES);
-    assert.deepEqual(normalizeScopes('chat:write'), LEGACY_DEFAULT_SCOPES, 'not an array');
-    assert.deepEqual(normalizeScopes([]), LEGACY_DEFAULT_SCOPES);
-    assert.deepEqual(normalizeScopes(['nonsense']), LEGACY_DEFAULT_SCOPES, 'all entries invalid');
+  });
+
+  it('normalizeScopes DENIES a present-but-malformed scopes field instead of granting the default', () => {
+    // Regression guard for a fail-open: every input below is a `scopes` field
+    // that EXISTS and cannot be read. Returning `['chat:write']` for any of
+    // them would hand chat access to a key an operator may have deliberately
+    // restricted away from chat.
+    assert.deepEqual(normalizeScopes(null), DENY_ALL_SCOPES, 'null is present, not absent');
+    assert.deepEqual(
+      normalizeScopes('memory:read'),
+      DENY_ALL_SCOPES,
+      'a string instead of an array',
+    );
+    assert.deepEqual(normalizeScopes(42), DENY_ALL_SCOPES, 'a number instead of an array');
+    assert.deepEqual(
+      normalizeScopes({ 0: 'chat:write' }),
+      DENY_ALL_SCOPES,
+      'an object instead of an array',
+    );
+    assert.deepEqual(normalizeScopes([]), DENY_ALL_SCOPES, 'an empty array grants nothing');
+    assert.deepEqual(
+      normalizeScopes(['Chat:Write']),
+      DENY_ALL_SCOPES,
+      'uppercase fails SCOPE_PATTERN — it is not the same scope as chat:write',
+    );
+    assert.deepEqual(normalizeScopes(['nonsense']), DENY_ALL_SCOPES, 'all entries invalid');
+    assert.deepEqual(normalizeScopes([null]), DENY_ALL_SCOPES, 'non-string entry');
+  });
+
+  it('a denied scope set fails every capability check closed', () => {
+    assert.equal(hasScope(normalizeScopes('memory:read'), CHAT_WRITE_SCOPE), false);
+    assert.equal(hasScope(normalizeScopes(['Chat:Write']), CHAT_WRITE_SCOPE), false);
+    assert.equal(hasScope(normalizeScopes([]), WILDCARD_SCOPE), false);
+  });
+
+  it('normalizeScopes denies a PARTIALLY valid array rather than silently narrowing it', () => {
+    // Never widen, and do not quietly guess either: half a scope set is a
+    // record we cannot read faithfully.
+    assert.deepEqual(normalizeScopes(['chat:write', 'nonsense']), DENY_ALL_SCOPES);
+    assert.deepEqual(normalizeScopes(['chat:write', 7]), DENY_ALL_SCOPES);
   });
 
   it('the legacy default is exactly the one capability pre-scopes keys had', () => {
@@ -52,11 +97,12 @@ describe('auth/apiKeyScopes', () => {
     );
   });
 
-  it('normalizeScopes keeps valid entries, drops invalid ones, and de-duplicates', () => {
-    assert.deepEqual(normalizeScopes(['chat:write', 'memory:read', 'chat:write', 7]), [
+  it('normalizeScopes keeps an all-valid array, de-duplicated', () => {
+    assert.deepEqual(normalizeScopes(['chat:write', 'memory:read', 'chat:write']), [
       'chat:write',
       'memory:read',
     ]);
+    assert.deepEqual(normalizeScopes([WILDCARD_SCOPE]), [WILDCARD_SCOPE]);
   });
 
   it('assertValidScopes throws on a malformed scope instead of silently dropping it', () => {

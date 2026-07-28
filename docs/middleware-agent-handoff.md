@@ -953,6 +953,16 @@ vom eigenen Server aus aufruft, ohne menschliche Session.
   Fähigkeit, die sie beim Minten hatten. `*` als Default wäre eine per Upgrade
   ausgelieferte Rechteausweitung. Admin-Route nimmt `scopes` bei `POST`
   entgegen (Zod-validiert → 400 statt 500) und zeigt sie im `GET`.
+  **`normalizeScopes` unterscheidet dabei *fehlend* von *kaputt*:** nur ein
+  komplett fehlendes Feld (`undefined`) bekommt den Legacy-Default; ein
+  vorhandenes, aber unlesbares Feld (kein Array, leeres Array, ungültige oder
+  teilweise ungültige Einträge wie `"memory:read"` als String oder
+  `['Chat:Write']`) ergibt die **leere** Scope-Menge — der Key
+  authentifiziert weiter, ist aber für nichts autorisiert, jeder
+  `hasScope`-Check schlägt fail-closed fehl. Beides in einen Grant zu
+  kollabieren würde einem Key, den ein Operator bewusst von Chat
+  weggeschnitten hat, genau diesen Chat-Zugriff zurückgeben. Jeder solche
+  Fall loggt eine `[api-key-auth] malformed persisted scopes`-Warnung.
 - **`publicPaths.ts` bleibt unverändert eng:** weiterhin nur
   `/api/public/v1/chat`. Wer `requireApiKey` auf eine neue Route mountet,
   braucht dort einen eigenen, möglichst engen Eintrag.
