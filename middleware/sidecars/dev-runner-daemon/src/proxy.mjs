@@ -50,6 +50,66 @@ import {
 /** DNS must not be a way to park a connection forever before the limiter sees it. */
 export const DEFAULT_RESOLVE_TIMEOUT_MS = 5_000;
 
+/**
+ * How long a successful resolution is reused before a fresh lookup, keyed by
+ * hostname and shared across every job. Short enough that the DNS-rebinding
+ * defence (resolve-once/connect-to-what-you-checked, spec §6) stays
+ * meaningful — the resolved addresses are still classified/pinned fresh on
+ * every CONNECT, only the lookup itself is reused; long enough to absorb a
+ * burst of concurrent fetches to the same host (npm's registry traffic:
+ * dozens of package tarballs from registry.npmjs.org at once).
+ */
+export const DEFAULT_RESOLVE_CACHE_TTL_MS = 30_000;
+
+/**
+ * Wrap a raw resolver with the cache + in-flight de-dup described above. npm
+ * ci fires up to `maxsockets` (default 15) concurrent CONNECTs to the SAME
+ * hostname within milliseconds of each other; without this, each one
+ * independently calls dns.lookup(), which runs on Node's libuv threadpool
+ * (default 4 workers, never tuned in this image) — so N concurrent same-host
+ * lookups compete for 4 slots instead of sharing one answer. Confirmed live
+ * (2026-07-28, epic #470): default npm concurrency crashed deterministically
+ * ~70s into `npm ci` with npm's own "Exit handler never called!" bug
+ * (npm/cli#9751 — a re-entrancy race triggered by near-simultaneous registry-
+ * fetch timeouts); raising `--maxsockets` to 1000 turned the same threadpool
+ * contention into outright `EAI_AGAIN` once lookups queued past the 5s
+ * resolve deadline; *lowering* it to 3 only delayed the same crash (70s→
+ * 251s). All three point at resolution contention, not npm itself — this
+ * removes the contention at its source instead of guessing at npm's own
+ * concurrency.
+ *
+ * @param {(host: string) => Promise<Array<{ address: string, family?: number }>>} rawResolve
+ * @param {number} ttlMs
+ */
+function createCachedResolve(rawResolve, ttlMs) {
+  /** @type {Map<string, { addresses: Array<{ address: string, family?: number }>, expiresAt: number }>} */
+  const cache = new Map();
+  /** @type {Map<string, Promise<Array<{ address: string, family?: number }>>>} */
+  const inflight = new Map();
+
+  /** @param {string} host */
+  return function cachedResolve(host) {
+    const cached = cache.get(host);
+    if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.addresses);
+
+    const existing = inflight.get(host);
+    if (existing) return existing;
+
+    const promise = rawResolve(host)
+      .then((addresses) => {
+        // Only a SUCCESS is cached — a failed lookup (or a deadline timeout
+        // racing it from the caller side) must not poison the next attempt.
+        if (ttlMs > 0) cache.set(host, { addresses, expiresAt: Date.now() + ttlMs });
+        return addresses;
+      })
+      .finally(() => {
+        inflight.delete(host);
+      });
+    inflight.set(host, promise);
+    return promise;
+  };
+}
+
 export const DEFAULT_DATA_PORT = 3128;
 /** Control-plane port (spec §6). */
 export const DEFAULT_CONTROL_PORT = 3129;
@@ -102,6 +162,7 @@ async function defaultResolve(host) {
  * @property {ReadonlySet<number>} [allowedPorts]
  * @property {(host: string) => Promise<Array<{ address: string, family?: number }>>} [resolve] DNS seam.
  * @property {number} [resolveTimeoutMs] Deadline on name resolution (default 5 s).
+ * @property {number} [resolveCacheTtlMs] How long a resolution is reused (default 30 s; 0 disables caching).
  * @property {Partial<typeof DEFAULTS>} [limits]
  * @property {{ warn?: (m: string) => void }} [logger]
  * @property {() => number} [now]
@@ -119,8 +180,10 @@ export function createProxy(deps) {
   const allowedPorts = deps.allowedPorts ?? new Set(DEFAULT_ALLOWED_PORTS);
   const rawResolve = deps.resolve ?? defaultResolve;
   const resolveTimeoutMs = deps.resolveTimeoutMs ?? DEFAULT_RESOLVE_TIMEOUT_MS;
+  const resolveCacheTtlMs = deps.resolveCacheTtlMs ?? DEFAULT_RESOLVE_CACHE_TTL_MS;
+  const cachedResolve = createCachedResolve(rawResolve, resolveCacheTtlMs);
   /** @param {string} host */
-  const resolve = (host) => withDeadline(rawResolve(host), resolveTimeoutMs, 'dns resolve');
+  const resolve = (host) => withDeadline(cachedResolve(host), resolveTimeoutMs, 'dns resolve');
   const limits = { ...DEFAULTS, ...(deps.limits ?? {}) };
   const ctx = {
     registry: deps.registry,

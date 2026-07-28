@@ -61,7 +61,7 @@ function closeServer(server) {
 
 /**
  * Boot a real proxy with capturing event sink + a resolver seam.
- * @param {{ internalHost?: string, internalPort?: number, jobs?: Array<{ jobId: string, allowlist: string[], proxyToken: string, ttlSec?: number }>, resolveMap?: Record<string, Array<{ address: string, family?: number }>> }} opts
+ * @param {{ internalHost?: string, internalPort?: number, jobs?: Array<{ jobId: string, allowlist: string[], proxyToken: string, ttlSec?: number }>, resolveMap?: Record<string, Array<{ address: string, family?: number }>>, resolveCacheTtlMs?: number, resolveDelayMs?: number, customResolve?: (host: string) => Promise<Array<{ address: string, family?: number }>> }} opts
  */
 async function startProxy(opts = {}) {
   const events = [];
@@ -73,8 +73,13 @@ async function startProxy(opts = {}) {
   const eventClient = { record: (e) => events.push(e), flush: async () => {}, stop: () => {} };
   const resolve = async (host) => {
     resolveCalls.push(host);
+    if (opts.customResolve) return opts.customResolve(host);
     // A nameserver that never answers: the tarpit the resolve deadline exists for.
     if (opts.resolveHangs) return new Promise(() => {});
+    // A deliberate delay widens the dedup race window for concurrent-CONNECT
+    // tests — without it, a same-tick resolve can settle before a second
+    // caller even asks, which would still be correct but proves nothing.
+    if (opts.resolveDelayMs) await new Promise((r) => setTimeout(r, opts.resolveDelayMs));
     return opts.resolveMap?.[host] ?? [{ address: '127.0.0.1', family: 4 }];
   };
   const proxy = createProxy({
@@ -87,6 +92,7 @@ async function startProxy(opts = {}) {
     logger: { warn() {} },
     limits: { connectMs: 2000, idleMs: 2000, absoluteMs: 5000 },
     ...(opts.resolveTimeoutMs !== undefined ? { resolveTimeoutMs: opts.resolveTimeoutMs } : {}),
+    ...(opts.resolveCacheTtlMs !== undefined ? { resolveCacheTtlMs: opts.resolveCacheTtlMs } : {}),
   });
   const dataPort = await listen(proxy.dataServer);
   const controlPort = await listen(proxy.controlServer);
@@ -343,6 +349,108 @@ describe('egress proxy — end-to-end tunnel through the vetted IP', () => {
       assert.ok(close.durationMs >= 0);
       assertEventSafe(allow);
       assertEventSafe(close);
+    } finally {
+      await p.close();
+      await upstream.close();
+    }
+  });
+});
+
+describe('egress proxy — DNS resolution cache (concurrent same-host CONNECTs share one lookup)', () => {
+  it('N concurrent CONNECTs to the same host fire exactly ONE underlying resolve call', async () => {
+    const upstream = await startTcpEcho();
+    const p = await startProxy({
+      internalHost: 'mw.internal',
+      internalPort: upstream.port,
+      jobs: [{ jobId: JOB_ID, allowlist: [], proxyToken: PROXY_TOKEN }],
+      resolveMap: { 'mw.internal': [{ address: '127.0.0.1', family: 4 }] },
+      // Wide enough that all 8 CONNECTs below are dispatched before the
+      // first underlying lookup would have settled without the cache.
+      resolveDelayMs: 100,
+    });
+    try {
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () => sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth())),
+      );
+      for (const r of results) assert.equal(r.statusCode, 200);
+      assert.deepEqual(p.resolveCalls, ['mw.internal'], 'exactly one raw resolve call, not eight');
+      for (const r of results) r.socket.destroy();
+    } finally {
+      await p.close();
+      await upstream.close();
+    }
+  });
+
+  it('a resolution is reused within the cache TTL, without a second CONNECT even in flight', async () => {
+    const upstream = await startTcpEcho();
+    const p = await startProxy({
+      internalHost: 'mw.internal',
+      internalPort: upstream.port,
+      jobs: [{ jobId: JOB_ID, allowlist: [], proxyToken: PROXY_TOKEN }],
+      resolveMap: { 'mw.internal': [{ address: '127.0.0.1', family: 4 }] },
+      resolveCacheTtlMs: 60_000,
+    });
+    try {
+      const first = await sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth());
+      assert.equal(first.statusCode, 200);
+      first.socket.destroy();
+      await waitFor(() => p.events.some((e) => e.decision === 'close'));
+      const second = await sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth());
+      assert.equal(second.statusCode, 200);
+      second.socket.destroy();
+      assert.deepEqual(p.resolveCalls, ['mw.internal'], 'the second CONNECT reused the cached resolution');
+    } finally {
+      await p.close();
+      await upstream.close();
+    }
+  });
+
+  it('a fresh lookup runs again once the cache entry expires', async () => {
+    const upstream = await startTcpEcho();
+    const p = await startProxy({
+      internalHost: 'mw.internal',
+      internalPort: upstream.port,
+      jobs: [{ jobId: JOB_ID, allowlist: [], proxyToken: PROXY_TOKEN }],
+      resolveMap: { 'mw.internal': [{ address: '127.0.0.1', family: 4 }] },
+      resolveCacheTtlMs: 20,
+    });
+    try {
+      const first = await sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth());
+      assert.equal(first.statusCode, 200);
+      first.socket.destroy();
+      await new Promise((r) => setTimeout(r, 40));
+      const second = await sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth());
+      assert.equal(second.statusCode, 200);
+      second.socket.destroy();
+      assert.deepEqual(p.resolveCalls, ['mw.internal', 'mw.internal'], 'the expired entry triggers a fresh lookup');
+    } finally {
+      await p.close();
+      await upstream.close();
+    }
+  });
+
+  it('a failed resolution is never cached — the next CONNECT gets a fresh attempt', async () => {
+    const upstream = await startTcpEcho();
+    let calls = 0;
+    const p = await startProxy({
+      internalHost: 'mw.internal',
+      internalPort: upstream.port,
+      jobs: [{ jobId: JOB_ID, allowlist: [], proxyToken: PROXY_TOKEN }],
+      // First CONNECT's lookup fails outright; the second must not reuse
+      // that failure (there is nothing to reuse) and must succeed on retry.
+      customResolve: async (_host) => {
+        calls += 1;
+        if (calls === 1) throw new Error('simulated transient DNS failure');
+        return [{ address: '127.0.0.1', family: 4 }];
+      },
+    });
+    try {
+      const first = await sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth());
+      assert.equal(first.statusCode, 502, 'the first CONNECT sees the resolve failure');
+      const second = await sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth());
+      assert.equal(second.statusCode, 200, 'the second CONNECT gets a fresh, successful lookup');
+      second.socket.destroy();
+      assert.equal(calls, 2, 'the failure was not cached — a real second attempt happened');
     } finally {
       await p.close();
       await upstream.close();
