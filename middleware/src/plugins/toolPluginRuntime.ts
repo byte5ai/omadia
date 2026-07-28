@@ -384,6 +384,14 @@ export class ToolPluginRuntime {
     // close() should already invoke — a leaked dispose still won't outlive
     // its plugin's lifecycle.
     this.deps.jobScheduler.stopForPlugin(agentId);
+    // Express cannot unmount, so the route registry flips its entries to
+    // disposed and the mounted closure falls through to next(). Without
+    // this call a deactivated plugin's routers stay live and — because
+    // Express matches first-mount-wins — keep serving after uninstall or
+    // across a hot-upgrade. DynamicAgentRuntime already does this
+    // (dynamicAgentRuntime.ts); the tool runtime held the dependency and
+    // threaded it into the plugin context but never disposed by source.
+    this.deps.pluginRouteRegistry.disposeBySource(agentId);
     this.deps.uiRouteCatalog.disposeBySource(agentId);
     this.deps.pluginStatusRegistry?.clear(agentId);
     this.deps.oauthConnectionTracker?.clear(agentId);

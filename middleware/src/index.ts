@@ -258,6 +258,7 @@ import { NotificationRouter } from './platform/notificationRouter.js';
 import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
 import { OAuthReadinessTracker } from './plugins/oauth/oauthReadinessTracker.js';
 import { UiRouteCatalog } from './platform/uiRouteCatalog.js';
+import { createUiNavigationRouter } from './routes/uiNavigation.js';
 import { CanvasOutputRegistry } from './platform/canvasOutputRegistry.js';
 import { EventCatalogRegistry } from './platform/eventCatalogRegistry.js';
 import { DeterministicActionRegistry } from './platform/deterministicActionRegistry.js';
@@ -328,6 +329,17 @@ interface Microsoft365AccessorShim {
 
 /** Escape a value for safe inclusion inside a double-quoted XML/HTML attribute
  *  (used for the <mcp-auth-required> chat block, #459 W9). */
+/**
+ * Locales the operator web UI ships message catalogues for
+ * (`web-ui/messages/*.json`). Used to validate `?locale=` on the
+ * navigation endpoint before it reaches label resolution — an unknown
+ * locale renders English chrome rather than an error. Keep in sync with
+ * web-ui's catalogue; a missing entry here only costs a fallback to
+ * English, never a failure.
+ */
+const WEB_UI_LOCALES = ['en', 'de'] as const;
+const WEB_UI_DEFAULT_LOCALE = 'en';
+
 function xmlAttr(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -2191,6 +2203,23 @@ async function main(): Promise<void> {
   // travels with it.
   app.use('/api/chat', requireAuth, createChatSessionsRouter({ getStore: getChatSessionStore }));
 
+  // Plugin-contributed navigation. The web-ui shell renders a static nav for
+  // its own compiled surfaces and merges this for everything a plugin adds,
+  // which is what makes a feature genuinely installable: deactivate its
+  // plugin and the menu entry is gone without a frontend rebuild.
+  // `requireAuth` is defence-in-depth over the `/api` mount — the entry list
+  // discloses which features an operator has installed.
+  app.use(
+    '/api',
+    requireAuth,
+    createUiNavigationRouter({
+      catalog: uiRouteCatalog,
+      supportedLocales: WEB_UI_LOCALES,
+      defaultLocale: WEB_UI_DEFAULT_LOCALE,
+    }),
+  );
+  console.log('[middleware] ui navigation endpoint ready at /api/v1/ui/navigation');
+
   // In-app "Create Issue" button: operator connects their own GitHub
   // account via the device flow (only a public client id, no secret — so
   // omadia ships the OAuth App baked in), the primary LLM reformulates the
@@ -2714,6 +2743,26 @@ async function main(): Promise<void> {
     console.log(
       `[middleware] dev platform ENABLED — worker running (max ${String(config.DEV_PLATFORM_MAX_CONCURRENT_JOBS)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
     );
+
+    // Contribute the operator menu entry instead of hardcoding it in the
+    // web-ui shell. This is the first consumer of the nav catalogue and the
+    // reason it exists: dev-platform is being extracted into a plugin
+    // (specs/470-dev-platform-plugin/plan.md), and its menu entry has to
+    // travel with it. Registering from here — still core, still inside the
+    // DEV_PLATFORM_ENABLED gate — proves the whole loop before any code
+    // moves. When the plugin package lands, this call becomes
+    // `ctx.uiRoutes.registerNav(...)` inside its activate() and nothing
+    // else about the shell changes.
+    //
+    // The `core:` prefix marks a kernel-registered source; a real plugin's
+    // entries are keyed by its plugin id, which the kernel injects.
+    uiRouteCatalog.registerNav('core:dev-platform', {
+      navId: 'devPlatform',
+      href: '/admin/dev-platform',
+      cluster: 'adminCluster',
+      order: 50,
+      label: { en: 'Dev Platform', de: 'Dev-Plattform' },
+    });
 
     // W5 data lifecycle — the daily retention sweep (two-tier event prune). The
     // per-job event cap + artifact ceiling are enforced inline at write time; this

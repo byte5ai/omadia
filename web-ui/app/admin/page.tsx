@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { getTranslations } from 'next-intl/server';
+import { getLocale, getTranslations } from 'next-intl/server';
+
+import { fetchNavEntries } from '../_lib/navigation';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,7 +21,18 @@ export async function generateMetadata(): Promise<Metadata> {
  * advertised here — the canonical Builder entry point is the Plugins nav
  * (`/store/builder`).
  */
-type CardDef = { readonly href: string; readonly key: string; readonly danger?: boolean };
+type CardDef = {
+  readonly href: string;
+  readonly key: string;
+  readonly danger?: boolean;
+  /**
+   * Marks a card as belonging to an optional feature: it renders only when
+   * a plugin has contributed a nav entry for this href. Keeps the grid
+   * honest about what is actually installed instead of linking to a page
+   * that would answer 403 — see specs/470-dev-platform-plugin.
+   */
+  readonly requiresNavHref?: boolean;
+};
 type GroupDef = { readonly key: string; readonly cards: readonly CardDef[] };
 
 const GROUPS: readonly GroupDef[] = [
@@ -49,8 +62,10 @@ const GROUPS: readonly GroupDef[] = [
       { href: '/admin/domains', key: 'domains' },
       { href: '/admin/registries', key: 'registries' },
       { href: '/admin/mcp', key: 'mcp' },
-      // Dev platform (epic #470) — isolated per-job code runners.
-      { href: '/admin/dev-platform', key: 'devPlatform' },
+      // Dev platform (epic #470) — isolated per-job code runners. Optional:
+      // shown only while the feature is enabled and contributing its nav
+      // entry, so the grid matches the menu.
+      { href: '/admin/dev-platform', key: 'devPlatform', requiresNavHref: true },
     ],
   },
   {
@@ -68,6 +83,16 @@ const GROUPS: readonly GroupDef[] = [
 
 export default async function AdminIndexPage(): Promise<React.ReactElement> {
   const t = await getTranslations('admin.index');
+  const locale = await getLocale();
+  const availableHrefs = new Set(
+    (await fetchNavEntries(locale)).map((e) => e.href),
+  );
+  const groups = GROUPS.map((group) => ({
+    ...group,
+    cards: group.cards.filter(
+      (card) => card.requiresNavHref !== true || availableHrefs.has(card.href),
+    ),
+  })).filter((group) => group.cards.length > 0);
   return (
     <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
@@ -80,7 +105,7 @@ export default async function AdminIndexPage(): Promise<React.ReactElement> {
       </header>
 
       <div className="flex flex-col gap-10">
-        {GROUPS.map((group) => (
+        {groups.map((group) => (
           <section key={group.key}>
             <h2 className="mb-3 text-xs font-semibold tracking-wider text-[color:var(--fg-muted)] uppercase">
               {t(`groups.${group.key}.heading`)}
