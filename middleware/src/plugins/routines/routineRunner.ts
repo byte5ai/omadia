@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import type {
   ChatTurnInput,
   ChatTurnResult,
@@ -46,11 +48,12 @@ import type {
   RoutineRunsStore,
   RoutineRunTrigger,
 } from './routineRunsStore.js';
-import type {
-  CreateRoutineInput,
-  Routine,
-  RoutineRunStatus,
-  RoutineStore,
+import {
+  RoutineNameConflictError,
+  type CreateRoutineInput,
+  type Routine,
+  type RoutineRunStatus,
+  type RoutineStore,
 } from './routineStore.js';
 
 /**
@@ -88,6 +91,15 @@ export class UnknownChannelError extends Error {
   }
 }
 
+export class ChatAgentUnavailableError extends Error {
+  constructor() {
+    super(
+      'chat agent unavailable — configure the LLM API key in Settings to enable routine runs',
+    );
+    this.name = 'ChatAgentUnavailableError';
+  }
+}
+
 export interface RoutineRunnerOptions {
   store: RoutineStore;
   runsStore: RoutineRunsStore;
@@ -98,13 +110,17 @@ export interface RoutineRunnerOptions {
    */
   scheduler: JobSchedulerLike;
   /**
-   * Production wiring passes `chatAgentBundle.raw` (the real
-   * `Orchestrator`); tests pass a stub that returns a synthetic
-   * `ChatTurnResult`. The runner needs `runTurn` (not the higher-level
-   * `chat`) so it can persist the per-turn `runTrace` for the
-   * call-stack viewer.
+   * Live resolver for the plugin-published chat agent — production wiring
+   * passes a closure over `serviceRegistry.get('chatAgent')?.raw`; tests
+   * pass `() => stub`. Resolved per run (never captured) so routines
+   * hot-enable the moment the Setup Wizard key save republishes
+   * chatAgent@1, and a key rotation swaps instances without a restart.
+   * A run that fires while it returns `undefined` records an `error`
+   * run via `ChatAgentUnavailableError`. The runner needs `runTurn`
+   * (not the higher-level `chat`) so it can persist the per-turn
+   * `runTrace` for the call-stack viewer.
    */
-  orchestrator: OrchestratorLike;
+  getOrchestrator: () => OrchestratorLike | undefined;
   senderRegistry: ProactiveSenderRegistry;
   log?: (msg: string) => void;
   /** Override the per-user active-routine cap. */
@@ -133,7 +149,7 @@ export class RoutineRunner {
   private readonly store: RoutineStore;
   private readonly runsStore: RoutineRunsStore;
   private readonly scheduler: JobSchedulerLike;
-  private readonly orchestrator: OrchestratorLike;
+  private readonly getOrchestrator: () => OrchestratorLike | undefined;
   private readonly senders: ProactiveSenderRegistry;
   private readonly log: (msg: string) => void;
   private readonly maxActivePerUser: number;
@@ -145,7 +161,7 @@ export class RoutineRunner {
     this.store = opts.store;
     this.runsStore = opts.runsStore;
     this.scheduler = opts.scheduler;
-    this.orchestrator = opts.orchestrator;
+    this.getOrchestrator = opts.getOrchestrator;
     this.senders = opts.senderRegistry;
     this.log = opts.log ?? ((msg) => console.log(msg));
     this.maxActivePerUser =
@@ -262,6 +278,17 @@ export class RoutineRunner {
   }
 
   /**
+   * Whether a chat agent currently resolves. The trigger endpoint checks
+   * this to return a synchronous 503 instead of accepting a manual run
+   * that is guaranteed to record `error` — cron fires still go through
+   * `runOnce` and record the failure, keeping the misconfiguration
+   * visible in run history.
+   */
+  chatAgentAvailable(): boolean {
+    return this.getOrchestrator() !== undefined;
+  }
+
+  /**
    * Dispose every registered routine. Called on graceful shutdown.
    * In-flight runs receive their AbortSignal via `stopForPlugin`.
    */
@@ -275,6 +302,34 @@ export class RoutineRunner {
     if (!this.senders.get(input.channel)) {
       throw new UnknownChannelError(input.channel);
     }
+
+    // Issue #506: check for a reconcile-eligible retry BEFORE the quota
+    // gate. A retried `createRoutine` call for a routine that already
+    // exists and is already active doesn't need a fresh slot — it needs
+    // nothing at all, because the work is already done. Without this
+    // proactive check, a user sitting exactly at `maxActivePerUser` whose
+    // confirmation got dropped (the scenario issue #506 targets) would
+    // have their retry rejected by the quota check below before it ever
+    // reaches the `RoutineNameConflictError` reconciliation in the
+    // `store.create()` catch block, surfacing a different but equally
+    // wrong "you're at capacity" error instead of the routine they already
+    // created. The `catch` block's reconciliation stays as-is: it remains
+    // the necessary race-safety net for a concurrent request that creates
+    // the matching row between this lookup and the `store.create()` call
+    // below.
+    const existing = await this.store.getByName(
+      input.tenant,
+      input.userId,
+      input.name,
+    );
+    if (
+      existing &&
+      existing.status === 'active' &&
+      isSameRoutineRequest(existing, input)
+    ) {
+      return existing;
+    }
+
     const active = await this.store.countActiveForUser(
       input.tenant,
       input.userId,
@@ -283,7 +338,56 @@ export class RoutineRunner {
       throw new RoutineQuotaExceededError(this.maxActivePerUser);
     }
 
-    const row = await this.store.create(input);
+    let row: Routine;
+    try {
+      row = await this.store.create(input);
+    } catch (err) {
+      // Issue #506: a retried `create` for the same (tenant, user, name) —
+      // e.g. the model or user retrying after the turn's own confirmation
+      // never made it back over the channel — hits the unique-name
+      // constraint here rather than actually duplicating anything. Rather
+      // than reporting that retry as a failure (which the caller can only
+      // read as "try again", pushing toward a real duplicate under a
+      // different name), reconcile: if the existing row is the same
+      // request, treat this call as already-succeeded and return it. A
+      // conflicting row with different cron/prompt/channel is a genuine
+      // name collision and still surfaces as an error. We deliberately do
+      // NOT additionally gate on `existing.createdAt` recency: the
+      // `status === 'active'` check below plus the field-by-field
+      // comparison in `isSameRoutineRequest` already narrow this to "an
+      // active routine with byte-for-byte identical cron/prompt/channel/
+      // timeout" — a false-positive reconciliation on an old-but-still-
+      // active routine is the caller re-issuing an identical create, which
+      // is the same "already succeeded" case regardless of age. Adding a
+      // time window would only reintroduce a class of false negatives
+      // (rejecting a legitimate late retry) without closing any real gap.
+      if (err instanceof RoutineNameConflictError) {
+        const existing = await this.store.getByName(
+          input.tenant,
+          input.userId,
+          input.name,
+        );
+        // Only reconcile against an `active` row. A paused/inactive row
+        // with matching fields is not "my own in-flight retry" — it's a
+        // genuine, separate collision (e.g. the user paused an earlier
+        // "demo" routine and is now deliberately creating a new one under
+        // the same name). Reconciling there would silently hand back a
+        // routine that has no active schedule, which is a worse version of
+        // the exact false-negative/false-positive problem issue #506 was
+        // filed to fix. Only an `active` existing row can plausibly be
+        // "the create that already succeeded", so only that case skips the
+        // error.
+        if (
+          existing &&
+          existing.status === 'active' &&
+          isSameRoutineRequest(existing, input)
+        ) {
+          return existing;
+        }
+      }
+      throw err;
+    }
+
     try {
       this.registerInScheduler(row);
     } catch (err) {
@@ -392,19 +496,30 @@ export class RoutineRunner {
     let userId = routine.userId;
 
     try {
-      const sender = this.senders.get(routine.channel);
-      if (!sender) {
-        throw new UnknownChannelError(routine.channel);
-      }
-
       // Re-read the row before invoking. A pause/delete that landed
       // between schedule and trigger should be honoured (the dispose was
-      // best-effort, not transactional).
+      // best-effort, not transactional). Checked first so a raced fire on
+      // a paused row never records a spurious availability error.
       const fresh = await this.store.get(routine.id);
       if (!fresh || fresh.status !== 'active') return;
       prompt = fresh.prompt;
       tenant = fresh.tenant;
       userId = fresh.userId;
+
+      // Resolve the chat agent per fire (issue #473) and BEFORE the
+      // sender lookup: pre-key, the channel plugins (which require
+      // chatAgent@^1) are dark too, so a sender-first check would record
+      // the misleading 'no proactive sender' error when the actual fix
+      // is configuring the key.
+      const orchestrator = this.getOrchestrator();
+      if (!orchestrator) {
+        throw new ChatAgentUnavailableError();
+      }
+
+      const sender = this.senders.get(routine.channel);
+      if (!sender) {
+        throw new UnknownChannelError(routine.channel);
+      }
 
       if (signal.aborted) {
         status = 'timeout';
@@ -424,7 +539,7 @@ export class RoutineRunner {
       // data sections directly from the tool handler's output instead
       // of letting the LLM author markdown rows. Non-templated routines
       // skip the wrap entirely — byte-identical to pre-C.2 behaviour.
-      const turn = await this.runTurnWithOptionalCapture(fresh);
+      const turn = await this.runTurnWithOptionalCapture(fresh, orchestrator);
       result = turn.result;
       cardBody = turn.cardBody;
 
@@ -530,12 +645,16 @@ export class RoutineRunner {
    */
   private async runTurnWithOptionalCapture(
     routine: Routine,
+    // The instance `runOnce` resolved for this fire — passed down (not
+    // re-resolved) so one run never straddles two orchestrator instances
+    // across a mid-run key rotation.
+    orchestrator: OrchestratorLike,
   ): Promise<{
     readonly result: ChatTurnResult;
     readonly cardBody?: readonly unknown[];
   }> {
     if (routine.outputTemplate === null) {
-      const result = await this.orchestrator.runTurn({
+      const result = await orchestrator.runTurn({
         userMessage: routine.prompt,
         userId: routine.userId,
         sessionScope: `routine:${routine.id}`,
@@ -570,7 +689,7 @@ export class RoutineRunner {
             captureRawToolResult,
           },
           () =>
-            this.orchestrator.runTurn({
+            orchestrator.runTurn({
               userMessage: augmentedPrompt,
               userId: routine.userId,
               sessionScope: `routine:${routine.id}`,
@@ -674,6 +793,44 @@ function emptySlotsFor(
     slots[id] = '';
   }
   return slots;
+}
+
+/**
+ * Whether `existing` (the row that already holds the unique-name slot) is
+ * indistinguishable, from the caller's point of view, from what `input`
+ * asked to create. Compared on the fields the user/model actually
+ * specified — `cron`, `prompt`, `channel`, the resolved `timeoutMs`
+ * (matching `store.create`'s own default so an omitted vs. explicit
+ * default value doesn't defeat the comparison), `outputTemplate`
+ * (Phase C structured-output template — an independently-settable object,
+ * so it needs a structural/deep comparison rather than `===`; two calls
+ * that agree on everything else but differ on `outputTemplate` are the
+ * caller asking to change the template on an existing schedule, not a
+ * retry, and must still surface as a name conflict), and `conversationRef`.
+ * `conversationRef` is also caller-specified on the cold-start outreach
+ * path: `ManageRoutineTool.handleCreate` derives it from `targetEmail` via
+ * `buildEmailColdStartTarget`, which resolves deterministically per email —
+ * same `targetEmail` on both calls produces the same `conversationRef`
+ * structure (a true retry), while a different `targetEmail` produces a
+ * different one (a genuine new request, e.g. the same routine name aimed
+ * at a different recipient). Excluding it would let a create for a new
+ * recipient silently reconcile to — and return as "created" — an existing
+ * row still routed to the *original* recipient, a silent-wrong-recipient
+ * bug. Deep comparison (not `===`) for the same reason as `outputTemplate`:
+ * it is `unknown`/an object, not a primitive.
+ */
+function isSameRoutineRequest(
+  existing: Routine,
+  input: CreateRoutineInput,
+): boolean {
+  return (
+    existing.cron === input.cron &&
+    existing.prompt === input.prompt &&
+    existing.channel === input.channel &&
+    existing.timeoutMs === (input.timeoutMs ?? 600_000) &&
+    isDeepStrictEqual(existing.outputTemplate, input.outputTemplate ?? null) &&
+    isDeepStrictEqual(existing.conversationRef, input.conversationRef ?? {})
+  );
 }
 
 function errMsg(err: unknown): string {

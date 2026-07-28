@@ -8,6 +8,7 @@ import {
   MigrationTimeoutError,
 } from '@omadia/plugin-api';
 
+import { findUnscannableSegment } from '../services/pluginScanner.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import { loadManifestFromPath } from './manifestLoader.js';
@@ -87,6 +88,19 @@ export interface PackageUploadServiceDeps {
    * without an `onMigrate` export would get).
    */
   migrationRunner?: MigrationRunner;
+  /**
+   * Optional code-scan scheduler (issue #453). Invoked fire-and-forget on
+   * the ingest success path — a missing scheduler, a scheduler throw, or a
+   * scanner outage must never fail or delay an ingest (advisory-only v1).
+   * Structural slice of `PluginScanScheduler` in services/pluginVerdict.ts.
+   */
+  scanScheduler?: {
+    scheduleScan(input: {
+      sha256: string;
+      pluginId: string;
+      installedDir: string;
+    }): Promise<void>;
+  };
   log?: (msg: string) => void;
 }
 
@@ -209,6 +223,19 @@ export class PackageUploadService {
           `lifecycle.entry '${entryRel}' ist im Zip nicht vorhanden.`,
         );
       }
+      // #453 (codex review fix) — the code scan skips node_modules/.git, so
+      // an entry point below such a path would EXECUTE code the scanner
+      // never saw while the store shows a clean badge. No legitimate omadia
+      // plugin does this (the boilerplate uses dist/plugin.js) → reject.
+      const unscannable = findUnscannableSegment(
+        path.relative(packageRoot, absEntry),
+      );
+      if (unscannable !== null) {
+        return fail(
+          'package.entry_unscannable',
+          `lifecycle.entry '${entryRel}' liegt unter '${unscannable}' — Entry Points unter node_modules oder versteckten Verzeichnissen sind nicht erlaubt (der Code-Scan würde sie nicht erfassen).`,
+        );
+      }
 
       // --- 9. ID-Konflikt-Check --------------------------------------------
       const existingUploaded = this.deps.store.get(plugin.id);
@@ -326,6 +353,29 @@ export class PackageUploadService {
       log(
         `[upload] ingest OK id=${plugin.id} version=${plugin.version} sha256=${sha256.slice(0, 12)} peers_missing=${peersMissing.length}${migratedConfig !== null ? ' [migrated]' : ''}`,
       );
+
+      // Advisory code scan (issue #453) — fire-and-forget AFTER the package
+      // is fully ingested. Not awaited: ingest latency stays unaffected, and
+      // any scheduler error is contained here.
+      if (this.deps.scanScheduler) {
+        try {
+          void this.deps.scanScheduler
+            .scheduleScan({
+              sha256,
+              pluginId: plugin.id,
+              installedDir: finalDir,
+            })
+            .catch((err: unknown) => {
+              log(
+                `[upload] plugin scan for ${plugin.id} failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            });
+        } catch (err) {
+          log(
+            `[upload] plugin scan scheduling for ${plugin.id} failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
 
       // Re-upload onto an already installed agent (typical: package file
       // was deleted, registry entry still `active`). Without the hook the

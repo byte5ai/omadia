@@ -18,6 +18,7 @@
     "@omadia/memory": "*",
     "@omadia/orchestrator-extras": "*",
     "@omadia/plugin-api": "*",
+    "@omadia/plugin-privacy-guard": "*",
     "@omadia/usage-telemetry": "*",
     "@omadia/verifier": "*",
     "pg": "^8.13.0",
@@ -28,8 +29,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "csv-parse": "^7.0.1",
     "mammoth": "^1.8.0",
-    "pdf-parse": "^1.1.1"
+    "pdf-parse": "^2.4.5"
   },
   "devDependencies": {
     "@types/pdf-parse": "^1.1.5"

@@ -186,6 +186,22 @@ export interface PluginPermissionsSummary {
   /** Spec 005 (US4 Conductor Surface): plugin declares `permissions.events.emit: true` and may
    *  emit declared domain events via `ctx.events`. Loader defaults to `false`. */
   events_emit?: boolean;
+  /** Epic #459 W5 (issue #458): plugin declares `permissions.mcp` (true or a
+   *  block) and receives `ctx.mcp`, scoped to operator-granted servers.
+   *  Loader defaults to `false`. */
+  mcp?: boolean;
+  /** Optional author hint (`permissions.mcp.servers_hint`): human-readable
+   *  descriptions of the servers the plugin expects, shown in the grant UI.
+   *  Granting is ALWAYS an explicit operator action. */
+  mcp_servers_hint?: string[];
+  /** Epic #470 W3: plugin declares `permissions.devJobs` (true or a block) and
+   *  receives `ctx.devJobs`, scoped to operator-granted repos
+   *  (`dev_repo_plugin_grants`). Loader defaults to `false`. */
+  dev_jobs?: boolean;
+  /** Optional author hint (`permissions.devJobs.repos_hint`): repos the plugin
+   *  expects to drive, shown in the operator grant UI. Documentation only —
+   *  granting a repo is ALWAYS an explicit operator action. */
+  dev_jobs_repos_hint?: string[];
   /** Spec 005: true when the manifest declares >=1 `oauth_providers`
    *  descriptor — the plugin acquires standard authorization-code credentials
    *  through the kernel OAuth broker (tokens stored + refreshed kernel-side;
@@ -469,11 +485,35 @@ export type PluginJobSchedule =
 
 export type StoreListResponse = Page<Plugin>;
 
+/** Advisory code-scan verdict for an ingested plugin package (issue #453).
+ *  Absent when the plugin was never scanned (built-ins, no scanner). */
+export interface PluginVerdict {
+  severity:
+    | 'no_signals'
+    | 'flagged'
+    | 'high_risk'
+    | 'scan_failed'
+    | 'pending'
+    | 'too_large_to_scan';
+  findings: readonly {
+    readonly code: string;
+    readonly severity: string;
+    readonly message: string;
+    readonly file: string | null;
+  }[];
+  scanner_version: string;
+  rationale: string | null;
+  computed_at: ISO8601;
+  ack: { by: string; at: ISO8601 } | null;
+}
+
 export interface StoreGetResponse {
   plugin: Plugin;
   manifest: unknown;
   install_available: boolean;
   blocking_reasons?: string[];
+  /** Advisory-only — never blocks install (issue #453). */
+  verdict?: PluginVerdict;
 }
 
 // ---------------------------------------------------------------------------

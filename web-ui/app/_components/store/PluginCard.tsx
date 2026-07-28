@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { AlertTriangle, ArrowUpRight, RefreshCw, Store } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 
 import type { Plugin } from '../../_lib/storeTypes';
 import { Chip } from './Chip';
@@ -11,6 +12,7 @@ interface PluginCardProps {
 }
 
 export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
+  const t = useTranslations('store.card');
   const isLegacy = plugin.categories.includes('legacy');
   const visibleCategories = plugin.categories
     .filter((c) => c !== 'legacy')
@@ -31,12 +33,15 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
           className="absolute -right-2 -top-2 z-10 inline-flex items-center gap-1 rounded-full bg-[color:var(--accent)] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-[color:var(--accent-fg)] shadow-[0_4px_12px_rgba(0,75,115,0.35)] ring-2 ring-[color:var(--bg-elevated)]"
           title={
             plugin.available_version
-              ? `Update verfügbar: ${plugin.version} → ${plugin.available_version}`
-              : 'Update verfügbar'
+              ? t('updateTitleWithVersion', {
+                  from: plugin.version,
+                  to: plugin.available_version,
+                })
+              : t('updateTitle')
           }
         >
           <RefreshCw className="size-3" aria-hidden />
-          Update
+          {t('updateSticker')}
           {plugin.available_version ? (
             <span className="font-mono-num font-semibold normal-case tracking-normal opacity-90">
               {plugin.available_version}
@@ -65,7 +70,7 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
       </div>
 
       <p className="mt-4 line-clamp-3 text-[14px] leading-relaxed text-[color:var(--fg-muted)]">
-        {plugin.description || <em>Keine Beschreibung hinterlegt.</em>}
+        {plugin.description || <em>{t('noDescription')}</em>}
       </p>
 
       {/* Metadata row. An update-available plugin IS installed — show that
@@ -89,7 +94,7 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
             title={plugin.action_status.detail ?? undefined}
           >
             <AlertTriangle className="size-3" aria-hidden />
-            {plugin.action_status.title ?? 'Aktion erforderlich'}
+            {plugin.action_status.title ?? t('actionRequired')}
           </span>
         ) : null}
         {/* Origin marker — present only on remote-registry (Hub) entries that

@@ -691,6 +691,55 @@ export interface KnowledgeGraph {
     rootExternalIds: string[],
     opts?: { maxHops?: number; maxNodes?: number },
   ): Promise<{ nodes: KgWalkNode[]; edges: KgWalkEdge[] }>;
+
+  /**
+   * #430 — persist a structured dataset (CSV import) as a relational
+   * sidecar: one `datasets` row + one `dataset_rows` row per record, plus
+   * exactly one `Dataset` graph node (`PluginEntity`, `system='dataset'`)
+   * for recall/citation linking. Individual rows are NEVER promoted to
+   * graph nodes — node properties are GIN-indexed and exploding rows into
+   * the graph would defeat that index (see {@link ingestEntities}). `rows`
+   * MUST already be privacy-scanned by the caller: mirrors the existing
+   * convention for `ingestTurn`, where masking happens BEFORE the
+   * KnowledgeGraph boundary, never inside it.
+   */
+  ingestDataset(input: DatasetIngest): Promise<DatasetIngestResult>;
+  /** #430 — list datasets owned by the caller, most-recent first. */
+  listDatasets(opts: {
+    ownerOmadiaUserId: string;
+    limit?: number;
+  }): Promise<DatasetSummary[]>;
+  /**
+   * #430 — read one dataset's metadata + inferred schema. Null when
+   * missing or the viewer doesn't own it (ACL mirrors `/api/v1/memory`:
+   * owner-only for v1, no team/public visibility tier yet).
+   */
+  getDataset(
+    datasetId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<DatasetSummary | null>;
+  /**
+   * #430 — filter/aggregate over a dataset's rows via the constrained
+   * {@link DatasetQueryOptions} DSL — never raw SQL from the caller.
+   * Powers the `query_dataset` native tool. Returns `null` under the same
+   * ACL rule as {@link getDataset}. Always paginates/aggregates server-side
+   * (`limit` clamped) so a caller can't accidentally dump a whole table
+   * into turn context.
+   */
+  queryDatasetRows(
+    datasetId: string,
+    viewerOmadiaUserId: string,
+    opts?: DatasetQueryOptions,
+  ): Promise<DatasetQueryResult | null>;
+  /**
+   * #430 — hard-delete a dataset, its rows (cascade), and its graph node.
+   * Owner-only. Returns `false` (no-op) when the dataset is missing or not
+   * owned by `actor`.
+   */
+  deleteDataset(
+    datasetId: string,
+    actor: AclMutationOptions,
+  ): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1537,6 +1586,11 @@ export interface RunAgentInvocation {
   /** 0-based index across the Run — ties back the INVOKED_AGENT edge ordering. */
   index: number;
   agentName: string;
+  /** Stable agent id when resolvable (e.g. `de.byte5.agent.strategist`). Lets
+   *  consumers disambiguate invocations whose human-facing label collides
+   *  (#332 gap-closure). Absent when the invoked tool has no registered
+   *  agentId (native/kernel tools). */
+  agentId?: string;
   durationMs: number;
   subIterations: number;
   status: RunStatus;
@@ -1997,4 +2051,243 @@ export function factNodeId(
   const clean = (s: string): string =>
     s.toLowerCase().replace(/[:\s]+/g, '_').slice(0, 80);
   return `fact:${sourceTurnId}:${clean(subject)}:${clean(predicate)}:${clean(object)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Issue #430 — structured dataset ingestion and handling. Relational
+// sidecar in the same store (`datasets` + `dataset_rows`), NOT a graph-node
+// explosion: rows never become graph nodes, only the parent dataset gets a
+// single `PluginEntity` (system='dataset') node. See `ingestDataset`.
+// ---------------------------------------------------------------------------
+
+/** Inferred column type from CSV import (#430). No `unknown` catch-all —
+ *  a column with no confidently-typed values falls back to `'string'`. */
+export type DatasetColumnType = 'string' | 'number' | 'boolean' | 'date';
+
+export interface DatasetColumnSchema {
+  name: string;
+  type: DatasetColumnType;
+  /** First non-empty value seen for this column — admin-UI schema preview
+   *  only, never used for query filtering. */
+  sample?: string;
+}
+
+export interface DatasetIngest {
+  /**
+   * Cluster-root uuid of the importing user. Sole initial ACL owner —
+   * mirrors the `/api/v1/memory` ACL model (an owners array seeded from
+   * the session/turn identity, checked on every read/write).
+   */
+  ownerOmadiaUserId: string;
+  name: string;
+  sourceFileName: string;
+  /**
+   * Tigris object key for the raw uploaded file. Omitted when the dataset
+   * was auto-ingested from a chat attachment whose raw bytes aren't
+   * separately persisted to Tigris (see `attachmentExtract.ts`'s CSV
+   * branch in `@omadia/orchestrator`).
+   */
+  sourceStorageKey?: string;
+  columns: DatasetColumnSchema[];
+  /**
+   * Already privacy-scanned rows. MUST be scrubbed by the caller before
+   * this call — see {@link KnowledgeGraph.ingestDataset}.
+   */
+  rows: ReadonlyArray<Record<string, unknown>>;
+}
+
+export interface DatasetIngestResult {
+  datasetId: string;
+  rowCount: number;
+  /** External id of the single Dataset `PluginEntity` graph node. */
+  graphNodeId: string;
+}
+
+export interface DatasetSummary {
+  id: string;
+  name: string;
+  sourceFileName: string;
+  ownerOmadiaUserId: string;
+  rowCount: number;
+  columns: DatasetColumnSchema[];
+  createdAt: string;
+}
+
+export type DatasetFilterOp =
+  | 'eq'
+  | 'neq'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte'
+  | 'contains';
+
+export interface DatasetFilter {
+  column: string;
+  op: DatasetFilterOp;
+  value: string | number | boolean;
+}
+
+export type DatasetAggregateFn = 'count' | 'sum' | 'avg' | 'min' | 'max';
+
+export interface DatasetAggregate {
+  fn: DatasetAggregateFn;
+  /** Required for every `fn` except `'count'`. */
+  column?: string;
+}
+
+/**
+ * Constrained query DSL for the `query_dataset` native tool (#430) — the
+ * model never writes raw SQL. Every `column` referenced (in `filters`,
+ * `groupBy`, or `aggregate`) MUST name a column from the dataset's own
+ * inferred schema; backends reject unknown columns instead of passing them
+ * through to a query string.
+ */
+export interface DatasetQueryOptions {
+  filters?: DatasetFilter[];
+  /** Group the aggregate by this column instead of collapsing to one row.
+   *  Ignored when `aggregate` is omitted. */
+  groupBy?: string;
+  aggregate?: DatasetAggregate;
+  /** Row cap when no `aggregate` is requested. Clamped to [1, 200] server-side.
+   *  Default 50. */
+  limit?: number;
+  offset?: number;
+}
+
+export interface DatasetQueryResult {
+  /** Raw matching rows — populated only when `aggregate` was omitted. */
+  rows?: Array<Record<string, unknown>>;
+  /** One entry per group — populated only when `aggregate` + `groupBy` were both set. */
+  groups?: Array<{ key: unknown; value: number | null }>;
+  /** Single scalar — populated only when `aggregate` was set without `groupBy`. */
+  aggregateValue?: number | null;
+  /**
+   * Total rows matching `filters`, before `limit`/`offset` — lets a caller
+   * (the `query_dataset` tool's response text) surface "showing 50 of 4,213"
+   * instead of silently truncating.
+   */
+  totalMatched: number;
+}
+
+/** Thrown by {@link validateDatasetQueryOptions} when a `query_dataset`
+ *  request references a column the dataset's inferred schema doesn't have,
+ *  or an aggregate is missing its required column. Caller-input error, not
+ *  an ACL failure — distinct from the `null` (not found / not owned) return
+ *  of {@link KnowledgeGraph.queryDatasetRows}. */
+export class DatasetQueryValidationError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'DatasetQueryValidationError';
+  }
+}
+
+export interface NormalizedDatasetQuery {
+  filters: DatasetFilter[];
+  groupBy?: string;
+  aggregate?: DatasetAggregate;
+  limit: number;
+  offset: number;
+}
+
+const DATASET_QUERY_LIMIT_MIN = 1;
+const DATASET_QUERY_LIMIT_MAX = 200;
+const DATASET_QUERY_LIMIT_DEFAULT = 50;
+
+/**
+ * Shared validation for the `query_dataset` constrained DSL (#430) — both
+ * `NeonKnowledgeGraph` and `InMemoryKnowledgeGraph` call this FIRST so the
+ * two backends reject the same malformed requests identically. Every
+ * `column` reference is checked against the dataset's own inferred schema
+ * (`columns`); `limit`/`offset` are clamped rather than rejected, since an
+ * over-large limit is a harmless caller mistake, not a shape violation.
+ */
+const NUMERIC_COMPARISON_OPS: ReadonlySet<DatasetFilterOp> = new Set([
+  'gt',
+  'gte',
+  'lt',
+  'lte',
+]);
+
+export function validateDatasetQueryOptions(
+  columns: readonly DatasetColumnSchema[],
+  opts: DatasetQueryOptions | undefined,
+): NormalizedDatasetQuery {
+  const columnsByName = new Map(columns.map((c) => [c.name, c]));
+  const filters = opts?.filters ?? [];
+  for (const f of filters) {
+    const column = columnsByName.get(f.column);
+    if (!column) {
+      throw new DatasetQueryValidationError(
+        'unknown_filter_column',
+        `filter references unknown column '${f.column}'`,
+      );
+    }
+    if (NUMERIC_COMPARISON_OPS.has(f.op) && column.type !== 'number') {
+      // v1 scope: only numeric comparisons — 'date' columns are stored as
+      // their original string representation (no canonical parse format
+      // assumed), so gt/gte/lt/lte on them isn't well-defined yet. A range
+      // filter on dates is a reasonable follow-up once dates are normalized
+      // to ISO at import time.
+      throw new DatasetQueryValidationError(
+        'op_type_mismatch',
+        `filter op '${f.op}' on column '${f.column}' needs a number column (got '${column.type}')`,
+      );
+    }
+    if (f.op === 'contains' && column.type !== 'string') {
+      throw new DatasetQueryValidationError(
+        'op_type_mismatch',
+        `filter op 'contains' on column '${f.column}' needs a string column (got '${column.type}')`,
+      );
+    }
+  }
+  if (opts?.groupBy !== undefined && !columnsByName.has(opts.groupBy)) {
+    throw new DatasetQueryValidationError(
+      'unknown_group_by_column',
+      `groupBy references unknown column '${opts.groupBy}'`,
+    );
+  }
+  if (opts?.aggregate) {
+    if (opts.aggregate.fn !== 'count') {
+      if (opts.aggregate.column === undefined) {
+        throw new DatasetQueryValidationError(
+          'aggregate_column_required',
+          `aggregate '${opts.aggregate.fn}' requires a column`,
+        );
+      }
+      const aggColumn = columnsByName.get(opts.aggregate.column);
+      if (!aggColumn) {
+        throw new DatasetQueryValidationError(
+          'unknown_aggregate_column',
+          `aggregate references unknown column '${opts.aggregate.column}'`,
+        );
+      }
+      if (aggColumn.type !== 'number') {
+        throw new DatasetQueryValidationError(
+          'aggregate_type_mismatch',
+          `aggregate '${opts.aggregate.fn}' needs a number column (got '${aggColumn.type}')`,
+        );
+      }
+    }
+  }
+  const rawLimit = opts?.limit ?? DATASET_QUERY_LIMIT_DEFAULT;
+  const limit = Math.min(
+    DATASET_QUERY_LIMIT_MAX,
+    Math.max(
+      DATASET_QUERY_LIMIT_MIN,
+      rawLimit === 0 ? 1 : Math.trunc(rawLimit) || DATASET_QUERY_LIMIT_DEFAULT,
+    ),
+  );
+  const rawOffset = opts?.offset ?? 0;
+  const offset = Math.max(0, Math.trunc(rawOffset));
+  return {
+    filters,
+    ...(opts?.groupBy !== undefined ? { groupBy: opts.groupBy } : {}),
+    ...(opts?.aggregate !== undefined ? { aggregate: opts.aggregate } : {}),
+    limit,
+    offset,
+  };
 }

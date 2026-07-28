@@ -1,15 +1,19 @@
 'use client';
 
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
   conductorBuilderTurn,
   publishConductorWorkflow,
+  resolveConductorText,
   type ConductorBuilderMessage,
   type ConductorGraphPatch,
+  type ConductorTemplate,
+  type ConductorTemplateProposal,
+  type ConductorTemplateSlotMapping,
   type ConductorValidationError,
   type ConductorValidationResult,
 } from '@/app/_lib/api';
@@ -27,6 +31,34 @@ interface ChatItem {
   patches?: ConductorGraphPatch[];
   validation?: ConductorValidationResult;
   applyErrors?: string[];
+  /** template suggestions for this turn (#478 F4) — rendered as proposal cards. */
+  templateProposals?: ConductorTemplateProposal[];
+}
+
+/** Defensive re-cap of B4's server-side ≤3 guarantee. */
+const MAX_PROPOSAL_CARDS = 3;
+
+/** How many of the template's DECLARED slots the proposal prefills — undeclared
+ *  prefill keys never count (parity with the form, which drops them on mount). */
+function slotCoverage(
+  tpl: ConductorTemplate,
+  prefill: ConductorTemplateSlotMapping,
+): { filled: number; total: number } {
+  let filled = 0;
+  let total = 0;
+  for (const kind of ['agents', 'actions', 'roles', 'events', 'channels'] as const) {
+    for (const slot of tpl.slots[kind] ?? []) {
+      total += 1;
+      const v = prefill[kind]?.[slot.key];
+      if (typeof v === 'string' && v.trim().length > 0) filled += 1;
+    }
+  }
+  for (const slot of tpl.slots.text ?? []) {
+    total += 1;
+    const v = prefill.text?.[slot.key];
+    if (typeof v === 'string' && v.trim().length > 0) filled += 1;
+  }
+  return { filled, total };
 }
 
 interface DraftSummary {
@@ -45,8 +77,23 @@ function summarize(graph: unknown): DraftSummary {
 // (a button), NOT automatically every turn — an auto-push would silently clobber any manual canvas
 // edits, since canvas edits don't flow back into this pane's draft. Explicit push matches the
 // existing "Load"/"Edit" semantics (a load replaces the canvas). True two-way live sync is a follow-up.
-export function ConductorChatPane({ onShowInDesigner }: { onShowInDesigner?: (graph: unknown) => void }): React.JSX.Element {
+export function ConductorChatPane({
+  onShowInDesigner,
+  templates,
+  onUseTemplateProposal,
+}: {
+  onShowInDesigner?: (graph: unknown) => void;
+  /** the page's template catalog (#478 F4) — resolves proposal ids to names/slots.
+   *  A proposal whose id is missing here (stale catalog, revoked visibility since
+   *  B4's server-side filter ran) degrades to plain text instead of a card. */
+  templates?: ConductorTemplate[];
+  /** "Use template" hand-off (#478 F4): the page opens the instantiate form for
+   *  this template/version with the prefill as the initial mapping. Chat never
+   *  auto-instantiates — creation stays a deliberate form action. */
+  onUseTemplateProposal?: (proposal: ConductorTemplateProposal) => void;
+}): React.JSX.Element {
   const t = useTranslations('conductor');
+  const locale = useLocale();
   const [items, setItems] = useState<ChatItem[]>([]);
   const [graph, setGraph] = useState<unknown>(EMPTY_GRAPH);
   const [input, setInput] = useState('');
@@ -87,7 +134,14 @@ export function ConductorChatPane({ onShowInDesigner }: { onShowInDesigner?: (gr
       setGraph(res.graph);
       setItems((xs) => [
         ...xs,
-        { role: 'assistant', text: res.reply, patches: res.patches, validation: res.validation, applyErrors: res.applyErrors },
+        {
+          role: 'assistant',
+          text: res.reply,
+          patches: res.patches,
+          validation: res.validation,
+          applyErrors: res.applyErrors,
+          templateProposals: res.templateProposals,
+        },
       ]);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
@@ -169,6 +223,56 @@ export function ConductorChatPane({ onShowInDesigner }: { onShowInDesigner?: (gr
                 {it.applyErrors && it.applyErrors.length > 0 && (
                   <div className="mt-1 text-[11px] text-[color:var(--danger,#e5484d)]">
                     {t('chatApplyIssues')} {it.applyErrors.join('; ')}
+                  </div>
+                )}
+                {/* Template proposals (#478 F4): compact cards under the reply. The
+                    action HANDS OFF to the instantiate form — never auto-creates. */}
+                {it.templateProposals && it.templateProposals.length > 0 && (
+                  <div className="mt-2 grid gap-2">
+                    <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70">
+                      {t('chatProposalsHeading')}
+                    </div>
+                    {it.templateProposals.slice(0, MAX_PROPOSAL_CARDS).map((proposal) => {
+                      const tpl = templates?.find((x) => x.id === proposal.templateId);
+                      if (!tpl) {
+                        // Server-filtered ids should always resolve; if one slips
+                        // through anyway, degrade to plain text (no dead action).
+                        return (
+                          <p key={proposal.templateId} className="text-[12px] text-[color:var(--fg-muted)]">
+                            {proposal.reason}
+                          </p>
+                        );
+                      }
+                      const coverage = slotCoverage(tpl, proposal.prefill);
+                      return (
+                        <div
+                          key={proposal.templateId}
+                          className="grid gap-1 rounded-md border border-[color:var(--border)] bg-[color:var(--card)]/40 px-3 py-2"
+                        >
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-[13px] font-medium text-[color:var(--fg-strong)]">
+                              {resolveConductorText(tpl.name, locale)}
+                            </span>
+                            <span className="font-mono text-[11px] text-[color:var(--fg-muted)]">
+                              {t('templateVersionTag', { version: proposal.version })}
+                            </span>
+                          </div>
+                          <p className="text-[12px] text-[color:var(--fg-muted)]">{proposal.reason}</p>
+                          {coverage.total > 0 && (
+                            <p className="text-[11px] text-[color:var(--fg-muted)]">
+                              {t('chatProposalCoverage', { filled: coverage.filled, total: coverage.total })}
+                            </p>
+                          )}
+                          {onUseTemplateProposal && (
+                            <div className="mt-1">
+                              <Button variant="primary" size="sm" onClick={() => onUseTemplateProposal(proposal)}>
+                                {t('templateUseButton')}
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

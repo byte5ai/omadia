@@ -8,6 +8,13 @@ export interface ConductorWorkflow {
   description: string | null;
   status: 'enabled' | 'disabled';
   activeVersionId: string | null;
+  /** Template provenance (#478): which template manifest (id + version) this
+   *  workflow was instantiated from. Informational only — copy-not-reference
+   *  stands, the columns power the "template updated" hint, never execution.
+   *  Optional so pre-#478 fakes/fixtures keep typechecking; null when the
+   *  workflow was not instantiated from a template. */
+  templateId?: string | null;
+  templateVersion?: number | null;
 }
 
 export interface ConductorVersion {
@@ -24,6 +31,8 @@ interface WorkflowRow {
   description: string | null;
   status: 'enabled' | 'disabled';
   active_version_id: string | null;
+  template_id: string | null;
+  template_version: number | null;
 }
 
 interface VersionRow {
@@ -31,6 +40,16 @@ interface VersionRow {
   workflow_id: string;
   version: number;
   graph: WorkflowGraph;
+}
+
+/** Thrown by createOrPublish({ expectNew: true }) when the slug is already taken. The
+ *  conflict is detected by the INSERT itself (ON CONFLICT DO NOTHING), so two racing
+ *  creates of the same fresh slug can never both publish -- no pre-check involved. */
+export class WorkflowSlugExistsError extends Error {
+  constructor(readonly slug: string) {
+    super(`a workflow with slug '${slug}' already exists`);
+    this.name = 'WorkflowSlugExistsError';
+  }
 }
 
 function toWorkflow(r: WorkflowRow): ConductorWorkflow {
@@ -41,8 +60,12 @@ function toWorkflow(r: WorkflowRow): ConductorWorkflow {
     description: r.description,
     status: r.status,
     activeVersionId: r.active_version_id,
+    templateId: r.template_id,
+    templateVersion: r.template_version,
   };
 }
+
+const WORKFLOW_COLS = 'id, slug, name, description, status, active_version_id, template_id, template_version';
 
 /**
  * Persistence for workflow headers + immutable versions. A publish snapshots the
@@ -54,7 +77,7 @@ export class ConductorWorkflowStore {
 
   async getBySlug(slug: string): Promise<ConductorWorkflow | null> {
     const r = await this.pool.query<WorkflowRow>(
-      'SELECT id, slug, name, description, status, active_version_id FROM conductor_workflows WHERE slug = $1',
+      `SELECT ${WORKFLOW_COLS} FROM conductor_workflows WHERE slug = $1`,
       [slug],
     );
     return r.rows[0] ? toWorkflow(r.rows[0]) : null;
@@ -62,7 +85,7 @@ export class ConductorWorkflowStore {
 
   async getById(id: string): Promise<ConductorWorkflow | null> {
     const r = await this.pool.query<WorkflowRow>(
-      'SELECT id, slug, name, description, status, active_version_id FROM conductor_workflows WHERE id = $1',
+      `SELECT ${WORKFLOW_COLS} FROM conductor_workflows WHERE id = $1`,
       [id],
     );
     return r.rows[0] ? toWorkflow(r.rows[0]) : null;
@@ -70,7 +93,7 @@ export class ConductorWorkflowStore {
 
   async list(): Promise<ConductorWorkflow[]> {
     const r = await this.pool.query<WorkflowRow>(
-      'SELECT id, slug, name, description, status, active_version_id FROM conductor_workflows ORDER BY created_at DESC',
+      `SELECT ${WORKFLOW_COLS} FROM conductor_workflows ORDER BY created_at DESC`,
     );
     return r.rows.map(toWorkflow);
   }
@@ -96,6 +119,11 @@ export class ConductorWorkflowStore {
     graph: WorkflowGraph;
     publishedBy?: string | null;
     enable?: boolean;
+    /** Create-only mode: throw WorkflowSlugExistsError when the slug already exists
+     *  instead of publishing a new version onto it (the template-instantiate route's
+     *  "create new" contract). Atomic -- the INSERT's conflict clause decides, not a
+     *  racy SELECT-then-INSERT. Default (absent/false) keeps the idempotent upsert. */
+    expectNew?: boolean;
     /** Runs inside the publish transaction after the version is set active — used to reconcile cron
      *  schedules atomically with the publish (a throw rolls the whole publish back, so a failed
      *  reconcile never leaves stale schedules behind). */
@@ -108,15 +136,21 @@ export class ConductorWorkflowStore {
       // Idempotent upsert — race-safe under concurrent/double-submitted publishes of the
       // same slug (a SELECT-then-INSERT would let two requests both pass the check and one
       // hit the unique-constraint). Status is only set on first create, never changed here.
+      // In expectNew mode the conflict clause flips to DO NOTHING: zero returned rows
+      // means the slug is taken and the publish aborts with WorkflowSlugExistsError.
+      const conflictClause = input.expectNew
+        ? 'ON CONFLICT (slug) DO NOTHING'
+        : `ON CONFLICT (slug) DO UPDATE
+           SET name = EXCLUDED.name, description = EXCLUDED.description, updated_at = now()`;
       const upserted = await client.query<{ id: string }>(
         `INSERT INTO conductor_workflows (slug, name, description, status)
          VALUES ($1, $2, $3, $4)
-         ON CONFLICT (slug) DO UPDATE
-           SET name = EXCLUDED.name, description = EXCLUDED.description, updated_at = now()
+         ${conflictClause}
          RETURNING id`,
         [input.slug, input.name, input.description ?? null, input.enable ? 'enabled' : 'disabled'],
       );
-      const workflowId = upserted.rows[0]!.id;
+      const workflowId = upserted.rows[0]?.id;
+      if (workflowId === undefined) throw new WorkflowSlugExistsError(input.slug);
       // Serialize concurrent publishes of the same workflow so version numbering can't collide.
       await client.query('SELECT id FROM conductor_workflows WHERE id = $1 FOR UPDATE', [workflowId]);
 
@@ -139,7 +173,7 @@ export class ConductorWorkflowStore {
         `UPDATE conductor_workflows
             SET active_version_id = $2, updated_at = now()
           WHERE id = $1
-        RETURNING id, slug, name, description, status, active_version_id`,
+        RETURNING ${WORKFLOW_COLS}`,
         [workflowId, version.id],
       );
 

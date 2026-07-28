@@ -1,10 +1,12 @@
+import { useTranslations } from 'next-intl';
+
 import { cn } from '../../_lib/cn';
 
 /**
  * Workaround lifecycle badge for the store + builder UI.
  *
- *   `active`            — yellow, "Workaround aktiv (#N)"
- *   `update-available`  — orange, "Update verfügbar — Plattform-Fix gemerged"
+ *   `active`            — yellow, "Workaround active (#N)"
+ *   `update-available`  — orange, "Update available — platform fix merged"
  *   `none`              — renders nothing (parent decides when to show it)
  *
  * Mirrors the styling pattern of StateBadge so the two badges line
@@ -20,9 +22,10 @@ interface WorkaroundBadgeProps {
   className?: string;
 }
 
-const LABEL: Record<Exclude<WorkaroundBadgeStatus, 'none'>, string> = {
-  active: 'Workaround aktiv',
-  'update-available': 'Update verfügbar',
+/** Message-key leaves under `store.workaroundBadge` — translated at render. */
+const LABEL_KEY: Record<Exclude<WorkaroundBadgeStatus, 'none'>, string> = {
+  active: 'active',
+  'update-available': 'updateAvailable',
 };
 
 const STYLE: Record<Exclude<WorkaroundBadgeStatus, 'none'>, string> = {
@@ -38,12 +41,14 @@ export function WorkaroundBadge({
   issueUrl,
   className,
 }: WorkaroundBadgeProps): React.ReactElement | null {
+  const t = useTranslations('store.workaroundBadge');
   if (status === 'none') return null;
 
+  const baseLabel = t(LABEL_KEY[status]);
   const label =
     issueNumber !== undefined
-      ? `${LABEL[status]} (#${String(issueNumber)})`
-      : LABEL[status];
+      ? t('labelWithIssue', { label: baseLabel, number: issueNumber })
+      : baseLabel;
 
   const content = (
     <span
@@ -66,7 +71,7 @@ export function WorkaroundBadge({
         target="_blank"
         rel="noopener noreferrer"
         className="no-underline"
-        aria-label={`${label} — issue im Browser öffnen`}
+        aria-label={t('openIssueAria', { label })}
       >
         {content}
       </a>

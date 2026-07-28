@@ -131,7 +131,7 @@ export function UiSurfacesEditor({
             <InlineSlotEditor
               draftId={draftId}
               slotKey={ADMIN_UI_BODY_SLOT}
-              initialValue={slots[ADMIN_UI_BODY_SLOT] ?? defaultAdminUiStub()}
+              initialValue={slots[ADMIN_UI_BODY_SLOT] ?? defaultAdminUiStub(t)}
               label={t('adminUi.bodyLabel')}
               hint={t('adminUi.bodyHint')}
               heightPx={280}
@@ -202,13 +202,18 @@ function SurfaceCard({
   );
 }
 
-function defaultAdminUiStub(): string {
+// Minimal translator signature (messages/README.md "Helper functions that
+// need to translate") — keeps the stub builder unit-testable with a fake
+// translator instead of coupling it to React hook rules.
+type TFn = (key: string, values?: Record<string, string | number>) => string;
+
+function defaultAdminUiStub(t: TFn): string {
   return `<!-- #region builder:admin-ui-body -->
 <main class="harness-main">
   <h1 class="harness-h1">{{AGENT_NAME}}</h1>
   <p class="harness-text">{{AGENT_DESCRIPTION_DE}}</p>
   <p class="harness-text">
-    Editier diesen Block via fill_slot('admin-ui-body', ...) oder direkt im Workspace.
+    ${t('adminUi.stubEditHint')}
   </p>
 </main>
 <!-- #endregion -->`;

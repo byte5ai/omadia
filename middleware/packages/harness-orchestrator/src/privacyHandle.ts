@@ -12,6 +12,7 @@
 
 import type {
   PrivacyGuardService,
+  PrivacyPromptMaskResult,
   PrivacyReceipt,
   PrivacyRenderedAnswer,
   PrivacyV4ToolSpec,
@@ -78,6 +79,29 @@ export interface PrivacyTurnHandle {
   takeRenderedAnswerV4(): Promise<PrivacyRenderedAnswer | undefined>;
   /** The verb + render tool specs to offer the LLM. */
   v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
+  /**
+   * #361 — mask PII spans in a wire-bound prompt text (user message or
+   * ingested attachment tail). `disabled` when the operator flag is off or
+   * the provider predates the contract — the caller uses the original text
+   * (byte-identical legacy behavior). `blocked` = failure-closed: the turn
+   * MUST fail instead of sending the prompt. Repeated calls within the
+   * turn share one server-held surrogate map.
+   */
+  maskUserPrompt(text: string): Promise<PrivacyPromptMaskResult>;
+  /**
+   * #361 — invert this turn's prompt-surrogate map over the final answer.
+   * Identity when nothing was masked. Must run BEFORE `finalize` (which
+   * drops the map).
+   */
+  restorePromptPseudonyms(text: string): Promise<string>;
+  /**
+   * #361 — snapshot this turn's surrogate→real inversion as a synchronous
+   * closure that stays valid after `finalize` dropped the live map. For the
+   * fire-and-forget fact-extraction path, which must restore extracted
+   * facts to real values before persisting them. `undefined` when nothing
+   * was masked this turn (or the provider predates the contract).
+   */
+  snapshotPromptRestorer(): ((text: string) => string) | undefined;
   /**
    * Drop the turn's Dataset Store and drain the user-facing receipt.
    * `turnInput` — the requester's own message text — lets the receipt
@@ -149,6 +173,28 @@ export function createPrivacyTurnHandle(deps: {
 
     v4ToolSpecs() {
       return deps.service.v4ToolSpecs();
+    },
+
+    async maskUserPrompt(text) {
+      // Optional on the service contract — providers (and test stubs) that
+      // predate #361 simply never mask.
+      if (deps.service.maskUserPrompt === undefined) {
+        return { outcome: 'disabled' };
+      }
+      return deps.service.maskUserPrompt({
+        sessionId: deps.sessionId,
+        turnId: deps.turnId,
+        text,
+      });
+    },
+
+    async restorePromptPseudonyms(text) {
+      if (deps.service.restorePromptPseudonyms === undefined) return text;
+      return deps.service.restorePromptPseudonyms(deps.turnId, text);
+    },
+
+    snapshotPromptRestorer() {
+      return deps.service.snapshotPromptRestorer?.(deps.turnId);
     },
 
     async finalize(turnInput) {

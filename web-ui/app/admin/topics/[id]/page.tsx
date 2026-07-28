@@ -4,12 +4,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 
+import { useTranslations } from 'next-intl';
+
 import {
   getTopicDetail,
   type TopicDetailDto,
 } from '../../../_lib/api';
 
 export default function TopicDetailPage(): React.ReactElement {
+  const t = useTranslations('adminTopics');
   const params = useParams<{ id: string }>();
   const id = useMemo(() => decodeURIComponent(params?.id ?? ''), [params]);
 
@@ -46,10 +49,10 @@ export default function TopicDetailPage(): React.ReactElement {
         </Link>
       </header>
 
-      {loading && <p className="text-xs text-[color:var(--fg-muted)]">lädt…</p>}
+      {loading && <p className="text-xs text-[color:var(--fg-muted)]">{t('loading')}</p>}
       {error !== null && (
         <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
-          Fehler: {error}
+          {t('error', { message: error })}
         </div>
       )}
 
@@ -63,7 +66,7 @@ export default function TopicDetailPage(): React.ReactElement {
           </p>
           <div className="mb-6 flex flex-wrap gap-2 text-[10px]">
             <span className="rounded bg-[color:var(--accent)]/10 px-2 py-0.5 font-mono uppercase tracking-wider text-[color:var(--accent)]">
-              {detail.props.member_count} Memories
+              {t('memberCount', { count: detail.props.member_count })}
             </span>
             <span className="rounded bg-[color:var(--bg-soft)] px-2 py-0.5 font-mono uppercase tracking-wider text-[color:var(--fg)]">
               {detail.props.naming_source}
@@ -71,11 +74,11 @@ export default function TopicDetailPage(): React.ReactElement {
           </div>
 
           <h2 className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-            Mitglieder
+            {t('detail.membersHeading')}
           </h2>
           {detail.members.length === 0 && (
             <p className="text-sm italic text-[color:var(--fg-muted)]">
-              Keine sichtbaren Mitglieder (oder ACL verbirgt sie).
+              {t('detail.emptyMembers')}
             </p>
           )}
           <ul className="flex flex-col gap-2">

@@ -13,3 +13,15 @@ export { activate } from './plugin.js';
 export type { PrivacyGuardPluginHandle } from './plugin.js';
 
 export { createPrivacyGuardService } from './service.js';
+
+// #361 — C1 transformer detector (GLiNER sidecar client), re-exported for
+// tests and for hosts that wire the seam manually.
+export { createC1HttpDetector, C1_DETECTOR_ID } from './c1Detector.js';
+export type { C1HttpDetectorOptions } from './c1Detector.js';
+
+// #361 — the C0 regex baseline + substitution pass, re-exported so other
+// ingestion paths that need the SAME PII-masking pipeline free-text prompts
+// get (not just the turn-scoped `maskUserPrompt` service) can call it
+// directly. #430 (dataset import) is the first such caller.
+export { createBaselineDetector, maskPrompt, dedupSpans } from './promptMask.js';
+export type { MaskPromptResult, ResolvedSpan } from './promptMask.js';

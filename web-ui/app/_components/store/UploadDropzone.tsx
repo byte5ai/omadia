@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
 
 import { ApiError, uploadPackage } from '../../_lib/api';
 import type { UploadedPackage } from '../../_lib/storeTypes';
@@ -17,6 +18,7 @@ type UploadState =
 const ACCEPTED_MIME = 'application/zip,application/x-zip-compressed,.zip';
 
 export function UploadDropzone(): React.ReactElement {
+  const t = useTranslations('store.upload');
   const [state, setState] = useState<UploadState>({ kind: 'idle' });
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -29,7 +31,7 @@ export function UploadDropzone(): React.ReactElement {
         setState({
           kind: 'error',
           code: 'upload.not_zip',
-          message: `Nur .zip erlaubt, bekommen: ${file.name}`,
+          message: t('onlyZip', { name: file.name }),
         });
         return;
       }
@@ -70,7 +72,7 @@ export function UploadDropzone(): React.ReactElement {
         }
       }
     },
-    [router],
+    [router, t],
   );
 
   const onDrop = useCallback(
@@ -147,15 +149,17 @@ export function UploadDropzone(): React.ReactElement {
           </div>
 
           <h2 className="font-display mt-3 text-[22px] leading-tight text-[color:var(--fg-strong)]">
-            Neues Agent-Package hochladen.
+            {t('title')}
           </h2>
 
           <p className="mt-2 text-sm leading-relaxed text-[color:var(--fg-muted)]">
-            Zieh ein{' '}
-            <span className="font-mono-num text-[color:var(--fg)]">.zip</span>{' '}
-            hierher oder wähl es über den Button. Der Server validiert das
-            Manifest, prüft Peer-Dependencies und registriert den Agent
-            automatisch im Katalog.
+            {t.rich('intro', {
+              mono: (chunks) => (
+                <span className="font-mono-num text-[color:var(--fg)]">
+                  {chunks}
+                </span>
+              ),
+            })}
           </p>
 
           {state.kind === 'idle' && (
@@ -165,10 +169,10 @@ export function UploadDropzone(): React.ReactElement {
                 pill
                 onClick={() => fileInputRef.current?.click()}
               >
-                Datei wählen
+                {t('chooseFile')}
               </Button>
               <span className="text-[12px] text-[color:var(--fg-subtle)]">
-                oder per Drag & Drop
+                {t('orDragDrop')}
               </span>
             </div>
           )}
@@ -220,6 +224,7 @@ function UploadingRow({
   total: number;
   onCancel: () => void;
 }): React.ReactElement {
+  const t = useTranslations('store.upload');
   const pct = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
   return (
     <div className="mt-4 space-y-2">
@@ -242,7 +247,7 @@ function UploadingRow({
         onClick={onCancel}
         className="text-[12px] text-[color:var(--fg-subtle)] hover:text-[color:var(--fg)]"
       >
-        Abbrechen
+        {t('cancel')}
       </button>
     </div>
   );
@@ -255,20 +260,26 @@ function SuccessRow({
   pkg: UploadedPackage;
   onDismiss: () => void;
 }): React.ReactElement {
+  const t = useTranslations('store.upload');
   return (
     <div className="mt-4 rounded-md border border-[color:var(--success,#2a8a5f)]/40 bg-[color:var(--success,#2a8a5f)]/6 px-4 py-3">
       <div className="flex items-baseline gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-[color:var(--success,#2a8a5f)]">
-        <span>✓ Hochgeladen</span>
+        <span>{t('uploadedKicker')}</span>
         <span className="h-px flex-1 bg-[color:var(--success,#2a8a5f)]/30" />
       </div>
       <p className="mt-2 text-sm text-[color:var(--fg-strong)]">
-        <span className="font-mono-num">{pkg.id}</span>{' '}
-        <span className="text-[color:var(--fg-muted)]">v{pkg.version}</span> ist
-        im Katalog. Unten wählen und installieren.
+        {t.rich('inCatalog', {
+          id: pkg.id,
+          version: pkg.version,
+          idTag: (chunks) => <span className="font-mono-num">{chunks}</span>,
+          versionTag: (chunks) => (
+            <span className="text-[color:var(--fg-muted)]">{chunks}</span>
+          ),
+        })}
       </p>
       <dl className="mt-2 grid grid-cols-3 gap-x-4 text-[11px] text-[color:var(--fg-muted)]">
         <Metric
-          label="Größe"
+          label={t('sizeLabel')}
           value={`${humanBytes(pkg.zip_bytes)} → ${humanBytes(pkg.extracted_bytes)}`}
         />
         <Metric label="Files" value={String(pkg.file_count)} />
@@ -276,8 +287,7 @@ function SuccessRow({
       </dl>
       {pkg.peers_missing.length > 0 && (
         <p className="mt-3 text-[12px] text-[color:var(--warning,#b97a00)]">
-          ⚠ Fehlende Peer-Deps: {pkg.peers_missing.join(', ')} — Agent kann zur
-          Laufzeit fehlschlagen.
+          {t('peersMissing', { peers: pkg.peers_missing.join(', ') })}
         </p>
       )}
       <div className="mt-3 flex gap-3">
@@ -286,7 +296,7 @@ function SuccessRow({
           onClick={onDismiss}
           className="text-[12px] text-[color:var(--fg-subtle)] hover:text-[color:var(--fg)]"
         >
-          Schließen
+          {t('close')}
         </button>
       </div>
     </div>
@@ -302,10 +312,11 @@ function ErrorRow({
   message: string;
   onDismiss: () => void;
 }): React.ReactElement {
+  const t = useTranslations('store.upload');
   return (
     <div className="mt-4 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 px-4 py-3">
       <div className="flex items-baseline gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-[color:var(--danger)]">
-        <span>Upload fehlgeschlagen</span>
+        <span>{t('failedKicker')}</span>
         <span className="h-px flex-1 bg-[color:var(--danger)]/30" />
         <span className="font-mono-num tracking-normal normal-case">
           {code}
@@ -317,7 +328,7 @@ function ErrorRow({
         onClick={onDismiss}
         className="mt-3 text-[12px] text-[color:var(--fg-subtle)] hover:text-[color:var(--fg)]"
       >
-        Zurücksetzen
+        {t('reset')}
       </button>
     </div>
   );

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 
 import {
   getExcerptMergeDetail,
@@ -11,22 +12,16 @@ import {
   type ExcerptMergeResolution,
 } from '../../../../_lib/api';
 
-const RESOLUTION_LABEL: Record<ExcerptMergeResolution, string> = {
-  keep_a: 'A behalten → B löschen',
-  keep_b: 'B behalten → A löschen',
-  not_duplicate: 'Kein Duplikat (Detector hat überschossen)',
-};
-
-const RESOLUTION_DESCRIPTION: Record<ExcerptMergeResolution, string> = {
-  keep_a:
-    'Behält Excerpt A als kanonisches Zitat und löscht Excerpt B endgültig vom Parent-MK. Provenance-Audit-Row (delete_excerpt) bleibt im memory_acl_audit erhalten.',
-  keep_b:
-    'Behält Excerpt B als kanonisches Zitat und löscht Excerpt A endgültig.',
-  not_duplicate:
-    'Markiert das Paar als „kein Duplikat". Beide Excerpts bleiben unverändert. Wird nicht erneut geprüft.',
+// Stable message-key suffix per resolution — labels/descriptions live under
+// `adminDuplicates.excerptDetail.resolutions.*` and are translated at render.
+const RESOLUTION_KEY: Record<ExcerptMergeResolution, string> = {
+  keep_a: 'keepA',
+  keep_b: 'keepB',
+  not_duplicate: 'notDuplicate',
 };
 
 export default function ExcerptDuplicateDetailPage(): React.ReactElement {
+  const t = useTranslations('adminDuplicates.excerptDetail');
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const id = useMemo(() => decodeURIComponent(params?.id ?? ''), [params]);
@@ -68,8 +63,10 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
             : null;
       const confirmText =
         destructive && targetExcerpt
-          ? `Excerpt wird endgültig gelöscht: "${targetExcerpt.props.text.slice(0, 100)}". Fortfahren?`
-          : `Duplikat-Status auf "${RESOLUTION_LABEL[resolution]}" setzen?`;
+          ? t('confirmDelete', { text: targetExcerpt.props.text.slice(0, 100) })
+          : t('confirmResolve', {
+              label: t(`resolutions.${RESOLUTION_KEY[resolution]}.label`),
+            });
       if (!window.confirm(confirmText)) return;
       setBusy(true);
       setMutationError(null);
@@ -84,7 +81,7 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
         setBusy(false);
       }
     },
-    [id, detail, reason, router],
+    [id, detail, reason, router, t],
   );
 
   return (
@@ -97,14 +94,16 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
           ← /admin/duplicates
         </Link>
         <h1 className="mt-2 font-display text-[clamp(1.5rem,3vw,2.25rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Excerpt-Duplikat auflösen
+          {t('title')}
         </h1>
       </header>
 
-      {loading && <p className="text-xs text-[color:var(--fg-muted)]">lädt…</p>}
+      {loading && (
+        <p className="text-xs text-[color:var(--fg-muted)]">{t('loading')}</p>
+      )}
       {loadError !== null && (
         <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
-          Fehler: {loadError}
+          {t('error', { message: loadError })}
         </div>
       )}
 
@@ -112,12 +111,15 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
         <>
           <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
             <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-              Detector-Befund
+              {t('detectorFindingTitle')}
             </h2>
             <p className="text-sm">
-              Cosine-Ähnlichkeit{' '}
-              <span className="font-mono">{detail.props.cosine_sim.toFixed(3)}</span>{' '}
-              — Excerpts sind fast wörtlich identisch.
+              {t.rich('cosineSummary', {
+                value: detail.props.cosine_sim.toFixed(3),
+                cosine: (chunks) => (
+                  <span className="font-mono">{chunks}</span>
+                ),
+              })}
             </p>
             <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[11px]">
               <dt className="text-[color:var(--fg-muted)]">Status</dt>
@@ -147,11 +149,11 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
           {detail.props.status === 'open' && (
             <section className="mt-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
               <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-                Auflösung
+                {t('resolutionTitle')}
               </h2>
               <label className="mb-3 block">
                 <span className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
-                  Begründung (optional, im Audit-Log)
+                  {t('reasonLabel')}
                 </span>
                 <input
                   type="text"
@@ -164,7 +166,7 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
               </label>
               {mutationError !== null && (
                 <p className="mb-3 border-l-2 border-[color:var(--danger-edge)] px-2 py-1 text-xs text-[color:var(--danger)]">
-                  Fehler: {mutationError}
+                  {t('error', { message: mutationError })}
                 </p>
               )}
               <div className="grid gap-2 sm:grid-cols-1">
@@ -181,9 +183,11 @@ export default function ExcerptDuplicateDetailPage(): React.ReactElement {
                         : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
                     ].join(' ')}
                   >
-                    <div className="font-semibold">{RESOLUTION_LABEL[r]}</div>
+                    <div className="font-semibold">
+                      {t(`resolutions.${RESOLUTION_KEY[r]}.label`)}
+                    </div>
                     <div className="mt-1 text-[10px] text-[color:var(--fg-muted)]">
-                      {RESOLUTION_DESCRIPTION[r]}
+                      {t(`resolutions.${RESOLUTION_KEY[r]}.description`)}
                     </div>
                   </button>
                 ))}
@@ -205,6 +209,7 @@ function ExcerptCard({
   excerpt: ExcerptMergeDetailDto['excerptA'];
   parentMk: ExcerptMergeDetailDto['mkA'];
 }): React.ReactElement {
+  const t = useTranslations('adminDuplicates.excerptDetail');
   return (
     <article className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
       <header className="mb-3 flex items-center justify-between">
@@ -216,26 +221,29 @@ function ExcerptCard({
             href={`/memories/${encodeURIComponent(parentMk.id)}`}
             className="text-[10px] text-[color:var(--fg-muted)] underline-offset-2 hover:underline"
           >
-            zur Parent-Memory →
+            {t('openParentMemory')}
           </Link>
         )}
       </header>
       {!excerpt && (
         <p className="text-xs italic text-[color:var(--fg-muted)]">
-          Excerpt nicht zugänglich (gelöscht oder kein Owner).
+          {t('excerptUnavailable')}
         </p>
       )}
       {excerpt && (
         <>
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-            Position {excerpt.props.position} · {excerpt.props.source}
+            {t('positionLine', {
+              position: excerpt.props.position,
+              source: excerpt.props.source,
+            })}
           </div>
           <p className="text-sm text-[color:var(--fg-strong)]">
-            „{excerpt.props.text}&ldquo;
+            {t('quotedText', { text: excerpt.props.text })}
           </p>
           {parentMk && (
             <p className="mt-3 text-[11px] text-[color:var(--fg-muted)]">
-              Parent-Memory: {String(parentMk.props.summary)}
+              {t('parentMemory', { summary: String(parentMk.props.summary) })}
             </p>
           )}
         </>

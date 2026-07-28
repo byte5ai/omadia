@@ -113,6 +113,29 @@ for everyone.
 5. **Merge** — squash-merge is the default. The PR title becomes the
    commit subject; the PR description becomes the commit body.
 
+## Releases & changelog
+
+- Every release is a git tag, cut automatically by `.github/workflows/auto-release.yml`
+  from Conventional Commit messages merged to `main` — there is no manual
+  release step and no release PR to approve.
+- Each GitHub Release gets a categorized changelog (Added/Changed/Fixed,
+  generated from commit subjects by `.github/scripts/generate-changelog.mjs`)
+  as part of the same automated step that creates the tag — this is the
+  canonical, always-current changelog per version.
+- `docs/CHANGELOG.md` is a periodically-refreshed *mirror* of the same data,
+  not auto-committed on every release (`main`'s branch protection requires a
+  PR, and this org doesn't allow GitHub Actions to open pull requests — a
+  bot-PR-per-release isn't actually less manual work than not having one).
+  Run `node .github/scripts/generate-changelog.mjs backfill` locally and
+  commit the result whenever you want it caught up. **Do not hand-edit past
+  version sections** — they'll be regenerated the same way. You *can* still
+  add hand-written notes under `## [Unreleased]` any time; the next `cut`/
+  `backfill` run carries them over verbatim above the generated bullet list.
+- Because the generator only recognizes `feat`/`fix`/`perf`/`refactor`/`revert`
+  (chore/docs/test/ci/style/build are treated as internal and omitted),
+  accurate Conventional Commit types are what keeps the changelog honest —
+  see the commit-message rules above.
+
 ## Code conventions
 
 - **TypeScript strict mode** is non-negotiable. Use `unknown` over `any`,

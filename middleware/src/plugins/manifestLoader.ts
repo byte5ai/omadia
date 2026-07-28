@@ -630,6 +630,19 @@ function extractPermissions(
       : 4096;
   // Spec 004 — runtime credential write + flow toolkit gates.
   const secretsBlock = asRecord(permissions?.['secrets']);
+  // Epic #459 W5 (issue #458) — ctx.mcp gate. `permissions.mcp: true` or a
+  // block ({ servers_hint: [...] }) opts in; absent → no accessor.
+  const mcpBlock = permissions?.['mcp'];
+  const mcpDeclared =
+    mcpBlock === true || (typeof mcpBlock === 'object' && mcpBlock !== null);
+  // Epic #470 W3 — ctx.devJobs gate. `permissions.devJobs: true` or a block
+  // ({ repos_hint: [...] }) opts in; absent → no accessor. The repos_hint is
+  // documentation for the operator grant UI, not enforcement (the real grant
+  // lives in dev_repo_plugin_grants).
+  const devJobsBlock = permissions?.['devJobs'];
+  const devJobsDeclared =
+    devJobsBlock === true ||
+    (typeof devJobsBlock === 'object' && devJobsBlock !== null);
   return {
     memory_reads: extractStringArray(memory?.['reads']),
     memory_writes: extractStringArray(memory?.['writes']),
@@ -653,6 +666,10 @@ function extractPermissions(
     flows: permissions?.['flows'] === true,
     // Spec 005 (US4 Conductor Surface) — plugin may emit declared domain events via ctx.events.emit.
     events_emit: asRecord(permissions?.['events'])?.['emit'] === true,
+    mcp: mcpDeclared,
+    mcp_servers_hint: extractStringArray(asRecord(mcpBlock)?.['servers_hint']),
+    dev_jobs: devJobsDeclared,
+    dev_jobs_repos_hint: extractStringArray(asRecord(devJobsBlock)?.['repos_hint']),
     // Spec 005 — overridden to true in adaptManifestV1 when the manifest
     // declares >=1 valid oauth_providers descriptor.
     acquires_oauth: false,
@@ -722,6 +739,45 @@ function extractOAuthProviders(
     out.push(descriptor);
   }
   return out;
+}
+
+/**
+ * #478 — plugin-borne workflow templates. Parse `permissions.templates`: an
+ * array of PACKAGE-RELATIVE paths to TemplateManifest JSON files shipped
+ * inside the plugin package. Shape-level only (non-string entries are
+ * errors, not silently dropped — this feeds a security gate that must fail
+ * loud); the fs-aware confinement + strict manifest validation live in
+ * `pluginTemplates.ts` and run at install time. Templates are data, never
+ * code — declaring them grants NO runtime capability (no `ctx.templates`).
+ */
+export function extractTemplateDeclarations(manifest: unknown): {
+  paths: string[];
+  errors: string[];
+} {
+  const doc = asRecord(manifest);
+  const permissions = asRecord(doc?.['permissions']);
+  const raw = permissions?.['templates'];
+  if (raw === undefined) return { paths: [], errors: [] };
+  if (!Array.isArray(raw)) {
+    return {
+      paths: [],
+      errors: [
+        'permissions.templates must be an array of package-relative .json paths',
+      ],
+    };
+  }
+  const paths: string[] = [];
+  const errors: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.trim().length === 0) {
+      errors.push(
+        `permissions.templates entry ${JSON.stringify(entry)} is not a non-empty string`,
+      );
+      continue;
+    }
+    paths.push(entry.trim());
+  }
+  return { paths, errors };
 }
 
 function extractIntegrationTargets(integrations: unknown[]): string[] {

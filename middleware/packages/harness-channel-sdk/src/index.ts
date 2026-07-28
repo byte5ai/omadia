@@ -102,6 +102,11 @@ export { toSemanticAnswer } from './toSemanticAnswer.js';
 // UI) can append a readable, harness-sourced consulted-agents footer line.
 export { agentsConsultedFooterText } from './toSemanticAnswer.js';
 
+// #332 Layer 1 (gap-closure) — shared derivation so streaming clients
+// (web-ui) and non-streaming `toSemanticAnswer` callers (Teams et al.) build
+// the IDENTICAL curated agentsConsulted array from the same run-trace.
+export { deriveAgentsConsulted } from './toSemanticAnswer.js';
+
 // Semantic outgoing-message contracts (connectors render native)
 export type {
   SemanticAnswer,

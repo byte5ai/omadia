@@ -10,16 +10,25 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useTranslations } from 'next-intl';
-import { Eraser, GitBranch, Navigation, Network } from 'lucide-react';
+import { ChevronDown, Eraser, GitBranch, Navigation, Network } from 'lucide-react';
 import { ChatTabs } from '../_components/ChatTabs';
+import { ScrollToBottomButton } from '../_components/ScrollToBottomButton';
 import { Button } from '../_components/ui/Button';
+import { useStickToBottom } from '../_lib/useStickToBottom';
 import { AgentPicker } from '../_components/AgentPicker';
 import { AgentUnavailableBanner } from '../_components/AgentUnavailableBanner';
 import { AgentUsagePills } from '../_components/chat/AgentUsagePills';
+import { AgentsConsultedFooter } from '../_components/chat/AgentsConsultedFooter';
 import { AutoPromotedBanner } from '../_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from '../_components/chat/CaptureDisclosure';
 import { ConfirmDialog } from '../_components/ConfirmDialog';
+import { DelegatedAnswerCard } from '../_components/chat/DelegatedAnswerCard';
 import { NudgeCard, parseNudgeBlock } from '../_components/chat/NudgeCard';
+import {
+  McpAuthRequiredCard,
+  parseMcpAuthRequired,
+  type ParsedMcpAuthRequired,
+} from '../_components/chat/McpAuthRequiredCard';
 import { PlanProgressCard } from '../_components/chat/PlanProgressCard';
 import { RecalledContextCard } from '../_components/chat/RecalledContextCard';
 import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
@@ -41,6 +50,8 @@ import {
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import { useStreamStore } from '../_lib/streamStore';
 import { ChoiceCard } from '../_components/ChoiceCard';
+import { DevJobChatCard } from '../_components/devjobs/DevJobChatCard';
+import { parseDevJobStartResult } from '../_components/devjobs/devJobChatCardState';
 import { KgWalkPane } from '../_components/KgWalkPane';
 import { PlanDagPane } from '../_components/PlanDagPane';
 import type { KgWalkPayload, PlanSnapshot } from '../_lib/chatSessions';
@@ -212,14 +223,12 @@ export default function ChatPage(): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Keep the newest message in view as it streams. Smooth scrolling can't
-  // keep pace with rapid token deltas — the animation restarts further
-  // behind on every tick and never reaches the bottom, leaving the latest
-  // content hidden under the input footer — so this jumps instantly.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [activeSession.messages]);
+  // Issue #404 — only keep following the stream while the user is actually
+  // at the bottom; scrolling up to read earlier messages now holds position
+  // instead of getting yanked back down on every token delta.
+  const { isAtBottom, scrollToBottom } = useStickToBottom(scrollRef, [
+    activeSession.messages,
+  ]);
 
   // Slice 4c — clear the auto-promoted-MK marker on a message after the
   // user Discards it. The manual save-as-memory button then comes back so
@@ -286,6 +295,9 @@ export default function ChatPage(): React.ReactElement {
         };
       });
       if (overrideText === undefined) setInput('');
+      // A sent message always lands at the bottom, even if the user had
+      // scrolled up to read earlier messages before sending.
+      scrollToBottom();
 
       // Hand the stream off to <StreamRunner /> via the store. The runner
       // owns the fetch + NDJSON-parse loop and writes deltas back into
@@ -313,6 +325,7 @@ export default function ChatPage(): React.ReactElement {
       streamStore,
       activeSession.messages.length,
       selectedAgentSlug,
+      scrollToBottom,
     ],
   );
 
@@ -461,6 +474,8 @@ export default function ChatPage(): React.ReactElement {
         disabled={sending}
       />
 
+      <ChatIntro />
+
       <div className="border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)]/75 px-6 py-2 text-xs">
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
           {/* Row 1 — orchestrator picker. The stream-path + session-scope
@@ -567,7 +582,7 @@ export default function ChatPage(): React.ReactElement {
         );
       })()}
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         <div
           ref={scrollRef}
           className="flex-1 overflow-y-auto px-6 py-6"
@@ -590,6 +605,11 @@ export default function ChatPage(): React.ReactElement {
             ))}
           </div>
         </div>
+        <ScrollToBottomButton
+          visible={!isAtBottom}
+          onClick={scrollToBottom}
+          ariaLabel={t('scrollToBottomAriaLabel')}
+        />
       </div>
 
       {/* KG-walk — togglable floating pane (launcher chip → flying window) for
@@ -697,6 +717,92 @@ export default function ChatPage(): React.ReactElement {
   );
 }
 
+// Persisted collapse state for the chat intro header, keyed in localStorage —
+// same module-level-store + useSyncExternalStore shape as the dashboard
+// onboarding dismiss ([[DashboardOnboarding]]), so a toggle sticks across
+// reloads without a setState-in-effect. Server + initial-client snapshot are
+// both `false` (expanded) — an operator only ever collapses it explicitly.
+const CHAT_INTRO_COLLAPSED_KEY = 'omadia.chat.intro.collapsed';
+let chatIntroCollapsedCache: boolean | null = null;
+const chatIntroCollapsedListeners = new Set<() => void>();
+
+function readChatIntroCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(CHAT_INTRO_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function subscribeChatIntroCollapsed(cb: () => void): () => void {
+  chatIntroCollapsedListeners.add(cb);
+  return () => chatIntroCollapsedListeners.delete(cb);
+}
+
+function getChatIntroCollapsedSnapshot(): boolean {
+  if (chatIntroCollapsedCache === null) {
+    chatIntroCollapsedCache = readChatIntroCollapsed();
+  }
+  return chatIntroCollapsedCache;
+}
+
+function getChatIntroCollapsedServerSnapshot(): boolean {
+  return false;
+}
+
+function setChatIntroCollapsedPersisted(value: boolean): void {
+  chatIntroCollapsedCache = value;
+  try {
+    if (value) window.localStorage.setItem(CHAT_INTRO_COLLAPSED_KEY, '1');
+    else window.localStorage.removeItem(CHAT_INTRO_COLLAPSED_KEY);
+  } catch {
+    /* private mode / no storage */
+  }
+  for (const l of chatIntroCollapsedListeners) l();
+}
+
+/**
+ * What-is-this-page header — kicker + body in the same `b5-hero-bg` treatment
+ * as the Hub page hero, scaled down for a top-of-chat banner. Starts
+ * expanded; the chevron toggles collapse and the choice persists in
+ * localStorage, so a collapsed operator doesn't see it re-expand every
+ * reload.
+ */
+function ChatIntro(): React.ReactElement {
+  const t = useTranslations('chat');
+  const collapsed = useSyncExternalStore(
+    subscribeChatIntroCollapsed,
+    getChatIntroCollapsedSnapshot,
+    getChatIntroCollapsedServerSnapshot,
+  );
+  return (
+    <div className="b5-hero-bg border-b border-[color:var(--border)] px-6 py-4">
+      <div className="mx-auto max-w-4xl">
+        <button
+          type="button"
+          onClick={() => setChatIntroCollapsedPersisted(!collapsed)}
+          aria-expanded={!collapsed}
+          className="flex w-full items-center gap-2 text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-[color:var(--accent)]"
+        >
+          <ChevronDown
+            className={[
+              'size-3.5 shrink-0 transition-transform',
+              collapsed ? '-rotate-90' : '',
+            ].join(' ')}
+            aria-hidden
+          />
+          {t('intro.kicker')}
+        </button>
+        {!collapsed && (
+          <p className="mt-1.5 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg)]">
+            {t('intro.body')}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function EmptyState({
   hydrating,
   session,
@@ -755,6 +861,24 @@ function MessageRow({
   const liveElapsedSec = showLiveness
     ? Math.max(0, Math.round((liveNow - message.startedAt) / 1000))
     : null;
+  // #332 Layer 2 (gap-closure) — `content` already carries the delegated
+  // answer's verbatim text (backend graceful-degrade design: even a
+  // connector that ignores `delegatedAnswer` shows the specialist's words).
+  // `<DelegatedAnswerCard>` renders that verbatim block attributed; render
+  // the ordinary content block ONLY for whatever the orchestrator added
+  // beyond it (the guarded-mode `▸ omadia note: …` suffix), so the answer
+  // never appears twice. Falls back to the full content if it doesn't start
+  // with the expected prefix (defensive — never silently drops text).
+  const rawNote =
+    message.delegatedAnswer &&
+    message.content.startsWith(message.delegatedAnswer.text)
+      ? message.content.slice(message.delegatedAnswer.text.length).replace(/^\s+/, '')
+      : message.content;
+  // A sub-agent's MCP auth-required tool result can bubble the machine
+  // <mcp-auth-required> block into the final answer text — strip it from the
+  // prose (it renders as the Connect card via McpAuthRequiredList instead).
+  const authFromNote = parseMcpAuthRequired(rawNote);
+  const delegatedNote = authFromNote.cleaned;
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -789,24 +913,34 @@ function MessageRow({
             {(message.tools?.length ?? 0) > 0 && (
               <ToolTrace tools={message.tools ?? []} />
             )}
+            <McpAuthRequiredList tools={message.tools ?? []} content={rawNote} />
             {(message.nudges?.length ?? 0) > 0 && (
               <NudgeList nudges={message.nudges ?? []} />
             )}
             {(message.steers?.length ?? 0) > 0 && (
               <SteerList steers={message.steers ?? []} />
             )}
-            {message.content.length > 0 ? (
+            {message.delegatedAnswer && (
+              <DelegatedAnswerCard answer={message.delegatedAnswer} />
+            )}
+            {delegatedNote.length > 0 ? (
               /* §2.7: agent narration renders in the prose register
                  (Source Serif 4); headings/tables/code stay structural. */
               <div className="lume-prose">
                 <Markdown
-                  source={message.content}
+                  source={delegatedNote}
                   highlightTerms={message.maskedValues}
                 />
               </div>
             ) : message.streaming ? (
               <StreamingDots />
             ) : null}
+            {message.agentsConsulted && message.agentsConsulted.length > 0 && (
+              <AgentsConsultedFooter
+                agents={message.agentsConsulted}
+                tools={message.tools ?? []}
+              />
+            )}
             {showLiveness && (
               <LivenessRow
                 liveness={message.liveness}
@@ -898,9 +1032,17 @@ function ToolTrace({ tools }: { tools: ToolEvent[] }): React.ReactElement {
         {t('toolTraceHeading', { count: tools.length })}
       </summary>
       <div className="flex flex-col gap-1 px-2 pb-2">
-        {tools.map((t) => (
-          <ToolRow key={t.id} tool={t} />
-        ))}
+        {tools.map((tool) => {
+          // Epic #470 W3 — a `dev_job_start` call renders a live dev-job card
+          // (seeded from its tool result) instead of the generic tool row.
+          const seed =
+            tool.name === 'dev_job_start' ? parseDevJobStartResult(tool.output) : null;
+          return seed ? (
+            <DevJobChatCard key={tool.id} seed={seed} />
+          ) : (
+            <ToolRow key={tool.id} tool={tool} />
+          );
+        })}
       </div>
     </details>
   );
@@ -1106,7 +1248,11 @@ function PersonaBadge({
 
 function ToolOutputWithNudge({ output }: { output: string }): React.ReactElement {
   const t = useTranslations('chat');
-  const { cleaned } = parseNudgeBlock(output);
+  // Strip both the inline <nudge> block and the <mcp-auth-required> block so the
+  // raw <pre> stays clean; the auth block renders as an actionable card at the
+  // message level (McpAuthRequiredList), mirroring how nudges surface.
+  const { cleaned: noNudge } = parseNudgeBlock(output);
+  const { cleaned } = parseMcpAuthRequired(noNudge);
   return (
     <>
       <div className="mt-2 text-[color:var(--fg-muted)]">{t('outputLabel')}</div>
@@ -1150,6 +1296,44 @@ function NudgeList({ nudges }: { nudges: NudgeEvent[] }): React.ReactElement {
             console.warn(`[nudge] suppress requested for ${id}`);
           }}
         />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Epic #459 W9 — collects any `<mcp-auth-required>` blocks emitted by failed
+ * MCP tool calls in this turn and renders a Connect card per distinct server.
+ * Scans the turn's tool outputs client-side (no extra stream event needed);
+ * deduped by serverId so repeated failures don't stack duplicate cards.
+ */
+function McpAuthRequiredList({
+  tools,
+  content,
+}: {
+  tools: ToolEvent[];
+  content: string;
+}): React.ReactElement | null {
+  const seen = new Set<string>();
+  const auths: ParsedMcpAuthRequired[] = [];
+  const scan = (text: string | undefined): void => {
+    if (!text) return;
+    const { auth } = parseMcpAuthRequired(text);
+    if (auth && !seen.has(auth.serverId)) {
+      seen.add(auth.serverId);
+      auths.push(auth);
+    }
+  };
+  // Top-level tool outputs (direct calls) …
+  for (const tool of tools) scan(tool.output);
+  // … and the answer prose, where a sub-agent's auth-required result bubbles up
+  // (the block rides through as text even when the failing call was nested).
+  scan(content);
+  if (auths.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-2">
+      {auths.map((auth) => (
+        <McpAuthRequiredCard key={auth.serverId} auth={auth} />
       ))}
     </div>
   );

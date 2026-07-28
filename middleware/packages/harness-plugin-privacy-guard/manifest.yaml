@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.2.0"
+  version: "0.4.0"
   kind: "tool"
   domain: "privacy.redact"
   description: "Privacy Shield v4 core plugin. Publishes the `privacy.redact@1` capability — a Data-Plane Boundary that interns raw tool results server-side and hands the LLM only an identity-free Digest. Identity-/order-critical work runs through a server-side Verb API; the final answer is materialized from ground truth. Emits a PII-free PrivacyReceipt the channel renderers (Teams Adaptive-Card, Web inline disclosure) consume to surface what was protected on each turn."
@@ -25,12 +25,35 @@ lifecycle:
   entry: "dist/plugin.js"
 
 # ---------------------------------------------------------------------------
-# No setup fields. The v4 Data-Plane Boundary is generic over JSON shape and
-# value statistics — there is no per-tenant policy, allowlist, or detector
-# configuration to tune.
+# Two setup fields (#361). The v4 Data-Plane Boundary itself stays
+# configuration-free — generic over JSON shape and value statistics. The
+# only toggles concern free-text user-prompt masking, DEFAULT OFF: flag-off
+# is byte-identical to pre-#361 behavior. Flipping it on for a locale
+# requires a green run of the committed validation harness (src/validation/)
+# against its documented recall gates, posted to issue #361 first.
+# `c1_detector_url` points at the optional GLiNER inference sidecar — a URL,
+# not a credential, hence a plain non-secret field (secrets-only-in-Vault
+# rule untouched).
 # ---------------------------------------------------------------------------
 setup:
-  fields: []
+  fields:
+    - key: "mask_user_prompt"
+      type: "enum"
+      label: "Free-text user-prompt PII masking"
+      help: "EXPERIMENTAL, default off. When on, PII spans detected in the user's own message (email, IBAN, phone, address, amounts, dates — C0 regex baseline) are replaced by realistic pseudonyms in every LLM-bound copy of the turn (main prompt, live chat history/priorTurns, ingested attachment text, recalled prior context, direct-line relay payloads, fact-extraction/routing/excerpt passes); the real values are restored server-side in the final answer and in everything persisted (session log, knowledge graph, promoted memories). Failure-closed: if masking cannot be guaranteed, the turn is blocked rather than sent unmasked — this includes direct-line (#specialist) turns. Names/free-form entities require the C1 transformer detector — set `c1_detector_url` (or the `PRIVACY_C1_DETECTOR_URL` env var) to enable it; unset, only the C0 regex baseline runs."
+      required: false
+      default: "off"
+      enum:
+        - value: "off"
+          label: "Off — prompts pass unchanged (default)"
+        - value: "on"
+          label: "On — mask detected PII spans (C0 baseline)"
+    - key: "c1_detector_url"
+      type: "string"
+      label: "C1 PII-detector sidecar URL"
+      help: "Base URL of the GLiNER PII-inference sidecar (middleware/sidecars/pii-detector) that detects person names and free-form addresses — the C1 tier on top of the C0 regex baseline. Under the docker-compose.pii-detector.yaml overlay: http://pii-detector:8812. Leave empty to run only the C0 regex baseline (no C1 call is attempted). The sidecar receives raw prompt PII — keep it internal-network-only, never public. Sidecar unreachable at runtime => audited degrade to C0 (promptMaskDegraded), never a silent unmasked pass-through. Falls back to the PRIVACY_C1_DETECTOR_URL env var when empty."
+      required: false
+      default: ""
 
 playbook:
   when_to_use: |
@@ -50,7 +73,9 @@ playbook:
     und kann dort als Collapsed-/Expanded-Card gerendert werden.
 
 # ---------------------------------------------------------------------------
-# Permissions. Pure server-side compute — no network, no graph, no memory.
+# Permissions. Server-side compute plus ONE deliberate network target
+# (#361): the operator-configured on-prem C1 PII-inference sidecar. No
+# graph, no memory.
 # ---------------------------------------------------------------------------
 permissions:
   memory:
@@ -60,7 +85,13 @@ permissions:
     reads: []
     writes: []
   network:
-    outbound: []
+    outbound:
+      # #361 — the GLiNER PII-detector sidecar (`c1_detector_url` setup
+      # field / PRIVACY_C1_DETECTOR_URL). Operator-configured, on-prem,
+      # internal-network-only — it receives raw prompt text, so this is a
+      # deliberate, security-reviewable exception to the plugin's
+      # previously pure-compute posture.
+      - "pii-detector-sidecar"
   filesystem:
     scratch: false
   # Slice 2 — schema-level PII classification. The plugin asks a cheap Haiku

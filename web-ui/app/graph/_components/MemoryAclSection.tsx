@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import type { GraphNode } from './graphTypes';
@@ -40,6 +41,7 @@ export default function MemoryAclSection({
   memory,
   onDeleted,
 }: Props): React.ReactElement {
+  const t = useTranslations('graph.acl');
   const memoryId = memory.id;
   const ownersFromProps = Array.isArray(memory.props['acl_owners'])
     ? (memory.props['acl_owners'] as string[])
@@ -161,11 +163,7 @@ export default function MemoryAclSection({
   );
 
   const deleteMemory = useCallback(async () => {
-    if (
-      !window.confirm(
-        'Memory wirklich löschen? Audit-Trail bleibt erhalten.',
-      )
-    ) {
+    if (!window.confirm(t('deleteConfirm'))) {
       return;
     }
     setBusy(true);
@@ -192,7 +190,7 @@ export default function MemoryAclSection({
     } finally {
       setBusy(false);
     }
-  }, [memoryId, onDeleted, reason]);
+  }, [memoryId, onDeleted, reason, t]);
 
   return (
     <div className="mt-3 border-t border-[color:var(--border)] pt-3">
@@ -225,7 +223,7 @@ export default function MemoryAclSection({
         <div className="flex flex-col gap-2">
           {owners.length === 0 ? (
             <div className="text-[11px] italic text-[color:var(--fg-muted)]">
-              Keine Owner — Memory ist Admin-only invisible.
+              {t('noOwners')}
             </div>
           ) : (
             <ul className="flex flex-col gap-1">
@@ -242,7 +240,7 @@ export default function MemoryAclSection({
                     disabled={busy}
                     onClick={() => void removeOwner(id)}
                     className="rounded border border-[color:var(--border)] px-1 text-[10px] hover:border-[color:var(--danger-edge)] hover:text-[color:var(--danger)] disabled:opacity-50"
-                    title="Owner entfernen"
+                    title={t('removeOwnerTitle')}
                   >
                     ×
                   </button>
@@ -254,7 +252,7 @@ export default function MemoryAclSection({
           <div className="flex flex-col gap-1">
             <input
               type="text"
-              placeholder="omadiaUserId (uuid) hinzufügen"
+              placeholder={t('addOwnerPlaceholder')}
               value={addInput}
               onChange={(e) => setAddInput(e.target.value)}
               className="rounded border border-[color:var(--border)] px-2 py-1 font-mono text-[10px]"
@@ -262,7 +260,7 @@ export default function MemoryAclSection({
             />
             <input
               type="text"
-              placeholder="Grund (optional, im Audit-Log)"
+              placeholder={t('reasonPlaceholder')}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               className="rounded border border-[color:var(--border)] px-2 py-1 text-[10px]"
@@ -276,14 +274,14 @@ export default function MemoryAclSection({
                 disabled={busy || addInput.trim().length === 0}
                 className="grow px-2 py-1 text-[11px]"
               >
-                + Owner hinzufügen
+                {t('addOwner')}
               </Button>
               <Button
                 variant="danger"
                 size="sm"
                 onClick={() => void deleteMemory()}
                 disabled={busy}
-                title="Memory hart löschen (Audit-Trail bleibt)"
+                title={t('deleteTitle')}
               >
                 Delete
               </Button>
@@ -291,7 +289,9 @@ export default function MemoryAclSection({
           </div>
 
           {error && (
-            <div className="text-[11px] text-[color:var(--danger)]">Fehler: {error}</div>
+            <div className="text-[11px] text-[color:var(--danger)]">
+              {t('errorPrefix', { error })}
+            </div>
           )}
         </div>
       )}
@@ -300,17 +300,17 @@ export default function MemoryAclSection({
         <div className="flex flex-col gap-2">
           {auditError && (
             <div className="text-[11px] text-[color:var(--danger)]">
-              Audit nicht lesbar: {auditError}
+              {t('auditUnreadable', { error: auditError })}
             </div>
           )}
           {audit === null && !auditError && (
             <div className="text-[11px] italic text-[color:var(--fg-muted)]">
-              lädt Audit-Trail…
+              {t('auditLoading')}
             </div>
           )}
           {audit?.length === 0 && !auditError && (
             <div className="text-[11px] italic text-[color:var(--fg-muted)]">
-              Keine Audit-Einträge.
+              {t('auditEmpty')}
             </div>
           )}
           {audit && audit.length > 0 && (
@@ -356,7 +356,7 @@ export default function MemoryAclSection({
                   </div>
                   {e.reason && (
                     <div className="mt-1 text-[10px] italic text-[color:var(--fg-muted)]">
-                      „{e.reason}“
+                      {t('reasonQuoted', { reason: e.reason })}
                     </div>
                   )}
                 </li>

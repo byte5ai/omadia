@@ -1,0 +1,264 @@
+{
+  "$comment": [
+    "W0 unit manifest for epic #470 (integrated dev platform).",
+    "Derived from the W0 spec: https://github.com/byte5ai/omadia/issues/470#issuecomment-4922824260",
+    "Feed to scripts/wave-implement.workflow.mjs. Regenerate with scripts/wave-decompose.workflow.mjs",
+    "if the spec changes. `touches` drives conflict detection; hub files (index.ts, config.ts,",
+    "messages/*.json) are subtracted from that signal and owned by the w0-wire unit instead.",
+    "VERIFY THE MIGRATION TIP before implementing — the spec's number was wrong once already."
+  ],
+  "wave": "W0",
+  "specUrl": "https://github.com/byte5ai/omadia/issues/470#issuecomment-4922824260",
+  "epic": 470,
+  "verifyCommand": "npm run build --workspace middleware && node --import tsx --test middleware/test/devplatform/*.test.ts",
+  "hubFiles": [
+    "middleware/src/index.ts",
+    "middleware/src/config.ts",
+    "web-ui/messages/en.json",
+    "web-ui/messages/de.json"
+  ],
+  "units": [
+    {
+      "id": "w0-schema",
+      "title": "Migration 0022 + shared types and runtime validators",
+      "acceptance": [
+        "0022_dev_platform.sql applies on a fresh DB and re-applies as a no-op",
+        "four tables and three indexes exist; no CHECK on dev_job_events.type or dev_job_artifacts.kind",
+        "dev_job_events has (job_id, provision, seq) unique and an IDENTITY id used for ordering"
+      ],
+      "touches": [
+        "middleware/migrations/0022_dev_platform.sql",
+        "middleware/src/devplatform/types.ts"
+      ],
+      "dependsOn": [],
+      "verifiedBy": "middleware/test/devplatform/devJobStore.pg.test.ts",
+      "securitySensitive": false,
+      "notes": "The type/kind enums live in types.ts as runtime validators, not as DB CHECKs — they grow every wave."
+    },
+    {
+      "id": "w0-store",
+      "title": "DevJobStore, claim loop, job tokens, finalizeDevJob",
+      "acceptance": [
+        "two concurrent claimNextQueued return disjoint jobs (SKIP LOCKED)",
+        "a lease-fenced update with a stale claimed_by affects 0 rows",
+        "appendEvents conflict-ignores within a provision and accepts the same seq under a different provision",
+        "every terminal transition routes through finalizeDevJob exactly once; it is idempotent",
+        "runner tokens are stored only as sha256; verification is timing-safe"
+      ],
+      "touches": [
+        "middleware/src/devplatform/devJobStore.ts",
+        "middleware/src/devplatform/jobToken.ts",
+        "middleware/src/devplatform/finalizeDevJob.ts",
+        "middleware/src/devplatform/devJobEventBus.ts"
+      ],
+      "dependsOn": [
+        "w0-schema"
+      ],
+      "verifiedBy": "middleware/test/devplatform/devJobStore.pg.test.ts",
+      "securitySensitive": true,
+      "notes": "finalizeDevJob is the single terminal-transition choke point. DevJobStore.finish() is private; nothing else may mark a job terminal. claimed_by must be randomUUID()."
+    },
+    {
+      "id": "w0-forge-apply",
+      "title": "ForgeClient, GitHub git-data apply, unified-diff parser",
+      "acceptance": [
+        "the apply builds blobs -> tree (base = pinned base_sha) -> commit -> creates a fresh ref",
+        "a numstat mismatch aborts before any write",
+        "createPR posts the right payload; auth errors never echo the response body",
+        "the parser handles rename/copy, quoted unicode paths, binary markers, CRLF"
+      ],
+      "touches": [
+        "middleware/src/devplatform/forgeClient.ts",
+        "middleware/src/devplatform/githubForgeClient.ts",
+        "middleware/src/devplatform/diffApplyService.ts",
+        "middleware/src/devplatform/policy/parseUnifiedDiff.ts"
+      ],
+      "dependsOn": [
+        "w0-schema"
+      ],
+      "verifiedBy": "middleware/test/devplatform/diffApplyService.test.ts",
+      "securitySensitive": true,
+      "notes": "This unit IS the security guarantee: the middleware constructs the tree from the diff it validated, so what was reviewed and what was committed are the same object. No git push anywhere. Ship the DiffPolicyEngine seam returning `allow`; W3 fills in rules."
+    },
+    {
+      "id": "w0-onboarding",
+      "title": "Repo credentials in Vault, branch-protection check, tracker read, brief composer",
+      "acceptance": [
+        "device-flow and PAT tokens land in Vault under core:dev-platform; never in Postgres or an API response",
+        "deleteRepo purges all three Vault keys",
+        "branch protection returns true / false / null (403 = could not verify)",
+        "the brief wraps ticket text in untrusted markers and escapes marker collisions"
+      ],
+      "touches": [
+        "middleware/src/devplatform/devRepoCredentials.ts",
+        "middleware/src/devplatform/branchProtectionCheck.ts",
+        "middleware/src/devplatform/githubIssuesTracker.ts",
+        "middleware/src/devplatform/briefComposer.ts"
+      ],
+      "dependsOn": [
+        "w0-schema"
+      ],
+      "verifiedBy": "middleware/test/devplatform/briefComposer.test.ts",
+      "securitySensitive": true,
+      "notes": "Reuse src/issues/githubOAuthProvider.ts unchanged (it already takes scopes as an argument) and a second DeviceFlowStore instance. Untrusted-marker framing is framing, not enforcement."
+    },
+    {
+      "id": "w0-runner-api",
+      "title": "Phone-home router at /api/v1/dev-runner (job-token auth)",
+      "acceptance": [
+        "401 without or with a wrong bearer; 410 on a terminal job",
+        "GET /spec contains no credential field (regression test)",
+        "GET /spec carries `protocol`; a shim mismatch fails the job naming both versions",
+        "GET /scm-token is read-scoped and one-shot per provision",
+        "POST /events is idempotent per (job, provision, seq)",
+        "POST /result diff_ready -> status applying"
+      ],
+      "touches": [
+        "middleware/src/routes/devRunnerApi.ts"
+      ],
+      "dependsOn": [
+        "w0-store"
+      ],
+      "verifiedBy": "middleware/test/devplatform/devRunnerApi.test.ts",
+      "securitySensitive": true,
+      "notes": "This router is NOT behind requireAuth. Its only authentication is the job token. Confirm no blanket guard in index.ts covers the mount path."
+    },
+    {
+      "id": "w0-shim",
+      "title": "packages/dev-runner-shim: clone, headless CLI, event translation, diff upload",
+      "acceptance": [
+        "clones at the pinned base_sha with a read-only credential helper",
+        "the token appears in no env, no argv, and not in .git/config; the credential file is 0600 and deleted",
+        "no code path invokes `git push` (assert by fake-git harness and by grepping the bundle)",
+        "CLI NDJSON maps to the documented event table; stderr becomes log events",
+        "protocol mismatch aborts with both versions in the message"
+      ],
+      "touches": [
+        "middleware/packages/dev-runner-shim/**"
+      ],
+      "dependsOn": [
+        "w0-runner-api"
+      ],
+      "verifiedBy": "middleware/packages/dev-runner-shim/test/gitOps.test.ts",
+      "securitySensitive": true,
+      "longContext": true,
+      "notes": "Node builtins only — the shim must not import middleware code. Env is allowlist-built, NOT scrubbed: do not copy cliChatAgent.ts's CLI_ENV_SCRUB_KEYS, which strips the ANTHROPIC_BASE_URL the LLM proxy needs."
+    },
+    {
+      "id": "w0-backend-local",
+      "title": "RunnerBackend interface + jailed LocalProcessBackend",
+      "acceptance": [
+        "refuses to start without DEV_PLATFORM_UNSAFE_LOCAL=true",
+        "refuses repos with runs_tests=true and any source other than admin",
+        "the child env contains no Vault path, no DATABASE_URL, no CLAUDE_CONFIG_DIR (test-asserted)",
+        "terminate escalates SIGTERM -> SIGKILL; reap kills orphan PIDs and removes workspaces"
+      ],
+      "touches": [
+        "middleware/src/devplatform/runnerBackend.ts",
+        "middleware/src/devplatform/localProcessBackend.ts"
+      ],
+      "dependsOn": [
+        "w0-shim",
+        "w0-store"
+      ],
+      "verifiedBy": "middleware/test/devplatform/localProcessBackend.test.ts",
+      "securitySensitive": true,
+      "notes": "The env allowlist is the control, not a scrub-list. This backend is a walking skeleton; W1's DockerBackend supersedes it and demotes it to DEV_ALLOW_LOCAL_BACKEND."
+    },
+    {
+      "id": "w0-worker",
+      "title": "devJobWorker: claim loop, stall + wall-clock enforcement, apply step, auth-mode admission",
+      "acceptance": [
+        "claims up to DEV_PLATFORM_MAX_CONCURRENT_JOBS",
+        "stale heartbeat -> stalled; wall clock exceeded -> budget_exceeded; both via finalizeDevJob",
+        "status applying -> apply called once, pr_url stored, done; apply failure -> failed with the diff retained",
+        "auth_mode=subscription is refused for runs_tests repos, non-admin sources, and when the flag is unset"
+      ],
+      "touches": [
+        "middleware/src/devplatform/devJobWorker.ts",
+        "middleware/src/devplatform/devJobWorkerPolicy.ts"
+      ],
+      "dependsOn": [
+        "w0-store",
+        "w0-backend-local",
+        "w0-forge-apply"
+      ],
+      "verifiedBy": "middleware/test/devplatform/devJobWorker.test.ts",
+      "securitySensitive": true,
+      "notes": "The auth-mode admission check lives here as well as in the create route — the route gives a good error, the worker is the boundary. See the question-4 decision."
+    },
+    {
+      "id": "w0-admin-routes",
+      "title": "Admin REST + SSE at /api/v1/admin/dev-platform",
+      "acceptance": [
+        "401 without a session; 403 for a caller who is not a permitted launcher",
+        "repo POST validates access via the forge probe and runs the protection check",
+        "job POST with issueNumber composes the brief; local backend refused for runs_tests repos",
+        "SSE: correct headers, replay after Last-Event-ID, live delivery via the bus, resume across a provision boundary"
+      ],
+      "touches": [
+        "middleware/src/routes/devPlatform.ts"
+      ],
+      "dependsOn": [
+        "w0-store",
+        "w0-onboarding"
+      ],
+      "verifiedBy": "middleware/test/devplatform/devPlatformRoutes.test.ts",
+      "securitySensitive": true,
+      "notes": "This is the ONLY job-event SSE route in the epic; W3's chat card consumes it. Copy builderEvents.ts exactly for the SSE mechanics. SSE `id:` is dev_job_events.id, never seq."
+    },
+    {
+      "id": "w0-ui",
+      "title": "Minimal /admin/dev-platform: repo list, add-repo wizard, job list, job detail with phase rail + live log",
+      "acceptance": [
+        "no spinners, no filled state backgrounds, no toasts, no skeleton shimmer; only Button variants",
+        "device-flow code and polling state render as text only",
+        "device-flow trade-offs render as the --warning-edge plain-language block",
+        "the phase rail is keyboard-operable and deep-linkable via ?phase=",
+        "the log pane uses useStickToBottom and ScrollToBottomButton",
+        "every string in en.json and de.json; npm run i18n:check green"
+      ],
+      "touches": [
+        "web-ui/app/admin/dev-platform/**",
+        "web-ui/app/_components/devjobs/**",
+        "web-ui/app/_lib/useDevJobEvents.ts"
+      ],
+      "dependsOn": [
+        "w0-admin-routes"
+      ],
+      "verifiedBy": "web-ui i18n:check + Interceptor session",
+      "securitySensitive": false,
+      "notes": "UI spec: https://github.com/byte5ai/omadia/issues/470#issuecomment-4922825984 . Interceptor (real Chrome) is the only accepted evidence for a UI verification claim — agent-browser is not."
+    },
+    {
+      "id": "w0-wire",
+      "title": "Wire the module into index.ts and config.ts behind DEV_PLATFORM_ENABLED",
+      "acceptance": [
+        "DEV_PLATFORM_ENABLED=false (default) mounts nothing and starts no worker",
+        "=true logs both mount lines: the auth-gated admin router and the job-token-gated runner router",
+        "boot refuses DEV_PLATFORM_SUBSCRIPTION_MODE=true without the acknowledgment",
+        "boot refuses DEV_PLATFORM_UNSAFE_LOCAL=true without DEV_PLATFORM_LOCAL_UID",
+        "DevJobStore implements the three seams devJobWorker injects: countActiveJobs(), findActiveByHandleId() (MUST NOT match `applying` jobs — that phase has no live runner), and prepareProvision(job, lease) -> {token, job} (mints the one-time runner token, pins branch + base_sha)"
+      ],
+      "touches": [
+        "middleware/src/index.ts",
+        "middleware/src/config.ts"
+      ],
+      "dependsOn": [
+        "w0-schema",
+        "w0-store",
+        "w0-forge-apply",
+        "w0-onboarding",
+        "w0-runner-api",
+        "w0-shim",
+        "w0-backend-local",
+        "w0-worker",
+        "w0-admin-routes",
+        "w0-ui"
+      ],
+      "verifiedBy": "middleware/test/devplatform/devPlatform.e2e.test.ts",
+      "securitySensitive": false,
+      "notes": "The hub unit. Every other unit appends here; running them in parallel worktrees would have them revert one another. This is why the wiring is a dependency edge and not a merge conflict. HANDOFF FROM w0-worker: the worker declares three store seams that do not exist yet — countActiveJobs(), findActiveByHandleId() and prepareProvision(). This unit implements them on DevJobStore. findActiveByHandleId's contract EXCLUDES `applying` (isHostSideApplyPhase in devJobWorkerPolicy.ts). Also register the /admin/dev-platform nav leaf + admin-page card the w0-ui unit deliberately left to this unit."
+    }
+  ]
+}

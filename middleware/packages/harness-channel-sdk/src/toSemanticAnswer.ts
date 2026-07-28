@@ -1,4 +1,4 @@
-import type { ChatTurnResult } from './chatAgent.js';
+import type { ChatTurnResult, RunTracePayload } from './chatAgent.js';
 import type {
   AgentConsultation,
   OutgoingAttachment,
@@ -47,6 +47,31 @@ function humanizeAgentLabel(agentName: string): string {
     .map((seg) => seg.charAt(0).toUpperCase() + seg.slice(1))
     .join(' ');
   return titled.length > 0 ? titled : agentName;
+}
+
+/**
+ * #332 Layer 1 — curate a tamper-evident consulted-agents projection from a
+ * run-trace's `agentInvocations`. Extracted (gap-closure) so BOTH the
+ * non-streaming `toSemanticAnswer` conversion (Teams et al.) AND the
+ * streaming `done` event construction (web-ui) build the identical
+ * harness-sourced array — one derivation, not a client-reimplemented one, so
+ * the tamper-evidence property (empty when no sub-agent really ran) holds on
+ * every channel.
+ */
+export function deriveAgentsConsulted(
+  runTrace: Pick<RunTracePayload, 'agentInvocations'> | undefined,
+): AgentConsultation[] | undefined {
+  return runTrace?.agentInvocations && runTrace.agentInvocations.length > 0
+    ? runTrace.agentInvocations.map((inv) => ({
+        ...(inv.agentId !== undefined ? { agentId: inv.agentId } : {}),
+        label: humanizeAgentLabel(inv.agentName),
+        status: inv.status,
+        ...(typeof inv.durationMs === 'number'
+          ? { durationMs: inv.durationMs }
+          : {}),
+        ...(inv.toolCalls ? { toolCalls: inv.toolCalls.length } : {}),
+      }))
+    : undefined;
 }
 
 /**
@@ -135,17 +160,7 @@ export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
   // get; the raw `runTrace` stays dropped (see header). Built by the harness,
   // outside the LLM's output stream — a fabricated "I asked X" with no real
   // invocation yields an empty array here.
-  const agentsConsulted: AgentConsultation[] | undefined =
-    r.runTrace?.agentInvocations && r.runTrace.agentInvocations.length > 0
-      ? r.runTrace.agentInvocations.map((inv) => ({
-          label: humanizeAgentLabel(inv.agentName),
-          status: inv.status,
-          ...(typeof inv.durationMs === 'number'
-            ? { durationMs: inv.durationMs }
-            : {}),
-          ...(inv.toolCalls ? { toolCalls: inv.toolCalls.length } : {}),
-        }))
-      : undefined;
+  const agentsConsulted = deriveAgentsConsulted(r.runTrace);
 
   return {
     text: r.answer,

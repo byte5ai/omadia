@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { getTranslations } from 'next-intl/server';
 
 import { listRoutines, type RoutineDto } from '../_lib/api';
 import { redirectIfUnauthorized } from '../_lib/authRedirect';
@@ -11,6 +12,7 @@ export const metadata: Metadata = {
 export const dynamic = 'force-dynamic';
 
 export default async function RoutinesPage(): Promise<React.ReactElement> {
+  const t = await getTranslations('routines.page');
   let routines: RoutineDto[] = [];
   let count = 0;
   let loadError: string | null = null;
@@ -20,10 +22,7 @@ export default async function RoutinesPage(): Promise<React.ReactElement> {
     count = resp.count;
   } catch (err) {
     await redirectIfUnauthorized(err);
-    loadError =
-      err instanceof Error
-        ? err.message
-        : 'Unbekannter Fehler beim Laden der Routinen.';
+    loadError = err instanceof Error ? err.message : t('errorUnknownLoad');
   }
 
   const activeCount = routines.filter((r) => r.status === 'active').length;
@@ -37,31 +36,33 @@ export default async function RoutinesPage(): Promise<React.ReactElement> {
             04
           </span>
           <span className="h-px flex-1 bg-[color:var(--border)]" />
-          <span>Routinen</span>
+          <span>{t('kicker')}</span>
         </div>
 
         <h1 className="font-display mt-6 text-[clamp(2.25rem,4.5vw,3.75rem)] leading-[1.05] text-[color:var(--fg-strong)]">
-          Cronjobs &amp; Routinen.
+          {t('title')}
         </h1>
 
         <p className="mt-6 max-w-2xl text-[18px] font-semibold leading-[1.55] text-[color:var(--fg-muted)]">
           <span className="text-[color:var(--highlight)] font-[900]">:</span>{' '}
-          User-eigene wiederkehrende Agent-Aufrufe. Anlegen passiert im Chat
-          (manage_routine Tool); hier siehst du alles auf einen Blick und
-          kannst pausieren oder löschen.
+          {t('intro')}
         </p>
 
         <div className="mt-8 flex flex-wrap gap-3 text-xs uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
-          <SummaryPill label="Total" value={count} tone="muted" />
-          <SummaryPill label="Aktiv" value={activeCount} tone="ok" />
-          <SummaryPill label="Pausiert" value={pausedCount} tone="warn" />
+          <SummaryPill label={t('summaryTotal')} value={count} tone="muted" />
+          <SummaryPill label={t('summaryActive')} value={activeCount} tone="ok" />
+          <SummaryPill
+            label={t('summaryPaused')}
+            value={pausedCount}
+            tone="warn"
+          />
         </div>
       </header>
 
       <section className="mt-8">
         {loadError ? (
           <div className="rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-6 text-sm text-[color:var(--danger)]">
-            <div className="font-semibold">Routinen nicht erreichbar</div>
+            <div className="font-semibold">{t('loadErrorTitle')}</div>
             <div className="mt-2 font-mono text-xs">{loadError}</div>
           </div>
         ) : routines.length === 0 ? (
@@ -74,11 +75,12 @@ export default async function RoutinesPage(): Promise<React.ReactElement> {
   );
 }
 
-function RoutinesTable({
+async function RoutinesTable({
   routines,
 }: {
   routines: RoutineDto[];
-}): React.ReactElement {
+}): Promise<React.ReactElement> {
+  const t = await getTranslations('routines.page');
   return (
     <div className="overflow-x-auto rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] shadow-sm">
       <table className="w-full table-fixed text-sm">
@@ -98,8 +100,8 @@ function RoutinesTable({
             <th className="px-4 py-3">Cron</th>
             <th className="px-4 py-3">Channel</th>
             <th className="px-4 py-3">Status</th>
-            <th className="px-4 py-3">Letzter Lauf</th>
-            <th className="px-4 py-3 text-right">Aktionen</th>
+            <th className="px-4 py-3">{t('columnLastRun')}</th>
+            <th className="px-4 py-3 text-right">{t('columnActions')}</th>
           </tr>
         </thead>
         <tbody>
@@ -137,20 +139,21 @@ function SummaryPill({
   );
 }
 
-function EmptyState(): React.ReactElement {
+async function EmptyState(): Promise<React.ReactElement> {
+  const t = await getTranslations('routines.page');
   return (
     <div className="rounded-lg border border-dashed border-[color:var(--border)] bg-[color:var(--surface)] p-12 text-center">
       <div className="text-base font-semibold text-[color:var(--fg-strong)]">
-        Noch keine Routinen.
+        {t('emptyTitle')}
       </div>
       <p className="mx-auto mt-2 max-w-md text-sm text-[color:var(--fg-muted)]">
-        Routinen entstehen, wenn ein User im Chat etwas wie &bdquo;erinnere
-        mich jeden Montag um 9 Uhr an X&ldquo; sagt &mdash; der Agent ruft
-        das{' '}
-        <code className="rounded bg-[color:var(--surface-muted)] px-2 py-0.5 font-mono text-xs">
-          manage_routine
-        </code>{' '}
-        Tool und legt sie an.
+        {t.rich('emptyBody', {
+          toolName: () => (
+            <code className="rounded bg-[color:var(--surface-muted)] px-2 py-0.5 font-mono text-xs">
+              manage_routine
+            </code>
+          ),
+        })}
       </p>
     </div>
   );

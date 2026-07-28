@@ -1,5 +1,6 @@
-import type { PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
+import type { ChannelKind, PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
 import type {
+  AgentConsultation,
   DelegatedAnswer,
   FollowUpOption,
   SemanticAnswer,
@@ -159,6 +160,11 @@ export interface RunAgentInvocation {
   /** 0-based index across the Run — ties back the INVOKED_AGENT edge ordering. */
   index: number;
   agentName: string;
+  /** Stable agent id when resolvable (e.g. `de.byte5.agent.strategist`). Lets
+   *  consumers disambiguate invocations whose human-facing label collides
+   *  (#332 gap-closure). Absent when the invoked tool has no registered
+   *  agentId (native/kernel tools). */
+  agentId?: string;
   durationMs: number;
   subIterations: number;
   status: RunStatus;
@@ -217,6 +223,23 @@ export interface ChatTurnInput {
    * "only this user's history". Never reaches the model prompt.
    */
   userId?: string;
+  /**
+   * #430 fixup — the turn's channel-native identity, when the dispatcher can
+   * map one. Populated ONLY for channel turns whose `ChannelUserRef.kind`
+   * maps to a {@link ChannelKind} the `KnowledgeGraph` ACL model understands
+   * (`createOrchestratorDispatcher` in `middleware/src/channels/
+   * orchestratorDispatcher.ts` is the sole producer). When present, `userId`
+   * above is a RAW channel-native id (Teams AAD oid, …) — NOT the canonical
+   * `omadiaUserId` uuid the KG's ACL routes filter on — and any code that
+   * needs to write an `ownerOmadiaUserId` (dataset ingest, MK ACLs, …) must
+   * resolve it first via `KnowledgeGraph.resolveOrCreateChannelIdentity`.
+   * Absent for HTTP/CLI turns, where `userId` (resolved from
+   * `req.session.omadia_user_id` or a validated `x-user-id`) already IS the
+   * canonical uuid, and for channel kinds the KG model doesn't have a
+   * `ChannelKind` for yet (discord, whatsapp, canvas' `'custom'` userRef) —
+   * deliberately not guessed at.
+   */
+  channelIdentity?: { channelKind: ChannelKind; channelUserId: string };
   /**
    * Chronologically ordered previous turns of this chat (oldest first), as
    * maintained by an in-memory store outside the orchestrator. When present,
@@ -667,6 +690,15 @@ export type ChatStreamEvent =
        * The orchestrator cannot suppress or reword it.
        */
       delegatedAnswer?: DelegatedAnswer;
+      /**
+       * #332 Layer 1 (gap-closure) — curated, tamper-evident projection of
+       * `runTrace.agentInvocations`, identical in shape and derivation to
+       * `SemanticAnswer.agentsConsulted` (see `deriveAgentsConsulted` in
+       * `toSemanticAnswer.ts`). Streaming clients (web-ui) previously had to
+       * either re-derive this from the raw `runTrace` or go without; this
+       * field gives every channel the SAME harness-built array.
+       */
+      agentsConsulted?: AgentConsultation[];
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The

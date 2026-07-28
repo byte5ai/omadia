@@ -77,8 +77,9 @@ interface ResolvedRenderColumn {
   readonly field: FieldClassification;
 }
 
-/** Format a single cell value for display. */
-function cell(value: unknown): string {
+/** Format a single cell value for display. `depth` bounds recursion into nested
+ *  objects so a genuinely deep structure degrades to a marker, not a blob. */
+function cell(value: unknown, depth = 0): string {
   if (value === null || value === undefined) return '—';
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') {
@@ -106,15 +107,28 @@ function cell(value: unknown): string {
         typeof e === 'boolean',
     )
   ) {
-    return value.map((e) => cell(e)).join(', ');
+    return value.map((e) => cell(e, depth + 1)).join(', ');
   }
-  // Any other nested structure (array of records, plain object) is NEVER
-  // dumped as raw JSON: that produced the unreadable blob in the timesheet
-  // view (a rendering defect — the data is masked from the LLM and only
-  // materialized here for the authorised user). The Dataset Store promotes the
-  // common "summary + detail" shape to real rows; anything that still reaches
-  // here (e.g. two competing record-arrays) gets a compact, structure-only
-  // marker instead.
+  // A shallow plain object with scalar-ish leaves is the common "totals" /
+  // "stats" shape (e.g. Strava's `all_ride_totals: {count, distance, …}`).
+  // Render it as readable `key: value` pairs for the AUTHORISED user instead of
+  // an opaque `[nested]` — the raw values were already masked from the LLM; the
+  // materialiser exists precisely to show the real data here. Bounded by depth,
+  // field count and length so a large/deep structure still degrades to a compact
+  // marker rather than the unreadable JSON blob the old code guarded against.
+  if (
+    !Array.isArray(value) &&
+    typeof value === 'object' &&
+    depth < 2
+  ) {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > 0 && entries.length <= 20) {
+      const rendered = entries
+        .map(([k, v]) => `${k}: ${cell(v, depth + 1)}`)
+        .join('; ');
+      if (rendered.length <= 300) return rendered;
+    }
+  }
   if (Array.isArray(value)) return `[${String(value.length)} records]`;
   return '[nested]';
 }

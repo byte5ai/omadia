@@ -197,7 +197,17 @@ export type ValidationCode =
   | 'unknown_agent_ref'
   | 'unknown_action_ref'
   | 'unknown_role_ref'
-  | 'unknown_event_ref';
+  | 'unknown_event_ref'
+  // Template-manifest integrity codes (checkTemplateManifest in template.ts).
+  | 'template_missing_metadata'
+  | 'template_invalid_localized_text'
+  | 'template_duplicate_slot_key'
+  | 'template_undeclared_slot'
+  | 'template_unused_slot'
+  | 'template_malformed_slot_ref'
+  | 'template_text_slot_undeclared'
+  | 'template_text_slot_unused'
+  | 'template_concrete_ref_in_strict_mode';
 
 export interface ValidationError {
   code: ValidationCode;
@@ -219,6 +229,108 @@ export interface KnownRefs {
   actionIds?: readonly string[];
   roleKeys?: readonly string[];
   eventIds?: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
+// Workflow templates ("workflow templates" user-facing; slot-parameterized graphs)
+// ---------------------------------------------------------------------------
+
+/** The five slot kinds a template graph can parameterize. Referenced from graph ref
+ *  fields with the kind-SINGULAR placeholder syntax `slot:<kind-singular>:<key>`
+ *  (e.g. kind 'agents' → `slot:agent:<key>`). Placeholders appear ONLY in ref fields
+ *  (`step.agentId`, `step.actionId`, role `step.human.principal.ref`,
+ *  `step.human.channel`, `trigger.eventId`) — never in `step.prompt` /
+ *  `human.message`, whose `{{...}}` syntax is run-context interpolation. */
+export type TemplateSlotKind = 'agents' | 'actions' | 'roles' | 'events' | 'channels';
+
+/** Per-locale text record carried by a manifest. `en` is the required base and the
+ *  universal fallback; any further locale key ('de', ...) is optional. */
+export interface LocalizedTextMap {
+  en: string;
+  [locale: string]: string | undefined;
+}
+
+/** Manifest-borne localizable text: either a plain string (treated as English) or a
+ *  per-locale record with `en` required. Templates are data -- v2 distributes them
+ *  outside the repo -- so localization travels WITH the manifest instead of living in
+ *  the app's message catalogs. Resolve with `resolveLocalizedText` (template.ts). */
+export type LocalizedText = string | LocalizedTextMap;
+
+export interface TemplateSlot {
+  /** unique within its kind; referenced from the graph as `slot:<kind-singular>:<key>`. */
+  key: string;
+  /** human-readable, shown in the mapping form. */
+  label: LocalizedText;
+  /** authored help text for the mapping form. */
+  description?: LocalizedText;
+}
+
+/** A declared text slot, referenced from designated text fields (`step.prompt`,
+ *  `step.human.message`) as the token `slot:text:<key>`. Text slots are NOT a
+ *  TemplateSlotKind — the five ref kinds stay closed (they drive KnownRefs
+ *  validation); text slots carry no ref semantics, only string substitution. */
+export interface TemplateTextSlot {
+  /** unique among text slots; token grammar `[A-Za-z0-9_-]+` (other characters
+   *  are not recognized as part of a token). */
+  key: string;
+  /** human-readable, shown in the mapping form. */
+  label: LocalizedText;
+  /** authored help text for the mapping form. */
+  description?: LocalizedText;
+  /** substituted when the instantiating operator supplies no mapping value;
+   *  a text slot with a default is never reported missing. */
+  default?: string;
+}
+
+export interface TemplateSlots {
+  agents?: TemplateSlot[];
+  actions?: TemplateSlot[];
+  roles?: TemplateSlot[];
+  events?: TemplateSlot[];
+  channels?: TemplateSlot[];
+  text?: TemplateTextSlot[];
+}
+
+export interface TemplateManifest {
+  /** stable kebab-case catalog id, e.g. "expense-approval". */
+  id: string;
+  name: LocalizedText;
+  /** the business problem it solves, plain language. */
+  description: LocalizedText;
+  /** category tag: 'approval' | 'escalation' | 'reporting' | 'onboarding' | free string. */
+  useCase: LocalizedText;
+  /** suggested workflow slug, operator-editable. */
+  defaultSlug: string;
+  /** complete graph with `slot:` placeholders in ref fields. */
+  graph: WorkflowGraph;
+  slots: TemplateSlots;
+  /** manifest version, integer ≥ 1. Absent = 1 (wire/back-compat with v1
+   *  bundled manifests and #330 consumers) — read via templateManifestVersion(). */
+  version?: number;
+}
+
+/** slot key → install-local entity id, per kind; `text` maps text-slot keys to
+ *  the substituted strings (additive, absent for pure-ref v1 mappings). */
+export type TemplateSlotMapping = Partial<Record<TemplateSlotKind, Record<string, string>>> & {
+  text?: Record<string, string>;
+};
+
+/** One placeholder found in a template graph, with every node referencing it. */
+export interface TemplateSlotRef {
+  kind: TemplateSlotKind;
+  key: string;
+  /** steps/triggers referencing the slot. */
+  nodeIds: string[];
+}
+
+/** A declared slot missing from a mapping (missingSlotMappings result item). The label
+ *  is resolved to plain English so the wire envelope stays a flat string -- clients
+ *  localize from the manifest they already hold, keyed by kind+key. `kind: 'text'`
+ *  entries are additive over v1 -- ref kinds keep the exact v1 shape. */
+export interface TemplateMissingSlot {
+  kind: TemplateSlotKind | 'text';
+  key: string;
+  label: string;
 }
 
 // ---------------------------------------------------------------------------

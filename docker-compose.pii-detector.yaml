@@ -1,0 +1,34 @@
+# Optional overlay — GLiNER PII-detector sidecar for prompt masking (#361).
+#
+# Adds the C1 transformer PII-detection sidecar (built from
+# middleware/sidecars/pii-detector) and points the middleware at it via
+# PRIVACY_C1_DETECTOR_URL. Advisory overlay: without it the default stack
+# runs unchanged — the (default-off) `mask_user_prompt` feature then runs on
+# the C0 regex baseline only, and no C1 calls are attempted. Sidecar down at
+# runtime ⇒ audited degrade to C0 (`promptMaskDegraded`), never a silent
+# unmasked pass-through.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.pii-detector.yaml up -d
+
+services:
+  middleware:
+    environment:
+      PRIVACY_C1_DETECTOR_URL: http://pii-detector:8812
+
+  pii-detector:
+    build: middleware/sidecars/pii-detector
+    restart: unless-stopped
+    # No ports: the detector receives raw user-prompt PII and is only
+    # reachable from inside the compose network — it must never be public.
+    networks: [omadia]
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'python'
+        - '-c'
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8812/health').status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      # The model (~280M backbone) loads before /health starts serving.
+      start_period: 120s

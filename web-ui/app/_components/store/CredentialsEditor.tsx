@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, KeyRound, Plug, Trash2 } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 
 import {
   ApiError,
@@ -55,6 +56,7 @@ export function CredentialsEditor({
   pluginId,
   setupFields,
 }: CredentialsEditorProps): React.ReactElement {
+  const t = useTranslations('store.credentials');
   const [storedKeys, setStoredKeys] = useState<Set<string> | null>(null);
   // Actual stored values for non-secret fields. Secrets stay server-side
   // and are absent here even when stored. Used to (a) display the
@@ -169,7 +171,7 @@ export function CredentialsEditor({
   if (setupFields.length === 0) {
     return (
       <p className="text-sm italic text-[color:var(--faint-ink)]">
-        Dieses Plugin deklariert keine Setup-Felder.
+        {t('noFields')}
       </p>
     );
   }
@@ -177,12 +179,20 @@ export function CredentialsEditor({
   return (
     <div className="space-y-4">
       <div className="text-[12px] leading-relaxed text-[color:var(--muted-ink)]">
-        Felder mit <span className="font-semibold text-[color:var(--accent)]">Secret · Vault</span> (Passwörter,
-        OAuth-Tokens) werden verschlüsselt im Vault gespeichert und nur als
-        „gespeichert&ldquo; angezeigt — niemals der eigentliche Wert. Felder mit
-        <span className="font-semibold"> Config</span> (Enum, URL, Flags) sind
-        nicht-sensitiv und zeigen die aktuelle Auswahl. Tippe oder wähle einen
-        neuen Wert um zu überschreiben, oder klicke auf <Trash2 className="inline size-3 align-text-bottom" aria-hidden /> um den Wert zu löschen.
+        {t.rich('intro', {
+          secret: (chunks) => (
+            <span className="font-semibold text-[color:var(--accent)]">
+              {chunks}
+            </span>
+          ),
+          config: (chunks) => <span className="font-semibold">{chunks}</span>,
+          trashIcon: () => (
+            <Trash2
+              className="inline size-3 align-text-bottom"
+              aria-hidden
+            />
+          ),
+        })}
       </div>
 
       <ul className="divide-y divide-[color:var(--rule)] border-y border-[color:var(--rule)]">
@@ -229,8 +239,8 @@ export function CredentialsEditor({
                     }`}
                     title={
                       isSecret
-                        ? 'Secret — verschlüsselt im per-Agent-Vault'
-                        : 'Config — nicht-sensitiver Wert in der Instanz-Konfiguration'
+                        ? t('secretBadgeTitle')
+                        : t('configBadgeTitle')
                     }
                   >
                     {isSecret ? 'Secret · Vault' : 'Config'}
@@ -275,12 +285,14 @@ export function CredentialsEditor({
                       ? state.draft
                       : (storedValue ?? '');
                     const placeholder = state.pendingDelete
-                      ? 'wird beim Speichern gelöscht'
+                      ? t('pendingDelete')
                       : isStored
-                        ? 'gespeichert · auswählen zum Überschreiben'
+                        ? t('storedSelectToOverwrite')
                         : field.default
-                          ? `nicht gesetzt · Default: ${field.default}`
-                          : 'nicht gesetzt';
+                          ? t('notSetWithDefault', {
+                              default: String(field.default),
+                            })
+                          : t('notSet');
                     return (
                       <select
                         value={selectValue}
@@ -316,12 +328,12 @@ export function CredentialsEditor({
                       ? state.draft
                       : (storedValue ?? '');
                     const placeholder = state.pendingDelete
-                      ? 'wird beim Speichern gelöscht'
+                      ? t('pendingDelete')
                       : isStored
                         ? isSecret
-                          ? 'gespeichert · neu eintippen zum Überschreiben'
-                          : 'leeren zum Löschen, neu eintippen zum Überschreiben'
-                        : 'noch nicht gesetzt';
+                          ? t('storedRetypeToOverwrite')
+                          : t('clearToDelete')
+                        : t('notSetYet');
                     return (
                       <input
                         type={isSecret ? 'password' : 'text'}
@@ -359,10 +371,10 @@ export function CredentialsEditor({
                     disabled={saving}
                     title={
                       state.pendingDelete
-                        ? 'Löschung abbrechen'
+                        ? t('cancelDelete')
                         : isSecret
-                          ? 'Secret beim nächsten Speichern löschen'
-                          : 'Config-Wert beim nächsten Speichern löschen'
+                          ? t('deleteSecretOnSave')
+                          : t('deleteConfigOnSave')
                     }
                     className={`inline-flex size-7 shrink-0 items-center justify-center rounded-md border transition-colors disabled:opacity-50 ${
                       state.pendingDelete
@@ -385,14 +397,20 @@ export function CredentialsEditor({
           onClick={() => void onSave()}
           disabled={saving || dirtyCount === 0}
           busy={saving}
-          busyLabel={`Speichern${dirtyCount > 0 ? ` (${String(dirtyCount)})` : ''}`}
+          busyLabel={
+            dirtyCount > 0
+              ? t('saveWithCount', { count: dirtyCount })
+              : t('save')
+          }
         >
           <CheckCircle2 className="size-3.5" aria-hidden />
-          Speichern{dirtyCount > 0 ? ` (${String(dirtyCount)})` : ''}
+          {dirtyCount > 0
+            ? t('saveWithCount', { count: dirtyCount })
+            : t('save')}
         </Button>
         {savedAt !== null ? (
           <span className="text-[11px] text-[color:var(--muted-ink)]">
-            ✓ Gespeichert
+            {t('savedCheck')}
           </span>
         ) : null}
         {error ? (
@@ -421,6 +439,7 @@ function OAuthConnectField({
   fieldKey: string;
   connected: boolean;
 }): React.ReactElement {
+  const t = useTranslations('store.credentials');
   const startUrl = `/bot-api/v1/install/oauth/start?pluginId=${encodeURIComponent(
     pluginId,
   )}&fieldKey=${encodeURIComponent(fieldKey)}`;
@@ -429,11 +448,11 @@ function OAuthConnectField({
       {connected ? (
         <span className="inline-flex items-center gap-1 text-[12px] font-semibold text-[color:var(--success)]">
           <CheckCircle2 className="size-3.5" aria-hidden />
-          Verbunden
+          {t('connected')}
         </span>
       ) : (
         <span className="text-[12px] text-[color:var(--muted-ink)]">
-          Nicht verbunden
+          {t('notConnected')}
         </span>
       )}
       <a
@@ -441,7 +460,7 @@ function OAuthConnectField({
         className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-3 py-1.5 text-[12px] font-semibold text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent)]/20"
       >
         <Plug className="size-3.5" aria-hidden />
-        {connected ? 'Neu verbinden' : 'Verbinden'}
+        {connected ? t('reconnect') : t('connect')}
       </a>
     </div>
   );
@@ -484,6 +503,7 @@ function MultiselectField({
   fieldKey: string;
   storedValue: string | undefined;
 }): React.ReactElement {
+  const t = useTranslations('store.credentials');
   const [selected, setSelected] = useState<string[]>([]);
   const [options, setOptions] = useState<SetupOption[] | null>(null);
   const [status, setStatus] = useState<'loading' | 'loaded' | 'degraded'>(
@@ -567,13 +587,14 @@ function MultiselectField({
     <div className="flex min-w-0 flex-1 flex-col gap-2">
       {status === 'loading' ? (
         <span className="text-[12px] text-[color:var(--muted-ink)]">
-          Loading options…
+          {t('loadingOptions')}
         </span>
       ) : status === 'degraded' ? (
         <div className="flex flex-col gap-1">
           <span className="text-[11px] text-[color:var(--muted-ink)]">
-            Options unavailable ({error ?? 'plugin inactive'}). Enter
-            values/IDs comma-separated.
+            {t('optionsUnavailable', {
+              error: error ?? t('pluginInactive'),
+            })}
           </span>
           <input
             type="text"
@@ -611,7 +632,7 @@ function MultiselectField({
         </div>
       ) : (
         <span className="text-[12px] text-[color:var(--muted-ink)]">
-          No selectable entries (nothing shared with the integration?).
+          {t('noEntries')}
         </span>
       )}
       <div className="flex items-center gap-3">
@@ -620,15 +641,16 @@ function MultiselectField({
           onClick={() => void onSave()}
           disabled={saving}
           busy={saving}
-          busyLabel="Saving"
+          busyLabel={t('saving')}
         >
           <CheckCircle2 className="size-3.5" aria-hidden />
-          Save selection
-          {status !== 'degraded' ? ` (${String(selected.length)})` : ''}
+          {status !== 'degraded'
+            ? t('saveSelectionWithCount', { count: selected.length })
+            : t('saveSelection')}
         </Button>
         {savedAt !== null ? (
           <span className="text-[11px] text-[color:var(--muted-ink)]">
-            ✓ Saved
+            {t('savedCheck')}
           </span>
         ) : null}
         {status === 'loaded' ? (
@@ -637,7 +659,7 @@ function MultiselectField({
             onClick={() => void load()}
             className="text-[11px] text-[color:var(--muted-ink)] underline hover:text-[color:var(--accent)]"
           >
-            Refresh list
+            {t('refreshList')}
           </button>
         ) : null}
       </div>

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { useTranslations } from 'next-intl';
+
 import { Button } from '@/app/_components/ui/Button';
 
 /**
@@ -34,6 +36,7 @@ const STAT_BASE = '/bot-api/dev/graph/priorities';
 const DEFAULT_AGENT = 'orchestrator-default';
 
 export default function KgPrioritiesPage(): React.ReactElement {
+  const t = useTranslations('adminKgPriorities');
   const [agentId, setAgentId] = useState<string>(DEFAULT_AGENT);
   const [records, setRecords] = useState<AgentPriorityRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -144,27 +147,24 @@ export default function KgPrioritiesPage(): React.ReactElement {
           Knowledge-Graph Priorities
         </h1>
         <p className="mt-3 max-w-3xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
-          Per-Agent Block/Boost-Liste für den Token-Budget-Assembler. Block
-          droppt einen Turn aus dem Recall-Pool; Boost multipliziert den
-          Score mit `weight` (Default 1.3). `manuallyAuthored=true` bringt
-          zusätzlich einen unabhängigen ×1.3 Boost — beide kombinieren.
+          {t('intro')}
         </p>
       </header>
 
       <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <label className="block text-sm font-semibold text-[color:var(--fg-strong)]">
-          Agent-ID
+          {t('agentIdLabel')}
         </label>
         <div className="mt-2 flex gap-3">
           <input
             type="text"
             value={agentId}
             onChange={(e) => { setAgentId(e.target.value); }}
-            placeholder="de.byte5.agent.calendar oder orchestrator-default"
+            placeholder={t('agentIdPlaceholder')}
             className="flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-sm text-[color:var(--fg-strong)]"
           />
           <Button variant="secondary" onClick={() => { void reload(); }}>
-            Laden
+            {t('load')}
           </Button>
         </div>
       </section>
@@ -177,7 +177,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
 
       <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="text-lg font-semibold text-[color:var(--fg-strong)]">
-          Neuer Eintrag
+          {t('newEntryTitle')}
         </h2>
         <div className="mt-4 grid gap-3 lg:grid-cols-12">
           <input
@@ -203,7 +203,11 @@ export default function KgPrioritiesPage(): React.ReactElement {
             onChange={(e) => { setDraftWeight(e.target.value); }}
             className="lg:col-span-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-sm text-[color:var(--fg-strong)]"
             disabled={draftAction === 'block'}
-            title={draftAction === 'block' ? 'weight ignoriert für block' : 'score multiplier'}
+            title={
+              draftAction === 'block'
+                ? t('weightIgnoredTitle')
+                : t('weightMultiplierTitle')
+            }
           />
           <input
             type="text"
@@ -250,7 +254,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
                   colSpan={6}
                   className="px-4 py-6 text-center text-[color:var(--fg-muted)]"
                 >
-                  Keine Einträge für diesen Agent.
+                  {t('empty')}
                 </td>
               </tr>
             ) : (

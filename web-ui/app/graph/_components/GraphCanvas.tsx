@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef } from 'react';
+import { useTranslations } from 'next-intl';
 import cytoscape from 'cytoscape';
 import type {
   Core,
@@ -526,6 +527,7 @@ export default function GraphCanvas({
   onExpandNode,
   dark = false,
 }: Props): React.ReactElement {
+  const t = useTranslations('graph.canvas');
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<Core | null>(null);
   const nodesRef = useRef<Map<string, GraphNode>>(new Map());
@@ -921,11 +923,11 @@ export default function GraphCanvas({
       </div>
       {elements.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-[color:var(--fg-muted)]">
-          keine Knoten — Session links wählen oder Filter anpassen
+          {t('emptyState')}
         </div>
       )}
       <div className="pointer-events-none absolute bottom-2 left-3 text-[10px] text-[color:var(--fg-muted)]">
-        Klick = Auswählen · Doppelklick = Nachbarn laden · Rad = Zoom · Ziehen = Pan
+        {t('help')}
       </div>
     </div>
   );
@@ -959,6 +961,7 @@ function Legend({
   dark: boolean;
   filter: GraphFilter;
 }): React.ReactElement {
+  const t = useTranslations('graph.canvas.legend');
   const items: Array<[NodeType, string]> = [
     ['Session', 'Session'],
     ['User', 'User'],
@@ -978,17 +981,17 @@ function Legend({
     items.push(['MemorableKnowledge', 'Memory'], ['PalaiaExcerpt', 'Excerpt']);
   }
   if (filter.showTopics) {
-    items.push(['Topic', 'Topic-Cluster']);
+    items.push(['Topic', t('topicCluster')]);
   }
   if (filter.showIssues) {
     items.push(
-      ['Inconsistency', 'Konflikt'],
-      ['MergeCandidate', 'Duplikat-Kandidat'],
-      ['ExcerptMergeCandidate', 'Excerpt-Duplikat'],
+      ['Inconsistency', t('conflict')],
+      ['MergeCandidate', t('duplicateCandidate')],
+      ['ExcerptMergeCandidate', t('excerptDuplicate')],
     );
   }
   if (filter.showPlans) {
-    items.push(['Plan', 'Plan'], ['PlanStep', 'Plan-Schritt']);
+    items.push(['Plan', 'Plan'], ['PlanStep', t('planStep')]);
   }
   const edgeRows: Array<[string, string]> = [['#10b981', 'PRODUCED']];
   edgeRows.push(['#ec4899', 'TRIGGERED']);
@@ -998,7 +1001,7 @@ function Legend({
     edgeRows.push(['#d946ef', 'Provenance (DERIVED · EXCERPT · …)']);
   if (filter.showTopics) {
     edgeRows.push(['#14b8a6', 'HAS_TOPIC']);
-    edgeRows.push(['#14b8a6', 'HAS_TOPIC (Excerpt, transitiv)']);
+    edgeRows.push(['#14b8a6', t('hasTopicTransitive')]);
   }
   if (filter.showIssues) {
     edgeRows.push(['#ef4444', 'CONFLICTS_WITH']);

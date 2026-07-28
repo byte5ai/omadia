@@ -1,26 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 
+import { renderWithIntl } from '../../../_lib/test-utils';
 import { WorkaroundBadge } from '../WorkaroundBadge';
 
 describe('WorkaroundBadge', () => {
   it('renders nothing when status is "none"', () => {
-    const { container } = render(<WorkaroundBadge status="none" />);
+    const { container } = renderWithIntl(<WorkaroundBadge status="none" />);
     expect(container.firstChild).toBeNull();
   });
 
   it('renders the active label with the issue number when provided', () => {
-    render(<WorkaroundBadge status="active" issueNumber={42} />);
-    expect(screen.getByText(/Workaround aktiv \(#42\)/)).toBeTruthy();
+    renderWithIntl(<WorkaroundBadge status="active" issueNumber={42} />);
+    expect(screen.getByText(/Workaround active \(#42\)/)).toBeTruthy();
   });
 
   it('renders the update-available label', () => {
-    render(<WorkaroundBadge status="update-available" issueNumber={7} />);
-    expect(screen.getByText(/Update verfügbar \(#7\)/)).toBeTruthy();
+    renderWithIntl(
+      <WorkaroundBadge status="update-available" issueNumber={7} />,
+    );
+    expect(screen.getByText(/Update available \(#7\)/)).toBeTruthy();
   });
 
   it('wraps the badge in an anchor when issueUrl is provided', () => {
-    render(
+    renderWithIntl(
       <WorkaroundBadge
         status="active"
         issueNumber={3}

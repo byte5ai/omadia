@@ -105,6 +105,42 @@ describe('<SessionWatcher />', () => {
     expect(screen.getByText(EXPIRED_TITLE)).toBeInTheDocument();
   });
 
+  it('"Relogin now" navigates to /login with a reauth flag and return path', async () => {
+    // The current session is still valid during the warning phase, so the
+    // reauth flag is what stops /login from bouncing straight back (#412).
+    // jsdom's location.assign is non-configurable, so swap the whole object.
+    const assign = vi.fn();
+    const realLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { pathname: '/chat', search: '?thread=42', assign },
+    });
+    try {
+      mockAuthedSession(2 * 60); // inside the warn window
+      renderWithIntl(<SessionWatcher />, { locale: 'de' });
+      await flush();
+
+      const cta = screen.getByRole('button', { name: 'Jetzt neu anmelden' });
+      await act(async () => {
+        cta.click();
+      });
+
+      expect(assign).toHaveBeenCalledTimes(1);
+      const url = new URL(
+        assign.mock.calls[0]?.[0] as string,
+        'http://localhost',
+      );
+      expect(url.pathname).toBe('/login');
+      expect(url.searchParams.get('reauth')).toBe('1');
+      expect(url.searchParams.get('return')).toBe('/chat?thread=42');
+    } finally {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: realLocation,
+      });
+    }
+  });
+
   it('renders nothing and never probes on the /login page', async () => {
     mockUsePathname.mockReturnValue('/login');
     mockAuthedSession(2 * 60);

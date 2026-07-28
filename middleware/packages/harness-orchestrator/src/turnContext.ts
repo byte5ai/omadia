@@ -44,6 +44,30 @@ export interface TurnContextValue {
    * `'default'`.
    */
   agentSlug?: string;
+  /**
+   * Omadia user id of the human driving this turn (= turn input `userId`).
+   * Set by the orchestrator at turn start. Used by dispatch-time consumers
+   * that must attribute per-user data — e.g. MCP→KG ingestion writes the
+   * observation with `aclOwners: [userId]` so it is recallable only by its
+   * owner. Undefined for system/ad-hoc turns.
+   */
+  userId?: string;
+  /**
+   * #430 fixup (reviewer round 5) — the turn caller's CANONICAL `omadiaUserId`
+   * uuid, resolved ONCE by `resolveTurnOwnerIdentity` at turn start (see
+   * `orchestrator.ts`'s `runTurn`/`chatStream`) and reused by every
+   * turn-scoped consumer that needs it for a KnowledgeGraph dataset ACL
+   * check — currently `QueryDatasetTool` (viewer/owner filtering) and
+   * `ingestAttachments` (dataset ownership on CSV import).
+   *
+   * Unlike `userId` above (which is the RAW turn input — a Teams AAD oid for
+   * a channel turn, already-canonical for HTTP/CLI turns), this field is
+   * ALWAYS the canonical uuid when set. Undefined when resolution wasn't
+   * possible (no `KnowledgeGraph` wired up for a channel turn, or resolution
+   * failed) — callers must treat that as "no identity available", never fall
+   * back to the raw `userId` for an ACL decision.
+   */
+  resolvedOmadiaUserId?: string;
   chatParticipants?: ChatParticipantsProvider;
   /**
    * Privacy-Proxy Slice 2.1: per-turn privacy handle threaded through the
@@ -123,6 +147,33 @@ export interface TurnContextValue {
    * underlying tool. Undefined outside a domain-tool dispatch.
    */
   subAgentOwnerPluginId?: string;
+  /**
+   * MCP call attribution overrides (epic #459 W2, issue #462). The audit
+   * observer in `McpManager.callTool` derives the caller taxonomy
+   * (agent | subagent | skill | plugin | unattributed) from the turn context;
+   * these two fields let a non-agent dispatch surface identify itself: the
+   * skill-binding path (#456) sets `mcpCallerKind: 'skill'` +
+   * `mcpCallerId: <skill slug>`, the plugin accessor (#458) sets
+   * `'plugin'` + the plugin id. Unset for plain agent/sub-agent turns.
+   */
+  mcpCallerKind?: 'skill' | 'plugin';
+  mcpCallerId?: string;
+  /**
+   * Epic #459 W9 (codex fold) — the identity MCP OAuth tokens are keyed to for
+   * this turn. Set by the turn's entry point to the authenticated user so the
+   * manager resolves that user's token. Unset outside a user turn; the auth
+   * provider then falls back to the operator scope.
+   */
+  mcpUserKey?: string;
+  /**
+   * Epic #459 W4/W5 (codex fold) — the persona skill the W8 per-turn router
+   * selected as this turn's acting identity, or undefined when no persona is
+   * active. Skill-bound MCP DomainTools check it at dispatch: a tool bound to
+   * skill X must not be callable on a turn where X is not the active persona
+   * (that would exceed the bind-time consent). Set by the orchestrator right
+   * after persona routing, mutated on the live store so nested scopes see it.
+   */
+  activePersonaSkillId?: string;
 }
 
 const storage = new AsyncLocalStorage<TurnContextValue>();

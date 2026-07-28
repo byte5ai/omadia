@@ -8,6 +8,8 @@ import type { ConductorRun, ConductorRunStore, TriggerKind } from './runStore.js
 import { RunLeaseLostError } from './runStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { StepEffects } from './stepEffects.js';
+import type { DevJobStepPort, DevJobTerminalOutcome } from './devJobStepEffect.js';
+import { isDevJobStep, buildDevJobPrincipalRef, parseDevJobPrincipalRef } from './devJobStepEffect.js';
 import { canonicalizePrincipalId } from './principalId.js';
 
 export class WorkflowNotFoundError extends Error {}
@@ -16,6 +18,8 @@ export class WorkflowNotPublishedError extends Error {}
 export class AwaitNotPendingError extends Error {}
 /** A responder who is not a current holder tried to resolve an await (authorization gate). */
 export class AwaitResponderNotHolderError extends Error {}
+/** A dev-job step was reached, or a dev-job outcome arrived, but no dev-job port was wired. */
+export class DevJobPortUnavailableError extends Error {}
 
 export interface PreviewStep {
   stepId: string;
@@ -77,6 +81,9 @@ export class ConductorRunExecutor {
   /** Late-bound role→holders resolver — the required responders for a quorum='all' role await.
    *  Required (not optional) so a role-based 'all' can never silently degrade to 'any' when unwired. */
   private readonly resolveRoleHolders: (roleKey: string) => Promise<string[]>;
+  /** Optional dev-job port (Epic #470 W3). Absent ⇒ the feature is off: a dev-job step falls
+   *  through to the normal action effect and `resolveDevJobAwait` throws if ever called. */
+  private readonly devJob?: DevJobStepPort;
   private readonly log: (msg: string) => void;
 
   constructor(deps: {
@@ -85,6 +92,7 @@ export class ConductorRunExecutor {
     awaitStore: ConductorAwaitStore;
     effects: StepEffects;
     resolveRoleHolders: (roleKey: string) => Promise<string[]>;
+    devJob?: DevJobStepPort;
     log?: (msg: string) => void;
   }) {
     this.workflowStore = deps.workflowStore;
@@ -92,6 +100,7 @@ export class ConductorRunExecutor {
     this.awaitStore = deps.awaitStore;
     this.effects = deps.effects;
     this.resolveRoleHolders = deps.resolveRoleHolders;
+    this.devJob = deps.devJob;
     this.log = deps.log ?? (() => undefined);
   }
 
@@ -178,6 +187,16 @@ export class ConductorRunExecutor {
           currentStepId = fb.target;
           seq += 1;
           continue;
+        }
+
+        // Dev-job step (Epic #470 W3) → launch one dev job, open a durable await bound to it,
+        // and park. The whole minutes-long job is ONE opaque step; `resolveDevJobAwait` resumes
+        // the run when the job reaches a terminal state, and the workflow branches on the
+        // outcome. Only active when a dev-job port is wired — otherwise it falls through to the
+        // normal action effect below (a `dev.job` actionId with no port simply fails there).
+        if (this.devJob && isDevJobStep(step)) {
+          await this.openDevJobAwait(runId, step, context, lease);
+          return (await this.runStore.get(runId)) ?? (await this.requireRun(runId));
         }
 
         let exec;
@@ -298,6 +317,89 @@ export class ConductorRunExecutor {
     const next = await this.applyDecision(aw.runId, seq, aw.stepId, { kind: 'human', quorum: aw.quorum, resolvedUserId: responder }, decision, context, lease);
     if (next) return this.driveFrom(aw.runId, graph, next, context, lease);
     return (await this.runStore.get(aw.runId)) ?? run;
+  }
+
+  /**
+   * A dev job reached a terminal state — resolve its holding await and resume the run
+   * SYNCHRONOUSLY (the redesign: the whole job is ONE opaque step; its terminal outcome is the
+   * step result fed to `nextStep`). Mirrors `resolveAwait` minus the human authorization gate —
+   * a dev job has no human responder, so there is nobody to authorize.
+   *
+   * Idempotent — a duplicate terminal event resolves the await AT MOST ONCE, so the run never
+   * double-advances: the `status !== 'waiting'` guard skips an already-resolved await, and the
+   * atomic `close` CAS makes the winner unique under a genuine race. An unknown/unbound job (no
+   * `conductor_await_id`) is a no-op — a non-Conductor job simply has no run to resume.
+   */
+  async resolveDevJobAwait(outcome: DevJobTerminalOutcome): Promise<ConductorRun | null> {
+    const port = this.devJob;
+    if (!port) {
+      throw new DevJobPortUnavailableError(`dev-job outcome for job '${outcome.jobId}' but no dev-job port wired`);
+    }
+    const awaitId = await port.awaitIdForJob(outcome.jobId);
+    if (!awaitId) return null; // not a Conductor-driven job (or link missing) — nothing to resume
+
+    const aw = await this.awaitStore.get(awaitId);
+    // Already resolved (a duplicate terminal event) or gone → idempotent no-op. Return the run's
+    // current state so a caller can observe where it landed, or null if the await is unknown.
+    if (!aw || aw.status !== 'waiting') {
+      return aw ? ((await this.runStore.get(aw.runId)) ?? null) : null;
+    }
+
+    const stepResult: JsonValue = {
+      jobId: outcome.jobId,
+      status: outcome.status,
+      prUrl: outcome.prUrl ?? null,
+      branch: outcome.branch ?? null,
+      result: outcome.result ?? null,
+      error: outcome.error ?? null,
+    };
+
+    // Atomic waiting → resolved. If a concurrent resolver already won, `close` returns false and
+    // we must NOT advance the run a second time — return its current state instead.
+    const won = await this.awaitStore.close(awaitId, 'resolved');
+    if (!won) return (await this.runStore.get(aw.runId)) ?? null;
+
+    const { graph, run } = await this.loadRunGraph(aw.runId);
+    const lease = randomUUID();
+    await this.runStore.acquireLease(aw.runId, lease); // take over the parked run's lease
+    const decision = nextStep(graph, aw.stepId, stepResult, run.context);
+    const context = this.accumulate(run.context, aw.stepId, stepResult);
+    const seq = (await this.runStore.stepsForRun(aw.runId)).length;
+    const next = await this.applyDecision(
+      aw.runId, seq, aw.stepId, { kind: 'dev_job', jobId: outcome.jobId, status: outcome.status }, decision, context, lease,
+    );
+    if (next) return this.driveFrom(aw.runId, graph, next, context, lease);
+    return (await this.runStore.get(aw.runId)) ?? run;
+  }
+
+  /**
+   * Reconciliation sweep for the terminal-before-bind lost-wakeup (Epic #470 W3). The
+   * `DevJobOutcomeEmitter` is edge-triggered and unbuffered, so a job that reaches a terminal
+   * state BEFORE its await was bound — a crash between `launch` and `bindAwait`, or the
+   * microsecond window between `create` and `bindAwait` — never re-emits, and neither
+   * `claimResumableRuns` (only `running` runs) nor the deadline worker (dev-job awaits have no
+   * deadline) would ever recover the parked run. Left unrecovered the run hangs forever.
+   *
+   * The sweep re-derives the wakeup from durable state: for every still-waiting dev-job await it
+   * asks the port whether the bound job is already terminal, and if so feeds that outcome through
+   * the idempotent `resolveDevJobAwait`. Safe to run repeatedly and concurrently with a live emit
+   * — the await's status guard + close CAS make the winner unique. Returns the number resolved.
+   * Wire-nothing: W4 schedules this on a timer; it is a no-op until the dev-job port is present.
+   */
+  async reconcileTerminalDevJobAwaits(limit = 200): Promise<number> {
+    const port = this.devJob;
+    if (!port) return 0;
+    const waiting = await this.awaitStore.listWaitingDevJobAwaits(limit);
+    let resolved = 0;
+    for (const aw of waiting) {
+      const jobId = parseDevJobPrincipalRef(aw.principalRef);
+      if (!jobId) continue; // not a dev-job principal (defensive) — leave it for the human paths
+      const outcome = await port.terminalOutcomeForJob(jobId);
+      if (!outcome) continue; // still running / unknown — nothing to resume yet
+      await this.resolveDevJobAwait(outcome);
+      resolved += 1;
+    }
+    return resolved;
   }
 
   /** A deadline passed with no response — close the await and fire the in-graph fallback (FR-017). */
@@ -425,6 +527,47 @@ export class ConductorRunExecutor {
     await this.runStore.park(runId, step.id, context, lease);
     this.log(`[conductor] run ${runId} awaiting human at step '${step.id}' (${h?.principal.kind}:${h?.principal.ref})`);
     return true;
+  }
+
+  /**
+   * Launch ONE dev job for a dev-job step, open a durable await bound to it, and park the run —
+   * the launch-side mirror of `openHumanAwait`. All I/O goes through the injected `DevJobStepPort`
+   * so the deterministic engine stays pure.
+   *
+   * Exactly-one-job safety across a crash-and-resume: `port.launch` is contractually idempotent
+   * per (runId, stepId), and `awaitStore.create` is idempotent per (run, step) via its partial
+   * unique index — so re-driving this step (the run is still 'running' at this step until `park`
+   * commits) re-uses the same job and the same await rather than doubling either. The await binds
+   * to a synthetic `dev_job:<jobId>` principal (a dev job has no human holder) and carries no
+   * deadline — the dev-job worker owns stall / wall-clock reaping, not Conductor.
+   */
+  private async openDevJobAwait(runId: string, step: Step, context: JsonObject, lease: string): Promise<void> {
+    const port = this.devJob;
+    if (!port) {
+      throw new DevJobPortUnavailableError(`run ${runId}: dev-job step '${step.id}' reached but no dev-job port wired`);
+    }
+    const { jobId } = await port.launch({ runId, stepId: step.id, step, context });
+    const aw = await this.awaitStore.create({
+      runId,
+      stepId: step.id,
+      principalKind: 'user',
+      principalRef: buildDevJobPrincipalRef(jobId),
+      channelType: 'dev_job',
+      message: '',
+      quorum: 'any',
+      reminderIntervalMs: null,
+      deadlineAt: null,
+      // Deliberately NULL (unlike openHumanAwait): a dev-job await carries no deadline, so
+      // `expireAwait` never fires and an await-level fallback could never be read. Failure
+      // branching for a dev-job step is expressed as ordinary GRAPH transitions on the outcome
+      // (`step.fallbackTransitionId` + guards), which `resolveDevJobAwait` honours through
+      // `nextStep`. Copying it onto the await too would be dead data that misleads authors into
+      // thinking the await-level field is what catches a failed job.
+      fallbackTransitionId: null,
+    });
+    await port.bindAwait(jobId, aw.id);
+    await this.runStore.park(runId, step.id, context, lease);
+    this.log(`[conductor] run ${runId} launched dev job ${jobId} at step '${step.id}' (await ${aw.id})`);
   }
 
   private accumulate(context: JsonObject, stepId: string, result: JsonValue): JsonObject {

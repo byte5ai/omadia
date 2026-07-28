@@ -26,6 +26,7 @@ describe('detectPersonaConflicts', () => {
     expect(warnings[0]!.severity).toBe('hard');
     expect(warnings[0]!.axes).toContain('quality.sycophancy');
     expect(warnings[0]!.axes).toContain('persona.directness');
+    expect(warnings[0]!.messageKey).toBe('sycophancyHighDirectnessLow');
     expect(countHardConflicts(warnings)).toBe(1);
   });
 
@@ -35,6 +36,7 @@ describe('detectPersonaConflicts', () => {
     const warnings = detectPersonaConflicts(q, p);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]!.severity).toBe('soft');
+    expect(warnings[0]!.messageKey).toBe('sycophancyHighDirectnessHigh');
     expect(countHardConflicts(warnings)).toBe(0);
   });
 
@@ -71,6 +73,7 @@ describe('detectPersonaConflicts', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]!.severity).toBe('soft');
     expect(warnings[0]!.id).toMatch(/sycophancy-off/);
+    expect(warnings[0]!.messageKey).toBe('sycophancyOffDirectnessVeryHigh');
   });
 
   it('soft cluster: formality ≥ 80 + humor ≥ 70', () => {
@@ -80,6 +83,7 @@ describe('detectPersonaConflicts', () => {
     );
     expect(warnings).toHaveLength(1);
     expect(warnings[0]!.id).toMatch(/formality.*humor/);
+    expect(warnings[0]!.messageKey).toBe('formalityHighHumorHigh');
   });
 
   it('soft: sarcasm ≥ 70 + warmth ≥ 70 contradicts', () => {
@@ -89,6 +93,7 @@ describe('detectPersonaConflicts', () => {
     );
     expect(warnings).toHaveLength(1);
     expect(warnings[0]!.id).toMatch(/sarcasm.*warmth/);
+    expect(warnings[0]!.messageKey).toBe('sarcasmHighWarmthHigh');
   });
 
   it('multiple conflicts compound (hard + soft together)', () => {
@@ -125,9 +130,9 @@ describe('countHardConflicts', () => {
   it('counts only hard severity', () => {
     expect(
       countHardConflicts([
-        { severity: 'soft', id: 'a', axes: [], message: '' },
-        { severity: 'hard', id: 'b', axes: [], message: '' },
-        { severity: 'hard', id: 'c', axes: [], message: '' },
+        { severity: 'soft', id: 'a', axes: [], messageKey: 'a' },
+        { severity: 'hard', id: 'b', axes: [], messageKey: 'b' },
+        { severity: 'hard', id: 'c', axes: [], messageKey: 'c' },
       ]),
     ).toBe(2);
     expect(countHardConflicts([])).toBe(0);

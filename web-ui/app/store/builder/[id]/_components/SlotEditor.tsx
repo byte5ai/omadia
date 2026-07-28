@@ -549,9 +549,16 @@ function TemplateSlotsPanel({
                   onClick={(e) => {
                     e.stopPropagation();
                     onPrefillBuilderChat(
-                      `Fülle den Slot \`${slot.key}\` (target: ${slot.target_file})${
-                        slot.description ? ` — ${slot.description}` : ''
-                      } mit der TypeScript-Implementierung.`,
+                      slot.description
+                        ? t('prefillPromptWithDescription', {
+                            slotKey: slot.key,
+                            targetFile: slot.target_file,
+                            description: slot.description,
+                          })
+                        : t('prefillPrompt', {
+                            slotKey: slot.key,
+                            targetFile: slot.target_file,
+                          }),
                       { autoSubmit: true },
                     );
                   }}

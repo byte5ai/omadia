@@ -15,28 +15,27 @@ export type BoundaryCategory = 'data' | 'scope' | 'authority' | 'communication';
 export interface BoundaryPreset {
   id: string;
   category: BoundaryCategory;
+  /** i18n leaf under `builder.persona.boundaries.presets.*`. */
   labelKey: string;
-  /** German label fallback; the i18n bundle resolves `labelKey` when available. */
-  labelDe: string;
 }
 
 export const BOUNDARY_PRESETS: readonly BoundaryPreset[] = [
   // data
-  { id: 'no-financial-data', category: 'data', labelKey: 'presetNoFinancial', labelDe: 'Keine Finanzdaten' },
-  { id: 'no-pii', category: 'data', labelKey: 'presetNoPii', labelDe: 'Keine personenbezogenen Daten (PII)' },
-  { id: 'no-medical-data', category: 'data', labelKey: 'presetNoMedical', labelDe: 'Keine medizinischen Daten' },
-  { id: 'no-legal-advice', category: 'data', labelKey: 'presetNoLegal', labelDe: 'Keine Rechtsberatung' },
+  { id: 'no-financial-data', category: 'data', labelKey: 'presetNoFinancial' },
+  { id: 'no-pii', category: 'data', labelKey: 'presetNoPii' },
+  { id: 'no-medical-data', category: 'data', labelKey: 'presetNoMedical' },
+  { id: 'no-legal-advice', category: 'data', labelKey: 'presetNoLegal' },
   // scope
-  { id: 'own-domain-only', category: 'scope', labelKey: 'presetOwnDomain', labelDe: 'Nur eigene Domäne' },
-  { id: 'no-code-execution', category: 'scope', labelKey: 'presetNoCode', labelDe: 'Keine Code-Ausführung' },
-  { id: 'no-external-links', category: 'scope', labelKey: 'presetNoExternal', labelDe: 'Keine externen Links' },
+  { id: 'own-domain-only', category: 'scope', labelKey: 'presetOwnDomain' },
+  { id: 'no-code-execution', category: 'scope', labelKey: 'presetNoCode' },
+  { id: 'no-external-links', category: 'scope', labelKey: 'presetNoExternal' },
   // authority
-  { id: 'no-discount-authority', category: 'authority', labelKey: 'presetNoDiscount', labelDe: 'Keine Rabatt-Befugnis' },
-  { id: 'no-commitments', category: 'authority', labelKey: 'presetNoCommitments', labelDe: 'Keine bindenden Zusagen' },
-  { id: 'no-personnel-decisions', category: 'authority', labelKey: 'presetNoPersonnel', labelDe: 'Keine Personalentscheidungen' },
+  { id: 'no-discount-authority', category: 'authority', labelKey: 'presetNoDiscount' },
+  { id: 'no-commitments', category: 'authority', labelKey: 'presetNoCommitments' },
+  { id: 'no-personnel-decisions', category: 'authority', labelKey: 'presetNoPersonnel' },
   // communication
-  { id: 'no-speculation', category: 'communication', labelKey: 'presetNoSpeculation', labelDe: 'Keine Spekulationen' },
-  { id: 'no-competitor-discussion', category: 'communication', labelKey: 'presetNoCompetitor', labelDe: 'Keine Wettbewerber-Diskussion' },
+  { id: 'no-speculation', category: 'communication', labelKey: 'presetNoSpeculation' },
+  { id: 'no-competitor-discussion', category: 'communication', labelKey: 'presetNoCompetitor' },
 ] as const;
 
 export const KNOWN_BOUNDARY_PRESET_IDS: ReadonlySet<string> = new Set(
@@ -46,10 +45,3 @@ export const KNOWN_BOUNDARY_PRESET_IDS: ReadonlySet<string> = new Set(
 export function findUnknownBoundaryPresets(presetIds: readonly string[]): string[] {
   return presetIds.filter((id) => !KNOWN_BOUNDARY_PRESET_IDS.has(id));
 }
-
-export const BOUNDARY_CATEGORY_LABELS_DE: Readonly<Record<BoundaryCategory, string>> = {
-  data: 'Daten',
-  scope: 'Geltungsbereich',
-  authority: 'Befugnisse',
-  communication: 'Kommunikation',
-};

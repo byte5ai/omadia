@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
 
 import { applyStreamEvent, type ChatStreamEvent } from '../_lib/chatStreamEvents';
+import { humanizeProviderError } from '../_lib/providerErrorMessage';
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import {
   type ClaimedRequest,
@@ -65,7 +66,7 @@ export function StreamRunner(): null {
   return null;
 }
 
-interface DepsRef {
+export interface DepsRef {
   current: {
     t: ReturnType<typeof useTranslations>;
     sessions: ReturnType<typeof useChatSessionsCtx>;
@@ -73,7 +74,12 @@ interface DepsRef {
   };
 }
 
-async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void> {
+// Exported for unit tests (#403): drives the fetch + NDJSON-drain loop and the
+// terminal store outcome. Not part of the component's public surface otherwise.
+export async function runOneTurn(
+  claim: ClaimedRequest,
+  depsRef: DepsRef,
+): Promise<void> {
   const { request, signal } = claim;
   const { sessionId, pendingMessageId, message, agentSlug } = request;
   const { store } = depsRef.current;
@@ -86,10 +92,27 @@ async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void
   let tokensIn = 0;
   let tokensOut = 0;
   let cacheTokens = 0;
+  // #403 — an in-band `error` event on a 200 stream still means the turn
+  // failed. Capture its humanized message here so the terminal record (and
+  // the background stream toast) can report the failure instead of a false
+  // 'done'. Stays null on a clean turn.
+  let inbandErrorMessage: string | null = null;
 
   const applyEvent = (event: ChatStreamEvent): void => {
-    const { sessions: liveSessions } = depsRef.current;
-    applyStreamEvent(liveSessions, sessionId, pendingMessageId, event);
+    const { sessions: liveSessions, t } = depsRef.current;
+    // A provider error arrives as a raw wrapped string (status + JSON blob).
+    // Reduce it to the embedded human sentence before it reaches the bubble;
+    // keep the raw text in the console for debugging.
+    let outgoing = event;
+    if (event.type === 'error') {
+      const clean = humanizeProviderError(event.message, t('errorProviderGeneric'));
+      inbandErrorMessage = clean;
+      if (clean !== event.message) {
+        console.warn('[chat] provider error', event.message);
+        outgoing = { ...event, message: clean };
+      }
+    }
+    applyStreamEvent(liveSessions, sessionId, pendingMessageId, outgoing);
 
     // Accumulate per-turn signals BEFORE deriving the patch so the
     // patch has fresh numbers.
@@ -164,7 +187,7 @@ async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void
         msg = fallback || `HTTP ${String(res.status)}`;
       }
       applyEvent({ type: 'error', message: msg });
-      store.finish(sessionId, 'error', msg);
+      store.finish(sessionId, 'error', humanizeProviderError(msg, t('errorProviderGeneric')));
       finalizePending(depsRef.current.sessions, sessionId, pendingMessageId);
       return;
     }
@@ -197,16 +220,21 @@ async function runOneTurn(claim: ClaimedRequest, depsRef: DepsRef): Promise<void
         /* ignore */
       }
     }
-    store.finish(sessionId, 'done');
+    if (inbandErrorMessage !== null) {
+      store.finish(sessionId, 'error', inbandErrorMessage);
+    } else {
+      store.finish(sessionId, 'done');
+    }
   } catch (err) {
     if ((err as Error).name === 'AbortError') {
       const { t } = depsRef.current;
       applyEvent({ type: 'error', message: t('errorAborted') });
       store.finish(sessionId, 'aborted');
     } else {
+      const { t } = depsRef.current;
       const msg = err instanceof Error ? err.message : String(err);
       applyEvent({ type: 'error', message: msg });
-      store.finish(sessionId, 'error', msg);
+      store.finish(sessionId, 'error', humanizeProviderError(msg, t('errorProviderGeneric')));
     }
   } finally {
     finalizePending(depsRef.current.sessions, sessionId, pendingMessageId);

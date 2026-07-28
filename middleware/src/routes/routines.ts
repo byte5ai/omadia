@@ -169,7 +169,8 @@ function toDto(r: Routine): RoutineDto {
  * Routes are mounted under `/api/v1/routines` and gated by `requireAuth`.
  *   GET    /                  → list all routines (cross-tenant)
  *   PATCH  /:id/status        → body `{status: 'active' | 'paused'}`
- *   POST   /:id/trigger       → fire one manual run (records as `manual` in routine_runs)
+ *   POST   /:id/trigger       → fire one manual run (records as `manual` in routine_runs);
+ *                               503 `routines.chat_unavailable` while no chat agent is published
  *   GET    /:id/runs          → list per-routine run history (last 50 by default)
  *   GET    /:id/runs/:runId   → single run with full agentic trace (call-stack viewer)
  *   DELETE /:id               → permanent (cascades into routine_runs)
@@ -252,6 +253,19 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
         res
           .status(404)
           .json({ code: 'routines.not_found', message: `routine '${id}' not found` });
+        return;
+      }
+      // Interactive path gets a synchronous 503 while no chat agent is
+      // published (LLM key not configured) instead of a 202 whose run is
+      // guaranteed to fail in the background — the web-ui maps this code
+      // to a "set the key in Settings" message. Cron fires keep recording
+      // `error` runs so the misconfiguration stays visible in history.
+      if (!deps.runner.chatAgentAvailable()) {
+        res.status(503).json({
+          code: 'routines.chat_unavailable',
+          message:
+            'chat agent unavailable — configure the LLM API key in Settings, then trigger again',
+        });
         return;
       }
       // Fire-and-forget: the trigger run takes seconds (LLM call +

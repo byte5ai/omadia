@@ -136,6 +136,51 @@ src/
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
 
+### Plugin-Tool-Readiness-Gate (#474)
+
+`Orchestrator.isToolAvailable(agentId)` entscheidet pro Tool, ob es dem
+Modell angeboten und bei Dispatch ausgeführt wird. Ohne `agentId`
+(kernel-interne Registrierungen wie `render_diagram`) oder ohne
+verdrahtetes `isPluginToolsReady` (Legacy-Hosts, Unit-Tests) bleibt das
+Verhalten exakt wie vor #474 — immer verfügbar. Konsultiert an jeder Stelle,
+die ein Tool-Name→Handler-Mapping liest: `buildToolsList()` (Tool-Specs,
+inkl. des Anthropic-`memory`-Fast-Path, falls ein Plugin ihn via
+`ctx.tools.registerHandler('memory', …)` registriert hat),
+`dispatchToolInner()` (derselbe Fast-Path plus die generischen
+`NativeToolRegistry`- und `DomainTool`-Handler), `getSystemPrompt()`
+(promptDoc-Splice + Fach-Agenten-Roster — ein gegatetes Tool taucht weder in
+den Specs noch in Doku/Roster auf), `directLineObligationState()` (#332
+Forced-`tool_choice`) und `executeDirectLine()` (`#token`-Kandidatenauflösung,
+degradiert auf die bestehende "Specialist … is no longer available."-Notiz
+statt den internen Dispatch-Fehler zu zeigen). Die parallele
+`ToolDispatchService` (Subscription-CLI-Bridge) trägt dieselbe Gate-Logik
+unabhängig nach, da sie ohne Orchestrator-Instanz läuft.
+
+Zwei unabhängige Readiness-Signale werden UND-verknüpft (jedes kann
+Verfügbarkeit allein verweigern) — bewusst zwei getrennte Caches statt einem
+gemergten, damit keins das Urteil des anderen stillschweigend überschreiben
+kann:
+
+- **`PluginStatusRegistry`** (`middleware/src/platform/pluginStatusRegistry.ts`)
+  — explizit, vom Plugin selbst via
+  `ctx.status.report({state:'needs_action'|'error'})` gesetzt.
+- **`OAuthReadinessTracker`** (`middleware/src/plugins/oauth/oauthReadinessTracker.ts`)
+  — automatisch, aus demselben Vault-Token-State abgeleitet, den
+  `ctx.oauthTokens` liest; refreshed bei jedem
+  `ToolPluginRuntime`/`DynamicAgentRuntime.activate()` (Install,
+  Boot-Reaktivierung, Post-Connect). Deckt den Fall, dass
+  `installService.ts` ein `type:'oauth'`-Plugin schon beim `configure()`
+  aktiviert — bevor der Operator "Connect" geklickt hat —, ohne dass der
+  Plugin-Autor dafür einen eigenen `status.report()`-Call schreiben muss.
+
+Beide werden am Boot hinter dem Service-Registry-Key
+`installedPluginToolsReadyReader` (`middleware/src/index.ts`)
+veröffentlicht und von `harness-orchestrator/src/plugin.ts` als
+`OrchestratorOptions.isPluginToolsReady` verdrahtet. Bewusst getrennt von
+der MCP-Server-spezifischen Auth-Lücke (`mcpOAuthService`), die für
+MCP-Server bereits existiert — dieses Gate deckt nur native
+Plugin-Tool-Registrierungen ab.
+
 ### Sub-Agents (lokal, in-process)
 
 - **Datei:** `services/localSubAgent.ts` (`LocalSubAgent`-Klasse).
@@ -459,6 +504,214 @@ Fan-out; Turn vor Handshake wird verworfen; `localOperations`/`action` landen in
 Canvas synthetisieren, sobald Tier 2 (`omadia-ui-orchestrator`) `surface_*`
 emittiert** — der Transport ist vollständig.
 
+### Conductor Workflow-Templates (Operator-API, #429)
+
+Kuratierter, file-basierter Template-Katalog für Conductor: `TemplateManifest`s
+(kompletter `WorkflowGraph` mit `slot:<kind>:<key>`-Platzhaltern in den fünf
+Ref-Feldern + Slot-Deklarationen, Contract in `@omadia/conductor-core`;
+Name/Description/useCase und Slot-Label/-Beschreibungen sind **im Manifest
+lokalisierbar** — `LocalizedText` = plain string oder `{ en, de?, … }` mit
+Pflicht-`en`, Auflösung via `resolveLocalizedText`, UI löst client-seitig per
+`useLocale()` auf; `GET /templates` liefert weiterhin unaufgelöste volle
+Manifeste) liegen
+als JSON in `middleware/src/conductor/templates/` und werden beim Wiring einmal
+via `loadTemplateCatalog()` geladen (`templateCatalog.ts`; invalide Assets
+werden mit Log-Zeile übersprungen, CI-Gate ist
+`test/conductorTemplateCatalog.test.ts`). Drei neue Routes in
+`src/conductor/routes.ts`, gemountet unter dem auth-gated
+`/api/v1/operator/conductors`, **vor** dem `/:slug`-Catch-all registriert:
+
+- **`GET /templates`** → `200 { templates: TemplateManifest[] }` — volle
+  Manifeste inkl. Graph + Slots (maschinenlesbar für #330/Facilitator). Ohne
+  verdrahteten Katalog `{ templates: [] }`; Fehler →
+  `500 conductor.templates_failed`.
+- **`POST /templates/:id/resolve`** — Body `{ mapping }`. Ephemere
+  Instanziierung (der #330-Seam und "Open in designer" der UI): Slot-Mapping
+  substituieren, validieren, Graph zurückgeben, **nichts persistieren** →
+  `200 { graph }`. Fehler: `404 conductor.template_not_found`;
+  `400 conductor.template_slot_mapping_incomplete` mit
+  `missing: [{ kind, key, label }]` (fail-clear vor allem anderen);
+  `400 conductor.invalid_graph` mit den bekannten `unknown_*_ref`-Codes.
+- **`POST /templates/:id/instantiate`** — Body
+  `{ slug, name?, description?, mapping, enable? }`. Gleiche Fehlerpfade wie
+  `resolve`, plus: fehlender/leerer `slug` → `400 conductor.invalid_input`;
+  Slug-Kollision → `409 conductor.slug_exists` (**bewusste Abweichung** von der
+  Upsert-Semantik von `POST /` — Instanziieren heißt "neu anlegen", nie still
+  über einen bestehenden Workflow publishen). Die Kollision wird **atomar** im
+  Store erkannt: `createOrPublish({ expectNew: true })` →
+  `INSERT … ON CONFLICT (slug) DO NOTHING`, null Rows → Transaktion bricht mit
+  `WorkflowSlugExistsError` ab, Route mappt auf den 409 — kein racy
+  `getBySlug`-Pre-Check mehr; von zwei parallelen Instanziierungen desselben
+  frischen Slugs gewinnt genau eine. Publish sonst exakt wie
+  `POST /` inkl. atomarem Cron-Schedule-Reconcile (`onPublished` →
+  `scheduleStore.reconcileOnClient`); `enable` default `false`; `name`/
+  `description` defaulten aufs Manifest (en-aufgelöst) →
+  `201 { workflow, version }`.
+
+**Validierungs-Unterschied zu `POST /`:** beide Template-Routes validieren mit
+**live `KnownRefs`** (Agent-Slugs aus der Registry, Action-Ids, Role-Keys,
+Event-Katalog — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
+strukturell. Bewusst strenger: eine Template-Instanz muss lauffähig sein, nicht
+nur wohlgeformt. Ergebnis der Instanziierung ist ein gewöhnlicher versionierter
+Workflow ohne Rückverweis aufs Template (Copy, not Reference — seit #478 mit
+`template_id`/`template_version`-Provenance-Stempel auf der Workflow-Row, aber
+weiterhin nie zur Laufzeit dereferenziert).
+
+**Templates v2 (#478): DB-Store + Composite-Katalog + CRUD/Versionierung.**
+Conductor-Migration **`0006_templates.sql`** (eigene Chain,
+`_conductor_migrations`): `conductor_templates` (Owner, Review-`status`
+`private|pending|shared` ohne CHECK, `latest_version`, `reviewed_by`),
+`conductor_template_versions` (immutable JSONB-Manifeste, PK
+`(template_id, version)`), `conductor_template_instantiations` (append-only,
+anonym, denormalisierter `template_name`), plus Provenance-Spalten auf
+`conductor_workflows`. `src/conductor/templateStore.ts` =
+`createTemplateStore(pool, log)` (create/addVersion atomar per `FOR UPDATE`/
+get/list/delete/setStatus/listVersions/getVersion/recordInstantiation/
+instantiationCounts/stampWorkflowProvenance); die `version`-Spalte ist
+autoritativ und wird beim Lesen in `manifest.version` gestempelt.
+
+Der **Composite-Katalog** (`createCompositeTemplateCatalog` in
+`templateCatalog.ts`; Bundled-Files + DB-User-Templates + Plugin-Seam
+`registerPluginTemplates`/`unregisterPluginTemplates` für B3) ist
+viewer-scoped: `{ list(viewer), get(id, viewer) }`, Viewer =
+`req.session?.sub ?? 'operator'`. **Sichtbarkeitsregel (Review-Gate-Fix):**
+bundled/plugin für alle; User-Template sichtbar wenn `shared` ODER
+`createdBy = viewer` ODER **`pending`** (jeder Operator auf der single-tier
+Operator-API ist potenzieller Reviewer); nur fremde `private` bleiben
+verborgen. `get` wendet exakt die List-Regel an (kein 404-vs-List-Drift).
+
+Routes (in `src/conductor/templateRoutes.ts` ausgelagert, Registrierung
+unverändert **vor** `/:slug`): `GET /templates` liefert jetzt
+`TemplateSummary` = Manifest + **additive** Felder `source`
+(`bundled|user|plugin`), `status?`, `createdBy?`, `version`, `latestVersion`,
+`instantiationCount`, `updatedAt?` (v1-Felder unangetastet — #330 per
+Contract-Test gesichert). Neu: **`GET /templates/:id`** (`404
+conductor.template_not_found` wenn unsichtbar), **`POST /templates`** Body
+`{ manifest }` (validiert, erstellt `private` im Besitz des Viewers → `201
+{ template }`; `409 conductor.template_id_exists` bei Kollision mit
+bundled/plugin/DB; `400 conductor.template_invalid` mit Issues-Array),
+**`PUT /templates/:id`** (author-only `403 conductor.template_forbidden`;
+`manifest.id` muss `:id` sein → 400; hängt Version `latestVersion+1` an —
+Status bleibt bewusst unverändert: das Gate regelt das Teilen, nicht jede
+Version), **`DELETE /templates/:id`** (author-only, nur User-Source → 204),
+**`GET /templates/:id/versions`**. `resolve`/`instantiate` akzeptieren
+optional `version` im Body (Default: latest); `instantiate` stempelt die
+Provenance **in derselben Transaktion** wie den Publish (via `onPublished`)
+und schreibt best-effort eine Telemetry-Row. Tests:
+`test/conductorTemplateStore.test.ts` (stateful Fake-Pool) +
+`test/conductorTemplateRoutes.test.ts` (echter Composite-Katalog; explizite
+Reviewer-Reachability-Fälle: pending Template von A erscheint in Bs List/Get).
+
+**Templates v2 (#478 B3): Authoring, Review-Gate, Plugin-Templates, Update-Hint.**
+Neu in `templateRoutes.ts`: **`POST /:slug/save-as-template`** (der Router ist
+auf `/api/v1/operator/conductors` gemountet — es gibt keinen
+`/workflows`-Präfix) lädt die aktive publizierte Version und liefert per
+`inferTemplateManifest` einen **Draft** `{ draft, sourceWorkflow: { slug,
+version } }` — jede konkrete Ref wird deklarierter Slot (Label = ursprüngliche
+Ref), NICHTS wird persistiert; die UI editiert und publisht via
+`POST /templates` bzw. `PUT` (Body-Overrides `{ id?, name?, description?,
+useCase? }`; Default-Id = Slug, bei Kollision `-template`-Suffix; `404
+conductor.workflow_not_found` ohne publizierte Version). **Review-Gate**
+(Make-Shape `private → pending → shared`): `POST /templates/:id/submit`
+(author-only; `409 conductor.template_status_conflict` außer aus `private`),
+`POST /templates/:id/approve` / `reject` (**jeder Operator** — erreichbar,
+weil `pending` install-weit sichtbar ist; Auflösung über das viewer-scoped
+Katalog-`get`, `reviewed_by = viewer` wird protokolliert; Self-Approval bleibt
+erlaubt/auditierbar, Separation of Duties explizit deferred). Ein Reject durch
+einen Nicht-Autor macht das Template `private` und damit für den Reviewer
+unsichtbar — die Response trägt dann `template: null`. **Update-Hint:**
+Workflow-List (`GET /`) und -Detail (`GET /:slug`) liefern additiv
+`template?: { id, version, latestVersion, updateAvailable }` wenn die Row
+Provenance trägt (`attachTemplateHints` in `templateHints.ts`; ein
+Katalog-List-Read pro Request, viewer-scoped — ein unsichtbares Template
+degradiert zu `latestVersion = version, updateAvailable: false`, kein
+Existenz-Leak); `workflowStore` liest dafür `template_id`/`template_version`
+mit (additiv auf `ConductorWorkflow`). **Plugin-Templates** (Trust-Boundary
+dokumentiert in `docs/security-architecture.md` §4): Deklaration
+`permissions.templates` (package-relative `.json`-Pfade, Parsing
+`extractTemplateDeclarations` in `plugins/manifestLoader.ts`), Install-Gate
+**fail-closed** in `plugins/pluginTemplates.ts` (`loadPluginTemplates`:
+Pfad-Confinement nach Symlink-Unwrapping, Id-Namespace
+`plugin:<pluginId>:<name>`, `checkTemplateManifest({ strict: true })`,
+`isValidCron`); jeder Verstoß → `install.template_invalid`, Install
+verweigert, nichts wird ausgeführt. Akzeptierte Manifeste registrieren als
+read-only Source `plugin` im Composite-Katalog (InstallService-Dep
+`conductorTemplates`, lazy aufgelöst — Registrar-Forward-Ref in
+`src/index.ts`; Boot-Sweep `registerInstalledPluginTemplates` fail-open pro
+Template), Deregistrierung beim Uninstall. Tests:
+`test/pluginTemplates.test.ts` (Gate incl. Symlink-Escape,
+InstallService-Integration, Boot-Sweep) +
+`test/conductorTemplateRoutes.test.ts` (State-Machine incl.
+Non-Author-Approve, Inferenz-Roundtrip, Update-Hint, Plugin-Source read-only).
+
+**Templates v2 (#478 B4): Builder-Chat-Template-Awareness.** Der
+Conversational-Builder (`src/conductor/builderAgent.ts`) sieht jetzt den
+Template-Katalog: seine Deps bekommen den viewer-scoped Composite-Katalog
+(`templateCatalog.list(viewer)`) plus `templateKnownRefs` (dieselbe — jetzt in
+`src/conductor/index.ts` gehoistete — Funktion, gegen die auch
+`resolve`/`instantiate` validieren). Der System-Prompt trägt einen kompakten
+**Katalog-Digest** (pro sichtbarem Template: id, en-aufgelöste `name`/`useCase`
+via `resolveLocalizedText`, Version, Slot-Liste inkl. Text-Slots; Cap 30
+Templates mit Count-Note). Das Reply-Protokoll erlaubt zusätzlich zu
+`{ reply, patches }` einen `templateProposals`-Block; **`POST /builder/turn`**
+liefert ihn **additiv** durch (`templateProposals?: [{ templateId, version,
+reason, prefill }]`, Feld fehlt komplett ohne Proposals — v1-Wire-Shape
+byte-identisch). Serverseitiges Gate im Agent-Seam (defensiv, wirft nie):
+unbekannte/unsichtbare Template-Ids werden gegen den viewer-scoped Katalog
+gedroppt, Duplikate dedupliziert, max. 3 Proposals, `version` kommt
+autoritativ aus dem Katalog (nicht vom LLM), `prefill`-Guesses nur für
+deklarierte Slot-Keys und Ref-Kinds nur wenn sie gegen die live `KnownRefs`
+auflösen (`channels` hat kein KnownRefs-Set → strukturell akzeptiert, wie in
+`validate()`); gestrippte Guesses rendert das Formular leer statt kaputt. Ein
+kaputter Katalog/KnownRefs-Read degradiert zum templatelosen Turn statt zum
+500. Chat **proponiert und prefillt nur** — Instanziierung bleibt auf den
+bestehenden `resolve`/`instantiate`-Routen (Formular-Flow, keine
+Auto-Instanziierung). Der Viewer läuft als `req.session?.sub ?? 'operator'`
+durch `runTurn({ ..., viewer })`. Tests: `test/conductorBuilder.test.ts`
+(Digest-Sichtbarkeit inkl. pending/fremd-privat, Proposal-Vetting,
+Malformed-Blocks, No-Proposal-Regression).
+
+### Dataset-Routen + `query_dataset`-Tool (#430)
+
+Neue REST-Oberfläche `src/routes/datasets.ts`, gemountet unter
+`/api/v1/datasets` (ACL-Pattern wie `/api/v1/memory` —
+`req.session.omadia_user_id`, kein anonymer Zugriff):
+
+- `POST /api/v1/datasets` — multipart CSV-Upload (`multer`, ein File pro
+  Request, `MAX_UPLOAD_BYTES` = 25 MB).
+- `GET /api/v1/datasets` — Liste der eigenen Datasets.
+- `GET /api/v1/datasets/:id` — Schema + Metadaten eines Datasets.
+- `GET /api/v1/datasets/:id/rows` — paginierte Roh-Zeilen.
+- `DELETE /api/v1/datasets/:id` — Dataset löschen.
+
+Dieselbe Pipeline (`importCsvDataset` aus
+`harness-orchestrator/src/datasetImport.ts`) läuft auch automatisch beim
+CSV-Chat-Attachment-Pfad in `orchestrator.ts`'s `ingestAttachments` (ersetzt
+dort den bisherigen 20.000-Zeichen-Text-Cutoff für CSVs) — siehe §7 für die
+Knowledge-Graph-seitige Implementierung.
+
+Neues natives Tool **`query_dataset`** (`tools/queryDatasetTool.ts`),
+registriert wie die übrigen Orchestrator-Tools in §3's Orchestrator-Setup:
+`list_datasets` / `get_schema` / `query_rows` gegen eine eingeschränkte
+Filter/Aggregat-DSL (nie rohes SQL vom Modell), Ergebnisse immer
+server-seitig paginiert/aggregiert bzw. auf 200 Gruppen gecappt.
+
+**Identity-Resolution (Fixup Runde 5):** für einen Channel-Turn (Teams/
+Slack/Telegram) ist `ChatTurnInput.userId` die RAW channel-native id, NICHT
+die kanonische `omadiaUserId` uuid. `resolveTurnOwnerIdentity`
+(`resolveTurnOwnerIdentity.ts`) löst sie EINMAL pro Turn auf (via
+`KnowledgeGraph.resolveOrCreateChannelIdentity`, wenn `input.channelIdentity`
+gesetzt ist — sonst fällt sie auf `input.userId` zurück, das für HTTP/CLI-
+Turns bereits kanonisch ist) und legt sie in
+`TurnContextValue.resolvedOmadiaUserId` ab — einmal in `runTurn` (non-
+streaming) und einmal in `chatStream` (der Pfad, den
+`createOrchestratorDispatcher` für Channel-Turns tatsächlich aufruft).
+`QueryDatasetTool` und `ingestAttachments` lesen beide ausschließlich dieses
+Feld für die Dataset-ACL (niemals das rohe `TurnContextValue.userId`) — vorher
+schrieb der Import-Pfad unter der kanonischen id, während der Query-Pfad die
+rohe id las, sodass ein Channel-User sein eigenes gerade importiertes Dataset
+nie wiederfinden konnte.
+
 ---
 
 ## 4. Migration Managed Agents → Lokal
@@ -671,6 +924,35 @@ Wird vom Orchestrator aufgerufen, wenn der User auf prior art verweist.
 End-to-End verifiziert: der Orchestrator nutzt das Tool von selbst, ohne
 dass man ihn zwingt.
 
+### Structured Datasets — CSV Import (#430)
+
+Separate Ablage neben dem eigentlichen Graph — bewusst KEINE Graph-Node-
+Explosion pro Zeile (Node-Properties sind GIN-indexiert, siehe
+`ingestEntities`-Doku). Relationale Sidecar-Tabellen `datasets` +
+`dataset_rows` (Migration `packages/harness-knowledge-graph-neon/src/
+migrations/0029_datasets.sql`); pro Dataset genau EIN `Dataset`-Graph-Node
+(`PluginEntity`, `system='dataset'`) für Recall/Zitation.
+
+- **Interface:** `KnowledgeGraph.{ingestDataset,listDatasets,getDataset,
+  queryDatasetRows,deleteDataset}` (`plugin-api/src/knowledgeGraph.ts`),
+  implementiert in `@omadia/knowledge-graph-neon` (echtes SQL) UND
+  `@omadia/knowledge-graph-inmemory` (volle Parität, kein Stub).
+- **Import:** `POST /api/v1/datasets` (multipart CSV, `src/routes/
+  datasets.ts`) sowie automatisch bei CSV-Chat-Attachments
+  (`attachmentExtract.ts`'s `isCsvAttachment` branch in `orchestrator.ts`'s
+  `ingestAttachments` — ersetzt den bisherigen 20.000-Zeichen-Text-Cutoff
+  für CSVs).
+- **Privacy:** jede importierte Zeile läuft vor dem Schreiben durch den
+  bestehenden C0-Regex-Baseline-Detector (`@omadia/plugin-privacy-guard`'s
+  `createBaselineDetector`/`maskPrompt`) — dieselbe Pipeline, die
+  Freitext-User-Prompts schützt. Nur `string`/`date`-Spalten werden
+  gescannt (Details + Kosten-Hinweis in `datasetImport.ts`'s Modul-Doc).
+- **Query:** `query_dataset`-Tool (`tools/queryDatasetTool.ts`) — eine
+  eingeschränkte Filter/Aggregat-DSL (nie rohes SQL vom Modell), immer
+  server-seitig paginiert/aggregiert.
+- **Admin-UI:** bewusst NICHT Teil dieser Änderung — siehe PR-Beschreibung
+  von #430 für die Begründung; offener Folge-Task.
+
 ---
 
 ## 8. Skills
@@ -707,6 +989,14 @@ Migration. Statt dessen überschreibt der Preamble in
 
 Funktioniert in der Praxis. Falls ein Sub-Agent dennoch curl-Muster
 produziert, Skill selbst anpassen.
+
+### Cross-Referenz: `query_dataset` (#430) ist kein Skill
+
+AGENTS.md's Doku-Regel ordnet "Neue Route / Tool / Sub-Agent" §3 **und**
+§8 zu. #430's `query_dataset`-Tool ist ein natives Orchestrator-Tool ohne
+eigenen `skills/<name>/SKILL.md`-Ordner — es gehört also inhaltlich nicht
+in "Aktuelle Skills" oben. Referenz statt Duplikat: volle Doku in §3
+("Dataset-Routen + `query_dataset`-Tool") und §7 (Knowledge-Graph-Schicht).
 
 ---
 
@@ -794,6 +1084,8 @@ DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # Tenant-Scope (auch für Diagramm-Cache-Keys genutzt)
 GRAPH_TENANT_ID=byte5
+# Prompt-PII C1-Detector (GLiNER-Sidecar, #361) — optional
+PRIVACY_C1_DETECTOR_URL=http://pii-detector:8812   # unset ⇒ nur C0-Regex-Baseline
 # Runtime
 PORT=3979
 ```
@@ -815,6 +1107,69 @@ PORT=3979
    undici-Agent mit `rejectUnauthorized: false`. Global
    `NODE_TLS_REJECT_UNAUTHORIZED=0` **nicht** setzen — kompromittiert
    auch Anthropic-Verbindung.
+
+### Prompt-PII-Masking (#361): C1-Transformer-Detector (GLiNER-Sidecar)
+
+Das Privacy-Guard-Plugin (`middleware/packages/harness-plugin-privacy-guard`,
+Manifest 0.4.0) maskiert bei aktiviertem Setup-Field `mask_user_prompt`
+(default **off**) PII-Spans im freien User-Prompt durch Pseudonyme, bevor der
+Text die LLM-Wire kreuzt; die Realwerte werden server-seitig in der finalen
+Antwort restauriert. Zwei Detektor-Tiers:
+
+- **C0** — deterministische Regex-Baseline (E-Mail, IBAN, Telefon, Adresse,
+  Beträge, Daten), immer aktiv, wirft nie.
+- **C1** — Transformer-Tier für Personennamen + Freiform-Adressen:
+  `src/c1Detector.ts` (`createC1HttpDetector`, Detector-Id `c1-gliner`)
+  spricht den GLiNER-Inference-Sidecar `middleware/sidecars/pii-detector/`
+  über `POST /detect` an. Injection über den bestehenden
+  `createPrivacyGuardService({c1Detector})`-Slot — **keine** Änderungen an
+  `service.ts` / Orchestrator; `promptMask.ts` wurde nur durch den
+  Overlap-Remainder-Fix (`6b42c6c`, siehe unten) angepasst.
+
+Konfiguration (live pro Call aufgelöst, kein Restart nötig): Setup-Field
+`c1_detector_url` zuerst, Env-Fallback `PRIVACY_C1_DETECTOR_URL` (leer =
+unset). URL nicht gesetzt ⇒ C1 unkonfiguriert, es wird **kein** Call
+versucht (kein Degrade-Audit-Noise). Docker: Overlay
+`docker-compose.pii-detector.yaml` baut den Sidecar (keine published Ports —
+er sieht rohe Prompt-PII, niemals öffentlich exponieren) und setzt die URL.
+
+Fail-closed-Verhalten des Clients: Response-Schema wird **positiv**
+validiert (skillspector-Präzedenz); Non-200, `ok:false`, malformed Spans,
+Non-JSON oder Timeout (default 1500 ms) ⇒ throw ⇒ der Service degradiert
+auditiert auf C0 (`promptMaskDegraded`-Log-Zeile), niemals ein stiller
+unmaskierter Pass-Through. Offset-Kontrakt: der Sidecar liefert
+Unicode-**Code-Point**-Offsets (Python-Semantik), der Client konvertiert
+exakt nach UTF-16 und asserted pro Span `text.slice(...) === span.text` —
+Mismatch ⇒ throw (ein falsch verankerter Personen-Span wäre ein Leak).
+Fehlermeldungen tragen nie Prompt-Text oder Span-Werte (sie landen im
+Audit-Log).
+
+Manuelles E2E (dev):
+
+1. `docker compose -f docker-compose.yaml -f docker-compose.pii-detector.yaml up -d`,
+   warten bis `pii-detector` healthy (Modell-Load ~1-2 min).
+2. Im Plugin-Setup `c1_detector_url` (`http://pii-detector:8812`) und
+   `mask_user_prompt: on` setzen.
+3. Prompt senden: *"What should we pay Anna Schmidt (32, lives at
+   Bahnhofstr. 5, 60311 Frankfurt) given her salary of €72,000?"* —
+   Service-Log zeigt `promptMask ... spans=N` inkl. `person`-Span, der
+   Wire-Text trägt einen Surrogat-Namen, die finale Antwort den echten.
+4. Sidecar stoppen, erneut senden — Log zeigt `promptMaskDegraded`, der
+   Turn läuft auf C0 weiter (E-Mail/IBAN etc. weiterhin maskiert).
+5. `mask_user_prompt: off` ⇒ byte-identisches Legacy-Verhalten.
+
+Tests: `middleware/test/privacyPromptC1Detector.test.ts` (Client-Kontrakt +
+Service-Komposition), `privacyPromptMask.test.ts` (Seam/Degrade generisch,
+inkl. Regression: Overlap-Verlierer-Spans behalten ihre unbedeckten Reste —
+ein langer C1-Adress-Span wird nie mehr komplett verworfen, nur weil ein
+kurzer C0-Treffer in ihm liegt).
+
+Recorded Validation-Run (2026-07-10, alle drei Detector-Sets × 6 Locales):
+`middleware/packages/harness-plugin-privacy-guard/src/validation/RESULTS.md`
+— de/en/it bestehen ALLE Gates auf `c0+c1`; es/fr/nl scheitern an
+dokumentierten C0-Locale-Lücken (Beträge/Daten/Telefonformate). Flag-Policy
+unverändert: Tabellen müssen vor dem Flag-Flip pro Locale auf Issue #361
+gepostet sein.
 
 ---
 
@@ -1024,6 +1379,18 @@ gekettet, weil `requires` beim Boot enforced wird): docs-RFC (diese PR)
 (plus `TurnContextValue`-Extension) → vier Per-Channel-Opt-in-PRs →
 omadia-ui-Orchestrator-Consumer. Details + per-PR-Doc-Pflichten in §15
 des RFC.
+
+### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up)
+
+Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckt
+absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete bleibt
+API-only (`POST/GET/DELETE /api/v1/datasets*`, siehe §3). #430's eigene
+Triage-Acceptance-Criteria verlangen aber genau diese UI; der Branch
+schließt das Issue deshalb NICHT, sondern "addresses" es — ein
+Folge-Issue für die Admin-UI-Seite (`web-ui/app/admin/datasets/` o.ä.,
+Upload-Dropzone + Schema-Tabelle + Zeilen-Preview + Delete-Bestätigung,
+Pattern analog zur bestehenden Package-Upload-Seite) ist offen zu
+erfassen.
 
 ---
 

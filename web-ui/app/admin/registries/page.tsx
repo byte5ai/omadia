@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 
+import { useTranslations } from 'next-intl';
+
 import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
@@ -11,6 +13,8 @@ import {
   listRegistries,
   updateRegistry,
 } from '../../_lib/api';
+
+type TFn = (key: string, values?: Record<string, string | number>) => string;
 
 type State =
   | { kind: 'loading' }
@@ -26,6 +30,7 @@ type State =
  * install is seeded with the public default `hub.omadia.ai`.
  */
 export default function AdminRegistriesPage(): React.ReactElement {
+  const t = useTranslations('adminRegistries');
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -72,7 +77,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
       setToken('');
       await reload();
     } catch (err) {
-      setActionError(toFriendlyError(err));
+      setActionError(toFriendlyError(err, t));
     } finally {
       setAdding(false);
     }
@@ -96,7 +101,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
       setEditing(null);
       await reload();
     } catch (err) {
-      setActionError(toFriendlyError(err));
+      setActionError(toFriendlyError(err, t));
     } finally {
       setPending(null);
     }
@@ -109,21 +114,21 @@ export default function AdminRegistriesPage(): React.ReactElement {
       await updateRegistry(r.name, { token: null });
       await reload();
     } catch (err) {
-      setActionError(toFriendlyError(err));
+      setActionError(toFriendlyError(err, t));
     } finally {
       setPending(null);
     }
   }
 
   async function onDelete(r: StoredRegistry): Promise<void> {
-    if (!confirm(`Registry „${r.name}" wirklich entfernen?`)) return;
+    if (!confirm(t('confirmDelete', { name: r.name }))) return;
     setActionError(null);
     setPending(r.name);
     try {
       await deleteRegistry(r.name);
       await reload();
     } catch (err) {
-      setActionError(toFriendlyError(err));
+      setActionError(toFriendlyError(err, t));
     } finally {
       setPending(null);
     }
@@ -135,26 +140,26 @@ export default function AdminRegistriesPage(): React.ReactElement {
     <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <h1 className="font-display text-[clamp(1.75rem,3.5vw,2.5rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Plugin-Registries
+          {t('title')}
         </h1>
         <p className="mt-3 max-w-2xl text-[15px] leading-[1.55] text-[color:var(--fg-muted)]">
-          Quellen, aus denen Plugins in den Store gezogen werden. Neue Instanzen
-          starten mit{' '}
-          <code className="rounded bg-[color:var(--card)] px-1 py-0.5 text-[12px]">
-            hub.omadia.ai
-          </code>
-          . Der Token wird verschlüsselt gespeichert und nie wieder angezeigt —
-          nur, ob einer hinterlegt ist. Änderungen wirken ohne Neustart.
+          {t.rich('intro', {
+            hub: () => (
+              <code className="rounded bg-[color:var(--card)] px-1 py-0.5 text-[12px]">
+                hub.omadia.ai
+              </code>
+            ),
+          })}
         </p>
       </header>
 
       {/* Add form */}
       <section className="mb-8 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="mb-4 text-[15px] font-semibold text-[color:var(--fg-strong)]">
-          Registry hinzufügen
+          {t('addHeading')}
         </h2>
         <div className="grid gap-3 sm:grid-cols-[1fr_2fr_1.5fr_auto] sm:items-end">
-          <Field label="Name">
+          <Field label={t('fields.name')}>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -162,7 +167,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
               className={inputCls}
             />
           </Field>
-          <Field label="URL">
+          <Field label={t('fields.url')}>
             <input
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -170,11 +175,11 @@ export default function AdminRegistriesPage(): React.ReactElement {
               className={inputCls}
             />
           </Field>
-          <Field label="Token (optional)">
+          <Field label={t('fields.tokenOptional')}>
             <input
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder="nur für private Registries"
+              placeholder={t('placeholders.token')}
               type="password"
               className={inputCls}
             />
@@ -184,18 +189,18 @@ export default function AdminRegistriesPage(): React.ReactElement {
             onClick={() => void onAdd()}
             disabled={!canAdd}
           >
-            {adding ? '…' : 'Hinzufügen'}
+            {adding ? '…' : t('add')}
           </Button>
         </div>
       </section>
 
       {state.kind === 'loading' ? (
-        <p className="text-sm opacity-70">Lädt …</p>
+        <p className="text-sm opacity-70">{t('loading')}</p>
       ) : state.kind === 'error' ? (
-        <p className="text-sm text-[color:var(--danger)]">Fehler beim Laden: {state.message}</p>
+        <p className="text-sm text-[color:var(--danger)]">{t('loadError', { message: state.message })}</p>
       ) : state.registries.length === 0 ? (
         <p className="text-sm text-[color:var(--fg-muted)]">
-          Keine Registries konfiguriert.
+          {t('empty')}
         </p>
       ) : (
         <ul className="flex flex-col gap-3">
@@ -224,33 +229,33 @@ export default function AdminRegistriesPage(): React.ReactElement {
                     }
                     disabled={pending === r.name}
                   >
-                    {editing === r.name ? 'Abbrechen' : 'Bearbeiten'}
+                    {editing === r.name ? t('cancel') : t('edit')}
                   </Button>
                   <Button
                     variant="danger"
                     onClick={() => void onDelete(r)}
                     busy={pending === r.name}
-                    busyLabel="Entfernen"
+                    busyLabel={t('remove')}
                   >
-                    Entfernen
+                    {t('remove')}
                   </Button>
                 </div>
               </div>
 
               {editing === r.name && (
                 <div className="mt-4 grid gap-3 border-t border-[color:var(--border)] pt-4 sm:grid-cols-[2fr_1.5fr_auto] sm:items-end">
-                  <Field label="URL">
+                  <Field label={t('fields.url')}>
                     <input
                       value={editUrl}
                       onChange={(e) => setEditUrl(e.target.value)}
                       className={inputCls}
                     />
                   </Field>
-                  <Field label="Token ersetzen">
+                  <Field label={t('fields.replaceToken')}>
                     <input
                       value={editToken}
                       onChange={(e) => setEditToken(e.target.value)}
-                      placeholder={r.has_token ? '•••••• (unverändert)' : 'keiner'}
+                      placeholder={r.has_token ? t('placeholders.tokenUnchanged') : t('placeholders.tokenNone')}
                       type="password"
                       className={inputCls}
                     />
@@ -261,7 +266,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
                       onClick={() => void onSaveEdit(r)}
                       disabled={pending === r.name}
                     >
-                      Speichern
+                      {t('save')}
                     </Button>
                     {r.has_token && (
                       <Button
@@ -269,7 +274,7 @@ export default function AdminRegistriesPage(): React.ReactElement {
                         onClick={() => void onClearToken(r)}
                         disabled={pending === r.name}
                       >
-                        Token entfernen
+                        {t('removeToken')}
                       </Button>
                     )}
                   </div>
@@ -306,6 +311,7 @@ function Field({
 }
 
 function TokenBadge({ hasToken }: { hasToken: boolean }): React.ReactElement {
+  const t = useTranslations('adminRegistries.badge');
   return (
     <span
       className={[
@@ -315,29 +321,29 @@ function TokenBadge({ hasToken }: { hasToken: boolean }): React.ReactElement {
           : 'bg-[color:var(--border)]/40 text-[color:var(--fg-muted)]',
       ].join(' ')}
     >
-      {hasToken ? 'Token gesetzt' : 'öffentlich'}
+      {hasToken ? t('tokenSet') : t('public')}
     </span>
   );
 }
 
-function toFriendlyError(err: unknown): string {
+function toFriendlyError(err: unknown, t: TFn): string {
   if (err instanceof ApiError) {
     if (err.body.includes('registry_config.duplicate')) {
-      return 'Eine Registry mit diesem Namen existiert bereits.';
+      return t('errors.duplicate');
     }
     if (err.body.includes('invalid_url')) {
-      return 'Die URL ist ungültig (http(s) erforderlich).';
+      return t('errors.invalidUrl');
     }
     if (err.body.includes('invalid_name')) {
-      return 'Der Name darf nur Buchstaben, Zahlen, . _ - enthalten.';
+      return t('errors.invalidName');
     }
     if (err.body.includes('not_found')) {
-      return 'Registry nicht gefunden — Liste neu geladen.';
+      return t('errors.notFound');
     }
     if (err.body.includes('missing_fields')) {
-      return 'Name und URL sind erforderlich.';
+      return t('errors.missingFields');
     }
-    return `Fehler ${err.status}.`;
+    return t('errors.generic', { status: err.status });
   }
   return err instanceof Error ? err.message : String(err);
 }

@@ -5,6 +5,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '../../_lib/api';
 import { getAgentGraph, type AgentGraph } from '../../_lib/agentBuilder';
 
+/** Translator threaded in from the calling component (see messages/README.md). */
+type TFn = (key: string, values?: Record<string, string | number>) => string;
+
 export type GraphState =
   | { kind: 'loading' }
   | { kind: 'ready'; graph: AgentGraph }
@@ -29,8 +32,8 @@ export interface UseAgentGraph {
   ) => Promise<void>;
 }
 
-function friendlyError(err: unknown): string {
-  if (err instanceof ApiError) return `Fehler ${err.status}`;
+function friendlyError(err: unknown, t: TFn): string {
+  if (err instanceof ApiError) return t('apiError', { status: err.status });
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -38,8 +41,11 @@ function friendlyError(err: unknown): string {
  * Loads and mutates an agent's canvas graph with optimistic UI + rollback.
  * The single `mutate` primitive backs every edge/node operation in the
  * canvas: snapshot → apply → commit → (rollback on failure).
+ *
+ * `t` is the caller's `useTranslations('admin.builder')` translator, used
+ * for the user-visible API-error message.
  */
-export function useAgentGraph(slug: string | null): UseAgentGraph {
+export function useAgentGraph(slug: string | null, t: TFn): UseAgentGraph {
   const [state, setState] = useState<GraphState>(
     slug ? { kind: 'loading' } : { kind: 'error', message: '' },
   );
@@ -56,9 +62,9 @@ export function useAgentGraph(slug: string | null): UseAgentGraph {
       const graph = await getAgentGraph(slug);
       setState({ kind: 'ready', graph });
     } catch (err) {
-      setState({ kind: 'error', message: friendlyError(err) });
+      setState({ kind: 'error', message: friendlyError(err, t) });
     }
-  }, [slug]);
+  }, [slug, t]);
 
   useEffect(() => {
     if (!slug) return;
@@ -80,10 +86,10 @@ export function useAgentGraph(slug: string | null): UseAgentGraph {
       } catch (err) {
         // Rollback to the authoritative pre-mutation snapshot.
         setState({ kind: 'ready', graph: snapshot });
-        setActionError(friendlyError(err));
+        setActionError(friendlyError(err, t));
       }
     },
-    [],
+    [t],
   );
 
   return {

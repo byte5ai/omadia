@@ -67,6 +67,13 @@ function LoginPageInner(): React.ReactElement {
     return raw;
   }, [searchParams]);
 
+  // Explicit re-login request (SessionWatcher's "Relogin now" button). The
+  // current session may still be valid, but the operator asked to mint a
+  // fresh token — so skip the already-authenticated short-circuit below and
+  // render the login form. Without this the page would bounce straight back
+  // and the button would appear to do nothing.
+  const forceReauth = searchParams.get('reauth') === '1';
+
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -85,7 +92,7 @@ function LoginPageInner(): React.ReactElement {
           getAuthProviders(),
         ]);
         if (cancelled) return;
-        if (session.authenticated) {
+        if (session.authenticated && !forceReauth) {
           // Guard against ?return=/login which would re-enter this page
           // and loop. Only reachable via hand-crafted URLs today.
           router.replace(returnPath === '/login' ? '/' : returnPath);
@@ -118,7 +125,7 @@ function LoginPageInner(): React.ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [returnPath, router]);
+  }, [returnPath, router, forceReauth]);
 
   async function handlePasswordSubmit(
     e: React.FormEvent<HTMLFormElement>,
@@ -250,7 +257,7 @@ function PageShell({ children }: { children: React.ReactNode }): React.ReactElem
           elev.modal carries the accent-glow components). */}
       <div className="lume-surface-raised lume-border w-full max-w-sm rounded-lg p-6 shadow-[var(--shadow-lg)]">
         <header className="mb-6 flex flex-col leading-none">
-          <h1 className="font-display text-3xl text-[color:var(--fg-strong)]">
+          <h1 className="font-logo text-3xl text-[color:var(--fg-strong)]">
             omadia
           </h1>
           <span className="mt-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-muted)]">

@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+
 import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 
@@ -23,6 +25,7 @@ const COST_CONFIRM_THRESHOLD = 50;
  * through hundreds of Haiku calls.
  */
 export default function BulkPromotePage(): React.ReactElement {
+  const t = useTranslations('adminBulkPromote');
   const [threshold, setThreshold] = useState(0.7);
   const [scoreLimit, setScoreLimit] = useState(100);
   const [promoteLimit, setPromoteLimit] = useState(100);
@@ -57,7 +60,10 @@ export default function BulkPromotePage(): React.ReactElement {
     if (
       scoreLimit > COST_CONFIRM_THRESHOLD &&
       !window.confirm(
-        `Achtung: bis zu ${String(scoreLimit)} Haiku-Calls (~$${(scoreLimit * 0.02).toFixed(2)}). Wirklich starten?`,
+        t('confirmRun', {
+          count: scoreLimit,
+          cost: (scoreLimit * 0.02).toFixed(2),
+        }),
       )
     ) {
       return;
@@ -71,16 +77,14 @@ export default function BulkPromotePage(): React.ReactElement {
       void loadPreview();
     } catch (err) {
       if (err instanceof ApiError && err.status === 503) {
-        setRunError(
-          'Kein SignificanceScorer verfügbar — ANTHROPIC_API_KEY in der Middleware setzen.',
-        );
+        setRunError(t('noScorerError'));
       } else {
         setRunError(err instanceof Error ? err.message : String(err));
       }
     } finally {
       setRunning(false);
     }
-  }, [scoreLimit, promoteLimit, threshold, loadPreview]);
+  }, [scoreLimit, promoteLimit, threshold, loadPreview, t]);
 
   return (
     <main className="mx-auto max-w-[800px] px-6 py-12 lg:px-8 lg:py-16">
@@ -92,44 +96,50 @@ export default function BulkPromotePage(): React.ReactElement {
           ← /admin
         </Link>
         <h1 className="mt-2 font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Memory · Bulk-Promotion
+          {t('title')}
         </h1>
         <p className="mt-3 max-w-2xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
-          Scoret historische Turns mit fehlender Significance via Haiku und
-          promotet die hochbewerteten als MemorableKnowledge. Idempotent —
-          Re-Runs machen nur neue Arbeit.
+          {t('intro')}
         </p>
       </header>
 
       <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-          Vorschau
+          {t('previewTitle')}
         </h2>
         {previewLoading && (
-          <p className="text-xs text-[color:var(--fg-muted)]">lädt…</p>
+          <p className="text-xs text-[color:var(--fg-muted)]">{t('loading')}</p>
         )}
         {previewError !== null && (
           <p className="border-l-2 border-[color:var(--danger-edge)] px-2 py-1 text-xs text-[color:var(--danger)]">
-            Fehler: {previewError}
+            {t('error', { message: previewError })}
           </p>
         )}
         {preview !== null && previewError === null && (
           <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-            <dt className="text-[color:var(--fg-muted)]">Turns ohne Significance</dt>
+            <dt className="text-[color:var(--fg-muted)]">
+              {t('turnsWithoutSignificance')}
+            </dt>
             <dd className="font-mono">{preview.nullSignificanceCount}</dd>
             <dt className="text-[color:var(--fg-muted)]">
-              Eligible für Promotion (≥ {preview.threshold.toFixed(2)})
+              {t('eligibleForPromotion', {
+                threshold: preview.threshold.toFixed(2),
+              })}
             </dt>
             <dd className="font-mono">{preview.eligibleForPromoteCount}</dd>
-            <dt className="text-[color:var(--fg-muted)]">Bereits promoted</dt>
+            <dt className="text-[color:var(--fg-muted)]">
+              {t('alreadyPromoted')}
+            </dt>
             <dd className="font-mono">{preview.alreadyPromotedCount}</dd>
-            <dt className="text-[color:var(--fg-muted)]">Scorer verfügbar</dt>
+            <dt className="text-[color:var(--fg-muted)]">
+              {t('scorerAvailable')}
+            </dt>
             <dd>
               {preview.scorerAvailable ? (
                 <span className="text-[color:var(--success)]">✓</span>
               ) : (
                 <span className="text-[color:var(--warning)]">
-                  ✗ — ANTHROPIC_API_KEY nicht gesetzt
+                  {t('scorerUnavailable')}
                 </span>
               )}
             </dd>
@@ -139,12 +149,12 @@ export default function BulkPromotePage(): React.ReactElement {
 
       <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-          Parameter
+          {t('parametersTitle')}
         </h2>
         <div className="grid gap-3 sm:grid-cols-3">
           <label className="flex flex-col gap-1">
             <span className="text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
-              Threshold
+              {t('thresholdLabel')}
             </span>
             <input
               type="number"
@@ -159,7 +169,7 @@ export default function BulkPromotePage(): React.ReactElement {
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
-              Score-Limit
+              {t('scoreLimitLabel')}
             </span>
             <input
               type="number"
@@ -173,7 +183,7 @@ export default function BulkPromotePage(): React.ReactElement {
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
-              Promote-Limit
+              {t('promoteLimitLabel')}
             </span>
             <input
               type="number"
@@ -193,7 +203,7 @@ export default function BulkPromotePage(): React.ReactElement {
             onClick={() => void loadPreview()}
             disabled={running || previewLoading}
           >
-            Vorschau aktualisieren
+            {t('refreshPreview')}
           </Button>
           <Button
             variant="primary"
@@ -201,9 +211,9 @@ export default function BulkPromotePage(): React.ReactElement {
             onClick={() => void trigger()}
             disabled={running || preview === null || !preview.scorerAvailable}
             busy={running}
-            busyLabel="läuft"
+            busyLabel={t('running')}
           >
-            Bulk-Job starten
+            {t('startRun')}
           </Button>
         </div>
       </section>
@@ -217,12 +227,12 @@ export default function BulkPromotePage(): React.ReactElement {
       {result !== null && (
         <section className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
           <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-            Ergebnis ({result.durationMs} ms)
+            {t('resultTitle', { duration: result.durationMs })}
           </h2>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-                Phase 1 · SCORE
+                {t('scorePhaseTitle')}
               </h3>
               <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-sm">
                 <dt className="text-[color:var(--fg-muted)]">scanned</dt>
@@ -239,7 +249,7 @@ export default function BulkPromotePage(): React.ReactElement {
             </div>
             <div>
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-                Phase 2 · PROMOTE
+                {t('promotePhaseTitle')}
               </h3>
               <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-sm">
                 <dt className="text-[color:var(--fg-muted)]">scanned</dt>

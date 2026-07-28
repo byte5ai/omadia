@@ -73,6 +73,7 @@ export function PersonaPillar({
   disabled,
 }: PersonaPillarProps): React.ReactElement {
   const t = useTranslations('builder.persona.pillar');
+  const tAxes = useTranslations('builder.persona.axes');
   const [persona, setPersona] = useState<PersonaConfig>(
     () => initialPersona ?? {},
   );
@@ -302,7 +303,7 @@ export function PersonaPillar({
             axis={axis}
             labelLeft={PERSONA_AXIS_LABELS[axis].left}
             labelRight={PERSONA_AXIS_LABELS[axis].right}
-            description={PERSONA_AXIS_LABELS[axis].description}
+            description={tAxes(`${axis}.description`)}
             value={persona.axes?.[axis] ?? PERSONA_AXIS_NEUTRAL}
             onChange={(v) => handleAxisChange(axis, v)}
             {...(warningByAxis.has(axis)
@@ -337,7 +338,7 @@ export function PersonaPillar({
                 axis={axis}
                 labelLeft={PERSONA_AXIS_LABELS[axis].left}
                 labelRight={PERSONA_AXIS_LABELS[axis].right}
-                description={PERSONA_AXIS_LABELS[axis].description}
+                description={tAxes(`${axis}.description`)}
                 value={persona.axes?.[axis] ?? PERSONA_AXIS_NEUTRAL}
                 onChange={(v) => handleAxisChange(axis, v)}
                 {...(warningByAxis.has(axis)

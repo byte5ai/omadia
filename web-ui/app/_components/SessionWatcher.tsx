@@ -50,10 +50,20 @@ function formatClock(ms: number): string {
   return `${minutes.toString()}:${seconds.toString().padStart(2, '0')}`;
 }
 
-/** Bounce to the login page, preserving the current location as `return`. */
+/**
+ * Bounce to the login page to re-authenticate, preserving the current
+ * location as `return`.
+ *
+ * The `reauth=1` flag marks this as an *explicit* re-login. During the
+ * warning phase the current session is still (briefly) valid, so without
+ * this flag the login page would see a live session and immediately bounce
+ * back here — making the "Relogin now" button look like it does nothing.
+ * The flag tells /login to show the form regardless.
+ */
 function relogin(): void {
   const target = window.location.pathname + window.location.search;
-  window.location.assign(`/login?return=${encodeURIComponent(target)}`);
+  const query = new URLSearchParams({ return: target, reauth: '1' });
+  window.location.assign(`/login?${query.toString()}`);
 }
 
 export function SessionWatcher(): React.ReactElement | null {

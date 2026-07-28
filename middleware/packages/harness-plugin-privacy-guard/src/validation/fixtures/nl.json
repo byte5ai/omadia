@@ -1,0 +1,1480 @@
+[
+  {
+    "text": "Jan van der Berg neemt vanaf mei de teamleiding over.",
+    "spans": [
+      {
+        "value": "Jan van der Berg",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Anouk de Vries en Pieter van den Heuvel delen de coördinatie van de avondploeg.",
+    "spans": [
+      {
+        "value": "Anouk de Vries",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Pieter van den Heuvel",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Sophie van Dijk wacht nog op een reactie over haar overplaatsing.",
+    "spans": [
+      {
+        "value": "Sophie van Dijk",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Willem ten Brink gaat op 30-06-2027 met pensioen.",
+    "spans": [
+      {
+        "value": "Willem ten Brink",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "30-06-2027",
+        "type": "date",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Mevrouw Bakker heeft het addendum nog niet ondertekend — graag herinneren.",
+    "spans": [
+      {
+        "value": "Mevrouw Bakker",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Bezorg de apparatuur bij de opslag achter de oude watertoren aan de Molenweg 3, tweede hek links na de spoorwegovergang, 6741 KM Lunteren.",
+    "spans": [
+      {
+        "value": "de opslag achter de oude watertoren aan de Molenweg 3, tweede hek links na de spoorwegovergang, 6741 KM Lunteren",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Stuur de koerier vóór twaalven naar de Herengracht 341.",
+    "spans": [
+      {
+        "value": "Herengracht 341",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Het BSN van Daan Visser is 123456782 — vastleggen in het dossier.",
+    "spans": [
+      {
+        "value": "Daan Visser",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "123456782",
+        "type": "idnum",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Bel Femke Mulder op 06 1234 5678 voor de keuring.",
+    "spans": [
+      {
+        "value": "Femke Mulder",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "06 1234 5678",
+        "type": "phone",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Aan de workshop doen Lotte Meijer, Bram Dekker en Eva Scholten mee.",
+    "spans": [
+      {
+        "value": "Lotte Meijer",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Bram Dekker",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Eva Scholten",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "De bonus van Ruben Smit, € 1.850, wordt met het meisalaris uitbetaald.",
+    "spans": [
+      {
+        "value": "Ruben Smit",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "€ 1.850",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Maak het voorschot over naar NL91 ABNA 0417 1643 00 ten name van Marit Postma.",
+    "spans": [
+      {
+        "value": "NL91 ABNA 0417 1643 00",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "Marit Postma",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Kandidaat Nienke Vos-Hoekstra is door naar de laatste ronde.",
+    "spans": [
+      {
+        "value": "Nienke Vos-Hoekstra",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Onze nieuwe contactpersoon heet Fatima el Amrani van de vestiging Rotterdam.",
+    "spans": [
+      {
+        "value": "Fatima el Amrani",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Joris Hendriks is geboren op 1990-06-15 volgens het dossier.",
+    "spans": [
+      {
+        "value": "Joris Hendriks",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "1990-06-15",
+        "type": "date",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Thijs Kuipers verhuist naar de Kerkstraat 12, 3811 KE Amersfoort.",
+    "spans": [
+      {
+        "value": "Thijs Kuipers",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Kerkstraat 12, 3811 KE Amersfoort",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Stuur het getekende contract door naar l.meijer@bedrijf-voorbeeld.nl en laat Lotte Meijer het weten.",
+    "spans": [
+      {
+        "value": "l.meijer@bedrijf-voorbeeld.nl",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "Lotte Meijer",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Wat zouden we Anouk Willemsen moeten betalen bij een huidig salaris van € 12.750,00?",
+    "spans": [
+      {
+        "value": "Anouk Willemsen",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "€ 12.750,00",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Wat zouden we Stijn Bosman moeten betalen bij een huidig salaris van € 12.750,00?",
+    "spans": [
+      {
+        "value": "Stijn Bosman",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "€ 12.750,00",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Wat zouden we Roos Jacobs moeten betalen bij een huidig salaris van € 3.499,99?",
+    "spans": [
+      {
+        "value": "Roos Jacobs",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "€ 3.499,99",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Wat zouden we Stijn Bosman moeten betalen bij een huidig salaris van € 4.980?",
+    "spans": [
+      {
+        "value": "Stijn Bosman",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "€ 4.980",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Maak het voorschot over naar NL63 INGB 0004 5566 78 en zet facturen@voorbeeld-consult.nl in de cc.",
+    "spans": [
+      {
+        "value": "NL63 INGB 0004 5566 78",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "facturen@voorbeeld-consult.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Maak het voorschot over naar NL86 INGB 0002 4455 88 en zet salaris@voorbeeld-bv.nl in de cc.",
+    "spans": [
+      {
+        "value": "NL86 INGB 0002 4455 88",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "salaris@voorbeeld-bv.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Maak het voorschot over naar NL39 RABO 0300 0652 64 en zet salaris@voorbeeld-bv.nl in de cc.",
+    "spans": [
+      {
+        "value": "NL39 RABO 0300 0652 64",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "salaris@voorbeeld-bv.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Maak het voorschot over naar NL39 RABO 0300 0652 64 en zet d.visser@bedrijf-voorbeeld.nl in de cc.",
+    "spans": [
+      {
+        "value": "NL39 RABO 0300 0652 64",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "d.visser@bedrijf-voorbeeld.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bel Bram Dekker op +31 20 624 1187; de geboortedatum in het dossier is 1990-06-15.",
+    "spans": [
+      {
+        "value": "Bram Dekker",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+31 20 624 1187",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "1990-06-15",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bel Koen Peters op +31 6 5512 3498; de geboortedatum in het dossier is 28-02-1995.",
+    "spans": [
+      {
+        "value": "Koen Peters",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+31 6 5512 3498",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "28-02-1995",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bel Iris Groen op 06 1234 5678; de geboortedatum in het dossier is 1984-09-17.",
+    "spans": [
+      {
+        "value": "Iris Groen",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "06 1234 5678",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "1984-09-17",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bel Thijs Kuipers op 020 623 4455; de geboortedatum in het dossier is 28-02-1995.",
+    "spans": [
+      {
+        "value": "Thijs Kuipers",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "020 623 4455",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "28-02-1995",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "De factuur van € 67.200 moet naar Amstelveenseweg 88, 1075 XM Amsterdam.",
+    "spans": [
+      {
+        "value": "€ 67.200",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Amstelveenseweg 88, 1075 XM Amsterdam",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "De factuur van € 899 moet naar Wilhelminalaan 4, 2012 EM Haarlem.",
+    "spans": [
+      {
+        "value": "€ 899",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Wilhelminalaan 4, 2012 EM Haarlem",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "De factuur van € 72.000 moet naar Stationsplein 9, 3511 ED Utrecht.",
+    "spans": [
+      {
+        "value": "€ 72.000",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Stationsplein 9, 3511 ED Utrecht",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "De factuur van € 15.000 moet naar Stationsplein 9, 3511 ED Utrecht.",
+    "spans": [
+      {
+        "value": "€ 15.000",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Stationsplein 9, 3511 ED Utrecht",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Voer Stijn Bosman op als nieuwe medewerker met het werkadres r.smit@voorbeeld-consult.nl.",
+    "spans": [
+      {
+        "value": "Stijn Bosman",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "r.smit@voorbeeld-consult.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Voer Lars Veldkamp op als nieuwe medewerker met het werkadres sanne.bakker@voorbeeld-bv.nl.",
+    "spans": [
+      {
+        "value": "Lars Veldkamp",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "sanne.bakker@voorbeeld-bv.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Voer Lotte Meijer op als nieuwe medewerker met het werkadres sanne.bakker@voorbeeld-bv.nl.",
+    "spans": [
+      {
+        "value": "Lotte Meijer",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "sanne.bakker@voorbeeld-bv.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Voer Maud Prins op als nieuwe medewerker met het werkadres l.meijer@bedrijf-voorbeeld.nl.",
+    "spans": [
+      {
+        "value": "Maud Prins",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "l.meijer@bedrijf-voorbeeld.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Daan Visser is per 12-11-1979 uit dienst — start de offboardingchecklist.",
+    "spans": [
+      {
+        "value": "Daan Visser",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12-11-1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Sven Hoekstra is per 12-11-1979 uit dienst — start de offboardingchecklist.",
+    "spans": [
+      {
+        "value": "Sven Hoekstra",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12-11-1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Sven Hoekstra is per 30-06-2026 uit dienst — start de offboardingchecklist.",
+    "spans": [
+      {
+        "value": "Sven Hoekstra",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "30-06-2026",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Ruben Smit is per 2023-02-01 uit dienst — start de offboardingchecklist.",
+    "spans": [
+      {
+        "value": "Ruben Smit",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "2023-02-01",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Werk de stamgegevens bij: Sanne Bakker woont nu op Molenweg 3, 6741 KM Lunteren.",
+    "spans": [
+      {
+        "value": "Sanne Bakker",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Molenweg 3, 6741 KM Lunteren",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Werk de stamgegevens bij: Marit Postma woont nu op Dorpsweg 17, 8325 BH Vollenhove.",
+    "spans": [
+      {
+        "value": "Marit Postma",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Dorpsweg 17, 8325 BH Vollenhove",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Werk de stamgegevens bij: Eva Scholten woont nu op Stationsplein 9, 3511 ED Utrecht.",
+    "spans": [
+      {
+        "value": "Eva Scholten",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Stationsplein 9, 3511 ED Utrecht",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Werk de stamgegevens bij: Femke Mulder woont nu op Prinsengracht 263, 1016 GV Amsterdam.",
+    "spans": [
+      {
+        "value": "Femke Mulder",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Prinsengracht 263, 1016 GV Amsterdam",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Vergoed de reiskosten van € 15.000 naar NL86 INGB 0002 4455 88.",
+    "spans": [
+      {
+        "value": "€ 15.000",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "NL86 INGB 0002 4455 88",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Vergoed de reiskosten van € 72.000 naar NL63 INGB 0004 5566 78.",
+    "spans": [
+      {
+        "value": "€ 72.000",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "NL63 INGB 0004 5566 78",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Vergoed de reiskosten van € 58.500 naar NL39 RABO 0300 0652 64.",
+    "spans": [
+      {
+        "value": "€ 58.500",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "NL39 RABO 0300 0652 64",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Vergoed de reiskosten van € 72.000 naar NL39 RABO 0300 0652 64.",
+    "spans": [
+      {
+        "value": "€ 72.000",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "NL39 RABO 0300 0652 64",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Stuur de loonstrook naar salaris@voorbeeld-bv.nl; het brutoloon is € 4.980.",
+    "spans": [
+      {
+        "value": "salaris@voorbeeld-bv.nl",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "€ 4.980",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Stuur de loonstrook naar sanne.bakker@voorbeeld-bv.nl; het brutoloon is € 72.000.",
+    "spans": [
+      {
+        "value": "sanne.bakker@voorbeeld-bv.nl",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "€ 72.000",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Stuur de loonstrook naar salaris@voorbeeld-bv.nl; het brutoloon is € 3.499,99.",
+    "spans": [
+      {
+        "value": "salaris@voorbeeld-bv.nl",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "€ 3.499,99",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Stuur de loonstrook naar boekhouding@voorbeeld-bv.nl; het brutoloon is € 899.",
+    "spans": [
+      {
+        "value": "boekhouding@voorbeeld-bv.nl",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "€ 899",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Voor de referentiecheck kun je Marit Postma bereiken op +31 20 624 1187.",
+    "spans": [
+      {
+        "value": "Marit Postma",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+31 20 624 1187",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Voor de referentiecheck kun je Jelle Timmermans bereiken op +31 20 624 1187.",
+    "spans": [
+      {
+        "value": "Jelle Timmermans",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+31 20 624 1187",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Voor de referentiecheck kun je Iris Groen bereiken op 06 1234 5678.",
+    "spans": [
+      {
+        "value": "Iris Groen",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "06 1234 5678",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Voor de referentiecheck kun je Marit Postma bereiken op +31 6 2445 8812.",
+    "spans": [
+      {
+        "value": "Marit Postma",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+31 6 2445 8812",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bereid het beoordelingsgesprek met Niels Verbeek voor.",
+    "spans": [
+      {
+        "value": "Niels Verbeek",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bereid het beoordelingsgesprek met Daan Visser voor.",
+    "spans": [
+      {
+        "value": "Daan Visser",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bereid het beoordelingsgesprek met Anouk Willemsen voor.",
+    "spans": [
+      {
+        "value": "Anouk Willemsen",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bereid het beoordelingsgesprek met Fleur Sanders voor.",
+    "spans": [
+      {
+        "value": "Fleur Sanders",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Lotte Meijer heeft zich op 12-11-1979 ziek gemeld — registreer dit in de HR-module.",
+    "spans": [
+      {
+        "value": "Lotte Meijer",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12-11-1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Marit Postma heeft zich op 30-06-2026 ziek gemeld — registreer dit in de HR-module.",
+    "spans": [
+      {
+        "value": "Marit Postma",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "30-06-2026",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Sanne Bakker heeft zich op 12-11-1979 ziek gemeld — registreer dit in de HR-module.",
+    "spans": [
+      {
+        "value": "Sanne Bakker",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12-11-1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bram Dekker heeft zich op 28-02-1995 ziek gemeld — registreer dit in de HR-module.",
+    "spans": [
+      {
+        "value": "Bram Dekker",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "28-02-1995",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "De leverancier verwacht de betaling van € 1.250,50 op NL39 RABO 0300 0652 64.",
+    "spans": [
+      {
+        "value": "€ 1.250,50",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "NL39 RABO 0300 0652 64",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "De leverancier verwacht de betaling van € 12.750,00 op NL20 ABNA 0512 3344 55.",
+    "spans": [
+      {
+        "value": "€ 12.750,00",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "NL20 ABNA 0512 3344 55",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "De leverancier verwacht de betaling van € 4.980 op NL39 RABO 0300 0652 64.",
+    "spans": [
+      {
+        "value": "€ 4.980",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "NL39 RABO 0300 0652 64",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "De leverancier verwacht de betaling van € 899 op NL86 INGB 0002 4455 88.",
+    "spans": [
+      {
+        "value": "€ 899",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "NL86 INGB 0002 4455 88",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Nieuwe sollicitatie: Daan Visser, bereikbaar op +31 20 624 1187 of via f.mulder@post-voorbeeld.nl.",
+    "spans": [
+      {
+        "value": "Daan Visser",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+31 20 624 1187",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "f.mulder@post-voorbeeld.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nieuwe sollicitatie: Lotte Meijer, bereikbaar op +31 10 411 2230 of via r.smit@voorbeeld-consult.nl.",
+    "spans": [
+      {
+        "value": "Lotte Meijer",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+31 10 411 2230",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "r.smit@voorbeeld-consult.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nieuwe sollicitatie: Iris Groen, bereikbaar op +31 6 5512 3498 of via f.mulder@post-voorbeeld.nl.",
+    "spans": [
+      {
+        "value": "Iris Groen",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+31 6 5512 3498",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "f.mulder@post-voorbeeld.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nieuwe sollicitatie: Sven Hoekstra, bereikbaar op +31 6 5512 3498 of via hr@voorbeeld-consult.nl.",
+    "spans": [
+      {
+        "value": "Sven Hoekstra",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+31 6 5512 3498",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "hr@voorbeeld-consult.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Stuur het aanbod naar Ilse Brouwer, Amstelveenseweg 88, 1075 XM Amsterdam.",
+    "spans": [
+      {
+        "value": "Ilse Brouwer",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Amstelveenseweg 88, 1075 XM Amsterdam",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Stuur het aanbod naar Femke Mulder, Herengracht 341, 1016 AZ Amsterdam.",
+    "spans": [
+      {
+        "value": "Femke Mulder",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Herengracht 341, 1016 AZ Amsterdam",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Stuur het aanbod naar Femke Mulder, Amstelveenseweg 88, 1075 XM Amsterdam.",
+    "spans": [
+      {
+        "value": "Femke Mulder",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Amstelveenseweg 88, 1075 XM Amsterdam",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Stuur het aanbod naar Stijn Bosman, Herengracht 341, 1016 AZ Amsterdam.",
+    "spans": [
+      {
+        "value": "Stijn Bosman",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Herengracht 341, 1016 AZ Amsterdam",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Het contract van Lars Veldkamp start op 28-02-1995 met een jaarsalaris van € 12.750,00.",
+    "spans": [
+      {
+        "value": "Lars Veldkamp",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "28-02-1995",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "€ 12.750,00",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Het contract van Maud Prins start op 30-06-2026 met een jaarsalaris van € 58.500.",
+    "spans": [
+      {
+        "value": "Maud Prins",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "30-06-2026",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "€ 58.500",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Het contract van Wouter Blom start op 28-02-1995 met een jaarsalaris van € 62.400.",
+    "spans": [
+      {
+        "value": "Wouter Blom",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "28-02-1995",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "€ 62.400",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Het contract van Femke Mulder start op 1990-06-15 met een jaarsalaris van € 62.400.",
+    "spans": [
+      {
+        "value": "Femke Mulder",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "1990-06-15",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "€ 62.400",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Schrijf Thijs Kuipers in voor de training van volgende week en informeer salaris@voorbeeld-bv.nl.",
+    "spans": [
+      {
+        "value": "Thijs Kuipers",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "salaris@voorbeeld-bv.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Schrijf Joris Hendriks in voor de training van volgende week en informeer salaris@voorbeeld-bv.nl.",
+    "spans": [
+      {
+        "value": "Joris Hendriks",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "salaris@voorbeeld-bv.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Schrijf Maud Prins in voor de training van volgende week en informeer hr@voorbeeld-consult.nl.",
+    "spans": [
+      {
+        "value": "Maud Prins",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "hr@voorbeeld-consult.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Schrijf Wouter Blom in voor de training van volgende week en informeer a.willemsen@voorbeeld-bv.nl.",
+    "spans": [
+      {
+        "value": "Wouter Blom",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "a.willemsen@voorbeeld-bv.nl",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Naar welk adres ging de laatste aanmaning — Wilhelminalaan 4, 2012 EM Haarlem, klopt dat?",
+    "spans": [
+      {
+        "value": "Wilhelminalaan 4, 2012 EM Haarlem",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Naar welk adres ging de laatste aanmaning — Stationsplein 9, 3511 ED Utrecht, klopt dat?",
+    "spans": [
+      {
+        "value": "Stationsplein 9, 3511 ED Utrecht",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Naar welk adres ging de laatste aanmaning — Dorpsweg 17, 8325 BH Vollenhove, klopt dat?",
+    "spans": [
+      {
+        "value": "Dorpsweg 17, 8325 BH Vollenhove",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Naar welk adres ging de laatste aanmaning — Prinsengracht 263, 1016 GV Amsterdam, klopt dat?",
+    "spans": [
+      {
+        "value": "Prinsengracht 263, 1016 GV Amsterdam",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Ziekte en verlof worden in de rapportage apart geteld.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "De Directie en de Ondernemingsraad vergaderen maandagochtend.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Leg het verschil uit tussen brutoloon en nettoloon.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Straat, laan en gracht zijn aparte veldtypes in de adresmodule.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Van Gogh is de naam van de vergaderruimte op de derde verdieping.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Personeelszaken publiceert morgen de nieuwe salaristabel.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "De Zuidas is het voorbeeldgebied in de handleiding voor regiocodes.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Willem van Oranje komt voor in de quizvragen voor het teamuitje.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Hoeveel vakantiedagen bouwt een medewerker op na drie jaar dienstverband?",
+    "spans": []
+  },
+  {
+    "text": "Maak een statusrapport voor het derdekwartaalproject; het budget blijft ongewijzigd.",
+    "spans": []
+  },
+  {
+    "text": "Vat het declaratiebeleid samen in vijf punten.",
+    "spans": []
+  },
+  {
+    "text": "Welke stappen omvat het onboardingproces in de eerste maand?",
+    "spans": []
+  },
+  {
+    "text": "Schrijf een vriendelijke herinnering over de wekelijkse urenregistratie.",
+    "spans": []
+  },
+  {
+    "text": "Hoe vraag ik een nieuwe laptop aan via het ticketsysteem?",
+    "spans": []
+  },
+  {
+    "text": "Maak een agenda voor het volgende teamoverleg met drie speerpunten.",
+    "spans": []
+  },
+  {
+    "text": "Welke deadlines gelden voor het indienen van declaraties?",
+    "spans": []
+  },
+  {
+    "text": "Vat de recente wijzigingen in het thuiswerkbeleid samen.",
+    "spans": []
+  },
+  {
+    "text": "Hoe werkt de goedkeuring van bestellingen in de inkoopmodule?",
+    "spans": []
+  },
+  {
+    "text": "Leg de goedkeuringsflow voor externe trainingen uit.",
+    "spans": []
+  },
+  {
+    "text": "Welke rapporten kan de boekhoudmodule maandelijks genereren?",
+    "spans": []
+  },
+  {
+    "text": "Schrijf een korte aankondiging voor het systeemonderhoud in het weekend.",
+    "spans": []
+  },
+  {
+    "text": "Hoe maak ik een nieuwe kostenplaats aan in het systeem?",
+    "spans": []
+  },
+  {
+    "text": "Wat is het verschil tussen een offerte en een orderbevestiging?",
+    "spans": []
+  },
+  {
+    "text": "Maak een checklist voor de maandafsluiting in de boekhouding.",
+    "spans": []
+  },
+  {
+    "text": "Hoe exporteer ik het verlofoverzicht als spreadsheet?",
+    "spans": []
+  },
+  {
+    "text": "Welke rollen zijn er in het goedkeuringsproces voor inkoopfacturen?",
+    "spans": []
+  },
+  {
+    "text": "Schrijf een beleefde afwijzing voor een uitgestelde leverdatum.",
+    "spans": []
+  },
+  {
+    "text": "Vat de belangrijkste punten van de flexwerkregeling samen.",
+    "spans": []
+  },
+  {
+    "text": "Hoe stel ik een afwezigheidsbericht in voor de feestdagen?",
+    "spans": []
+  },
+  {
+    "text": "Welke velden zijn verplicht bij het aanmaken van een nieuwe leverancier?",
+    "spans": []
+  },
+  {
+    "text": "Beschrijf de procedure van de jaarlijkse magazijninventarisatie.",
+    "spans": []
+  },
+  {
+    "text": "Hoe kunnen terugkerende facturen automatisch worden aangemaakt?",
+    "spans": []
+  }
+]

@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslations } from 'next-intl';
+
 import { Button } from '@/app/_components/ui/Button';
 import {
   type GraphNode,
@@ -37,6 +39,7 @@ export default function DetailPanel({
   onMemoryDeleted,
   provenance = null,
 }: Props): React.ReactElement {
+  const t = useTranslations('graph.detailPanel');
   const propEntries = Object.entries(node.props).filter(
     ([, v]) => v !== null && v !== undefined && v !== '',
   );
@@ -61,7 +64,7 @@ export default function DetailPanel({
         {node.type === 'Turn' && node.manuallyAuthored ? (
           <span
             className="px-2 py-0.5 text-[10px] font-medium text-[color:var(--warning)]"
-            title="manuell erfasst — Score-Boost ×1.3 im Token-Budget-Assembler"
+            title={t('manualTitle')}
           >
             ✎ manual
           </span>
@@ -100,10 +103,10 @@ export default function DetailPanel({
           onClick={() => onExpand(node.id)}
           disabled={loadingNeighbors}
           busy={loadingNeighbors}
-          busyLabel="lade Nachbarn…"
+          busyLabel={t('loadingNeighbors')}
           className="text-[11px] font-semibold"
         >
-          ↔ Nachbarn expandieren
+          {t('expandNeighbors')}
         </Button>
 
         {node.type === 'MemorableKnowledge' && (
@@ -120,7 +123,7 @@ export default function DetailPanel({
         {neighbors && neighbors.length > 0 && (
           <div className="mt-3">
             <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--fg-subtle)]">
-              {neighbors.length} Nachbar{neighbors.length === 1 ? '' : 'n'}
+              {t('neighborCount', { count: neighbors.length })}
             </div>
             <div className="flex flex-col gap-1">
               {neighbors.map((n) => (
@@ -216,21 +219,18 @@ function ProvenanceSection({
   provenance: MemoryWithAncestors;
   onSelect: (n: GraphNode) => void;
 }): React.ReactElement | null {
+  const t = useTranslations('graph.detailPanel');
   if (node.type !== 'MemorableKnowledge' && node.type !== 'PalaiaExcerpt') {
     return null;
   }
   const lvl1Label =
-    node.type === 'MemorableKnowledge'
-      ? 'Lvl 1 · Turn / User / Entitäten'
-      : 'Lvl 1 · Parent-Memory';
+    node.type === 'MemorableKnowledge' ? t('lvl1Memory') : t('lvl1Excerpt');
   const lvl2Label =
-    node.type === 'MemorableKnowledge'
-      ? 'Lvl 2 · Session'
-      : 'Lvl 2 · Turn / User / Entitäten';
+    node.type === 'MemorableKnowledge' ? t('lvl2Memory') : t('lvl2Excerpt');
   return (
     <div className="mt-3 rounded border border-[color:var(--accent)] bg-[color:var(--accent)]/10 p-2">
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--accent)]">
-        Provenance (2 Hops)
+        {t('provenanceHeading')}
       </div>
       <ProvenanceList label={lvl1Label} nodes={provenance.level1} onSelect={onSelect} />
       <ProvenanceList label={lvl2Label} nodes={provenance.level2} onSelect={onSelect} />
@@ -247,13 +247,16 @@ function ProvenanceList({
   nodes: GraphNode[];
   onSelect: (n: GraphNode) => void;
 }): React.ReactElement {
+  const t = useTranslations('graph.detailPanel');
   if (nodes.length === 0) {
     return (
       <div className="mt-1">
         <div className="text-[10px] uppercase tracking-wide text-[color:var(--fg-subtle)]">
           {label}
         </div>
-        <div className="text-[11px] italic text-[color:var(--fg-subtle)]">keine</div>
+        <div className="text-[11px] italic text-[color:var(--fg-subtle)]">
+          {t('none')}
+        </div>
       </div>
     );
   }

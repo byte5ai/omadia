@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 
+import { useTranslations } from 'next-intl';
+
 /**
  * Admin → Plugin-Domains overview (Palaia Phase 8 / OB-77 Slice 3c).
  *
@@ -45,6 +47,7 @@ type DomainsResponse = {
 const ENDPOINT = '/bot-api/admin/domains';
 
 export default function AdminDomainsPage(): React.ReactElement {
+  const t = useTranslations('adminDomains');
   const [data, setData] = useState<DomainsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -78,41 +81,40 @@ export default function AdminDomainsPage(): React.ReactElement {
     <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Plugin-Domains
+          {t('title')}
         </h1>
         <p className="mt-3 max-w-2xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
-          Übersicht aller registrierten Plugins, gruppiert nach ihrer in
-          der <code>manifest.yaml</code> deklarierten <code>domain</code>.
-          Domains werden vom Phase-8 Nudge-Pipeline-Multi-Domain-Trigger
-          gelesen und vom Operator-UI für Cross-Agent-Gruppierung
-          verwendet. Curation (Umbenennen / Mergen / Hierarchien) folgt
-          mit OB-78 (Phase 9 Agent-Profile).
+          {t.rich('intro', {
+            manifest: () => <code>manifest.yaml</code>,
+            domain: () => <code>domain</code>,
+          })}
         </p>
       </header>
 
       {loading ? (
-        <p className="text-[color:var(--fg-muted)]">Lade …</p>
+        <p className="text-[color:var(--fg-muted)]">{t('loading')}</p>
       ) : error ? (
         <p className="rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 p-4 text-sm text-[color:var(--danger)]">
-          Fehler beim Laden: {error}
+          {t('loadError', { message: error })}
         </p>
       ) : data ? (
         <Content data={data} />
       ) : (
-        <p className="text-[color:var(--fg-muted)]">Keine Daten.</p>
+        <p className="text-[color:var(--fg-muted)]">{t('noData')}</p>
       )}
     </main>
   );
 }
 
 function Content({ data }: { data: DomainsResponse }): React.ReactElement {
+  const t = useTranslations('adminDomains');
   return (
     <>
       <section className="mb-8 grid grid-cols-3 gap-3">
-        <Stat label="Plugins" value={data.totals.plugins} />
-        <Stat label="Domains" value={data.totals.domains} />
+        <Stat label={t('stats.plugins')} value={data.totals.plugins} />
+        <Stat label={t('stats.domains')} value={data.totals.domains} />
         <Stat
-          label="Fallbacks"
+          label={t('stats.fallbacks')}
           value={data.totals.fallbackDomains}
           warn={data.totals.fallbackDomains > 0}
         />
@@ -120,7 +122,7 @@ function Content({ data }: { data: DomainsResponse }): React.ReactElement {
 
       {data.buckets.length === 0 ? (
         <p className="text-[color:var(--fg-muted)]">
-          Keine Plugins im Katalog.
+          {t('emptyCatalog')}
         </p>
       ) : (
         <ul className="space-y-6">
@@ -132,14 +134,15 @@ function Content({ data }: { data: DomainsResponse }): React.ReactElement {
 
       {data.totals.fallbackDomains > 0 ? (
         <p className="mt-8 rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 p-4 text-sm text-[color:var(--warning)]">
-          {data.totals.fallbackDomains} Plugin
-          {data.totals.fallbackDomains === 1 ? '' : 's'} ohne deklarierte
-          Domain — auto-fallback auf{' '}
-          <code className="text-[color:var(--warning)]">unknown.&lt;id&gt;</code>. Füge
-          dem Manifest eine <code>identity.domain</code>-Zeile hinzu (z.B.
-          <code> &quot;confluence&quot;</code>,{' '}
-          <code>&quot;odoo.hr&quot;</code>) oder lade den Agent über den
-          Builder neu hoch.
+          {t.rich('fallbackWarning', {
+            count: data.totals.fallbackDomains,
+            fallbackDomain: () => (
+              <code className="text-[color:var(--warning)]">unknown.&lt;id&gt;</code>
+            ),
+            manifestKey: () => <code>identity.domain</code>,
+            exampleOne: () => <code>&quot;confluence&quot;</code>,
+            exampleTwo: () => <code>&quot;odoo.hr&quot;</code>,
+          })}
         </p>
       ) : null}
     </>
@@ -151,6 +154,7 @@ function DomainSection({
 }: {
   bucket: DomainBucket;
 }): React.ReactElement {
+  const t = useTranslations('adminDomains');
   return (
     <li
       className={
@@ -170,8 +174,7 @@ function DomainSection({
           {bucket.domain}
         </h2>
         <span className="text-[13px] text-[color:var(--fg-muted)]">
-          {bucket.plugins.length} Plugin
-          {bucket.plugins.length === 1 ? '' : 's'}
+          {t('pluginCount', { count: bucket.plugins.length })}
         </span>
       </header>
       <ul className="divide-y divide-[color:var(--border)]/40">

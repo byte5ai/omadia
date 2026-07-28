@@ -33,8 +33,8 @@ const PLUGIN_DIRECTORY: ReadonlyArray<{ id: string; labelKey: string }> = [
  * GET/PATCH /api/v1/admin/settings (via the /bot-api proxy). Changes auto-save
  * after a short debounce and the affected plugin is re-activated server-side,
  * so they take effect live — no restart. Secrets show set/unset only; their
- * stored value is never returned. Hardcoded-German labels follow the sibling
- * admin pages (this section does not use the i18n message catalog).
+ * stored value is never returned. Labels resolve from the i18n catalog under
+ * `adminSettings`.
  */
 
 type FieldStatus = 'idle' | 'saving' | 'saved' | 'error';
@@ -51,6 +51,7 @@ export default function AdminSettingsPage(): React.ReactElement {
   const [status, setStatus] = useState<Record<string, FieldStatus>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const t = useTranslations('adminSettings');
   const tDir = useTranslations('adminSettings.pluginDirectory');
 
   const load = useCallback(async (): Promise<void> => {
@@ -167,26 +168,26 @@ export default function AdminSettingsPage(): React.ReactElement {
     <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <h1 className="font-display text-[clamp(1.75rem,3.5vw,2.5rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Konfiguration
+          {t('title')}
         </h1>
         <p className="mt-3 max-w-2xl text-[15px] leading-[1.55] text-[color:var(--fg-muted)]">
-          Alle <code className="rounded bg-[color:var(--card)] px-1 py-0.5 text-[12px]">.env</code>-Werte,
-          die beim Start in den Config-Store bzw. den Secret-Vault geschrieben
-          werden. Änderungen werden automatisch gespeichert und das betroffene
-          Plugin neu aktiviert — sie wirken sofort, ohne Neustart. Secrets zeigen
-          nur, ob ein Wert hinterlegt ist; der Wert selbst wird nie angezeigt.
+          {t.rich('intro', {
+            envFile: () => (
+              <code className="rounded bg-[color:var(--card)] px-1 py-0.5 text-[12px]">.env</code>
+            ),
+          })}
         </p>
       </header>
 
       {state.kind === 'loading' ? (
-        <p className="text-sm opacity-70">Lädt …</p>
+        <p className="text-sm opacity-70">{t('loading')}</p>
       ) : state.kind === 'error' ? (
-        <p className="text-sm text-[color:var(--danger)]">Fehler beim Laden: {state.message}</p>
+        <p className="text-sm text-[color:var(--danger)]">{t('loadError', { message: state.message })}</p>
       ) : (
         <div className="flex flex-col gap-8">
           {!state.vaultAvailable && (
             <p className="rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-4 py-3 text-sm text-[color:var(--warning)]">
-              Vault nicht verfügbar — Secrets können nicht bearbeitet werden.
+              {t('vaultUnavailable')}
             </p>
           )}
           {state.categories.map((cat) => (
@@ -268,6 +269,7 @@ function SettingRow({
   onText: (s: ResolvedSetting, raw: string) => void;
   onImmediate: (key: string, value: string | null) => void;
 }): React.ReactElement {
+  const t = useTranslations('adminSettings');
   const disabled = !s.installed;
 
   return (
@@ -280,7 +282,7 @@ function SettingRow({
           <code className="text-[11px] text-[color:var(--fg-muted)]">{s.key}</code>
           {!s.installed && (
             <span className="rounded-full bg-[color:var(--border)]/40 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
-              nicht installiert
+              {t('notInstalled')}
             </span>
           )}
         </div>
@@ -294,8 +296,8 @@ function SettingRow({
           onChange={(e) => onImmediate(s.key, e.target.value)}
           className={`${inputCls} sm:max-w-[200px]`}
         >
-          <option value="true">an</option>
-          <option value="false">aus</option>
+          <option value="true">{t('boolean.on')}</option>
+          <option value="false">{t('boolean.off')}</option>
         </select>
       ) : s.type === 'enum' ? (
         <select
@@ -320,13 +322,13 @@ function SettingRow({
                 : 'bg-[color:var(--border)]/40 text-[color:var(--fg-muted)]',
             ].join(' ')}
           >
-            {s.isSet ? 'gesetzt' : 'nicht gesetzt'}
+            {s.isSet ? t('secret.set') : t('secret.unset')}
           </span>
           <input
             type="password"
             value={value}
             disabled={disabled}
-            placeholder={s.isSet ? '•••••• (ersetzen)' : (s.placeholder ?? 'Wert eingeben')}
+            placeholder={s.isSet ? t('secret.replacePlaceholder') : (s.placeholder ?? t('secret.enterPlaceholder'))}
             onChange={(e) => onText(s, e.target.value)}
             className={`${inputCls} flex-1 sm:min-w-[260px]`}
           />
@@ -336,7 +338,7 @@ function SettingRow({
               disabled={disabled}
               onClick={() => onImmediate(s.key, null)}
             >
-              Entfernen
+              {t('secret.remove')}
             </Button>
           )}
         </div>
@@ -362,12 +364,13 @@ function SettingRow({
 }
 
 function StatusChip({ status }: { status: FieldStatus }): React.ReactElement | null {
+  const t = useTranslations('adminSettings.status');
   if (status === 'idle') return null;
-  const map: Record<Exclude<FieldStatus, 'idle'>, { label: string; cls: string }> = {
-    saving: { label: 'speichert …', cls: 'text-[color:var(--fg-muted)]' },
-    saved: { label: '✓ gespeichert', cls: 'text-[color:var(--success)]' },
-    error: { label: '✗ Fehler', cls: 'text-[color:var(--danger)]' },
+  const map: Record<Exclude<FieldStatus, 'idle'>, { labelKey: string; cls: string }> = {
+    saving: { labelKey: 'saving', cls: 'text-[color:var(--fg-muted)]' },
+    saved: { labelKey: 'saved', cls: 'text-[color:var(--success)]' },
+    error: { labelKey: 'error', cls: 'text-[color:var(--danger)]' },
   };
-  const { label, cls } = map[status];
-  return <span className={`text-[11px] ${cls}`}>{label}</span>;
+  const { labelKey, cls } = map[status];
+  return <span className={`text-[11px] ${cls}`}>{t(labelKey)}</span>;
 }

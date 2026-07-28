@@ -5,7 +5,7 @@ identity:
   domain: "seo"
   name: "SEO Analyst"
   version: "0.1.0"
-  description: "Analysiert byte5-Webseiten aus SEO-Perspektive: On-Page, Technical, Structured Data, Crawl-Audits."
+  description: "Analyzes websites from an SEO perspective: on-page, technical, structured data, and crawl audits."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

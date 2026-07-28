@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+
 import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -36,6 +38,7 @@ const BULK_DEFAULT_LIMIT = 50;
 const BULK_HARD_CAP = 500;
 
 export default function DuplicatesListPage(): React.ReactElement {
+  const t = useTranslations('adminDuplicates.list');
   const [tab, setTab] = useState<TabKey>('memories');
   const [statusFilter, setStatusFilter] = useState<MergeCandidateStatus | 'all'>(
     'open',
@@ -80,9 +83,7 @@ export default function DuplicatesListPage(): React.ReactElement {
     if (excerptBulkRunning) return;
     if (
       excerptBulkLimit > BULK_CONFIRM_THRESHOLD &&
-      !window.confirm(
-        `Bulk Excerpt-Duplicate-Detect für bis zu ${String(excerptBulkLimit)} Excerpts? Cosine-only, kostenfrei.`,
-      )
+      !window.confirm(t('confirmExcerptBulkRun', { count: excerptBulkLimit }))
     ) {
       return;
     }
@@ -98,7 +99,7 @@ export default function DuplicatesListPage(): React.ReactElement {
     } finally {
       setExcerptBulkRunning(false);
     }
-  }, [excerptBulkLimit, excerptBulkRunning, loadExcerptBulkPreview]);
+  }, [excerptBulkLimit, excerptBulkRunning, loadExcerptBulkPreview, t]);
 
   const loadExcerpts = useCallback(async (): Promise<void> => {
     setExcerptLoading(true);
@@ -141,9 +142,7 @@ export default function DuplicatesListPage(): React.ReactElement {
     if (bulkRunning) return;
     if (
       bulkLimit > BULK_CONFIRM_THRESHOLD &&
-      !window.confirm(
-        `Bulk-Merge-Detect für bis zu ${String(bulkLimit)} Memories starten? Cosine-only, kostenfrei — aber der Bulk-Scan ist O(n × top-k) cosine-Vergleiche.`,
-      )
+      !window.confirm(t('confirmBulkRun', { count: bulkLimit }))
     ) {
       return;
     }
@@ -159,7 +158,7 @@ export default function DuplicatesListPage(): React.ReactElement {
     } finally {
       setBulkRunning(false);
     }
-  }, [bulkLimit, bulkRunning, loadBulkPreview]);
+  }, [bulkLimit, bulkRunning, loadBulkPreview, t]);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -210,32 +209,28 @@ export default function DuplicatesListPage(): React.ReactElement {
           ← /admin
         </Link>
         <h1 className="mt-2 font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Memory · Mögliche Duplikate
+          {t('title')}
         </h1>
         <p className="mt-3 max-w-2xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
-          Memories die semantisch fast identisch sind. Tab „Memories&ldquo;
-          zeigt MK-Paare (cosine ≥ 0.95), Tab „Excerpts&ldquo; zeigt
-          Palaia-Excerpt-Paare
-          (cosine ≥ 0.97). Klick auf einen Eintrag öffnet die
-          Side-by-side-Ansicht mit Resolve-Knopf.
+          {t('intro')}
         </p>
       </header>
 
       {/* Slice 12 — Tab switcher MK | Excerpt */}
       <div className="mb-6 flex flex-wrap gap-2 border-b border-[color:var(--border)]">
-        {(['memories', 'excerpts'] as const).map((t) => (
+        {(['memories', 'excerpts'] as const).map((tabKey) => (
           <button
-            key={t}
+            key={tabKey}
             type="button"
-            onClick={() => setTab(t)}
+            onClick={() => setTab(tabKey)}
             className={[
               '-mb-px rounded-t border-b-2 px-3 py-2 text-sm font-medium transition',
-              tab === t
+              tab === tabKey
                 ? 'border-[color:var(--accent)] text-[color:var(--fg-strong)]'
                 : 'border-transparent text-[color:var(--fg-muted)] hover:text-[color:var(--fg)]',
             ].join(' ')}
           >
-            {t === 'memories' ? 'Memories' : 'Excerpts (Palaia)'}
+            {tabKey === 'memories' ? t('tabs.memories') : t('tabs.excerpts')}
           </button>
         ))}
       </div>
@@ -243,39 +238,42 @@ export default function DuplicatesListPage(): React.ReactElement {
       {tab === 'memories' && (
       <>
       <section
-        aria-label="Bulk merge detect"
+        aria-label={t('bulkDetectAria')}
         className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
       >
         <div className="mb-3 flex flex-wrap items-baseline gap-3">
           <h2 className="text-sm font-semibold text-[color:var(--fg-strong)]">
-            Bulk-Detect
+            {t('bulkDetectTitle')}
           </h2>
           <p className="text-xs text-[color:var(--fg-muted)]">
-            Memories die noch keinen Merge-Check hatten. Cosine-only, kein
-            LLM, praktisch kostenfrei.
+            {t('bulkDetectDescription')}
           </p>
         </div>
 
         {bulkPreviewError !== null && (
           <p className="mb-2 text-xs text-[color:var(--danger)]">
-            Preview fehlgeschlagen: {bulkPreviewError}
+            {t('previewFailed', { message: bulkPreviewError })}
           </p>
         )}
 
         {bulkPreview !== null && (
           <dl className="mb-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
             <div>
-              <dt className="text-[color:var(--fg-muted)]">ungeprüft</dt>
+              <dt className="text-[color:var(--fg-muted)]">{t('unchecked')}</dt>
               <dd className="font-mono text-base">{bulkPreview.unchecked}</dd>
             </div>
             <div>
-              <dt className="text-[color:var(--fg-muted)]">schon geprüft</dt>
+              <dt className="text-[color:var(--fg-muted)]">
+                {t('alreadyChecked')}
+              </dt>
               <dd className="font-mono text-base">
                 {bulkPreview.alreadyChecked}
               </dd>
             </div>
             <div>
-              <dt className="text-[color:var(--fg-muted)]">ohne Embedding</dt>
+              <dt className="text-[color:var(--fg-muted)]">
+                {t('withoutEmbedding')}
+              </dt>
               <dd className="font-mono text-base">
                 {bulkPreview.withoutEmbedding}
               </dd>
@@ -285,7 +283,7 @@ export default function DuplicatesListPage(): React.ReactElement {
 
         <div className="flex flex-wrap items-center gap-3">
           <label htmlFor="bulk-limit" className="text-xs text-[color:var(--fg-muted)]">
-            Limit
+            {t('limitLabel')}
           </label>
           <input
             id="bulk-limit"
@@ -309,27 +307,27 @@ export default function DuplicatesListPage(): React.ReactElement {
               bulkRunning || (bulkPreview !== null && bulkPreview.unchecked === 0)
             }
             busy={bulkRunning}
-            busyLabel="läuft"
+            busyLabel={t('running')}
           >
-            Bulk-Detect starten
+            {t('startBulkDetect')}
           </Button>
           {bulkLimit > BULK_CONFIRM_THRESHOLD && (
             <span className="text-[11px] text-[color:var(--warning)]">
-              ⚠️ Confirm bei Limit &gt; {BULK_CONFIRM_THRESHOLD}
+              {t('confirmHint', { limit: BULK_CONFIRM_THRESHOLD })}
             </span>
           )}
         </div>
 
         {bulkError !== null && (
           <p className="mt-3 text-xs text-[color:var(--danger)]">
-            Run fehlgeschlagen: {bulkError}
+            {t('runFailed', { message: bulkError })}
           </p>
         )}
 
         {bulkResult !== null && (
           <div className="mt-3 rounded border border-[color:var(--border)] bg-black/5 p-3 text-xs">
             <p className="mb-2 font-medium">
-              Ergebnis · {bulkResult.durationMs} ms
+              {t('resultTitle', { duration: bulkResult.durationMs })}
             </p>
             <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">
               <div>
@@ -341,17 +339,21 @@ export default function DuplicatesListPage(): React.ReactElement {
                 <dd className="font-mono">{bulkResult.checked}</dd>
               </div>
               <div>
-                <dt className="text-[color:var(--fg-muted)]">neue Duplikate</dt>
+                <dt className="text-[color:var(--fg-muted)]">
+                  {t('newDuplicates')}
+                </dt>
                 <dd className="font-mono">
                   {bulkResult.mergeCandidatesCreated}
                 </dd>
               </div>
               <div>
-                <dt className="text-[color:var(--fg-muted)]">ohne Embedding</dt>
+                <dt className="text-[color:var(--fg-muted)]">
+                  {t('withoutEmbedding')}
+                </dt>
                 <dd className="font-mono">{bulkResult.skippedNoEmbedding}</dd>
               </div>
               <div>
-                <dt className="text-[color:var(--fg-muted)]">Fehler</dt>
+                <dt className="text-[color:var(--fg-muted)]">{t('errors')}</dt>
                 <dd className="font-mono">{bulkResult.failed}</dd>
               </div>
             </dl>
@@ -372,7 +374,7 @@ export default function DuplicatesListPage(): React.ReactElement {
                 : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
             ].join(' ')}
           >
-            {s === 'all' ? 'alle' : s}
+            {s === 'all' ? t('statusAll') : s}
           </button>
         ))}
         <Button
@@ -382,19 +384,19 @@ export default function DuplicatesListPage(): React.ReactElement {
           disabled={loading}
           className="ml-auto"
         >
-          {loading ? 'lädt…' : 'aktualisieren'}
+          {loading ? t('loading') : t('refresh')}
         </Button>
       </div>
 
       {error !== null && (
         <div className="mb-4 border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
-          Fehler: {error}
+          {t('error', { message: error })}
         </div>
       )}
 
       {sorted !== null && sorted.length === 0 && error === null && (
         <p className="text-sm italic text-[color:var(--fg-muted)]">
-          Keine Duplikat-Kandidaten in dieser Auswahl.
+          {t('emptyMemories')}
         </p>
       )}
 
@@ -443,40 +445,46 @@ export default function DuplicatesListPage(): React.ReactElement {
       <>
         {/* Slice 12 — Excerpt Bulk Detect panel */}
         <section
-          aria-label="Bulk excerpt-merge detect"
+          aria-label={t('bulkDetectExcerptsAria')}
           className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
         >
           <div className="mb-3 flex flex-wrap items-baseline gap-3">
             <h2 className="text-sm font-semibold text-[color:var(--fg-strong)]">
-              Bulk-Detect (Excerpts)
+              {t('bulkDetectExcerptsTitle')}
             </h2>
             <p className="text-xs text-[color:var(--fg-muted)]">
-              Excerpts ohne Merge-Check (cosine ≥ 0.97). Cosine-only, kostenfrei.
+              {t('bulkDetectExcerptsDescription')}
             </p>
           </div>
 
           {excerptBulkPreviewError !== null && (
             <p className="mb-2 text-xs text-[color:var(--danger)]">
-              Preview fehlgeschlagen: {excerptBulkPreviewError}
+              {t('previewFailed', { message: excerptBulkPreviewError })}
             </p>
           )}
 
           {excerptBulkPreview !== null && (
             <dl className="mb-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
               <div>
-                <dt className="text-[color:var(--fg-muted)]">ungeprüft</dt>
+                <dt className="text-[color:var(--fg-muted)]">
+                  {t('unchecked')}
+                </dt>
                 <dd className="font-mono text-base">
                   {excerptBulkPreview.unchecked}
                 </dd>
               </div>
               <div>
-                <dt className="text-[color:var(--fg-muted)]">schon geprüft</dt>
+                <dt className="text-[color:var(--fg-muted)]">
+                  {t('alreadyChecked')}
+                </dt>
                 <dd className="font-mono text-base">
                   {excerptBulkPreview.alreadyChecked}
                 </dd>
               </div>
               <div>
-                <dt className="text-[color:var(--fg-muted)]">ohne Embedding</dt>
+                <dt className="text-[color:var(--fg-muted)]">
+                  {t('withoutEmbedding')}
+                </dt>
                 <dd className="font-mono text-base">
                   {excerptBulkPreview.withoutEmbedding}
                 </dd>
@@ -486,7 +494,7 @@ export default function DuplicatesListPage(): React.ReactElement {
 
           <div className="flex flex-wrap items-center gap-3">
             <label htmlFor="excerpt-bulk-limit" className="text-xs text-[color:var(--fg-muted)]">
-              Limit
+              {t('limitLabel')}
             </label>
             <input
               id="excerpt-bulk-limit"
@@ -511,27 +519,27 @@ export default function DuplicatesListPage(): React.ReactElement {
                 (excerptBulkPreview !== null && excerptBulkPreview.unchecked === 0)
               }
               busy={excerptBulkRunning}
-              busyLabel="läuft"
+              busyLabel={t('running')}
             >
-              Bulk-Detect starten
+              {t('startBulkDetect')}
             </Button>
             {excerptBulkLimit > BULK_CONFIRM_THRESHOLD && (
               <span className="text-[11px] text-[color:var(--warning)]">
-                ⚠️ Confirm bei Limit &gt; {BULK_CONFIRM_THRESHOLD}
+                {t('confirmHint', { limit: BULK_CONFIRM_THRESHOLD })}
               </span>
             )}
           </div>
 
           {excerptBulkError !== null && (
             <p className="mt-3 text-xs text-[color:var(--danger)]">
-              Run fehlgeschlagen: {excerptBulkError}
+              {t('runFailed', { message: excerptBulkError })}
             </p>
           )}
 
           {excerptBulkResult !== null && (
             <div className="mt-3 rounded border border-[color:var(--border)] bg-black/5 p-3 text-xs">
               <p className="mb-2 font-medium">
-                Ergebnis · {excerptBulkResult.durationMs} ms
+                {t('resultTitle', { duration: excerptBulkResult.durationMs })}
               </p>
               <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <div>
@@ -543,13 +551,17 @@ export default function DuplicatesListPage(): React.ReactElement {
                   <dd className="font-mono">{excerptBulkResult.checked}</dd>
                 </div>
                 <div>
-                  <dt className="text-[color:var(--fg-muted)]">neue Duplikate</dt>
+                  <dt className="text-[color:var(--fg-muted)]">
+                    {t('newDuplicates')}
+                  </dt>
                   <dd className="font-mono">
                     {excerptBulkResult.excerptMergeCandidatesCreated}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-[color:var(--fg-muted)]">Fehler</dt>
+                  <dt className="text-[color:var(--fg-muted)]">
+                    {t('errors')}
+                  </dt>
                   <dd className="font-mono">{excerptBulkResult.failed}</dd>
                 </div>
               </dl>
@@ -571,7 +583,7 @@ export default function DuplicatesListPage(): React.ReactElement {
                   : 'border-[color:var(--border)] hover:border-[color:var(--border-strong)]',
               ].join(' ')}
             >
-              {s === 'all' ? 'alle' : s}
+              {s === 'all' ? t('statusAll') : s}
             </button>
           ))}
           <Button
@@ -581,19 +593,19 @@ export default function DuplicatesListPage(): React.ReactElement {
             disabled={excerptLoading}
             className="ml-auto"
           >
-            {excerptLoading ? 'lädt…' : 'aktualisieren'}
+            {excerptLoading ? t('loading') : t('refresh')}
           </Button>
         </div>
 
         {excerptError !== null && (
           <div className="mb-4 border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
-            Fehler: {excerptError}
+            {t('error', { message: excerptError })}
           </div>
         )}
 
         {excerptItems !== null && excerptItems.length === 0 && excerptError === null && (
           <p className="text-sm italic text-[color:var(--fg-muted)]">
-            Keine Excerpt-Duplikate in dieser Auswahl.
+            {t('emptyExcerpts')}
           </p>
         )}
 

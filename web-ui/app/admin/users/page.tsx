@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
+import { useTranslations } from 'next-intl';
+
 import { Button } from '@/app/_components/ui/Button';
 import {
   AdminUser,
@@ -17,6 +19,7 @@ type State =
   | { kind: 'error'; message: string };
 
 export default function AdminUsersPage(): React.ReactElement {
+  const t = useTranslations('adminUsers');
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [showCreate, setShowCreate] = useState(false);
   const [newEmail, setNewEmail] = useState('');
@@ -50,7 +53,7 @@ export default function AdminUsersPage(): React.ReactElement {
     e.preventDefault();
     setCreateError(null);
     if (newPassword.length < 8) {
-      setCreateError('Passwort muss mindestens 8 Zeichen lang sein.');
+      setCreateError(t('errors.passwordMinLength'));
       return;
     }
     setSubmitting(true);
@@ -70,15 +73,13 @@ export default function AdminUsersPage(): React.ReactElement {
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.body.includes('email_in_use')) {
-          setCreateError(
-            'Diese Email ist bereits als lokaler Nutzer registriert.',
-          );
+          setCreateError(t('errors.emailInUse'));
         } else if (err.body.includes('password_too_short')) {
-          setCreateError('Passwort zu kurz (mind. 8 Zeichen).');
+          setCreateError(t('errors.passwordTooShort'));
         } else if (err.body.includes('invalid_email')) {
-          setCreateError('Ungültige Email-Adresse.');
+          setCreateError(t('errors.invalidEmail'));
         } else {
-          setCreateError(`Fehler ${err.status}: ${err.message}`);
+          setCreateError(t('errors.generic', { status: err.status, message: err.message }));
         }
       } else {
         setCreateError(err instanceof Error ? err.message : String(err));
@@ -93,19 +94,17 @@ export default function AdminUsersPage(): React.ReactElement {
       <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-[clamp(1.75rem,3.5vw,2.5rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-            Benutzer
+            {t('list.title')}
           </h1>
           <p className="mt-3 max-w-2xl text-[15px] leading-[1.55] text-[color:var(--fg-muted)]">
-            Lokale Konten und föderierte Identitäten. Nur lokale Nutzer können
-            hier neu angelegt werden — föderierte Konten erscheinen, sobald der
-            Nutzer sich einmal über den IdP angemeldet hat.
+            {t('list.intro')}
           </p>
         </div>
         <Button
           variant="primary"
           onClick={() => setShowCreate((s) => !s)}
         >
-          {showCreate ? 'Abbrechen' : 'Neuen Nutzer anlegen'}
+          {showCreate ? t('list.cancel') : t('list.create')}
         </Button>
       </header>
 
@@ -115,7 +114,7 @@ export default function AdminUsersPage(): React.ReactElement {
           className="mb-8 grid gap-4 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 sm:grid-cols-2"
         >
           <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium">Email</span>
+            <span className="font-medium">{t('list.form.email')}</span>
             <input
               type="email"
               required
@@ -125,7 +124,7 @@ export default function AdminUsersPage(): React.ReactElement {
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium">Anzeigename (optional)</span>
+            <span className="font-medium">{t('list.form.displayName')}</span>
             <input
               type="text"
               value={newDisplay}
@@ -134,7 +133,7 @@ export default function AdminUsersPage(): React.ReactElement {
             />
           </label>
           <label className="flex flex-col gap-1 text-sm sm:col-span-2">
-            <span className="font-medium">Passwort (mind. 8 Zeichen)</span>
+            <span className="font-medium">{t('list.form.password')}</span>
             <input
               type="password"
               required
@@ -153,26 +152,26 @@ export default function AdminUsersPage(): React.ReactElement {
             disabled={submitting}
             className="sm:col-span-2"
           >
-            {submitting ? 'Lege an …' : 'Anlegen'}
+            {submitting ? t('list.form.creating') : t('list.form.submit')}
           </Button>
         </form>
       )}
 
       {state.kind === 'loading' ? (
-        <p className="text-sm opacity-70">Lädt …</p>
+        <p className="text-sm opacity-70">{t('loading')}</p>
       ) : state.kind === 'error' ? (
         <p className="text-sm text-[color:var(--danger)]">
-          Fehler beim Laden: {state.message}
+          {t('loadError', { message: state.message })}
         </p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-[color:var(--border)]">
           <table className="w-full text-left text-sm">
             <thead className="bg-[color:var(--card)]/40 text-[12px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
               <tr>
-                <th className="px-4 py-3">Email</th>
-                <th className="px-4 py-3">Provider</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Letzte Anmeldung</th>
+                <th className="px-4 py-3">{t('list.table.email')}</th>
+                <th className="px-4 py-3">{t('list.table.provider')}</th>
+                <th className="px-4 py-3">{t('list.table.status')}</th>
+                <th className="px-4 py-3">{t('list.table.lastLogin')}</th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
@@ -215,7 +214,7 @@ export default function AdminUsersPage(): React.ReactElement {
                       href={`/admin/users/${u.id}`}
                       className="text-sm text-[color:var(--accent)] hover:underline"
                     >
-                      Bearbeiten →
+                      {t('list.table.edit')} →
                     </Link>
                   </td>
                 </tr>

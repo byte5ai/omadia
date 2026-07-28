@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
@@ -26,6 +27,14 @@ const optionalNonEmpty = <T extends z.ZodTypeAny>(inner: T) =>
     (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
     inner.optional(),
   );
+
+/** A boolean env flag, off by default — the `'true'|'false'` string pattern used
+ *  across this schema (an unset var short-circuits to `false`). */
+const devFlag = () =>
+  z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(false);
 
 const ConfigSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3979),
@@ -133,6 +142,10 @@ const ConfigSchema = z.object({
   // it only when flow callbacks must land on a different origin than the rest
   // of the admin UI (rare). Mirrors the AUTH_REDIRECT_URI precedent.
   FLOW_PUBLIC_BASE_URL: z.string().url().optional(),
+  // Epic #459 W9 — absolute redirect URI the MCP OAuth callback lands on. Set
+  // only when the callback must resolve on a different origin than
+  // FLOW_PUBLIC_BASE_URL/api/v1/operator/mcp-oauth/callback (the default).
+  MCP_OAUTH_REDIRECT_URI: z.string().url().optional(),
   // Absolute URL Azure AD redirects to after login. MUST be registered
   // verbatim in the MS365 App Registration. In prod: middleware's own
   // /api/v1/auth/callback. In dev: http://localhost:3000/bot-api/v1/auth/callback
@@ -174,6 +187,22 @@ const ConfigSchema = z.object({
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
     .default(false),
+
+  // Epic #470 W4 — GitHub webhook trigger controls (spec §3). The global kill
+  // switch defaults ON (a per-repo `webhook_enabled` and an empty sender allowlist
+  // already keep it off until an operator opts a repo in). The two rate limits cap
+  // how many jobs a single repo / single sender can spawn per rolling hour.
+  DEV_WEBHOOKS_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(true),
+  DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR: z.coerce.number().int().positive().default(5),
+  DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR: z.coerce.number().int().positive().default(2),
+
+  // Epic #470 W4 — default per-job LLM cost budget (USD) applied when neither the
+  // job nor its repo sets one (spec §5). Token budgets have NO default: they are
+  // enforced only when explicitly set on the job or repo.
+  DEV_JOB_DEFAULT_BUDGET_USD: z.coerce.number().positive().default(5),
 
   // Postgres connection string for the Neon-backed knowledge graph.
   // When set, `bootstrapKnowledgeGraphFromEnv` installs the
@@ -396,6 +425,13 @@ const ConfigSchema = z.object({
   PACKAGE_UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(15 * 1024 * 1024),
   PACKAGE_UPLOAD_MAX_EXTRACTED_BYTES: z.coerce.number().int().positive().default(80 * 1024 * 1024),
   PACKAGE_UPLOAD_MAX_ENTRIES: z.coerce.number().int().positive().default(2000),
+  /** Base URL of the SkillSpector code-scan sidecar (issue #453), e.g.
+   *  http://skillspector:8811. Unset → no scanning: ingests succeed
+   *  unchanged and NO verdict rows are written (`scan_failed` is reserved
+   *  for real sidecar failures). Advisory-only in v1 — a verdict never
+   *  blocks an install. */
+  SKILLSPECTOR_URL: z.string().url().optional(),
+  SKILLSPECTOR_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
   /** Root of the built-in package tree (scanned for manifest.yaml files at
    *  boot). In dev this resolves to `<repo>/middleware/packages`; in the
    *  Docker image it's `/app/packages`. Each subdirectory with a valid
@@ -423,6 +459,110 @@ const ConfigSchema = z.object({
     .int()
     .positive()
     .default(15_000),
+
+  // --- Dev platform (epic #470 W0) ----------------------------------------
+  // Isolated per-job code runners (clone → agent-edit → diff → server-side PR).
+  // The whole subsystem is dark by default: DEV_PLATFORM_ENABLED=false mounts
+  // no router and starts no worker. See src/devplatform/ and the wire unit.
+  DEV_PLATFORM_ENABLED: devFlag(),
+  // The W0 walking-skeleton LocalProcessBackend runs the agent under a dedicated
+  // unprivileged uid with an allowlist-built env and NO dependency-install / test
+  // execution. It is an unsafe skeleton by construction, so it stays off unless
+  // the operator explicitly acknowledges it — and boot REFUSES the flag without a
+  // uid (loadConfig, below), never runs the agent as root.
+  DEV_PLATFORM_UNSAFE_LOCAL: devFlag(),
+  DEV_PLATFORM_LOCAL_UID: optionalNonEmpty(z.coerce.number().int().positive()),
+  DEV_PLATFORM_WORKSPACE_DIR: z
+    .string()
+    .min(1)
+    .default(() => path.join(os.tmpdir(), 'omadia-dev-jobs')),
+  // Where the runner phones home. Defaults to loopback + PORT in loadConfig.
+  DEV_PLATFORM_RUNNER_BASE_URL: optionalNonEmpty(z.string().url()),
+  DEV_PLATFORM_CLI_BIN: z.string().min(1).default('claude'),
+  DEV_PLATFORM_JOB_WALL_CLOCK_MS: z.coerce.number().int().positive().default(1_800_000),
+  DEV_PLATFORM_HEARTBEAT_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  DEV_PLATFORM_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(1),
+  DEV_PLATFORM_GITHUB_CLIENT_ID: optionalNonEmpty(z.string().min(1)),
+  DEV_PLATFORM_COMMIT_AUTHOR: z.string().min(1).default('omadia-dev <dev-platform@omadia.ai>'),
+  DEV_PLATFORM_EVENT_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
+  // Epic #470 W5 — data lifecycle (spec §7). Two-tier event retention: low-value
+  // telemetry (heartbeat/log) is pruned at EVENT_RETENTION_DAYS above; audit-grade
+  // events (status/tool/gate/token/approval/egress/phase) are kept until this outer
+  // bound. The daily retention job also purges terminal jobs older than it.
+  DEV_PLATFORM_AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(365),
+  // Per-job event cap: once a job holds this many events, the append path drops
+  // further low-value telemetry (keeps audit-grade events) and records one
+  // `events_truncated` status event. Bounds a runaway agent's event stream.
+  DEV_JOB_MAX_EVENTS: z.coerce.number().int().positive().default(50_000),
+  // Artifact ceiling: inline content larger than this is offloaded to object
+  // storage (when wired) or marked and refused inline (default 5 MiB).
+  DEV_ARTIFACT_MAX_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
+  // Q4 decision: subscription-mode jobs run the CLI on the operator's Claude
+  // login, so the credential is IN the runner. It is off by default and boot
+  // REFUSES the flag unless the operator also sets the explicit acknowledgment
+  // string (loadConfig, below) — a boot-time refusal, not a warning.
+  DEV_PLATFORM_SUBSCRIPTION_MODE: devFlag(),
+  DEV_PLATFORM_SUBSCRIPTION_ACK: optionalNonEmpty(z.string().min(1)),
+  // --- W1 keystones (spec §4/§6/§6b) ---------------------------------------
+  // The daemon's shared bearer for the internal job-policy endpoint AND the
+  // DockerBackend's control-plane calls. Absent ⇒ the job-policy endpoint 503s
+  // and the DockerBackend is NOT registered.
+  DEV_RUNNER_DAEMON_TOKEN: optionalNonEmpty(z.string().min(1)),
+  // The daemon control-plane origin the middleware calls (spec §4/§5). Absent ⇒
+  // the DockerBackend is not registered even under DEV_PLATFORM_BACKEND=docker.
+  DEV_RUNNER_DAEMON_URL: optionalNonEmpty(z.string().url()),
+  // Which runner backend the operator ships (spec §5): `docker` registers the
+  // container backend as the shipping path; `local` keeps the W0 skeleton (which
+  // ALSO requires DEV_PLATFORM_UNSAFE_LOCAL). Default `docker` — the local
+  // backend never becomes the permanent crutch the epic warns against, and it
+  // stays inert until its own acknowledgment flag is set anyway.
+  DEV_PLATFORM_BACKEND: z.enum(['docker', 'local']).default('docker'),
+  // Lease TTL a docker job requests + renews at ~TTL/3 (spec §7/§8). Bounded to
+  // the daemon's [30, 3600] window in the backend.
+  DEV_JOB_LEASE_TTL_SEC: z.coerce.number().int().positive().default(180),
+  // Digest-pinned runner image. Absent ⇒ the job-policy endpoint 503s.
+  DEV_RUNNER_DEFAULT_IMAGE: optionalNonEmpty(z.string().min(1)),
+  // Operator egress default, comma-separated bare hostnames (validated in
+  // deriveJobPolicy). Absent ⇒ empty base allowlist.
+  DEV_EGRESS_BASE_ALLOWLIST: optionalNonEmpty(z.string().min(1)),
+  // Hostname the job container reaches the middleware on; defaults to the
+  // RUNNER_BASE_URL host in the wire layer when unset.
+  DEV_PLATFORM_MIDDLEWARE_HOST: optionalNonEmpty(z.string().min(1)),
+  // LLM proxy (spec §6b): upstream origin + exact model allowlist. The proxy is
+  // always mounted; an empty allowlist ⇒ it answers 500 "no LLM policy".
+  DEV_PLATFORM_LLM_UPSTREAM_BASE_URL: z.string().url().default('https://api.anthropic.com'),
+  DEV_PLATFORM_LLM_PROVIDER: z.string().min(1).default('anthropic'),
+  DEV_PLATFORM_LLM_ALLOWED_MODELS: optionalNonEmpty(z.string().min(1)),
+
+  // Epic #470 W4 — LLM budget hard-enforcement ceiling (spec §5, Forge W4 #2).
+  // The proxy clamps a job's `max_tokens` to this so the buffered enforcement path
+  // can never overshoot the budget by an unbounded single response.
+  DEV_JOB_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(8192),
+
+  // Epic #470 W4 — FlyMachinesBackend (spec §2): one ephemeral Fly Machine per job
+  // in a DEDICATED runner app (NEVER odoo-bot-middleware). The backend is registered
+  // ONLY when DEV_FLY_RUNNER_APP is set (absent ⇒ not registered, like the docker
+  // backend keys on the daemon url). The operator MUST have run
+  // `flyctl apps create <app> --org <org>` and stored a deploy token in Vault at
+  // `core:dev-platform` key `fly/deploy_token` — the wiring logs a hint at boot.
+  DEV_FLY_RUNNER_APP: optionalNonEmpty(z.string().min(1)),
+  // Fly-injected env; presence is the on-Fly detector (picks the internal Machines
+  // API + `.internal` phone-home address). Absent off-Fly ⇒ public endpoints.
+  FLY_APP_NAME: optionalNonEmpty(z.string().min(1)),
+  // Digest-pinned runner image for Fly machines. Falls back to
+  // DEV_RUNNER_DEFAULT_IMAGE when unset (both must be digest-pinned, never a tag).
+  DEV_RUNNER_IMAGE: optionalNonEmpty(z.string().min(1)),
+  // Operator override for the shim phone-home URL. Default: on-Fly
+  // `http://$FLY_APP_NAME.internal:8080`, else PUBLIC_BASE_URL.
+  DEV_FLY_PHONE_HOME_URL: optionalNonEmpty(z.string().min(1)),
+  // Guest ceilings — a per-job request over these is CLAMPED, never honored.
+  DEV_FLY_MAX_CPUS: z.coerce.number().int().positive().default(4),
+  DEV_FLY_MAX_MEMORY_MB: z.coerce.number().int().positive().default(8192),
+  // Default guest size a Fly machine boots with (clamped to the ceilings above).
+  DEV_FLY_GUEST_CPUS: z.coerce.number().int().positive().default(1),
+  DEV_FLY_GUEST_MEMORY_MB: z.coerce.number().int().positive().default(1024),
+  // Optional Fly region placement (Fly picks one when unset).
+  DEV_FLY_REGION: optionalNonEmpty(z.string().min(1)),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -462,6 +602,35 @@ export function resolveStateDir(
   return resolvePath(zodDefaultResolved);
 }
 
+/**
+ * Boot-time refusals for the dev platform's two credential-exposing modes
+ * (epic #470 W0). These are hard refusals, NOT warnings: an operator who turns
+ * on subscription mode or the unsafe local backend without the paired safety
+ * variable must not boot. Pure + exported so the wire unit's test can drive it
+ * without importing the whole config module.
+ */
+export function devPlatformBootRefusals(cfg: {
+  subscriptionMode: boolean;
+  subscriptionAck: string | undefined;
+  unsafeLocal: boolean;
+  localUid: number | undefined;
+}): string[] {
+  const refusals: string[] = [];
+  if (cfg.subscriptionMode && !cfg.subscriptionAck) {
+    refusals.push(
+      'DEV_PLATFORM_SUBSCRIPTION_MODE=true requires DEV_PLATFORM_SUBSCRIPTION_ACK to be set ' +
+        '(the operator must acknowledge that subscription jobs run the CLI credential inside the runner)',
+    );
+  }
+  if (cfg.unsafeLocal && cfg.localUid === undefined) {
+    refusals.push(
+      'DEV_PLATFORM_UNSAFE_LOCAL=true requires DEV_PLATFORM_LOCAL_UID ' +
+        '(the jailed shim must run as a dedicated unprivileged uid, never root)',
+    );
+  }
+  return refusals;
+}
+
 function loadConfig(): Config {
   const parsed = ConfigSchema.safeParse(process.env);
   if (!parsed.success) {
@@ -469,6 +638,15 @@ function loadConfig(): Config {
       .map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`)
       .join('\n');
     throw new Error(`Invalid configuration:\n${issues}`);
+  }
+  const refusals = devPlatformBootRefusals({
+    subscriptionMode: parsed.data.DEV_PLATFORM_SUBSCRIPTION_MODE,
+    subscriptionAck: parsed.data.DEV_PLATFORM_SUBSCRIPTION_ACK,
+    unsafeLocal: parsed.data.DEV_PLATFORM_UNSAFE_LOCAL,
+    localUid: parsed.data.DEV_PLATFORM_LOCAL_UID,
+  });
+  if (refusals.length > 0) {
+    throw new Error(`Invalid configuration:\n${refusals.map((r) => `  - ${r}`).join('\n')}`);
   }
   return {
     ...parsed.data,
@@ -482,6 +660,10 @@ function loadConfig(): Config {
     PLUGIN_DEV_DIR: parsed.data.PLUGIN_DEV_DIR
       ? resolvePath(parsed.data.PLUGIN_DEV_DIR)
       : undefined,
+    // Runner phone-home base URL: explicit override, else loopback + PORT.
+    DEV_PLATFORM_RUNNER_BASE_URL:
+      parsed.data.DEV_PLATFORM_RUNNER_BASE_URL ?? `http://127.0.0.1:${String(parsed.data.PORT)}`,
+    DEV_PLATFORM_WORKSPACE_DIR: resolvePath(parsed.data.DEV_PLATFORM_WORKSPACE_DIR),
   };
 }
 

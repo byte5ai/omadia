@@ -21,6 +21,15 @@ import {
   userNodeId,
   type ChannelIdentityIngest,
   type CreateMergeCandidateInput,
+  type DatasetAggregate,
+  type DatasetColumnSchema,
+  type DatasetFilter,
+  type DatasetIngest,
+  type DatasetIngestResult,
+  type DatasetQueryOptions,
+  type DatasetQueryResult,
+  type DatasetSummary,
+  validateDatasetQueryOptions,
   type EntityCapturedTurnsHit,
   type EntityCapturedTurnsOptions,
   type EntityIngest,
@@ -250,6 +259,94 @@ export async function waitForPostgres(
   }
 }
 
+/** #430 — raw `datasets` row shape (migration 0029). */
+interface DatasetRow {
+  id: string;
+  name: string;
+  source_file_name: string;
+  owner_omadia_user_id: string;
+  row_count: number;
+  columns: DatasetColumnSchema[];
+  created_at: Date | string;
+}
+
+/**
+ * #430 — one `DatasetFilter` as a parameterized SQL fragment against
+ * `dataset_rows.data` (JSONB). The column NAME is bound as a parameter too
+ * (`data->>$N`), not string-interpolated — `columns` in a dataset's schema
+ * are themselves data from an uploaded CSV's header row, not a trusted
+ * literal, even after `validateDatasetQueryOptions` confirms the name is
+ * one the schema actually has. `columnType` gates which SQL this can even
+ * build: `validateDatasetQueryOptions` already rejected op/type mismatches
+ * (numeric ops on non-number columns, `contains` on non-string columns),
+ * so every branch here is reachable only for a compatible pairing.
+ */
+function buildDatasetFilterClause(
+  filter: DatasetFilter,
+  columnType: DatasetColumnSchema['type'],
+  params: unknown[],
+): string {
+  params.push(filter.column);
+  const colParamIdx = params.length;
+  const isNumeric = columnType === 'number';
+  const lhs = isNumeric ? `(data->>$${String(colParamIdx)})::numeric` : `data->>$${String(colParamIdx)}`;
+
+  switch (filter.op) {
+    case 'eq':
+    case 'neq': {
+      params.push(isNumeric ? Number(filter.value) : String(filter.value));
+      const rhs = isNumeric ? `$${String(params.length)}::numeric` : `$${String(params.length)}::text`;
+      return `${lhs} ${filter.op === 'eq' ? '=' : '!='} ${rhs}`;
+    }
+    case 'gt':
+    case 'gte':
+    case 'lt':
+    case 'lte': {
+      params.push(Number(filter.value));
+      const opSql = { gt: '>', gte: '>=', lt: '<', lte: '<=' }[filter.op];
+      return `${lhs} ${opSql} $${String(params.length)}::numeric`;
+    }
+    case 'contains': {
+      // #430 fixup — a literal `%`/`_` (or backslash) in `filter.value` would
+      // otherwise be interpreted as a SQL wildcard/escape char instead of a
+      // literal character once wrapped for ILIKE, diverging from the
+      // in-memory backend's literal `.includes()` substring match (see
+      // `matchesDatasetFilter` in `inMemoryKnowledgeGraph.ts`). Escaping the
+      // escape character itself FIRST is required — otherwise a value
+      // containing a literal backslash would double-escape.
+      const escaped = String(filter.value).replace(/[\\%_]/g, '\\$&');
+      params.push(`%${escaped}%`);
+      return `${lhs} ILIKE $${String(params.length)} ESCAPE '\\'`;
+    }
+  }
+}
+
+/**
+ * #430 — SQL expression for a `DatasetAggregate`, appending its column (if
+ * any) to `params` as a bound parameter for the same "not a trusted
+ * literal" reason as {@link buildDatasetFilterClause}.
+ * `validateDatasetQueryOptions` already confirmed the aggregate column (when
+ * required) is a `number` column, so the `::numeric` cast is always valid.
+ */
+function buildAggregateSelectSql(
+  aggregate: DatasetAggregate,
+  params: unknown[],
+): string {
+  if (aggregate.fn === 'count') return 'COUNT(*)';
+  params.push(aggregate.column);
+  const expr = `(data->>$${String(params.length)})::numeric`;
+  switch (aggregate.fn) {
+    case 'sum':
+      return `SUM(${expr})`;
+    case 'avg':
+      return `AVG(${expr})`;
+    case 'min':
+      return `MIN(${expr})`;
+    case 'max':
+      return `MAX(${expr})`;
+  }
+}
+
 /**
  * Postgres-backed knowledge graph (Neon serverless).
  *
@@ -425,6 +522,267 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       client.release();
     }
     return { entityIds, inserted, updated };
+  }
+
+  // -------------------------------------------------------------------
+  // #430 — structured dataset ingestion. Relational sidecar (`datasets` +
+  // `dataset_rows`, migration 0029) in this same Neon pool — rows never
+  // become graph nodes; only one Dataset PluginEntity node is created per
+  // dataset via the existing `ingestEntities` path above.
+  // -------------------------------------------------------------------
+
+  /** Insert the `datasets` row + all `dataset_rows` in one transaction.
+   *  Split out from {@link ingestDataset} so the returned `datasetId` is
+   *  definitely-assigned by construction (`return` inside the `try`)
+   *  rather than relying on control-flow analysis across a rethrow. */
+  private async insertDatasetAndRows(input: DatasetIngest): Promise<string> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const insertResult = await client.query<{ id: string }>(
+        `INSERT INTO datasets
+           (tenant_id, owner_omadia_user_id, name, source_file_name, source_storage_key, row_count, columns)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id`,
+        [
+          this.tenantId,
+          input.ownerOmadiaUserId,
+          input.name,
+          input.sourceFileName,
+          input.sourceStorageKey ?? null,
+          input.rows.length,
+          JSON.stringify(input.columns),
+        ],
+      );
+      const datasetId = insertResult.rows[0]?.id;
+      if (datasetId === undefined) {
+        throw new Error('dataset insert returned no id');
+      }
+
+      // Batched multi-row INSERT (chunked so a very large CSV doesn't
+      // build one gigantic statement) — one round-trip per chunk instead
+      // of one per row.
+      const CHUNK_SIZE = 500;
+      for (let start = 0; start < input.rows.length; start += CHUNK_SIZE) {
+        const chunk = input.rows.slice(start, start + CHUNK_SIZE);
+        const values: string[] = [];
+        const params: unknown[] = [];
+        chunk.forEach((row, offset) => {
+          const base = params.length;
+          values.push(`($${String(base + 1)}, $${String(base + 2)}, $${String(base + 3)})`);
+          params.push(datasetId, start + offset, JSON.stringify(row));
+        });
+        await client.query(
+          `INSERT INTO dataset_rows (dataset_id, row_index, data) VALUES ${values.join(', ')}`,
+          params,
+        );
+      }
+
+      await client.query('COMMIT');
+      return datasetId;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async ingestDataset(input: DatasetIngest): Promise<DatasetIngestResult> {
+    const datasetId = await this.insertDatasetAndRows(input);
+
+    // Dataset graph node — created after the row transaction commits, via
+    // the same path proactive entity-sync (Odoo/Confluence) uses. `system:
+    // 'dataset'` maps to the generic PluginEntity node type; `extras` stays
+    // small (row count + column NAMES only, never the data) per the
+    // GIN-index warning on `ingestEntities`.
+    const { entityIds } = await this.ingestEntities([
+      {
+        system: 'dataset',
+        model: 'dataset',
+        id: datasetId,
+        displayName: input.name,
+        extras: {
+          rowCount: input.rows.length,
+          columnNames: input.columns.map((c) => c.name),
+        },
+      },
+    ]);
+    const graphNodeId = entityIds[0];
+    if (graphNodeId === undefined) {
+      throw new Error('dataset graph-node ingest returned no id');
+    }
+    await this.pool.query(
+      `UPDATE datasets SET graph_node_external_id = $1, updated_at = now() WHERE tenant_id = $2 AND id = $3`,
+      [graphNodeId, this.tenantId, datasetId],
+    );
+    return { datasetId, rowCount: input.rows.length, graphNodeId };
+  }
+
+  private async loadDatasetRow(datasetId: string): Promise<DatasetRow | null> {
+    const result = await this.pool.query<DatasetRow>(
+      `SELECT id, name, source_file_name, owner_omadia_user_id, row_count, columns, created_at
+       FROM datasets WHERE tenant_id = $1 AND id = $2`,
+      [this.tenantId, datasetId],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  private datasetRowToSummary(row: DatasetRow): DatasetSummary {
+    return {
+      id: row.id,
+      name: row.name,
+      sourceFileName: row.source_file_name,
+      ownerOmadiaUserId: row.owner_omadia_user_id,
+      rowCount: row.row_count,
+      columns: row.columns,
+      createdAt:
+        row.created_at instanceof Date
+          ? row.created_at.toISOString()
+          : String(row.created_at),
+    };
+  }
+
+  async listDatasets(opts: {
+    ownerOmadiaUserId: string;
+    limit?: number;
+  }): Promise<DatasetSummary[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    const result = await this.pool.query<DatasetRow>(
+      `SELECT id, name, source_file_name, owner_omadia_user_id, row_count, columns, created_at
+       FROM datasets
+       WHERE tenant_id = $1 AND owner_omadia_user_id = $2
+       ORDER BY created_at DESC
+       LIMIT $3`,
+      [this.tenantId, opts.ownerOmadiaUserId, limit],
+    );
+    return result.rows.map((r) => this.datasetRowToSummary(r));
+  }
+
+  async getDataset(
+    datasetId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<DatasetSummary | null> {
+    const row = await this.loadDatasetRow(datasetId);
+    if (!row || row.owner_omadia_user_id !== viewerOmadiaUserId) return null;
+    return this.datasetRowToSummary(row);
+  }
+
+  async queryDatasetRows(
+    datasetId: string,
+    viewerOmadiaUserId: string,
+    opts?: DatasetQueryOptions,
+  ): Promise<DatasetQueryResult | null> {
+    const dataset = await this.loadDatasetRow(datasetId);
+    if (!dataset || dataset.owner_omadia_user_id !== viewerOmadiaUserId) {
+      return null;
+    }
+    const columns = dataset.columns;
+    const normalized = validateDatasetQueryOptions(columns, opts);
+    const columnTypeByName = new Map(columns.map((c) => [c.name, c.type]));
+
+    const params: unknown[] = [datasetId];
+    const whereClauses = normalized.filters.map((f) => {
+      const colType = columnTypeByName.get(f.column);
+      if (colType === undefined) {
+        // Unreachable — validateDatasetQueryOptions already rejected any
+        // filter naming a column outside `columns`.
+        throw new Error(`internal: validated column '${f.column}' has no type`);
+      }
+      return buildDatasetFilterClause(f, colType, params);
+    });
+    const whereSql = ['dataset_id = $1', ...whereClauses].join(' AND ');
+
+    const totalResult = await this.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM dataset_rows WHERE ${whereSql}`,
+      params,
+    );
+    const totalMatched = Number(totalResult.rows[0]?.count ?? '0');
+
+    if (!normalized.aggregate) {
+      const pageParams = [...params, normalized.limit, normalized.offset];
+      const limitIdx = pageParams.length - 1;
+      const offsetIdx = pageParams.length;
+      const rowsResult = await this.pool.query<{ data: Record<string, unknown> }>(
+        `SELECT data FROM dataset_rows WHERE ${whereSql}
+         ORDER BY row_index ASC LIMIT $${String(limitIdx)} OFFSET $${String(offsetIdx)}`,
+        pageParams,
+      );
+      return { rows: rowsResult.rows.map((r) => r.data), totalMatched };
+    }
+
+    if (normalized.groupBy !== undefined) {
+      const groupParams = [...params, normalized.groupBy];
+      const groupIdx = groupParams.length;
+      const groupExpr = `data->>$${String(groupIdx)}`;
+      const aggSql = buildAggregateSelectSql(normalized.aggregate, groupParams);
+      const result = await this.pool.query<{ key: unknown; value: string | null }>(
+        `SELECT ${groupExpr} AS key, ${aggSql} AS value
+         FROM dataset_rows WHERE ${whereSql}
+         GROUP BY ${groupExpr}
+         ORDER BY value DESC NULLS LAST
+         LIMIT 200`,
+        groupParams,
+      );
+      return {
+        groups: result.rows.map((r) => ({
+          key: r.key,
+          value: r.value === null ? null : Number(r.value),
+        })),
+        totalMatched,
+      };
+    }
+
+    const aggParams = [...params];
+    const aggSql = buildAggregateSelectSql(normalized.aggregate, aggParams);
+    const result = await this.pool.query<{ value: string | null }>(
+      `SELECT ${aggSql} AS value FROM dataset_rows WHERE ${whereSql}`,
+      aggParams,
+    );
+    const value = result.rows[0]?.value;
+    return {
+      aggregateValue: value === undefined || value === null ? null : Number(value),
+      totalMatched,
+    };
+  }
+
+  async deleteDataset(
+    datasetId: string,
+    actor: AclMutationOptions,
+  ): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query<{
+        id: string;
+        owner_omadia_user_id: string;
+        graph_node_external_id: string | null;
+      }>(
+        `SELECT id, owner_omadia_user_id, graph_node_external_id
+         FROM datasets WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
+        [this.tenantId, datasetId],
+      );
+      const row = result.rows[0];
+      if (!row || row.owner_omadia_user_id !== actor.actorOmadiaUserId) {
+        await client.query('ROLLBACK');
+        return false;
+      }
+      // CASCADE (migration 0029) removes dataset_rows.
+      await client.query(`DELETE FROM datasets WHERE id = $1`, [row.id]);
+      if (row.graph_node_external_id) {
+        await client.query(
+          `DELETE FROM graph_nodes WHERE tenant_id = $1 AND external_id = $2`,
+          [this.tenantId, row.graph_node_external_id],
+        );
+      }
+      await client.query('COMMIT');
+      return true;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async ingestFacts(facts: FactIngest[]): Promise<FactIngestResult> {
@@ -905,6 +1263,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         const invProps = validateNodeProps('AgentInvocation', {
           runId: runExtId,
           agentName: inv.agentName,
+          ...(inv.agentId !== undefined ? { agentId: inv.agentId } : {}),
           index: inv.index,
           durationMs: inv.durationMs,
           subIterations: inv.subIterations,

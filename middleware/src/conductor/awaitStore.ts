@@ -113,11 +113,35 @@ export class ConductorAwaitStore {
     return r.rows[0] ? toAwait(r.rows[0]) : null;
   }
 
-  /** All waiting awaits (the operator inbox). */
+  /**
+   * All waiting HUMAN awaits (the operator inbox). Dev-job awaits (`channel_type='dev_job'`,
+   * Epic #470 W3) are excluded: they have no human holder and are resolved by a terminal dev-job
+   * outcome, not an operator response — surfacing them would show a phantom, un-actionable row
+   * whose `respond` can only ever be rejected by the authz gate.
+   */
   async listWaiting(limit = 100): Promise<ConductorAwait[]> {
     const r = await this.pool.query<AwaitRow>(
-      `SELECT ${COLS} FROM conductor_awaits WHERE status = 'waiting' ORDER BY created_at ASC LIMIT $1`,
+      `SELECT ${COLS} FROM conductor_awaits
+        WHERE status = 'waiting' AND channel_type <> 'dev_job'
+        ORDER BY created_at ASC LIMIT $1`,
       [Math.min(Math.max(1, limit), 500)],
+    );
+    return r.rows.map(toAwait);
+  }
+
+  /**
+   * Waiting dev-job awaits (`channel_type='dev_job'`) — the reconciliation sweep's input
+   * (Epic #470 W3). Deliberately the COMPLEMENT of {@link listWaiting}: these carry a synthetic
+   * `dev_job:<jobId>` principal and are recovered by `reconcileTerminalDevJobAwaits`, which asks
+   * the dev-job port whether the bound job is already terminal (closing the terminal-before-bind
+   * lost-wakeup window).
+   */
+  async listWaitingDevJobAwaits(limit = 200): Promise<ConductorAwait[]> {
+    const r = await this.pool.query<AwaitRow>(
+      `SELECT ${COLS} FROM conductor_awaits
+        WHERE status = 'waiting' AND channel_type = 'dev_job'
+        ORDER BY created_at ASC LIMIT $1`,
+      [Math.min(Math.max(1, limit), 1000)],
     );
     return r.rows.map(toAwait);
   }

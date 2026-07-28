@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+
 import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -28,10 +30,9 @@ import {
  * same admin router family as the Danger Zone purge page).
  */
 
-const BACKENDS: ReadonlyArray<{ value: MemoryBackend; label: string }> = [
-  { value: 'postgres', label: 'Postgres (postgres)' },
-  { value: 'inmemory', label: 'In-Memory (flüchtig, ohne Datenbank)' },
-];
+// Stable backend keys — labels are translated at render via
+// `adminMemoryBackend.backends.*`.
+const BACKENDS: ReadonlyArray<MemoryBackend> = ['postgres', 'inmemory'];
 
 /** Surface the inline 400 `database_url_required` payload from an ApiError. */
 function databaseUrlRequiredFromError(err: unknown): boolean {
@@ -45,6 +46,7 @@ function databaseUrlRequiredFromError(err: unknown): boolean {
 }
 
 export default function MemoryBackendPage(): React.ReactElement {
+  const t = useTranslations('adminMemoryBackend');
   const [state, setState] = useState<MemoryBackendState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -97,24 +99,18 @@ export default function MemoryBackendPage(): React.ReactElement {
       await load();
     } catch (err) {
       if (databaseUrlRequiredFromError(err)) {
-        setSaveError(
-          'Postgres benötigt DATABASE_URL (Neon-KG/graphPool). Setze DATABASE_URL und starte neu, bevor du auf Postgres wechselst.',
-        );
+        setSaveError(t('dbUrlRequiredError'));
       } else if (err instanceof ApiError && err.status === 403) {
-        setSaveError(
-          'Nicht berechtigt (403) — das Umschalten des Backends erfordert Admin-Rechte.',
-        );
+        setSaveError(t('forbiddenError'));
       } else if (err instanceof ApiError && err.status === 409) {
-        setSaveError(
-          'Kein Memory-Provider registriert (409) — die Auswahl kann nicht gespeichert werden.',
-        );
+        setSaveError(t('noProviderError'));
       } else {
         setSaveError(err instanceof Error ? err.message : String(err));
       }
     } finally {
       setSaving(false);
     }
-  }, [choice, load]);
+  }, [choice, load, t]);
 
   return (
     <main className="mx-auto max-w-[800px] px-6 py-12 lg:px-8 lg:py-16">
@@ -126,27 +122,25 @@ export default function MemoryBackendPage(): React.ReactElement {
           ← /admin
         </Link>
         <h1 className="mt-2 font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Memory · Speicher-Backend
+          {t('title')}
         </h1>
         <p className="mt-3 max-w-2xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
-          Schaltet das Memory-Storage zwischen <strong>Postgres</strong> und{' '}
-          <strong>In-Memory</strong> (flüchtig, ohne Datenbank) um. Postgres
-          benötigt{' '}
-          <code className="font-mono">DATABASE_URL</code> (Neon-KG/graphPool).
-          Die Auswahl wird gespeichert, der Wechsel greift erst nach einem
-          Neustart.
+          {t.rich('intro', {
+            strong: (chunks) => <strong>{chunks}</strong>,
+            code: (chunks) => <code className="font-mono">{chunks}</code>,
+          })}
         </p>
       </header>
 
       {loading && (
         <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 text-sm text-[color:var(--fg-muted)]">
-          lädt…
+          {t('loading')}
         </section>
       )}
 
       {loadError !== null && (
         <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
-          Laden fehlgeschlagen: {loadError}
+          {t('loadFailed', { message: loadError })}
         </section>
       )}
 
@@ -154,39 +148,42 @@ export default function MemoryBackendPage(): React.ReactElement {
         <>
           <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
             <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-              Aktueller Stand
+              {t('currentStateTitle')}
             </h2>
             <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-              <dt className="text-[color:var(--fg-muted)]">Aktives Backend</dt>
+              <dt className="text-[color:var(--fg-muted)]">
+                {t('activeBackend')}
+              </dt>
               <dd className="font-mono">{state.current}</dd>
-              <dt className="text-[color:var(--fg-muted)]">Env-Default</dt>
+              <dt className="text-[color:var(--fg-muted)]">{t('envDefault')}</dt>
               <dd className="font-mono">{state.envDefault}</dd>
-              <dt className="text-[color:var(--fg-muted)]">Aktiver Provider</dt>
+              <dt className="text-[color:var(--fg-muted)]">
+                {t('activeProvider')}
+              </dt>
               <dd className="font-mono">{state.activeProviderId ?? '—'}</dd>
               <dt className="text-[color:var(--fg-muted)]">DATABASE_URL</dt>
               <dd className="font-mono">
-                {state.databaseUrlPresent ? 'gesetzt' : 'nicht gesetzt'}
+                {state.databaseUrlPresent ? t('dbUrlSet') : t('dbUrlNotSet')}
               </dd>
             </dl>
           </section>
 
           {state.restartRequiredToApply && (
             <section className="mb-6 rounded-lg border border-[color:var(--warning)]/50 bg-[color:var(--warning)]/10 p-4 text-sm font-medium text-[color:var(--warning)]">
-              ⚠ Ein Wechsel ist gespeichert, aber noch nicht aktiv — Neustart
-              erforderlich, damit der Wechsel greift.
+              {t('restartPending')}
             </section>
           )}
 
           <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
             <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-              Backend wählen
+              {t('chooseBackendTitle')}
             </h2>
             <div className="flex flex-col gap-2">
               {BACKENDS.map((b) => {
-                const disabled = b.value === 'postgres' && dbMissing;
+                const disabled = b === 'postgres' && dbMissing;
                 return (
                   <label
-                    key={b.value}
+                    key={b}
                     className={
                       disabled
                         ? 'flex items-center gap-2 text-sm text-[color:var(--fg-subtle)]'
@@ -196,19 +193,19 @@ export default function MemoryBackendPage(): React.ReactElement {
                     <input
                       type="radio"
                       name="memory-backend"
-                      value={b.value}
-                      checked={choice === b.value}
+                      value={b}
+                      checked={choice === b}
                       disabled={disabled || saving}
                       onChange={() => {
-                        setChoice(b.value);
+                        setChoice(b);
                         setSaved(null);
                         setSaveError(null);
                       }}
                     />
-                    <span>{b.label}</span>
+                    <span>{t(`backends.${b}`)}</span>
                     {disabled && (
                       <span className="text-xs text-[color:var(--fg-muted)]">
-                        — benötigt DATABASE_URL (Neon-KG/graphPool)
+                        {t('requiresDbUrl')}
                       </span>
                     )}
                   </label>
@@ -222,7 +219,7 @@ export default function MemoryBackendPage(): React.ReactElement {
                 onClick={() => void onSave()}
                 disabled={!canSave}
               >
-                {saving ? 'speichert…' : 'Auswahl speichern'}
+                {saving ? t('saving') : t('saveButton')}
               </Button>
             </div>
           </section>
@@ -236,11 +233,14 @@ export default function MemoryBackendPage(): React.ReactElement {
           {saved !== null && saveError === null && (
             <section className="rounded-lg border border-[color:var(--warning)]/50 bg-[color:var(--warning)]/10 p-4 text-sm text-[color:var(--warning)]">
               <p className="font-semibold">
-                Backend <code className="font-mono">{saved}</code> gespeichert.
+                {t.rich('savedMessage', {
+                  backend: saved,
+                  code: (chunks) => (
+                    <code className="font-mono">{chunks}</code>
+                  ),
+                })}
               </p>
-              <p className="mt-1">
-                Neustart erforderlich, damit der Wechsel greift.
-              </p>
+              <p className="mt-1">{t('restartRequired')}</p>
             </section>
           )}
 

@@ -4,6 +4,7 @@ import { useTranslations } from 'next-intl';
 import { useEffect, useState } from 'react';
 
 import {
+  ackMcpToolVerdict,
   addPersonaSkill,
   discoverMcpTools,
   listSkills,
@@ -11,6 +12,7 @@ import {
   patchSubAgent,
   removePersonaSkill,
   type AgentNode,
+  type McpDiscoveredTool,
   type McpServerNode,
   type ModelRoutingConfig,
   type ModelRoutingMode,
@@ -23,6 +25,7 @@ import { listBuilderModels } from '../../../_lib/api';
 import type { BuilderModelInfo } from '../../../_lib/builderTypes';
 import { Button } from '@/app/_components/ui/Button';
 import { SkillEditor } from '../../../_components/admin/SkillEditor';
+import { SkillVerdictBadge } from '../../../_components/admin/SkillVerdictBadge';
 import type { BuilderNodeData } from '../nodes/types';
 import { Field, inputCls, SaveButton } from './InspectorControls';
 
@@ -226,12 +229,27 @@ function PersonaSkillsSection({
   onSaved: () => void;
 }): React.ReactElement {
   const t = useTranslations('admin.builder');
+  /** Falls back to the raw code for anything without a catalog entry yet
+   *  (post-review fix: 2 unguarded call sites crashed/rendered raw keys on
+   *  the new `credential_harvest`/`silent_permission_escalation` codes). */
+  function riskCodeLabel(code: string): string {
+    const key = `import.risks.code.${code}`;
+    return t.has(key) ? t(key) : code.replace(/_/g, ' ');
+  }
   const [allSkills, setAllSkills] = useState<SkillNode[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedToAdd, setSelectedToAdd] = useState('');
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastRisks, setLastRisks] = useState<SkillRisk[] | null>(null);
+  // Attach-boundary confirm gate (issue #436): a persona skill drives the
+  // top-level agent with full tool access. Post-review fix: the persisted
+  // verdict is NOT always present (a skill imported/edited before this
+  // feature, or before the online-compute fix landed, has none until
+  // backfilled) — so the gate also falls back to the live regex `risks`
+  // array (the same cheap, always-fresh signal the dropdown's ⚠ icon
+  // already uses), never blocking on an in-flight/pending LLM scan.
+  const [confirmHighRiskId, setConfirmHighRiskId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -258,6 +276,17 @@ function PersonaSkillsSection({
 
   async function handleAdd(): Promise<void> {
     if (!selectedToAdd) return;
+    // Fail OPEN if the verdict is missing/pending (not yet scanned or the
+    // async LLM pass hasn't landed) — the gate only fires on a CONFIRMED
+    // high_risk deterministic verdict, never blocking on absence of signal.
+    const target = skillById.get(selectedToAdd);
+    const highRisk =
+      target?.verdict?.severity === 'high_risk' || (target?.risks?.length ?? 0) > 0;
+    if (highRisk && confirmHighRiskId !== selectedToAdd) {
+      setConfirmHighRiskId(selectedToAdd);
+      return;
+    }
+    setConfirmHighRiskId(null);
     setPendingId(selectedToAdd);
     setError(null);
     setLastRisks(null);
@@ -305,9 +334,7 @@ function PersonaSkillsSection({
                 title={
                   risky
                     ? t('persona.riskWarning', {
-                        codes: (s?.risks ?? [])
-                          .map((r) => t(`import.risks.code.${r.code}`))
-                          .join(', '),
+                        codes: (s?.risks ?? []).map((r) => riskCodeLabel(r.code)).join(', '),
                       })
                     : undefined
                 }
@@ -343,7 +370,10 @@ function PersonaSkillsSection({
           <div className="flex gap-2">
             <select
               value={selectedToAdd}
-              onChange={(e) => setSelectedToAdd(e.target.value)}
+              onChange={(e) => {
+                setSelectedToAdd(e.target.value);
+                setConfirmHighRiskId(null);
+              }}
               className={inputCls}
             >
               <option value="">{t('persona.addPlaceholder')}</option>
@@ -359,16 +389,29 @@ function PersonaSkillsSection({
               onClick={() => void handleAdd()}
               disabled={!selectedToAdd || pendingId !== null}
             >
-              {t('persona.add')}
+              {confirmHighRiskId === selectedToAdd ? t('persona.confirmAttachAction') : t('persona.add')}
             </Button>
           </div>
         ) : (
           <p className="text-xs text-[color:var(--fg-muted)]">{t('persona.noSkillsAvailable')}</p>
         ))}
+      {confirmHighRiskId && confirmHighRiskId === selectedToAdd && (
+        <p className="rounded-md border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1.5 text-xs text-[color:var(--danger)]">
+          {t('persona.confirmAttachHighRisk', {
+            codes: (
+              skillById.get(confirmHighRiskId)?.verdict?.riskCodes.length
+                ? (skillById.get(confirmHighRiskId)?.verdict?.riskCodes ?? [])
+                : (skillById.get(confirmHighRiskId)?.risks ?? []).map((r) => r.code)
+            )
+              .map(riskCodeLabel)
+              .join(', '),
+          })}
+        </p>
+      )}
       {lastRisks && lastRisks.length > 0 && (
         <p className="rounded-md border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-2 py-1.5 text-xs text-[color:var(--danger)]">
           {t('persona.riskWarning', {
-            codes: lastRisks.map((r) => t(`import.risks.code.${r.code}`)).join(', '),
+            codes: lastRisks.map((r) => riskCodeLabel(r.code)).join(', '),
           })}
         </p>
       )}
@@ -539,6 +582,7 @@ function McpEditor({
   // selected server changes (id mismatch), the override is ignored and we
   // fall back to the prop — no setState-in-effect needed.
   const [override, setOverride] = useState<McpServerNode | null>(null);
+  const [confirmAckTool, setConfirmAckTool] = useState<string | null>(null);
   const live = override && override.id === server.id ? override : server;
   const { pending, error, run } = useSaver();
 
@@ -565,8 +609,99 @@ function McpEditor({
         {live.discoveredTools.length} {t('nodes.tools')}
         {live.lastDiscoveredAt ? ` · ${live.lastDiscoveredAt}` : ''}
       </div>
+      {live.discoveredTools.length > 0 ? (
+        <div className="flex flex-col gap-1.5">
+          {live.discoveredTools.map((tool) => (
+            <McpToolRow
+              key={tool.name}
+              serverId={server.id}
+              tool={tool}
+              armed={confirmAckTool === tool.name}
+              onArm={() => setConfirmAckTool(tool.name)}
+              onAcked={(name) => {
+                setConfirmAckTool(null);
+                setOverride({
+                  ...live,
+                  discoveredTools: live.discoveredTools.map((dt) =>
+                    dt.name === name && dt.verdict
+                      ? { ...dt, verdict: { ...dt.verdict, acked: true, ackStale: false } }
+                      : dt,
+                  ),
+                });
+                onSaved();
+              }}
+            />
+          ))}
+        </div>
+      ) : null}
       <ErrLine error={error} />
       <SaveButton onClick={() => void discover()} pending={pending} label={t('inspector.discover')} />
+    </div>
+  );
+}
+
+/** One discovered tool with its scan verdict (issue #454). Acknowledging a
+ *  high_risk verdict is a deliberate two-click action (arm, then confirm),
+ *  mirroring the #436 persona attach gate. */
+function McpToolRow({
+  serverId,
+  tool,
+  armed,
+  onArm,
+  onAcked,
+}: {
+  serverId: string;
+  tool: McpDiscoveredTool;
+  armed: boolean;
+  onArm: () => void;
+  onAcked: (toolName: string) => void;
+}): React.ReactElement {
+  const t = useTranslations('admin.builder');
+  const { pending, error, run } = useSaver();
+  const verdict = tool.verdict;
+  const needsAck =
+    verdict?.severity === 'high_risk' && (!verdict.acked || verdict.ackStale);
+
+  async function ack(): Promise<void> {
+    await run(async () => {
+      await ackMcpToolVerdict(serverId, tool.name);
+      onAcked(tool.name);
+    });
+  }
+
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-[color:var(--border)] px-2 py-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate text-xs" title={tool.description ?? tool.name}>
+          {tool.name}
+        </span>
+        <SkillVerdictBadge severity={verdict?.severity ?? 'not_yet_scanned'} />
+      </div>
+      {verdict && verdict.riskCodes.length > 0 ? (
+        <div className="text-[10px] text-[color:var(--fg-muted)]">
+          {verdict.riskCodes.join(', ')}
+        </div>
+      ) : null}
+      {needsAck ? (
+        <Button
+          size="sm"
+          variant="danger"
+          busy={pending}
+          onClick={() => {
+            if (!armed) {
+              onArm();
+              return;
+            }
+            void ack();
+          }}
+        >
+          {armed ? t('inspector.ackToolConfirm') : t('inspector.ackTool')}
+        </Button>
+      ) : null}
+      {verdict?.acked && !verdict.ackStale ? (
+        <div className="text-[10px] text-[color:var(--fg-muted)]">{t('inspector.ackDone')}</div>
+      ) : null}
+      <ErrLine error={error} />
     </div>
   );
 }

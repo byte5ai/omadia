@@ -69,7 +69,7 @@ export default function BuilderCanvas(props: BuilderCanvasProps): React.ReactEle
 
 function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
   const t = useTranslations('admin.builder');
-  const { state, actionError, clearActionError, reload, mutate } = useAgentGraph(slug);
+  const { state, actionError, clearActionError, reload, mutate } = useAgentGraph(slug, t);
   const { screenToFlowPosition } = useReactFlow();
 
   const labels = useMemo(

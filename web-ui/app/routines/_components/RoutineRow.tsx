@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useCallback, useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -29,6 +30,7 @@ const HISTORY_LIMIT = 10;
  * detail page, which always reads from the server).
  */
 export function RoutineRow({ routine }: Props): React.ReactElement {
+  const t = useTranslations('routines.row');
   const [expanded, setExpanded] = useState(false);
   const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [runs, setRuns] = useState<RoutineRunSummaryDto[] | null>(null);
@@ -166,7 +168,9 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
               </button>
             </>
           ) : (
-            <span className="text-[color:var(--fg-subtle)]">noch nie</span>
+            <span className="text-[color:var(--fg-subtle)]">
+              {t('neverRan')}
+            </span>
           )}
         </td>
         <td className="px-4 py-3 text-right">
@@ -206,6 +210,7 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
 }
 
 function DetailsPanel({ routine }: { routine: RoutineDto }): React.ReactElement {
+  const t = useTranslations('routines.row');
   return (
     <div className="space-y-4">
       <div>
@@ -229,18 +234,18 @@ function DetailsPanel({ routine }: { routine: RoutineDto }): React.ReactElement 
         />
         <DetailField label="Status" value={routine.status} />
         <DetailField
-          label="Letzter Lauf"
+          label={t('lastRun')}
           value={
             routine.lastRunAt
               ? `${formatDate(routine.lastRunAt)} · ${routine.lastRunStatus ?? '—'}`
-              : 'noch nie'
+              : t('neverRan')
           }
         />
       </div>
       {routine.lastRunError ? (
         <div className="rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-3">
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--danger)]">
-            Letzter Fehler
+            {t('lastError')}
           </div>
           <pre className="mt-2 whitespace-pre-wrap font-mono text-[11px] text-[color:var(--danger)]">
             {routine.lastRunError}
@@ -290,11 +295,12 @@ function RunHistoryPanel({
   error: string | null;
   onRefresh: () => void;
 }): React.ReactElement {
+  const t = useTranslations('routines.row');
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-          Letzte {HISTORY_LIMIT} Runs
+          {t('historyTitle', { count: HISTORY_LIMIT })}
         </div>
         <Button
           variant="secondary"
@@ -304,20 +310,21 @@ function RunHistoryPanel({
           disabled={loading}
           className="text-[10px] uppercase tracking-[0.16em]"
         >
-          {loading ? 'Lädt…' : 'Refresh'}
+          {loading ? t('loading') : 'Refresh'}
         </Button>
       </div>
       {error ? (
         <div className="rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-3 text-[12px] text-[color:var(--danger)]">
-          <div className="font-semibold">Run-Historie nicht erreichbar</div>
+          <div className="font-semibold">{t('historyErrorTitle')}</div>
           <div className="mt-1 font-mono text-[10px]">{error}</div>
         </div>
       ) : runs === null ? (
-        <div className="text-[12px] text-[color:var(--fg-subtle)]">Lädt…</div>
+        <div className="text-[12px] text-[color:var(--fg-subtle)]">
+          {t('loading')}
+        </div>
       ) : runs.length === 0 ? (
         <div className="text-[12px] text-[color:var(--fg-subtle)]">
-          Noch keine Run-Historie für diese Routine — sobald sie zum ersten
-          Mal feuert, erscheint hier eine Zeile.
+          {t('historyEmpty')}
         </div>
       ) : (
         <div className="overflow-x-auto rounded-md border border-[color:var(--border)] bg-[color:var(--surface)]">
@@ -327,9 +334,9 @@ function RunHistoryPanel({
                 <th className="px-3 py-2">Started</th>
                 <th className="px-3 py-2">Trigger</th>
                 <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Dauer</th>
+                <th className="px-3 py-2">{t('columnDuration')}</th>
                 <th className="px-3 py-2">Iter · Tools</th>
-                <th className="px-3 py-2">Fehler</th>
+                <th className="px-3 py-2">{t('columnError')}</th>
                 <th className="px-3 py-2 text-right">Detail</th>
               </tr>
             </thead>
@@ -413,8 +420,13 @@ function TriggerPill({
 }: {
   trigger: 'cron' | 'catchup' | 'manual';
 }): React.ReactElement {
+  const t = useTranslations('routines.trigger');
   const label =
-    trigger === 'cron' ? 'Cron' : trigger === 'catchup' ? 'Catch-up' : 'Manuell';
+    trigger === 'cron'
+      ? t('cron')
+      : trigger === 'catchup'
+        ? t('catchup')
+        : t('manual');
   const colorVar =
     trigger === 'manual'
       ? '--accent'

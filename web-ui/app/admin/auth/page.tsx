@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 
+import { useTranslations } from 'next-intl';
+
 import { Button } from '@/app/_components/ui/Button';
 import {
   AdminAuthProvider,
@@ -10,6 +12,8 @@ import {
   enableAdminAuthProvider,
   getAdminAuthProviders,
 } from '../../_lib/api';
+
+type TFn = (key: string, values?: Record<string, string | number>) => string;
 
 type State =
   | { kind: 'loading' }
@@ -29,6 +33,7 @@ type State =
  *   we surface the server codes through instead of duplicating them client-side.
  */
 export default function AdminAuthPage(): React.ReactElement {
+  const t = useTranslations('adminAuth');
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -63,7 +68,7 @@ export default function AdminAuthPage(): React.ReactElement {
       }
       await reload();
     } catch (err) {
-      setActionError(toFriendlyError(err, p.active));
+      setActionError(toFriendlyError(err, p.active, t));
     } finally {
       setPendingId(null);
     }
@@ -73,23 +78,24 @@ export default function AdminAuthPage(): React.ReactElement {
     <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <h1 className="font-display text-[clamp(1.75rem,3.5vw,2.5rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Authentifizierungs-Provider
+          {t('title')}
         </h1>
         <p className="mt-3 max-w-2xl text-[15px] leading-[1.55] text-[color:var(--fg-muted)]">
-          Aktiviere oder deaktiviere die Anmelde-Verfahren. Die env-Variable{' '}
-          <code className="rounded bg-[color:var(--card)] px-1 py-0.5 text-[12px]">
-            AUTH_PROVIDERS
-          </code>{' '}
-          definiert die zulässigen Provider; hier wählst du, welche davon
-          aktuell aktiv sind.
+          {t.rich('intro', {
+            envVar: () => (
+              <code className="rounded bg-[color:var(--card)] px-1 py-0.5 text-[12px]">
+                AUTH_PROVIDERS
+              </code>
+            ),
+          })}
         </p>
       </header>
 
       {state.kind === 'loading' ? (
-        <p className="text-sm opacity-70">Lädt …</p>
+        <p className="text-sm opacity-70">{t('loading')}</p>
       ) : state.kind === 'error' ? (
         <p className="text-sm text-[color:var(--danger)]">
-          Fehler beim Laden: {state.message}
+          {t('loadError', { message: state.message })}
         </p>
       ) : (
         <ul className="flex flex-col gap-3">
@@ -124,16 +130,16 @@ export default function AdminAuthPage(): React.ReactElement {
                       p.active ? 'bg-[color:var(--success)]/100' : 'bg-[color:var(--fg-muted)]',
                     ].join(' ')}
                   />
-                  {p.active ? 'aktiv' : 'inaktiv'}
+                  {p.active ? t('statusActive') : t('statusInactive')}
                 </span>
               </div>
               <Button
                 variant={p.active ? 'secondary' : 'primary'}
                 onClick={() => void toggle(p)}
                 busy={pendingId === p.id}
-                busyLabel={p.active ? 'Deaktivieren' : 'Aktivieren'}
+                busyLabel={p.active ? t('disable') : t('enable')}
               >
-                {p.active ? 'Deaktivieren' : 'Aktivieren'}
+                {p.active ? t('disable') : t('enable')}
               </Button>
             </li>
           ))}
@@ -147,18 +153,20 @@ export default function AdminAuthPage(): React.ReactElement {
   );
 }
 
-function toFriendlyError(err: unknown, wasActive: boolean): string {
+function toFriendlyError(err: unknown, wasActive: boolean, t: TFn): string {
   if (err instanceof ApiError) {
     if (err.body.includes('self_lockout')) {
-      return 'Du kannst nicht den Provider deaktivieren, mit dem du gerade angemeldet bist.';
+      return t('errors.selfLockout');
     }
     if (err.body.includes('last_active_provider')) {
-      return 'Mindestens ein Provider muss aktiv bleiben — sonst kommt niemand mehr rein.';
+      return t('errors.lastActiveProvider');
     }
     if (err.body.includes('not_in_whitelist')) {
-      return 'Dieser Provider ist nicht in der AUTH_PROVIDERS-Whitelist erlaubt.';
+      return t('errors.notInWhitelist');
     }
-    return `Fehler ${err.status}: ${wasActive ? 'Deaktivieren' : 'Aktivieren'} fehlgeschlagen.`;
+    return wasActive
+      ? t('errors.disableFailed', { status: err.status })
+      : t('errors.enableFailed', { status: err.status });
   }
   return err instanceof Error ? err.message : String(err);
 }

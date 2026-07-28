@@ -95,6 +95,20 @@ describe('<LoginPage /> redirect on mount', () => {
     await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/'));
   });
 
+  it('does not redirect on an explicit ?reauth=1 even when still authenticated', async () => {
+    // The "Relogin now" button lands here with a live session; the page
+    // must show the form instead of bouncing back (issue #412).
+    mockSearchParamsGet.mockImplementation((key) =>
+      key === 'reauth' ? '1' : key === 'return' ? '/chat' : null,
+    );
+    mockGetSessionStatus.mockImplementation(authedSession);
+
+    renderWithIntl(<LoginPage />);
+
+    await waitFor(() => expect(mockGetAuthProviders).toHaveBeenCalled());
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
   it('does not redirect an unauthenticated visitor', async () => {
     mockSearchParamsGet.mockReturnValue(null);
     mockGetSessionStatus.mockImplementation(unauthedSession);

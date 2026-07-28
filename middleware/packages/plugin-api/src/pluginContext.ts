@@ -161,6 +161,26 @@ export interface PluginContext {
    *  rephrasing) without managing API keys themselves — the host pays. */
   readonly llm?: LlmAccessor;
 
+  /** Epic #459 W5 (issue #458) — host-pooled MCP tool access. Present iff the
+   *  manifest declares `permissions.mcp` AND the host wires an MCP service.
+   *  Scoped to servers the operator has EXPLICITLY granted to this plugin —
+   *  never ambient access to every registered server. Calls route through
+   *  the host's shared connection pool, the scan-verdict dispatch guard, and
+   *  the call audit log (attributed to this plugin). Guard with
+   *  `if (ctx.mcp)` — a Hub plugin may land on an older core that lacks it. */
+  readonly mcp?: McpAccessor;
+
+  /** Epic #470 W3 — dev-platform access. Present iff the manifest declares
+   *  `permissions.devJobs` AND the host wires the 'devJobs' service. Scoped to
+   *  the repos the operator has EXPLICITLY granted to this plugin
+   *  (`dev_repo_plugin_grants`) — never ambient access to every registered
+   *  repo. Fail-closed like `ctx.mcp`: an ungranted repo (or a job on one)
+   *  throws, and the error never reveals whether an out-of-scope repo/job
+   *  exists. Deliberately CANNOT resolve gates — a human gate must stay
+   *  attributable to a human session, never a model/plugin turn. Guard with
+   *  `if (ctx.devJobs)` — a Hub plugin may land on an older core that lacks it. */
+  readonly devJobs?: DevJobsAccessor;
+
   /** Spec 004 — redirect/callback flow toolkit. Present iff the manifest
    *  declares `permissions.flows: true`. Supplies the three things a plugin
    *  needs to run a credential-acquisition round-trip on its OWN route:
@@ -1246,6 +1266,117 @@ export interface LlmCompleteRequest {
    *  `permissions.llm.max_tokens_per_call` when manifest sets a smaller cap. */
   readonly maxTokens?: number;
   readonly temperature?: number;
+}
+
+/** One discovered MCP tool, as the host's manager reports it (issue #458). */
+export interface McpAccessorToolDescriptor {
+  readonly name: string;
+  readonly description?: string;
+  readonly inputSchema?: Record<string, unknown>;
+}
+
+/**
+ * Host-pooled MCP access for plugins (epic #459 W5, issue #458). Server ids
+ * are the host's `mcp_servers` ids; only operator-granted servers resolve —
+ * everything else throws `McpServerNotGrantedError`-shaped errors as plain
+ * `Error` (plugin-api stays dependency-free). `callTool` mirrors the host
+ * manager's contract: it never throws on tool failure, it returns an
+ * `Error: …` string (including scan-policy denials).
+ */
+export interface McpAccessor {
+  /** Server ids the operator has granted to this plugin. */
+  listServers(): Promise<readonly string[]>;
+  listTools(serverId: string): Promise<readonly McpAccessorToolDescriptor[]>;
+  callTool(
+    serverId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<string>;
+}
+
+// ---------------------------------------------------------------------------
+// Dev-platform access (epic #470 W3, issue #470) — `ctx.devJobs`.
+// ---------------------------------------------------------------------------
+
+/** The three job intents a plugin may start (spec §2). */
+export type DevJobKind = 'analyze' | 'fix_issue' | 'implement';
+
+/** Job lifecycle status, mirrored from `dev_jobs.status` (spec §2). */
+export type DevJobStatus =
+  | 'queued'
+  | 'provisioning'
+  | 'running'
+  | 'waiting'
+  | 'applying'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'stalled'
+  | 'budget_exceeded';
+
+/** Read-only projection of a dev job handed to plugins. Deliberately omits the
+ *  creator, runner token, cost, and raw diff artifacts — the forge PR page is
+ *  the review surface (epic non-goal). */
+export interface DevJobDescriptor {
+  readonly id: string;
+  readonly repoId: string;
+  readonly kind: DevJobKind;
+  readonly status: DevJobStatus;
+  readonly phase: string;
+  readonly branch?: string;
+  readonly prUrl?: string;
+  readonly createdAt: string;
+}
+
+export interface DevJobCreateRequest {
+  readonly repoId: string;
+  readonly kind: DevJobKind;
+  readonly brief: string;
+  /** Ticket key, e.g. "PROJ-123" — becomes the job's `sourceRef`. */
+  readonly sourceRef?: string;
+}
+
+export interface DevJobEventRecord {
+  readonly id: number;
+  /** Server-assigned ordering key (event timestamp, ISO 8601). */
+  readonly at: string;
+  readonly type: string;
+  readonly payload: Record<string, unknown>;
+}
+
+/**
+ * Dev-platform access for plugins (epic #470 W3). Repo ids are host
+ * `dev_repos` ids; only operator-granted repos (`dev_repo_plugin_grants`)
+ * resolve — everything else throws a plain `Error` (plugin-api stays
+ * dependency-free), with an opaque message that does NOT reveal whether an
+ * out-of-scope repo or job exists. Mirrors `McpAccessor`'s fail-closed
+ * contract. Gate resolution is deliberately absent from this surface — see the
+ * `devJobs?` doc on {@link PluginContext}.
+ */
+export interface DevJobsAccessor {
+  /** Repo ids the operator has granted to THIS plugin. Everything else is
+   *  invisible. */
+  listRepos(): Promise<readonly string[]>;
+  /** Start a dev job on a granted repo. Throws on an ungranted repo. */
+  create(req: DevJobCreateRequest): Promise<DevJobDescriptor>;
+  /** Fetch one job. Throws — indistinguishably from not-found — when the job is
+   *  missing OR lives on a repo not granted to this plugin (no existence
+   *  oracle). */
+  get(jobId: string): Promise<DevJobDescriptor>;
+  /** List jobs, scoped to granted repos. A `repoId` filter naming an ungranted
+   *  repo throws. */
+  list(filter?: {
+    repoId?: string;
+    status?: DevJobStatus;
+  }): Promise<readonly DevJobDescriptor[]>;
+  /** Cursor-poll over the append-only event log — no push subscription in v1
+   *  (SSE stays a host/UI concern). Pass the last-seen `afterId` to page.
+   *  Same repo-grant scoping as `get`. */
+  listEvents(jobId: string, afterId?: number): Promise<readonly DevJobEventRecord[]>;
+  /** Cancel a job — only jobs THIS plugin created. Throws on a job created by
+   *  another plugin, and (indistinguishably from not-found) on an
+   *  ungranted/missing job. */
+  cancel(jobId: string): Promise<void>;
 }
 
 export interface LlmCompleteResult {

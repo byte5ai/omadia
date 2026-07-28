@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 
 import type { PluginActionStatus } from '../../_lib/storeTypes';
 
@@ -19,6 +20,7 @@ export function ActionStatusBanner({
   pluginId: string;
   initial?: PluginActionStatus;
 }): React.ReactElement | null {
+  const t = useTranslations('store.actionStatus');
   const [status, setStatus] = useState<PluginActionStatus | undefined>(initial);
 
   useEffect(() => {
@@ -66,7 +68,7 @@ export function ActionStatusBanner({
       />
       <div className="min-w-0">
         <p className="text-[14px] font-semibold text-[color:var(--fg-strong)]">
-          {status.title ?? (isError ? 'Fehler' : 'Aktion erforderlich')}
+          {status.title ?? (isError ? t('errorTitle') : t('actionRequired'))}
         </p>
         {status.detail ? (
           <p className="mt-1 text-[13px] leading-relaxed text-[color:var(--fg-muted)]">

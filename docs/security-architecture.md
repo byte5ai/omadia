@@ -65,6 +65,66 @@ discovered from public registries. This keeps the supply chain explicit:
   filesystem). The runtime enforces the declaration.
 - A plugin's `depends_on` is a soft contract, not an automatic install
   trigger.
+- Optionally (issue #453), every ingested package — direct upload, hub
+  install, Builder install — is statically scanned by an NVIDIA
+  SkillSpector sidecar (`SKILLSPECTOR_URL`, deterministic `--no-llm` mode,
+  no outbound calls; the scanner dependency is pinned to an exact upstream
+  commit SHA — pin-bump procedure in the sidecar README). The scan is
+  **advisory-only in v1**: it runs fire-and-forget after a successful
+  ingest, its verdict (severity + findings, cached by ZIP sha256 + scanner
+  version in `plugin_verdicts`, migration 0021) decorates the store detail
+  page, and a scanner outage degrades to a `scan_failed` verdict — never a
+  failed install. With `SKILLSPECTOR_URL` unset no scan is scheduled and no
+  verdict row is written. The result pipeline is **fail-closed**: only
+  SkillSpector's positively-verified report schema counts as a scan; an
+  unrecognized schema is recorded as `scan_failed`, never as a
+  `no_signals` all-clear. Entry-point coverage is fail-closed too: upload
+  validation rejects a `lifecycle.entry` that resolves below
+  `node_modules` or a hidden directory (`package.entry_unscannable` —
+  the scanner's directory walk skips those, so the runtime would execute
+  code the scan never saw), and as defense in depth the scanner
+  force-includes the manifest's entry file in the scan payload when the
+  walk skipped it, recording `scan_failed` when coverage cannot be
+  guaranteed. Operator acknowledgements persist
+  `ack_by`/`ack_at`/`ack_severity` for audit and are cleared automatically
+  when a later re-scan worsens the verdict beyond the acked severity;
+  turning the verdict into a hard install block is deferred until omadia
+  has a role model (same policy gap as skill-verdict suppression, see
+  `agentBuilder.ts`).
+
+### Plugin-borne workflow templates (#478)
+
+Plugins may contribute Conductor workflow templates, and the capability is
+deliberately data-only:
+
+- **Templates are data, never code.** A plugin declares TemplateManifest
+  JSON files under `permissions.templates` (package-relative paths). That
+  declaration is the entire capability: there is no runtime template API
+  (`pluginContext.ts` gains no `ctx.templates`), nothing from these files is
+  ever executed, and no registration endpoint exists — the only ingestion
+  path is the plugin package itself.
+- **Fail-closed install gate** (`src/plugins/pluginTemplates.ts`, invoked by
+  `InstallService.configure()` before any persistent write): `.json` files
+  only; the declared path must resolve inside the package root *after
+  symlink unwrapping* (a confined-looking path whose file symlinks outside
+  the package is rejected); the template id must be namespaced
+  `plugin:<pluginId>:<name>` so a plugin can never shadow a bundled or
+  user template id; the manifest must pass
+  `checkTemplateManifest({ strict: true })` — undeclared concrete refs
+  (agents/actions/roles/events/channels) are rejected as
+  confusion/exfiltration vectors pointing at install-local entities — and
+  every cron trigger value must pass `isValidCron`. Any violation fails the
+  install with `install.template_invalid` and the per-template findings.
+- **Read-only in the catalog.** Accepted manifests register as
+  `source: 'plugin'` entries in the Conductor's composite template catalog;
+  PUT/DELETE/submit/approve refuse them (403), and they are unregistered on
+  uninstall. Boot re-registers templates of already-installed plugins
+  fail-open per template (the fail-closed gate already ran at install time;
+  a template problem must not brick boot).
+- **Instantiation stays gated.** Plugin templates run through the same
+  resolve/instantiate path as every other template, including live
+  `KnownRefs` validation — a template referencing entities this install
+  lacks fails visibly at mapping time, never silently.
 
 ## 5. Signed artefact URLs
 

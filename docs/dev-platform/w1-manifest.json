@@ -1,0 +1,311 @@
+{
+  "wave": "W1",
+  "epic": 470,
+  "specUrl": "https://github.com/byte5ai/omadia/issues/470#issuecomment-4922824601",
+  "baseSha": "7c8f156",
+  "verifyCommand": "cd middleware && npm run build && npm run lint && node --import tsx --test test/devplatform/*.test.ts && node --import tsx --test packages/dev-runner-shim/test/*.test.ts",
+  "hubFiles": [
+    "middleware/src/index.ts",
+    "middleware/src/config.ts",
+    "web-ui/messages/en.json",
+    "web-ui/messages/de.json",
+    "docker-compose.yaml",
+    "middleware/sidecars/dev-runner-daemon/src/daemon.mjs",
+    "middleware/src/routes/devRunnerApi.ts"
+  ],
+  "wiringUnitId": "w1-golden-fixture-e2e-harness",
+  "units": [
+    {
+      "id": "w1-daemon-wire-protocol",
+      "title": "Daemon↔middleware wire protocol schema (dual-defined zod + parity snapshot)",
+      "acceptance": [
+        "`POST /v1/jobs` carrying `env`, `image`, or `egressAllowlist` in the body is rejected; the daemon's effective policy comes only from the middleware's job-policy lookup."
+      ],
+      "touches": [
+        "middleware/src/devplatform/daemonProtocol.ts",
+        "middleware/sidecars/dev-runner-daemon/src/protocol.ts"
+      ],
+      "dependsOn": [],
+      "verifiedBy": "middleware/test/devplatform/daemonProtocol.test.ts",
+      "securitySensitive": true,
+      "longContext": false,
+      "notes": "Foundational shared-types unit. Spec §4: zod defs are DUPLICATED in both files (daemon must not inherit middleware deps) and kept honest by a contract test that snapshots both and diffs them; a versioned `protocol: 1` field in every request is the runtime guard. The `POST /v1/jobs` body must be exactly `{ protocol, jobId, leaseTtlSec }` and nothing else — no env/image/egressAllowlist/limits (review finding S3: 'a clamp that trusts caller-supplied policy is not a clamp'). Distinct from the existing W0 phone-home protocol: `RUNNER_PROTOCOL_VERSION = 1` already lives in middleware/src/devplatform/types.ts and governs runner↔middleware phone-home, NOT this daemon control-plane wire. Path drift: spec §4 writes `sidecars/dev-runner-daemon/src/protocol.ts` but the real tree roots sidecars at `middleware/sidecars/` (cf. existing middleware/sidecars/skillspector). verifiedBy filename is inferred — §10 names the test only as 'zod protocol round-trips + middleware/daemon schema parity snapshot', no path given. Spec drift to flag to humans: §3 refers to the W0 migration as `0021_dev_platform.sql`, but the actual file is middleware/migrations/0022_dev_platform.sql (0021 is 0021_plugin_verdict.sql). This unit OWNS the zod schema in both files; the daemon service-api unit imports it (edge added there) to avoid protocol.ts collision.",
+      "collidesWith": [
+        "w1-daemon-service-api"
+      ]
+    },
+    {
+      "id": "w1-daemon-service-api",
+      "title": "Runner daemon package scaffold, bearer-authed HTTP API, and wire protocol",
+      "acceptance": [
+        "`POST /v1/jobs` carrying `env`, `image`, or `egressAllowlist` in the body is rejected; the daemon's effective policy comes only from the middleware's job-policy lookup.",
+        "The middleware container has no Docker socket mount and no `DOCKER_HOST`; `privileged` appears on exactly one service (`dev-dind`); the daemon is unreachable from the `omadia` bridge (test: a container on `omadia` gets connection-refused on 7411)."
+      ],
+      "touches": [
+        "middleware/sidecars/dev-runner-daemon/package.json",
+        "middleware/sidecars/dev-runner-daemon/tsconfig.json",
+        "middleware/sidecars/dev-runner-daemon/Dockerfile",
+        "middleware/sidecars/dev-runner-daemon/src/daemon.mjs",
+        "middleware/sidecars/dev-runner-daemon/src/protocol.ts",
+        "middleware/src/devplatform/daemonProtocol.ts"
+      ],
+      "dependsOn": [
+        "w1-daemon-wire-protocol"
+      ],
+      "verifiedBy": "§10 zod protocol round-trips + middleware/daemon schema-parity snapshot (contract test; exact filename not fixed by spec)",
+      "securitySensitive": true,
+      "longContext": false,
+      "notes": "MERGED from w1-daemon-http-api-auth + w1-daemon-service-api (same unit: daemon package scaffold + bearer-authed HTTP API + wire protocol). STANDALONE directory, NOT a workspace package — image stays minimal (dockerode + zod + node builtins), must not inherit the middleware dependency surface. One codebase, two entrypoints (daemon.mjs / proxy.mjs, one image, two services) for privilege separation. Port 7411; endpoints POST/DELETE /v1/jobs, POST /v1/jobs/:id/lease, GET /v1/jobs, GET /v1/jobs/:id/logs?follow=1, GET /v1/health, POST /v1/warm. Body of POST /v1/jobs is `{protocol, jobId, leaseTtlSec}` and NOTHING else; idempotent on jobId; daemon fetches policy from middleware GET /api/v1/dev-runner/internal/job-policy/:jobId with daemon-token auth. Binds ONLY to the omadia/dev-control interface (nothing listens toward dev-engine). Auth: shared bearer DEV_RUNNER_DAEMON_TOKEN, constant-time compare, >=32 chars enforced at boot, comma-separated list for zero-downtime rotation (NOT mTLS in W1 — that's W5). protocol.ts (zod) is the daemon half of the schema owned by w1-daemon-wire-protocol; this unit is the foundational daemon scaffold that clamp/warmer/reaper/netclassify/proxy all build on. PATH DRIFT: spec writes both `sidecars/dev-runner-daemon/` and `middleware/sidecars/dev-runner-daemon/`; real tree has middleware/sidecars/.",
+      "collidesWith": [
+        "w1-daemon-wire-protocol"
+      ]
+    },
+    {
+      "id": "w1-netclassify-choke-point",
+      "title": "netClassify — internal-host/IP classifier for the egress proxy, parity-locked to ssrfGuard",
+      "acceptance": [
+        "A fetch to a non-allowlisted host fails with a `deny` event; an allowlisted clone produces `allow` events; no event contains a URL path, header, or credential."
+      ],
+      "touches": [
+        "middleware/sidecars/dev-runner-daemon/src/netClassify.ts",
+        "middleware/src/services/ssrfGuard.ts"
+      ],
+      "dependsOn": [
+        "w1-daemon-service-api"
+      ],
+      "verifiedBy": "middleware/test/devplatform/netClassify.test.ts",
+      "securitySensitive": true,
+      "longContext": false,
+      "notes": "The single-choke-point net-classification helper. Kept separate (Agent B folded it into the egress-proxy unit, but it is a shared, parity-locked module the proxy imports). Spec §6: `isInternalHost`/`isInternalIp` are COPIED (not imported — daemon package stays minimal: dockerode + zod + node builtins only) from middleware/src/services/ssrfGuard.ts into the daemon package, with a parity unit test running BOTH implementations against one fixture table so drift fails CI. Underpins the proxy's rebinding defense (rule 4: 'rejects if any resolved address is internal ... pins the connection to a vetted resolved IP'). ssrfGuard.ts today exports isInternalHost/isInternalIp as module-private functions — the copy target must re-expose them (ssrfGuard.ts is a read source; re-export only). Authoritative verification is the §10 parity fixtures ('netClassify ↔ ssrfGuard parity fixtures') plus the §9 failure mode 'Allowlisted host resolves to RFC1918 → deny(reason: internal_ip)'. dependsOn daemon-service-api for the package scaffold (netClassify.ts lives in that package). Path drift: spec §6 writes `sidecars/dev-runner-daemon/src/netClassify.ts`; real root is middleware/sidecars/.",
+      "collidesWith": [
+        "w1-egress-proxy"
+      ]
+    },
+    {
+      "id": "w1-daemon-hardening-clamp",
+      "title": "Daemon hardening clamp applied to every docker create",
+      "acceptance": [
+        "`docker inspect` of a job container shows the full clamp list from §4.",
+        "A dev job on the docker backend completes W0's end-to-end (clone → agent run → push → PR host-side) in a fresh container, non-root, read-only rootfs, all caps dropped.",
+        "`POST /v1/jobs` carrying `env`, `image`, or `egressAllowlist` in the body is rejected; the daemon's effective policy comes only from the middleware's job-policy lookup."
+      ],
+      "touches": [
+        "middleware/sidecars/dev-runner-daemon/src/clamp.ts",
+        "middleware/sidecars/dev-runner-daemon/src/daemon.mjs"
+      ],
+      "dependsOn": [
+        "w1-daemon-service-api"
+      ],
+      "verifiedBy": "§10 clamp table unit tests (every rejection: privileged, host mount, cap-add, reserved env, unknown image); integration test/devplatform-docker/ docker-inspect assertion",
+      "securitySensitive": true,
+      "longContext": false,
+      "notes": "MERGED (extracted twice under the same id). 'Applied to every docker create regardless of the requested spec; anything the clamp forbids fails the job with spec_rejected, never silently granted.' Full clamp: image must digest-match a warmed ref from DEV_RUNNER_IMAGES; User 1000:1000; CapDrop ALL, no CapAdd; no-new-privileges; ReadonlyRootfs; writable only per-job volume at /workspace + tmpfs /tmp (512 MB; noexec deliberately NOT set — npm needs exec in tmp; documented); reject any requested bind/host mount; Privileged false, no Devices/PidMode/IpcMode/NetworkMode:host; Memory 4GiB with MemorySwap==Memory, NanoCpus 2, PidsLimit 512, nofile 4096; RestartPolicy no; reserved env keys always overridden: HTTP_PROXY/HTTPS_PROXY/NO_PROXY/DOCKER_HOST/OMADIA_JOB_ID; labels ai.omadia.dev.jobId/createdBy/leaseExpiresAt. Also creates the per-job bridge network omadia-job-<jobId> (NOT --internal, needs NAT to proxy) and per-job workspace volume. 'env can raise DEV_JOB_MEM, nothing can grant privileged, caps, or host mounts.' W5 seam: DevJobSpec.services?.docker is accepted by schema but rejected here with 'spec_rejected: services.docker requires W5'. Disk per-job quota (storage-opt) explicitly NOT in W1. dependsOn daemon-service-api (module wired into daemon.mjs docker-create path). The image-digest-match rule consumes warmed digests from the warmer at runtime, but clamp-table unit tests mock the digest map, so no compile edge to the warmer.",
+      "collidesWith": []
+    },
+    {
+      "id": "w1-daemon-image-warmer",
+      "title": "Image-cache warming loop, digest pinning, and health reporting",
+      "acceptance": [
+        "Both images publish from the release workflow, version-tagged with the middleware; the daemon launches jobs by digest."
+      ],
+      "touches": [
+        "middleware/sidecars/dev-runner-daemon/src/imageWarmer.ts",
+        "middleware/sidecars/dev-runner-daemon/src/daemon.mjs"
+      ],
+      "dependsOn": [
+        "w1-daemon-service-api"
+      ],
+      "verifiedBy": "integration test/devplatform-docker/ case 6 (cold-cache provision pulls through proxy; registry hosts appear as `system:image-warm` events)",
+      "securitySensitive": false,
+      "longContext": false,
+      "notes": "MERGED from w1-daemon-image-warmer + w1-daemon-image-warming. Background worker: 'on boot, every 6 h, and on admin-triggered POST /v1/warm' pulls every ref in DEV_RUNNER_IMAGES against dind, records digests, prunes dangling images older than the previous digest. Pulls traverse the egress proxy against DEV_REGISTRY_ALLOWLIST, logged under reserved principal jobId 'system:image-warm'. 'The daemon resolves its configured tag to a digest at warm time and launches by digest; latest drift between warm and launch cannot occur' (digest resolution lives HERE; the image publish lives in w1-runner-image — they share acceptance #14). 'provision does not hard-require warmth; /v1/health reports imageWarm:false and the admin UI surfaces it.' Filename imageWarmer.ts is inferred — spec names no explicit file, only the POST /v1/warm endpoint and behavior. dependsOn daemon-service-api (POST /v1/warm endpoint + dockerode scaffold).",
+      "collidesWith": []
+    },
+    {
+      "id": "w1-daemon-lease-reaper",
+      "title": "Daemon lease reaper, cancellation/cleanup, and boot state rebuild",
+      "acceptance": [
+        "Cancel removes container, network, and volume within 15 s.",
+        "Stopping the middleware for > lease TTL results in zero running job containers.",
+        "Restarting the daemon leaves running jobs running and still cleans them up afterward."
+      ],
+      "touches": [
+        "middleware/sidecars/dev-runner-daemon/src/reaper.ts",
+        "middleware/sidecars/dev-runner-daemon/src/daemon.mjs"
+      ],
+      "dependsOn": [
+        "w1-daemon-service-api"
+      ],
+      "verifiedBy": "§10 lease reaper unit test with injected clock; integration test/devplatform-docker/ cases 3–5",
+      "securitySensitive": true,
+      "longContext": false,
+      "notes": "MERGED from w1-daemon-lease-reaper-cancel + w1-daemon-lease-reaper-cancellation. 'The daemon lease reaper is authoritative for containers (survives middleware death)' — pairs with DockerBackend.reap() (w1-docker-backend) which owns DB state; jobId label ai.omadia.dev.jobId is the join key. DELETE /v1/jobs/:jobId = SIGTERM, 10 s grace, SIGKILL; remove container + per-job network + workspace volume; deregister at the proxy; idempotent. leaseTtlSec default 180; W0 heartbeat renews every 60 s. 60 s reaper reconciles against container labels (ground truth), kills lease-expired containers, removes orphaned networks/volumes. On daemon restart, state is rebuilt from container labels; leases resume from the middleware's next renew tick; proxy registrations self-expire independently. securitySensitive=true (union of the two extractions). dependsOn daemon-service-api (module wired into DELETE endpoint + background loop). Filename reaper.ts inferred; spec names no explicit file.",
+      "collidesWith": []
+    },
+    {
+      "id": "w1-egress-proxy",
+      "title": "TypeScript forward egress proxy: data plane, policy engine, control plane, and event logging",
+      "acceptance": [
+        "A `CONNECT` to a non-allowlisted hostname produces a `deny` event **without a DNS lookup for that name**.",
+        "A fetch to a non-allowlisted host fails with a `deny` event; an allowlisted clone produces `allow` events; no event contains a URL path, header, or credential.",
+        "Adding a host to `dev_repos.egress_allowlist` takes effect on the next job without restarting any service."
+      ],
+      "touches": [
+        "middleware/sidecars/dev-runner-daemon/src/proxy.mjs",
+        "middleware/sidecars/dev-runner-daemon/src/netClassify.ts",
+        "middleware/src/services/ssrfGuard.ts",
+        "middleware/src/routes/devRunnerApi.ts"
+      ],
+      "dependsOn": [
+        "w1-daemon-service-api",
+        "w1-netclassify-choke-point"
+      ],
+      "verifiedBy": "§10 proxy policy-engine pure-function unit (auth/target/allowlist/resolved-IP → decision) + proxy event/scrub unit (batching, deny-immediate flush, hostname/port-only rows) + netClassify↔ssrfGuard parity fixtures; integration test/devplatform-docker/ case 2 (default-deny) + egress-event assertions",
+      "securitySensitive": true,
+      "longContext": false,
+      "notes": "MERGED from w1-egress-proxy-data-plane + w1-egress-proxy-control-and-events + w1-egress-proxy (all three center on proxy.mjs; splitting collides on that file). '~600-line Node forward proxy (http.Server + CONNECT handler + net.connect), NOT Squid/Envoy' — chosen for per-job dynamic allowlists pushed over an API and structured per-connection logging. Data plane :3128 on dev-egress; CONNECT host:port + absolute-form plain HTTP. Decision order: (1) Proxy-Authorization Basic <jobId>:<proxyToken> else 407 bad_auth; (2) OMADIA_INTERNAL_API_URL exact-match allow; (3) hostname exact or suffix-wildcard (*.githubusercontent.com, no regex, port 443 or explicitly listed); (4) resolve DNS itself, reject if ANY resolved addr is internal per isInternalIp (rebinding defense), pin the connection to a vetted IP; (5) else 403 deny. CRITICAL (S4): resolve a hostname ONLY AFTER it passes the allowlist check — never before (a resolve-first allowlist leaks the name / becomes a DNS-exfil channel). No TLS interception — CONNECT tunnels pass opaquely, policy is hostname:port only. Control plane :3129 bound to the omadia interface, bearer-authed: PUT /jobs/:jobId {allowlist, proxyToken, ttlSec}, DELETE /jobs/:jobId; registrations self-expire at lease TTL so a dead daemon cannot leave a job authorized forever; daemon re-pushes registrations for live jobs on 'unknown job'. Jobs get --dns 172.28.5.3 (serves no DNS) + HTTP_PROXY/HTTPS_PROXY=http://<jobId>:<proxyToken>@172.28.5.3:3128, empty NO_PROXY. Events batched to POST /api/v1/dev/internal/egress-events (daemon-token bearer; flush 2 s/100 events; deny flushes immediately): hostnames+ports only, never URLs/headers/userinfo. netClassify.ts / ssrfGuard.ts appear in touches because the proxy imports the classifier owned by w1-netclassify-choke-point (edge added). The ingestion path /api/v1/dev/internal/egress-events sits under a different prefix than the phone-home /api/v1/dev-runner router; devRunnerApi.ts is the closest existing mount (confirm exact router with humans — shared hub file with llm-proxy + job-policy). The effective allowlist is computed middleware-side (w1-job-policy-endpoint / w1-docker-backend.provision) and pushed here per-job before the container starts; acceptance #10 is enforced by this proxy's per-job registration but depends on that derivation.",
+      "collidesWith": [
+        "w1-netclassify-choke-point"
+      ]
+    },
+    {
+      "id": "w1-job-policy-endpoint",
+      "title": "Server-side job-policy derivation — internal endpoint deriving env + egress allowlist from dev_repos (never caller-supplied)",
+      "acceptance": [
+        "`POST /v1/jobs` carrying `env`, `image`, or `egressAllowlist` in the body is rejected; the daemon's effective policy comes only from the middleware's job-policy lookup.",
+        "Adding a host to `dev_repos.egress_allowlist` takes effect on the next job without restarting any service."
+      ],
+      "touches": [
+        "middleware/src/routes/devRunnerApi.ts",
+        "middleware/src/devplatform/devRepoStore.ts",
+        "middleware/src/devplatform/wireDevPlatform.ts",
+        "middleware/src/routes/devPlatformShared.ts"
+      ],
+      "dependsOn": [],
+      "verifiedBy": "middleware/test/devplatform/devPlatform.e2e.test.ts + test/devplatform-e2e/ golden-fixture harness; §11 AC3 (policy-from-lookup, body rejection) — no dedicated §10 unit test named",
+      "securitySensitive": true,
+      "longContext": false,
+      "notes": "MERGED from w1-server-derived-job-policy + w1-job-policy-endpoint (both describe the same S3 single-choke-point derivation: 'The caller names a job; it never supplies a policy'; review finding S3 — 'a clamp that trusts caller-supplied policy is not a clamp'). Spec §4 exposes GET /api/v1/dev-runner/internal/job-policy/:jobId (daemon-token auth — NOT the per-job djr_ bearer; confirm auth layering) that derives env + image + egressAllowlist server-side from the dev_repos row. Effective allowlist (§6) = {middleware host (implicit)} ∪ {forge host from dev_repos.clone_url} ∪ DEV_EGRESS_BASE_ALLOWLIST ∪ dev_repos.egress_allowlist. Because it reads the row live each job, an added host takes effect on the next job with no restart. Subscription jobs (auth_mode='subscription'): add api.anthropic.com, claude.ai, platform.claude.com and set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, DISABLE_AUTOUPDATER=1, DISABLE_TELEMETRY=1; admitted only in the no-exec shape (W0 §6b); these jobs do NOT use the LLM proxy. RECOMMEND implementing as a pure `deriveJobPolicy(repo, job)` helper in middleware/src/devplatform/ that both the internal endpoint and DockerBackend.provision call — spec names NO file for the helper; touches are inferred (devPlatformShared.ts surfaces repo.egressAllowlist, devRepoStore.ts reads/writes egress_allowlist, wireDevPlatform.ts mounts the /api/v1/dev-runner router, devRunnerApi.ts hosts the route). SPEC DRIFT to resolve: §4 (endpoint owns allowlist) vs §5/§6b ('computed here [in DockerBackend.provision]') leave ownership of allowlist computation ambiguous — the shared helper resolves it. dependsOn [] (reads the W0 dev_repos table; no new W1 type prerequisite). Shares hub files devRunnerApi.ts / wireDevPlatform.ts with llm-proxy and egress-proxy — coordinate edits.",
+      "collidesWith": []
+    },
+    {
+      "id": "w1-docker-backend",
+      "title": "DockerBackend — middleware client for the daemon API",
+      "acceptance": [
+        "`docker compose -f docker-compose.yaml -f docker-compose.dev-platform.yaml up -d` brings up daemon, dind, proxy; middleware health shows the docker backend registered.",
+        "A dev job on the docker backend completes W0's end-to-end (clone → agent run → push → PR host-side) in a fresh container, non-root, read-only rootfs, all caps dropped.",
+        "The middleware container has no Docker socket mount and no `DOCKER_HOST`; `privileged` appears on exactly one service (`dev-dind`); the daemon is unreachable from the `omadia` bridge (test: a container on `omadia` gets connection-refused on 7411)."
+      ],
+      "touches": [
+        "middleware/src/devplatform/backends/dockerBackend.ts",
+        "middleware/src/devplatform/runnerBackend.ts"
+      ],
+      "dependsOn": [
+        "w1-daemon-wire-protocol",
+        "w1-job-policy-endpoint"
+      ],
+      "verifiedBy": "§10 DockerBackend against a fake daemon: retry/idempotency matrix, error taxonomy, reap() join logic across all four live/terminal quadrants",
+      "securitySensitive": true,
+      "longContext": false,
+      "notes": "Implements RunnerBackend (kind 'docker'): provision/terminate/reap/renewLease. provision maps DevJobSpec → POST /v1/jobs (needs the daemonProtocol.ts wire types from w1-daemon-wire-protocol) and calls the shared deriveJobPolicy helper (w1-job-policy-endpoint) — 'resolves job env host-side exactly like McpConfigService.getConfigEnv resolves stdio env — secrets from Vault, non-secrets from the row' (see middleware/src/services/mcpConfigService.ts), ships one-time job token + ANTHROPIC_BASE_URL to the LLM proxy. 'The handle is persisted to dev_jobs.runner_handle before the job is marked running' so a crash is caught by reap() idempotency (jobId label is the join key). Error taxonomy: SpecRejectedError(4xx)→terminal no-retry; DaemonUnreachableError→retry twice (2s/8s) only after GET /v1/jobs confirms jobId absent ('never blind-retry a create'); EngineError(5xx)→one retry then failed('engine_error'). reap() boot+60s: DB running/applying + daemon-absent → failed('runner_lost') unless last heartbeat <90s. Backend selection: when daemon URL+token configured, docker is default; LocalProcessBackend requires DEV_ALLOW_LOCAL_BACKEND=true AND stays operator-trigger-only. Mirrors DEV_RUNNER_DAEMON_TOKEN into Vault (namespace @omadia/dev-platform, key daemon:token). Tested against a FAKE daemon, so it needs only the wire types + policy helper, not the live daemon — deliberately NOT edged to w1-daemon-service-api to preserve parallelism. PATH DRIFT: spec places dockerBackend.ts in devplatform/backends/ but the existing sibling is middleware/src/devplatform/localProcessBackend.ts (no backends/ subdir yet) — confirm intended layout.",
+      "collidesWith": []
+    },
+    {
+      "id": "w1-llm-proxy",
+      "title": "Middleware LLM proxy — Anthropic-compatible reverse proxy with Vault key and usage metering",
+      "acceptance": [
+        "No provider API key exists in any job container's env or filesystem; the CLI reaches Anthropic only through `ANTHROPIC_BASE_URL` → the LLM proxy, and every call lands in `token_usage` with `source='dev-job'`.",
+        "GET / returns 2xx: the Claude CLI probes the origin root before its first POST /v1/messages (verified in the option-D spike, https://github.com/byte5ai/omadia/issues/470#issuecomment-4929394900). Without this route the CLI may treat the proxy as unreachable.",
+        "The CLI's Authorization: Bearer <per-job token> is validated by the proxy and REPLACED with the real provider credential server-side; no provider key ever exists inside a container (spike confirmed the CLI forwards ANTHROPIC_AUTH_TOKEN verbatim as a bearer)."
+      ],
+      "touches": [
+        "middleware/src/devplatform/llmProxy.ts",
+        "middleware/src/routes/devRunnerApi.ts"
+      ],
+      "dependsOn": [],
+      "verifiedBy": "test/devplatform-e2e/ golden-fixture harness (scripted fake `claude` binary) — NO dedicated llmProxy unit test is named in §10 (coverage gap to flag)",
+      "securitySensitive": true,
+      "longContext": true,
+      "notes": "THE v2 KEYSTONE. Mounted at 'POST /api/v1/dev-runner/llm/*' on the phone-home router (job-token auth, same djr_ bearer). Flow: (1) authenticate job token, reject terminal jobs 410; (2) look up dev_jobs.repo_id→agent_kind, resolve provider + model allowlist, model outside allowlist → 403 {code:'dev.model_not_allowed'}, 'reuses the ctx.llm gate's allowlist semantics'; (3) 'Attach the provider key from Vault (namespace core:dev-platform, key llm/<provider>/api_key), strip any client-supplied x-api-key / Authorization beyond the job bearer'; (4) 'Stream the response back verbatim (SSE passthrough, no buffering, no re-chunking)', on terminal message_delta/message_stop extract usage → atomic 'UPDATE dev_jobs SET tokens_in = tokens_in + $1' (W4 statement) + recordUsage({source:'dev-job', sessionId:'devjob:'+jobId}) into the token_usage ledger (append-only; see middleware/src/routes/usage.ts — recordUsage writer not yet present in tree, locate/confirm). (5) upstream 429→pass through Retry-After; 5xx→one retry then pass; 'The proxy never retries a streamed request that already emitted tokens (double-billing).' SUBSCRIPTION jobs (auth_mode='subscription') do NOT use the proxy — handled in w1-job-policy-endpoint. PREREQUISITE (blocks image freeze): the option-D spike — verify `claude -p` honors ANTHROPIC_BASE_URL under (a) API key and (b) OAuth subscription; note cliBackendDetector.ts/localProcessBackend.ts CLI_ENV_SCRUB_KEYS strips ANTHROPIC_BASE_URL/ANTHROPIC_CUSTOM_HEADERS. dependsOn [] — mounts on the existing W0 phone-home router; no new W1 type prerequisite, but shares hub file devRunnerApi.ts with job-policy + egress event ingestion (coordinate edits). longContext: touches token_usage ledger + W4 usage statement + ctx.llm gate simultaneously. SPIKE RESULT (option D, run 2026-07-09 against the real binary with env -i + throwaway HOME): the CLI fully honors ANTHROPIC_BASE_URL and sends Authorization: Bearer $ANTHROPIC_AUTH_TOKEN to <base>/v1/messages?beta=true, after one GET / probe. This unit is therefore unblocked and the image may be frozen against that contract.",
+      "collidesWith": []
+    },
+    {
+      "id": "w1-runner-image",
+      "title": "omadia/dev-runner image + release-workflow publish of both dev images",
+      "acceptance": [
+        "Both images publish from the release workflow, version-tagged with the middleware; the daemon launches jobs by digest."
+      ],
+      "touches": [
+        "middleware/sidecars/dev-runner/Dockerfile",
+        "middleware/sidecars/dev-runner/shim/",
+        ".github/workflows/publish-images.yml"
+      ],
+      "dependsOn": [],
+      "verifiedBy": "test/devplatform-docker/ (dev-platform-integration.yml)",
+      "securitySensitive": true,
+      "longContext": false,
+      "notes": "Build context is repo root, same as middleware image. USER 1000:1000, tini entrypoint (reaps CLI+git on SIGTERM), CLAUDE_CONFIG_DIR=/tmp/claude-cli, no openssh-client (HTTPS-only clone in W1). Image contains NO credentials/omadia secrets — everything arrives per-job via env or the git credential helper. CLAUDE_CODE_VERSION pin must match the middleware Dockerfile and be bumped together. Tags: ghcr.io/byte5ai/omadia-dev-runner:<OMADIA_VERSION> plus :sha-<gitsha>. DRIFT: the §3 Dockerfile copies the shim from middleware/sidecars/dev-runner/shim/ but the W0 shim already exists as a workspace package at middleware/packages/dev-runner-shim/ — humans must decide whether the image bundles the existing package or a new sidecar copy. publish-images.yml today builds only middleware + web-ui and must be extended to build+push both dev images (dev-runner and dev-runner-daemon) under byte5ai, version-locked to the middleware release. Overlaps acceptance #14 with w1-daemon-image-warmer on the 'launches by digest' clause — image publish lives here, digest resolution lives in the warmer. dependsOn [] (independent image build). W0 HANDOFF: the shim's W0 LLM passthrough (OMADIA_ANTHROPIC_* gated by OMADIA_LLM_ENV_ALLOWED, see packages/dev-runner-shim/src/protocol.ts + agentRunner.ts) is a documented placeholder. Once the per-job LLM-proxy token exists, the gate and the passthrough should be removed — flag it as a specDelta if you cannot do it inside this unit's scope.",
+      "collidesWith": []
+    },
+    {
+      "id": "w1-compose-topology",
+      "title": "dev-platform compose overlay + isolated network topology",
+      "acceptance": [
+        "`docker compose -f docker-compose.yaml -f docker-compose.dev-platform.yaml up -d` brings up daemon, dind, proxy; middleware health shows the docker backend registered.",
+        "The middleware container has no Docker socket mount and no `DOCKER_HOST`; `privileged` appears on exactly one service (`dev-dind`); the daemon is unreachable from the `omadia` bridge (test: a container on `omadia` gets connection-refused on 7411)."
+      ],
+      "touches": [
+        "docker-compose.dev-platform.yaml"
+      ],
+      "dependsOn": [
+        "w1-daemon-service-api",
+        "w1-egress-proxy",
+        "w1-runner-image",
+        "w1-docker-backend"
+      ],
+      "verifiedBy": "test/devplatform-docker/ (dev-platform-integration.yml)",
+      "securitySensitive": true,
+      "longContext": true,
+      "notes": "Overlay at repo root per existing convention (sibling to docker-compose.storage.yaml etc). Networks dev-control/dev-engine/dev-egress are `internal: true`; dev-egress pins IPAM subnet 172.28.5.0/24 so the proxy has static IP 172.28.5.3 (nested dind containers can't use compose DNS). Daemon sits on dev-control+dev-engine, NOT on the `omadia` bridge (review finding S3). dev-dind is `privileged: true` on internal-only nets, DOCKER_TLS mandatory (no 2375 fallback). No host ports on any W1 service. dind HTTP_PROXY/HTTPS_PROXY point at 172.28.5.3:3128 so registry pulls traverse the egress proxy. Both dev-runner-daemon and dev-egress-proxy run the SAME image (omadia-dev-runner-daemon) with different commands (daemon.mjs / proxy.mjs) — hence deps on both service-api and egress-proxy. dependsOn runner-image (dev-runner image referenced by DEV_RUNNER_IMAGES) and docker-backend (middleware health shows the docker backend registered once daemon URL+token are wired in this overlay). This overlay wires services together but is NOT the graph sink — the e2e harness depends on it, so it cannot be the wiring unit.",
+      "collidesWith": []
+    },
+    {
+      "id": "w1-golden-fixture-e2e-harness",
+      "title": "Golden-fixture E2E harness, docker-required integration suite, gated CI workflow (WIRING UNIT)",
+      "acceptance": [
+        "The golden-fixture E2E harness passes: branch created, PR opened, forge received the exact evaluated diff, no `git push`, no unlisted egress, container reaped.",
+        "Unit suites green in default CI; docker-required suite green in its gated workflow."
+      ],
+      "touches": [
+        "test/devplatform-e2e/",
+        "test/fixtures/dev-platform-golden/",
+        "test/devplatform-docker/",
+        ".github/workflows/dev-platform-integration.yml"
+      ],
+      "dependsOn": [
+        "w1-daemon-wire-protocol",
+        "w1-daemon-service-api",
+        "w1-netclassify-choke-point",
+        "w1-daemon-hardening-clamp",
+        "w1-daemon-image-warmer",
+        "w1-daemon-lease-reaper",
+        "w1-egress-proxy",
+        "w1-job-policy-endpoint",
+        "w1-docker-backend",
+        "w1-llm-proxy",
+        "w1-runner-image",
+        "w1-compose-topology"
+      ],
+      "verifiedBy": "test/devplatform-e2e/ (golden-fixture) + test/devplatform-docker/ via dev-platform-integration.yml",
+      "securitySensitive": true,
+      "longContext": true,
+      "notes": "WIRING UNIT — the graph sink. It boots the full overlay stack (daemon + dind + proxy + stub middleware) and drives one end-to-end job, so it structurally dependsOn every other W1 unit and nothing depends on it (compose-topology is config but the harness depends on compose, so compose cannot be the all-dependent sink). Owns the integration/CI config entrypoint (.github/workflows/dev-platform-integration.yml). Boots a committed fixture repo (five-file project, one deliberately-failing test, one issue body) served by a local git http-backend. Drives: clone → agent (scripted fake `claude` binary emitting fixed NDJSON transcript) → diff upload → server-side apply → PR against a stub forge; asserts branch exists, PR body references the issue, forge-received diff is byte-identical to the policy-evaluated diff, no git push, no non-allowlisted egress, container gone afterward. Integration cases (test/devplatform-docker/): (1) provision→phone-home→clone→push→terminate; (2) default-deny curl→403+deny and direct-dial→timeout; (3) cancel mid-run→removed <15s + token 410; (4) kill stub middleware 200s→lease reaper removes container; (5) restart daemon with live job→survives+cleanup; (6) cold-cache provision pulls through proxy as system:image-warm events. Gated workflow, Docker required, skipped when DOCKER_AVAILABLE unset; may need a self-hosted/larger runner for dind (privileged) — constraint recorded in the workflow header, suite is not deferred. Each later wave adds one assertion. NOTE on hub files: devRunnerApi.ts / wireDevPlatform.ts are edited by w1-llm-proxy, w1-job-policy-endpoint, and w1-egress-proxy (event ingestion); those edits are additive route registrations that must be reconciled at merge — flag as the primary coordination point since this harness cannot reassign their touches. DRIFT: spec places these under repo-root test/ but the repo keeps tests under middleware/test/ (no root test/ dir exists) — humans should confirm the intended location before implementation.",
+      "collidesWith": []
+    }
+  ],
+  "w0Handoffs": {
+    "baseShaPinning": "DevJobStore.prepareProvision pins branch but NOT base_sha — the W0 ForgeClient has no getRef/resolveRef, so runners clone the default-branch tip. Needs a forge ref-read seam (W1 or W2). Declared as needsHumanDecision in the w0-wire unit.",
+    "numstatMarker": "NUMSTAT_MARKER is duplicated in packages/dev-runner-shim/src/diffUpload.ts and middleware/src/devplatform/devJobWorkerPolicy.ts (layering: the shim must not import middleware). Keep in sync.",
+    "migrationNumber": "The specs say 0021_dev_platform.sql; the real file is middleware/migrations/0022_dev_platform.sql (0021 was taken by 0021_plugin_verdict.sql via PR #477)."
+  }
+}

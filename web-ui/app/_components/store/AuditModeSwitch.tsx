@@ -17,25 +17,32 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { ShieldAlert } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 
 import { ApiError, listInstalledSecretKeys, setAuditMode } from '../../_lib/api';
 import type { AuditMode } from '../../_lib/storeTypes';
 
-const MODES: ReadonlyArray<{ value: AuditMode; label: string; help: string }> = [
+/** Mode labels are technical identifiers (same in every locale); the help
+ *  copy lives in the catalog under `store.auditMode.<helpKey>`. */
+const MODES: ReadonlyArray<{
+  value: AuditMode;
+  label: string;
+  helpKey: string;
+}> = [
   {
     value: 'single-host',
     label: 'Single-Host',
-    help: 'Nur die im Manifest deklarierten Hosts.',
+    helpKey: 'singleHostHelp',
   },
   {
     value: 'allowlist',
     label: 'Allowlist',
-    help: 'Manifest-Hosts plus die vom Operator gepflegte Host-Liste.',
+    helpKey: 'allowlistHelp',
   },
   {
     value: 'public-web',
     label: 'Public-Web',
-    help: 'Beliebige öffentliche Hosts. Private Netzbereiche und Cloud-Metadata-Endpoints bleiben blockiert.',
+    helpKey: 'publicWebHelp',
   },
 ];
 
@@ -51,6 +58,7 @@ export function AuditModeSwitch({
 }: {
   pluginId: string;
 }): React.ReactElement {
+  const t = useTranslations('store.auditMode');
   const [mode, setMode] = useState<AuditMode>('single-host');
   const [status, setStatus] = useState<Status>({ kind: 'loading' });
 
@@ -86,8 +94,8 @@ export function AuditModeSwitch({
       if (widening) {
         const ok = window.confirm(
           next === 'public-web'
-            ? 'Public-Web erlaubt diesem Plugin, beliebige öffentliche Hosts zu kontaktieren. Private Netzbereiche und Cloud-Metadata-Endpoints bleiben blockiert. Fortfahren?'
-            : 'Allowlist erlaubt diesem Plugin zusätzlich die operator-gepflegte Host-Liste. Fortfahren?',
+            ? t('confirmPublicWeb')
+            : t('confirmAllowlist'),
         );
         if (!ok) return;
       }
@@ -108,7 +116,7 @@ export function AuditModeSwitch({
         });
       }
     },
-    [mode, pluginId],
+    [mode, pluginId, t],
   );
 
   const busy = status.kind === 'loading' || status.kind === 'saving';
@@ -118,8 +126,10 @@ export function AuditModeSwitch({
       <div className="flex items-start gap-2 text-[13px] text-[color:var(--fg-muted)]">
         <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
         <p>
-          Steuert, welche Hosts dieses Audit-Plugin über <code>ctx.http</code>{' '}
-          erreichen darf. Standard ist <strong>Single-Host</strong>.
+          {t.rich('intro', {
+            code: (chunks) => <code>{chunks}</code>,
+            strong: (chunks) => <strong>{chunks}</strong>,
+          })}
         </p>
       </div>
       <div className="flex flex-col gap-2">
@@ -147,7 +157,7 @@ export function AuditModeSwitch({
                 {m.label}
               </span>
               <span className="text-[12px] text-[color:var(--fg-muted)]">
-                {m.help}
+                {t(m.helpKey)}
               </span>
             </span>
           </label>
@@ -156,20 +166,20 @@ export function AuditModeSwitch({
       <div className="min-h-[20px] text-[12px]">
         {status.kind === 'loading' && (
           <span className="inline-flex items-center gap-2 text-[color:var(--fg-muted)]">
-            <span className="lume-busy-dots" aria-hidden /> lädt …
+            <span className="lume-busy-dots" aria-hidden /> {t('loading')}
           </span>
         )}
         {status.kind === 'saving' && (
           <span className="inline-flex items-center gap-2 text-[color:var(--fg-muted)]">
-            <span className="lume-busy-dots" aria-hidden /> speichert …
+            <span className="lume-busy-dots" aria-hidden /> {t('saving')}
           </span>
         )}
         {status.kind === 'saved' && (
-          <span className="text-[color:var(--accent)]">Modus gespeichert.</span>
+          <span className="text-[color:var(--accent)]">{t('saved')}</span>
         )}
         {status.kind === 'error' && (
           <span className="text-[color:var(--danger)]">
-            Fehler: {status.message}
+            {t('error', { message: status.message })}
           </span>
         )}
       </div>

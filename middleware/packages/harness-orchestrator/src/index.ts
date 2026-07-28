@@ -101,8 +101,13 @@ export { AgentGraphStore } from './registry/agentGraphStore.js';
 export { computeSkillHash } from './registry/skillHash.js';
 export type {
   CanvasPos,
+  McpCallLogRow,
+  McpConfigField,
+  McpRegistryRow,
   McpServerInput,
   McpServerRow,
+  McpToolVerdictAckRow,
+  McpToolVerdictRow,
   PersonaSkillRow,
   ScheduleInput,
   ScheduleRow,
@@ -110,6 +115,8 @@ export type {
   SkillPatch,
   SkillResourceInput,
   SkillResourceRow,
+  SkillToolBindingRow,
+  SkillVerdictRow,
   SkillRow,
   SubAgentInput,
   SubAgentPatch,
@@ -125,12 +132,19 @@ export {
   mcpToolToNativeSpec,
 } from './mcp/mcpClient.js';
 export type {
+  McpAuthProvider,
+  McpCallerKind,
+  McpCallGuard,
+  McpCallLogEntry,
+  McpCallObserver,
+  McpManagerOptions,
   McpServerConfig,
   McpToolDescriptor,
   McpTransportKind,
 } from './mcp/mcpClient.js';
 export {
   buildSubAgentDomainTools,
+  mcpToolNameFromRef,
   subAgentToolName,
 } from './registry/subAgentTools.js';
 export type {
@@ -279,6 +293,14 @@ export {
   buildDateHeader,
 } from './turnContext.js';
 export type { TurnContextValue } from './turnContext.js';
+export {
+  setMcpPrivacyBypassServers,
+  isMcpServerPrivacyBypassed,
+} from './mcpPrivacyBypass.js';
+export {
+  setMcpKgIngestServers,
+  isMcpServerKgIngest,
+} from './mcpKgIngest.js';
 export type {
   TurnAnnotation,
   TurnHook,
@@ -322,6 +344,24 @@ export {
 export type { AttachmentReader } from './tools/readAttachmentTool.js';
 export { createAttachmentReader } from './attachmentReaderFactory.js';
 export type { AttachmentByteStore } from './attachmentReaderFactory.js';
+export {
+  QUERY_DATASET_TOOL_NAME,
+  QueryDatasetTool,
+  queryDatasetToolSpec,
+} from './tools/queryDatasetTool.js';
+export { isCsvAttachment } from './attachmentExtract.js';
+export {
+  buildDatasetFromCsv,
+  importCsvDataset,
+  parseCsv,
+  MAX_DATASET_ROWS,
+} from './datasetImport.js';
+export type {
+  CsvParseResult,
+  ImportCsvDatasetInput,
+  ImportCsvDatasetResult,
+  PrivacyScanStats,
+} from './datasetImport.js';
 export {
   FindFreeSlotsTool,
   FIND_FREE_SLOTS_TOOL_NAME,

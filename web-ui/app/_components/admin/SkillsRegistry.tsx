@@ -11,9 +11,21 @@ import {
   type SkillDetail,
   type SkillNode,
   type SkillResource,
+  type SkillVerdictSeverity,
 } from '../../_lib/agentBuilder';
 import { SkillEditor } from './SkillEditor';
 import { SkillImportModal } from './SkillImportModal';
+import { SKILL_VERDICT_LABEL_KEY, SkillVerdictBadge } from './SkillVerdictBadge';
+
+const VERDICT_FILTER_VALUES: readonly SkillVerdictSeverity[] = [
+  'high_risk',
+  'flagged',
+  'no_signals',
+  'not_yet_scanned',
+  'scan_failed',
+  'too_large_to_scan',
+  'pending',
+];
 
 /**
  * The central skills registry, reused wherever skills are managed (the Operator
@@ -33,6 +45,7 @@ export function SkillsRegistry({
   const t = useTranslations('skills');
   const [skills, setSkills] = useState<SkillNode[]>(initial);
   const [query, setQuery] = useState('');
+  const [verdictFilter, setVerdictFilter] = useState<SkillVerdictSeverity | ''>('');
   const [selected, setSelected] = useState<SkillNode | null>(null);
   const [detail, setDetail] = useState<SkillDetail | null>(null);
   const [resources, setResources] = useState<SkillResource[]>([]);
@@ -81,11 +94,10 @@ export function SkillsRegistry({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return skills;
-    return skills.filter((s) =>
-      `${s.name} ${s.slug} ${s.description ?? ''}`.toLowerCase().includes(q),
-    );
-  }, [skills, query]);
+    return skills
+      .filter((s) => !q || `${s.name} ${s.slug} ${s.description ?? ''}`.toLowerCase().includes(q))
+      .filter((s) => !verdictFilter || (s.verdict?.severity ?? 'not_yet_scanned') === verdictFilter);
+  }, [skills, query, verdictFilter]);
 
   const onDelete = useCallback(
     async (id: string) => {
@@ -113,6 +125,19 @@ export function SkillsRegistry({
             placeholder={t('search')}
             className="w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-2 text-sm"
           />
+          <select
+            value={verdictFilter}
+            onChange={(e) => setVerdictFilter(e.target.value as SkillVerdictSeverity | '')}
+            aria-label={t('verdict.filterLabel')}
+            className="shrink-0 rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-2 text-sm"
+          >
+            <option value="">{t('verdict.filterAll')}</option>
+            {VERDICT_FILTER_VALUES.map((v) => (
+              <option key={v} value={v}>
+                {t(`verdict.${SKILL_VERDICT_LABEL_KEY[v]}`)}
+              </option>
+            ))}
+          </select>
           <button
             type="button"
             onClick={() => setImporting(true)}
@@ -137,8 +162,11 @@ export function SkillsRegistry({
                   }`}
                 >
                   <span className="truncate text-[color:var(--fg-strong)]">{s.name}</span>
-                  <span className="shrink-0 rounded-full border border-[color:var(--border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[color:var(--fg-muted)]">
-                    {t(`source.${s.source}`)}
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    <SkillVerdictBadge severity={s.verdict?.severity ?? 'not_yet_scanned'} />
+                    <span className="rounded-full border border-[color:var(--border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[color:var(--fg-muted)]">
+                      {t(`source.${s.source}`)}
+                    </span>
                   </span>
                 </button>
               </li>

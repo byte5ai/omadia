@@ -83,6 +83,15 @@ body {
   letter-spacing: -0.01em;
 }
 
+/* Utility: the omadia wordmark only (header logo + login card). Keeps the
+   original Days One brand face without reopening the §2.7 decision that
+   moved every other heading onto Geist (.font-display above). */
+.font-logo {
+  font-family: var(--font-days-one), var(--font-sans);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
 /* Long-form agent prose register — Source Serif 4 (§2.7). */
 .font-prose {
   font-family: var(--font-serif);
@@ -766,7 +775,7 @@ summary:focus-visible,
 table:not(.md-view table) thead th {
   background: linear-gradient(180deg, var(--bg-surface-sunken-top) 0%, var(--bg-surface-sunken-btm) 100%);
 }
-table:not(.md-view table) tbody tr:hover {
+table:not(.md-view table) tbody tr:not([data-detail-row]):hover {
   background: var(--accent-subtle);
 }
 th[aria-sort='ascending'],

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import {
+  deriveAgentsConsulted,
   toSemanticAnswer,
   type ChatStreamEvent,
   type ChatTurnInput,
@@ -73,8 +74,18 @@ import {
   ReadAttachmentTool,
   readAttachmentToolSpec,
 } from './tools/readAttachmentTool.js';
+import {
+  QUERY_DATASET_TOOL_NAME,
+  QueryDatasetTool,
+  queryDatasetToolSpec,
+} from './tools/queryDatasetTool.js';
 import { parseAttachmentsInfo } from './attachmentsInfo.js';
-import { extractAttachmentText } from './attachmentExtract.js';
+import {
+  checkVisionEmbeddable,
+  extractAttachmentText,
+  isCsvAttachment,
+} from './attachmentExtract.js';
+import { importCsvDataset } from './datasetImport.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -103,6 +114,7 @@ import { LoopGuard } from './loopGuard.js';
 import {
   createPrivacyTurnHandle,
   ensureWellFormedParams,
+  type PrivacyTurnHandle,
 } from './privacyHandle.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
 import {
@@ -134,6 +146,9 @@ import type {
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
+import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
+import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
+import { isMcpServerKgIngest } from './mcpKgIngest.js';
 
 // S+10-2 back-compat re-exports: kernel-side callers that still
 // `import { … } from './orchestrator.js'` (verifierService.ts, routes/chat.ts,
@@ -189,6 +204,30 @@ export interface OrchestratorOptions {
    */
   modelRouting?: ModelRoutingConfig;
   maxTokens: number;
+  /**
+   * #504/#505 (round-6 codex review) — the ACTIVE model's vision capability
+   * (the registry's per-model `ModelInfo.vision`, e.g. from
+   * `@omadia/llm-provider-api`), resolved by the caller the same way it
+   * already resolves `maxTokens` for the model. harness-orchestrator has no
+   * dependency on `@omadia/llm-provider` / `@omadia/llm-provider-api` (by
+   * design — it never imports the model registry itself, exactly like
+   * `maxTokens` above arrives pre-resolved instead of being looked up
+   * internally), so this cannot be derived in here; the caller must pass it.
+   *
+   * Deliberately NOT `this.provider.capabilities.vision` (a property of the
+   * PROVIDER CONNECTION, not the model): one provider connection can serve
+   * several models with different vision support — e.g. the bundled
+   * `mistral` openai-compatible connection serves `mistral-large-latest`
+   * and `mistral-medium-latest` (vision) alongside `mistral-small-latest`
+   * (no vision), yet the openai adapter hardcodes
+   * `capabilities.vision = true` on the connection regardless of which
+   * model is actually selected for the turn.
+   *
+   * Omitted → falls back to `this.provider.capabilities.vision` (today's
+   * behaviour), for backward compatibility with callers that haven't been
+   * updated to pass the more precise per-model value yet.
+   */
+  visionSupported?: boolean;
   maxToolIterations: number;
   /**
    * Round-loop guard thresholds (see {@link LoopGuard}). When the model
@@ -222,6 +261,19 @@ export interface OrchestratorOptions {
    * mention/markup parsing (see directLine.ts).
    */
   directLinePrefix?: string;
+  /**
+   * #332 Layer 3 (gap-closure) — standing, per-orchestrator forced-delegation
+   * obligation. When set to one of this orchestrator's whitelisted domain
+   * tool names, EVERY ordinary (non-direct-line) turn carries that turn's
+   * obligation automatically — equivalent to the caller passing
+   * `expectedDomainTool` on every `ChatTurnInput`, without requiring the
+   * caller to wire it per turn. Opt-in; absent → no standing obligation (byte
+   * -identical pre-gap-closure behaviour). A per-turn `input.expectedDomainTool`
+   * still takes precedence when both are set. Gives OB-31 forced-tool-choice a
+   * real (minimal) production producer beyond the Conductor's own future,
+   * heavier per-step reuse.
+   */
+  requiredConsultToolName?: string;
   /** Kernel-shared native-tool registry. Created once at boot and shared
    *  between the orchestrator and the plugin-activation pipeline so plugin-
    *  contributed tools land in the same dispatch map as the kernel's own. */
@@ -366,6 +418,22 @@ export interface OrchestratorOptions {
     configKey: string,
   ) => unknown | undefined;
   /**
+   * Issue #474 — per-plugin tool-readiness gate. Given the `agentId` of a
+   * plugin that contributed a native tool (via `ctx.tools.register`),
+   * returns whether that plugin's connection/auth setup is complete and its
+   * tools may be exposed to and invoked by the orchestrator. Checked both in
+   * `buildToolsList()` (tool-list assembly) and `dispatchToolInner()`
+   * (tool-invocation time) — auth can complete or expire between the two, so
+   * list-time filtering alone is not enough. Kernel-internal tools (no
+   * `agentId` on the registration) are never gated.
+   *
+   * Caller wires this from the harness runtime's `PluginStatusRegistry`
+   * (spec 004): `(agentId) => pluginStatusRegistry.isReady(agentId)`.
+   * Absent ⇒ every plugin's tools are always available (pre-#474 behaviour,
+   * and the correct default for test/migration contexts).
+   */
+  isPluginToolsReady?: (agentId: string) => boolean;
+  /**
    * Palaia Phase 8 (OB-77) — Nudge-Pipeline registry. Plugin-contributed
    * `NudgeProvider`s register against this registry; the orchestrator
    * iterates them after every tool_result. Absent → pipeline is a no-op
@@ -461,33 +529,102 @@ type ContentBlock = any;
 type Message = any;
 
 /**
- * Build the user-message content for the Anthropic API. When the channel
- * supplied image attachments with `bytesBase64`, return a multimodal
- * content array (image source-blocks first, then text); otherwise just
- * pass the plain string for the simple text case (so existing callers
- * without attachments don't pay an array allocation).
+ * A base64-encoded image resolved by {@link ingestAttachments}'s async
+ * pre-fetch pass (issues #504, #505) — Teams `[attachments-info]`
+ * storage_key images and url-only image attachments from any channel that
+ * doesn't pre-fetch bytes. Same wire shape `buildUserContent` already
+ * builds for inline `bytesBase64` attachments below, just sourced from a
+ * fetch instead of the channel payload.
+ */
+interface IngestedImageBlock {
+  mediaType: string;
+  bytesBase64: string;
+}
+
+/**
+ * Build the user-message content for the Anthropic API. Returns a
+ * multimodal content array (image source-blocks first, then text) when
+ * there is at least one image to embed; otherwise just the plain string
+ * (so existing callers without attachments don't pay an array allocation).
  *
- * S+7.7+ — wired in for Telegram channel's photo/image-document path.
- * Teams calendar/diagram channels don't populate `attachments` today,
- * so this stays a no-op for them.
+ * Images come from two sources, both folded into the same block list:
+ *   - `input.attachments[]` entries with `bytesBase64` already set —
+ *     wired in for Telegram's photo/image-document path (S+7.7+).
+ *   - `ingestedImages`, resolved by `ingestAttachments`'s async pre-fetch —
+ *     Teams' Tigris `storage_key` images (#504) and url-only image
+ *     attachments from channels that don't pre-fetch bytes (#505).
+ *
+ * `visionSupported` gates BOTH sources at once (#504/#505 review round 2):
+ * a provider/model without vision capability can reject the whole request
+ * or silently drop an unsupported content block, reintroducing the "agent
+ * cannot see the image, nothing indicates why" failure these issues exist
+ * to close. When `false`, no image content-blocks are built at all — but
+ * the fact that image(s) were received is never silently dropped either:
+ * a visible `[N image attachment(s) received but the active model does not
+ * support image input]` note is folded into the text instead, combining
+ * the caller-supplied `skippedVisionImageCount` (images `ingestAttachments`
+ * didn't even bother fetching, see there) with the inline `bytesBase64`
+ * attachments this function would otherwise have embedded itself.
+ *
+ * Separately, `rejectedImageReasons` (#504/#505 review round 4) covers image
+ * candidates that WERE fetched by `ingestAttachments` under a vision-capable
+ * provider but failed {@link checkVisionEmbeddable} (oversized, or an
+ * unsupported format such as SVG/BMP/TIFF). That guard rejection used to be
+ * a server-only `console.warn` with no trace in the turn's text — the exact
+ * silent-drop failure #504 exists to close, just triggered by size/format
+ * instead of provider capability. A visible `[N image attachment(s) could
+ * not be shown: <reason(s)>]` note now covers it. The two notes cannot
+ * describe the same image (a guard rejection only happens when vision IS
+ * supported, since `ingestAttachments` skips fetching entirely otherwise),
+ * so they are simply concatenated when both are non-empty.
  */
 function buildUserContent(
   input: ChatTurnInput,
   extraText?: string,
+  wireUserMessage?: string,
+  ingestedImages?: IngestedImageBlock[],
+  visionSupported = true,
+  skippedVisionImageCount = 0,
+  rejectedImageReasons: string[] = [],
 ): ContentBlock[] | string {
+  // #361 — when prompt masking is on, the caller passes the pseudonym-
+  // substituted variant for the LLM wire; `input.userMessage` stays the
+  // original for memory persistence and receipt attribution.
+  const message = wireUserMessage ?? input.userMessage;
   // #268 — server-side auto-ingested attachment text, appended as a trailing
   // block so the model sees the document content without a tool call. Kept
   // additive to the existing image/bytesBase64 multimodal path.
   const ingested =
     extraText && extraText.trim().length > 0 ? extraText : undefined;
-  const imageAtts = (input.attachments ?? []).filter(
+  const rawImageAtts = (input.attachments ?? []).filter(
     (a) => a.kind === 'image' && typeof a.bytesBase64 === 'string',
   );
-  if (imageAtts.length === 0) {
-    if (!ingested) return input.userMessage;
-    return input.userMessage.length > 0
-      ? `${input.userMessage}${ingested}`
-      : ingested;
+
+  // #504/#505 vision-capability guard — see doc comment above. Zero out
+  // both image sources up front so nothing below ever builds an image
+  // content-block for a non-vision provider.
+  const imageAtts = visionSupported ? rawImageAtts : [];
+  const effectiveIngestedImages = visionSupported ? ingestedImages : undefined;
+  const visionNoteCount = visionSupported
+    ? 0
+    : rawImageAtts.length + skippedVisionImageCount;
+  const visionNote =
+    visionNoteCount > 0
+      ? `\n\n[${visionNoteCount} image attachment${visionNoteCount === 1 ? '' : 's'} received but the active model does not support image input]`
+      : '';
+  // #504/#505 review round 4 — a fetched image candidate that failed
+  // checkVisionEmbeddable (oversized / unsupported format) must still leave
+  // a visible trace, not just a server-side console.warn.
+  const guardRejectedCount = rejectedImageReasons.length;
+  const guardNote =
+    guardRejectedCount > 0
+      ? `\n\n[${guardRejectedCount} image attachment${guardRejectedCount === 1 ? '' : 's'} could not be shown: ${rejectedImageReasons.join('; ')}]`
+      : '';
+
+  if (imageAtts.length === 0 && (effectiveIngestedImages?.length ?? 0) === 0) {
+    const trailing = `${ingested ?? ''}${visionNote}${guardNote}`;
+    if (trailing.length === 0) return message;
+    return message.length > 0 ? `${message}${trailing}` : trailing;
   }
   const blocks: ContentBlock[] = [];
   for (const att of imageAtts) {
@@ -500,11 +637,215 @@ function buildUserContent(
       },
     });
   }
-  const trailingText = `${input.userMessage}${ingested ?? ''}`;
+  for (const img of effectiveIngestedImages ?? []) {
+    blocks.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: img.mediaType,
+        data: img.bytesBase64,
+      },
+    });
+  }
+  const trailingText = `${message}${ingested ?? ''}${visionNote}${guardNote}`;
   if (trailingText.trim().length > 0) {
     blocks.push({ type: 'text', text: trailingText });
   }
   return blocks;
+}
+
+// ---------------------------------------------------------------------------
+// #361 — free-text user-prompt PII masking (wire side).
+// ---------------------------------------------------------------------------
+
+/** Thrown when prompt masking was requested but could not be guaranteed —
+ *  failure-closed: the turn is blocked instead of sending PII to the model. */
+export class PromptMaskBlockedError extends Error {
+  constructor(reason: string) {
+    super(`[privacy] user-prompt masking failed (${reason}) — turn blocked`);
+    this.name = 'PromptMaskBlockedError';
+  }
+}
+
+/** User-facing answer for a prompt-mask-blocked turn. Deliberately generic —
+ *  it must not echo any detected value. */
+const PROMPT_MASK_BLOCKED_ANSWER =
+  'This message could not be processed: privacy protection for your text ' +
+  'could not be guaranteed (prompt masking failed), so it was not sent to ' +
+  'the language model. Please try again or contact your operator.';
+
+/**
+ * Mask a wire-bound prompt text through the turn's privacy handle. Returns
+ * the text unchanged when no handle is present, the operator flag is off,
+ * or the text is empty — byte-identical legacy behavior. Throws
+ * `PromptMaskBlockedError` on the failure-closed `blocked` outcome.
+ */
+async function maskPromptForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  text: string,
+): Promise<string> {
+  if (privacy === undefined || text.length === 0) return text;
+  const result = await privacy.maskUserPrompt(text);
+  if (result.outcome === 'blocked') {
+    throw new PromptMaskBlockedError(result.reason);
+  }
+  return result.outcome === 'masked' ? result.maskedText : text;
+}
+
+/** `maskPromptForWire` for the #268 ingested attachment tail — skips the
+ *  empty/whitespace case (`ingestAttachments` returns '' without docs). */
+async function maskIngestedForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  ingestedText: string,
+): Promise<string> {
+  if (ingestedText.trim().length === 0) return ingestedText;
+  return maskPromptForWire(privacy, ingestedText);
+}
+
+/** `maskPromptForWire` for the recalled prior-context block. The recalled
+ *  TEXT is injected into the next prompt, so it is LLM-bound wire content:
+ *  a raw span recalled from turn N would undo the masking of turn N. Runs
+ *  through the SAME turn map, so answer-side restore covers these spans
+ *  too. Server-side stores stay raw — only the injected copy is masked. */
+async function maskRecalledForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  recalledText: string | undefined,
+): Promise<string | undefined> {
+  if (recalledText === undefined || recalledText.trim().length === 0) {
+    return recalledText;
+  }
+  return maskPromptForWire(privacy, recalledText);
+}
+
+/** #361 second-review fix — live chat history (`input.priorTurns`) is
+ *  LLM-bound wire content too: persisted turns store restored REAL values
+ *  by design, and channels replay them verbatim as priorTurns, so turn-N
+ *  PII would reach the model raw on turn N+1. Mask every prior userMessage
+ *  AND assistant answer through the SAME turn map before message assembly
+ *  (answer-side restore covers these spans as well). Empty pairs are
+ *  filtered so a failed prior turn can't poison context. */
+async function maskPriorTurnsForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  priorTurns: ChatTurnInput['priorTurns'],
+): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
+  const pairs: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  for (const t of priorTurns ?? []) {
+    if (t.userMessage.trim().length > 0) {
+      pairs.push({
+        role: 'user',
+        content: await maskPromptForWire(privacy, t.userMessage),
+      });
+    }
+    if (t.assistantAnswer.trim().length > 0) {
+      pairs.push({
+        role: 'assistant',
+        content: await maskPromptForWire(privacy, t.assistantAnswer),
+      });
+    }
+  }
+  return pairs;
+}
+
+/**
+ * Restore prompt surrogates → real values in a text that is about to be
+ * PERSISTED (session log / KG / promoted memory) or returned as the final
+ * answer. Identity when no handle is present or nothing was masked.
+ * Best-effort: a restore failure must never lose the answer — the wire
+ * variant is logged and kept (surrogates, but no data loss and no leak).
+ */
+async function restorePromptForPersistence(
+  privacy: PrivacyTurnHandle | undefined,
+  text: string,
+): Promise<string> {
+  if (privacy === undefined || text.length === 0) return text;
+  try {
+    return await privacy.restorePromptPseudonyms(text);
+  } catch (err) {
+    console.warn(
+      '[orchestrator] restorePromptPseudonyms threw — text left as-is:',
+      err,
+    );
+    return text;
+  }
+}
+
+/**
+ * #361 — restore the string fields of a Palaia excerpt before it is
+ * persisted (auto-promotion) or shown in the save-as-memory modal. The
+ * excerpt came out of an LLM pass over masked wire text, so its copies may
+ * carry surrogates; stored memories must carry real values.
+ */
+async function restoreExcerptForPersistence(
+  privacy: PrivacyTurnHandle | undefined,
+  excerpt: PalaiaExcerpt | undefined,
+): Promise<PalaiaExcerpt | undefined> {
+  if (privacy === undefined || excerpt === undefined) return excerpt;
+  const restored = { ...excerpt };
+  restored.suggestedSummary = await restorePromptForPersistence(
+    privacy,
+    excerpt.suggestedSummary,
+  );
+  if (excerpt.suggestedRationale !== undefined) {
+    restored.suggestedRationale = await restorePromptForPersistence(
+      privacy,
+      excerpt.suggestedRationale,
+    );
+  }
+  const excerpts: string[] = [];
+  for (const span of excerpt.excerpts) {
+    excerpts.push(await restorePromptForPersistence(privacy, span));
+  }
+  restored.excerpts = excerpts;
+  return restored;
+}
+
+/** #361 — an `ask_user_choice` card (LLM tool call or card-router pass over
+ *  masked wire text) is user-facing: restore surrogates → real values in
+ *  question, rationale, and option labels/values before the channel renders
+ *  it (cosmetic surrogate exposure otherwise). Identity when no handle is
+ *  present or nothing was masked this turn. */
+async function restorePendingChoiceForUser(
+  privacy: PrivacyTurnHandle | undefined,
+  choice: PendingUserChoice | undefined,
+): Promise<PendingUserChoice | undefined> {
+  if (privacy === undefined || choice === undefined) return choice;
+  const options: PendingUserChoice['options'] = [];
+  for (const opt of choice.options) {
+    options.push({
+      label: await restorePromptForPersistence(privacy, opt.label),
+      value: await restorePromptForPersistence(privacy, opt.value),
+    });
+  }
+  const restored: PendingUserChoice = {
+    ...choice,
+    question: await restorePromptForPersistence(privacy, choice.question),
+    options,
+  };
+  if (choice.rationale !== undefined) {
+    restored.rationale = await restorePromptForPersistence(
+      privacy,
+      choice.rationale,
+    );
+  }
+  return restored;
+}
+
+/** #361 — same rationale as `restorePendingChoiceForUser`, for the
+ *  follow-up suggestion buttons (labels are shown to the user; the prompt
+ *  becomes the next turn's user message). */
+async function restoreFollowUpsForUser(
+  privacy: PrivacyTurnHandle | undefined,
+  followUps: FollowUpOption[] | undefined,
+): Promise<FollowUpOption[] | undefined> {
+  if (privacy === undefined || followUps === undefined) return followUps;
+  const out: FollowUpOption[] = [];
+  for (const f of followUps) {
+    out.push({
+      label: await restorePromptForPersistence(privacy, f.label),
+      prompt: await restorePromptForPersistence(privacy, f.prompt),
+    });
+  }
+  return out;
 }
 
 const MEMORY_TOOL_NAME = 'memory';
@@ -907,6 +1248,25 @@ export function parseToolEmittedRoutineList(
   };
 }
 
+/**
+ * Value-free structural digest of a raw MCP tool result for KG ingestion when
+ * the server is NOT privacy-bypassed: records the SHAPE (top-level fields /
+ * record count) without any PII/values, so recall knows the data exists and its
+ * shape without persisting sensitive contents. */
+function mcpObservationDigest(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) return `${String(parsed.length)} records (values masked)`;
+    if (parsed !== null && typeof parsed === 'object') {
+      const keys = Object.keys(parsed as Record<string, unknown>);
+      return `Fields: ${keys.slice(0, 40).join(', ')} (values masked)`;
+    }
+  } catch {
+    /* not JSON — fall through to a byte-size note */
+  }
+  return `(${String(Buffer.byteLength(raw, 'utf8'))} bytes, values masked)`;
+}
+
 export class Orchestrator {
   /** The Agent (orchestrator instance) this object serves. */
   readonly agentId: string;
@@ -916,6 +1276,10 @@ export class Orchestrator {
   /** Wave 8 — direct-answer persona candidates; empty when none attached. */
   private readonly personaSkills: readonly OrchestratorPersonaSkill[];
   private readonly maxTokens: number;
+  /** #504/#505 — active model's vision support, if the caller resolved it
+   *  (see OrchestratorOptions.visionSupported). Undefined → callers fall
+   *  back to `this.provider.capabilities.vision` at each read site. */
+  private readonly visionSupported: boolean | undefined;
   private readonly maxIterations: number;
   /** Round-loop guard thresholds (see {@link LoopGuard}). */
   private readonly loopRepeatSoft: number | undefined;
@@ -929,6 +1293,8 @@ export class Orchestrator {
   private readonly directLineMode: DirectLineMode;
   /** #332 Layer 2 — directive prefix (default `'#'`). */
   private readonly directLinePrefix: string;
+  /** #332 Layer 3 (gap-closure) — standing forced-consult tool name, if any. */
+  private readonly requiredConsultToolName: string | undefined;
   // systemPrompt is rebuilt live per turn from `buildSystemPrompt()` —
   // so hot-registered DomainTools show up in the preamble. Prompt caching
   // still applies within stable phases (between two register/unregister
@@ -948,6 +1314,8 @@ export class Orchestrator {
   private readonly attachmentReader: AttachmentReader | undefined;
   /** #268 — lazily built `read_attachment` handler (only when reader present). */
   private readonly readAttachmentTool: ReadAttachmentTool | undefined;
+  /** #430 — `query_dataset` native tool; only needs the KnowledgeGraph handle. */
+  private readonly queryDatasetTool: QueryDatasetTool | undefined;
   private readonly chatParticipantsTool: ChatParticipantsTool | undefined;
   private readonly findFreeSlotsTool: FindFreeSlotsTool | undefined;
   private readonly bookMeetingTool: BookMeetingTool | undefined;
@@ -956,6 +1324,10 @@ export class Orchestrator {
   /** Slice 2.5 — cross-plugin runtime-config lookup (see OrchestratorOptions). */
   private readonly pluginConfigGet:
     | ((agentId: string, configKey: string) => unknown | undefined)
+    | undefined;
+  /** Issue #474 — per-plugin tool-readiness gate (see OrchestratorOptions). */
+  private readonly isPluginToolsReady:
+    | ((agentId: string) => boolean)
     | undefined;
   private readonly nudgeRegistry: NudgeRegistry | undefined;
   private readonly nudgeStateStore: NudgeStateStore | undefined;
@@ -992,6 +1364,7 @@ export class Orchestrator {
     this.modelRouting = options.modelRouting;
     this.personaSkills = options.personaSkills ?? [];
     this.maxTokens = options.maxTokens;
+    this.visionSupported = options.visionSupported;
     this.maxIterations = options.maxToolIterations;
     this.loopRepeatSoft = options.loopRepeatSoft;
     this.loopRepeatHard = options.loopRepeatHard;
@@ -1003,9 +1376,13 @@ export class Orchestrator {
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
     this.directLineMode = options.directLineMode ?? 'strict';
     this.directLinePrefix = options.directLinePrefix ?? '#';
+    this.requiredConsultToolName = options.requiredConsultToolName;
     this.knowledgeGraph = options.knowledgeGraph;
     this.knowledgeGraphTool = options.knowledgeGraph
       ? new KnowledgeGraphTool(options.knowledgeGraph, options.embeddingClient)
+      : undefined;
+    this.queryDatasetTool = options.knowledgeGraph
+      ? new QueryDatasetTool(options.knowledgeGraph)
       : undefined;
     this.factExtractor = options.factExtractor;
     this.chatParticipantsTool = options.chatParticipantsTool;
@@ -1020,6 +1397,7 @@ export class Orchestrator {
     this.responseGuard = options.responseGuard;
     this.privacyGuard = options.privacyGuard;
     this.pluginConfigGet = options.pluginConfigGet;
+    this.isPluginToolsReady = options.isPluginToolsReady;
     this.nudgeRegistry = options.nudgeRegistry;
     this.nudgeStateStore = options.nudgeStateStore;
     this.nudgeProcessMemory = options.nudgeProcessMemory;
@@ -1193,6 +1571,9 @@ export class Orchestrator {
         arguments: Record<string, unknown>;
       };
     }) => void,
+    // #361 — the wire-bound (possibly masked) message variant; nudge
+    // provider output can land back in LLM-bound tool_result content.
+    wireUserMessage?: string,
   ): Promise<void> {
     if (!this.nudgeRegistry) return;
     const registry = this.nudgeRegistry;
@@ -1242,7 +1623,7 @@ export class Orchestrator {
           turnContext: {
             turnId,
             agentId,
-            userMessage: input.userMessage,
+            userMessage: wireUserMessage ?? input.userMessage,
             toolTrace,
             sessionScope,
           },
@@ -1592,6 +1973,10 @@ export class Orchestrator {
    */
   private async retrievePriorContext(
     input: ChatTurnInput,
+    // #361 — the wire-bound (possibly masked) message variant. The recalled
+    // text this returns flows INTO the LLM prompt, so the recall query must
+    // not itself carry a raw PII span the mask pass just removed.
+    wireUserMessage?: string,
   ): Promise<{ text: string | undefined; recalled: RecalledContext | undefined }> {
     // Use console.error so the trace lands on stderr — Fly's log aggregator
     // has been observed to drop some stdout INFO lines under load, and this
@@ -1618,7 +2003,7 @@ export class Orchestrator {
       // directly should pass their manifest identity.id so per-agent
       // priorities apply.
       const result = await this.contextRetriever.assembleForBudget({
-        userMessage: input.userMessage,
+        userMessage: wireUserMessage ?? input.userMessage,
         // Per-orchestrator isolation: the real Agent identity drives the KG
         // scope-prefix filter (and agent_priorities). The retriever expects
         // the sessionScope already agent-qualified — `graphScopeFor` is the
@@ -1812,6 +2197,15 @@ export class Orchestrator {
     const privacyHandle = privacyService
       ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
       : undefined;
+    // #430 fixup (reviewer round 5) — resolve the canonical omadiaUserId ONCE
+    // for the whole turn; see `resolveTurnOwnerIdentity` for the fallback
+    // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
+    // `turnContext.current()?.resolvedOmadiaUserId` instead of each
+    // re-deriving it independently.
+    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
+      this.knowledgeGraph,
+      input,
+    );
 
     return turnContext.run(
       {
@@ -1820,6 +2214,10 @@ export class Orchestrator {
         // Per-orchestrator isolation: expose THIS Agent's identity to the
         // per-call MemoryAccessor (plugin/sub-agent memory namespacing).
         agentSlug: this.agentId,
+        // Human user id — dispatch-time consumers (MCP→KG ingestion) attribute
+        // per-user data with it.
+        ...(input.userId ? { userId: input.userId } : {}),
+        ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -1841,7 +2239,20 @@ export class Orchestrator {
         // the privacy-finalize block below so the verbatim answer is PII-masked
         // (Pitfall 3) and a receipt is attached.
         const direct = await this.executeDirectLine(input, turnId);
-        let result = direct ?? (await this.chatInContext(input, turnId));
+        let result: ChatTurnResult;
+        try {
+          result = direct ?? (await this.chatInContext(input, turnId));
+        } catch (err) {
+          // #361 — failure-closed prompt masking: the prompt never reached
+          // the model; answer with a generic privacy error instead of a raw
+          // 500. Audited above by the guard service itself.
+          if (err instanceof PromptMaskBlockedError) {
+            console.error(`[orchestrator] ${err.message}`);
+            result = { answer: PROMPT_MASK_BLOCKED_ANSWER, toolCalls: 0, iterations: 0 };
+          } else {
+            throw err;
+          }
+        }
         // Privacy Shield v4 — when a v4_render_answer call produced the
         // answer this turn it is final and already safe (real values
         // materialized server-side from ground truth). Swap it in.
@@ -1855,6 +2266,22 @@ export class Orchestrator {
                 ? { maskedValues: v4Rendered.maskedValues }
                 : {}),
             };
+          }
+        }
+        // #361 — restore prompt surrogates → real values over the final
+        // answer (identity when the turn masked nothing). Must run BEFORE
+        // finalize, which drops the turn's surrogate map.
+        if (privacyHandle) {
+          try {
+            result = {
+              ...result,
+              answer: await privacyHandle.restorePromptPseudonyms(result.answer),
+            };
+          } catch (err) {
+            console.warn(
+              '[orchestrator] restorePromptPseudonyms threw — answer left as-is:',
+              err,
+            );
           }
         }
         if (privacyHandle) {
@@ -1939,28 +2366,61 @@ export class Orchestrator {
 
     const candidate = resolution.candidate;
     const tool = this.domainToolsByName.get(candidate.toolName);
-    if (!tool) {
+    // Issue #474 (round 4) — a not-ready plugin's domain tool must resolve
+    // the same as a deleted one: `dispatchToolInner` already blocks the
+    // handler safely (no capability leak), but without this check its raw
+    // `Error: tool … is unavailable …` string would be wrapped into a
+    // delegatedAnswer and shown to the user as if the specialist itself had
+    // answered. Reuse the SAME notice as the deleted-tool branch above
+    // instead of surfacing that internal dispatch-error string.
+    if (!tool || !this.isToolAvailable(tool.agentId)) {
       return this.directLineNotice(
         `Specialist "${candidate.label}" is no longer available.`,
       );
     }
 
+    // #361 second-review fix — the relayed payload is LLM-bound wire
+    // content: `dispatchTool` hands it to an LLM-backed sub-agent verbatim.
+    // Mask it through the SAME turn map as a normal prompt; the sub-agent's
+    // answer is restored surrogate→real below, so the user still sees the
+    // real values (the no-redaction invariant holds on the restored text).
+    // Failure-closed: a `blocked` outcome answers with the generic privacy
+    // error (audited by the guard) instead of dispatching unmasked.
+    const privacyForPrompt = turnContext.current()?.privacyHandle;
+    let wirePayload: string;
+    try {
+      wirePayload = await maskPromptForWire(privacyForPrompt, directive.payload);
+    } catch (err) {
+      if (err instanceof PromptMaskBlockedError) {
+        console.error(`[orchestrator] direct-line dispatch blocked — ${err.message}`);
+        return { answer: PROMPT_MASK_BLOCKED_ANSWER, toolCalls: 0, iterations: 0 };
+      }
+      throw err;
+    }
+
     // Deterministic harness invocation through the choke point. Input is bound
-    // to the verbatim user payload — the orchestrator cannot reshape it.
+    // to the user payload — the orchestrator never reshapes it beyond the
+    // #361 privacy masking above (flag off ⇒ byte-identical verbatim relay).
     const collector = new RunTraceCollector({
       scope: input.sessionScope ?? turnId,
       ...(input.userId ? { userId: input.userId } : {}),
     });
-    const handle = collector.beginInvocation(tool.name);
+    const handle = collector.beginInvocation(tool.name, candidate.agentId);
     const startedAt = Date.now();
     let verbatim: string;
     let status: 'success' | 'error';
     try {
       // The domain-tool contract takes `{ question }` (see createDomainTool);
-      // bind it to the user's VERBATIM payload — the orchestrator never
-      // reshapes it.
-      verbatim = await tool.handle(
-        { question: directive.payload },
+      // bind it to the user's payload (masked when the #361 flag is on,
+      // byte-identical otherwise). Routed through the SAME `dispatchTool`
+      // choke point as every other domain-tool dispatch (not a raw
+      // `tool.handle` call) so the Privacy Shield v4 masking cascade applies
+      // here too — #332 gap-closure: a raw `tool.handle` call bypassed
+      // `dispatchTool` entirely, so a verbatim delegated answer was never
+      // interned even when a privacy guard was active.
+      verbatim = await this.dispatchTool(
+        tool.name,
+        { question: wirePayload },
         handle.observer,
       );
       // `createDomainTool.handle` does not throw on a sub-agent failure — it
@@ -1976,7 +2436,13 @@ export class Orchestrator {
     handle.finish({ durationMs: Date.now() - startedAt, status });
     const runTrace = collector.finish({ iterations: 1, status });
 
-    // Harness-owned, attributed segment — byte-for-byte the sub-agent's words.
+    // #361 — the sub-agent may echo the masked payload's surrogates back;
+    // restore them to real values (identity when nothing was masked) before
+    // the text is rendered, persisted, or attributed.
+    verbatim = await restorePromptForPersistence(privacyForPrompt, verbatim);
+
+    // Harness-owned, attributed segment — byte-for-byte the sub-agent's words
+    // (post surrogate-restore, which only inverts the #361 pseudonym map).
     const delegatedAnswer: DelegatedAnswer = {
       agentId: candidate.agentId ?? candidate.toolName,
       label: candidate.label,
@@ -2042,13 +2508,36 @@ export class Orchestrator {
     // answer. Fire-and-forget against Haiku, after the session log lands so the
     // Fact → Turn edge has an anchor. Never awaited; entityRefs are empty (the
     // relay issues no orchestrator-level tool calls of its own).
+    // #361 — the extraction prompt is LLM-bound, so a direct-line turn (which
+    // never masked anything up to here) masks both texts through the turn map
+    // first; the extracted facts are restored to real values before ingest.
+    // Fail closed on `blocked`: skip fact extraction (audited) rather than
+    // send an unmasked prompt — the user-visible answer is unaffected.
     if (this.factExtractor && persistedTurnId) {
-      void this.factExtractor.extractAndIngest({
-        turnId: persistedTurnId,
-        userMessage: input.userMessage,
-        assistantAnswer: answer,
-        entityRefs: [],
-      });
+      try {
+        const maskedUserMessage = await maskPromptForWire(
+          privacyForPrompt,
+          input.userMessage,
+        );
+        const maskedAnswer = await maskPromptForWire(privacyForPrompt, answer);
+        const restoreFacts = privacyForPrompt?.snapshotPromptRestorer();
+        void this.factExtractor.extractAndIngest({
+          turnId: persistedTurnId,
+          userMessage: maskedUserMessage,
+          assistantAnswer: maskedAnswer,
+          entityRefs: [],
+          ...(restoreFacts ? { restoreFacts } : {}),
+        });
+      } catch (err) {
+        if (err instanceof PromptMaskBlockedError) {
+          console.error(
+            '[orchestrator] direct-line fact extraction skipped — ' +
+              `prompt masking blocked: ${err.message}`,
+          );
+        } else {
+          throw err;
+        }
+      }
     }
 
     return {
@@ -2083,10 +2572,22 @@ export class Orchestrator {
     obligationTool: string | undefined;
     forceObligation: { type: 'tool'; name: string } | undefined;
   } {
+    // #332 gap-closure — a per-turn `expectedDomainTool` still wins; absent,
+    // fall back to this orchestrator's standing `requiredConsultToolName`
+    // (if configured), so the forced-delegation primitive has a real,
+    // opt-in producer beyond a caller wiring it per turn.
+    const requested = input.expectedDomainTool ?? this.requiredConsultToolName;
+    const requestedEntry = requested
+      ? this.domainToolsByName.get(requested)
+      : undefined;
+    // Issue #474 (round 3 self-audit) — a not-ready plugin's domain tool must
+    // not become an obligation: `tool_choice` would then force the model onto
+    // a tool name that buildToolsList() has already excluded from tools[],
+    // which the API rejects. Same isToolAvailable gate as the roster/tools[]
+    // paths above.
     const tool =
-      input.expectedDomainTool &&
-      this.domainToolsByName.has(input.expectedDomainTool)
-        ? input.expectedDomainTool
+      requestedEntry && this.isToolAvailable(requestedEntry.agentId)
+        ? requested
         : undefined;
     return {
       obligationTool: tool,
@@ -2320,6 +2821,15 @@ export class Orchestrator {
     const picked = r.skillId
       ? this.personaSkills.find((p) => p.skillId === r.skillId)
       : undefined;
+    // Publish the routed persona on the live turn context (epic #459 W4
+    // codex fold): skill-bound MCP tools gate on it at dispatch, so a tool
+    // bound to skill X is unusable on turns where X is not the acting
+    // persona. Mutation (not re-run) so every scope of this turn sees it.
+    const activeTurn = turnContext.current();
+    if (activeTurn) {
+      if (picked?.skillId !== undefined) activeTurn.activePersonaSkillId = picked.skillId;
+      else delete activeTurn.activePersonaSkillId;
+    }
     return {
       skillBody: picked?.body,
       persona: {
@@ -2338,14 +2848,58 @@ export class Orchestrator {
     await this.fireTurnHook('onBeforeTurn', turnId, input, {
       userMessage: input.userMessage,
     });
+    // #361 — mask the wire-bound prompt BEFORE anything LLM-adjacent sees
+    // it. `wireUserMessage` is the LLM-facing variant (pseudonyms for
+    // detected PII spans when the operator flag is on; the original text
+    // otherwise). `input.userMessage` stays untouched for memory
+    // persistence (sessionLogger / factExtractor) and receipt attribution.
+    // Failure-closed: a `blocked` outcome throws and the turn fails.
+    const privacyForPrompt = turnContext.current()?.privacyHandle;
+    const wireUserMessage = await maskPromptForWire(
+      privacyForPrompt,
+      input.userMessage,
+    );
     // Non-streaming path: `priorContext` is injected into the prompt; the
     // structured `recalled` payload rides out on the ChatTurnResult so
     // non-streaming channels (Teams) can render a recall card (the streaming
     // path emits it as a `kg_recall` annotation instead).
-    const { text: priorContext, recalled } =
-      await this.retrievePriorContext(input);
+    const { text: rawPriorContext, recalled } =
+      await this.retrievePriorContext(input, wireUserMessage);
+    // #361 — the recalled TEXT is LLM-bound wire content: it carries real
+    // values persisted from earlier turns, so it is masked through the SAME
+    // turn map before injection (answer-side restore covers these spans).
+    // The structured `recalled` payload stays raw — it goes to the UI, not
+    // the model.
+    const priorContext = await maskRecalledForWire(
+      privacyForPrompt,
+      rawPriorContext,
+    );
     // #268 — pre-fetch + extract any uploaded document text for this turn.
-    const ingestedText = await this.ingestAttachments(input);
+    // #504/#505 — the same pass also resolves image attachments (Teams
+    // Tigris storage_key, or a bare url for channels without a pre-fetch)
+    // into vision content-blocks; `ingestedImages` rides separately from the
+    // text since it never crosses the PII-masking wire. Gated on the ACTIVE
+    // MODEL's vision capability (round-6 codex review) — `visionSupported`
+    // wins when the caller resolved it (see OrchestratorOptions), otherwise
+    // this falls back to the provider connection's own capability flag,
+    // which is imprecise whenever one connection serves several models with
+    // different vision support. Either way, a non-vision model never gets
+    // an image content-block, and `buildUserContent` below surfaces a
+    // visible note instead of silently dropping the attachment.
+    // #361 — the ingested verbatim tail crosses the wire alongside the
+    // message, so it is masked through the SAME turn map (stable surrogates).
+    const visionSupported =
+      this.visionSupported ?? this.provider.capabilities.vision;
+    const {
+      text: ingestedRawText,
+      images: ingestedImages,
+      skippedVisionImageCount,
+      rejectedImageReasons,
+    } = await this.ingestAttachments(input, visionSupported);
+    const ingestedText = await maskIngestedForWire(
+      privacyForPrompt,
+      ingestedRawText,
+    );
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — per-turn nudge counter (shared across all
     // tool-call iterations of this turn so NUDGE_MAX_PER_TURN is enforced).
@@ -2363,27 +2917,30 @@ export class Orchestrator {
       domain?: string;
     }> = [];
 
+    // #361 — priorTurns replay persisted REAL values (turn N restored them
+    // before persistence), so they are masked through the same turn map
+    // before assembly. See maskPriorTurnsForWire.
+    const priorTurnMessages = await maskPriorTurnsForWire(
+      privacyForPrompt,
+      input.priorTurns,
+    );
     const messages: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] | string }> = [
       // Live chat history first. Each turn becomes a (user, assistant) pair —
       // same shape the Anthropic API expects for a multi-turn conversation.
       // Empty pairs are filtered so a failed prior turn can't poison context.
-      ...(input.priorTurns ?? []).flatMap<{
-        role: 'user' | 'assistant';
-        content: ContentBlock[] | string;
-      }>((t) => {
-        const pair: Array<{
-          role: 'user' | 'assistant';
-          content: ContentBlock[] | string;
-        }> = [];
-        if (t.userMessage.trim().length > 0) {
-          pair.push({ role: 'user', content: t.userMessage });
-        }
-        if (t.assistantAnswer.trim().length > 0) {
-          pair.push({ role: 'assistant', content: t.assistantAnswer });
-        }
-        return pair;
-      }),
-      { role: 'user', content: buildUserContent(input, ingestedText) },
+      ...priorTurnMessages,
+      {
+        role: 'user',
+        content: buildUserContent(
+          input,
+          ingestedText,
+          wireUserMessage,
+          ingestedImages,
+          visionSupported,
+          skippedVisionImageCount,
+          rejectedImageReasons,
+        ),
+      },
     ];
 
     // Open an EntityRef collection keyed to this turn. Tool handlers that
@@ -2436,8 +2993,8 @@ export class Orchestrator {
     // non-streaming path has no event channel, so both decisions are simply
     // applied (channels that want to surface them use chatStream).
     const [turnModelResolved, turnPersonaResolved] = await Promise.all([
-      this.resolveTurnModel(input.userMessage),
-      this.resolveTurnPersona(input.userMessage),
+      this.resolveTurnModel(wireUserMessage),
+      this.resolveTurnPersona(wireUserMessage),
     ]);
     const turnModel = turnModelResolved.model;
     const turnPersonaBody = turnPersonaResolved.skillBody;
@@ -2561,6 +3118,15 @@ export class Orchestrator {
             drainedAttachments.files.length > 0
               ? drainedAttachments.files
               : undefined;
+          // #361 — restore prompt surrogates → real values BEFORE anything
+          // is persisted: the session log / KG must store ground truth, or
+          // recall would re-surface fabricated surrogate IBANs/addresses as
+          // if real. `answer` (the wire variant) stays in scope for the
+          // LLM-bound extra passes below (card router, fact extraction).
+          const restoredAnswer = await restorePromptForPersistence(
+            privacyForPrompt,
+            answer,
+          );
           // Hoisted so the return payload can carry the KG turn id back to
           // the chat UI (powers the save-as-memory affordance). Stays
           // undefined when session-logging is disabled or threw.
@@ -2573,7 +3139,7 @@ export class Orchestrator {
             // the latency cost is worth the retrieval guarantee.
             const entityRefs = entityCollection?.drain() ?? [];
             const answerForGraph = appendToolDigest(
-              answer,
+              restoredAnswer,
               attachments,
               fileAttachments,
             );
@@ -2599,12 +3165,22 @@ export class Orchestrator {
             // session log lands in the graph (so the Fact → Turn
             // DERIVED_FROM edge finds its anchor). Never awaited — a slow
             // or failing extractor must not delay the user reply.
+            // #361 — the extraction prompt is LLM-bound, so it gets the
+            // MASKED wire variants; the extracted facts are restored to
+            // real values before ingest via the snapshot restorer (which
+            // stays valid after finalize drops the live map).
             if (this.factExtractor && persistedTurnId) {
+              const restoreFacts = privacyForPrompt?.snapshotPromptRestorer();
               void this.factExtractor.extractAndIngest({
                 turnId: persistedTurnId,
-                userMessage: input.userMessage,
-                assistantAnswer: answerForGraph,
+                userMessage: wireUserMessage,
+                assistantAnswer: appendToolDigest(
+                  answer,
+                  attachments,
+                  fileAttachments,
+                ),
                 entityRefs,
+                ...(restoreFacts ? { restoreFacts } : {}),
               });
             }
           }
@@ -2612,17 +3188,25 @@ export class Orchestrator {
           // intent as prose; route it through the existing handlers before the
           // drains below pick it up. No-op on Anthropic and on trivial answers.
           await this.maybeRouteCardsFromText(
-            input.userMessage,
+            wireUserMessage,
             answer,
             turnModel,
           );
-          const pendingUserChoice = this.drainPendingChoice();
-          const followUpOptions = this.drainFollowUps();
+          // #361 — card contents came out of an LLM pass over masked wire
+          // text and are user-facing; restore surrogates → real values.
+          const pendingUserChoice = await restorePendingChoiceForUser(
+            privacyForPrompt,
+            this.drainPendingChoice(),
+          );
+          const followUpOptions = await restoreFollowUpsForUser(
+            privacyForPrompt,
+            this.drainFollowUps(),
+          );
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
           const pendingOAuthConsent = this.drainConsentRequired();
           return {
-            answer,
+            answer: restoredAnswer,
             toolCalls,
             iterations,
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
@@ -2660,7 +3244,10 @@ export class Orchestrator {
         const invocations = toolUses.map((use: ContentBlock) => {
           const isNative = this.nativeTools.has(use.name);
           return !isNative && traceCollector
-            ? traceCollector.beginInvocation(use.name)
+            ? traceCollector.beginInvocation(
+                use.name,
+                this.domainToolsByName.get(use.name)?.agentId,
+              )
             : undefined;
         });
         const settled = await Promise.allSettled(
@@ -2726,6 +3313,8 @@ export class Orchestrator {
           nudgeTrace,
           input,
           turnId,
+          undefined,
+          wireUserMessage,
         );
         // Round-loop guard. A `nudge` steer is appended to THIS iteration's
         // tool-result user message (keeping a single well-formed user turn);
@@ -2750,9 +3339,13 @@ export class Orchestrator {
         // plugin-tool result this batch. Stored on the orchestrator until
         // the done block drains it. Doesn't affect short-circuit decisions.
         this.extractToolEmittedRoutineList(toolResults);
-        const pendingUserChoice =
+        // #361 — the choice card is user-facing AND its question is
+        // persisted in the session log; restore surrogates → real values.
+        const pendingUserChoice = await restorePendingChoiceForUser(
+          privacyForPrompt,
           this.drainPendingChoice() ??
-          this.extractToolEmittedChoice(toolResults);
+            this.extractToolEmittedChoice(toolResults),
+        );
         if (pendingUserChoice) {
           this.drainAttachments();
           // Follow-up suggestions are incompatible with a blocking choice
@@ -2767,6 +3360,11 @@ export class Orchestrator {
           // resolving the choice.
           this.drainPendingRoutineList();
           const answer = textParts.join('\n\n').trim();
+          // #361 — persisted + user-facing: restore surrogates → real values.
+          const restoredAnswer = await restorePromptForPersistence(
+            privacyForPrompt,
+            answer,
+          );
           const iterations = iteration + 1;
           const runTrace = traceCollector?.finish({
             iterations,
@@ -2775,8 +3373,8 @@ export class Orchestrator {
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             const entityRefs = entityCollection?.drain() ?? [];
-            const loggedAnswer = answer.length > 0
-              ? `${answer}\n\n[Rückfrage] ${pendingUserChoice.question}`
+            const loggedAnswer = restoredAnswer.length > 0
+              ? `${restoredAnswer}\n\n[Rückfrage] ${pendingUserChoice.question}`
               : `[Rückfrage] ${pendingUserChoice.question}`;
             try {
               const logged = await this.sessionLogger.log({
@@ -2798,7 +3396,7 @@ export class Orchestrator {
             }
           }
           return {
-            answer,
+            answer: restoredAnswer,
             toolCalls,
             iterations,
             pendingUserChoice,
@@ -2848,12 +3446,22 @@ export class Orchestrator {
     const privacyHandle = privacyService
       ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
       : undefined;
+    // #430 fixup (reviewer round 5) — same per-turn resolution as `runTurn`
+    // above. This streaming entry point is what channel adapters (Teams/
+    // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
+    // without this the resolved identity would never reach a channel turn's
+    // tool dispatch at all — see `resolveTurnOwnerIdentity`.
+    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
+      this.knowledgeGraph,
+      input,
+    );
 
     turnContext.enter({
       turnId,
       turnDate: today(),
       // Per-orchestrator isolation: see the matching `turnContext.run` above.
       agentSlug: this.agentId,
+      ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
@@ -2892,6 +3500,7 @@ export class Orchestrator {
       // exactly like the normal done branch below.
       const direct = await this.executeDirectLine(input, turnId);
       if (direct) {
+        const directAgentsConsulted = deriveAgentsConsulted(direct.runTrace);
         let doneEvent: Extract<ChatStreamEvent, { type: 'done' }> = {
           type: 'done',
           answer: direct.answer,
@@ -2901,6 +3510,9 @@ export class Orchestrator {
           ...(direct.turnId ? { turnId: direct.turnId } : {}),
           ...(direct.delegatedAnswer
             ? { delegatedAnswer: direct.delegatedAnswer }
+            : {}),
+          ...(directAgentsConsulted && directAgentsConsulted.length > 0
+            ? { agentsConsulted: directAgentsConsulted }
             : {}),
         };
         if (privacyHandle) {
@@ -2933,7 +3545,29 @@ export class Orchestrator {
         yield doneEvent;
         return;
       }
-      for await (const event of this.chatStreamInner(input, turnId, observer)) {
+      // #361 — failure-closed prompt masking (streaming path): the inner
+      // generator throws before any model call when masking cannot be
+      // guaranteed; convert that into a graceful privacy-error `done` event
+      // instead of tearing the stream down with a raw 500.
+      const inner = this.chatStreamInner(input, turnId, observer);
+      const guardedInner = (async function* () {
+        try {
+          yield* inner;
+        } catch (err) {
+          if (err instanceof PromptMaskBlockedError) {
+            console.error(`[orchestrator] ${err.message}`);
+            yield {
+              type: 'done',
+              answer: PROMPT_MASK_BLOCKED_ANSWER,
+              toolCalls: 0,
+              iterations: 0,
+            } as Extract<ChatStreamEvent, { type: 'done' }>;
+            return;
+          }
+          throw err;
+        }
+      })();
+      for await (const event of guardedInner) {
         if (event.type === 'tool_use') {
           toolNameById.set(event.id, event.name);
         } else if (event.type === 'tool_result') {
@@ -2967,6 +3601,22 @@ export class Orchestrator {
                     : {}),
                 }
               : event;
+          // #361 — restore prompt surrogates → real values on the final
+          // answer, before finalize drops the turn's surrogate map. Note:
+          // streamed text deltas may transiently show a surrogate; the
+          // `done` answer is authoritative (same contract as the v4
+          // rendered-answer swap above).
+          try {
+            doneEvent = {
+              ...doneEvent,
+              answer: await privacyHandle.restorePromptPseudonyms(doneEvent.answer),
+            };
+          } catch (err) {
+            console.warn(
+              '[orchestrator] restorePromptPseudonyms threw — answer left as-is:',
+              err,
+            );
+          }
           try {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
@@ -3021,8 +3671,21 @@ export class Orchestrator {
     turnId: string,
     observer: AskObserver | undefined,
   ): AsyncGenerator<ChatStreamEvent> {
-    const { text: priorContext, recalled } =
-      await this.retrievePriorContext(input);
+    // #361 — wire-bound prompt masking; see chatInContextInner for the full
+    // rationale. Same seam, streaming path.
+    const privacyForPrompt = turnContext.current()?.privacyHandle;
+    const wireUserMessage = await maskPromptForWire(
+      privacyForPrompt,
+      input.userMessage,
+    );
+    const { text: rawPriorContext, recalled } =
+      await this.retrievePriorContext(input, wireUserMessage);
+    // #361 — the recalled TEXT is LLM-bound wire content; mask through the
+    // same turn map before injection (see chatInContextInner).
+    const priorContext = await maskRecalledForWire(
+      privacyForPrompt,
+      rawPriorContext,
+    );
     // Cross-session recall probe — surface plans/processes/insights pulled
     // from prior sessions as a visible `kg_recall` card before the answer
     // streams in. No-op when every recall leg was empty.
@@ -3032,7 +3695,22 @@ export class Orchestrator {
     // can never break or delay the turn; additive/opaque to the model.
     yield* await this.toKgGraphAnnotationEvents(recalled);
     // #268 — pre-fetch + extract any uploaded document text for this turn.
-    const ingestedText = await this.ingestAttachments(input);
+    // #504/#505 — same pass also resolves image attachments into vision
+    // content-blocks; see chatInContextInner for the full rationale,
+    // including the per-model vision-capability gate (round-6 codex review).
+    // #361 — masked through the same turn map as the message (see above).
+    const visionSupported =
+      this.visionSupported ?? this.provider.capabilities.vision;
+    const {
+      text: ingestedRawText,
+      images: ingestedImages,
+      skippedVisionImageCount,
+      rejectedImageReasons,
+    } = await this.ingestAttachments(input, visionSupported);
+    const ingestedText = await maskIngestedForWire(
+      privacyForPrompt,
+      ingestedRawText,
+    );
     const effectiveExtraSystemHint = composeExtraSystemHint(input);
     // Palaia Phase 8 (OB-77) — see chatInContextInner for rationale.
     const nudgeCounter = createNudgeTurnCounter();
@@ -3044,25 +3722,27 @@ export class Orchestrator {
       domain?: string;
     }> = [];
 
+    // #361 — priorTurns are masked through the same turn map before
+    // assembly; see chatInContextInner / maskPriorTurnsForWire.
+    const priorTurnMessages = await maskPriorTurnsForWire(
+      privacyForPrompt,
+      input.priorTurns,
+    );
     const messages: Array<{ role: 'user' | 'assistant'; content: ContentBlock[] | string }> = [
       // Same in-memory history injection as chat() — see chatInContext().
-      ...(input.priorTurns ?? []).flatMap<{
-        role: 'user' | 'assistant';
-        content: ContentBlock[] | string;
-      }>((t) => {
-        const pair: Array<{
-          role: 'user' | 'assistant';
-          content: ContentBlock[] | string;
-        }> = [];
-        if (t.userMessage.trim().length > 0) {
-          pair.push({ role: 'user', content: t.userMessage });
-        }
-        if (t.assistantAnswer.trim().length > 0) {
-          pair.push({ role: 'assistant', content: t.assistantAnswer });
-        }
-        return pair;
-      }),
-      { role: 'user', content: buildUserContent(input, ingestedText) },
+      ...priorTurnMessages,
+      {
+        role: 'user',
+        content: buildUserContent(
+          input,
+          ingestedText,
+          wireUserMessage,
+          ingestedImages,
+          visionSupported,
+          skippedVisionImageCount,
+          rejectedImageReasons,
+        ),
+      },
     ];
 
     const entityCollection = this.entityRefBus?.beginCollection(turnId);
@@ -3070,6 +3750,32 @@ export class Orchestrator {
     const textParts: string[] = [];
     // One forced file-build retry per turn (see fileAnnouncedButNotBuilt).
     let fileForceRetried = false;
+    // Issue #506 — generic, tool-agnostic record of which tool(s) already
+    // committed a successful side effect THIS turn (a `tool_result` yielded
+    // with `isError` falsy). If a LATER exception (a subsequent model call,
+    // the nudge pipeline, ...) lands in the catch below, this lets it report
+    // an honest `done` instead of discarding a real, already-committed
+    // action behind a bare `error`. Never special-cases a tool by name.
+    //
+    // Deliberate tradeoff (issue #506) — not an oversight: this list is
+    // populated by ANY successful `tool_result`, with no distinction
+    // between a read-only tool (e.g. `list_routines`) and a mutating one
+    // (e.g. `manage_routine` create/update). Concrete residual risk: a
+    // read-only tool succeeds early in the turn, then a LATER, more
+    // consequential tool call never runs because a transient failure hits
+    // the model call that would have requested it — the turn is still
+    // reported `done` (see the catch block below), even though the user's
+    // actual intended mutating action may never have happened.
+    // Two narrower alternatives were considered and rejected: (a) scoping
+    // this tracking to routine-create only sidesteps the residual risk but
+    // leaves the same false-negative bug unfixed for every other mutating
+    // tool (send_email, book_meeting, ...); (b) dropping this fix and
+    // always reporting `error` here regresses to issue #506's original,
+    // reported symptom for every tool. Kept generic and tool-agnostic
+    // across all tools as the better tradeoff; re-evaluate before
+    // narrowing it.
+    const committedToolNames: string[] = [];
+    let lastIterationIndex = 0;
 
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
@@ -3101,8 +3807,8 @@ export class Orchestrator {
     // classifier calls — run in parallel so persona routing adds no serial
     // latency. Resolved once so the whole streamed turn runs on one model.
     const [resolved, resolvedPersona] = await Promise.all([
-      this.resolveTurnModel(input.userMessage),
-      this.resolveTurnPersona(input.userMessage),
+      this.resolveTurnModel(wireUserMessage),
+      this.resolveTurnPersona(wireUserMessage),
     ]);
     const turnModel = resolved.model;
     const turnPersonaBody = resolvedPersona.skillBody;
@@ -3131,6 +3837,7 @@ export class Orchestrator {
     }
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+        lastIterationIndex = iteration;
         yield { type: 'iteration_start', iteration };
         // Mirror BuilderAgent: the per-iteration boundary is also when the
         // observer's iteration counter resets, so its consumers (heartbeat
@@ -3157,9 +3864,20 @@ export class Orchestrator {
         // present — at iteration ≥1 it's the tool_results turn) keeps roles
         // strictly alternating; otherwise we append a fresh user turn.
         for (const steerText of steeringBus.drain(steerKey)) {
+          // #361 (codex review fix) — steered text is LLM-bound wire content
+          // exactly like the original user message: mask it through the SAME
+          // per-turn map before it is appended, so answer-side restore covers
+          // steered spans too. Fails closed via PromptMaskBlockedError (the
+          // stream guard in chatStream converts it into a graceful privacy
+          // `done` event). The `steer_applied` event below stays RAW — it is
+          // user-facing echo, not wire content.
+          const wireSteerText = await maskPromptForWire(
+            privacyForPrompt,
+            steerText,
+          );
           const steerBlock = {
             type: 'text' as const,
-            text: `[Live user steering — added mid-turn]: ${steerText}`,
+            text: `[Live user steering — added mid-turn]: ${wireSteerText}`,
           };
           const last = messages[messages.length - 1];
           if (last && last.role === 'user') {
@@ -3285,6 +4003,14 @@ export class Orchestrator {
             iterations,
             status: 'success',
           });
+          // #361 — restore prompt surrogates → real values BEFORE anything
+          // is persisted (session log, auto-promotion). `answer` (the wire
+          // variant) stays in scope for the LLM-bound extra passes below
+          // (card router, excerpt pass).
+          const restoredAnswer = await restorePromptForPersistence(
+            privacyForPrompt,
+            answer,
+          );
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             const entityRefs = entityCollection?.drain() ?? [];
@@ -3293,7 +4019,7 @@ export class Orchestrator {
             // are already committed to waiting for the final `done` event,
             // so the extra ~sub-second is paid by the client already.
             const answerForGraph = appendToolDigest(
-              answer,
+              restoredAnswer,
               attachments,
               fileAttachments,
             );
@@ -3320,12 +4046,20 @@ export class Orchestrator {
           // intent as prose; route it through the existing handlers before the
           // drains below pick it up. No-op on Anthropic and on trivial answers.
           await this.maybeRouteCardsFromText(
-            input.userMessage,
+            wireUserMessage,
             answer,
             turnModel,
           );
-          const pendingUserChoice = this.drainPendingChoice();
-          const followUpOptions = this.drainFollowUps();
+          // #361 — card contents came out of an LLM pass over masked wire
+          // text and are user-facing; restore surrogates → real values.
+          const pendingUserChoice = await restorePendingChoiceForUser(
+            privacyForPrompt,
+            this.drainPendingChoice(),
+          );
+          const followUpOptions = await restoreFollowUpsForUser(
+            privacyForPrompt,
+            this.drainFollowUps(),
+          );
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
           const pendingOAuthConsent = this.drainConsentRequired();
@@ -3334,9 +4068,13 @@ export class Orchestrator {
           // carrier and the chat UI wants the suggestion immediately;
           // accept the 300-800ms latency cost. Failure → undefined,
           // modal falls back to its 240-char prefill.
-          const palaiaExcerpt = await this.maybeExtractExcerpt(
-            input.userMessage,
-            answer,
+          // #361 — the excerpt pass is a Haiku (LLM) call, so it gets the
+          // wire variants in; its OUTPUT is persisted (auto-promotion) and
+          // user-facing (modal prefill), so surrogates are restored to real
+          // values before either consumer sees it.
+          const palaiaExcerpt = await restoreExcerptForPersistence(
+            privacyForPrompt,
+            await this.maybeExtractExcerpt(wireUserMessage, answer),
           );
           // Slice 4b/4c — auto-promotion. Awaited so the resulting
           // mkId rides the same `done` event and the UI can render an
@@ -3347,15 +4085,16 @@ export class Orchestrator {
             turnId: persistedTurnId,
             userId: input.userId,
             palaiaExcerpt,
-            fallbackAssistantAnswer: answer,
+            fallbackAssistantAnswer: restoredAnswer,
           });
           // KG-insert chat visualization — when this turn wrote a node, pulse
           // the freshly-inserted neighbourhood in the floating pane. Best-effort
           // & guarded; emitted before `done` so it lands with the final turn.
           yield* await this.toKgInsertAnnotationEvents(autoPromotedMkId);
+          const finalAgentsConsulted = deriveAgentsConsulted(runTrace);
           yield {
             type: 'done',
-            answer,
+            answer: restoredAnswer,
             toolCalls,
             iterations,
             model: turnModel,
@@ -3370,6 +4109,9 @@ export class Orchestrator {
             ...(pendingSlotCard ? { pendingSlotCard } : {}),
             ...(pendingRoutineList ? { pendingRoutineList } : {}),
             ...(pendingOAuthConsent ? { pendingOAuthConsent: true } : {}),
+            ...(finalAgentsConsulted && finalAgentsConsulted.length > 0
+              ? { agentsConsulted: finalAgentsConsulted }
+              : {}),
           };
           return;
         }
@@ -3446,6 +4188,14 @@ export class Orchestrator {
             s.isError = winner.output.startsWith('Error:');
             s.durationMs = Date.now() - s.started;
             this.finishSlotInvocation(s, traceCollector);
+            // Issue #506 — record the committed side effect before yielding,
+            // generically (name only, no tool-specific payload inspection).
+            if (!s.isError) {
+              const name = s.use.name;
+              if (typeof name === 'string' && !committedToolNames.includes(name)) {
+                committedToolNames.push(name);
+              }
+            }
             yield {
               type: 'tool_result',
               id: s.use.id,
@@ -3499,6 +4249,7 @@ export class Orchestrator {
           (event) => {
             stagedNudgeEvents.push({ type: 'nudge', ...event });
           },
+          wireUserMessage,
         );
         for (const ev of stagedNudgeEvents) {
           yield ev;
@@ -3538,9 +4289,13 @@ export class Orchestrator {
         // plugin-tool result this batch. Stored on the orchestrator until
         // the done block drains it. Doesn't affect short-circuit decisions.
         this.extractToolEmittedRoutineList(toolResults);
-        const pendingUserChoice =
+        // #361 — the choice card is user-facing AND its question is
+        // persisted in the session log; restore surrogates → real values.
+        const pendingUserChoice = await restorePendingChoiceForUser(
+          privacyForPrompt,
           this.drainPendingChoice() ??
-          this.extractToolEmittedChoice(toolResults);
+            this.extractToolEmittedChoice(toolResults),
+        );
         if (pendingUserChoice) {
           this.drainAttachments();
           // Follow-up suggestions are incompatible with a blocking choice
@@ -3549,6 +4304,11 @@ export class Orchestrator {
           this.drainFollowUps();
           this.drainPendingSlotCard();
           const answer = textParts.join('\n\n').trim();
+          // #361 — persisted + user-facing: restore surrogates → real values.
+          const restoredAnswer = await restorePromptForPersistence(
+            privacyForPrompt,
+            answer,
+          );
           const iterations = iteration + 1;
           const runTrace = traceCollector?.finish({
             iterations,
@@ -3557,8 +4317,8 @@ export class Orchestrator {
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             const entityRefs = entityCollection?.drain() ?? [];
-            const loggedAnswer = answer.length > 0
-              ? `${answer}\n\n[Rückfrage] ${pendingUserChoice.question}`
+            const loggedAnswer = restoredAnswer.length > 0
+              ? `${restoredAnswer}\n\n[Rückfrage] ${pendingUserChoice.question}`
               : `[Rückfrage] ${pendingUserChoice.question}`;
             try {
               const logged = await this.sessionLogger.log({
@@ -3579,15 +4339,19 @@ export class Orchestrator {
               );
             }
           }
+          const choiceAgentsConsulted = deriveAgentsConsulted(runTrace);
           yield {
             type: 'done',
-            answer,
+            answer: restoredAnswer,
             toolCalls,
             iterations,
             model: turnModel,
             pendingUserChoice,
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
+            ...(choiceAgentsConsulted && choiceAgentsConsulted.length > 0
+              ? { agentsConsulted: choiceAgentsConsulted }
+              : {}),
           };
           return;
         }
@@ -3607,10 +4371,89 @@ export class Orchestrator {
         '[orchestrator] turn failed:',
         err instanceof Error ? (err.stack ?? err.message) : err,
       );
-      yield {
-        type: 'error',
-        message: err instanceof Error ? err.message : String(err),
-      };
+      // Issue #506 — a tool call earlier in this turn may have already
+      // committed a real side effect (e.g. created a record) even though a
+      // LATER step of the SAME turn (a subsequent model call, the nudge
+      // pipeline, ...) then threw. Reporting a bare `error` in that case is
+      // a false negative: the action succeeded, only the turn's own
+      // bookkeeping failed afterwards. Report `done` instead — honest that
+      // the action(s) completed but the turn itself didn't finish cleanly.
+      // Generic across every tool; no tool-specific detail is fabricated.
+      // A genuine failure (nothing committed yet) still yields `error`,
+      // unchanged from today.
+      //
+      // Deliberate tradeoff — not an oversight: this done-vs-error branch
+      // trusts ANY entry in `committedToolNames` equally, read-only or
+      // mutating (see the fuller tradeoff comment on `committedToolNames`'s
+      // declaration above). Accepted residual risk: a benign read-only
+      // success earlier in the turn can mask a later, more consequential
+      // mutation that was silently skipped, and this branch will still
+      // report `done`. Kept generic across all tools rather than narrowed
+      // to routine-create only or dropped entirely, because reverting to
+      // always-`error` here would leave issue #506's reported
+      // false-negative-on-success bug unfixed for every side-effecting
+      // tool, not just routine creation.
+      if (committedToolNames.length > 0) {
+        const toolList = committedToolNames.join(', ');
+        const answer =
+          committedToolNames.length === 1
+            ? `The requested action (${toolList}) completed successfully, but the turn could not finish generating a follow-up response.`
+            : `The requested actions (${toolList}) completed successfully, but the turn could not finish generating a follow-up response.`;
+        const iterations = lastIterationIndex + 1;
+        // Issue #506 (review follow-up) — every OTHER `done`-emission site
+        // in this function persists the exchange via `sessionLogger.log()`
+        // BEFORE yielding (see the success path above, the choice-card
+        // path, and direct-line). This emergency path is specifically for
+        // the case where a tool already committed a real side effect, so
+        // skipping the log here would be the one `done` path that leaves
+        // that commitment unrecorded — the next turn's model would have no
+        // memory of it and could re-invoke the same tool, reintroducing the
+        // duplicate-side-effect bug issue #506 exists to prevent. Same
+        // call shape as the other sites; best-effort like all of them.
+        const restoredAnswer = await restorePromptForPersistence(
+          privacyForPrompt,
+          answer,
+        );
+        const runTrace = traceCollector?.finish({
+          iterations,
+          status: 'success',
+        });
+        let persistedTurnId: string | undefined;
+        if (this.sessionLogger && input.sessionScope) {
+          const entityRefs = entityCollection?.drain() ?? [];
+          try {
+            const logged = await this.sessionLogger.log({
+              scope: input.sessionScope,
+              userMessage: input.userMessage,
+              assistantAnswer: restoredAnswer,
+              toolCalls,
+              iterations,
+              entityRefs,
+              ...(input.userId ? { userId: input.userId } : {}),
+              ...(runTrace ? { runTrace } : {}),
+            });
+            persistedTurnId = logged.turnExternalId;
+          } catch (logErr) {
+            console.error(
+              '[orchestrator] session log failed (continuing with emergency done):',
+              logErr instanceof Error ? logErr.message : logErr,
+            );
+          }
+        }
+        yield {
+          type: 'done',
+          answer: restoredAnswer,
+          toolCalls,
+          iterations,
+          ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+          ...(runTrace ? { runTrace } : {}),
+        };
+      } else {
+        yield {
+          type: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
     } finally {
       entityCollection?.drain();
     }
@@ -3631,7 +4474,10 @@ export class Orchestrator {
     const isNative = this.nativeTools.has(use.name);
     const invocation =
       !isNative && traceCollector
-        ? traceCollector.beginInvocation(use.name)
+        ? traceCollector.beginInvocation(
+            use.name,
+            this.domainToolsByName.get(use.name)?.agentId,
+          )
         : undefined;
     const observer = this.makeSlotObserver(use.id, subEvents, invocation);
     const started = Date.now();
@@ -3802,6 +4648,40 @@ export class Orchestrator {
       if (isInternExemptTool(name)) {
         return result;
       }
+      // MCP → Knowledge-Graph ingestion (epic #459, opt-in per server). Runs
+      // before masking so it sees the raw result; fire-and-forget so it never
+      // affects the tool call. Stores a value-free structural digest by default
+      // and the raw result only when the server is privacy-bypassed; always
+      // ACL-gated to the turn's user.
+      const kgTool = this.domainToolsByName.get(name);
+      if (
+        kgTool?.mcpServerId !== undefined &&
+        isMcpServerKgIngest(kgTool.mcpServerId) &&
+        this.knowledgeGraph !== undefined
+      ) {
+        const tc = turnContext.current();
+        const userId = tc?.userId;
+        if (userId) {
+          const bypassed = isMcpServerPrivacyBypassed(kgTool.mcpServerId);
+          const detail = bypassed
+            ? result.slice(0, 8000)
+            : mcpObservationDigest(result);
+          void this.knowledgeGraph
+            .createMemorableKnowledge({
+              kind: 'reference',
+              summary: `MCP ${kgTool.mcpServerName ?? kgTool.mcpServerId} · ${name}`.slice(0, 2000),
+              rationale: detail.slice(0, 10000),
+              createdBy: `auto:${userId}`,
+              involvedOmadiaUserIds: [userId],
+              aclOwners: [userId],
+              ...(tc?.agentSlug ? { originAgent: tc.agentSlug } : {}),
+              ...(tc?.turnId ? { derivedFromTurnIds: [tc.turnId] } : {}),
+            })
+            .catch(() => {
+              /* KG ingestion is best-effort — never break the tool call */
+            });
+        }
+      }
       // Slice 2.5 — Operator-owned per-plugin bypass. If the originating
       // plugin's `_privacy_mode` is `bypass` (or per-tool whitelist hits
       // this name), pass the raw result through unmasked AND record an
@@ -3941,6 +4821,22 @@ export class Orchestrator {
     const resolveBypass = (
       toolName: string,
     ): { pluginId: string } | undefined => {
+      // Path 0 — per-MCP-server operator bypass (epic #459). A server flagged
+      // `privacy_bypass` opts its tool results out of masking regardless of any
+      // owning-agent `_privacy_mode`. The flag is read LIVE by server id (a
+      // reload is additive and won't update a baked marker), then routed through
+      // resolveEffectivePrivacyMode so `OMADIA_PRIVACY_FORCE_GUARDED` can still
+      // clamp it back to guarded org-wide.
+      const bypassTool = domainTools.get(toolName);
+      if (isMcpServerPrivacyBypassed(bypassTool?.mcpServerId)) {
+        const effective = resolveEffectivePrivacyMode({
+          storedMode: 'bypass',
+          storedScopes: undefined,
+          toolName,
+          env: process.env,
+        });
+        if (effective === 'bypass') return { pluginId: bypassTool?.domain ?? toolName };
+      }
       // Path 1 — kernel tool with attached config closure.
       const reg = nativeTools.get(toolName);
       if (reg?.agentId !== undefined && reg.readConfig !== undefined) {
@@ -3992,7 +4888,22 @@ export class Orchestrator {
     // handler (which wraps the unscoped FilesystemMemoryStore). Checked
     // before the generic `reg?.handler` dispatch below, since `memory` is a
     // plugin-registered native tool and would otherwise win here unscoped.
+    //
+    // Issue #474 (review round 10) — this fast path bypassed the readiness
+    // gate entirely: a plugin that contributes `memory` via
+    // `ctx.tools.registerHandler('memory', ...)` (e.g. harness-memory /
+    // harness-memory-postgres) still has its own `agentId` recorded on the
+    // NativeToolRegistry entry, so re-derive that agentId here and run it
+    // through the same `isToolAvailable` gate the generic `reg?.handler`
+    // path below already uses. A marker-only / agentId-less entry (nothing
+    // registered `memory` via a plugin) keeps its `agentId === undefined ⇒
+    // always-available` default, so the two current always-ready memory
+    // plugins are unaffected as long as they haven't reported not-ready.
     if (name === MEMORY_TOOL_NAME && this.memoryToolHandler) {
+      const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
+      if (!this.isToolAvailable(memoryAgentId)) {
+        return `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`;
+      }
       return this.memoryToolHandler.handle(input);
     }
     // Plugin-contributed handlers win first. Kernel branches below are the
@@ -4001,10 +4912,23 @@ export class Orchestrator {
     // migrates, its hardcoded branch disappears.
     const reg = this.nativeTools.get(name);
     if (reg?.handler) {
+      // Issue #474 — re-check readiness at invocation time, not just at
+      // list-assembly time: a plugin's connection/auth state can complete
+      // or expire between the two, so list-time filtering alone leaves a
+      // race window. Returned (not thrown) as an `Error:`-prefixed string,
+      // matching the `unknown tool` fallback below — both the streaming and
+      // non-streaming dispatch loops key `is_error` off that prefix, and
+      // only the non-streaming one also catches thrown rejections.
+      if (!this.isToolAvailable(reg.agentId)) {
+        return `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`;
+      }
       return reg.handler(input);
     }
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
       return this.knowledgeGraphTool.handle(input);
+    }
+    if (name === QUERY_DATASET_TOOL_NAME && this.queryDatasetTool) {
+      return this.queryDatasetTool.handle(input);
     }
     if (name === CHAT_PARTICIPANTS_TOOL_NAME && this.chatParticipantsTool) {
       return this.chatParticipantsTool.handle();
@@ -4025,7 +4949,17 @@ export class Orchestrator {
       return this.bookMeetingTool.handle(input);
     }
     const domainTool = this.domainToolsByName.get(name);
-    if (domainTool) return domainTool.handle(input, observer);
+    if (domainTool) {
+      // Issue #474 — same re-check-at-invocation-time gate as the native-tool
+      // branch above, applied to the second tool-registration path (domain
+      // tools contributed by dynamic agent plugins via DomainTool.agentId).
+      // Without this, a not-ready plugin's domain tool was still invocable
+      // even though its native tools and promptDoc were already hidden.
+      if (!this.isToolAvailable(domainTool.agentId)) {
+        return `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`;
+      }
+      return domainTool.handle(input, observer);
+    }
     return `Error: unknown tool \`${name}\`.`;
   }
 
@@ -4045,13 +4979,26 @@ export class Orchestrator {
     // kernel's hardcoded blocks (graph/diagram/…) remain in buildSystemPrompt
     // for their tools; plugin docs land in a separate bullet list so both
     // paths coexist cleanly during the extraction transition.
+    // Issue #474 — mirror the same isToolAvailable gate applied in
+    // buildToolsList(): a plugin whose connection/auth setup hasn't
+    // completed must not have its promptDoc advertised here either,
+    // otherwise the model is told about a capability that buildToolsList()
+    // has already hidden from its `tools[]` for this same turn.
     const extraDocs = this.nativeTools
       .listWithHandler()
+      .filter((e) => this.isToolAvailable(e.agentId))
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
+    // Issue #474 (round 3) — same isToolAvailable gate as buildToolsList()'s
+    // domain-tool loop above: a not-ready plugin's DomainTool must not be
+    // advertised in the 'Fach-Agenten' roster either, otherwise the model is
+    // told to route to a tool that tools[] has already hidden this turn.
+    const availableDomainTools = Array.from(this.domainToolsByName.values()).filter((tool) =>
+      this.isToolAvailable(tool.agentId),
+    );
     return buildSystemPrompt(
       personaOverride ?? this.assistantIdentity,
-      Array.from(this.domainToolsByName.values()),
+      availableDomainTools,
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.
       false,
@@ -4170,24 +5117,68 @@ export class Orchestrator {
 
   /**
    * #268 sub-problem 2 — server-side attachment auto-ingest.
+   * #504/#505 — extended to also resolve image attachments into vision
+   * content-blocks instead of silently dropping them after fetch.
    *
-   * Pre-fetches and text-extracts the user's current-turn document uploads so
-   * the model can read them WITHOUT a tool call. Candidates come from BOTH
-   * sources:
+   * Pre-fetches the user's current-turn uploads so the model can read/see
+   * them WITHOUT a tool call. Candidates come from THREE sources:
    *   - the `[attachments-info]` block Teams appends to `input.userMessage`
-   *     (preferred: read by storage_key, since signed URLs expire);
+   *     (preferred: read by storage_key, since signed URLs expire) — files
+   *     AND images alike;
    *   - `input.attachments[]` non-image file entries from other channels
-   *     (read by url).
-   * De-duplicated by storageKey/url. Images and unsupported types are skipped
-   * silently (brand:// / vision handles images). Ingested regardless of
-   * `freshCheck` — these are the user's current message, not recalled context.
+   *     (read by url);
+   *   - `input.attachments[]` image entries that lack `bytesBase64` (read by
+   *     url) — the documented fallback for channels that don't pre-fetch
+   *     (`chatAgent.ts` / `incoming.ts`); images WITH `bytesBase64` are
+   *     already handled inline by `buildUserContent` and are skipped here.
+   * De-duplicated by storageKey/url. Text is extracted for non-image
+   * candidates; images are guarded by {@link checkVisionEmbeddable}
+   * (supported type + size cap) and turned into base64 image blocks —
+   * neither path throws, both just skip the candidate on failure. Ingested
+   * regardless of `freshCheck` — these are the user's current message, not
+   * recalled context.
    *
-   * Returns a concatenation of `[attachment-content: …]` blocks (leading
-   * with `\n\n`), or '' when there is nothing to ingest or no reader is
-   * configured. NEVER throws — any failure logs a warning and returns ''.
+   * `visionSupported` (#504/#505 review round 2 — `this.provider.capabilities
+   * .vision` at both call sites): when `false`, image candidates are never
+   * fetched at all (fetching bytes the provider can't accept would just
+   * waste the round-trip) — they're counted into `skippedVisionImageCount`
+   * instead so `buildUserContent` can still surface a visible note that
+   * image(s) existed, rather than silently acting as if none did.
+   *
+   * `rejectedImageReasons` (#504/#505 review round 4): a candidate IS
+   * fetched (vision is supported) but fails {@link checkVisionEmbeddable}
+   * — oversized (>10MB base64-encoded) or an unsupported format
+   * (SVG/BMP/TIFF/…). That used
+   * to be a server-only `console.warn` with no trace in the turn's text,
+   * reproducing the exact silent-drop failure #504 exists to close via a
+   * different trigger (size/format instead of provider capability). Each
+   * rejection's `guard.reason` is collected here so `buildUserContent` can
+   * surface a visible note instead.
+   *
+   * Returns `text` (a concatenation of `[attachment-content: …]` blocks,
+   * leading with `\n\n`, or '' when there is no document text), `images`
+   * (base64 blocks for `buildUserContent` to embed, or `[]`),
+   * `skippedVisionImageCount` (image candidates found but not fetched
+   * because vision is unsupported), and `rejectedImageReasons` (reasons for
+   * fetched image candidates the vision-embeddability guard rejected).
+   * NEVER throws — any failure logs a warning and returns the empty shape.
    */
-  private async ingestAttachments(input: ChatTurnInput): Promise<string> {
-    if (!this.attachmentReader) return '';
+  private async ingestAttachments(
+    input: ChatTurnInput,
+    visionSupported: boolean,
+  ): Promise<{
+    text: string;
+    images: IngestedImageBlock[];
+    skippedVisionImageCount: number;
+    rejectedImageReasons: string[];
+  }> {
+    const empty = {
+      text: '',
+      images: [] as IngestedImageBlock[],
+      skippedVisionImageCount: 0,
+      rejectedImageReasons: [] as string[],
+    };
+    if (!this.attachmentReader) return empty;
     try {
       type Candidate = {
         fileName: string | undefined;
@@ -4195,6 +5186,11 @@ export class Orchestrator {
         storageKey?: string;
         url?: string;
         dedupe: string;
+        /** #504/#505 — route to the vision branch below instead of
+         *  `extractAttachmentText`. Set from the manifest/attachment kind at
+         *  candidate time; re-checked against the fetched content-type since
+         *  a signed URL or Tigris object can disagree with the caller's claim. */
+        isImage: boolean;
       };
       const candidates: Candidate[] = [];
       const seen = new Set<string>();
@@ -4204,14 +5200,41 @@ export class Orchestrator {
         candidates.push(c);
       };
 
-      // 1. Teams `[attachments-info]` manifest (storage_key-bearing).
+      // De-dup guard for source 1 below: filenames already embedded inline
+      // by `buildUserContent` from `input.attachments[]` entries that carry
+      // `bytesBase64`. Today Teams (the manifest's only producer) never
+      // populates `attachments[].bytesBase64` and the channels that DO
+      // (Telegram) never emit an `[attachments-info]` manifest, so this set
+      // is empty in practice — but it's the one place this invariant is
+      // actually checked, not just documented, so a future channel that
+      // violates it can't silently double-send an image to the model.
+      const inlineImageFileNames = new Set(
+        (input.attachments ?? [])
+          .filter(
+            (a): a is typeof a & { name: string } =>
+              a.kind === 'image' &&
+              typeof a.bytesBase64 === 'string' &&
+              typeof a.name === 'string',
+          )
+          .map((a) => a.name.trim().toLowerCase()),
+      );
+
+      // 1. Teams `[attachments-info]` manifest (storage_key-bearing) — files
+      //    and images alike (#504).
       for (const info of parseAttachmentsInfo(input.userMessage)) {
+        const isImage = info.contentType.toLowerCase().startsWith('image/');
+        if (isImage && inlineImageFileNames.has(info.fileName.trim().toLowerCase())) {
+          // Already embedded inline via `bytesBase64` — skip to avoid
+          // sending the same image to the model twice in one turn.
+          continue;
+        }
         push({
           fileName: info.fileName,
           contentType: info.contentType,
           storageKey: info.storageKey,
           ...(info.signedUrl ? { url: info.signedUrl } : {}),
           dedupe: `key:${info.storageKey}`,
+          isImage,
         });
       }
       // 2. Non-image file attachments from other channels (url-bearing).
@@ -4223,13 +5246,42 @@ export class Orchestrator {
           contentType: att.mediaType,
           url: att.url,
           dedupe: `url:${att.url}`,
+          isImage: false,
         });
       }
-      if (candidates.length === 0) return '';
+      // 3. Image attachments without pre-fetched bytes (url-bearing) — the
+      //    documented url-fetch fallback for channels that don't pre-fetch
+      //    (#505). Images WITH `bytesBase64` are already handled inline by
+      //    `buildUserContent`, so they're excluded here to avoid double-embedding.
+      for (const att of input.attachments ?? []) {
+        if (att.kind !== 'image') continue;
+        if (typeof att.bytesBase64 === 'string') continue;
+        if (typeof att.url !== 'string' || att.url.length === 0) continue;
+        push({
+          fileName: att.name,
+          contentType: att.mediaType,
+          url: att.url,
+          dedupe: `url:${att.url}`,
+          isImage: true,
+        });
+      }
+      if (candidates.length === 0) return empty;
 
-      const blocks: string[] = [];
+      const textBlocks: string[] = [];
+      const images: IngestedImageBlock[] = [];
+      const rejectedImageReasons: string[] = [];
+      let skippedVisionImageCount = 0;
       for (const c of candidates) {
         try {
+          // #504/#505 review round 2 — don't even fetch an image candidate
+          // when the active provider/model has no vision capability; the
+          // bytes would just be discarded. Count it instead so
+          // `buildUserContent` can surface a visible note rather than
+          // silently acting as if the image never existed.
+          if (c.isImage && !visionSupported) {
+            skippedVisionImageCount += 1;
+            continue;
+          }
           // Prefer storage_key (durable) over url (Teams signed urls expire).
           const fetched = c.storageKey
             ? await this.attachmentReader.readByStorageKey(c.storageKey)
@@ -4237,18 +5289,98 @@ export class Orchestrator {
               ? await this.attachmentReader.readByUrl(c.url)
               : undefined;
           if (!fetched) continue;
+          const contentType = fetched.contentType ?? c.contentType;
+          if (c.isImage) {
+            const guard = checkVisionEmbeddable(
+              contentType,
+              fetched.bytes.length,
+            );
+            if (!guard.ok) {
+              console.warn(
+                `[harness-orchestrator] ingestAttachments: skipped image — ${guard.reason}`,
+              );
+              // #504/#505 review round 4 — a guard rejection must leave a
+              // visible trace in the turn's text, not just this server log.
+              rejectedImageReasons.push(guard.reason);
+              continue;
+            }
+            images.push({
+              mediaType: guard.mediaType,
+              bytesBase64: fetched.bytes.toString('base64'),
+            });
+            continue;
+          }
           const fetchedFileName =
             'fileName' in fetched
               ? (fetched as { fileName?: string }).fileName
               : undefined;
+          const attachmentFileName = fetchedFileName ?? c.fileName;
+          const label = c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
+          // #430 — CSV attachments become a queryable dataset instead of a
+          // truncated `[attachment-content]` text blob, whenever a
+          // KnowledgeGraph AND a resolved user identity are both available.
+          // Falls back to the plain-text path otherwise, so CSV ingest
+          // degrades instead of silently failing on a channel without
+          // either.
+          //
+          // #430 fixup (reviewer round 2) — dataset ownership needs the
+          // canonical `omadiaUserId` uuid, NOT the raw channel-native id
+          // `input.userId` carries for channel turns (Teams AAD oid, …; see
+          // `ChatTurnInput.userId`'s doc comment).
+          //
+          // #430 fixup (reviewer round 5) — this used to re-resolve
+          // `input.channelIdentity` independently, right here, on every CSV
+          // attachment. That was the ONLY place the canonical id got
+          // computed — `QueryDatasetTool` had no way to read it and fell
+          // back to the raw `turnContext.current()?.userId`, so a dataset a
+          // channel user just imported could never be found again by that
+          // same user. Now reads the ONE per-turn resolution both the
+          // import and query paths share — see
+          // `resolveTurnOwnerIdentity`/`TurnContextValue.resolvedOmadiaUserId`
+          // for the resolution + fallback rules (still idempotent, still
+          // degrades to the plain-text path below when unresolved).
+          if (isCsvAttachment(contentType, attachmentFileName) && this.knowledgeGraph) {
+            const ownerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
+            if (ownerOmadiaUserId) {
+              const imported = await importCsvDataset({
+                graph: this.knowledgeGraph,
+                bytes: fetched.bytes,
+                datasetName: attachmentFileName ?? label,
+                sourceFileName: attachmentFileName ?? label,
+                ownerOmadiaUserId,
+                ...(c.storageKey ? { sourceStorageKey: c.storageKey } : {}),
+              });
+              if (imported.ok) {
+                // #430 fixup — per-cell truncation (MAX_CELL_CHARS) still
+                // happens (see datasetImport.ts module doc); only tell the
+                // model "not truncated" when that's actually true this time,
+                // rather than making a blanket claim the PR no longer backs.
+                const { truncatedCellCount, truncatedColumns } = imported.truncation;
+                const truncationNote =
+                  truncatedCellCount > 0
+                    ? `Note: ${String(truncatedCellCount)} cell(s) in column(s) [${truncatedColumns.join(', ')}] exceeded the per-cell length cap and were truncated on import.`
+                    : 'No cells were truncated on import.';
+                textBlocks.push(
+                  `\n\n[dataset-imported: ${label}]\ndataset_id=${imported.result.datasetId}, rows=${String(imported.result.rowCount)}. ` +
+                    `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with this dataset_id to filter/aggregate this data — do not ask the user to re-paste it. ${truncationNote}\n[/dataset-imported]`,
+                );
+                continue;
+              }
+              console.warn(
+                `[harness-orchestrator] ingestAttachments: CSV dataset import failed for ${label} — ${imported.reason}`,
+              );
+              // Fall through to the plain-text path below so the CSV's raw
+              // text (even if capped) still reaches the model rather than
+              // vanishing silently.
+            }
+          }
           const result = await extractAttachmentText(
             fetched.bytes,
-            fetched.contentType ?? c.contentType,
-            fetchedFileName ?? c.fileName,
+            contentType,
+            attachmentFileName,
           );
           if (!result.ok) continue;
-          const label = c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
-          blocks.push(
+          textBlocks.push(
             `\n\n[attachment-content: ${label}]\n${result.text}\n[/attachment-content]`,
           );
         } catch (err) {
@@ -4259,22 +5391,50 @@ export class Orchestrator {
           );
         }
       }
-      return blocks.join('');
+      return {
+        text: textBlocks.join(''),
+        images,
+        skippedVisionImageCount,
+        rejectedImageReasons,
+      };
     } catch (err) {
       console.warn(
         `[harness-orchestrator] ingestAttachments failed (non-fatal) — ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      return '';
+      return empty;
     }
+  }
+
+  /**
+   * Issue #474 — true when a plugin-contributed native tool may be exposed
+   * to / invoked by the orchestrator. Kernel-internal registrations (no
+   * `agentId`) are always available; a plugin-owned one is gated on
+   * `isPluginToolsReady`, which defaults to "ready" when the gate was never
+   * wired (byte-identical pre-#474 behaviour).
+   */
+  private isToolAvailable(agentId: string | undefined): boolean {
+    if (agentId === undefined) return true;
+    if (!this.isPluginToolsReady) return true;
+    return this.isPluginToolsReady(agentId);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildToolsList(): any[] {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tools: any[] = [{ type: MEMORY_TOOL_TYPE, name: MEMORY_TOOL_NAME }];
+    const tools: any[] = [];
+    // Issue #474 (review round 10) — the hardcoded `memory` tool spec used
+    // to be pushed unconditionally, bypassing the readiness gate applied to
+    // every other plugin-contributed tool below. Mirror `isToolAvailable`'s
+    // `dispatchToolInner` check: gate on the `agentId` of whichever plugin
+    // (if any) registered `memory` via `ctx.tools.registerHandler('memory')`.
+    const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
+    if (this.isToolAvailable(memoryAgentId)) {
+      tools.push({ type: MEMORY_TOOL_TYPE, name: MEMORY_TOOL_NAME });
+    }
     if (this.knowledgeGraphTool) tools.push(knowledgeGraphToolSpec);
+    if (this.queryDatasetTool) tools.push(queryDatasetToolSpec);
     // Diagrams + enrich_company tool specs come from nativeTools registry (plugin-contributed).
     if (this.chatParticipantsTool) tools.push(chatParticipantsToolSpec);
     if (this.askUserChoiceTool) tools.push(askUserChoiceToolSpec);
@@ -4285,13 +5445,24 @@ export class Orchestrator {
     // Plugin-contributed native tools (registered via ctx.tools.register).
     // Live-ingested: activating a tool-kind plugin makes its spec appear on
     // the next iteration without requiring an orchestrator rebuild.
+    // Issue #474 — a plugin that hasn't finished its own connection/auth
+    // setup is excluded here so the orchestrator never offers a tool it
+    // knows will fail, instead of discovering that via a wasted round-trip.
     for (const entry of this.nativeTools.listWithHandler()) {
-      if (entry.spec) tools.push(entry.spec);
+      if (entry.spec && this.isToolAvailable(entry.agentId)) {
+        tools.push(entry.spec);
+      }
     }
     // DomainTools dynamically from the map — so hot-registered uploaded
     // agents become visible from the next iteration without reboot.
+    // Issue #474 — same gate as the native-tools loop above: a domain tool
+    // whose owning plugin hasn't completed its connection/auth setup must
+    // not be offered either, otherwise the model discovers the missing
+    // access via a failing dispatch instead of the tool being absent.
     for (const tool of this.domainToolsByName.values()) {
-      tools.push(tool.spec);
+      if (this.isToolAvailable(tool.agentId)) {
+        tools.push(tool.spec);
+      }
     }
     // Privacy-Shield v4 — verb + render tools, offered only when the v4
     // data-plane boundary is active for this turn.

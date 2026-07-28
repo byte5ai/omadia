@@ -311,7 +311,7 @@ export function PageForm({
         <InlineSlotEditor
           draftId={draftId}
           slotKey={componentSlotKey}
-          initialValue={slots[componentSlotKey] ?? defaultReactSsrStub(route.id)}
+          initialValue={slots[componentSlotKey] ?? defaultReactSsrStub(route.id, t)}
           label={t('componentSlot.label')}
           hint={t('componentSlot.hint')}
         />
@@ -379,7 +379,12 @@ interface ItemTemplateEditorProps {
   onPatch: (patches: JsonPatch[]) => void;
 }
 
-function defaultReactSsrStub(routeId: string): string {
+// Minimal translator signature (messages/README.md "Helper functions that
+// need to translate") — keeps the stub builders unit-testable with a fake
+// translator instead of coupling them to React hook rules.
+type TFn = (key: string, values?: Record<string, string | number>) => string;
+
+function defaultReactSsrStub(routeId: string, t: TFn): string {
   const componentName = pascalize(routeId);
   // B.13 — the root element MUST carry `data-omadia-page="<routeId>"` so
   // the client-side hydration script can locate the mount node. If
@@ -396,7 +401,7 @@ export default function ${componentName}Page({ data, fetchError }: PageProps) {
     return (
       <main data-omadia-page="${routeId}" className="max-w-3xl mx-auto p-6">
         <div className="rounded-md border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
-          Daten konnten nicht gelesen werden: {fetchError}
+          ${t('stub.fetchErrorPrefix')} {fetchError}
         </div>
       </main>
     );
@@ -405,7 +410,7 @@ export default function ${componentName}Page({ data, fetchError }: PageProps) {
   if (items.length === 0) {
     return (
       <main data-omadia-page="${routeId}" className="max-w-3xl mx-auto p-6 text-center text-[color:var(--fg-muted)]">
-        Keine Daten.
+        ${t('stub.noData')}
       </main>
     );
   }

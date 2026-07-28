@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 
@@ -28,13 +29,6 @@ const KINDS: readonly MemorableKind[] = [
   'reference',
 ];
 
-const KIND_LABELS: Record<MemorableKind, string> = {
-  decision: 'Entscheidung',
-  insight: 'Erkenntnis',
-  preference: 'Präferenz',
-  reference: 'Referenz',
-};
-
 const KIND_BADGE: Record<MemorableKind, string> = {
   decision:
     'bg-[color:var(--accent)]/10 text-[color:var(--accent)]',
@@ -55,19 +49,14 @@ const ACTION_BADGE: Record<MemorableAclAction, string> = {
   edit_excerpt: 'bg-[color:var(--accent)]/20 text-[color:var(--accent)]',
 };
 
-const ACTION_LABELS: Record<MemorableAclAction, string> = {
-  create: 'angelegt',
-  expand: 'Owner ergänzt',
-  shrink: 'Owner entfernt',
-  delete: 'gelöscht',
-  edit: 'bearbeitet',
-  edit_excerpt: 'Excerpt bearbeitet',
-};
-
-const SOURCE_LABELS: Record<ExcerptSource, string> = {
-  llm: 'LLM-extrahiert',
-  hint: 'Hint-übernommen',
-  fallback: 'Fallback',
+/** Stable translation-key suffixes per audit action (`memories.detail.actions.*`). */
+const ACTION_KEYS: Record<MemorableAclAction, string> = {
+  create: 'create',
+  expand: 'expand',
+  shrink: 'shrink',
+  delete: 'delete',
+  edit: 'edit',
+  edit_excerpt: 'editExcerpt',
 };
 
 const SOURCE_BADGE: Record<ExcerptSource, string> = {
@@ -90,6 +79,7 @@ const SOURCE_BADGE: Record<ExcerptSource, string> = {
  * just surfaces the API's error code without trying to mask it.
  */
 export default function MemoryDetailPage(): React.ReactElement {
+  const t = useTranslations('memories');
   const params = useParams<{ id: string }>();
   const rawId = params?.id ?? '';
   const id = useMemo(() => decodeURIComponent(rawId), [rawId]);
@@ -230,7 +220,7 @@ export default function MemoryDetailPage(): React.ReactElement {
     if (!node) return;
     const trimmedSummary = summary.trim();
     if (trimmedSummary.length === 0) {
-      setMutationError('Zusammenfassung darf nicht leer sein.');
+      setMutationError(t('detail.summaryRequired'));
       return;
     }
     setBusy(true);
@@ -263,15 +253,11 @@ export default function MemoryDetailPage(): React.ReactElement {
     } finally {
       setBusy(false);
     }
-  }, [id, node, kind, summary, rationale, reason, loadAudit]);
+  }, [id, node, kind, summary, rationale, reason, loadAudit, t]);
 
   const discard = useCallback(async (): Promise<void> => {
     if (!node) return;
-    if (
-      !window.confirm(
-        'Memory wirklich löschen? Audit-Trail bleibt, aber das Item verschwindet aus /memories.',
-      )
-    ) {
+    if (!window.confirm(t('detail.deleteConfirm'))) {
       return;
     }
     setBusy(true);
@@ -283,7 +269,7 @@ export default function MemoryDetailPage(): React.ReactElement {
       setMutationError(err instanceof Error ? err.message : String(err));
       setBusy(false);
     }
-  }, [id, node, reason, router]);
+  }, [id, node, reason, router, t]);
 
   const startEdit = useCallback((): void => {
     setMutationError(null);
@@ -317,13 +303,15 @@ export default function MemoryDetailPage(): React.ReactElement {
 
       <section className="min-h-0 flex-1 overflow-y-auto bg-[color:var(--bg-soft)] px-6 py-4">
         {loading && (
-          <div className="text-xs text-[color:var(--fg-muted)]">lädt…</div>
+          <div className="text-xs text-[color:var(--fg-muted)]">
+            {t('detail.loading')}
+          </div>
         )}
         {loadError !== null && (
           <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
             {loadError === 'memory.not_found'
-              ? 'Memory nicht gefunden oder du bist kein Owner.'
-              : `Fehler: ${loadError}`}
+              ? t('detail.notFound')
+              : t('detail.errorPrefix', { error: loadError })}
           </div>
         )}
 
@@ -351,7 +339,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                         disabled={busy}
                         className="sr-only"
                       />
-                      {KIND_LABELS[k]}
+                      {t(`kinds.${k}`)}
                     </label>
                   ))}
                 </div>
@@ -362,7 +350,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                     KIND_BADGE[node.props.kind],
                   ].join(' ')}
                 >
-                  {KIND_LABELS[node.props.kind]}
+                  {t(`kinds.${node.props.kind}`)}
                 </span>
               )}
               <time
@@ -375,7 +363,7 @@ export default function MemoryDetailPage(): React.ReactElement {
 
             <div className="mb-4">
               <label className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
-                Zusammenfassung
+                {t('detail.summaryLabel')}
               </label>
               {editing ? (
                 <textarea
@@ -395,7 +383,7 @@ export default function MemoryDetailPage(): React.ReactElement {
 
             <div className="mb-4">
               <label className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
-                Begründung
+                {t('detail.rationaleLabel')}
               </label>
               {editing ? (
                 <textarea
@@ -412,14 +400,16 @@ export default function MemoryDetailPage(): React.ReactElement {
                   {node.props.rationale}
                 </p>
               ) : (
-                <p className="text-xs text-[color:var(--fg-subtle)]">— keine —</p>
+                <p className="text-xs text-[color:var(--fg-subtle)]">
+                  {t('detail.noRationale')}
+                </p>
               )}
             </div>
 
             {editing && (
               <div className="mb-4">
                 <label className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
-                  Grund für die Änderung (optional, im Audit-Log)
+                  {t('detail.reasonLabel')}
                 </label>
                 <input
                   type="text"
@@ -451,7 +441,7 @@ export default function MemoryDetailPage(): React.ReactElement {
 
             {mutationError !== null && (
               <div className="mb-3 border-l-2 border-[color:var(--danger-edge)] px-2 py-1 text-xs text-[color:var(--danger)]">
-                Fehler: {mutationError}
+                {t('detail.errorPrefix', { error: mutationError })}
               </div>
             )}
 
@@ -464,7 +454,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                     onClick={cancelEdit}
                     disabled={busy}
                   >
-                    Abbrechen
+                    {t('detail.cancel')}
                   </Button>
                   <Button
                     variant="primary"
@@ -472,9 +462,9 @@ export default function MemoryDetailPage(): React.ReactElement {
                     onClick={() => void save()}
                     disabled={busy || summary.trim().length === 0}
                     busy={busy}
-                    busyLabel="speichert…"
+                    busyLabel={t('detail.saving')}
                   >
-                    Speichern
+                    {t('detail.save')}
                   </Button>
                 </>
               ) : (
@@ -485,7 +475,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                     onClick={() => void discard()}
                     disabled={busy}
                   >
-                    Löschen
+                    {t('detail.delete')}
                   </Button>
                   <Button
                     variant="primary"
@@ -493,7 +483,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                     onClick={startEdit}
                     disabled={busy}
                   >
-                    Bearbeiten
+                    {t('detail.edit')}
                   </Button>
                 </>
               )}
@@ -503,29 +493,28 @@ export default function MemoryDetailPage(): React.ReactElement {
 
         {!loading && node !== null && (
           <section
-            aria-label="Quellen-Snippets"
+            aria-label={t('detail.excerptsHeading')}
             className="mx-auto mt-4 max-w-2xl rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4 shadow-sm"
           >
             <header className="mb-3 flex items-center justify-between">
               <div>
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-                  Quellen-Snippets
+                  {t('detail.excerptsHeading')}
                 </h2>
                 <p className="mt-0.5 text-[10px] text-[color:var(--fg-muted)]">
-                  Verbatim aus dem ursprünglichen Turn — Provenance-Anker für die Memory.
+                  {t('detail.excerptsSubtitle')}
                 </p>
               </div>
             </header>
 
             {excerptsError !== null && (
               <div className="mb-2 border-l-2 border-[color:var(--danger-edge)] px-2 py-1 text-xs text-[color:var(--danger)]">
-                Snippets nicht lesbar: {excerptsError}
+                {t('detail.excerptsUnreadable', { error: excerptsError })}
               </div>
             )}
             {excerpts !== null && excerpts.length === 0 && excerptsError === null && (
               <p className="text-xs italic text-[color:var(--fg-muted)]">
-                Keine Quellen-Snippets — Memory wurde vor Slice 6.5 gespeichert oder
-                der Extractor lieferte keine Excerpts.
+                {t('detail.excerptsEmpty')}
               </p>
             )}
             {excerpts !== null && excerpts.length > 0 && (
@@ -549,7 +538,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                               SOURCE_BADGE[ex.props.source],
                             ].join(' ')}
                           >
-                            {SOURCE_LABELS[ex.props.source]}
+                            {t(`detail.sources.${ex.props.source}`)}
                           </span>
                         </div>
                         {!isEditing && (
@@ -559,9 +548,11 @@ export default function MemoryDetailPage(): React.ReactElement {
                               size="sm"
                               onClick={() => void copyExcerpt(ex)}
                               className="px-2 py-0.5 text-[10px] text-[color:var(--fg-muted)]"
-                              title="Snippet in die Zwischenablage kopieren"
+                              title={t('detail.excerptCopyTitle')}
                             >
-                              {justCopied ? '✓ kopiert' : 'kopieren'}
+                              {justCopied
+                                ? t('detail.excerptCopied')
+                                : t('detail.excerptCopy')}
                             </Button>
                             <Button
                               variant="secondary"
@@ -569,7 +560,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                               onClick={() => startExcerptEdit(ex)}
                               className="px-2 py-0.5 text-[10px] text-[color:var(--fg-muted)]"
                             >
-                              bearbeiten
+                              {t('detail.excerptEdit')}
                             </Button>
                           </div>
                         )}
@@ -587,7 +578,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                           />
                           <div className="flex flex-wrap items-center gap-2">
                             <label className="text-[10px] uppercase tracking-wider text-[color:var(--fg-muted)]">
-                              Quelle:
+                              {t('detail.sourceLabel')}
                             </label>
                             {(['llm', 'hint', 'fallback'] as const).map((s) => (
                               <label
@@ -608,7 +599,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                                   disabled={excerptBusy}
                                   className="sr-only"
                                 />
-                                {SOURCE_LABELS[s]}
+                                {t(`detail.sources.${s}`)}
                               </label>
                             ))}
                             <div className="ml-auto flex gap-1">
@@ -619,7 +610,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                                 disabled={excerptBusy}
                                 className="px-2 py-0.5 text-[10px]"
                               >
-                                Abbrechen
+                                {t('detail.cancel')}
                               </Button>
                               <Button
                                 variant="primary"
@@ -629,10 +620,10 @@ export default function MemoryDetailPage(): React.ReactElement {
                                   excerptBusy || excerptDraft.trim().length === 0
                                 }
                                 busy={excerptBusy}
-                                busyLabel="speichert…"
+                                busyLabel={t('detail.saving')}
                                 className="px-2 py-0.5 text-[10px]"
                               >
-                                Speichern
+                                {t('detail.save')}
                               </Button>
                             </div>
                           </div>
@@ -649,7 +640,7 @@ export default function MemoryDetailPage(): React.ReactElement {
             )}
             {copiedPos === -1 && (
               <p className="mt-2 text-[10px] italic text-[color:var(--warning)]">
-                Kopieren fehlgeschlagen (Browser blockiert Clipboard).
+                {t('detail.copyFailed')}
               </p>
             )}
           </section>
@@ -657,12 +648,12 @@ export default function MemoryDetailPage(): React.ReactElement {
 
         {!loading && node !== null && (
           <section
-            aria-label="Audit-Verlauf"
+            aria-label={t('detail.auditAriaLabel')}
             className="mx-auto mt-4 max-w-2xl rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4 shadow-sm"
           >
             <header className="mb-3 flex items-center justify-between">
               <h2 className="text-xs font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
-                Verlauf
+                {t('detail.auditHeading')}
               </h2>
               <button
                 type="button"
@@ -670,18 +661,18 @@ export default function MemoryDetailPage(): React.ReactElement {
                 disabled={auditLoading}
                 className="text-[10px] text-[color:var(--fg-muted)] underline-offset-2 hover:text-[color:var(--fg-strong)] hover:underline disabled:opacity-50"
               >
-                {auditLoading ? 'lädt…' : 'aktualisieren'}
+                {auditLoading ? t('detail.loading') : t('detail.refresh')}
               </button>
             </header>
 
             {auditError !== null && (
               <div className="mb-2 border-l-2 border-[color:var(--danger-edge)] px-2 py-1 text-xs text-[color:var(--danger)]">
-                Verlauf nicht lesbar: {auditError}
+                {t('detail.auditUnreadable', { error: auditError })}
               </div>
             )}
             {audit !== null && audit.length === 0 && auditError === null && (
               <p className="text-xs italic text-[color:var(--fg-muted)]">
-                Keine Audit-Einträge.
+                {t('detail.auditEmpty')}
               </p>
             )}
             {audit !== null && audit.length > 0 && (
@@ -703,7 +694,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                             ACTION_BADGE[e.action],
                           ].join(' ')}
                         >
-                          {ACTION_LABELS[e.action]}
+                          {t(`detail.actions.${ACTION_KEYS[e.action]}`)}
                         </span>
                         <time
                           dateTime={e.createdAt}
@@ -745,7 +736,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                       )}
                       {e.reason !== undefined && e.reason.length > 0 && (
                         <p className="mt-1 text-xs italic text-[color:var(--fg-muted)]">
-                          „{e.reason}“
+                          {t('detail.reasonQuoted', { reason: e.reason })}
                         </p>
                       )}
                     </li>

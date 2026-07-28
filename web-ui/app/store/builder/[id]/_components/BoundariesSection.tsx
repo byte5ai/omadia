@@ -7,7 +7,6 @@ import { Button } from '@/app/_components/ui/Button';
 
 import { setQualityConfig } from '../../../../_lib/api';
 import {
-  BOUNDARY_CATEGORY_LABELS_DE,
   BOUNDARY_PRESETS,
   type BoundaryCategory,
   findUnknownBoundaryPresets,
@@ -130,7 +129,7 @@ export function BoundariesSection({
       {CATEGORY_ORDER.map((cat) => (
         <div key={cat} className="space-y-1">
           <div className="text-xs font-medium uppercase tracking-wider text-[color:var(--fg-muted)]">
-            {BOUNDARY_CATEGORY_LABELS_DE[cat]}
+            {t(`categories.${cat}`)}
           </div>
           <div className="grid grid-cols-1 gap-1 md:grid-cols-2">
             {presetsByCategory[cat]?.map((p) => {
@@ -147,7 +146,7 @@ export function BoundariesSection({
                     onChange={(e) => handleToggle(p.id, e.target.checked)}
                     disabled={disabled || pending}
                   />
-                  <span>{p.labelDe}</span>
+                  <span>{t(`presets.${p.labelKey}`)}</span>
                 </label>
               );
             })}

@@ -249,6 +249,18 @@ export interface PreviewPluginContext {
    *  declare the permission fails preview the same way it would fail install —
    *  no false "works in preview" signal. */
   readonly llm?: PreviewLlmAccessor;
+  /** Epic #459 W5 (issue #458) — deterministic ctx.mcp preview stub, always
+   *  present so MCP-using plugins do not crash in the Builder preview (the
+   *  ctx.jobs/ctx.status crash class). No external connections. */
+  readonly mcp?: {
+    listServers(): Promise<readonly string[]>;
+    listTools(serverId: string): Promise<readonly never[]>;
+    callTool(
+      serverId: string,
+      toolName: string,
+      args: Record<string, unknown>,
+    ): Promise<string>;
+  };
   readonly smokeMode: boolean;
   log(...args: unknown[]): void;
 }
@@ -937,6 +949,17 @@ function createStubContext(opts: {
     // kernel's optional `ctx.http`.
     ...(opts.http ? { http: opts.http } : {}),
     ...(opts.llm ? { llm: opts.llm } : {}),
+    // Epic #459 W5 (issue #458) — ctx.mcp preview stub. Always present in
+    // preview (unlike the kernel, which gates on permissions.mcp): the same
+    // crash class that once hit ctx.jobs/ctx.status (documented above) would
+    // otherwise return for MCP-using plugins. Deterministic no-op behavior —
+    // no external connections from the Builder preview sandbox.
+    mcp: {
+      listServers: async (): Promise<readonly string[]> => [],
+      listTools: async (): Promise<readonly never[]> => [],
+      callTool: async (_serverId: string, toolName: string): Promise<string> =>
+        `Error: MCP tool "${toolName}" is not available in the Builder preview. Install the plugin and grant it a server to test real calls.`,
+    },
     smokeMode: opts.smokeMode,
     log: opts.logger,
   };

@@ -32,6 +32,7 @@ export function ToolBulkImportModal({
   onImport,
 }: ToolBulkImportModalProps): React.ReactElement {
   const t = useTranslations('builder.tools.bulkImport');
+  const tValidation = useTranslations('builder.tools.validation');
   const [tab, setTab] = useState<'openapi' | 'jsonschema'>('openapi');
   const [text, setText] = useState<string>('');
   const [pending, setPending] = useState<boolean>(false);
@@ -55,8 +56,10 @@ export function ToolBulkImportModal({
         ],
       };
     }
-    return tab === 'openapi' ? mapOpenAPI(parsed) : mapJsonSchemaArray(parsed);
-  }, [tab, text, t]);
+    return tab === 'openapi'
+      ? mapOpenAPI(parsed, tValidation)
+      : mapJsonSchemaArray(parsed, tValidation);
+  }, [tab, text, t, tValidation]);
 
   const collisions: ReadonlyArray<string> = useMemo(() => {
     if (!result) return [];
