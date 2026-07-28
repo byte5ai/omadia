@@ -11,6 +11,7 @@ import { runGraphMigrations } from './migrator.js';
 import {
   allowsVectorWrites,
   evaluateEmbeddingModelGate,
+  type EmbeddingModelGateOutcome,
 } from './embeddingModelGate.js';
 import {
   startEmbeddingBackfill,
@@ -175,24 +176,53 @@ export async function activate(
   await runGraphMigrations(graphPool, (msg) => { console.log(msg); });
 
   // #440 — dimension/model gate. An embedding provider that disagrees with
-  // the corpus recorded in `graph_embedding_model` must not write vectors:
-  // mixing two models in one cosine space is silent recall rot, not an error
-  // anyone would see. When the gate blocks, we simply proceed as if no
-  // embedding client were resolved — ingest stores NULL embeddings, the
-  // retriever falls back to FTS, the backfill stays disarmed. Same shape as
-  // the long-standing no-Ollama degradation, so nothing else needs to know.
-  const gateOutcome = await evaluateEmbeddingModelGate({
-    pool: graphPool,
-    tenantId,
-    provider: readEmbeddingProviderMetadata(resolvedEmbeddingClient),
-    log: (msg) => { console.error(msg); },
-  });
-  const embeddingClient = allowsVectorWrites(gateOutcome)
+  // the vector columns (declared width) or with the corpus recorded in
+  // `graph_embedding_model` must not write vectors: mixing two models in one
+  // cosine space is silent recall rot, not an error anyone would see. When
+  // the gate blocks we proceed as if no embedding client were resolved —
+  // graph ingest and process writes store NULL embeddings and the backfill
+  // stays disarmed. Same shape as the long-standing no-Ollama degradation.
+  //
+  // The gate governs THIS plugin's vector writes, not the whole system:
+  // contextRetriever / inconsistencyDetector / mergeCandidateDetector /
+  // topicDetector resolve `embeddingClient` from the registry themselves and
+  // keep calling it. Their vector queries then fail inside the try/catch each
+  // of them already has, so recall is FTS-only in effect — at the cost of one
+  // wasted embed call plus an error log per attempt.
+  //
+  // A gate FAILURE (unreachable catalog, migration race, …) must not take
+  // knowledge-graph activation down with it: the kernel treats knowledgeGraph
+  // as a required service, so a throw here would crash-loop the middleware.
+  // Degrade to the safe path instead — no embeddings is recoverable, a boot
+  // loop is not.
+  let gateOutcome: EmbeddingModelGateOutcome;
+  try {
+    gateOutcome = await evaluateEmbeddingModelGate({
+      pool: graphPool,
+      tenantId,
+      provider: readEmbeddingProviderMetadata(resolvedEmbeddingClient),
+      log: (msg) => { console.error(msg); },
+    });
+  } catch (err) {
+    console.error(
+      `[graph-embedding-gate] gate evaluation failed: ${err instanceof Error ? err.message : String(err)} — refusing vector writes for this boot`,
+    );
+    gateOutcome = {
+      status: 'blocked',
+      reason: 'dimension-mismatch',
+      modelId: '(gate evaluation failed)',
+      dimensions: 0,
+      storedModelId: '(unknown)',
+      storedDimensions: 0,
+    };
+  }
+  const vectorWritesAllowed = allowsVectorWrites(gateOutcome);
+  const embeddingClient = vectorWritesAllowed
     ? resolvedEmbeddingClient
     : undefined;
-  if (!allowsVectorWrites(gateOutcome)) {
+  if (!vectorWritesAllowed) {
     ctx.log(
-      '[harness-knowledge-graph-neon] embedding provider rejected by the model/dimension gate — running FTS-only until the provider or the vector column is migrated',
+      '[harness-knowledge-graph-neon] embedding provider rejected by the model/dimension gate — knowledge-graph vector writes disabled until the provider or the vector columns are migrated',
     );
   }
 
@@ -260,10 +290,15 @@ export async function activate(
       // join the rotation so curated memory becomes recall-ready
       // automatically without a second sweep process.
       nodeTypes: ['Turn', 'MemorableKnowledge', 'PalaiaExcerpt'],
+      // #440 — `processes.embedding` is the second governed cosine space, and
+      // the sweep is also what finishes a stale-vector clear the gate capped
+      // at activation time.
+      includeProcesses: true,
+      resumeStaleVectorClear: true,
       log: (msg) => { console.error(msg); },
     });
     console.error(
-      `[graph-embedding-backfill] scheduler armed interval=${String(intervalMinutes)}min batch=${String(batchSize)} maxAttempts=${String(maxAttempts)} types=[Turn,MemorableKnowledge,PalaiaExcerpt]`,
+      `[graph-embedding-backfill] scheduler armed interval=${String(intervalMinutes)}min batch=${String(batchSize)} maxAttempts=${String(maxAttempts)} types=[Turn,MemorableKnowledge,PalaiaExcerpt,+processes]`,
     );
   }
 

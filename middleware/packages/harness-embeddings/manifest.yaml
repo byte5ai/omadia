@@ -63,9 +63,8 @@ setup:
     - key: "embedding_dimensions"
       type: "integer"
       label: "Vektor-Dimensionen des Modells"
-      help: "Wird als Provider-Metadatum veröffentlicht; der Knowledge-Graph vergleicht es mit dem Modell, mit dem der bestehende Korpus embedded wurde (#440). Default 768 = nomic-embed-text. Bei anderem Modell zwingend anpassen."
+      help: "Wird als Provider-Metadatum veröffentlicht; der Knowledge-Graph vergleicht es mit dem Modell, mit dem der bestehende Korpus embedded wurde (#440). Bewusst OHNE Default: für bekannte Modelle (nomic-embed-text 768, mxbai-embed-large 1024, bge-m3 1024, all-minilm 384) wird der Wert aus dem Modell abgeleitet. Nur bei einem unbekannten Modell nötig — fehlt er dort, published das Plugin den Client ohne Metadaten und das Gate lässt Writes wie vor #440 unverändert zu. Widerspricht der Wert dem bekannten Modell, published das Plugin gar nichts."
       required: false
-      default: 768
     - key: "max_concurrent"
       type: "integer"
       label: "Max. parallele Embeddings"

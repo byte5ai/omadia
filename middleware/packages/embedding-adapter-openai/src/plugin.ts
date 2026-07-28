@@ -28,7 +28,8 @@ import {
  * Config (`ctx.config`, from manifest `setup.fields`):
  *   - `base_url`   default https://api.openai.com
  *   - `model`      default text-embedding-3-small
- *   - `dimensions` default derived from the model when known
+ *   - `dimensions` NO default — derived from the known-model table, and only
+ *     required for a model we do not know. See below.
  *   - `timeout_ms` default 30000
  *   - `max_concurrent` default 4 (0 disables the limiter)
  * Secret (`ctx.secrets`, Vault-backed — never plugin config):
@@ -37,6 +38,14 @@ import {
  * Without an api_key the plugin activates but publishes nothing, mirroring
  * the Ollama adapter's empty-base-url path: consumers degrade to their
  * no-embedding paths instead of the boot failing.
+ *
+ * Dimensions are never guessed. `dimensions` carries no manifest default on
+ * purpose: bootstrap seeds non-secret manifest defaults into install config,
+ * so a default would have followed the operator into every install and
+ * silently contradicted whatever model they picked — the exact "publishes a
+ * number nobody confirmed" failure the KG gate cannot defend against. The
+ * resolution is: known model → its width; unknown model → the operator must
+ * fill the field; both present and disagreeing → refuse to publish.
  */
 
 const EMBEDDING_CLIENT_SERVICE = 'embeddingClient';
@@ -63,10 +72,10 @@ export async function activate(
     ctx.config.get<unknown>('max_concurrent'),
     4,
   );
-  const dimensions = parsePositiveInt(
+  const configuredDimensions = parseOptionalPositiveInt(
     ctx.config.get<unknown>('dimensions'),
-    defaultDimensionsForModel(model) ?? 0,
   );
+  const knownDimensions = defaultDimensionsForModel(model);
 
   if (!apiKey) {
     ctx.log(
@@ -74,7 +83,21 @@ export async function activate(
     );
     return { close: closeNoop(ctx) };
   }
-  if (dimensions <= 0) {
+  if (
+    configuredDimensions !== undefined &&
+    knownDimensions !== undefined &&
+    configuredDimensions !== knownDimensions
+  ) {
+    // The configured model and the declared width contradict each other. One
+    // of them is wrong and we cannot tell which, so publishing either would
+    // be publishing an unconfirmed number.
+    ctx.log(
+      `[embedding-adapter-openai] '${model}' emits ${String(knownDimensions)}-dimensional vectors but 'dimensions' is set to ${String(configuredDimensions)} — refusing to publish a vector size that contradicts the model; fix one of the two`,
+    );
+    return { close: closeNoop(ctx) };
+  }
+  const dimensions = knownDimensions ?? configuredDimensions;
+  if (dimensions === undefined) {
     // Refusing here beats publishing a client with unknown dimensions: the KG
     // gate would have nothing to compare and could not protect the corpus.
     ctx.log(
@@ -111,6 +134,19 @@ function closeNoop(ctx: PluginContext): () => Promise<void> {
   return async (): Promise<void> => {
     ctx.log('[embedding-adapter-openai] deactivating (no client was built)');
   };
+}
+
+/** `undefined` when the field is absent or not a positive integer — the
+ *  caller must not substitute a guess. */
+function parseOptionalPositiveInt(raw: unknown): number | undefined {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    return Math.floor(raw);
+  }
+  if (typeof raw === 'string' && raw.trim().length > 0) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return undefined;
 }
 
 function parsePositiveInt(raw: unknown, fallback: number): number {

@@ -1,4 +1,7 @@
-import { EmbeddingError, type EmbeddingProvider } from '@omadia/plugin-api';
+import {
+  EmbeddingError,
+  type EmbeddingClient,
+} from '@omadia/plugin-api';
 import { fetch as undiciFetch } from 'undici';
 
 /**
@@ -20,6 +23,55 @@ export const OLLAMA_MODEL_ID_PREFIX = 'ollama:';
 /** nomic-embed-text — the model the compose/Fly sidecar pulls by default. */
 export const DEFAULT_OLLAMA_EMBEDDING_DIMENSIONS = 768;
 
+/**
+ * Vector length per Ollama model, for the models we have actually verified.
+ * Used to derive the published `dimensions` so the declared width and the
+ * configured model cannot silently disagree (#440). An unknown model is not
+ * guessed — see `resolveOllamaDimensions`.
+ */
+const KNOWN_OLLAMA_MODEL_DIMENSIONS: Readonly<Record<string, number>> = {
+  'nomic-embed-text': DEFAULT_OLLAMA_EMBEDDING_DIMENSIONS,
+  'mxbai-embed-large': 1024,
+  'bge-m3': 1024,
+  'all-minilm': 384,
+};
+
+/** Strip an Ollama tag (`nomic-embed-text:v1.5`) before the table lookup. */
+function baseModelName(model: string): string {
+  const colon = model.indexOf(':');
+  return colon === -1 ? model : model.slice(0, colon);
+}
+
+export type OllamaDimensionsResolution =
+  /** Verified width — safe to publish as provider metadata. */
+  | { kind: 'resolved'; dimensions: number }
+  /** No known width and no operator-supplied one. */
+  | { kind: 'unknown' }
+  /** Operator-supplied width contradicts the model's known width. */
+  | { kind: 'conflict'; configured: number; known: number };
+
+/**
+ * Decide which vector length to publish, or refuse to publish one.
+ *
+ * The rule mirrors the OpenAI adapter: known model wins, unknown model needs
+ * the operator, and a contradiction is an error rather than a preference —
+ * a `dimensions` value nobody confirmed is exactly what the KG gate cannot
+ * protect against.
+ */
+export function resolveOllamaDimensions(
+  model: string,
+  configured: number | undefined,
+): OllamaDimensionsResolution {
+  const known = KNOWN_OLLAMA_MODEL_DIMENSIONS[baseModelName(model)];
+  if (configured !== undefined && known !== undefined && configured !== known) {
+    return { kind: 'conflict', configured, known };
+  }
+  const dimensions = known ?? configured;
+  return dimensions === undefined
+    ? { kind: 'unknown' }
+    : { kind: 'resolved', dimensions };
+}
+
 export interface EmbeddingClientOptions {
   baseUrl: string;
   /** Model name served by the sidecar. Default matches our compose/Fly pull. */
@@ -29,24 +81,26 @@ export interface EmbeddingClientOptions {
    * on a fresh Fly machine). Topic-detection is still cheap because after
    * the first call `OLLAMA_KEEP_ALIVE` keeps the model warm. */
   timeoutMs?: number;
-  /** Vector length the model emits — reported as provider metadata so the KG
-   *  dimension gate can compare it against the stored corpus. Defaults to 768
-   *  (nomic-embed-text); operators running a different model must set it. */
+  /** VERIFIED vector length the model emits — published as provider metadata
+   *  so the KG dimension gate can compare it against the stored corpus. Leave
+   *  `undefined` when it is not verified: the client is then published without
+   *  metadata and the gate treats the provider as "identity unknown", exactly
+   *  as it did before #440. Never pass a guess. */
   dimensions?: number;
 }
 
 export function createEmbeddingClient(
   options: EmbeddingClientOptions,
-): EmbeddingProvider {
+): EmbeddingClient {
   const base = options.baseUrl.replace(/\/+$/, '');
   const model = options.model ?? 'nomic-embed-text';
   const timeoutMs = options.timeoutMs ?? 30_000;
-  const dimensions =
-    options.dimensions ?? DEFAULT_OLLAMA_EMBEDDING_DIMENSIONS;
+  const { dimensions } = options;
 
   return {
-    modelId: `${OLLAMA_MODEL_ID_PREFIX}${model}`,
-    dimensions,
+    ...(dimensions === undefined
+      ? {}
+      : { modelId: `${OLLAMA_MODEL_ID_PREFIX}${model}`, dimensions }),
     async embed(text: string): Promise<number[]> {
       let response;
       try {

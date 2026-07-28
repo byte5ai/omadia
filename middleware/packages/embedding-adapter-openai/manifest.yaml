@@ -39,15 +39,14 @@ setup:
     - key: "model"
       type: "string"
       label: "Embedding-Modell"
-      help: "Modellname, den der Endpoint kennt. Default: text-embedding-3-small."
+      help: "Modellname, den der Endpoint kennt. Default: text-embedding-3-small. ACHTUNG: Der Knowledge-Graph legt seine Vektor-Spalten (graph_nodes.embedding, processes.embedding) als vector(768) an — passend zu nomic-embed-text. Modelle mit anderer Vektorlänge (text-embedding-3-small = 1536, -3-large = 3072, ada-002 = 1536) werden vom Dimensions-Gate blockiert, bis ein Operator die Spalten migriert (Muster: 0005_turn_embeddings_768.sql — Index droppen, Spalte droppen, in neuer Größe neu anlegen, Index neu bauen). Ohne diese Migration sind hier nur 768-dimensionale Modelle nutzbar."
       required: false
       default: "text-embedding-3-small"
     - key: "dimensions"
       type: "integer"
       label: "Vektor-Dimensionen des Modells"
-      help: "Wird als Provider-Metadatum veröffentlicht und gegen jede Antwort geprüft. Für text-embedding-3-small (1536), -3-large (3072) und ada-002 (1536) automatisch gesetzt; bei unbekanntem Modell zwingend erforderlich, sonst published das Plugin keinen Client."
+      help: "Wird als Provider-Metadatum veröffentlicht und gegen jede Antwort geprüft. Bewusst OHNE Default: für bekannte Modelle (text-embedding-3-small = 1536, -3-large = 3072, ada-002 = 1536) wird der Wert aus dem Modell abgeleitet, bei unbekanntem Modell ist das Feld zwingend erforderlich — sonst published das Plugin keinen Client. Wenn der Wert dem bekannten Modell widerspricht, published das Plugin ebenfalls nichts: eine ungeprüfte Vektorlänge ist gefährlicher als gar kein Embedding-Provider."
       required: false
-      default: 1536
     - key: "timeout_ms"
       type: "integer"
       label: "Embed-Timeout (ms)"

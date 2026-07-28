@@ -32,11 +32,16 @@ export type {
 // writes on an unrecoverable mismatch.
 export {
   allowsVectorWrites,
+  clearStaleVectors,
+  discoverGovernedVectorColumns,
   evaluateEmbeddingModelGate,
+  isStaleVectorClearPending,
 } from './embeddingModelGate.js';
 export type {
   EmbeddingModelGateOptions,
   EmbeddingModelGateOutcome,
+  GovernedVectorColumn,
+  StaleVectorClearResult,
 } from './embeddingModelGate.js';
 
 // Palaia-Phase-5 (OB-74) — Per-Agent Block/Boost-Store. Backs the

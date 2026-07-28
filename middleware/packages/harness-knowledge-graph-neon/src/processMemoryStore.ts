@@ -92,7 +92,10 @@ function vectorLiteral(v: readonly number[]): string {
 
 /** Body text for embedding + FTS — title + flattened steps joined by \n.
  *  Stable output shape so tests are deterministic. */
-function buildEmbeddingBody(title: string, steps: readonly string[]): string {
+/** Exported so the embedding backfill re-embeds processes with exactly the
+ *  same body the write path used — a different composition would silently
+ *  place re-embedded rows slightly off in the same cosine space. */
+export function buildEmbeddingBody(title: string, steps: readonly string[]): string {
   return [title, ...steps].join('\n');
 }
 

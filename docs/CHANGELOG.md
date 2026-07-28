@@ -36,27 +36,68 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   built-in catch-all bootstrap does not auto-install it — installing a second
   embedding provider stays an explicit operator act, and
   `ctx.services.provide` still throws if two ever end up active.
+- **Vector width is a hard constraint out of the box.** The knowledge graph
+  creates its vector columns as `vector(768)` (`graph_nodes.embedding` from
+  `0005_turn_embeddings_768.sql`, `processes.embedding` from
+  `0009_process_memory.sql`). Until an operator migrates those columns, only
+  768-dimensional models are usable — `text-embedding-3-small` (1536),
+  `text-embedding-3-large` (3072) and `text-embedding-ada-002` (1536) are
+  refused by the gate rather than silently failing per row. The column
+  migration follows `0005_turn_embeddings_768.sql`: drop index → drop column →
+  re-add at the new size → re-create index, for every governed column.
+- Neither adapter publishes a vector size it has not confirmed. The
+  `dimensions` / `embedding_dimensions` settings carry **no manifest default**
+  any more (a default would be seeded into every install by bootstrap and
+  would contradict whatever model the operator picked). Known models resolve
+  their width from a table in the adapter; an unknown model needs the field;
+  a field that contradicts a known model makes the adapter refuse to publish.
+  The Ollama adapter keeps working unchanged for an unknown model — it then
+  publishes the client *without* provider metadata, and the gate treats the
+  provider as "identity unknown" exactly as before #440, rather than switching
+  an existing deployment to FTS-only on upgrade.
 - Migration `0030_embedding_model_registry.sql` (KG-neon chain): new
   `graph_embedding_model` table, one row per tenant, recording the model id
-  and vector size the stored embeddings were produced with.
-- Knowledge-graph activation now runs a model/dimension gate against that
-  record. Empty corpus or an unrecorded pre-#440 corpus of matching size →
-  the active model is recorded. Same dimensions, different model → stored
-  vectors are set to NULL (attempt counters reset) and the existing
-  `embeddingBackfill` sweep re-embeds them. Different dimensions → vector
-  writes are refused for the boot with a log line naming stored vs active
-  model, and the graph degrades to FTS-only instead of mixing two models in
-  one cosine space; recovering requires a column migration in the style of
-  `0005_turn_embeddings_768.sql` (drop index → drop column → re-add at the
-  new size → re-create index).
+  and vector size the stored embeddings were produced with, plus a
+  `clear_pending` flag that makes a model switch resumable.
+- Knowledge-graph activation now runs a model/dimension gate. It reads the
+  **declared** width of every `vector` column on a tenant-scoped table from
+  the catalog (`pg_attribute` / `format_type`), not from sampled rows, so an
+  empty corpus is checked exactly like a full one. Outcomes: column width ≠
+  provider width → vector writes refused for the boot; empty or unrecorded
+  corpus of matching width → the active model is recorded; same width,
+  different model → every governed vector column is cleared in bounded
+  batches (attempt counters reset) and the `embeddingBackfill` sweep
+  re-embeds, finishing any clear the activation capped; recorded width ≠
+  provider width → refused. Vector columns are discovered rather than
+  hard-coded, so a future migration adding one is covered by the width check.
+- `processes.embedding` is now governed too. It is a second cosine space used
+  for the write-path dedup pre-check and for hybrid process recall; before
+  this it was neither cleared on a model switch nor re-embeddable, so a
+  same-width provider swap corrupted process recall permanently. The backfill
+  sweep gained a process pass (retries capped in memory — `processes` has no
+  attempt column, and the condition is transient).
+- **What the gate does and does not cover.** It governs the knowledge-graph
+  plugin's own embedding client: all vector writes into `graph_nodes` and
+  `processes`, plus the backfill sweep. It does not withdraw the
+  `embeddingClient@1` capability from the service registry, so
+  `contextRetriever`, `inconsistencyDetector`, `mergeCandidateDetector` and
+  `topicDetector` keep resolving and calling the provider on a blocked boot.
+  Their vector queries then fail inside the try/catch each already has, so
+  recall is FTS-only in effect — at the cost of one wasted embed call and one
+  error log per attempt. Withdrawing a published capability centrally would
+  need a kernel-side revoke hook that does not exist yet.
+- Activation is not allowed to stall or crash on the gate. The vector clear
+  runs in bounded batches, each in its own transaction with a
+  `statement_timeout`, capped per activation; the remainder is finished by
+  the backfill sweep. A gate failure degrades to the safe path (no embeddings,
+  FTS-only) instead of throwing out of `activate()` — the kernel treats
+  `knowledgeGraph` as a required service, so a throw there is a boot loop.
 - The `/health` KG snapshot no longer equates "embeddings configured" with
   "Ollama base URL set" — an active alternative provider counts as well.
 - Unchanged for existing deployments: `bootstrapEmbeddingsFromEnv()` still
   seeds only the Ollama adapter from `OLLAMA_BASE_URL` /
   `OLLAMA_EMBEDDING_MODEL`, and a deployment with no embedding provider still
-  boots into the FTS-only path. The Ollama adapter gained one optional
-  setting, `embedding_dimensions` (default 768, nomic-embed-text) — operators
-  running a different Ollama model must set it so the gate can do its job.
+  boots into the FTS-only path.
 
 ### Added — structured dataset ingestion (CSV import) for the Knowledge Graph (#430)
 

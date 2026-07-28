@@ -27,10 +27,14 @@ export type {
 } from '@omadia/plugin-api';
 export { EmbeddingError, withConcurrencyLimit } from '@omadia/plugin-api';
 
-export type { EmbeddingClientOptions } from './embeddingClient.js';
+export type {
+  EmbeddingClientOptions,
+  OllamaDimensionsResolution,
+} from './embeddingClient.js';
 export {
   DEFAULT_OLLAMA_EMBEDDING_DIMENSIONS,
   OLLAMA_MODEL_ID_PREFIX,
   cosineSimilarity,
   createEmbeddingClient,
+  resolveOllamaDimensions,
 } from './embeddingClient.js';
