@@ -161,6 +161,150 @@ describe('UiRouteCatalog — nav entries', () => {
     });
   });
 
+  describe('hostile label objects', () => {
+    it('rejects __proto__ as a locale key', () => {
+      const cat = new UiRouteCatalog();
+      // Reaches Object.entries as an own property when it arrives via
+      // JSON.parse, so the locale-code check is what stops it.
+      const hostile = JSON.parse('{"en":"OK","__proto__":"polluted"}') as Record<
+        string,
+        string
+      >;
+      assert.throws(
+        () => cat.registerNav('@p/x', validEntry({ label: hostile })),
+        /is not a valid locale code/,
+      );
+    });
+
+    it('does not pollute Object.prototype via a crafted label', () => {
+      const cat = new UiRouteCatalog();
+      const hostile = JSON.parse(
+        '{"en":"OK","constructor":"x","prototype":"y"}',
+      ) as Record<string, string>;
+      assert.throws(() => cat.registerNav('@p/x', validEntry({ label: hostile })));
+      assert.equal(
+        ({} as Record<string, unknown>)['polluted'],
+        undefined,
+        'Object.prototype must be untouched',
+      );
+    });
+
+    it('rejects an array in place of the label map', () => {
+      const cat = new UiRouteCatalog();
+      assert.throws(
+        () =>
+          cat.registerNav(
+            '@p/x',
+            validEntry({ label: ['en', 'Dev'] as unknown as Record<string, string> }),
+          ),
+        /object of locale to string/,
+      );
+    });
+
+    it('rejects a non-string label value', () => {
+      const cat = new UiRouteCatalog();
+      assert.throws(
+        () =>
+          cat.registerNav(
+            '@p/x',
+            validEntry({ label: { en: 42 as unknown as string } }),
+          ),
+        /non-empty string/,
+      );
+    });
+  });
+
+  describe('href canonical form', () => {
+    // The shell decides "core destinations win" by comparing href strings.
+    // Any spelling a browser resolves to a core path but that does not
+    // string-match it would slip past that rule, so only already-canonical
+    // paths are accepted.
+    const nonCanonical: readonly [string, string][] = [
+      ['/x/%2e%2e/admin', 'percent-encoded dot-segment resolving to /admin'],
+      ['/x/../admin', 'literal dot-segment'],
+      ['/admin/', 'trailing slash aliases /admin'],
+      ['/admin?source=x', 'query string'],
+      ['/admin#x', 'fragment'],
+      ['/%2f%2fevil.example', 'percent-encoded slashes'],
+      ['/admin\\x', 'backslash'],
+      ['/a//b', 'empty interior segment'],
+    ];
+
+    for (const [href, why] of nonCanonical) {
+      it(`rejects ${JSON.stringify(href)} (${why})`, () => {
+        const cat = new UiRouteCatalog();
+        assert.throws(() => cat.registerNav('@p/x', validEntry({ href })), /href/);
+      });
+    }
+
+    it('accepts the canonical spelling of a nested path', () => {
+      const cat = new UiRouteCatalog();
+      assert.doesNotThrow(() =>
+        cat.registerNav('@p/x', validEntry({ href: '/admin/dev-platform' })),
+      );
+    });
+
+    it('accepts the root path', () => {
+      const cat = new UiRouteCatalog();
+      assert.doesNotThrow(() => cat.registerNav('@p/x', validEntry({ href: '/' })));
+    });
+
+    it('rejects an over-long href', () => {
+      const cat = new UiRouteCatalog();
+      assert.throws(
+        () => cat.registerNav('@p/x', validEntry({ href: `/${'a'.repeat(300)}` })),
+        /exceeds 256 characters/,
+      );
+    });
+  });
+
+  describe('resource bounds', () => {
+    it('rejects a label map declaring absurdly many locales', () => {
+      const cat = new UiRouteCatalog();
+      const label: Record<string, string> = { en: 'OK' };
+      for (let i = 0; i < 40; i += 1) label[`l${String(i)}`] = 'x';
+      assert.throws(
+        () => cat.registerNav('@p/x', validEntry({ label })),
+        /more than 32 locales/,
+      );
+    });
+
+    it('caps how many nav entries one plugin may contribute', () => {
+      const cat = new UiRouteCatalog();
+      for (let i = 0; i < 20; i += 1) {
+        cat.registerNav(
+          '@p/greedy',
+          validEntry({ navId: `n${String(i)}`, href: `/p${String(i)}` }),
+        );
+      }
+      assert.throws(
+        () => cat.registerNav('@p/greedy', validEntry({ navId: 'n20', href: '/p20' })),
+        /at most 20 nav entries/,
+      );
+      // The cap is per plugin, not global.
+      assert.doesNotThrow(() => cat.registerNav('@p/polite', validEntry()));
+    });
+
+    it('rejects an over-long navId', () => {
+      const cat = new UiRouteCatalog();
+      assert.throws(
+        () => cat.registerNav('@p/x', validEntry({ navId: 'a'.repeat(100) })),
+        /navId/,
+      );
+    });
+  });
+
+  it('rejects zero-width characters in a label', () => {
+    // Invisible padding lets a plugin render a label that looks identical
+    // to a core entry while comparing unequal to it.
+    const cat = new UiRouteCatalog();
+    const zeroWidth = String.fromCharCode(0x200b);
+    assert.throws(
+      () => cat.registerNav('@p/x', validEntry({ label: { en: `Ad${zeroWidth}min` } })),
+      /control or bidirectional-formatting/,
+    );
+  });
+
   describe('field validation', () => {
     it('rejects a navId with structural characters', () => {
       const cat = new UiRouteCatalog();

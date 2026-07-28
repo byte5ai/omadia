@@ -131,6 +131,39 @@ describe('mergeNav', () => {
     ]);
   });
 
+  it('drops a duplicate href contributed by a second plugin', () => {
+    // Rendering both would duplicate the React key (`key={item.href}`) and
+    // light up two entries as active.
+    const merged = mergeNav(
+      STATIC,
+      [
+        entry({ pluginId: '@a/first', href: '/shared', label: 'First', order: 1 }),
+        entry({ pluginId: '@b/second', href: '/shared', label: 'Second', order: 2 }),
+      ],
+      translate,
+    );
+    const shared = merged.filter((i) => i.kind === 'link' && i.href === '/shared');
+    expect(shared).toHaveLength(1);
+    expect(shared[0]).toMatchObject({ label: 'First' });
+  });
+
+  it('orders equal-order entries deterministically, without a locale collator', () => {
+    // localeCompare can order the same pair differently under Node's ICU
+    // than under the visitor's browser, which would be a hydration mismatch.
+    const merged = mergeNav(
+      STATIC,
+      [
+        entry({ navId: 'z', href: '/z', label: 'Ähnlich', order: 1 }),
+        entry({ navId: 'a', href: '/a', label: 'Zebra', order: 1 }),
+      ],
+      translate,
+    );
+    // Plain codepoint order puts 'Z' (U+005A) before 'Ä' (U+00C4).
+    expect(
+      merged.filter((i) => i.kind === 'link').map((i) => i.href),
+    ).toEqual(['/', '/a', '/z']);
+  });
+
   it('splits entries across their clusters and top level in one pass', () => {
     const merged = mergeNav(
       STATIC,
@@ -162,6 +195,13 @@ describe('bestPrefixMatch', () => {
     expect(bestPrefixMatch('/admin/dev-platform/jobs/42', leaves)).toBe(
       '/admin/dev-platform',
     );
+  });
+
+  it('matches only on segment boundaries', () => {
+    // A bare startsWith would light up /admin while on /administrator, and
+    // let a plugin leaf /reports claim /reports-old.
+    expect(bestPrefixMatch('/administrator', leaves)).toBe('');
+    expect(bestPrefixMatch('/admin/dev-platform-old', leaves)).toBe('/admin');
   });
 
   it('returns empty for an unmatched path and for a null pathname', () => {

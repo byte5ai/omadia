@@ -44,14 +44,15 @@ Success is binary and observable:
 | `middleware/packages/dev-runner-shim/` | 21 files, zero deps |
 | `middleware/test/devplatform/**` | 54 files |
 | `web-ui/app/admin/dev-platform/**` | 20 files, 3,163 LOC |
-| `web-ui/app/_components/devjobs/**` + `_lib/useDevJobEvents.ts` | 7 files, 890 LOC |
+| `web-ui/app/_components/devjobs/**` + `_lib/useDevJobEvents.ts` | 7 files, 884 LOC |
 | Database | 9 tables, 14 indexes, migrations `0022`–`0030` |
-| Config | **41** `DEV_*`/`FLY_*` keys — 37 in the `config.ts` dev-platform block plus 4 elsewhere (`DEV_WEBHOOKS_ENABLED`, two webhook rate limits, `DEV_JOB_DEFAULT_BUDGET_USD`) |
-| i18n | **281** keys — `adminDevPlatform.*` (269) + `chat.devJob.*` (9) + `admin.index.cards.devPlatform.*` (2) + `nav.devPlatform` (1), of 3,131 total |
+| Config | **41** dev-platform `DEV_*`/`FLY_*` keys — 37 in the `config.ts` dev-platform block plus 4 elsewhere (`DEV_WEBHOOKS_ENABLED`, two webhook rate limits, `DEV_JOB_DEFAULT_BUDGET_USD`). `config.ts` holds 42 distinct `DEV_*`/`FLY_*` identifiers in total; the 42nd, `DEV_ENDPOINTS_ENABLED`, is generic and stays in core |
+| i18n | **281** keys before this PR — `adminDevPlatform.*` (269) + `chat.devJob.*` (9) + `admin.index.cards.devPlatform.*` (2) + `nav.devPlatform` (1), of 3,131 total. Now 280 of 3,130: this PR removed `nav.devPlatform`, since the label ships with the plugin |
 
 ### The coupling cut-line
 
-Only **nine** core files reference dev-platform — the boundary is already almost clean.
+Ten core files reference dev-platform (`runExecutor.ts` and `awaitStore.ts` share a row
+below) — the boundary is already almost clean.
 
 | Core file | Coupling |
 |---|---|
@@ -122,6 +123,17 @@ The consequences for this plan are sharp:
 So the real gap is **G6**, and it must be solved as a declarative, install-time,
 operator-consented grant (a manifest `permissions.public_paths[]` surfaced in the install
 dialog and revoked on deactivate) — never a runtime escape hatch on `RoutesAccessor`.
+
+**A grant alone is not sufficient.** `publicPaths` only makes `requireAuth` call `next()`
+for a URL; it says nothing about *which* router is entitled to answer it. If plugin A is
+granted a prefix and does not handle some subpath, plugin B mounted at the same prefix
+receives that request unauthenticated. The grant must therefore be paired with **exclusive
+prefix ownership** (register-time collision rejection) or enforced inside a per-entry
+dispatcher rather than as a global URL bypass.
+
+Note also that the blanket `/api` gate is not universal: `publicPaths` already exempts
+several prefixes, so a plugin registering beneath one of those is unauthenticated today
+without declaring anything. Prefix ownership fixes that too.
 
 ### G3: not via `express.json`'s verify hook
 
@@ -210,8 +222,17 @@ A ZIP cannot ship React into an ahead-of-time-compiled Next.js app — the exten
 allowlist has no `.tsx`, and `web-ui` is built once at image build time. But dev-platform
 is not going to be a ZIP: it is a **built-in package**, which ships inside the middleware
 image and goes through the same activation pathway. For that tier, "the React stays
-compiled into web-ui" is not a compromise, it is the correct design — both halves ship in
-the same image and are versioned together.
+compiled into web-ui" is not a compromise, it is the correct design.
+
+**Correction (review round 3):** an earlier draft justified this with "both halves ship in
+the same image." That is false. The plugin compiles into `omadia-middleware`; its React
+page compiles into `omadia-web-ui` — two separately deployable images, versioned together
+only by convention. Upgrade middleware first and it can advertise a nav href for a page
+the deployed web UI does not contain (a 404 from the menu); upgrade web-ui first and the
+page exists with no backend. The nav mechanism narrows this — the entry only appears when
+the middleware side is active — but it does not close it. **P3 must add a compatibility
+signal** (a minimum-web-ui version on the nav entry, or a shell-side allowlist of paths it
+actually compiled) rather than relying on lockstep deploys.
 
 So write the tiering down instead of hedging:
 
@@ -291,8 +312,59 @@ riskiest steps are not coupled to the visible win.
    installed, no dev-platform code paths" is **unverifiable** while routers outlive their
    plugin. The regression test fails 3/4 without the one-line fix.
 
-Tests: 29 catalog, 11 route, 4 disposal (middleware, `node:test`), 12 merge (web-ui,
-vitest). Full suites green — middleware 4,890 pass / 0 fail, web-ui 331 pass.
+Tests: 48 catalog, 11 route, 6 disposal (middleware, `node:test`), 13 merge + 12 parse
+(web-ui, vitest). web-ui 344 pass / 0 fail.
+
+### Known limitations of what shipped
+
+Surfaced by two adversarial review passes (GPT-5.4, then GPT-5.6). Recorded here rather
+than silently carried:
+
+- **The nav fetch is on every page's critical path.** The root layout awaits it with a
+  2s timeout and degrades to the static nav, but a hung middleware still adds up to 2s
+  before first paint — including on `/login` and `/setup`, where there is no session and
+  the answer is always empty. A Suspense boundary, or skipping the fetch on
+  unauthenticated routes, would remove that; neither is done yet.
+- **`no-store` means a round trip per render.** The catalogue varies by locale and by
+  plugin lifecycle, not by session, so a short stale-while-revalidate cache keyed on
+  locale would bound the load. Conversely, because Next reuses shared layouts across
+  client navigations, an already-open tab can keep showing an entry for a plugin that was
+  just deactivated. Neither direction is addressed.
+- **`MIDDLEWARE_URL` became a runtime requirement for web-ui.** RSC rendering reads it at
+  request time; `web-ui/Dockerfile` and `.env.local.example` still describe it as
+  build/dev-time only. Running the standalone image without it silently falls back to
+  `localhost:3979` and hides every plugin entry. Documentation fix owed.
+- **`WEB_UI_LOCALES` is duplicated in middleware** with a keep-in-sync comment. Server-side
+  label resolution removes the *hydration* clock but not translation/version skew across
+  the two images: ship a new locale in web-ui against older middleware and static labels
+  translate while plugin labels fall back to English.
+- **Homoglyph spoofing is not prevented.** Control, bidi and zero-width codepoints are
+  rejected, but a Cyrillic `Аdmin` still renders convincingly next to the core `Admin`.
+  Full confusable detection is out of scope; the entry at least carries its `pluginId`.
+- **Test gaps.** The rollback path inside `activate()`'s catch is not covered (driving it
+  needs a real on-disk package plus catalog/vault wiring), and the route test exercises
+  the router without `requireAuth` — deleting the production guard would not fail a test.
+
+### Pre-existing suite flakiness (not caused by this PR)
+
+Adding these test files made `registryInstallMerge` fail intermittently in the full run
+while passing in isolation. Investigated rather than assumed:
+
+| Experiment | Result |
+|---|---|
+| Baseline, my files removed (3 runs) | 0 fail |
+| My files present (3 runs) | 1, 5, 0 fail |
+| My files with all TCP sockets removed (3 runs) | 1, 5, 0 fail |
+| Three trivial 22-test files instead of mine (3 runs) | 0 fail |
+| **One file of 48 `assert.equal(1, 1)` tests at the same sort position (3 runs)** | **0, 3, 2 fail** |
+
+A file containing nothing but trivial assertions reproduces it. The race is latent in
+`registryInstallMerge` (which itself binds ~6 sockets) and is exposed by test-runner
+worker scheduling; any sufficiently large added file triggers it. This matches the
+already-known "passes isolated, fails in the full suite" issue in this repo. My tests were
+nevertheless converted to run socket-free via `test/_helpers/httpInvoke.ts`, which drives
+the real Express pipeline through `app.handle` without binding a port — worth doing on its
+own merits. **Follow-up owed on `registryInstallMerge`; it is not addressed here.**
 
 ---
 

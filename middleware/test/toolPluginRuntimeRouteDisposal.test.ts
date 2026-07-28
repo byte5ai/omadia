@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import type { AddressInfo } from 'node:net';
 import express, { Router } from 'express';
+
+import { getJson } from './_helpers/httpInvoke.js';
 
 import { PluginRouteRegistry } from '../src/platform/pluginRouteRegistry.js';
 import { UiRouteCatalog } from '../src/platform/uiRouteCatalog.js';
@@ -128,6 +129,67 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
     assert.deepEqual(stoppedJobsFor, ['@plugin/dev']);
   });
 
+  it('disposes routes BEFORE awaiting the plugin-controlled close()', async () => {
+    // close() gets a 5s budget. Disposing after it would leave the router
+    // answering for that whole window on a deactivation the operator has
+    // already triggered — and for the full 5s when close() hangs.
+    const registry = new PluginRouteRegistry();
+    const catalog = new UiRouteCatalog();
+    const deps = {
+      pluginRouteRegistry: registry,
+      uiRouteCatalog: catalog,
+      jobScheduler: { stopForPlugin: (): void => {} },
+      log: (): void => {},
+    } as unknown as ToolPluginRuntimeDeps;
+    const runtime = new ToolPluginRuntime(deps);
+
+    registry.register('/api/v1/dev-runner', Router(), '@plugin/slow');
+
+    let disposedWhenCloseRan: boolean | undefined;
+    (runtime as unknown as { active: Map<string, unknown> }).active.set(
+      '@plugin/slow',
+      {
+        agentId: '@plugin/slow',
+        extDisposes: [],
+        handle: {
+          close: (): Promise<void> => {
+            disposedWhenCloseRan =
+              registry.list().every((e) => e.disposed) && catalog.navSize() === 0;
+            return Promise.resolve();
+          },
+        },
+      },
+    );
+
+    await runtime.deactivate('@plugin/slow');
+
+    assert.equal(
+      disposedWhenCloseRan,
+      true,
+      'routes and nav must already be disposed by the time close() runs',
+    );
+  });
+
+  it('deactivate() cannot clean up a plugin that never became active', async () => {
+    // Documents WHY activate() must roll back its own registrations: a
+    // plugin that registers a router and then throws never reaches
+    // active.set, so this path is a no-op and the orphan would otherwise
+    // serve for the life of the process. The rollback itself lives in
+    // activate()'s catch and is NOT covered here — driving it needs a real
+    // on-disk package plus catalog/vault wiring. Tracked as a test gap in
+    // specs/470-dev-platform-plugin/plan.md.
+    const registry = new PluginRouteRegistry();
+    const { runtime } = makeRuntime(registry, new UiRouteCatalog());
+    registry.register('/api/v1/half-built', Router(), '@plugin/broken');
+
+    assert.equal(await runtime.deactivate('@plugin/broken'), false);
+    assert.equal(
+      registry.list().some((e) => e.source === '@plugin/broken' && !e.disposed),
+      true,
+      'the orphaned router survives deactivate() — hence the rollback in activate()',
+    );
+  });
+
   it('a disposed router stops answering and falls through to the next handler', async () => {
     const registry = new PluginRouteRegistry();
     const { runtime } = makeRuntime(registry, new UiRouteCatalog());
@@ -146,26 +208,18 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
       res.status(404).json({ from: 'fallthrough' });
     });
 
-    const server = app.listen(0);
-    await new Promise((resolve) => server.once('listening', resolve));
-    const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+    const live = await getJson<{ from: string }>(app, '/api/v1/dev-runner/ping');
+    assert.equal(live.status, 200);
+    assert.deepEqual(live.body, { from: 'plugin' });
 
-    try {
-      const live = await fetch(`${base}/api/v1/dev-runner/ping`);
-      assert.equal(live.status, 200);
-      assert.deepEqual(await live.json(), { from: 'plugin' });
+    await runtime.deactivate('@plugin/dev');
 
-      await runtime.deactivate('@plugin/dev');
-
-      const dead = await fetch(`${base}/api/v1/dev-runner/ping`);
-      assert.equal(
-        dead.status,
-        404,
-        'an uninstalled plugin must not keep serving its routes',
-      );
-      assert.deepEqual(await dead.json(), { from: 'fallthrough' });
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-    }
+    const dead = await getJson<{ from: string }>(app, '/api/v1/dev-runner/ping');
+    assert.equal(
+      dead.status,
+      404,
+      'an uninstalled plugin must not keep serving its routes',
+    );
+    assert.deepEqual(dead.body, { from: 'fallthrough' });
   });
 });

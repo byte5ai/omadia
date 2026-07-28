@@ -12,9 +12,26 @@ const DEFAULT_ORDER = 100;
 /** Nav labels are chrome, not content — long strings break the header. */
 const MAX_LABEL_LENGTH = 40;
 
+/**
+ * Bounds on everything else a plugin supplies. The whole catalogue is
+ * serialised into the root-layout RSC payload of every page, so an
+ * accidental or hostile plugin must not be able to bloat it.
+ */
+const MAX_HREF_LENGTH = 256;
+const MAX_NAV_ID_LENGTH = 64;
+const MAX_CLUSTER_LENGTH = 64;
+const MAX_LOCALES_PER_LABEL = 32;
+const MAX_NAV_ENTRIES_PER_PLUGIN = 20;
+
 const NAV_ID = /^[A-Za-z0-9._-]+$/;
 const CLUSTER_KEY = /^[A-Za-z][A-Za-z0-9]*$/;
 const LOCALE_CODE = /^[a-z]{2}(?:-[A-Za-z0-9]+)*$/;
+
+/**
+ * Characters permitted in a single href path segment — the RFC 3986
+ * "unreserved" set. Deliberately excludes `%`, `?`, `#`, and `\`.
+ */
+const HREF_SEGMENT = /^[A-Za-z0-9\-._~]+$/;
 
 /**
  * Reject control characters and bidirectional-formatting codepoints.
@@ -37,15 +54,27 @@ function hasUnsafeChars(value: string): boolean {
     if (code === 0x200e || code === 0x200f) return true; // LRM / RLM
     if (code >= 0x202a && code <= 0x202e) return true; // bidi embed / override
     if (code >= 0x2066 && code <= 0x2069) return true; // bidi isolates
+    if (code >= 0x200b && code <= 0x200d) return true; // zero-width space/joiners
+    if (code === 0x2060 || code === 0xfeff) return true; // word joiner / BOM
   }
   return false;
 }
 
 /**
- * An in-app path and nothing else. Must begin with exactly one `/`:
- * `//evil.example` is protocol-relative and `/\evil.example` is normalised
- * to `//` by browsers — either would take the operator off-origin from a
- * link rendered in the trusted header.
+ * An in-app path in *canonical* form.
+ *
+ * Validating the raw string is not enough: the shell decides that "core
+ * destinations win" by comparing hrefs for equality, so any spelling that
+ * a browser resolves to a core path but that does not string-match it
+ * would slip past that rule. `/x/%2e%2e/admin`, `/admin/`, `/admin?a=1`
+ * and `/admin#x` all navigate to Admin while comparing unequal to
+ * `/admin`.
+ *
+ * Rather than canonicalising (and having to keep our normaliser in step
+ * with the URL parser), accept only strings that are *already* canonical:
+ * a leading `/`, non-empty unreserved-charset segments, no dot-segments,
+ * no trailing slash, no query, no fragment, no percent-encoding. For that
+ * subset, string equality and browser resolution agree.
  */
 function assertInAppHref(
   context: string,
@@ -54,15 +83,33 @@ function assertInAppHref(
   if (typeof href !== 'string' || href.length === 0) {
     throw new Error(`${context}: href must be a non-empty string`);
   }
-  if (!href.startsWith('/') || href.startsWith('//') || href.startsWith('/\\')) {
+  if (href.length > MAX_HREF_LENGTH) {
     throw new Error(
-      `${context}: href must be an in-app path starting with a single '/' (got '${href}')`,
+      `${context}: href exceeds ${String(MAX_HREF_LENGTH)} characters`,
     );
   }
-  if (hasUnsafeChars(href) || /\s/.test(href)) {
+  if (!href.startsWith('/')) {
     throw new Error(
-      `${context}: href must not contain whitespace or control characters`,
+      `${context}: href must be an in-app path starting with '/' (got '${href}')`,
     );
+  }
+  if (href === '/') return; // the root is canonical by definition
+  for (const segment of href.slice(1).split('/')) {
+    if (segment.length === 0) {
+      throw new Error(
+        `${context}: href must not contain an empty path segment — no '//', no trailing '/' (got '${href}')`,
+      );
+    }
+    if (segment === '.' || segment === '..') {
+      throw new Error(
+        `${context}: href must not contain dot-segments (got '${href}')`,
+      );
+    }
+    if (!HREF_SEGMENT.test(segment)) {
+      throw new Error(
+        `${context}: href segment '${segment}' has characters outside [A-Za-z0-9-._~] — query strings, fragments, percent-encoding and backslashes are not accepted`,
+      );
+    }
   }
 }
 
@@ -81,6 +128,11 @@ function normalizeLabels(
   const entries = Object.entries(label as Record<string, unknown>);
   if (entries.length === 0) {
     throw new Error(`${context}: label must contain at least one locale`);
+  }
+  if (entries.length > MAX_LOCALES_PER_LABEL) {
+    throw new Error(
+      `${context}: label declares more than ${String(MAX_LOCALES_PER_LABEL)} locales`,
+    );
   }
   const out: Record<string, string> = {};
   for (const [locale, value] of entries) {
@@ -244,14 +296,22 @@ export class UiRouteCatalog {
         'UiRouteCatalog.registerNav: pluginId must be a non-empty string',
       );
     }
-    if (typeof input.navId !== 'string' || !NAV_ID.test(input.navId)) {
+    if (
+      typeof input.navId !== 'string' ||
+      input.navId.length > MAX_NAV_ID_LENGTH ||
+      !NAV_ID.test(input.navId)
+    ) {
       throw new Error(
-        `UiRouteCatalog.registerNav(${pluginId}): navId must match ${String(NAV_ID)}`,
+        `UiRouteCatalog.registerNav(${pluginId}): navId must match ${String(NAV_ID)} and be at most ${String(MAX_NAV_ID_LENGTH)} characters`,
       );
     }
     const context = `UiRouteCatalog.registerNav(${pluginId}/${input.navId})`;
     assertInAppHref(context, input.href);
-    if (input.cluster !== undefined && !CLUSTER_KEY.test(input.cluster)) {
+    if (
+      input.cluster !== undefined &&
+      (input.cluster.length > MAX_CLUSTER_LENGTH ||
+        !CLUSTER_KEY.test(input.cluster))
+    ) {
       throw new Error(`${context}: cluster must match ${String(CLUSTER_KEY)}`);
     }
     if (input.order !== undefined && !Number.isInteger(input.order)) {
@@ -263,6 +323,15 @@ export class UiRouteCatalog {
     if (this.navEntries.has(key)) {
       throw new Error(
         `UiRouteCatalog: nav entry '${key}' is already registered — dispose the previous registration before re-registering (hot-swap leak)`,
+      );
+    }
+    let owned = 0;
+    for (const existing of this.navEntries.values()) {
+      if (existing.pluginId === pluginId) owned += 1;
+    }
+    if (owned >= MAX_NAV_ENTRIES_PER_PLUGIN) {
+      throw new Error(
+        `${context}: a plugin may contribute at most ${String(MAX_NAV_ENTRIES_PER_PLUGIN)} nav entries`,
       );
     }
     const entry: UiNavEntry = {

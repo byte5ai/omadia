@@ -27,11 +27,14 @@ type CardDef = {
   readonly danger?: boolean;
   /**
    * Marks a card as belonging to an optional feature: it renders only when
-   * a plugin has contributed a nav entry for this href. Keeps the grid
-   * honest about what is actually installed instead of linking to a page
-   * that would answer 403 — see specs/470-dev-platform-plugin.
+   * *this specific* plugin has contributed a nav entry for this href. Keeps
+   * the grid honest about what is actually installed instead of linking to
+   * a page that would answer 403 — see specs/470-dev-platform-plugin.
+   *
+   * Matching on the contributing plugin id, not just the href, so an
+   * unrelated plugin cannot resurrect a core card by claiming the path.
    */
-  readonly requiresNavHref?: boolean;
+  readonly requiresNavFrom?: string;
 };
 type GroupDef = { readonly key: string; readonly cards: readonly CardDef[] };
 
@@ -65,7 +68,11 @@ const GROUPS: readonly GroupDef[] = [
       // Dev platform (epic #470) — isolated per-job code runners. Optional:
       // shown only while the feature is enabled and contributing its nav
       // entry, so the grid matches the menu.
-      { href: '/admin/dev-platform', key: 'devPlatform', requiresNavHref: true },
+      {
+        href: '/admin/dev-platform',
+        key: 'devPlatform',
+        requiresNavFrom: 'core:dev-platform',
+      },
     ],
   },
   {
@@ -84,13 +91,15 @@ const GROUPS: readonly GroupDef[] = [
 export default async function AdminIndexPage(): Promise<React.ReactElement> {
   const t = await getTranslations('admin.index');
   const locale = await getLocale();
-  const availableHrefs = new Set(
-    (await fetchNavEntries(locale)).map((e) => e.href),
+  const contributed = new Set(
+    (await fetchNavEntries(locale)).map((e) => `${e.pluginId}::${e.href}`),
   );
   const groups = GROUPS.map((group) => ({
     ...group,
     cards: group.cards.filter(
-      (card) => card.requiresNavHref !== true || availableHrefs.has(card.href),
+      (card) =>
+        card.requiresNavFrom === undefined ||
+        contributed.has(`${card.requiresNavFrom}::${card.href}`),
     ),
   })).filter((group) => group.cards.length > 0);
   return (

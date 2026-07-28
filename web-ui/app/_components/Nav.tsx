@@ -123,13 +123,28 @@ export function mergeNav(
 
   const ordered = [...entries]
     .filter((e) => !staticHrefs.has(e.href))
-    .sort((a, b) =>
-      a.order !== b.order ? a.order - b.order : a.label.localeCompare(b.label),
+    // Plain codepoint comparison, not localeCompare: this runs on both the
+    // server and the client, and a locale-sensitive collator can order the
+    // same two labels differently under Node's ICU than under the visitor's
+    // browser, producing a hydration mismatch. Ties broken by pluginId +
+    // navId so the order is total and stable.
+    .sort(
+      (a, b) =>
+        a.order - b.order ||
+        (a.label < b.label ? -1 : a.label > b.label ? 1 : 0) ||
+        (a.pluginId < b.pluginId ? -1 : a.pluginId > b.pluginId ? 1 : 0) ||
+        (a.navId < b.navId ? -1 : a.navId > b.navId ? 1 : 0),
     );
 
   const byCluster = new Map<string, ResolvedLeaf[]>();
   const topLevel: ResolvedLeaf[] = [];
+  // Two plugins can legitimately register the same href. Rendering both
+  // would duplicate the React key (`key={item.href}`) and light up two
+  // entries as active. First wins, deterministically, by the sort above.
+  const claimed = new Set<string>();
   for (const entry of ordered) {
+    if (claimed.has(entry.href)) continue;
+    claimed.add(entry.href);
     const leaf: ResolvedLeaf = { href: entry.href, label: entry.label };
     if (entry.cluster !== undefined && clusterKeys.has(entry.cluster)) {
       const bucket = byCluster.get(entry.cluster) ?? [];
@@ -168,6 +183,11 @@ function collectLeaves(items: readonly ResolvedNavItem[]): readonly ResolvedLeaf
   return out;
 }
 
+/**
+ * Longest-prefix match on *segment boundaries*. A bare `startsWith` would
+ * light up `/admin` while the operator is on `/administrator`, and a plugin
+ * leaf `/reports` would claim `/reports-old`.
+ */
 export function bestPrefixMatch(
   pathname: string | null,
   leaves: readonly ResolvedLeaf[],
@@ -177,7 +197,8 @@ export function bestPrefixMatch(
     const match =
       candidate.href === '/'
         ? pathname === '/'
-        : pathname.startsWith(candidate.href);
+        : pathname === candidate.href ||
+          pathname.startsWith(`${candidate.href}/`);
     if (!match) return acc;
     return candidate.href.length > acc.length ? candidate.href : acc;
   }, '');
