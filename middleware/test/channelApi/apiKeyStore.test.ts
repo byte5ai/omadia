@@ -102,12 +102,20 @@ describe('channelApi/apiKeyStore — scopes', () => {
     assert.deepEqual(resolved?.scopes, ['memory:read', 'chat:write']);
   });
 
-  it('treats an explicitly empty scope array at CREATE time as "unspecified", and persists the resolved set explicitly', async () => {
-    // Not a silent grant: the create result echoes the scope set that was
-    // actually assigned, and the vault entry holds it verbatim — which is
-    // what keeps "no scopes field at all" meaning "pre-#439" on read.
+  it('rejects an explicitly empty scope array at CREATE time rather than resolving it to a default', async () => {
+    // The read path (`normalizeScopes`) treats a persisted `[]` as corruption
+    // and denies everything. If creation resolved the same value to the legacy
+    // default, one field would mean "deny all" coming out and "grant chat"
+    // going in — and an operator who asked for zero capabilities would be
+    // handed a chat-capable key. Omitting `scopes` is how you ask for the
+    // default; `[]` is an error.
     const store = createApiKeyStore(createFakeSecrets());
-    const created = await store.create({ scopes: [] });
+    await assert.rejects(() => store.create({ scopes: [] }), /must not be empty/);
+  });
+
+  it('omitting scopes entirely still resolves to the legacy default (unchanged)', async () => {
+    const store = createApiKeyStore(createFakeSecrets());
+    const created = await store.create({ label: 'defaulted' });
     assert.deepEqual(created.record.scopes, ['chat:write']);
     assert.deepEqual((await store.verify(created.token))?.scopes, ['chat:write']);
   });

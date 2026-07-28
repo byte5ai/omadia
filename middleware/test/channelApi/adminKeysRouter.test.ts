@@ -101,6 +101,27 @@ describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
     );
   });
 
+  it('POST / rejects an explicitly empty scope array with 400, never a defaulted key (issue #439)', async () => {
+    // Regression guard for a create/read divergence: `normalizeScopes` denies
+    // a persisted `[]`, so creation must not quietly turn it into the legacy
+    // `chat:write` default. An operator asking for zero capabilities must get
+    // an error, not a chat-capable key — and not a permanently-403 one either.
+    const res = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'readonly', scopes: [] }),
+    });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { error: string };
+    assert.equal(body.error, 'invalid_request');
+
+    // ...and nothing was minted under that label.
+    const listed = (await (await fetch(baseUrl)).json()) as {
+      keys: Array<{ label?: string }>;
+    };
+    assert.ok(!listed.keys.some((k) => k.label === 'readonly'));
+  });
+
   it('POST / without scopes still mints a working, chat-capable key (backward compatible)', async () => {
     const res = await fetch(baseUrl, {
       method: 'POST',

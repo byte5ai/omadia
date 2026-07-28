@@ -74,6 +74,15 @@ export const DENY_ALL_SCOPES: readonly ApiKeyScope[] = [];
  * The key still AUTHENTICATES in the deny case — `verify()` is unaffected —
  * it is simply authorized for nothing, so every scope check fails closed and
  * the caller gets `403`, not a silently-widened `200`.
+ *
+ * The empty array earns its place in the malformed group by an invariant on
+ * the write side: no writer here can persist one. `assertValidScopes` throws
+ * on `[]`, so `create()` cannot store it, and the HTTP boundary
+ * (`CreateKeyRequestSchema` in `@omadia/channel-api`'s `adminKeysRouter.ts`)
+ * answers `400` before that. A persisted `[]` is therefore corruption or a
+ * foreign writer by construction, and denying is the only honest reading.
+ * Keep the two halves in step — if `[]` ever became persistable, the same
+ * value would mean "grant the default" on write and "grant nothing" on read.
  */
 export function normalizeScopes(raw: unknown): readonly ApiKeyScope[] {
   if (raw === undefined) return LEGACY_DEFAULT_SCOPES;
@@ -113,8 +122,20 @@ function warnMalformedScopes(reason: string, raw: unknown): void {
  * silently dropping a typo'd scope would hand back a key that looks right and
  * is quietly missing a capability. Callers accepting HTTP input should
  * validate first and answer 400; reaching this throw is a programmer error.
+ *
+ * An EXPLICIT empty array is rejected here rather than resolved to any default.
+ * The read path (`normalizeScopes`) treats a persisted `[]` as corruption and
+ * returns `DENY_ALL_SCOPES`; if creation quietly turned the same value into
+ * `LEGACY_DEFAULT_SCOPES` instead, one field would mean "deny everything" going
+ * out and "grant chat" going in — and the grant is the dangerous direction.
+ * Omitting `scopes` entirely remains the way to ask for the legacy default.
  */
 export function assertValidScopes(scopes: readonly unknown[]): readonly ApiKeyScope[] {
+  if (scopes.length === 0) {
+    throw new Error(
+      'API-key scopes must not be empty; omit the field entirely to accept the default',
+    );
+  }
   const invalid = scopes.filter((s) => !isValidScope(s));
   if (invalid.length > 0) {
     throw new Error(`invalid API-key scope(s): ${invalid.map((s) => String(s)).join(', ')}`);

@@ -70,6 +70,12 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   operator can tell a corrupt record from a revoked key. The scope set is
   always persisted explicitly at `create()` time, so nothing this store
   writes can be mistaken for a pre-#439 record.
+- Creation agrees with that read path on the same value. Only an **omitted**
+  `scopes` field resolves to the legacy default; an explicitly supplied `[]`
+  is rejected — `400` at the admin route, and a throw from `create()` for
+  callers using the package directly. Otherwise one field would mean "deny
+  everything" on read and "grant `chat:write`" on write, so an operator asking
+  for a zero-capability key would have been handed a chat-capable one.
 - `@omadia/channel-api` now consumes the shared package instead of owning
   the code: `chatRouter.ts` mounts `requireApiKey` with `scope: 'chat:write'`
   rather than parsing bearer headers itself. Behaviour and wire format of
