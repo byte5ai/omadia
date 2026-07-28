@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { DevJobEventMessage } from '@/app/_lib/useDevJobEvents';
 
-import { foldDevJobEvent, summarizeToolCall, type LogItem, type ToolCallEntry } from '../toolCallLog';
+import {
+  INITIAL_LOG_STATE,
+  foldDevJobEvent,
+  summarizeToolCall,
+  type LogItem,
+  type LogState,
+  type ToolCallEntry,
+} from '../toolCallLog';
 
 function ev(
   id: number,
@@ -12,20 +19,32 @@ function ev(
   return { id, jobId: 'job-1', provision: 1, seq: id, type, ts: '2026-01-01T00:00:00Z', payload };
 }
 
+/** Fold a sequence of events onto INITIAL_LOG_STATE and return just the items. */
+function foldItems(...evs: DevJobEventMessage[]): LogItem[] {
+  return evs.reduce((s: LogState, e) => foldDevJobEvent(s, e), INITIAL_LOG_STATE).items;
+}
+
 describe('foldDevJobEvent — tool pairing', () => {
-  it('appends a pending entry on the start event', () => {
-    const items = foldDevJobEvent([], ev(1, 'tool', { name: 'Read', inputPreview: '{"file_path":"a.ts"}' }));
+  it('appends a pending entry on the start event, stamped with the current phase', () => {
+    const items = foldItems(ev(1, 'tool', { name: 'Read', inputPreview: '{"file_path":"a.ts"}' }));
     expect(items).toEqual<LogItem[]>([
-      { kind: 'tool', entry: { id: '1', name: 'Read', status: 'pending', inputPreview: '{"file_path":"a.ts"}' } },
+      {
+        kind: 'tool',
+        phase: 'analyze',
+        entry: { id: '1', name: 'Read', status: 'pending', inputPreview: '{"file_path":"a.ts"}' },
+      },
     ]);
   });
 
   it('pairs the result event into the matching pending entry', () => {
-    let items = foldDevJobEvent([], ev(1, 'tool', { name: 'Read', inputPreview: '{"file_path":"a.ts"}' }));
-    items = foldDevJobEvent(items, ev(2, 'tool', { name: 'Read', ok: true, outputPreview: 'file contents' }));
+    const items = foldItems(
+      ev(1, 'tool', { name: 'Read', inputPreview: '{"file_path":"a.ts"}' }),
+      ev(2, 'tool', { name: 'Read', ok: true, outputPreview: 'file contents' }),
+    );
     expect(items).toEqual<LogItem[]>([
       {
         kind: 'tool',
+        phase: 'analyze',
         entry: {
           id: '1',
           name: 'Read',
@@ -38,16 +57,20 @@ describe('foldDevJobEvent — tool pairing', () => {
   });
 
   it('marks status error when ok is false', () => {
-    let items = foldDevJobEvent([], ev(1, 'tool', { name: 'Bash', inputPreview: '{"command":"false"}' }));
-    items = foldDevJobEvent(items, ev(2, 'tool', { name: 'Bash', ok: false, outputPreview: 'exit 1' }));
+    const items = foldItems(
+      ev(1, 'tool', { name: 'Bash', inputPreview: '{"command":"false"}' }),
+      ev(2, 'tool', { name: 'Bash', ok: false, outputPreview: 'exit 1' }),
+    );
     expect((items[0] as { kind: 'tool'; entry: ToolCallEntry }).entry.status).toBe('error');
   });
 
   it('pairs same-name calls in order (FIFO) rather than the first pending one incorrectly', () => {
-    let items = foldDevJobEvent([], ev(1, 'tool', { name: 'Read', inputPreview: '{"file_path":"a.ts"}' }));
-    items = foldDevJobEvent(items, ev(2, 'tool', { name: 'Read', ok: true, outputPreview: 'A' }));
-    items = foldDevJobEvent(items, ev(3, 'tool', { name: 'Read', inputPreview: '{"file_path":"b.ts"}' }));
-    items = foldDevJobEvent(items, ev(4, 'tool', { name: 'Read', ok: true, outputPreview: 'B' }));
+    const items = foldItems(
+      ev(1, 'tool', { name: 'Read', inputPreview: '{"file_path":"a.ts"}' }),
+      ev(2, 'tool', { name: 'Read', ok: true, outputPreview: 'A' }),
+      ev(3, 'tool', { name: 'Read', inputPreview: '{"file_path":"b.ts"}' }),
+      ev(4, 'tool', { name: 'Read', ok: true, outputPreview: 'B' }),
+    );
     const entries = items.map((i) => (i as { kind: 'tool'; entry: ToolCallEntry }).entry);
     expect(entries).toEqual([
       { id: '1', name: 'Read', status: 'ok', inputPreview: '{"file_path":"a.ts"}', outputPreview: 'A' },
@@ -56,31 +79,68 @@ describe('foldDevJobEvent — tool pairing', () => {
   });
 
   it('renders a standalone result when no matching start exists', () => {
-    const items = foldDevJobEvent([], ev(1, 'tool', { name: 'Read', ok: true, outputPreview: 'orphan' }));
+    const items = foldItems(ev(1, 'tool', { name: 'Read', ok: true, outputPreview: 'orphan' }));
     expect(items).toEqual<LogItem[]>([
-      { kind: 'tool', entry: { id: '1', name: 'Read', status: 'ok', outputPreview: 'orphan' } },
+      { kind: 'tool', phase: 'analyze', entry: { id: '1', name: 'Read', status: 'ok', outputPreview: 'orphan' } },
     ]);
   });
 });
 
 describe('foldDevJobEvent — log/other events', () => {
   it('appends agent-stream text', () => {
-    const items = foldDevJobEvent([], ev(1, 'log', { text: 'thinking…', stream: 'agent' }));
-    expect(items).toEqual<LogItem[]>([{ kind: 'text', id: '1', stream: 'agent', text: 'thinking…' }]);
+    const items = foldItems(ev(1, 'log', { text: 'thinking…', stream: 'agent' }));
+    expect(items).toEqual<LogItem[]>([{ kind: 'text', id: '1', phase: 'analyze', stream: 'agent', text: 'thinking…' }]);
   });
 
   it('routes stderr stream text', () => {
-    const items = foldDevJobEvent([], ev(1, 'log', { text: 'boom', stream: 'stderr' }));
-    expect(items).toEqual<LogItem[]>([{ kind: 'text', id: '1', stream: 'stderr', text: 'boom' }]);
+    const items = foldItems(ev(1, 'log', { text: 'boom', stream: 'stderr' }));
+    expect(items).toEqual<LogItem[]>([{ kind: 'text', id: '1', phase: 'analyze', stream: 'stderr', text: 'boom' }]);
   });
 
   it('drops empty-text log events', () => {
-    expect(foldDevJobEvent([], ev(1, 'log', { text: '' }))).toEqual([]);
+    expect(foldItems(ev(1, 'log', { text: '' }))).toEqual([]);
   });
 
-  it('ignores status/phase/heartbeat events entirely', () => {
-    expect(foldDevJobEvent([], ev(1, 'status', { state: 'agent_started' }))).toEqual([]);
-    expect(foldDevJobEvent([], ev(1, 'phase', { phase: 'implement', state: 'start' }))).toEqual([]);
+  it('ignores status/heartbeat events entirely', () => {
+    expect(foldItems(ev(1, 'status', { state: 'agent_started' }))).toEqual([]);
+  });
+});
+
+describe('foldDevJobEvent — phase cursor', () => {
+  it('starts at analyze (matches devJobStore.createJob\'s own default)', () => {
+    expect(INITIAL_LOG_STATE.phase).toBe('analyze');
+  });
+
+  it('a phase event updates the cursor without producing a log item', () => {
+    const state = foldDevJobEvent(INITIAL_LOG_STATE, ev(1, 'phase', { phase: 'bootstrap', state: 'start' }));
+    expect(state.phase).toBe('bootstrap');
+    expect(state.items).toEqual([]);
+  });
+
+  it('stamps subsequent tool/log items with the phase in effect when they arrived', () => {
+    const items = foldItems(
+      ev(1, 'log', { text: 'analyzing…', stream: 'agent' }),
+      ev(2, 'phase', { phase: 'plan', state: 'start' }),
+      ev(3, 'tool', { name: 'Write', inputPreview: '{"file_path":"plan.md"}' }),
+      ev(4, 'phase', { phase: 'implement', state: 'start' }),
+      ev(5, 'log', { text: 'implementing…', stream: 'agent' }),
+    );
+    expect(items.map((i) => i.phase)).toEqual(['analyze', 'plan', 'implement']);
+  });
+
+  it('a result event keeps the phase of its own start, even if the phase cursor since moved on', () => {
+    const items = foldItems(
+      ev(1, 'tool', { name: 'Bash', inputPreview: '{"command":"echo hi"}' }),
+      ev(2, 'phase', { phase: 'plan', state: 'start' }), // moves on before the result lands
+      ev(3, 'tool', { name: 'Bash', ok: true, outputPreview: 'hi' }),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]?.phase).toBe('analyze');
+  });
+
+  it('ignores an unset phase field, keeping the previous cursor', () => {
+    const state = foldDevJobEvent(INITIAL_LOG_STATE, ev(1, 'phase', {}));
+    expect(state.phase).toBe('analyze');
   });
 });
 

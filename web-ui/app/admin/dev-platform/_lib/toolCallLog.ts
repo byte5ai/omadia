@@ -4,16 +4,22 @@ import { computeLineDiff, type DiffLine } from './lineDiff';
 
 /**
  * Epic #470 — turns the raw `dev_job_events` SSE tail into renderable log
- * items for the job-detail implement-phase pane. Two responsibilities:
+ * items for EVERY phase's log pane, not just implement (analyze/bootstrap/
+ * plan/clarify each run a real `claude -p` session or the bootstrap command,
+ * emitting the same event shapes — see `phaseLoop.ts`). Three responsibilities:
  *
- *   1. `foldDevJobEvent` pairs a tool call's two independent wire events
- *      (`{name, inputPreview}` at start, `{ok, name, outputPreview}` at
- *      result — no shared correlation id) into one `ToolCallEntry`, by
- *      walking back to the nearest still-pending entry with the same tool
- *      name. Safe for the single-threaded CLI agent loop this feeds from: a
- *      tool cannot start a second call under the same name before the first
- *      resolves.
- *   2. `summarizeToolCall` turns a paired entry's raw JSON `inputPreview`
+ *   1. `foldDevJobEvent` tracks a running "current phase" cursor, updated on
+ *      each `phase` event (`{phase, state:'start'}` — always the first event
+ *      of a provision), and stamps every subsequent tool/log item with it, so
+ *      the UI can filter the single flat event stream down to one phase's
+ *      view without a second query.
+ *   2. It also pairs a tool call's two independent wire events (`{name,
+ *      inputPreview}` at start, `{ok, name, outputPreview}` at result — no
+ *      shared correlation id) into one `ToolCallEntry`, by walking back to
+ *      the nearest still-pending entry with the same tool name. Safe for the
+ *      single-threaded CLI agent loop this feeds from: a tool cannot start a
+ *      second call under the same name before the first resolves.
+ *   3. `summarizeToolCall` turns a paired entry's raw JSON `inputPreview`
  *      into a one-line headline + a tool-shaped detail (a diff for `Edit`,
  *      a command for `Bash`, etc.) instead of the previous `$ Name {...raw
  *      JSON...}` dump. Unknown tool names fall back to the raw
@@ -31,23 +37,36 @@ export interface ToolCallEntry {
 }
 
 export type LogItem =
-  | { kind: 'text'; id: string; stream: 'agent' | 'stderr'; text: string }
-  | { kind: 'tool'; entry: ToolCallEntry };
+  | { kind: 'text'; id: string; phase: string; stream: 'agent' | 'stderr'; text: string }
+  | { kind: 'tool'; phase: string; entry: ToolCallEntry };
 
-export function foldDevJobEvent(items: LogItem[], ev: DevJobEventMessage): LogItem[] {
-  if (ev.type === 'tool') return foldToolEvent(items, ev);
-  if (ev.type === 'log') return foldLogEvent(items, ev);
-  return items;
+export interface LogState {
+  items: LogItem[];
+  /** The most recently started phase — new tool/log items are stamped with this. */
+  phase: string;
 }
 
-function foldToolEvent(items: LogItem[], ev: DevJobEventMessage): LogItem[] {
+/** `'analyze'` matches devJobStore.createJob's own default starting phase. */
+export const INITIAL_LOG_STATE: LogState = { items: [], phase: 'analyze' };
+
+export function foldDevJobEvent(state: LogState, ev: DevJobEventMessage): LogState {
+  if (ev.type === 'phase') {
+    const phase = typeof ev.payload['phase'] === 'string' ? ev.payload['phase'] : state.phase;
+    return { ...state, phase };
+  }
+  if (ev.type === 'tool') return { ...state, items: foldToolEvent(state.items, ev, state.phase) };
+  if (ev.type === 'log') return { ...state, items: foldLogEvent(state.items, ev, state.phase) };
+  return state;
+}
+
+function foldToolEvent(items: LogItem[], ev: DevJobEventMessage, phase: string): LogItem[] {
   const p = ev.payload;
   const name = typeof p['name'] === 'string' ? p['name'] : 'tool';
   const hasResult = typeof p['ok'] === 'boolean';
 
   if (!hasResult) {
     const inputPreview = typeof p['inputPreview'] === 'string' ? p['inputPreview'] : undefined;
-    return [...items, { kind: 'tool', entry: { id: String(ev.id), name, status: 'pending', inputPreview } }];
+    return [...items, { kind: 'tool', phase, entry: { id: String(ev.id), name, status: 'pending', inputPreview } }];
   }
 
   const ok = p['ok'] === true;
@@ -57,22 +76,25 @@ function foldToolEvent(items: LogItem[], ev: DevJobEventMessage): LogItem[] {
     // No matching start (e.g. a reconnect landed mid-call) — render standalone.
     return [
       ...items,
-      { kind: 'tool', entry: { id: String(ev.id), name, status: ok ? 'ok' : 'error', outputPreview } },
+      { kind: 'tool', phase, entry: { id: String(ev.id), name, status: ok ? 'ok' : 'error', outputPreview } },
     ];
   }
 
   const target = items[idx];
   if (!target || target.kind !== 'tool') return items;
   const next = items.slice();
-  next[idx] = { kind: 'tool', entry: { ...target.entry, status: ok ? 'ok' : 'error', outputPreview } };
+  next[idx] = { kind: 'tool', phase: target.phase, entry: { ...target.entry, status: ok ? 'ok' : 'error', outputPreview } };
   return next;
 }
 
-function foldLogEvent(items: LogItem[], ev: DevJobEventMessage): LogItem[] {
+function foldLogEvent(items: LogItem[], ev: DevJobEventMessage, phase: string): LogItem[] {
   const p = ev.payload;
   const text = typeof p['text'] === 'string' ? p['text'] : '';
   if (!text) return items;
-  return [...items, { kind: 'text', id: String(ev.id), stream: p['stream'] === 'stderr' ? 'stderr' : 'agent', text }];
+  return [
+    ...items,
+    { kind: 'text', id: String(ev.id), phase, stream: p['stream'] === 'stderr' ? 'stderr' : 'agent', text },
+  ];
 }
 
 function findLastPending(items: LogItem[], name: string): number {

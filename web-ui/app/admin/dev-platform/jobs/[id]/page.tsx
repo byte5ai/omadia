@@ -13,21 +13,24 @@ import {
   DEV_JOB_UI_PHASES,
   DevJobPhaseRail,
   computePhaseStops,
+  phaseToUi,
   statusIsLive,
   type DevJobUiPhase,
 } from '@/app/_components/devjobs/DevJobPhaseRail';
 import { useDevJobEvents, type DevJobEventMessage } from '@/app/_lib/useDevJobEvents';
 import { JobLogPane, type LogConnection } from '../../_components/JobLogPane';
 import { cancelJob, deleteJob, getJob, isTerminalStatus, type DevJobView } from '../../_lib/api';
-import { foldDevJobEvent, type LogItem } from '../../_lib/toolCallLog';
+import { INITIAL_LOG_STATE, foldDevJobEvent, type LogState } from '../../_lib/toolCallLog';
 
 /**
  * Epic #470 W0 — the job-detail signature screen (UI spec §5). Header, the
  * phase rail (keyboard-operable, deep-linkable via `?phase=`), then a two-column
  * body: the log pane (driven by rail selection) and a metadata sidebar. The
  * live log streams over SSE through `useDevJobEvents` and sticks to bottom via
- * `useStickToBottom`. W0 is minimal: only the `implement` phase has a live-log
- * pane; other phases show "no artifact yet" (W2 fills them in).
+ * `useStickToBottom`. Every non-`pr` phase gets the same live log pane,
+ * filtered to that phase's own events (`toolCallLog.ts` stamps each item with
+ * the phase it happened in) — analyze/bootstrap/plan/clarify run real agent
+ * sessions too, not just implement.
  */
 
 function shortHash(id: string): string {
@@ -43,7 +46,7 @@ export default function JobDetailPage(): React.ReactElement {
 
   const [job, setJob] = useState<DevJobView | null>(null);
   const [notFound, setNotFound] = useState(false);
-  const [items, setItems] = useState<LogItem[]>([]);
+  const [logState, setLogState] = useState<LogState>(INITIAL_LOG_STATE);
   const [conn, setConn] = useState<LogConnection>('reconnecting');
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
   const [agoSec, setAgoSec] = useState<number | null>(null);
@@ -67,7 +70,7 @@ export default function JobDetailPage(): React.ReactElement {
 
   const handleEvent = useCallback((ev: DevJobEventMessage) => {
     setLastEventAt(Date.now());
-    setItems((prev) => foldDevJobEvent(prev, ev));
+    setLogState((prev) => foldDevJobEvent(prev, ev));
     if (ev.type === 'status' || ev.type === 'phase') {
       // Re-sync the authoritative view on lifecycle transitions.
       void getJob(ev.jobId).then(
@@ -174,9 +177,7 @@ export default function JobDetailPage(): React.ReactElement {
       {/* Body */}
       <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_320px]">
         <div>
-          {effective === 'implement' ? (
-            <JobLogPane items={items} connection={conn} lastEventAgoSec={agoSec} />
-          ) : effective === 'pr' && job?.prUrl ? (
+          {effective === 'pr' && job?.prUrl ? (
             <div className="rounded-lg border border-[color:var(--border)] p-4 text-sm">
               <a href={job.prUrl} target="_blank" rel="noreferrer" className="text-[color:var(--accent)] underline">
                 {t('openPr')}
@@ -186,7 +187,11 @@ export default function JobDetailPage(): React.ReactElement {
               ) : null}
             </div>
           ) : (
-            <p className="text-sm text-[color:var(--fg-subtle)]">{t('noArtifact')}</p>
+            <JobLogPane
+              items={logState.items.filter((item) => phaseToUi(item.phase) === effective)}
+              connection={conn}
+              lastEventAgoSec={agoSec}
+            />
           )}
         </div>
 

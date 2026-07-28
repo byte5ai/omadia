@@ -3212,7 +3212,6 @@
         "pr": "pr"
       },
       "phaseSkipped": "skipped — no questions",
-      "noArtifact": "No artifact for this phase yet.",
       "toolCall": {
         "pending": "running",
         "failed": "failed",
