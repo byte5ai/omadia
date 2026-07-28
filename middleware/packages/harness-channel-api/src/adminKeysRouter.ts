@@ -19,18 +19,27 @@
  * (`503`) — if the host never wired an `operatorAuth` accessor into this
  * plugin's context. Missing/invalid session → `401`, in the same
  * `{code, message}` shape `requireAuth` itself returns.
+ *
+ * Issue #439 added `scopes` to creation and to the listing, on top of — never
+ * instead of — that operator-session gate. Omitting `scopes` yields
+ * `LEGACY_DEFAULT_SCOPES` (the exact capability set a key minted before scopes
+ * existed had), so existing operator tooling that posts `{label}` keeps
+ * producing working keys.
  */
 
 import { Router } from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import type { OperatorAuthAccessor } from '@omadia/plugin-api';
 import { z } from 'zod';
-
-import type { ApiKeyStore } from './apiKeyStore.js';
+import type { ApiKeyStore } from '@omadia/api-key-auth';
+import { isValidScope } from '@omadia/api-key-auth';
 
 const CreateKeyRequestSchema = z.object({
   label: z.string().min(1).max(120).optional(),
   rateLimitPerMinute: z.number().int().positive().max(6000).optional(),
+  // Validated here (400 on a typo) rather than letting the store's
+  // `assertValidScopes` throw into a 500 — operator input is user input.
+  scopes: z.array(z.string().refine(isValidScope, 'must be `<resource>:<action>` or `*`')).optional(),
 });
 
 export function createAdminKeysRouter(

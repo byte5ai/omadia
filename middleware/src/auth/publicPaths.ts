@@ -39,12 +39,19 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   /^\/p\/[^/]+(?:\/|$|\?)/,
   // Issue #438 — the public API channel's chat ingress. A caller presents a
   // per-key API key (Authorization: Bearer) instead of a session cookie; the
-  // `@omadia/channel-api` plugin's own router validates it (constant-time
-  // hash compare) before dispatching a turn — that IS its authentication.
+  // `@omadia/channel-api` plugin mounts `requireApiKey` from
+  // `@omadia/api-key-auth` (issue #439 — constant-time hash compare, per-key
+  // rate limit, `chat:write` scope) on this route, and that IS its
+  // authentication.
   // Deliberately narrow to `/chat` only: the sibling `/admin/keys` key-
   // lifecycle routes under the same `/api/public/v1` prefix are NOT listed
   // here, so they stay behind this same session gate like every other admin
   // surface (see `src/routes/adminSettings.ts`).
+  // NOTE for whoever mounts `requireApiKey` next: an API-key-authenticated
+  // route needs an entry here to be reachable at all, and every entry is a
+  // new unauthenticated-until-the-handler-says-otherwise surface. Add the
+  // narrowest regex that covers the one route, never a prefix that also
+  // catches its siblings.
   /^\/api\/public\/v1\/chat(?:\/|$|\?)/,
 ];
 

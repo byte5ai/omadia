@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { createRateLimiter } from '../../packages/harness-channel-api/src/rateLimiter.js';
+import { createRateLimiter } from '../../packages/harness-api-key-auth/src/rateLimiter.js';
 
 describe('channelApi/rateLimiter', () => {
   it('allows up to the configured per-minute capacity, then trips', () => {

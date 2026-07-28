@@ -18,6 +18,58 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — API keys as a first-class authentication method, with per-key scopes (#439)
+
+- New workspace package `@omadia/api-key-auth`
+  (`middleware/packages/harness-api-key-auth/`). The API-key primitives
+  #438 shipped inside `@omadia/channel-api` — mint/sha256-hash/constant-time
+  verify, the vault-backed key store, the per-key rate limiter, the usage
+  audit log — moved here unchanged, so there is exactly **one**
+  implementation of the credential. A shared workspace package is the only
+  home both sides can reach: the kernel must never import a channel plugin,
+  and a plugin cannot import kernel source (`middleware/src/auth/` is not
+  resolvable from a package whose `tsconfig` has `rootDir: src`). Same role
+  `@omadia/plugin-api` and `@omadia/channel-sdk` already play. The package is
+  dependency-free apart from an `express` peer — its storage dependency is a
+  structural subset (`ApiKeySecretStorage`) that `SecretsAccessor` satisfies
+  without an adapter. No new npm dependencies, matching #438.
+- New mountable Express middleware `requireApiKey({ apiKeys, rateLimiter,
+  auditLog, scope })`: any route or plugin can apply it and be authenticated
+  by a server-to-server bearer key instead of the `omadia_session` cookie
+  (driving use case: a Laravel/PHP integration with no human session behind
+  it). It attaches an `ApiKeyPrincipal` to `req.apiKey` and deliberately does
+  **not** populate `req.session` — `SessionClaims.role` is hard-typed
+  `'admin'`, so synthesizing a session for a machine would make every
+  session-reading route downstream silently treat a key as an operator.
+  401/403/429 use the `{ error, message }` shape #438 established for the
+  public API surface, not the session gate's `{ code, message }`, so the wire
+  format of `POST /api/public/v1/chat` is unchanged.
+- Per-key **scopes**: `<resource>:<action>` strings (or the global `*`),
+  matched exactly — no prefix wildcards, which are how "I thought `admin:*`
+  didn't cover `admin:delete`" happens. A route declares the scope it needs;
+  a key without it gets `403 forbidden` and a `forbidden` audit entry.
+  Backward compatible: a key persisted before scopes existed carries no
+  `scopes` field and is normalized to `['chat:write']` — exactly the one
+  capability it had when it was minted. Defaulting such keys to `*` would
+  also keep them working and would silently widen every existing key to
+  whatever scoped surface lands next, so it is not what we do.
+  `POST /api/public/v1/admin/keys` accepts a `scopes` array (validated, 400
+  on a malformed scope) and `GET` lists it.
+- `@omadia/channel-api` now consumes the shared package instead of owning
+  the code: `chatRouter.ts` mounts `requireApiKey` with `scope: 'chat:write'`
+  rather than parsing bearer headers itself. Behaviour and wire format of
+  `POST /api/public/v1/chat` are unchanged, and its existing test suite
+  passes as written (only the moved modules' import paths were repointed).
+- `middleware/src/auth/publicPaths.ts` is deliberately **not** broadened —
+  `/api/public/v1/chat` is still the only exempted API-key route. Its comment
+  now records what a future route that mounts `requireApiKey` has to do.
+- Tests: `test/auth/requireApiKey.test.ts`, `test/auth/apiKeyScopes.test.ts`,
+  and `test/channelApi/apiKeyAuthReuseSeam.test.ts` — the last one is a
+  structural guard on the seam itself (the plugin holds no second copy of the
+  primitives, and `middleware/src` imports no channel plugin), because
+  "where does this code live" is a property no runtime assertion can express
+  and the cheapest one to regress.
+
 ### Added — public API channel: chat over HTTP with per-key auth (#438)
 
 - New built-in channel package `@omadia/channel-api`

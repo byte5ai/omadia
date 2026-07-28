@@ -15,17 +15,19 @@
  *
  * Follows the same "built-in package, activate(ctx, core)" shape as
  * `@omadia/ui-channel` — see that package for the template this mirrors.
+ *
+ * Issue #439: the key store, rate limiter, audit log and the bearer-auth
+ * middleware now live in `@omadia/api-key-auth` so the kernel can reuse them
+ * too. This plugin only wires them to `ctx.secrets` and mounts the routes.
  */
 
 import { Router } from 'express';
 import type { ChannelHandle, CoreApi } from '@omadia/channel-sdk';
 import type { PluginContext } from '@omadia/plugin-api';
+import { createApiKeyStore, createAuditLog, createRateLimiter } from '@omadia/api-key-auth';
 
 import { createAdminKeysRouter } from './adminKeysRouter.js';
-import { createApiKeyStore } from './apiKeyStore.js';
-import { createAuditLog } from './auditLog.js';
 import { createApiChatRouter } from './chatRouter.js';
-import { createRateLimiter } from './rateLimiter.js';
 
 /** Mount prefix this plugin registers under. `publicPaths.ts` exempts ONLY
  *  `${API_PREFIX}/chat` from the session gate — keep the two in sync. */
