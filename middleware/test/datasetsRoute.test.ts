@@ -38,8 +38,10 @@ function withSession(userId: string | undefined) {
 // No default value here on purpose — a default would silently win over an
 // explicit `undefined` argument (JS default-parameter semantics), which is
 // exactly the "anonymous caller" case this harness needs to express.
-async function makeHarness(userId: string | undefined): Promise<Harness> {
-  const graph = new InMemoryKnowledgeGraph();
+async function makeHarness(
+  userId: string | undefined,
+  graph: InMemoryKnowledgeGraph = new InMemoryKnowledgeGraph(),
+): Promise<Harness> {
   const app = express();
   app.use(express.json());
   app.use(MOUNT, withSession(userId), createDatasetsRouter({ graph }));
@@ -56,6 +58,16 @@ async function makeHarness(userId: string | undefined): Promise<Harness> {
 }
 
 const CSV = 'name,age\nAda,36\nGrace,85\n';
+
+/** #430 fixup regression harness — a graph whose `ingestDataset` throws,
+ *  simulating an unexpected failure (e.g. a transient Postgres error inside
+ *  `NeonKnowledgeGraph.ingestDataset`) rather than returning the structured
+ *  `{ok: false, reason}` not-ok result `importCsvDataset` handles already. */
+class ThrowingIngestKnowledgeGraph extends InMemoryKnowledgeGraph {
+  override async ingestDataset(): Promise<never> {
+    throw new Error('simulated ingest failure');
+  }
+}
 
 describe('POST /api/v1/datasets', () => {
   let h: Harness;
@@ -110,6 +122,19 @@ describe('POST /api/v1/datasets', () => {
     assert.equal(deleteRes.status, 204);
     const afterDeleteRes = await fetch(`${h.baseUrl}/${datasetId}`);
     assert.equal(afterDeleteRes.status, 404);
+  });
+
+  it('returns a JSON {code, message} body — not an unhandled rejection / Express default page — when importCsvDataset throws', async () => {
+    const throwing = await makeHarness('user-1', new ThrowingIngestKnowledgeGraph());
+    const form = new FormData();
+    form.append('file', new Blob([CSV], { type: 'text/csv' }), 'people.csv');
+    const res = await fetch(throwing.baseUrl, { method: 'POST', body: form });
+    assert.equal(res.status, 500);
+    assert.equal(res.headers.get('content-type')?.includes('application/json'), true);
+    const body = (await res.json()) as { code: string; message: string };
+    assert.equal(body.code, 'dataset.internal_error');
+    assert.equal(body.message, 'simulated ingest failure');
+    await throwing.close();
   });
 
   it('scopes datasets per owner — a different session cannot see or delete them', async () => {

@@ -128,6 +128,21 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `datasetImport.test.ts` with signed zero-padded values proving the column
   types as `'string'`, the value round-trips with sign and leading zero
   intact, and the privacy scan runs on it.
+- Fixup (round 7, adversarial review): `POST /api/v1/datasets` was the only
+  one of the five dataset route handlers (`middleware/src/routes/datasets.ts`)
+  with no `try/catch` around its core call (`importCsvDataset`). Since
+  Express 5 auto-forwards async rejections to its default error handler and
+  this app registers no global JSON error middleware, an unexpected THROWN
+  error during import (e.g. a transient Postgres error inside
+  `NeonKnowledgeGraph.ingestDataset`) fell through to Express's default
+  handler and returned an HTML error page instead of the `{code, message}`
+  JSON envelope every other dataset endpoint already returns via
+  `mapErrorToHttp`. Fixed by wrapping the handler's `importCsvDataset` call
+  in the same `try/catch` + `mapErrorToHttp` pattern the other four
+  handlers use — the existing, already-handled `{ok: false, reason}`
+  not-ok/privacy-rejection return path is unchanged. Regression test added
+  in `datasetsRoute.test.ts` with a graph whose `ingestDataset` throws,
+  asserting the route returns a JSON `{code, message}` body.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 

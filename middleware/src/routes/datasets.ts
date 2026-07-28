@@ -97,25 +97,36 @@ export function createDatasetsRouter(deps: { graph: KnowledgeGraph }): Router {
           ? nameField.trim()
           : file.originalname;
 
-      const imported = await importCsvDataset({
-        graph: deps.graph,
-        bytes: file.buffer,
-        datasetName,
-        sourceFileName: file.originalname,
-        ownerOmadiaUserId: sessionUserId,
-      });
-      if (!imported.ok) {
-        res.status(422).json({ code: 'dataset.import_failed', message: imported.reason });
-        return;
+      try {
+        const imported = await importCsvDataset({
+          graph: deps.graph,
+          bytes: file.buffer,
+          datasetName,
+          sourceFileName: file.originalname,
+          ownerOmadiaUserId: sessionUserId,
+        });
+        if (!imported.ok) {
+          res.status(422).json({ code: 'dataset.import_failed', message: imported.reason });
+          return;
+        }
+        res.status(201).json({
+          dataset: imported.result,
+          privacyScan: imported.privacyScan,
+          // #430 fixup — cells over MAX_CELL_CHARS are still cut (protects the
+          // scan + storage from one pathological cell), but the cut is no
+          // longer silent: callers can see it happened and which columns.
+          truncation: imported.truncation,
+        });
+      } catch (err) {
+        // #430 fixup — an unexpected THROWN error (e.g. a transient Postgres
+        // failure inside NeonKnowledgeGraph.ingestDataset) must still return
+        // the same {code, message} JSON envelope as the other four dataset
+        // handlers below, not Express's default HTML error page. The
+        // structured `{ok: false, reason}` not-ok case above is unaffected —
+        // this only guards against a thrown exception.
+        const { status, code, message } = mapErrorToHttp(err);
+        res.status(status).json({ code, message });
       }
-      res.status(201).json({
-        dataset: imported.result,
-        privacyScan: imported.privacyScan,
-        // #430 fixup — cells over MAX_CELL_CHARS are still cut (protects the
-        // scan + storage from one pathological cell), but the cut is no
-        // longer silent: callers can see it happened and which columns.
-        truncation: imported.truncation,
-      });
     },
   );
 
