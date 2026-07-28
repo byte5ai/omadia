@@ -478,7 +478,7 @@ function injectDaemonOwnedEnv(policyEnv, jobId, owned) {
   if (owned.egressProxyUrl) {
     // The proxy is default-deny and authenticates every request as
     // `Proxy-Authorization: Basic base64(jobId:proxyToken)`. Standard http clients
-    // (curl, git, undici, python-requests) derive that header from the proxy URL's
+    // (curl, git, python-requests) derive that header from the proxy URL's
     // userinfo, so the credential travels in the injected value — NOT in the
     // operator-supplied DEV_RUNNER_EGRESS_PROXY_URL, which is still refused if it
     // carries userinfo. The token names exactly one job's allowlist, and it is the
@@ -490,6 +490,18 @@ function injectDaemonOwnedEnv(policyEnv, jobId, owned) {
     env.HTTPS_PROXY = withCreds;
     env.http_proxy = withCreds;
     env.https_proxy = withCreds;
+    // UNLIKE curl/git, Node's own global `fetch` (undici) does NOT read
+    // HTTP_PROXY/HTTPS_PROXY/NO_PROXY by default — that's opt-in, gated behind
+    // this exact flag (undici's EnvHttpProxyAgent). The shim's homeClient.ts is
+    // deliberately "Node's global fetch only — no dependency", so without this,
+    // every phone-home call (spec fetch, events, diff upload, result) ignores
+    // the proxy entirely and tries the middleware direct — which the runner's
+    // own per-job network has no route to (`getaddrinfo ENOTFOUND middleware`).
+    // MUST be a real process env var: setting it in-process after Node starts
+    // does nothing, since undici reads it once at dispatcher construction.
+    // Read-only for `MUST be set`; the value itself carries no secret and has
+    // no reason to ever be anything but '1' when a proxy is configured at all.
+    env.NODE_USE_ENV_PROXY = '1';
   }
   if (owned.noProxy) {
     env.NO_PROXY = owned.noProxy;

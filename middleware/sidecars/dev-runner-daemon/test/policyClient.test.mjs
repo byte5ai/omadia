@@ -313,6 +313,18 @@ describe('policyClient — daemon-owned env keys are injected, never accepted', 
     assert.equal(policy.env.no_proxy, 'middleware,localhost');
   });
 
+  it('injects NODE_USE_ENV_PROXY alongside a configured proxy — otherwise Node fetch ignores HTTP_PROXY entirely', async () => {
+    // Unlike curl/git, Node's global fetch (undici) does NOT read HTTP_PROXY by
+    // default; the shim's homeClient.ts uses fetch with no dependency, so
+    // without this flag every phone-home call silently bypasses the proxy and
+    // tries the middleware direct — unreachable from the job's own network.
+    const client = clientWith(policyBody(), {
+      clientOpts: { egressProxyUrl: 'http://egress-proxy:3128' },
+    });
+    const policy = await client.fetchJobPolicy(JOB_ID);
+    assert.equal(policy.env.NODE_USE_ENV_PROXY, '1');
+  });
+
   it('splices the per-job proxy credentials into the injected proxy URL', async () => {
     // The proxy is default-deny and authenticates as Basic base64(jobId:proxyToken).
     // Standard http clients derive that header from the URL userinfo, so the
@@ -339,7 +351,15 @@ describe('policyClient — daemon-owned env keys are injected, never accepted', 
   it('injects NO proxy vars when the daemon has none configured', async () => {
     const client = clientWith(policyBody());
     const policy = await client.fetchJobPolicy(JOB_ID);
-    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY', 'no_proxy']) {
+    for (const k of [
+      'HTTP_PROXY',
+      'HTTPS_PROXY',
+      'http_proxy',
+      'https_proxy',
+      'NO_PROXY',
+      'no_proxy',
+      'NODE_USE_ENV_PROXY',
+    ]) {
       assert.equal(policy.env[k], undefined, `${k} must be absent without a configured proxy`);
     }
   });
