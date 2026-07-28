@@ -333,4 +333,41 @@ describe('channelApi/chatRouter — audit-log accuracy for every authenticated o
 
     await harness.close();
   });
+
+  it('audits status "error" — never "ok" — for an in-band {type:"error"} event with no throw', async () => {
+    // The real orchestrator (and the verifier-wrapped orchestrator, when
+    // verifier mode is on) can yield a `{type:'error', message}` event on an
+    // already-open 200 stream WITHOUT throwing — the async iterator
+    // completes normally. This is the exact bug class that hit issue #403:
+    // nothing throws, so a naive "loop completed => audit ok" is wrong.
+    const harness = startTestServer({
+      async *handleTurnStream() {
+        yield { type: 'text_delta', text: 'partial answer before things went wrong' };
+        yield { type: 'error', message: 'downstream tool call failed' };
+      },
+    });
+    const created = await harness.apiKeys.create({ label: 'in-band-error' });
+
+    const res = await fetch(harness.baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${created.token}` },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+    assert.equal(res.status, 200);
+    const events = parseNdjson(await res.text());
+    assert.deepEqual(
+      events.map((e) => (e as { type: string }).type),
+      ['text_delta', 'error'],
+    );
+
+    const entries = await harness.auditLog.list();
+    assert.equal(entries.length, 1, 'exactly one audit row for this authenticated call');
+    assert.equal(
+      entries[0]?.status,
+      'error',
+      'an in-band error event with no throw must be audited as "error", not "ok"',
+    );
+
+    await harness.close();
+  });
 });

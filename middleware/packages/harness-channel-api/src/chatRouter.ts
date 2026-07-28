@@ -40,6 +40,21 @@ function writeEvent(res: Response, event: unknown): void {
   res.write(`${JSON.stringify(event)}\n`);
 }
 
+/**
+ * True for an in-band `{type:'error', ...}` event forwarded from the
+ * orchestrator stream. These complete the async iterator normally — nothing
+ * throws — so the caller has to inspect the events themselves to notice the
+ * turn failed (see the `sawInBandError` tracking below).
+ */
+function isErrorEvent(event: unknown): boolean {
+  return (
+    typeof event === 'object' &&
+    event !== null &&
+    'type' in event &&
+    (event as { type: unknown }).type === 'error'
+  );
+}
+
 function bearerToken(req: Request): string | undefined {
   const header = req.headers['authorization'];
   if (typeof header !== 'string' || !header.startsWith('Bearer ')) {
@@ -148,10 +163,17 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
         },
         text: parsed.data.message,
       };
+      // The orchestrator (or, with verifier mode on, the verifier wrapper)
+      // can yield an in-band `{type:'error', ...}` event on this already-open
+      // 200 stream WITHOUT throwing — the async iterator completes normally.
+      // Track whether one was seen so we don't record 'ok' for a turn that
+      // actually failed (same bug class as issue #403).
+      let sawInBandError = false;
       for await (const event of deps.core.handleTurnStream(turn)) {
+        if (isErrorEvent(event)) sawInBandError = true;
         safeWrite(event);
       }
-      audit('ok');
+      audit(sawInBandError ? 'error' : 'ok');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!clientGone) writeEvent(res, { type: 'error', message });

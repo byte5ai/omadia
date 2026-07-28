@@ -76,16 +76,24 @@ relevant to a plain chat integration:
 
 | `type` | Meaning |
 |---|---|
-| `agent_bound` | Emitted once, near the start: which agent is handling the turn. |
 | `text_delta` | Incremental chunk of the assistant's answer text. Concatenate these to reconstruct the streamed answer as it's produced. |
 | `done` | Terminal event on success. Carries the full `answer` string plus `toolCalls` / `iterations` counters — read `done.answer` if you only want the final text and don't care about incremental deltas. |
-| `error` | Terminal event when the turn failed mid-stream (the orchestrator threw). Carries a `message`. |
+| `error` | Terminal event when the turn failed mid-stream (the orchestrator threw, or the orchestrator/verifier yielded an in-band error event without throwing). Carries a `message`. |
+| `verifier` | **Informational, safe to ignore.** Only appears when the omadia instance has verifier mode enabled — one extra event **after** `done`, carrying a `summary` of the post-hoc fact-check. Never blocks or retries the turn; the caller already has the answer by the time this arrives. |
+
+Note: `agent_bound` — an event some other omadia channel routes emit — is
+**not** emitted on this route. `CoreApi.handleTurnStream` (what this plugin
+calls directly) never yields it; it's synthesized by the kernel's own
+`/api/chat/stream` HTTP route handler, which this plugin doesn't go through.
+Integrators porting code from that route should not expect it here.
 
 The full event union carries additional internal event types (tool-call
 tracing, heartbeats, token-usage accounting, and similar) that a simple
 integration can safely ignore — treat any `type` you don't recognize as
-informational and skip it rather than treating it as an error. Only `done`
-and `error` are guaranteed terminal.
+informational and skip it rather than treating it as an error. `done` and
+`error` are the terminal events for the turn itself, but note the `verifier`
+row above: a `done` or `error` event is not a guarantee that nothing else
+will ever appear on the stream afterward.
 
 A dropped connection on the caller's side does not fail the underlying turn
 server-side; the server simply stops writing once it detects the client is
@@ -104,6 +112,13 @@ returns `429 Too Many Requests`:
 This is a fixed 60-second window, counted per key, in-memory on the server —
 back off and retry after the window resets. A rate-limited call is
 authenticated (the key was valid) but never reaches the orchestrator.
+
+**This limiter is in-memory and per-process.** It resets on every restart
+and does not share state across multiple replicas/instances of this app —
+if the app is ever scaled horizontally, each replica enforces the budget
+independently, so a key's effective ceiling becomes `rateLimitPerMinute ×
+replica count`. This is a known, accepted v1 trade-off (see
+`docs/security-architecture.md` § 8), not an oversight.
 
 ## Error summary
 
@@ -128,7 +143,6 @@ arrives rather than only once the stream closes. A successful call prints a
 sequence of lines like:
 
 ```
-{"type":"agent_bound","slug":"general"}
 {"type":"text_delta","text":"Your "}
 {"type":"text_delta","text":"current MRR is..."}
 {"type":"done","answer":"Your current MRR is...","toolCalls":0,"iterations":1}

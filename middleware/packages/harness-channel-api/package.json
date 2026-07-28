@@ -12,8 +12,8 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@omadia/channel-sdk": "*",
-    "@omadia/plugin-api": "*",
+    "@omadia/channel-sdk": "^0.1.0",
+    "@omadia/plugin-api": "^0.1.0",
     "express": "^5.1.0",
     "zod": "^4.0.0"
   },

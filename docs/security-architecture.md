@@ -191,11 +191,20 @@ hash with `crypto.timingSafeEqual`, deliberately without an early return on
 the first match, so total work (and the timing signal) never depends on
 which key, if any, matched.
 
-**Rate limiting — fixed-window, per key.** Each key gets its own in-memory
-fixed-window counter (`rateLimiter.ts`, 60s window, capacity =
-`rateLimitPerMinute` set at key-creation time). In-memory and per-process:
-a restart clears every counter, which is an accepted v1 trade-off (a burst
-right after deploy is not the threat this defends against).
+**Rate limiting — fixed-window, per key, in-memory and per-process.** Each
+key gets its own in-memory fixed-window counter (`rateLimiter.ts`, 60s
+window, capacity = `rateLimitPerMinute` set at key-creation time). This
+state lives in a single Node process's memory only — it is **not** shared
+across multiple replicas/instances of this app, and a restart clears every
+counter. If this app is ever run with more than one replica behind a load
+balancer, each replica enforces the limit independently, so the effective
+ceiling for a key is `rateLimitPerMinute × replica count`, not the
+configured value. This is an accepted v1 trade-off, same bar as the
+`TokenBucket` in `httpAccessor.ts` elsewhere in this codebase — "good enough
+to stop a runaway caller", not a precise distributed quota. A shared/
+distributed limiter (e.g. Redis-backed) was explicitly considered and
+declined for v1; revisit only if multi-replica deployment of this app
+becomes real.
 
 **Revocation.** `POST /api/public/v1/admin/keys/:id/revoke` sets
 `revokedAt` on the key's vault record (idempotent — revoking an

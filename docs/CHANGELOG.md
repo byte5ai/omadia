@@ -53,6 +53,23 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   status reflecting the real outcome — `ok` | `rate_limited` |
   `invalid_request` | `error` — instead of writing `status: 'ok'`
   optimistically before dispatch.
+- Second review fixup round: the audit-status fix above still had a gap —
+  `deps.core.handleTurnStream` can yield an in-band `{type:'error',
+  message}` event on the already-open stream WITHOUT throwing (same bug
+  class as #403), and the loop completing normally was still recorded as
+  `ok`. `chatRouter.ts` now tracks whether an `error`-type event was
+  forwarded during iteration and audits `error` in that case too, with a
+  regression test covering the no-throw path. Docs: the README's event
+  table no longer claims `agent_bound` is emitted on this route (it isn't —
+  that event is synthesized by the kernel's own `/api/chat/stream` handler,
+  not by `CoreApi.handleTurnStream`) and now documents the verifier-mode
+  `{type:'verifier'}` event that can follow `done`. `docs/security-architecture.md`
+  § 8 and the README's rate-limiting section now say explicitly that the
+  limiter is in-memory and per-process, not shared across replicas
+  (accepted v1 trade-off, no code change). `harness-channel-api`'s
+  `peerDependencies` on `@omadia/channel-sdk` / `@omadia/plugin-api` are now
+  pinned to `^0.1.0` instead of `"*"`, per `CONTRIBUTING.md`'s dependency
+  hardening policy.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 
