@@ -184,6 +184,39 @@ describe('<EmbeddingProviderPage />', () => {
     expect(panel?.className).not.toContain('--danger');
   });
 
+  it('surfaces provider drift, in amber, when the registry and the verdict disagree', async () => {
+    // Reachable without anything failing: an adapter swapped through the
+    // generic plugin-install UI does NOT re-run the dimension gate, so the
+    // graph keeps running under a verdict about a model nobody is using. Both
+    // numbers were already on this page — only the disagreement was silent.
+    mockGetEmbeddingProvider.mockResolvedValue(
+      baseState({
+        providerDrift: {
+          activeModelId: 'ollama:nomic-embed-text',
+          gateModelId: 'openai:text-embedding-3-small',
+        },
+      }),
+    );
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    const banner = await screen.findByText('Provider drift');
+    const panel = banner.closest('section');
+    // Amber, not red: nothing is broken, but it needs re-gating.
+    expect(panel?.className).toContain('--warning');
+    expect(panel?.className).not.toContain('--danger');
+    expect(
+      screen.getByText(/openai:text-embedding-3-small/),
+    ).toBeTruthy();
+  });
+
+  it('says nothing about drift when the two agree', async () => {
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    await screen.findByText(OLLAMA);
+    expect(screen.queryByText('Provider drift')).toBeNull();
+  });
+
   it('renders a blocked gate as an error', async () => {
     mockGetEmbeddingProvider.mockResolvedValue(
       baseState({

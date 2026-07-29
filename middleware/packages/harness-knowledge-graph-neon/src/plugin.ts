@@ -180,6 +180,13 @@ export async function activate(
   // provider switch re-arms the sweep with the NEW client (the sweep captures
   // its client at construction, so "re-arm" means replace) or stands it down
   // when the new verdict has nothing for it to do.
+  //
+  // "Replace" covers the TIMERS ONLY. `stop()` cannot cancel a tick that is
+  // already awaiting `embed()`, and that tick keeps the client the outgoing
+  // handle was constructed with — which is how previous-provider vectors used
+  // to land after the switch's clear had drained, permanently (non-NULL, so no
+  // clear and no `WHERE embedding IS NULL` sweep revisits them). The gate
+  // epoch is what actually fences that work; see `gateEpoch.ts`.
   let backfill: EmbeddingBackfillHandle | undefined;
   /** The client the RUNNING sweep holds, so a no-op sync stays a no-op. */
   let backfillClient: EmbeddingClient | undefined;
@@ -254,9 +261,14 @@ export async function activate(
       resumeStaleVectorClear: true,
       // Republish the gate status the moment the clear drains, so /health
       // stops reporting a pending clear without waiting for a restart.
-      onStaleVectorClearComplete: () => {
-        gate.markStaleVectorClearComplete();
+      onStaleVectorClearComplete: (sweepEpoch) => {
+        gate.markStaleVectorClearComplete(sweepEpoch);
       },
+      // The write fence. `stop()` below only clears timers — a tick already
+      // awaiting `embed()` keeps running with THIS handle's client, so a sweep
+      // replaced mid-batch would otherwise finish its rows with the previous
+      // provider and land those vectors after the clear drained.
+      gateEpoch: () => gate.epoch(),
       log: (msg) => { console.error(msg); },
     });
     backfillClient = wanted;
@@ -397,6 +409,9 @@ export async function activate(
     tenantId,
     accessTracker,
     resolveEmbeddingClient,
+    // Fences the two post-COMMIT embedders against a re-gate that lands
+    // between their `embed()` and their UPDATE — see `gateEpoch.ts`.
+    gateEpoch: () => gate.epoch(),
   });
   console.log(
     embeddingClient
@@ -533,6 +548,7 @@ export async function activate(
     tenantId,
     dedupThreshold,
     resolveEmbeddingClient,
+    gateEpoch: () => gate.epoch(),
   });
   const disposeProcessMemory = ctx.services.provide(
     PROCESS_MEMORY_SERVICE,

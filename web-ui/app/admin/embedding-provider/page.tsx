@@ -245,6 +245,26 @@ export default function EmbeddingProviderPage(): React.ReactElement {
             </section>
           )}
 
+          {/* The registry's client and the governing verdict name different
+              models. Amber, not red: an adapter swapped through the generic
+              plugin-install UI does not re-gate — deliberately — so nothing
+              failed, but the graph is running under a verdict about a model
+              nobody is using. Both numbers were already on this page; only
+              their disagreement was silent. */}
+          {state.providerDrift != null && (
+            <section
+              className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.warn}`}
+            >
+              <p className="font-semibold">{t('providerDriftTitle')}</p>
+              <p className="mt-1">
+                {t('providerDriftBody', {
+                  activeModelId: state.providerDrift.activeModelId,
+                  gateModelId: state.providerDrift.gateModelId,
+                })}
+              </p>
+            </section>
+          )}
+
           <GatePanel gate={state.gate} card={card} heading={heading} dt={dt} />
 
           <section className={card}>

@@ -1,4 +1,5 @@
 import type { EmbeddingModelGateOutcome } from './embeddingModelGate.js';
+import { INITIAL_GATE_EPOCH } from './gateEpoch.js';
 
 /**
  * #440 — the `embeddingModelGateStatus` service, as `/health` consumes it
@@ -92,8 +93,17 @@ export interface EmbeddingGateStatusPublication {
    * Called by the backfill sweep the moment it drains the owed clear. No-op
    * unless the CURRENT verdict actually owes a clear, so a late or spurious
    * call can never upgrade a `blocked` verdict.
+   *
+   * #440 follow-up — VERDICT-SCOPED. `callerEpoch` is the gate epoch the
+   * caller captured when it started the clear it is reporting on; the call is
+   * dropped unless it matches the epoch that armed the CURRENT owed clear.
+   * Without that check the `clearResumeOwed` guard alone is not enough: a
+   * sweep stood down under verdict A can complete its tick after verdict B
+   * republished, and because B also owes a clear the guard passes and writes
+   * go ON for a clear that never drained. Harmless while this method kept
+   * writes OFF; load-bearing now that it flips them ON.
    */
-  markStaleVectorClearComplete(): void;
+  markStaleVectorClearComplete(callerEpoch: number): void;
   /**
    * Replace the published verdict wholesale (#440 follow-up).
    *
@@ -112,6 +122,13 @@ export interface EmbeddingGateStatusPublication {
     outcome: EmbeddingModelGateOutcome,
     vectorWritesAllowed: boolean,
     clearResumeOwed: boolean,
+    /**
+     * The gate epoch this verdict was published under (#440 follow-up). It
+     * becomes the only epoch `markStaleVectorClearComplete` will accept, so a
+     * sweep armed by an earlier verdict cannot report a drain for this one.
+     * Omitted keeps the current epoch — for callers with no gate runner.
+     */
+    epoch?: number,
   ): void;
   /**
    * Attach the re-evaluate entry point to the PUBLISHED object.
@@ -139,12 +156,17 @@ export function createEmbeddingGateStatus(
   initialOutcome: EmbeddingModelGateOutcome,
   initialVectorWritesAllowed: boolean,
   initialClearResumeOwed: boolean,
+  initialEpoch: number = INITIAL_GATE_EPOCH,
 ): EmbeddingGateStatusPublication {
-  // The verdict currently on display. All three move together — a re-evaluation
+  // The verdict currently on display. All four move together — a re-evaluation
   // that replaced the outcome but left the owed-clear flag behind would let
-  // `markStaleVectorClearComplete` upgrade a verdict that never owed a clear.
+  // `markStaleVectorClearComplete` upgrade a verdict that never owed a clear,
+  // and one that left the EPOCH behind would let a sweep stood down under the
+  // previous verdict report a drain for this one.
   let outcome = initialOutcome;
   let clearResumeOwed = initialClearResumeOwed;
+  /** The gate epoch the currently-owed clear was armed under. */
+  let clearArmedEpoch = initialEpoch;
   let snapshot = describeGateOutcome(
     outcome,
     initialVectorWritesAllowed,
@@ -164,11 +186,17 @@ export function createEmbeddingGateStatus(
     vectorWritesAllowed(): boolean {
       return snapshot.vectorWritesAllowed;
     },
-    markStaleVectorClearComplete(): void {
+    markStaleVectorClearComplete(callerEpoch: number): void {
       // Guarded on `clearResumeOwed`, which is false for every `blocked`
       // outcome — a late or spurious call can still never upgrade a verdict
       // that never owed a clear. What it CAN do is re-enable writes.
       if (!clearResumeOwed) return;
+      // …and guarded on the epoch that armed THIS clear. `clearResumeOwed`
+      // alone cannot tell "the sweep I armed finished my clear" from "a sweep
+      // I stood down finished someone else's": both arrive with the flag up.
+      // `stop()` does not cancel an in-flight tick, so the second case is
+      // reachable on every switch that replaces one owed clear with another.
+      if (callerEpoch !== clearArmedEpoch) return;
       // Vector writes go back ON, in-process. They used to stay reported as
       // OFF here, and that was correct at the time: the plugin constructed
       // NeonKnowledgeGraph and NeonProcessMemoryStore with a captured
@@ -184,9 +212,11 @@ export function createEmbeddingGateStatus(
       nextOutcome: EmbeddingModelGateOutcome,
       nextVectorWritesAllowed: boolean,
       nextClearResumeOwed: boolean,
+      nextEpoch?: number,
     ): void {
       outcome = nextOutcome;
       clearResumeOwed = nextClearResumeOwed;
+      if (nextEpoch !== undefined) clearArmedEpoch = nextEpoch;
       snapshot = describeGateOutcome(
         nextOutcome,
         nextVectorWritesAllowed,

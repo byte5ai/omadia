@@ -111,6 +111,7 @@ import {
   GRAPH_NODE_TYPES,
   validateNodeProps,
 } from './schema.js';
+import { captureGateEpoch, type GateEpochReader } from './gateEpoch.js';
 
 export interface NeonKnowledgeGraphOptions {
   pool: Pool;
@@ -133,6 +134,20 @@ export interface NeonKnowledgeGraphOptions {
    * refusal had finished. A resolver lets the gate re-open writes in-process.
    */
   resolveEmbeddingClient?: () => EmbeddingClient | undefined;
+  /**
+   * #440 follow-up — reads the gate's current epoch, for the write fence.
+   *
+   * The resolve-once contract above is deliberate and stays: re-resolving
+   * between the guard and the `embed()` would turn a clean skip into a crash.
+   * But it means a client resolved before an `await embed()` can be un-approved
+   * by the time the UPDATE runs — a same-width provider switch drains
+   * `clear_pending` and re-opens writes inside exactly that window, and the
+   * previous-provider vector that lands afterwards is unrecoverable (non-NULL,
+   * so no clear and no NULL-only sweep will ever revisit it). Both embedders
+   * below therefore capture this epoch before their embed and drop the write if
+   * it moved. Omitted → never fenced, byte-for-byte the pre-#440 behaviour.
+   */
+  gateEpoch?: GateEpochReader;
   /**
    * OB-73 (Phase 4) — optional read-path access tracker. When wired, every
    * Turn surfaced by `searchTurns`, `searchTurnsByEmbedding`, `getSession`
@@ -382,10 +397,14 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     | { markAccessed(externalId: string | null | undefined): void }
     | undefined;
 
+  /** See `NeonKnowledgeGraphOptions.gateEpoch`. */
+  private readonly gateEpoch: GateEpochReader | undefined;
+
   constructor(opts: NeonKnowledgeGraphOptions) {
     this.pool = opts.pool;
     this.tenantId = opts.tenantId ?? 'default';
     this.resolveEmbeddingClient = opts.resolveEmbeddingClient;
+    this.gateEpoch = opts.gateEpoch;
     this.accessTracker = opts.accessTracker;
   }
 
@@ -944,9 +963,24 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       [turnUuid],
     );
     if (existing.rows[0]?.has_embedding === true) return;
+    // Captured BEFORE the embed, checked AFTER it. See
+    // `NeonKnowledgeGraphOptions.gateEpoch`.
+    const fence = captureGateEpoch(this.gateEpoch);
     try {
       const vector = await embeddingClient.embed(text);
       if (vector.length === 0) return;
+      if (fence.moved()) {
+        // The gate re-evaluated while we were embedding, so this vector came
+        // from a client the current verdict no longer approves. Dropping it is
+        // a clean no-op: the row keeps `embedding IS NULL` and no attempt is
+        // burned, so the backfill sweep — armed with the approved client —
+        // re-embeds it on its next tick. Writing it instead would leave a
+        // previous-model vector nothing can find again.
+        console.error(
+          `[graph] discarded a previous-provider embedding for turn uuid=${turnUuid.slice(0, 8)}… — the model gate re-evaluated mid-embed; the backfill sweep will re-embed it`,
+        );
+        return;
+      }
       await this.pool.query(
         `UPDATE graph_nodes
            SET embedding = $1::vector,
@@ -3247,9 +3281,17 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const embeddingClient = this.currentEmbeddingClient();
     if (!embeddingClient) return;
     if (text.trim().length === 0) return;
+    // Same fence as `embedAndStoreTurn`.
+    const fence = captureGateEpoch(this.gateEpoch);
     try {
       const vector = await embeddingClient.embed(text);
       if (vector.length === 0) return;
+      if (fence.moved()) {
+        console.error(
+          `[graph] discarded a previous-provider embedding for ${externalId} — the model gate re-evaluated mid-embed; the backfill sweep will re-embed it`,
+        );
+        return;
+      }
       await this.pool.query(
         `UPDATE graph_nodes
            SET embedding = $1::vector,

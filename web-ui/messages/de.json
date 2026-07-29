@@ -3785,6 +3785,8 @@
     "activeProvider": "Aktiver Provider",
     "activeModel": "Modell",
     "activeDimensions": "Vektorbreite",
+    "providerDriftTitle": "Provider-Drift",
+    "providerDriftBody": "Die Registry liefert {activeModelId} aus, das für den Knowledge Graph geltende Verdikt wurde aber gegen {gateModelId} berechnet. Kaputt ist damit nichts — ein Adapter-Wechsel über die Plugin-Seiten führt das Dimensions-Gate nicht erneut aus. Wechsle den Provider hier, um neu zu gaten, damit Korpus und Verdikt wieder dasselbe Modell beschreiben.",
     "capabilityMissing": "Der aktive Adapter published keinen Client — er läuft, ist aber nicht konfiguriert (API-Key oder Base-URL fehlt).",
     "corpusTitle": "Gespeicherter Korpus",
     "corpusModel": "Registriertes Modell",

@@ -46,7 +46,7 @@ describe('embedding gate status publication (#440)', () => {
     assert.equal(handedToTheRegistry.vectorWritesAllowed, false);
     assert.equal(handedToTheRegistry.reason, 'stale-vector-clear-pending');
 
-    published.markStaleVectorClearComplete();
+    published.markStaleVectorClearComplete(0);
 
     assert.equal(
       handedToTheRegistry.reason,
@@ -83,7 +83,7 @@ describe('embedding gate status publication (#440)', () => {
       false,
       'while a clear is owed the resolver must hand the stores nothing',
     );
-    published.markStaleVectorClearComplete();
+    published.markStaleVectorClearComplete(0);
     assert.equal(published.vectorWritesAllowed(), true);
   });
 
@@ -101,7 +101,7 @@ describe('embedding gate status publication (#440)', () => {
       false,
     );
 
-    blocked.markStaleVectorClearComplete();
+    blocked.markStaleVectorClearComplete(0);
 
     assert.equal(blocked.status.reason, 'dimension-mismatch');
     assert.equal(
@@ -123,7 +123,7 @@ describe('embedding gate status publication (#440)', () => {
     assert.equal(published.status.vectorWritesAllowed, false);
     assert.equal(published.status.reason, 'stale-vector-clear-pending');
 
-    published.markStaleVectorClearComplete();
+    published.markStaleVectorClearComplete(0);
     assert.equal(published.status.reason, 'stale-vector-clear-complete');
     assert.equal(published.status.vectorWritesAllowed, true);
   });
@@ -140,7 +140,7 @@ describe('embedding gate status publication (#440)', () => {
     assert.equal(before.warnings.length, 1);
     assert.match(String(before.warnings[0]), /still dropping old vectors/);
 
-    published.markStaleVectorClearComplete();
+    published.markStaleVectorClearComplete(0);
 
     const after = buildKgHealth(reg, published.status);
     assert.deepEqual(
@@ -242,7 +242,7 @@ describe('embedding gate status publication (#440)', () => {
 
     // …and it clears without a restart, the same way every other owed clear
     // does — this must not become a permanent red.
-    published.markStaleVectorClearComplete();
+    published.markStaleVectorClearComplete(0);
     assert.equal(published.vectorWritesAllowed(), true);
     assert.equal(published.status.reason, 'stale-vector-clear-complete');
   });
@@ -328,7 +328,7 @@ describe('embedding gate status publication (#440)', () => {
       false,
       false,
     );
-    published.markStaleVectorClearComplete();
+    published.markStaleVectorClearComplete(0);
     assert.equal(
       published.status.vectorWritesAllowed,
       false,
@@ -342,8 +342,40 @@ describe('embedding gate status publication (#440)', () => {
       true,
     );
     assert.equal(published.status.vectorWritesAllowed, false);
-    published.markStaleVectorClearComplete();
+    published.markStaleVectorClearComplete(0);
     assert.equal(published.status.vectorWritesAllowed, true);
+  });
+
+  it('drops a clear-completion reported by a sweep the CURRENT verdict did not arm', async () => {
+    // BLOCKING-2. `stop()` clears timers; it cannot cancel a tick already
+    // awaiting `embed()`. So a sweep armed under verdict A can complete after
+    // a switch republished verdict B — and when B ALSO owes a clear, the
+    // `clearResumeOwed` guard passes and writes go ON for a clear that never
+    // drained. That was harmless while this method deliberately kept writes
+    // OFF; the follow-up made it flip them ON, which made it load-bearing.
+    const published = createEmbeddingGateStatus(OWED_MATCH, false, true, 7);
+
+    // The switch: verdict B, new epoch, and it owes a clear of its own.
+    published.republish(
+      { status: 're-embedding', modelId: 'b', previousModelId: 'a', clearedVectors: 3, clearPending: true },
+      false,
+      true,
+      8,
+    );
+
+    // Verdict A's stood-down sweep finishes its tick and reports in.
+    published.markStaleVectorClearComplete(7);
+    assert.equal(
+      published.vectorWritesAllowed(),
+      false,
+      "verdict B's clear has NOT drained — a stale sweep must not open writes for it",
+    );
+    assert.equal(published.status.reason, 'stale-vector-clear-pending');
+
+    // The sweep verdict B actually armed reports in.
+    published.markStaleVectorClearComplete(8);
+    assert.equal(published.vectorWritesAllowed(), true);
+    assert.equal(published.status.reason, 'stale-vector-clear-complete');
   });
 
   it('carries the re-evaluate entry point without leaking it into the health JSON', async () => {

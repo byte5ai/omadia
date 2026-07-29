@@ -59,6 +59,12 @@ export type { ColumnCatalogInfo } from './vectorColumnCatalog.js';
 // without going near `activate()`/`close()` (which would end the shared pool).
 export { startGateRunner } from './gateReevaluation.js';
 export type { BackfillSync, GateRunner, GateRunnerDeps } from './gateReevaluation.js';
+
+// #440 follow-up — the gate epoch, the fence that keeps a previous provider's
+// vectors out of the corpus when a re-gate lands between an `embed()` and its
+// UPDATE. Every vector writer in this package takes a `gateEpoch` reader.
+export { captureGateEpoch, INITIAL_GATE_EPOCH } from './gateEpoch.js';
+export type { GateEpochFence, GateEpochReader } from './gateEpoch.js';
 export { createEmbeddingGateStatus } from './gateStatusPublication.js';
 export type {
   EmbeddingGateStatus,

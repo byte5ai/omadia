@@ -5,6 +5,7 @@ import {
   clearStaleVectors,
   isStaleVectorClearPending,
 } from './staleVectorClear.js';
+import { captureGateEpoch, type GateEpochFence, type GateEpochReader } from './gateEpoch.js';
 import { buildEmbeddingBody } from './processMemoryStore.js';
 
 /**
@@ -52,12 +53,28 @@ export interface EmbeddingBackfillOptions {
   /** #440 — invoked once, on the tick where the resumed clear finally drains
    *  (`pending === false`). The gate's published status is a boot-time
    *  verdict; without this hook it would keep telling `/health` a clear is
-   *  pending long after this sweep finished it, until the next restart. */
-  onStaleVectorClearComplete?: () => void;
+   *  pending long after this sweep finished it, until the next restart.
+   *
+   *  #440 follow-up — receives the gate epoch this tick ran under, so the gate
+   *  can drop a completion reported by a sweep it has since stood down. */
+  onStaleVectorClearComplete?: (epoch: number) => void;
+  /** #440 follow-up — reads the gate's current epoch. `stop()` clears timers
+   *  but cannot cancel a tick that is already awaiting `embed()`, so a sweep
+   *  replaced mid-batch would otherwise finish its rows with the PREVIOUS
+   *  provider's client and write those vectors after the clear drained. Every
+   *  write below re-reads this immediately before the UPDATE and drops the row
+   *  when it moved. Omitted → never fenced (pre-#440 callers, unit tests). */
+  gateEpoch?: GateEpochReader;
   log?: (msg: string) => void;
 }
 
 export interface EmbeddingBackfillHandle {
+  /**
+   * Cancel the timers. It does NOT cancel a tick that is already awaiting an
+   * `embed()` — that tick runs to completion with the client this handle was
+   * constructed with. What keeps its writes out of the corpus is the gate
+   * epoch (`gateEpoch` option), not this call.
+   */
   stop(): void;
   /** Run one sweep immediately, bypassing the interval. Used for tests. */
   runOnce(): Promise<EmbeddingBackfillStats>;
@@ -72,6 +89,11 @@ export interface EmbeddingBackfillStats {
   /** Vectors dropped by the resumed stale-vector clear (#440). Non-zero only
    *  while a provider switch is still being worked off. */
   cleared?: number;
+  /** Rows whose freshly computed vector was DISCARDED because the gate
+   *  re-evaluated mid-tick (#440 follow-up). Counted, never written, and never
+   *  charged an attempt — the row stays NULL and the next sweep, armed with
+   *  the approved client, picks it up again. */
+  staleEpochSkipped?: number;
 }
 
 interface PendingProcessRow {
@@ -144,7 +166,10 @@ export function startEmbeddingBackfill(
   /** In-memory retry counter for `processes` (no persisted attempt column). */
   const processFailures = new Map<string, number>();
 
-  const sweepNodes = async (stats: EmbeddingBackfillStats): Promise<void> => {
+  const sweepNodes = async (
+    stats: EmbeddingBackfillStats,
+    fence: GateEpochFence,
+  ): Promise<void> => {
     try {
       // Slice 7 — fan in across configured node types. The ORDER BY
       // (embedding_attempts, created_at) keeps freshly-failed rows at
@@ -193,6 +218,23 @@ export function startEmbeddingBackfill(
         }
         try {
           const vector = await opts.embeddingClient.embed(text);
+          // THE FENCE, after the await and immediately before the write. This
+          // sweep holds the client it was constructed with; a re-gate in the
+          // meantime means that client is no longer approved, so the vector in
+          // hand belongs to the previous model. Writing it here is exactly the
+          // unrecoverable state `clear_pending` exists to prevent: the row goes
+          // non-NULL under a registry that names the NEW model, so no clear
+          // will revisit it and no `WHERE embedding IS NULL` sweep will either.
+          //
+          // The whole rest of the batch is doomed for the same reason, so stop
+          // rather than burn one provider call per remaining row.
+          if (fence.moved()) {
+            stats.staleEpochSkipped = (stats.staleEpochSkipped ?? 0) + 1;
+            log(
+              `[graph-embedding-backfill] gate re-evaluated mid-sweep (epoch ${String(fence.epoch)} → ${String(opts.gateEpoch?.() ?? fence.epoch)}) — discarding this batch's remaining previous-provider vectors; the rows stay NULL for the next sweep`,
+            );
+            return;
+          }
           if (vector.length === 0) {
             stats.failed++;
             await opts.pool.query(
@@ -257,6 +299,7 @@ export function startEmbeddingBackfill(
    */
   const sweepProcesses = async (
     stats: EmbeddingBackfillStats,
+    fence: GateEpochFence,
   ): Promise<void> => {
     // The exclusion has to happen INSIDE the query. Filtering after `LIMIT`
     // starves the sweep: once `batchSize` poison rows exist they fill every
@@ -295,6 +338,16 @@ export function startEmbeddingBackfill(
       }
       try {
         const vector = await opts.embeddingClient.embed(text);
+        // Same fence as the node pass — `processes.embedding` is the second
+        // governed cosine space, so a previous-provider vector landing here
+        // after a clear drained is the same unrecoverable state.
+        if (fence.moved()) {
+          stats.staleEpochSkipped = (stats.staleEpochSkipped ?? 0) + 1;
+          log(
+            `[graph-embedding-backfill] gate re-evaluated mid-process-sweep (epoch ${String(fence.epoch)}) — discarding this batch's remaining previous-provider vectors; the rows stay NULL for the next sweep`,
+          );
+          return;
+        }
         if (vector.length === 0) throw new Error('empty vector from embedder');
         await opts.pool.query(
           `UPDATE processes
@@ -326,6 +379,12 @@ export function startEmbeddingBackfill(
     }
     running = true;
     const stats: EmbeddingBackfillStats = { tried: 0, succeeded: 0, failed: 0 };
+    // Captured ONCE for the whole tick. `stop()` only clears timers, so this
+    // tick can outlive the verdict that armed it; every write below and the
+    // clear-completion callback are scoped to the epoch it started under.
+    // Tick-wide rather than per-row on purpose: if the gate moved at any point
+    // during the tick, none of this tick's work belongs in the corpus.
+    const fence = captureGateEpoch(opts.gateEpoch);
     try {
       // #440 — finish what the gate capped. Embedding anything while stale
       // vectors are still around would break the invariant the clear relies
@@ -355,7 +414,7 @@ export function startEmbeddingBackfill(
             // reporting a clear that is finished. A throwing listener must not
             // take the sweep down with it.
             try {
-              opts.onStaleVectorClearComplete?.();
+              opts.onStaleVectorClearComplete?.(fence.epoch);
             } catch (err) {
               log(
                 `[graph-embedding-backfill] stale-vector-clear completion listener failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -366,8 +425,8 @@ export function startEmbeddingBackfill(
         }
       }
 
-      await sweepNodes(stats);
-      if (opts.includeProcesses === true) await sweepProcesses(stats);
+      await sweepNodes(stats, fence);
+      if (opts.includeProcesses === true) await sweepProcesses(stats, fence);
     } catch (err) {
       log(
         `[graph-embedding-backfill] sweep error: ${err instanceof Error ? err.message : String(err)}`,

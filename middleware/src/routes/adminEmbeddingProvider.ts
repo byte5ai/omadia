@@ -396,16 +396,24 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
     });
 
     const activeMetadata = readActiveMetadata(deps);
+    const gateStatus = deps.getGateStatus() ?? null;
     return {
       providers,
       activeProviderId: activeId,
       activeModel: activeMetadata,
+      // The registry's CURRENT client vs. the model the last gate verdict was
+      // computed against. They diverge when a provider was swapped through the
+      // generic plugin-install UI, which deliberately does not re-gate — so
+      // nothing is broken, but the graph is still governed by a verdict about
+      // a model that is no longer active. Surfaced rather than left for an
+      // operator to notice by comparing two fields on the page.
+      providerDrift: describeProviderDrift(activeMetadata, gateStatus),
       capabilityPublished: deps.getEmbeddingClient() !== undefined,
       corpus: recorded,
       columns: corpus.columns,
       columnDimensions: corpus.columnDimensions,
       storedVectorTotal: corpus.storedVectorTotal,
-      gate: deps.getGateStatus() ?? null,
+      gate: gateStatus,
       autoMigrateVectorColumns: autoMigrateEnabled(deps.installedRegistry),
       knowledgeGraphInstalled: deps.installedRegistry.has(KG_NEON_ID),
       graphAvailable: pool !== undefined,
@@ -575,6 +583,40 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
   }
 
   return router;
+}
+
+/**
+ * The `(768d)` suffix `describeGateOutcome` appends on some arms and not
+ * others. Stripped before comparing so a purely cosmetic difference in how the
+ * verdict was worded never reads as drift.
+ */
+const GATE_MODEL_DIMENSION_SUFFIX = / \(\d+d\)$/;
+
+/**
+ * PROVIDER DRIFT — the registry's live client names a different model than the
+ * verdict currently governing the graph.
+ *
+ * Reachable without anything going wrong: the generic plugin-install UI can
+ * activate a different `embeddingClient@1` adapter, and it deliberately does
+ * not re-gate (only Admin → Embedding provider does, behind an explicit
+ * discard confirmation). The graph then keeps refusing or allowing writes on
+ * the strength of a verdict about a model nobody is using any more. Both
+ * numbers were already on the page; only their disagreement was silent.
+ *
+ * `null` whenever the comparison cannot be made — no client published, no
+ * gate, or an `unknown-provider` verdict that names no model at all. Absence of
+ * evidence is not drift.
+ */
+function describeProviderDrift(
+  activeModel: { modelId: string; dimensions: number } | null,
+  gate: EmbeddingGateStatus | null,
+): { activeModelId: string; gateModelId: string } | null {
+  if (activeModel === null || gate === null) return null;
+  const gateModelId = gate.activeModelId;
+  if (typeof gateModelId !== 'string' || gateModelId.length === 0) return null;
+  const normalised = gateModelId.replace(GATE_MODEL_DIMENSION_SUFFIX, '');
+  if (normalised === activeModel.modelId) return null;
+  return { activeModelId: activeModel.modelId, gateModelId: normalised };
 }
 
 function readActiveMetadata(

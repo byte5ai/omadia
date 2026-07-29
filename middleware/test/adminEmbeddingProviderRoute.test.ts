@@ -488,6 +488,59 @@ describe('POST /switch — in-place gate re-evaluation (F7, repurposed)', () => 
   });
 });
 
+describe('provider drift — the registry and the verdict name different models', () => {
+  // Reachable without anything failing: the generic plugin-install UI can
+  // activate a different `embeddingClient@1` adapter and deliberately does NOT
+  // re-run the dimension gate. Both numbers were already in the snapshot; only
+  // their disagreement was silent, so an operator had to spot it by comparing
+  // two fields.
+
+  it('reports no drift while the two agree', async () => {
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: KG_NEON, status: 'active' },
+    ]);
+    const { body } = await harness.getJson();
+    assert.equal(body.activeModel?.modelId, 'ollama:nomic-embed-text');
+    assert.equal(body.gate?.activeModelId, 'ollama:nomic-embed-text (768d)');
+    assert.equal(
+      body.providerDrift,
+      null,
+      'the (768d) suffix the verdict carries is formatting, not drift',
+    );
+  });
+
+  it('surfaces drift when the verdict describes a model that is no longer active', async () => {
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: KG_NEON, status: 'active' },
+    ]);
+    // The registry still publishes ollama:nomic-embed-text; the governing
+    // verdict was computed against something else and nothing re-gated.
+    harness.gate.activeModelId = 'openai:text-embedding-3-small (1536d)';
+
+    const { body } = await harness.getJson();
+    assert.deepEqual(body.providerDrift, {
+      activeModelId: 'ollama:nomic-embed-text',
+      gateModelId: 'openai:text-embedding-3-small',
+    });
+  });
+
+  it('does not invent drift when the verdict names no model at all', async () => {
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: KG_NEON, status: 'active' },
+    ]);
+    // `unknown-provider` publishes no `activeModelId`. Absence of evidence is
+    // not evidence of drift — reporting one here would be a permanent false
+    // alarm on every pre-#440 third-party adapter.
+    delete (harness.gate as { activeModelId?: string }).activeModelId;
+
+    const { body } = await harness.getJson();
+    assert.equal(body.providerDrift, null);
+  });
+});
+
 describe('corpus pricing uses the tenant the plugin uses (F5)', () => {
   it('prices graph_tenant_id from the knowledge-graph setup field, not GRAPH_TENANT_ID', async () => {
     const { pool, tenantsQueried } = makeCorpusPool({

@@ -363,6 +363,7 @@ export interface SnapshotResponse {
   }>;
   activeProviderId: string | null;
   activeModel: { modelId: string; dimensions: number } | null;
+  providerDrift: { activeModelId: string; gateModelId: string } | null;
   gate: EmbeddingGateStatus | null;
   autoMigrateVectorColumns: boolean;
   graphAvailable: boolean;

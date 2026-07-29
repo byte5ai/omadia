@@ -197,6 +197,8 @@ describe('#440 in-place gate re-evaluation (real Postgres)', { skip: !pgAvailabl
   async function startRunner(opts: {
     initialClient: EmbeddingClient | undefined;
     autoMigrateVectorColumns?: boolean;
+    /** Make `syncBackfill` throw — see the BLOCKING-3 case below. */
+    syncBackfillThrows?: boolean;
   }): Promise<{
     runner: Awaited<ReturnType<typeof startGateRunner>>;
     setRegistryClient: (c: EmbeddingClient | undefined) => void;
@@ -220,6 +222,9 @@ describe('#440 in-place gate re-evaluation (real Postgres)', { skip: !pgAvailabl
           vectorWritesAllowed: args.vectorWritesAllowed,
           clearResumeOwed: args.clearResumeOwed,
         });
+        if (opts.syncBackfillThrows === true) {
+          throw new Error('could not arm the backfill sweep');
+        }
       },
       log: silent,
     });
@@ -422,6 +427,56 @@ describe('#440 in-place gate re-evaluation (real Postgres)', { skip: !pgAvailabl
     assert.equal(await declaredType('graph_nodes'), 'public.vector(768)');
     assert.equal(await countVectors('graph_nodes'), 3);
     assert.equal((await registryRow())?.dimensions, 768);
+  });
+
+  it('never leaves writes ON with no sweep armed when arming the sweep throws', async () => {
+    // BLOCKING-3. The order was `approved = nextClient` → `republish` →
+    // `syncBackfill`, with nothing around the last call. A throw propagated out
+    // of `reevaluate` AFTER the permitting verdict was published and AFTER the
+    // previous sweep had been stopped and `backfill`/`backfillClient` cleared:
+    // writes ON, nothing re-earning the corpus, and the admin route telling the
+    // operator the switch failed.
+    await freshSchema({
+      nodesWithVectors: 1,
+      registry: { modelId: 'ollama:nomic-embed-text', dimensions: 768 },
+    });
+    const h = await startRunner({
+      initialClient: OLLAMA,
+      syncBackfillThrows: true,
+    });
+    assert.equal(h.runner.vectorWritesAllowed(), true, 'precondition');
+    const epochBefore = h.runner.epoch();
+
+    h.setRegistryClient(OLLAMA_ALT);
+    await assert.rejects(
+      h.runner.reevaluate({ allowDestructiveMigration: true }),
+      /could not arm the backfill sweep/,
+      'the caller must still be told the switch failed',
+    );
+
+    // The sweep WAS asked for — this is the real failure, not a skipped call.
+    assert.equal(h.backfillCalls.length, 1);
+    assert.equal(h.backfillCalls[0]?.vectorWritesAllowed, true);
+
+    // …and the published verdict now agrees with what the caller was told.
+    assert.equal(
+      h.runner.vectorWritesAllowed(),
+      false,
+      'writes must not stay ON while nothing is armed to re-earn the corpus',
+    );
+    assert.equal(h.runner.outcome().status, 'blocked');
+    assert.equal(h.runner.status.vectorWritesAllowed, false);
+    assert.equal(
+      h.resolveEmbeddingClient(),
+      undefined,
+      'and the stores must be handed nothing, so they store NULL and fall back to FTS',
+    );
+    assert.ok(
+      h.runner.epoch() > epochBefore + 1,
+      'the downgrade bumps the epoch again, so anything mid-embed under the ' +
+        'permitting verdict is fenced too',
+    );
+    assert.equal(h.endCalls(), 0);
   });
 
   it('refuses to rewrite for an UNCONFIRMED re-evaluation, master switch on', async () => {

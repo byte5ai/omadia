@@ -3785,6 +3785,8 @@
     "activeProvider": "Active provider",
     "activeModel": "Model",
     "activeDimensions": "Vector width",
+    "providerDriftTitle": "Provider drift",
+    "providerDriftBody": "The registry hands out {activeModelId}, but the verdict governing the knowledge graph was computed against {gateModelId}. Nothing is broken — swapping an adapter through the plugin pages does not re-run the dimension gate. Switch the provider here to re-gate, so the corpus and the verdict describe the same model again.",
     "capabilityMissing": "The active adapter publishes no client — it is running but not configured (missing API key or base URL).",
     "corpusTitle": "Stored corpus",
     "corpusModel": "Recorded model",

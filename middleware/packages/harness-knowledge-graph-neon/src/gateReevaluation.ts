@@ -8,6 +8,7 @@ import {
   requiresStaleVectorClearResume,
   type EmbeddingModelGateOutcome,
 } from './embeddingModelGate.js';
+import { INITIAL_GATE_EPOCH } from './gateEpoch.js';
 import {
   createEmbeddingGateStatus,
   type EmbeddingGateStatus,
@@ -98,8 +99,19 @@ export interface GateRunner {
   vectorWritesAllowed(): boolean;
   /** The client the current verdict was computed against. */
   approvedClient(): EmbeddingClient | undefined;
-  /** Backfill hook — drains an owed clear and re-enables writes in-process. */
-  markStaleVectorClearComplete(): void;
+  /**
+   * THE FENCE (#440 follow-up). Bumped in the same synchronous block that
+   * swaps `approvedClient()`, so "the epoch moved" and "a different client is
+   * approved now" are the same event. Every vector writer captures this before
+   * its `await embed()` and drops the write if it moved — see `gateEpoch.ts`.
+   */
+  epoch(): number;
+  /**
+   * Backfill hook — drains an owed clear and re-enables writes in-process.
+   * `callerEpoch` is the epoch the reporting sweep captured; a call from a
+   * sweep the current verdict did not arm is dropped.
+   */
+  markStaleVectorClearComplete(callerEpoch: number): void;
   /** Re-run the gate in place. See the module header. */
   reevaluate(request?: GateReevaluateRequest): Promise<EmbeddingGateStatus>;
 }
@@ -124,6 +136,11 @@ function gateEvaluationFailed(detail: string): EmbeddingModelGateOutcome {
 
 export async function startGateRunner(deps: GateRunnerDeps): Promise<GateRunner> {
   let approved = deps.resolveRegistryClient();
+  /**
+   * THE GATE EPOCH. Monotonic, bumped only alongside `approved`. See
+   * `gateEpoch.ts` for what it fences and why nothing narrower suffices.
+   */
+  let epoch = INITIAL_GATE_EPOCH;
   let outcome: EmbeddingModelGateOutcome;
   try {
     outcome = await evaluateEmbeddingModelGate({
@@ -147,6 +164,7 @@ export async function startGateRunner(deps: GateRunnerDeps): Promise<GateRunner>
     outcome,
     allowsVectorWrites(outcome),
     requiresStaleVectorClearResume(outcome),
+    epoch,
   );
 
   // Serialises re-evaluations. Two overlapping calls would race the same
@@ -190,21 +208,47 @@ export async function startGateRunner(deps: GateRunnerDeps): Promise<GateRunner>
     // Swap the approved client BEFORE the verdict goes live. The other order
     // leaves a window in which writes are allowed while the resolver still
     // hands out the previous provider's client.
+    //
+    // The epoch moves in the SAME synchronous block, which is what makes it a
+    // usable fence: no writer can observe the new client under the old epoch
+    // or vice versa, and anything already awaiting an `embed()` under the
+    // previous verdict is invalidated at exactly this instant.
     approved = nextClient;
-    publication.republish(next, writesAllowed, clearOwed);
-    deps.syncBackfill({
-      client: approved,
-      vectorWritesAllowed: writesAllowed,
-      clearResumeOwed: clearOwed,
-    });
+    epoch += 1;
+    publication.republish(next, writesAllowed, clearOwed, epoch);
+    outcome = next;
+    try {
+      deps.syncBackfill({
+        client: approved,
+        vectorWritesAllowed: writesAllowed,
+        clearResumeOwed: clearOwed,
+      });
+    } catch (err) {
+      // A THROW HERE USED TO LEAVE THE WORST OF BOTH. The permitting verdict
+      // was already published (writes ON) and the previous sweep was already
+      // stopped with `backfill`/`backfillClient` cleared — so the hot path
+      // embedded into a corpus nothing was re-earning, while the admin route
+      // reported the switch as failed. Downgrade the verdict to match what the
+      // caller is about to be told: writes OFF, nothing owed, and a fresh
+      // epoch so anything mid-embed under the permitting verdict is fenced too.
+      const detail = err instanceof Error ? err.message : String(err);
+      const degraded = gateEvaluationFailed(`backfill sync failed: ${detail}`);
+      approved = undefined;
+      epoch += 1;
+      publication.republish(degraded, false, false, epoch);
+      outcome = degraded;
+      deps.log(
+        `[graph-embedding-gate] the new verdict could not arm a backfill sweep: ${detail} — vector writes forced OFF so the switch does not look successful to the hot path while the caller is told it failed`,
+      );
+      throw err;
+    }
     deps.log(
       `[graph-embedding-gate] re-evaluated in place: status=${next.status} writes=${
         writesAllowed ? 'ON' : 'OFF'
-      } client=${readEmbeddingProviderMetadata(nextClient)?.modelId ?? '(none)'} destructiveMigration=${
+      } epoch=${String(epoch)} client=${readEmbeddingProviderMetadata(nextClient)?.modelId ?? '(none)'} destructiveMigration=${
         allowed ? 'permitted' : 'not permitted'
       } — the knowledge-graph plugin and its pool were NOT restarted`,
     );
-    outcome = next;
     return { ...publication.status };
   };
 
@@ -227,7 +271,10 @@ export async function startGateRunner(deps: GateRunnerDeps): Promise<GateRunner>
     clearResumeOwed: () => requiresStaleVectorClearResume(outcome),
     vectorWritesAllowed: () => publication.vectorWritesAllowed(),
     approvedClient: () => approved,
-    markStaleVectorClearComplete: () => { publication.markStaleVectorClearComplete(); },
+    epoch: () => epoch,
+    markStaleVectorClearComplete: (callerEpoch: number) => {
+      publication.markStaleVectorClearComplete(callerEpoch);
+    },
     reevaluate,
   };
 }

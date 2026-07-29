@@ -3572,10 +3572,26 @@ export interface EmbeddingGateState {
   detail?: string;
 }
 
+/**
+ * The registry's live client and the last gate verdict name DIFFERENT models
+ * (#440 follow-up). Not a failure: swapping an `embeddingClient@1` adapter
+ * through the generic plugin-install UI deliberately does not re-gate, so the
+ * graph keeps running under a verdict about a model that is no longer active.
+ * `null` when the two agree, or when either side is unknown.
+ */
+export interface EmbeddingProviderDrift {
+  /** What the registry hands out right now. */
+  activeModelId: string;
+  /** What the governing verdict was computed against. */
+  gateModelId: string;
+}
+
 export interface EmbeddingProviderState {
   providers: EmbeddingProviderOption[];
   activeProviderId: string | null;
   activeModel: { modelId: string; dimensions: number } | null;
+  /** Optional so older middleware builds still satisfy this type. */
+  providerDrift?: EmbeddingProviderDrift | null;
   capabilityPublished: boolean;
   /** `graph_embedding_model` — what the stored vectors were produced with. */
   corpus: { modelId: string; dimensions: number; clearPending: boolean } | null;
