@@ -43,9 +43,9 @@ The three verdicts are **not the same**, and that is the finding.
 |---|---|---|---|
 | 1 | **Conductor `dev.job` step** | Executor constructed with no `devJob` dep, so the dispatch branch is always false; the reconciliation sweep is never scheduled | **ACTIVATE as its own PR — or delete.** Not as a side-effect of C5 |
 | 2 | **`ctx.devJobs`** | `provide('devJobs', …)` exists nowhere in `src/` | **DELETE** |
-| 3 | **Tracker polling** | `TrackerPoller` never constructed or started | **DEFER — move dormant** |
-| 4 | **`TrackerRegistry`** | `registerTracker` has zero production callers; no tracker of any kind is registered | **DEFER — moves with #3** |
-| 5 | **Comment-back** | `tracker/commentBack.ts` referenced only by its own test | **DEFER — moves with #3** |
+| 3 | **Tracker polling** | `TrackerPoller` never constructed or started | **DEFER-AND-HARDEN** — roadmap foundation; six fixes gate switch-on |
+| 4 | **`TrackerRegistry`** | `registerTracker` has zero production callers | **DELETE** — the seam inverts, so there is nothing to move |
+| 5 | **Comment-back** | `tracker/commentBack.ts` referenced only by its own test | **REWRITE at P3** against the tracker contract |
 
 #4 and #5 were found while designing #3. `acceptance.md` §2.5 listed comment-back as live with
 the probe *"result posted to the issue"* — it is not wired, so a polled job's result never
@@ -278,7 +278,85 @@ being tolerated, it is the **extension point for a roadmap feature**. Three cons
    ungated, any plugin could register one. The per-caller-factory fix in C2 is a prerequisite,
    not an optional hardening.
 
-Design pass on the seam is in flight; this section will carry its outcome.
+### The seam design — invert it
+
+The obvious reading is "dev-platform provides `trackerRegistry@1`, the Jira plugin requires it
+and registers into it." That fails on four counts, and the fix is to **turn the direction
+around**:
+
+- **Jira plugin = provider**: `provides: ["devTracker.jira@1"]`, `ctx.services.provide(...)`.
+- **Dev-platform = consumer**: declares **no** tracker `requires`, resolves late —
+  `ctx.services.get('devTracker.' + repo.trackerKind)` per repo per sweep.
+- **`TrackerRegistry` is deleted, not moved.** Its plugin-map half becomes the `services.get`
+  lookup; its GitHub-fallback half folds into dev-platform's own resolver.
+
+Why the naive direction fails: it hands a **mutable registry** through an ungated accessor;
+`registerTracker(kind, factory)` has no caller attribution (the identity is the key the caller
+picks); `services.replace()` is an exposed MITM primitive; and the ABI is `DevRepo`-shaped —
+a ~40-field internal type that moves to the plugin repo at P4, paired with a return type from
+a core route file deleted at C10. Both sides of that signature cease to exist where a third
+party can reach them.
+
+Under the inversion the object crossing the seam is a **read-only, stateless service** — the
+same risk class as `graphPool@1`, which this org already ships.
+
+**And it is what makes C2's per-caller factory actually pay off.** The credential owner decides
+who may use its credentials: `provide('devTracker.jira', (consumerId) => consumerId ===
+'@omadia/dev-platform' ? impl : undefined)`. Applied to a shared registry instead, the factory
+would gate *who may register* — the wrong question.
+
+Capability names must carry the kind (`devTracker.jira@1`, not `devTracker@1`), or Jira and
+Linear become mutually exclusive twice over: `provide` throws on duplicate, and the provider
+index throws at boot.
+
+### Three verified findings that change other decisions
+
+1. **The hot-install path bypasses capability resolution entirely.** `index.ts` routes
+   `case 'extension'` straight to `toolPluginRuntime.activate(agentId)` — no
+   `resolveEligiblePlugins`, no topo-sort. Verified. So `requires`-based ordering only applies
+   on the **boot** path; for the normal case (operator installs from the hub at runtime) it
+   does nothing. **Any design leaning on activation ordering is already broken for that path**
+   — which weakens several ordering arguments elsewhere in these documents, including the
+   `ctx.devJobs` inversion discussion.
+2. **`findDependents` checks `depends_on` only**, never capability `requires` — verified. So an
+   operator can uninstall a capability provider with live consumers and get no 409. Small,
+   independently valuable core fix.
+3. **`source_ref` is `owner/name#N`** — verified. A Jira `PROJ-123` coerced to `123` collides
+   with GitHub issue #123.
+
+### Correction to "what ships now"
+
+Finding 3 **inverts the ship order I recommended.** Widening the unique index to cover
+`source IN ('webhook','tracker')` *before* namespacing `source_ref` would ship a false-**positive**
+dedupe: a Jira ticket silently suppressing an unrelated GitHub issue. Namespace first
+(`jira:PROJ-123`), widen second.
+
+And the dedupe fix is **less load-bearing than I claimed.** `listPollableRepos` selects
+`WHERE 'tracker' = ANY(allowed_triggers) AND (tracker_kind IS NOT NULL OR credential_kind =
+'github_app')`. That `OR` is what drags webhook-covered GitHub repos into the poll set — the
+sole source of the double-job risk. **Delete the built-in GitHub fallback and poll only repos
+with a resolvable plugin tracker**, and no repo is ever both polled and webhooked for the same
+ticket. The widened index drops from "the one thing worth shipping now" to defence-in-depth —
+still worth having, since migration `0025`'s `source='plugin'` is a third potential writer.
+
+### The verdicts change
+
+- **Tracker polling: DEFER → DEFER-AND-HARDEN.** Move behind a flag, freeze the contract, keep
+  an expiry (delete if the Jira plugin is not staffed by the plugin repo's second release).
+  P3's exit condition becomes *"cannot be switched on without all six hardening fixes"*.
+- **Comment-back: no longer "moves with #3"** — it is **rewritten** against the tracker contract
+  at P3. Its transport becomes `comment(binding, ticketId, body)` on the provider interface;
+  only the marker/idempotency logic survives.
+- **`TrackerRegistry`: DEFER → DELETE.** Nothing to move once the seam is inverted, and that is
+  what lets the ratchet legitimately reach 0 without an allowlist entry.
+
+### The contract must be frozen before the poller is hardened
+
+`Ticket` needs `ticketId: string` (opaque) + `displayKey`, `labels[]`, **`labelAppliedAt`**, and
+`updatedSince` as a *provider parameter* rather than a client-side filter. Without
+`labelAppliedAt` the "fires on any update" bug is unfixable at the consumer — so the interface
+has to land first. Home: `middleware/src/devplatform/trackerContract.ts` in Phase A, travelling
+with the tree at P4, exactly the treatment already agreed for `devJobTypes.ts`.
 
 ## Remaining decisions for Marcel
 
