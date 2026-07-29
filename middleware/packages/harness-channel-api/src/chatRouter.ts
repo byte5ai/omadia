@@ -185,6 +185,32 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
         conversationId: internalConversationId(key.id, parsed.data.conversationId ?? randomUUID()),
         // Design decision (issue #438): the key IS its own identity — not a
         // delegate for a human end-user. No impersonation surface.
+        //
+        // Investigated (post-review): raw `key:<uuid>` is never resolved to
+        // a knowledge-graph `omadiaUserId` before dispatch. Confirmed this
+        // is NOT a plugin-specific regression — it matches the documented,
+        // universal contract:
+        //   - `ChannelUserRef.id` is typed "channel-native user id (opaque
+        //     to core)" (harness-channel-sdk/src/incoming.ts) — no channel
+        //     is expected to pre-resolve it.
+        //   - `orchestratorDispatcher.ts` passes `input.userRef.id` straight
+        //     through as `userId` with no resolution step, for every channel.
+        //   - `resolveOrCreateChannelIdentity` is only ever called from the
+        //     browser-login flow (src/index.ts, `/api/v1/auth`) to cache an
+        //     `omadiaUserId` in the session JWT — it is not a per-turn,
+        //     per-channel pattern. Even the one channel with that cached id
+        //     available (omadia-ui-channel/canvasConnection.ts) uses the raw
+        //     `session.subject`, not `session.omadiaUserId`, for `userRef.id`.
+        //   - `src/routes/chat.ts`'s `resolveUserId()` already documents the
+        //     same behaviour for Teams and generic HTTP callers: unresolved
+        //     ids are "advisory metadata only" because
+        //     `NeonKnowledgeGraph.ingestRun` throws when no matching
+        //     User-Cluster node exists (by design — it never auto-creates
+        //     one), so the run-trace ingest is dropped while the Session/Turn
+        //     transcript still persists fine via `ingestTurn` (no such check).
+        // Introducing per-key `resolveOrCreateChannelIdentity` resolution
+        // here would be a NEW pattern no other channel implements, not an
+        // alignment with an established one.
         userRef: {
           kind: 'custom',
           id: `key:${key.id}`,
