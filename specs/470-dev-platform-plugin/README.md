@@ -15,9 +15,10 @@ it at all.
 | File | Answers | Read it when |
 |---|---|---|
 | **`plan.md`** | *What are we building, and why this way?* Architecture decisions, the capability gaps (G1–G10), the three hard couplings (H1–H3), phases P2a→P6, risks | Before touching anything |
+| **`dormant-capabilities.md`** | *What happens to the five capabilities that never ran?* Per-capability verdict (activate / defer / delete) with the security finding that makes `ctx.devJobs` a delete | Before P2b |
 | **`implementation.md`** | *In what order, and what did the detailed design change?* Six design passes synthesised: the five corrected decisions, six verified live bugs, the C1→C13 / P0→P6 PR sequence, and the six blocking decisions | Before starting a phase |
 | **`core-decoupling-checklist.md`** | *What is still coupled?* 276 items across 18 zones, ~49,100 LOC / ~200 files, with `file:line` and DELETE / MOVE / GENERICISE per item | While doing the removal |
-| **`acceptance.md`** | *Did every capability survive, and does it install?* 34 endpoints, 3 chat tools, `ctx.devJobs`, 4 background loops, 4 UI screens, CLI, conductor step — each with a probe. Plus install/uninstall/upgrade criteria | Before claiming a phase is done |
+| **`acceptance.md`** | *Did every capability survive, and does it install?* 35 endpoints, 3 chat tools, 3 live background loops, 4 UI screens, CLI — each with a probe, plus FIVE capabilities marked unreachable. Plus install/uninstall/upgrade criteria | Before claiming a phase is done |
 | **`plugin-tailwind-subset.probe.css`** | *Can a distributed plugin ship a UI without shipping CSS?* Measured reference artifact (7.7 KB gzip) — not built, not shipped | When implementing P3b |
 | **`decoupling-baseline.json`** | The committed reference count the CI ratchet enforces | Never by hand — use `--update` |
 
@@ -71,13 +72,14 @@ node scripts/check-core-decoupling.mjs --report   # per-zone breakdown
 node scripts/check-core-decoupling.mjs --update   # lower the baseline
 ```
 
-The ratchet counts Dev Platform references across 12 zones of core and **fails if the count
-rises**. Baseline **3,171**. It only ever falls; raising it needs a hand-edited baseline, so
+The ratchet counts Dev Platform references across 14 disjoint zones and **fails if the count
+rises, per zone**. Baseline **3,181**. It only ever falls; raising it needs a hand-edited baseline, so
 a new coupling shows up in review instead of slipping in.
 
 That is what makes the checklist's staleness survivable — a file inventory goes stale on
 contact, but the count does not, and it cannot reach zero while a reference survives. It
-also turns "extraction finished" into a machine-checked fact rather than an assertion.
+But it counts IDENTIFIERS, NOT BEHAVIOUR: zero is a necessary condition for done, not a
+sufficient one. Sections 2 and 3 of `acceptance.md` cover the rest, and neither is automated.
 
 **Definition of done:** ratchet reads `0`, every row of `acceptance.md` §2 passes, and the
 install/uninstall criteria in `acceptance.md` §3 pass.

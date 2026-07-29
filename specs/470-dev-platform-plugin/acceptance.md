@@ -55,20 +55,26 @@ So: the ratchet is a necessary condition for done, not a sufficient one.
 
 ## 2. Capability matrix
 
-> ### ⚠️ Three of these capabilities are DEAD IN PRODUCTION TODAY
+> ### ⚠️ FIVE of these capabilities are UNREACHABLE IN PRODUCTION TODAY
 >
 > Found by adversarial review of this document, verified against the code. The matrix
-> below was written from the *source*, and source presence is not production reality:
+> below was written from the *source*, and source presence is not production reality.
+> **Decisions are made in `dormant-capabilities.md`** — this is the summary.
 >
-> | Capability | Why it never runs |
-> |---|---|
-> | **Conductor `dev.job` step** | `conductor/index.ts:209` constructs the executor with no `devJob` dep, so the `runExecutor.ts` dispatch branch is always false and the reconciliation sweep is never scheduled |
-> | **`ctx.devJobs` plugin service** | `provide('devJobs', …)` **does not exist anywhere in `src/`**. The accessor resolves lazily, so it throws `'dev-platform host service unavailable'` on every call |
-> | **Tracker polling** | `TrackerPoller` has a factory and a `start()`, but nothing constructs or starts it in production |
+> | Capability | Why it never runs | Verdict |
+> |---|---|---|
+> | **Conductor `dev.job` step** | Executor built with no `devJob` dep, so the dispatch branch is always false; the sweep is never scheduled. The launch half of the port has **no implementation at all** | Activate as its own PR (C5b), or delete |
+> | **`ctx.devJobs` plugin service** | `provide('devJobs', …)` exists nowhere in `src/`. Zero consumers on disk | **DELETE** — and registering it would be a *security regression* while `services.get` is ungated |
+> | **Tracker polling** | `TrackerPoller` never constructed or started | Defer, move dormant |
+> | **`TrackerRegistry`** | `registerTracker` has zero production callers | Defer, moves with polling |
+> | **Comment-back** | `tracker/commentBack.ts` referenced only by its own test | Defer, moves with polling |
 >
 > **Do not "preserve" them.** Extraction acceptance that certifies these would be
-> certifying a capability the operator never had. For each: decide *delete* or
-> *wire it up in the plugin*, and record which — that decision belongs in P2b.
+> certifying capabilities the operator never had — which is exactly the failure this
+> matrix exists to prevent, in the opposite direction.
+>
+> Note the count grew twice under scrutiny (three → four → five), and "never executed in
+> production" is **unverifiable from source**; what is proven is current unreachability.
 >
 > This is the failure mode a file-level checklist cannot catch, and it is also one the
 > capability matrix got wrong in the opposite direction: listing dead things as live.

@@ -76,7 +76,7 @@ The load-bearing ones:
 
 | Claim | Reality | Consequence |
 |---|---|---|
-| **Four background loops**; `ctx.devJobs` and the conductor step are live capabilities | **Three capabilities are dead in production**: the conductor step (no `devJob` dep), `ctx.devJobs` (`provide('devJobs', …)` exists nowhere in `src/`, so it always throws), and tracker polling (never constructed) | Acceptance would have certified preservation of capabilities the operator never had. Decide *delete* or *wire up in the plugin* — P2b |
+| **Four background loops**; `ctx.devJobs` and the conductor step are live capabilities | **FIVE capabilities are unreachable in production** (the count grew twice under scrutiny): the conductor step (no `devJob` dep), `ctx.devJobs` (`provide('devJobs', …)` exists nowhere in `src/`, so it always throws), and tracker polling, TrackerRegistry and comment-back (all never constructed) | Decisions now in `dormant-capabilities.md`. Acceptance would have certified preservation of capabilities the operator never had. Decide *delete* or *wire up in the plugin* — P2b |
 | **34 HTTP endpoints** | **35 business / 36 handlers.** The LLM proxy has two, and the CLI's liveness probe `GET /llm/` was **absent from the matrix** | A missing capability is the dangerous direction; this is the one that was missing |
 | `wireDevPlatform ↔ routes` is a **real ESM cycle** | **Layering inversion only.** `wireDevPlatform` is imported solely by `index.ts`; no route imports back | C3 is boundary cleanup, not a fix for hoist-dependent behaviour. Don't sell it as the latter |
 | **Five** migrators race on boot | **At least eight** | Worse than stated; the advisory-lock fix is broader |
