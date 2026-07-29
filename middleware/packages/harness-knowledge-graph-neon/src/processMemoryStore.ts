@@ -56,9 +56,22 @@ interface ProcessHistoryRow {
 export interface NeonProcessMemoryStoreOptions {
   pool: Pool;
   tenantId: string;
-  /** Required for `write` (Dedup-First-Write guarantee). Optional makes the
-   *  store read-only-ish: write+edit reject with `embedding-unavailable`. */
-  embeddingClient?: EmbeddingClient;
+  /**
+   * Live lookup for the embedding client, resolved AT THE MOMENT OF USE.
+   *
+   * Required for `write` (Dedup-First-Write guarantee). A resolver that
+   * returns `undefined` — or no resolver at all — makes the store
+   * read-only-ish: `write` and `edit` reject with `embedding-unavailable` and
+   * `query` degrades to BM25-only, byte-for-byte the pre-#440 behaviour of an
+   * absent client.
+   *
+   * #440: previously a fixed client captured in the constructor. The
+   * model/dimension gate passes `undefined` while it refuses vector writes,
+   * and a captured field meant a boot that was gated could never embed again
+   * without an operator restart — including after the stale-vector clear that
+   * caused the refusal had drained. The resolver removes that.
+   */
+  resolveEmbeddingClient?: () => EmbeddingClient | undefined;
   /** Default 0.9 — tunable via setup-field `process_dedup_threshold`. */
   dedupThreshold?: number;
 }
@@ -102,15 +115,43 @@ export function buildEmbeddingBody(title: string, steps: readonly string[]): str
 export class NeonProcessMemoryStore implements ProcessMemoryService {
   private readonly pool: Pool;
   private readonly tenantId: string;
-  private readonly embeddingClient: EmbeddingClient | undefined;
+  /** See `NeonProcessMemoryStoreOptions.resolveEmbeddingClient`. Stored as
+   *  the resolver, never as its result. */
+  private readonly resolveEmbeddingClient:
+    | (() => EmbeddingClient | undefined)
+    | undefined;
+
   private readonly dedupThreshold: number;
 
   constructor(opts: NeonProcessMemoryStoreOptions) {
     this.pool = opts.pool;
     this.tenantId = opts.tenantId;
-    this.embeddingClient = opts.embeddingClient;
+    this.resolveEmbeddingClient = opts.resolveEmbeddingClient;
     const threshold = opts.dedupThreshold ?? PROCESS_DEDUP_DEFAULT_THRESHOLD;
     this.dedupThreshold = Math.max(0, Math.min(1, threshold));
+  }
+
+  /**
+   * The embedding client to use right now, or `undefined` when there is none.
+   *
+   * Every caller resolves ONCE and keeps the reference for the whole
+   * operation. `edit` in particular checks availability long before it embeds
+   * (it has a transaction and a history snapshot in between); re-resolving at
+   * the embed site would let a gate flip in that window turn a clean
+   * `embedding-unavailable` rejection into a TypeError mid-transaction.
+   *
+   * A resolver that throws reads as "unavailable" — that is the safe
+   * direction here, since every caller already has a defined behaviour for it.
+   */
+  private currentEmbeddingClient(): EmbeddingClient | undefined {
+    try {
+      return this.resolveEmbeddingClient?.();
+    } catch (err) {
+      console.error(
+        `[processMemory] embedding-client resolver threw (treating as unavailable): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
   }
 
   async write(input: WriteProcessInput): Promise<WriteProcessResult> {
@@ -122,7 +163,8 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
           'Process-Title muss dem Schema "[Domain]: [What it does]" folgen (z.B. "Backend: Deploy to staging").',
       };
     }
-    if (!this.embeddingClient) {
+    const embeddingClient = this.currentEmbeddingClient();
+    if (!embeddingClient) {
       return {
         ok: false,
         reason: 'embedding-unavailable',
@@ -133,7 +175,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
 
     const steps = input.steps.map((s) => String(s));
     const body = buildEmbeddingBody(input.title, steps);
-    const embedding = await this.embeddingClient.embed(body);
+    const embedding = await embeddingClient.embed(body);
     if (!Array.isArray(embedding) || embedding.length === 0) {
       return {
         ok: false,
@@ -217,7 +259,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
 
     const stepsProvided = Array.isArray(input.steps);
     const needsEmbeddingRebuild = titleProvided || stepsProvided;
-    if (needsEmbeddingRebuild && !this.embeddingClient) {
+    // Resolved here and carried all the way to the embed call below, across
+    // the BEGIN + history snapshot. See `currentEmbeddingClient`.
+    const embeddingClient = this.currentEmbeddingClient();
+    if (needsEmbeddingRebuild && !embeddingClient) {
       return {
         ok: false,
         reason: 'embedding-unavailable',
@@ -273,7 +318,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
 
       let embeddingParam: string | null = null;
       if (needsEmbeddingRebuild) {
-        const embedding = await this.embeddingClient!.embed(
+        // Non-null by the `needsEmbeddingRebuild && !embeddingClient` guard
+        // above, and the reference is the SAME one that guard checked — no
+        // live re-resolve can invalidate it mid-transaction.
+        const embedding = await embeddingClient!.embed(
           buildEmbeddingBody(newTitle, newSteps),
         );
         if (!Array.isArray(embedding) || embedding.length === 0) {
@@ -355,9 +403,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
     // pure BM25 path (degraded but viable). On the write path embedding is
     // mandatory; query is allowed to be softer.
     let queryEmbedding: number[] | null = null;
-    if (this.embeddingClient) {
+    const embeddingClient = this.currentEmbeddingClient();
+    if (embeddingClient) {
       try {
-        const v = await this.embeddingClient.embed(trimmedQuery);
+        const v = await embeddingClient.embed(trimmedQuery);
         queryEmbedding = Array.isArray(v) && v.length > 0 ? v : null;
       } catch {
         // sidecar transient — degrade silently to BM25-only.

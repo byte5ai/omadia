@@ -184,9 +184,12 @@ export async function activate(
   // the vector columns (declared width) or with the corpus recorded in
   // `graph_embedding_model` must not write vectors: mixing two models in one
   // cosine space is silent recall rot, not an error anyone would see. When
-  // the gate blocks we proceed as if no embedding client were resolved —
-  // graph ingest and process writes store NULL embeddings and the backfill
-  // stays disarmed. Same shape as the long-standing no-Ollama degradation.
+  // the gate blocks, the resolver below hands the stores `undefined` — graph
+  // ingest and process writes store NULL embeddings and the backfill stays
+  // disarmed. Same shape as the long-standing no-Ollama degradation, and now
+  // reversible in-process: the resolver is re-consulted on every embed, so a
+  // refusal that ends (a drained stale-vector clear) re-enables writes without
+  // an operator restart.
   //
   // The gate governs THIS plugin's vector writes, not the whole system:
   // contextRetriever / inconsistencyDetector / mergeCandidateDetector /
@@ -200,12 +203,26 @@ export async function activate(
   // as a required service, so a throw here would crash-loop the middleware.
   // Degrade to the safe path instead — no embeddings is recoverable, a boot
   // loop is not.
+  //
+  // #440 Wave A — a DECLARED-WIDTH mismatch is no longer terminal. The KG
+  // columns are vector(768) and every OpenAI model is 1536/3072, so switching
+  // provider always trips it; the gate now rewrites the columns at the new
+  // width and lets the backfill re-embed. That destroys every stored
+  // embedding, so it is a flag — defaulted ON because automatic migration is
+  // the asked-for behaviour, but an operator who would rather hand-write a
+  // 0005-style migration can turn it off and get the old `blocked` outcome.
+  const autoMigrateVectorColumns = parseBool(
+    ctx.config.get<string>('auto_migrate_vector_columns') ??
+      process.env['GRAPH_AUTO_MIGRATE_VECTOR_COLUMNS'],
+    true,
+  );
   let gateOutcome: EmbeddingModelGateOutcome;
   try {
     gateOutcome = await evaluateEmbeddingModelGate({
       pool: graphPool,
       tenantId,
       provider: readEmbeddingProviderMetadata(resolvedEmbeddingClient),
+      autoMigrateVectorColumns,
       log: (msg) => { console.error(msg); },
     });
   } catch (err) {
@@ -222,6 +239,9 @@ export async function activate(
     };
   }
   const vectorWritesAllowed = allowsVectorWrites(gateOutcome);
+  // BOOT-TIME snapshot of the verdict. Used only for the startup log lines and
+  // for deciding whether to arm the backfill; the STORES do not use it, they
+  // go through `resolveEmbeddingClient` below and see the live answer.
   const embeddingClient = vectorWritesAllowed
     ? resolvedEmbeddingClient
     : undefined;
@@ -259,6 +279,25 @@ export async function activate(
     gateStatus.status,
   );
 
+  // THE live resolver both stores consult on every embed. It reads the gate's
+  // CURRENT verdict, not the boot-time one, which is the whole point: when the
+  // backfill sweep drains an owed stale-vector clear it calls
+  // `markStaleVectorClearComplete()`, the published status flips
+  // `vectorWritesAllowed` back to true, and the very next ingest embeds again
+  // — no restart. Before this, both stores captured `embeddingClient:
+  // undefined` in their constructors and a gated boot could never embed again.
+  //
+  // Returning `undefined` is a SKIP, not an error: the stores store NULL and
+  // fall back to FTS, exactly as on a deployment with no provider at all.
+  const resolveEmbeddingClient = (): EmbeddingClient | undefined =>
+    gateStatus.vectorWritesAllowed() ? resolvedEmbeddingClient : undefined;
+
+  if (gateOutcome.status === 'column-migrated') {
+    ctx.log(
+      `[harness-knowledge-graph-neon] vector columns were MIGRATED to ${String(gateOutcome.dimensions)}d for '${gateOutcome.modelId}' — ${gateOutcome.discardedVectors === undefined ? 'an unknown number of' : String(gateOutcome.discardedVectors)} stored embedding(s) were discarded; vector writes are enabled and the backfill sweep is re-embedding the corpus (recall is degraded until it finishes). Set auto_migrate_vector_columns=false to require a manual column migration instead.`,
+    );
+  }
+
   // OB-73 (Phase 4 / Slice B) — read-path access tracker. Reads queue
   // touches into an in-memory map; the decay-job tick flushes them into a
   // single batched UPDATE (access_count, accessed_at, COLD→WARM promotion).
@@ -270,7 +309,7 @@ export async function activate(
     pool: graphPool,
     tenantId,
     accessTracker,
-    ...(embeddingClient ? { embeddingClient } : {}),
+    resolveEmbeddingClient,
   });
   console.log(
     embeddingClient
@@ -472,7 +511,7 @@ export async function activate(
     pool: graphPool,
     tenantId,
     dedupThreshold,
-    ...(embeddingClient ? { embeddingClient } : {}),
+    resolveEmbeddingClient,
   });
   const disposeProcessMemory = ctx.services.provide(
     PROCESS_MEMORY_SERVICE,

@@ -329,16 +329,21 @@ describe('evaluateEmbeddingModelGate', () => {
     assert.ok(queries.some((q) => /clear_pending = FALSE/i.test(q.sql)));
   });
 
-  it('blocks a provider wider than the declared column on an EMPTY corpus', async () => {
+  it('blocks a provider wider than the declared column on an EMPTY corpus (auto-migration OFF)', async () => {
     // The headline case: fresh deployment, no rows anywhere, operator installs
     // a 1536-dim provider against vector(768) columns. Sampling stored rows
     // sees nothing here — only the catalog knows.
+    //
+    // `autoMigrateVectorColumns: false` because that switch now DEFAULTS to
+    // true and would rewrite the columns instead. This is the opted-out path,
+    // and it must still behave exactly as it always did.
     const { pool, queries } = makeFakePool({ hasVectors: false });
 
     const outcome = await evaluateEmbeddingModelGate({
       pool,
       tenantId: 't1',
       provider: OPENAI_SMALL,
+      autoMigrateVectorColumns: false,
       log: silent,
     });
 
@@ -358,7 +363,7 @@ describe('evaluateEmbeddingModelGate', () => {
     );
   });
 
-  it('blocks when only the SECOND governed column disagrees', async () => {
+  it('blocks when only the SECOND governed column disagrees (auto-migration OFF)', async () => {
     // processes.embedding is a separate cosine space; a partial migration
     // that resized graph_nodes only must not read as healthy.
     const { pool } = makeFakePool({
@@ -382,6 +387,7 @@ describe('evaluateEmbeddingModelGate', () => {
       pool,
       tenantId: 't1',
       provider: OPENAI_SMALL,
+      autoMigrateVectorColumns: false,
       log: silent,
     });
 

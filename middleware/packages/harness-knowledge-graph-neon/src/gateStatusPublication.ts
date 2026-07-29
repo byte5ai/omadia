@@ -36,10 +36,24 @@ export interface EmbeddingGateStatus {
 export const CLEAR_COMPLETE_REASON = 'stale-vector-clear-complete';
 /** `reason` value published while a clear is still owed. */
 export const CLEAR_PENDING_REASON = 'stale-vector-clear-pending';
+/**
+ * `reason` published when the gate rewrote the governed vector columns at the
+ * active provider's width. Vector writes ARE allowed in this state — the point
+ * of surfacing it is that every stored embedding was destroyed and the
+ * backfill sweep is still re-earning them, so recall is degraded even though
+ * nothing is broken. Mirrored in `middleware/src/health/kgHealth.ts`.
+ */
+export const VECTOR_COLUMNS_MIGRATED_REASON = 'vector-columns-migrated';
 
 export interface EmbeddingGateStatusPublication {
   /** The object handed to `ctx.services.provide`. Identity is stable. */
   readonly status: EmbeddingGateStatus;
+  /**
+   * Are vector writes allowed RIGHT NOW? This is what the plugin's embedding
+   * client resolver consults on every ingest, so the answer has to be read
+   * live rather than captured — `markStaleVectorClearComplete` changes it.
+   */
+  vectorWritesAllowed(): boolean;
   /**
    * Called by the backfill sweep the moment it drains the owed clear. No-op
    * unless this boot actually published a pending clear, so a late or spurious
@@ -81,16 +95,24 @@ export function createEmbeddingGateStatus(
 
   return {
     status,
+    vectorWritesAllowed(): boolean {
+      return snapshot.vectorWritesAllowed;
+    },
     markStaleVectorClearComplete(): void {
+      // Guarded on `clearResumeOwed`, which is false for every `blocked`
+      // outcome — a late or spurious call can still never upgrade a verdict
+      // this boot never made. What it CAN do now is re-enable writes.
       if (!clearResumeOwed) return;
-      // Vector writes stay reported as OFF. The clear really is done and the
-      // backfill really is re-embedding, but this process constructed
-      // NeonKnowledgeGraph and NeonProcessMemoryStore WITHOUT an embedding
-      // client (plugin.ts), so hot-path ingest still stores NULL and
-      // processMemory still rejects writes with `embedding-unavailable` until
-      // the next restart. Flipping this to true would put back exactly the
-      // false-green reading the gate status exists to prevent.
-      snapshot = describeGateOutcome(outcome, false, 'completed');
+      // Vector writes go back ON, in-process. They used to stay reported as
+      // OFF here, and that was correct at the time: the plugin constructed
+      // NeonKnowledgeGraph and NeonProcessMemoryStore with a captured
+      // `embeddingClient: undefined`, so the stores genuinely could not embed
+      // again without a restart and a green reading would have been a lie.
+      // Both stores now resolve their client live (see
+      // `resolveEmbeddingClient`), and that resolver reads exactly this
+      // snapshot — so flipping it true is what actually re-enables the hot
+      // path, not a cosmetic upgrade of a stale verdict.
+      snapshot = describeGateOutcome(outcome, true, 'completed');
     },
   };
 }
@@ -129,6 +151,32 @@ export function describeGateOutcome(
   if (outcome.status === 'unknown-provider') {
     return { ...base, ...describeClearState(clearState) };
   }
+  // A runtime column migration is NOT a degradation of the write path — it
+  // re-enabled it — but it destroyed the corpus on the way, so it has to be
+  // visible rather than quietly successful.
+  if (outcome.status === 'column-migrated') {
+    const columns = outcome.migratedColumns
+      .map(
+        (m) =>
+          `${m.table}.${m.column} vector(${String(m.previousDimensions ?? 0)})→vector(${String(m.newDimensions)})`,
+      )
+      .join(', ');
+    const discarded =
+      outcome.discardedVectors === undefined
+        ? 'an unknown number of'
+        : String(outcome.discardedVectors);
+    return {
+      ...base,
+      reason: VECTOR_COLUMNS_MIGRATED_REASON,
+      activeModelId: `${outcome.modelId} (${String(outcome.dimensions)}d)`,
+      ...(outcome.previousModelId !== undefined
+        ? {
+            storedModelId: `${outcome.previousModelId} (${String(outcome.previousDimensions ?? 0)}d)`,
+          }
+        : {}),
+      detail: `${columns} were rewritten at runtime; ${discarded} stored vector(s) were discarded and the backfill sweep is re-embedding them`,
+    };
+  }
   return {
     ...base,
     activeModelId: outcome.modelId,
@@ -153,7 +201,7 @@ function describeClearState(
     return {
       reason: CLEAR_COMPLETE_REASON,
       detail:
-        'the stale-vector clear finished and the backfill sweep is re-embedding; this process keeps hot-path vector writes disabled until it is restarted',
+        'the stale-vector clear finished; hot-path vector writes were re-enabled in this process without a restart, and the backfill sweep is re-embedding the corpus',
     };
   }
   return {};

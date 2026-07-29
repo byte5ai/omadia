@@ -8,6 +8,15 @@ import {
   type ClearOptions,
   type StaleVectorClearResult,
 } from './staleVectorClear.js';
+import { tryAutoMigrateColumns } from './gateAutoMigration.js';
+import {
+  // Advisory-lock namespace (first key of the two-int form). It lives in the
+  // migration module because the runtime width migration takes a SESSION-level
+  // lock in this same space — which is exactly what makes it mutually
+  // exclusive with `decideRegistry`'s transaction below.
+  LOCK_NS_REGISTRY,
+  type MigratedVectorColumn,
+} from './vectorColumnMigration.js';
 
 // The clear machinery lives in `staleVectorClear.ts`; re-exported here so
 // `embeddingBackfill.ts`, the package index and existing callers keep their
@@ -146,8 +155,25 @@ export interface EmbeddingModelGateOptions {
   clearStatementTimeoutMs?: number;
   /** Refuse a destructive model switch when the registry row was written
    *  this recently AND vectors still exist. Anti-oscillation guard for
-   *  rolling deploys. Default 10 min; 0 disables. */
+   *  rolling deploys. Default 10 min; 0 disables. Applies UNCHANGED to the
+   *  runtime width migration below, which is strictly more destructive. */
   switchCooldownMs?: number;
+  /**
+   * #440 — on a declared-width mismatch, migrate every governed vector column
+   * to the active provider's width instead of blocking. DEFAULT TRUE: the KG
+   * columns are `vector(768)` and every OpenAI model is 1536/3072, so a width
+   * mismatch is the NORMAL case for anyone switching provider, and automatic
+   * migration is what the feature was asked for.
+   *
+   * It drops every stored embedding, so it can be turned off — the operator
+   * then gets the old `blocked/column-width-mismatch` outcome and can migrate
+   * by hand. Wired to the `auto_migrate_vector_columns` setup field.
+   */
+  autoMigrateVectorColumns?: boolean;
+  /** Wall-clock cap for that migration. `activate()` is killed at 10s, and a
+   *  migration that cannot finish degrades to `blocked` rather than failing
+   *  activation. Default 5000. */
+  autoMigrateBudgetMs?: number;
   log?: (msg: string) => void;
 }
 
@@ -176,6 +202,24 @@ export type EmbeddingModelGateOutcome =
     }
   /** First record for this tenant (empty corpus, or an adopted pre-#440 one). */
   | { status: 'recorded'; modelId: string; dimensions: number }
+  /**
+   * The governed vector columns were the wrong width and have been rewritten
+   * at the active provider's width, at runtime. Every stored vector was
+   * DESTROYED; the backfill sweep re-embeds from NULL. Vector writes are
+   * allowed immediately — the columns now match the provider, the registry
+   * names it, and nothing old is left to mix with.
+   */
+  | {
+      status: 'column-migrated';
+      modelId: string;
+      dimensions: number;
+      /** Registry identity before the migration, when there was one. */
+      previousModelId: string | undefined;
+      previousDimensions: number | undefined;
+      migratedColumns: readonly MigratedVectorColumn[];
+      /** Vectors dropped, or `undefined` when the count could not be taken. */
+      discardedVectors: number | undefined;
+    }
   /** Same vector size, different model — stored vectors cleared for re-embed. */
   | {
       status: 're-embedding';
@@ -220,10 +264,9 @@ const DEFAULT_CLEAR_BATCH_SIZE = 500;
 const DEFAULT_CLEAR_MAX_ROWS = 5_000;
 const DEFAULT_CLEAR_STATEMENT_TIMEOUT_MS = 15_000;
 const DEFAULT_SWITCH_COOLDOWN_MS = 10 * 60 * 1000;
-
-/** Advisory-lock namespaces (first key of the two-int form). Arbitrary but
- *  stable — collisions with other subsystems are what the namespace avoids. */
-const LOCK_NS_REGISTRY = 4_400;
+/** `activate()` is hard-capped at 10s (toolPluginRuntime.ts:286-290) and the
+ *  migration is only one of the things happening inside it. */
+const DEFAULT_AUTO_MIGRATE_BUDGET_MS = 5_000;
 
 /**
  * May this boot's embedding client write vectors?
@@ -315,12 +358,42 @@ export async function evaluateEmbeddingModelGate(
 
   // (1) Declared column width — the check that works on an empty corpus.
   const columns = await discoverGovernedVectorColumns(pool);
+  // Raised BEFORE the width branch: a boot that ends up blocked (or migrating)
+  // is exactly the boot whose operator most needs to know a vector column is
+  // outside this gate's reach.
+  const ungoverned = columns.filter(
+    (c) => !CLEARABLE_COLUMNS.some((k) => k.table === c.table && k.column === c.column),
+  );
+  if (ungoverned.length > 0) {
+    log(
+      `[graph-embedding-gate] WARNING: ${ungoverned
+        .map((c) => `${c.table}.${c.column}`)
+        .join(', ')} is a vector column this gate cannot clear — a model switch will leave foreign-model vectors there. Add it to CLEARABLE_COLUMNS in staleVectorClear.ts.`,
+    );
+  }
+
   const mismatches = columns.filter(
     (c) =>
       c.declaredDimensions !== undefined &&
       c.declaredDimensions !== provider.dimensions,
   );
   if (mismatches.length > 0) {
+    // #440 — the normal case for a provider switch (768-wide columns, a
+    // 1536/3072-wide model). Rewrite the columns rather than dead-ending the
+    // operator on a hand-written migration. Any failure inside falls through
+    // to the historical `blocked` outcome below, with the registry untouched.
+    const migratedOutcome = await tryAutoMigrateColumns({
+      pool,
+      tenantId,
+      provider,
+      mismatches,
+      enabled: opts.autoMigrateVectorColumns ?? true,
+      switchCooldownMs: opts.switchCooldownMs ?? DEFAULT_SWITCH_COOLDOWN_MS,
+      budgetMs: opts.autoMigrateBudgetMs ?? DEFAULT_AUTO_MIGRATE_BUDGET_MS,
+      log,
+    });
+    if (migratedOutcome) return migratedOutcome;
+
     log(
       `[graph-embedding-gate] BLOCKED: active provider '${provider.modelId}' emits ${String(provider.dimensions)}-dimensional vectors, but ${mismatches
         .map(
@@ -338,16 +411,6 @@ export async function evaluateEmbeddingModelGate(
       dimensions: provider.dimensions,
       mismatches,
     };
-  }
-  const ungoverned = columns.filter(
-    (c) => !CLEARABLE_COLUMNS.some((k) => k.table === c.table && k.column === c.column),
-  );
-  if (ungoverned.length > 0) {
-    log(
-      `[graph-embedding-gate] WARNING: ${ungoverned
-        .map((c) => `${c.table}.${c.column}`)
-        .join(', ')} is a vector column this gate cannot clear — a model switch will leave foreign-model vectors there. Add it to CLEARABLE_COLUMNS in staleVectorClear.ts.`,
-    );
   }
 
   // (2) Recorded model identity — read/decide/flip under one tenant lock.

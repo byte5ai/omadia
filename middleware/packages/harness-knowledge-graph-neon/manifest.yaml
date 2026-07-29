@@ -64,6 +64,11 @@ setup:
       type: "string"
       required: false
       help: "Tenant-Schlüssel für die Neon-Tabellen (graph_nodes.tenant_id-Spalte). Migriert aus GRAPH_TENANT_ID. Default: 'default'."
+    - key: "auto_migrate_vector_columns"
+      label: "Auto-migrate vector columns on a dimension change"
+      type: "string"
+      required: false
+      help: "'true' (Default) lässt den #440-Model/Dimension-Gate die vector-Spalten (graph_nodes.embedding, processes.embedding) beim Provider-Wechsel automatisch auf die Breite des aktiven Modells umbauen: Index-Definitionen sichern → Index droppen → Spalte droppen → in neuer Breite neu anlegen → Indizes verbatim wiederherstellen → embedding_attempts zurücksetzen → Registry auf das neue Modell setzen. DESTRUKTIV — jedes gespeicherte Embedding wird verworfen und muss vom Backfill-Sweep neu berechnet werden (kostet je einen Provider-Call pro Zeile). 'false' liefert stattdessen das alte `blocked/column-width-mismatch` und verlangt eine handgeschriebene Migration im Stil von 0005_turn_embeddings_768.sql. Migriert aus GRAPH_AUTO_MIGRATE_VECTOR_COLUMNS."
     - key: "graph_embedding_backfill_enabled"
       label: "Embedding Backfill Enabled"
       type: "string"

@@ -46,6 +46,17 @@ export type {
   StaleVectorClearResult,
 } from './embeddingModelGate.js';
 
+// #440 — the runtime vector-column width migration the gate performs when the
+// declared column width disagrees with the active provider. Exported because
+// `EmbeddingModelGateOutcome`'s `column-migrated` arm carries these types.
+export { migrateVectorColumns } from './vectorColumnMigration.js';
+export type {
+  MigratedVectorColumn,
+  VectorColumnMigrationOptions,
+  VectorColumnMigrationResult,
+  VectorColumnTarget,
+} from './vectorColumnMigration.js';
+
 // Palaia-Phase-5 (OB-74) — Per-Agent Block/Boost-Store. Backs the
 // `agentPriorities@1` capability published by activate(). The InMemory
 // sibling falls back to the NoopAgentPrioritiesStore from plugin-api.

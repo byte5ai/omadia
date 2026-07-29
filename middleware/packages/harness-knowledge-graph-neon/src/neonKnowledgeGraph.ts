@@ -116,12 +116,23 @@ export interface NeonKnowledgeGraphOptions {
   pool: Pool;
   tenantId?: string;
   /**
-   * Optional embedding client used to populate the Turn `embedding` column on
-   * every ingest. When absent, `embedding` stays NULL and semantic search
-   * falls back to FTS. Embedding failures are logged and non-fatal — the
-   * turn is still written to the graph.
+   * Live lookup for the embedding client that populates the `embedding`
+   * column on every ingest. Resolved AT THE MOMENT OF USE, never cached.
+   *
+   * A resolver that returns `undefined` means "no embedding client right
+   * now": `embedding` stays NULL, semantic search falls back to FTS, nothing
+   * is logged as a failure and no attempt counter is burned. That is
+   * deliberately byte-for-byte the old behaviour of omitting the client, so
+   * "unavailable" stays a SKIP. Only a client that throws counts as a failed
+   * attempt — the two are different states and both callers below rely on it.
+   *
+   * #440: this used to be a fixed `embeddingClient` captured in the
+   * constructor. The model/dimension gate hands the plugin `undefined` while
+   * it refuses vector writes, and with a captured field the only way back was
+   * an operator restart — even once the stale-vector clear that caused the
+   * refusal had finished. A resolver lets the gate re-open writes in-process.
    */
-  embeddingClient?: EmbeddingClient;
+  resolveEmbeddingClient?: () => EmbeddingClient | undefined;
   /**
    * OB-73 (Phase 4) — optional read-path access tracker. When wired, every
    * Turn surfaced by `searchTurns`, `searchTurnsByEmbedding`, `getSession`
@@ -360,7 +371,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
 
   private readonly tenantId: string;
 
-  private readonly embeddingClient: EmbeddingClient | undefined;
+  /** See `NeonKnowledgeGraphOptions.resolveEmbeddingClient`. Held as the
+   *  resolver, never as its result — the whole point is that the answer can
+   *  change while this instance is alive. */
+  private readonly resolveEmbeddingClient:
+    | (() => EmbeddingClient | undefined)
+    | undefined;
 
   private readonly accessTracker:
     | { markAccessed(externalId: string | null | undefined): void }
@@ -369,8 +385,26 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
   constructor(opts: NeonKnowledgeGraphOptions) {
     this.pool = opts.pool;
     this.tenantId = opts.tenantId ?? 'default';
-    this.embeddingClient = opts.embeddingClient;
+    this.resolveEmbeddingClient = opts.resolveEmbeddingClient;
     this.accessTracker = opts.accessTracker;
+  }
+
+  /**
+   * The embedding client to use right now, or `undefined` when there is none.
+   *
+   * A resolver that THROWS is treated as "none" rather than propagated: the
+   * callers below are post-commit fire-and-forget paths whose contract is that
+   * a missing embedder never disturbs the write that already succeeded.
+   */
+  private currentEmbeddingClient(): EmbeddingClient | undefined {
+    try {
+      return this.resolveEmbeddingClient?.();
+    } catch (err) {
+      console.error(
+        `[graph] embedding-client resolver threw (treating as unavailable): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
   }
 
   async ingestTurn(turn: TurnIngest): Promise<TurnIngestResult> {
@@ -459,7 +493,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       // Embed the turn *after* commit: a slow embedding sidecar must not
       // block (or roll back) the main ingest. Failure is logged and left
       // as NULL — next retrieval just falls back to FTS for this turn.
-      if (this.embeddingClient) {
+      // Resolved fresh: the gate can have re-enabled vector writes since this
+      // instance was constructed. `embedAndStoreTurn` re-resolves for itself,
+      // so this check only avoids scheduling obvious no-op work.
+      if (this.currentEmbeddingClient()) {
         void this.embedAndStoreTurn(turnUuid, turn.userMessage, turn.assistantAnswer);
       }
 
@@ -888,7 +925,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     userMessage: string,
     assistantAnswer: string,
   ): Promise<void> {
-    if (!this.embeddingClient) return;
+    // Resolve ONCE per call and reuse it below: re-resolving between the
+    // guard and the `embed()` would let a mid-flight gate flip turn a skip
+    // into a crash. `undefined` here is a silent skip — no log, no attempt
+    // counter bump — exactly as when no client was ever configured.
+    const embeddingClient = this.currentEmbeddingClient();
+    if (!embeddingClient) return;
     const text = `${userMessage}\n\n${assistantAnswer}`.trim();
     if (text.length === 0) return;
     // Skip re-embedding a turn that already has a vector. The Markdown replay
@@ -903,7 +945,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     );
     if (existing.rows[0]?.has_embedding === true) return;
     try {
-      const vector = await this.embeddingClient.embed(text);
+      const vector = await embeddingClient.embed(text);
       if (vector.length === 0) return;
       await this.pool.query(
         `UPDATE graph_nodes
@@ -3200,10 +3242,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     externalId: string,
     text: string,
   ): Promise<void> {
-    if (!this.embeddingClient) return;
+    // Same resolve-once contract as `embedAndStoreTurn`: no client is a
+    // silent skip, a throwing client is a counted attempt.
+    const embeddingClient = this.currentEmbeddingClient();
+    if (!embeddingClient) return;
     if (text.trim().length === 0) return;
     try {
-      const vector = await this.embeddingClient.embed(text);
+      const vector = await embeddingClient.embed(text);
       if (vector.length === 0) return;
       await this.pool.query(
         `UPDATE graph_nodes

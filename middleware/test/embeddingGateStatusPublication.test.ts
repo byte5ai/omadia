@@ -53,21 +53,38 @@ describe('embedding gate status publication (#440)', () => {
       'stale-vector-clear-complete',
       'the same object the registry holds must reflect the finished clear',
     );
-    assert.match(String(handedToTheRegistry.detail), /restart/);
+    assert.match(String(handedToTheRegistry.detail), /without a restart/);
     assert.equal(
       handedToTheRegistry.vectorWritesAllowed,
-      false,
-      'the hot path really is still off — this process built its stores without ' +
-        'an embedding client, so flipping to true would restore the false-green reading',
+      true,
+      'the hot path really IS back on: both stores resolve their embedding ' +
+        'client live, so this flip is what re-enables them — reporting false ' +
+        'would now be the lie',
+    );
+    assert.equal(
+      published.vectorWritesAllowed(),
+      true,
+      'the plugin resolver reads this, so it has to agree with the published field',
     );
     // The published shape has to survive JSON — /health serialises it.
     assert.deepEqual(JSON.parse(JSON.stringify(handedToTheRegistry)), {
-      vectorWritesAllowed: false,
+      vectorWritesAllowed: true,
       status: 'match',
       reason: 'stale-vector-clear-complete',
       activeModelId: OWED_MATCH.modelId,
       detail: handedToTheRegistry.detail,
     });
+  });
+
+  it('exposes the live verdict the plugin resolver consults', async () => {
+    const published = createEmbeddingGateStatus(OWED_MATCH, false, true);
+    assert.equal(
+      published.vectorWritesAllowed(),
+      false,
+      'while a clear is owed the resolver must hand the stores nothing',
+    );
+    published.markStaleVectorClearComplete();
+    assert.equal(published.vectorWritesAllowed(), true);
   });
 
   it('never upgrades a verdict that had no pending clear to begin with', async () => {
@@ -87,7 +104,12 @@ describe('embedding gate status publication (#440)', () => {
     blocked.markStaleVectorClearComplete();
 
     assert.equal(blocked.status.reason, 'dimension-mismatch');
-    assert.equal(blocked.status.vectorWritesAllowed, false);
+    assert.equal(
+      blocked.status.vectorWritesAllowed,
+      false,
+      'a completion callback must never open writes a blocked verdict closed',
+    );
+    assert.equal(blocked.vectorWritesAllowed(), false);
   });
 
   it('carries a pending clear on the unknown-provider outcome too', async () => {
@@ -103,6 +125,7 @@ describe('embedding gate status publication (#440)', () => {
 
     published.markStaleVectorClearComplete();
     assert.equal(published.status.reason, 'stale-vector-clear-complete');
+    assert.equal(published.status.vectorWritesAllowed, true);
   });
 
   it('/health stops reporting a pending clear the moment the sweep finishes it', async () => {
@@ -120,15 +143,57 @@ describe('embedding gate status publication (#440)', () => {
     published.markStaleVectorClearComplete();
 
     const after = buildKgHealth(reg, published.status);
-    assert.ok(
-      !/still dropping old vectors/.test(String(after.warnings[0])),
-      'the clear is finished — saying it is still draining is the red-lie this fixes',
+    assert.deepEqual(
+      after.warnings,
+      [],
+      'the clear is finished AND the hot path was re-enabled in-process — there ' +
+        'is nothing left to warn about, and the old "restart it" note became wrong',
     );
-    assert.match(String(after.warnings[0]), /clear has drained/);
-    assert.match(String(after.warnings[0]), /restart/);
-    assert.ok(
-      !/no vectors are being written/.test(String(after.warnings[0])),
-      'the backfill sweep IS writing vectors again; only the hot path is off',
+    assert.equal(after.embeddings, true);
+    assert.equal(after.semanticRecall, true);
+    assert.equal(after.processReuse, true);
+  });
+
+  it('surfaces a runtime vector-column migration on /health even though writes are ON', async () => {
+    const published = createEmbeddingGateStatus(
+      {
+        status: 'column-migrated',
+        modelId: 'openai:text-embedding-3-small',
+        dimensions: 1536,
+        previousModelId: 'ollama:nomic-embed-text',
+        previousDimensions: 768,
+        migratedColumns: [
+          {
+            table: 'graph_nodes',
+            column: 'embedding',
+            previousDimensions: 768,
+            newDimensions: 1536,
+            indexes: ['CREATE INDEX i ON graph_nodes USING hnsw (embedding)'],
+            discardedVectors: 42,
+          },
+        ],
+        discardedVectors: 42,
+      },
+      true,
+      false,
     );
+
+    assert.equal(published.status.vectorWritesAllowed, true);
+    assert.equal(published.status.reason, 'vector-columns-migrated');
+    assert.match(String(published.status.detail), /42 stored vector\(s\) were discarded/);
+    assert.match(String(published.status.activeModelId), /1536d/);
+
+    const health = buildKgHealth(
+      registry([
+        { id: KG_NEON },
+        { id: EMBEDDINGS, config: { ollama_base_url: 'http://ollama:11434' } },
+      ]),
+      published.status,
+    );
+    assert.equal(health.embeddings, true, 'nothing is disabled — the columns fit now');
+    assert.equal(health.warnings.length, 1);
+    assert.match(String(health.warnings[0]), /migrated automatically/);
+    assert.match(String(health.warnings[0]), /42 stored vector/);
+    assert.match(String(health.warnings[0]), /auto_migrate_vector_columns=false/);
   });
 });

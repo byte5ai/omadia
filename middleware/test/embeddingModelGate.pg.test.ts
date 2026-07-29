@@ -244,7 +244,7 @@ describe('embeddingModelGate against real Postgres', { skip: !pgAvailable }, () 
     );
   });
 
-  it('blocks a 1536d provider against real vector(768) columns, on an empty corpus', async () => {
+  it('blocks a 1536d provider against real vector(768) columns when auto-migration is OFF', async () => {
     const tenant = 'pg-width';
     await seed(tenant, {});
 
@@ -252,6 +252,7 @@ describe('embeddingModelGate against real Postgres', { skip: !pgAvailable }, () 
       pool,
       tenantId: tenant,
       provider: OPENAI_1536,
+      autoMigrateVectorColumns: false,
       log: silent,
     });
 
