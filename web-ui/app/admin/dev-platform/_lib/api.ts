@@ -295,6 +295,35 @@ export function retryJob(id: string): Promise<{ ok: boolean; jobId: string }> {
   return req(`/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST', body: JSON.stringify({}) });
 }
 
+/** Mirrors `middleware/src/devplatform/types.ts`'s `DEV_JOB_ARTIFACT_KINDS`. */
+export type DevJobArtifactKind =
+  | 'diff'
+  | 'test_report'
+  | 'analysis'
+  | 'plan'
+  | 'summary'
+  | 'bootstrap_report'
+  | 'questions'
+  | 'answers'
+  | 'review_verdict';
+
+export interface DevJobArtifactSummary {
+  id: string;
+  jobId: string;
+  kind: DevJobArtifactKind;
+  meta: Record<string, unknown> | null;
+  bytes: number;
+  createdAt: string;
+}
+
+/** All artifacts recorded for a job (metadata only — fetch content per-id via
+ *  `getArtifactText`). Used to show a completed phase's own output (plan,
+ *  clarify questions, bootstrap log, ...) once the live SSE log has nothing
+ *  left to show for it. */
+export function listJobArtifacts(id: string): Promise<{ artifacts: DevJobArtifactSummary[] }> {
+  return req(`/jobs/${encodeURIComponent(id)}/artifacts`);
+}
+
 /** Same-origin URL for an artifact's text content (the plan is a text artifact).
  *  `GET /artifacts/:id` returns `text/plain`; opening it in a new tab shows the
  *  plan the operator is being asked to approve. */

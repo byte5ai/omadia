@@ -3229,6 +3229,7 @@
         "moreDiffLines": "… {count, plural, one {# more line} other {# more lines}}"
       },
       "openPr": "Open pull request",
+      "artifactError": "This phase's recorded output could not be loaded.",
       "logEmpty": "No log output yet.",
       "scrollToBottom": "Scroll to bottom",
       "connection": {

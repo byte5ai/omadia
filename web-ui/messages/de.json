@@ -3229,6 +3229,7 @@
         "moreDiffLines": "… {count, plural, one {# weitere Zeile} other {# weitere Zeilen}}"
       },
       "openPr": "Pull Request öffnen",
+      "artifactError": "Das Ergebnis dieser Phase konnte nicht geladen werden.",
       "logEmpty": "Noch keine Log-Ausgabe.",
       "scrollToBottom": "Nach unten scrollen",
       "connection": {

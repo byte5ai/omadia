@@ -21,6 +21,7 @@ import { findGateForJob } from '@/app/_components/devjobs/devJobChatCardState';
 import { useDevJobEvents, type DevJobEventMessage } from '@/app/_lib/useDevJobEvents';
 import { GateCard } from '../../_components/GateInbox';
 import { JobLogPane, type LogConnection } from '../../_components/JobLogPane';
+import { PhaseArtifactPanel } from '../../_components/PhaseArtifactPanel';
 import {
   cancelJob,
   deleteJob,
@@ -37,10 +38,14 @@ import { INITIAL_LOG_STATE, foldDevJobEvent, type LogState } from '../../_lib/to
  * phase rail (keyboard-operable, deep-linkable via `?phase=`), then a two-column
  * body: the log pane (driven by rail selection) and a metadata sidebar. The
  * live log streams over SSE through `useDevJobEvents` and sticks to bottom via
- * `useStickToBottom`. Every non-`pr` phase gets the same live log pane,
- * filtered to that phase's own events (`toolCallLog.ts` stamps each item with
- * the phase it happened in) — analyze/bootstrap/plan/clarify run real agent
- * sessions too, not just implement.
+ * `useStickToBottom`. Every non-`gate`/`pr` phase stacks a `PhaseArtifactPanel`
+ * (that phase's own recorded plan/questions/bootstrap_report/review_verdict,
+ * once it exists) above the same live log pane, filtered to that phase's own
+ * events (`toolCallLog.ts` stamps each item with the phase it happened in) —
+ * analyze/bootstrap/plan/clarify run real agent sessions too, not just
+ * implement. The log pane alone is live-only state, so navigating back to an
+ * already-finished phase (or reloading the page) left it permanently empty
+ * without the artifact panel as a second, persisted source.
  */
 
 function shortHash(id: string): string {
@@ -233,11 +238,14 @@ export default function JobDetailPage(): React.ReactElement {
               ) : null}
             </div>
           ) : (
-            <JobLogPane
-              items={logState.items.filter((item) => phaseToUi(item.phase) === effective)}
-              connection={conn}
-              lastEventAgoSec={agoSec}
-            />
+            <div className="flex flex-col gap-4">
+              <PhaseArtifactPanel jobId={id} phase={effective} />
+              <JobLogPane
+                items={logState.items.filter((item) => phaseToUi(item.phase) === effective)}
+                connection={conn}
+                lastEventAgoSec={agoSec}
+              />
+            </div>
           )}
         </div>
 
