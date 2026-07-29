@@ -493,6 +493,41 @@ export function createProxy(deps) {
       return;
     }
     const url = new URL(req.url ?? '/', 'http://proxy.local');
+
+    // POST /resolve — the daemon has no route to the internet by design (only
+    // the proxy does); this lets it pre-resolve a job's allowlist for static
+    // /etc/hosts entries (spec §470, the npm local-DNS-bypass root cause)
+    // using the SAME resolver the data plane trusts, without granting the
+    // daemon egress of its own. Bearer-authed like every other control route;
+    // NOT allowlist-gated — a resolution reveals only a public IP for a name
+    // the caller already supplied, nothing a public DNS query wouldn't.
+    if (url.pathname === '/resolve' && req.method === 'POST') {
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        sendJson(res, 400, { code: 'proxy.bad_body', message: 'invalid JSON body' });
+        return;
+      }
+      const hosts = Array.isArray(body?.hosts) ? body.hosts.filter((h) => typeof h === 'string') : null;
+      if (!hosts || hosts.length === 0 || hosts.length > 100) {
+        sendJson(res, 400, { code: 'proxy.bad_body', message: 'hosts must be a non-empty array of at most 100 strings' });
+        return;
+      }
+      const results = await Promise.all(
+        hosts.map(async (host) => {
+          try {
+            const addresses = await resolve(host);
+            return { host, addresses };
+          } catch {
+            return { host, addresses: null };
+          }
+        }),
+      );
+      sendJson(res, 200, { results });
+      return;
+    }
+
     const m = /^\/jobs\/([^/]+)$/.exec(url.pathname);
     if (!m) {
       sendJson(res, 404, { code: 'proxy.not_found', message: 'no such route' });

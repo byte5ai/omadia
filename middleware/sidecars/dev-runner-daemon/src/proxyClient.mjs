@@ -46,6 +46,10 @@ export class ProxyControlError extends Error {
  * @typedef {object} ProxyClient
  * @property {(jobId: string, entry: { allowlist: readonly string[], proxyToken: string, ttlSec: number }) => Promise<void>} register
  * @property {(jobId: string) => Promise<boolean>} unregister
+ * @property {(hosts: readonly string[]) => Promise<Array<{ host: string, addresses: Array<{ address: string, family?: number }> | null }>>} resolveHosts
+ *   Pre-resolve hostnames using the proxy's OWN internet-reachable resolver —
+ *   the daemon has none by design. `addresses: null` for a host that failed
+ *   to resolve; non-fatal by contract, the caller decides what to do with it.
  */
 
 /**
@@ -98,7 +102,7 @@ export function createProxyClient(deps) {
       try {
         json = await res.json();
       } catch {
-        json = null;
+        // leave json null
       }
       return { status: res.status, json };
     })();
@@ -133,6 +137,43 @@ export function createProxyClient(deps) {
         throw new ProxyControlError('proxy.control_rejected', `proxy refused to unregister job ${jobId} (HTTP ${status})`, status);
       }
       return Boolean(/** @type {any} */ (json)?.deleted);
+    },
+
+    async resolveHosts(hosts) {
+      if (hosts.length === 0) return [];
+      const url = `${origin}/resolve`;
+      const controller = new AbortController();
+      const run = (async () => {
+        const res = await fetchImpl(url, {
+          method: 'POST',
+          redirect: 'error',
+          signal: controller.signal,
+          headers: { authorization: `Bearer ${deps.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ hosts }),
+        });
+        let json = null;
+        try {
+          json = await res.json();
+        } catch {
+          // leave json null
+        }
+        return { status: res.status, json };
+      })();
+      let status, json;
+      try {
+        ({ status, json } = await withDeadline(run, timeoutMs, () => controller.abort()));
+      } catch (err) {
+        throw new ProxyControlError(
+          'proxy.control_unreachable',
+          `POST ${url} failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      if (status !== 200) {
+        const code = typeof (/** @type {any} */ (json)?.code) === 'string' ? json.code : 'proxy.control_rejected';
+        throw new ProxyControlError(code, `proxy refused to resolve hosts (HTTP ${status})`, status);
+      }
+      const results = /** @type {any} */ (json)?.results;
+      return Array.isArray(results) ? results : [];
     },
   };
 }

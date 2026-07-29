@@ -532,34 +532,39 @@ function makeFakeDocker(opts = {}) {
 }
 
 describe('resolveAllowlistHosts — pre-resolves an allowlist for ExtraHosts', () => {
-  it('resolves each host and formats Docker\'s host:ip ExtraHosts entries', async () => {
-    const lookup = async (host) => {
-      if (host === 'registry.npmjs.org') return { address: '104.16.0.35' };
-      if (host === 'github.com') return { address: '140.82.121.3' };
-      throw new Error(`unexpected lookup for ${host}`);
+  it('resolves each host in ONE batched call and formats Docker\'s host:ip ExtraHosts entries', async () => {
+    const calls = [];
+    const resolveHosts = async (hosts) => {
+      calls.push(hosts);
+      return [
+        { host: 'registry.npmjs.org', addresses: [{ address: '104.16.0.35' }] },
+        { host: 'github.com', addresses: [{ address: '140.82.121.3' }] },
+      ];
     };
-    const result = await resolveAllowlistHosts(['registry.npmjs.org', 'github.com'], lookup);
+    const result = await resolveAllowlistHosts(['registry.npmjs.org', 'github.com'], resolveHosts);
     assert.deepEqual(result.sort(), ['github.com:140.82.121.3', 'registry.npmjs.org:104.16.0.35'].sort());
+    assert.equal(calls.length, 1, 'exactly one batched call, not one per host');
+    assert.deepEqual(calls[0].sort(), ['github.com', 'registry.npmjs.org'].sort());
   });
 
-  it('skips a host that fails to resolve — non-fatal, the CONNECT path still works for it', async () => {
-    const lookup = async (host) => {
-      if (host === 'flaky.example.com') throw Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' });
-      return { address: '203.0.113.10' };
-    };
-    const result = await resolveAllowlistHosts(['flaky.example.com', 'good.example.com'], lookup);
+  it('skips a host that failed to resolve (addresses: null) — non-fatal, the CONNECT path still works for it', async () => {
+    const resolveHosts = async () => [
+      { host: 'flaky.example.com', addresses: null },
+      { host: 'good.example.com', addresses: [{ address: '203.0.113.10' }] },
+    ];
+    const result = await resolveAllowlistHosts(['flaky.example.com', 'good.example.com'], resolveHosts);
     assert.deepEqual(result, ['good.example.com:203.0.113.10']);
   });
 
   it('skips an already-literal IP entry — nothing to pre-resolve, and it is not a valid ExtraHosts name', async () => {
     let called = false;
-    const lookup = async () => {
+    const resolveHosts = async () => {
       called = true;
-      return { address: '0.0.0.0' };
+      return [];
     };
-    const result = await resolveAllowlistHosts(['203.0.113.5'], lookup);
+    const result = await resolveAllowlistHosts(['203.0.113.5'], resolveHosts);
     assert.deepEqual(result, []);
-    assert.equal(called, false, 'an IP literal is never handed to the lookup seam');
+    assert.equal(called, false, 'an IP literal is never handed to the batched resolver');
   });
 
   it('an empty allowlist resolves to an empty array', async () => {
@@ -592,19 +597,16 @@ describe('createDockerEngine — createJobContainer applies the clamp and provis
     assert.equal(docker.state.events.started.length, 1, 'the container was started');
   });
 
-  it('pre-resolves the egress allowlist and passes host:ip entries as HostConfig.ExtraHosts', async () => {
+  it('passes caller-supplied extraHosts straight through to HostConfig.ExtraHosts — this engine resolves nothing itself', async () => {
     const createContainerCalls = [];
     const docker = makeFakeDocker({ createContainerCalls });
-    const lookup = async (host) => {
-      if (host === 'registry.npmjs.org') return { address: '104.16.0.35' };
-      throw new Error(`unexpected lookup for ${host}`);
-    };
-    const engine = createDockerEngine({ docker, env: {}, resolveHost: lookup });
+    const engine = createDockerEngine({ docker, env: {} });
 
     await engine.createJobContainer({
       jobId: JOB_ID,
-      policy: { ...enginePolicy(), egressAllowlist: ['registry.npmjs.org'] },
+      policy: enginePolicy(),
       leaseExpiresAt: '2026-07-10T12:00:00.000Z',
+      extraHosts: ['registry.npmjs.org:104.16.0.35'],
     });
 
     assert.equal(createContainerCalls.length, 1);
@@ -1055,14 +1057,23 @@ describe('JobManager — egress-proxy registration is part of provisioning', () 
         if (overrides.unregisterError) throw overrides.unregisterError;
         return true;
       },
+      async resolveHosts(hosts) {
+        calls.push({ op: 'resolveHosts', hosts });
+        if (overrides.resolveHostsError) throw overrides.resolveHostsError;
+        return overrides.resolveHostsResult ?? hosts.map((host) => ({ host, addresses: null }));
+      },
     };
   }
 
-  /** An engine that records the order of operations against the proxy calls. */
+  /** An engine that records the order of operations against the proxy calls
+   *  and captures the exact args each createJobContainer call received. */
   function orderedEngine(order, opts = {}) {
     return {
-      async createJobContainer() {
+      /** @type {any[]} */
+      createJobContainerCalls: [],
+      async createJobContainer(args) {
         order.push('createContainer');
+        this.createJobContainerCalls.push(args);
         if (opts.createError) throw opts.createError;
         return { jobId: JOB_ID, id: 'c1', networkId: 'n1', volumeName: 'v1', imageDigest: 'sha256:abc' };
       },
@@ -1184,5 +1195,38 @@ describe('JobManager — egress-proxy registration is part of provisioning', () 
     await jm.create(JOB_ID, 180);
     await jm.destroy(JOB_ID);
     assert.equal(jm.size(), 0);
+  });
+
+  it('resolves the allowlist through the proxy and passes the result to createJobContainer as extraHosts', async () => {
+    const engine = orderedEngine([]);
+    const proxy = recordingProxyClient({
+      resolveHostsResult: [{ host: 'registry.npmjs.org', addresses: [{ address: '104.16.0.35' }] }],
+    });
+    const policyClient = {
+      async fetchJobPolicy(jobId) {
+        return { jobId, image: 'ghcr.io/x/y@sha256:abc', env: {}, egressAllowlist: ['registry.npmjs.org'] };
+      },
+    };
+    const jm = new JobManager({ engine, policyClient, proxyClient: proxy });
+    await jm.create(JOB_ID, 180);
+
+    const resolveCall = proxy.calls.find((c) => c.op === 'resolveHosts');
+    assert.deepEqual(resolveCall.hosts, ['registry.npmjs.org']);
+    assert.deepEqual(engine.createJobContainerCalls[0].extraHosts, ['registry.npmjs.org:104.16.0.35']);
+  });
+
+  it('a resolveHosts failure never aborts job creation — the job proceeds with no extra /etc/hosts entries', async () => {
+    const engine = orderedEngine([]);
+    const proxy = recordingProxyClient({ resolveHostsError: new Error('proxy unreachable') });
+    const policyClient = {
+      async fetchJobPolicy(jobId) {
+        return { jobId, image: 'ghcr.io/x/y@sha256:abc', env: {}, egressAllowlist: ['registry.npmjs.org'] };
+      },
+    };
+    const jm = new JobManager({ engine, policyClient, proxyClient: proxy });
+    await jm.create(JOB_ID, 180);
+
+    assert.deepEqual(engine.createJobContainerCalls[0].extraHosts, []);
+    assert.equal(jm.size(), 1, 'the job was still created despite the resolution failure');
   });
 });

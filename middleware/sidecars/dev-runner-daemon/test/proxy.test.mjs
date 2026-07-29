@@ -544,6 +544,112 @@ describe('egress proxy — control plane (daemon-token, per-job allowlist push)'
   });
 });
 
+describe('egress proxy — control plane: POST /resolve (the daemon has no internet route of its own)', () => {
+  it('rejects an unauthenticated resolve request', async () => {
+    const p = await startProxy({ resolveMap: { 'a.test': [{ address: '203.0.113.1', family: 4 }] } });
+    try {
+      const res = await controlRequest(p.controlPort, 'POST', '/resolve', 'wrong', { hosts: ['a.test'] });
+      assert.equal(res.statusCode, 401);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it('resolves every requested host in one call using the SAME resolver the data plane trusts', async () => {
+    const p = await startProxy({
+      resolveMap: {
+        'registry.npmjs.org': [{ address: '104.16.0.35', family: 4 }],
+        'github.com': [{ address: '140.82.121.3', family: 4 }],
+      },
+    });
+    try {
+      const res = await controlRequest(p.controlPort, 'POST', '/resolve', DAEMON_TOKEN, {
+        hosts: ['registry.npmjs.org', 'github.com'],
+      });
+      assert.equal(res.statusCode, 200);
+      const byHost = Object.fromEntries(res.body.results.map((r) => [r.host, r.addresses]));
+      assert.deepEqual(byHost['registry.npmjs.org'], [{ address: '104.16.0.35', family: 4 }]);
+      assert.deepEqual(byHost['github.com'], [{ address: '140.82.121.3', family: 4 }]);
+      assert.deepEqual(p.resolveCalls.sort(), ['github.com', 'registry.npmjs.org']);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it('reports null addresses for a host that fails to resolve — one bad host does not fail the whole batch', async () => {
+    const p = await startProxy({
+      customResolve: async (host) => {
+        if (host === 'flaky.example.com') throw new Error('simulated DNS failure');
+        return [{ address: '203.0.113.10', family: 4 }];
+      },
+    });
+    try {
+      const res = await controlRequest(p.controlPort, 'POST', '/resolve', DAEMON_TOKEN, {
+        hosts: ['flaky.example.com', 'good.example.com'],
+      });
+      assert.equal(res.statusCode, 200);
+      const byHost = Object.fromEntries(res.body.results.map((r) => [r.host, r.addresses]));
+      assert.equal(byHost['flaky.example.com'], null);
+      assert.deepEqual(byHost['good.example.com'], [{ address: '203.0.113.10', family: 4 }]);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it('400s on an empty, missing, or oversized hosts array — never a silent no-op', async () => {
+    const p = await startProxy();
+    try {
+      const empty = await controlRequest(p.controlPort, 'POST', '/resolve', DAEMON_TOKEN, { hosts: [] });
+      assert.equal(empty.statusCode, 400);
+      const missing = await controlRequest(p.controlPort, 'POST', '/resolve', DAEMON_TOKEN, {});
+      assert.equal(missing.statusCode, 400);
+      const oversized = await controlRequest(p.controlPort, 'POST', '/resolve', DAEMON_TOKEN, {
+        hosts: Array.from({ length: 101 }, (_, i) => `h${i}.test`),
+      });
+      assert.equal(oversized.statusCode, 400);
+    } finally {
+      await p.close();
+    }
+  });
+});
+
+describe('createProxyClient — resolveHosts (the daemon-side caller of POST /resolve)', () => {
+  it('calls POST /resolve with the bearer token and returns the results array', async () => {
+    const p = await startProxy({
+      resolveMap: { 'registry.npmjs.org': [{ address: '104.16.0.35', family: 4 }] },
+    });
+    try {
+      const client = createProxyClient({ controlUrl: `http://127.0.0.1:${p.controlPort}`, token: DAEMON_TOKEN });
+      const results = await client.resolveHosts(['registry.npmjs.org']);
+      assert.deepEqual(results, [{ host: 'registry.npmjs.org', addresses: [{ address: '104.16.0.35', family: 4 }] }]);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it('an empty hosts array short-circuits — no request is made', async () => {
+    const p = await startProxy();
+    try {
+      const client = createProxyClient({ controlUrl: `http://127.0.0.1:${p.controlPort}`, token: DAEMON_TOKEN });
+      const results = await client.resolveHosts([]);
+      assert.deepEqual(results, []);
+      assert.deepEqual(p.resolveCalls, []);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it('throws ProxyControlError on a wrong token, never silently returning empty', async () => {
+    const p = await startProxy();
+    try {
+      const client = createProxyClient({ controlUrl: `http://127.0.0.1:${p.controlPort}`, token: 'wrong-token' });
+      await assert.rejects(() => client.resolveHosts(['a.test']), /proxy refused to resolve hosts/);
+    } finally {
+      await p.close();
+    }
+  });
+});
+
 /** PUT /jobs/:id on the control plane. */
 function controlPut(controlPort, jobId, body, token) {
   return controlRequest(controlPort, 'PUT', `/jobs/${jobId}`, token, body);
