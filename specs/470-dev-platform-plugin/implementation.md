@@ -133,12 +133,40 @@ Ordered by what they hold up.
 
 | # | Decision | Blocks | Recommendation |
 |---|---|---|---|
-| **D1** | **Publish `@omadia/plugin-api` to public npm?** It is `private: true` and the publish job is `if: false` | C1 → everything | Public npm. GitHub Packages needs auth even to read, which kills the "fork the starter and go" story |
+| **D1** | **How does the plugin repo get `@omadia/plugin-api` types at build time?** | P3 typecheck only — **not a blocker** | `file:` sibling dependency (proven), vendored `.d.ts`, or a git tag. **Not public npm** — see the correction below |
 | **D2** | **H3 chat card** — closed card contract, or accepted `ToolRow` degradation? | C13 | The closed contract. The card's value is the *gate*; degrading it makes the platform's principal safety mechanism annoying, and annoying safety mechanisms get bypassed |
 | **D3** | **Uninstall data lifecycle** — 9 tables of rows | P4 | Orphan by default, never drop. Reinstall must be lossless. Ship a separate type-to-confirm purge route |
 | **D4** | **Secret re-key** — one-time migration or operator re-entry? | P4 | Operator re-entry. Visible, honest, and it avoids a core hook that becomes dead code |
 | **D5** | **Cosign identity** — transition regexp, documented break, or dual image? | P4 | Transition regexp, narrowed one release later |
 | **D6** | **`.sql` codegen or allowlist?** | P3 | Both. Codegen ships now; the allowlist fix means the next plugin doesn't need one |
+
+### Correction to D1 — publishing was never required
+
+An earlier revision listed "publish `@omadia/plugin-api` to public npm" as the blocker for
+everything downstream. That was wrong, and the evidence was two directories away:
+
+- **`omadia-byte5-plugins` already solves this**, in production, for six private plugins:
+  `package.json` declares `"@omadia/plugin-api": "file:../odoo-bot/middleware/packages/plugin-api"`,
+  and the sub-packages carry `"*"` as a peer resolved by the workspace root. No registry, no
+  publish, nothing public.
+- **The boilerplate contract mandates the opposite.** Point 1: *"KEIN Cross-Import … Das Package
+  muss standalone kompilieren (Zip-Upload-Flow). Die Interface-Definition wird bewusst in
+  `./types.ts` dupliziert … Absicht nicht Bug."* `omadia-plugin-starter` ships vendored
+  `types/omadia-plugin-api.d.ts` for exactly this.
+- **There is no runtime dependency at all.** Every `@omadia/plugin-api` import in the
+  dev-platform tree is `import type` and vanishes from the emitted JS. Even a value import
+  would resolve at runtime against the host's own `node_modules`, which the uploaded-package
+  store symlinks in.
+
+The design pass recommended public npm on a *product* argument — GitHub Packages needs auth
+even to read, which would hurt a third-party plugin ecosystem. That argument is sound for a
+public ecosystem and irrelevant for a private byte5 plugin. It was passed through as a
+technical blocker without checking how this org actually builds private plugins.
+
+**Remaining choice, none of them public:** `file:` sibling (proven, but the plugin repo's CI
+then needs a core checkout — a known friction, already recorded in project memory), vendored
+`.d.ts` (CI-isolated, drifts silently), or a git dependency on a tag (CI-isolated, explicit
+version). Undecided; it only gates P3's typecheck, not the sequence.
 
 ---
 
