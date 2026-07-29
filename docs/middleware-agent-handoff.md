@@ -671,6 +671,168 @@ durch `runTurn({ ..., viewer })`. Tests: `test/conductorBuilder.test.ts`
 (Digest-Sichtbarkeit inkl. pending/fremd-privat, Proposal-Vetting,
 Malformed-Blocks, No-Proposal-Regression).
 
+### Conductor Webhooks — Inbound + Outbound (#437)
+
+Generischer Webhook-Mechanismus für Conductor, symmetrisch zum bisher
+declared-but-dead `'webhook'`-`TriggerKind` (`conductor-core/src/types.ts`).
+
+**Inbound:** `POST /api/hooks/:endpointId` — unauthenticated Mount **vor**
+`app.use(express.json(...))` in `src/index.ts` (Forward-Reference-Pattern wie
+`conductorTemplateRegistrarRef`: `conductorWebhookInboundDepsRef` wird früh
+deklariert, der Router (`src/routes/conductorWebhooksInbound.ts`) mountet
+sofort mit einem `getDeps()`-Getter darauf, die echten Deps werden erst tief
+im `graphPool`-Block nach `wireConductor(...)` zugewiesen — by request time
+immer aufgelöst). Raw-Body-HMAC (`x-webhook-signature: sha256=<hex>`) gegen
+das per-Endpoint-Secret aus dem Vault (`webhookEndpointStore.ts`,
+`core:conductor`-Namespace); unbekannte Endpoint-Id und falsches Secret
+antworten **byte-identisch** mit `401` (kein Existenz-Leak). Verifizierte
+Delivery → atomarer Claim der Delivery-Id (`x-webhook-delivery-id`, sonst
+Server-generiert = kein Dedupe, aber kein stiller Drop) in
+`conductor_webhook_inbound_deliveries`, dann `ConductorEventRouter.emit(
+endpoint.eventId, payload, 'webhook:<endpointId>')` — jeder Workflow mit
+passendem `event`- **oder** `webhook`-Trigger (`eventRouter.ts` matcht jetzt
+beide Kinds identisch) startet einen Run. Jede geclaimte Delivery landet mit
+genau einem terminalen `outcome`; Noise (disabled, malformed JSON, kein
+Subscriber) antwortet immer `2xx` (Redelivery-Storm-Vermeidung), der globale
+Kill-Switch ist `CONDUCTOR_WEBHOOKS_ENABLED` (§10).
+
+**Outbound:** `ConductorWebhookDispatcher` (`webhookDispatcher.ts`) — ein
+neuer `notifyRunEnded`-Hook in `ConductorRunExecutor` (feuert exakt an jedem
+Punkt, an dem ein echter, nicht-Dry-Run-Run terminal wird — `driveFrom`s
+Loop-Exit UND die drei direkten Terminal-Returns in `resolveAwait`/
+`resolveDevJobAwait`/`expireAwait`, zentralisiert in `finalizeIfEnded`) löst
+`run.completed`/`run.failed` aus. Der Dispatcher fächert an jede enabled
+`conductor_webhook_subscriptions`-Row für das Event auf, signiert HMAC
+(`x-omadia-signature`), und retried mit exponentiellem Backoff (Default 6
+Attempts, 30s verdoppelnd bis 30min Cap) — `conductor_webhook_deliveries` ist
+das persistente Delivery-Log; `ConductorWebhookRetryWorker` pollt fällige
+Retries (überlebt Prozess-Restart). Zusätzlich: ein Built-in-Action
+`webhook.post` (`webhookPostAction.ts`, special-cased in `src/index.ts`s
+`invokeAction`-Wiring VOR dem `dynamicAgentRuntime`-Dispatch, kein Plugin
+nötig) für Ad-hoc-Outbound-POST aus einem Workflow-Step.
+
+**Security:** Secrets (Inbound-Endpoint + Outbound-Subscription) leben
+ausschließlich im Vault (`core:conductor`, Split Metadata-in-Postgres /
+Secret-in-Vault nach `DevGithubAppStore`-Vorbild) — nie in Graph-JSON, nie in
+einer List/Get-Response (nur einmalig bei Create/Rotate). SSRF-Guard
+(`webhookOutbound.ts`) wiederverwendet den bestehenden
+`platform/ssrfGuard.ts`-Mechanismus (Literal-IP-Precheck + guarded undici
+`Agent` gegen DNS-Rebinding) für **beide** Outbound-Pfade (Dispatcher +
+`webhook.post`).
+
+**Migration:** `src/conductor/migrations/0007_webhooks.sql` (eigene
+`_conductor_migrations`-Chain, nächste freie Nummer nach `0006_templates.sql`)
+— `conductor_webhook_endpoints`, `conductor_webhook_inbound_deliveries`,
+`conductor_webhook_subscriptions`, `conductor_webhook_deliveries`.
+
+**Admin-API:** CRUD + Secret-Rotation + Delivery-Logs unter dem bestehenden
+auth-gated `/api/v1/operator/conductors/webhooks/*`
+(`webhookRoutes.ts`, registriert **vor** `/:slug` wie die Template-Routes).
+Eine minimale Admin-UI-Seite (`web-ui/app/admin/webhooks/`, Endpoints +
+Subscriptions, Secret-Rotation, Delivery-History) **ist** Teil dieser
+Änderung — sie erfüllt das Issue-Akzeptanzkriterium einer Admin-Oberfläche.
+Die inbound-Endpoint-URL wird server-seitig aus `webhookInboundBaseUrl`
+(`CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL`, fällt zurück auf `PUBLIC_BASE_URL`)
+gebaut und als `inboundUrl`-Feld zurückgegeben — die UI zeigt diesen Wert an,
+nie `window.location.origin` (im lokalen Standard-Dev-Setup ist das der
+Next.js-Dev-Server, der nur `/bot-api/*` proxied, nicht `/api/hooks/*`,
+siehe `web-ui/next.config.ts`).
+
+Tests: `test/conductorWebhookInbound.test.ts` (Route, Signatur/Dedupe/2xx-
+Noise), `test/conductorWebhookDispatcher.test.ts` (Signing/Retry/Backoff),
+`test/conductorWebhookEndpointStore.test.ts` (Vault-Split, Dedupe-Claim),
+`test/conductorWebhookPostAction.test.ts` + SSRF-Guard-Unit-Tests,
+`test/conductorEventRouterWebhookTrigger.test.ts` (`webhook`-Trigger-Kind
+Matching, keine Regression auf `event`).
+### Dataset-Routen + `query_dataset`-Tool (#430)
+
+Neue REST-Oberfläche `src/routes/datasets.ts`, gemountet unter
+`/api/v1/datasets` (ACL-Pattern wie `/api/v1/memory` —
+`req.session.omadia_user_id`, kein anonymer Zugriff):
+
+- `POST /api/v1/datasets` — multipart CSV-Upload (`multer`, ein File pro
+  Request, `MAX_UPLOAD_BYTES` = 25 MB).
+- `GET /api/v1/datasets` — Liste der eigenen Datasets.
+- `GET /api/v1/datasets/:id` — Schema + Metadaten eines Datasets.
+- `GET /api/v1/datasets/:id/rows` — paginierte Roh-Zeilen.
+- `DELETE /api/v1/datasets/:id` — Dataset löschen.
+
+Dieselbe Pipeline (`importCsvDataset` aus
+`harness-orchestrator/src/datasetImport.ts`) läuft auch automatisch beim
+CSV-Chat-Attachment-Pfad in `orchestrator.ts`'s `ingestAttachments` (ersetzt
+dort den bisherigen 20.000-Zeichen-Text-Cutoff für CSVs) — siehe §7 für die
+Knowledge-Graph-seitige Implementierung.
+
+Neues natives Tool **`query_dataset`** (`tools/queryDatasetTool.ts`),
+registriert wie die übrigen Orchestrator-Tools in §3's Orchestrator-Setup:
+`list_datasets` / `get_schema` / `query_rows` gegen eine eingeschränkte
+Filter/Aggregat-DSL (nie rohes SQL vom Modell), Ergebnisse immer
+server-seitig paginiert/aggregiert bzw. auf 200 Gruppen gecappt.
+
+**Identity-Resolution (Fixup Runde 5):** für einen Channel-Turn (Teams/
+Slack/Telegram) ist `ChatTurnInput.userId` die RAW channel-native id, NICHT
+die kanonische `omadiaUserId` uuid. `resolveTurnOwnerIdentity`
+(`resolveTurnOwnerIdentity.ts`) löst sie EINMAL pro Turn auf (via
+`KnowledgeGraph.resolveOrCreateChannelIdentity`, wenn `input.channelIdentity`
+gesetzt ist — sonst fällt sie auf `input.userId` zurück, das für HTTP/CLI-
+Turns bereits kanonisch ist) und legt sie in
+`TurnContextValue.resolvedOmadiaUserId` ab — einmal in `runTurn` (non-
+streaming) und einmal in `chatStream` (der Pfad, den
+`createOrchestratorDispatcher` für Channel-Turns tatsächlich aufruft).
+`QueryDatasetTool` und `ingestAttachments` lesen beide ausschließlich dieses
+Feld für die Dataset-ACL (niemals das rohe `TurnContextValue.userId`) — vorher
+schrieb der Import-Pfad unter der kanonischen id, während der Query-Pfad die
+rohe id las, sodass ein Channel-User sein eigenes gerade importiertes Dataset
+nie wiederfinden konnte.
+
+### Plugin-contributed Navigation (#470, Phase 1 der Dev-Platform-Extraktion)
+
+Damit ein Feature wirklich *installierbar* ist, muss sein Menü-Eintrag mit
+dem Plugin mitreisen — bisher war die Navigation ein eingefrorenes Literal in
+`web-ui/app/_components/Nav.tsx`. Neue Plugin-Fähigkeit:
+
+```ts
+ctx.uiRoutes.registerNav({ navId, href, cluster?, order?, label })
+```
+
+Bewusst getrennt von `ctx.uiRoutes.register()`: ein uiRoute-Descriptor
+adressiert relativ zum `/p/<pluginId>`-Mount des Plugins, ein Nav-Eintrag
+adressiert einen absoluten In-App-Pfad. Beides in einen Descriptor zu falten
+würde eines der zwei Pfad-Felder zur Lüge machen. Beide teilen sich denselben
+Lifecycle in `UiRouteCatalog` (`disposeBySource` räumt beide ab).
+
+Neue Route: **`GET /api/v1/ui/navigation?locale=<l>`**
+(`src/routes/uiNavigation.ts`), gemountet unter `/api` und zusätzlich
+explizit hinter `requireAuth` — die Einträge verraten, welche Features
+installiert sind. Antwort ist `no-store` und enthält **bereits aufgelöste**
+Labels: der Browser bekommt die Locale-Map nie zu sehen, dadurch bleibt das
+Web-UI auf genau einer i18n-Uhr (next-intl) statt auf zwei, die beim
+Sprachwechsel auseinanderlaufen.
+
+Die Shell holt die Einträge **server-seitig im Root-Layout** (`fetchNavEntries`
+in `web-ui/app/_lib/navigation.ts`, 2s-Timeout, degradiert lautlos auf die
+statische Navigation) und merged sie in `Nav.tsx`. Merge-Regeln: Eintrag
+landet im benannten Cluster; unbekannter/fehlender Cluster wird zum
+Top-Level-Eintrag (statt still verschluckt zu werden); ein href-Konflikt mit
+einem statischen Eintrag wird verworfen, damit ein Plugin kein Core-Ziel
+überschatten kann.
+
+Jedes vom Plugin gelieferte Feld gilt als **untrusted input**, weil es im
+vertrauenswürdigen Header gerendert wird: `href` nur in kanonischer In-App-Form
+(kein `//host`, keine Dot-Segments, keine Query/Fragment/Prozent-Kodierung —
+sonst wäre die „Core gewinnt"-Regel per Alias umgehbar), Labels längenbegrenzt
+und gegen Control-, Bidi- und Zero-Width-Codepoints geprüft (Trojan-Source-
+Spoofing benachbarter Core-Einträge). Dazu Obergrenzen für href-/navId-Länge,
+Locale-Map-Größe und Einträge pro Plugin, weil der Katalog in jede
+Root-Layout-RSC-Antwort serialisiert wird.
+
+Erster Consumer ist die Dev Platform selbst: ihr Eintrag wird aus dem
+bestehenden `DEV_PLATFORM_ENABLED`-Block in `index.ts` registriert
+(`core:dev-platform`), nicht mehr in `Nav.tsx` hardcodiert. Wenn das Plugin-
+Package landet, wird daraus `ctx.uiRoutes.registerNav(...)` in dessen
+`activate()` — an der Shell ändert sich dabei nichts. Vollständiger Plan und
+die verbleibenden Phasen: `specs/470-dev-platform-plugin/plan.md`.
+
 ---
 
 ### Public API Channel (issue #438)
@@ -742,7 +904,7 @@ Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
   nie stillschweigend offen). Der Vorteil ist, dass die Garantie nicht mehr
   an der Mount-Reihenfolge hängt und künftige Plugins mit Admin-Fläche den
   Accessor wiederverwenden können, statt sich auf dieselbe Koinzidenz zu
-  verlassen. Siehe `docs/security-architecture.md` § 8 für die volle
+  verlassen. Siehe `docs/security-architecture.md` § 9 für die volle
   Mechanik.
 - **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
   extend to other flows" — weitere Flows sind Folge-Issues).
@@ -967,6 +1129,35 @@ Wird vom Orchestrator aufgerufen, wenn der User auf prior art verweist.
 End-to-End verifiziert: der Orchestrator nutzt das Tool von selbst, ohne
 dass man ihn zwingt.
 
+### Structured Datasets — CSV Import (#430)
+
+Separate Ablage neben dem eigentlichen Graph — bewusst KEINE Graph-Node-
+Explosion pro Zeile (Node-Properties sind GIN-indexiert, siehe
+`ingestEntities`-Doku). Relationale Sidecar-Tabellen `datasets` +
+`dataset_rows` (Migration `packages/harness-knowledge-graph-neon/src/
+migrations/0029_datasets.sql`); pro Dataset genau EIN `Dataset`-Graph-Node
+(`PluginEntity`, `system='dataset'`) für Recall/Zitation.
+
+- **Interface:** `KnowledgeGraph.{ingestDataset,listDatasets,getDataset,
+  queryDatasetRows,deleteDataset}` (`plugin-api/src/knowledgeGraph.ts`),
+  implementiert in `@omadia/knowledge-graph-neon` (echtes SQL) UND
+  `@omadia/knowledge-graph-inmemory` (volle Parität, kein Stub).
+- **Import:** `POST /api/v1/datasets` (multipart CSV, `src/routes/
+  datasets.ts`) sowie automatisch bei CSV-Chat-Attachments
+  (`attachmentExtract.ts`'s `isCsvAttachment` branch in `orchestrator.ts`'s
+  `ingestAttachments` — ersetzt den bisherigen 20.000-Zeichen-Text-Cutoff
+  für CSVs).
+- **Privacy:** jede importierte Zeile läuft vor dem Schreiben durch den
+  bestehenden C0-Regex-Baseline-Detector (`@omadia/plugin-privacy-guard`'s
+  `createBaselineDetector`/`maskPrompt`) — dieselbe Pipeline, die
+  Freitext-User-Prompts schützt. Nur `string`/`date`-Spalten werden
+  gescannt (Details + Kosten-Hinweis in `datasetImport.ts`'s Modul-Doc).
+- **Query:** `query_dataset`-Tool (`tools/queryDatasetTool.ts`) — eine
+  eingeschränkte Filter/Aggregat-DSL (nie rohes SQL vom Modell), immer
+  server-seitig paginiert/aggregiert.
+- **Admin-UI:** bewusst NICHT Teil dieser Änderung — siehe PR-Beschreibung
+  von #430 für die Begründung; offener Folge-Task.
+
 ---
 
 ## 8. Skills
@@ -1003,6 +1194,14 @@ Migration. Statt dessen überschreibt der Preamble in
 
 Funktioniert in der Praxis. Falls ein Sub-Agent dennoch curl-Muster
 produziert, Skill selbst anpassen.
+
+### Cross-Referenz: `query_dataset` (#430) ist kein Skill
+
+AGENTS.md's Doku-Regel ordnet "Neue Route / Tool / Sub-Agent" §3 **und**
+§8 zu. #430's `query_dataset`-Tool ist ein natives Orchestrator-Tool ohne
+eigenen `skills/<name>/SKILL.md`-Ordner — es gehört also inhaltlich nicht
+in "Aktuelle Skills" oben. Referenz statt Duplikat: volle Doku in §3
+("Dataset-Routen + `query_dataset`-Tool") und §7 (Knowledge-Graph-Schicht).
 
 ---
 
@@ -1088,6 +1287,9 @@ DIAGRAM_MAX_SOURCE_BYTES=64000             # Quellcode-Cap
 DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
 # Object-storage (Tigris auf Fly, MinIO lokal — auto-provisioniert via `fly storage create`)
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# Conductor generic webhooks (issue #437) — Kill-Switch für POST /api/hooks/:endpointId
+CONDUCTOR_WEBHOOKS_ENABLED=true
+CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE=60   # Rate-Limit pro Endpoint (rolling minute)
 # Tenant-Scope (auch für Diagramm-Cache-Keys genutzt)
 GRAPH_TENANT_ID=byte5
 # Prompt-PII C1-Detector (GLiNER-Sidecar, #361) — optional
@@ -1385,6 +1587,18 @@ gekettet, weil `requires` beim Boot enforced wird): docs-RFC (diese PR)
 (plus `TurnContextValue`-Extension) → vier Per-Channel-Opt-in-PRs →
 omadia-ui-Orchestrator-Consumer. Details + per-PR-Doc-Pflichten in §15
 des RFC.
+
+### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up)
+
+Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckt
+absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete bleibt
+API-only (`POST/GET/DELETE /api/v1/datasets*`, siehe §3). #430's eigene
+Triage-Acceptance-Criteria verlangen aber genau diese UI; der Branch
+schließt das Issue deshalb NICHT, sondern "addresses" es — ein
+Folge-Issue für die Admin-UI-Seite (`web-ui/app/admin/datasets/` o.ä.,
+Upload-Dropzone + Schema-Tabelle + Zeilen-Preview + Delete-Bestätigung,
+Pattern analog zur bestehenden Package-Upload-Seite) ist offen zu
+erfassen.
 
 ---
 

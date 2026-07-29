@@ -221,6 +221,10 @@
           "title": "Dev-Plattform",
           "description": "Repositories registrieren und isolierte Code-Runner-Jobs starten, die aus einem geprüften Diff einen Pull Request öffnen."
         },
+        "webhooks": {
+          "title": "Conductor-Webhooks",
+          "description": "Eingehende Endpunkte und ausgehende Subscriptions, mit Secret-Rotation und Zustellungsverlauf."
+        },
         "auth": {
           "title": "Authentifizierungs-Provider",
           "description": "Lokale Anmeldung und Entra-ID aktivieren oder deaktivieren; Änderungen wirken ohne Neustart."
@@ -411,8 +415,7 @@
     "agentsOverview": "Übersicht",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
-    "adminCluster": "Admin",
-    "devPlatform": "Dev-Plattform"
+    "adminCluster": "Admin"
   },
   "conductor": {
     "title": "Conductor",
@@ -1058,7 +1061,10 @@
     "viewTrace": "Trace ▾",
     "stepsCount": "{count, plural, one {# Schritt} other {# Schritte}}",
     "delegatedAnswerFrom": "Direkte Antwort von {label}",
-    "delegatedAnswerCaption": "Wortgetreu übermittelt — der Orchestrator kann diese Antwort nicht bearbeiten oder entfernen."
+    "delegatedAnswerCaption": "Wortgetreu übermittelt — der Orchestrator kann diese Antwort nicht bearbeiten oder entfernen.",
+    "stickyActive": "Direkter Draht zu {label} — jede Nachricht geht dorthin.",
+    "stickyExit": "Zurück zum Orchestrator",
+    "stickyPlaceholder": "Nachricht an {label}…"
   },
   "privacyOperator": {
     "eyebrow": "Privacy Operator",
@@ -2458,6 +2464,10 @@
     },
     "descriptionLabel": "Beschreibe es in eigenen Worten",
     "descriptionPlaceholder": "Was ist passiert oder was wünschst du dir? Jede Sprache ist okay — wir formulieren es auf Englisch.",
+    "diagnosticsCheckboxLabel": "Aktuelle Fehler aus dieser Sitzung anhängen",
+    "diagnosticsCheckboxHint": "Enthält kürzliche unbehandelte clientseitige Fehler aus dieser Sitzung. Bekannte Secrets werden vor dem Absenden geschwärzt — prüfe den Auszug unten und noch einmal auf dem nächsten Bildschirm.",
+    "diagnosticsPreviewLabel": "Vorschau des Anhangs",
+    "diagnosticsSectionLabel": "Diagnose (angehängt)",
     "reformulate": "Weiter",
     "reformulating": "Formuliere …",
     "previewTitle": "Issue prüfen",
@@ -2491,6 +2501,7 @@
     "errorNotConnected": "Verbinde zuerst dein GitHub-Konto.",
     "errorLlm": "Es ist kein KI-Provider verbunden, um das Issue zu formulieren.",
     "errorRateLimited": "Dein KI-Provider hat ein Raten- oder Kontingentlimit erreicht. Später erneut versuchen oder in den Einstellungen den Provider wechseln.",
+    "errorDiagnostics": "Der angehängte Diagnose-Auszug wurde abgelehnt. Versuch es erneut oder fahre ohne Anhang fort.",
     "errorGeneric": "Etwas ist schiefgelaufen. Bitte erneut versuchen."
   },
   "store": {
@@ -3309,6 +3320,73 @@
       "notFound": "Registry nicht gefunden — Liste neu geladen.",
       "missingFields": "Name und URL sind erforderlich.",
       "generic": "Fehler {status}."
+    }
+  },
+  "adminWebhooks": {
+    "title": "Conductor-Webhooks",
+    "intro": "Eingehende Endpunkte starten abonnierte Workflow-Runs; ausgehende Subscriptions erhalten eine HMAC-signierte Zustellung bei Run-Abschluss oder -Fehlschlag. Ein erzeugtes oder rotiertes Secret wird einmalig angezeigt — danach nie wieder.",
+    "badge": {
+      "enabled": "aktiv",
+      "disabled": "inaktiv"
+    },
+    "endpoints": {
+      "heading": "Eingehende Endpunkte",
+      "hint": "POST an die Endpunkt-URL mit gültiger HMAC-Signatur startet jeden Workflow, der dessen Event abonniert hat.",
+      "fields": {
+        "eventId": "Event-ID",
+        "description": "Beschreibung (optional)"
+      },
+      "create": "Endpunkt anlegen",
+      "loading": "Lädt …",
+      "empty": "Keine eingehenden Endpunkte konfiguriert.",
+      "viewHistory": "Verlauf anzeigen",
+      "hideHistory": "Verlauf ausblenden",
+      "enable": "Aktivieren",
+      "disable": "Deaktivieren",
+      "rotateSecret": "Secret rotieren",
+      "rotating": "Rotiert",
+      "delete": "Löschen",
+      "deleting": "Löscht",
+      "secretRevealed": "Neues Secret — jetzt kopieren, es wird nicht erneut angezeigt:",
+      "dismiss": "Ausblenden",
+      "noDeliveries": "Noch keine Zustellungen aufgezeichnet.",
+      "confirmDelete": "Diesen Endpunkt wirklich löschen? Jeder Sender, der ihn nutzt, erhält danach 401.",
+      "table": {
+        "deliveryId": "Delivery-ID",
+        "outcome": "Ergebnis",
+        "receivedAt": "Empfangen"
+      }
+    },
+    "subscriptions": {
+      "heading": "Ausgehende Subscriptions",
+      "hint": "Erhält ein HMAC-signiertes POST, sobald das abonnierte Event feuert. Fehlgeschlagene Zustellungen werden mit Backoff wiederholt, bis das Versuchslimit erreicht ist.",
+      "fields": {
+        "url": "URL",
+        "event": "Event",
+        "description": "Beschreibung (optional)"
+      },
+      "create": "Subscription anlegen",
+      "loading": "Lädt …",
+      "empty": "Keine ausgehenden Subscriptions konfiguriert.",
+      "viewHistory": "Verlauf anzeigen",
+      "hideHistory": "Verlauf ausblenden",
+      "enable": "Aktivieren",
+      "disable": "Deaktivieren",
+      "rotateSecret": "Secret rotieren",
+      "rotating": "Rotiert",
+      "delete": "Löschen",
+      "deleting": "Löscht",
+      "secretRevealed": "Neues Secret — jetzt kopieren, es wird nicht erneut angezeigt:",
+      "dismiss": "Ausblenden",
+      "noDeliveries": "Noch keine Zustellungen aufgezeichnet.",
+      "confirmDelete": "Diese Subscription wirklich löschen?",
+      "table": {
+        "status": "Status",
+        "attempts": "Versuche",
+        "lastError": "Letzter Fehler",
+        "nextAttemptAt": "Nächster Versuch",
+        "createdAt": "Erstellt"
+      }
     }
   },
   "adminDomains": {

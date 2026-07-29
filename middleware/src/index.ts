@@ -47,6 +47,7 @@ import type {
   OrchestratorRegistry as MultiOrchestratorRegistry,
 } from '@omadia/orchestrator';
 import { createMemoryRouter } from './routes/memory.js';
+import { createDatasetsRouter } from './routes/datasets.js';
 import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
 import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createDuplicatesRouter } from './routes/duplicates.js';
@@ -168,6 +169,11 @@ import { isPermittedLauncher } from './routes/devPlatformShared.js';
 import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from './routes/devWebhooks.js';
 import { WebhookDeliveryStore } from './devplatform/triggers/webhookDeliveryStore.js';
 import { DevGithubAppStore } from './devplatform/githubApp/appStore.js';
+import {
+  createConductorWebhooksInboundRouter,
+  type ConductorWebhookInboundDeps,
+} from './routes/conductorWebhooksInbound.js';
+import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
 import { DevJobStore as DevJobStoreForWebhooks } from './devplatform/devJobStore.js';
 import { DevRepoStore as DevRepoStoreForWebhooks } from './devplatform/devRepoStore.js';
 import { DevJobGateStore as DevJobGateStoreForWebhooks } from './devplatform/pipeline/gateStore.js';
@@ -258,6 +264,7 @@ import { NotificationRouter } from './platform/notificationRouter.js';
 import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
 import { OAuthReadinessTracker } from './plugins/oauth/oauthReadinessTracker.js';
 import { UiRouteCatalog } from './platform/uiRouteCatalog.js';
+import { createUiNavigationRouter } from './routes/uiNavigation.js';
 import { CanvasOutputRegistry } from './platform/canvasOutputRegistry.js';
 import { EventCatalogRegistry } from './platform/eventCatalogRegistry.js';
 import { DeterministicActionRegistry } from './platform/deterministicActionRegistry.js';
@@ -328,6 +335,17 @@ interface Microsoft365AccessorShim {
 
 /** Escape a value for safe inclusion inside a double-quoted XML/HTML attribute
  *  (used for the <mcp-auth-required> chat block, #459 W9). */
+/**
+ * Locales the operator web UI ships message catalogues for
+ * (`web-ui/messages/*.json`). Used to validate `?locale=` on the
+ * navigation endpoint before it reaches label resolution — an unknown
+ * locale renders English chrome rather than an error. Keep in sync with
+ * web-ui's catalogue; a missing entry here only costs a fallback to
+ * English, never a failure.
+ */
+const WEB_UI_LOCALES = ['en', 'de'] as const;
+const WEB_UI_DEFAULT_LOCALE = 'en';
+
 function xmlAttr(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -989,6 +1007,14 @@ async function main(): Promise<void> {
   // undefined on the in-memory backend (conductor inert); the install-time
   // template VALIDATION gate runs regardless.
   let conductorTemplateRegistrarRef: PluginTemplateRegistrar | undefined;
+
+  // Forward reference for the Conductor inbound-webhook router deps (issue #437) —
+  // same pattern as the template registrar above. The router itself is mounted
+  // further down, BEFORE express.json() (raw-body HMAC verification needs the
+  // untouched bytes); the real deps (endpoint store, event router, vault) are only
+  // built later inside the graphPool block's `wireConductor` call. By the time a real
+  // request arrives, the assignment there has already run.
+  let conductorWebhookInboundDepsRef: ConductorWebhookInboundDeps | undefined;
 
   // Forward refs — runtime propagation of a POST-BOOT agent-plugin
   // (de)activation into the per-Agent registry orchestrators + the fallback
@@ -2113,6 +2139,15 @@ async function main(): Promise<void> {
     console.log('[middleware] dev-platform GitHub webhook router mounted at /api/webhooks/github (raw-body, before express.json)');
   }
 
+  // Issue #437 — Conductor's generic inbound webhook route. Mounted unconditionally
+  // (mirrors the forward-reference pattern, not the `if (graphPool)` gate above): on
+  // the in-memory backend `conductorWebhookInboundDepsRef` never gets assigned, so the
+  // handler's `getDeps()` resolves undefined and every call answers 503 — the router
+  // itself must still be registered here, before express.json(), for the raw-body HMAC
+  // verification to ever see real request bytes once Conductor IS wired.
+  app.use(createConductorWebhooksInboundRouter(() => conductorWebhookInboundDepsRef));
+  console.log('[middleware] conductor webhook inbound router mounted at /api/hooks/:endpointId (raw-body, before express.json)');
+
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -2212,6 +2247,23 @@ async function main(): Promise<void> {
   // travels with it.
   app.use('/api/chat', requireAuth, createChatSessionsRouter({ getStore: getChatSessionStore }));
 
+  // Plugin-contributed navigation. The web-ui shell renders a static nav for
+  // its own compiled surfaces and merges this for everything a plugin adds,
+  // which is what makes a feature genuinely installable: deactivate its
+  // plugin and the menu entry is gone without a frontend rebuild.
+  // `requireAuth` is defence-in-depth over the `/api` mount — the entry list
+  // discloses which features an operator has installed.
+  app.use(
+    '/api',
+    requireAuth,
+    createUiNavigationRouter({
+      catalog: uiRouteCatalog,
+      supportedLocales: WEB_UI_LOCALES,
+      defaultLocale: WEB_UI_DEFAULT_LOCALE,
+    }),
+  );
+  console.log('[middleware] ui navigation endpoint ready at /api/v1/ui/navigation');
+
   // In-app "Create Issue" button: operator connects their own GitHub
   // account via the device flow (only a public client id, no secret — so
   // omadia ships the OAuth App baked in), the primary LLM reformulates the
@@ -2242,6 +2294,15 @@ async function main(): Promise<void> {
     createMemoryRouter({ graph: knowledgeGraph }),
   );
   console.log('[middleware] memory endpoint ready at /api/v1/memory (auth-gated)');
+
+  // #430 — structured dataset ingestion (CSV import) REST surface. Same
+  // requireAuth + per-route session-user ACL pattern as /api/v1/memory.
+  app.use(
+    '/api/v1/datasets',
+    requireAuth,
+    createDatasetsRouter({ graph: knowledgeGraph }),
+  );
+  console.log('[middleware] datasets endpoint ready at /api/v1/datasets (auth-gated)');
 
   // Slice 8 — bulk score + promote admin endpoint. Mounted only when
   // the orchestrator-extras plugin published the bulkPromotion service
@@ -2727,6 +2788,26 @@ async function main(): Promise<void> {
       `[middleware] dev platform ENABLED — worker running (max ${String(config.DEV_PLATFORM_MAX_CONCURRENT_JOBS)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
     );
 
+    // Contribute the operator menu entry instead of hardcoding it in the
+    // web-ui shell. This is the first consumer of the nav catalogue and the
+    // reason it exists: dev-platform is being extracted into a plugin
+    // (specs/470-dev-platform-plugin/plan.md), and its menu entry has to
+    // travel with it. Registering from here — still core, still inside the
+    // DEV_PLATFORM_ENABLED gate — proves the whole loop before any code
+    // moves. When the plugin package lands, this call becomes
+    // `ctx.uiRoutes.registerNav(...)` inside its activate() and nothing
+    // else about the shell changes.
+    //
+    // The `core:` prefix marks a kernel-registered source; a real plugin's
+    // entries are keyed by its plugin id, which the kernel injects.
+    uiRouteCatalog.registerNav('core:dev-platform', {
+      navId: 'devPlatform',
+      href: '/admin/dev-platform',
+      cluster: 'adminCluster',
+      order: 50,
+      label: { en: 'Dev Platform', de: 'Dev-Plattform' },
+    });
+
     // W5 data lifecycle — the daily retention sweep (two-tier event prune). The
     // per-job event cap + artifact ceiling are enforced inline at write time; this
     // cron only prunes aged rows. Terminal-job purge stays operator-driven via
@@ -2776,8 +2857,12 @@ async function main(): Promise<void> {
       app,
       requireAuth,
       getRegistry,
-      invokeAction: (toolId, input) => dynamicAgentRuntime.invokeAgentTool(toolId, input),
-      listActions: () => deterministicActionRegistry.list(),
+      // `webhook.post` (issue #437) is a built-in action, not a plugin tool — special-cased
+      // ahead of the dynamicAgentRuntime dispatch so a Designer action step can fire an
+      // ad-hoc outbound webhook without an installed connector.
+      invokeAction: (toolId, input) =>
+        toolId === WEBHOOK_POST_ACTION_ID ? invokeWebhookPostAction(input) : dynamicAgentRuntime.invokeAgentTool(toolId, input),
+      listActions: () => [WEBHOOK_POST_ACTION_ID, ...deterministicActionRegistry.list()],
       eventCatalog: eventCatalogRegistry,
       // US5 reminders: resolve a channel's proactive sender from the routines senderRegistry. Adapt
       // ProactiveSender → the worker's minimal shape ({ text } is a valid SemanticAnswer).
@@ -2785,8 +2870,22 @@ async function main(): Promise<void> {
         const sender = routinesHandle?.senderRegistry.get(channel);
         return sender ? { send: (opts) => sender.send(opts) } : undefined;
       },
+      // Issue #437 — inbound endpoint secrets + outbound subscription signing secrets
+      // live in the same per-agent-scoped vault as every other subsystem's credentials.
+      vault: secretVault,
+      webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
+      webhookInboundMaxPerMinute: config.CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE,
+      // Review finding — the operator UI must display an inbound endpoint URL it can
+      // actually reach; PUBLIC_BASE_URL alone isn't reliable here since it may
+      // deliberately point at the Next.js dev-server origin (browser-facing), which
+      // doesn't proxy /api/hooks/*. CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL overrides it
+      // when the two must differ.
+      webhookInboundBaseUrl: config.CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL,
       log: (m) => console.log(m),
     });
+    // Issue #437 — resolve the inbound-webhook forward reference mounted earlier
+    // (before express.json()); requests arriving from here on reach the real deps.
+    conductorWebhookInboundDepsRef = conductorWiring.webhookInboundDeps;
     // Expose the event router so plugin contexts (ctx.events.emit) resolve it lazily — US4.
     serviceRegistry.provide('conductorEventRouter', conductorWiring.eventRouter);
     // Expose the channel-binding store so the routines turn-capture hook can populate it — US5.

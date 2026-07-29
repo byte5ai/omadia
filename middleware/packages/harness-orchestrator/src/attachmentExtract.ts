@@ -136,6 +136,27 @@ export function checkVisionEmbeddable(
   return { ok: true, mediaType: ct };
 }
 
+const CSV_TYPES = new Set(['text/csv']);
+const CSV_EXTS = new Set(['csv']);
+
+/**
+ * #430 — true when an attachment should route through the structured
+ * `importCsvDataset` path (`datasetImport.ts`) instead of the plain-text
+ * extraction below. Checked BEFORE `extractAttachmentText` at both entry
+ * points (chat-attachment auto-ingest in `orchestrator.ts`, and the
+ * `POST /api/v1/datasets` route) so a CSV is never silently truncated at
+ * `MAX_TEXT_CHARS` — it gets a real schema + queryable rows instead.
+ */
+export function isCsvAttachment(
+  contentType: string | undefined,
+  fileName: string | undefined,
+): boolean {
+  return (
+    CSV_TYPES.has(normalizeContentType(contentType)) ||
+    CSV_EXTS.has(extOf(fileName))
+  );
+}
+
 /**
  * Extract plain text from an attachment's bytes. Never throws — any failure
  * (unknown type, corrupt binary, missing extractor) resolves to

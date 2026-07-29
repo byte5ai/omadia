@@ -221,6 +221,10 @@
           "title": "Dev Platform",
           "description": "Register repositories and launch isolated code-runner jobs that open a pull request from a reviewed diff."
         },
+        "webhooks": {
+          "title": "Conductor Webhooks",
+          "description": "Inbound endpoints and outbound subscriptions, with secret rotation and delivery history."
+        },
         "auth": {
           "title": "Authentication Providers",
           "description": "Enable or disable local login and Entra ID sign-in; changes apply without a restart."
@@ -411,8 +415,7 @@
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
-    "adminCluster": "Admin",
-    "devPlatform": "Dev Platform"
+    "adminCluster": "Admin"
   },
   "conductor": {
     "title": "Conductor",
@@ -1058,7 +1061,10 @@
     "viewTrace": "trace ▾",
     "stepsCount": "{count, plural, one {# step} other {# steps}}",
     "delegatedAnswerFrom": "Direct answer from {label}",
-    "delegatedAnswerCaption": "Delivered verbatim — the orchestrator cannot edit or remove this answer."
+    "delegatedAnswerCaption": "Delivered verbatim — the orchestrator cannot edit or remove this answer.",
+    "stickyActive": "Talking directly to {label} — every message goes straight there.",
+    "stickyExit": "Back to orchestrator",
+    "stickyPlaceholder": "Message to {label}…"
   },
   "privacyOperator": {
     "eyebrow": "Privacy Operator",
@@ -2458,6 +2464,10 @@
     },
     "descriptionLabel": "Describe it in your own words",
     "descriptionPlaceholder": "What happened, or what would you like to see? Any language is fine — we'll phrase it in English.",
+    "diagnosticsCheckboxLabel": "Attach recent errors from this session",
+    "diagnosticsCheckboxHint": "Includes recent unhandled client-side errors from this session. Known secrets are redacted before filing — review the excerpt below and again on the next screen.",
+    "diagnosticsPreviewLabel": "Preview what will be attached",
+    "diagnosticsSectionLabel": "Diagnostics (attached)",
     "reformulate": "Continue",
     "reformulating": "Phrasing …",
     "previewTitle": "Review the issue",
@@ -2491,6 +2501,7 @@
     "errorNotConnected": "Connect your GitHub account first.",
     "errorLlm": "No AI provider is connected to phrase the issue.",
     "errorRateLimited": "Your AI provider hit a rate or quota limit. Try again later, or switch the provider in Settings.",
+    "errorDiagnostics": "The attached diagnostics excerpt was rejected. Try again, or continue without attaching it.",
     "errorGeneric": "Something went wrong. Please try again."
   },
   "store": {
@@ -3309,6 +3320,73 @@
       "notFound": "Registry not found — list reloaded.",
       "missingFields": "Name and URL are required.",
       "generic": "Error {status}."
+    }
+  },
+  "adminWebhooks": {
+    "title": "Conductor Webhooks",
+    "intro": "Inbound endpoints start subscribed workflow runs; outbound subscriptions receive an HMAC-signed delivery on run completion or failure. A created or rotated secret is shown once — it is never returned again.",
+    "badge": {
+      "enabled": "enabled",
+      "disabled": "disabled"
+    },
+    "endpoints": {
+      "heading": "Inbound endpoints",
+      "hint": "POST to the endpoint's URL with a valid HMAC signature to start every workflow subscribed to its event.",
+      "fields": {
+        "eventId": "Event id",
+        "description": "Description (optional)"
+      },
+      "create": "Create endpoint",
+      "loading": "Loading …",
+      "empty": "No inbound endpoints configured.",
+      "viewHistory": "View history",
+      "hideHistory": "Hide history",
+      "enable": "Enable",
+      "disable": "Disable",
+      "rotateSecret": "Rotate secret",
+      "rotating": "Rotating",
+      "delete": "Delete",
+      "deleting": "Deleting",
+      "secretRevealed": "New secret — copy it now, it will not be shown again:",
+      "dismiss": "Dismiss",
+      "noDeliveries": "No deliveries recorded yet.",
+      "confirmDelete": "Really delete this endpoint? Any sender using it will start getting 401s.",
+      "table": {
+        "deliveryId": "Delivery id",
+        "outcome": "Outcome",
+        "receivedAt": "Received"
+      }
+    },
+    "subscriptions": {
+      "heading": "Outbound subscriptions",
+      "hint": "Receives an HMAC-signed POST whenever the subscribed event fires. Failed deliveries retry with backoff until the attempt cap is reached.",
+      "fields": {
+        "url": "URL",
+        "event": "Event",
+        "description": "Description (optional)"
+      },
+      "create": "Create subscription",
+      "loading": "Loading …",
+      "empty": "No outbound subscriptions configured.",
+      "viewHistory": "View history",
+      "hideHistory": "Hide history",
+      "enable": "Enable",
+      "disable": "Disable",
+      "rotateSecret": "Rotate secret",
+      "rotating": "Rotating",
+      "delete": "Delete",
+      "deleting": "Deleting",
+      "secretRevealed": "New secret — copy it now, it will not be shown again:",
+      "dismiss": "Dismiss",
+      "noDeliveries": "No deliveries recorded yet.",
+      "confirmDelete": "Really delete this subscription?",
+      "table": {
+        "status": "Status",
+        "attempts": "Attempts",
+        "lastError": "Last error",
+        "nextAttemptAt": "Next attempt",
+        "createdAt": "Created"
+      }
     }
   },
   "adminDomains": {

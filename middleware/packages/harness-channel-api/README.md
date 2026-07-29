@@ -123,7 +123,7 @@ and does not share state across multiple replicas/instances of this app —
 if the app is ever scaled horizontally, each replica enforces the budget
 independently, so a key's effective ceiling becomes `rateLimitPerMinute ×
 replica count`. This is a known, accepted v1 trade-off (see
-`docs/security-architecture.md` § 8), not an oversight.
+`docs/security-architecture.md` § 9), not an oversight.
 
 ## Error summary
 
@@ -162,7 +162,7 @@ Standard channel-plugin shape: `src/plugin.ts` wires the routes at
 (sha256, constant-time verified), and vault-backed storage of keys;
 `src/rateLimiter.ts` and `src/auditLog.ts` implement the per-key rate limit
 and the usage audit trail described above. See
-`docs/security-architecture.md` § 8 for the full security posture (threat
+`docs/security-architecture.md` § 9 for the full security posture (threat
 model, storage design, verification details) and
 `docs/middleware-agent-handoff.md` for the implementation handoff notes.
 

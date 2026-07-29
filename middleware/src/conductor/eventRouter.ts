@@ -12,10 +12,13 @@ export interface EmitResult {
 
 /**
  * Routes a domain event to the workflows that subscribe to it. A workflow subscribes via an
- * `event` trigger in its active version graph (an `eventId` plus an optional payload `filter`
- * predicate). A matching emit starts a run with the validated payload as initial context (US4 /
- * FR-013). This is the kernel side of the Conductor Surface; a connector calls it (today via the
- * operator emit route; `ctx.events.emit` for plugins is a follow-up).
+ * `event` trigger, or a `webhook` trigger (issue #437 — the inbound `/api/hooks/:endpointId`
+ * route emits its endpoint's configured `eventId` here, exactly like any other domain event; a
+ * `webhook` trigger is `event`'s sibling matched the same way, not a separate mechanism), in its
+ * active version graph (an `eventId` plus an optional payload `filter` predicate). A matching
+ * emit starts a run with the validated payload as initial context (US4 / FR-013). This is the
+ * kernel side of the Conductor Surface; a connector calls it (today via the operator emit route
+ * and the inbound webhook route; `ctx.events.emit` for plugins is a follow-up).
  */
 export class ConductorEventRouter {
   constructor(
@@ -38,7 +41,10 @@ export class ConductorEventRouter {
 
       const triggers = version.graph.triggers ?? [];
       const match = triggers.find(
-        (tr) => tr.kind === 'event' && tr.eventId === eventId && this.filterMatches(tr.filter, payload),
+        (tr) =>
+          (tr.kind === 'event' || tr.kind === 'webhook') &&
+          tr.eventId === eventId &&
+          this.filterMatches(tr.filter, payload),
       );
       if (!match) continue;
       matched += 1;
@@ -47,7 +53,7 @@ export class ConductorEventRouter {
         const run = await this.deps.executor.startRun({
           slug: wf.slug,
           payload,
-          triggerKind: 'event',
+          triggerKind: match.kind,
           triggerSource: { eventId, ...(sourcePluginId ? { sourcePluginId } : {}) },
         });
         started.push({ workflowSlug: wf.slug, runId: run.id });

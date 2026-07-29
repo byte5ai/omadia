@@ -7,6 +7,7 @@ import {
   type ChatTurnInput,
   type ChatTurnResult,
   type DelegatedAnswer,
+  type DirectLineSessionState,
   type DiagramAttachment,
   type OutgoingFileAttachment,
   type PendingRoutineList,
@@ -74,8 +75,18 @@ import {
   ReadAttachmentTool,
   readAttachmentToolSpec,
 } from './tools/readAttachmentTool.js';
+import {
+  QUERY_DATASET_TOOL_NAME,
+  QueryDatasetTool,
+  queryDatasetToolSpec,
+} from './tools/queryDatasetTool.js';
 import { parseAttachmentsInfo } from './attachmentsInfo.js';
-import { checkVisionEmbeddable, extractAttachmentText } from './attachmentExtract.js';
+import {
+  checkVisionEmbeddable,
+  extractAttachmentText,
+  isCsvAttachment,
+} from './attachmentExtract.js';
+import { importCsvDataset } from './datasetImport.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -108,12 +119,21 @@ import {
 } from './privacyHandle.js';
 import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
 import {
-  parseDirectLineDirective,
   resolveDirectLineTarget,
   directLineLabel,
   type DirectLineCandidate,
   type DirectLineMode,
 } from './directLine.js';
+import {
+  DIRECT_LINE_EXIT_TOKENS,
+  InMemoryDirectLineStickyStore,
+  classifyStickyScope,
+  decideDirectLineTurn,
+  type DirectLineBinding,
+  type DirectLineDecision,
+  type DirectLineStickyStore,
+  type StickyScopeClassification,
+} from './directLineSticky.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
@@ -136,6 +156,7 @@ import type {
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
 import { buildDateHeader, today, turnContext } from './turnContext.js';
+import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
 
@@ -250,6 +271,21 @@ export interface OrchestratorOptions {
    * mention/markup parsing (see directLine.ts).
    */
   directLinePrefix?: string;
+  /**
+   * #445 — sticky Direct Line. When true, a bare `#<agent>` binds the
+   * conversation to that specialist until the user sends `#end` /
+   * `#orchestrator`. Off by default: while it is off, `executeDirectLine`
+   * behaves byte-for-byte as #332 did.
+   */
+  directLineSticky?: boolean;
+  /**
+   * #445 — binding store. Injected so it OUTLIVES this Orchestrator instance:
+   * the registry replaces the instance on any config diff, and an instance
+   * field would silently unbind every live session on an unrelated operator
+   * tweak. Absent → a private instance (keeps `new Orchestrator({…})`
+   * unit-testable without boot wiring).
+   */
+  directLineStickyStore?: DirectLineStickyStore;
   /**
    * #332 Layer 3 (gap-closure) — standing, per-orchestrator forced-delegation
    * obligation. When set to one of this orchestrator's whitelisted domain
@@ -1282,6 +1318,10 @@ export class Orchestrator {
   private readonly directLineMode: DirectLineMode;
   /** #332 Layer 2 — directive prefix (default `'#'`). */
   private readonly directLinePrefix: string;
+  /** #445 — sticky Direct Line enabled for this Agent (default off). */
+  private readonly directLineSticky: boolean;
+  /** #445 — binding store; injected at boot so it survives a registry rebuild. */
+  private readonly directLineStickyStore: DirectLineStickyStore;
   /** #332 Layer 3 (gap-closure) — standing forced-consult tool name, if any. */
   private readonly requiredConsultToolName: string | undefined;
   // systemPrompt is rebuilt live per turn from `buildSystemPrompt()` —
@@ -1303,6 +1343,8 @@ export class Orchestrator {
   private readonly attachmentReader: AttachmentReader | undefined;
   /** #268 — lazily built `read_attachment` handler (only when reader present). */
   private readonly readAttachmentTool: ReadAttachmentTool | undefined;
+  /** #430 — `query_dataset` native tool; only needs the KnowledgeGraph handle. */
+  private readonly queryDatasetTool: QueryDatasetTool | undefined;
   private readonly chatParticipantsTool: ChatParticipantsTool | undefined;
   private readonly findFreeSlotsTool: FindFreeSlotsTool | undefined;
   private readonly bookMeetingTool: BookMeetingTool | undefined;
@@ -1363,10 +1405,38 @@ export class Orchestrator {
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
     this.directLineMode = options.directLineMode ?? 'strict';
     this.directLinePrefix = options.directLinePrefix ?? '#';
+    this.directLineSticky = options.directLineSticky ?? false;
+    this.directLineStickyStore =
+      options.directLineStickyStore ?? new InMemoryDirectLineStickyStore();
+    // #445 — a deployment whose specialist normalizes to a reserved exit token
+    // keeps its agent (resolution wins) and loses only that one exit spelling.
+    // Say so once at construction rather than leaving an operator to discover
+    // it from a conversation that will not end.
+    if (this.directLineSticky) {
+      for (const tool of this.domainToolsByName.values()) {
+        const label = directLineLabel(tool.agentId ?? tool.name);
+        for (const token of DIRECT_LINE_EXIT_TOKENS) {
+          if (
+            resolveDirectLineTarget(token, [
+              { toolName: tool.name, ...(tool.agentId ? { agentId: tool.agentId } : {}), label },
+            ]).kind === 'resolved'
+          ) {
+            console.warn(
+              `[orchestrator] direct-line sticky: specialist "${label}" shadows the reserved ` +
+                `exit token "${this.directLinePrefix}${token}" — use ` +
+                `"${this.directLinePrefix}${token === 'end' ? 'orchestrator' : 'end'}" to leave.`,
+            );
+          }
+        }
+      }
+    }
     this.requiredConsultToolName = options.requiredConsultToolName;
     this.knowledgeGraph = options.knowledgeGraph;
     this.knowledgeGraphTool = options.knowledgeGraph
       ? new KnowledgeGraphTool(options.knowledgeGraph, options.embeddingClient)
+      : undefined;
+    this.queryDatasetTool = options.knowledgeGraph
+      ? new QueryDatasetTool(options.knowledgeGraph)
       : undefined;
     this.factExtractor = options.factExtractor;
     this.chatParticipantsTool = options.chatParticipantsTool;
@@ -2181,6 +2251,15 @@ export class Orchestrator {
     const privacyHandle = privacyService
       ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
       : undefined;
+    // #430 fixup (reviewer round 5) — resolve the canonical omadiaUserId ONCE
+    // for the whole turn; see `resolveTurnOwnerIdentity` for the fallback
+    // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
+    // `turnContext.current()?.resolvedOmadiaUserId` instead of each
+    // re-deriving it independently.
+    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
+      this.knowledgeGraph,
+      input,
+    );
 
     return turnContext.run(
       {
@@ -2192,6 +2271,7 @@ export class Orchestrator {
         // Human user id — dispatch-time consumers (MCP→KG ingestion) attribute
         // per-user data with it.
         ...(input.userId ? { userId: input.userId } : {}),
+        ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -2216,6 +2296,12 @@ export class Orchestrator {
         let result: ChatTurnResult;
         try {
           result = direct ?? (await this.chatInContext(input, turnId));
+          // #445 — an ordinary turn is by definition an UNBOUND turn (a live
+          // binding would have produced a sticky dispatch), so stamp the
+          // negative. Without it a client could never learn a binding ended.
+          if (!direct && this.directLineSticky) {
+            result = { ...result, directLineSession: { active: false } };
+          }
         } catch (err) {
           // #361 — failure-closed prompt masking: the prompt never reached
           // the model; answer with a generic privacy error instead of a raw
@@ -2299,12 +2385,6 @@ export class Orchestrator {
     input: ChatTurnInput,
     turnId: string,
   ): Promise<ChatTurnResult | undefined> {
-    const directive = parseDirectLineDirective(
-      input.userMessage,
-      this.directLinePrefix,
-    );
-    if (!directive) return undefined; // ordinary turn — proceed with the LLM.
-
     // Candidates = THIS orchestrator's whitelisted sub-agents (OB-29-1 gating).
     const candidates: DirectLineCandidate[] = Array.from(
       this.domainToolsByName.values(),
@@ -2314,31 +2394,80 @@ export class Orchestrator {
       label: directLineLabel(t.agentId ?? t.name),
     }));
 
-    const resolution = resolveDirectLineTarget(directive.token, candidates);
-    // Collision rule (#332 Open Q3): a leading `#token` is only treated as a
-    // Direct-Line directive when it RESOLVES to a whitelisted specialist.
-    // An unknown token falls THROUGH to the normal LLM turn — so an ordinary
-    // message that merely starts with `#` (e.g. `#urgent …`, `#1 priority …`,
-    // a hashtag) is never hijacked into a "no such agent" reply. Ambiguity (the
-    // token matched ≥2 whitelisted agents) IS a directive intent, so we
-    // disambiguate rather than route silently (Pitfall 7).
-    if (resolution.kind === 'unknown') return undefined;
-    if (resolution.kind === 'ambiguous') {
-      const names = resolution.matches.map((c) => c.label).join(', ');
+    // #445 — TARGET SELECTION. This block is the entire sticky feature: it
+    // decides WHICH `{candidate, payload}` the unchanged #332 dispatch body
+    // below receives. With sticky off, `decideDirectLineTurn` reproduces #332's
+    // rules exactly (unknown ⇒ fall through to the LLM, ambiguous ⇒ notice,
+    // empty payload ⇒ notice, else dispatch), so this is a refactor, not a
+    // behaviour change, until an operator turns the flag on.
+    const scope: StickyScopeClassification = this.directLineSticky
+      ? classifyStickyScope({
+          agentSlug: this.agentId,
+          ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
+          ...(input.userId ? { userId: input.userId } : {}),
+        })
+      : { kind: 'refused', reason: 'no-scope' };
+    const stickyKey = scope.kind === 'eligible' ? scope.key : undefined;
+    const binding = stickyKey ? this.directLineStickyStore.get(stickyKey) : undefined;
+
+    const decision = decideDirectLineTurn({
+      userMessage: input.userMessage,
+      prefix: this.directLinePrefix,
+      candidates,
+      binding,
+      stickyEnabled: this.directLineSticky,
+      scope,
+    });
+
+    // Ordinary turn — proceed with the LLM. The caller stamps `{active:false}`.
+    if (decision.kind === 'ordinary') return undefined;
+
+    if (decision.kind === 'exit') {
+      if (stickyKey) this.directLineStickyStore.clear(stickyKey);
+      const label = binding?.label ?? 'The specialist';
       return this.directLineNotice(
-        `"${directive.token}" is ambiguous — it matches ${names}. Please name one specifically.`,
+        `Back to the orchestrator — ${label} is no longer answering directly.`,
+        { active: false, transition: 'left' },
       );
     }
 
-    // A resolved specialist with no question — ask for one rather than
-    // dispatching an empty payload.
-    if (directive.payload.length === 0) {
+    if (decision.kind === 'notice') return this.directLineDecisionNotice(decision, binding);
+
+    if (decision.kind === 'enter') {
+      const target = this.domainToolsByName.get(decision.candidate.toolName);
+      if (!target || !this.isToolAvailable(target.agentId)) {
+        return this.directLineNotice(
+          `Specialist "${decision.candidate.label}" is no longer available.`,
+          this.directLineStateFor(binding),
+        );
+      }
+      if (!stickyKey) {
+        // Unreachable via `decideDirectLineTurn` (an ineligible scope yields a
+        // 'sticky-refused' notice), but binding without a key would silently
+        // drop the binding and strand the user in a mode that never engages.
+        return this.directLineNotice(
+          `Direct mode is not available in this conversation.`,
+          { active: false, transition: 'refused', refusedReason: 'no-scope' },
+        );
+      }
+      const bound = this.directLineStickyStore.bind(stickyKey, {
+        toolName: decision.candidate.toolName,
+        ...(decision.candidate.agentId ? { agentId: decision.candidate.agentId } : {}),
+        label: decision.candidate.label,
+      });
       return this.directLineNotice(
-        `You addressed ${resolution.candidate.label} but didn't include a question. Try \`${this.directLinePrefix}${directive.token} <your question>\`.`,
+        `You are now talking to ${bound.label}. Every message goes straight there — ` +
+          `send \`${this.directLinePrefix}end\` to come back to the orchestrator.`,
+        {
+          active: true,
+          ...(bound.agentId ? { agentId: bound.agentId } : {}),
+          label: bound.label,
+          transition: binding ? 'switched' : 'entered',
+        },
       );
     }
 
-    const candidate = resolution.candidate;
+    const candidate = decision.candidate;
     const tool = this.domainToolsByName.get(candidate.toolName);
     // Issue #474 (round 4) — a not-ready plugin's domain tool must resolve
     // the same as a deleted one: `dispatchToolInner` already blocks the
@@ -2347,9 +2476,15 @@ export class Orchestrator {
     // delegatedAnswer and shown to the user as if the specialist itself had
     // answered. Reuse the SAME notice as the deleted-tool branch above
     // instead of surfacing that internal dispatch-error string.
+    // #445 — this now re-runs on EVERY sticky turn, so a mid-session uninstall
+    // unbinds the conversation instead of stranding it on a dead specialist.
     if (!tool || !this.isToolAvailable(tool.agentId)) {
+      if (decision.sticky && stickyKey) this.directLineStickyStore.clear(stickyKey);
       return this.directLineNotice(
         `Specialist "${candidate.label}" is no longer available.`,
+        decision.sticky
+          ? { active: false, transition: 'unavailable' }
+          : this.directLineStateFor(binding),
       );
     }
 
@@ -2360,10 +2495,22 @@ export class Orchestrator {
     // real values (the no-redaction invariant holds on the restored text).
     // Failure-closed: a `blocked` outcome answers with the generic privacy
     // error (audited by the guard) instead of dispatching unmasked.
+    // #445 — slide the idle window BEFORE dispatch, so a long specialist call
+    // cannot let the binding expire underneath the very turn that is using it.
+    if (decision.sticky && stickyKey) this.directLineStickyStore.touch(stickyKey);
+    const directLineSession: DirectLineSessionState | undefined = decision.sticky
+      ? {
+          active: true,
+          ...(candidate.agentId ? { agentId: candidate.agentId } : {}),
+          label: candidate.label,
+          transition: 'continued',
+        }
+      : this.directLineStateFor(binding);
+
     const privacyForPrompt = turnContext.current()?.privacyHandle;
     let wirePayload: string;
     try {
-      wirePayload = await maskPromptForWire(privacyForPrompt, directive.payload);
+      wirePayload = await maskPromptForWire(privacyForPrompt, decision.payload);
     } catch (err) {
       if (err instanceof PromptMaskBlockedError) {
         console.error(`[orchestrator] direct-line dispatch blocked — ${err.message}`);
@@ -2445,7 +2592,7 @@ export class Orchestrator {
     ) {
       const note = await this.maybeDirectLineNote(
         candidate.label,
-        directive.payload,
+        decision.payload,
         verbatim,
       );
       if (note) answer = `${verbatim}\n\n▸ omadia note: ${note}`;
@@ -2521,7 +2668,66 @@ export class Orchestrator {
       runTrace,
       delegatedAnswer,
       ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+      ...(directLineSession ? { directLineSession } : {}),
     };
+  }
+
+  /**
+   * #445 — the indicator for a turn that did not change the binding. Returns
+   * `undefined` while the feature is off so the field never appears at all;
+   * once on, EVERY turn carries a state (including `{active:false}`), which is
+   * what lets a client clear a stale banner after a restart or a TTL expiry.
+   */
+  private directLineStateFor(
+    binding: DirectLineBinding | undefined,
+  ): DirectLineSessionState | undefined {
+    if (!this.directLineSticky) return undefined;
+    if (!binding) return { active: false };
+    return {
+      active: true,
+      ...(binding.agentId ? { agentId: binding.agentId } : {}),
+      label: binding.label,
+      transition: 'continued',
+    };
+  }
+
+  /** #445 — render a non-dispatching decision as a faithful notice turn. */
+  private directLineDecisionNotice(
+    decision: Extract<DirectLineDecision, { kind: 'notice' }>,
+    binding: DirectLineBinding | undefined,
+  ): ChatTurnResult {
+    switch (decision.reason) {
+      case 'ambiguous': {
+        const names = (decision.matches ?? []).map((c) => c.label).join(', ');
+        return this.directLineNotice(
+          `That name is ambiguous — it matches ${names}. Please name one specifically.`,
+          this.directLineStateFor(binding),
+        );
+      }
+      case 'no-question':
+        return this.directLineNotice(
+          `You addressed ${decision.candidate?.label ?? 'a specialist'} but didn't include a ` +
+            `question. Try \`${this.directLinePrefix}<agent> <your question>\`.`,
+          this.directLineStateFor(binding),
+        );
+      case 'already-bound':
+        return this.directLineNotice(
+          `You are already talking to ${decision.candidate?.label ?? 'that specialist'}. ` +
+            `Send \`${this.directLinePrefix}end\` to come back to the orchestrator.`,
+          this.directLineStateFor(binding),
+        );
+      case 'sticky-refused':
+        return this.directLineNotice(
+          `Direct mode is not available in this conversation. You can still ask ` +
+            `${decision.candidate?.label ?? 'a specialist'} one question at a time with ` +
+            `\`${this.directLinePrefix}<agent> <your question>\`.`,
+          {
+            active: false,
+            transition: 'refused',
+            ...(decision.refusedReason ? { refusedReason: decision.refusedReason } : {}),
+          },
+        );
+    }
   }
 
   /**
@@ -2531,8 +2737,16 @@ export class Orchestrator {
    * Never silently routes to the wrong agent (Pitfall 7). An UNKNOWN token is
    * not handled here — it falls through to the normal LLM turn (collision rule).
    */
-  private directLineNotice(text: string): ChatTurnResult {
-    return { answer: text, toolCalls: 0, iterations: 0 };
+  private directLineNotice(
+    text: string,
+    directLineSession?: DirectLineSessionState,
+  ): ChatTurnResult {
+    return {
+      answer: text,
+      toolCalls: 0,
+      iterations: 0,
+      ...(directLineSession ? { directLineSession } : {}),
+    };
   }
 
   /**
@@ -3420,12 +3634,22 @@ export class Orchestrator {
     const privacyHandle = privacyService
       ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
       : undefined;
+    // #430 fixup (reviewer round 5) — same per-turn resolution as `runTurn`
+    // above. This streaming entry point is what channel adapters (Teams/
+    // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
+    // without this the resolved identity would never reach a channel turn's
+    // tool dispatch at all — see `resolveTurnOwnerIdentity`.
+    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
+      this.knowledgeGraph,
+      input,
+    );
 
     turnContext.enter({
       turnId,
       turnDate: today(),
       // Per-orchestrator isolation: see the matching `turnContext.run` above.
       agentSlug: this.agentId,
+      ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
@@ -3477,6 +3701,11 @@ export class Orchestrator {
             : {}),
           ...(directAgentsConsulted && directAgentsConsulted.length > 0
             ? { agentsConsulted: directAgentsConsulted }
+            : {}),
+          // #445 — guarded on PRESENCE, never on `.active`: `{active:false}` is
+          // exactly the payload that clears a stale banner.
+          ...(direct.directLineSession
+            ? { directLineSession: direct.directLineSession }
             : {}),
         };
         if (privacyHandle) {
@@ -4076,6 +4305,11 @@ export class Orchestrator {
             ...(finalAgentsConsulted && finalAgentsConsulted.length > 0
               ? { agentsConsulted: finalAgentsConsulted }
               : {}),
+            // #445 — reached only on an ordinary (unbound) turn; stamp the
+            // negative so a client can clear a banner it is still showing.
+            ...(this.directLineSticky
+              ? { directLineSession: { active: false } as const }
+              : {}),
           };
           return;
         }
@@ -4316,6 +4550,9 @@ export class Orchestrator {
             ...(choiceAgentsConsulted && choiceAgentsConsulted.length > 0
               ? { agentsConsulted: choiceAgentsConsulted }
               : {}),
+            ...(this.directLineSticky
+              ? { directLineSession: { active: false } as const }
+              : {}),
           };
           return;
         }
@@ -4411,6 +4648,9 @@ export class Orchestrator {
           iterations,
           ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
           ...(runTrace ? { runTrace } : {}),
+          ...(this.directLineSticky
+            ? { directLineSession: { active: false } as const }
+            : {}),
         };
       } else {
         yield {
@@ -4891,6 +5131,9 @@ export class Orchestrator {
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
       return this.knowledgeGraphTool.handle(input);
     }
+    if (name === QUERY_DATASET_TOOL_NAME && this.queryDatasetTool) {
+      return this.queryDatasetTool.handle(input);
+    }
     if (name === CHAT_PARTICIPANTS_TOOL_NAME && this.chatParticipantsTool) {
       return this.chatParticipantsTool.handle();
     }
@@ -5275,13 +5518,72 @@ export class Orchestrator {
             'fileName' in fetched
               ? (fetched as { fileName?: string }).fileName
               : undefined;
+          const attachmentFileName = fetchedFileName ?? c.fileName;
+          const label = c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
+          // #430 — CSV attachments become a queryable dataset instead of a
+          // truncated `[attachment-content]` text blob, whenever a
+          // KnowledgeGraph AND a resolved user identity are both available.
+          // Falls back to the plain-text path otherwise, so CSV ingest
+          // degrades instead of silently failing on a channel without
+          // either.
+          //
+          // #430 fixup (reviewer round 2) — dataset ownership needs the
+          // canonical `omadiaUserId` uuid, NOT the raw channel-native id
+          // `input.userId` carries for channel turns (Teams AAD oid, …; see
+          // `ChatTurnInput.userId`'s doc comment).
+          //
+          // #430 fixup (reviewer round 5) — this used to re-resolve
+          // `input.channelIdentity` independently, right here, on every CSV
+          // attachment. That was the ONLY place the canonical id got
+          // computed — `QueryDatasetTool` had no way to read it and fell
+          // back to the raw `turnContext.current()?.userId`, so a dataset a
+          // channel user just imported could never be found again by that
+          // same user. Now reads the ONE per-turn resolution both the
+          // import and query paths share — see
+          // `resolveTurnOwnerIdentity`/`TurnContextValue.resolvedOmadiaUserId`
+          // for the resolution + fallback rules (still idempotent, still
+          // degrades to the plain-text path below when unresolved).
+          if (isCsvAttachment(contentType, attachmentFileName) && this.knowledgeGraph) {
+            const ownerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
+            if (ownerOmadiaUserId) {
+              const imported = await importCsvDataset({
+                graph: this.knowledgeGraph,
+                bytes: fetched.bytes,
+                datasetName: attachmentFileName ?? label,
+                sourceFileName: attachmentFileName ?? label,
+                ownerOmadiaUserId,
+                ...(c.storageKey ? { sourceStorageKey: c.storageKey } : {}),
+              });
+              if (imported.ok) {
+                // #430 fixup — per-cell truncation (MAX_CELL_CHARS) still
+                // happens (see datasetImport.ts module doc); only tell the
+                // model "not truncated" when that's actually true this time,
+                // rather than making a blanket claim the PR no longer backs.
+                const { truncatedCellCount, truncatedColumns } = imported.truncation;
+                const truncationNote =
+                  truncatedCellCount > 0
+                    ? `Note: ${String(truncatedCellCount)} cell(s) in column(s) [${truncatedColumns.join(', ')}] exceeded the per-cell length cap and were truncated on import.`
+                    : 'No cells were truncated on import.';
+                textBlocks.push(
+                  `\n\n[dataset-imported: ${label}]\ndataset_id=${imported.result.datasetId}, rows=${String(imported.result.rowCount)}. ` +
+                    `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with this dataset_id to filter/aggregate this data — do not ask the user to re-paste it. ${truncationNote}\n[/dataset-imported]`,
+                );
+                continue;
+              }
+              console.warn(
+                `[harness-orchestrator] ingestAttachments: CSV dataset import failed for ${label} — ${imported.reason}`,
+              );
+              // Fall through to the plain-text path below so the CSV's raw
+              // text (even if capped) still reaches the model rather than
+              // vanishing silently.
+            }
+          }
           const result = await extractAttachmentText(
             fetched.bytes,
             contentType,
-            fetchedFileName ?? c.fileName,
+            attachmentFileName,
           );
           if (!result.ok) continue;
-          const label = c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
           textBlocks.push(
             `\n\n[attachment-content: ${label}]\n${result.text}\n[/attachment-content]`,
           );
@@ -5336,6 +5638,7 @@ export class Orchestrator {
       tools.push({ type: MEMORY_TOOL_TYPE, name: MEMORY_TOOL_NAME });
     }
     if (this.knowledgeGraphTool) tools.push(knowledgeGraphToolSpec);
+    if (this.queryDatasetTool) tools.push(queryDatasetToolSpec);
     // Diagrams + enrich_company tool specs come from nativeTools registry (plugin-contributed).
     if (this.chatParticipantsTool) tools.push(chatParticipantsToolSpec);
     if (this.askUserChoiceTool) tools.push(askUserChoiceToolSpec);

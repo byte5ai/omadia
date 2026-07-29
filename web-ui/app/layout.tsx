@@ -15,6 +15,7 @@ import { StreamRunner } from './_components/StreamRunner';
 import { StreamToasts } from './_components/StreamToasts';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
 import { StreamStoreProvider } from './_lib/streamStore';
+import { fetchNavEntries } from './_lib/navigation';
 import { UI_PREFS_COOKIE, parseUiPrefsCookie } from './_lib/uiPrefs';
 import './globals.css';
 
@@ -94,6 +95,11 @@ export default async function RootLayout({
   const messages = await getMessages();
   const t = await getTranslations('layout');
   const jar = await cookies();
+  // Plugin-contributed menu entries, resolved for this locale server-side so
+  // the nav is correct on first paint and stays on next-intl's single i18n
+  // clock. Never throws — an unauthenticated visitor or an unreachable
+  // middleware yields an empty list and the static nav renders alone.
+  const navEntries = await fetchNavEntries(locale);
   const { palette, theme } = parseUiPrefsCookie(jar.get(UI_PREFS_COOKIE)?.value);
   return (
     <html
@@ -124,7 +130,7 @@ export default async function RootLayout({
                     </span>
                   </Link>
                   <div className="ml-auto flex items-center gap-4">
-                    <Nav />
+                    <Nav entries={navEntries} />
                     <span
                       className="hidden h-5 w-px bg-[color:var(--border)] sm:block"
                       aria-hidden

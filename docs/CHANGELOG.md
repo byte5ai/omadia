@@ -96,7 +96,7 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   unavailable → `503` (fail closed, never silently unauthenticated). New
   end-to-end coverage in `adminKeysRouter.test.ts` mounts the router behind
   the REAL accessor (not a stub) and asserts the no-cookie / invalid-cookie
-  / valid-cookie and fail-closed paths. `docs/security-architecture.md` § 8,
+  / valid-cookie and fail-closed paths. `docs/security-architecture.md` § 9,
   this package's `README.md`, and `docs/middleware-agent-handoff.md` are
   corrected to describe the real mechanism.
 - Third review fixup: the key-id namespacing above (`${key.id}:${callerConversationId}`)
@@ -114,6 +114,282 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   both collision shapes through the real `createApiChatRouter` and asserts
   the resulting scopes differ after being run through the real
   `graphScopeFor`/`sanitizeScope`.
+### Added — plugin-contributed navigation (#470, phase 1 of the Dev Platform extraction)
+
+- New plugin capability `ctx.uiRoutes.registerNav({ navId, href, cluster?,
+  order?, label })` lets an installed plugin contribute entries to the
+  operator navigation. Backed by `UiRouteCatalog.registerNav()` /
+  `listNav(locale)` and served by a new session-gated route
+  `GET /api/v1/ui/navigation?locale=<l>`, which returns labels **already
+  resolved** for the requested locale — the browser never receives the
+  per-locale map, so the web UI stays on next-intl's single i18n clock.
+- The web-ui shell (`Nav.tsx`) now merges its static nav with the
+  contributed entries, fetched server-side in the root layout. An entry
+  joins the cluster it names; an unknown or absent cluster promotes it to
+  top level; an href colliding with a static one is dropped so a plugin
+  cannot shadow a core destination. Every plugin-supplied field is
+  validated as untrusted input (canonical in-app hrefs only; labels
+  length-capped and screened for control, bidi and zero-width codepoints).
+- Dev Platform is the first consumer: its menu entry and its `/admin` grid
+  card now come from that registration instead of being hardcoded, so
+  disabling the feature removes both with no frontend rebuild. Removes the
+  now-unused `nav.devPlatform` key from `messages/{en,de}.json`.
+- Rationale and the remaining extraction phases:
+  `specs/470-dev-platform-plugin/plan.md`.
+
+### Fixed — deactivated tool plugins kept serving their Express routes
+
+- `ToolPluginRuntime.deactivate()` stopped background jobs and disposed UI
+  routes but never called `pluginRouteRegistry.disposeBySource()`, although
+  it held that dependency and threaded it into every plugin context
+  (`DynamicAgentRuntime` already did). Express cannot unmount, so an
+  uninstalled or hot-upgraded plugin's routers stayed live and — because
+  Express matches first-mount-wins — kept answering and shadowed anything
+  later mounted at the same prefix.
+- Disposal now also runs **before** the plugin-controlled `close()` is
+  awaited; previously a plugin whose `close()` hung kept its routes and menu
+  entry live for the full 5s budget after the operator triggered
+  deactivation. `activate()` additionally rolls back its own route/nav/job
+  registrations when a plugin registers and then throws or times out —
+  such a plugin never reaches the active set, so `deactivate()` could never
+  clean it up and the orphan survived for the life of the process.
+
+### Added — Conductor generic webhook support, inbound + outbound (#437)
+
+- **Inbound**: `POST /api/hooks/:endpointId` (unauthenticated mount, raw-body
+  HMAC verification ahead of the global `express.json()` — same pattern as
+  `routes/devWebhooks.ts`). An endpoint maps to a Conductor `eventId`; a
+  verified delivery calls the existing `ConductorEventRouter.emit()`, so any
+  workflow with a matching `event` **or** `webhook` trigger starts a run — the
+  previously declared-but-dead `'webhook'` `TriggerKind`
+  (`conductor-core/src/types.ts`) is now implemented as `event`'s sibling, not
+  a separate mechanism. Every claimed delivery id lands in
+  `conductor_webhook_inbound_deliveries` with a terminal outcome (dedupe +
+  audit ledger); noise (disabled endpoint, malformed JSON, no subscriber)
+  always answers 2xx to avoid a redelivery storm, while a bad/absent signature
+  and an unknown endpoint id answer byte-for-byte the same 401.
+- **Outbound**: `ConductorWebhookDispatcher` fires an HMAC-signed delivery to
+  every enabled `conductor_webhook_subscriptions` row matching an internal
+  event (`run.completed` / `run.failed`, wired via a new
+  `ConductorRunExecutor` terminal-run hook), with exponential backoff up to a
+  configurable attempt cap and a persisted `conductor_webhook_deliveries` log
+  (`ConductorWebhookRetryWorker` re-attempts anything still `pending` on a
+  poll loop, so a delivery survives a process restart).
+- **Designer action**: a new built-in `webhook.post` action lets a workflow
+  step fire an ad-hoc outbound POST to an operator-supplied URL.
+- **Security**: inbound endpoint secrets and outbound subscription signing
+  secrets live in the secret vault (`core:conductor` namespace, metadata in
+  Postgres / secret in Vault split, modeled on `DevGithubAppStore`) — never in
+  graph JSON or an API response beyond their one-time creation/rotation
+  reply. Both the dispatcher and `webhook.post` share one SSRF guard
+  (`conductor/webhookOutbound.ts`, reusing the existing
+  `platform/ssrfGuard.ts` guarded-`Agent` defence) that rejects a private /
+  loopback / link-local / cloud-metadata target before a request is ever
+  attempted.
+- New config: `CONDUCTOR_WEBHOOKS_ENABLED` (global inbound kill switch,
+  default `true`) — see `middleware/.env.example`.
+- New migration: `middleware/src/conductor/migrations/0007_webhooks.sql`
+  (`conductor_webhook_endpoints`, `conductor_webhook_inbound_deliveries`,
+  `conductor_webhook_subscriptions`, `conductor_webhook_deliveries`).
+- Admin CRUD (list/create/rotate-secret/enable-disable/delivery-log) is
+  exposed under the existing auth-gated
+  `/api/v1/operator/conductors/webhooks/*`, with a minimal admin UI at
+  `/admin/webhooks` (endpoints + subscriptions, secret rotation, delivery
+  history) satisfying the issue's admin-surface acceptance criterion.
+- **Rate limiting**: the inbound route enforces a per-endpoint cap over a
+  rolling minute (`CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE`, default 60),
+  atomically alongside the delivery-id dedupe claim — a correctly-signed
+  sender minting a fresh delivery id on every call can no longer start an
+  unbounded number of workflow runs.
+- **Dedupe fix**: the inbound delivery ledger's dedupe key is scoped per
+  `(endpoint_id, delivery_id)`, not globally on `delivery_id` alone — two
+  endpoints can now each process their own delivery id '1' without one
+  shadowing the other.
+- **Outbound durability fix**: a periodic reconciliation pass (run by the
+  existing retry worker) finds terminal, non-dry-run runs from the last 24h
+  with no delivery row yet for an enabled subscription and creates the
+  missing one — closing the gap where a process kill between a run's
+  terminal-status commit and its fire-and-forget delivery-row creation lost
+  the webhook permanently.
+- **Outbound race fix**: the first, inline delivery attempt now claims its
+  row (`FOR UPDATE SKIP LOCKED`, same claim the retry worker's poll loop
+  uses) before sending, so the inline path and a concurrent retry-worker
+  tick can never attempt — and duplicate-report the outcome of — the same
+  delivery.
+- **Second-review fixups (#437):**
+  - **Inbound claim/emit ordering**: `ConductorWebhookEndpointStore.claim()`
+    inserts the delivery row (`outcome='received'`) BEFORE the route calls
+    `emit()`, so a crash between the two (e.g. `emit()` throwing on a
+    Postgres error) used to strand the row at `'received'` forever — a
+    retry with the same `X-Webhook-Delivery-Id` then got a cached
+    `'duplicate'` 200 without `emit()` ever running again, losing the event
+    permanently. `claim()` now treats a still-`'received'` row older than
+    `IN_FLIGHT_CLAIM_STALE_MS` (30s) as an abandoned claim and lets a
+    legitimate retry re-attempt processing, while a genuinely concurrent
+    redelivery within that window is still reported `'duplicate'` as
+    before.
+  - **Outbound reconciliation lifecycle bound**: `listMissingRunDeliveries`
+    previously only bounded its backfill by the caller's lookback window,
+    so creating a subscription — or re-enabling a disabled one — resurrected
+    every matching run in that whole window, including runs that ended
+    before the subscription existed or while it was disabled. A new
+    `conductor_webhook_subscriptions.enabled_since` column (defaults to
+    creation time, bumped on every transition into the enabled state) now
+    also bounds the reconciliation JOIN, so only runs that ended while the
+    subscription was genuinely active are ever backfilled.
+  - **Outbound delivery uniqueness**: reconciliation's unlocked `NOT EXISTS`
+    read followed by an unconstrained insert could race the live
+    terminal-run hook (or a second replica's reconciliation pass) into
+    creating two deliveries for the same run+subscription. A generated
+    `conductor_webhook_deliveries.run_id` column (from `payload->>'runId'`)
+    plus a partial unique index on `(subscription_id, run_id)` now cap this
+    at one delivery per run per subscription; `createDelivery` is
+    conflict-safe (`ON CONFLICT ... DO NOTHING`, returning the row that
+    already won on a race) instead of erroring or silently returning
+    nothing.
+  - **Admin UI inbound URL**: the endpoint list/create response now includes
+    a server-computed `inboundUrl` (`CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL` —
+    new, optional — falling back to `PUBLIC_BASE_URL`) and the admin UI
+    displays that instead of building the URL from
+    `window.location.origin`. In the standard local dev setup that origin is
+    the Next.js dev server, which only proxies `/bot-api/*`
+    (`web-ui/next.config.ts`) — a copied `window.location.origin` URL 404s
+    instead of reaching the middleware.
+  - **Webhook trigger validation**: `conductor-core/src/validate.ts` now
+    requires `eventId` for `kind === 'webhook'` triggers, the same
+    validation `kind === 'event'` already had. `eventRouter.ts#emit` matches
+    a trigger by `(kind === 'event' || kind === 'webhook') && eventId ===
+    <emitted id>`, so a `webhook` trigger with no/invalid `eventId` used to
+    publish successfully but could never actually fire.
+  - **Docs**: added a webhook section to `docs/security-architecture.md`
+    (secret placement, inbound auth model, outbound SSRF guard) and fixed
+    the stale "admin UI is not part of this change" claim in
+    `docs/middleware-agent-handoff.md`.
+### Added — structured dataset ingestion (CSV import) for the Knowledge Graph (#430)
+
+- New `KnowledgeGraph` surface (`ingestDataset`, `listDatasets`, `getDataset`,
+  `queryDatasetRows`, `deleteDataset`) backed by a relational sidecar —
+  `datasets` + `dataset_rows` tables (migration `0029_datasets.sql`) — NOT a
+  graph-node explosion: individual rows never become graph nodes, only one
+  `Dataset` node (`PluginEntity`, `system='dataset'`) is created per dataset
+  for recall/citation linking. Implemented in both `@omadia/knowledge-graph-neon`
+  (real SQL, parameterized JSONB filters/aggregates) and
+  `@omadia/knowledge-graph-inmemory` (full parity, not a stub).
+- `POST /api/v1/datasets` (multipart CSV upload), `GET /api/v1/datasets`,
+  `GET /api/v1/datasets/:id`, `GET /api/v1/datasets/:id/rows`,
+  `DELETE /api/v1/datasets/:id` — ACL pattern mirrors `/api/v1/memory`
+  (session-derived owner, no anonymous access).
+- CSV attachments in chat now import as a queryable dataset instead of being
+  silently truncated at the existing 20,000-char text cap
+  (`attachmentExtract.ts`'s `MAX_TEXT_CHARS`).
+- New `query_dataset` native tool: `list_datasets` / `get_schema` /
+  `query_rows` (a constrained filter+aggregate DSL — never raw SQL from the
+  model), always paginated/aggregated server-side.
+- Every imported row runs through the existing C0 regex PII-detector
+  baseline (`@omadia/plugin-privacy-guard`) before being persisted — the
+  same masking pipeline that already protects free-text user prompts.
+- Admin UI (upload/schema/delete page under `web-ui/app/admin/`) is
+  intentionally NOT part of this change — see the PR description.
+- Fixup: `inferColumnType` (`datasetImport.ts`) no longer types a column as
+  `'number'` when any value has a leading zero (`'0301234567'`, `'01234'`) —
+  such columns are zero-padded identifiers (phone numbers, postal codes),
+  not numbers. Previously `Number()` silently dropped the leading zero
+  (data corruption) AND the column skipped the mandatory C0 privacy scan
+  because number-typed columns are assumed to have no free-text surface.
+  Both bugs are fixed by keeping such columns `'string'`-typed, which
+  restores the scan and preserves the value verbatim.
+- Fixup (round 2, adversarial cross-vendor review): the chat-attachment CSV
+  auto-ingest path (`orchestrator.ts`'s `ingestAttachments`) was writing
+  `ownerOmadiaUserId` from the turn's raw channel-native id (Teams AAD oid,
+  …) instead of the canonical `omadiaUserId` uuid the KG's ACL routes
+  filter on. `ChatTurnInput` gains an optional `channelIdentity` field
+  (`{ channelKind, channelUserId }`, populated only by
+  `createOrchestratorDispatcher` for channel kinds the KG model has a
+  mapping for); the CSV-import call site now resolves it via
+  `KnowledgeGraph.resolveOrCreateChannelIdentity` before using it as the
+  dataset owner, and declines the KG-import branch (falling back to the
+  plain-text attachment path) rather than guess for a channel it can't map.
+- Fixup (round 2): per-cell CSV truncation (`MAX_CELL_CHARS` in
+  `datasetImport.ts`) is still applied but is no longer silent —
+  `parseCsv`/`buildDatasetFromCsv`/`importCsvDataset` now return a
+  `truncation: { truncatedCellCount, truncatedColumns }` alongside
+  `privacyScan`, surfaced in the `POST /api/v1/datasets` response and in the
+  chat-ingest tool-result note.
+- Fixup (round 2): `NeonKnowledgeGraph`'s `contains` dataset filter now
+  escapes `%`, `_`, and `\` in the filter value before wrapping it for
+  `ILIKE ... ESCAPE '\'`, so a literal `%`/`_` in the value matches literally
+  instead of being treated as a SQL wildcard — matching the in-memory
+  backend's literal substring `.includes()` semantics.
+- Fixup (round 2): `InMemoryKnowledgeGraph`'s grouped dataset query now caps
+  results at 200 groups (sorted by aggregate value descending, nulls last),
+  matching `NeonKnowledgeGraph`'s existing `LIMIT 200` — an unbounded
+  group-by could otherwise blow the turn token budget through the
+  in-memory backend only.
+- Scope correction: this change addresses #430's CSV import/query path.
+  #430's own triage acceptance criteria also call for an admin
+  upload/schema/delete UI, which is deliberately not part of this change —
+  see Phase 14 in `docs/middleware-agent-handoff.md` §13 for the tracked
+  follow-up.
+- Fixup (round 3, adversarial review): `InMemoryKnowledgeGraph`'s
+  `matchesDatasetFilter` compared `eq`/`neq`/`contains` filter values with
+  no type coercion (`value === filter.value`), while
+  `NeonKnowledgeGraph`'s `buildDatasetFilterClause` already coerced
+  `filter.value` to the target column's declared type
+  (`::numeric`/`::text`) before comparing. Concrete failing case: a
+  `number` column `amount` storing `250` (a JS number) with
+  `query_dataset` filter `{column:'amount', op:'eq', value:'250'}` (a JSON
+  string — the tool's Zod schema permits this regardless of column type or
+  op) matched on Neon but silently returned `totalMatched: 0` on the
+  in-memory backend for the identical logical query. Fixed by coercing
+  `filter.value` against the row value using the column's schema-declared
+  type, mirroring Neon's cast choice exactly (`Number(...)` for a
+  `number` column, `String(...)` otherwise; `contains` now also coerces a
+  non-string `filter.value` to a string before the substring check instead
+  of rejecting it). Regression test added in
+  `middleware/test/inMemoryKnowledgeGraph.test.ts` reproducing the exact
+  case above plus the `neq`/`contains` mirrors.
+- Fixup (round 5, adversarial review): round 2's channel-identity fix only
+  covered the IMPORT path (`ingestAttachments`) — `QueryDatasetTool.handle`
+  still resolved the viewer as `turnContext.current()?.userId`, the RAW
+  channel-native id, never the canonical `omadiaUserId` a channel turn's
+  dataset was actually stored under. Net effect: a dataset imported via
+  Teams/Slack/Telegram chat could never be found again by `list_datasets` /
+  `get_schema` / `query_rows` from that same chat — the exact "query
+  ingested datasets" requirement #430 exists for. Fixed by resolving the
+  canonical id ONCE per turn (`resolveTurnOwnerIdentity`, new
+  `TurnContextValue.resolvedOmadiaUserId`) in both `runTurn` and
+  `chatStream` (the latter is what channel adapters actually call —
+  previously it never populated any per-turn user identity at all for the
+  `query_dataset`/dataset-ACL purpose), and pointing both `QueryDatasetTool`
+  and `ingestAttachments` at that single shared value instead of each
+  re-deriving it. Regression test in `queryDatasetTool.test.ts` simulates a
+  channel turn's raw-id-at-write-vs-read mismatch end-to-end.
+- Fixup (round 6, adversarial review): round 1's `LEADING_ZERO_RE` fix only
+  matched an UNSIGNED leading zero (`/^0\d/`), so a signed zero-padded value
+  like `-0123`/`-0456` still passed `NUMBER_RE` (which allows an optional
+  leading `-`) without tripping the leading-zero guard — the exact same
+  corruption-plus-scan-bypass defect as round 1, just missed for the signed
+  case. Fixed by widening the pattern to `/^-?0\d/`, which still correctly
+  excludes a bare `0`/`-0` or a `0.x`/`-0.x` decimal (those are followed by
+  nothing or a `.`, not another digit). Regression test added in
+  `datasetImport.test.ts` with signed zero-padded values proving the column
+  types as `'string'`, the value round-trips with sign and leading zero
+  intact, and the privacy scan runs on it.
+- Fixup (round 7, adversarial review): `POST /api/v1/datasets` was the only
+  one of the five dataset route handlers (`middleware/src/routes/datasets.ts`)
+  with no `try/catch` around its core call (`importCsvDataset`). Since
+  Express 5 auto-forwards async rejections to its default error handler and
+  this app registers no global JSON error middleware, an unexpected THROWN
+  error during import (e.g. a transient Postgres error inside
+  `NeonKnowledgeGraph.ingestDataset`) fell through to Express's default
+  handler and returned an HTML error page instead of the `{code, message}`
+  JSON envelope every other dataset endpoint already returns via
+  `mapErrorToHttp`. Fixed by wrapping the handler's `importCsvDataset` call
+  in the same `try/catch` + `mapErrorToHttp` pattern the other four
+  handlers use — the existing, already-handled `{ok: false, reason}`
+  not-ok/privacy-rejection return path is unchanged. Regression test added
+  in `datasetsRoute.test.ts` with a graph whose `ingestDataset` throws,
+  asserting the route returns a JSON `{code, message}` body.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 

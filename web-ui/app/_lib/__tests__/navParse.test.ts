@@ -1,0 +1,113 @@
+import { describe, expect, it } from 'vitest';
+
+import { parseEntries } from '../navigation';
+
+/**
+ * The shell re-applies the middleware's nav rules rather than trusting them
+ * to have run. The middleware is the enforcement point, but it is a
+ * separate deployable — version skew, a partial rollout, or a compromised
+ * control plane must not be able to put an off-origin link or
+ * header-breaking chrome into the trusted header.
+ */
+
+const ok = {
+  pluginId: 'core:dev-platform',
+  navId: 'devPlatform',
+  href: '/admin/dev-platform',
+  label: 'Dev Platform',
+  order: 50,
+  cluster: 'adminCluster',
+};
+
+const wrap = (...entries: unknown[]): unknown => ({ locale: 'en', entries });
+
+describe('parseEntries', () => {
+  it('accepts a well-formed entry', () => {
+    expect(parseEntries(wrap(ok))).toEqual([ok]);
+  });
+
+  it('returns empty for malformed envelopes', () => {
+    expect(parseEntries(null)).toEqual([]);
+    expect(parseEntries({})).toEqual([]);
+    expect(parseEntries({ entries: 'nope' })).toEqual([]);
+    expect(parseEntries(wrap(null, 42, 'x'))).toEqual([]);
+  });
+
+  it('drops entries with missing or mistyped required fields', () => {
+    expect(parseEntries(wrap({ ...ok, href: undefined }))).toEqual([]);
+    expect(parseEntries(wrap({ ...ok, label: 123 }))).toEqual([]);
+    expect(parseEntries(wrap({ ...ok, pluginId: null }))).toEqual([]);
+    expect(parseEntries(wrap({ ...ok, cluster: 7 }))).toEqual([]);
+  });
+
+  it('drops off-origin and non-canonical hrefs', () => {
+    for (const href of [
+      '//evil.example',
+      '/\\evil.example',
+      'https://evil.example',
+      'javascript:alert(1)',
+      '/x/%2e%2e/admin',
+      '/x/../admin',
+      '/admin/',
+      '/admin?a=1',
+      '/admin#x',
+      `/${'a'.repeat(300)}`,
+    ]) {
+      expect(parseEntries(wrap({ ...ok, href })), href).toEqual([]);
+    }
+  });
+
+  it('drops labels that could spoof or break the header', () => {
+    const cases = [
+      '',
+      '   ',
+      'x'.repeat(41),
+      `Safe${String.fromCharCode(0x202e)}nimdA`, // RTL override
+      `Ad${String.fromCharCode(0x200b)}min`, // zero-width space
+      `Dev${String.fromCharCode(0)}Platform`, // NUL
+    ];
+    for (const label of cases) {
+      expect(parseEntries(wrap({ ...ok, label })), JSON.stringify(label)).toEqual(
+        [],
+      );
+    }
+  });
+
+  it('normalises a non-finite order rather than poisoning the sort', () => {
+    // JSON.parse('{"order":1e400}') yields Infinity, which is a number and
+    // would make every comparison in the merge sort return NaN-ish results.
+    const infinite = JSON.parse('{"order":1e400}') as { order: number };
+    expect(infinite.order).toBe(Infinity);
+    const parsed = parseEntries(wrap({ ...ok, order: infinite.order }));
+    expect(parsed[0]?.order).toBe(100);
+  });
+
+  it('defaults a missing order instead of dropping the entry', () => {
+    const noOrder: Partial<typeof ok> = { ...ok };
+    delete noOrder.order;
+    expect(parseEntries(wrap(noOrder))[0]?.order).toBe(100);
+  });
+
+  it('omits cluster when absent rather than emitting undefined', () => {
+    const noCluster: Partial<typeof ok> = { ...ok };
+    delete noCluster.cluster;
+    expect(Object.hasOwn(parseEntries(wrap(noCluster))[0] ?? {}, 'cluster')).toBe(
+      false,
+    );
+  });
+
+  it('caps how many entries it will accept', () => {
+    const many = Array.from({ length: 250 }, (_, i) => ({
+      ...ok,
+      navId: `n${String(i)}`,
+      href: `/p${String(i)}`,
+    }));
+    expect(parseEntries(wrap(...many))).toHaveLength(100);
+  });
+
+  it('keeps the good entries when one is malformed', () => {
+    const parsed = parseEntries(wrap(ok, { ...ok, href: '//evil.example' }));
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]?.href).toBe('/admin/dev-platform');
+  });
+});

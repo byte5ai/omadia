@@ -1,5 +1,29 @@
 import { CHAT_AGENT_SERVICE } from '@omadia/channel-sdk';
-import type { ChatAgent, ChatAgentBundle } from '@omadia/channel-sdk';
+import type { ChatAgent, ChatAgentBundle, ChannelUserKind } from '@omadia/channel-sdk';
+import type { ChannelKind } from '@omadia/plugin-api';
+
+/**
+ * #430 fixup — map the channel-plugin-facing {@link ChannelUserKind}
+ * namespace to the KG-facing {@link ChannelKind} the ACL/identity model
+ * understands. Deliberately partial: `discord-user` / `whatsapp-phone` have
+ * no `ChannelKind` counterpart yet, and `custom` (the canvas/Omadia-UI
+ * channel's own namespace, which carries its already-resolved
+ * `omadiaUserId` via a different path — `metadata.omadiaUserId`) is not a
+ * single channel at all. Callers must treat `undefined` as "cannot safely
+ * resolve an identity for this turn", not fall back to guessing.
+ */
+function toChannelKind(kind: ChannelUserKind): ChannelKind | undefined {
+  switch (kind) {
+    case 'teams-aad':
+      return 'teams';
+    case 'slack-user':
+      return 'slack';
+    case 'telegram-chat':
+      return 'telegram';
+    default:
+      return undefined;
+  }
+}
 
 import type { ChannelManifestBlock } from '../api/admin-v1.js';
 import type { TurnDispatcher } from './coreApi.js';
@@ -127,10 +151,20 @@ export function createOrchestratorDispatcher(
         typeof (rawState as { basedOnRevision?: unknown }).basedOnRevision === 'string'
           ? (rawState as { basedOnRevision: string; currentTree: unknown })
           : undefined;
+      // #430 fixup — the ONLY place a `ChatTurnInput.channelIdentity` is
+      // produced. `userId` above stays the raw channel-native id (unchanged,
+      // documented behaviour); `channelIdentity` gives downstream code
+      // (dataset ingest ACL) a typed, resolvable channel kind when one
+      // exists, without guessing for kinds the KG model doesn't cover.
+      const channelKind = toChannelKind(input.userRef.kind);
+      const channelIdentity = channelKind
+        ? { channelKind, channelUserId: input.userRef.id }
+        : undefined;
       yield* agent.chatStream({
         userMessage: input.text,
         sessionScope: input.scope,
         userId: input.userRef.id,
+        ...(channelIdentity ? { channelIdentity } : {}),
         ...(canvasSessionId ? { canvasSessionId } : {}),
         ...(action ? { action } : {}),
         ...(canvasRefresh ? { canvasRefresh } : {}),

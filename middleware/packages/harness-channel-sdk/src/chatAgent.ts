@@ -1,7 +1,8 @@
-import type { PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
+import type { ChannelKind, PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
 import type {
   AgentConsultation,
   DelegatedAnswer,
+  DirectLineSessionState,
   FollowUpOption,
   SemanticAnswer,
 } from './outgoing.js';
@@ -223,6 +224,23 @@ export interface ChatTurnInput {
    * "only this user's history". Never reaches the model prompt.
    */
   userId?: string;
+  /**
+   * #430 fixup — the turn's channel-native identity, when the dispatcher can
+   * map one. Populated ONLY for channel turns whose `ChannelUserRef.kind`
+   * maps to a {@link ChannelKind} the `KnowledgeGraph` ACL model understands
+   * (`createOrchestratorDispatcher` in `middleware/src/channels/
+   * orchestratorDispatcher.ts` is the sole producer). When present, `userId`
+   * above is a RAW channel-native id (Teams AAD oid, …) — NOT the canonical
+   * `omadiaUserId` uuid the KG's ACL routes filter on — and any code that
+   * needs to write an `ownerOmadiaUserId` (dataset ingest, MK ACLs, …) must
+   * resolve it first via `KnowledgeGraph.resolveOrCreateChannelIdentity`.
+   * Absent for HTTP/CLI turns, where `userId` (resolved from
+   * `req.session.omadia_user_id` or a validated `x-user-id`) already IS the
+   * canonical uuid, and for channel kinds the KG model doesn't have a
+   * `ChannelKind` for yet (discord, whatsapp, canvas' `'custom'` userRef) —
+   * deliberately not guessed at.
+   */
+  channelIdentity?: { channelKind: ChannelKind; channelUserId: string };
   /**
    * Chronologically ordered previous turns of this chat (oldest first), as
    * maintained by an in-memory store outside the orchestrator. When present,
@@ -458,6 +476,13 @@ export interface ChatTurnResult {
    * reword it. Omitted on ordinary turns.
    */
   delegatedAnswer?: DelegatedAnswer;
+  /**
+   * #445 — sticky Direct Line indicator for this turn. Set by the harness in
+   * `executeDirectLine`; `toSemanticAnswer` forwards it to
+   * `SemanticAnswer.directLineSession`. Present on every turn while the
+   * feature is enabled (including `{ active: false }`), omitted when off.
+   */
+  directLineSession?: DirectLineSessionState;
 }
 
 /**
@@ -673,6 +698,12 @@ export type ChatStreamEvent =
        * The orchestrator cannot suppress or reword it.
        */
       delegatedAnswer?: DelegatedAnswer;
+      /**
+       * #445 — sticky Direct Line indicator; see ChatTurnResult.directLineSession.
+       * Rides the existing `done` event exactly like `delegatedAnswer` rather
+       * than adding a stream event type, so the web-ui folds it in one hop.
+       */
+      directLineSession?: DirectLineSessionState;
       /**
        * #332 Layer 1 (gap-closure) — curated, tamper-evident projection of
        * `runTrace.agentInvocations`, identical in shape and derivation to
