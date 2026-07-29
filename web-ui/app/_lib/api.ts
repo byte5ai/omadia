@@ -3521,6 +3521,105 @@ export async function setMemoryBackend(
 }
 
 // -----------------------------------------------------------------------------
+// Embedding-provider switch (#440 follow-up). Backed by the admin router at
+// /api/v1/admin/embedding-provider, surfaced to the browser as
+// /bot-api/v1/admin/embedding-provider.
+//
+// Unlike `setMemoryBackend` above, the POST here does NOT just persist a
+// choice: the middleware deactivates the outgoing `embeddingClient@1` adapter,
+// activates the target and re-runs the knowledge-graph's model/dimension gate
+// in-process. No restart. The response therefore carries the resulting gate
+// outcome plus a fresh snapshot.
+//   - GET  /       → providers, active model, corpus, live gate, switch preview
+//   - POST /switch → perform the switch (destructive; needs confirmation)
+// -----------------------------------------------------------------------------
+
+/** What a switch to this provider would cost. `null` fields mean "cannot be
+ *  told before activation" — the gate decides for real. */
+export interface EmbeddingProviderPreview {
+  /** True when the target width differs from the stored column width. */
+  widthChange: boolean | null;
+  /** Stored vectors that would be discarded and re-embedded. */
+  vectorsToDiscard: number | null;
+}
+
+export interface EmbeddingProviderOption {
+  pluginId: string;
+  label: string;
+  active: boolean;
+  registryStatus: 'active' | 'inactive' | 'errored' | null;
+  modelId: string | null;
+  dimensions: number | null;
+  /** `null` for the provider that is already active. */
+  preview: EmbeddingProviderPreview | null;
+}
+
+/** A governed `vector(n)` column and how much corpus it holds. */
+export interface EmbeddingVectorColumn {
+  table: string;
+  column: string;
+  declaredDimensions: number | null;
+  storedVectors: number | null;
+}
+
+/** The #440 gate verdict, live (never a boot snapshot). */
+export interface EmbeddingGateState {
+  vectorWritesAllowed: boolean;
+  status: string;
+  reason?: string;
+  activeModelId?: string;
+  storedModelId?: string;
+  detail?: string;
+}
+
+export interface EmbeddingProviderState {
+  providers: EmbeddingProviderOption[];
+  activeProviderId: string | null;
+  activeModel: { modelId: string; dimensions: number } | null;
+  capabilityPublished: boolean;
+  /** `graph_embedding_model` — what the stored vectors were produced with. */
+  corpus: { modelId: string; dimensions: number; clearPending: boolean } | null;
+  columns: EmbeddingVectorColumn[];
+  columnDimensions: number | null;
+  storedVectorTotal: number | null;
+  gate: EmbeddingGateState | null;
+  autoMigrateVectorColumns: boolean;
+  knowledgeGraphInstalled: boolean;
+  graphAvailable: boolean;
+  corpusError: string | null;
+}
+
+export interface SwitchEmbeddingProviderResult extends EmbeddingProviderState {
+  ok: true;
+  switchedTo: string;
+}
+
+/** Read the current embedding-provider picture. Safe to poll. */
+export async function getEmbeddingProvider(): Promise<EmbeddingProviderState> {
+  return getJson<EmbeddingProviderState>('/v1/admin/embedding-provider');
+}
+
+/**
+ * Switch the active embedding provider, live.
+ *
+ * DESTRUCTIVE: the stored vectors are discarded and re-embedded, one paid
+ * provider call per row. `confirmDiscardVectors` must be `true` or the
+ * middleware answers 400 `embeddingProvider.confirmation_required`. Other
+ * inline-surfaceable failures: 400 `embeddingProvider.unknown_target`, 409
+ * `embeddingProvider.already_active`, 409 `embeddingProvider.target_unavailable`
+ * (the target was not configured; the previous provider was restored).
+ */
+export async function switchEmbeddingProvider(
+  pluginId: string,
+  confirmDiscardVectors: boolean,
+): Promise<SwitchEmbeddingProviderResult> {
+  return postJson<SwitchEmbeddingProviderResult>(
+    '/v1/admin/embedding-provider/switch',
+    { pluginId, confirmDiscardVectors },
+  );
+}
+
+// -----------------------------------------------------------------------------
 // Mid-turn steering (2026-06-06).
 // -----------------------------------------------------------------------------
 

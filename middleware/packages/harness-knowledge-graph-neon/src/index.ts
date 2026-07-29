@@ -46,6 +46,14 @@ export type {
   StaleVectorClearResult,
 } from './embeddingModelGate.js';
 
+// #440 — read-only catalog probe over a governed vector column. Exported so
+// the kernel's embedding-provider admin router can price a provider switch
+// ("how many vectors would this discard?") with the SAME query the migration
+// already uses for its operator warning, instead of hand-rolling a second one
+// that could drift from the column set the gate actually governs.
+export { countVectors } from './vectorColumnCatalog.js';
+export type { ColumnCatalogInfo } from './vectorColumnCatalog.js';
+
 // #440 — the runtime vector-column width migration the gate performs when the
 // declared column width disagrees with the active provider. Exported because
 // `EmbeddingModelGateOutcome`'s `column-migrated` arm carries these types.

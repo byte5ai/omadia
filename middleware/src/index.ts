@@ -95,6 +95,7 @@ import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createAdminProvidersRouter } from './routes/adminProviders.js';
+import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
@@ -315,7 +316,11 @@ import { deriveChannelType } from './channels/channelType.js';
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import { backfillGraph } from '@omadia/orchestrator-extras';
 import { turnContext } from '@omadia/orchestrator';
-import type { EntityRefBus, KnowledgeGraph } from '@omadia/plugin-api';
+import type {
+  EmbeddingClient,
+  EntityRefBus,
+  KnowledgeGraph,
+} from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type {
   ChatAgent,
@@ -3375,6 +3380,36 @@ async function main(): Promise<void> {
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
+
+  // Embedding-provider switch (#440 follow-up) — pick which `embeddingClient@1`
+  // adapter is active, LIVE. Unlike the memory-backend router next door this
+  // one does not persist-and-ask-for-a-restart: it deactivates the outgoing
+  // provider, activates the target, and re-activates the knowledge-graph so its
+  // model/dimension gate re-runs (and auto-migrates the vector columns when the
+  // width changed) inside this process.
+  app.use(
+    '/api/v1/admin/embedding-provider',
+    requireAuth,
+    createAdminEmbeddingProviderRouter({
+      installedRegistry,
+      catalog: pluginCatalog,
+      getEmbeddingClient: () =>
+        serviceRegistry.get<EmbeddingClient>('embeddingClient'),
+      // Resolved per request, never captured: `vectorWritesAllowed` flips
+      // false→true in-process when a stale-vector clear drains, and the whole
+      // point of the page is that the operator sees that without a reload.
+      getGateStatus: () =>
+        serviceRegistry.get<EmbeddingGateStatus>(EMBEDDING_GATE_STATUS_SERVICE),
+      getGraphPool: () => graphPool,
+      tenantId: graphTenantId,
+      activate: (id) => toolPluginRuntime.activate(id),
+      deactivate: (id) => toolPluginRuntime.deactivate(id),
+      reactivate: reactivateAgent,
+    }),
+  );
+  console.log(
+    '[middleware] embedding-provider switch ready at /api/v1/admin/embedding-provider (auth: required)',
+  );
 
   // Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
   // (Claude/Codex/Gemini) so the operator can run agents on a subscription.
