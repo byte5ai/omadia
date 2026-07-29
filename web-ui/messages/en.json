@@ -1062,7 +1062,10 @@
     "viewTrace": "trace ▾",
     "stepsCount": "{count, plural, one {# step} other {# steps}}",
     "delegatedAnswerFrom": "Direct answer from {label}",
-    "delegatedAnswerCaption": "Delivered verbatim — the orchestrator cannot edit or remove this answer."
+    "delegatedAnswerCaption": "Delivered verbatim — the orchestrator cannot edit or remove this answer.",
+    "stickyActive": "Talking directly to {label} — every message goes straight there.",
+    "stickyExit": "Back to orchestrator",
+    "stickyPlaceholder": "Message to {label}…"
   },
   "privacyOperator": {
     "eyebrow": "Privacy Operator",
