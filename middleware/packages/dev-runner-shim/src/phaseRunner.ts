@@ -348,13 +348,46 @@ function runCommand(
   });
 }
 
-/** Minimal hermetic env for the bootstrap command — no LLM auth, job-scoped HOME. */
+/**
+ * Minimal hermetic env for the bootstrap command — no LLM auth, job-scoped
+ * HOME. "Minimal" deliberately excludes ANTHROPIC_* and OMADIA_JOB_TOKEN and
+ * any other LLM-session secret (bootstrap is a plain shell command, not a CLI
+ * session — it has no business seeing them). It must NOT exclude proxy
+ * config, though: bootstrap is a spawned child of THIS shim process, which
+ * does not inherit the shim's own process.env automatically (same reason
+ * agentRunner.ts's buildAgentEnv and gitOps.ts's runGit both forward these
+ * explicitly) — and the job's isolated network has no route to ANYTHING
+ * except through the daemon's egress proxy. Confirmed live (2026-07-29,
+ * epic #470): without this, `env` inside bootstrap showed ONLY
+ * PATH/HOME/LANG/PWD — no HTTPS_PROXY at all — so npm (or any tool)
+ * attempted direct connections for its entire run, which an unrelated
+ * infra fix (the dev-dind egress guard) then correctly rejected, but the
+ * REAL bug was here: bootstrap never had a route to succeed in the first
+ * place. This was very likely the root cause of the "Exit handler never
+ * called!" investigation's entire failure pattern, not any npm-internal
+ * proxy-bypass behavior.
+ */
 function bootstrapEnv(workspace: string): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     PATH: process.env['PATH'] ?? '/usr/bin:/bin',
     HOME: path.join(workspace, 'home'),
     LANG: process.env['LANG'] ?? 'C.UTF-8',
   };
+  for (const key of [
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'no_proxy',
+    'npm_config_proxy',
+    'npm_config_https_proxy',
+    'npm_config_noproxy',
+  ]) {
+    const value = process.env[key];
+    if (value) env[key] = value;
+  }
+  return env;
 }
 
 /** Max artifact size the shim will read back (Forge #2 — bound before the 4 MiB

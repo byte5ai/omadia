@@ -269,6 +269,44 @@ describe('runPhasedShim — bootstrap runs as a command, not a CLI session', () 
     assert.deepEqual(homes, [], 'bootstrap starts no agent session');
   });
 
+  it('forwards proxy env vars into the bootstrap command, but never LLM/job-auth secrets', async () => {
+    // Regression: found live (epic #470, 2026-07-29) -- bootstrapEnv() built
+    // an env of ONLY PATH/HOME/LANG, so a bootstrap command had literally no
+    // route to anything (the job's isolated network has no path except
+    // through the daemon's egress proxy). A real npm ci spent its entire
+    // ~240s budget attempting doomed direct connections instead. Bootstrap
+    // MUST see the proxy vars (same reason agentRunner.ts's buildAgentEnv
+    // and gitOps.ts's runGit both forward them) while staying "hermetic"
+    // about anything LLM-session-specific.
+    const originalEnv = { ...process.env };
+    process.env['HTTPS_PROXY'] = 'http://job-id:token@egress-proxy:3128/';
+    process.env['HTTP_PROXY'] = 'http://job-id:token@egress-proxy:3128/';
+    process.env['NO_PROXY'] = 'localhost,127.0.0.1';
+    process.env['npm_config_https_proxy'] = 'http://job-id:token@egress-proxy:3128/';
+    process.env['npm_config_noproxy'] = 'localhost,127.0.0.1';
+    // Something bootstrap must NEVER see, to prove this isn't just "forward everything".
+    process.env['ANTHROPIC_API_KEY'] = 'sk-this-must-not-leak-into-bootstrap';
+    try {
+      const spec = makeSpec({
+        phaseContext: { phase: 'bootstrap' },
+        bootstrap: { command: 'env', timeoutMs: 30_000 },
+      });
+      const home = new ScriptedHome(spec, [{ directive: 'done' }]);
+      await runPhasedShim(env, { home, gitBin, log: () => {} });
+
+      const boot = home.phaseResults[0];
+      const content = boot?.artifact?.content ?? '';
+      assert.match(content, /HTTPS_PROXY=http:\/\/job-id:token@egress-proxy:3128/);
+      assert.match(content, /HTTP_PROXY=http:\/\/job-id:token@egress-proxy:3128/);
+      assert.match(content, /NO_PROXY=localhost,127\.0\.0\.1/);
+      assert.match(content, /npm_config_https_proxy=http:\/\/job-id:token@egress-proxy:3128/);
+      assert.match(content, /npm_config_noproxy=localhost,127\.0\.0\.1/);
+      assert.doesNotMatch(content, /ANTHROPIC_API_KEY/, 'bootstrap stays hermetic about LLM-session secrets');
+    } finally {
+      process.env = originalEnv;
+    }
+  });
+
   it('captures the command\'s own stdout+stderr into the report, not just its exit code', async () => {
     // Regression: found live -- a real `npm ci` failure inside a job
     // container reported only `exitCode:1` with zero further detail; the
