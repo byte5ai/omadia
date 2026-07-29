@@ -1,7 +1,7 @@
 import { Router, json as expressJson } from 'express';
 import type { Request, Response } from 'express';
 
-import { mintAppJwt } from '../devplatform/githubApp/appJwt.js';
+import { mintAppJwt } from '../services/githubAppJwt.js';
 import {
   buildManifest,
   exchangeManifestCode,

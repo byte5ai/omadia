@@ -18,18 +18,41 @@ Related: epic #470, PR #496, #497, #529
 ## 1. Goal
 
 Turn the Dev Platform from a hard-wired core subsystem into an **installable,
-uninstallable plugin** — one that brings its own backend, its own database schema, its
-own configuration, and **its own menu entries** — without regressing behaviour, security
-posture, or the operator experience.
+uninstallable plugin living in its own repository** — one that brings its own backend, its
+own database schema, its own configuration, its own UI, and **its own menu entries** —
+without regressing behaviour, security posture, or the operator experience.
 
 Success is binary and observable:
 
 - With the plugin **not installed**, `middleware` boots with zero dev-platform code
   paths, no `dev_*` tables required, no `DEV_*` config required, and **no Dev Platform
   entry in the navigation**.
-- With the plugin **installed and active**, the Dev Platform works exactly as it does
-  today, and its menu entries appear — contributed by the plugin, not hardcoded in the
-  shell.
+- With the plugin **installed and active**, the Dev Platform works as it does today, and
+  its menu entries appear — contributed by the plugin, not hardcoded in the shell.
+- **The `omadia` repository contains no reference to the Dev Platform at all.**
+
+### Two constraints added after the first draft
+
+1. **The plugin lives in its own repository** (like `omadia-byte5-plugins` and
+   `omadia-plugin-starter`), not in `middleware/packages/`.
+2. **Every hardcoded dev-platform part is removed from core** — not gated, not
+   feature-flagged: absent.
+
+They sound small. They are not, and they invalidate two decisions in the first draft:
+
+- **The plugin can no longer be a built-in package.** §4.1 previously placed it in
+  `middleware/packages/harness-plugin-dev-platform/`, shipping inside the middleware
+  image. An own repo makes it a **distributed (tier-2) plugin**, which is a materially
+  weaker delivery vehicle — see §4.3.
+- **The React pages can no longer stay compiled into web-ui.** §4.3 previously argued
+  that was correct *because* both halves shipped in the same image. Under constraint 2
+  those 3,933 LOC are hardcoded core references and must go, which resurfaces the
+  "a ZIP cannot ship React" problem the first draft had sidestepped.
+
+Concretely: **276 hardcoded items across 18 zones, ≈49,100 LOC across ~200 files.** Full
+work-list in `core-decoupling-checklist.md`. Three of those items are not deletions at all
+— core has no extension point for them, so a new generic mechanism has to be built first
+(H1 public paths, H2 conductor step kinds, H3 chat tool-card renderers).
 
 ---
 
@@ -93,7 +116,11 @@ files is the easy part.
 | **G3** | **A plugin router cannot receive a raw request body.** The GitHub webhook receiver needs untouched bytes for HMAC and is mounted *before* `express.json` on purpose. Plugin routers mount at boot flush, after it. | Open |
 | **G4** | **No kernel mechanism for plugin-owned SQL.** `onMigrate` is *config* migration only. | Open (softer than it looks) |
 | **G5** | **No plugin-declared external services.** No `services:`/`image:` in the manifest; sidecars are operator-managed compose overlays. | Won't fix — see below |
-| **G6** | **`publicPaths` is a frozen literal.** A plugin cannot contribute an auth exemption, and core cannot revoke one on uninstall. | Open — **blocks P2** |
+| **G6** | **`publicPaths` is a frozen literal.** A plugin cannot contribute an auth exemption, and core cannot revoke one on uninstall. Needs prefix ownership too, not just a grant. | Open — **hard blocker** (H1) |
+| **G7** | **A distributed plugin cannot ship a React UI.** The ZIP extension allowlist has no `.tsx` — and, verified, **no `.css` either**, so it cannot even carry a compiled SPA's stylesheet. web-ui is built once at image build time. | Open — **hard blocker**, new |
+| **G8** | **`DevJob*` are published `@omadia/plugin-api` types.** Removing them is a SemVer-major break for every Hub plugin importing them; `api/admin-v1.ts` leaks `dev_jobs` onto the public admin DTO too. | Open — new |
+| **G9** | **The conductor hardcodes the `dev_job` step kind and channel type** across `runExecutor.ts`, `awaitStore.ts`, and all of `devJobStepEffect.ts`. | Open — **hard blocker** (H2) |
+| **G10** | **The chat renderer hardcodes `tool.name === 'dev_job_start'`** and renders a core-compiled React card for it. | Open — **hard blocker** (H3) |
 
 ### G2 is the inverse of the obvious reading — and it is a trap
 
@@ -180,11 +207,25 @@ crash) when `DEV_RUNNER_DAEMON_URL` is unreachable.
 
 ### 4.1 What the plugin owns
 
-`@omadia/plugin-dev-platform` at `middleware/packages/harness-plugin-dev-platform/`, as a
-**built-in package** (`kind: extension` — capability resolution only exists in
-`ToolPluginRuntime`, which handles `tool`/`extension`/`integration`). It owns
-`src/devplatform/**`, all dev-platform routers including `devRunnerApi.ts` and
-`devWebhooks.ts`, its own migrations, its config, and its nav contribution.
+`@omadia/plugin-dev-platform`, in **its own repository** (`byte5ai/omadia-plugin-dev-platform`,
+alongside `omadia-byte5-plugins` and `omadia-plugin-starter`), `kind: extension` —
+capability resolution only exists in `ToolPluginRuntime`, which handles
+`tool`/`extension`/`integration`. It owns `src/devplatform/**`, all dev-platform routers
+including `devRunnerApi.ts` and `devWebhooks.ts`, its own migrations, its config, its UI,
+and its nav contribution.
+
+The repo also inherits what core currently does *for* it and will stop doing:
+
+- **Its own container images and supply chain.** `dev-runner` and `dev-runner-daemon` are
+  built, SBOM'd and keyless-signed by `.github/workflows/publish-images.yml` today; those
+  matrix entries and cosign steps leave with the plugin, and the new repo needs an
+  equivalent pipeline. `id-token: write` in `auto-release.yml` / `release.yml` exists
+  *solely* for that signing and can then be dropped from core.
+- **Its own compose overlay** (`docker-compose.dev-platform.yaml`, 193 lines) and the two
+  sidecar Dockerfiles.
+- **Its own `@omadia/dev-platform-plugin-api`** carrying the `DevJob*` types, so third
+  parties that consume `ctx.devJobs` depend on the plugin's contract rather than core's
+  (G8).
 
 `devRunnerApi.ts` belongs in the plugin: it has zero core dependencies and is versioned
 with the **shim**, not with core (`RUNNER_PROTOCOL_VERSION`). A protocol whose counterpart
@@ -216,44 +257,56 @@ request. Decide explicitly: does `permissions.devJobs` imply `requires: devJobs@
 accordingly. Keeping the types while silently making the runtime optional preserves the
 type signature and breaks the contract — invisibly to `tsc`.
 
-### 4.3 The UI: a two-tier contract
+### 4.3 The UI — the decision the own-repo constraint forces (G7)
 
-A ZIP cannot ship React into an ahead-of-time-compiled Next.js app — the extension
-allowlist has no `.tsx`, and `web-ui` is built once at image build time. But dev-platform
-is not going to be a ZIP: it is a **built-in package**, which ships inside the middleware
-image and goes through the same activation pathway. For that tier, "the React stays
-compiled into web-ui" is not a compromise, it is the correct design.
+**This section replaces the first draft's answer.** That draft kept the 3,933 LOC of React
+compiled into web-ui and justified it by the plugin being a built-in package. Both halves
+of that justification are now gone: the plugin lives in its own repo, and pages compiled
+into web-ui *are* hardcoded core references, which constraint 2 forbids.
 
-**Correction (review round 3):** an earlier draft justified this with "both halves ship in
-the same image." That is false. The plugin compiles into `omadia-middleware`; its React
-page compiles into `omadia-web-ui` — two separately deployable images, versioned together
-only by convention. Upgrade middleware first and it can advertise a nav href for a page
-the deployed web UI does not contain (a 404 from the menu); upgrade web-ui first and the
-page exists with no backend. The nav mechanism narrows this — the entry only appears when
-the middleware side is active — but it does not close it. **P3 must add a compatibility
-signal** (a minimum-web-ui version on the nav entry, or a shell-side allowlist of paths it
-actually compiled) rather than relying on lockstep deploys.
+So the UI has to leave core, and the mechanism has to work for a plugin distributed as a
+package. That is a genuinely harder problem, and it is the epic's biggest single risk.
 
-So write the tiering down instead of hedging:
+**What a distributed plugin can carry today.** The ZIP extension allowlist
+(`zipExtractor.ts:20-41`) is `.yaml .yml .md .json .js .mjs .cjs .map .png .svg .jpg .jpeg
+.txt .license .html`. No `.tsx` — expected. But also, verified, **no `.css`**. So today a
+plugin cannot even ship a compiled SPA's stylesheet, only inline styles inside a single
+`.html`. The existing precedent (`admin_ui_path` → iframe on the plugin's store detail
+page) is exactly one hand-written HTML file.
 
-| Tier | Who | UI mechanism | Nav |
-|---|---|---|---|
-| 1 — built-in package | ships in the image | React compiled into web-ui, runtime-gated on the plugin being active | absolute in-app path |
-| 2 — uploaded ZIP | third party | iframe of plugin-served HTML (`admin_ui_path`, `/p/:path*`, shared theming) — already exists | `/p/<id>/...` path |
+**The options, honestly.**
 
-One nav mechanism serves both. A nav API that only served tier 1 would be a feature flag
-with extra steps.
+| Option | Verdict |
+|---|---|
+| **A. Rewrite as hand-rolled HTML** served from the plugin's router | Fits today's mechanism with no core change. Throws away 3,163 LOC of Lume React, the phase rail, the SSE log pane, and 280 i18n keys. A visible product downgrade for the operator surface. |
+| **B. Plugin ships a compiled SPA, served by its own router, embedded via iframe** | **Recommended.** Keeps React, keeps the design system, keeps the components. Needs: `.css` (and probably `.woff2`) added to the allowlist, a static-asset serving path, and the Lume tokens published as a package the plugin can depend on. Costs a bundler in the plugin repo and an iframe boundary. |
+| **C. Module federation / RSC remoting** | Not viable with App Router + RSC. Excluded. |
+| **D. Optional web-ui build variant** | Two images in lockstep, and the plugin's code would still have to live in core's build. Fails constraint 2. |
+| **E. Publish the pages as an npm package web-ui optionally installs** | Keeps React and removes the *source* from core, but core's build must still know the package exists. Weakens constraint 2 to "no source, but a build-time hook". Fallback if B proves too costly. |
 
-Constraint worth preserving: the dev-platform pages are already pure `'use client'`
-components talking to `/bot-api/...` — effectively a SPA. **No dev-platform page may
-become a server component**, so a future tier-2 port stays mechanical rather than a
-rewrite.
+**Recommendation: B.** It is the only option that satisfies both constraints without a
+product downgrade. It is also strictly more valuable than a one-off fix — it is the
+mechanism *any* third-party plugin needs to ship a real UI, which is currently the
+platform's weakest extension point.
 
-Rejected: a workspace package for the pages (adds monorepo plumbing for modularity a
-directory and a lint rule already give), an iframe rewrite of these pages (throws away
-3,163 LOC of Lume React and 281 i18n keys for an internal operator surface), Next.js
-multi-zone (a second deployment, no installability gain), module federation (not viable
-with App Router + RSC), and a separate optional web-ui build (two images in lockstep).
+Two properties make B cheaper than it looks: the dev-platform pages are already pure
+`'use client'` components talking to `/bot-api/...` — effectively a SPA already — and the
+nav API shipped in phase 1 already supports pointing an entry at a `/p/<pluginId>/...`
+path, so discovery and placement are solved. **No dev-platform page may become a server
+component** in the meantime, or the port stops being mechanical.
+
+**The chat card (H3) is not covered by B.** `DevJobChatCard` renders *inside* the core
+chat transcript, not in an iframe, and `chat/page.tsx:1025` hardcodes
+`tool.name === 'dev_job_start'`. An iframe per tool call is not acceptable there. Options:
+a declarative card schema the plugin returns and core renders generically, or accept that
+the rich card degrades to a plain `ToolRow` for out-of-repo plugins. **This needs a
+decision before P4** — it is the one place where "no hardcoding" and "no downgrade" may
+genuinely conflict.
+
+**Cross-image skew still applies and gets worse.** middleware, web-ui and now the plugin
+are three separately versioned artifacts. The nav entry only appears when the plugin is
+active, which narrows it, but a compatibility signal (minimum core version in the manifest,
+checked at install) is now required rather than optional.
 
 ### 4.4 Nav contribution design (G1 — shipped)
 
@@ -375,11 +428,14 @@ single irreversible step moved last.
 
 | Phase | Content | Observable outcome |
 |---|---|---|
-| **P2a** | Decide the `ctx.devJobs` contract (§4.2) and version `plugin-api`. Add capability edges to `dynamicAgentRuntime`, or document why agent plugins are excluded. | A written, versioned contract — before any code depends on it |
-| **P2b** | Break the `wireDevPlatform ↔ routes` cycle; move `mintAppJwt` to `src/platform/githubAppJwt.ts`; collapse the 41 config keys into one namespaced object. | `index.ts` wiring reduced to one `assembleDevPlatform(cfg)` call |
-| **P3** | **G6** dynamic `publicPaths` via manifest-declared, operator-consented grants + **G2** `auth: 'session'` composed *inside* the disposed guard + **G3** route-local raw parser + **G4** `pgPool` capability and shared `runPluginMigrations`. | Any plugin can own routes, exemptions, raw bodies, and tables |
-| **P4** | Create the package, move the code, relocate 54 tests. **Do not delete the `publicPaths` exemptions until P3's mechanism is proven on the live runner phone-home path.** | Dev Platform installs and uninstalls |
-| **P5** | Migration ownership handoff (no renumbering) + `copy-sql-assets` + `Dockerfile` line, tested against a database restored from a production snapshot. Its own PR, its own rollback story. | Plugin owns its schema |
+| **P2a** | Decide the `ctx.devJobs` contract (§4.2) and the G8 public-contract break: `DevJob*` move to `@omadia/dev-platform-plugin-api`, `plugin-api` gets a SemVer-major bump, `dev_jobs` leaves the admin-v1 DTO. Add capability edges to `dynamicAgentRuntime` or document why agent plugins are excluded. | A written, versioned contract — before any code depends on it |
+| **P2b** | Decide **H3** (chat card): declarative card schema, or accept degradation to `ToolRow` for out-of-repo plugins. Decide **G7 option B vs E**. | Both answers written down before code moves |
+| **P2c** | Mechanical decoupling: break the `wireDevPlatform ↔ routes` cycle; collapse the 41 config keys into one namespaced object. ✅ `mintAppJwt` already moved to `src/services/githubAppJwt.ts`. | `index.ts` wiring reduced to one `assembleDevPlatform(cfg)` call |
+| **P3** | The extension points. **H1** dynamic `publicPaths` + exclusive prefix ownership · **H2** generic conductor step-kind/channel-type registry · **G2** `auth: 'session'` composed *inside* the disposed guard · **G3** route-local raw parser · **G4** `pgPool` capability + shared `runPluginMigrations`. | Any plugin can own routes, exemptions, raw bodies, tables, and long-running steps |
+| **P3b** | **G7**: `.css`/font extensions in the ZIP allowlist, a static-asset serving path for plugin SPAs, Lume tokens published as a consumable package. | Any plugin can ship a real UI — the platform's weakest extension point today |
+| **P4** | Stand up `byte5ai/omadia-plugin-dev-platform`; move ~49,100 LOC per `core-decoupling-checklist.md`; port the UI; stand up the repo's own GHCR + SBOM + signing pipeline. **Do not delete the `publicPaths` exemptions until P3 is proven on the live runner phone-home path.** | Dev Platform installs and uninstalls from its own repo |
+| **P5** | Migration ownership handoff (no renumbering) + ledger seed, tested against a database restored from a production snapshot. Its own PR, its own rollback story. | Plugin owns its schema |
+| **P6** | Delete the residue: core's `DEV_*` config, the compose overlay, the CI matrix entries and `id-token: write`, the workflow prompt rules, and every comment reference. | `rg -i 'dev.?platform\|devjob' omadia/` returns nothing |
 
 **Config is not 41 `setup.fields`.** The keys are four different things and only one
 belongs in a manifest form: platform-injected env (`FLY_APP_NAME` is a probe, not a
@@ -404,7 +460,11 @@ misconfigured plugin no longer takes the host offline.
 | **`ctx.devJobs` inversion breaks third parties invisibly** | P2a resolves it as a contract decision before implementation |
 | **Uninstall data lifecycle is undefined** | Must be decided in P4: what happens to 9 tables on uninstall; who cleans `dev_repo_plugin_grants` when a *granted* plugin is removed; what happens to `running` jobs whose runner still holds a valid token |
 | **Secrets are vaulted under core's namespace** | GitHub App private keys, webhook secrets, and the proxy's provider key live under `core:dev-platform`. P4 must re-key into the plugin namespace or grant read access — operator-visible either way |
-| **Half-migrated codebase** | Each phase has an observable outcome above. **Abandonment checkpoint: after P3, the platform capabilities stand alone and dev-platform stays in core with no partial-move debt.** Half-moved is the only genuinely bad end state |
+| **Half-migrated codebase** | Each phase has an observable outcome above. **Abandonment checkpoint: after P3/P3b, the platform capabilities stand alone and dev-platform stays in core with no partial-move debt.** Half-moved is the only genuinely bad end state |
+| **The UI port is the biggest single risk (G7)** | 3,933 LOC of React must move to a repo that currently cannot ship a stylesheet. P3b de-risks it *before* P4 commits. If P3b proves too costly, fall back to option E (npm-published UI package) and accept the weakened constraint rather than rewriting the UI as hand-rolled HTML |
+| **Cross-repo development loses atomic changes** | Today a change spanning core and dev-platform is one PR with one CI run. Afterwards it is two PRs in two repos with a published contract between them, and no way to land them atomically. This is the standing tax of the split — worth it for installability, but it makes P3's extension points load-bearing: get them wrong and every fix needs a core release |
+| **The new repo needs a real supply chain** | `dev-runner` is currently SBOM'd and keyless-signed in core's `publish-images.yml`. That is not a copy-paste — the new repo needs GHCR publishing, cosign identity, and its own release workflow before the images can move |
+| **`plugin-api` SemVer-major break (G8)** | Third-party plugins importing `DevJobDescriptor` et al. break at compile time. Deliberate, versioned, and announced — not silent. The worse outcome is keeping the types while making the runtime optional, which preserves the signature and breaks the contract invisibly |
 | **SSE is not horizontally scalable** | Pre-existing (one in-process `EventEmitter` per job). Flagged, not fixed here |
 | **Dead conductor bridge** | `devJobConductorBridge.ts` has no production wiring — only a test imports it. Wire it or delete it in P4; do not carry dead code into a published package |
 
