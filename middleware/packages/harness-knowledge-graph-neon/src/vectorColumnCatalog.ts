@@ -6,6 +6,22 @@ import type { PoolClient } from 'pg';
  * Split out of `vectorColumnMigration.ts` so that file stays about the
  * ORDER and the GUARDS of a destructive operation, and this one about reading
  * the truth out of `pg_catalog`. Everything here is read-only.
+ *
+ * KNOWN LIMITS of the capture/replay pair, stated here rather than left
+ * implicit in the queries below:
+ *   - CONSTRAINT-BACKED indexes (PRIMARY KEY, UNIQUE, EXCLUDE) are deliberately
+ *     NOT captured. `DROP INDEX` refuses them — the constraint owns them — so
+ *     capturing one would only produce DDL the migration cannot execute. No
+ *     schema here hangs a uniqueness constraint off an embedding column; if one
+ *     ever did, `DROP COLUMN` would fail outright, the per-table transaction
+ *     would roll back and the gate would degrade to `blocked`. Nothing is lost
+ *     silently — the migration simply refuses to run.
+ *   - VIEWS, materialised views and generated columns depending on the column
+ *     are likewise not captured, and are likewise safe for the same reason:
+ *     `DROP COLUMN` without CASCADE errors on them, so the whole swap rolls
+ *     back and the caller reports `ddl-failed`.
+ *   - TRIGGERS, rules, extended statistics and column-level privileges are not
+ *     replayed. None exist on the governed embedding columns in this schema.
  */
 
 /** Identifiers come from the catalog, but quoting them costs nothing and
@@ -72,8 +88,30 @@ export async function readColumnInfo(
  * the author did not think of (`m`, `ef_construction`, a WHERE predicate, a
  * second key column).
  *
- * Constraint-backed indexes are excluded: `DROP INDEX` refuses them, and no
- * sane schema hangs a UNIQUE/PK constraint off an embedding column.
+ * WHY `pg_depend` AND NOT `unnest(indkey)`. An index can reference a column in
+ * three places: as a key column (`indkey`), inside an expression (`indexprs`,
+ * where the corresponding `indkey` entry is 0), and inside a partial predicate
+ * (`indpred`, which `indkey` does not mention at all). `ALTER TABLE … DROP
+ * COLUMN` auto-drops the index in ALL THREE cases — no error, no CASCADE
+ * needed — so a capture that only walked `indkey` destroyed predicate and
+ * expression indexes and never replayed them, while the migration returned
+ * `ok: true` and logged a count that excluded them.
+ *
+ * That was not hypothetical: `0006_embedding_backfill_state.sql` and
+ * `0022_kg_embedding_pending_indexes.sql` both create indexes keyed on
+ * `(embedding_attempts, id)` that mention `embedding` only in their `WHERE`
+ * predicate — and those are the BACKFILL SCAN indexes, i.e. exactly what the
+ * re-embedding sweep this migration triggers depends on.
+ *
+ * `pg_depend` is the fix because it is the same dependency graph `DROP COLUMN`
+ * itself walks: `index_create` records one `pg_class → pg_class(attnum)` row
+ * per referenced column, whether the reference came from a key, an expression
+ * or the predicate. Capturing off it therefore cannot diverge from what the
+ * drop destroys, which is the property that matters — one query, all three
+ * cases, no text-matching on `pg_get_expr` output.
+ *
+ * Constraint-backed indexes are excluded; see the module header for why, and
+ * for the other limits of this capture.
  */
 export async function captureIndexDefs(
   client: PoolClient,
@@ -85,6 +123,10 @@ export async function captureIndexDefs(
        JOIN pg_class     i ON i.oid = x.indexrelid
        JOIN pg_class     t ON t.oid = x.indrelid
        JOIN pg_namespace n ON n.oid = t.relnamespace
+       JOIN pg_attribute a ON a.attrelid = x.indrelid
+                          AND a.attname  = $2
+                          AND a.attnum   > 0
+                          AND NOT a.attisdropped
       WHERE t.relname = $1
         AND n.nspname = ANY (current_schemas(false))
         AND NOT EXISTS (
@@ -92,10 +134,12 @@ export async function captureIndexDefs(
             )
         AND EXISTS (
               SELECT 1
-                FROM unnest(x.indkey) AS k(attnum)
-                JOIN pg_attribute a
-                  ON a.attrelid = x.indrelid AND a.attnum = k.attnum
-               WHERE a.attname = $2
+                FROM pg_depend d
+               WHERE d.classid     = 'pg_class'::regclass
+                 AND d.objid       = x.indexrelid
+                 AND d.refclassid  = 'pg_class'::regclass
+                 AND d.refobjid    = x.indrelid
+                 AND d.refobjsubid = a.attnum
             )
       ORDER BY i.relname`,
     [target.table, target.column],

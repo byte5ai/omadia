@@ -28,6 +28,13 @@ export const OLLAMA_PROVIDER_ID = '@omadia/embeddings';
 export const OPENAI_PROVIDER_ID = '@omadia/embedding-adapter-openai';
 /** KG setup field wired to `EmbeddingModelGateOptions.autoMigrateVectorColumns`. */
 export const AUTO_MIGRATE_CONFIG_KEY = 'auto_migrate_vector_columns';
+/**
+ * KG setup field that decides which tenant the plugin's stores, gate and
+ * backfill operate on. Operator-settable in the KG setup form, which is why
+ * anything pricing that corpus has to read it rather than assuming the env
+ * var — see `resolveGraphTenantId` in `adminEmbeddingProvider.ts`.
+ */
+export const GRAPH_TENANT_ID_CONFIG_KEY = 'graph_tenant_id';
 
 /** Structural view of `PluginCatalog` — only what this router reads, so tests
  *  can pass a two-entry stub instead of loading manifests off disk. */

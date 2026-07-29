@@ -17,6 +17,7 @@ import type { AddressInfo } from 'node:net';
 import type { EmbeddingClient } from '@omadia/plugin-api';
 import express from 'express';
 import type { Express } from 'express';
+import type { Pool, PoolClient, QueryResult } from 'pg';
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 
 import { createAdminEmbeddingProviderRouter } from '../src/routes/adminEmbeddingProvider.js';
@@ -70,6 +71,70 @@ export const CATALOG_ENTRIES: readonly CatalogEntry[] = [
   },
 ];
 
+/**
+ * A `Pool` that answers the three read-only queries the router makes and
+ * RECORDS the tenant parameter of every one of them.
+ *
+ * That parameter is the whole point: the confirmation gate prices the switch
+ * off `countVectors(… tenantId)`, so a router that asks for the wrong tenant
+ * reports an empty corpus for a populated one and lets a destructive switch
+ * through unconfirmed. Only a fake can assert on the parameter itself.
+ */
+export function makeCorpusPool(opts: {
+  /** Vectors per tenant. Any tenant not listed reads as empty. */
+  vectorsByTenant: Readonly<Record<string, number>>;
+  declaredDimensions?: number;
+}): { pool: Pool; tenantsQueried: string[] } {
+  const tenantsQueried: string[] = [];
+  const dims = opts.declaredDimensions ?? 768;
+
+  const run = (sql: string, params?: ReadonlyArray<unknown>): QueryResult => {
+    const rows = (r: ReadonlyArray<Record<string, unknown>>): QueryResult =>
+      ({ command: '', rowCount: r.length, oid: 0, rows: [...r], fields: [] }) as unknown as QueryResult;
+    if (/FROM pg_attribute/i.test(sql)) {
+      return rows([
+        {
+          table_name: 'graph_nodes',
+          column_name: 'embedding',
+          declared_type: `vector(${String(dims)})`,
+          typmod: dims,
+        },
+      ]);
+    }
+    if (/count\(\*\) AS n/i.test(sql)) {
+      const tenant = String(params?.[0] ?? '');
+      tenantsQueried.push(tenant);
+      return rows([{ n: String(opts.vectorsByTenant[tenant] ?? 0) }]);
+    }
+    if (/FROM graph_embedding_model/i.test(sql)) {
+      const tenant = String(params?.[0] ?? '');
+      tenantsQueried.push(tenant);
+      return rows([
+        { model_id: 'ollama:nomic-embed-text', dimensions: dims, clear_pending: false },
+      ]);
+    }
+    return rows([]);
+  };
+
+  const pool = {
+    async query(sql: string, params?: ReadonlyArray<unknown>): Promise<QueryResult> {
+      return run(sql, params);
+    },
+    async connect(): Promise<PoolClient> {
+      return {
+        async query(sql: string, params?: ReadonlyArray<unknown>): Promise<QueryResult> {
+          return run(sql, params);
+        },
+        release(): void {
+          /* no-op */
+        },
+      } as unknown as PoolClient;
+    },
+  } as unknown as Pool;
+
+  return { pool, tenantsQueried };
+}
+
 export interface Harness {
   server: Server;
   baseUrl: string;
@@ -85,6 +150,14 @@ export interface Harness {
   failActivation: Set<string>;
   /** Plugin ids that activate successfully but publish no client. */
   publishNothing: Set<string>;
+  /**
+   * Plugin ids whose `reactivate()` fails. Modelled the way
+   * `installService.reactivate` actually behaves: the hook error is swallowed
+   * and the promise RESOLVES, leaving the plugin's services withdrawn.
+   */
+  failReactivate: Set<string>;
+  /** Is the `knowledgeGraph` service currently resolvable? */
+  knowledgeGraphLive: boolean;
   gate: EmbeddingGateStatus;
   close(): Promise<void>;
 }
@@ -95,6 +168,7 @@ export async function makeHarness(
     status?: 'active' | 'inactive';
     config?: Record<string, unknown>;
   }>,
+  wiring: { graphPool?: Pool; activateDelayMs?: number } = {},
 ): Promise<Harness> {
   const registry = new InMemoryInstalledRegistry();
   for (const p of installed) {
@@ -112,6 +186,8 @@ export async function makeHarness(
     calls: [] as string[],
     failActivation: new Set<string>(),
     publishNothing: new Set<string>(),
+    failReactivate: new Set<string>(),
+    knowledgeGraphLive: true,
     gate: {
       vectorWritesAllowed: true,
       status: 'match',
@@ -137,10 +213,16 @@ export async function makeHarness(
       getEmbeddingClient: () =>
         state.publishedBy === null ? undefined : CLIENTS[state.publishedBy],
       getGateStatus: () => state.gate,
-      getGraphPool: () => undefined,
+      getGraphPool: () => wiring.graphPool,
+      getKnowledgeGraph: () => (state.knowledgeGraphLive ? { kind: 'graph' } : undefined),
       tenantId: 'default',
       activate: async (id: string) => {
         state.calls.push(`activate:${id}`);
+        // Lets a concurrency test guarantee the two switches actually overlap
+        // instead of relying on express scheduling.
+        if (wiring.activateDelayMs !== undefined) {
+          await new Promise((r) => setTimeout(r, wiring.activateDelayMs));
+        }
         if (state.failActivation.has(id)) {
           throw new Error(`boom activating ${id}`);
         }
@@ -155,6 +237,12 @@ export async function makeHarness(
       },
       reactivate: async (id: string) => {
         state.calls.push(`reactivate:${id}`);
+        if (state.failReactivate.has(id)) {
+          // installService.reactivate logs the hook failure and RESOLVES; the
+          // plugin's services are gone but the caller sees a clean promise.
+          if (id === KG_NEON) state.knowledgeGraphLive = false;
+          return;
+        }
         if (id === KG_NEON && state.publishedBy !== null) {
           const client = CLIENTS[state.publishedBy];
           state.gate = {
@@ -201,6 +289,12 @@ export async function makeHarness(
     get publishNothing() {
       return state.publishNothing;
     },
+    get failReactivate() {
+      return state.failReactivate;
+    },
+    get knowledgeGraphLive() {
+      return state.knowledgeGraphLive;
+    },
     get gate() {
       return state.gate;
     },
@@ -229,6 +323,8 @@ export interface SnapshotResponse {
   gate: EmbeddingGateStatus | null;
   autoMigrateVectorColumns: boolean;
   graphAvailable: boolean;
+  graphTenantId: string;
+  storedVectorTotal: number | null;
   switchedTo?: string;
 }
 

@@ -14,6 +14,7 @@ import {
   KG_NEON,
   OLLAMA,
   OPENAI,
+  makeCorpusPool,
   makeHarness,
   type Harness,
   type SnapshotResponse,
@@ -128,6 +129,7 @@ describe('mount-time auth', () => {
         getEmbeddingClient: () => undefined,
         getGateStatus: () => undefined,
         getGraphPool: () => undefined,
+        getKnowledgeGraph: () => ({ kind: 'graph' }),
         tenantId: 'default',
         activate: async () => undefined,
         deactivate: async () => true,
@@ -320,5 +322,188 @@ describe('POST /api/v1/admin/embedding-provider/switch', () => {
     assert.equal(harness.publishedBy, OLLAMA);
     assert.equal(harness.registry.get(OLLAMA)?.status, 'active');
     assert.equal(harness.registry.get(OPENAI)?.status, 'inactive');
+  });
+
+  it('does not claim a restore when the previous provider could not be brought back', async () => {
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: OPENAI, status: 'inactive' },
+      { id: KG_NEON, status: 'active' },
+    ]);
+    // The target cannot take over AND the outgoing one cannot be revived —
+    // the deployment ends with no live provider. Reporting "the previous
+    // provider was restored" over that is the failure mode being fixed.
+    harness.failActivation.add(OPENAI);
+    harness.failActivation.add(OLLAMA);
+
+    const { status, body } = await harness.postSwitch({
+      pluginId: OPENAI,
+      confirmDiscardVectors: true,
+    });
+    assert.equal(status, 409);
+    assert.equal(body['code'], 'embeddingProvider.target_unavailable');
+    assert.match(String(body['message']), /COULD NOT BE RESTORED/);
+    assert.deepEqual(body['details'], { restoredProviderId: null });
+    assert.equal(harness.publishedBy, null, 'nothing is live — say so');
+    // The registry must not claim an active provider that is not live, or the
+    // next boot activates it into the same failure.
+    assert.equal(harness.registry.get(OLLAMA)?.status, 'inactive');
+    assert.equal(harness.registry.get(OPENAI)?.status, 'inactive');
+  });
+});
+
+describe('POST /switch — concurrency (F6)', () => {
+  it('refuses a second switch while one is in flight, so the registry keeps exactly one active provider', async () => {
+    harness = await makeHarness(
+      [
+        { id: OLLAMA, status: 'active' },
+        { id: OPENAI, status: 'inactive' },
+        { id: KG_NEON, status: 'active' },
+      ],
+      // Hold `activate` open long enough that the second request is
+      // guaranteed to arrive mid-switch rather than after it.
+      { activateDelayMs: 120 },
+    );
+    const h = harness;
+
+    // A→OPENAI and A→OPENAI concurrently. Interleaved, the second request used
+    // to mark its target active while the first was mid-activation, and the
+    // duplicate `ctx.services.provide` throw was swallowed by a rollback that
+    // ALSO threw — leaving two entries at status 'active', which crashes the
+    // next boot in activateAllInstalled.
+    const [a, b] = await Promise.all([
+      h.postSwitch({ pluginId: OPENAI, confirmDiscardVectors: true }),
+      h.postSwitch({ pluginId: OPENAI, confirmDiscardVectors: true }),
+    ]);
+
+    const codes = [a, b].map((r) => String(r.body['code'] ?? 'ok')).sort();
+    assert.deepEqual(
+      codes,
+      ['embeddingProvider.switch_in_progress', 'ok'],
+      `exactly one switch may run; the other must be told, got ${codes.join(',')}`,
+    );
+
+    const active = [OLLAMA, OPENAI].filter(
+      (id) => h.registry.get(id)?.status === 'active',
+    );
+    assert.deepEqual(active, [OPENAI], 'exactly one provider may be left active');
+    assert.equal(h.publishedBy, OPENAI);
+  });
+});
+
+describe('POST /switch — knowledge-graph re-gate (F7)', () => {
+  it('reports the truth when the knowledge graph does not come back', async () => {
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: OPENAI, status: 'inactive' },
+      { id: KG_NEON, status: 'active' },
+    ]);
+    // installService.reactivate logs hook failures and does NOT rethrow, so
+    // `deps.reactivate` resolves while the plugin stays deactivated.
+    harness.failReactivate.add(KG_NEON);
+
+    const { status, body } = await harness.postSwitch({
+      pluginId: OPENAI,
+      confirmDiscardVectors: true,
+    });
+
+    assert.equal(status, 500, 'a deactivated knowledge graph is not ok: true');
+    assert.equal(body['code'], 'embeddingProvider.knowledge_graph_down');
+    assert.notEqual(body['ok'], true);
+    assert.match(String(body['message']), /DEACTIVATED/);
+    assert.equal(harness.knowledgeGraphLive, false);
+    // The provider switch itself DID take effect, so nothing is rolled back
+    // and no restore may be claimed.
+    assert.equal(harness.publishedBy, OPENAI);
+    assert.deepEqual(body['details'], {
+      switchedTo: OPENAI,
+      knowledgeGraphAvailable: false,
+    });
+  });
+
+  it('still reports ok when the knowledge graph comes back', async () => {
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: OPENAI, status: 'inactive' },
+      { id: KG_NEON, status: 'active' },
+    ]);
+    const { status, body } = await harness.postSwitch({
+      pluginId: OPENAI,
+      confirmDiscardVectors: true,
+    });
+    assert.equal(status, 200);
+    assert.equal(body['ok'], true);
+    assert.equal(harness.knowledgeGraphLive, true);
+  });
+});
+
+describe('corpus pricing uses the tenant the plugin uses (F5)', () => {
+  it('prices graph_tenant_id from the knowledge-graph setup field, not GRAPH_TENANT_ID', async () => {
+    const { pool, tenantsQueried } = makeCorpusPool({
+      // The real corpus lives under 'acme'. 'default' is empty.
+      vectorsByTenant: { acme: 42 },
+    });
+    harness = await makeHarness(
+      [
+        { id: OLLAMA, status: 'active' },
+        { id: OPENAI, status: 'inactive' },
+        { id: KG_NEON, status: 'active', config: { graph_tenant_id: 'acme' } },
+      ],
+      { graphPool: pool },
+    );
+
+    const { body } = await harness.getJson();
+    assert.equal(body.graphTenantId, 'acme');
+    assert.equal(
+      body.storedVectorTotal,
+      42,
+      'GET reported 0 for a populated corpus before this fix',
+    );
+    assert.ok(
+      tenantsQueried.every((t) => t === 'acme'),
+      `every corpus read must address 'acme', saw ${tenantsQueried.join(',')}`,
+    );
+    const openai = body.providers.find((p) => p.pluginId === OPENAI);
+    assert.equal(openai?.preview?.vectorsToDiscard, 42);
+  });
+
+  it('refuses a same-width switch that would discard the configured tenant\'s corpus', async () => {
+    // Same-width target (768 → 768) with a populated 'acme' corpus. Priced
+    // against 'default' the total came back 0, `destructive` computed false,
+    // and the switch went through with no confirmDiscardVectors — after which
+    // the gate cleared the real corpus.
+    const { pool } = makeCorpusPool({ vectorsByTenant: { acme: 7 } });
+    harness = await makeHarness(
+      [
+        { id: OLLAMA, status: 'active' },
+        { id: OPENAI, status: 'inactive', config: { model: 'nomic-embed-text' } },
+        { id: KG_NEON, status: 'active', config: { graph_tenant_id: 'acme' } },
+      ],
+      { graphPool: pool },
+    );
+
+    const { status, body } = await harness.postSwitch({ pluginId: OPENAI });
+    assert.equal(status, 400);
+    assert.equal(body['code'], 'embeddingProvider.confirmation_required');
+    assert.deepEqual(
+      (body['details'] as { vectorsToDiscard: number }).vectorsToDiscard,
+      7,
+    );
+    assert.deepEqual(harness.calls, [], 'nothing may have been touched');
+  });
+
+  it('falls back to the env-derived tenant when the setup field is unset or blank', async () => {
+    const { pool, tenantsQueried } = makeCorpusPool({ vectorsByTenant: { default: 3 } });
+    harness = await makeHarness(
+      [
+        { id: OLLAMA, status: 'active' },
+        { id: KG_NEON, status: 'active', config: { graph_tenant_id: '   ' } },
+      ],
+      { graphPool: pool },
+    );
+    const { body } = await harness.getJson();
+    assert.equal(body.graphTenantId, 'default');
+    assert.equal(body.storedVectorTotal, 3);
+    assert.ok(tenantsQueried.every((t) => t === 'default'));
   });
 });

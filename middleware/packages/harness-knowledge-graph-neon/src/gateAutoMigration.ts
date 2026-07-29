@@ -16,15 +16,29 @@ import { migrateVectorColumns } from './vectorColumnMigration.js';
  * mechanics live one layer down in `vectorColumnMigration.ts`.
  */
 
+/** What one auto-migration attempt produced. */
+export interface AutoMigrationAttempt {
+  /** Set only when the migration completed and produced a gate outcome. */
+  outcome?: EmbeddingModelGateOutcome;
+  /**
+   * Set when the run left the SCHEMA and the REGISTRY disagreeing — columns at
+   * the new width, `graph_embedding_model` still naming something else. The
+   * caller attaches it to the `blocked/column-width-mismatch` outcome so
+   * `/health` names the state instead of showing a generic width complaint
+   * that no longer describes the schema.
+   */
+  hazard?: string;
+}
+
 /**
  * Rewrite the mismatching vector columns at the provider's width, or give up.
  *
- * Returns the `column-migrated` outcome on success and `undefined` on every
- * other path — "give up" here always means "fall through to the historical
- * `blocked/column-width-mismatch`", which is the outcome that existed before
- * this function and is still correct: writes off, nothing destroyed, operator
- * told exactly what to do. A migration that cannot run must never be louder
- * than that, and must never fail activation.
+ * Returns the `column-migrated` outcome on success and an empty (or
+ * hazard-carrying) attempt on every other path — "give up" here always means
+ * "fall through to the historical `blocked/column-width-mismatch`", which is
+ * the outcome that existed before this function and is still correct: writes
+ * off, nothing destroyed, operator told exactly what to do. A migration that
+ * cannot run must never be louder than that, and must never fail activation.
  *
  * The destructiveness is logged BEFORE the work rather than after, so an
  * operator reading a crash log still sees what was about to happen.
@@ -38,7 +52,7 @@ export async function tryAutoMigrateColumns(args: {
   switchCooldownMs: number;
   budgetMs: number;
   log: (msg: string) => void;
-}): Promise<EmbeddingModelGateOutcome | undefined> {
+}): Promise<AutoMigrationAttempt> {
   const named = args.mismatches
     .map((c) => `${c.table}.${c.column} vector(${String(c.declaredDimensions ?? 0)})`)
     .join(', ');
@@ -46,7 +60,7 @@ export async function tryAutoMigrateColumns(args: {
     args.log(
       `[graph-embedding-gate] auto_migrate_vector_columns is OFF — leaving ${named} alone and blocking instead. Turn it on, or migrate by hand the way 0005_turn_embeddings_768.sql did.`,
     );
-    return undefined;
+    return {};
   }
 
   args.log(
@@ -69,14 +83,29 @@ export async function tryAutoMigrateColumns(args: {
     args.log(
       `[graph-embedding-gate] ERROR: the vector-column migration threw (${err instanceof Error ? err.message : String(err)}) — falling back to blocked; the registry was not touched`,
     );
-    return undefined;
+    return {};
   }
 
   if (!result.ok) {
     args.log(
       `[graph-embedding-gate] ERROR: the vector-column migration did not complete [${result.reason}]: ${result.detail}. ${String(result.migrated.length)} column(s) were migrated and stay migrated; falling back to blocked for this boot.`,
     );
-    return undefined;
+    // A run that migrated nothing is fully recoverable — the next activation
+    // sees the same width mismatch and simply retries. A run that migrated
+    // SOMETHING and did not flip the registry is not equally benign, and
+    // `registry-flip-failed` is the terminal one: every column is at the new
+    // width, so the next activation finds no mismatch, never reaches this path
+    // again, and dead-ends on `blocked/dimension-mismatch` until a human edits
+    // the registry. `budget-exhausted` always leaves at least one column
+    // un-migrated (the deadline is checked at the TOP of each target), so the
+    // next activation still sees a mismatch and resumes — it is reported for
+    // visibility, not because it is stuck.
+    if (result.migrated.length > 0) {
+      const hazard = `${String(result.migrated.length)} column(s) are already vector(${String(args.provider.dimensions)}) while graph_embedding_model was NOT updated [${result.reason}]: ${result.detail}`;
+      args.log(`[graph-embedding-gate] SCHEMA/REGISTRY SPLIT: ${hazard}`);
+      return { hazard };
+    }
+    return {};
   }
 
   args.log(
@@ -87,16 +116,23 @@ export async function tryAutoMigrateColumns(args: {
       )
       .join(
         '; ',
-      )}. Vector writes are ENABLED; the backfill sweep re-embeds the corpus from NULL, so semantic recall is degraded until it finishes.`,
+      )}. ${
+      result.attemptsResetPending
+        ? 'Vector writes stay REFUSED until the capped retry-counter reset finishes (clear_pending is TRUE; the gate resume path and the backfill sweep drain it in bounded batches).'
+        : 'Vector writes are ENABLED; the backfill sweep re-embeds the corpus from NULL, so semantic recall is degraded until it finishes.'
+    }`,
   );
   return {
-    status: 'column-migrated',
-    modelId: args.provider.modelId,
-    dimensions: args.provider.dimensions,
-    previousModelId: result.previousModelId,
-    previousDimensions: result.previousDimensions,
-    migratedColumns: result.migrated,
-    discardedVectors: result.discardedVectors,
+    outcome: {
+      status: 'column-migrated',
+      modelId: args.provider.modelId,
+      dimensions: args.provider.dimensions,
+      previousModelId: result.previousModelId,
+      previousDimensions: result.previousDimensions,
+      migratedColumns: result.migrated,
+      discardedVectors: result.discardedVectors,
+      clearPending: result.attemptsResetPending,
+    },
   };
 }
 

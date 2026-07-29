@@ -170,9 +170,11 @@ describe('embedding gate status publication (#440)', () => {
             newDimensions: 1536,
             indexes: ['CREATE INDEX i ON graph_nodes USING hnsw (embedding)'],
             discardedVectors: 42,
+            attemptsReset: 7,
           },
         ],
         discardedVectors: 42,
+        clearPending: false,
       },
       true,
       false,
@@ -195,5 +197,74 @@ describe('embedding gate status publication (#440)', () => {
     assert.match(String(health.warnings[0]), /migrated automatically/);
     assert.match(String(health.warnings[0]), /42 stored vector/);
     assert.match(String(health.warnings[0]), /auto_migrate_vector_columns=false/);
+  });
+
+  it('reports a migration whose capped retry-counter reset is still owed as writes-OFF', async () => {
+    // F2 — the reset is bounded, and the remainder rides on `clear_pending`.
+    // While that is up, `clearStaleVectors` NULLs every non-NULL governed
+    // vector it finds, so allowing writes would destroy freshly embedded rows.
+    const published = createEmbeddingGateStatus(
+      {
+        status: 'column-migrated',
+        modelId: 'openai:text-embedding-3-small',
+        dimensions: 1536,
+        previousModelId: 'ollama:nomic-embed-text',
+        previousDimensions: 768,
+        migratedColumns: [
+          {
+            table: 'graph_nodes',
+            column: 'embedding',
+            previousDimensions: 768,
+            newDimensions: 1536,
+            indexes: [],
+            discardedVectors: 9,
+            attemptsReset: 5_000,
+          },
+        ],
+        discardedVectors: 9,
+        clearPending: true,
+      },
+      false,
+      true,
+    );
+
+    assert.equal(published.vectorWritesAllowed(), false);
+    assert.equal(published.status.reason, 'stale-vector-clear-pending');
+    assert.match(String(published.status.detail), /retry-counter reset is still owed/);
+
+    // …and it clears without a restart, the same way every other owed clear
+    // does — this must not become a permanent red.
+    published.markStaleVectorClearComplete();
+    assert.equal(published.vectorWritesAllowed(), true);
+    assert.equal(published.status.reason, 'stale-vector-clear-complete');
+  });
+
+  it('names a schema/registry split on /health instead of a width complaint that no longer fits', async () => {
+    // A migration that moved columns and could not record it leaves the
+    // columns at the new width while `graph_embedding_model` names the old
+    // model. The next activation sees no width mismatch, falls through to
+    // decideRegistry and reports blocked/dimension-mismatch forever — so the
+    // one boot that CAN describe the state has to say so.
+    const published = createEmbeddingGateStatus(
+      {
+        status: 'blocked',
+        reason: 'column-width-mismatch',
+        modelId: 'openai:text-embedding-3-small',
+        dimensions: 1536,
+        mismatches: [
+          { table: 'processes', column: 'embedding', declaredDimensions: 768 },
+        ],
+        migrationHazard:
+          "1 column(s) are already vector(1536) while graph_embedding_model was NOT updated [registry-flip-failed]: the registry row changed between read and flip",
+      },
+      false,
+      false,
+    );
+
+    assert.equal(published.status.vectorWritesAllowed, false);
+    assert.equal(published.status.reason, 'column-width-mismatch');
+    assert.match(String(published.status.detail), /processes\.embedding is vector\(768\)/);
+    assert.match(String(published.status.detail), /SCHEMA\/REGISTRY SPLIT/);
+    assert.match(String(published.status.detail), /registry-flip-failed/);
   });
 });

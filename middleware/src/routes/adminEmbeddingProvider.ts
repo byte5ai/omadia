@@ -11,6 +11,7 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import {
   AUTO_MIGRATE_CONFIG_KEY,
   EMBEDDING_CLIENT_CAPABILITY,
+  GRAPH_TENANT_ID_CONFIG_KEY,
   KG_NEON_ID,
   describeProviderConfig,
   type EmbeddingProviderCatalog,
@@ -46,7 +47,25 @@ import {
  * deployment with NO active embedding provider at all, which is strictly worse
  * than where it started. The switch therefore verifies that the capability is
  * actually published afterwards and restores the previous provider when it is
- * not.
+ * not — and VERIFIES THE RESTORE, rather than reporting one it never checked.
+ *
+ * ONE SWITCH AT A TIME. Two concurrent `POST /switch` calls (A→B and A→C) used
+ * to interleave into the exact corruption this router's own comments say it
+ * prevents: R1 marks B active, R2 marks C active,
+ * `ctx.services.provide('embeddingClient', …)` throws on the duplicate, the
+ * rollback's own `activate` throws on the duplicate too and was swallowed —
+ * leaving A and B both `status: 'active'` in the registry, which crashes the
+ * next boot in `activateAllInstalled`. Everything from pricing the corpus to
+ * the final re-gate therefore runs under `switchInFlight`; a second caller is
+ * told so (409) instead of being queued behind an operation that holds a
+ * 10s-capped activation and a corpus count.
+ *
+ * TRUTHFUL REPORTING. `installService.reactivate` logs hook failures and does
+ * not rethrow, so `deps.reactivate` resolving proves nothing. A knowledge
+ * graph that failed to come back leaves `knowledgeGraph`/`graphPool`/
+ * `embeddingModelGateStatus` missing from the registry, and this endpoint used
+ * to answer `{ ok: true, gate: null }` over exactly that. The re-gate is now
+ * verified against the live service.
  */
 
 const SwitchBodySchema = z.object({
@@ -67,6 +86,16 @@ export interface AdminEmbeddingProviderDeps {
   /** Neon pool. Undefined on the in-memory knowledge-graph backend, in which
    *  case there are no governed vector columns to price. */
   readonly getGraphPool: () => Pool | undefined;
+  /**
+   * Live `knowledgeGraph` service lookup. Used ONLY as the post-condition of
+   * the re-gate: `reactivate` swallows hook failures, so its resolution is not
+   * evidence that the plugin came back. Resolved per call, never captured.
+   */
+  readonly getKnowledgeGraph: () => unknown;
+  /**
+   * Env-derived fallback tenant (`GRAPH_TENANT_ID ?? 'default'`). The KG setup
+   * field wins over it — see `resolveGraphTenantId`.
+   */
   readonly tenantId: string;
   /** Runtime activation of a tool/extension plugin (ToolPluginRuntime). */
   readonly activate: (pluginId: string) => Promise<void>;
@@ -201,6 +230,33 @@ function activeProviderId(
   return null;
 }
 
+/**
+ * The tenant the KNOWLEDGE-GRAPH PLUGIN actually uses.
+ *
+ * `plugin.ts` resolves it as `ctx.config.get('graph_tenant_id') ??
+ * process.env['GRAPH_TENANT_ID'] ?? 'default'`, and `graph_tenant_id` IS an
+ * operator-settable setup field in the KG manifest. This router used to price
+ * the switch against the env value alone, so a deployment with
+ * `graph_tenant_id: acme` and no env var counted vectors for tenant
+ * `'default'`: `storedVectorTotal` came back 0, a same-width target computed
+ * `destructive === false`, and `POST /switch` proceeded WITHOUT
+ * `confirmDiscardVectors` — after which the gate cleared the real `acme`
+ * corpus. GET reported `vectorsToDiscard: 0` for a populated corpus.
+ *
+ * Read live rather than captured: the field is editable in the Store UI, and a
+ * value captured at boot would drift the moment an operator changes it.
+ */
+function resolveGraphTenantId(deps: AdminEmbeddingProviderDeps): string {
+  const configured = deps.installedRegistry.get(KG_NEON_ID)?.config?.[
+    GRAPH_TENANT_ID_CONFIG_KEY
+  ];
+  if (typeof configured === 'string') {
+    const trimmed = configured.trim();
+    if (trimmed !== '') return trimmed;
+  }
+  return deps.tenantId;
+}
+
 /** Read the current `auto_migrate_vector_columns` value off the KG entry.
  *  Manifest default is `'true'`; anything but the literal `'false'` reads as
  *  on, mirroring `plugin.ts`. */
@@ -213,12 +269,32 @@ function autoMigrateEnabled(registry: InstalledRegistry): boolean {
   );
 }
 
-/** Raised when the target could not take over and the previous provider was
- *  put back. Distinguished from a genuine failure so the caller can say so. */
-class SwitchRolledBack extends Error {}
+/**
+ * Raised when the target could not take over. `restoredProviderId` is the
+ * provider that is VERIFIED live again — `null` when nothing was restored, so
+ * the response can never claim a rollback that did not happen.
+ */
+class SwitchRolledBack extends Error {
+  constructor(
+    message: string,
+    readonly restoredProviderId: string | null,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Raised when the provider switch itself succeeded but the knowledge graph did
+ * not come back. Not a rollback: the new provider IS live and the registry is
+ * consistent — what failed is the re-gate, which is why it must not be reported
+ * as `{ ok: true }`.
+ */
+class KnowledgeGraphDown extends Error {}
 
 export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderDeps): Router {
   const router = Router();
+  // Serialises `POST /switch`. See ONE SWITCH AT A TIME in the module header.
+  let switchInFlight = false;
 
   /** Everything the page needs, in one call. */
   async function snapshot(): Promise<Record<string, unknown>> {
@@ -226,13 +302,14 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
     const activeId = activeProviderId(deps, providerIds);
     const pool = deps.getGraphPool();
 
+    const tenantId = resolveGraphTenantId(deps);
     let corpus = EMPTY_CORPUS;
     let recorded: Awaited<ReturnType<typeof readRecordedModel>> = null;
     let corpusError: string | null = null;
     if (pool) {
       try {
-        corpus = await readCorpus(pool, deps.tenantId);
-        recorded = await readRecordedModel(pool, deps.tenantId);
+        corpus = await readCorpus(pool, tenantId);
+        recorded = await readRecordedModel(pool, tenantId);
       } catch (err) {
         corpusError = err instanceof Error ? err.message : String(err);
       }
@@ -282,6 +359,9 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
       autoMigrateVectorColumns: autoMigrateEnabled(deps.installedRegistry),
       knowledgeGraphInstalled: deps.installedRegistry.has(KG_NEON_ID),
       graphAvailable: pool !== undefined,
+      // The tenant every number above was priced against. Reported so a
+      // `vectorsToDiscard: 0` can be told apart from "priced the wrong tenant".
+      graphTenantId: tenantId,
       corpusError,
     };
   }
@@ -311,6 +391,29 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
     }
     const { pluginId, confirmDiscardVectors } = parsed.data;
 
+    // Everything below reads registry state and then writes it. A second
+    // caller must not interleave with that — see ONE SWITCH AT A TIME.
+    if (switchInFlight) {
+      res.status(409).json({
+        code: 'embeddingProvider.switch_in_progress',
+        message:
+          'another embedding-provider switch is still running; wait for it to finish and re-read the current state before retrying',
+      });
+      return;
+    }
+    switchInFlight = true;
+    try {
+      await handleSwitch(pluginId, confirmDiscardVectors, res);
+    } finally {
+      switchInFlight = false;
+    }
+  });
+
+  async function handleSwitch(
+    pluginId: string,
+    confirmDiscardVectors: boolean | undefined,
+    res: Response,
+  ): Promise<void> {
     // Never activate an arbitrary caller-supplied plugin id: the target must
     // be installed AND actually declare `embeddingClient@1`.
     const providerIds = installedProviderIds(deps);
@@ -338,7 +441,9 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
     let corpus = EMPTY_CORPUS;
     if (pool) {
       try {
-        corpus = await readCorpus(pool, deps.tenantId);
+        // The tenant the PLUGIN uses, not the env default — pricing the wrong
+        // one is how an unconfirmed switch used to wipe a populated corpus.
+        corpus = await readCorpus(pool, resolveGraphTenantId(deps));
       } catch {
         corpus = EMPTY_CORPUS;
       }
@@ -371,19 +476,37 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
       await applySwitch(deps, previousId, pluginId);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof KnowledgeGraphDown) {
+        // The switch itself STUCK — the target owns the capability and the
+        // registry is consistent. Reporting a rollback here would be a lie in
+        // the other direction, so this is its own code.
+        res.status(500).json({
+          code: 'embeddingProvider.knowledge_graph_down',
+          message,
+          details: { switchedTo: pluginId, knowledgeGraphAvailable: false },
+        });
+        return;
+      }
       res.status(err instanceof SwitchRolledBack ? 409 : 500).json({
         code:
           err instanceof SwitchRolledBack
             ? 'embeddingProvider.target_unavailable'
             : 'embeddingProvider.switch_failed',
         message,
-        details: { restoredProviderId: previousId },
+        // Only claim a restore that was VERIFIED. A generic throw restores
+        // nothing, and a rollback whose own `activate` failed restores nothing
+        // either — both used to report `restoredProviderId: previousId`
+        // regardless, which sent the operator looking at the wrong provider.
+        details:
+          err instanceof SwitchRolledBack
+            ? { restoredProviderId: err.restoredProviderId }
+            : {},
       });
       return;
     }
 
     res.json({ ok: true, switchedTo: pluginId, ...(await snapshot()) });
-  });
+  }
 
   return router;
 }
@@ -416,7 +539,9 @@ async function setStatus(
  * The registry status is flipped alongside the runtime call because
  * `activateAllInstalled` only activates entries the registry marks active —
  * leaving both providers at `status: 'active'` would crash the NEXT boot in
- * `ctx.services.provide` with two `embeddingClient@1` providers.
+ * `ctx.services.provide` with two `embeddingClient@1` providers. Callers hold
+ * `switchInFlight` for the whole of this function, which is what makes that
+ * reasoning hold under concurrency rather than only in the single-caller case.
  */
 async function applySwitch(
   deps: AdminEmbeddingProviderDeps,
@@ -428,26 +553,44 @@ async function applySwitch(
     await setStatus(deps.installedRegistry, previousId, 'inactive');
   }
 
-  const restorePrevious = async (): Promise<void> => {
+  /**
+   * Put the world back. Returns the provider id that is VERIFIED live again,
+   * or `null` when nothing came back.
+   *
+   * Both steps used to be `.catch(() => undefined)` and the caller reported a
+   * restore either way. That is how a failed rollback became a `409 … the
+   * previous provider was restored` over a deployment with NO live provider at
+   * all. The post-condition is `getEmbeddingClient()`, i.e. the same evidence
+   * the forward path is held to.
+   */
+  const restorePrevious = async (): Promise<string | null> => {
     await deps.deactivate(targetId).catch(() => false);
     await setStatus(deps.installedRegistry, targetId, 'inactive');
-    if (previousId !== null) {
-      await setStatus(deps.installedRegistry, previousId, 'active');
-      await deps.activate(previousId).catch(() => undefined);
+    if (previousId === null) return null;
+    await setStatus(deps.installedRegistry, previousId, 'active');
+    await deps.activate(previousId).catch(() => undefined);
+    if (deps.getEmbeddingClient() === undefined) {
+      // The restore did not take. Do not leave the registry claiming a
+      // provider that is not live — the next boot would activate it into the
+      // same failure while this response said everything was fine.
+      await setStatus(deps.installedRegistry, previousId, 'inactive');
+      return null;
     }
     // The knowledge-graph captured the outgoing client at its last activate();
     // re-gate so it goes back to the restored one rather than a disposed
     // reference.
     await deps.reactivate(KG_NEON_ID).catch(() => undefined);
+    return previousId;
   };
 
   await setStatus(deps.installedRegistry, targetId, 'active');
   try {
     await deps.activate(targetId);
   } catch (err) {
-    await restorePrevious();
+    const restored = await restorePrevious();
     throw new SwitchRolledBack(
-      `activating '${targetId}' failed (${err instanceof Error ? err.message : String(err)}) — the previous provider was restored`,
+      `activating '${targetId}' failed (${err instanceof Error ? err.message : String(err)}) — ${describeRestore(restored)}`,
+      restored,
     );
   }
 
@@ -455,14 +598,34 @@ async function applySwitch(
   // vault, no ollama_base_url) leaves the deployment with NO embedding
   // provider — strictly worse than not switching. Treat it as a failure.
   if (deps.getEmbeddingClient() === undefined) {
-    await restorePrevious();
+    const restored = await restorePrevious();
     throw new SwitchRolledBack(
-      `'${targetId}' activated but published no embeddingClient@1 — it is not configured (missing API key or base URL); the previous provider was restored`,
+      `'${targetId}' activated but published no embeddingClient@1 — it is not configured (missing API key or base URL); ${describeRestore(restored)}`,
+      restored,
     );
   }
 
   // Re-run the model/dimension gate against the new provider. This is what
   // migrates the vector columns when the width changed — in-process, no
   // restart.
+  const graphWasLive = deps.getKnowledgeGraph() !== undefined;
   await deps.reactivate(KG_NEON_ID);
+  // `installService.reactivate` catches and only LOGS hook failures, so the
+  // await above resolving is not evidence of anything. If the knowledge graph
+  // was live before and is gone now, the plugin failed to come back — its
+  // services (knowledgeGraph, graphPool, embeddingModelGateStatus) are out of
+  // the registry — and answering `{ ok: true, gate: null }` over that is the
+  // single most misleading thing this endpoint could do.
+  if (graphWasLive && deps.getKnowledgeGraph() === undefined) {
+    throw new KnowledgeGraphDown(
+      `the embedding provider was switched to '${targetId}' and IS live, but re-activating the knowledge graph afterwards failed — it is now DEACTIVATED (no knowledgeGraph service, no vector writes, no gate verdict). Check the middleware log for the reactivate hook error, then re-install or re-activate '${KG_NEON_ID}'.`,
+    );
+  }
+}
+
+/** Wording for a rollback that may or may not have taken. */
+function describeRestore(restored: string | null): string {
+  return restored === null
+    ? 'AND THE PREVIOUS PROVIDER COULD NOT BE RESTORED — there is no live embeddingClient@1 right now; configure one and activate it'
+    : `the previous provider ('${restored}') was restored and verified live`;
 }

@@ -3586,6 +3586,14 @@ export interface EmbeddingProviderState {
   autoMigrateVectorColumns: boolean;
   knowledgeGraphInstalled: boolean;
   graphAvailable: boolean;
+  /**
+   * The tenant every corpus number above was priced against — the
+   * knowledge-graph plugin's own `graph_tenant_id` when the operator set one,
+   * otherwise the deployment default. Optional so older middleware builds
+   * still satisfy this type; it exists so a `storedVectorTotal: 0` can be told
+   * apart from "the wrong tenant was counted".
+   */
+  graphTenantId?: string;
   corpusError: string | null;
 }
 
@@ -3607,7 +3615,12 @@ export async function getEmbeddingProvider(): Promise<EmbeddingProviderState> {
  * middleware answers 400 `embeddingProvider.confirmation_required`. Other
  * inline-surfaceable failures: 400 `embeddingProvider.unknown_target`, 409
  * `embeddingProvider.already_active`, 409 `embeddingProvider.target_unavailable`
- * (the target was not configured; the previous provider was restored).
+ * (the target was not configured; `details.restoredProviderId` names the
+ * provider that is verified live again, or is `null` when NOTHING could be
+ * restored), 409 `embeddingProvider.switch_in_progress` (another switch is
+ * running — re-read the state before retrying) and 500
+ * `embeddingProvider.knowledge_graph_down` (the provider switch DID take
+ * effect, but the knowledge graph failed to come back and is deactivated).
  */
 export async function switchEmbeddingProvider(
   pluginId: string,

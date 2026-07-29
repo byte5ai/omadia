@@ -206,8 +206,14 @@ export type EmbeddingModelGateOutcome =
    * The governed vector columns were the wrong width and have been rewritten
    * at the active provider's width, at runtime. Every stored vector was
    * DESTROYED; the backfill sweep re-embeds from NULL. Vector writes are
-   * allowed immediately — the columns now match the provider, the registry
-   * names it, and nothing old is left to mix with.
+   * normally allowed immediately — the columns now match the provider, the
+   * registry names it, and nothing old is left to mix with.
+   *
+   * `clearPending` is the exception: the migration's retry-counter reset is
+   * bounded, and when it hit its cap the remainder is carried by
+   * `clear_pending` for the gate's resume path and the backfill sweep to
+   * finish. Writes are refused until they do, because the resumer NULLs every
+   * non-NULL governed vector it finds.
    */
   | {
       status: 'column-migrated';
@@ -219,6 +225,8 @@ export type EmbeddingModelGateOutcome =
       migratedColumns: readonly MigratedVectorColumn[];
       /** Vectors dropped, or `undefined` when the count could not be taken. */
       discardedVectors: number | undefined;
+      /** Capped retry-counter reset still owed. Refuses writes while true. */
+      clearPending: boolean;
     }
   /** Same vector size, different model — stored vectors cleared for re-embed. */
   | {
@@ -244,6 +252,10 @@ export type EmbeddingModelGateOutcome =
       modelId: string;
       dimensions: number;
       mismatches: GovernedVectorColumn[];
+      /** An auto-migration ran, moved some columns and could not record it.
+       *  Surfaced so `/health` names the split instead of reporting a width
+       *  complaint that no longer describes the schema. */
+      migrationHazard?: string;
     }
   /** Another instance owns the registry row and disagrees about the model.
    *  Switching would destroy the corpus it is busy re-embedding. */
@@ -290,12 +302,17 @@ function hasClearPendingFlag(
   outcome: EmbeddingModelGateOutcome,
 ): outcome is Extract<
   EmbeddingModelGateOutcome,
-  { status: 'match' | 're-embedding' | 'unknown-provider' }
+  { status: 'match' | 're-embedding' | 'unknown-provider' | 'column-migrated' }
 > {
   return (
     outcome.status === 'match' ||
     outcome.status === 're-embedding' ||
-    outcome.status === 'unknown-provider'
+    outcome.status === 'unknown-provider' ||
+    // A width migration normally lowers the flag (the columns are empty by
+    // construction). It raises it only when its bounded retry-counter reset
+    // hit the cap, and then writes must stay off for the same reason they do
+    // on every other pending clear.
+    outcome.status === 'column-migrated'
   );
 }
 
@@ -382,7 +399,7 @@ export async function evaluateEmbeddingModelGate(
     // 1536/3072-wide model). Rewrite the columns rather than dead-ending the
     // operator on a hand-written migration. Any failure inside falls through
     // to the historical `blocked` outcome below, with the registry untouched.
-    const migratedOutcome = await tryAutoMigrateColumns({
+    const attempt = await tryAutoMigrateColumns({
       pool,
       tenantId,
       provider,
@@ -392,7 +409,7 @@ export async function evaluateEmbeddingModelGate(
       budgetMs: opts.autoMigrateBudgetMs ?? DEFAULT_AUTO_MIGRATE_BUDGET_MS,
       log,
     });
-    if (migratedOutcome) return migratedOutcome;
+    if (attempt.outcome !== undefined) return attempt.outcome;
 
     log(
       `[graph-embedding-gate] BLOCKED: active provider '${provider.modelId}' emits ${String(provider.dimensions)}-dimensional vectors, but ${mismatches
@@ -410,6 +427,7 @@ export async function evaluateEmbeddingModelGate(
       modelId: provider.modelId,
       dimensions: provider.dimensions,
       mismatches,
+      ...(attempt.hazard !== undefined ? { migrationHazard: attempt.hazard } : {}),
     };
   }
 

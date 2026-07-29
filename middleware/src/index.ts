@@ -1464,8 +1464,15 @@ async function main(): Promise<void> {
   // Graph + Bus lifetime; close() drains everything.
   // - graphPool may be undefined when the in-memory backend is active
   //   (no DATABASE_URL — used by tests + zero-config dev).
-  // - graphTenantId is read at the same place the plugin reads it so
-  //   verifier-store + plugin-internal embedding-backfill use the same key.
+  // - graphTenantId here is the ENV-derived value only. The knowledge-graph
+  //   plugin resolves its own tenant as `ctx.config.get('graph_tenant_id') ??
+  //   GRAPH_TENANT_ID ?? 'default'`, and `graph_tenant_id` is an
+  //   operator-settable setup field — so the two are NOT "read at the same
+  //   place", which an earlier version of this comment claimed. Anything that
+  //   must price or address the plugin's own corpus has to consult the
+  //   registry config first (see `resolveGraphTenantId` in
+  //   routes/adminEmbeddingProvider.ts); the consumers below use this value as
+  //   the deployment-wide default, which is what they have always done.
   const knowledgeGraph = serviceRegistry.get<KnowledgeGraph>('knowledgeGraph');
   if (!knowledgeGraph) {
     throw new Error(
@@ -3401,6 +3408,12 @@ async function main(): Promise<void> {
       getGateStatus: () =>
         serviceRegistry.get<EmbeddingGateStatus>(EMBEDDING_GATE_STATUS_SERVICE),
       getGraphPool: () => graphPool,
+      // Live lookup, never captured: it is the post-condition of the re-gate,
+      // and `installService.reactivate` swallows hook failures — so the only
+      // way to know the plugin came back is to ask the registry again.
+      getKnowledgeGraph: () => serviceRegistry.get<KnowledgeGraph>('knowledgeGraph'),
+      // Env-derived fallback. The router prefers the KG plugin's own
+      // `graph_tenant_id` setup field when one is set.
       tenantId: graphTenantId,
       activate: (id) => toolPluginRuntime.activate(id),
       deactivate: (id) => toolPluginRuntime.deactivate(id),

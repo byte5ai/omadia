@@ -130,12 +130,20 @@ export function describeGateOutcome(
         ...base,
         reason: outcome.reason,
         activeModelId: `${outcome.modelId} (${String(outcome.dimensions)}d)`,
-        detail: outcome.mismatches
-          .map(
-            (m) =>
-              `${m.table}.${m.column} is vector(${String(m.declaredDimensions ?? 0)})`,
-          )
-          .join(', '),
+        detail: [
+          outcome.mismatches
+            .map(
+              (m) =>
+                `${m.table}.${m.column} is vector(${String(m.declaredDimensions ?? 0)})`,
+            )
+            .join(', '),
+          // An auto-migration that moved columns and could not record it makes
+          // the width complaint above an incomplete description of the schema.
+          // Naming the split here is what keeps it out of "silently stuck".
+          ...(outcome.migrationHazard !== undefined
+            ? [`SCHEMA/REGISTRY SPLIT: ${outcome.migrationHazard}`]
+            : []),
+        ].join(' — '),
       };
     }
     return {
@@ -165,16 +173,39 @@ export function describeGateOutcome(
       outcome.discardedVectors === undefined
         ? 'an unknown number of'
         : String(outcome.discardedVectors);
+    const migrated = `${columns} were rewritten at runtime; ${discarded} stored vector(s) were discarded`;
+    // `clearState` rather than `outcome.clearPending`: the outcome is frozen at
+    // activation, the clear state is not. A migration whose capped
+    // retry-counter reset was still owed must go green the moment the backfill
+    // sweep drains it — the same no-restart transition every other pending
+    // clear gets, and the whole reason this module is not a plain snapshot.
+    const note =
+      clearState === 'none'
+        ? { reason: VECTOR_COLUMNS_MIGRATED_REASON }
+        : clearState === 'pending'
+          ? {
+              reason: CLEAR_PENDING_REASON,
+              suffix:
+                '. The capped retry-counter reset is still owed, so vector writes stay refused until a resumer drains it',
+            }
+          : {
+              reason: CLEAR_COMPLETE_REASON,
+              suffix:
+                '. The owed retry-counter reset finished and hot-path vector writes were re-enabled without a restart',
+            };
     return {
       ...base,
-      reason: VECTOR_COLUMNS_MIGRATED_REASON,
+      reason: note.reason,
       activeModelId: `${outcome.modelId} (${String(outcome.dimensions)}d)`,
       ...(outcome.previousModelId !== undefined
         ? {
             storedModelId: `${outcome.previousModelId} (${String(outcome.previousDimensions ?? 0)}d)`,
           }
         : {}),
-      detail: `${columns} were rewritten at runtime; ${discarded} stored vector(s) were discarded and the backfill sweep is re-embedding them`,
+      detail:
+        clearState === 'none'
+          ? `${migrated} and the backfill sweep is re-embedding them`
+          : `${migrated}${'suffix' in note ? note.suffix : ''}`,
     };
   }
   return {

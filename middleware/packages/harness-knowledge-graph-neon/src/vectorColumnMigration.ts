@@ -4,7 +4,6 @@ import { ATTEMPT_RESETS } from './staleVectorClear.js';
 import {
   captureIndexDefs,
   countVectors,
-  hasAnyVector,
   indexNameOf,
   quoteIdent,
   readColumnInfo,
@@ -32,11 +31,14 @@ export type { VectorColumnTarget } from './vectorColumnCatalog.js';
  *   3. reset the attempt bookkeeping (`graph_nodes.embedding_attempts`) so the
  *      backfill picks rows up again — every row is NULL now, and a row that
  *      exhausted its retries under the OLD provider would otherwise be skipped
- *      forever, which is the one thing a provider switch has to fix;
- *   4. flip `graph_embedding_model` to the new model + dimensions with
- *      `clear_pending = FALSE`. The column is empty by construction, so there
- *      is nothing for a stale-vector clear to do — an owed clear is subsumed
- *      and correctly lowered rather than left dangling.
+ *      forever, which is the one thing a provider switch has to fix. BOUNDED:
+ *      see ATTEMPT RESET below;
+ *   4. flip `graph_embedding_model` to the new model + dimensions. The columns
+ *      are empty by construction, so there is nothing for a stale-vector clear
+ *      to do and an owed clear is subsumed rather than left dangling —
+ *      `clear_pending` is therefore lowered to FALSE, EXCEPT when the bounded
+ *      attempt reset did not drain (below), where it stays TRUE as the durable
+ *      marker that finishes the job.
  *
  * It is fast precisely because the re-added column is entirely NULL: the HNSW
  * build has nothing to index. The expensive part is re-embedding, and the
@@ -59,11 +61,18 @@ export type { VectorColumnTarget } from './vectorColumnCatalog.js';
  *     `activate()` is hard-capped at 10s (toolPluginRuntime.ts:286-290) and
  *     waiting out another instance's migration would spend that budget on
  *     nothing;
- *   - the anti-oscillation cooldown applies UNCHANGED. Registry row written
- *     inside `switchCooldownMs` AND vectors still present → refused. Two
- *     machine versions with different providers during a rolling deploy would
- *     otherwise take turns dropping each other's columns: the same failure the
- *     cooldown was written for, an order of magnitude more expensive;
+ *   - the anti-oscillation cooldown is armed by REGISTRY WRITE RECENCY ALONE.
+ *     Registry row written inside `switchCooldownMs` → refused, full stop. It
+ *     used to also require "and the corpus still holds vectors", which made the
+ *     guard unable to survive the very migration it guards: the previous
+ *     migration re-created the target columns EMPTY, so the vectors-present
+ *     probe read false and the cooldown never fired. Reproduced against
+ *     pgvector: 768 corpus + day-old registry → migrate to 1536 → immediately
+ *     re-evaluate with a 768 provider → migrated straight back, 0s elapsed,
+ *     cooldown 600s. Two machine versions in a rolling deploy therefore
+ *     alternately dropped BOTH governed columns, each cycle burning paid API
+ *     calls on rows the next cycle discarded. Recency is the durable signal;
+ *     "are there vectors" is state this operation itself destroys;
  *   - the registry flip carries the SAME CAS predicate as the same-width
  *     switch. A row that moved between read and flip means somebody wrote the
  *     registry without the lock, and this reports failure rather than claiming
@@ -77,6 +86,38 @@ export type { VectorColumnTarget } from './vectorColumnCatalog.js';
  * UNTOUCHED, so the next activation sees the remaining mismatch and finishes
  * the job. That is why the registry flip is last, and why every failure path
  * returns without touching it.
+ *
+ * ATTEMPT RESET, AND WHY IT IS BOUNDED. The column swap is metadata-only and
+ * cheap; the attempt reset is the ONLY row-touching statement in here, and it
+ * runs under the same 4s `statement_timeout` while the table is held at
+ * AccessExclusiveLock. Unbounded, its predicate degenerates after the swap to
+ * "every row that ever failed an embed" — on a million-row `graph_nodes` that
+ * times out, rolls the whole swap back, and returns `ddl-failed` → `blocked`.
+ * Identically on every restart: a livelock whose only escape is turning off a
+ * default-ON flag. So it is capped at `attemptResetMaxRows` (default 5000,
+ * the same ceiling `clearStaleVectors` uses), which keeps the invariant that
+ * every row-touching path in this subsystem is explicitly batched.
+ *
+ * Capping alone would violate the invariant that actually matters — A MIGRATED
+ * COLUMN MUST NEVER LEAVE ROWS PERMANENTLY UN-EMBEDDABLE BECAUSE THEIR ATTEMPT
+ * COUNTER STAYED SPENT — so the remainder is handed to a durable marker rather
+ * than dropped: when the capped UPDATE comes back FULL, the registry flip
+ * writes `clear_pending = TRUE`. That flag already arms the two existing
+ * resumers, both of which run `ATTEMPT_RESETS` in bounded batches and lower it
+ * only after a residual probe says nothing is left — the gate's `resumeClear`
+ * on every activation, and the backfill sweep on every tick
+ * (`resumeStaleVectorClear` is unconditionally on). Their vector-clearing half
+ * is a no-op here because the columns are NULL by construction, so the only
+ * work they do is the reset we owe. Vector writes stay refused for the
+ * duration, which is required rather than incidental: `clearStaleVectors`
+ * NULLs any non-NULL governed vector it finds, so allowing writes while it is
+ * armed would destroy freshly embedded rows.
+ *
+ * "The UPDATE came back full ⇒ rows remain" is EXACT here, not a guess: the
+ * transaction already holds AccessExclusiveLock on the table from the
+ * `DROP COLUMN`, so no concurrent session can be adding or removing rows from
+ * the predicate. A short batch therefore means drained, and no residual probe
+ * is needed.
  */
 
 /** Advisory-lock namespace shared with the gate's registry transaction. */
@@ -87,6 +128,10 @@ const DEFAULT_STATEMENT_TIMEOUT_MS = 4_000;
 /** Kept short on purpose: `DROP COLUMN` needs an AccessExclusiveLock, and
  *  queueing behind a long reader inside a 10s activate() budget is a hang. */
 const DEFAULT_LOCK_TIMEOUT_MS = 2_000;
+/** Rows the in-transaction attempt reset may touch per table, per run. Same
+ *  ceiling as `clearStaleVectors`' `DEFAULT_CLEAR_MAX_ROWS`; the remainder is
+ *  carried by `clear_pending`. See ATTEMPT RESET in the module header. */
+const DEFAULT_ATTEMPT_RESET_MAX_ROWS = 5_000;
 
 export interface MigratedVectorColumn {
   table: string;
@@ -97,6 +142,8 @@ export interface MigratedVectorColumn {
   indexes: readonly string[];
   /** Non-NULL vectors destroyed, or `undefined` when the count timed out. */
   discardedVectors: number | undefined;
+  /** Exhausted `embedding_attempts` counters reset inside the swap. */
+  attemptsReset: number;
 }
 
 export type VectorColumnMigrationFailure =
@@ -119,6 +166,13 @@ export type VectorColumnMigrationResult =
       previousDimensions: number | undefined;
       /** Sum over columns; `undefined` if any per-column count was unknown. */
       discardedVectors: number | undefined;
+      /**
+       * The bounded attempt reset hit its cap, so counters are still owed.
+       * `clear_pending` was written TRUE to carry the remainder; the caller
+       * must refuse vector writes until a resumer drains it. See ATTEMPT RESET
+       * in the module header.
+       */
+      attemptsResetPending: boolean;
     }
   | {
       ok: false;
@@ -145,6 +199,8 @@ export interface VectorColumnMigrationOptions {
   budgetMs?: number;
   statementTimeoutMs?: number;
   lockTimeoutMs?: number;
+  /** Cap on rows the attempt reset touches per table. Default 5000. */
+  attemptResetMaxRows?: number;
   log: (msg: string) => void;
   /** Injectable clock, for tests. */
   now?: () => number;
@@ -164,12 +220,28 @@ export async function migrateVectorColumns(
   const deadline = now() + budgetMs;
   const statementTimeoutMs = opts.statementTimeoutMs ?? DEFAULT_STATEMENT_TIMEOUT_MS;
   const lockTimeoutMs = opts.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+  const attemptResetMaxRows =
+    opts.attemptResetMaxRows ?? DEFAULT_ATTEMPT_RESET_MAX_ROWS;
   const migrated: MigratedVectorColumn[] = [];
+  let attemptsResetPending = false;
 
   const client = await opts.pool.connect();
   let poisoned = false;
+  // Tracks whether the SESSION-scoped advisory lock may still be held on this
+  // connection. It is the only thing that decides pooling vs destruction on
+  // the way out — see the `finally` at the bottom.
+  let lockHeld = false;
   try {
-    if (!(await tryAcquireRegistryLock(client, opts.tenantId))) {
+    let acquired: boolean;
+    try {
+      acquired = await tryAcquireRegistryLock(client, opts.tenantId);
+    } catch (err) {
+      // The acquire statement itself failed, so whether the lock was granted
+      // is unknowable. Assume the worst and destroy the connection.
+      poisoned = true;
+      throw err;
+    }
+    if (!acquired) {
       return {
         ok: false,
         reason: 'lock-held',
@@ -178,22 +250,23 @@ export async function migrateVectorColumns(
         migrated,
       };
     }
+    lockHeld = true;
     try {
       const stored = await readRegistryRow(client, opts.tenantId);
 
-      // Cheap existence probe over the targets themselves: the columns about
-      // to be destroyed ARE the corpus the cooldown is protecting.
-      const hasVectors = await hasAnyVector(client, opts.targets, opts.tenantId);
+      // Anti-oscillation, armed by registry write recency ALONE. It used to
+      // also require `hasAnyVector(targets)`, which probes the very columns the
+      // previous migration re-created EMPTY — so the guard could not survive
+      // the operation it guards. See the GUARDS section of the module header.
       if (
         stored !== undefined &&
         opts.switchCooldownMs > 0 &&
-        hasVectors &&
         isWithinCooldown(stored, opts.switchCooldownMs)
       ) {
         return {
           ok: false,
           reason: 'cooldown',
-          detail: `the registry was last written ${String(Math.round(Number(stored.age_ms) / 1000))}s ago (cooldown ${String(Math.round(opts.switchCooldownMs / 1000))}s) and the corpus still holds vectors`,
+          detail: `the registry was last written ${String(Math.round(Number(stored.age_ms) / 1000))}s ago, inside the ${String(Math.round(opts.switchCooldownMs / 1000))}s anti-oscillation cooldown — refusing to rewrite the governed columns again`,
           migrated,
         };
       }
@@ -220,12 +293,14 @@ export async function migrateVectorColumns(
           statementTimeoutMs,
         );
         const indexes = await captureIndexDefs(client, target);
+        let reset: AttemptResetOutcome;
         try {
-          await migrateOneColumn(client, target, info, indexes, {
+          reset = await migrateOneColumn(client, target, info, indexes, {
             targetDimensions: opts.targetDimensions,
             tenantId: opts.tenantId,
             statementTimeoutMs,
             lockTimeoutMs,
+            attemptResetMaxRows,
           });
         } catch (err) {
           if (await isConnectionAborted(client)) poisoned = true;
@@ -236,6 +311,7 @@ export async function migrateVectorColumns(
             migrated,
           };
         }
+        if (reset.pending) attemptsResetPending = true;
         migrated.push({
           table: target.table,
           column: target.column,
@@ -243,20 +319,27 @@ export async function migrateVectorColumns(
           newDimensions: opts.targetDimensions,
           indexes,
           discardedVectors,
+          attemptsReset: reset.rows,
         });
         opts.log(
-          `[graph-embedding-gate] MIGRATED ${target.table}.${target.column}: vector(${String(info.declaredDimensions ?? 0)}) → vector(${String(opts.targetDimensions)}); ${discardedVectors === undefined ? 'an unknown number of' : String(discardedVectors)} stored vector(s) DISCARDED and must be re-embedded, ${String(indexes.length)} index(es) re-created from their captured definition`,
+          `[graph-embedding-gate] MIGRATED ${target.table}.${target.column}: vector(${String(info.declaredDimensions ?? 0)}) → vector(${String(opts.targetDimensions)}); ${discardedVectors === undefined ? 'an unknown number of' : String(discardedVectors)} stored vector(s) DISCARDED and must be re-embedded, ${String(indexes.length)} index(es) re-created from their captured definition, ${String(reset.rows)} exhausted retry counter(s) reset${reset.pending ? ' (CAP HIT — more are owed, clear_pending will carry them)' : ''}`,
         );
       }
 
-      if (!(await flipRegistry(client, stored, opts))) {
+      if (!(await flipRegistry(client, stored, opts, attemptsResetPending))) {
         return {
           ok: false,
           reason: 'registry-flip-failed',
           detail:
-            'the registry row changed between read and flip — the columns are at the new width but graph_embedding_model still names the old model; the next activation reconciles it',
+            `the registry row changed between read and flip and now names neither the old model nor '${opts.targetModelId}' — the columns ARE at the new width but graph_embedding_model still names a different one. The next activation will NOT self-heal this: it sees no width mismatch, falls through to decideRegistry and reports blocked/dimension-mismatch until the registry row is corrected. Point graph_embedding_model at '${opts.targetModelId}' (${String(opts.targetDimensions)}d) for this tenant, or run every instance on one provider and restart.`,
           migrated,
         };
+      }
+
+      if (attemptsResetPending) {
+        opts.log(
+          `[graph-embedding-gate] the attempt reset hit its ${String(attemptResetMaxRows)}-row cap — clear_pending was left TRUE so the gate's resume path and the backfill sweep finish it in bounded batches. Vector writes stay refused until they do; no row is left permanently un-embeddable.`,
+        );
       }
 
       return {
@@ -265,16 +348,31 @@ export async function migrateVectorColumns(
         previousModelId: stored?.model_id,
         previousDimensions: stored?.dimensions,
         discardedVectors: sumDiscarded(migrated),
+        attemptsResetPending,
       };
     } finally {
-      await releaseRegistryLock(client, opts.tenantId);
+      // EVERY throw inside the locked region lands here, not just the one from
+      // `migrateOneColumn`: `readRegistryRow`, `readColumnInfo`,
+      // `captureIndexDefs` and `flipRegistry` can all fail, and each of them
+      // used to run this `finally`, swallow the unlock error and then hand a
+      // connection that may STILL HOLD the session-scoped lock back to the
+      // pool. That is not a degraded mode: `decideRegistry` takes a BLOCKING
+      // `pg_advisory_xact_lock` in this same namespace with no
+      // `lock_timeout`, so a leaked lock means the knowledge-graph plugin
+      // never activates again until the process restarts.
+      //
+      // So the unlock now REPORTS. Released ⇒ the connection is clean and gets
+      // pooled. Not released (query threw, connection sits in an aborted
+      // transaction, driver says the lock was not held) ⇒ the connection is
+      // destroyed below, which releases the session lock with it.
+      if (await releaseRegistryLock(client, opts.tenantId)) lockHeld = false;
     }
   } finally {
-    // Same reasoning as the stale-vector clear: a connection stuck inside an
-    // aborted transaction could not release the SESSION-level lock, so it is
-    // destroyed rather than pooled — otherwise every later migration and every
-    // `decideRegistry` on this tenant blocks for the connection's lifetime.
-    client.release(poisoned);
+    // Same reasoning as the stale-vector clear: a connection that could not
+    // provably release its SESSION-level lock is destroyed rather than pooled
+    // — otherwise every later migration and every `decideRegistry` on this
+    // tenant blocks for the connection's lifetime.
+    client.release(poisoned || lockHeld);
   }
 }
 
@@ -294,6 +392,13 @@ function isWithinCooldown(row: StoredRegistryRow, cooldownMs: number): boolean {
   return Number.isFinite(ageMs) && ageMs < cooldownMs;
 }
 
+/** What the bounded attempt reset did for one table. */
+interface AttemptResetOutcome {
+  rows: number;
+  /** The cap was hit, so counters are still owed. */
+  pending: boolean;
+}
+
 /**
  * The column swap, as ONE transaction. See the module header for why every
  * step belongs in here rather than being spread across several.
@@ -308,8 +413,9 @@ async function migrateOneColumn(
     tenantId: string;
     statementTimeoutMs: number;
     lockTimeoutMs: number;
+    attemptResetMaxRows: number;
   },
-): Promise<void> {
+): Promise<AttemptResetOutcome> {
   const table = quoteIdent(target.table);
   const column = quoteIdent(target.column);
   await client.query('BEGIN');
@@ -336,18 +442,37 @@ async function migrateOneColumn(
     }
     // Every row is NULL now, so ATTEMPT_RESETS' `embedding IS NULL AND
     // embedding_attempts > 0` predicate selects exactly the rows whose retry
-    // budget the OLD provider spent. It runs INSIDE this transaction on
-    // purpose: a timeout here rolls the column back to its old width, which is
-    // the safe direction — a migrated column whose counters were never reset
-    // would silently exclude those rows from the backfill forever.
+    // budget the OLD provider spent — which after the swap is "every row that
+    // ever failed an embed", with no natural ceiling. BOUNDED for that reason;
+    // the module header explains the cap, the durable marker that carries the
+    // remainder, and why a short batch here proves the predicate is drained.
+    //
+    // No `FOR UPDATE SKIP LOCKED`: this transaction already holds
+    // AccessExclusiveLock on the table from the `DROP COLUMN` above, so there
+    // is no concurrent writer to skip and `rowCount` is exact.
+    const limit = Math.max(1, Math.floor(opts.attemptResetMaxRows));
+    let rows = 0;
+    let pending = false;
     for (const reset of ATTEMPT_RESETS) {
       if (reset.table !== target.table) continue;
-      await client.query(
-        `UPDATE ${quoteIdent(reset.table)} SET ${reset.set} WHERE tenant_id = $1 AND ${reset.where}`,
+      const done = await client.query(
+        `UPDATE ${quoteIdent(reset.table)}
+            SET ${reset.set}
+          WHERE ctid IN (
+                  SELECT ctid
+                    FROM ${quoteIdent(reset.table)}
+                   WHERE tenant_id = $1 AND ${reset.where}
+                   ORDER BY ctid
+                   LIMIT ${String(limit)}
+                )`,
         [opts.tenantId],
       );
+      const affected = done.rowCount ?? 0;
+      rows += affected;
+      if (affected >= limit) pending = true;
     }
     await client.query('COMMIT');
+    return { rows, pending };
   } catch (err) {
     try {
       await client.query('ROLLBACK');
@@ -375,30 +500,43 @@ async function readRegistryRow(
 }
 
 /**
- * Record the new identity. `clear_pending = FALSE` is not an oversight: the
- * columns were just re-created empty, so no old-model vector is left for a
- * clear to find — this migration subsumes whatever clear was owed.
+ * Record the new identity.
  *
- * The CAS predicate is the same one the same-width switch uses.
+ * `clearPending` is normally FALSE and that is not an oversight: the columns
+ * were just re-created empty, so no old-model vector is left for a clear to
+ * find and this migration subsumes whatever clear was owed. It is TRUE only
+ * when the bounded attempt reset hit its cap — see ATTEMPT RESET in the module
+ * header for why that flag is the right carrier for the remainder.
+ *
+ * The CAS predicate is the same one the same-width switch uses. Losing it is
+ * not automatically a failure, though: two instances migrating to the SAME
+ * provider is the ordinary rolling-deploy shape, and the loser's work is
+ * already done for it. `adoptIfAlreadyOurs` turns that into success, which is
+ * what keeps a concurrent pair from leaving the columns migrated and the
+ * registry stale — the one state the next activation cannot recover from on
+ * its own (no width mismatch left to trigger this path, so it dead-ends on
+ * `blocked/dimension-mismatch`).
  */
 async function flipRegistry(
   client: PoolClient,
   stored: StoredRegistryRow | undefined,
   opts: VectorColumnMigrationOptions,
+  clearPending: boolean,
 ): Promise<boolean> {
   if (stored === undefined) {
     const inserted = await client.query(
       `INSERT INTO graph_embedding_model (tenant_id, model_id, dimensions, clear_pending)
-       VALUES ($1, $2, $3, FALSE)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (tenant_id) DO NOTHING
        RETURNING model_id`,
-      [opts.tenantId, opts.targetModelId, opts.targetDimensions],
+      [opts.tenantId, opts.targetModelId, opts.targetDimensions, clearPending],
     );
-    return (inserted.rowCount ?? 0) === 1;
+    if ((inserted.rowCount ?? 0) === 1) return true;
+    return await adoptIfAlreadyOurs(client, opts, clearPending);
   }
   const updated = await client.query(
     `UPDATE graph_embedding_model
-        SET model_id = $2, dimensions = $3, clear_pending = FALSE, updated_at = now()
+        SET model_id = $2, dimensions = $3, clear_pending = $6, updated_at = now()
       WHERE tenant_id = $1
         AND model_id = $4
         AND dimensions = $5`,
@@ -408,9 +546,43 @@ async function flipRegistry(
       opts.targetDimensions,
       stored.model_id,
       stored.dimensions,
+      clearPending,
     ],
   );
-  return (updated.rowCount ?? 0) === 1;
+  if ((updated.rowCount ?? 0) === 1) return true;
+  return await adoptIfAlreadyOurs(client, opts, clearPending);
+}
+
+/**
+ * The CAS lost — did it lose to somebody who wrote exactly what we wanted?
+ *
+ * If the row now names our target model at our target width, the flip is a
+ * no-op that already happened and reporting failure would be a lie that leaves
+ * a perfectly consistent schema flagged as broken. An owed attempt reset is
+ * still raised, because the winner may not have owed one.
+ */
+async function adoptIfAlreadyOurs(
+  client: PoolClient,
+  opts: VectorColumnMigrationOptions,
+  clearPending: boolean,
+): Promise<boolean> {
+  const current = await readRegistryRow(client, opts.tenantId);
+  if (
+    current === undefined ||
+    current.model_id !== opts.targetModelId ||
+    Number(current.dimensions) !== opts.targetDimensions
+  ) {
+    return false;
+  }
+  if (clearPending) {
+    await client.query(
+      `UPDATE graph_embedding_model
+          SET clear_pending = TRUE, updated_at = now()
+        WHERE tenant_id = $1 AND model_id = $2 AND dimensions = $3`,
+      [opts.tenantId, opts.targetModelId, opts.targetDimensions],
+    );
+  }
+  return true;
 }
 
 async function tryAcquireRegistryLock(
@@ -427,18 +599,31 @@ async function tryAcquireRegistryLock(
   return row === undefined || row.locked !== false;
 }
 
+/**
+ * Release the session lock, and REPORT whether it actually went.
+ *
+ * The return value is load-bearing: `false` is what makes the caller destroy
+ * the connection instead of pooling it, which is the only other way a
+ * session-scoped lock can be released. Swallowing the answer (what this used
+ * to do) leaked the lock on every failure path except one, and a leaked lock
+ * in this namespace hangs `decideRegistry` forever rather than degrading it.
+ */
 async function releaseRegistryLock(
   client: PoolClient,
   tenantId: string,
-): Promise<void> {
+): Promise<boolean> {
   try {
-    await client.query('SELECT pg_advisory_unlock($1::int, hashtext($2)::int)', [
-      LOCK_NS_REGISTRY,
-      tenantId,
-    ]);
+    const result = await client.query<{ unlocked: boolean }>(
+      'SELECT pg_advisory_unlock($1::int, hashtext($2)::int) AS unlocked',
+      [LOCK_NS_REGISTRY, tenantId],
+    );
+    // A fake/limited driver that does not model advisory locks returns no row.
+    // It never took a lock either, so "no row" is a clean release — the same
+    // symmetry `tryAcquireRegistryLock` uses.
+    const row = result.rows[0];
+    return row === undefined || row.unlocked !== false;
   } catch {
-    // Best-effort; a poisoned connection is destroyed by the caller, which
-    // releases the session lock with it.
+    return false;
   }
 }
 
