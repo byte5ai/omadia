@@ -15,7 +15,7 @@
  * imported.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { Router } from 'express';
 import type { Request, Response } from 'express';
@@ -62,6 +62,32 @@ function bearerToken(req: Request): string | undefined {
   }
   const token = header.slice('Bearer '.length).trim();
   return token.length > 0 ? token : undefined;
+}
+
+/**
+ * Derives the internal conversationId from the (fixed, never caller-
+ * controlled) key id and the caller-supplied conversationId.
+ *
+ * This is NOT the same as namespacing via plain string concatenation
+ * (`${keyId}:${callerConversationId}`), which was the original approach and
+ * is unsafe: `CoreApi.handleTurnStream` folds this value into a scope string
+ * that downstream `SessionLogger`'s `sanitizeScope` mangles — punctuation
+ * runs (any char outside `[a-zA-Z0-9_-]`) collapse to a single `-`, the
+ * result is lowercased, and it's truncated to 80 chars. Two distinct
+ * caller-supplied ids can therefore land on the IDENTICAL sanitized scope
+ * under the same key — e.g. `"case/a"` and `"case?a"` both sanitize to
+ * `...-case-a`, and two long ids that only differ past the truncation cutoff
+ * sanitize identically too. Either lets one conversation thread recall
+ * another thread's memory/graph content under the same key.
+ *
+ * A fixed-width (64 hex chars, well under the 80-char cap), collision-
+ * resistant hash of the same inputs sidesteps sanitizeScope's exact
+ * transform rules entirely: hex digest output is already lowercase
+ * alphanumeric, so nothing about it can be mangled or truncated into
+ * colliding with a different digest.
+ */
+export function internalConversationId(keyId: string, callerConversationId: string): string {
+  return createHash('sha256').update(`${keyId}:${callerConversationId}`).digest('hex');
 }
 
 export interface ApiChatRouterDeps {
@@ -150,10 +176,13 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
         // userRef. An unnamespaced caller-supplied conversationId would let
         // two different API keys collide on the exact same core-side scope
         // by sending the same conversationId — cross-key context/transcript
-        // leakage. Prefixing with `key.id` (a per-key UUID, never
-        // caller-controlled) makes that collision structurally impossible,
-        // even when two different keys send identical conversationId values.
-        conversationId: `${key.id}:${parsed.data.conversationId ?? randomUUID()}`,
+        // leakage. Hashing `key.id` (a per-key UUID, never caller-controlled)
+        // together with the caller-supplied conversationId — rather than
+        // plain string concatenation — makes both that cross-key collision
+        // AND same-key collisions via lossy downstream sanitization
+        // structurally impossible; see `internalConversationId`'s doc
+        // comment for why concatenation alone isn't enough.
+        conversationId: internalConversationId(key.id, parsed.data.conversationId ?? randomUUID()),
         // Design decision (issue #438): the key IS its own identity — not a
         // delegate for a human end-user. No impersonation surface.
         userRef: {

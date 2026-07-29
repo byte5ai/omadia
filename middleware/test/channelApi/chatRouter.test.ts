@@ -9,8 +9,15 @@ import type { CoreApi, IncomingTurn } from '@omadia/channel-sdk';
 import { createApiKeyStore } from '../../packages/harness-channel-api/src/apiKeyStore.js';
 import { createAuditLog } from '../../packages/harness-channel-api/src/auditLog.js';
 import { createRateLimiter } from '../../packages/harness-channel-api/src/rateLimiter.js';
-import { createApiChatRouter } from '../../packages/harness-channel-api/src/chatRouter.js';
+import {
+  createApiChatRouter,
+  internalConversationId,
+} from '../../packages/harness-channel-api/src/chatRouter.js';
 import { createFakeSecrets } from './testSecrets.js';
+// Import from source: `graphScopeFor` was added after the last dist build,
+// so the built `@omadia/orchestrator` barrel doesn't re-export it yet (same
+// rationale as test/sessionLoggerGraphScope.test.ts).
+import { graphScopeFor } from '../../packages/harness-orchestrator/src/sessionLogger.js';
 
 /** Parses an NDJSON response body (one JSON object per line) into events. */
 function parseNdjson(body: string): unknown[] {
@@ -100,8 +107,13 @@ describe('channelApi/chatRouter — wiring (auth, rate limit, audit, NDJSON fram
     assert.equal(capturedTurns.length, 1);
     assert.equal(capturedTurns[0]?.channelId, '@omadia/channel-api');
     // Namespaced by key identity (cross-key isolation fix) — never the raw
-    // caller-supplied conversationId on its own.
-    assert.equal(capturedTurns[0]?.conversationId, `${created.record.id}:conv-1`);
+    // caller-supplied conversationId on its own, and derived via a hash (not
+    // plain concatenation) so it can't collide after downstream sanitization
+    // (see the `internalConversationId` doc comment).
+    assert.equal(
+      capturedTurns[0]?.conversationId,
+      internalConversationId(created.record.id, 'conv-1'),
+    );
     assert.equal(capturedTurns[0]?.text, 'ping');
     // Design decision (issue #438): the key IS its own identity.
     assert.deepEqual(capturedTurns[0]?.userRef, {
@@ -223,8 +235,89 @@ describe('channelApi/chatRouter — cross-key conversationId isolation (finding 
       capturedTurns[1]?.conversationId,
       'identical caller-supplied conversationId must still map to distinct internal scopes per key',
     );
-    assert.equal(capturedTurns[0]?.conversationId, `${keyA.record.id}:shared-thread`);
-    assert.equal(capturedTurns[1]?.conversationId, `${keyB.record.id}:shared-thread`);
+    assert.equal(
+      capturedTurns[0]?.conversationId,
+      internalConversationId(keyA.record.id, 'shared-thread'),
+    );
+    assert.equal(
+      capturedTurns[1]?.conversationId,
+      internalConversationId(keyB.record.id, 'shared-thread'),
+    );
+
+    await harness.close();
+  });
+});
+
+describe('channelApi/chatRouter — same-key conversationId collision via lossy sanitizeScope (finding #3)', () => {
+  it('two caller-supplied conversationIds differing only in punctuation never collide after sanitizeScope', async () => {
+    const capturedTurns: IncomingTurn[] = [];
+    const harness = startTestServer({
+      async *handleTurnStream(turn) {
+        capturedTurns.push(turn);
+        yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 };
+      },
+    });
+
+    const key = await harness.apiKeys.create({ label: 'punctuation' });
+
+    await fetch(harness.baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key.token}` },
+      body: JSON.stringify({ message: 'hi', conversationId: 'case/a' }),
+    });
+    await fetch(harness.baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key.token}` },
+      body: JSON.stringify({ message: 'hi', conversationId: 'case?a' }),
+    });
+
+    assert.equal(capturedTurns.length, 2);
+    const idA = capturedTurns[0]?.conversationId ?? '';
+    const idB = capturedTurns[1]?.conversationId ?? '';
+    // The internal conversationIds themselves must differ...
+    assert.notEqual(idA, idB);
+    // ...and, critically, so must the scope SessionLogger actually persists
+    // under (`graphScopeFor` applies the real `sanitizeScope`, which lower-
+    // cases and collapses any punctuation run to a single '-' — the exact
+    // transform that made `"case/a"` and `"case?a"` collide before this fix,
+    // since plain concatenation left that punctuation exposed).
+    assert.notEqual(graphScopeFor(undefined, idA), graphScopeFor(undefined, idB));
+
+    await harness.close();
+  });
+
+  it('two long caller-supplied conversationIds differing only past the 80-char sanitizeScope truncation cutoff never collide', async () => {
+    const capturedTurns: IncomingTurn[] = [];
+    const harness = startTestServer({
+      async *handleTurnStream(turn) {
+        capturedTurns.push(turn);
+        yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 };
+      },
+    });
+
+    const key = await harness.apiKeys.create({ label: 'truncation' });
+    // Well past 80 chars post-sanitization once namespaced with a key id —
+    // these two only diverge after the point sanitizeScope would truncate a
+    // plain-concatenated scope, which is exactly what made them collide
+    // before this fix.
+    const longBase = 'x'.repeat(150);
+
+    await fetch(harness.baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key.token}` },
+      body: JSON.stringify({ message: 'hi', conversationId: `${longBase}-tail-one` }),
+    });
+    await fetch(harness.baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key.token}` },
+      body: JSON.stringify({ message: 'hi', conversationId: `${longBase}-tail-two` }),
+    });
+
+    assert.equal(capturedTurns.length, 2);
+    const idA = capturedTurns[0]?.conversationId ?? '';
+    const idB = capturedTurns[1]?.conversationId ?? '';
+    assert.notEqual(idA, idB);
+    assert.notEqual(graphScopeFor(undefined, idA), graphScopeFor(undefined, idB));
 
     await harness.close();
   });

@@ -93,6 +93,21 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   / valid-cookie and fail-closed paths. `docs/security-architecture.md` § 8,
   this package's `README.md`, and `docs/middleware-agent-handoff.md` are
   corrected to describe the real mechanism.
+- Third review fixup: the key-id namespacing above (`${key.id}:${callerConversationId}`)
+  was itself still lossy. `SessionLogger`'s `sanitizeScope` collapses any run
+  of punctuation to a single `-`, lowercases, and truncates to 80 chars
+  before persisting — so two DIFFERENT caller-supplied `conversationId`s
+  under the SAME key could still land on the identical sanitized scope (for
+  example `"case/a"` and `"case?a"`, or two long ids differing only past the
+  truncation cutoff), letting one conversation thread recall another
+  thread's memory/graph content. `chatRouter.ts` now derives the internal
+  `conversationId` as `sha256(key.id:callerConversationId)` (hex digest —
+  fixed-width, already lowercase alphanumeric, so nothing about it can be
+  mangled or truncated into colliding with a different digest) instead of
+  plain concatenation. Regression coverage in `chatRouter.test.ts` sends
+  both collision shapes through the real `createApiChatRouter` and asserts
+  the resulting scopes differ after being run through the real
+  `graphScopeFor`/`sanitizeScope`.
 
 ### Fixed — orchestrator no longer offers or invokes a not-yet-authenticated plugin's tools (#474)
 
