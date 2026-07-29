@@ -15,6 +15,7 @@ it at all.
 | File | Answers | Read it when |
 |---|---|---|
 | **`plan.md`** | *What are we building, and why this way?* Architecture decisions, the capability gaps (G1–G10), the three hard couplings (H1–H3), phases P2a→P6, risks | Before touching anything |
+| **`implementation.md`** | *In what order, and what did the detailed design change?* Six design passes synthesised: the five corrected decisions, six verified live bugs, the C1→C13 / P0→P6 PR sequence, and the six blocking decisions | Before starting a phase |
 | **`core-decoupling-checklist.md`** | *What is still coupled?* 276 items across 18 zones, ~49,100 LOC / ~200 files, with `file:line` and DELETE / MOVE / GENERICISE per item | While doing the removal |
 | **`acceptance.md`** | *Did every capability survive, and does it install?* 34 endpoints, 3 chat tools, `ctx.devJobs`, 4 background loops, 4 UI screens, CLI, conductor step — each with a probe. Plus install/uninstall/upgrade criteria | Before claiming a phase is done |
 | **`plugin-tailwind-subset.probe.css`** | *Can a distributed plugin ship a UI without shipping CSS?* Measured reference artifact (7.7 KB gzip) — not built, not shipped | When implementing P3b |
