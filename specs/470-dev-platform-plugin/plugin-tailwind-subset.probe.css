@@ -1,0 +1,103 @@
+/* PROBE — not shipped, not built by web-ui. Reference artifact for plan.md §G7.
+ *
+ * Answers: can a plugin use Tailwind instead of shipping its own CSS?
+ * Yes — but only for utilities core pre-generates, because Tailwind v4 emits
+ * only what it finds when scanning source, and a plugin installed at runtime
+ * from another repository is never scanned. `@source inline(...)` (v4's
+ * replacement for `safelist`) forces generation without scanning; combined
+ * with `source(none)` it produces a stylesheet containing exactly this set
+ * and nothing else.
+ *
+ * Measured with the repo's own tailwindcss 4.3.3 + @tailwindcss/postcss:
+ *   43,199 bytes raw → 7,704 gzip → 5.7 KB brotli
+ * carrying the real Lume tokens (.bg-accent, .text-fg-muted, .border-border,
+ * .hover:bg-accent, .text-danger all verified present), plus sm:/md:/lg:
+ * and hover:/focus:/disabled: variants.
+ *
+ * HARD CONSTRAINT this implies: plugins may NOT use arbitrary values
+ * (`w-[137px]`, `bg-[#abc]`). That space is unbounded and cannot be
+ * pre-generated — such a class silently renders unstyled. Enforce at package
+ * ingest by rejecting `[...]` in class attributes.
+ *
+ * Starting point, not a final vocabulary — widen it from what the ported
+ * dev-platform pages actually use.
+ */
+@import 'tailwindcss' source(none);
+@import './app/_lib/theme.css';
+
+/* The Lume token bridge — copied from globals.css for the probe. In the real
+   implementation this block gets extracted into its own file that both
+   globals.css and the plugin stylesheet import, so they cannot drift. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-soft: var(--bg-soft);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-surface: var(--surface);
+  --color-fg: var(--fg);
+  --color-fg-strong: var(--fg-strong);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-serif: var(--font-serif);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+}
+
+/* Layout */
+@source inline("{flex,inline-flex,grid,block,inline-block,hidden}");
+@source inline("flex-{row,col,wrap,1,none}");
+@source inline("items-{start,center,end,baseline,stretch}");
+@source inline("justify-{start,center,end,between,around}");
+@source inline("grid-cols-{1..6}");
+@source inline("{gap,gap-x,gap-y}-{0..8}");
+@source inline("{w,h}-full");
+@source inline("{min-w,max-w}-{0,full,xs,sm,md,lg,xl,2xl}");
+@source inline("overflow-{auto,hidden,x-auto,y-auto}");
+@source inline("relative,absolute,sticky,static");
+
+/* Spacing */
+@source inline("{p,px,py,pt,pr,pb,pl}-{0..12}");
+@source inline("{m,mx,my,mt,mr,mb,ml}-{0..12}");
+@source inline("space-{x,y}-{1..6}");
+
+/* Typography */
+@source inline("text-{xs,sm,base,lg,xl,2xl,3xl}");
+@source inline("font-{normal,medium,semibold,bold,mono,sans}");
+@source inline("{text-left,text-center,text-right}");
+@source inline("truncate,uppercase,lowercase,capitalize");
+@source inline("leading-{none,tight,snug,normal,relaxed}");
+@source inline("tracking-{tight,normal,wide,wider}");
+
+/* Design-system colours only — the Lume tokens, not Tailwind's palette.
+   This is the point: plugins get OUR colours, so they cannot drift. */
+@source inline("{hover:,focus:,}bg-{bg,bg-soft,bg-elevated,surface,accent,danger,success,warning}");
+@source inline("{hover:,}text-{fg,fg-strong,fg-muted,fg-subtle,accent,danger,success,warning}");
+@source inline("border-{border,border-strong,accent,danger}");
+
+/* Borders / shape */
+@source inline("border,border-{0,2},border-{t,r,b,l}");
+@source inline("rounded{,-sm,-md,-lg,-full}");
+@source inline("shadow{,-sm,-md,-lg}");
+
+/* Interaction */
+@source inline("{hover:,focus:,}opacity-{0,50,75,100}");
+@source inline("cursor-{pointer,not-allowed}");
+@source inline("transition,transition-colors");
+@source inline("disabled:{opacity-50,cursor-not-allowed}");
+
+/* Responsive — one breakpoint for the common cases */
+@source inline("{sm:,md:,lg:}{flex,grid,hidden,block}");
+@source inline("{sm:,md:,lg:}grid-cols-{1..4}");
