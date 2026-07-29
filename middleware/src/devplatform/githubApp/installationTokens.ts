@@ -1,5 +1,5 @@
 import type { DevJob } from '../types.js';
-import { mintAppJwt } from './appJwt.js';
+import { mintAppJwt } from '../../services/githubAppJwt.js';
 
 /**
  * Epic #470 W2 — scoped, uncached, revocable GitHub App installation tokens.

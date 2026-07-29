@@ -415,8 +415,7 @@
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
-    "adminCluster": "Admin",
-    "devPlatform": "Dev Platform"
+    "adminCluster": "Admin"
   },
   "conductor": {
     "title": "Conductor",

@@ -18,6 +18,46 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — plugin-contributed navigation (#470, phase 1 of the Dev Platform extraction)
+
+- New plugin capability `ctx.uiRoutes.registerNav({ navId, href, cluster?,
+  order?, label })` lets an installed plugin contribute entries to the
+  operator navigation. Backed by `UiRouteCatalog.registerNav()` /
+  `listNav(locale)` and served by a new session-gated route
+  `GET /api/v1/ui/navigation?locale=<l>`, which returns labels **already
+  resolved** for the requested locale — the browser never receives the
+  per-locale map, so the web UI stays on next-intl's single i18n clock.
+- The web-ui shell (`Nav.tsx`) now merges its static nav with the
+  contributed entries, fetched server-side in the root layout. An entry
+  joins the cluster it names; an unknown or absent cluster promotes it to
+  top level; an href colliding with a static one is dropped so a plugin
+  cannot shadow a core destination. Every plugin-supplied field is
+  validated as untrusted input (canonical in-app hrefs only; labels
+  length-capped and screened for control, bidi and zero-width codepoints).
+- Dev Platform is the first consumer: its menu entry and its `/admin` grid
+  card now come from that registration instead of being hardcoded, so
+  disabling the feature removes both with no frontend rebuild. Removes the
+  now-unused `nav.devPlatform` key from `messages/{en,de}.json`.
+- Rationale and the remaining extraction phases:
+  `specs/470-dev-platform-plugin/plan.md`.
+
+### Fixed — deactivated tool plugins kept serving their Express routes
+
+- `ToolPluginRuntime.deactivate()` stopped background jobs and disposed UI
+  routes but never called `pluginRouteRegistry.disposeBySource()`, although
+  it held that dependency and threaded it into every plugin context
+  (`DynamicAgentRuntime` already did). Express cannot unmount, so an
+  uninstalled or hot-upgraded plugin's routers stayed live and — because
+  Express matches first-mount-wins — kept answering and shadowed anything
+  later mounted at the same prefix.
+- Disposal now also runs **before** the plugin-controlled `close()` is
+  awaited; previously a plugin whose `close()` hung kept its routes and menu
+  entry live for the full 5s budget after the operator triggered
+  deactivation. `activate()` additionally rolls back its own route/nav/job
+  registrations when a plugin registers and then throws or times out —
+  such a plugin never reaches the active set, so `deactivate()` could never
+  clean it up and the orphan survived for the life of the process.
+
 ### Added — Conductor generic webhook support, inbound + outbound (#437)
 
 - **Inbound**: `POST /api/hooks/:endpointId` (unauthenticated mount, raw-body

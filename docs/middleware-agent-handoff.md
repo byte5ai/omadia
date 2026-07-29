@@ -785,6 +785,54 @@ schrieb der Import-Pfad unter der kanonischen id, während der Query-Pfad die
 rohe id las, sodass ein Channel-User sein eigenes gerade importiertes Dataset
 nie wiederfinden konnte.
 
+### Plugin-contributed Navigation (#470, Phase 1 der Dev-Platform-Extraktion)
+
+Damit ein Feature wirklich *installierbar* ist, muss sein Menü-Eintrag mit
+dem Plugin mitreisen — bisher war die Navigation ein eingefrorenes Literal in
+`web-ui/app/_components/Nav.tsx`. Neue Plugin-Fähigkeit:
+
+```ts
+ctx.uiRoutes.registerNav({ navId, href, cluster?, order?, label })
+```
+
+Bewusst getrennt von `ctx.uiRoutes.register()`: ein uiRoute-Descriptor
+adressiert relativ zum `/p/<pluginId>`-Mount des Plugins, ein Nav-Eintrag
+adressiert einen absoluten In-App-Pfad. Beides in einen Descriptor zu falten
+würde eines der zwei Pfad-Felder zur Lüge machen. Beide teilen sich denselben
+Lifecycle in `UiRouteCatalog` (`disposeBySource` räumt beide ab).
+
+Neue Route: **`GET /api/v1/ui/navigation?locale=<l>`**
+(`src/routes/uiNavigation.ts`), gemountet unter `/api` und zusätzlich
+explizit hinter `requireAuth` — die Einträge verraten, welche Features
+installiert sind. Antwort ist `no-store` und enthält **bereits aufgelöste**
+Labels: der Browser bekommt die Locale-Map nie zu sehen, dadurch bleibt das
+Web-UI auf genau einer i18n-Uhr (next-intl) statt auf zwei, die beim
+Sprachwechsel auseinanderlaufen.
+
+Die Shell holt die Einträge **server-seitig im Root-Layout** (`fetchNavEntries`
+in `web-ui/app/_lib/navigation.ts`, 2s-Timeout, degradiert lautlos auf die
+statische Navigation) und merged sie in `Nav.tsx`. Merge-Regeln: Eintrag
+landet im benannten Cluster; unbekannter/fehlender Cluster wird zum
+Top-Level-Eintrag (statt still verschluckt zu werden); ein href-Konflikt mit
+einem statischen Eintrag wird verworfen, damit ein Plugin kein Core-Ziel
+überschatten kann.
+
+Jedes vom Plugin gelieferte Feld gilt als **untrusted input**, weil es im
+vertrauenswürdigen Header gerendert wird: `href` nur in kanonischer In-App-Form
+(kein `//host`, keine Dot-Segments, keine Query/Fragment/Prozent-Kodierung —
+sonst wäre die „Core gewinnt"-Regel per Alias umgehbar), Labels längenbegrenzt
+und gegen Control-, Bidi- und Zero-Width-Codepoints geprüft (Trojan-Source-
+Spoofing benachbarter Core-Einträge). Dazu Obergrenzen für href-/navId-Länge,
+Locale-Map-Größe und Einträge pro Plugin, weil der Katalog in jede
+Root-Layout-RSC-Antwort serialisiert wird.
+
+Erster Consumer ist die Dev Platform selbst: ihr Eintrag wird aus dem
+bestehenden `DEV_PLATFORM_ENABLED`-Block in `index.ts` registriert
+(`core:dev-platform`), nicht mehr in `Nav.tsx` hardcodiert. Wenn das Plugin-
+Package landet, wird daraus `ctx.uiRoutes.registerNav(...)` in dessen
+`activate()` — an der Shell ändert sich dabei nichts. Vollständiger Plan und
+die verbleibenden Phasen: `specs/470-dev-platform-plugin/plan.md`.
+
 ---
 
 ## 4. Migration Managed Agents → Lokal
