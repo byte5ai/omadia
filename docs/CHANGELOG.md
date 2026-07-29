@@ -18,6 +18,117 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — Conductor generic webhook support, inbound + outbound (#437)
+
+- **Inbound**: `POST /api/hooks/:endpointId` (unauthenticated mount, raw-body
+  HMAC verification ahead of the global `express.json()` — same pattern as
+  `routes/devWebhooks.ts`). An endpoint maps to a Conductor `eventId`; a
+  verified delivery calls the existing `ConductorEventRouter.emit()`, so any
+  workflow with a matching `event` **or** `webhook` trigger starts a run — the
+  previously declared-but-dead `'webhook'` `TriggerKind`
+  (`conductor-core/src/types.ts`) is now implemented as `event`'s sibling, not
+  a separate mechanism. Every claimed delivery id lands in
+  `conductor_webhook_inbound_deliveries` with a terminal outcome (dedupe +
+  audit ledger); noise (disabled endpoint, malformed JSON, no subscriber)
+  always answers 2xx to avoid a redelivery storm, while a bad/absent signature
+  and an unknown endpoint id answer byte-for-byte the same 401.
+- **Outbound**: `ConductorWebhookDispatcher` fires an HMAC-signed delivery to
+  every enabled `conductor_webhook_subscriptions` row matching an internal
+  event (`run.completed` / `run.failed`, wired via a new
+  `ConductorRunExecutor` terminal-run hook), with exponential backoff up to a
+  configurable attempt cap and a persisted `conductor_webhook_deliveries` log
+  (`ConductorWebhookRetryWorker` re-attempts anything still `pending` on a
+  poll loop, so a delivery survives a process restart).
+- **Designer action**: a new built-in `webhook.post` action lets a workflow
+  step fire an ad-hoc outbound POST to an operator-supplied URL.
+- **Security**: inbound endpoint secrets and outbound subscription signing
+  secrets live in the secret vault (`core:conductor` namespace, metadata in
+  Postgres / secret in Vault split, modeled on `DevGithubAppStore`) — never in
+  graph JSON or an API response beyond their one-time creation/rotation
+  reply. Both the dispatcher and `webhook.post` share one SSRF guard
+  (`conductor/webhookOutbound.ts`, reusing the existing
+  `platform/ssrfGuard.ts` guarded-`Agent` defence) that rejects a private /
+  loopback / link-local / cloud-metadata target before a request is ever
+  attempted.
+- New config: `CONDUCTOR_WEBHOOKS_ENABLED` (global inbound kill switch,
+  default `true`) — see `middleware/.env.example`.
+- New migration: `middleware/src/conductor/migrations/0007_webhooks.sql`
+  (`conductor_webhook_endpoints`, `conductor_webhook_inbound_deliveries`,
+  `conductor_webhook_subscriptions`, `conductor_webhook_deliveries`).
+- Admin CRUD (list/create/rotate-secret/enable-disable/delivery-log) is
+  exposed under the existing auth-gated
+  `/api/v1/operator/conductors/webhooks/*`, with a minimal admin UI at
+  `/admin/webhooks` (endpoints + subscriptions, secret rotation, delivery
+  history) satisfying the issue's admin-surface acceptance criterion.
+- **Rate limiting**: the inbound route enforces a per-endpoint cap over a
+  rolling minute (`CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE`, default 60),
+  atomically alongside the delivery-id dedupe claim — a correctly-signed
+  sender minting a fresh delivery id on every call can no longer start an
+  unbounded number of workflow runs.
+- **Dedupe fix**: the inbound delivery ledger's dedupe key is scoped per
+  `(endpoint_id, delivery_id)`, not globally on `delivery_id` alone — two
+  endpoints can now each process their own delivery id '1' without one
+  shadowing the other.
+- **Outbound durability fix**: a periodic reconciliation pass (run by the
+  existing retry worker) finds terminal, non-dry-run runs from the last 24h
+  with no delivery row yet for an enabled subscription and creates the
+  missing one — closing the gap where a process kill between a run's
+  terminal-status commit and its fire-and-forget delivery-row creation lost
+  the webhook permanently.
+- **Outbound race fix**: the first, inline delivery attempt now claims its
+  row (`FOR UPDATE SKIP LOCKED`, same claim the retry worker's poll loop
+  uses) before sending, so the inline path and a concurrent retry-worker
+  tick can never attempt — and duplicate-report the outcome of — the same
+  delivery.
+- **Second-review fixups (#437):**
+  - **Inbound claim/emit ordering**: `ConductorWebhookEndpointStore.claim()`
+    inserts the delivery row (`outcome='received'`) BEFORE the route calls
+    `emit()`, so a crash between the two (e.g. `emit()` throwing on a
+    Postgres error) used to strand the row at `'received'` forever — a
+    retry with the same `X-Webhook-Delivery-Id` then got a cached
+    `'duplicate'` 200 without `emit()` ever running again, losing the event
+    permanently. `claim()` now treats a still-`'received'` row older than
+    `IN_FLIGHT_CLAIM_STALE_MS` (30s) as an abandoned claim and lets a
+    legitimate retry re-attempt processing, while a genuinely concurrent
+    redelivery within that window is still reported `'duplicate'` as
+    before.
+  - **Outbound reconciliation lifecycle bound**: `listMissingRunDeliveries`
+    previously only bounded its backfill by the caller's lookback window,
+    so creating a subscription — or re-enabling a disabled one — resurrected
+    every matching run in that whole window, including runs that ended
+    before the subscription existed or while it was disabled. A new
+    `conductor_webhook_subscriptions.enabled_since` column (defaults to
+    creation time, bumped on every transition into the enabled state) now
+    also bounds the reconciliation JOIN, so only runs that ended while the
+    subscription was genuinely active are ever backfilled.
+  - **Outbound delivery uniqueness**: reconciliation's unlocked `NOT EXISTS`
+    read followed by an unconstrained insert could race the live
+    terminal-run hook (or a second replica's reconciliation pass) into
+    creating two deliveries for the same run+subscription. A generated
+    `conductor_webhook_deliveries.run_id` column (from `payload->>'runId'`)
+    plus a partial unique index on `(subscription_id, run_id)` now cap this
+    at one delivery per run per subscription; `createDelivery` is
+    conflict-safe (`ON CONFLICT ... DO NOTHING`, returning the row that
+    already won on a race) instead of erroring or silently returning
+    nothing.
+  - **Admin UI inbound URL**: the endpoint list/create response now includes
+    a server-computed `inboundUrl` (`CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL` —
+    new, optional — falling back to `PUBLIC_BASE_URL`) and the admin UI
+    displays that instead of building the URL from
+    `window.location.origin`. In the standard local dev setup that origin is
+    the Next.js dev server, which only proxies `/bot-api/*`
+    (`web-ui/next.config.ts`) — a copied `window.location.origin` URL 404s
+    instead of reaching the middleware.
+  - **Webhook trigger validation**: `conductor-core/src/validate.ts` now
+    requires `eventId` for `kind === 'webhook'` triggers, the same
+    validation `kind === 'event'` already had. `eventRouter.ts#emit` matches
+    a trigger by `(kind === 'event' || kind === 'webhook') && eventId ===
+    <emitted id>`, so a `webhook` trigger with no/invalid `eventId` used to
+    publish successfully but could never actually fire.
+  - **Docs**: added a webhook section to `docs/security-architecture.md`
+    (secret placement, inbound auth model, outbound SSRF guard) and fixed
+    the stale "admin UI is not part of this change" claim in
+    `docs/middleware-agent-handoff.md`.
 ### Added — structured dataset ingestion (CSV import) for the Knowledge Graph (#430)
 
 - New `KnowledgeGraph` surface (`ingestDataset`, `listDatasets`, `getDataset`,

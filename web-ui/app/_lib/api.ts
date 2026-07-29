@@ -4251,3 +4251,133 @@ export function createGithubIssue(input: {
 }): Promise<CreatedIssue> {
   return postJson<CreatedIssue>('/v1/issues/create', input);
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Conductor webhooks (issue #437) — inbound endpoints that start subscribed
+// workflow runs, and outbound subscriptions that receive run-lifecycle events.
+// Backed by /api/v1/operator/conductors/webhooks/* (cookie auth, same router
+// as the rest of Conductor's operator surface). A create/rotate-secret call
+// returns the plaintext secret exactly ONCE — never again, and never in a
+// list/get response.
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface ConductorWebhookEndpoint {
+  endpointId: string;
+  eventId: string;
+  description: string | null;
+  enabled: boolean;
+  createdBy: string;
+  createdAt: string;
+  /** Absolute inbound URL (`<middleware base>/api/hooks/:endpointId`), computed
+   *  server-side from the middleware's configured base URL — review finding: the
+   *  admin UI must never build this from `window.location.origin`, which in the
+   *  standard local dev setup is the Next.js dev server (does not proxy
+   *  `/api/hooks/*`). Absent only if the middleware has no base URL configured. */
+  inboundUrl?: string;
+}
+
+export interface ConductorWebhookInboundDelivery {
+  deliveryId: string;
+  endpointId: string;
+  outcome: string;
+  receivedAt: string;
+}
+
+export interface ConductorWebhookSubscription {
+  id: string;
+  url: string;
+  event: string;
+  description: string | null;
+  enabled: boolean;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ConductorWebhookOutboundDelivery {
+  id: string;
+  subscriptionId: string;
+  event: string;
+  payload: unknown;
+  status: 'pending' | 'delivered' | 'failed' | 'exhausted';
+  attempts: number;
+  lastError: string | null;
+  nextAttemptAt: string;
+  deliveredAt: string | null;
+  createdAt: string;
+}
+
+const WEBHOOKS_BASE = `${CONDUCTOR_BASE}/webhooks`;
+
+async function deleteRequest(path: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi(path), {
+    method: 'DELETE',
+    headers: { accept: 'application/json', ...forwarded },
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}`, text);
+  }
+}
+
+export async function listWebhookEndpoints(): Promise<{ endpoints: ConductorWebhookEndpoint[] }> {
+  return getJson(`${WEBHOOKS_BASE}/endpoints`);
+}
+
+export async function createWebhookEndpoint(input: {
+  eventId: string;
+  description?: string;
+}): Promise<{ endpoint: ConductorWebhookEndpoint; secret: string }> {
+  return postJson(`${WEBHOOKS_BASE}/endpoints`, input);
+}
+
+export async function rotateWebhookEndpointSecret(endpointId: string): Promise<{ secret: string }> {
+  return postJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/rotate-secret`, {});
+}
+
+export async function setWebhookEndpointEnabled(endpointId: string, enabled: boolean): Promise<void> {
+  return postJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/status`, { enabled });
+}
+
+export async function deleteWebhookEndpoint(endpointId: string): Promise<void> {
+  return deleteRequest(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}`);
+}
+
+export async function listWebhookEndpointDeliveries(
+  endpointId: string,
+): Promise<{ deliveries: ConductorWebhookInboundDelivery[] }> {
+  return getJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/deliveries`);
+}
+
+export async function listWebhookSubscriptions(): Promise<{ subscriptions: ConductorWebhookSubscription[] }> {
+  return getJson(`${WEBHOOKS_BASE}/subscriptions`);
+}
+
+export async function createWebhookSubscription(input: {
+  url: string;
+  event: string;
+  description?: string;
+}): Promise<{ subscription: ConductorWebhookSubscription; secret: string }> {
+  return postJson(`${WEBHOOKS_BASE}/subscriptions`, input);
+}
+
+export async function rotateWebhookSubscriptionSecret(id: string): Promise<{ secret: string }> {
+  return postJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/rotate-secret`, {});
+}
+
+export async function setWebhookSubscriptionEnabled(id: string, enabled: boolean): Promise<void> {
+  return postJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/status`, { enabled });
+}
+
+export async function deleteWebhookSubscription(id: string): Promise<void> {
+  return deleteRequest(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}`);
+}
+
+export async function listWebhookSubscriptionDeliveries(
+  id: string,
+): Promise<{ deliveries: ConductorWebhookOutboundDelivery[] }> {
+  return getJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/deliveries`);
+}
