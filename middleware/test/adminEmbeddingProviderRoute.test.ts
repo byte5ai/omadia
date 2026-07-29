@@ -164,7 +164,7 @@ describe('mount-time auth', () => {
 });
 
 describe('POST /api/v1/admin/embedding-provider/switch', () => {
-  it('deactivates the old provider, activates the target and re-gates the knowledge-graph', async () => {
+  it('deactivates the old provider, activates the target and re-gates in place', async () => {
     harness = await makeHarness([
       { id: OLLAMA, status: 'active' },
       { id: OPENAI, status: 'inactive' },
@@ -181,12 +181,29 @@ describe('POST /api/v1/admin/embedding-provider/switch', () => {
 
     // Order matters: the outgoing provider must be gone before the incoming
     // one publishes, or `ctx.services.provide` throws on the duplicate.
+    //
+    // INVERTED (was `reactivate:${KG_NEON}`): re-activating the knowledge
+    // graph runs its `close()`, which ends the pg pool the kernel captured
+    // once and shares with ~40 subsystems — so a successful switch poisoned
+    // all of them until the process restarted. The gate re-evaluates itself in
+    // place now, and the knowledge-graph plugin is never touched. `destructive`
+    // because the operator confirmed the discard; that confirmation is the
+    // only thing in the system that can hand over the capability.
     assert.deepEqual(harness.calls, [
       `deactivate:${OLLAMA}`,
       `activate:${OPENAI}`,
-      `reactivate:${KG_NEON}`,
+      'reevaluate:destructive',
     ]);
+    assert.ok(
+      !harness.calls.some((c) => c.startsWith('reactivate:')),
+      'the knowledge-graph plugin must not be reactivated — that ends the shared pool',
+    );
     assert.equal(harness.publishedBy, OPENAI);
+    // The gate re-resolved the client, so the graph now embeds with the NEW
+    // provider. Without this the switch reports success while the graph keeps
+    // calling the previous one, silently.
+    assert.equal(harness.approvedClientId, OPENAI);
+    assert.equal(body['gateReevaluated'], true);
     // Persisted, not just runtime: leaving both at 'active' would crash the
     // next boot with two embeddingClient@1 providers.
     assert.equal(harness.registry.get(OLLAMA)?.status, 'inactive');
@@ -297,7 +314,13 @@ describe('POST /api/v1/admin/embedding-provider/switch', () => {
     assert.equal(harness.registry.get(OLLAMA)?.status, 'active');
     assert.equal(harness.registry.get(OPENAI)?.status, 'inactive');
     assert.ok(harness.calls.includes(`activate:${OLLAMA}`));
-    assert.ok(harness.calls.includes(`reactivate:${KG_NEON}`));
+    // The rollback re-gates too — otherwise the graph would keep the
+    // half-switched world's client. Never destructively: the target never
+    // activated, so no column ever moved, and a rollback that dropped a corpus
+    // would be its own incident.
+    assert.ok(harness.calls.includes('reevaluate:safe'));
+    assert.ok(!harness.calls.includes('reevaluate:destructive'));
+    assert.equal(harness.approvedClientId, OLLAMA);
   });
 
   it('restores the previous provider when the target activates but publishes no client', async () => {
@@ -391,37 +414,64 @@ describe('POST /switch — concurrency (F6)', () => {
   });
 });
 
-describe('POST /switch — knowledge-graph re-gate (F7)', () => {
-  it('reports the truth when the knowledge graph does not come back', async () => {
+describe('POST /switch — in-place gate re-evaluation (F7, repurposed)', () => {
+  /**
+   * The original F7 property was "a knowledge graph that failed to come back is
+   * never reported as ok: true". The reactivation that could leave it down is
+   * gone (it ended the shared pg pool), so the property moves onto the state
+   * that CAN still fail: the in-place re-evaluation itself. Same strength, same
+   * "this is not a rollback" reasoning, different failure.
+   */
+  it('reports the truth when the in-place re-gate throws', async () => {
     harness = await makeHarness([
       { id: OLLAMA, status: 'active' },
       { id: OPENAI, status: 'inactive' },
       { id: KG_NEON, status: 'active' },
     ]);
-    // installService.reactivate logs hook failures and does NOT rethrow, so
-    // `deps.reactivate` resolves while the plugin stays deactivated.
-    harness.failReactivate.add(KG_NEON);
+    harness.failGateReevaluation = true;
 
     const { status, body } = await harness.postSwitch({
       pluginId: OPENAI,
       confirmDiscardVectors: true,
     });
 
-    assert.equal(status, 500, 'a deactivated knowledge graph is not ok: true');
-    assert.equal(body['code'], 'embeddingProvider.knowledge_graph_down');
+    assert.equal(status, 500, 'a gate that did not re-run is not ok: true');
+    assert.equal(body['code'], 'embeddingProvider.gate_reevaluation_failed');
     assert.notEqual(body['ok'], true);
-    assert.match(String(body['message']), /DEACTIVATED/);
-    assert.equal(harness.knowledgeGraphLive, false);
+    assert.match(String(body['message']), /still governed by the PREVIOUS verdict/);
     // The provider switch itself DID take effect, so nothing is rolled back
     // and no restore may be claimed.
     assert.equal(harness.publishedBy, OPENAI);
     assert.deepEqual(body['details'], {
       switchedTo: OPENAI,
-      knowledgeGraphAvailable: false,
+      gateReevaluated: false,
     });
+    // And the graph is still embedding with the OLD client, which is exactly
+    // what the 500 is telling the operator.
+    assert.equal(harness.approvedClientId, OLLAMA);
   });
 
-  it('still reports ok when the knowledge graph comes back', async () => {
+  it('says so, rather than implying success, when there is no re-gate to run', async () => {
+    // No Postgres knowledge-graph active: the switch is a legitimate success,
+    // but a different one from a switch whose vector columns were re-gated.
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: OPENAI, status: 'inactive' },
+    ]);
+    harness.gateReevaluatorPresent = false;
+
+    const { status, body } = await harness.postSwitch({
+      pluginId: OPENAI,
+      confirmDiscardVectors: true,
+    });
+    assert.equal(status, 200);
+    assert.equal(body['ok'], true);
+    assert.equal(body['gateReevaluated'], false);
+    assert.match(String(body['gateWarning']), /no gate re-evaluation entry point/);
+    assert.equal(harness.publishedBy, OPENAI);
+  });
+
+  it('reports ok, and a gate that actually re-ran, on the happy path', async () => {
     harness = await makeHarness([
       { id: OLLAMA, status: 'active' },
       { id: OPENAI, status: 'inactive' },
@@ -433,7 +483,8 @@ describe('POST /switch — knowledge-graph re-gate (F7)', () => {
     });
     assert.equal(status, 200);
     assert.equal(body['ok'], true);
-    assert.equal(harness.knowledgeGraphLive, true);
+    assert.equal(body['gateReevaluated'], true);
+    assert.equal(harness.approvedClientId, OPENAI);
   });
 });
 

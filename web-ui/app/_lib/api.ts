@@ -3600,6 +3600,15 @@ export interface EmbeddingProviderState {
 export interface SwitchEmbeddingProviderResult extends EmbeddingProviderState {
   ok: true;
   switchedTo: string;
+  /**
+   * Did the knowledge-graph's model/dimension gate actually re-run against the
+   * new provider? False on a deployment with no Postgres knowledge-graph
+   * active (nothing to gate) — a legitimate success, but a different one, so
+   * it is reported rather than implied. `gateWarning` says why.
+   * Optional so older middleware builds still satisfy this type.
+   */
+  gateReevaluated?: boolean;
+  gateWarning?: string;
 }
 
 /** Read the current embedding-provider picture. Safe to poll. */
@@ -3619,8 +3628,15 @@ export async function getEmbeddingProvider(): Promise<EmbeddingProviderState> {
  * provider that is verified live again, or is `null` when NOTHING could be
  * restored), 409 `embeddingProvider.switch_in_progress` (another switch is
  * running — re-read the state before retrying) and 500
- * `embeddingProvider.knowledge_graph_down` (the provider switch DID take
- * effect, but the knowledge graph failed to come back and is deactivated).
+ * `embeddingProvider.gate_reevaluation_failed` (the provider switch DID take
+ * effect and the knowledge graph is still up with its pool intact, but
+ * re-evaluating its model/dimension gate against the new provider threw, so
+ * the graph is still governed by the PREVIOUS verdict).
+ *
+ * The switch never re-activates the knowledge-graph plugin — that would end
+ * the pg pool the whole middleware shares — so a successful switch can no
+ * longer leave the graph deactivated. The former
+ * `embeddingProvider.knowledge_graph_down` code is gone with it.
  */
 export async function switchEmbeddingProvider(
   pluginId: string,

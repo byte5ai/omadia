@@ -3391,9 +3391,16 @@ async function main(): Promise<void> {
   // Embedding-provider switch (#440 follow-up) — pick which `embeddingClient@1`
   // adapter is active, LIVE. Unlike the memory-backend router next door this
   // one does not persist-and-ask-for-a-restart: it deactivates the outgoing
-  // provider, activates the target, and re-activates the knowledge-graph so its
-  // model/dimension gate re-runs (and auto-migrates the vector columns when the
-  // width changed) inside this process.
+  // provider, activates the target, and asks the knowledge-graph's gate to
+  // re-evaluate ITSELF against the new provider (rewriting the vector columns
+  // when the width changed and the operator confirmed the discard), inside this
+  // process.
+  //
+  // It deliberately does NOT get `reactivate`. Re-activating the knowledge
+  // graph runs its `close()`, which ends `graphPool` — the pool captured once
+  // right here and shared with ~40 subsystems below. Handing the router that
+  // capability is what made every successful switch poison them all with
+  // "Cannot use a pool after calling end on the pool".
   app.use(
     '/api/v1/admin/embedding-provider',
     requireAuth,
@@ -3408,16 +3415,11 @@ async function main(): Promise<void> {
       getGateStatus: () =>
         serviceRegistry.get<EmbeddingGateStatus>(EMBEDDING_GATE_STATUS_SERVICE),
       getGraphPool: () => graphPool,
-      // Live lookup, never captured: it is the post-condition of the re-gate,
-      // and `installService.reactivate` swallows hook failures — so the only
-      // way to know the plugin came back is to ask the registry again.
-      getKnowledgeGraph: () => serviceRegistry.get<KnowledgeGraph>('knowledgeGraph'),
       // Env-derived fallback. The router prefers the KG plugin's own
       // `graph_tenant_id` setup field when one is set.
       tenantId: graphTenantId,
       activate: (id) => toolPluginRuntime.activate(id),
       deactivate: (id) => toolPluginRuntime.deactivate(id),
-      reactivate: reactivateAgent,
     }),
   );
   console.log(

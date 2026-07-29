@@ -268,6 +268,7 @@ describe('#440 vector-column migration guards (real Postgres)', { skip: !pgAvail
         pool,
         tenantId: TENANT,
         provider: OPENAI_1536,
+        allowDestructiveColumnMigration: true,
         log: silent,
       });
       assert.equal(outcome.status, 'column-migrated');
@@ -313,6 +314,7 @@ describe('#440 vector-column migration guards (real Postgres)', { skip: !pgAvail
         pool,
         tenantId: TENANT,
         provider: OPENAI_1536,
+        allowDestructiveColumnMigration: true,
         log: silent,
       });
       assert.equal(outcome.status, 'column-migrated');
@@ -384,6 +386,7 @@ describe('#440 vector-column migration guards (real Postgres)', { skip: !pgAvail
         pool,
         tenantId: TENANT,
         provider: OPENAI_1536,
+        allowDestructiveColumnMigration: true,
         log: silent,
       });
 
@@ -496,13 +499,14 @@ describe('#440 vector-column migration guards (real Postgres)', { skip: !pgAvail
       assert.equal(await lockIsFree(), true);
     });
 
-    it('a second activation still works after a throwing one', async () => {
+    it('a second gate evaluation still works after a throwing one', async () => {
       // The observable consequence of the leak: the very next gate evaluation
       // took a blocking xact lock in the same namespace and never returned.
       const outcome = await evaluateEmbeddingModelGate({
         pool,
         tenantId: TENANT,
         provider: OPENAI_1536,
+        allowDestructiveColumnMigration: true,
         log: silent,
       });
       assert.ok(outcome.status !== 'blocked' || outcome.reason !== 'registry-conflict');
@@ -522,6 +526,7 @@ describe('#440 vector-column migration guards (real Postgres)', { skip: !pgAvail
         pool,
         tenantId: TENANT,
         provider: OPENAI_1536,
+        allowDestructiveColumnMigration: true,
         log: silent,
       });
       assert.equal(first.status, 'column-migrated');
@@ -537,6 +542,7 @@ describe('#440 vector-column migration guards (real Postgres)', { skip: !pgAvail
         pool,
         tenantId: TENANT,
         provider: OLLAMA_768,
+        allowDestructiveColumnMigration: true,
         log: silent,
       });
 
@@ -562,6 +568,7 @@ describe('#440 vector-column migration guards (real Postgres)', { skip: !pgAvail
         pool,
         tenantId: TENANT,
         provider: OLLAMA_768,
+        allowDestructiveColumnMigration: true,
         log: silent,
       });
       assert.equal(outcome.status, 'column-migrated');

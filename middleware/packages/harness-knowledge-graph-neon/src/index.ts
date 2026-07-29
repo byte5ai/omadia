@@ -54,6 +54,19 @@ export type {
 export { countVectors } from './vectorColumnCatalog.js';
 export type { ColumnCatalogInfo } from './vectorColumnCatalog.js';
 
+// #440 follow-up — the in-place gate re-evaluation entry point. Exported for
+// the plugin's own wiring and for tests that drive a live provider switch
+// without going near `activate()`/`close()` (which would end the shared pool).
+export { startGateRunner } from './gateReevaluation.js';
+export type { BackfillSync, GateRunner, GateRunnerDeps } from './gateReevaluation.js';
+export { createEmbeddingGateStatus } from './gateStatusPublication.js';
+export type {
+  EmbeddingGateStatus,
+  EmbeddingGateStatusPublication,
+  GateReevaluate,
+  GateReevaluateRequest,
+} from './gateStatusPublication.js';
+
 // #440 — the runtime vector-column width migration the gate performs when the
 // declared column width disagrees with the active provider. Exported because
 // `EmbeddingModelGateOutcome`'s `column-migrated` arm carries these types.

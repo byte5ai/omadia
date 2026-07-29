@@ -159,17 +159,30 @@ export interface EmbeddingModelGateOptions {
    *  runtime width migration below, which is strictly more destructive. */
   switchCooldownMs?: number;
   /**
-   * #440 — on a declared-width mismatch, migrate every governed vector column
-   * to the active provider's width instead of blocking. DEFAULT TRUE: the KG
-   * columns are `vector(768)` and every OpenAI model is 1536/3072, so a width
-   * mismatch is the NORMAL case for anyone switching provider, and automatic
-   * migration is what the feature was asked for.
+   * #440 follow-up — may THIS evaluation rewrite every governed vector column
+   * at the active provider's width instead of blocking?
    *
-   * It drops every stored embedding, so it can be turned off — the operator
-   * then gets the old `blocked/column-width-mismatch` outcome and can migrate
-   * by hand. Wired to the `auto_migrate_vector_columns` setup field.
+   * DEFAULTS TO FALSE, and omitting it means NOT ALLOWED. That is the whole
+   * point of it being a parameter: the rewrite drops every stored embedding
+   * and cannot be undone, so the capability travels with the call rather than
+   * sitting in the options as an ambient default.
+   *
+   * It briefly was such a default (true), and a deployment already sitting on
+   * `blocked/column-width-mismatch` — the documented state for 768-wide
+   * columns under a 1536-wide provider — would then have lost its entire
+   * embedding corpus by doing nothing but upgrading and restarting. The
+   * `confirmDiscardVectors` prompt lived only on the HTTP route, so the boot
+   * path had no prompt at all.
+   *
+   * Who passes what:
+   *   - plugin activation passes nothing (i.e. false) — a restart is never
+   *     allowed to destroy a corpus, and `blocked/column-width-mismatch` is
+   *     reversible: writes off, nothing dropped, operator told what to do;
+   *   - the re-evaluate path passes true only for an operator-initiated switch
+   *     that came with `confirmDiscardVectors`, AND only while the KG's
+   *     `auto_migrate_vector_columns` master switch is not 'false'.
    */
-  autoMigrateVectorColumns?: boolean;
+  allowDestructiveColumnMigration?: boolean;
   /** Wall-clock cap for that migration. `activate()` is killed at 10s, and a
    *  migration that cannot finish degrades to `blocked` rather than failing
    *  activation. Default 5000. */
@@ -396,15 +409,18 @@ export async function evaluateEmbeddingModelGate(
   );
   if (mismatches.length > 0) {
     // #440 — the normal case for a provider switch (768-wide columns, a
-    // 1536/3072-wide model). Rewrite the columns rather than dead-ending the
-    // operator on a hand-written migration. Any failure inside falls through
-    // to the historical `blocked` outcome below, with the registry untouched.
+    // 1536/3072-wide model). An operator who confirmed the discard gets the
+    // columns rewritten rather than dead-ending on a hand-written migration;
+    // everyone else — every boot, every unconfirmed call — falls through to
+    // the historical `blocked` outcome below, with the registry untouched.
     const attempt = await tryAutoMigrateColumns({
       pool,
       tenantId,
       provider,
       mismatches,
-      enabled: opts.autoMigrateVectorColumns ?? true,
+      // Fail closed. The boot path omits the flag, so it lands here as false
+      // and falls through to `blocked/column-width-mismatch` below.
+      allowed: opts.allowDestructiveColumnMigration ?? false,
       switchCooldownMs: opts.switchCooldownMs ?? DEFAULT_SWITCH_COOLDOWN_MS,
       budgetMs: opts.autoMigrateBudgetMs ?? DEFAULT_AUTO_MIGRATE_BUDGET_MS,
       log,

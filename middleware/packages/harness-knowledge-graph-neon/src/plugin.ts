@@ -1,5 +1,5 @@
 import type { EmbeddingClient, PluginContext } from '@omadia/plugin-api';
-import { EntityRefBus, readEmbeddingProviderMetadata } from '@omadia/plugin-api';
+import { EntityRefBus } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 
 import {
@@ -9,16 +9,10 @@ import {
 } from './neonKnowledgeGraph.js';
 import { runGraphMigrations } from './migrator.js';
 import {
-  allowsVectorWrites,
-  evaluateEmbeddingModelGate,
-  requiresStaleVectorClearResume,
-  type EmbeddingModelGateOutcome,
-} from './embeddingModelGate.js';
-import {
   startEmbeddingBackfill,
   type EmbeddingBackfillHandle,
 } from './embeddingBackfill.js';
-import { createEmbeddingGateStatus } from './gateStatusPublication.js';
+import { startGateRunner } from './gateReevaluation.js';
 import { runDecaySweep } from './decayJob.js';
 import { AccessTracker } from './accessTracker.js';
 import { runGcSweep } from './gc.js';
@@ -150,8 +144,6 @@ export async function activate(
     };
   }
 
-  const resolvedEmbeddingClient =
-    ctx.services.get<EmbeddingClient>(EMBEDDING_CLIENT_SERVICE);
   const turnContextAccessor = ctx.services.get<TurnContextAccessor>(TURN_CONTEXT_SERVICE);
 
   const tenantId =
@@ -180,6 +172,99 @@ export async function activate(
   await waitForPostgres(graphPool, { log: (msg) => { ctx.log(msg); } });
   await runGraphMigrations(graphPool, (msg) => { console.log(msg); });
 
+  // Re-embed nodes whose post-commit `embedAndStoreTurn` failed (Ollama
+  // timeout / 500), and finish any stale-vector clear the gate capped.
+  //
+  // Declared BEFORE the gate because the gate owns it now: `startGateRunner`
+  // is handed `syncBackfill` and calls it after every re-evaluation, so a
+  // provider switch re-arms the sweep with the NEW client (the sweep captures
+  // its client at construction, so "re-arm" means replace) or stands it down
+  // when the new verdict has nothing for it to do.
+  let backfill: EmbeddingBackfillHandle | undefined;
+  /** The client the RUNNING sweep holds, so a no-op sync stays a no-op. */
+  let backfillClient: EmbeddingClient | undefined;
+  const backfillEnabled = parseBool(
+    ctx.config.get<string>('graph_embedding_backfill_enabled') ??
+      process.env['GRAPH_EMBEDDING_BACKFILL_ENABLED'],
+    true,
+  );
+  const backfillIntervalMinutes = parsePositiveInt(
+    ctx.config.get<string>('graph_embedding_backfill_interval_minutes') ??
+      process.env['GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES'],
+    5,
+  );
+  const backfillBatchSize = parsePositiveInt(
+    ctx.config.get<string>('graph_embedding_backfill_batch_size') ??
+      process.env['GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE'],
+    20,
+  );
+  const backfillMaxAttempts = parsePositiveInt(
+    ctx.config.get<string>('graph_embedding_backfill_max_attempts') ??
+      process.env['GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS'],
+    5,
+  );
+
+  /**
+   * Bring the sweep in line with a gate verdict — at boot, and again after
+   * every in-place re-evaluation.
+   *
+   * The sweep runs while writes are REFUSED as well, whenever a clear is still
+   * owed: it is the only thing that can finish that clear and lower the flag.
+   * Once the flag drops it re-embeds every NULL vector, including whatever was
+   * ingested while writes were off.
+   */
+  const syncBackfill = (args: {
+    client: EmbeddingClient | undefined;
+    vectorWritesAllowed: boolean;
+    clearResumeOwed: boolean;
+  }): void => {
+    const wanted =
+      backfillEnabled && (args.vectorWritesAllowed || args.clearResumeOwed)
+        ? args.client
+        : undefined;
+    if (backfill !== undefined && backfillClient === wanted) return;
+    if (backfill !== undefined) {
+      backfill.stop();
+      backfill = undefined;
+      backfillClient = undefined;
+    }
+    if (!wanted) return;
+    backfill = startEmbeddingBackfill({
+      pool: graphPool,
+      embeddingClient: wanted,
+      tenantId,
+      intervalMs: backfillIntervalMinutes * 60 * 1000,
+      batchSize: backfillBatchSize,
+      maxAttempts: backfillMaxAttempts,
+      // Slice 7 — sweep all three embedded node types in a single
+      // worker. Turn was the original Slice-1 type; MK + PalaiaExcerpt
+      // join the rotation so curated memory becomes recall-ready
+      // automatically without a second sweep process.
+      nodeTypes: ['Turn', 'MemorableKnowledge', 'PalaiaExcerpt'],
+      // #440 — `processes.embedding` is the second governed cosine space, and
+      // the sweep is also what finishes a stale-vector clear the gate capped.
+      includeProcesses: true,
+      // Unconditionally on, even when the current verdict found no owed clear:
+      // another instance can raise `clear_pending` at any time (a rolling
+      // deploy that switches models), and the sweep re-checks the flag every
+      // tick, so leaving it armed is the multi-instance-safe setting. What
+      // makes it safe is the gate refusing writes whenever the flag is up —
+      // including on the `unknown-provider` path, which used to skip the
+      // registry read entirely.
+      resumeStaleVectorClear: true,
+      // Republish the gate status the moment the clear drains, so /health
+      // stops reporting a pending clear without waiting for a restart.
+      onStaleVectorClearComplete: () => {
+        gate.markStaleVectorClearComplete();
+      },
+      log: (msg) => { console.error(msg); },
+    });
+    backfillClient = wanted;
+    console.error(
+      `[graph-embedding-backfill] scheduler armed interval=${String(backfillIntervalMinutes)}min batch=${String(backfillBatchSize)} maxAttempts=${String(backfillMaxAttempts)} types=[Turn,MemorableKnowledge,PalaiaExcerpt,+processes]`,
+    );
+  };
+
   // #440 — dimension/model gate. An embedding provider that disagrees with
   // the vector columns (declared width) or with the corpus recorded in
   // `graph_embedding_model` must not write vectors: mixing two models in one
@@ -188,8 +273,8 @@ export async function activate(
   // ingest and process writes store NULL embeddings and the backfill stays
   // disarmed. Same shape as the long-standing no-Ollama degradation, and now
   // reversible in-process: the resolver is re-consulted on every embed, so a
-  // refusal that ends (a drained stale-vector clear) re-enables writes without
-  // an operator restart.
+  // refusal that ends (a drained stale-vector clear, or an operator switching
+  // provider from the admin UI) re-enables writes without a restart.
   //
   // The gate governs THIS plugin's vector writes, not the whole system:
   // contextRetriever / inconsistencyDetector / mergeCandidateDetector /
@@ -201,57 +286,55 @@ export async function activate(
   // A gate FAILURE (unreachable catalog, migration race, …) must not take
   // knowledge-graph activation down with it: the kernel treats knowledgeGraph
   // as a required service, so a throw here would crash-loop the middleware.
-  // Degrade to the safe path instead — no embeddings is recoverable, a boot
-  // loop is not.
+  // `startGateRunner` degrades to the safe blocked verdict instead — no
+  // embeddings is recoverable, a boot loop is not.
   //
-  // #440 Wave A — a DECLARED-WIDTH mismatch is no longer terminal. The KG
-  // columns are vector(768) and every OpenAI model is 1536/3072, so switching
-  // provider always trips it; the gate now rewrites the columns at the new
-  // width and lets the backfill re-embed. That destroys every stored
-  // embedding, so it is a flag — defaulted ON because automatic migration is
-  // the asked-for behaviour, but an operator who would rather hand-write a
-  // 0005-style migration can turn it off and get the old `blocked` outcome.
+  // #440 follow-up — a DECLARED-WIDTH mismatch stays `blocked` on this path,
+  // exactly as it did before the migration existed. The rewrite drops every
+  // stored embedding, so a deployment that merely upgrades and restarts must
+  // never trigger it: `blocked/column-width-mismatch` is reversible, this is
+  // not. The runtime rewrite is reachable only through an operator-confirmed
+  // switch in the admin UI (Admin → Embedding provider), which calls
+  // `reevaluate({ allowDestructiveMigration: true })` after
+  // `confirmDiscardVectors`.
+  //
+  // `auto_migrate_vector_columns` is the MASTER SWITCH over that: 'false'
+  // forbids the rewrite even from a confirmed switch, so an operator can take
+  // the destructive path off the table entirely and keep the hand-written
+  // 0005-style migration route. It no longer has a boot-path meaning, because
+  // the boot path never asks for the capability.
   const autoMigrateVectorColumns = parseBool(
     ctx.config.get<string>('auto_migrate_vector_columns') ??
       process.env['GRAPH_AUTO_MIGRATE_VECTOR_COLUMNS'],
     true,
   );
-  let gateOutcome: EmbeddingModelGateOutcome;
-  try {
-    gateOutcome = await evaluateEmbeddingModelGate({
-      pool: graphPool,
-      tenantId,
-      provider: readEmbeddingProviderMetadata(resolvedEmbeddingClient),
-      autoMigrateVectorColumns,
-      log: (msg) => { console.error(msg); },
-    });
-  } catch (err) {
-    console.error(
-      `[graph-embedding-gate] gate evaluation failed: ${err instanceof Error ? err.message : String(err)} — refusing vector writes for this boot`,
-    );
-    gateOutcome = {
-      status: 'blocked',
-      reason: 'dimension-mismatch',
-      modelId: '(gate evaluation failed)',
-      dimensions: 0,
-      storedModelId: '(unknown)',
-      storedDimensions: 0,
-    };
-  }
-  const vectorWritesAllowed = allowsVectorWrites(gateOutcome);
-  // BOOT-TIME snapshot of the verdict. Used only for the startup log lines and
-  // for deciding whether to arm the backfill; the STORES do not use it, they
-  // go through `resolveEmbeddingClient` below and see the live answer.
-  const embeddingClient = vectorWritesAllowed
-    ? resolvedEmbeddingClient
-    : undefined;
+
+  // ONE owner for both gate evaluations, and for the question the provider
+  // switch turns on: WHICH client is currently approved to embed. See
+  // `gateReevaluation.ts` — a boot-time capture here is exactly how a
+  // "successful" switch kept embedding with the previous provider.
+  const gate = await startGateRunner({
+    pool: graphPool,
+    tenantId,
+    resolveRegistryClient: () =>
+      ctx.services.get<EmbeddingClient>(EMBEDDING_CLIENT_SERVICE),
+    autoMigrateVectorColumns,
+    syncBackfill,
+    log: (msg) => { console.error(msg); },
+  });
+
+  const gateOutcome = gate.outcome();
+  const vectorWritesAllowed = gate.vectorWritesAllowed();
+  // BOOT-TIME snapshot of the verdict. Used only for the startup log lines;
+  // the STORES do not use it, they go through `resolveEmbeddingClient` below
+  // and see the live answer.
+  const embeddingClient = vectorWritesAllowed ? gate.approvedClient() : undefined;
   // A capped or interrupted stale-vector clear still owes work. Vector writes
   // stay refused for the duration (that is what makes "non-NULL ⇒ old model"
   // true), but the backfill sweep is the ONLY thing that can finish the clear
   // and lower the flag — so it gets armed even though nothing may be embedded
-  // yet. Once the flag drops, the same sweep re-embeds every NULL vector,
-  // including whatever was ingested while writes were off.
-  const clearResumeOwed = requiresStaleVectorClearResume(gateOutcome);
+  // yet.
+  const clearResumeOwed = gate.clearResumeOwed();
   if (!vectorWritesAllowed) {
     ctx.log(
       clearResumeOwed
@@ -265,36 +348,40 @@ export async function activate(
   // `embeddings: true, semanticRecall: true, processReuse: true, warnings: []`
   // for a boot where no vector is ever written and every processMemory write
   // returns `embedding-unavailable`.
-  // Live rather than a snapshot: the gate runs once at activation, but the
-  // state it describes changes underneath it when the backfill sweep drains
-  // the owed clear. A frozen object would keep reporting
-  // `stale-vector-clear-pending` on /health until the next restart.
-  const gateStatus = createEmbeddingGateStatus(
-    gateOutcome,
-    vectorWritesAllowed,
-    clearResumeOwed,
-  );
+  // Live rather than a snapshot: the gate runs at activation, but the state it
+  // describes changes underneath it — the backfill sweep drains the owed
+  // clear, an operator switches provider. A frozen object would keep reporting
+  // the boot verdict until the next restart. The same object also carries the
+  // (non-enumerable) `reevaluate` entry point the admin switch calls.
   const disposeGateStatus = ctx.services.provide(
     EMBEDDING_GATE_STATUS_SERVICE,
-    gateStatus.status,
+    gate.status,
   );
 
   // THE live resolver both stores consult on every embed. It reads the gate's
-  // CURRENT verdict, not the boot-time one, which is the whole point: when the
-  // backfill sweep drains an owed stale-vector clear it calls
-  // `markStaleVectorClearComplete()`, the published status flips
-  // `vectorWritesAllowed` back to true, and the very next ingest embeds again
-  // — no restart. Before this, both stores captured `embeddingClient:
-  // undefined` in their constructors and a gated boot could never embed again.
+  // CURRENT verdict AND the client that verdict was computed against, which is
+  // the whole point: when the backfill sweep drains an owed stale-vector clear
+  // it calls `markStaleVectorClearComplete()` and the very next ingest embeds
+  // again; when an operator switches provider, `reevaluate` swaps the approved
+  // client and republishes the verdict, and the very next ingest embeds with
+  // the NEW provider. No restart in either case.
   //
   // Returning `undefined` is a SKIP, not an error: the stores store NULL and
   // fall back to FTS, exactly as on a deployment with no provider at all.
   const resolveEmbeddingClient = (): EmbeddingClient | undefined =>
-    gateStatus.vectorWritesAllowed() ? resolvedEmbeddingClient : undefined;
+    gate.vectorWritesAllowed() ? gate.approvedClient() : undefined;
+
+  // Arm the sweep for the boot verdict. Every later verdict re-runs this
+  // through the gate runner's `syncBackfill`.
+  syncBackfill({
+    client: gate.approvedClient(),
+    vectorWritesAllowed,
+    clearResumeOwed,
+  });
 
   if (gateOutcome.status === 'column-migrated') {
     ctx.log(
-      `[harness-knowledge-graph-neon] vector columns were MIGRATED to ${String(gateOutcome.dimensions)}d for '${gateOutcome.modelId}' — ${gateOutcome.discardedVectors === undefined ? 'an unknown number of' : String(gateOutcome.discardedVectors)} stored embedding(s) were discarded; vector writes are enabled and the backfill sweep is re-embedding the corpus (recall is degraded until it finishes). Set auto_migrate_vector_columns=false to require a manual column migration instead.`,
+      `[harness-knowledge-graph-neon] vector columns were MIGRATED to ${String(gateOutcome.dimensions)}d for '${gateOutcome.modelId}' — ${gateOutcome.discardedVectors === undefined ? 'an unknown number of' : String(gateOutcome.discardedVectors)} stored embedding(s) were discarded; vector writes are enabled and the backfill sweep is re-embedding the corpus (recall is degraded until it finishes).`,
     );
   }
 
@@ -324,72 +411,6 @@ export async function activate(
   const disposeGraph = ctx.services.provide(KNOWLEDGE_GRAPH_SERVICE, knowledgeGraph);
   const disposeBus = ctx.services.provide(ENTITY_REF_BUS_SERVICE, entityRefBus);
   const disposePool = ctx.services.provide(GRAPH_POOL_SERVICE, graphPool);
-
-  // Re-embed Turns whose post-commit `embedAndStoreTurn` failed (Ollama
-  // timeout / 500). Runs in-process on a cheap timer; no-ops without
-  // embeddingClient.
-  let backfill: EmbeddingBackfillHandle | undefined;
-  const backfillEnabled = parseBool(
-    ctx.config.get<string>('graph_embedding_backfill_enabled') ??
-      process.env['GRAPH_EMBEDDING_BACKFILL_ENABLED'],
-    true,
-  );
-  // `embeddingClient` is undefined while a clear is owed, but the sweep still
-  // has to run — see clearResumeOwed above. It only clears until the flag
-  // drops; the client it holds is used afterwards, on the next tick.
-  const backfillClient =
-    embeddingClient ?? (clearResumeOwed ? resolvedEmbeddingClient : undefined);
-  if (backfillEnabled && backfillClient) {
-    const intervalMinutes = parsePositiveInt(
-      ctx.config.get<string>('graph_embedding_backfill_interval_minutes') ??
-        process.env['GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES'],
-      5,
-    );
-    const batchSize = parsePositiveInt(
-      ctx.config.get<string>('graph_embedding_backfill_batch_size') ??
-        process.env['GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE'],
-      20,
-    );
-    const maxAttempts = parsePositiveInt(
-      ctx.config.get<string>('graph_embedding_backfill_max_attempts') ??
-        process.env['GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS'],
-      5,
-    );
-    backfill = startEmbeddingBackfill({
-      pool: graphPool,
-      embeddingClient: backfillClient,
-      tenantId,
-      intervalMs: intervalMinutes * 60 * 1000,
-      batchSize,
-      maxAttempts,
-      // Slice 7 — sweep all three embedded node types in a single
-      // worker. Turn was the original Slice-1 type; MK + PalaiaExcerpt
-      // join the rotation so curated memory becomes recall-ready
-      // automatically without a second sweep process.
-      nodeTypes: ['Turn', 'MemorableKnowledge', 'PalaiaExcerpt'],
-      // #440 — `processes.embedding` is the second governed cosine space, and
-      // the sweep is also what finishes a stale-vector clear the gate capped
-      // at activation time.
-      includeProcesses: true,
-      // Unconditionally on, even when THIS boot's gate found no owed clear:
-      // another instance can raise `clear_pending` at any time (a rolling
-      // deploy that switches models), and the sweep re-checks the flag every
-      // tick, so leaving it armed is the multi-instance-safe setting. What
-      // makes it safe is the gate refusing writes whenever the flag is up —
-      // including on the `unknown-provider` path, which used to skip the
-      // registry read entirely.
-      resumeStaleVectorClear: true,
-      // Republish the gate status the moment the clear drains, so /health
-      // stops reporting a pending clear without waiting for a restart.
-      onStaleVectorClearComplete: () => {
-        gateStatus.markStaleVectorClearComplete();
-      },
-      log: (msg) => { console.error(msg); },
-    });
-    console.error(
-      `[graph-embedding-backfill] scheduler armed interval=${String(intervalMinutes)}min batch=${String(batchSize)} maxAttempts=${String(maxAttempts)} types=[Turn,MemorableKnowledge,PalaiaExcerpt,+processes]`,
-    );
-  }
 
   // OB-73 (Phase 4) — Decay-Score + Tier-Rotation + Done-Task-TTL hourly cron.
   // Pure SQL sweep against `graph_nodes`; no LLM call; tenant-scoped.

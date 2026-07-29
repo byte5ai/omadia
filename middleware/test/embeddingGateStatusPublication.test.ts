@@ -194,7 +194,15 @@ describe('embedding gate status publication (#440)', () => {
     );
     assert.equal(health.embeddings, true, 'nothing is disabled — the columns fit now');
     assert.equal(health.warnings.length, 1);
-    assert.match(String(health.warnings[0]), /migrated automatically/);
+    // INVERTED: the warning used to say the columns were "migrated
+    // automatically", and while the auto-migration was default-ON during
+    // activation that was true. It no longer is — the rewrite is unreachable
+    // from the boot path and only ever follows a switch the operator confirmed
+    // — so the /health copy must not keep implying the system did it on its
+    // own initiative.
+    assert.doesNotMatch(String(health.warnings[0]), /migrated automatically/);
+    assert.match(String(health.warnings[0]), /rewritten to fit/);
+    assert.match(String(health.warnings[0]), /confirmed provider switch/);
     assert.match(String(health.warnings[0]), /42 stored vector/);
     assert.match(String(health.warnings[0]), /auto_migrate_vector_columns=false/);
   });
@@ -266,5 +274,106 @@ describe('embedding gate status publication (#440)', () => {
     assert.match(String(published.status.detail), /processes\.embedding is vector\(768\)/);
     assert.match(String(published.status.detail), /SCHEMA\/REGISTRY SPLIT/);
     assert.match(String(published.status.detail), /registry-flip-failed/);
+  });
+
+  it('republishes a whole new verdict on the SAME object the registry holds', async () => {
+    // #440 follow-up. A live provider switch replaces the verdict wholesale.
+    // It cannot replace the OBJECT: `ctx.services.provide` handed this exact
+    // reference to the kernel once, and /health plus the admin page read it
+    // forever after. This is what makes re-gating in place possible at all —
+    // the alternative was re-activating the plugin, which ends the pg pool the
+    // whole middleware shares.
+    const published = createEmbeddingGateStatus(OWED_MATCH, false, true);
+    const handedToTheRegistry = published.status;
+
+    published.republish(
+      {
+        status: 'column-migrated',
+        modelId: 'openai:text-embedding-3-small',
+        dimensions: 1536,
+        previousModelId: 'ollama:nomic-embed-text',
+        previousDimensions: 768,
+        migratedColumns: [
+          {
+            table: 'graph_nodes',
+            column: 'embedding',
+            previousDimensions: 768,
+            newDimensions: 1536,
+            discardedVectors: 7,
+          },
+        ],
+        discardedVectors: 7,
+        clearPending: false,
+      },
+      true,
+      false,
+    );
+
+    assert.equal(published.status, handedToTheRegistry, 'identity must survive');
+    assert.equal(handedToTheRegistry.vectorWritesAllowed, true);
+    assert.equal(handedToTheRegistry.status, 'column-migrated');
+    assert.match(String(handedToTheRegistry.activeModelId), /text-embedding-3-small/);
+  });
+
+  it('re-arms the owed-clear hook for the NEW verdict, not the boot one', async () => {
+    // The trap: `markStaleVectorClearComplete` used to be guarded on the
+    // clear the object was CONSTRUCTED with. After a republish that guard has
+    // to describe the current verdict, or a sweep draining nothing would
+    // upgrade a verdict that never owed a clear.
+    const published = createEmbeddingGateStatus(OWED_MATCH, false, true);
+
+    // New verdict owes nothing → a late call from the previous sweep is inert.
+    published.republish(
+      { status: 'blocked', reason: 'column-width-mismatch', modelId: 'openai:x', dimensions: 1536, mismatches: [] },
+      false,
+      false,
+    );
+    published.markStaleVectorClearComplete();
+    assert.equal(
+      published.status.vectorWritesAllowed,
+      false,
+      'a spurious drain must never unblock a blocked verdict',
+    );
+
+    // New verdict DOES owe one → the hook works again on the new state.
+    published.republish(
+      { status: 're-embedding', modelId: 'a', previousModelId: 'b', clearedVectors: 1, clearPending: true },
+      false,
+      true,
+    );
+    assert.equal(published.status.vectorWritesAllowed, false);
+    published.markStaleVectorClearComplete();
+    assert.equal(published.status.vectorWritesAllowed, true);
+  });
+
+  it('carries the re-evaluate entry point without leaking it into the health JSON', async () => {
+    // The admin switch reaches the re-evaluation through this same service, so
+    // it lives on this object — but /health and the admin snapshot both
+    // JSON-serialise it, and a function has no business showing up there.
+    const published = createEmbeddingGateStatus(OWED_MATCH, false, true);
+    let calledWith: unknown;
+    published.attachReevaluate(async (request) => {
+      calledWith = request;
+      return published.status;
+    });
+
+    const entryPoint = (published.status as { reevaluate?: unknown }).reevaluate;
+    assert.equal(typeof entryPoint, 'function');
+    assert.ok(
+      !Object.keys(published.status).includes('reevaluate'),
+      'it must not be enumerable',
+    );
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(
+        JSON.parse(JSON.stringify(published.status)) as Record<string, unknown>,
+        'reevaluate',
+      ),
+      'and it must not survive JSON serialisation',
+    );
+
+    await (entryPoint as (r: unknown) => Promise<unknown>)({
+      allowDestructiveMigration: true,
+    });
+    assert.deepEqual(calledWith, { allowDestructiveMigration: true });
   });
 });

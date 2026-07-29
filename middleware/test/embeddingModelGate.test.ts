@@ -329,21 +329,24 @@ describe('evaluateEmbeddingModelGate', () => {
     assert.ok(queries.some((q) => /clear_pending = FALSE/i.test(q.sql)));
   });
 
-  it('blocks a provider wider than the declared column on an EMPTY corpus (auto-migration OFF)', async () => {
+  it('blocks a provider wider than the declared column on an EMPTY corpus', async () => {
     // The headline case: fresh deployment, no rows anywhere, operator installs
     // a 1536-dim provider against vector(768) columns. Sampling stored rows
     // sees nothing here — only the catalog knows.
     //
-    // `autoMigrateVectorColumns: false` because that switch now DEFAULTS to
-    // true and would rewrite the columns instead. This is the opted-out path,
-    // and it must still behave exactly as it always did.
+    // INVERTED. `allowDestructiveColumnMigration` briefly defaulted to TRUE,
+    // so this case had to opt out explicitly to keep testing the block. It now
+    // defaults to FALSE — an evaluation that was not handed the capability
+    // cannot destroy anything — so passing it explicitly is a statement of
+    // what the caller wants, not a workaround. The companion case below proves
+    // that OMITTING it lands in exactly the same place.
     const { pool, queries } = makeFakePool({ hasVectors: false });
 
     const outcome = await evaluateEmbeddingModelGate({
       pool,
       tenantId: 't1',
       provider: OPENAI_SMALL,
-      autoMigrateVectorColumns: false,
+      allowDestructiveColumnMigration: false,
       log: silent,
     });
 
@@ -363,7 +366,7 @@ describe('evaluateEmbeddingModelGate', () => {
     );
   });
 
-  it('blocks when only the SECOND governed column disagrees (auto-migration OFF)', async () => {
+  it('blocks when only the SECOND governed column disagrees', async () => {
     // processes.embedding is a separate cosine space; a partial migration
     // that resized graph_nodes only must not read as healthy.
     const { pool } = makeFakePool({
@@ -387,7 +390,7 @@ describe('evaluateEmbeddingModelGate', () => {
       pool,
       tenantId: 't1',
       provider: OPENAI_SMALL,
-      autoMigrateVectorColumns: false,
+      allowDestructiveColumnMigration: false,
       log: silent,
     });
 
@@ -400,6 +403,41 @@ describe('evaluateEmbeddingModelGate', () => {
     } else {
       assert.fail('expected the processes column to trip the gate');
     }
+  });
+
+  it('cannot rewrite the columns for a caller that did not ask — the boot path', async () => {
+    // THE boot-path guarantee, at the seam where it is decided.
+    //
+    // `plugin.ts` calls the gate without `allowDestructiveColumnMigration`,
+    // and the destructive column rewrite drops every stored embedding. So a
+    // deployment already sitting on the documented
+    // `blocked/column-width-mismatch` — 768-wide columns, a 1536-wide provider
+    // — would have lost its whole corpus by doing nothing but upgrading and
+    // restarting, with no prompt anywhere: `confirmDiscardVectors` only ever
+    // existed on the HTTP route. Omitting the option must mean NOT ALLOWED.
+    const { pool, queries } = makeFakePool({ hasVectors: true });
+
+    const outcome = await evaluateEmbeddingModelGate({
+      pool,
+      tenantId: 't1',
+      provider: OPENAI_SMALL,
+      // no allowDestructiveColumnMigration — exactly what activation passes
+      log: silent,
+    });
+
+    assert.equal(outcome.status, 'blocked');
+    if (outcome.status === 'blocked') {
+      assert.equal(outcome.reason, 'column-width-mismatch');
+    }
+    assert.equal(allowsVectorWrites(outcome), false);
+    assert.ok(
+      !queries.some((q) => /DROP COLUMN|ALTER TABLE/i.test(q.sql)),
+      'a restart may not touch the schema',
+    );
+    assert.ok(
+      !queries.some((q) => /INSERT INTO graph_embedding_model|UPDATE graph_embedding_model/i.test(q.sql)),
+      'and it may not claim the corpus for the new model either',
+    );
   });
 
   it('records the active model on a first run with an empty corpus', async () => {

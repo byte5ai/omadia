@@ -252,7 +252,7 @@ describe('embeddingModelGate against real Postgres', { skip: !pgAvailable }, () 
       pool,
       tenantId: tenant,
       provider: OPENAI_1536,
-      autoMigrateVectorColumns: false,
+      allowDestructiveColumnMigration: false,
       log: silent,
     });
 

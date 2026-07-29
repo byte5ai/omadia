@@ -17,6 +17,15 @@ import type { EmbeddingModelGateOutcome } from './embeddingModelGate.js';
  * exposes its fields through getters over a snapshot that is REPLACED
  * wholesale when the state changes. The registry keeps one stable reference;
  * readers always see current state; nothing is mutated field by field.
+ *
+ * #440 follow-up — the same property is what makes a LIVE PROVIDER SWITCH
+ * possible. The admin router used to re-activate the whole knowledge-graph
+ * plugin to re-run the gate; that calls `graphPool.end()` on the pool the
+ * kernel captured once and shares with ~40 subsystems, so a "switch without
+ * restart" forced one. The published object now also carries a `reevaluate`
+ * entry point (non-enumerable, so it never reaches the health JSON) which
+ * re-resolves the embedding client, re-runs the gate and `republish`es the
+ * verdict — nothing is torn down.
  */
 
 export interface EmbeddingGateStatus {
@@ -45,21 +54,73 @@ export const CLEAR_PENDING_REASON = 'stale-vector-clear-pending';
  */
 export const VECTOR_COLUMNS_MIGRATED_REASON = 'vector-columns-migrated';
 
+/**
+ * The re-evaluate entry point, as the kernel calls it (#440 follow-up).
+ *
+ * Attached to the PUBLISHED status object so the admin router reaches it
+ * through the `embeddingModelGateStatus` service it already resolves — one
+ * service, one lookup, and the same no-shared-types structural contract the
+ * rest of this module keeps.
+ */
+export type GateReevaluate = (
+  request?: GateReevaluateRequest,
+) => Promise<EmbeddingGateStatus>;
+
+export interface GateReevaluateRequest {
+  /**
+   * May THIS evaluation rewrite the governed `vector(n)` columns at the new
+   * provider's width, destroying every stored embedding?
+   *
+   * Defaults to false, and is only ever true for an operator who confirmed the
+   * discard in the admin UI. Activation never passes it — see the boot-path
+   * note in `gateReevaluation.ts`.
+   */
+  allowDestructiveMigration?: boolean;
+}
+
 export interface EmbeddingGateStatusPublication {
   /** The object handed to `ctx.services.provide`. Identity is stable. */
   readonly status: EmbeddingGateStatus;
   /**
    * Are vector writes allowed RIGHT NOW? This is what the plugin's embedding
    * client resolver consults on every ingest, so the answer has to be read
-   * live rather than captured — `markStaleVectorClearComplete` changes it.
+   * live rather than captured — `markStaleVectorClearComplete` and
+   * `republish` both change it.
    */
   vectorWritesAllowed(): boolean;
   /**
    * Called by the backfill sweep the moment it drains the owed clear. No-op
-   * unless this boot actually published a pending clear, so a late or spurious
+   * unless the CURRENT verdict actually owes a clear, so a late or spurious
    * call can never upgrade a `blocked` verdict.
    */
   markStaleVectorClearComplete(): void;
+  /**
+   * Replace the published verdict wholesale (#440 follow-up).
+   *
+   * This is what makes a live provider switch possible without tearing the
+   * knowledge-graph plugin down. The kernel captured `graphPool` ONCE and ~40
+   * subsystems hold that reference, so re-activating the plugin to re-run its
+   * gate ended the pool underneath all of them ("Cannot use a pool after
+   * calling end on the pool" until the process restarts). Everything the gate
+   * publishes is replaceable in place, which makes the teardown unnecessary
+   * rather than merely risky.
+   *
+   * Re-arms `markStaleVectorClearComplete` for whatever the NEW verdict owes:
+   * the owed-clear flag is a property of the verdict, not of the boot.
+   */
+  republish(
+    outcome: EmbeddingModelGateOutcome,
+    vectorWritesAllowed: boolean,
+    clearResumeOwed: boolean,
+  ): void;
+  /**
+   * Attach the re-evaluate entry point to the PUBLISHED object.
+   *
+   * Non-enumerable on purpose: `/health` and the admin snapshot both
+   * JSON-serialise this object, and the entry point must not surface as a
+   * field in either. Replaces any previous attachment rather than throwing.
+   */
+  attachReevaluate(fn: GateReevaluate): void;
 }
 
 /** Which of the three clear states the published status describes. */
@@ -75,13 +136,18 @@ const STATUS_KEYS = [
 ] as const;
 
 export function createEmbeddingGateStatus(
-  outcome: EmbeddingModelGateOutcome,
-  vectorWritesAllowed: boolean,
-  clearResumeOwed: boolean,
+  initialOutcome: EmbeddingModelGateOutcome,
+  initialVectorWritesAllowed: boolean,
+  initialClearResumeOwed: boolean,
 ): EmbeddingGateStatusPublication {
+  // The verdict currently on display. All three move together — a re-evaluation
+  // that replaced the outcome but left the owed-clear flag behind would let
+  // `markStaleVectorClearComplete` upgrade a verdict that never owed a clear.
+  let outcome = initialOutcome;
+  let clearResumeOwed = initialClearResumeOwed;
   let snapshot = describeGateOutcome(
     outcome,
-    vectorWritesAllowed,
+    initialVectorWritesAllowed,
     clearResumeOwed ? 'pending' : 'none',
   );
 
@@ -101,7 +167,7 @@ export function createEmbeddingGateStatus(
     markStaleVectorClearComplete(): void {
       // Guarded on `clearResumeOwed`, which is false for every `blocked`
       // outcome — a late or spurious call can still never upgrade a verdict
-      // this boot never made. What it CAN do now is re-enable writes.
+      // that never owed a clear. What it CAN do is re-enable writes.
       if (!clearResumeOwed) return;
       // Vector writes go back ON, in-process. They used to stay reported as
       // OFF here, and that was correct at the time: the plugin constructed
@@ -113,6 +179,27 @@ export function createEmbeddingGateStatus(
       // snapshot — so flipping it true is what actually re-enables the hot
       // path, not a cosmetic upgrade of a stale verdict.
       snapshot = describeGateOutcome(outcome, true, 'completed');
+    },
+    republish(
+      nextOutcome: EmbeddingModelGateOutcome,
+      nextVectorWritesAllowed: boolean,
+      nextClearResumeOwed: boolean,
+    ): void {
+      outcome = nextOutcome;
+      clearResumeOwed = nextClearResumeOwed;
+      snapshot = describeGateOutcome(
+        nextOutcome,
+        nextVectorWritesAllowed,
+        nextClearResumeOwed ? 'pending' : 'none',
+      );
+    },
+    attachReevaluate(fn: GateReevaluate): void {
+      Object.defineProperty(status, 'reevaluate', {
+        enumerable: false,
+        configurable: true,
+        writable: true,
+        value: fn,
+      });
     },
   };
 }

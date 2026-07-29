@@ -11,6 +11,12 @@ import {
 /**
  * #440 — the runtime vector-column width migration, against a REAL Postgres.
  *
+ * Every case here passes `allowDestructiveColumnMigration: true`, because this
+ * whole suite exercises the ONE path that may destroy a corpus: a provider
+ * switch an operator confirmed in the admin UI. Activation does not pass it and
+ * therefore cannot reach any of this — that guarantee is asserted next door, in
+ * `embeddingGateReevaluation.pg.test.ts` and `embeddingModelGate.test.ts`.
+ *
  * Nothing here can be faked usefully. `ALTER TABLE … DROP COLUMN`, HNSW index
  * recreation from `pg_get_indexdef`, DDL inside a transaction, and
  * `lock_timeout` against a concurrent AccessShareLock are the entire subject.
@@ -209,6 +215,7 @@ describe('#440 runtime vector-column migration (real Postgres)', { skip: !pgAvai
       pool,
       tenantId: 'default',
       provider: OPENAI_1536,
+      allowDestructiveColumnMigration: true,
       log: silent,
     });
 
@@ -267,6 +274,7 @@ describe('#440 runtime vector-column migration (real Postgres)', { skip: !pgAvai
       pool,
       tenantId: 'default',
       provider: OPENAI_1536,
+      allowDestructiveColumnMigration: true,
       log: silent,
     });
 
@@ -297,6 +305,7 @@ describe('#440 runtime vector-column migration (real Postgres)', { skip: !pgAvai
       pool,
       tenantId: 'default',
       provider: OPENAI_1536,
+      allowDestructiveColumnMigration: true,
       log: silent,
     });
 
@@ -305,7 +314,7 @@ describe('#440 runtime vector-column migration (real Postgres)', { skip: !pgAvai
     assert.equal((await registryRow())?.clear_pending, false);
   });
 
-  it('does nothing at all when the flag is off — the old blocked outcome, intact', async () => {
+  it('does nothing at all when the capability is withheld — the old blocked outcome, intact', async () => {
     await freshSchema({
       nodesWithVectors: 3,
       registry: { modelId: OLLAMA_768.modelId, dimensions: 768, ageDays: 3 },
@@ -316,7 +325,7 @@ describe('#440 runtime vector-column migration (real Postgres)', { skip: !pgAvai
       pool,
       tenantId: 'default',
       provider: OPENAI_1536,
-      autoMigrateVectorColumns: false,
+      allowDestructiveColumnMigration: false,
       log: silent,
     });
 
@@ -344,6 +353,7 @@ describe('#440 runtime vector-column migration (real Postgres)', { skip: !pgAvai
       pool,
       tenantId: 'default',
       provider: OPENAI_1536,
+      allowDestructiveColumnMigration: true,
       log: silent,
     });
 
@@ -379,6 +389,7 @@ describe('#440 runtime vector-column migration (real Postgres)', { skip: !pgAvai
         pool,
         tenantId: 'default',
         provider: OPENAI_1536,
+        allowDestructiveColumnMigration: true,
         log: silent,
       });
 
@@ -413,13 +424,15 @@ describe('#440 runtime vector-column migration (real Postgres)', { skip: !pgAvai
     }
   });
 
-  it('a second activation resumes cleanly once the blocker is gone', async () => {
-    // Same tables the previous case left fully un-migrated: the operator does
-    // nothing, the next boot just works.
+  it('a retried switch resumes cleanly once the blocker is gone', async () => {
+    // Same tables the previous case left fully un-migrated: the operator hits
+    // the switch again and it just works. (It has to be a retried SWITCH, not
+    // a restart — a restart never rewrites columns.)
     const outcome = await evaluateEmbeddingModelGate({
       pool,
       tenantId: 'default',
       provider: OPENAI_1536,
+      allowDestructiveColumnMigration: true,
       log: silent,
     });
     assert.equal(outcome.status, 'column-migrated');
@@ -428,7 +441,7 @@ describe('#440 runtime vector-column migration (real Postgres)', { skip: !pgAvai
     assert.equal((await registryRow())?.dimensions, 1536);
   });
 
-  it('an already-correct column is a no-op, so a partial run finishes on the next boot', async () => {
+  it('an already-correct column is a no-op, so a partial run finishes on a retry', async () => {
     await freshSchema({
       registry: { modelId: OLLAMA_768.modelId, dimensions: 768, ageDays: 3 },
     });
@@ -445,6 +458,7 @@ describe('#440 runtime vector-column migration (real Postgres)', { skip: !pgAvai
       pool,
       tenantId: 'default',
       provider: OPENAI_1536,
+      allowDestructiveColumnMigration: true,
       log: silent,
     });
 

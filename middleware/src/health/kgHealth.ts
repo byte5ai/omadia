@@ -196,10 +196,11 @@ function describeColumnMigration(gate: EmbeddingGateStatus): string {
   const detail =
     gate.detail !== undefined && gate.detail.length > 0 ? ` — ${gate.detail}` : '';
   return (
-    `the knowledge-graph vector columns were migrated automatically to fit '${active}'${from}${detail}. ` +
+    `the knowledge-graph vector columns were rewritten to fit '${active}'${from}${detail}. ` +
     'Vector writes are ENABLED, but semantic recall, the durable tier and process-reuse stay degraded ' +
-    'until the embedding backfill has re-embedded the corpus. Set auto_migrate_vector_columns=false to ' +
-    'require a hand-written column migration instead.'
+    'until the embedding backfill has re-embedded the corpus. This only ever follows a confirmed ' +
+    'provider switch under Admin → Embedding provider; set auto_migrate_vector_columns=false to ' +
+    'forbid the rewrite even there and require a hand-written column migration instead.'
   );
 }
 

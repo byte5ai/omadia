@@ -174,6 +174,57 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
     `vector(n)` column, the `ON CONFLICT` race, a switch → capped clear →
     resume cycle, advisory-lock exclusion). It self-skips when no database is
     reachable, same convention as `test/devplatform/*.pg.test.ts`.
+- Follow-up — **switching the embedding provider without a restart.**
+  - The knowledge-graph stores resolve their embedding client *live* instead
+    of capturing it in their constructors, so a refusal that ends (a drained
+    stale-vector clear, a provider switch) re-enables vector writes in-process
+    rather than needing an operator restart.
+  - New admin page **Admin → Embedding provider**
+    (`/api/v1/admin/embedding-provider`, cookie-session auth) lists every
+    installed `embeddingClient@1` adapter, prices the switch up front (how
+    many stored vectors it discards, whether the column width changes) and
+    performs it: deactivate the outgoing provider, activate the target, then
+    ask the knowledge-graph's gate to **re-evaluate itself in place**. The
+    switch refuses to run without an explicit `confirmDiscardVectors`.
+  - The re-evaluation is an entry point on the published
+    `embeddingModelGateStatus` service (`reevaluate`): it re-resolves the
+    embedding client from the service registry, re-runs the model/dimension
+    gate, replaces the published verdict and re-arms or stands down the
+    backfill sweep. It deliberately does **not** re-activate the
+    knowledge-graph plugin: that would run its `close()`, which ends the
+    `graphPool` the kernel captured once and shares with ~40 subsystems
+    (routines, dev-platform webhooks, agent schedules, cost telemetry, MCP
+    audit, `AgentGraphStore`, `McpConfigService`), poisoning all of them with
+    `Cannot use a pool after calling end on the pool` until the next restart.
+    Re-resolving the client is load-bearing rather than tidy: the plugin used
+    to close over the boot-time client, so a "successful" switch left the
+    registry holding the new provider while the graph kept embedding with the
+    old one, silently.
+  - On a declared-width mismatch the gate can now rewrite the governed
+    `vector(n)` columns at the active provider's width (capture index
+    definitions via `pg_depend` → drop index → drop column → re-add at the new
+    width → replay the index definitions verbatim → reset `embedding_attempts`
+    → flip the registry), under the same anti-oscillation cooldown a
+    same-width switch uses and a wall-clock budget that keeps `activate()`
+    inside its 10 s cap.
+  - **That rewrite never runs on the boot path.** It destroys every stored
+    embedding, so the capability is an explicit parameter of the gate
+    evaluation rather than an ambient default: plugin activation does not pass
+    it and a width mismatch therefore stays `blocked/column-width-mismatch` —
+    reversible, nothing dropped, operator decides — exactly as before this
+    work. Only an operator-confirmed switch through the admin UI passes it.
+    Without this, a deployment already sitting on the documented
+    `blocked/column-width-mismatch` (768-wide columns, a 1536-wide provider)
+    would have lost its entire embedding corpus by doing nothing but upgrading
+    and restarting, with no prompt anywhere — `confirmDiscardVectors` only
+    ever existed on the HTTP route.
+  - `auto_migrate_vector_columns` (KG setup field,
+    `GRAPH_AUTO_MIGRATE_VECTOR_COLUMNS`) is therefore a **master switch over
+    the confirmed path**, not a boot-path behaviour. `'false'` forbids the
+    destructive rewrite even from a confirmed switch in the admin UI, leaving
+    the hand-written `0005_turn_embeddings_768.sql`-style migration as the only
+    route. `'true'` (default) permits it *when an operator confirms it*; it can
+    no longer let a restart wipe a corpus.
 
 ### Added — Conductor generic webhook support, inbound + outbound (#437)
 

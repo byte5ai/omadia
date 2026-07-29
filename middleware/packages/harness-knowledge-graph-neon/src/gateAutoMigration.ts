@@ -40,6 +40,10 @@ export interface AutoMigrationAttempt {
  * off, nothing destroyed, operator told exactly what to do. A migration that
  * cannot run must never be louder than that, and must never fail activation.
  *
+ * `allowed` is a CAPABILITY the caller hands over, not a config value read
+ * here. Activation never hands it over, so the boot path can only ever reach
+ * the fall-through above; only an operator-confirmed provider switch does.
+ *
  * The destructiveness is logged BEFORE the work rather than after, so an
  * operator reading a crash log still sees what was about to happen.
  */
@@ -48,7 +52,14 @@ export async function tryAutoMigrateColumns(args: {
   tenantId: string;
   provider: EmbeddingProviderMetadata;
   mismatches: readonly GovernedVectorColumn[];
-  enabled: boolean;
+  /**
+   * Did the CALLER hand this evaluation the capability to destroy the corpus?
+   *
+   * False on every boot, and false for any switch the operator did not confirm.
+   * It is deliberately not defaulted anywhere down here — see
+   * `EmbeddingModelGateOptions.allowDestructiveColumnMigration`.
+   */
+  allowed: boolean;
   switchCooldownMs: number;
   budgetMs: number;
   log: (msg: string) => void;
@@ -56,9 +67,12 @@ export async function tryAutoMigrateColumns(args: {
   const named = args.mismatches
     .map((c) => `${c.table}.${c.column} vector(${String(c.declaredDimensions ?? 0)})`)
     .join(', ');
-  if (!args.enabled) {
+  if (!args.allowed) {
+    // Two different states reach this line and the wording has to fit both:
+    // a boot (which is NEVER allowed to rewrite columns) and a switch the
+    // operator did not confirm, or confirmed while the master switch is off.
     args.log(
-      `[graph-embedding-gate] auto_migrate_vector_columns is OFF — leaving ${named} alone and blocking instead. Turn it on, or migrate by hand the way 0005_turn_embeddings_768.sql did.`,
+      `[graph-embedding-gate] destructive column migration was not permitted for this evaluation — leaving ${named} alone and blocking instead. Vector columns are only rewritten by an operator-confirmed provider switch (Admin → Embedding provider), and only while auto_migrate_vector_columns is not 'false'. A restart never rewrites them. The hand-written route is still open: migrate the way 0005_turn_embeddings_768.sql did.`,
     );
     return {};
   }
@@ -88,17 +102,17 @@ export async function tryAutoMigrateColumns(args: {
 
   if (!result.ok) {
     args.log(
-      `[graph-embedding-gate] ERROR: the vector-column migration did not complete [${result.reason}]: ${result.detail}. ${String(result.migrated.length)} column(s) were migrated and stay migrated; falling back to blocked for this boot.`,
+      `[graph-embedding-gate] ERROR: the vector-column migration did not complete [${result.reason}]: ${result.detail}. ${String(result.migrated.length)} column(s) were migrated and stay migrated; falling back to blocked.`,
     );
-    // A run that migrated nothing is fully recoverable — the next activation
-    // sees the same width mismatch and simply retries. A run that migrated
-    // SOMETHING and did not flip the registry is not equally benign, and
-    // `registry-flip-failed` is the terminal one: every column is at the new
-    // width, so the next activation finds no mismatch, never reaches this path
-    // again, and dead-ends on `blocked/dimension-mismatch` until a human edits
-    // the registry. `budget-exhausted` always leaves at least one column
-    // un-migrated (the deadline is checked at the TOP of each target), so the
-    // next activation still sees a mismatch and resumes — it is reported for
+    // A run that migrated nothing is fully recoverable — a repeated confirmed
+    // switch sees the same width mismatch and simply retries. A run that
+    // migrated SOMETHING and did not flip the registry is not equally benign,
+    // and `registry-flip-failed` is the terminal one: every column is at the
+    // new width, so the next evaluation finds no mismatch, never reaches this
+    // path again, and dead-ends on `blocked/dimension-mismatch` until a human
+    // edits the registry. `budget-exhausted` always leaves at least one column
+    // un-migrated (the deadline is checked at the TOP of each target), so a
+    // repeated switch still sees a mismatch and resumes — it is reported for
     // visibility, not because it is stuck.
     if (result.migrated.length > 0) {
       const hazard = `${String(result.migrated.length)} column(s) are already vector(${String(args.provider.dimensions)}) while graph_embedding_model was NOT updated [${result.reason}]: ${result.detail}`;

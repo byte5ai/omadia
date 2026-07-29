@@ -29,10 +29,30 @@ import {
  * choice and tells the operator to restart. That is unacceptable here: the
  * whole point of the #440 gate work is that a provider swap now takes effect
  * in-process — the knowledge-graph stores resolve their embedding client live
- * and the gate auto-migrates the vector columns on a width change. So this
- * router performs the switch: deactivate the current provider, activate the
- * target, then re-activate the knowledge-graph so its gate re-runs against the
- * new provider. No process restart anywhere in this path.
+ * and the gate rewrites the vector columns on a width change. So this router
+ * performs the switch: deactivate the current provider, activate the target,
+ * then ask the gate to RE-EVALUATE ITSELF against the new provider. No process
+ * restart anywhere in this path.
+ *
+ * WHY IT DOES NOT REACTIVATE THE KNOWLEDGE GRAPH. It used to, and that is the
+ * one thing it must never do. `installService.reactivate` runs
+ * `toolPluginRuntime.deactivate`, which calls the KG plugin's `close()`, which
+ * calls `graphPool.end()` — on the pool the kernel captured ONCE
+ * (`src/index.ts`) and shares with ~40 subsystems: routines, dev-platform
+ * webhooks, agent schedules, cost telemetry, MCP audit, `AgentGraphStore`,
+ * `McpConfigService`. After every SUCCESSFUL switch all of them answered
+ * `Cannot use a pool after calling end on the pool` until the process was
+ * restarted, i.e. the "switch without restart" feature forced one. The gate is
+ * re-evaluated in place instead (`embeddingModelGateStatus.reevaluate`), which
+ * re-resolves the embedding client, re-runs the model/dimension gate and
+ * republishes the verdict without tearing anything down.
+ *
+ * WHO MAY DESTROY THE CORPUS. The destructive column rewrite is a capability
+ * this route hands to that re-evaluation, and only after `confirmDiscardVectors`.
+ * Plugin activation never hands it over, so a deployment sitting on
+ * `blocked/column-width-mismatch` that merely upgrades and restarts keeps its
+ * corpus. `auto_migrate_vector_columns` is the operator's master switch over
+ * the confirmed path, not a boot-path behaviour.
  *
  * SAFETY. Switching provider discards the stored corpus — a different width
  * rewrites the `vector(n)` columns, an equal width clears them for re-embed.
@@ -60,12 +80,14 @@ import {
  * told so (409) instead of being queued behind an operation that holds a
  * 10s-capped activation and a corpus count.
  *
- * TRUTHFUL REPORTING. `installService.reactivate` logs hook failures and does
- * not rethrow, so `deps.reactivate` resolving proves nothing. A knowledge
- * graph that failed to come back leaves `knowledgeGraph`/`graphPool`/
- * `embeddingModelGateStatus` missing from the registry, and this endpoint used
- * to answer `{ ok: true, gate: null }` over exactly that. The re-gate is now
- * verified against the live service.
+ * TRUTHFUL REPORTING. The failure this once guarded against — `reactivate`
+ * swallowing a hook error and the endpoint answering `{ ok: true, gate: null }`
+ * over a knowledge graph that never came back — is gone with the reactivation
+ * itself; nothing is torn down, so nothing can fail to come back. The property
+ * is kept at the same strength on the state that CAN still fail: the response
+ * reports `gateReevaluated` truthfully, a re-evaluation that throws is a 500
+ * rather than an `ok: true`, and a deployment with no re-evaluate entry point
+ * at all (no Postgres knowledge-graph active) is named instead of implied.
  */
 
 const SwitchBodySchema = z.object({
@@ -81,17 +103,12 @@ export interface AdminEmbeddingProviderDeps {
   readonly getEmbeddingClient: () => EmbeddingClient | undefined;
   /** Live gate verdict. NOT cached — `vectorWritesAllowed` flips false→true
    *  in-process when a stale-vector clear drains, and a captured copy would
-   *  show a stale red forever. */
+   *  show a stale red forever. Also carries the (non-enumerable) `reevaluate`
+   *  entry point the switch calls; see `readReevaluator`. */
   readonly getGateStatus: () => EmbeddingGateStatus | undefined;
   /** Neon pool. Undefined on the in-memory knowledge-graph backend, in which
    *  case there are no governed vector columns to price. */
   readonly getGraphPool: () => Pool | undefined;
-  /**
-   * Live `knowledgeGraph` service lookup. Used ONLY as the post-condition of
-   * the re-gate: `reactivate` swallows hook failures, so its resolution is not
-   * evidence that the plugin came back. Resolved per call, never captured.
-   */
-  readonly getKnowledgeGraph: () => unknown;
   /**
    * Env-derived fallback tenant (`GRAPH_TENANT_ID ?? 'default'`). The KG setup
    * field wins over it — see `resolveGraphTenantId`.
@@ -100,10 +117,30 @@ export interface AdminEmbeddingProviderDeps {
   /** Runtime activation of a tool/extension plugin (ToolPluginRuntime). */
   readonly activate: (pluginId: string) => Promise<void>;
   readonly deactivate: (pluginId: string) => Promise<boolean>;
-  /** Tear down + bring back up so a plugin re-reads its world. Used on the
-   *  knowledge-graph so the gate re-evaluates against the new provider. */
-  readonly reactivate: (pluginId: string) => Promise<void>;
 }
+
+/**
+ * The knowledge-graph's in-place gate re-evaluation, as this route sees it.
+ *
+ * Duck-typed off the published `embeddingModelGateStatus` object rather than
+ * imported: the same no-shared-types structural contract `/health` already
+ * keeps with that service, and it degrades correctly against a knowledge-graph
+ * that predates the entry point (the property is simply absent).
+ */
+type GateReevaluate = (request: {
+  allowDestructiveMigration: boolean;
+}) => Promise<unknown>;
+
+function readReevaluator(
+  gate: EmbeddingGateStatus | undefined,
+): GateReevaluate | undefined {
+  const fn = (gate as { reevaluate?: unknown } | undefined)?.reevaluate;
+  return typeof fn === 'function' ? (fn as GateReevaluate) : undefined;
+}
+
+/** Why no gate was re-run. Reported rather than implied — see TRUTHFUL REPORTING. */
+const NO_REEVALUATOR =
+  'the knowledge-graph published no gate re-evaluation entry point, so no model/dimension gate was re-run for the new provider — either no Postgres knowledge-graph is active, or it is an older build. Vector writes stay governed by the verdict from the last activation.';
 
 /** `count(*)` per governed column plus the width they are declared at. */
 interface CorpusSnapshot {
@@ -257,9 +294,16 @@ function resolveGraphTenantId(deps: AdminEmbeddingProviderDeps): string {
   return deps.tenantId;
 }
 
-/** Read the current `auto_migrate_vector_columns` value off the KG entry.
- *  Manifest default is `'true'`; anything but the literal `'false'` reads as
- *  on, mirroring `plugin.ts`. */
+/**
+ * Read the current `auto_migrate_vector_columns` value off the KG entry.
+ * Manifest default is `'true'`; anything but the literal `'false'` reads as on,
+ * mirroring `plugin.ts`.
+ *
+ * It is a MASTER SWITCH over the confirmed switch below, not a boot-path
+ * behaviour: `'false'` forbids the destructive column rewrite even when the
+ * operator confirms the discard here. `'true'` does not make a restart
+ * destructive — activation never asks for the capability at all.
+ */
 function autoMigrateEnabled(registry: InstalledRegistry): boolean {
   const raw = registry.get(KG_NEON_ID)?.config?.[AUTO_MIGRATE_CONFIG_KEY];
   return (
@@ -284,12 +328,18 @@ class SwitchRolledBack extends Error {
 }
 
 /**
- * Raised when the provider switch itself succeeded but the knowledge graph did
- * not come back. Not a rollback: the new provider IS live and the registry is
- * consistent — what failed is the re-gate, which is why it must not be reported
- * as `{ ok: true }`.
+ * Raised when the provider switch itself succeeded but the in-place gate
+ * re-evaluation threw. Not a rollback: the new provider IS live and the
+ * registry is consistent — what failed is the re-gate, which is why it must not
+ * be reported as `{ ok: true }`.
+ *
+ * This is the repurposed `KnowledgeGraphDown`. That error covered "reactivating
+ * the knowledge graph left it deactivated", a state this route can no longer
+ * produce because it no longer reactivates anything. The truthful-reporting
+ * property it carried — a re-gate that did not happen is never `ok: true` —
+ * moves here unchanged.
  */
-class KnowledgeGraphDown extends Error {}
+class GateReevaluationFailed extends Error {}
 
 export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderDeps): Router {
   const router = Router();
@@ -472,18 +522,25 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
       return;
     }
 
+    let regate: RegateReport;
     try {
-      await applySwitch(deps, previousId, pluginId);
+      regate = await applySwitch(deps, previousId, pluginId, {
+        // THE destructive-capability handover. `destructive && !confirmed`
+        // already returned above, so this is true exactly when the operator
+        // ticked the box in front of the discard count. Nothing else in the
+        // system can hand this capability over — activation certainly cannot.
+        allowDestructiveMigration: confirmDiscardVectors === true,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (err instanceof KnowledgeGraphDown) {
+      if (err instanceof GateReevaluationFailed) {
         // The switch itself STUCK — the target owns the capability and the
         // registry is consistent. Reporting a rollback here would be a lie in
         // the other direction, so this is its own code.
         res.status(500).json({
-          code: 'embeddingProvider.knowledge_graph_down',
+          code: 'embeddingProvider.gate_reevaluation_failed',
           message,
-          details: { switchedTo: pluginId, knowledgeGraphAvailable: false },
+          details: { switchedTo: pluginId, gateReevaluated: false },
         });
         return;
       }
@@ -505,7 +562,16 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
       return;
     }
 
-    res.json({ ok: true, switchedTo: pluginId, ...(await snapshot()) });
+    res.json({
+      ok: true,
+      switchedTo: pluginId,
+      // Say whether the gate actually re-ran. A switch against a deployment
+      // with no Postgres knowledge-graph is a legitimate success, but it is a
+      // different success from one whose vector columns were just re-gated.
+      gateReevaluated: regate.reevaluated,
+      ...(regate.warning === undefined ? {} : { gateWarning: regate.warning }),
+      ...(await snapshot()),
+    });
   }
 
   return router;
@@ -543,11 +609,18 @@ async function setStatus(
  * `switchInFlight` for the whole of this function, which is what makes that
  * reasoning hold under concurrency rather than only in the single-caller case.
  */
+/** What the in-place re-gate did, so the response can say so. */
+interface RegateReport {
+  readonly reevaluated: boolean;
+  readonly warning?: string;
+}
+
 async function applySwitch(
   deps: AdminEmbeddingProviderDeps,
   previousId: string | null,
   targetId: string,
-): Promise<void> {
+  opts: { allowDestructiveMigration: boolean },
+): Promise<RegateReport> {
   if (previousId !== null) {
     await deps.deactivate(previousId);
     await setStatus(deps.installedRegistry, previousId, 'inactive');
@@ -576,10 +649,13 @@ async function applySwitch(
       await setStatus(deps.installedRegistry, previousId, 'inactive');
       return null;
     }
-    // The knowledge-graph captured the outgoing client at its last activate();
-    // re-gate so it goes back to the restored one rather than a disposed
-    // reference.
-    await deps.reactivate(KG_NEON_ID).catch(() => undefined);
+    // The knowledge-graph's gate approved the OUTGOING client; re-gate so the
+    // resolver hands out the restored one rather than a disposed reference.
+    // Never destructive: the target never activated, so no column ever moved,
+    // and a rollback that dropped a corpus would be its own incident.
+    await readReevaluator(deps.getGateStatus())?.({
+      allowDestructiveMigration: false,
+    }).catch(() => undefined);
     return previousId;
   };
 
@@ -605,22 +681,24 @@ async function applySwitch(
     );
   }
 
-  // Re-run the model/dimension gate against the new provider. This is what
-  // migrates the vector columns when the width changed — in-process, no
-  // restart.
-  const graphWasLive = deps.getKnowledgeGraph() !== undefined;
-  await deps.reactivate(KG_NEON_ID);
-  // `installService.reactivate` catches and only LOGS hook failures, so the
-  // await above resolving is not evidence of anything. If the knowledge graph
-  // was live before and is gone now, the plugin failed to come back — its
-  // services (knowledgeGraph, graphPool, embeddingModelGateStatus) are out of
-  // the registry — and answering `{ ok: true, gate: null }` over that is the
-  // single most misleading thing this endpoint could do.
-  if (graphWasLive && deps.getKnowledgeGraph() === undefined) {
-    throw new KnowledgeGraphDown(
-      `the embedding provider was switched to '${targetId}' and IS live, but re-activating the knowledge graph afterwards failed — it is now DEACTIVATED (no knowledgeGraph service, no vector writes, no gate verdict). Check the middleware log for the reactivate hook error, then re-install or re-activate '${KG_NEON_ID}'.`,
+  // Re-run the model/dimension gate against the new provider, IN PLACE. This
+  // is what re-points the knowledge-graph's embedding resolver at the client
+  // that just took over — without it the switch would report success while the
+  // graph kept embedding with the previous provider — and it is what rewrites
+  // the vector columns when the width changed and the operator confirmed it.
+  // Nothing is deactivated, so the shared `graphPool` survives.
+  const reevaluate = readReevaluator(deps.getGateStatus());
+  if (reevaluate === undefined) {
+    return { reevaluated: false, warning: NO_REEVALUATOR };
+  }
+  try {
+    await reevaluate({ allowDestructiveMigration: opts.allowDestructiveMigration });
+  } catch (err) {
+    throw new GateReevaluationFailed(
+      `the embedding provider was switched to '${targetId}' and IS live, but re-evaluating the knowledge-graph model/dimension gate against it failed (${err instanceof Error ? err.message : String(err)}). The graph is still up and its pool is intact, but it is still governed by the PREVIOUS verdict — check the middleware log, then retry the switch.`,
     );
   }
+  return { reevaluated: true };
 }
 
 /** Wording for a rollback that may or may not have taken. */

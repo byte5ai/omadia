@@ -150,14 +150,24 @@ export interface Harness {
   failActivation: Set<string>;
   /** Plugin ids that activate successfully but publish no client. */
   publishNothing: Set<string>;
+  /** Make the in-place gate re-evaluation reject. */
+  failGateReevaluation: boolean;
   /**
-   * Plugin ids whose `reactivate()` fails. Modelled the way
-   * `installService.reactivate` actually behaves: the hook error is swallowed
-   * and the promise RESOLVES, leaving the plugin's services withdrawn.
+   * Does the published `embeddingModelGateStatus` carry a `reevaluate` entry
+   * point? False models a deployment with no Postgres knowledge-graph active
+   * (or an older plugin build) — there is simply nothing to re-gate.
    */
-  failReactivate: Set<string>;
-  /** Is the `knowledgeGraph` service currently resolvable? */
-  knowledgeGraphLive: boolean;
+  gateReevaluatorPresent: boolean;
+  /**
+   * Which provider's client the knowledge-graph would actually embed with.
+   *
+   * The whole point of the re-evaluate entry point: the plugin used to close
+   * over the client it resolved at activation, so a switch could leave the
+   * REGISTRY holding the new provider while the graph kept embedding with the
+   * old one. The fake re-evaluation re-resolves it the way the real one does,
+   * so a test can assert the swap actually reached the embedding path.
+   */
+  approvedClientId: string | null;
   gate: EmbeddingGateStatus;
   close(): Promise<void>;
 }
@@ -183,11 +193,12 @@ export async function makeHarness(
 
   const state = {
     publishedBy: null as string | null,
+    approvedClientId: null as string | null,
     calls: [] as string[],
     failActivation: new Set<string>(),
     publishNothing: new Set<string>(),
-    failReactivate: new Set<string>(),
-    knowledgeGraphLive: true,
+    failGateReevaluation: false,
+    gateReevaluatorPresent: true,
     gate: {
       vectorWritesAllowed: true,
       status: 'match',
@@ -199,6 +210,51 @@ export async function makeHarness(
     (p) => (p.status ?? 'active') === 'active' && p.id in CLIENTS,
   );
   state.publishedBy = initiallyActive?.id ?? null;
+  state.approvedClientId = state.publishedBy;
+
+  /**
+   * The knowledge-graph's in-place gate re-evaluation, modelled the way the
+   * real one behaves: re-resolve the client from the registry, re-run the
+   * verdict, republish it — and DO NOT tear the plugin (or its pool) down.
+   *
+   * Attached non-enumerably, like the real publication does, so it never
+   * appears in the JSON the route serialises back.
+   */
+  const reevaluate = async (request: {
+    allowDestructiveMigration: boolean;
+  }): Promise<unknown> => {
+    state.calls.push(
+      `reevaluate:${request.allowDestructiveMigration ? 'destructive' : 'safe'}`,
+    );
+    if (state.failGateReevaluation) throw new Error('gate re-evaluation exploded');
+    state.approvedClientId = state.publishedBy;
+    const client = state.publishedBy === null ? undefined : CLIENTS[state.publishedBy];
+    const dims = (client as { dimensions?: number } | undefined)?.dimensions ?? 0;
+    const migrated = request.allowDestructiveMigration && dims !== 768;
+    state.gate = {
+      vectorWritesAllowed: true,
+      status: migrated ? 'column-migrated' : 'match',
+      ...(migrated ? { reason: 'vector-columns-migrated' } : {}),
+      activeModelId: `${client?.modelId ?? '?'} (${String(dims)}d)`,
+      ...(migrated
+        ? {
+            detail:
+              'graph_nodes.embedding vector(768)→vector(1536) were rewritten at runtime',
+          }
+        : {}),
+    } as EmbeddingGateStatus;
+    return undefined;
+  };
+
+  const publishedGate = (): EmbeddingGateStatus => {
+    if (!state.gateReevaluatorPresent) return state.gate;
+    const withEntryPoint = { ...state.gate };
+    Object.defineProperty(withEntryPoint, 'reevaluate', {
+      enumerable: false,
+      value: reevaluate,
+    });
+    return withEntryPoint;
+  };
 
   const app: Express = express();
   app.use(express.json());
@@ -212,9 +268,8 @@ export async function makeHarness(
       },
       getEmbeddingClient: () =>
         state.publishedBy === null ? undefined : CLIENTS[state.publishedBy],
-      getGateStatus: () => state.gate,
+      getGateStatus: publishedGate,
       getGraphPool: () => wiring.graphPool,
-      getKnowledgeGraph: () => (state.knowledgeGraphLive ? { kind: 'graph' } : undefined),
       tenantId: 'default',
       activate: async (id: string) => {
         state.calls.push(`activate:${id}`);
@@ -234,27 +289,6 @@ export async function makeHarness(
         state.calls.push(`deactivate:${id}`);
         if (state.publishedBy === id) state.publishedBy = null;
         return true;
-      },
-      reactivate: async (id: string) => {
-        state.calls.push(`reactivate:${id}`);
-        if (state.failReactivate.has(id)) {
-          // installService.reactivate logs the hook failure and RESOLVES; the
-          // plugin's services are gone but the caller sees a clean promise.
-          if (id === KG_NEON) state.knowledgeGraphLive = false;
-          return;
-        }
-        if (id === KG_NEON && state.publishedBy !== null) {
-          const client = CLIENTS[state.publishedBy];
-          state.gate = {
-            vectorWritesAllowed: true,
-            status: 'column-migrated',
-            reason: 'vector-columns-migrated',
-            activeModelId: `${client?.modelId ?? '?'} (${String(
-              (client as { dimensions?: number } | undefined)?.dimensions ?? 0,
-            )}d)`,
-            detail: 'graph_nodes.embedding vector(768)→vector(1536) were rewritten at runtime',
-          };
-        }
       },
     }),
   );
@@ -289,11 +323,20 @@ export async function makeHarness(
     get publishNothing() {
       return state.publishNothing;
     },
-    get failReactivate() {
-      return state.failReactivate;
+    get failGateReevaluation() {
+      return state.failGateReevaluation;
     },
-    get knowledgeGraphLive() {
-      return state.knowledgeGraphLive;
+    set failGateReevaluation(v: boolean) {
+      state.failGateReevaluation = v;
+    },
+    get gateReevaluatorPresent() {
+      return state.gateReevaluatorPresent;
+    },
+    set gateReevaluatorPresent(v: boolean) {
+      state.gateReevaluatorPresent = v;
+    },
+    get approvedClientId() {
+      return state.approvedClientId;
     },
     get gate() {
       return state.gate;
@@ -326,6 +369,8 @@ export interface SnapshotResponse {
   graphTenantId: string;
   storedVectorTotal: number | null;
   switchedTo?: string;
+  gateReevaluated?: boolean;
+  gateWarning?: string;
 }
 
 export async function getJson(
