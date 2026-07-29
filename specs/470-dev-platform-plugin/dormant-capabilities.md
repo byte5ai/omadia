@@ -248,15 +248,43 @@ factory and a green test suite is cheap to keep and expensive to believe in.
 | 3 | `acceptance.md` — mark all five dormant, add comment-back and tracker-registry rows | Stops the extraction certifying capabilities the operator never had |
 | 4 | `implementation.md` — resolve the P3-vs-C5 contradiction; C2 keeps types local | Two implementers would otherwise build incompatible boundaries |
 
-## Decisions for Marcel
+## Answered by Marcel — 2026-07-29
+
+**Q: Does any customer-side or unreleased plugin declare `permissions.devJobs`?** → **No.**
+
+`ctx.devJobs` **DELETE is confirmed.** There is no consumer anywhere — not in this repo, not
+in `omadia-byte5-plugins`, not customer-side. The one fact that could have inverted the verdict
+does not exist. Consequences: G8 collapses almost entirely (all three of its items exist only
+to serve this capability), and the `@omadia/plugin-api` SemVer-major bump becomes hygiene
+rather than a break with downstream cost.
+
+**Q: Is a Jira/Linear tracker on the roadmap?** → **Yes, and it is considered important.**
+
+This **changes the tracker verdict's meaning**, though not its direction. "Defer and move
+dormant" stays right, but "and forget about it" was wrong: `TrackerRegistry` is not dead weight
+being tolerated, it is the **extension point for a roadmap feature**. Three consequences:
+
+1. **The blockers stop being hypothetical.** Cold-start ($500 ceiling), `requireGate: false`
+   with no sender allowlist, firing on any ticket update rather than on label application, and
+   the cross-source dedupe gap are now *must-fix before a Jira tracker ever runs* — not
+   "things to note if anyone ever activates this".
+2. **A new architectural question, in no document until now.** After extraction the registry
+   lives in the dev-platform **plugin** repo. A Jira tracker would therefore be *a plugin
+   registering into another plugin's registry* — cross-plugin extension. That seam has to be
+   designed, and it constrains the extraction: it may argue for keeping a generic
+   "job trigger source" extension point in **core** rather than moving the registry out.
+3. **It inherits the B1 security hole.** A tracker registry is a *write* surface — registering
+   a tracker influences which issues become code-execution jobs. With `ctx.services.get`
+   ungated, any plugin could register one. The per-caller-factory fix in C2 is a prerequisite,
+   not an optional hardening.
+
+Design pass on the seam is in flight; this section will carry its outcome.
+
+## Remaining decisions for Marcel
 
 1. **Is there a named first workflow for the conductor step?** If nobody can name it, take the
    delete — writing one bundled template is the cheapest possible demand test, and if that is not
    worth doing, activation is not either.
-2. **Does any customer-side or unreleased plugin declare `permissions.devJobs`?** Zero on disk
-   across 34 repos. This is the single fact that would invert the delete, and the only one not
-   verifiable from here.
-3. **Is a Jira/Linear tracker on the roadmap?** If no — delete #3–#5 now and stop paying
-   attention tax. If yes, defer-and-move is right and the timeline sets the expiry date.
-4. **Does middleware ever run more than one instance?** If yes, the widened index is mandatory
-   *today*, independent of everything else here.
+2. **Does middleware ever run more than one instance?** Relevant to migration sequencing, though
+   the widened index is NOT mandatory today — the existing webhook-only index already makes the
+   live path replica-safe.
