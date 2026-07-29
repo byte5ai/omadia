@@ -60,7 +60,7 @@ work-list in `core-decoupling-checklist.md`. Three of those items are not deleti
 
 | Surface | Size |
 |---|---|
-| `middleware/src/devplatform/**` | 54 files, 14,498 LOC |
+| `middleware/src/devplatform/**` | 53 files, 14,457 LOC |
 | `middleware/src/routes/devPlatform*.ts`, `devRunnerApi.ts`, `devRunnerJobPolicyRoute.ts` | 7 files, 2,733 LOC |
 | `middleware/src/routes/devWebhooks.ts`, `src/conductor/devJobStepEffect.ts` | 2 files, 394 LOC |
 | `middleware/sidecars/dev-runner-daemon/` | 30 files (dockerode) |
@@ -99,8 +99,13 @@ only for dev-platform. `dockerode` lives in the sidecar's own package; the GitHu
 are hand-rolled `fetch` by house style.
 
 **Layering is not clean**: `wireDevPlatform.ts:37,45,50,51` imports *up* into
-`src/routes/`, which imports back *down* into `src/devplatform/*` (23 times). Circular by
-layer, resolved only by ESM hoisting. This must be untangled before the code can move.
+`src/routes/`, which imports back *down* into `src/devplatform/*` (23 times).
+
+**Corrected after review:** an earlier revision called this "circular by layer, resolved
+only by ESM hoisting." It is **not** an import cycle — `wireDevPlatform` is imported only
+by `index.ts`, and no route imports back into it. It is a one-way layering inversion.
+Untangling it is boundary cleanup that makes the move mechanical, **not** a fix for
+hoist-dependent runtime behaviour, and it should not be justified as the latter.
 
 ---
 
@@ -183,7 +188,7 @@ There is already a working precedent for plugin-owned migrations:
 step and a `Dockerfile` line to ship the SQL next to the compiled migrator.
 `harness-memory-postgres` does the same.
 
-G4 therefore needs the existing pattern formalised into a shared helper plus a `pgPool`
+G4 therefore needs the existing pattern formalised into a shared helper plus a permission gate on the existing `graphPool@1`
 capability so the plugin can reuse the core pool — not a new kernel subsystem.
 
 **Do not renumber the migrations.** Ledgers key on filename. `0022`–`0030` are already
@@ -483,7 +488,7 @@ single irreversible step moved last.
 | **P2a** | Decide the `ctx.devJobs` contract (§4.2) and the G8 public-contract break: `DevJob*` move to `@omadia/dev-platform-plugin-api`, `plugin-api` gets a SemVer-major bump, `dev_jobs` leaves the admin-v1 DTO. Add capability edges to `dynamicAgentRuntime` or document why agent plugins are excluded. | A written, versioned contract — before any code depends on it |
 | **P2b** | Decide **H3** (chat card): declarative card schema, or accept degradation to `ToolRow` for out-of-repo plugins. Decide **G7 option B vs E**. | Both answers written down before code moves |
 | **P2c** | Mechanical decoupling: break the `wireDevPlatform ↔ routes` cycle; collapse the 41 config keys into one namespaced object. ✅ `mintAppJwt` already moved to `src/services/githubAppJwt.ts`. | `index.ts` wiring reduced to one `assembleDevPlatform(cfg)` call |
-| **P3** | The extension points. **H1** dynamic `publicPaths` + exclusive prefix ownership · **H2** generic conductor step-kind/channel-type registry · **G2** `auth: 'session'` composed *inside* the disposed guard · **G3** route-local raw parser · **G4** `pgPool` capability + shared `runPluginMigrations`. | Any plugin can own routes, exemptions, raw bodies, tables, and long-running steps |
+| **P3** | The extension points. **H1** dynamic `publicPaths` + exclusive prefix ownership · **H2** generic conductor step-kind/channel-type registry · **G2** `auth: 'session'` composed *inside* the disposed guard · **G3** route-local raw parser · **G4** permission-gated `graphPool@1` + shared `runPluginMigrations`. | Any plugin can own routes, exemptions, raw bodies, tables, and long-running steps |
 | **P3b** | **G7** (§4.3a): extract the `@theme inline` bridge out of `globals.css`; build the plugin Tailwind subset from it and serve it — replacing the 345 hand-written lines of `harness-admin-css.ts`; add a static-asset serving path for plugin SPA bundles; reject arbitrary-value classes at ingest. | Any plugin can ship a real UI in the house design system — the platform's weakest extension point today |
 | **P4** | Stand up `byte5ai/omadia-plugin-dev-platform`; move ~49,100 LOC per `core-decoupling-checklist.md`; port the UI; stand up the repo's own GHCR + SBOM + signing pipeline. **Do not delete the `publicPaths` exemptions until P3 is proven on the live runner phone-home path.** | Dev Platform installs and uninstalls from its own repo |
 | **P5** | Migration ownership handoff (no renumbering) + ledger seed, tested against a database restored from a production snapshot. Its own PR, its own rollback story. | Plugin owns its schema |

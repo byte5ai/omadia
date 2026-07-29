@@ -30,9 +30,9 @@ Five decisions were wrong or under-specified. All five are corrected here and in
 
 | # | Bug | Evidence | Status |
 |---|---|---|---|
-| **B1** | **`ctx.services.get` is completely ungated.** `platform/pluginContext.ts:230-233` is a bare pass-through. Any installed plugin can call `ctx.services.get('graphPool')` and receive the superuser `pg.Pool` — full read/write on `users`, `conductor_runs`, everything. No manifest declaration, nothing in the install dialog | Read the file — the accessor has no permission check. The file's own comment concedes it: *"naked service-locator; enforcement lives at the consumer seam"* | **Verified.** Biggest hole found in this epic, and it is live today |
+| **B1** | **`ctx.services.get` is completely ungated.** `platform/pluginContext.ts:230-233` is a bare pass-through. Any installed plugin can call `ctx.services.get('graphPool')` and receive the `graphPool` — the same pool core uses. (The "superuser" characterisation is unproven; the ungated access is not.) No manifest declaration, nothing in the install dialog | Read the file — the accessor has no permission check. The file's own comment concedes it: *"naked service-locator; enforcement lives at the consumer seam"* | **Verified.** Biggest hole found in this epic, and it is live today |
 | **B2** | **`ServiceRegistry` is never disposed on deactivate.** No owner tracking, no `disposeBySource`. `toolPluginRuntime.deactivate()` disposes routes and uiRoutes but not services — so a provider whose `close()` forgets leaves the service registered on a torn-down module, and reinstall then throws `duplicate provider` | `serviceRegistry.ts` has only the duplicate-provider throw; `deactivate()` has no services call | **Verified.** Exactly the bug class PR #536 fixed for Express routers, one layer down |
-| **B3** | **All five core migrators race on multi-replica boot.** No advisory lock: two replicas read an empty ledger, both execute. `IF NOT EXISTS` hides it; `0025`'s `ADD CONSTRAINT` does not (`42710`, boot fails) | Every migrator is read-ledger → filter → apply, unguarded | Reported by design; **fix independently of #470** |
+| **B3** | **At least eight core migrators race on multi-replica boot.** No advisory lock: two replicas read an empty ledger, both execute. `IF NOT EXISTS` hides it; `0025`'s `ADD CONSTRAINT` does not (`42710`, boot fails) | Every migrator is read-ledger → filter → apply, unguarded | Reported by design; **fix independently of #470** |
 | **B4** | **`.sql` is not in the ZIP extension allowlist.** `zipExtractor.ts:20-41`. A distributed plugin cannot ship migrations at all | Confirmed by grep — `.sql` absent | **Verified. Blocks G4** exactly as the missing `.css` blocked G7 |
 | **B5** | **The conductor dev-job step is dead code in production.** `conductor/index.ts:209-232` builds the executor with **no** `devJob` dep, so the `runExecutor.ts:203` branch is always false and nothing ever schedules the reconciliation sweep | Its own comment says "W4 schedules this on a timer" — W4 never did | Reported by design. **Good news:** almost certainly zero live `dev_job` awaits, so H2's backwards-compatibility is nearly free |
 | **B6** | **Stale plugin grants.** `dev_repo_plugin_grants` is never cleaned on uninstall. Uninstall B, reinstall something claiming the same id, and it inherits the operator's consent silently. `plugin_mcp_grants` likely has the identical bug | No FK, no cleanup hook | Reported by design |
@@ -69,6 +69,34 @@ repo. Narrow it one release later.
 
 ---
 
+## 2.5 Corrections from the adversarial deep-check
+
+A full verification pass against the code (GPT-5.6) found eleven errors in these documents.
+The load-bearing ones:
+
+| Claim | Reality | Consequence |
+|---|---|---|
+| **Four background loops**; `ctx.devJobs` and the conductor step are live capabilities | **Three capabilities are dead in production**: the conductor step (no `devJob` dep), `ctx.devJobs` (`provide('devJobs', …)` exists nowhere in `src/`, so it always throws), and tracker polling (never constructed) | Acceptance would have certified preservation of capabilities the operator never had. Decide *delete* or *wire up in the plugin* — P2b |
+| **34 HTTP endpoints** | **35 business / 36 handlers.** The LLM proxy has two, and the CLI's liveness probe `GET /llm/` was **absent from the matrix** | A missing capability is the dangerous direction; this is the one that was missing |
+| `wireDevPlatform ↔ routes` is a **real ESM cycle** | **Layering inversion only.** `wireDevPlatform` is imported solely by `index.ts`; no route imports back | C3 is boundary cleanup, not a fix for hoist-dependent behaviour. Don't sell it as the latter |
+| **Five** migrators race on boot | **At least eight** | Worse than stated; the advisory-lock fix is broader |
+| `ctx.services.get` exposes the **superuser** pool | Hole confirmed; the *superuser* characterisation is unproven | Still a real ungated-capability hole. Don't overstate the privilege level |
+| `dev_repo_plugin_grants` stale-grant bug | The MCP grant bug is live; the **dev-repo grant mechanism itself is unwired** | Fix `plugin_mcp_grants`; the dev-repo half is moot until wired |
+| Arbitrary Tailwind values **cannot** be pre-generated | An *exact* arbitrary value can (`@source inline("w-[137px]")` emits it). The **unbounded universe** cannot | The vocabulary argument holds; the absolute phrasing was wrong. And ingest sees compiled Vite JS, not JSX attributes — "reject `[` in class attributes" is under-specified |
+| `src/devplatform` = 54 files / 14,498 LOC | **53 / 14,457** | Stale; the checklist is a snapshot, which is why the ratchet exists |
+| §4.1 vs §4.2 on `DevJob*` type ownership | **They contradict each other** | Two implementers would build incompatible package boundaries. §4.2 wins: types move to the plugin repo |
+| C1 "publish to public npm" | Residue of the corrected D1 | Removed below |
+| Proposed capability `pgPool@1` | The existing contract is **`graphPool@1`**, already provided by `harness-knowledge-graph-neon` | A second D1-class error: inventing a name that contradicts established practice. Use `graphPool@1` |
+
+Also flagged and accepted: a Vite multi-file SPA is **not** supported by today's plugin
+contract (the boilerplate mandates single-file HTML and a `tsc`-only build), so P2 is viable
+only after C8 ships the static-serving contract. And `permissions.public_paths` /
+`permissions.sql` are future fields — unknown manifest keys are silently ignored today, not
+rejected, so a plugin declaring them against an unpatched core would activate with no grant
+and no error.
+
+---
+
 ## 3. The sequence
 
 Governing trick: **copy → prove → delete.** For a long stretch both implementations exist and
@@ -79,13 +107,13 @@ core's is the live one.
 | # | PR | Exit condition |
 |---|---|---|
 | **B-fix** | The three live bugs that stand alone: `ServiceRegistry` owner tracking + `disposeBySource` + the `deactivate` call (B2); advisory lock in all five migrators (B3); `.sql` in the allowlist (B4) | Independently valuable, zero contract change |
-| **C1** | Publish `@omadia/plugin-api` for real: un-private, un-gate the `if: false` publish job, **add a `.d.ts` golden-snapshot test** | Third parties can depend on it. The snapshot is what makes the contract machine-checked |
+| **C1** | **Add a `.d.ts` golden-snapshot test** to `@omadia/plugin-api`. **No publishing** — the plugin repo consumes it by `file:`/vendored `.d.ts`/git tag (D1). The package stays `private: true` | The contract becomes machine-checked. Today nothing stops a breaking change to `PluginContext` landing silently — and after the split that silence is an incident in another repo |
 | **C2** | **G8**: `DevJob*` types → `@omadia/dev-platform-plugin-api`; delete `PluginContext.devJobs` and the `admin-v1` DTO fields; grant-gate `services.get` + per-caller factory (**closes B1**) | Break taken once, deliberately, before any publish |
 | **C3** | Mechanical decoupling: break the `wireDevPlatform ↔ routes` cycle; collapse the 41 config keys | `index.ts` reduced to one `assembleDevPlatform(cfg)` |
 | **C4** | **H1**: manifest-declared, operator-consented public-path grants + **exclusive prefix ownership** + the terminating early mount. The two static exemptions **stay** | Belt and braces, zero risk |
 | **C5** | **H2**: generic long-running step-kind registry + `await_kind` column replacing the `<> 'dev_job'` literal. Core's own dev-job re-registers *through* the new registry | The registry is proven by its first consumer while that consumer is still in-tree |
 | **C6** | **G2** `auth:'session'` composed *inside* the disposed guard; **G3** `rawBody` via a route-local parser at the plugin's own prefix | Webhook HMAC works through the generic path |
-| **C7** | **G4** `pgPool` capability (gated on `permissions.sql`) + shared `runPluginMigrations` with advisory lock, ledger-name validation, empty-dir throw, and a `MigrationReport` | Plugins can own tables |
+| **C7** | **G4** gate the EXISTING `graphPool@1` capability behind `permissions.sql` (do NOT invent `pgPool`) + shared `runPluginMigrations` with advisory lock, ledger-name validation, empty-dir throw, and a `MigrationReport` | Plugins can own tables |
 | **C8** | **G7/P3b**: extract the `@theme inline` bridge out of `globals.css`; generate + serve the plugin Tailwind subset; static-asset serving; ingest check for arbitrary values. Prove with a throwaway SPA | **← ABANDONMENT CHECKPOINT** |
 
 **If the epic stops at C8, everything shipped is still net-positive**: five reusable platform

@@ -82,11 +82,18 @@ const ZONES = [
   { name: 'middleware/sidecars', path: 'middleware/sidecars' },
   { name: 'middleware/migrations', path: 'middleware/migrations' },
   { name: 'middleware/package.json', path: 'middleware/package.json' },
+  // Operator-facing config docs. A zone gap here let the count read 0 while
+  // .env.example still documented 15 DEV_* keys — found by adversarial review.
+  { name: 'middleware/env-example', path: 'middleware/.env.example' },
   { name: 'web-ui/app', path: 'web-ui/app' },
   { name: 'web-ui/messages', path: 'web-ui/messages' },
+  // Root-level config only — maxDepth 1, or this rescans web-ui/app and
+  // double-counts it against the zone above. Overlapping zones make the
+  // total meaningless.
+  { name: 'web-ui/config', path: 'web-ui', maxDepth: 1 },
   { name: 'ci-workflows', path: '.github/workflows' },
   { name: 'scripts', path: 'scripts' },
-  { name: 'compose', path: '.', globs: ['docker-compose*.yaml', 'Dockerfile'] },
+  { name: 'compose', path: '.', maxDepth: 1 },
 ];
 
 /** Build output and vendored code regenerate; they are not source. */
@@ -104,6 +111,7 @@ function rgCount(zone) {
   for (const p of PATTERNS) args.push('-e', p);
   for (const g of EXCLUDE_GLOBS) args.push('--glob', g);
   if (zone.globs) for (const g of zone.globs) args.push('--glob', g);
+  if (zone.maxDepth !== undefined) args.push('--max-depth', String(zone.maxDepth));
   args.push('--', zone.path);
 
   let out = '';
@@ -199,10 +207,15 @@ if (!baseline) {
   process.exit(1);
 }
 
-if (result.total > baseline.total) {
-  const worse = Object.entries(result.zones)
-    .filter(([name, count]) => count > (baseline.zones[name] ?? 0))
-    .map(([name, count]) => `  ${name}: ${String(baseline.zones[name] ?? 0)} → ${String(count)}`);
+// Per-zone, not just the total. An aggregate-only check passes when one zone
+// falls while another rises by the same amount — which is exactly what a
+// half-finished move looks like.
+const regressed = Object.entries(result.zones)
+  .filter(([name, count]) => count > (baseline.zones[name] ?? 0))
+  .map(([name, count]) => `  ${name}: ${String(baseline.zones[name] ?? 0)} → ${String(count)}`);
+
+if (regressed.length > 0 || result.total > baseline.total) {
+  const worse = regressed.length > 0 ? regressed : ['  (total rose without a single zone rising)'];
   console.error(
     `Core re-acquired Dev Platform references: ${String(baseline.total)} → ${String(result.total)}\n\n` +
       `${worse.join('\n')}\n\n` +

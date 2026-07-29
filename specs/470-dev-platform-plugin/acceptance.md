@@ -16,7 +16,7 @@ every row passes *and* the decoupling ratchet reads zero.
 
 | Guard | What it proves | Status |
 |---|---|---|
-| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight; "finished" is machine-checked (count 0), not asserted | **In place.** Baseline **3,171** across 12 zones |
+| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight | **In place.** Baseline **3,181** across **14** zones, per-zone regression check |
 | `middleware/test/devplatform/**` (54 files) | The behaviour itself, at unit/integration level. These **move with the plugin** and must stay green in the new repo | In place, moves in P4 |
 | §2 capability matrix below | Nothing is silently dropped in the move | **Written here; not yet automated** |
 | §3 install/uninstall | The result is genuinely installable | **Not yet built** — needs P3/P4 |
@@ -29,16 +29,59 @@ node scripts/check-core-decoupling.mjs --report   # per-zone breakdown
 node scripts/check-core-decoupling.mjs --update   # lower the baseline (never raises)
 ```
 
-The count may only fall. Raising it requires hand-editing the committed baseline, so a new
-coupling shows up in review instead of slipping in.
+The count may only fall, **per zone** — an aggregate-only check would pass while one zone
+fell and another rose, which is what a half-finished move looks like. Raising a baseline
+requires hand-editing the committed file, so a new coupling shows up in review.
+
+### What the ratchet does NOT prove — corrected after review
+
+The earlier claim that "zero is a machine-checked definition of completion" was too strong.
+Two flaws were found and fixed, and one limitation is inherent:
+
+- **Fixed — a zone gap.** `middleware/.env.example` (19 references) was covered by no zone,
+  so the count could have read 0 while it still documented `DEV_*` keys. Two more zones
+  added; baseline moved 3,171 → 3,181.
+- **Fixed — overlapping zones.** A root-config zone rescanned the whole `web-ui` tree and
+  double-counted `web-ui/app`. Overlapping zones make the total meaningless; all zones are
+  now depth-bounded and disjoint.
+- **Inherent — it counts identifiers, not behaviour.** Zero means "core names nothing
+  dev-platform-shaped". It does **not** mean the plugin works, that nothing was lost, or
+  that a coupling expressed without a matching identifier is gone. §2 and §3 are what
+  cover those, and neither is automated yet.
+
+So: the ratchet is a necessary condition for done, not a sufficient one.
 
 ---
 
 ## 2. Capability matrix
 
-**34 HTTP endpoints, 3 chat tools, 1 plugin service, 4 background loops, 4 UI screens,
-1 chat surface, 1 CLI, 1 conductor step kind.** Every row must have an owner and a probe
-after extraction. `→` marks a capability whose *mechanism* has to exist in core first —
+> ### ⚠️ Three of these capabilities are DEAD IN PRODUCTION TODAY
+>
+> Found by adversarial review of this document, verified against the code. The matrix
+> below was written from the *source*, and source presence is not production reality:
+>
+> | Capability | Why it never runs |
+> |---|---|
+> | **Conductor `dev.job` step** | `conductor/index.ts:209` constructs the executor with no `devJob` dep, so the `runExecutor.ts` dispatch branch is always false and the reconciliation sweep is never scheduled |
+> | **`ctx.devJobs` plugin service** | `provide('devJobs', …)` **does not exist anywhere in `src/`**. The accessor resolves lazily, so it throws `'dev-platform host service unavailable'` on every call |
+> | **Tracker polling** | `TrackerPoller` has a factory and a `start()`, but nothing constructs or starts it in production |
+>
+> **Do not "preserve" them.** Extraction acceptance that certifies these would be
+> certifying a capability the operator never had. For each: decide *delete* or
+> *wire it up in the plugin*, and record which — that decision belongs in P2b.
+>
+> This is the failure mode a file-level checklist cannot catch, and it is also one the
+> capability matrix got wrong in the opposite direction: listing dead things as live.
+> Every remaining row below needs a *production* probe, not a source reference.
+
+**35 HTTP endpoints (36 concrete handlers), 3 chat tools, 1 plugin service, 3 live
+background loops (+1 dead), 4 UI screens, 1 chat surface, 1 CLI, 1 conductor step kind.**
+Every row must have an owner and a probe after extraction.
+
+Corrected from "34 endpoints / 4 loops" after review. The miscount hid a real omission:
+the LLM proxy has **two** handlers, and only one was listed — `GET /api/v1/dev-runner/llm/`
+is a **liveness probe the CLI depends on**, and it was absent from the matrix entirely.
+A missing capability is the dangerous direction; this is the one the matrix missed. `→` marks a capability whose *mechanism* has to exist in core first —
 those are the H1/H2/H3 blockers from the checklist.
 
 ### 2.1 Operator REST — jobs (`/api/v1/admin/dev-platform`)
@@ -88,7 +131,8 @@ depend on a plugin being able to declare a public path *and* own its prefix excl
 | Upload diff | `POST /jobs/:id/diff` | secret scan runs |
 | Phase / final result | `POST /jobs/:id/{phase-result,result}` | phase engine advances |
 | Daemon job policy | `GET /internal/job-policy/:jobId` | daemon token only; runner token rejected |
-| **LLM proxy** | `/llm` passthrough | model allowlist + token cap enforced, usage accounted |
+| **LLM proxy — liveness** | `GET /api/v1/dev-runner/llm/` | the CLI probes this before use; **was missing from this matrix** |
+| **LLM proxy — messages** | `POST /api/v1/dev-runner/llm/v1/messages` | model allowlist + token cap enforced, usage accounted |
 
 ### 2.5 Triggers
 

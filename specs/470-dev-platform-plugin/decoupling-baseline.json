@@ -1,5 +1,5 @@
 {
-  "total": 3171,
+  "total": 3181,
   "zones": {
     "middleware/src": 1621,
     "middleware/test": 925,
@@ -8,10 +8,12 @@
     "middleware/sidecars": 180,
     "middleware/migrations": 70,
     "middleware/package.json": 0,
+    "middleware/env-example": 19,
     "web-ui/app": 192,
     "web-ui/messages": 4,
+    "web-ui/config": 0,
     "ci-workflows": 16,
     "scripts": 30,
-    "compose": 39
+    "compose": 30
   }
 }
