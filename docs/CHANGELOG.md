@@ -44,8 +44,8 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   to `middleware/src/auth/publicPaths.ts`'s exemption list — only `.../chat`
   is public. Key management stays behind the normal operator session, like
   every other admin surface in this app — see the security-fixup entry below
-  for how that's actually enforced (an earlier note here claimed the
-  publicPaths omission alone was sufficient; it wasn't).
+  for how that's enforced both implicitly (the kernel's broad `/api`
+  session gate) and, after that entry's change, explicitly as well.
 - Review fixups: the internal `conversationId` handed to `CoreApi` is now
   namespaced by key id (`${key.id}:${callerConversationId}`) so two
   different API keys can never collide on the same core-side scope, even
@@ -72,12 +72,18 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `peerDependencies` on `@omadia/channel-sdk` / `@omadia/plugin-api` are now
   pinned to `^0.1.0` instead of `"*"`, per `CONTRIBUTING.md`'s dependency
   hardening policy.
-- Security fixup: `/api/public/v1/admin/keys` was, in fact, completely
-  unauthenticated — mounting via `core.registerRouter` applies only an
-  active/inactive gate, never `requireAuth`, and NOT being in
-  `publicPaths.ts` does nothing to change that (any anonymous caller could
-  mint, list, or revoke API keys). Fixed at the kernel level, not just in
-  this plugin: `PluginContext` gains an optional `ctx.operatorAuth`
+- Security fixup: an earlier note here overstated this as a live
+  authentication bypass. It wasn't — `/api/public/v1/admin/keys` was
+  already covered by the kernel's pre-existing broad `app.use('/api',
+  requireAuth, ...)` mount (`src/index.ts`), which runs ahead of
+  `pluginRouteRegistry.mountAll(app)` in boot order and gates every
+  `/api/*` path not listed in `publicPaths.ts`, same as any other
+  non-exempted channel route. That coverage is real but implicit — it
+  depends on mount order and on this path never being added to
+  `publicPaths.ts`, either of which a future refactor could break silently.
+  Hardened at the kernel level so the guarantee doesn't depend on that
+  coincidence, and so future plugins needing an admin surface get a
+  reusable, explicit check: `PluginContext` gains an optional `ctx.operatorAuth`
   (`OperatorAuthAccessor`, `packages/plugin-api/src/pluginContext.ts`),
   published by the kernel and threaded into every plugin runtime
   (`ToolPluginRuntime`, `DynamicAgentRuntime`, `DefaultChannelRegistry`) so

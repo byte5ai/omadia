@@ -707,13 +707,30 @@ Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
   /api/public/v1/admin/keys/:id/revoke`) liegt bewusst unter demselben
   `/api/public/v1`-Prefix, ist aber **nicht** in
   `src/auth/publicPaths.ts`s Exemption-Liste — nur `.../chat` ist public.
-  Das allein war aber NICHT der Auth-Mechanismus (ein früherer Stand dieser
-  Notiz behauptete das fälschlich): `core.registerRouter` — der Weg, über
-  den dieses Plugin mountet — prüft nur active/inactive, nie Auth
-  (`requireAuth` hängt ausschließlich an expliziten `app.use(path,
-  requireAuth, handler)`-Stellen in `src/index.ts`, nie um einen
-  Plugin-Router herum). Der reale Fix (Kernel-Ebene, Security-Nachbesserung):
-  `PluginContext` bekommt ein optionales `ctx.operatorAuth`
+  Ein früherer Stand dieser Notiz behauptete, das sei ein kompletter
+  Auth-Bypass gewesen (jeder anonyme Caller könnte Keys minten/listen/
+  revoken); das war empirisch falsch. `src/index.ts` mountet früh im Boot
+  `app.use('/api', requireAuth, createChatRouter(...))` (der OB-106-Hotfix)
+  — lange bevor `pluginRouteRegistry.mountAll(app)` später im selben Boot
+  läuft. Express wertet Middleware in Mount-Reihenfolge für den gesamten
+  `/api`-Prefix aus, unabhängig davon, welcher Router den Pfad am Ende
+  bedient — `requireAuth` lief also bereits vor JEDEM `/api/*`-Request,
+  auch plugin-gemounteten, außer der Pfad steht in
+  `publicPaths.ts`. `/api/public/v1/admin/keys` stand dort nie, war also
+  schon durch dieses Gate geschützt — genau wie jede andere
+  nicht-exemptierte Channel-Route. Eine Minimal-Reproduktion mit dem
+  echten Mount-Order (echtes `createRequireAuth` + `publicPaths`) bestätigt:
+  ein anonymer Request auf `/api/public/v1/admin/keys` bekommt `401
+  {code:'auth.missing'}` von diesem Gate, bevor er überhaupt den
+  Plugin-Router (der selbst keine eigene Auth hat, da `core.registerRouter`
+  nur active/inactive prüft) erreicht.
+
+  Diese Absicherung ist real, aber implizit — sie hängt an der Mount-
+  Reihenfolge und daran, dass der Pfad nie in `publicPaths.ts` landet.
+  Beides kann ein künftiger Refactor versehentlich brechen, ohne dass
+  etwas sichtbar fehlschlägt. Deshalb der reale Fix (Kernel-Ebene,
+  Security-Nachbesserung), der die Absicherung explizit statt implizit
+  macht: `PluginContext` bekommt ein optionales `ctx.operatorAuth`
   (`OperatorAuthAccessor`), vom Kernel published und in jede
   Plugin-Runtime durchgereicht (`ToolPluginRuntime`, `DynamicAgentRuntime`,
   `DefaultChannelRegistry`). `hasValidSession(cookieHeader)` nutzt exakt
@@ -722,8 +739,11 @@ Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
   keine zwei, die auseinanderlaufen können. `adminKeysRouter.ts` wendet das
   jetzt als Router-Middleware VOR jedem Handler an: fehlende/ungültige
   Session → `401`; kein `ctx.operatorAuth` verfügbar → `503` (fail closed,
-  nie stillschweigend offen). Siehe `docs/security-architecture.md` § 8 für
-  die volle Mechanik.
+  nie stillschweigend offen). Der Vorteil ist, dass die Garantie nicht mehr
+  an der Mount-Reihenfolge hängt und künftige Plugins mit Admin-Fläche den
+  Accessor wiederverwenden können, statt sich auf dieselbe Koinzidenz zu
+  verlassen. Siehe `docs/security-architecture.md` § 8 für die volle
+  Mechanik.
 - **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
   extend to other flows" — weitere Flows sind Folge-Issues).
 

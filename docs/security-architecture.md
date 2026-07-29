@@ -167,18 +167,41 @@ a bearer API key, so it is explicitly exempted from the session middleware
 (`middleware/src/auth/publicPaths.ts`, `${API_PREFIX}/chat` only).
 
 **Key administration (`/api/public/v1/admin/keys`) — kernel-published
-`ctx.operatorAuth`, not `publicPaths.ts`.** An earlier revision of this
-document claimed key administration "stays behind the normal operator
-session cookie, same as every other admin surface" purely by virtue of NOT
-being in `publicPaths.ts`'s exemption list. That claim was false and left
-the admin routes completely unauthenticated: this plugin mounts its router
-via `core.registerRouter` (`middleware/src/channels/routeRegistry.ts`), which
-gates only on the channel's active/inactive state, never authentication —
-`requireAuth` is applied per-route via `app.use(path, requireAuth, handler)`
-call sites in `middleware/src/index.ts`, and is never injected around a
-plugin-contributed router (see the `RoutesAccessor` doc comment on
-`PluginContext`: "the kernel does not inject middleware around the
-contributed router").
+`ctx.operatorAuth`, in addition to the broad `/api` session gate.**
+`middleware/src/index.ts` mounts `app.use('/api', requireAuth,
+createChatRouter(...))` (the OB-106 hotfix) early in server boot, well
+before `pluginRouteRegistry.mountAll(app)` runs later in the same boot
+sequence. Express evaluates middleware in mount order for the whole `/api`
+prefix regardless of which router ultimately answers a given path, so
+`requireAuth` already runs in front of every `/api/*` request — including
+plugin-mounted routes — unless that specific path is listed in
+`middleware/src/auth/publicPaths.ts`'s exemption list. `/api/public/v1/admin/keys`
+was never added to that list (only `.../chat` was, deliberately), so it was
+already covered by this session gate, the same mechanism that protects
+every other channel's non-exempted routes (see `publicPaths.ts`'s own doc
+comment). An earlier revision of this document instead described the admin
+routes as reachable by any anonymous caller; that was wrong — it read
+`core.registerRouter` (`middleware/src/channels/routeRegistry.ts`, which
+does only gate on the channel's active/inactive state) as the sole gate in
+front of the router, without accounting for the broad `/api` mount that
+Express already applies ahead of it. A minimal reproduction mirroring the
+real mount order (real `createRequireAuth` + `publicPaths`, same mount
+sequence as `index.ts`) confirms an anonymous request to
+`/api/public/v1/admin/keys` gets `401 {code:'auth.missing'}` from that gate
+before ever reaching the plugin router.
+
+That coverage is real, but it depends on an *implicit* invariant: the
+broad `/api` mount happening to run before this plugin's router is mounted,
+and this path happening not to be added to `publicPaths.ts`. Either one is
+easy to break by accident in a future refactor — reordering mounts, moving
+this plugin behind a different prefix, or a well-meaning future PR adding
+`/api/public/v1/admin` to the exemption list by pattern-matching too
+broadly against the neighboring `/chat` entry. None of that would raise an
+error; the admin surface would just quietly stop being gated. So the fix
+below adds an *explicit* check inside the plugin itself, so the guarantee
+travels with the router regardless of where or in what order it gets
+mounted — and publishes a reusable accessor so future plugins that need an
+admin surface don't have to rely on the same mount-order coincidence.
 
 The real fix: `PluginContext` now exposes an optional `ctx.operatorAuth`
 (`OperatorAuthAccessor`, `middleware/packages/plugin-api/src/pluginContext.ts`),
