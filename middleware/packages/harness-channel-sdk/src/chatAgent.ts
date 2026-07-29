@@ -2,6 +2,7 @@ import type { ChannelKind, PrivacyReceipt, RecalledContext } from '@omadia/plugi
 import type {
   AgentConsultation,
   DelegatedAnswer,
+  DirectLineSessionState,
   FollowUpOption,
   SemanticAnswer,
 } from './outgoing.js';
@@ -475,6 +476,13 @@ export interface ChatTurnResult {
    * reword it. Omitted on ordinary turns.
    */
   delegatedAnswer?: DelegatedAnswer;
+  /**
+   * #445 — sticky Direct Line indicator for this turn. Set by the harness in
+   * `executeDirectLine`; `toSemanticAnswer` forwards it to
+   * `SemanticAnswer.directLineSession`. Present on every turn while the
+   * feature is enabled (including `{ active: false }`), omitted when off.
+   */
+  directLineSession?: DirectLineSessionState;
 }
 
 /**
@@ -690,6 +698,12 @@ export type ChatStreamEvent =
        * The orchestrator cannot suppress or reword it.
        */
       delegatedAnswer?: DelegatedAnswer;
+      /**
+       * #445 — sticky Direct Line indicator; see ChatTurnResult.directLineSession.
+       * Rides the existing `done` event exactly like `delegatedAnswer` rather
+       * than adding a stream event type, so the web-ui folds it in one hop.
+       */
+      directLineSession?: DirectLineSessionState;
       /**
        * #332 Layer 1 (gap-closure) — curated, tamper-evident projection of
        * `runTrace.agentInvocations`, identical in shape and derivation to

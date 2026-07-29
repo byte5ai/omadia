@@ -1,14 +1,21 @@
 import { createSign } from 'node:crypto';
 
 /**
- * Epic #470 W2 — the shared GitHub App JWT minter.
+ * The shared GitHub App JWT minter.
  *
  * A GitHub App authenticates to the API as itself with a short-lived RS256 JWT
  * signed by its private key, then exchanges that for an installation token. Two
- * places mint this JWT: the existing issue-reporting provider
- * (`builder/githubAppAuth.ts`) and W2's scoped, revocable job tokens. Rather than
- * duplicate the signing — a security primitive is the last thing to copy-paste —
- * both call this.
+ * places mint this JWT: the issue-reporting provider
+ * (`plugins/builder/githubAppAuth.ts`) and the dev platform's scoped, revocable
+ * job tokens. Rather than duplicate the signing — a security primitive is the
+ * last thing to copy-paste — both call this.
+ *
+ * Lives in `services/` rather than under `devplatform/` where it was first
+ * written (epic #470 W2): core's builder imported it from there, which made the
+ * dev-platform tree a dependency of core and blocked extracting that tree into
+ * its own repository. The primitive itself is generic GitHub App auth and has
+ * nothing dev-platform-specific about it.
+ * See `specs/470-dev-platform-plugin/core-decoupling-checklist.md`.
  */
 
 /** GitHub rejects a JWT whose lifetime exceeds 10 minutes; 9 leaves headroom. */

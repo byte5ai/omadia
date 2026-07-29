@@ -66,6 +66,16 @@ const ConfigSchema = z.object({
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
     .default(false),
+  // #445 — sticky Direct Line. When on, a bare `#<agent>` binds the
+  // conversation to that specialist until the user sends `#end` /
+  // `#orchestrator`. Default OFF: not every channel can show which specialist
+  // is answering (Telegram renders neither the consulted footer nor the
+  // delegated-answer attribution today), and an invisible sticky mode would
+  // break the "never ambiguous who is answering" requirement this exists for.
+  ORCHESTRATOR_DIRECT_LINE_STICKY: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(false),
   MODEL_ROUTING_CLASSIFIER_MODEL: z.string().min(1).optional(),
   MODEL_ROUTING_SIMPLE_MODEL: z.string().min(1).optional(),
   MODEL_ROUTING_COMPLEX_MODEL: z.string().min(1).optional(),
@@ -198,6 +208,30 @@ const ConfigSchema = z.object({
     .default(true),
   DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR: z.coerce.number().int().positive().default(5),
   DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR: z.coerce.number().int().positive().default(2),
+
+  // Issue #437 — Conductor's generic inbound webhook route (`POST /api/hooks/:endpointId`).
+  // Per-endpoint secrets already gate every request (Vault-backed, see webhookEndpointStore.ts);
+  // this is the same operator-facing global kill switch DEV_WEBHOOKS_ENABLED is for the
+  // dev-platform's GitHub route, kept separate because the two features are unrelated.
+  CONDUCTOR_WEBHOOKS_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(true),
+  // Per-endpoint cap over a rolling minute — closes the gap dedupe alone leaves open
+  // (a correctly-signed sender can mint a fresh delivery id on every call, so it
+  // would otherwise start an unbounded number of workflow runs). Enforced atomically
+  // in ConductorWebhookEndpointStore.claim(), same transaction as the dedupe insert.
+  CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE: z.coerce.number().int().positive().default(60),
+  // Review finding: the operator UI must show the inbound endpoint URL
+  // (`/api/hooks/:endpointId`) as an address the sender can ACTUALLY reach — the
+  // middleware's own base URL, not `window.location.origin` (in the standard local
+  // dev setup that's the Next.js dev server, which only proxies `/bot-api/*` per
+  // `web-ui/next.config.ts`; `/api/hooks/*` there 404s). Same fallback shape as
+  // `FLOW_PUBLIC_BASE_URL ?? PUBLIC_BASE_URL`: set this only when the inbound
+  // webhook route must be advertised on a different origin than the rest of the
+  // admin UI (e.g. PUBLIC_BASE_URL is deliberately the browser-facing Next.js
+  // origin in dev, while the webhook route only ever lives on the middleware).
+  CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL: z.string().url().optional(),
 
   // Epic #470 W4 — default per-job LLM cost budget (USD) applied when neither the
   // job nor its repo sets one (spec §5). Token budgets have NO default: they are

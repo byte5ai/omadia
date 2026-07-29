@@ -3,11 +3,12 @@ import { randomUUID } from 'node:crypto';
 import type { Express, RequestHandler } from 'express';
 import type { Pool } from 'pg';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
-import type { KnownRefs } from '@omadia/conductor-core';
+import type { JsonObject, KnownRefs } from '@omadia/conductor-core';
 
 import { runConductorMigrations } from './migrator.js';
 import { ConductorWorkflowStore } from './workflowStore.js';
 import { ConductorRunStore } from './runStore.js';
+import type { ConductorRun } from './runStore.js';
 import { ConductorAwaitStore } from './awaitStore.js';
 import type { ConductorAwait } from './awaitStore.js';
 import type { ApprovalReminder } from '@omadia/plugin-api';
@@ -27,6 +28,31 @@ import type { CompositeTemplateCatalog } from './templateCatalog.js';
 import { createTemplateStore } from './templateStore.js';
 import type { ConductorTemplateStore } from './templateStore.js';
 import { createConductorRouter } from './routes.js';
+import type { SecretVault } from '../secrets/vault.js';
+import { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
+import { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
+import { ConductorWebhookDispatcher } from './webhookDispatcher.js';
+import { ConductorWebhookRetryWorker } from './webhookRetryWorker.js';
+import { assertOutboundUrlAllowed } from './webhookOutbound.js';
+import type { ConductorWebhookInboundDeps } from '../routes/conductorWebhooksInbound.js';
+
+/** Issue #437 — the run.completed/run.failed webhook payload shape. Shared between
+ *  `notifyRunEnded`'s inline hook and the retry worker's reconciliation pass (below)
+ *  so the two paths can never drift into delivering differently-shaped payloads for
+ *  the same event. Best-effort workflow-slug/name enrichment: a lookup miss still
+ *  delivers the bare run fields rather than dropping the event. */
+async function buildRunEventPayload(run: ConductorRun, workflowStore: ConductorWorkflowStore): Promise<JsonObject> {
+  const version = await workflowStore.getVersion(run.workflowVersionId).catch(() => null);
+  const workflow = version ? await workflowStore.getById(version.workflowId).catch(() => null) : null;
+  return {
+    runId: run.id,
+    status: run.status,
+    workflowSlug: workflow?.slug ?? null,
+    workflowName: workflow?.name ?? null,
+    triggerKind: run.triggerKind,
+    context: run.context,
+  };
+}
 
 export { runConductorMigrations } from './migrator.js';
 export { ConductorWorkflowStore } from './workflowStore.js';
@@ -52,6 +78,14 @@ export { createTemplateStore, TemplateIdExistsError, TemplateInvalidError } from
 export type { ConductorTemplateStore, TemplateRecord, TemplateStatus } from './templateStore.js';
 export { createCompositeTemplateCatalog, loadTemplateCatalog, userTemplateVisible } from './templateCatalog.js';
 export type { CompositeTemplateCatalog, TemplateSummary } from './templateCatalog.js';
+export { ConductorWebhookEndpointStore, generateInboundDeliveryId } from './webhookEndpointStore.js';
+export type { ConductorWebhookEndpoint, WebhookInboundOutcome } from './webhookEndpointStore.js';
+export { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
+export type { ConductorWebhookSubscription, ConductorWebhookDelivery, WebhookDeliveryStatus } from './webhookSubscriptionStore.js';
+export { ConductorWebhookDispatcher } from './webhookDispatcher.js';
+export { ConductorWebhookRetryWorker } from './webhookRetryWorker.js';
+export { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './webhookPostAction.js';
+export { assertOutboundUrlAllowed, WebhookUrlNotAllowedError } from './webhookOutbound.js';
 
 export interface ConductorWiring {
   workflowStore: ConductorWorkflowStore;
@@ -71,6 +105,15 @@ export interface ConductorWiring {
   /** Composite template catalog (bundled + user + plugin) — its plugin
    *  registration seam is what the plugin install service feeds (#478). */
   templateCatalog: CompositeTemplateCatalog;
+  /** Issue #437 — inbound endpoints + outbound subscriptions/dispatcher/retry worker. */
+  webhookEndpoints: ConductorWebhookEndpointStore;
+  webhookSubscriptions: ConductorWebhookSubscriptionStore;
+  webhookDispatcher: ConductorWebhookDispatcher;
+  webhookRetryWorker: ConductorWebhookRetryWorker;
+  /** Deps for the unauthenticated `/api/hooks/:endpointId` router, which is mounted
+   *  much earlier in `index.ts` (before `express.json()`) via a forward reference —
+   *  `index.ts` assigns this once `wireConductor` returns. */
+  webhookInboundDeps: ConductorWebhookInboundDeps;
 }
 
 /**
@@ -93,6 +136,22 @@ export async function wireConductor(deps: {
   eventCatalog?: { list(): string[]; byPluginId(): Record<string, string[]> };
   /** resolves a proactive sender for a channel (US5 reminders) — from the routines senderRegistry. */
   getProactiveSender?: (channel: string) => ProactiveSenderLike | undefined;
+  /** Per-agent-scoped secret vault (issue #437) — inbound endpoint secrets and outbound
+   *  subscription signing secrets live here under the `core:conductor` namespace, never
+   *  in a Postgres column or an API response body beyond their one-time creation reply. */
+  vault: SecretVault;
+  /** Global inbound kill switch (`CONDUCTOR_WEBHOOKS_ENABLED`). Default true. */
+  webhooksEnabled?: boolean;
+  /** Outbound delivery attempt cap + per-attempt timeout — defaults live in webhookDispatcher.ts. */
+  webhookMaxAttempts?: number;
+  webhookTimeoutMs?: number;
+  /** Per-endpoint inbound rate limit (`CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE`),
+   *  enforced atomically alongside the delivery-id dedupe. Default 60/minute. */
+  webhookInboundMaxPerMinute?: number;
+  /** Review finding — the middleware's own externally-reachable base URL
+   *  (`CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL` falling back to `PUBLIC_BASE_URL`), used to
+   *  build the absolute inbound endpoint URL the operator UI displays. */
+  webhookInboundBaseUrl?: string;
   log?: (msg: string) => void;
 }): Promise<ConductorWiring> {
   const log = deps.log ?? (() => undefined);
@@ -104,6 +163,49 @@ export async function wireConductor(deps: {
   const roleStore = new ConductorRoleStore(deps.pool);
   const scheduleStore = new ConductorScheduleStore(deps.pool);
   const channelBindingStore = new ConductorChannelBindingStore(deps.pool);
+
+  // Issue #437 — webhooks. Built before the executor so `notifyRunEnded` can dispatch
+  // outbound deliveries the moment a run reaches a terminal state.
+  const webhookEndpoints = new ConductorWebhookEndpointStore(deps.pool, deps.vault);
+  const webhookSubscriptions = new ConductorWebhookSubscriptionStore(deps.pool, deps.vault);
+  const webhookDispatcher = new ConductorWebhookDispatcher({
+    store: webhookSubscriptions,
+    ...(deps.webhookMaxAttempts !== undefined ? { maxAttempts: deps.webhookMaxAttempts } : {}),
+    ...(deps.webhookTimeoutMs !== undefined ? { timeoutMs: deps.webhookTimeoutMs } : {}),
+    log,
+  });
+  // Issue #437 finding — `notifyRunEnded` below dispatches fire-and-forget AFTER the
+  // run's terminal status is already committed; a process kill in that exact window
+  // loses the webhook permanently (no delivery row is ever created for it). This
+  // reconciliation pass finds terminal, non-dry-run runs from the last 24h with no
+  // delivery row yet for an enabled subscription and creates the missing one(s) —
+  // the already-running retry worker then delivers it on its next `claimDue` poll.
+  // 24h is a generous restart-recovery window; the gap this closes is normally only
+  // open for the length of a process restart.
+  const WEBHOOK_RECONCILE_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const reconcileMissingWebhookDeliveries = async (): Promise<void> => {
+    const sinceIso = new Date(Date.now() - WEBHOOK_RECONCILE_WINDOW_MS).toISOString();
+    const missing = await webhookSubscriptions.listMissingRunDeliveries(sinceIso);
+    for (const m of missing) {
+      const run = await runStore.get(m.runId).catch(() => null);
+      if (!run) continue; // shouldn't happen — the run this delivery would describe is gone
+      const payload = await buildRunEventPayload(run, workflowStore);
+      await webhookSubscriptions
+        .createDelivery({ subscriptionId: m.subscriptionId, event: `run.${m.status}`, payload })
+        .catch((err: unknown) => {
+          log(`[conductor] webhook reconciliation: creating delivery for run ${m.runId} failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+    }
+  };
+
+  const webhookRetryWorker = new ConductorWebhookRetryWorker({
+    store: webhookSubscriptions,
+    dispatcher: webhookDispatcher,
+    reconcile: reconcileMissingWebhookDeliveries,
+    log,
+  });
+  webhookRetryWorker.start();
+
   const executor = new ConductorRunExecutor({
     workflowStore,
     runStore,
@@ -114,6 +216,18 @@ export async function wireConductor(deps: {
       log,
     }),
     resolveRoleHolders: (key) => roleStore.resolve(key), // quorum='all' required-responder resolution
+    // Issue #437 — run-lifecycle outbound webhooks. Best-effort and fire-and-forget;
+    // a delivery lost to a crash in this exact window is recovered by
+    // `reconcileMissingWebhookDeliveries` above (issue #437 finding).
+    notifyRunEnded: (run) => {
+      const event = run.status === 'completed' ? 'run.completed' : 'run.failed';
+      void (async () => {
+        const payload = await buildRunEventPayload(run, workflowStore);
+        await webhookDispatcher.deliverEvent(event, payload);
+      })().catch((err: unknown) => {
+        log(`[conductor] webhook dispatch for run ${run.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    },
     log,
   });
 
@@ -220,8 +334,34 @@ export async function wireConductor(deps: {
       // Live known-reference sets for the STRICT template validation (stricter than 'POST /'
       // on purpose: a template instance must be runnable, not merely well-formed).
       templateKnownRefs,
+      webhookEndpoints,
+      webhookSubscriptions,
+      assertOutboundUrlAllowed: (url) => {
+        assertOutboundUrlAllowed(url); // throws WebhookUrlNotAllowedError — route catches + 400s it
+      },
+      ...(deps.webhookInboundBaseUrl ? { webhookInboundBaseUrl: deps.webhookInboundBaseUrl } : {}),
     }),
   );
 
-  return { workflowStore, runStore, awaitStore, roleStore, scheduleStore, channelBindingStore, executor, awaitWorker, resumeWorker, scheduleWorker, eventRouter, builderAgent, templateStore, templateCatalog };
+  // Issue #437 — deps for the unauthenticated inbound router mounted early in
+  // `index.ts` (before `express.json()`, via a forward reference this wiring assigns).
+  const webhookInboundRateLimit = { limit: deps.webhookInboundMaxPerMinute ?? 60, windowMs: 60_000 };
+  const webhookInboundDeps: ConductorWebhookInboundDeps = {
+    enabled: deps.webhooksEnabled ?? true,
+    getEndpoint: async (endpointId) => {
+      const ep = await webhookEndpoints.get(endpointId);
+      return ep ? { eventId: ep.eventId, enabled: ep.enabled } : null;
+    },
+    getSecret: (endpointId) => webhookEndpoints.getSecret(endpointId),
+    claim: (deliveryId, endpointId) => webhookEndpoints.claim(deliveryId, endpointId, webhookInboundRateLimit),
+    setOutcome: (deliveryId, endpointId, outcome) => webhookEndpoints.setOutcome(deliveryId, endpointId, outcome),
+    emit: (eventId, payload, source) => eventRouter.emit(eventId, payload, source),
+    log,
+  };
+
+  return {
+    workflowStore, runStore, awaitStore, roleStore, scheduleStore, channelBindingStore, executor, awaitWorker,
+    resumeWorker, scheduleWorker, eventRouter, builderAgent, templateStore, templateCatalog,
+    webhookEndpoints, webhookSubscriptions, webhookDispatcher, webhookRetryWorker, webhookInboundDeps,
+  };
 }

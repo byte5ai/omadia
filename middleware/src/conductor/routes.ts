@@ -26,6 +26,9 @@ import type { ConductorTemplateStore } from './templateStore.js';
 import type { TemplateSummary } from './templateCatalog.js';
 import { attachTemplateHints } from './templateHints.js';
 import { registerTemplateRoutes } from './templateRoutes.js';
+import type { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
+import type { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
+import { registerWebhookRoutes } from './webhookRoutes.js';
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -69,6 +72,20 @@ export interface ConductorRouterDeps {
   templateStore?: ConductorTemplateStore;
   /** Live known-reference sets for strict template validation. */
   templateKnownRefs?: () => Promise<KnownRefs>;
+  /** Issue #437 — inbound webhook endpoints (`/api/hooks/:endpointId` reads these) and
+   *  outbound subscriptions (the run-lifecycle dispatcher reads these). Optional: absent
+   *  on hosts without a Postgres pool (conductor inert), same as the other stores. */
+  webhookEndpoints?: ConductorWebhookEndpointStore;
+  webhookSubscriptions?: ConductorWebhookSubscriptionStore;
+  /** SSRF pre-check applied to a subscription URL at creation time — fails fast with a
+   *  400 rather than only discovering the block on the first delivery attempt. */
+  assertOutboundUrlAllowed?: (url: string) => void;
+  /** Review finding (issue #437): the middleware's own externally-reachable base URL,
+   *  used to build the ABSOLUTE inbound endpoint URL (`<base>/api/hooks/:endpointId`)
+   *  returned to the operator UI. Never derived from the request's Host header or
+   *  `window.location.origin` client-side — in the standard local dev setup those
+   *  resolve to the Next.js dev server, which does not proxy `/api/hooks/*`. */
+  webhookInboundBaseUrl?: string;
 }
 
 /**
@@ -185,6 +202,10 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   // versioning, telemetry) — split into templateRoutes.ts for file size. MUST
   // register before the '/:slug' catch-all below.
   registerTemplateRoutes(router, deps);
+
+  // Webhook admin routes (#437 inbound endpoints + outbound subscriptions) — same
+  // "before the catch-all" requirement as templates.
+  registerWebhookRoutes(router, deps);
 
   // Conversational builder turn (US7): (draft graph + message) → patched draft + reply + validation.
   // Stateless — the draft lives client-side (parity with the visual Designer); this just transforms it.

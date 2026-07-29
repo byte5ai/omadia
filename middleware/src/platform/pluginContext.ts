@@ -691,6 +691,9 @@ export function createPluginContext(
     register(input) {
       return opts.uiRouteCatalog.register(agentId, input);
     },
+    registerNav(input) {
+      return opts.uiRouteCatalog.registerNav(agentId, input);
+    },
   };
 
   // OB-29-1 — SubAgentAccessor: present iff the manifest declares

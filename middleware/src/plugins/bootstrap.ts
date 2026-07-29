@@ -1023,6 +1023,12 @@ async function bootstrapOrchestratorFromEnv(
   config['orchestrator_model_routing'] = deps.config.ORCHESTRATOR_MODEL_ROUTING
     ? 'true'
     : 'false';
+  // #445 — sticky Direct Line. Always seeded so the runtime read has a
+  // definite value rather than depending on an absent key.
+  config['orchestrator_direct_line_sticky'] = deps.config
+    .ORCHESTRATOR_DIRECT_LINE_STICKY
+    ? 'true'
+    : 'false';
   if (deps.config.MODEL_ROUTING_CLASSIFIER_MODEL) {
     config['model_routing_classifier_model'] =
       deps.config.MODEL_ROUTING_CLASSIFIER_MODEL;
