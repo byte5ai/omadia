@@ -42,3 +42,24 @@ describe('orchestrator manifest — model-routing setup fields', () => {
     }
   });
 });
+
+/**
+ * #445 — the sticky Direct Line flag must stay reachable by an operator.
+ * `directLineMode`, `directLinePrefix` and `requiredConsultToolName` are all
+ * constructor-only and therefore dead in production; this guard exists so the
+ * one Direct-Line knob that IS plumbed does not quietly join them.
+ */
+describe('orchestrator manifest — #445 sticky Direct Line field', () => {
+  it('exposes orchestrator_direct_line_sticky as a boolean defaulting to off', async () => {
+    const entry = await loadManifestFromPath(MANIFEST);
+    assert.ok(entry, 'orchestrator manifest.yaml failed to load');
+    const field = (entry.plugin.setup_fields ?? []).find(
+      (f) => f.key === 'orchestrator_direct_line_sticky',
+    );
+    assert.ok(field, 'missing setup field: orchestrator_direct_line_sticky');
+    assert.equal(field.type, 'boolean');
+    // The loader reads non-`host_list` defaults via `asString`, so the default
+    // must be the STRING "false" — a YAML boolean would read back as undefined.
+    assert.equal(field.default, 'false');
+  });
+});

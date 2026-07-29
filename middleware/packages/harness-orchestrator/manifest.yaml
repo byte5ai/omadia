@@ -96,6 +96,12 @@ setup:
       type: "boolean"
       required: false
       help: "Wenn an, klassifiziert ein günstiger Haiku-Call jeden Turn: einfach → Simple-Modell, komplex → Complex-Modell. Migriert aus ORCHESTRATOR_MODEL_ROUTING."
+    - key: "orchestrator_direct_line_sticky"
+      label: "Direct Line: Sticky-Modus"
+      type: "boolean"
+      required: false
+      default: "false"
+      help: "Wenn an, bindet ein blosses `#<agent>` das Gespräch an diesen Spezialisten — jede weitere Nachricht geht direkt dorthin, bis `#end` oder `#orchestrator` gesendet wird. Ohne diesen Schalter wirkt `#<agent> <Frage>` weiterhin nur für eine einzelne Nachricht. Standard: aus. Migriert aus ORCHESTRATOR_DIRECT_LINE_STICKY."
     - key: "model_routing_classifier_model"
       label: "Routing: Klassifizierer-Modell"
       type: "string"
