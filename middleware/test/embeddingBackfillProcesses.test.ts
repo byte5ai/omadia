@@ -278,6 +278,49 @@ describe('embedding backfill — processes + stale-vector clear (#440)', () => {
     );
   });
 
+  it('reports a clear it found ALREADY down, so a dropped report cannot wedge the gate', async () => {
+    // LIVENESS. `markStaleVectorClearComplete` drops a report whose epoch is
+    // not the one that armed the CURRENT owed clear. A tick that captured
+    // epoch N can physically drain the flag a SECOND switch armed under N+1:
+    // its report carries N and is dropped, and if only the draining tick ever
+    // reported, no later tick would report at all — the flag is down for every
+    // one of them. /health would keep `stale-vector-clear-pending` and vector
+    // writes would stay refused until a restart or another switch.
+    const { pool } = makeFakePool({
+      clearPending: false,
+      pendingProcesses: [
+        { id: 'process:ops:deploy', title: 'Ops: Deploy', steps: ['a'] },
+      ],
+    });
+    const reported: number[] = [];
+
+    const handle = startEmbeddingBackfill({
+      pool,
+      embeddingClient: embedder([0.1]),
+      tenantId: 't1',
+      intervalMs: 60_000,
+      batchSize: 10,
+      maxAttempts: 3,
+      includeProcesses: true,
+      resumeStaleVectorClear: true,
+      gateEpoch: () => 7,
+      onStaleVectorClearComplete: (epoch) => {
+        reported.push(epoch);
+      },
+      log: silent,
+    });
+    const stats = await handle.runOnce();
+    handle.stop();
+
+    assert.deepEqual(
+      reported,
+      [7],
+      'the tick observed the flag FALSE under the CURRENT epoch, which is ' +
+        'exactly the fact the publication needs to re-open writes',
+    );
+    assert.equal(stats.succeeded, 1, 'and the tick still does its normal work');
+  });
+
   it('does not lower the flag while the clear still owes rows', async () => {
     const { pool, queries } = makeFakePool({
       clearPending: true,

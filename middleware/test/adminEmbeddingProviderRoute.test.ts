@@ -526,6 +526,38 @@ describe('provider drift — the registry and the verdict name different models'
     });
   });
 
+  it('surfaces drift when the two agree on the name but not on the width', async () => {
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: KG_NEON, status: 'active' },
+    ]);
+    // A model id is free text the adapter chooses, so two adapters can publish
+    // the SAME name at different widths — and the width is what the governed
+    // `vector(n)` columns are actually shaped for. Comparing names alone
+    // reported "no drift" for the more dangerous of the two divergences.
+    harness.gate.activeModelId = 'ollama:nomic-embed-text (1536d)';
+
+    const { body } = await harness.getJson();
+    assert.deepEqual(body.providerDrift, {
+      activeModelId: 'ollama:nomic-embed-text (768d)',
+      gateModelId: 'ollama:nomic-embed-text (1536d)',
+    });
+  });
+
+  it('does not render a failed gate evaluation as if it named a model', async () => {
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: KG_NEON, status: 'active' },
+    ]);
+    // What `gateEvaluationFailed` publishes rather than crash-looping
+    // activation. It is a diagnostic in the model-name slot, not a model — and
+    // the gate's own `blocked` status already says what went wrong.
+    harness.gate.activeModelId = '(gate evaluation failed: connection terminated) (0d)';
+
+    const { body } = await harness.getJson();
+    assert.equal(body.providerDrift, null);
+  });
+
   it('does not invent drift when the verdict names no model at all', async () => {
     harness = await makeHarness([
       { id: OLLAMA, status: 'active' },

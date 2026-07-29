@@ -370,6 +370,20 @@ export function startEmbeddingBackfill(
     );
   };
 
+  /**
+   * Fire the clear-completion listener under `epoch`. A throwing listener must
+   * not take the sweep down with it.
+   */
+  const announceClearComplete = (epoch: number): void => {
+    try {
+      opts.onStaleVectorClearComplete?.(epoch);
+    } catch (err) {
+      log(
+        `[graph-embedding-backfill] stale-vector-clear completion listener failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
   const runSweep = async (): Promise<EmbeddingBackfillStats> => {
     if (running) {
       // A previous sweep is still in flight — skip this tick rather than
@@ -379,13 +393,17 @@ export function startEmbeddingBackfill(
     }
     running = true;
     const stats: EmbeddingBackfillStats = { tried: 0, succeeded: 0, failed: 0 };
-    // Captured ONCE for the whole tick. `stop()` only clears timers, so this
-    // tick can outlive the verdict that armed it; every write below and the
-    // clear-completion callback are scoped to the epoch it started under.
-    // Tick-wide rather than per-row on purpose: if the gate moved at any point
-    // during the tick, none of this tick's work belongs in the corpus.
-    const fence = captureGateEpoch(opts.gateEpoch);
     try {
+      // Captured ONCE for the whole tick. `stop()` only clears timers, so this
+      // tick can outlive the verdict that armed it; every write below and the
+      // clear-completion callback are scoped to the epoch it started under.
+      // Tick-wide rather than per-row on purpose: if the gate moved at any point
+      // during the tick, none of this tick's work belongs in the corpus.
+      //
+      // INSIDE the try, not above it: a caller that wires a throwing epoch
+      // reader would otherwise skip the `finally` below and leave `running`
+      // TRUE for the process lifetime, which silently kills every later tick.
+      const fence = captureGateEpoch(opts.gateEpoch);
       // #440 — finish what the gate capped. Embedding anything while stale
       // vectors are still around would break the invariant the clear relies
       // on ("non-NULL ⇒ old model"), so this tick does nothing else. The
@@ -411,18 +429,30 @@ export function startEmbeddingBackfill(
           if (!cleared.pending) {
             // The flag is down and the corpus is drained. Tell whoever
             // published the gate's boot-time verdict, so /health stops
-            // reporting a clear that is finished. A throwing listener must not
-            // take the sweep down with it.
-            try {
-              opts.onStaleVectorClearComplete?.(fence.epoch);
-            } catch (err) {
-              log(
-                `[graph-embedding-backfill] stale-vector-clear completion listener failed: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
+            // reporting a clear that is finished.
+            announceClearComplete(fence.epoch);
           }
           return stats;
         }
+        // LIVENESS — the flag was ALREADY down when this tick started.
+        //
+        // Reporting only from the tick that physically drained the flag leaves
+        // a hole: `markStaleVectorClearComplete` drops a report whose epoch is
+        // not the one that armed the CURRENT owed clear, so a tick that
+        // captured epoch N and drained the flag a second switch armed under
+        // N+1 reports N, is dropped, and no later tick reports at all because
+        // the flag is down for every one of them. /health then keeps
+        // `stale-vector-clear-pending` and vector writes stay refused until a
+        // restart or another switch.
+        //
+        // "The flag is FALSE right now, observed under the CURRENT epoch" is
+        // exactly the fact the publication needs, and this cannot invent a
+        // drain: the registry flag stays TRUE for as long as any verdict owes
+        // a clear, so observing it FALSE means the work is finished. The epoch
+        // guard on the other side still rejects a report from a stood-down
+        // tick, and `markStaleVectorClearComplete` is a no-op once nothing is
+        // owed, so the repeat on every later tick costs nothing.
+        announceClearComplete(fence.epoch);
       }
 
       await sweepNodes(stats, fence);

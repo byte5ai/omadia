@@ -590,7 +590,21 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
  * others. Stripped before comparing so a purely cosmetic difference in how the
  * verdict was worded never reads as drift.
  */
-const GATE_MODEL_DIMENSION_SUFFIX = / \(\d+d\)$/;
+const GATE_MODEL_DIMENSION_SUFFIX = / \((\d+)d\)$/;
+
+/**
+ * What a FAILED gate evaluation puts in the model-name slot — see
+ * `gateEvaluationFailed` in the knowledge-graph plugin's `gateReevaluation.ts`,
+ * which degrades to `blocked` with `modelId: '(gate evaluation failed: …)'`
+ * rather than crash-looping activation.
+ *
+ * It is a diagnostic string, not a model identity, so it can never DISAGREE
+ * with the registry in the sense this warning means. Reporting it as drift
+ * rendered the sentence "the verdict names <(gate evaluation failed: …)>" on a
+ * page whose whole job is naming models. The gate's own `blocked` status
+ * already tells the operator what is wrong there.
+ */
+const GATE_FAILURE_SENTINEL = /^\(gate evaluation failed:/;
 
 /**
  * PROVIDER DRIFT — the registry's live client names a different model than the
@@ -614,9 +628,28 @@ function describeProviderDrift(
   if (activeModel === null || gate === null) return null;
   const gateModelId = gate.activeModelId;
   if (typeof gateModelId !== 'string' || gateModelId.length === 0) return null;
+  if (GATE_FAILURE_SENTINEL.test(gateModelId)) return null;
+  const suffix = GATE_MODEL_DIMENSION_SUFFIX.exec(gateModelId);
   const normalised = gateModelId.replace(GATE_MODEL_DIMENSION_SUFFIX, '');
-  if (normalised === activeModel.modelId) return null;
-  return { activeModelId: activeModel.modelId, gateModelId: normalised };
+  if (normalised !== activeModel.modelId) {
+    return { activeModelId: activeModel.modelId, gateModelId: normalised };
+  }
+  // SAME NAME, DIFFERENT WIDTH. Comparing names alone missed it, and it is the
+  // more dangerous half: a model id is free text an adapter chooses, so two
+  // adapters can publish the same name at different widths, and the width is
+  // what the governed `vector(n)` columns are actually shaped for. The suffix
+  // is the only place the verdict carries its width, so this comparison is
+  // only possible for the outcomes that render one.
+  const gateDimensions = suffix?.[1] === undefined ? null : Number(suffix[1]);
+  if (gateDimensions === null || gateDimensions === activeModel.dimensions) {
+    return null;
+  }
+  // Widths are what disagree, so both sides carry theirs — "X vs X" would read
+  // as a bug in the warning rather than a real divergence.
+  return {
+    activeModelId: `${activeModel.modelId} (${String(activeModel.dimensions)}d)`,
+    gateModelId: `${normalised} (${String(gateDimensions)}d)`,
+  };
 }
 
 function readActiveMetadata(

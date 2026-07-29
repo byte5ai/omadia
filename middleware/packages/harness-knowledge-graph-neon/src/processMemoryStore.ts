@@ -252,6 +252,24 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
       };
     }
 
+    // Checked AGAIN, immediately before the write. The dedup probe above is a
+    // full `await` boundary: a switch that completes while that query is in
+    // flight passes the check above and would still land a previous-provider
+    // vector here. `processes.embedding` is governed by `staleVectorClear`, so
+    // such a row is unrecoverable by construction — `clear_pending` is already
+    // FALSE, `embedding IS NOT NULL` keeps the sweep's `WHERE embedding IS
+    // NULL` away from it, and /health stays green. Every other fenced writer
+    // has zero awaits between its check and its write; this one cannot, so it
+    // re-reads. See `gateEpoch.ts`.
+    if (fence.moved()) {
+      return {
+        ok: false,
+        reason: 'embedding-unavailable',
+        message:
+          'Der Embedding-Provider wurde während des Schreibvorgangs gewechselt — bitte erneut versuchen.',
+      };
+    }
+
     const id = buildProcessId(input.scope, input.title);
     const visibility = input.visibility ?? 'team';
     const inserted = await this.pool.query<ProcessRow>(

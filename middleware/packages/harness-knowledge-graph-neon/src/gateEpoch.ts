@@ -61,9 +61,22 @@ export interface GateEpochFence {
  *
  * A reader is deliberately NOT wrapped in try/catch. It is a closure over a
  * number owned by the gate runner and cannot throw in practice; if a caller
- * wires something that can, the throw lands in the writer's existing
- * try/catch, which logs it and counts a failed attempt. That is loud and
- * recoverable — the quieter alternatives are "never fence again" and "never
+ * wires something that can, the throw propagates out of the writer, and where
+ * it lands differs per writer — so do not read this as a blanket containment
+ * guarantee:
+ *
+ *  - `embeddingBackfill.runSweep` captures INSIDE its own try, so a throw is
+ *    logged and `running` is lowered in the `finally`. That placement is
+ *    load-bearing: outside it, one throw would leave `running` TRUE and every
+ *    later tick would short-circuit for the process lifetime.
+ *  - `neonKnowledgeGraph`'s two embedders capture just ABOVE their try, so a
+ *    throw rejects a fire-and-forget call rather than counting an attempt.
+ *  - `processMemoryStore.write`/`edit` capture outside any try at all, so a
+ *    throw surfaces as a rejected promise to the caller — before either has
+ *    opened a transaction or written anything.
+ *
+ * All three are loud and leave no partial state behind, which is the property
+ * that matters — the quieter alternatives are "never fence again" and "never
  * write again", and both fail silently.
  */
 export function captureGateEpoch(

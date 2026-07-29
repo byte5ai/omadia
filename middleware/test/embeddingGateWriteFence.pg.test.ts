@@ -263,7 +263,10 @@ describe('#440 gate-epoch write fence (real Postgres, real backfill handle)', { 
     resolveEmbeddingClient: () => EmbeddingClient | undefined;
   }> {
     let registryClient: EmbeddingClient = initialClient;
-    let runner: GateRunner | undefined;
+    // Initialised explicitly so `prefer-const` sees the later assignment as a
+    // reassignment; `syncBackfill` closes over it before `startGateRunner`
+    // returns, so it cannot be a `const`.
+    let runner: GateRunner | undefined = undefined;
     let handle: EmbeddingBackfillHandle | undefined;
     let handleClient: EmbeddingClient | undefined;
 
@@ -519,6 +522,72 @@ describe('#440 gate-epoch write fence (real Postgres, real backfill handle)', { 
       rows.rows.length,
       0,
       'nothing was written — the caller can simply retry against the new provider',
+    );
+  });
+
+  it('processMemory.write drops the INSERT when the switch lands DURING the dedup probe', async () => {
+    // THE WINDOW THE FIRST CHECK CANNOT SEE. `write()` fences before the dedup
+    // probe — correctly: a probe answered against a corpus in another cosine
+    // space could report a bogus `duplicate` — but that probe is a full
+    // `await` boundary, and it is the ONLY writer with an await between its
+    // check and its write. A switch that completes while the probe is in
+    // flight passes the first check and would land a previous-provider vector
+    // in `processes.embedding`, which `staleVectorClear` governs: the clear
+    // has already drained so `clear_pending` is FALSE, every sweep looks only
+    // `WHERE embedding IS NULL`, and /health stays green. Nothing ever finds
+    // that row again.
+    await freshSchema({});
+    const modelA = new HeldEmbedder(
+      'ollama:nomic-embed-text',
+      MODEL_A_FILL,
+    ).runFreeFromTheStart();
+    const modelB = new HeldEmbedder('ollama:mxbai-embed-768', MODEL_B_FILL).runFreeFromTheStart();
+    const rt = await startPluginLikeRuntime(modelA);
+
+    // The hold moves from the embedder to the POOL: the whole switch runs
+    // inside the dedup query, i.e. after the embed and after the pre-probe
+    // check, which is exactly where the real race sits.
+    let switchedDuringProbe = false;
+    const switchingPool = {
+      query: async (sql: unknown, params?: unknown) => {
+        if (!switchedDuringProbe && typeof sql === 'string' && /AS similarity/.test(sql)) {
+          switchedDuringProbe = true;
+          rt.setRegistryClient(modelB);
+          await rt.runner.reevaluate({ allowDestructiveMigration: true });
+        }
+        return (real.query as (...a: unknown[]) => Promise<unknown>)(sql, params);
+      },
+      connect: () => real.connect(),
+    } as unknown as typeof real;
+
+    const store = new NeonProcessMemoryStore({
+      pool: switchingPool,
+      tenantId: TENANT,
+      resolveEmbeddingClient: rt.resolveEmbeddingClient,
+      gateEpoch: () => rt.runner.epoch(),
+    });
+
+    const result = await store.write({
+      scope: 'backend',
+      title: 'Backend: deploy to staging',
+      steps: ['build', 'push'],
+    });
+
+    assert.equal(
+      switchedDuringProbe,
+      true,
+      'precondition: the switch really did complete inside the dedup probe, ' +
+        'not before it — otherwise this only re-tests the pre-probe check',
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reason, 'embedding-unavailable');
+    const rows = await real.query('SELECT id FROM processes WHERE tenant_id = $1', [TENANT]);
+    assert.equal(
+      rows.rows.length,
+      0,
+      'the vector in hand was computed under a verdict that is gone, so the ' +
+        'INSERT must be dropped — a row written here is invisible to the ' +
+        'clear, to the sweep and to /health for good',
     );
   });
 
