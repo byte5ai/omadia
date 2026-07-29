@@ -1,0 +1,98 @@
+# Epic #470 — Dev Platform → installable plugin in its own repository
+
+Single source of truth for the extraction: the plan, the work-list, the acceptance
+contract, and the automated guard. Implementation lands against these documents.
+
+**Goal.** Turn the Dev Platform from a hard-wired core subsystem into an installable,
+uninstallable plugin living in **its own repository** — its own backend, database schema,
+configuration, UI and menu entries — until the `omadia` repository contains no reference to
+it at all.
+
+---
+
+## The documents
+
+| File | Answers | Read it when |
+|---|---|---|
+| **`plan.md`** | *What are we building, and why this way?* Architecture decisions, the capability gaps (G1–G10), the three hard couplings (H1–H3), phases P2a→P6, risks | Before touching anything |
+| **`core-decoupling-checklist.md`** | *What is still coupled?* 276 items across 18 zones, ~49,100 LOC / ~200 files, with `file:line` and DELETE / MOVE / GENERICISE per item | While doing the removal |
+| **`acceptance.md`** | *Did every capability survive, and does it install?* 34 endpoints, 3 chat tools, `ctx.devJobs`, 4 background loops, 4 UI screens, CLI, conductor step — each with a probe. Plus install/uninstall/upgrade criteria | Before claiming a phase is done |
+| **`plugin-tailwind-subset.probe.css`** | *Can a distributed plugin ship a UI without shipping CSS?* Measured reference artifact (7.7 KB gzip) — not built, not shipped | When implementing P3b |
+| **`decoupling-baseline.json`** | The committed reference count the CI ratchet enforces | Never by hand — use `--update` |
+
+---
+
+## Status
+
+### Done — merged via PR #536
+
+- **Nav contribution API.** `ctx.uiRoutes.registerNav(...)`, `UiRouteCatalog.registerNav/listNav`,
+  `GET /api/v1/ui/navigation` (session-gated, labels resolved server-side), and the
+  static/dynamic merge in `Nav.tsx`. Dev Platform is its first consumer: its menu entry and
+  `/admin` card now come from a registration, not a hardcoded literal.
+- **Stale-plugin-route fix.** `ToolPluginRuntime.deactivate()` never disposed Express
+  routers, so uninstalled plugins kept serving and shadowed later mounts. Disposal now also
+  runs *before* the plugin-controlled `close()`, and `activate()` rolls back its own
+  registrations when a plugin registers and then throws.
+- **`appJwt` reverse dependency removed** → `middleware/src/services/githubAppJwt.ts`. Core's
+  builder was importing out of the dev-platform tree, which made that tree a dependency of
+  core and blocked extraction outright.
+
+### In flight — this PR
+
+- The Tailwind-for-plugins decision (§4.3a) and its measured probe.
+- The core-decoupling ratchet + the acceptance matrix.
+
+### Next — decisions before code
+
+Two are genuinely blocking and belong to the maintainer, not the implementer:
+
+1. **H3 — the chat card.** `chat/page.tsx` hardcodes `tool.name === 'dev_job_start'` and
+   renders a core-compiled React card. An iframe per tool call is not acceptable. Either a
+   declarative card schema, or an accepted degradation to a plain `ToolRow` for
+   out-of-repo plugins. This is the one place "no hardcoding" and "no downgrade" conflict.
+2. **G7 fallback.** If fixing the plugin asset pipeline proves too costly, option E is an
+   npm-published UI package that web-ui optionally installs — which weakens "no hardcoding"
+   to "no source in core". Worth deciding deliberately rather than drifting into.
+
+Then P3's extension points (H1 public paths + prefix ownership, H2 conductor step-kind
+registry, G2/G3/G4), which everything else waits on.
+
+---
+
+## How we know it is complete
+
+Three different jobs; none of them is sufficient alone.
+
+```bash
+node scripts/check-core-decoupling.mjs            # verify (CI runs this)
+node scripts/check-core-decoupling.mjs --report   # per-zone breakdown
+node scripts/check-core-decoupling.mjs --update   # lower the baseline
+```
+
+The ratchet counts Dev Platform references across 12 zones of core and **fails if the count
+rises**. Baseline **3,171**. It only ever falls; raising it needs a hand-edited baseline, so
+a new coupling shows up in review instead of slipping in.
+
+That is what makes the checklist's staleness survivable — a file inventory goes stale on
+contact, but the count does not, and it cannot reach zero while a reference survives. It
+also turns "extraction finished" into a machine-checked fact rather than an assertion.
+
+**Definition of done:** ratchet reads `0`, every row of `acceptance.md` §2 passes, and the
+install/uninstall criteria in `acceptance.md` §3 pass.
+
+---
+
+## Working agreement for this PR
+
+- **One commit per phase**, so a ~49k-LOC epic stays reviewable and revertible even though
+  it lives in one PR.
+- **Wire paths are frozen.** No phase may change `/api/v1/dev-runner`,
+  `/api/v1/admin/dev-platform`, `/api/webhooks/github`, or `RUNNER_PROTOCOL_VERSION` —
+  deployed runner images phone home to literal URLs and a rename bricks in-flight jobs with
+  no compile-time signal.
+- **Do not delete the `publicPaths` exemptions** until H1's mechanism is proven on the live
+  runner path. Deleting them early 401s every phone-home.
+- **Abandonment checkpoint:** after P3/P3b the platform capabilities stand alone and the
+  Dev Platform can stay in core with no partial-move debt. Half-moved is the only genuinely
+  bad end state.
