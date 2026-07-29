@@ -1,4 +1,4 @@
-import { mintAppJwt } from '../../devplatform/githubApp/appJwt.js';
+import { mintAppJwt } from '../../services/githubAppJwt.js';
 
 /**
  * GitHub App authentication for the native direct-create path

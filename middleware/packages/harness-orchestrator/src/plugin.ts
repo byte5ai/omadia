@@ -54,6 +54,7 @@ import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { Orchestrator } from './orchestrator.js';
+import { InMemoryDirectLineStickyStore } from './directLineSticky.js';
 import { DEFAULT_ORCHESTRATOR_MODEL } from './registry/agentRuntime.js';
 import { ConfigStore } from './registry/configStore.js';
 import {
@@ -576,6 +577,12 @@ export async function activate(
     graphTenantId,
     ...(assistantIdentity ? { assistantIdentity } : {}),
     ...(turnHookRegistry ? { turnHookRegistry } : {}),
+    // #445 — one binding store for the whole process, shared by every Agent
+    // the registry builds and rebuilt by none of them. Constructed
+    // unconditionally: it is an empty Map until the flag is on, and holding it
+    // in deps means toggling the flag at runtime never strands a binding in a
+    // store that has been thrown away.
+    directLineStickyStore: new InMemoryDirectLineStickyStore(),
     attachmentReader,
   };
   // Per-turn Sonnet/Opus routing (opt-in). When `orchestrator_model_routing`
@@ -619,11 +626,26 @@ export async function activate(
     );
   }
 
+  // #445 — sticky Direct Line. Read defensively: the installed-plugin config
+  // may hold a real boolean (persisted by the install service) OR the string
+  // the manifest/bootstrap seeds. `.trim()` on a boolean throws, and `?? ''`
+  // does not protect because `false` is not nullish.
+  const stickyRaw = ctx.config.get<unknown>('orchestrator_direct_line_sticky');
+  const directLineSticky =
+    stickyRaw === true || String(stickyRaw).trim().toLowerCase() === 'true';
+  if (directLineSticky) {
+    console.log(
+      '[harness-orchestrator] direct-line sticky mode ON — a bare `#<agent>` binds the ' +
+        'conversation until `#end`.',
+    );
+  }
+
   const built = buildOrchestratorForAgent(
     {
       agentId: 'default',
       model,
       ...(modelRouting ? { modelRouting } : {}),
+      ...(directLineSticky ? { directLineSticky: true } : {}),
       maxTokens,
       maxToolIterations: maxIterations,
       ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
@@ -686,6 +708,7 @@ export async function activate(
         defaultRuntimeConfig: {
           model,
           ...(modelRouting ? { modelRouting } : {}),
+          ...(directLineSticky ? { directLineSticky: true } : {}),
           maxTokens,
           maxToolIterations: maxIterations,
           ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),

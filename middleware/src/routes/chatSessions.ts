@@ -61,6 +61,20 @@ const MessageSchema = z.object({
   error: z.boolean().optional(),
   startedAt: z.number(),
   finishedAt: z.number().optional(),
+  // #445 — persist the sticky Direct-Line indicator so the banner survives a
+  // reload or a cross-device resume. zod strips unknown keys, so without this
+  // the field would be silently dropped by the client's own periodic PUT.
+  directLineSession: z
+    .object({
+      active: z.boolean(),
+      agentId: z.string().optional(),
+      label: z.string().optional(),
+      transition: z
+        .enum(['entered', 'switched', 'continued', 'left', 'unavailable', 'refused'])
+        .optional(),
+      refusedReason: z.enum(['no-scope', 'shared-scope', 'synthetic-scope']).optional(),
+    })
+    .optional(),
 });
 
 const SessionSchema = z.object({
