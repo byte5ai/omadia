@@ -11,13 +11,16 @@
 # — the same bug class behind the original EAI_AGAIN-driven crash this whole
 # investigation started from).
 #
-# This adds ONE static iptables rule in dev-dind's OWN network namespace
-# (already `privileged: true` — no new capability granted anywhere) that
-# REJECTs (not silently drops) any FORWARDED packet — i.e. traffic dind is
-# relaying from a nested per-job container, never dind's own process-level
-# traffic, which uses OUTPUT, not FORWARD, and is untouched by this — unless
-# it's headed to the proxy's own network (172.28.5.0/24, dev-egress: the
-# proxy itself plus dind's own presence there). Everything else fails in
+# This adds a small, STATEFUL iptables ruleset in dev-dind's OWN network
+# namespace (already `privileged: true` — no new capability granted
+# anywhere): any FORWARDED packet — i.e. traffic dind is relaying from a
+# nested per-job container, never dind's own process-level traffic, which
+# uses OUTPUT, not FORWARD, and is untouched by this — gets REJECTed (not
+# silently dropped) UNLESS it belongs to an already-established connection
+# (conntrack ESTABLISHED,RELATED — required for the proxy's own RETURN
+# traffic, whose destination is the job container's per-job IP, never the
+# proxy's own subnet) or is headed to the proxy's own network (172.28.5.0/24,
+# dev-egress, for the connection's initiating leg). Everything else fails in
 # milliseconds instead of minutes. Zero change to the job container's own
 # security clamp (CapDrop: ALL, no-new-privileges, single NetworkMode) —
 # this lives entirely one layer down, in dind's netns.
@@ -37,6 +40,15 @@ done
 # Idempotent: a restart of this container must not stack duplicate rules.
 iptables -N OMADIA-EGRESS-GUARD 2>/dev/null || true
 iptables -F OMADIA-EGRESS-GUARD
+# RETURN-leg traffic for an ALREADY-established connection (proxy -> job
+# container: TCP ACKs, the CONNECT response, tunnel data) is forwarded with
+# its destination being the JOB CONTAINER's own per-job-network IP, never
+# 172.28.5.0/24 — a destination-only rule rejects that return traffic too,
+# breaking every legitimate proxy-bound connection after its first packet.
+# Confirmed live (2026-07-29): with only the destination rule, the shim's
+# own phone-home fetch failed instantly on every attempt; flushing the chain
+# entirely fixed it immediately. This conntrack rule must come first.
+iptables -A OMADIA-EGRESS-GUARD -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 iptables -A OMADIA-EGRESS-GUARD -d 172.28.5.0/24 -j RETURN
 iptables -A OMADIA-EGRESS-GUARD -j REJECT --reject-with icmp-net-unreachable
 iptables -C DOCKER-USER -j OMADIA-EGRESS-GUARD 2>/dev/null \
