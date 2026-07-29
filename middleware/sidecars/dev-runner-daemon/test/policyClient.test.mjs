@@ -263,6 +263,11 @@ describe('policyClient — daemon-owned env keys are injected, never accepted', 
     'http_proxy',
     'https_proxy',
     'no_proxy',
+    // npm's own config-layer spellings — same egress-redirect risk as the
+    // generic env vars above, so daemon-owned on the same terms.
+    'npm_config_proxy',
+    'npm_config_https_proxy',
+    'npm_config_noproxy',
   ];
 
   // A policy that carries any of these is a compromised/spoofed middleware trying
@@ -313,6 +318,21 @@ describe('policyClient — daemon-owned env keys are injected, never accepted', 
     assert.equal(policy.env.no_proxy, 'middleware,localhost');
   });
 
+  it('ALSO pins npm\'s own config-layer proxy vars — npm resolves npm_config_* before generic HTTP_PROXY', async () => {
+    // Root cause context (epic #470, 2026-07-29): npm's proxy-vs-direct
+    // decision reads its OWN resolved config, not raw env, directly. A
+    // config-precedence bug (npm/cli#6835, npm/agent#125 class) could still
+    // let npm miss the generic HTTP_PROXY/HTTPS_PROXY vars even when they are
+    // set correctly — pinning npm's own env-var spelling closes that gap.
+    const client = clientWith(policyBody(), {
+      clientOpts: { egressProxyUrl: 'http://egress-proxy:3128', noProxy: 'middleware,localhost' },
+    });
+    const policy = await client.fetchJobPolicy(JOB_ID);
+    assert.equal(policy.env.npm_config_proxy, 'http://egress-proxy:3128');
+    assert.equal(policy.env.npm_config_https_proxy, 'http://egress-proxy:3128');
+    assert.equal(policy.env.npm_config_noproxy, 'middleware,localhost');
+  });
+
   it('injects NODE_USE_ENV_PROXY alongside a configured proxy — otherwise Node fetch ignores HTTP_PROXY entirely', async () => {
     // Unlike curl/git, Node's global fetch (undici) does NOT read HTTP_PROXY by
     // default; the shim's homeClient.ts uses fetch with no dependency, so
@@ -336,7 +356,7 @@ describe('policyClient — daemon-owned env keys are injected, never accepted', 
     });
     const policy = await client.fetchJobPolicy(JOB_ID, { proxyToken: token });
     const expected = `http://${JOB_ID}:${token}@egress-proxy:3128/`;
-    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) {
+    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'npm_config_proxy', 'npm_config_https_proxy']) {
       assert.equal(policy.env[k], expected, `${k} must carry the job's own credential`);
     }
   });
@@ -359,6 +379,9 @@ describe('policyClient — daemon-owned env keys are injected, never accepted', 
       'NO_PROXY',
       'no_proxy',
       'NODE_USE_ENV_PROXY',
+      'npm_config_proxy',
+      'npm_config_https_proxy',
+      'npm_config_noproxy',
     ]) {
       assert.equal(policy.env[k], undefined, `${k} must be absent without a configured proxy`);
     }

@@ -195,7 +195,18 @@ services:
 
   # --- the nested engine: the only privileged service in the stack ----------
   dev-dind:
-    image: docker:27-dind
+    # Thin wrapper around docker:27-dind (see middleware/sidecars/dev-dind):
+    # adds ONE static iptables rule in dind's OWN netns so a nested per-job
+    # container's direct-connect bypass attempt (confirmed live, 2026-07-29 —
+    # npm's own proxy resolution occasionally lands on a direct-connect code
+    # path) fails in milliseconds instead of a multi-minute TCP blackhole.
+    # dev-engine/dev-egress are already `internal: true`, so the bypass was
+    # ALWAYS doomed — this only makes the failure deterministic, closing the
+    # timing window that re-triggers npm's own ExitHandler race (npm/cli#9751).
+    # Zero capability change to the job container itself.
+    image: omadia-dev-dind:local
+    build:
+      context: middleware/sidecars/dev-dind
     restart: unless-stopped
     privileged: true
     environment:

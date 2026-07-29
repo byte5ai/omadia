@@ -197,15 +197,17 @@ const ALLOWED_ENV_KEYS = new Set([
  *     UUID-validated job id, not a value the middleware can skew.
  *   - `OMADIA_WORKSPACE` — where the repo is cloned; must be the container's fixed
  *     workspace path, not a policy-chosen directory.
- *   - `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` (and their lowercase spellings) —
+ *   - `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` (and their lowercase spellings, plus
+ *     npm's own `npm_config_proxy` / `npm_config_https_proxy` / `npm_config_noproxy`) —
  *     the container-wide egress-routing lever. A policy value would redirect every
  *     http(s) client in the container (clone, SCM-token exchange, diff upload,
- *     git, node, curl) through an attacker-chosen proxy. The egress proxy's
+ *     git, node, curl, npm) through an attacker-chosen proxy. The egress proxy's
  *     address is deployment topology the daemon knows from its own config, so the
  *     daemon injects it (`DEV_RUNNER_EGRESS_PROXY_URL` / `DEV_RUNNER_NO_PROXY`)
- *     and never accepts it from the policy. Both spellings are owned because
- *     curl/libcurl honour the lowercase names and git/node the uppercase ones —
- *     admitting either from the policy would reopen the lever the other closes.
+ *     and never accepts it from the policy. Every spelling is owned because
+ *     curl/libcurl honour the lowercase names, git/node the uppercase ones, and
+ *     npm's own config layer resolves `npm_config_*` before either — admitting
+ *     any one from the policy would reopen the lever the others close.
  *
  * A policy that CARRIES any of these is not a legitimate policy — it is a
  * compromised or spoofed middleware. So we REJECT it loudly (`assertPolicyEnv`)
@@ -226,6 +228,9 @@ const DAEMON_OWNED_ENV_KEYS = new Set([
   'http_proxy',
   'https_proxy',
   'no_proxy',
+  'npm_config_proxy',
+  'npm_config_https_proxy',
+  'npm_config_noproxy',
 ]);
 
 /** The container's fixed, job-scoped clone directory (W1 clamp: the per-job
@@ -490,6 +495,16 @@ function injectDaemonOwnedEnv(policyEnv, jobId, owned) {
     env.HTTPS_PROXY = withCreds;
     env.http_proxy = withCreds;
     env.https_proxy = withCreds;
+    // npm's OWN config layer (lib/utils/config, @npmcli/config) resolves
+    // `proxy`/`https-proxy`/`noproxy` from `npm_config_*` env vars BEFORE it
+    // ever looks at generic HTTP_PROXY/HTTPS_PROXY — @npmcli/agent then reads
+    // the resolved npm config, not the raw env, for its own proxy-vs-direct
+    // decision. Pinning both layers closes a config-precedence class of bug
+    // (npm/cli#6835, npm/agent#125) as a contributing factor in the
+    // DNS-bypass-then-ENETUNREACH investigation (epic #470, 2026-07-29) —
+    // independent of whichever exact code path was choosing direct-connect.
+    env.npm_config_proxy = withCreds;
+    env.npm_config_https_proxy = withCreds;
     // UNLIKE curl/git, Node's own global `fetch` (undici) does NOT read
     // HTTP_PROXY/HTTPS_PROXY/NO_PROXY by default — that's opt-in, gated behind
     // this exact flag (undici's EnvHttpProxyAgent). The shim's homeClient.ts is
@@ -506,6 +521,7 @@ function injectDaemonOwnedEnv(policyEnv, jobId, owned) {
   if (owned.noProxy) {
     env.NO_PROXY = owned.noProxy;
     env.no_proxy = owned.noProxy;
+    env.npm_config_noproxy = owned.noProxy;
   }
   return env;
 }
