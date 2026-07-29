@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 
 import express from 'express';
 import type { Express, NextFunction, Request, Response } from 'express';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 import { createAdminEmbeddingProviderRouter } from '../src/routes/adminEmbeddingProvider.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
@@ -13,9 +14,7 @@ import {
   KG_NEON,
   OLLAMA,
   OPENAI,
-  getJson,
   makeHarness,
-  postSwitch,
   type Harness,
   type SnapshotResponse,
 } from './adminEmbeddingProvider.harness.js';
@@ -54,7 +53,7 @@ describe('GET /api/v1/admin/embedding-provider', () => {
       { id: KG_NEON, status: 'active', config: {} },
     ]);
 
-    const { status, body } = await getJson(harness.baseUrl);
+    const { status, body } = await harness.getJson();
     assert.equal(status, 200);
     assert.deepEqual(
       body.providers.map((p) => p.pluginId),
@@ -88,13 +87,13 @@ describe('GET /api/v1/admin/embedding-provider', () => {
       { id: OLLAMA },
       { id: KG_NEON, config: { auto_migrate_vector_columns: 'false' } },
     ]);
-    const { body } = await getJson(harness.baseUrl);
+    const { body } = await harness.getJson();
     assert.equal(body.autoMigrateVectorColumns, false);
   });
 
   it('does not list a provider that is not installed', async () => {
     harness = await makeHarness([{ id: OLLAMA }]);
-    const { body } = await getJson(harness.baseUrl);
+    const { body } = await harness.getJson();
     assert.deepEqual(
       body.providers.map((p) => p.pluginId),
       [OLLAMA],
@@ -140,19 +139,23 @@ describe('mount-time auth', () => {
     });
     const port = (server.address() as AddressInfo).port;
     const base = `http://127.0.0.1:${String(port)}/api/v1/admin/embedding-provider`;
+    const dispatcher = new Agent({ keepAliveTimeout: 10, keepAliveMaxTimeout: 10 });
     try {
-      assert.equal((await fetch(base)).status, 401);
+      assert.equal((await undiciFetch(base, { dispatcher })).status, 401);
       assert.equal(
         (
-          await fetch(`${base}/switch`, {
+          await undiciFetch(`${base}/switch`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ pluginId: OPENAI, confirmDiscardVectors: true }),
+            dispatcher,
           })
         ).status,
         401,
       );
     } finally {
+      await dispatcher.destroy();
+      server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
@@ -166,7 +169,7 @@ describe('POST /api/v1/admin/embedding-provider/switch', () => {
       { id: KG_NEON, status: 'active' },
     ]);
 
-    const { status, body } = await postSwitch(harness.baseUrl, {
+    const { status, body } = await harness.postSwitch({
       pluginId: OPENAI,
       confirmDiscardVectors: true,
     });
@@ -202,7 +205,7 @@ describe('POST /api/v1/admin/embedding-provider/switch', () => {
     ]);
 
     // Installed, but provides knowledgeGraph@1 — not an embedding provider.
-    const notAProvider = await postSwitch(harness.baseUrl, {
+    const notAProvider = await harness.postSwitch({
       pluginId: KG_NEON,
       confirmDiscardVectors: true,
     });
@@ -210,7 +213,7 @@ describe('POST /api/v1/admin/embedding-provider/switch', () => {
     assert.equal(notAProvider.body['code'], 'embeddingProvider.unknown_target');
 
     // Declares the capability but is not installed here.
-    const notInstalled = await postSwitch(harness.baseUrl, {
+    const notInstalled = await harness.postSwitch({
       pluginId: OPENAI,
       confirmDiscardVectors: true,
     });
@@ -218,13 +221,13 @@ describe('POST /api/v1/admin/embedding-provider/switch', () => {
     assert.equal(notInstalled.body['code'], 'embeddingProvider.unknown_target');
 
     // Pure garbage.
-    const garbage = await postSwitch(harness.baseUrl, {
+    const garbage = await harness.postSwitch({
       pluginId: '../../etc/passwd',
       confirmDiscardVectors: true,
     });
     assert.equal(garbage.status, 400);
 
-    const malformed = await postSwitch(harness.baseUrl, { confirm: true });
+    const malformed = await harness.postSwitch({ confirm: true });
     assert.equal(malformed.status, 400);
     assert.equal(malformed.body['code'], 'embeddingProvider.invalid_request');
 
@@ -240,7 +243,7 @@ describe('POST /api/v1/admin/embedding-provider/switch', () => {
       { id: KG_NEON, status: 'active' },
     ]);
 
-    const { status, body } = await postSwitch(harness.baseUrl, { pluginId: OPENAI });
+    const { status, body } = await harness.postSwitch({ pluginId: OPENAI });
     assert.equal(status, 400);
     assert.equal(body['code'], 'embeddingProvider.confirmation_required');
     assert.deepEqual(harness.calls, []);
@@ -249,7 +252,7 @@ describe('POST /api/v1/admin/embedding-provider/switch', () => {
     assert.equal(harness.registry.get(OPENAI)?.status, 'inactive');
 
     // An explicit `false` is not a confirmation either.
-    const explicitFalse = await postSwitch(harness.baseUrl, {
+    const explicitFalse = await harness.postSwitch({
       pluginId: OPENAI,
       confirmDiscardVectors: false,
     });
@@ -262,7 +265,7 @@ describe('POST /api/v1/admin/embedding-provider/switch', () => {
       { id: OLLAMA, status: 'active' },
       { id: KG_NEON, status: 'active' },
     ]);
-    const { status, body } = await postSwitch(harness.baseUrl, {
+    const { status, body } = await harness.postSwitch({
       pluginId: OLLAMA,
       confirmDiscardVectors: true,
     });
@@ -279,7 +282,7 @@ describe('POST /api/v1/admin/embedding-provider/switch', () => {
     ]);
     harness.failActivation.add(OPENAI);
 
-    const { status, body } = await postSwitch(harness.baseUrl, {
+    const { status, body } = await harness.postSwitch({
       pluginId: OPENAI,
       confirmDiscardVectors: true,
     });
@@ -306,7 +309,7 @@ describe('POST /api/v1/admin/embedding-provider/switch', () => {
     // NO embedding provider at all.
     harness.publishNothing.add(OPENAI);
 
-    const { status, body } = await postSwitch(harness.baseUrl, {
+    const { status, body } = await harness.postSwitch({
       pluginId: OPENAI,
       confirmDiscardVectors: true,
     });

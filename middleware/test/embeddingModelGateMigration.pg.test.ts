@@ -32,13 +32,18 @@ const PG_URL =
 const SCHEMA = 'embgate_migrate_test';
 
 let pgAvailable = true;
+// The probe runs at module scope, so it executes even when the suite ends up
+// skipping. `end()` must therefore live in a `finally`: on the unreachable-PG
+// path the old code left the pool (and its pending connect timer) behind for
+// the lifetime of this file's test process.
+const probe = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 1_500 });
 try {
-  const probe = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 1_500 });
   await probe.query('SELECT 1');
   await probe.query('CREATE EXTENSION IF NOT EXISTS vector');
-  await probe.end();
 } catch {
   pgAvailable = false;
+} finally {
+  await probe.end().catch(() => undefined);
 }
 
 const OLLAMA_768 = { modelId: 'ollama:nomic-embed-text', dimensions: 768 };

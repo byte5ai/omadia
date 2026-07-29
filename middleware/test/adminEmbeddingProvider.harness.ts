@@ -16,7 +16,8 @@ import type { AddressInfo } from 'node:net';
 
 import type { EmbeddingClient } from '@omadia/plugin-api';
 import express from 'express';
-import type { Express, NextFunction, Request, Response } from 'express';
+import type { Express } from 'express';
+import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 
 import { createAdminEmbeddingProviderRouter } from '../src/routes/adminEmbeddingProvider.js';
 import type { EmbeddingGateStatus } from '../src/health/kgHealth.js';
@@ -72,6 +73,10 @@ export const CATALOG_ENTRIES: readonly CatalogEntry[] = [
 export interface Harness {
   server: Server;
   baseUrl: string;
+  /** This harness's OWN connection pool — never the process-global one. */
+  dispatcher: Agent;
+  getJson(): Promise<{ status: number; body: SnapshotResponse }>;
+  postSwitch(body: unknown): Promise<{ status: number; body: Record<string, unknown> }>;
   registry: InMemoryInstalledRegistry;
   /** Which plugin currently owns the single `embeddingClient@1` slot. */
   publishedBy: string | null;
@@ -170,9 +175,19 @@ export async function makeHarness(
     const s = app.listen(0, () => resolve(s));
   });
   const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${String(port)}/api/v1/admin/embedding-provider`;
+  // A pool scoped to this harness. The process-global fetch dispatcher keeps
+  // sockets alive past `server.close()`, so a later request could be written
+  // onto a socket whose server is already gone (UND_ERR_SOCKET
+  // "other side closed", or a 300s headersTimeout hang). Owning the pool lets
+  // `close()` destroy it deterministically.
+  const dispatcher = new Agent({ keepAliveTimeout: 10, keepAliveMaxTimeout: 10 });
   return {
     server,
-    baseUrl: `http://127.0.0.1:${String(port)}/api/v1/admin/embedding-provider`,
+    baseUrl,
+    dispatcher,
+    getJson: () => getJson(baseUrl, dispatcher),
+    postSwitch: (body: unknown) => postSwitch(baseUrl, body, dispatcher),
     registry,
     get publishedBy() {
       return state.publishedBy;
@@ -190,6 +205,10 @@ export async function makeHarness(
       return state.gate;
     },
     async close() {
+      // Order matters: drop the client pool first, then force any socket the
+      // server still holds, then wait for the listener to actually go away.
+      await dispatcher.destroy();
+      server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   } as Harness;
@@ -213,19 +232,24 @@ export interface SnapshotResponse {
   switchedTo?: string;
 }
 
-export async function getJson(url: string): Promise<{ status: number; body: SnapshotResponse }> {
-  const res = await fetch(url);
+export async function getJson(
+  url: string,
+  dispatcher: Dispatcher,
+): Promise<{ status: number; body: SnapshotResponse }> {
+  const res = await undiciFetch(url, { dispatcher });
   return { status: res.status, body: (await res.json()) as SnapshotResponse };
 }
 
 export async function postSwitch(
   baseUrl: string,
   body: unknown,
+  dispatcher: Dispatcher,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
-  const res = await fetch(`${baseUrl}/switch`, {
+  const res = await undiciFetch(`${baseUrl}/switch`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    dispatcher,
   });
   return { status: res.status, body: (await res.json()) as Record<string, unknown> };
 }
