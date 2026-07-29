@@ -1,4 +1,5 @@
 import type { MemoryStore } from '@omadia/plugin-api';
+import type { DirectLineSessionState } from '@omadia/channel-sdk';
 
 /**
  * Persisted chat sessions for the dev-UI chat tab. Each session is a
@@ -59,6 +60,11 @@ export interface ChatMessage {
   error?: boolean;
   startedAt: number;
   finishedAt?: number;
+  /**
+   * #445 — sticky Direct-Line indicator as of this turn, so a reload restores
+   * the banner instead of dropping it. Optional: legacy messages pre-date it.
+   */
+  directLineSession?: DirectLineSessionState;
 }
 
 /**

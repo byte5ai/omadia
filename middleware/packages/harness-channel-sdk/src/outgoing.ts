@@ -132,6 +132,41 @@ export interface SemanticAnswer {
    * Omitted on ordinary turns (no direct-line directive). Sidecar.
    */
   delegatedAnswer?: DelegatedAnswer;
+
+  /**
+   * #445 — sticky Direct Line indicator. Present on EVERY turn while the
+   * feature is enabled, including `{ active: false }` on ordinary turns. That
+   * is deliberate: a field that only appears while bound cannot tell a client
+   * that a binding ENDED, so a restart, a registry rebuild or a TTL expiry
+   * would leave a stale "you are talking to X" banner on screen. Emitting the
+   * negative makes the indicator self-correcting on the very next turn.
+   * Omitted entirely when the feature is off. Sidecar.
+   */
+  directLineSession?: DirectLineSessionState;
+}
+
+/**
+ * #445 — which specialist, if any, this conversation is currently bound to.
+ * `transition` describes what THIS turn did, so a channel can narrate the
+ * change ("now talking to X") without diffing against its own prior state.
+ */
+export interface DirectLineSessionState {
+  /** True while a binding is live at the END of this turn. */
+  readonly active: boolean;
+  /** Stable agent id of the bound specialist. Omitted when inactive. */
+  readonly agentId?: string;
+  /** Human label of the bound specialist. Omitted when inactive. */
+  readonly label?: string;
+  /** What this turn did to the binding. */
+  readonly transition?:
+    | 'entered'
+    | 'switched'
+    | 'continued'
+    | 'left'
+    | 'unavailable'
+    | 'refused';
+  /** Why a requested binding was refused — only with `transition: 'refused'`. */
+  readonly refusedReason?: 'no-scope' | 'shared-scope' | 'synthetic-scope';
 }
 
 /**

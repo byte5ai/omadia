@@ -1061,7 +1061,10 @@
     "viewTrace": "Trace ▾",
     "stepsCount": "{count, plural, one {# Schritt} other {# Schritte}}",
     "delegatedAnswerFrom": "Direkte Antwort von {label}",
-    "delegatedAnswerCaption": "Wortgetreu übermittelt — der Orchestrator kann diese Antwort nicht bearbeiten oder entfernen."
+    "delegatedAnswerCaption": "Wortgetreu übermittelt — der Orchestrator kann diese Antwort nicht bearbeiten oder entfernen.",
+    "stickyActive": "Direkter Draht zu {label} — jede Nachricht geht dorthin.",
+    "stickyExit": "Zurück zum Orchestrator",
+    "stickyPlaceholder": "Nachricht an {label}…"
   },
   "privacyOperator": {
     "eyebrow": "Privacy Operator",

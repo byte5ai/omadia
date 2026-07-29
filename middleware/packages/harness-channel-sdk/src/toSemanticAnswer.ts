@@ -169,6 +169,10 @@ export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
       ? { agentsConsulted }
       : {}),
     ...(r.delegatedAnswer ? { delegatedAnswer: r.delegatedAnswer } : {}),
+    // #445 — forward the sticky indicator verbatim. Guarded on PRESENCE, not
+    // on `.active`: `{ active: false }` is the signal that clears a stale
+    // banner, so dropping it would be the one bug this field exists to prevent.
+    ...(r.directLineSession ? { directLineSession: r.directLineSession } : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(r.followUpOptions && r.followUpOptions.length > 0
       ? { followUps: r.followUpOptions }

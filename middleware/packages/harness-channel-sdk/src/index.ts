@@ -120,6 +120,7 @@ export type {
   CaptureDisclosure,
   AgentConsultation,
   DelegatedAnswer,
+  DirectLineSessionState,
 } from './outgoing.js';
 
 // Channel-agnostic store interfaces
