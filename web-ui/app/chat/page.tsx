@@ -39,6 +39,7 @@ import { resetChatSession, steerActiveTurn } from '../_lib/api';
 import {
   deriveTitle,
   newSessionId,
+  stripStaleInteractives,
   type ChatSession,
   type DiagramAttachment,
   type OutgoingFileAttachment,
@@ -51,6 +52,7 @@ import {
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import { useStreamStore } from '../_lib/streamStore';
 import { ChoiceCard } from '../_components/ChoiceCard';
+import { McpInputCard } from '../_components/chat/McpInputCard';
 import { DevJobChatCard } from '../_components/devjobs/DevJobChatCard';
 import { parseDevJobStartResult } from '../_components/devjobs/devJobChatCardState';
 import { TaskChatCard } from '../_components/tasks/TaskChatCard';
@@ -297,18 +299,12 @@ export default function ChatPage(): React.ReactElement {
       mutateActive((session) => {
         if (session.id !== targetSessionId) return session;
         const isFirst = session.messages.length === 0;
-        // Strip pendingUserChoice AND followUpOptions from older assistant
-        // messages so the button rows disappear as soon as the user commits
-        // to a choice or types a fresh message.
-        const cleanedMessages = session.messages.map((m) => {
-          if (!m.pendingUserChoice && !m.followUpOptions) return m;
-          const {
-            pendingUserChoice: _dropChoice,
-            followUpOptions: _dropFollowUps,
-            ...rest
-          } = m;
-          return rest;
-        });
+        // Strip pendingUserChoice, pendingMcpInput AND followUpOptions from
+        // older assistant messages so the button rows / input forms disappear as
+        // soon as the user commits to a choice or types a fresh message. Lives
+        // in `chatSessions.ts` so it is actually covered by tests — see
+        // `stripStaleInteractives`.
+        const cleanedMessages = stripStaleInteractives(session.messages);
         return {
           ...session,
           title: isFirst ? deriveTitle(trimmed) : session.title,
@@ -974,6 +970,17 @@ function MessageRow({
                 choice={message.pendingUserChoice}
                 disabled={disabled}
                 onChoose={onChoose}
+              />
+            )}
+            {/* #544 W2-1 — MCP mid-call input form. Mutually exclusive with the
+                choice card server-side (the choice card wins), so the two can
+                never render together. `onChoose` submits the returned envelope
+                as a fresh user turn, exactly like a choice-card click. */}
+            {message.pendingMcpInput && (
+              <McpInputCard
+                request={message.pendingMcpInput}
+                disabled={disabled}
+                onSubmit={onChoose}
               />
             )}
             {message.attachments && message.attachments.length > 0 && (

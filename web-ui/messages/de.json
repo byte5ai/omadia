@@ -920,6 +920,13 @@
       "modalBody": "Autorisiere {server}, damit diese und künftige Anfragen es nutzen können.",
       "close": "Schließen"
     },
+    "mcpInput": {
+      "kicker": "Externe Eingabe-Anfrage",
+      "heading": "„{server}“ braucht für „{tool}“ noch weitere Angaben.",
+      "secretHint": "Bei der Eingabe verborgen — an den Server geht der Wert unverändert.",
+      "warning": "Was du hier eingibst, geht an den externen Server „{server}“. Gib nur Daten ein, die dieser Server bekommen darf.",
+      "submit": "An Server senden"
+    },
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
     "attachmentCachedSuffix": " · cached",

@@ -17,7 +17,7 @@
  * string so a tool failure degrades the turn instead of killing it.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -36,6 +36,17 @@ import type {
 } from '@omadia/plugin-api';
 
 import { turnContext } from '../turnContext.js';
+import {
+  MCP_INPUT_MAX_REPLAY_DEPTH,
+  extractMcpInputPrompt,
+  mcpInputMalformedError,
+  mcpInputReplayCappedError,
+  mcpInputRequiredSentinel,
+  mcpInputUnsupportedError,
+  parseMcpInputRequests,
+  type PendingMcpInput,
+  type PendingMcpInputStore,
+} from './pendingMcpInput.js';
 
 /**
  * Relaxed CallToolResult schema: the MCP spec says `structuredContent` MUST be a
@@ -49,13 +60,40 @@ import { turnContext } from '../turnContext.js';
  * `extractStructured` and handed to `McpManagerOptions.structuredSink`. The
  * lenient schema is what makes that possible for off-spec (array-valued)
  * payloads too — the sink carries whatever the server sent, unnormalised.
+ *
+ * Issue #544 (W2-1): `resultType` + `inputRequests` (MRTR mid-call user input)
+ * are declared here too. Both are readable off the SHIPPED SDK 1.29.0 — no
+ * version bump, and no dependency on the `@modelcontextprotocol/{core,client,
+ * server}@2.0.0` family (#540).
+ *
+ * Be precise about what the declaration buys, because it is NOT "makes the
+ * fields arrive": SDK 1.29.0's `CallToolResultSchema` derives from
+ * `ResultSchema`, which is `.passthrough()`, so an unmodelled key already
+ * survives `parse` at runtime. Verified, and pinned by a characterization test
+ * in `mcpPendingInput.test.ts`. Declaring them explicitly buys two things:
+ *   1. They are typed and intentional rather than an unnamed passthrough
+ *      residue, so a reader can see what we consume off the wire.
+ *   2. The behaviour stops being hostage to an SDK internal. Passthrough is not
+ *      part of the MRTR contract, and this file already carries the scar of a
+ *      strict-vs-lenient result schema breaking every call on a server
+ *      (`structuredContent`, above); a future SDK that tightens it would break
+ *      MRTR silently instead of loudly.
+ * Both are typed loosely on purpose — the MRTR shape is not final, so
+ * validation lives in `parseMcpInputRequests` where a failure can degrade to a
+ * plain tool error instead of rejecting the whole result.
  */
 // Cast back to the base schema type: the SDK's callTool overload is typed to the
 // strict CallToolResultSchema, but our runtime schema only *widens* what parses
-// (any structuredContent), so it is a safe superset.
+// (any structuredContent, optional resultType/inputRequests), so it is a safe
+// superset.
 const LENIENT_CALL_TOOL_RESULT_SCHEMA = CallToolResultSchema.extend({
   structuredContent: z.unknown().optional(),
+  resultType: z.string().optional(),
+  inputRequests: z.unknown().optional(),
 }) as unknown as typeof CallToolResultSchema;
+
+/** MRTR result type meaning "I need more information from the human" (#544). */
+export const MCP_RESULT_TYPE_INPUT_REQUIRED = 'input_required';
 
 export type McpTransportKind = 'stdio' | 'http' | 'sse';
 
@@ -127,6 +165,19 @@ export interface McpToolDescriptor {
  *  themselves via `turnContext.mcpCallerKind`. */
 export type McpCallerKind = 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
 
+/**
+ * Issue #544 (W2-1) — what actually happened on a call.
+ *
+ * The audit trail used to be binary (`ok: true | false`), which MRTR breaks:
+ * a parked `input_required` call neither succeeded nor failed. Overloading
+ * either value would misreport it — `ok: false` would put a phantom failure in
+ * front of operators debugging a healthy server, and a bare `ok: true` would
+ * claim the tool delivered a result it never delivered. So the truth gets its
+ * own field, and `ok` keeps its narrower documented meaning: "the call
+ * completed without failing".
+ */
+export type McpCallOutcome = 'ok' | 'fail' | 'input_required';
+
 /** One audit entry per `callTool` invocation. Deliberately carries NO tool
  *  arguments — identity and outcome only. */
 export interface McpCallLogEntry {
@@ -136,7 +187,15 @@ export interface McpCallLogEntry {
   readonly callerKind: McpCallerKind;
   readonly callerAgent: string | null;
   readonly turnId: string | null;
+  /** True unless the call FAILED. An `input_required` park is not a failure —
+   *  read `outcome` to tell it apart from a delivered result. */
   readonly ok: boolean;
+  /**
+   * W2-1 — the three-valued truth. Optional so persisters that predate #544
+   * (and the `mcp_call_log` table, which has no column for it yet) keep
+   * compiling and simply ignore it; every entry the manager emits sets it.
+   */
+  readonly outcome?: McpCallOutcome;
   readonly error: string | null;
   readonly durationMs: number;
   readonly calledAt: Date;
@@ -217,8 +276,10 @@ export interface McpAuthProvider {
 //      masking — i.e. bypass the shield entirely.
 // The sidecar keeps both invariants intact: no downstream hop changes.
 
-/** Discriminator for a sidecar payload. W2-1 adds `'input_required'` here. */
-export type McpSidecarKind = 'structured_output';
+/** Discriminator for a sidecar payload. W1-3 shaped this as a union precisely
+ *  so W2-1 could add its second member here instead of inventing a parallel
+ *  channel; `'input_required'` is that planned member (#544). */
+export type McpSidecarKind = 'structured_output' | 'input_required';
 
 /** Identity carried by every sidecar payload: which turn, which server, which
  *  tool. `turnId` is null outside a turn (e.g. an operator test-call). */
@@ -238,9 +299,26 @@ export interface McpStructuredOutputSidecar extends McpSidecarIdentity {
   readonly outputSchema?: Record<string, unknown>;
 }
 
+/**
+ * Issue #544 (W2-1) — an MCP tool answered `resultType: "input_required"` and
+ * the call has been parked in the {@link PendingMcpInputStore}. Rides the same
+ * out-of-band channel as the structured-output payload for the same reason: the
+ * model-facing return stays a plain string (a stable sentinel), so neither the
+ * `NativeToolHandler` contract nor the orchestrator's
+ * `typeof result === 'string'` Privacy-Shield gate changes.
+ */
+export interface McpInputRequiredSidecar extends McpSidecarIdentity {
+  readonly kind: 'input_required';
+  /** The parked record — carries `serverName` so the card can attribute the
+   *  request, which is a security requirement, not cosmetics. */
+  readonly pending: PendingMcpInput;
+}
+
 /** Union of everything the sidecar channel can carry. Add new members here;
  *  consumers switch on `kind`. */
-export type McpSidecarPayload = McpStructuredOutputSidecar;
+export type McpSidecarPayload =
+  | McpStructuredOutputSidecar
+  | McpInputRequiredSidecar;
 
 /**
  * Out-of-band sink for payloads that must NOT reach the model as text.
@@ -257,6 +335,14 @@ export interface McpManagerOptions {
   /** Issue #547 (W1-3) — see `McpStructuredSink`. Optional: omitting it leaves
    *  behaviour byte-identical to before. */
   readonly structuredSink?: McpStructuredSink;
+  /**
+   * Issue #544 (W2-1) — where a `resultType: "input_required"` call gets parked
+   * until the user answers. Same optional-dependency shape as `auth` /
+   * `structuredSink`: omitting it leaves every existing path byte-identical,
+   * and an `input_required` result then degrades to a plain tool error
+   * (`mcpInputUnsupportedError`) rather than vanishing.
+   */
+  readonly pendingInput?: PendingMcpInputStore;
 }
 
 /** True when an error/result string looks like an authorization failure. */
@@ -341,7 +427,7 @@ export class McpManager {
   private emitCall(
     cfg: McpServerConfig,
     toolName: string,
-    ok: boolean,
+    outcome: McpCallOutcome,
     error: string | null,
     startedAt: number,
     actingIdentity: string | null,
@@ -364,7 +450,11 @@ export class McpManager {
         callerKind,
         callerAgent: ctx?.mcpCallerId ?? ctx?.agentSlug ?? null,
         turnId: inTurn ? ctx.turnId : null,
-        ok,
+        // W2-1: `fail` is the ONLY outcome that clears `ok`. A parked
+        // `input_required` call did not fail, so it must not show up in any
+        // failure-rate query built on `ok`.
+        ok: outcome !== 'fail',
+        outcome,
         // Bounded: external error strings can carry upstream data; the audit
         // table is append-only, so cap what gets persisted (codex W2 finding).
         error: error === null ? null : error.length > 300 ? `${error.slice(0, 300)}…` : error,
@@ -409,6 +499,93 @@ export class McpManager {
         turnId: ctx !== undefined && ctx.turnId !== '' ? ctx.turnId : null,
         structured,
         ...(outputSchema ? { outputSchema } : {}),
+      });
+    } catch {
+      /* the sidecar must never break a tool call */
+    }
+  }
+
+  /**
+   * W2-1 (#544) — park a `resultType: "input_required"` call and hand the model
+   * a stable sentinel instead of a result.
+   *
+   * Every exit here is deliberate and distinguishable; nothing degrades into
+   * "looked like success":
+   *   - no store wired            → plain tool error (`mcpInputUnsupportedError`)
+   *   - unusable `inputRequests`  → plain tool error (`mcpInputMalformedError`)
+   *   - bounce cap tripped        → plain tool error (`mcpInputReplayCappedError`)
+   *   - second park in one turn   → `MCP_INPUT_ALREADY_PENDING_SENTINEL`
+   *   - parked                    → `mcpInputRequiredSentinel`
+   *
+   * The three error exits audit as `'fail'` (they ARE failed calls — the tool
+   * produced nothing usable). The two park exits audit as `'input_required'`,
+   * which keeps `ok` true without claiming a result was delivered.
+   */
+  private parkInputRequired(
+    cfg: McpServerConfig,
+    toolName: string,
+    args: Record<string, unknown>,
+    res: unknown,
+    startedAt: number,
+    actingIdentity: string | null,
+  ): string {
+    const store = this.options?.pendingInput;
+    if (!store) {
+      const failure = mcpInputUnsupportedError(cfg.name, toolName);
+      this.emitCall(cfg, toolName, 'fail', failure, startedAt, actingIdentity);
+      return failure;
+    }
+    const parsed = parseMcpInputRequests(
+      (res as { inputRequests?: unknown }).inputRequests,
+    );
+    if (!parsed.ok) {
+      const failure = mcpInputMalformedError(cfg.name, toolName, parsed.reason);
+      this.emitCall(cfg, toolName, 'fail', failure, startedAt, actingIdentity);
+      return failure;
+    }
+    const prompt = extractMcpInputPrompt(res);
+    const record: PendingMcpInput = {
+      correlationId: randomUUID(),
+      serverId: cfg.id,
+      serverName: cfg.name,
+      toolName,
+      originalArgs: args,
+      inputRequests: parsed.fields,
+      ...(prompt !== undefined ? { prompt } : {}),
+      // A call that already carries `inputResponses` IS the replay — the only
+      // signal available here, since the manager is stateless per call.
+      replayDepth: REPLAY_ARG_KEY in args ? MCP_INPUT_MAX_REPLAY_DEPTH : 0,
+    };
+    // Parked WITHOUT an owner: the manager has no reliable turn identity (see
+    // `PendingMcpInputStore`). The orchestrator binds the owner when it claims
+    // the record via the correlation id embedded in the sentinel below. Until
+    // then the record is replayable by nobody.
+    if (store.put(record) === 'replay_capped') {
+      const failure = mcpInputReplayCappedError(record);
+      this.emitCall(cfg, toolName, 'fail', failure, startedAt, actingIdentity);
+      return failure;
+    }
+    this.emitCall(cfg, toolName, 'input_required', null, startedAt, actingIdentity);
+    this.emitInputRequired(cfg, toolName, record);
+    return mcpInputRequiredSentinel(record);
+  }
+
+  /** Emit one `input_required` sidecar. Same never-throws contract as
+   *  `emitStructured`; consumers switch on `kind`. */
+  private emitInputRequired(
+    cfg: McpServerConfig,
+    toolName: string,
+    pending: PendingMcpInput,
+  ): void {
+    if (!this.options?.structuredSink) return;
+    try {
+      const ctx = turnContext.current();
+      this.options.structuredSink({
+        kind: 'input_required',
+        serverId: cfg.id,
+        toolName,
+        turnId: ctx !== undefined && ctx.turnId !== '' ? ctx.turnId : null,
+        pending,
       });
     } catch {
       /* the sidecar must never break a tool call */
@@ -476,7 +653,7 @@ export class McpManager {
     try {
       const denial = this.options?.guard?.(cfg.id, toolName);
       if (denial) {
-        this.emitCall(cfg, toolName, false, denial, startedAt, actingIdentity);
+        this.emitCall(cfg, toolName, 'fail', denial, startedAt, actingIdentity);
         return denial;
       }
     } catch {
@@ -548,7 +725,22 @@ export class McpManager {
         if (protocolError) {
           return this.handleFailure(cfg, toolName, token, rendered, startedAt, actingIdentity);
         }
-        this.emitCall(cfg, toolName, true, null, startedAt, actingIdentity);
+        // ── W2-1 (#544) MRTR mid-call user input ─────────────────────────────
+        // Checked BEFORE the success audit and INSIDE the attempt loop with an
+        // unconditional `return`, which is what makes the two "must nots" true
+        // by construction: no retry attempt is consumed (we never `continue`),
+        // and no failure row is emitted (`handleFailure` is not on this path).
+        if (isInputRequiredResult(res)) {
+          return this.parkInputRequired(
+            cfg,
+            toolName,
+            args,
+            res,
+            startedAt,
+            actingIdentity,
+          );
+        }
+        this.emitCall(cfg, toolName, 'ok', null, startedAt, actingIdentity);
         // Issue #547 (W1-3) — hand any `structuredContent` to the out-of-band
         // sink. `rendered` above is already final and is NOT re-derived from
         // this: the model-facing string is byte-identical with or without a
@@ -600,11 +792,11 @@ export class McpManager {
         /* fall back to the raw failure */
       }
       if (authMessage) {
-        this.emitCall(cfg, toolName, false, 'auth_required', startedAt, actingIdentity);
+        this.emitCall(cfg, toolName, 'fail', 'auth_required', startedAt, actingIdentity);
         return authMessage;
       }
     }
-    this.emitCall(cfg, toolName, false, rawFailure, startedAt, actingIdentity);
+    this.emitCall(cfg, toolName, 'fail', rawFailure, startedAt, actingIdentity);
     return rawFailure;
   }
 
@@ -876,6 +1068,27 @@ function schemaKey(serverId: string, toolName: string): string {
 /** True for a non-null, non-array object. */
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * The argument key the replay adds. Also the manager's only signal that a call
+ * IS a replay — see `parkInputRequired`. Exported so the replayer and the tests
+ * cannot drift from it.
+ */
+export const REPLAY_ARG_KEY = 'inputResponses';
+
+/**
+ * W2-1 (#544) — does this result ask for mid-call user input?
+ *
+ * Requires `resultType === 'input_required'` exactly. An `isError` result is
+ * excluded: a failed call has no pending continuation to park, and treating one
+ * as a card would turn every server-side error into a prompt for the user.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isInputRequiredResult(res: any): boolean {
+  if (res === null || typeof res !== 'object') return false;
+  if (res.isError === true) return false;
+  return res.resultType === MCP_RESULT_TYPE_INPUT_REQUIRED;
 }
 
 /** Split a shell command line into argv. Honours simple double/single quotes;

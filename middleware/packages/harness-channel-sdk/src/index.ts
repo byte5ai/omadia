@@ -89,6 +89,9 @@ export type {
   OutgoingFileAttachment,
   PendingUserChoice,
   PendingSlotCard,
+  // #544 W2-1 — MCP mid-call input request.
+  McpInputCardField,
+  PendingMcpInputCard,
   PendingRoutineList,
   AgentMeta,
 } from './chatAgent.js';
@@ -101,6 +104,8 @@ export { toSemanticAnswer } from './toSemanticAnswer.js';
 // #332 Layer 1 — plain-text fallback so even a minimal connector (no rich-card
 // UI) can append a readable, harness-sourced consulted-agents footer line.
 export { agentsConsultedFooterText } from './toSemanticAnswer.js';
+// #544 W2-1 — plain-text fallback for channels without form support.
+export { withMcpInputPrompt } from './toSemanticAnswer.js';
 
 // #332 Layer 1 (gap-closure) — shared derivation so streaming clients
 // (web-ui) and non-streaming `toSemanticAnswer` callers (Teams et al.) build
@@ -117,6 +122,8 @@ export type {
   OutgoingChoiceCard,
   OutgoingSlotPicker,
   OutgoingTopicAsk,
+  // #544 W2-1 — MCP mid-call input form.
+  OutgoingMcpInputForm,
   CaptureDisclosure,
   AgentConsultation,
   DelegatedAnswer,
