@@ -68,6 +68,19 @@ export interface TurnContextValue {
    * back to the raw `userId` for an ACL decision.
    */
   resolvedOmadiaUserId?: string;
+  /**
+   * W2-1 (#544) — the turn's session scope (`input.sessionScope`, falling back
+   * to the turn id when the caller supplied none), as computed once by the
+   * orchestrator entry point.
+   *
+   * Exists so the MCP manager can key a parked `input_required` record on
+   * `{userId, sessionId, correlationId}` without a call-site parameter sweep.
+   * NOT safe as a key on its own: `resolveScope` returns the literal
+   * `'http-default'` for unscoped HTTP turns, so every such caller shares this
+   * value — that was the live cross-user hole in #445. It is one component of
+   * the triple, never the whole key.
+   */
+  sessionScope?: string;
   chatParticipants?: ChatParticipantsProvider;
   /**
    * Privacy-Proxy Slice 2.1: per-turn privacy handle threaded through the
