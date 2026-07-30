@@ -46,15 +46,34 @@ BEGIN
 END $$;
 
 -- Backward compatibility (see the warning above): every EXISTING server that
--- already has a stored token keeps the shared identity it is working with
+-- already holds an OPERATOR token keeps the shared identity it is working with
 -- today. Guarded by to_regclass so the migration is safe on a database where
 -- mcp_oauth_tokens has not been created yet.
+--
+-- The predicate is `user_key = 'operator'`, NOT "has any token row". This
+-- backfill exists solely to preserve the behaviour the 'operator' fallback was
+-- producing (see D2 above), and that fallback only ever applied where an
+-- operator token existed to borrow. A server holding only per-user tokens —
+-- `user_key = 'alice@corp.com'` and nothing else — was never using a shared
+-- identity, so flipping it to 'service' would be a silent identity change no
+-- operator decided on: `resolveMcpUserKey` would hand every caller the shared
+-- `operator` key, and once anyone completed a re-auth the minted operator token
+-- would be shared by every caller, including unmapped channel users. The
+-- narrow predicate leaves such a server on the safe 'per_user' default, which
+-- is the choice its stored tokens already imply.
+--
+-- The literal must stay in sync with `SERVICE_USER_KEY` in
+-- `src/services/mcpDelegation.ts` (a migration cannot import it).
 DO $$
 BEGIN
   IF to_regclass('public.mcp_oauth_tokens') IS NOT NULL THEN
     UPDATE mcp_servers s
        SET delegation = 'service'
-     WHERE EXISTS (SELECT 1 FROM mcp_oauth_tokens t WHERE t.server_id = s.id);
+     WHERE EXISTS (
+       SELECT 1 FROM mcp_oauth_tokens t
+        WHERE t.server_id = s.id
+          AND t.user_key = 'operator'
+     );
   END IF;
 END $$;
 
