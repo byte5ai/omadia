@@ -240,6 +240,10 @@
         "dangerZone": {
           "title": "Memory-Purge",
           "description": "Memory unwiderruflich entlang einer Achse löschen (Alles, Agent, User, Team, Channel); Vorschau-gated mit Confirm-Phrase, kein Undo."
+        },
+        "apiKeys": {
+          "title": "Öffentliche API-Schlüssel",
+          "description": "Bearer-Zugangsdaten für die öffentliche Chat-API erstellen, auflisten und widerrufen (Issues #438/#439)."
         }
       }
     },
@@ -4137,6 +4141,48 @@
       "dotInactive": "Inaktiv",
       "keySourceDevFile": "dev-file (nicht für Produktion)",
       "keySourceDevFileCreated": "dev-file (neu generiert — DEV ONLY)"
+    }
+  },
+  "adminApiKeys": {
+    "title": "Öffentliche API-Schlüssel",
+    "intro": "Server-zu-Server-Bearer-Zugangsdaten für die öffentliche Chat-API. Das Klartext-Token eines Schlüssels wird genau einmal angezeigt, direkt nach dem Erstellen — sofort kopieren, es kann danach nicht erneut abgerufen werden, auch nicht von einem Operator.",
+    "create": {
+      "heading": "Neuen Schlüssel erstellen",
+      "fields": {
+        "label": "Label (optional)",
+        "rateLimit": "Rate-Limit (Anfragen/Minute, optional)"
+      },
+      "rateLimitInvalid": "Rate-Limit muss zwischen {min} und {max} Anfragen/Minute liegen.",
+      "scopesRequired": "Mindestens einen Scope auswählen — ein Schlüssel ohne Scope kann nichts tun.",
+      "submit": "Schlüssel erstellen",
+      "creating": "Wird erstellt"
+    },
+    "reveal": {
+      "heading": "Neuer API-Schlüssel erstellt",
+      "warning": "Dieses Token wird nur dieses eine Mal angezeigt. Jetzt kopieren — es kann danach nicht erneut abgerufen werden, auch nicht von einem Operator.",
+      "copy": "Kopieren",
+      "copied": "Kopiert",
+      "copyFailed": "Automatisches Kopieren fehlgeschlagen — Token oben markieren und manuell kopieren.",
+      "dismiss": "Kopiert, ausblenden"
+    },
+    "list": {
+      "heading": "Vorhandene Schlüssel",
+      "loading": "Lädt …",
+      "empty": "Noch keine API-Schlüssel. Oben einen erstellen, um loszulegen.",
+      "unlabeled": "Ohne Label",
+      "createdAt": "Erstellt {date}",
+      "rateLimitValue": "{value}/Min",
+      "status": {
+        "active": "Aktiv",
+        "revoked": "Widerrufen"
+      },
+      "revoke": "Widerrufen",
+      "revoking": "Wird widerrufen",
+      "confirmRevoke": {
+        "message": "Diesen Schlüssel widerrufen? Alles, was ihn verwendet, hört sofort auf zu funktionieren — das kann nicht rückgängig gemacht werden.",
+        "confirm": "Widerruf bestätigen",
+        "cancel": "Abbrechen"
+      }
     }
   }
 }

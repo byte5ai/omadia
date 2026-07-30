@@ -240,6 +240,10 @@
         "dangerZone": {
           "title": "Memory Purge",
           "description": "Irreversibly delete memory along one axis (all, agent, user, team, channel); preview-gated with a confirm phrase, no undo."
+        },
+        "apiKeys": {
+          "title": "Public API Keys",
+          "description": "Create, list, and revoke bearer credentials for the public chat API (issues #438/#439)."
         }
       }
     },
@@ -4137,6 +4141,48 @@
       "dotInactive": "Inactive",
       "keySourceDevFile": "dev file (not for production)",
       "keySourceDevFileCreated": "dev file (newly generated — DEV ONLY)"
+    }
+  },
+  "adminApiKeys": {
+    "title": "Public API Keys",
+    "intro": "Server-to-server bearer credentials for the public chat API. A key’s plaintext token is shown exactly once, right after creation — copy it immediately, it cannot be retrieved again, even by an operator.",
+    "create": {
+      "heading": "Create a new key",
+      "fields": {
+        "label": "Label (optional)",
+        "rateLimit": "Rate limit (requests/minute, optional)"
+      },
+      "rateLimitInvalid": "Rate limit must be between {min} and {max} requests/minute.",
+      "scopesRequired": "Select at least one scope — a key with none cannot do anything.",
+      "submit": "Create key",
+      "creating": "Creating"
+    },
+    "reveal": {
+      "heading": "New API key created",
+      "warning": "This is the only time this token is shown. Copy it now — it cannot be retrieved again, even by an operator.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "copyFailed": "Couldn't copy automatically — select the token above and copy it manually.",
+      "dismiss": "I've copied it, dismiss"
+    },
+    "list": {
+      "heading": "Existing keys",
+      "loading": "Loading …",
+      "empty": "No API keys yet. Create one above to get started.",
+      "unlabeled": "Unlabeled",
+      "createdAt": "Created {date}",
+      "rateLimitValue": "{value}/min",
+      "status": {
+        "active": "Active",
+        "revoked": "Revoked"
+      },
+      "revoke": "Revoke",
+      "revoking": "Revoking",
+      "confirmRevoke": {
+        "message": "Revoke this key? Anything using it stops working immediately — this can't be undone.",
+        "confirm": "Confirm revoke",
+        "cancel": "Cancel"
+      }
     }
   }
 }
