@@ -164,8 +164,15 @@ function looksUnauthorized(text: string): boolean {
  *  (request timeout, dropped/closed connection, socket reset) — NOT an auth or
  *  application-level tool error. */
 function looksTransient(text: string): boolean {
+  // W0-5 — auth wins. `-32001` used to be matched as a bare numeric code here,
+  // which contradicted this function's own contract: the code is only
+  // *implementation-defined*, and servers legitimately use it for Unauthorized
+  // (omadia's own LoopbackMcpServer does, see its 401 branch). A genuine
+  // Unauthorized was therefore retried once — an extra doomed round trip that
+  // delayed the auth prompt. A real SDK request timeout still retries: it
+  // carries "Request timed out" and matches the timeout pattern below.
+  if (looksUnauthorized(text)) return false;
   return (
-    /-?32001\b/.test(text) ||
     /timed?\s*out|timeout/i.test(text) ||
     /connection closed|connection reset|econnreset|socket hang ?up|network error|fetch failed|und_err/i.test(
       text,
@@ -180,6 +187,29 @@ interface Pooled {
 }
 
 const CLIENT_INFO = { name: 'omadia-agent-builder', version: '0.1.0' } as const;
+
+/**
+ * W0-2 — explicit per-call MCP request policy. `callTool` used to pass no
+ * `RequestOptions` at all and silently inherited the SDK's 60s default, so the
+ * real ceiling was undocumented and un-tunable. Stated here instead:
+ *  - `timeout`: idle budget for one request.
+ *  - `resetTimeoutOnProgress`: a server streaming progress notifications keeps
+ *    its budget alive (long Odoo/Confluence reports do exactly this)…
+ *  - `maxTotalTimeout`: …but never past this absolute ceiling, so a chatty
+ *    server cannot extend a call forever.
+ * Both are env-tunable per deployment; the orchestrator's own per-tool dispatch
+ * deadline (`OMADIA_TOOL_DISPATCH_TIMEOUT_MS`) is the outer bound.
+ */
+const DEFAULT_MCP_CALL_TIMEOUT_MS = 60_000;
+const DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = 180_000;
+
+function envMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
 
 export class McpManager {
   private readonly pool = new Map<string, Pooled>();
@@ -324,6 +354,16 @@ export class McpManager {
           // the failure surfaces to the model as "-32000 Connection closed",
           // making every tool call on that server look like a transport failure.
           LENIENT_CALL_TOOL_RESULT_SCHEMA,
+          // Stated request policy instead of the SDK's implicit 60s default —
+          // see DEFAULT_MCP_CALL_TIMEOUT_MS.
+          {
+            timeout: envMs('OMADIA_MCP_CALL_TIMEOUT_MS', DEFAULT_MCP_CALL_TIMEOUT_MS),
+            resetTimeoutOnProgress: true,
+            maxTotalTimeout: envMs(
+              'OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS',
+              DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
+            ),
+          },
         );
         const rendered = renderToolResult(res);
         // MCP protocol errors resolve (isError result) instead of throwing —
