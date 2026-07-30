@@ -281,6 +281,8 @@ import { DeterministicActionRegistry } from './platform/deterministicActionRegis
 import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
+// W3-A / W4 — boot-time enforcement of the tool-timeout ordering invariant.
+import { assertTimeoutHierarchy } from '@omadia/orchestrator';
 // W2-2 (issue #543) — generic long-running task seam.
 import { InMemoryTaskStore, startTaskReaper } from '@omadia/orchestrator';
 import { McpManager, type McpCallLogEntry, type McpServerConfig } from '@omadia/orchestrator';
@@ -390,6 +392,14 @@ async function main(): Promise<void> {
   // the host alive when a plugin's detached async (timers, resolved promises,
   // fire-and-forget I/O) throws.
   installProcessGuards();
+
+  // W3-A / W4 — refuse to boot on an incoherent tool-timeout hierarchy. The
+  // ordering (dispatch deadline > MCP worst case > per-request idle budget) used
+  // to be asserted only inside a test helper that nothing shipped ever called,
+  // so `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=90000` inverted it with green CI and the
+  // symptom surfaced much later as MCP calls dying on a generic
+  // dispatch-deadline error. Config errors belong at startup.
+  assertTimeoutHierarchy();
 
   // Plugin-api registries. Created empty at boot; populated as plugins
   // register into them during the activation sequence further down. Today

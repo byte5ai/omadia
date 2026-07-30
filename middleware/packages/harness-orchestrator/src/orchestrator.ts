@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
+import { resolveMcpCallTimeouts } from './mcp/mcpClient.js';
 import {
   deriveAgentsConsulted,
   toSemanticAnswer,
@@ -1404,16 +1405,29 @@ function mcpObservationDigest(raw: string): string {
  * dispatch-deadline error instead of the MCP layer's own diagnosis (which the
  * audit trail records as an `fail`/`timeout` row against the server).
  *
- * `test/orchestrator/timeoutHierarchy.test.ts` asserts
- * `dispatchDeadline > mcpAbsoluteCeiling`, so a future edit to EITHER knob fails
- * loudly rather than silently re-creating the inversion.
+ * The invariant is enforced in PRODUCTION, not only in a test.
+ * {@link assertTimeoutHierarchy} used to exist ONLY as a local helper inside
+ * `test/orchestrator/timeoutHierarchy.test.ts` that nothing shipped ever
+ * called — so `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=90000` re-created the exact
+ * inversion W3-A removed, with fully green CI, and the symptom surfaced much
+ * later as MCP calls dying on a generic dispatch-deadline error. It now lives
+ * here and runs at boot, so an incoherent deployment refuses to start.
+ *
+ * The invariant is stated against the MCP layer's `worstCaseTotalMs` — retries
+ * INCLUDED — because the per-attempt ceiling was never the number that mattered.
+ *
+ * `resolveToolDispatchTimeoutMs` is deliberately left as a pure resolver rather
+ * than clamping to a coherent value: silently substituting a number the operator
+ * did not choose hides the misconfiguration instead of reporting it, and a short
+ * deadline is legitimate for a deployment that also lowers the MCP ceiling. The
+ * boot check is where an incoherent pair is refused.
  */
 const DEFAULT_TOOL_DISPATCH_TIMEOUT_MS = 240_000;
 const TOOL_DISPATCH_TIMEOUT_ENV = 'OMADIA_TOOL_DISPATCH_TIMEOUT_MS';
 
 /** Resolved per dispatch (not cached at module load) so an operator env change
  *  applies to the next turn without a restart. Exported so the timeout-hierarchy
- *  invariant test reads the REAL resolved value, env overrides included. */
+ *  invariant check reads the REAL resolved value, env overrides included. */
 export function resolveToolDispatchTimeoutMs(): number {
   const raw = process.env[TOOL_DISPATCH_TIMEOUT_ENV];
   if (raw === undefined || raw.trim() === '') {
@@ -1427,6 +1441,38 @@ export function resolveToolDispatchTimeoutMs(): number {
     return DEFAULT_TOOL_DISPATCH_TIMEOUT_MS;
   }
   return parsed;
+}
+
+/**
+ * Fail-fast configuration check for the tool-timeout hierarchy — the PRODUCTION
+ * home of the invariant. Called at boot from `src/index.ts`.
+ *
+ * Throws, rather than warning, because every alternative is worse: a warning is
+ * invisible in a container log, and clamping runs the deployment on a number
+ * nobody chose. Both knobs are operator-set, so the operator is exactly who can
+ * fix it, and startup is exactly when they are looking.
+ */
+export function assertTimeoutHierarchy(): void {
+  const { timeoutMs, maxTotalTimeoutMs, worstCaseTotalMs } = resolveMcpCallTimeouts();
+  if (maxTotalTimeoutMs <= timeoutMs) {
+    throw new Error(
+      `[orchestrator] timeout hierarchy is incoherent: the absolute MCP ceiling ` +
+        `(OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS=${String(maxTotalTimeoutMs)}ms) must be looser than the ` +
+        `per-request idle budget (OMADIA_MCP_CALL_TIMEOUT_MS=${String(timeoutMs)}ms).`,
+    );
+  }
+  // `0` means "no dispatch deadline", which is looser than any finite ceiling.
+  const configured = resolveToolDispatchTimeoutMs();
+  if (configured !== 0 && configured <= worstCaseTotalMs) {
+    throw new Error(
+      `[orchestrator] timeout hierarchy is incoherent: the OUTER tool-dispatch deadline ` +
+        `(${TOOL_DISPATCH_TIMEOUT_ENV}=${String(configured)}ms) must be strictly looser than the MCP layer's ` +
+        `worst-case call budget (${String(worstCaseTotalMs)}ms, retries included) — otherwise an MCP call that ` +
+        `legitimately uses its full allowance is killed by the outer bound first and the model gets a generic ` +
+        `dispatch-deadline error instead of the MCP layer's own diagnosis. Raise ${TOOL_DISPATCH_TIMEOUT_ENV} ` +
+        `above ${String(worstCaseTotalMs)}ms, or lower OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS.`,
+    );
+  }
 }
 
 /** Model-facing result for a tool that blew its deadline. `Error:`-prefixed so
@@ -5429,8 +5475,25 @@ export class Orchestrator {
     // the turn took `toolDeadlineError` and moved on. Everything below this
     // line WRITES this result into turn state (raw-result capture, canvas
     // sentinel tap, KG ingestion, privacy interning/bypass receipts), so a
-    // late arrival must be dropped HERE — before the first side effect —
-    // rather than merely being ignored by the caller.
+    // late arrival is dropped HERE, before the first of THOSE side effects.
+    //
+    // WHAT THIS DOES NOT DO — the guard sits AFTER `dispatchToolInner` returns,
+    // so everything the tool did on its way to producing this result has already
+    // happened and is not undone:
+    //   - MCP mutations on the remote server, and their `mcp_call_log` rows;
+    //   - knowledge-graph and memory writes performed by the tool itself;
+    //   - datasets a sub-agent interned via `privacy.internToolResultV4`, which
+    //     register on the TURN's `privacyHandle` and therefore outlive this
+    //     abort (the local `subAgentSink` array is discarded with the slot, but
+    //     the registration is not — the privacy contract exposes no per-dataset
+    //     drop, only `finalizeTurn`, so unwinding it needs a new API on the
+    //     published `@omadia/plugin-api` surface, not a change here).
+    // So a `knowledge_graph` write that took 241 s IS in the graph, while the
+    // model was told the call was aborted and its result discarded. What is
+    // guaranteed is narrower and worth stating exactly: the late result never
+    // enters TURN state, and the model never sees it. Side effects the tool
+    // already committed are outside this boundary by construction — cancelling
+    // them would need cooperative aborts all the way down.
     if (deadlineSignal?.aborted === true) {
       console.warn(
         `[orchestrator.dispatchTool:${name}] result arrived after the dispatch deadline — discarded.`,

@@ -419,11 +419,38 @@ const CLIENT_INFO = { name: 'omadia-agent-builder', version: '0.1.0' } as const;
  * ceiling — so an MCP-backed sub-agent legitimately streaming progress for its
  * full allowance was killed by the outer bound first, and the model saw a
  * generic dispatch-deadline error instead of the MCP layer's own diagnosis.
- * `test/orchestrator/timeoutHierarchy.test.ts` fails loudly if a future edit to
- * either knob re-creates the inversion.
+ * `assertTimeoutHierarchy()` in `orchestrator.ts` refuses to boot on an
+ * incoherent configuration, and `resolveToolDispatchTimeoutMs()` clamps a
+ * runtime env change that would re-create the inversion.
+ *
+ * ── …AND THE RETRY MUST NOT DOUBLE IT ───────────────────────────────────────
+ * `maxTotalTimeout` bounds ONE `callTool` request. `callTool` below makes up to
+ * {@link MCP_CALL_MAX_ATTEMPTS} of them, so the naive reading of the invariant —
+ * outer (240 s) > ceiling (180 s) — was asserted against a per-attempt number
+ * while reality was 2 × 180 s = 360 s: the inversion W3-A removed, re-created by
+ * a knob nobody counted. The fix is on this side, not by inflating the outer
+ * bound: the attempts SHARE one absolute budget, so `maxTotalTimeout` means what
+ * its name says. Attempt 2 gets only the remainder, and no retry is started once
+ * the budget is spent. {@link resolveMcpCallTimeouts} therefore reports a
+ * `worstCaseTotalMs` the hierarchy check can assert against the real ceiling.
  */
 const DEFAULT_MCP_CALL_TIMEOUT_MS = 60_000;
 const DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = 180_000;
+
+/**
+ * Attempts one `callTool` may make: the original plus ONE transient retry.
+ * Exported so the timeout hierarchy reasons about the real number rather than
+ * re-deriving it from the loop below.
+ */
+export const MCP_CALL_MAX_ATTEMPTS = 2;
+
+/**
+ * Floor on the remaining budget worth spending on a retry. Below this a second
+ * attempt cannot plausibly finish, so it is skipped rather than started and
+ * immediately timed out — which would turn one honest ceiling error into a
+ * misleading "the retry also failed".
+ */
+const MCP_RETRY_MIN_REMAINING_MS = 1_000;
 
 function envMs(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -442,13 +469,23 @@ function envMs(name: string, fallback: number): number {
 export function resolveMcpCallTimeouts(): {
   readonly timeoutMs: number;
   readonly maxTotalTimeoutMs: number;
+  /**
+   * Wall-clock worst case for one `callTool`, retries INCLUDED — the number the
+   * outer dispatch deadline actually has to be looser than. Equal to
+   * `maxTotalTimeoutMs` because the attempts share one budget; it is reported
+   * separately so the hierarchy check keeps asserting against the real worst
+   * case if that ever stops being true.
+   */
+  readonly worstCaseTotalMs: number;
 } {
+  const maxTotalTimeoutMs = envMs(
+    'OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS',
+    DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
+  );
   return {
     timeoutMs: envMs('OMADIA_MCP_CALL_TIMEOUT_MS', DEFAULT_MCP_CALL_TIMEOUT_MS),
-    maxTotalTimeoutMs: envMs(
-      'OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS',
-      DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
-    ),
+    maxTotalTimeoutMs,
+    worstCaseTotalMs: maxTotalTimeoutMs,
   };
 }
 
@@ -733,9 +770,25 @@ export class McpManager {
     //
     // The mitigation itself is untouched for everything else — read tools, and
     // write tools dispatched without an idempotency key, still get the retry.
+    //
+    // W4 — the retry does NOT get a fresh `maxTotalTimeout`. Two attempts each
+    // allowed the full absolute ceiling made one `callTool` worth up to
+    // 2 × 180 s = 360 s of wall clock, above the 240 s dispatch deadline that is
+    // supposed to be the LOOSER, outer bound — the exact inversion W3-A existed
+    // to remove, re-created by a retry nobody counted in the invariant. The
+    // attempts therefore share one budget: attempt 2 runs with what is left, and
+    // is not started at all once the budget is spent.
     const idempotency = currentIdempotencyScope();
-    const maxAttempts = idempotency?.exactlyOnce === true ? 1 : 2;
+    const maxAttempts =
+      idempotency?.exactlyOnce === true ? 1 : MCP_CALL_MAX_ATTEMPTS;
     let lastFailure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed.`;
+    const budgetStartedAt = Date.now();
+    /** What is left of the shared absolute ceiling, or `null` when it is gone. */
+    const remainingBudgetMs = (): number | null => {
+      const policy = resolveMcpCallTimeouts();
+      const left = policy.maxTotalTimeoutMs - (Date.now() - budgetStartedAt);
+      return left >= MCP_RETRY_MIN_REMAINING_MS ? left : null;
+    };
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       let pooled: Pooled;
       try {
@@ -745,7 +798,12 @@ export class McpManager {
         // (streamable-HTTP surfaces the 401 as "-32000 Connection closed"), so
         // this path must also offer the auth prompt — not just tool-level errors.
         const failure = `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
-        if (attempt < maxAttempts && looksTransient(failure) && token !== null) {
+        if (
+          attempt < maxAttempts &&
+          looksTransient(failure) &&
+          token !== null &&
+          remainingBudgetMs() !== null
+        ) {
           await this.close(this.poolKey(cfg, token));
           lastFailure = failure;
           continue;
@@ -775,13 +833,21 @@ export class McpManager {
           // making every tool call on that server look like a transport failure.
           LENIENT_CALL_TOOL_RESULT_SCHEMA,
           // Stated request policy instead of the SDK's implicit 60s default —
-          // see DEFAULT_MCP_CALL_TIMEOUT_MS.
+          // see DEFAULT_MCP_CALL_TIMEOUT_MS. `maxTotalTimeout` is the SHARED
+          // remainder, not a fresh allowance per attempt, so N attempts still
+          // cost at most one ceiling of wall clock (see the note above the loop).
           (() => {
             const policy = resolveMcpCallTimeouts();
+            const elapsed = Date.now() - budgetStartedAt;
+            const remaining = Math.max(
+              MCP_RETRY_MIN_REMAINING_MS,
+              policy.maxTotalTimeoutMs - elapsed,
+            );
             return {
-              timeout: policy.timeoutMs,
+              // The per-request idle budget can never outlive the absolute one.
+              timeout: Math.min(policy.timeoutMs, remaining),
               resetTimeoutOnProgress: true,
-              maxTotalTimeout: policy.maxTotalTimeoutMs,
+              maxTotalTimeout: remaining,
             };
           })(),
         );
@@ -822,7 +888,16 @@ export class McpManager {
         // Drop the connection so the next call reconnects (server may have died).
         await this.close(this.poolKey(cfg, token));
         const failure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed: ${msg(err)}`;
-        if (attempt < maxAttempts && looksTransient(failure)) {
+        // No retry once the shared absolute budget is spent: a call that already
+        // consumed its whole ceiling is not "transiently flaky", and starting a
+        // second attempt with no time left would only replace an honest ceiling
+        // error with a confusing one — while doubling the wall clock the outer
+        // dispatch deadline was sized against.
+        if (
+          attempt < maxAttempts &&
+          looksTransient(failure) &&
+          remainingBudgetMs() !== null
+        ) {
           lastFailure = failure;
           continue;
         }
