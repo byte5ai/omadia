@@ -234,11 +234,14 @@ export function createPluginContext(
     has(name: string): boolean {
       return serviceRegistry.has(name);
     },
+    // Owner attribution comes from the kernel-known `agentId`, never from
+    // the caller — it is what lets `disposeBySource(agentId)` unregister a
+    // plugin's services on deactivate.
     provide<T>(name: string, impl: T): () => void {
-      return serviceRegistry.provide(name, impl);
+      return serviceRegistry.provide(name, impl, agentId);
     },
     replace<T>(name: string, impl: T): () => void {
-      return serviceRegistry.replace(name, impl);
+      return serviceRegistry.replace(name, impl, agentId);
     },
   };
 
