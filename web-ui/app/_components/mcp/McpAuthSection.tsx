@@ -136,6 +136,33 @@ export function McpAuthSection({
             <span className="text-[color:var(--warning)]">{t('auth.notConnected')}</span>
           )}
         </span>
+        {/* W2-4 — which acquisition mode this issuer is on. A badge rather than
+            a sentence because it is a persistent property of the server, and
+            because `manual` must read as a normal state, not a warning. */}
+        {status.acquisitionMode === 'cimd' ? (
+          <span
+            title={t('auth.cimdBadgeWhy')}
+            className="rounded-full border border-[color:var(--success)]/50 px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--success)]"
+          >
+            {t('auth.modeCimd')}
+          </span>
+        ) : null}
+        {status.acquisitionMode === 'manual' ? (
+          <span
+            title={t('auth.modeManualWhy')}
+            className="rounded-full border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--fg-muted)]"
+          >
+            {t('auth.modeManual')}
+          </span>
+        ) : null}
+        {status.acquisitionMode === 'dcr' ? (
+          <span
+            title={t('auth.modeDcrWhy')}
+            className="rounded-full border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--fg-muted)]"
+          >
+            {t('auth.modeDcr')}
+          </span>
+        ) : null}
         {status.connected ? (
           <Button
             size="sm"
@@ -159,9 +186,30 @@ export function McpAuthSection({
       </div>
       {!status.connected && !showClientForm ? (
         <div className="text-[11px] text-[color:var(--fg-muted)]">
-          {status.brokered
-            ? t('auth.hintBrokered')
-            : t('auth.hintDelegated', { host: status.issuerHost ?? status.issuer ?? '?' })}
+          {status.acquisitionMode === 'cimd'
+            ? t('auth.hintCimd')
+            : status.brokered
+              ? t('auth.hintBrokered')
+              : t('auth.hintDelegated', { host: status.issuerHost ?? status.issuer ?? '?' })}
+        </div>
+      ) : null}
+      {/* W2-4 diagnostic: the authorization server WOULD accept a metadata
+          document, but this deployment cannot serve one it can reach. That is
+          the on-prem norm, not a fault — so the copy says what to do (use the
+          manual client) and what would change it (inbound https), and never
+          implies the manual path is inferior. */}
+      {status.cimdSupported && status.acquisitionMode !== 'cimd' ? (
+        <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--card)]/40 p-2 text-[11px] text-[color:var(--fg-muted)]">
+          <div>{t('auth.cimdUnreachable')}</div>
+          {status.cimdBlockedReason ? (
+            <div className="mt-1">
+              {t('auth.cimdUnreachableReason')}:{' '}
+              <code className="rounded bg-[color:var(--card)] px-1 py-0.5">
+                {status.cimdBlockedReason}
+              </code>
+            </div>
+          ) : null}
+          <div className="mt-1">{t('auth.manualStillSupported')}</div>
         </div>
       ) : null}
       {status.delegation ? (
@@ -195,6 +243,12 @@ export function McpAuthSection({
         <div className="flex flex-col gap-1.5 rounded-md border border-[color:var(--border)] bg-[color:var(--card)]/40 p-2.5">
           <div className="text-xs text-[color:var(--fg-muted)]">
             {t('auth.needsClientWhy', { host: status.issuerHost ?? status.issuer ?? '?' })}
+          </div>
+          {/* W2-4 — say plainly that this form IS the enterprise path, so nobody
+              reads it as a stopgap until CIMD arrives. It never will for Entra
+              ID or Okta: they use pre-registered app registrations by design. */}
+          <div className="text-[11px] text-[color:var(--fg-muted)]">
+            {t('auth.manualIsEnterprisePath')}
           </div>
           {status.redirectUri ? (
             <div className="text-[11px] text-[color:var(--fg-muted)]">

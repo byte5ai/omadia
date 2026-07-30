@@ -2880,7 +2880,18 @@
       "delegationServiceWhy": "All callers share one authorization — yours. Anyone who can reach an orchestrator with this server granted acts with that authority. Only keep this for servers where a shared identity is intended.",
       "delegationSwitchToPerUser": "Require per-user identity",
       "delegationSwitchToService": "Use a shared service identity",
-      "delegationIdentityMissing": "This session has no mapped user identity, so per-user calls to this server fail closed. Nothing is sent to the server."
+      "delegationIdentityMissing": "This session has no mapped user identity, so per-user calls to this server fail closed. Nothing is sent to the server.",
+      "modeCimd": "Metadata document",
+      "modeDcr": "Auto-registered",
+      "modeManual": "Registered app",
+      "cimdBadgeWhy": "This server accepts a client ID metadata document, so omadia identifies itself by a URL this deployment publishes. No app registration was needed.",
+      "modeDcrWhy": "This server registered omadia automatically (dynamic client registration). The MCP spec is phasing this out in favour of metadata documents, but it keeps working — there is nothing to do.",
+      "modeManualWhy": "omadia uses an OAuth app you registered once at this issuer. This is the standard path for Microsoft Entra ID and Okta and stays fully supported.",
+      "hintCimd": "This server identifies omadia by a metadata document published on this deployment — nothing to register, just connect and log in.",
+      "cimdUnreachable": "This server would accept a client ID metadata document, but this deployment cannot publish one it can fetch. That usually means omadia is not reachable from the internet — normal for an on-premises install, since the identity provider has to fetch the document itself.",
+      "cimdUnreachableReason": "Reason",
+      "manualStillSupported": "Nothing is broken: register a one-time OAuth app for this issuer below and connect as usual.",
+      "manualIsEnterprisePath": "This is the standard enterprise path, not a workaround. Microsoft Entra ID and Okta use pre-registered app registrations by design and will keep using this form."
     },
     "marketplace": {
       "registry": "Registry",
