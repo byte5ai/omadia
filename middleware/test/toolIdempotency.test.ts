@@ -395,3 +395,138 @@ describe('ToolDispatchService — idempotent write dispatch', () => {
     assert.deepEqual(seen, [{ key: 'req-1', exactlyOnce: true }, undefined]);
   });
 });
+
+/**
+ * W4 — an in-flight entry used to be exempt from BOTH expiry and eviction, with
+ * no upper bound at all. The reasoning ("it never expires out from under its own
+ * execution") holds only while the execution finishes. A handler that hangs
+ * forever — the exact failure the dispatch deadline exists for, and the deadline
+ * resolves the SLOT, it does not make the underlying promise settle — pinned its
+ * key permanently: every later call under that key awaited a promise that never
+ * resolved, and the entry could not be evicted, so the map grew past
+ * `maxEntries` unchecked.
+ */
+describe('ToolIdempotencyStore — in-flight entries are bounded (W4)', () => {
+  /** A promise that never settles: a hung executor, not a slow one. */
+  function hung(): Promise<{ content: string }> {
+    return new Promise<{ content: string }>(() => undefined);
+  }
+
+  it('MUTATION CHECK: a hung execution stops pinning its key once the TTL passes', async () => {
+    let clock = 0;
+    const store = new ToolIdempotencyStore({ ttlMs: 1_000, now: () => clock });
+
+    // Fire and DO NOT await — this one never settles.
+    void store.run('k1', 'write_tool', { a: 1 }, hung).catch(() => undefined);
+
+    clock += 2_000;
+
+    // Under the bug this call collapsed onto the hung promise and never
+    // resolved, so the test would time out rather than fail — which is why the
+    // assertion below is guarded by an explicit race instead of a bare await.
+    let executed = 0;
+    const fresh = store.run('k1', 'write_tool', { a: 1 }, async () => {
+      executed += 1;
+      return { content: 'fresh result' };
+    });
+    const settled = await Promise.race([
+      fresh,
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 250)),
+    ]);
+
+    assert.notEqual(settled, 'hung', 'the expired in-flight entry still pinned the key');
+    assert.equal(executed, 1, 'the replacement execution must actually run');
+    assert.deepEqual(
+      (settled as Awaited<typeof fresh>).result,
+      { content: 'fresh result' },
+    );
+    assert.equal((settled as Awaited<typeof fresh>).replayed, false);
+  });
+
+  it('collapses a concurrent duplicate onto a still-live in-flight execution', async () => {
+    // The property the expiry must NOT break: inside the TTL, duplicates share
+    // one execution instead of racing.
+    let clock = 0;
+    const store = new ToolIdempotencyStore({ ttlMs: 10_000, now: () => clock });
+    let executed = 0;
+    let release!: (value: { content: string }) => void;
+    const gate = new Promise<{ content: string }>((r) => {
+      release = r;
+    });
+
+    const first = store.run('k1', 'write_tool', { a: 1 }, () => {
+      executed += 1;
+      return gate;
+    });
+    clock += 500;
+    const second = store.run('k1', 'write_tool', { a: 1 }, () => {
+      executed += 1;
+      return gate;
+    });
+
+    release({ content: 'once' });
+    const [a, b] = await Promise.all([first, second]);
+
+    assert.equal(executed, 1, 'the duplicate must not get its own execution');
+    assert.equal(a.replayed, false);
+    assert.equal(b.replayed, true);
+    assert.deepEqual(b.result, { content: 'once' });
+  });
+
+  it('MUTATION CHECK: hung executions cannot grow the map without bound', async () => {
+    let clock = 0;
+    const store = new ToolIdempotencyStore({
+      ttlMs: 1_000,
+      maxEntries: 2,
+      now: () => clock,
+    });
+
+    for (let i = 0; i < 5; i += 1) {
+      void store.run(`k${String(i)}`, 'write_tool', { i }, hung).catch(() => undefined);
+    }
+    // While genuinely live, in-flight entries are correctly protected from
+    // eviction — losing one would break duplicate collapsing.
+    assert.equal(store.size(), 5);
+
+    clock += 2_000;
+
+    // One more dispatch. Its own entry is live; the five stale ones are not, and
+    // the evictor now runs on the in-flight path too (it used to run only after
+    // a SUCCESSFUL completion, so a burst of hung calls never triggered it).
+    void store.run('k-new', 'write_tool', { n: 1 }, hung).catch(() => undefined);
+
+    assert.ok(
+      store.size() <= 2,
+      `stale in-flight entries were never evicted — map holds ${String(store.size())} entries with maxEntries=2`,
+    );
+  });
+
+  it('a late completion does not clobber a newer execution installed under the same key', async () => {
+    // Direct consequence of making in-flight entries expirable: two executions
+    // can legitimately exist for one key. The older one's outcome must not
+    // overwrite the newer one's entry.
+    let clock = 0;
+    const store = new ToolIdempotencyStore({ ttlMs: 1_000, now: () => clock });
+    let releaseOld!: (value: { content: string }) => void;
+    const old = new Promise<{ content: string }>((r) => {
+      releaseOld = r;
+    });
+
+    const first = store.run('k1', 'write_tool', { a: 1 }, () => old);
+    clock += 2_000;
+    const second = await store.run('k1', 'write_tool', { a: 1 }, async () => ({
+      content: 'newer',
+    }));
+    assert.deepEqual(second.result, { content: 'newer' });
+
+    releaseOld({ content: 'stale' });
+    await first;
+
+    // The newer result is what a replay gets.
+    const replay = await store.run('k1', 'write_tool', { a: 1 }, async () => {
+      assert.fail('a live cached entry must not re-execute');
+    });
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(replay.result, { content: 'newer' });
+  });
+});

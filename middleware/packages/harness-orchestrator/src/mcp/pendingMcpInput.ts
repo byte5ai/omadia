@@ -252,6 +252,20 @@ export class InMemoryPendingMcpInputStore implements PendingMcpInputStore {
     }
     // Already claimed → miss. This is what makes the FIRST sentinel in a batch
     // the winner, and what stops a replayed sentinel from re-carding.
+    //
+    // Trust-on-first-claim, deliberately. A review pass asked why this does not
+    // also compare the record's own `userId`/`sessionId` the way `take()` does:
+    // because a parked record HAS none. `PendingMcpInput` carries no owner
+    // fields at all — binding one here IS how it acquires them, which is the
+    // whole point of the two-phase design (see the interface doc: `callTool` is
+    // reached through a published handler contract with no turn parameter, and
+    // reading turn identity from ambient context at park time is exactly the
+    // robustness regression that design avoids). There is nothing to compare
+    // against, so the protection has to come from elsewhere, and it does: the
+    // correlation id is a random UUID that is only ever learned from the tool
+    // result of the call that parked it, inside the same turn's batch, so no
+    // other turn can present it; and the security property that actually
+    // matters — REPLAY — is enforced by `take()` on the full triple.
     if (entry.owner !== undefined) return undefined;
     entry.owner = owner;
     // NOTE: the record is intentionally NOT removed. Claiming renders the card;

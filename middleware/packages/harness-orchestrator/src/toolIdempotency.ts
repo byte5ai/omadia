@@ -223,46 +223,85 @@ export class ToolIdempotencyStore {
 
     const inFlight = exec();
     this.entries.set(cacheKey, { fingerprint, storedAt: this.now(), inFlight });
+    // Bound the map on the IN-FLIGHT path too. Eviction used to run only after a
+    // successful completion, so a burst of dispatches that were all still
+    // running (or a handler that never settles) grew the map past `maxEntries`
+    // with nothing ever calling the evictor.
+    this.evictOverflow();
     // A duplicate awaiting `inFlight` handles its own rejection; this guard only
     // stops an unobserved rejection from killing the process.
     inFlight.catch(() => undefined);
+
+    // Every write below is conditional on OUR entry still being the one in the
+    // map. Once an in-flight entry can expire or be evicted (see `live`), a
+    // later dispatch may legitimately have installed its own execution under
+    // this key while this one was still running; a blind `set`/`delete` here
+    // would clobber that newer entry with this older execution's outcome.
+    const stillOurs = (): boolean => this.entries.get(cacheKey)?.inFlight === inFlight;
 
     let result: ToolIdempotencyResult;
     try {
       result = await inFlight;
     } catch (error) {
       // Not retained — a caller retry after a thrown failure is allowed to run.
-      this.entries.delete(cacheKey);
+      if (stillOurs()) this.entries.delete(cacheKey);
       throw error;
     }
     if (result.isError === true) {
-      this.entries.delete(cacheKey);
+      if (stillOurs()) this.entries.delete(cacheKey);
       return { result, replayed: false };
     }
-    this.entries.set(cacheKey, { fingerprint, storedAt: this.now(), result });
-    this.evictOverflow();
+    if (stillOurs()) {
+      this.entries.set(cacheKey, { fingerprint, storedAt: this.now(), result });
+      this.evictOverflow();
+    }
     return { result, replayed: false };
+  }
+
+  /**
+   * `true` for an entry whose execution is still running AND still within the
+   * window in which it is worth collapsing duplicates onto.
+   *
+   * An in-flight entry used to be exempt from expiry AND from eviction with no
+   * upper bound at all, on the reasoning that it "never expires out from under
+   * its own execution". That reasoning holds only while the execution actually
+   * finishes: a handler that hangs forever (the exact failure the dispatch
+   * deadline exists for — and the deadline resolves the SLOT, it does not make
+   * this promise settle) pinned its key permanently, made every later call under
+   * that key wait on a promise that never resolves, and made the entry
+   * un-evictable, so the map grew past `maxEntries` unchecked. Past the TTL an
+   * in-flight entry is therefore treated exactly like a stale completed one.
+   */
+  private isLiveInFlight(entry: StoredEntry): boolean {
+    if (entry.inFlight === undefined || entry.result !== undefined) return false;
+    return this.now() - entry.storedAt < this.ttlMs;
   }
 
   /** Entry for `cacheKey` if it exists and has not expired; prunes on expiry. */
   private live(cacheKey: string): StoredEntry | undefined {
     const entry = this.entries.get(cacheKey);
     if (entry === undefined) return undefined;
-    // An in-flight entry never expires out from under its own execution.
-    if (entry.inFlight !== undefined && entry.result === undefined) return entry;
+    // A still-running execution inside its TTL: collapse duplicates onto it.
+    if (this.isLiveInFlight(entry)) return entry;
     if (this.now() - entry.storedAt >= this.ttlMs) {
+      // Also covers an in-flight entry past its TTL. Deleting the map entry does
+      // NOT cancel the underlying execution (nothing here can) — it stops a
+      // hung one from blocking every future call under this key, which is the
+      // difference between a stuck tool and a stuck key.
       this.entries.delete(cacheKey);
       return undefined;
     }
     return entry;
   }
 
-  /** Insertion-order eviction. Never drops an in-flight execution. */
+  /** Insertion-order eviction. Never drops an execution that is still live —
+   *  but an in-flight entry past its TTL is no longer live (see
+   *  {@link isLiveInFlight}) and is evictable like any other stale row. */
   private evictOverflow(): void {
     while (this.entries.size > this.maxEntries) {
       let evicted = false;
       for (const [k, v] of this.entries) {
-        if (v.inFlight !== undefined && v.result === undefined) continue;
+        if (this.isLiveInFlight(v)) continue;
         this.entries.delete(k);
         evicted = true;
         break;
