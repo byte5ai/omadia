@@ -60,7 +60,7 @@ import {
   type TerminalTaskPatch,
 } from '@omadia/orchestrator';
 
-import type { ListJobsFilter } from './devJobStore.js';
+import type { DevJobSweepScope, ListJobsFilter } from './devJobStore.js';
 import type {
   DevJob,
   DevJobEvent,
@@ -145,7 +145,7 @@ export interface DevJobTaskJobStore {
     provision: number,
     events: readonly { seq: number; type: string; payload: Record<string, unknown> }[],
   ): Promise<number>;
-  findStalled(cutoff: Date): Promise<DevJob[]>;
+  findStalled(cutoff: Date, scope?: DevJobSweepScope): Promise<DevJob[]>;
   /** Optional so a unit-test fake need not implement it; absent ⇒ empty tail. */
   listEvents?(
     jobId: string,
@@ -177,6 +177,15 @@ export interface DevJobTaskStoreDeps {
     olderThanDays: number,
     now: Date,
   ) => Promise<number>;
+  /**
+   * W3-A — narrows `reapOrphans`' stalled sweep. OMITTED in production, where the
+   * reaper is deliberately database-global (see {@link DevJobSweepScope}).
+   *
+   * Set at CONSTRUCTION rather than per call because `reapOrphans` implements the
+   * generic {@link TaskStore} contract, whose `TaskReapOptions` must stay free of
+   * dev-platform concepts like a repo id.
+   */
+  readonly sweepScope?: DevJobSweepScope;
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -323,7 +332,10 @@ export function createDevJobTaskStore(deps: DevJobTaskStoreDeps): TaskStore {
     async reapOrphans(opts: TaskReapOptions): Promise<TaskReapResult> {
       const now = opts.now ?? new Date();
       const cutoff = new Date(now.getTime() - opts.staleAfterMs);
-      const stalled = await jobStore.findStalled(cutoff);
+      const stalled = await jobStore.findStalled(
+        cutoff,
+        ...(deps.sweepScope ? ([deps.sweepScope] as const) : ([] as const)),
+      );
       let staleFailed = 0;
       for (const job of stalled) {
         const finished = await deps.finalize(job.id, 'stalled', {

@@ -14,7 +14,12 @@ import type { DevJob, DevJobStatus } from '../../src/devplatform/types.js';
 /**
  * W2-2 — the dev_job adapter's orphan sweep, isolated.
  *
- * Why not in the pg suite: `DevJobStore.findStalled` is DATABASE-GLOBAL (no
+ * W3-A UPDATE: the pg-level sweep is now covered too —
+ * `test/devplatform/devJobTaskStore.pg.test.ts` drives `reapOrphans` against real
+ * rows with `DevJobSweepScope` bound to its own repos. This file keeps the
+ * driven-clock and error-shape coverage the fake makes cheap. Historical note:
+ *
+ * Why this was not in the pg suite: `DevJobStore.findStalled` was DATABASE-GLOBAL (no
  * tenant predicate), so triggering a real sweep in a shared test cluster
  * finalizes other suites' in-flight jobs as `stalled`. That is correct
  * production behaviour and an untenable test, so the sweep is driven here

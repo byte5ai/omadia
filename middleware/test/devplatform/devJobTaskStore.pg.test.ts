@@ -12,6 +12,7 @@ import { DevJobEventBus } from '../../src/devplatform/devJobEventBus.js';
 import {
   DevJobStore,
   TERMINAL_FINISH_BRAND,
+  type DevJobSweepScope,
 } from '../../src/devplatform/devJobStore.js';
 import {
   createDevJobTaskStore,
@@ -74,7 +75,14 @@ describe('devplatform/devJobTaskStore — seam conformance (pg)', { skip: !pgAva
     return jobStore.finishTerminal(TERMINAL_FINISH_BRAND, jobId, status, patch);
   }
 
-  function seam(overrides: { createJob?: (input: unknown) => Promise<DevJob> } = {}) {
+  function seam(
+    overrides: {
+      createJob?: (input: unknown) => Promise<DevJob> | Promise<DevJob>;
+      /** W3-A — constrains `reapOrphans`' sweep to this run's repos. */
+      sweepScope?: DevJobSweepScope;
+      purgeTerminalJobs?: (olderThanDays: number, now: Date) => Promise<number>;
+    } = {},
+  ) {
     return createDevJobTaskStore({
       jobStore,
       createJob:
@@ -83,6 +91,10 @@ describe('devplatform/devJobTaskStore — seam conformance (pg)', { skip: !pgAva
           throw new Error('createJob not wired in this test');
         }),
       finalize,
+      ...(overrides.sweepScope ? { sweepScope: overrides.sweepScope } : {}),
+      ...(overrides.purgeTerminalJobs
+        ? { purgeTerminalJobs: overrides.purgeTerminalJobs }
+        : {}),
     });
   }
 
@@ -314,18 +326,99 @@ describe('devplatform/devJobTaskStore — seam conformance (pg)', { skip: !pgAva
     assert.ok(working.every((d) => d.status === 'working'));
   });
 
-  // NOTE — `reapOrphans` is deliberately NOT exercised here.
+  // ── reapOrphans, at the pg level (W3-A) ───────────────────────────────────
   //
-  // It delegates to `DevJobStore.findStalled`, whose query is DATABASE-GLOBAL:
-  // `WHERE status IN (provisioning, running, applying) AND
-  // COALESCE(last_heartbeat_at, started_at, claimed_at) < $1`, with no tenant
-  // predicate. A sweep in a shared test cluster therefore finalizes OTHER
-  // suites' in-flight jobs as `stalled` — which is exactly what happened the
-  // first time this suite ran it with a forward-dated cutoff: it broke
-  // `devPlatformPipeline.wire.pg.test.ts`. That is correct production behaviour
-  // (the real reaper IS global) and an untenable test, so the sweep is covered
-  // where it can be isolated: `test/tasks/devJobTaskStoreReap.test.ts` drives it
-  // against a controlled fake `findStalled`, and
-  // `test/tasks/inMemoryTaskStore.test.ts` pins the reaper semantics against a
-  // real store with a driven clock.
+  // This used to be deliberately absent. `DevJobStore.findStalled` was
+  // database-global with no scope predicate, so a forward-dated cutoff here
+  // finalized OTHER suites' in-flight jobs as `stalled` — it broke
+  // `devPlatformPipeline.wire.pg.test.ts` the first time it ran. Global IS the
+  // correct production behaviour, so the fix was to make the sweep NARROWABLE
+  // (`DevJobSweepScope`) rather than to change what production does. With the
+  // scope bound to this run's own repos the sweep is finally testable against
+  // real rows, so the fake-`findStalled` unit test in
+  // `test/tasks/devJobTaskStoreReap.test.ts` is no longer the only coverage.
+
+  /**
+   * A job in the ACTIVE set (`provisioning`) on a KNOWN repo.
+   *
+   * NOT via `claimNextQueued`: that pops the oldest queued row DATABASE-WIDE, so
+   * with concurrent dev-platform pg suites (and this suite's own earlier jobs) it
+   * cannot be aimed at a repo. The reaper only reads `status` + the heartbeat
+   * columns, so stamping them is a faithful and deterministic setup.
+   */
+  async function newActiveJob(repoId: string): Promise<DevJob> {
+    const job = await newQueuedJob(repoId);
+    await pool.query(
+      `UPDATE dev_jobs
+          SET status = 'provisioning', claimed_by = $2, claimed_at = now(), started_at = now()
+        WHERE id = $1`,
+      [job.id, randomUUID()],
+    );
+    const active = await jobStore.getJob(job.id);
+    assert.ok(active && active.status === 'provisioning', 'setup failed to activate the job');
+    return active;
+  }
+
+  it('MUTATION CHECK: reapOrphans finalizes a real stalled job as `stalled`, scoped to its own repos', async () => {
+    const localRepo = await newRepo();
+    const otherRepo = await newRepo();
+    const inScope = await newActiveJob(localRepo.id);
+    const outOfScope = await newActiveJob(otherRepo.id);
+
+    const store = seam({ sweepScope: { repoIds: [localRepo.id] } });
+    // Forward-dated `now` ⇒ every active job is past the cutoff. Before the scope
+    // predicate existed this is precisely what reached across suites.
+    const result = await store.reapOrphans({
+      now: new Date(Date.now() + 3_600_000),
+      staleAfterMs: 1_000,
+      purgeTerminalAfterMs: 30 * 86_400_000,
+    });
+
+    assert.equal(result.staleFailed, 1, 'exactly the in-scope job was reaped');
+    const reaped = await jobStore.getJob(inScope.id);
+    assert.equal(reaped?.status, 'stalled');
+    assert.match(String(reaped?.error), /no worker heartbeat/);
+    // The load-bearing half: the sibling repo's in-flight job is UNTOUCHED. This
+    // is the assertion whose absence forced the whole test to be downgraded.
+    const untouched = await jobStore.getJob(outOfScope.id);
+    assert.equal(untouched?.status, 'provisioning', 'the sweep escaped its scope');
+    assert.equal(untouched?.error, null);
+  });
+
+  it('MUTATION CHECK: an EMPTY scope reaps nothing — it must never widen to global', async () => {
+    const localRepo = await newRepo();
+    const active = await newActiveJob(localRepo.id);
+
+    const result = await seam({ sweepScope: { repoIds: [] } }).reapOrphans({
+      now: new Date(Date.now() + 3_600_000),
+      staleAfterMs: 1_000,
+      purgeTerminalAfterMs: 30 * 86_400_000,
+    });
+
+    assert.equal(result.staleFailed, 0, 'an empty scope swept something');
+    // A caller who computed an empty entitlement set must not become a caller who
+    // sweeps everything — `= ANY('{}')` semantics, made explicit.
+    assert.equal((await jobStore.getJob(active.id))?.status, 'provisioning');
+  });
+
+  it('findStalled without a scope stays DATABASE-GLOBAL (production behaviour)', async () => {
+    // Production passes no scope and must keep reaching every abandoned job. Both
+    // repos' active jobs are visible to an unscoped sweep.
+    const a = await newRepo();
+    const b = await newRepo();
+    const one = await newActiveJob(a.id);
+    const two = await newActiveJob(b.id);
+
+    const global = await jobStore.findStalled(new Date(Date.now() + 3_600_000));
+    const ids = new Set(global.map((j) => j.id));
+    assert.ok(ids.has(one.id) && ids.has(two.id), 'the unscoped sweep lost a repo');
+    // …and the scoped call over the same cutoff sees only its own.
+    const scoped = await jobStore.findStalled(new Date(Date.now() + 3_600_000), {
+      repoIds: [a.id],
+    });
+    assert.deepEqual(
+      scoped.map((j) => j.repoId),
+      [a.id],
+    );
+  });
 });
