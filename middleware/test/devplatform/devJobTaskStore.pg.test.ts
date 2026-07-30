@@ -314,26 +314,18 @@ describe('devplatform/devJobTaskStore — seam conformance (pg)', { skip: !pgAva
     assert.ok(working.every((d) => d.status === 'working'));
   });
 
-  it('reapOrphans finalizes a stalled job as failed', async () => {
-    const localRepo = await newRepo();
-    await newQueuedJob(localRepo.id);
-    const store = seam();
-    const lease = randomUUID();
-    const claimed = await store.claimNextPending(lease);
-    assert.ok(claimed);
-    const id = claimed.descriptor.id;
-
-    // `findStalled` compares against COALESCE(last_heartbeat_at, started_at,
-    // claimed_at); a zero-width window makes every claimed job stale.
-    const r = await store.reapOrphans({
-      now: new Date(Date.now() + 3_600_000),
-      staleAfterMs: 1,
-      purgeTerminalAfterMs: 3_600_000,
-    });
-    assert.ok(r.staleFailed >= 1);
-    const row = await jobStore.getJob(id);
-    assert.equal(row?.status, 'stalled', 'dev_job records its own `stalled`');
-    assert.equal(projectDevJobStatus('stalled'), 'failed');
-    assert.match(String(row?.error), /abandoned/);
-  });
+  // NOTE — `reapOrphans` is deliberately NOT exercised here.
+  //
+  // It delegates to `DevJobStore.findStalled`, whose query is DATABASE-GLOBAL:
+  // `WHERE status IN (provisioning, running, applying) AND
+  // COALESCE(last_heartbeat_at, started_at, claimed_at) < $1`, with no tenant
+  // predicate. A sweep in a shared test cluster therefore finalizes OTHER
+  // suites' in-flight jobs as `stalled` — which is exactly what happened the
+  // first time this suite ran it with a forward-dated cutoff: it broke
+  // `devPlatformPipeline.wire.pg.test.ts`. That is correct production behaviour
+  // (the real reaper IS global) and an untenable test, so the sweep is covered
+  // where it can be isolated: `test/tasks/devJobTaskStoreReap.test.ts` drives it
+  // against a controlled fake `findStalled`, and
+  // `test/tasks/inMemoryTaskStore.test.ts` pins the reaper semantics against a
+  // real store with a driven clock.
 });
