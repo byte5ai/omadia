@@ -68,7 +68,7 @@ async function main(): Promise<void> {
   const kg = new NeonKnowledgeGraph({
     pool,
     tenantId: TENANT,
-    embeddingClient,
+    resolveEmbeddingClient: () => embeddingClient,
   });
   const failures: string[] = [];
 

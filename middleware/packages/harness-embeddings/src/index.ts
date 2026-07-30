@@ -7,12 +7,14 @@
  * orchestrator-extras) import from here instead of the old
  * `src/services/embeddingClient.js` path.
  *
- * Sub-Commit 2b will flip the lifetime: `activate()` will construct an
- * EmbeddingClient (Ollama wrapper + concurrency limiter) and publish it
- * via `ctx.services.provide('embeddingClient', client)`. The kernel-side
- * Pre-S+8.5 bridge in `src/index.ts` is deleted, the manifest declares
- * `provides: ["embeddingClient@1"]`, and consumer manifests (KG,
- * later orchestrator-extras) get `requires: ["embeddingClient@^1"]`.
+ * Sub-Commit 2b flipped the lifetime: `activate()` constructs the client
+ * (Ollama wrapper + concurrency limiter) and publishes it via
+ * `ctx.services.provide('embeddingClient', client)`.
+ *
+ * #440: this package is now the *Ollama adapter*, not the contract owner.
+ * `EmbeddingClient`, `EmbeddingProvider` and `EmbeddingError` live in
+ * `@omadia/plugin-api`; they are re-exported here so out-of-repo plugins
+ * that import them from the built `dist/` keep compiling.
  */
 
 export { activate } from './plugin.js';
@@ -20,11 +22,19 @@ export type { EmbeddingsPluginHandle } from './plugin.js';
 
 export type {
   EmbeddingClient,
+  EmbeddingProvider,
+  EmbeddingProviderMetadata,
+} from '@omadia/plugin-api';
+export { EmbeddingError, withConcurrencyLimit } from '@omadia/plugin-api';
+
+export type {
   EmbeddingClientOptions,
+  OllamaDimensionsResolution,
 } from './embeddingClient.js';
 export {
-  EmbeddingError,
+  DEFAULT_OLLAMA_EMBEDDING_DIMENSIONS,
+  OLLAMA_MODEL_ID_PREFIX,
   cosineSimilarity,
   createEmbeddingClient,
-  withConcurrencyLimit,
+  resolveOllamaDimensions,
 } from './embeddingClient.js';
