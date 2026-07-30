@@ -2985,6 +2985,8 @@
       "plan": "Plan",
       "viewPlan": "Plan ansehen",
       "noPlan": "Kein Plan-Artefakt",
+      "planLoading": "Plan wird geladen…",
+      "planLoadError": "Der Plan konnte nicht geladen werden.",
       "holders": "Holder",
       "noHolders": "keine",
       "questions": "Rückfragen",
@@ -3075,6 +3077,7 @@
       "age": "Alter",
       "view": "Ansehen",
       "cancel": "Abbrechen",
+      "delete": "Löschen",
       "empty": "Noch keine Jobs. Starte einen aus einer Repository-Zeile.",
       "live": "live",
       "liveLost": "Verbindung verloren — versucht erneut",
@@ -3104,6 +3107,12 @@
         "body": "Der Runner wird beendet. Branch, Log und ein bereits hochgeladener Diff bleiben erhalten.",
         "confirm": "Job abbrechen",
         "cancel": "Weiterlaufen lassen"
+      },
+      "deleteConfirm": {
+        "title": "Job löschen?",
+        "body": "Der Job, sein Log und seine Artefakte werden endgültig entfernt. Ein bereits erstellter Branch oder PR bleibt erhalten.",
+        "confirm": "Job löschen",
+        "cancel": "Behalten"
       }
     },
     "newJob": {
@@ -3220,8 +3229,17 @@
         "pr": "pr"
       },
       "phaseSkipped": "übersprungen — keine Fragen",
-      "noArtifact": "Für diese Phase gibt es noch kein Artefakt.",
+      "toolCall": {
+        "pending": "läuft",
+        "failed": "fehlgeschlagen",
+        "noOutput": "(keine Ausgabe)",
+        "prompt": "Prompt",
+        "result": "Ergebnis",
+        "output": "Ausgabe",
+        "moreDiffLines": "… {count, plural, one {# weitere Zeile} other {# weitere Zeilen}}"
+      },
       "openPr": "Pull Request öffnen",
+      "artifactError": "Das Ergebnis dieser Phase konnte nicht geladen werden.",
       "logEmpty": "Noch keine Log-Ausgabe.",
       "scrollToBottom": "Nach unten scrollen",
       "connection": {
@@ -3235,6 +3253,13 @@
         "body": "Der Runner wird beendet, der Branch bleibt erhalten.",
         "confirm": "Job abbrechen",
         "cancelLabel": "Weiterlaufen lassen"
+      },
+      "delete": {
+        "action": "Löschen",
+        "title": "Job löschen?",
+        "body": "Der Job, sein Log und seine Artefakte werden endgültig entfernt. Ein bereits erstellter Branch oder PR bleibt erhalten.",
+        "confirm": "Job löschen",
+        "cancelLabel": "Behalten"
       },
       "sidebar": {
         "backend": "Backend",

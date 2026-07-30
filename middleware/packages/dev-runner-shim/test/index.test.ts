@@ -222,6 +222,24 @@ describe('runShim — LLM auth gate + job-scoped HOME', () => {
     assert.equal(childEnv['ANTHROPIC_BASE_URL'], 'http://proxy.internal');
     assert.equal(childEnv['HOME'], path.join(ws, 'home'), 'child HOME is a fresh dir inside the workspace');
   });
+
+  it('W1: forwards LLM auth from the policy-supplied ANTHROPIC_BASE_URL + ShimEnv.jobToken, with NO jail acknowledgment', async () => {
+    // The docker backend's real path: deriveJobPolicy.ts sets plain
+    // ANTHROPIC_BASE_URL (no OMADIA_ prefix), and there is no
+    // OMADIA_ANTHROPIC_AUTH_TOKEN at all -- the per-job jobToken already on
+    // ShimEnv IS the bearer the LLM proxy (llmProxy.ts) resolves the calling
+    // job from. llmEnvAllowed stays false: the short-lived per-job token
+    // stands in for the W0 jail acknowledgment rather than requiring it.
+    process.env['ANTHROPIC_BASE_URL'] = 'http://middleware:8080/api/v1/dev-runner/llm';
+    await writeFakeGit(false);
+    const home = new FakeHome(makeSpec());
+    const code = await runShim({ ...env, llmEnvAllowed: false, jobToken: 'djr_w1-token' }, { home, gitBin, log: () => {} });
+    assert.equal(code, 0);
+    const childEnv = await readEnvDump();
+    assert.equal(childEnv['ANTHROPIC_AUTH_TOKEN'], 'djr_w1-token', 'the per-job bearer, not a middleware secret');
+    assert.equal(childEnv['ANTHROPIC_BASE_URL'], 'http://middleware:8080/api/v1/dev-runner/llm');
+    delete process.env['ANTHROPIC_BASE_URL'];
+  });
 });
 
 describe('runShim — wall-clock budget', () => {

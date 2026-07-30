@@ -19,7 +19,7 @@ import { describe, it } from 'node:test';
 import Docker from 'dockerode';
 
 import { SpecRejectedError } from '../src/clamp.mjs';
-import { createDockerEngine, JobCancelledError, JobCapacityError, JobCleanupError, JobManager, resolvePullPolicy } from '../src/jobs.mjs';
+import { createDockerEngine, JobCancelledError, JobCapacityError, JobCleanupError, JobManager, resolveAllowlistHosts, resolvePullPolicy } from '../src/jobs.mjs';
 
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -501,8 +501,9 @@ function makeFakeDocker(opts = {}) {
       volumes.add(o.Name);
       return { Name: o.Name };
     },
-    async createContainer(_o) {
+    async createContainer(o) {
       if (opts.containerCreateFail) throw opts.containerCreateFail;
+      if (opts.createContainerCalls) opts.createContainerCalls.push(o);
       const id = `ctr-${++seq}`;
       containers.add(id);
       return containerHandle(id);
@@ -518,11 +519,61 @@ function makeFakeDocker(opts = {}) {
         if (opts.presentImages && !opts.presentImages.has(ref)) throw notFound('image');
         // Real docker reports `repository@sha256:…` — never with a tag.
         const repo = (ref.split('@')[0] ?? ref).replace(/:[^:/]+$/, '');
-        return { RepoDigests: [`${repo}@${DIGEST}`], Id: 'sha256:imgid' };
+        // `noRepoDigests` models a `docker load`ed image: it never came from a
+        // registry, so docker reports NO RepoDigests and the Id is its only
+        // content address. That is the local-dev shape, not a hypothetical.
+        return {
+          RepoDigests: opts.noRepoDigests ? [] : [`${repo}@${DIGEST}`],
+          Id: opts.imageId ?? 'sha256:imgid',
+        };
       },
     }),
   };
 }
+
+describe('resolveAllowlistHosts — pre-resolves an allowlist for ExtraHosts', () => {
+  it('resolves each host in ONE batched call and formats Docker\'s host:ip ExtraHosts entries', async () => {
+    const calls = [];
+    const resolveHosts = async (hosts) => {
+      calls.push(hosts);
+      return [
+        { host: 'registry.npmjs.org', addresses: [{ address: '104.16.0.35' }] },
+        { host: 'github.com', addresses: [{ address: '140.82.121.3' }] },
+      ];
+    };
+    const result = await resolveAllowlistHosts(['registry.npmjs.org', 'github.com'], resolveHosts);
+    assert.deepEqual(result.sort(), ['github.com:140.82.121.3', 'registry.npmjs.org:104.16.0.35'].sort());
+    assert.equal(calls.length, 1, 'exactly one batched call, not one per host');
+    assert.deepEqual(calls[0].sort(), ['github.com', 'registry.npmjs.org'].sort());
+  });
+
+  it('skips a host that failed to resolve (addresses: null) — non-fatal, the CONNECT path still works for it', async () => {
+    const resolveHosts = async () => [
+      { host: 'flaky.example.com', addresses: null },
+      { host: 'good.example.com', addresses: [{ address: '203.0.113.10' }] },
+    ];
+    const result = await resolveAllowlistHosts(['flaky.example.com', 'good.example.com'], resolveHosts);
+    assert.deepEqual(result, ['good.example.com:203.0.113.10']);
+  });
+
+  it('skips an already-literal IP entry — nothing to pre-resolve, and it is not a valid ExtraHosts name', async () => {
+    let called = false;
+    const resolveHosts = async () => {
+      called = true;
+      return [];
+    };
+    const result = await resolveAllowlistHosts(['203.0.113.5'], resolveHosts);
+    assert.deepEqual(result, []);
+    assert.equal(called, false, 'an IP literal is never handed to the batched resolver');
+  });
+
+  it('an empty allowlist resolves to an empty array', async () => {
+    const result = await resolveAllowlistHosts([], async () => {
+      throw new Error('must not be called');
+    });
+    assert.deepEqual(result, []);
+  });
+});
 
 describe('createDockerEngine — createJobContainer applies the clamp and provisions cleanly', () => {
   it('pulls by digest, creates the per-job network+volume+container, starts it, returns the handle', async () => {
@@ -544,6 +595,36 @@ describe('createDockerEngine — createJobContainer applies the clamp and provis
     assert.equal(docker.state.volumes.size, 1, 'one per-job volume');
     assert.equal(docker.state.containers.size, 1, 'one container');
     assert.equal(docker.state.events.started.length, 1, 'the container was started');
+  });
+
+  it('passes caller-supplied extraHosts straight through to HostConfig.ExtraHosts — this engine resolves nothing itself', async () => {
+    const createContainerCalls = [];
+    const docker = makeFakeDocker({ createContainerCalls });
+    const engine = createDockerEngine({ docker, env: {} });
+
+    await engine.createJobContainer({
+      jobId: JOB_ID,
+      policy: enginePolicy(),
+      leaseExpiresAt: '2026-07-10T12:00:00.000Z',
+      extraHosts: ['registry.npmjs.org:104.16.0.35'],
+    });
+
+    assert.equal(createContainerCalls.length, 1);
+    assert.deepEqual(createContainerCalls[0].HostConfig.ExtraHosts, ['registry.npmjs.org:104.16.0.35']);
+  });
+
+  it('an empty egress allowlist yields an empty ExtraHosts array — no change for a repo with none', async () => {
+    const createContainerCalls = [];
+    const docker = makeFakeDocker({ createContainerCalls });
+    const engine = createDockerEngine({ docker, env: {} });
+
+    await engine.createJobContainer({
+      jobId: JOB_ID,
+      policy: enginePolicy(),
+      leaseExpiresAt: '2026-07-10T12:00:00.000Z',
+    });
+
+    assert.deepEqual(createContainerCalls[0].HostConfig.ExtraHosts, []);
   });
 
   it('refuses a floating-tag image with spec_rejected BEFORE creating any resource', async () => {
@@ -768,6 +849,69 @@ describe('createDockerEngine — image pull policy (epic #470 local deploy #4)',
   });
 });
 
+// The local-dev image is `docker load`ed straight into the nested dind engine:
+// a floating tag, no registry, therefore no digest to pin and no RepoDigest to
+// resolve. `DEV_RUNNER_REQUIRE_DIGEST=0` is the documented escape hatch for that
+// shape; these prove the whole provision path honours it end-to-end, and that the
+// prod path is untouched.
+describe('createDockerEngine — DEV_RUNNER_REQUIRE_DIGEST and the locally-loaded image', () => {
+  const FLOATING = 'omadia-dev-runner:latest';
+  /** A real `docker image inspect .Id` — the only content address a loaded image has. */
+  const LOCAL_ID = 'sha256:697ba6492dcec1c6aa49dfc4a8891e81c7caad11636905a610123c01df790f46';
+  const LEASE = '2026-07-10T12:00:00.000Z';
+
+  it('refuses a floating tag when the posture is unset — prod is unchanged, and nothing is created', async () => {
+    const docker = makeFakeDocker();
+    const engine = createDockerEngine({ docker, env: {} });
+
+    await assert.rejects(
+      engine.createJobContainer({ jobId: JOB_ID, policy: enginePolicy(FLOATING), leaseExpiresAt: LEASE }),
+      (err) => err instanceof SpecRejectedError && err.reason === 'image_not_digest_pinned',
+    );
+    assert.equal(docker.state.containers.size, 0, 'a refused spec creates no container');
+    assert.equal(docker.state.networks.size, 0, 'a refused spec creates no network');
+    assert.equal(docker.state.volumes.size, 0, 'a refused spec creates no volume');
+  });
+
+  it('provisions a loaded floating tag under DEV_RUNNER_REQUIRE_DIGEST=0 and records the image Id as the content address', async () => {
+    const docker = makeFakeDocker({
+      noRepoDigests: true,
+      imageId: LOCAL_ID,
+      presentImages: new Set([FLOATING]),
+    });
+    const engine = createDockerEngine({
+      docker,
+      env: { DEV_RUNNER_REQUIRE_DIGEST: '0', DEV_RUNNER_PULL_POLICY: 'if-not-present' },
+    });
+
+    const handle = await engine.createJobContainer({
+      jobId: JOB_ID,
+      policy: enginePolicy(FLOATING),
+      leaseExpiresAt: LEASE,
+    });
+
+    assert.equal(docker.state.containers.size, 1, 'the job container was created');
+    assert.deepEqual(docker.state.events.pulled, [], 'a loaded image is never pulled (the proxy would 407)');
+    // `imageDigest` is a REQUIRED wire field (z.string().min(1)) — an empty one
+    // fails the middleware's response parse AFTER the container is already up.
+    assert.equal(handle.imageDigest, LOCAL_ID, 'the local image Id is the recorded content address');
+    assert.notEqual(handle.imageDigest, '', 'the required wire field is never empty');
+  });
+
+  it('a digest-pinned ref still resolves from the ref itself — no engine round-trip, prod behaviour byte-identical', async () => {
+    const docker = makeFakeDocker({ noRepoDigests: true, imageId: LOCAL_ID });
+    const engine = createDockerEngine({ docker, env: { DEV_RUNNER_REQUIRE_DIGEST: '0' } });
+
+    const handle = await engine.createJobContainer({
+      jobId: JOB_ID,
+      policy: enginePolicy(),
+      leaseExpiresAt: LEASE,
+    });
+
+    assert.equal(handle.imageDigest, DIGEST, 'the pinned digest wins over anything the engine reports');
+  });
+});
+
 // Real dockerode against the local engine. Skipped in the default suite; run with
 // DEV_RUNNER_DOCKER_IT=1 to exercise a genuine hardened container end-to-end.
 const RUN_DOCKER_IT = process.env.DEV_RUNNER_DOCKER_IT === '1';
@@ -913,14 +1057,23 @@ describe('JobManager — egress-proxy registration is part of provisioning', () 
         if (overrides.unregisterError) throw overrides.unregisterError;
         return true;
       },
+      async resolveHosts(hosts) {
+        calls.push({ op: 'resolveHosts', hosts });
+        if (overrides.resolveHostsError) throw overrides.resolveHostsError;
+        return overrides.resolveHostsResult ?? hosts.map((host) => ({ host, addresses: null }));
+      },
     };
   }
 
-  /** An engine that records the order of operations against the proxy calls. */
+  /** An engine that records the order of operations against the proxy calls
+   *  and captures the exact args each createJobContainer call received. */
   function orderedEngine(order, opts = {}) {
     return {
-      async createJobContainer() {
+      /** @type {any[]} */
+      createJobContainerCalls: [],
+      async createJobContainer(args) {
         order.push('createContainer');
+        this.createJobContainerCalls.push(args);
         if (opts.createError) throw opts.createError;
         return { jobId: JOB_ID, id: 'c1', networkId: 'n1', volumeName: 'v1', imageDigest: 'sha256:abc' };
       },
@@ -1042,5 +1195,38 @@ describe('JobManager — egress-proxy registration is part of provisioning', () 
     await jm.create(JOB_ID, 180);
     await jm.destroy(JOB_ID);
     assert.equal(jm.size(), 0);
+  });
+
+  it('resolves the allowlist through the proxy and passes the result to createJobContainer as extraHosts', async () => {
+    const engine = orderedEngine([]);
+    const proxy = recordingProxyClient({
+      resolveHostsResult: [{ host: 'registry.npmjs.org', addresses: [{ address: '104.16.0.35' }] }],
+    });
+    const policyClient = {
+      async fetchJobPolicy(jobId) {
+        return { jobId, image: 'ghcr.io/x/y@sha256:abc', env: {}, egressAllowlist: ['registry.npmjs.org'] };
+      },
+    };
+    const jm = new JobManager({ engine, policyClient, proxyClient: proxy });
+    await jm.create(JOB_ID, 180);
+
+    const resolveCall = proxy.calls.find((c) => c.op === 'resolveHosts');
+    assert.deepEqual(resolveCall.hosts, ['registry.npmjs.org']);
+    assert.deepEqual(engine.createJobContainerCalls[0].extraHosts, ['registry.npmjs.org:104.16.0.35']);
+  });
+
+  it('a resolveHosts failure never aborts job creation — the job proceeds with no extra /etc/hosts entries', async () => {
+    const engine = orderedEngine([]);
+    const proxy = recordingProxyClient({ resolveHostsError: new Error('proxy unreachable') });
+    const policyClient = {
+      async fetchJobPolicy(jobId) {
+        return { jobId, image: 'ghcr.io/x/y@sha256:abc', env: {}, egressAllowlist: ['registry.npmjs.org'] };
+      },
+    };
+    const jm = new JobManager({ engine, policyClient, proxyClient: proxy });
+    await jm.create(JOB_ID, 180);
+
+    assert.deepEqual(engine.createJobContainerCalls[0].extraHosts, []);
+    assert.equal(jm.size(), 1, 'the job was still created despite the resolution failure');
   });
 });

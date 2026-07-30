@@ -304,4 +304,37 @@ describe('runGit — hermetic environment', () => {
       delete process.env['SHIM_TEST_LEAK_CANARY'];
     }
   });
+
+  it('DOES forward the proxy vars (deployment topology, not a secret) — otherwise a forge host is unreachable', async () => {
+    // The job's network has no route to github.com except through the daemon's
+    // egress proxy (same reason node's own fetch needs NODE_USE_ENV_PROXY).
+    // Without this, git falls back to a direct DNS lookup that always fails.
+    process.env['HTTP_PROXY'] = 'http://proxy.example:3128/';
+    process.env['HTTPS_PROXY'] = 'http://proxy.example:3128/';
+    process.env['NO_PROXY'] = 'localhost,127.0.0.1';
+    process.env['http_proxy'] = 'http://proxy.example:3128/';
+    try {
+      await cloneAtBaseSha(baseOpts(), { cloneUrl: CLONE_URL, defaultBranch: 'main', baseSha: '' });
+      const clone = readLog().find((r) => r.sub === 'clone');
+      assert.ok(clone, 'clone ran');
+      assert.equal(clone.env['HTTP_PROXY'], 'http://proxy.example:3128/');
+      assert.equal(clone.env['HTTPS_PROXY'], 'http://proxy.example:3128/');
+      assert.equal(clone.env['NO_PROXY'], 'localhost,127.0.0.1');
+      assert.equal(clone.env['http_proxy'], 'http://proxy.example:3128/');
+    } finally {
+      delete process.env['HTTP_PROXY'];
+      delete process.env['HTTPS_PROXY'];
+      delete process.env['NO_PROXY'];
+      delete process.env['http_proxy'];
+    }
+  });
+
+  it('omits proxy keys entirely when none are configured (no empty-string env pollution)', async () => {
+    await cloneAtBaseSha(baseOpts(), { cloneUrl: CLONE_URL, defaultBranch: 'main', baseSha: '' });
+    const clone = readLog().find((r) => r.sub === 'clone');
+    assert.ok(clone, 'clone ran');
+    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy']) {
+      assert.equal(clone.env[k], undefined, `${k} must be absent, not an empty string`);
+    }
+  });
 });

@@ -13,44 +13,43 @@ import {
   DEV_JOB_UI_PHASES,
   DevJobPhaseRail,
   computePhaseStops,
+  phaseToUi,
   statusIsLive,
   type DevJobUiPhase,
 } from '@/app/_components/devjobs/DevJobPhaseRail';
+import { findGateForJob } from '@/app/_components/devjobs/devJobChatCardState';
 import { useDevJobEvents, type DevJobEventMessage } from '@/app/_lib/useDevJobEvents';
-import { JobLogPane, type LogConnection, type LogLine } from '../../_components/JobLogPane';
-import { cancelJob, getJob, isTerminalStatus, type DevJobView } from '../../_lib/api';
+import { GateCard } from '../../_components/GateInbox';
+import { JobLogPane, type LogConnection } from '../../_components/JobLogPane';
+import { PhaseArtifactPanel } from '../../_components/PhaseArtifactPanel';
+import {
+  cancelJob,
+  deleteJob,
+  getJob,
+  isTerminalStatus,
+  listWaitingGates,
+  type DevGateView,
+  type DevJobView,
+} from '../../_lib/api';
+import { INITIAL_LOG_STATE, foldDevJobEvent, type LogState } from '../../_lib/toolCallLog';
 
 /**
  * Epic #470 W0 — the job-detail signature screen (UI spec §5). Header, the
  * phase rail (keyboard-operable, deep-linkable via `?phase=`), then a two-column
  * body: the log pane (driven by rail selection) and a metadata sidebar. The
  * live log streams over SSE through `useDevJobEvents` and sticks to bottom via
- * `useStickToBottom`. W0 is minimal: only the `implement` phase has a live-log
- * pane; other phases show "no artifact yet" (W2 fills them in).
+ * `useStickToBottom`. Every non-`gate`/`pr` phase stacks a `PhaseArtifactPanel`
+ * (that phase's own recorded plan/questions/bootstrap_report/review_verdict,
+ * once it exists) above the same live log pane, filtered to that phase's own
+ * events (`toolCallLog.ts` stamps each item with the phase it happened in) —
+ * analyze/bootstrap/plan/clarify run real agent sessions too, not just
+ * implement. The log pane alone is live-only state, so navigating back to an
+ * already-finished phase (or reloading the page) left it permanently empty
+ * without the artifact panel as a second, persisted source.
  */
 
 function shortHash(id: string): string {
   return id.replace(/-/g, '').slice(0, 6);
-}
-
-function eventToLine(ev: DevJobEventMessage): LogLine | null {
-  const p = ev.payload as Record<string, unknown>;
-  if (ev.type === 'tool') {
-    const name = typeof p['name'] === 'string' ? p['name'] : 'tool';
-    const preview =
-      typeof p['inputPreview'] === 'string'
-        ? p['inputPreview']
-        : typeof p['outputPreview'] === 'string'
-          ? p['outputPreview']
-          : '';
-    return { id: String(ev.id), stream: 'tool', text: preview ? `${name} ${preview}` : name };
-  }
-  if (ev.type === 'log') {
-    const text = typeof p['text'] === 'string' ? p['text'] : '';
-    if (!text) return null;
-    return { id: String(ev.id), stream: p['stream'] === 'stderr' ? 'stderr' : 'agent', text };
-  }
-  return null;
 }
 
 export default function JobDetailPage(): React.ReactElement {
@@ -62,12 +61,13 @@ export default function JobDetailPage(): React.ReactElement {
 
   const [job, setJob] = useState<DevJobView | null>(null);
   const [notFound, setNotFound] = useState(false);
-  const [lines, setLines] = useState<LogLine[]>([]);
+  const [logState, setLogState] = useState<LogState>(INITIAL_LOG_STATE);
   const [conn, setConn] = useState<LogConnection>('reconnecting');
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
   const [agoSec, setAgoSec] = useState<number | null>(null);
   const [closedOnce, setClosedOnce] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const terminalRef = useRef(false);
   useEffect(() => {
@@ -85,8 +85,7 @@ export default function JobDetailPage(): React.ReactElement {
 
   const handleEvent = useCallback((ev: DevJobEventMessage) => {
     setLastEventAt(Date.now());
-    const line = eventToLine(ev);
-    if (line) setLines((prev) => [...prev, line]);
+    setLogState((prev) => foldDevJobEvent(prev, ev));
     if (ev.type === 'status' || ev.type === 'phase') {
       // Re-sync the authoritative view on lifecycle transitions.
       void getJob(ev.jobId).then(
@@ -124,6 +123,38 @@ export default function JobDetailPage(): React.ReactElement {
     }, 1000);
     return () => clearInterval(timer);
   }, [conn, lastEventAt]);
+
+  // Fetch the waiting gate for this job whenever it parks at the human gate —
+  // shown inline on the GATE stop instead of sending the operator to a
+  // separate tab to approve/reject (mirrors DevJobChatCard.tsx's pattern).
+  // `gate` is derived from the fetch + the job's live status rather than
+  // reset via a synchronous setState in the effect's early return: once the
+  // job leaves `waiting` this naturally reads as null without a second write.
+  const isWaiting = job?.status === 'waiting';
+  const [fetchedGate, setFetchedGate] = useState<DevGateView | null>(null);
+  const gate = isWaiting ? fetchedGate : null;
+
+  useEffect(() => {
+    if (!isWaiting) return;
+    let cancelled = false;
+    void listWaitingGates().then(
+      (res) => {
+        if (!cancelled) setFetchedGate(findGateForJob(res.gates, id));
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [isWaiting, id]);
+
+  const onGateResolved = useCallback(() => {
+    setFetchedGate(null);
+    void getJob(id).then(
+      (j) => setJob(j),
+      () => {},
+    );
+  }, [id]);
 
   // Deep-link: the viewed phase comes from `?phase=`.
   const rawPhase = search?.get('phase') ?? null;
@@ -178,6 +209,11 @@ export default function JobDetailPage(): React.ReactElement {
             {t('cancel.action')}
           </Button>
         ) : null}
+        {job && isTerminalStatus(job.status) ? (
+          <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)}>
+            {t('delete.action')}
+          </Button>
+        ) : null}
       </div>
 
       {/* Phase rail */}
@@ -188,8 +224,10 @@ export default function JobDetailPage(): React.ReactElement {
       {/* Body */}
       <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_320px]">
         <div>
-          {effective === 'implement' ? (
-            <JobLogPane lines={lines} connection={conn} lastEventAgoSec={agoSec} />
+          {effective === 'gate' && gate ? (
+            <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
+              <GateCard gate={gate} onResolved={onGateResolved} compact />
+            </div>
           ) : effective === 'pr' && job?.prUrl ? (
             <div className="rounded-lg border border-[color:var(--border)] p-4 text-sm">
               <a href={job.prUrl} target="_blank" rel="noreferrer" className="text-[color:var(--accent)] underline">
@@ -200,7 +238,14 @@ export default function JobDetailPage(): React.ReactElement {
               ) : null}
             </div>
           ) : (
-            <p className="text-sm text-[color:var(--fg-subtle)]">{t('noArtifact')}</p>
+            <div className="flex flex-col gap-4">
+              <PhaseArtifactPanel jobId={id} phase={effective} />
+              <JobLogPane
+                items={logState.items.filter((item) => phaseToUi(item.phase) === effective)}
+                connection={conn}
+                lastEventAgoSec={agoSec}
+              />
+            </div>
           )}
         </div>
 
@@ -222,6 +267,23 @@ export default function JobDetailPage(): React.ReactElement {
           setConfirmCancel(false);
           void cancelJob(id).then(
             () => getJob(id).then((j) => setJob(j), () => {}),
+            () => {},
+          );
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmDelete}
+        tone="danger"
+        title={t('delete.title')}
+        body={t('delete.body')}
+        confirmLabel={t('delete.confirm')}
+        cancelLabel={t('delete.cancelLabel')}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={() => {
+          setConfirmDelete(false);
+          void deleteJob(id).then(
+            () => router.push('/admin/dev-platform?tab=jobs'),
             () => {},
           );
         }}

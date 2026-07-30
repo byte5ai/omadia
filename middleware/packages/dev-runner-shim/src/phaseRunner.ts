@@ -9,12 +9,13 @@
  */
 
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, readFile, realpath } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import { HomeError } from './homeClient.js';
 import { runGit, type GitOptions } from './gitOps.js';
 import { runAgent } from './agentRunner.js';
+import { detectBootstrapCommand } from './bootstrapDetect.js';
 import { buildPhasePrompt, PHASE_ARTIFACT_ENV, phaseWritesArtifactFile } from './phasePrompts.js';
 import {
   isAgentSessionPhase,
@@ -149,15 +150,24 @@ export class PhaseRunner {
     };
   }
 
-  /** bootstrap — dependency install as a COMMAND (spec §4), not a CLI session. */
+  /** bootstrap — dependency install as a COMMAND (spec §4), not a CLI session.
+   *  An explicit `spec.bootstrap.command` always wins; absent that, auto-detect
+   *  from the cloned repo root (`bootstrapDetect.ts`). Nothing explicit AND
+   *  nothing detectable is not itself a failure — many repos have no separate
+   *  install step — so bootstrap reports `ok: true` and moves on. */
   private async runBootstrap(): Promise<PhaseResultBody> {
-    const boot = this.c.spec.bootstrap;
-    if (!boot?.command) {
-      return { phase: 'bootstrap', ok: false, error: 'no bootstrap command provisioned for this repo' };
+    const explicit = this.c.spec.bootstrap?.command;
+    const command = explicit ?? (await this.detectBootstrapCommandAtRoot());
+    if (!command) {
+      return {
+        phase: 'bootstrap',
+        ok: true,
+        artifact: { kind: 'bootstrap_report', content: JSON.stringify({ command: null, skipped: true }) },
+      };
     }
-    const timeoutMs = boot.timeoutMs ?? DEV_BOOTSTRAP_TIMEOUT_MS;
+    const timeoutMs = this.c.spec.bootstrap?.timeoutMs ?? DEV_BOOTSTRAP_TIMEOUT_MS;
     const started = Date.now();
-    const result = await runCommand(boot.command, {
+    const result = await runCommand(command, {
       cwd: this.c.repoDir,
       env: bootstrapEnv(this.c.env.workspace),
       timeoutMs,
@@ -165,10 +175,12 @@ export class PhaseRunner {
     });
     const durationMs = Date.now() - started;
     const report = JSON.stringify({
-      command: boot.command,
+      command,
+      detected: explicit === undefined,
       exitCode: result.code,
       timedOut: result.timedOut,
       durationMs,
+      outputTail: result.outputTail,
     });
     if (result.code !== 0) {
       return {
@@ -183,6 +195,15 @@ export class PhaseRunner {
     return { phase: 'bootstrap', ok: true, artifact: { kind: 'bootstrap_report', content: report } };
   }
 
+  private async detectBootstrapCommandAtRoot(): Promise<string | null> {
+    try {
+      const entries = await readdir(this.c.repoDir);
+      return detectBootstrapCommand(entries);
+    } catch {
+      return null;
+    }
+  }
+
   /** Spawn a fresh `claude -p` session with a FRESH per-phase HOME (no session
    *  state bleeds between phases) and the phase prompt on STDIN. */
   private async runSession(
@@ -194,14 +215,25 @@ export class PhaseRunner {
     const homeDir = path.join(this.c.env.workspace, 'home', `${phase}-${sessionIdx}`);
     await mkdir(homeDir, { recursive: true });
 
-    const proxyBaseUrl = process.env['OMADIA_ANTHROPIC_BASE_URL']?.trim();
-    const proxyToken = process.env['OMADIA_ANTHROPIC_AUTH_TOKEN']?.trim();
+    // W1: `ANTHROPIC_BASE_URL` (policy-supplied, deriveJobPolicy.ts) plus the
+    // per-job bearer already on ShimEnv (`jobToken`, required, sourced from
+    // `OMADIA_JOB_TOKEN`) ARE the "W1's per-job, short-lived LLM-proxy tokens"
+    // ShimEnv.llmEnvAllowed's own doc comment says replace the W0 passthrough
+    // entirely -- a short-lived, per-job token is a different threat model
+    // from W0's long-lived middleware secret, so its presence stands in for
+    // the W0 jail acknowledgment rather than requiring it. Falls back to the
+    // legacy OMADIA_ANTHROPIC_* pair (still gated behind llmEnvAllowed) only
+    // when there is no W1 base URL, i.e. genuinely running under W0.
+    const w1BaseUrl = process.env['ANTHROPIC_BASE_URL']?.trim();
+    const proxyBaseUrl = w1BaseUrl || process.env['OMADIA_ANTHROPIC_BASE_URL']?.trim();
+    const proxyToken = w1BaseUrl ? this.c.env.jobToken : process.env['OMADIA_ANTHROPIC_AUTH_TOKEN']?.trim();
+    const llmEnvAllowed = this.c.env.llmEnvAllowed || Boolean(w1BaseUrl);
     const agent = runAgent({
       cliBin: this.c.env.cliBin,
       cwd: this.c.repoDir,
       homeDir,
       spec: this.c.spec,
-      llmEnvAllowed: this.c.env.llmEnvAllowed,
+      llmEnvAllowed,
       ...(proxyBaseUrl ? { proxyBaseUrl } : {}),
       ...(proxyToken ? { proxyToken } : {}),
       promptOverride: prompt,
@@ -256,12 +288,27 @@ export function absorb(acc: Accumulated, phase: DevJobPhase, body: PhaseResultBo
 // Small helpers.
 // ---------------------------------------------------------------------------
 
+/** Cap on captured command output — the tail is what matters for diagnosing
+ *  a failure (npm/pip/etc. print their actual error at the end, not the
+ *  start), and unbounded capture risks a memory/artifact-size blowup on a
+ *  verbose or runaway command. */
+const MAX_COMMAND_OUTPUT_BYTES = 4096;
+
 interface CommandResult {
   code: number;
   timedOut: boolean;
+  /** Last MAX_COMMAND_OUTPUT_BYTES of combined stdout+stderr. */
+  outputTail: string;
 }
 
-/** Run a shell command with its own timeout. Used only for `bootstrap`. */
+/** Run a shell command with its own timeout. Used only for `bootstrap`.
+ *
+ *  Found live: this used to spawn with `stdio: ['ignore','pipe','pipe']` and
+ *  never read either pipe — a failed bootstrap command (e.g. `npm ci`
+ *  exiting 1 after 70s of real, successful-looking network activity)
+ *  reported only an exit code, with the actual reason (npm's own error
+ *  output) silently discarded and unrecoverable, not even via `docker logs`
+ *  (piped streams never reach the container's own stdout/stderr). */
 function runCommand(
   command: string,
   opts: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number; setKill: SetKill },
@@ -272,30 +319,75 @@ function runCommand(
       env: opts.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    let output = '';
+    const appendOutput = (chunk: Buffer): void => {
+      output += chunk.toString('utf8');
+      // Keep memory bounded while the command is STILL RUNNING, not just at
+      // the end — a runaway command must not accumulate unboundedly.
+      if (output.length > MAX_COMMAND_OUTPUT_BYTES * 2) {
+        output = output.slice(-MAX_COMMAND_OUTPUT_BYTES);
+      }
+    };
+    child.stdout?.on('data', appendOutput);
+    child.stderr?.on('data', appendOutput);
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill('SIGKILL');
     }, opts.timeoutMs);
     opts.setKill((signal: NodeJS.Signals = 'SIGTERM') => child.kill(signal));
-    child.once('error', () => {
+    child.once('error', (err) => {
       clearTimeout(timer);
-      resolve({ code: -1, timedOut });
+      appendOutput(Buffer.from(`\n[spawn error] ${err.message}`));
+      resolve({ code: -1, timedOut, outputTail: output.slice(-MAX_COMMAND_OUTPUT_BYTES) });
     });
     child.once('close', (code) => {
       clearTimeout(timer);
-      resolve({ code: code ?? -1, timedOut });
+      resolve({ code: code ?? -1, timedOut, outputTail: output.slice(-MAX_COMMAND_OUTPUT_BYTES) });
     });
   });
 }
 
-/** Minimal hermetic env for the bootstrap command — no LLM auth, job-scoped HOME. */
+/**
+ * Minimal hermetic env for the bootstrap command — no LLM auth, job-scoped
+ * HOME. "Minimal" deliberately excludes ANTHROPIC_* and OMADIA_JOB_TOKEN and
+ * any other LLM-session secret (bootstrap is a plain shell command, not a CLI
+ * session — it has no business seeing them). It must NOT exclude proxy
+ * config, though: bootstrap is a spawned child of THIS shim process, which
+ * does not inherit the shim's own process.env automatically (same reason
+ * agentRunner.ts's buildAgentEnv and gitOps.ts's runGit both forward these
+ * explicitly) — and the job's isolated network has no route to ANYTHING
+ * except through the daemon's egress proxy. Confirmed live (2026-07-29,
+ * epic #470): without this, `env` inside bootstrap showed ONLY
+ * PATH/HOME/LANG/PWD — no HTTPS_PROXY at all — so npm (or any tool)
+ * attempted direct connections for its entire run, which an unrelated
+ * infra fix (the dev-dind egress guard) then correctly rejected, but the
+ * REAL bug was here: bootstrap never had a route to succeed in the first
+ * place. This was very likely the root cause of the "Exit handler never
+ * called!" investigation's entire failure pattern, not any npm-internal
+ * proxy-bypass behavior.
+ */
 function bootstrapEnv(workspace: string): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     PATH: process.env['PATH'] ?? '/usr/bin:/bin',
     HOME: path.join(workspace, 'home'),
     LANG: process.env['LANG'] ?? 'C.UTF-8',
   };
+  for (const key of [
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'no_proxy',
+    'npm_config_proxy',
+    'npm_config_https_proxy',
+    'npm_config_noproxy',
+  ]) {
+    const value = process.env[key];
+    if (value) env[key] = value;
+  }
+  return env;
 }
 
 /** Max artifact size the shim will read back (Forge #2 — bound before the 4 MiB

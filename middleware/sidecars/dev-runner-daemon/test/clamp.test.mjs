@@ -84,6 +84,24 @@ describe('buildContainerCreateOptions — REQUIRED clamp fields present', () => 
   });
 });
 
+describe('buildContainerCreateOptions — ExtraHosts (pre-resolved allowlist entries)', () => {
+  it('defaults to an empty array when no extraHosts are given', () => {
+    const hc = build().HostConfig ?? {};
+    assert.deepEqual(hc.ExtraHosts, []);
+  });
+
+  it('passes the given entries through verbatim — this function derives nothing itself', () => {
+    const entries = ['registry.npmjs.org:104.16.0.35', 'github.com:140.82.121.3'];
+    const hc = build({ extraHosts: entries }).HostConfig ?? {};
+    assert.deepEqual(hc.ExtraHosts, entries);
+  });
+
+  it('is still distinct from the forbidden Dns field — a resolver override stays refused', () => {
+    const hc = build({ extraHosts: ['registry.npmjs.org:104.16.0.35'] }).HostConfig ?? {};
+    assert.equal(hc.Dns, undefined);
+  });
+});
+
 describe('buildContainerCreateOptions — FORBIDDEN options are absent by construction', () => {
   const o = build();
   const hc = /** @type {Record<string, unknown>} */ (o.HostConfig ?? {});
@@ -94,6 +112,7 @@ describe('buildContainerCreateOptions — FORBIDDEN options are absent by constr
     const allowed = [
       'Binds',
       'CapDrop',
+      'ExtraHosts',
       'Memory',
       'MemorySwap',
       'NanoCpus',
@@ -156,6 +175,50 @@ describe('buildContainerCreateOptions — a forbidden image fails with spec_reje
   it('rejects a stub/short digest that is not a real content address', () => {
     assert.throws(
       () => build({ policy: policy({ image: 'ghcr.io/x/y@sha256:abc' }) }),
+      (err) => err instanceof SpecRejectedError && err.reason === 'image_bad_digest',
+    );
+  });
+});
+
+// The clamp used to hardcode the digest requirement ON, which made the documented
+// `DEV_RUNNER_REQUIRE_DIGEST=0` local escape hatch a NO-OP: the policy client was
+// told to allow a floating tag and the clamp refused it anyway, one gate later.
+describe('buildContainerCreateOptions — the DEV_RUNNER_REQUIRE_DIGEST posture', () => {
+  const FLOATING = 'omadia-dev-runner:latest';
+
+  it('fails CLOSED — an omitted posture refuses a floating tag (prod default)', () => {
+    assert.throws(
+      () => build({ policy: policy({ image: FLOATING }) }),
+      (err) => err instanceof SpecRejectedError && err.reason === 'image_not_digest_pinned',
+    );
+  });
+
+  it('an explicit requireDigest: true refuses a floating tag', () => {
+    assert.throws(
+      () => build({ policy: policy({ image: FLOATING }), requireDigest: true }),
+      (err) => err instanceof SpecRejectedError && err.reason === 'image_not_digest_pinned',
+    );
+  });
+
+  it('admits a floating tag ONLY when the operator explicitly relaxes the posture', () => {
+    const o = build({ policy: policy({ image: FLOATING }), requireDigest: false });
+    assert.equal(o.Image, FLOATING, 'the locally-loaded image is launched verbatim');
+  });
+
+  it('relaxing the posture relaxes NOTHING else — the full clamp still applies', () => {
+    const o = build({ policy: policy({ image: FLOATING }), requireDigest: false });
+    const hc = o.HostConfig ?? {};
+    assert.equal(o.User, '1000:1000');
+    assert.equal(hc.ReadonlyRootfs, true);
+    assert.deepEqual(hc.CapDrop, ['ALL']);
+    assert.deepEqual(hc.SecurityOpt, ['no-new-privileges:true']);
+    assert.equal(hc.Privileged, false);
+    assert.deepEqual(hc.Binds, [`${jobVolumeName(JOB_ID)}:/workspace`]);
+  });
+
+  it('still refuses a MALFORMED digest with the posture relaxed — a knob about whether a digest is required never tolerates garbage', () => {
+    assert.throws(
+      () => build({ policy: policy({ image: 'ghcr.io/x/y@sha256:abc' }), requireDigest: false }),
       (err) => err instanceof SpecRejectedError && err.reason === 'image_bad_digest',
     );
   });

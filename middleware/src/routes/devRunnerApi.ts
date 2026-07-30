@@ -58,6 +58,10 @@ import {
 export interface DevRunnerJobStore {
   verifyRunnerToken(jobId: string, token: string): Promise<boolean>;
   getJob(jobId: string): Promise<DevJob | null>;
+  /** Mints and persists a fresh runner token, invalidating the previous one.
+   *  See `devRunnerJobPolicyRoute.ts` — the docker backend's actual provision
+   *  moment, since `DockerBackend.provision()` itself never carries a token. */
+  reissueRunnerToken(jobId: string): Promise<string>;
   markRunning(jobId: string): Promise<boolean>;
   /** Liveness without an event. `appendEvents` returns early on an empty batch,
    *  so an agent that thinks without emitting a tool call would otherwise be
