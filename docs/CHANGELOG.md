@@ -18,6 +18,51 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — long-running tools stop blocking chat turns (#543)
+
+- New generic **long-running task seam** in `@omadia/orchestrator`
+  (`TaskDescriptor` / `TaskStore`, `defineLongRunningTool`). Mark a tool
+  `longRunning` and it gets a non-blocking `<tool>_start` / `<tool>_status` /
+  `<tool>_list` triple plus a streaming status card: `_start` returns a handle in
+  milliseconds, the work runs detached, and the model collects the result on a
+  later poll. Generalized from the `dev_job_*` tools, which hand-rolled exactly
+  this shape.
+- **A chat turn is never parked.** There is no park/resume for a chat turn —
+  `chat.ts` streams SSE with a heartbeat and ends when the model loop ends — so
+  holding the stream open for minutes only buys proxy idle timeouts, Teams
+  activity expiry, and reaped connections. The model says "started, I'll report
+  back" instead; that is the intended UX.
+- **`dev_job` is the seam's first implementor, with no behaviour change.** A new
+  adapter projects `DevJobStore` onto the seam (ten-value `DevJobStatus` down to
+  `working | input_required | completed | failed`, `dev_job_events` onto the event
+  tail, `claimNextQueued` onto the claim, `finalizeDevJob` onto the terminal
+  write so the brand-gated choke point is preserved). `dev_job_start` still
+  returns `{"status":"job_started",…}`; nothing in `devJobStore.ts` or
+  `devJobOrchestratorTool.ts` changed and no migration was added.
+- **Deferred sub-agent dispatch** is the second consumer. A slow sub-agent
+  delegated from a chat turn blocks that turn for as long as its `LocalSubAgent`
+  loop runs; opt one in via `LONG_RUNNING_SUBAGENT_TOOLS` (comma-separated
+  `ask_<slug>` names) and it also gets the non-blocking triple. The blocking
+  `ask_<slug>` tool stays registered either way, so a sub-agent that answers in
+  seconds keeps answering inline. Empty by default — no existing behaviour moves.
+- **Orphan handling**: a periodic reaper fails live tasks whose worker went
+  silent (including tasks no worker ever claimed) and purges terminal tasks past
+  a retain window, so an unpolled task cannot leak a `working` row forever.
+  Windows: `LONG_RUNNING_TASK_STALE_MS` (default 15 min),
+  `LONG_RUNNING_TASK_RETAIN_MS` (default 1 h).
+- **Deferred-result privacy**: a task's result reaches the model only as the
+  return value of `<tool>_status` — an ordinary tool call inside a live turn — so
+  the Privacy Shield interning that `dispatchTool` performs still applies, at poll
+  time instead of completion time. Status cards deliberately carry no result and
+  no input (they bypass `dispatchTool`), which is enforced by test. Known v1
+  limitation: privacy **bypass attribution** for work done inside the detached
+  runner cannot be recorded against the originating turn, since that turn has
+  already ended. No data leaks; the audit line is what is missing.
+- Not the MCP Tasks extension: internal `LocalSubAgent` dispatches never cross an
+  MCP boundary, and the redesigned extension (SEP-2663) is unshipped even in SDK
+  v2 (`tasks/update` does not exist). The status vocabulary above was chosen to
+  match MCP Tasks so a later protocol projection is mechanical.
+
 ### Added — pluggable embedding provider (#440)
 
 - The `EmbeddingClient` contract moved from `@omadia/embeddings` (the Ollama
