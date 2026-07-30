@@ -494,6 +494,23 @@ const ConfigSchema = z.object({
     .positive()
     .default(15_000),
 
+  // --- Public MCP endpoint (W2-3, issue #542) ------------------------------
+  // omadia's own tools, exposed over a stateless Streamable-HTTP MCP server at
+  // /api/v1/mcp to third parties holding an API key. This is the highest-blast
+  // -radius surface in the MCP cluster — an internet-facing route that reaches
+  // the tool layer, including WRITE tools by operator allowlist — so the whole
+  // thing is dark by default: false mounts NO router at all, which is a
+  // stronger guarantee than mounting one that answers 403.
+  PUBLIC_MCP_ENABLED: devFlag(),
+  // Whether tool calls are served while the dispatch privacy/trace seam is
+  // still open. `ToolDispatchService` applies no PII masking — the chat path's
+  // masking lives in `Orchestrator.dispatchToolInner`, which that dispatcher
+  // explicitly does not replicate — so serving without the seam means a public
+  // HTTP response can carry unmasked personal data out of Odoo or M365.
+  // Default false ⇒ tools/list works, tools/call refuses and says why.
+  // Set true ONLY on a deliberate, documented operator decision.
+  PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_SEAM: devFlag(),
+
   // --- Dev platform (epic #470 W0) ----------------------------------------
   // Isolated per-job code runners (clone → agent-edit → diff → server-side PR).
   // The whole subsystem is dark by default: DEV_PLATFORM_ENABLED=false mounts

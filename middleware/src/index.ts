@@ -162,6 +162,7 @@ import {
   type MdnsAdvertisement,
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
+import { mountPublicMcp } from './mcp/wirePublicMcp.js';
 import { createRequireAuth } from './auth/requireAuth.js';
 import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
 import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
@@ -2421,6 +2422,23 @@ async function main(): Promise<void> {
       snapshotForAgent: (slug) => getRegistry()?.snapshotForAgent(slug),
     }),
   );
+
+  // W2-3 (issue #542) — the public, stateless MCP endpoint.
+  //
+  // Mounted AFTER the `/api` requireAuth line above ON PURPOSE. That mount runs
+  // for every `/api/*` request whichever router answers it, so being listed in
+  // `auth/publicPaths.ts` is what makes this route reachable at all — and
+  // losing that entry makes it go DARK (401) rather than open. `requireApiKey`
+  // inside the router is the actual authentication; the per-key tool allowlist
+  // and the per-tool write scopes are the actual authorization.
+  mountPublicMcp(app, requireAuth, {
+    enabled: config.PUBLIC_MCP_ENABLED,
+    allowWithoutPrivacySeam: config.PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_SEAM,
+    vault: secretVault,
+    graphPool,
+    getRegistry,
+    nativeToolRegistry,
+  });
 
   // Chat-sessions CRUD behind `requireAuth` — sessions may contain
   // PII / tool outputs / code snippets and must not be readable anonymously.
