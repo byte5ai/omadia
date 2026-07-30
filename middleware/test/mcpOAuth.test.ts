@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+
+import express from 'express';
 
 import { McpAuthDiscovery } from '../src/services/mcpAuthDiscovery.js';
 import { McpOAuthClient, type OAuthClientCredentials } from '../src/services/mcpOAuthClient.js';
@@ -121,6 +125,7 @@ const AS: AuthServerMetadata = {
   grantTypes: ['authorization_code'],
   scopesSupported: ['read'],
   issParameterSupported: false,
+  clientIdMetadataDocumentSupported: false,
 };
 const CLIENT: OAuthClientCredentials = { clientId: 'cid', clientSecret: 'sec' };
 
@@ -209,7 +214,14 @@ describe('McpOAuthClient', () => {
 
 describe('McpOAuthService.describeAuth (broker classification)', () => {
   const server = { id: 's', name: 'srv', endpoint: 'https://srv.example/mcp' } as never;
-  const deps = { graph: {} as never, vault: {} as never, redirectUri: 'https://host/cb' };
+  // W2-4: describeAuth now reads the stored client FIRST (to report which
+  // acquisition mode an issuer is already on), so the graph stub has to answer
+  // getMcpOAuthClient even for issuers that never reach the DCR probe.
+  const deps = {
+    graph: { getMcpOAuthClient: async () => undefined } as never,
+    vault: {} as never,
+    redirectUri: 'https://host/cb',
+  };
 
   it('brokered=true when DCR actually succeeds (zero-setup)', async () => {
     const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
@@ -829,5 +841,504 @@ describe('W0-1 D5 — no token, code, or code_verifier can reach a log line', ()
   it('leaves short values alone rather than shredding unrelated text', () => {
     // A 3-char "secret" would otherwise redact every occurrence of those chars.
     assert.equal(redactSecrets('the cat sat', ['cat']), 'the cat sat');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W2-4 — Client ID Metadata Documents (issue #546, CIMD half)
+//
+// The issue body claims omadia "only supports static headers with secretRef".
+// It does not: the whole provider-agnostic OAuth 2.1 + PKCE stack exercised
+// above shipped in epic #459 W9. These tests cover the DELTA — a third
+// client-acquisition mode that coexists PERMANENTLY with the manual path,
+// because Entra ID and Okta do not support CIMD and use pre-registered apps.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** An AS that advertises `client_id_metadata_document_supported`. */
+const CIMD_AS: AuthServerMetadata = { ...AS, clientIdMetadataDocumentSupported: true };
+
+/** Discovery stub returning a chosen authorization-server metadata document. */
+function discoveryFor(as: AuthServerMetadata): never {
+  return {
+    discover: async () => ({
+      resource: {
+        resource: 'https://srv.example',
+        authorizationServers: [as.issuer],
+        scopesSupported: ['read'],
+        bearerMethods: ['header'],
+      },
+      server: as,
+    }),
+  } as never;
+}
+
+/** Graph stub recording every client upsert, so a test can assert WHICH mode
+ *  the chain actually persisted rather than merely that something happened. */
+function clientGraph(stored?: {
+  clientId: string;
+  clientSecretRef: string | null;
+  registeredVia: string;
+  clientMetadataUrl?: string | null;
+}): { graph: never; upserts: Array<Record<string, unknown>> } {
+  const upserts: Array<Record<string, unknown>> = [];
+  const graph = {
+    getMcpOAuthClient: async () => (stored ? { issuer: CIMD_AS.issuer, ...stored } : undefined),
+    upsertMcpOAuthClient: async (input: Record<string, unknown>) => {
+      upserts.push(input);
+    },
+    createMcpOAuthFlow: async () => {},
+  } as never;
+  return { graph, upserts };
+}
+
+/** A fetch that serves a VALID CIMD document at one URL and 404s elsewhere —
+ *  i.e. an install whose ingress really does route `/.well-known/*` inbound. */
+function cimdServing(metadataUrl: string, redirectUri = 'https://host/cb'): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    if (String(input) === metadataUrl) {
+      return new Response(
+        JSON.stringify({
+          client_id: metadataUrl,
+          client_name: 'omadia MCP',
+          redirect_uris: [redirectUri],
+          token_endpoint_auth_method: 'none',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    return new Response('not found', { status: 404 });
+  }) as typeof fetch;
+}
+
+// `omadia.example` is a reserved-TLD name: the SSRF guard's DNS lookup cannot
+// resolve it, and `assertPublicHttpsUrl` deliberately does not hard-block an
+// unresolvable host (the fetch would fail loudly anyway) — so the stubbed fetch
+// is what decides reachability in these tests, which is the point.
+const MD_URL = 'https://omadia.example/.well-known/omadia-mcp-client';
+const SERVER_ROW = { id: 's', name: 'srv', endpoint: 'https://srv.example/mcp' } as never;
+
+const AUTHORIZE_STUB = {
+  buildAuthorizeUrl: (args: { client: { clientId: string } }) => ({
+    url: `https://as.example/authorize?client_id=${encodeURIComponent(args.client.clientId)}`,
+    state: 'st',
+    codeVerifier: 'v',
+  }),
+};
+
+describe('W2-4 — client-acquisition chain (stored → cimd → dcr → manual)', () => {
+  it('stored beats cimd: an existing client short-circuits, nothing is re-acquired', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const { graph, upserts } = clientGraph({
+      clientId: 'already-here',
+      clientSecretRef: null,
+      registeredVia: 'manual',
+    });
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => undefined, set: async () => {} } as never,
+      redirectUri: 'https://host/cb',
+      cimdMetadataUrl: MD_URL,
+      cimdFetchImpl: cimdServing(MD_URL),
+      discovery: discoveryFor({ ...CIMD_AS, registrationEndpoint: 'https://as.example/register' }),
+      client: {
+        registerClient: async () => ({ clientId: 'dcr-cid', clientSecret: null }),
+        ...AUTHORIZE_STUB,
+      } as never,
+    });
+    const { authorizeUrl } = await svc.beginAuthorization(SERVER_ROW, 'u');
+    // The real invariant is not "a mock went uncalled": it is that the stored
+    // client is what reaches the provider AND that nothing was re-persisted, so
+    // an operator's manual client cannot be silently replaced by a CIMD one.
+    assert.ok(authorizeUrl.includes('client_id=already-here'), authorizeUrl);
+    assert.deepEqual(upserts, [], 'a stored client must never be overwritten by the chain');
+  });
+
+  it('cimd beats dcr: a CIMD-capable AS is acquired via the document', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const { graph, upserts } = clientGraph();
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => undefined, set: async () => {} } as never,
+      redirectUri: 'https://host/cb',
+      cimdMetadataUrl: MD_URL,
+      cimdFetchImpl: cimdServing(MD_URL),
+      // An AS offering BOTH: CIMD must win.
+      discovery: discoveryFor({ ...CIMD_AS, registrationEndpoint: 'https://as.example/register' }),
+      client: {
+        registerClient: async () => ({ clientId: 'dcr-cid', clientSecret: 'dcr-sec' }),
+        ...AUTHORIZE_STUB,
+      } as never,
+    });
+    const { authorizeUrl } = await svc.beginAuthorization(SERVER_ROW, 'u');
+    assert.equal(upserts.length, 1);
+    assert.equal(upserts[0]?.['registeredVia'], 'cimd');
+    assert.equal(upserts[0]?.['clientId'], MD_URL, 'the client_id IS the metadata URL');
+    assert.equal(upserts[0]?.['clientMetadataUrl'], MD_URL);
+    assert.equal(upserts[0]?.['clientSecretRef'], null, 'a CIMD client is public — no secret');
+    // Observable consequence, not a call count: a regression letting DCR win
+    // would change the client_id that actually reaches the provider.
+    assert.ok(authorizeUrl.includes(encodeURIComponent(MD_URL)), authorizeUrl);
+    assert.ok(!authorizeUrl.includes('dcr-cid'), authorizeUrl);
+  });
+
+  it('cimd is SKIPPED when the AS does not advertise support (dcr wins)', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const { graph, upserts } = clientGraph();
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => undefined, set: async () => {} } as never,
+      redirectUri: 'https://host/cb',
+      // CIMD is fully configured AND reachable — the ONLY reason it must not be
+      // used is that this AS never promised to dereference a document.
+      cimdMetadataUrl: MD_URL,
+      cimdFetchImpl: cimdServing(MD_URL),
+      discovery: discoveryFor({
+        ...AS,
+        clientIdMetadataDocumentSupported: false,
+        registrationEndpoint: 'https://as.example/register',
+      }),
+      client: {
+        registerClient: async () => ({ clientId: 'dcr-cid', clientSecret: null }),
+        ...AUTHORIZE_STUB,
+      } as never,
+    });
+    const { authorizeUrl } = await svc.beginAuthorization(SERVER_ROW, 'u');
+    assert.equal(upserts[0]?.['registeredVia'], 'dcr');
+    assert.ok(authorizeUrl.includes('client_id=dcr-cid'), authorizeUrl);
+  });
+
+  it('dcr keeps working and is NOT removed — it only warns about deprecation', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const { graph, upserts } = clientGraph();
+    const logs: string[] = [];
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => undefined, set: async () => {} } as never,
+      redirectUri: 'https://host/cb',
+      discovery: discoveryFor({ ...AS, registrationEndpoint: 'https://as.example/register' }),
+      client: {
+        registerClient: async () => ({ clientId: 'dcr-cid', clientSecret: null }),
+        ...AUTHORIZE_STUB,
+      } as never,
+      log: (m) => logs.push(m),
+    });
+    await svc.beginAuthorization(SERVER_ROW, 'u');
+    assert.equal(upserts[0]?.['registeredVia'], 'dcr', 'DCR must still succeed');
+    assert.ok(
+      logs.some((l) => /deprecat/i.test(l)),
+      `a deprecation warning is required, got: ${JSON.stringify(logs)}`,
+    );
+  });
+
+  it('manual last: an AS with neither CIMD nor DCR raises McpOAuthNeedsClientError', async () => {
+    const { McpOAuthService, McpOAuthNeedsClientError } = await import(
+      '../src/services/mcpOAuthService.js'
+    );
+    const { graph } = clientGraph();
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => undefined, set: async () => {} } as never,
+      redirectUri: 'https://host/cb',
+      discovery: discoveryFor(AS),
+      client: { registerClient: async () => null, ...AUTHORIZE_STUB } as never,
+    });
+    await assert.rejects(
+      () => svc.beginAuthorization(SERVER_ROW, 'u'),
+      (err: unknown) => err instanceof McpOAuthNeedsClientError,
+    );
+  });
+
+  it('a CIMD-capable AS still degrades to manual when the document is unreachable', async () => {
+    // THE on-prem case: the AS would happily dereference a document, but this
+    // install has no inbound https route, so nothing can fetch it. The chain
+    // must fall through rather than hand over an unresolvable client_id.
+    const { McpOAuthService, McpOAuthNeedsClientError } = await import(
+      '../src/services/mcpOAuthService.js'
+    );
+    const { graph, upserts } = clientGraph();
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => undefined, set: async () => {} } as never,
+      redirectUri: 'https://host/cb',
+      cimdMetadataUrl: MD_URL,
+      // Ingress does not route `/.well-known/*` inbound → 404.
+      cimdFetchImpl: (async () => new Response('nope', { status: 404 })) as typeof fetch,
+      discovery: discoveryFor(CIMD_AS),
+      client: { registerClient: async () => null, ...AUTHORIZE_STUB } as never,
+    });
+    await assert.rejects(
+      () => svc.beginAuthorization(SERVER_ROW, 'u'),
+      (err: unknown) => err instanceof McpOAuthNeedsClientError,
+    );
+    assert.deepEqual(upserts, [], 'an unreachable document must persist no client');
+  });
+
+  it('cimd is skipped with no metadata URL at all (FLOW_PUBLIC_BASE_URL unset)', async () => {
+    const { McpOAuthService, McpOAuthNeedsClientError } = await import(
+      '../src/services/mcpOAuthService.js'
+    );
+    const { graph, upserts } = clientGraph();
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => undefined, set: async () => {} } as never,
+      redirectUri: 'https://host/cb',
+      cimdMetadataUrl: null,
+      discovery: discoveryFor(CIMD_AS),
+      client: { registerClient: async () => null, ...AUTHORIZE_STUB } as never,
+    });
+    await assert.rejects(
+      () => svc.beginAuthorization(SERVER_ROW, 'u'),
+      (err: unknown) => err instanceof McpOAuthNeedsClientError,
+    );
+    assert.deepEqual(upserts, []);
+  });
+});
+
+describe('W2-4 — describeAuth reports the acquisition mode', () => {
+  it('acquisitionMode=cimd and brokered=true when CIMD is live', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const { graph } = clientGraph();
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => undefined } as never,
+      redirectUri: 'https://host/cb',
+      cimdMetadataUrl: MD_URL,
+      cimdFetchImpl: cimdServing(MD_URL),
+      discovery: discoveryFor(CIMD_AS),
+      client: { registerClient: async () => null } as never,
+    });
+    const d = await svc.describeAuth(SERVER_ROW);
+    assert.equal(d.acquisitionMode, 'cimd');
+    assert.equal(d.cimdSupported, true);
+    assert.equal(d.cimdBlockedReason, null);
+    assert.equal(d.brokered, true);
+  });
+
+  it('reports cimdSupported with a blocked reason on a firewalled install', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const { graph } = clientGraph();
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => undefined } as never,
+      redirectUri: 'https://host/cb',
+      cimdMetadataUrl: null,
+      discovery: discoveryFor(CIMD_AS),
+      client: { registerClient: async () => null } as never,
+    });
+    const d = await svc.describeAuth(SERVER_ROW);
+    assert.equal(d.cimdSupported, true, 'the AS DID advertise CIMD');
+    assert.equal(d.cimdBlockedReason, 'no_public_base_url');
+    // Manual is the answer here, and it is a supported answer — not an error.
+    assert.equal(d.acquisitionMode, 'manual');
+    assert.equal(d.brokered, false);
+  });
+
+  it('a stored manual client reports manual and is never re-probed as cimd', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const { graph, upserts } = clientGraph({
+      clientId: 'entra-app-id',
+      clientSecretRef: 'client/x/secret',
+      registeredVia: 'manual',
+    });
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => 'sec' } as never,
+      redirectUri: 'https://host/cb',
+      cimdMetadataUrl: MD_URL,
+      cimdFetchImpl: cimdServing(MD_URL),
+      discovery: discoveryFor(CIMD_AS),
+      client: { registerClient: async () => null } as never,
+    });
+    const d = await svc.describeAuth(SERVER_ROW);
+    assert.equal(d.acquisitionMode, 'manual');
+    assert.deepEqual(upserts, [], 'describeAuth must not mutate a stored client');
+  });
+
+  it('a stored cimd client reports acquisitionMode=cimd', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const { graph } = clientGraph({
+      clientId: MD_URL,
+      clientSecretRef: null,
+      registeredVia: 'cimd',
+      clientMetadataUrl: MD_URL,
+    });
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => undefined } as never,
+      redirectUri: 'https://host/cb',
+      cimdMetadataUrl: MD_URL,
+      discovery: discoveryFor(CIMD_AS),
+      client: { registerClient: async () => null } as never,
+    });
+    const d = await svc.describeAuth(SERVER_ROW);
+    assert.equal(d.acquisitionMode, 'cimd');
+    assert.equal(d.brokered, true);
+  });
+});
+
+describe('W2-4 — SSRF guard on the CIMD metadata URL', () => {
+  it('refuses a loopback metadata URL without ever fetching it', async () => {
+    const { probeCimdReachable } = await import('../src/services/mcpCimd.js');
+    let fetched = 0;
+    const r = await probeCimdReachable({
+      metadataUrl: 'https://127.0.0.1/.well-known/omadia-mcp-client',
+      fetchImpl: (async () => {
+        fetched += 1;
+        return new Response('{}', { status: 200 });
+      }) as typeof fetch,
+    });
+    assert.equal(r.reachable, false);
+    assert.equal(r.reason, 'not_public_https');
+    assert.equal(fetched, 0, 'the guard must run BEFORE any request leaves');
+  });
+
+  it('refuses an RFC1918 metadata URL', async () => {
+    const { probeCimdReachable } = await import('../src/services/mcpCimd.js');
+    const r = await probeCimdReachable({
+      metadataUrl: 'https://10.1.2.3/.well-known/omadia-mcp-client',
+    });
+    assert.equal(r.reason, 'not_public_https');
+  });
+
+  it('refuses a link-local (cloud metadata service) URL', async () => {
+    const { probeCimdReachable } = await import('../src/services/mcpCimd.js');
+    const r = await probeCimdReachable({
+      metadataUrl: 'https://169.254.169.254/.well-known/omadia-mcp-client',
+    });
+    assert.equal(r.reason, 'not_public_https');
+  });
+
+  it('refuses a non-https metadata URL', async () => {
+    const { probeCimdReachable } = await import('../src/services/mcpCimd.js');
+    const r = await probeCimdReachable({
+      metadataUrl: 'http://omadia.example/.well-known/omadia-mcp-client',
+    });
+    assert.equal(r.reason, 'not_public_https');
+  });
+
+  it('refuses a document whose client_id is not the URL we fetched', async () => {
+    // A catch-all proxy route answering 200 with someone else's document must
+    // not read as "our document is reachable".
+    const { probeCimdReachable } = await import('../src/services/mcpCimd.js');
+    const r = await probeCimdReachable({
+      metadataUrl: MD_URL,
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ client_id: 'https://someone.else/doc' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })) as typeof fetch,
+    });
+    assert.equal(r.reachable, false);
+    assert.equal(r.reason, 'document_mismatch');
+  });
+
+  it('accepts a genuinely public, self-consistent document', async () => {
+    const { probeCimdReachable } = await import('../src/services/mcpCimd.js');
+    const r = await probeCimdReachable({ metadataUrl: MD_URL, fetchImpl: cimdServing(MD_URL) });
+    assert.equal(r.reachable, true);
+    assert.equal(r.reason, null);
+  });
+});
+
+describe('W2-4 — GET /.well-known/omadia-mcp-client', () => {
+  async function serve(opts: {
+    metadataUrl: string | null;
+    redirectUri: string | null;
+  }): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+    const { createMcpClientMetadataRouter } = await import('../src/routes/mcpClientMetadata.js');
+    const app = express();
+    app.use(createMcpClientMetadataRouter(opts));
+    const server: Server = await new Promise((resolve) => {
+      const s = app.listen(0, () => resolve(s));
+    });
+    const port = (server.address() as AddressInfo).port;
+    return {
+      baseUrl: `http://127.0.0.1:${port}`,
+      close: () =>
+        new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        }),
+    };
+  }
+
+  it('serves the document shape a CIMD-aware AS expects', async () => {
+    const h = await serve({ metadataUrl: MD_URL, redirectUri: 'https://host/cb' });
+    try {
+      const res = await fetch(`${h.baseUrl}/.well-known/omadia-mcp-client`);
+      assert.equal(res.status, 200);
+      const doc = (await res.json()) as Record<string, unknown>;
+      assert.equal(doc['client_id'], MD_URL, 'client_id must be self-referential');
+      assert.deepEqual(doc['redirect_uris'], ['https://host/cb']);
+      assert.equal(doc['token_endpoint_auth_method'], 'none');
+      assert.equal(typeof doc['client_name'], 'string');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('answers 501 with an actionable message when FLOW_PUBLIC_BASE_URL is unset', async () => {
+    const h = await serve({ metadataUrl: null, redirectUri: 'https://host/cb' });
+    try {
+      const res = await fetch(`${h.baseUrl}/.well-known/omadia-mcp-client`);
+      // 501, not 500: this is a configuration state, not a fault. A firewalled
+      // install lives here permanently and the manual path still works.
+      assert.equal(res.status, 501);
+      const body = (await res.json()) as { error: string; message: string };
+      assert.equal(body.error, 'cimd_unavailable');
+      assert.ok(
+        body.message.includes('FLOW_PUBLIC_BASE_URL'),
+        'the message must name the knob to set',
+      );
+      assert.ok(
+        /Entra|Okta|manual/.test(body.message),
+        'the message must point at the still-supported manual path',
+      );
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('answers 501 when no redirect URI is configured (nothing valid to advertise)', async () => {
+    const h = await serve({ metadataUrl: MD_URL, redirectUri: null });
+    try {
+      assert.equal((await fetch(`${h.baseUrl}/.well-known/omadia-mcp-client`)).status, 501);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('served redirect_uris matches McpOAuthService.redirectUri EXACTLY', async () => {
+    // If these ever diverge, the AS matches the authorize request's
+    // redirect_uri against this document, finds no match, and every code
+    // exchange fails — at the provider, far from the cause. Both are wired from
+    // one variable in index.ts; this pins that they stay one value.
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const redirectUri = 'https://omadia.example/api/v1/operator/mcp-oauth/callback';
+    const svc = new McpOAuthService({
+      graph: { getMcpOAuthClient: async () => undefined } as never,
+      vault: {} as never,
+      redirectUri,
+      cimdMetadataUrl: MD_URL,
+    });
+    const h = await serve({ metadataUrl: MD_URL, redirectUri: svc.redirectUri });
+    try {
+      const doc = (await (await fetch(`${h.baseUrl}/.well-known/omadia-mcp-client`)).json()) as {
+        redirect_uris: string[];
+      };
+      assert.deepEqual(doc.redirect_uris, [svc.redirectUri]);
+      assert.equal(doc.redirect_uris[0], redirectUri);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('the metadata URL is stable across restarts (from config, not the Host header)', async () => {
+    const { cimdMetadataUrl } = await import('../src/services/mcpCimd.js');
+    // Same config in, same client_id out — including across a trailing-slash
+    // difference, which would otherwise mint two client_ids for one install.
+    assert.equal(cimdMetadataUrl('https://omadia.example'), MD_URL);
+    assert.equal(cimdMetadataUrl('https://omadia.example/'), MD_URL);
+    assert.equal(cimdMetadataUrl(undefined), null);
+    assert.equal(cimdMetadataUrl(null), null);
   });
 });
