@@ -16,7 +16,7 @@ every row passes *and* the decoupling ratchet reads zero.
 
 | Guard | What it proves | Status |
 |---|---|---|
-| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight | **In place.** Baseline **3,181** across **14** zones, per-zone regression check |
+| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight | **In place.** Baseline **3,293** across **14** zones, per-zone regression check |
 | `middleware/test/devplatform/**` (54 files) | The behaviour itself, at unit/integration level. These **move with the plugin** and must stay green in the new repo | In place, moves in P4 |
 | §2 capability matrix below | Nothing is silently dropped in the move | **Written here; not yet automated** |
 | §3 install/uninstall | The result is genuinely installable | **Not yet built** — needs P3/P4 |
@@ -63,11 +63,11 @@ So: the ratchet is a necessary condition for done, not a sufficient one.
 >
 > | Capability | Why it never runs | Verdict |
 > |---|---|---|
-> | **Conductor `dev.job` step** | Executor built with no `devJob` dep, so the dispatch branch is always false; the sweep is never scheduled. The launch half of the port has **no implementation at all** | Activate as its own PR (C5b), or delete |
-> | **`ctx.devJobs` plugin service** | `provide('devJobs', …)` exists nowhere in `src/`. Zero consumers on disk | **DELETE** — and registering it would be a *security regression* while `services.get` is ungated |
-> | **Tracker polling** | `TrackerPoller` never constructed or started | Defer, move dormant |
-> | **`TrackerRegistry`** | `registerTracker` has zero production callers | Defer, moves with polling |
-> | **Comment-back** | `tracker/commentBack.ts` referenced only by its own test | Defer, moves with polling |
+> | **Conductor `dev.job` step** | Executor built with no `devJob` dep; the launch half of the port has **no implementation at all** | **DELETE** — 73 refs / ~600 LOC. Wanting it back is a *new feature*, its own epic |
+> | **`ctx.devJobs` plugin service** | `provide('devJobs', …)` exists nowhere in `src/`. Zero consumers on disk | **DELETE** — registering it would be a *security regression* while `services.get` is ungated |
+> | **Tracker polling** | `TrackerPoller` never constructed or started | **DEFER-AND-HARDEN** — Jira/Linear is on the roadmap; six fixes gate switch-on |
+> | **`TrackerRegistry`** | `registerTracker` has zero production callers | **DELETE** — the seam inverts (plugin provides, dev-platform consumes) |
+> | **Comment-back** | `tracker/commentBack.ts` referenced only by its own test | **REWRITE at P3** against the tracker contract |
 >
 > **Do not "preserve" them.** Extraction acceptance that certifies these would be
 > certifying capabilities the operator never had — which is exactly the failure this

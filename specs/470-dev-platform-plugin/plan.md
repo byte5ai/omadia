@@ -60,13 +60,13 @@ work-list in `core-decoupling-checklist.md`. Three of those items are not deleti
 
 | Surface | Size |
 |---|---|
-| `middleware/src/devplatform/**` | 53 files, 14,457 LOC |
+| `middleware/src/devplatform/**` | 53 files, 14,520 LOC |
 | `middleware/src/routes/devPlatform*.ts`, `devRunnerApi.ts`, `devRunnerJobPolicyRoute.ts` | 7 files, 2,733 LOC |
 | `middleware/src/routes/devWebhooks.ts`, `src/conductor/devJobStepEffect.ts` | 2 files, 394 LOC |
 | `middleware/sidecars/dev-runner-daemon/` | 30 files (dockerode) |
 | `middleware/packages/dev-runner-shim/` | 21 files, zero deps |
 | `middleware/test/devplatform/**` | 54 files |
-| `web-ui/app/admin/dev-platform/**` | 20 files, 3,163 LOC |
+| `web-ui/app/admin/dev-platform/**` | 29 files, 4,344 LOC (PR #529) |
 | `web-ui/app/_components/devjobs/**` + `_lib/useDevJobEvents.ts` | 7 files, 884 LOC |
 | Database | 9 tables, 14 indexes, migrations `0022`–`0030` |
 | Config | **41** dev-platform `DEV_*`/`FLY_*` keys — 37 in the `config.ts` dev-platform block plus 4 elsewhere (`DEV_WEBHOOKS_ENABLED`, two webhook rate limits, `DEV_JOB_DEFAULT_BUDGET_USD`). `config.ts` holds 42 distinct `DEV_*`/`FLY_*` identifiers in total; the 42nd, `DEV_ENDPOINTS_ENABLED`, is generic and stays in core |
