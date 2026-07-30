@@ -41,7 +41,7 @@ The three verdicts are **not the same**, and that is the finding.
 
 | # | Capability | Evidence it never runs | Verdict |
 |---|---|---|---|
-| 1 | **Conductor `dev.job` step** | Executor constructed with no `devJob` dep, so the dispatch branch is always false; the reconciliation sweep is never scheduled | **ACTIVATE as its own PR — or delete.** Not as a side-effect of C5 |
+| 1 | **Conductor `dev.job` step** | Executor constructed with no `devJob` dep, so the dispatch branch is always false; the sweep is never scheduled | **DELETE** — 73 refs / ~600 LOC. Activating it is a NEW FEATURE, out of scope |
 | 2 | **`ctx.devJobs`** | `provide('devJobs', …)` exists nowhere in `src/` | **DELETE** |
 | 3 | **Tracker polling** | `TrackerPoller` never constructed or started | **DEFER-AND-HARDEN** — roadmap foundation; six fixes gate switch-on |
 | 4 | **`TrackerRegistry`** | `registerTracker` has zero production callers | **DELETE** — the seam inverts, so there is nothing to move |
@@ -55,7 +55,40 @@ All five verified directly, not taken on report.
 
 ---
 
-## 1. Conductor `dev.job` step — ACTIVATE as C5b, or delete
+## 1. Conductor `dev.job` step — DELETE (scope correction, 2026-07-30)
+
+> **Marcel: "Der Conductor ist eine neue Funktion. Was hat das mit der Dev Platform zu tun?"**
+> Correct, and it exposes a scope error in everything below this box.
+>
+> **Why the Conductor is in this epic at all:** not as a feature. Core's conductor currently
+> holds **73 dev-platform references across 4 files** — `devJobStepEffect.ts` (122 LOC, entirely
+> dev-job), 31 in `runExecutor.ts`, 6 in `awaitStore.ts` (incl. the `AND channel_type <>
+> 'dev_job'` literal), 1 in `routes.ts`. They must go or the ratchet never reaches 0. *That* is
+> the legitimate scope.
+>
+> **What I turned it into:** "build a generic long-running step-kind registry (H2/C5) and then
+> activate the step (C5b)". That is a **new platform capability plus a new feature**, neither of
+> which anyone asked for, and it propagated through the plan as a hard blocker.
+>
+> **The correct treatment.** There are two ways to remove a dev-platform reference from core:
+> genericise it, or delete it. Genericising is only justified when something real needs the
+> generic version. Here nothing does — the capability is dead, has no demand, no template, and
+> no consumer. So: **delete the ~600 LOC**, all 73 references go with it, and:
+>
+> - **H2 collapses.** It stops being "design a step-kind registry" and becomes "delete dead code".
+> - **C5 disappears** from the critical path. It was a hard blocker; it is now not required.
+> - **C5b disappears.** It was always a new feature wearing an extraction costume.
+> - The `await_kind` migration, the registry-deactivation-semantics question, the cross-kind
+>   guard, the principal-ref namespacing — all of it goes away unbuilt.
+>
+> **If the `dev.job` step is ever genuinely wanted**, it is a new feature, built in the plugin
+> repo, and *then* a generic registry is justified — designed against a real consumer instead of
+> frozen as an interface that has never executed. That is strictly better than building it now.
+>
+> The analysis below is kept because it is the record of what activation would cost, should the
+> question ever be reopened. **It is no longer the recommendation.**
+
+### (Superseded) The activate-or-delete analysis
 
 ### The diagnosis was too optimistic by half
 

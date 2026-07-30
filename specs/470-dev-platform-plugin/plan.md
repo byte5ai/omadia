@@ -124,7 +124,7 @@ files is the easy part.
 | **G6** | **`publicPaths` is a frozen literal.** A plugin cannot contribute an auth exemption, and core cannot revoke one on uninstall. Needs prefix ownership too, not just a grant. | Open — **hard blocker** (H1) |
 | **G7** | **A distributed plugin cannot ship a React UI.** The ZIP allowlist has no `.tsx`, and web-ui is built once at image build time. The missing `.css` is **no longer the blocker** — a core-served Tailwind subset removes the need for plugin CSS entirely (§4.3a, measured). | Open — reduced to the JS-bundle question |
 | **G8** | **`DevJob*` are published `@omadia/plugin-api` types.** Removing them is a SemVer-major break for every Hub plugin importing them; `api/admin-v1.ts` leaks `dev_jobs` onto the public admin DTO too. | Open — new |
-| **G9** | **The conductor hardcodes the `dev_job` step kind and channel type** across `runExecutor.ts`, `awaitStore.ts`, and all of `devJobStepEffect.ts`. | Open — **hard blocker** (H2) |
+| **G9** | **The conductor hardcodes the `dev_job` step kind and channel type** — 73 refs across `runExecutor.ts`, `awaitStore.ts`, `routes.ts` and all of `devJobStepEffect.ts`. | **No longer a blocker.** The capability is dead with no demand, so the fix is DELETE (~600 LOC), not a generic registry. See `dormant-capabilities.md` §1 |
 | **G10** | **The chat renderer hardcodes `tool.name === 'dev_job_start'`** and renders a core-compiled React card for it. | Open — **hard blocker** (H3) |
 
 ### G2 is the inverse of the obvious reading — and it is a trap
