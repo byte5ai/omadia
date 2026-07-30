@@ -1386,17 +1386,35 @@ function mcpObservationDigest(raw: string): string {
  * single sub-agent that never returns used to pin the WHOLE parallel batch for
  * the rest of the turn — there was no per-tool timeout anywhere.
  *
- * 120s is deliberately generous: a domain sub-agent runs its own multi-iteration
+ * 240s is deliberately generous: a domain sub-agent runs its own multi-iteration
  * LLM loop with its own tool calls, so p99 legitimately reaches tens of seconds.
  * Operators whose Odoo/Confluence sub-agents run longer raise it via
  * `OMADIA_TOOL_DISPATCH_TIMEOUT_MS`; `0` disables the deadline entirely.
+ *
+ * ── ORDERING INVARIANT (W3-A) ───────────────────────────────────────────────
+ * This is the OUTER bound. It must stay strictly LOOSER than the innermost MCP
+ * bound — `OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` (default 180 s, see
+ * `DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` in `mcp/mcpClient.ts`), which itself
+ * sits above the 60 s per-request idle budget.
+ *
+ * The default was 120 s, i.e. INSIDE the 180 s MCP ceiling. An MCP-backed
+ * sub-agent legitimately streaming progress notifications for its full
+ * allowance was therefore killed by the OUTER bound first: the tighter schranke
+ * was the outer one, which is backwards, and the model got a generic
+ * dispatch-deadline error instead of the MCP layer's own diagnosis (which the
+ * audit trail records as an `fail`/`timeout` row against the server).
+ *
+ * `test/orchestrator/timeoutHierarchy.test.ts` asserts
+ * `dispatchDeadline > mcpAbsoluteCeiling`, so a future edit to EITHER knob fails
+ * loudly rather than silently re-creating the inversion.
  */
-const DEFAULT_TOOL_DISPATCH_TIMEOUT_MS = 120_000;
+const DEFAULT_TOOL_DISPATCH_TIMEOUT_MS = 240_000;
 const TOOL_DISPATCH_TIMEOUT_ENV = 'OMADIA_TOOL_DISPATCH_TIMEOUT_MS';
 
 /** Resolved per dispatch (not cached at module load) so an operator env change
- *  applies to the next turn without a restart. */
-function resolveToolDispatchTimeoutMs(): number {
+ *  applies to the next turn without a restart. Exported so the timeout-hierarchy
+ *  invariant test reads the REAL resolved value, env overrides included. */
+export function resolveToolDispatchTimeoutMs(): number {
   const raw = process.env[TOOL_DISPATCH_TIMEOUT_ENV];
   if (raw === undefined || raw.trim() === '') {
     return DEFAULT_TOOL_DISPATCH_TIMEOUT_MS;

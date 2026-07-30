@@ -393,8 +393,18 @@ const CLIENT_INFO = { name: 'omadia-agent-builder', version: '0.1.0' } as const;
  *    its budget alive (long Odoo/Confluence reports do exactly this)…
  *  - `maxTotalTimeout`: …but never past this absolute ceiling, so a chatty
  *    server cannot extend a call forever.
- * Both are env-tunable per deployment; the orchestrator's own per-tool dispatch
- * deadline (`OMADIA_TOOL_DISPATCH_TIMEOUT_MS`) is the outer bound.
+ * Both are env-tunable per deployment.
+ *
+ * ── ORDERING INVARIANT (W3-A) ───────────────────────────────────────────────
+ * These are the INNER bounds. The orchestrator's per-tool dispatch deadline
+ * (`OMADIA_TOOL_DISPATCH_TIMEOUT_MS`, see `DEFAULT_TOOL_DISPATCH_TIMEOUT_MS` in
+ * `orchestrator.ts`) is the OUTER bound and must stay strictly LOOSER than
+ * `maxTotalTimeout` here. It used to default to 120 s — i.e. INSIDE this 180 s
+ * ceiling — so an MCP-backed sub-agent legitimately streaming progress for its
+ * full allowance was killed by the outer bound first, and the model saw a
+ * generic dispatch-deadline error instead of the MCP layer's own diagnosis.
+ * `test/orchestrator/timeoutHierarchy.test.ts` fails loudly if a future edit to
+ * either knob re-creates the inversion.
  */
 const DEFAULT_MCP_CALL_TIMEOUT_MS = 60_000;
 const DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = 180_000;
@@ -405,6 +415,25 @@ function envMs(name: string, fallback: number): number {
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
+}
+
+/**
+ * The MCP request policy as it would be applied to the NEXT `callTool` — the
+ * same resolution `callTool` performs, exposed so the timeout-hierarchy
+ * invariant can be asserted against the real numbers (including env overrides)
+ * rather than against a copy of the defaults.
+ */
+export function resolveMcpCallTimeouts(): {
+  readonly timeoutMs: number;
+  readonly maxTotalTimeoutMs: number;
+} {
+  return {
+    timeoutMs: envMs('OMADIA_MCP_CALL_TIMEOUT_MS', DEFAULT_MCP_CALL_TIMEOUT_MS),
+    maxTotalTimeoutMs: envMs(
+      'OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS',
+      DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
+    ),
+  };
 }
 
 export class McpManager {
@@ -708,14 +737,14 @@ export class McpManager {
           LENIENT_CALL_TOOL_RESULT_SCHEMA,
           // Stated request policy instead of the SDK's implicit 60s default —
           // see DEFAULT_MCP_CALL_TIMEOUT_MS.
-          {
-            timeout: envMs('OMADIA_MCP_CALL_TIMEOUT_MS', DEFAULT_MCP_CALL_TIMEOUT_MS),
-            resetTimeoutOnProgress: true,
-            maxTotalTimeout: envMs(
-              'OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS',
-              DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
-            ),
-          },
+          (() => {
+            const policy = resolveMcpCallTimeouts();
+            return {
+              timeout: policy.timeoutMs,
+              resetTimeoutOnProgress: true,
+              maxTotalTimeout: policy.maxTotalTimeoutMs,
+            };
+          })(),
         );
         const rendered = renderToolResult(res);
         // MCP protocol errors resolve (isError result) instead of throwing —

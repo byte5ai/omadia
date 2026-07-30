@@ -23,10 +23,10 @@
  *
  * ## Interaction with the per-tool dispatch deadline
  *
- * A separate unit adds `OMADIA_TOOL_DISPATCH_TIMEOUT_MS` (default 120 s) around
+ * A separate unit adds `OMADIA_TOOL_DISPATCH_TIMEOUT_MS` (default 240 s) around
  * tool dispatch. It does not interact with this path in any harmful way, BY
  * CONSTRUCTION: every handler here is bounded by a store round-trip, so
- * `_start` returns in milliseconds and can never approach a 120 s deadline. The
+ * `_start` returns in milliseconds and can never approach that deadline. The
  * long work runs in a DETACHED runner (see `startRunner`) that is not inside the
  * dispatch call at all, so the deadline has nothing to cancel. That is the point
  * of the seam — a deadline and a long-running tool stop being in conflict once

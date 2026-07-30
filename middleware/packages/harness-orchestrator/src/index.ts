@@ -139,6 +139,9 @@ export {
   mcpToolToLocalSubAgentTool,
   mcpToolToNativeSpec,
   renderToolResult,
+  // W3-A — the inner half of the timeout hierarchy; see the ORDERING INVARIANT
+  // block next to `DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS`.
+  resolveMcpCallTimeouts,
 } from './mcp/mcpClient.js';
 export type {
   DeprecatedMcpTransport,
@@ -223,7 +226,13 @@ export type {
 } from './buildOrchestrator.js';
 
 // Orchestrator class + options
-export { Orchestrator, parseToolEmittedChoice } from './orchestrator.js';
+export {
+  Orchestrator,
+  parseToolEmittedChoice,
+  // W3-A — the outer half of the timeout hierarchy; see the ORDERING INVARIANT
+  // block next to `DEFAULT_TOOL_DISPATCH_TIMEOUT_MS`.
+  resolveToolDispatchTimeoutMs,
+} from './orchestrator.js';
 export type { OrchestratorOptions } from './orchestrator.js';
 
 // #332 Layer 2 — Direct Line directive parsing & target resolution (exported

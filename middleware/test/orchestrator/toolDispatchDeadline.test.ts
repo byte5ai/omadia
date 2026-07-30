@@ -349,7 +349,7 @@ describe('Orchestrator per-tool dispatch deadline (W0-2)', () => {
     );
   });
 
-  it('falls back to the 120s default when the env value is not a number', async () => {
+  it('falls back to the 240s default when the env value is not a number', async () => {
     process.env['OMADIA_TOOL_DISPATCH_TIMEOUT_MS'] = 'not-a-number';
     const probe = slowDomainTool('query_slow_agent', 20);
     const orchestrator = buildOrchestrator(
@@ -363,7 +363,7 @@ describe('Orchestrator per-tool dispatch deadline (W0-2)', () => {
 
     const result = await orchestrator.runTurn({ userMessage: 'go' });
     // A bad env value must not degrade into "no deadline" or "0ms deadline":
-    // the tool completes normally well inside the 120s default.
+    // the tool completes normally well inside the 240s default.
     assert.equal(result.answer, 'answered');
     assert.equal(probe.settledLate(), true);
   });
