@@ -28,9 +28,12 @@
  *     No row ⇒ zero tools. The row names ONE agent, which is what makes key A
  *     unable to reach agent B's tools even though the native tool registry is
  *     process-wide.
- *  3. ALLOWLIST — the tool must be named in that row. Enforced on `tools/call`
- *     AND on `tools/list`, because a tool name the key cannot call is itself a
- *     disclosure (it tells a third party which integrations this install runs).
+ *  3. ALLOWLIST — the tool must be named in that row AND advertised by the
+ *     agent. Enforced on `tools/call` AND on `tools/list` through the SAME
+ *     predicate (`callableToolNames`), because a tool name the key cannot call
+ *     is itself a disclosure (it tells a third party which integrations this
+ *     install runs), and two predicates that disagree hand a caller a working
+ *     oracle for the binding's contents.
  *  4. SCOPE — `mcp:list` to enumerate, `mcp:invoke` to call, and additionally
  *     the exact `mcp:write:<tool>` for anything the row lists as a write.
  *     `WILDCARD_SCOPE` does not satisfy a write scope; `hasScope` enforces that
@@ -195,10 +198,11 @@ export interface PublicMcpServerDeps {
   readonly maxConcurrentCalls?: number;
 }
 
-/** Deliberately identical for "no such tool" and "not allowlisted for this
- *  key". Distinguishing them would confirm a tool's existence to a caller not
- *  entitled to know, which is the same disclosure `tools/list` filtering
- *  exists to prevent. */
+/** Deliberately identical for "no such tool", "not allowlisted for this key",
+ *  and "allowlisted but the agent does not advertise it". Distinguishing them
+ *  would confirm a tool's existence — or a binding's contents — to a caller not
+ *  entitled to know, which is the same disclosure `tools/list` filtering exists
+ *  to prevent. */
 function unavailableToolMessage(name: string): string {
   return `Tool \`${name}\` is not available to this API key.`;
 }
@@ -416,10 +420,10 @@ export class PublicMcpServer {
   /**
    * The tools this key can actually CALL, name-sorted.
    *
-   * Not "the tools it may see" — the two must be the same set. A name the
-   * caller cannot invoke is a free hint about which integrations this install
-   * runs, which is exactly the enumeration the issue's own security notes warn
-   * about.
+   * Not "the tools it may see" — the two ARE the same set, because both come
+   * from `callableToolNames`. A name the caller cannot invoke is a free hint
+   * about which integrations this install runs, which is exactly the enumeration
+   * the issue's own security notes warn about.
    */
   private async listToolsFor(
     principal: ApiKeyPrincipal,
@@ -443,10 +447,11 @@ export class PublicMcpServer {
     const callable = this.callableToolNames(principal, binding, dispatcher);
     if (callable.size === 0) return [];
 
-    // Filter the AGENT's advertised specs by the KEY's callable set. Both
-    // directions matter: a tool in the binding that the agent does not
-    // advertise cannot be described (and must not be invented), and a tool the
-    // agent advertises that the binding omits must not appear.
+    // `callable` is already a SUBSET of what the agent advertises (see
+    // `callableToolNames`), so this filter only projects the specs — it can no
+    // longer narrow the set. Kept as the projection step, not as a second
+    // predicate: describing a tool requires its spec, and the spec is what this
+    // iteration is here to fetch.
     return dispatcher
       .listDispatchableToolSpecs()
       .filter((spec) => callable.has(spec.name))
@@ -464,6 +469,20 @@ export class PublicMcpServer {
    * ONE function, used by both `tools/list` and `tools/call`, so the list can
    * never advertise something the call path would refuse (or vice versa —
    * which would be the security-relevant direction).
+   *
+   * ─── W4: the ADVERTISED filter belongs here, not only in `listToolsFor` ─────
+   *
+   * `tools/list` used to intersect this set with `listDispatchableToolSpecs()`
+   * while `tools/call` authorized on this set alone and then dispatched by raw
+   * name. A tool named in a binding but NOT advertised by the agent was
+   * therefore hidden from list yet accepted by call — where it failed deep in
+   * the dispatcher as ``Error: unknown tool `x` `` instead of the uniform
+   * refusal. List being stricter is the safe direction, but the two error
+   * shapes are a working oracle: a caller can distinguish "in your binding but
+   * unavailable" from "not in your binding" and map the binding's contents one
+   * probe at a time. Moving the filter here collapses both to
+   * `unavailableToolMessage`, and makes the invariant documented above actually
+   * true.
    */
   private callableToolNames(
     principal: ApiKeyPrincipal,
@@ -471,8 +490,15 @@ export class PublicMcpServer {
     dispatcher: PublicMcpDispatcher,
   ): ReadonlySet<string> {
     if (!hasScope(principal.scopes, MCP_INVOKE_SCOPE)) return new Set();
+    const advertised = new Set(
+      dispatcher.listDispatchableToolSpecs().map((spec) => spec.name),
+    );
     const callable = new Set<string>();
     for (const tool of [...binding.readTools, ...binding.writeTools]) {
+      // The agent must actually offer it. Covers a stale binding, a plugin
+      // whose readiness gate is closed (`listDispatchableToolSpecs` filters
+      // those), and a handler-only registration that carries no spec.
+      if (!advertised.has(tool)) continue;
       // Never servable regardless of the operator's allowlist: a tool the
       // Privacy Shield deliberately exempts from masking would reach a third
       // party in clear. See `publicMcpPrivacy.ts` header, point 3.

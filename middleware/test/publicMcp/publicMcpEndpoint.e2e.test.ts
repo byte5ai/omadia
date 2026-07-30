@@ -399,6 +399,111 @@ describe('public MCP endpoint', () => {
     assert.match(rpcErrorMessage(payload) ?? '', /not available to this API key/);
   });
 
+  // ── W4: list and call use ONE predicate ───────────────────────────────────
+
+  /**
+   * The two paths used to disagree. `tools/list` returned
+   * `listDispatchableToolSpecs() ∩ callableToolNames`, while `tools/call`
+   * authorized on `callableToolNames` alone and then dispatched by raw name. A
+   * tool named in a binding but NOT advertised by the agent was therefore hidden
+   * from list yet ACCEPTED by call — failing deep in the dispatcher as
+   * "unknown tool" instead of the uniform refusal.
+   *
+   * List being stricter is the safe direction, so this is not itself a
+   * privilege escalation. What it IS is an oracle: the two error shapes let a
+   * caller separate "named in your binding but unavailable" from "not in your
+   * binding" and map the binding's contents one probe at a time — the exact
+   * enumeration the identical-message rule exists to prevent.
+   */
+  const PHANTOM_TOOL = 'query_phantom';
+
+  function phantomBinding(): Partial<HarnessOptions> {
+    return {
+      bindingRows: [
+        {
+          key_id: KEY_ID,
+          agent_id: 'sales',
+          // Named by the operator; the agent does not advertise it.
+          read_tools: [READ_TOOL, PHANTOM_TOOL],
+          write_tools: [WRITE_TOOL],
+          write_rate_limit_per_minute: 5,
+          enabled: true,
+        },
+      ],
+      dispatchers: {
+        sales: fakeDispatcher([{ name: READ_TOOL }, { name: WRITE_TOOL }]),
+      },
+    };
+  }
+
+  it('refuses a binding entry the agent does not advertise, with the UNIFORM message', async (t) => {
+    const h = await start(baseOptions(phantomBinding()), t);
+    if (!h) return;
+    const { payload } = await h.rpc(callToolRequest(PHANTOM_TOOL), { token: KEY_TOKEN });
+    const message = rpcErrorMessage(payload) ?? '';
+    assert.match(message, /not available to this API key/);
+    assert.doesNotMatch(message, /unknown tool/, 'the dispatcher-level error is a binding oracle');
+  });
+
+  it('gives a BYTE-IDENTICAL answer for an unadvertised binding entry and a name not in the binding', async (t) => {
+    // The oracle, closed. Normalizing the tool name out is the only difference
+    // permitted between the two replies.
+    const h = await start(baseOptions(phantomBinding()), t);
+    if (!h) return;
+    const inBinding = await h.rpc(callToolRequest(PHANTOM_TOOL, {}, 1), { token: KEY_TOKEN });
+    const notInBinding = await h.rpc(callToolRequest('never_heard_of_it', {}, 1), {
+      token: KEY_TOKEN,
+    });
+    assert.equal(
+      JSON.stringify(inBinding.payload).replaceAll(PHANTOM_TOOL, 'T'),
+      JSON.stringify(notInBinding.payload).replaceAll('never_heard_of_it', 'T'),
+    );
+  });
+
+  it('never DISPATCHES an unadvertised binding entry', async (t) => {
+    // Authorization must refuse it, not the dispatcher. Otherwise a
+    // not-yet-ready plugin's tool reaches dispatch on every probe.
+    const seen: { name: string; input: unknown }[] = [];
+    const h = await start(
+      baseOptions({
+        ...phantomBinding(),
+        dispatchers: {
+          sales: fakeDispatcher([{ name: READ_TOOL }, { name: WRITE_TOOL }], seen),
+        },
+      }),
+      t,
+    );
+    if (!h) return;
+    await h.rpc(callToolRequest(PHANTOM_TOOL), { token: KEY_TOKEN });
+    assert.deepEqual(seen, []);
+  });
+
+  it('list and call agree exactly: every listed tool is callable and nothing else is', async (t) => {
+    // The invariant the module header claims, asserted as an invariant rather
+    // than as two separate examples.
+    const h = await start(baseOptions(phantomBinding()), t);
+    if (!h) return;
+    const listed = toolNames((await h.rpc(listToolsRequest(), { token: KEY_TOKEN })).payload) ?? [];
+    assert.deepEqual(listed, SORTED_TOOLS, 'the phantom must not be listed');
+
+    for (const name of listed) {
+      const { payload } = await h.rpc(callToolRequest(name, {}, 2), { token: KEY_TOKEN });
+      assert.equal(
+        rpcErrorMessage(payload),
+        undefined,
+        `listed tool ${name} was refused by the call path`,
+      );
+    }
+    for (const name of [PHANTOM_TOOL, 'never_heard_of_it']) {
+      const { payload } = await h.rpc(callToolRequest(name, {}, 3), { token: KEY_TOKEN });
+      assert.match(
+        rpcErrorMessage(payload) ?? '',
+        /not available to this API key/,
+        `unlisted tool ${name} was accepted by the call path`,
+      );
+    }
+  });
+
   it('refuses every call for a DISABLED binding', async (t) => {
     const h = await start(
       baseOptions({

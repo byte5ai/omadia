@@ -46,6 +46,7 @@ TESTS=('test/publicMcp/publicMcpScopes.test.ts'
        'test/publicMcp/publicMcpBodyCap.test.ts'
        'test/publicMcp/publicMcpEndpoint.e2e.test.ts'
        'test/publicMcp/publicMcpPrivacy.e2e.test.ts'
+       'test/publicMcp/publicMcpMaskingAssertion.test.ts'
        'test/publicPaths.test.ts')
 
 pass=0; fail=0
@@ -227,6 +228,25 @@ run_mutation "write capability ignores the operator's write_tools list" "$SERVER
 echo "── caller context propagation ───────────────────────────────────────────"
 run_mutation "the API-key principal is not propagated to dispatch" "$SERVER" \
   'principal: principal.keyId,|||principal: undefined,'
+
+echo "── W4: the masking boundary must be CROSSED, not merely un-failed ───────"
+# `maskingFailed()` is false BOTH when masking succeeded and when it never ran.
+# The second is how the unmasked-error-text leak reached the wire, so the
+# endpoint gates on the positive `masked()` signal. These three mutations cover
+# the assertion itself and both halves of its `origin` exception.
+run_mutation "the endpoint stops requiring that masking actually RAN" "$SERVER" \
+  "if (gate !== undefined && result.origin !== 'dispatcher' && !gate.masked()) {|||if (false) {"
+run_mutation "an origin-less result is exempted from the masking assertion" "$SERVER" \
+  "gate !== undefined && result.origin !== 'dispatcher' && !gate.masked()|||gate !== undefined && result.origin === 'tool' && !gate.masked()"
+run_mutation "the gate stops recording that masking ran" "$PRIVACY" \
+  'didMask = true;|||'
+
+echo "── W4: list and call use ONE predicate ──────────────────────────────────"
+# A tool named in a binding but not advertised by the agent used to be hidden
+# from `tools/list` yet ACCEPTED by `tools/call`, where it failed as
+# "unknown tool" — a working oracle for the binding's contents.
+run_mutation "tools/call accepts a binding entry the agent does not advertise" "$SERVER" \
+  'if (!advertised.has(tool)) continue;|||'
 
 echo
 echo "════════════════════════════════════════════════════════════════════════"
