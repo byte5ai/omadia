@@ -97,7 +97,7 @@ describe('NeonProcessMemoryStore', () => {
       const store = new NeonProcessMemoryStore({
         pool,
         tenantId: 'tenant-test',
-        embeddingClient: embed,
+        resolveEmbeddingClient: () => embed,
       });
       const result = await store.write({
         title: 'lowercase no colon',
@@ -147,7 +147,7 @@ describe('NeonProcessMemoryStore', () => {
       const store = new NeonProcessMemoryStore({
         pool,
         tenantId: 'tenant-test',
-        embeddingClient: embed,
+        resolveEmbeddingClient: () => embed,
       });
       const result = await store.write({
         title: 'Backend: Push to staging',
@@ -189,7 +189,7 @@ describe('NeonProcessMemoryStore', () => {
       const store = new NeonProcessMemoryStore({
         pool,
         tenantId: 'tenant-test',
-        embeddingClient: embed,
+        resolveEmbeddingClient: () => embed,
       });
       const result = await store.write({
         title: 'Backend: Deploy to staging',
@@ -226,7 +226,7 @@ describe('NeonProcessMemoryStore', () => {
       const store = new NeonProcessMemoryStore({
         pool,
         tenantId: 'tenant-test',
-        embeddingClient: makeFakeEmbeddingClient(),
+        resolveEmbeddingClient: () => makeFakeEmbeddingClient(),
       });
       const result = await store.edit({
         id: 'process:s:does-not-exist',
@@ -274,7 +274,7 @@ describe('NeonProcessMemoryStore', () => {
       const store = new NeonProcessMemoryStore({
         pool,
         tenantId: 'tenant-test',
-        embeddingClient: makeFakeEmbeddingClient(),
+        resolveEmbeddingClient: () => makeFakeEmbeddingClient(),
       });
       const result = await store.edit({
         id: 'process:s:backend-deploy-to-staging',
@@ -329,7 +329,7 @@ describe('NeonProcessMemoryStore', () => {
       const store = new NeonProcessMemoryStore({
         pool,
         tenantId: 'tenant-test',
-        embeddingClient: makeFakeEmbeddingClient(),
+        resolveEmbeddingClient: () => makeFakeEmbeddingClient(),
       });
       const hits = await store.query({ query: 'deploy', scope: 's', limit: 5 });
       assert.equal(hits.length, 1);
@@ -376,7 +376,7 @@ describe('NeonProcessMemoryStore', () => {
       const store = new NeonProcessMemoryStore({
         pool,
         tenantId: 'tenant-test',
-        embeddingClient: makeFakeEmbeddingClient(),
+        resolveEmbeddingClient: () => makeFakeEmbeddingClient(),
       });
       const history = await store.history('process:s:x');
       assert.equal(history.length, 2);

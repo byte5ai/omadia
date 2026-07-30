@@ -57,6 +57,8 @@ const GROUPS: readonly GroupDef[] = [
       { href: '/admin/bulk-promote', key: 'bulkPromote' },
       { href: '/admin/inconsistencies', key: 'inconsistencies' },
       { href: '/admin/memory-backend', key: 'memoryBackend' },
+      // #440 follow-up — live embeddingClient@1 provider switch.
+      { href: '/admin/embedding-provider', key: 'embeddingProvider' },
     ],
   },
   {

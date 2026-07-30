@@ -1,9 +1,12 @@
-import type { PluginContext } from '@omadia/plugin-api';
+import {
+  withConcurrencyLimit,
+  type EmbeddingClient,
+  type PluginContext,
+} from '@omadia/plugin-api';
 
 import {
   createEmbeddingClient,
-  withConcurrencyLimit,
-  type EmbeddingClient,
+  resolveOllamaDimensions,
 } from './embeddingClient.js';
 
 /**
@@ -23,6 +26,12 @@ import {
  *   - `ollama_model`        default 'nomic-embed-text'
  *   - `ollama_timeout_ms`   default 30000
  *   - `max_concurrent`      default 4 (0 disables the limiter)
+ *   - `embedding_dimensions` NO default — derived from the known-model table
+ *     (nomic-embed-text 768, mxbai-embed-large 1024, bge-m3 1024, all-minilm
+ *     384) and published as provider metadata for the KG dimension gate
+ *     (#440). Required only for a model we have not verified; an unverified
+ *     model without it publishes a client WITHOUT metadata, which is the
+ *     pre-#440 behaviour rather than a silent switch to FTS-only.
  *
  * Empty `ollama_base_url` → plugin activates without publishing a
  * client. The capability-resolver still sees `provides: embeddingClient@1`
@@ -53,6 +62,10 @@ export async function activate(
     ctx.config.get<unknown>('max_concurrent'),
     4,
   );
+  const resolution = resolveOllamaDimensions(
+    model,
+    parseOptionalPositiveInt(ctx.config.get<unknown>('embedding_dimensions')),
+  );
 
   if (!baseUrl) {
     ctx.log(
@@ -65,16 +78,41 @@ export async function activate(
     };
   }
 
+  if (resolution.kind === 'conflict') {
+    // The operator's number contradicts the model we know. Publishing either
+    // one would be publishing a vector length nobody confirmed.
+    ctx.log(
+      `[harness-embeddings] '${model}' emits ${String(resolution.known)}-dimensional vectors but embedding_dimensions is set to ${String(resolution.configured)} — refusing to publish a contradictory vector size; fix one of the two. Capability not published`,
+    );
+    return {
+      async close(): Promise<void> {
+        ctx.log('[harness-embeddings] deactivating (no client was built)');
+      },
+    };
+  }
+  if (resolution.kind === 'unknown') {
+    // Pre-#440 behaviour, deliberately: the client is published WITHOUT
+    // metadata, the KG gate reports 'unknown-provider' and leaves writes
+    // exactly as they were. Refusing outright would silently switch existing
+    // deployments running a custom Ollama model to FTS-only on upgrade.
+    ctx.log(
+      `[harness-embeddings] vector size of model '${model}' is not known here — set embedding_dimensions so the knowledge-graph dimension gate (#440) can protect the corpus; publishing without provider metadata for now`,
+    );
+  }
+
+  const dimensions =
+    resolution.kind === 'resolved' ? resolution.dimensions : undefined;
   const raw: EmbeddingClient = createEmbeddingClient({
     baseUrl,
     model,
     timeoutMs,
+    ...(dimensions === undefined ? {} : { dimensions }),
   });
   const client: EmbeddingClient = withConcurrencyLimit(raw, maxConcurrent);
 
   const dispose = ctx.services.provide(EMBEDDING_CLIENT_SERVICE, client);
   ctx.log(
-    `[harness-embeddings] ready (baseUrl=${baseUrl}, model=${model}, timeoutMs=${String(timeoutMs)}, maxConcurrent=${String(maxConcurrent)})`,
+    `[harness-embeddings] ready (baseUrl=${baseUrl}, model=${model}, dimensions=${dimensions === undefined ? 'unknown' : String(dimensions)}, timeoutMs=${String(timeoutMs)}, maxConcurrent=${String(maxConcurrent)})`,
   );
 
   return {
@@ -83,6 +121,18 @@ export async function activate(
       dispose();
     },
   };
+}
+
+/** `undefined` when absent or not a positive integer — never a guess. */
+function parseOptionalPositiveInt(raw: unknown): number | undefined {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    return Math.floor(raw);
+  }
+  if (typeof raw === 'string' && raw.trim().length > 0) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return undefined;
 }
 
 function parsePositiveInt(raw: unknown, fallback: number): number {

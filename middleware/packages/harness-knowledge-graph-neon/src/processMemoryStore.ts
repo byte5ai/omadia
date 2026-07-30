@@ -1,9 +1,9 @@
 import type { Pool } from 'pg';
 
-import type { EmbeddingClient } from '@omadia/embeddings';
 import type {
   EditProcessInput,
   EditProcessResult,
+  EmbeddingClient,
   ProcessMemoryService,
   ProcessQueryHit,
   ProcessRecord,
@@ -16,6 +16,8 @@ import {
   PROCESS_TITLE_REGEX,
   buildProcessId,
 } from '@omadia/plugin-api';
+
+import { captureGateEpoch, type GateEpochReader } from './gateEpoch.js';
 
 /**
  * @omadia/knowledge-graph-neon — NeonProcessMemoryStore (Palaia
@@ -56,9 +58,36 @@ interface ProcessHistoryRow {
 export interface NeonProcessMemoryStoreOptions {
   pool: Pool;
   tenantId: string;
-  /** Required for `write` (Dedup-First-Write guarantee). Optional makes the
-   *  store read-only-ish: write+edit reject with `embedding-unavailable`. */
-  embeddingClient?: EmbeddingClient;
+  /**
+   * Live lookup for the embedding client, resolved AT THE MOMENT OF USE.
+   *
+   * Required for `write` (Dedup-First-Write guarantee). A resolver that
+   * returns `undefined` — or no resolver at all — makes the store
+   * read-only-ish: `write` and `edit` reject with `embedding-unavailable` and
+   * `query` degrades to BM25-only, byte-for-byte the pre-#440 behaviour of an
+   * absent client.
+   *
+   * #440: previously a fixed client captured in the constructor. The
+   * model/dimension gate passes `undefined` while it refuses vector writes,
+   * and a captured field meant a boot that was gated could never embed again
+   * without an operator restart — including after the stale-vector clear that
+   * caused the refusal had drained. The resolver removes that.
+   */
+  resolveEmbeddingClient?: () => EmbeddingClient | undefined;
+  /**
+   * #440 follow-up — reads the gate's current epoch, for the write fence.
+   *
+   * `processes.embedding` is the second cosine space the model gate governs.
+   * The resolve-once contract above stays (re-resolving mid-transaction turns
+   * a clean `embedding-unavailable` rejection into a TypeError), which leaves
+   * the window between `await embed()` and the write: a same-width provider
+   * switch drains `clear_pending` and re-opens writes inside it, and the
+   * previous-provider vector that lands afterwards is unrecoverable — non-NULL
+   * under a registry naming the new model, so neither a clear nor the
+   * `WHERE embedding IS NULL` sweep ever revisits it. Both writers check this
+   * after their embed. Omitted → never fenced (pre-#440 behaviour).
+   */
+  gateEpoch?: GateEpochReader;
   /** Default 0.9 — tunable via setup-field `process_dedup_threshold`. */
   dedupThreshold?: number;
 }
@@ -92,22 +121,57 @@ function vectorLiteral(v: readonly number[]): string {
 
 /** Body text for embedding + FTS — title + flattened steps joined by \n.
  *  Stable output shape so tests are deterministic. */
-function buildEmbeddingBody(title: string, steps: readonly string[]): string {
+/** Exported so the embedding backfill re-embeds processes with exactly the
+ *  same body the write path used — a different composition would silently
+ *  place re-embedded rows slightly off in the same cosine space. */
+export function buildEmbeddingBody(title: string, steps: readonly string[]): string {
   return [title, ...steps].join('\n');
 }
 
 export class NeonProcessMemoryStore implements ProcessMemoryService {
   private readonly pool: Pool;
   private readonly tenantId: string;
-  private readonly embeddingClient: EmbeddingClient | undefined;
+  /** See `NeonProcessMemoryStoreOptions.resolveEmbeddingClient`. Stored as
+   *  the resolver, never as its result. */
+  private readonly resolveEmbeddingClient:
+    | (() => EmbeddingClient | undefined)
+    | undefined;
+
+  /** See `NeonProcessMemoryStoreOptions.gateEpoch`. */
+  private readonly gateEpoch: GateEpochReader | undefined;
+
   private readonly dedupThreshold: number;
 
   constructor(opts: NeonProcessMemoryStoreOptions) {
     this.pool = opts.pool;
     this.tenantId = opts.tenantId;
-    this.embeddingClient = opts.embeddingClient;
+    this.resolveEmbeddingClient = opts.resolveEmbeddingClient;
+    this.gateEpoch = opts.gateEpoch;
     const threshold = opts.dedupThreshold ?? PROCESS_DEDUP_DEFAULT_THRESHOLD;
     this.dedupThreshold = Math.max(0, Math.min(1, threshold));
+  }
+
+  /**
+   * The embedding client to use right now, or `undefined` when there is none.
+   *
+   * Every caller resolves ONCE and keeps the reference for the whole
+   * operation. `edit` in particular checks availability long before it embeds
+   * (it has a transaction and a history snapshot in between); re-resolving at
+   * the embed site would let a gate flip in that window turn a clean
+   * `embedding-unavailable` rejection into a TypeError mid-transaction.
+   *
+   * A resolver that throws reads as "unavailable" — that is the safe
+   * direction here, since every caller already has a defined behaviour for it.
+   */
+  private currentEmbeddingClient(): EmbeddingClient | undefined {
+    try {
+      return this.resolveEmbeddingClient?.();
+    } catch (err) {
+      console.error(
+        `[processMemory] embedding-client resolver threw (treating as unavailable): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
   }
 
   async write(input: WriteProcessInput): Promise<WriteProcessResult> {
@@ -119,7 +183,8 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
           'Process-Title muss dem Schema "[Domain]: [What it does]" folgen (z.B. "Backend: Deploy to staging").',
       };
     }
-    if (!this.embeddingClient) {
+    const embeddingClient = this.currentEmbeddingClient();
+    if (!embeddingClient) {
       return {
         ok: false,
         reason: 'embedding-unavailable',
@@ -130,12 +195,29 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
 
     const steps = input.steps.map((s) => String(s));
     const body = buildEmbeddingBody(input.title, steps);
-    const embedding = await this.embeddingClient.embed(body);
+    // Captured before the embed, checked after it. See
+    // `NeonProcessMemoryStoreOptions.gateEpoch`.
+    const fence = captureGateEpoch(this.gateEpoch);
+    const embedding = await embeddingClient.embed(body);
     if (!Array.isArray(embedding) || embedding.length === 0) {
       return {
         ok: false,
         reason: 'embedding-unavailable',
         message: 'Embedding-Service lieferte leeren Vektor zurück.',
+      };
+    }
+    // Checked BEFORE the dedup probe, not just before the INSERT: the probe
+    // compares this vector against the stored corpus, and a vector from the
+    // previous provider would be answering that question in the wrong cosine
+    // space. `embedding-unavailable` is the existing, defined rejection for
+    // "no usable vector, so Dedup-First-Write cannot be guaranteed" — nothing
+    // is written and the caller can simply retry against the new provider.
+    if (fence.moved()) {
+      return {
+        ok: false,
+        reason: 'embedding-unavailable',
+        message:
+          'Der Embedding-Provider wurde während des Schreibvorgangs gewechselt — bitte erneut versuchen.',
       };
     }
     const queryLit = vectorLiteral(embedding);
@@ -167,6 +249,24 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
         conflictingId: conflict.id,
         conflictingTitle: conflict.title,
         similarity: Number(conflict.similarity),
+      };
+    }
+
+    // Checked AGAIN, immediately before the write. The dedup probe above is a
+    // full `await` boundary: a switch that completes while that query is in
+    // flight passes the check above and would still land a previous-provider
+    // vector here. `processes.embedding` is governed by `staleVectorClear`, so
+    // such a row is unrecoverable by construction — `clear_pending` is already
+    // FALSE, `embedding IS NOT NULL` keeps the sweep's `WHERE embedding IS
+    // NULL` away from it, and /health stays green. Every other fenced writer
+    // has zero awaits between its check and its write; this one cannot, so it
+    // re-reads. See `gateEpoch.ts`.
+    if (fence.moved()) {
+      return {
+        ok: false,
+        reason: 'embedding-unavailable',
+        message:
+          'Der Embedding-Provider wurde während des Schreibvorgangs gewechselt — bitte erneut versuchen.',
       };
     }
 
@@ -214,7 +314,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
 
     const stepsProvided = Array.isArray(input.steps);
     const needsEmbeddingRebuild = titleProvided || stepsProvided;
-    if (needsEmbeddingRebuild && !this.embeddingClient) {
+    // Resolved here and carried all the way to the embed call below, across
+    // the BEGIN + history snapshot. See `currentEmbeddingClient`.
+    const embeddingClient = this.currentEmbeddingClient();
+    if (needsEmbeddingRebuild && !embeddingClient) {
       return {
         ok: false,
         reason: 'embedding-unavailable',
@@ -222,6 +325,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
           'Embedding-Service nicht verfügbar — title/steps-Änderungen brauchen ein neues Embedding.',
       };
     }
+    // Captured alongside the client, for the same reason: both describe the
+    // verdict this operation is running under, and both have to survive the
+    // BEGIN + history snapshot that sits between here and the embed.
+    const fence = captureGateEpoch(this.gateEpoch);
 
     const client = await this.pool.connect();
     try {
@@ -270,7 +377,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
 
       let embeddingParam: string | null = null;
       if (needsEmbeddingRebuild) {
-        const embedding = await this.embeddingClient!.embed(
+        // Non-null by the `needsEmbeddingRebuild && !embeddingClient` guard
+        // above, and the reference is the SAME one that guard checked — no
+        // live re-resolve can invalidate it mid-transaction.
+        const embedding = await embeddingClient!.embed(
           buildEmbeddingBody(newTitle, newSteps),
         );
         if (!Array.isArray(embedding) || embedding.length === 0) {
@@ -279,6 +389,21 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
             ok: false,
             reason: 'embedding-unavailable',
             message: 'Embedding-Service lieferte leeren Vektor zurück.',
+          };
+        }
+        if (fence.moved()) {
+          // The gate re-evaluated while we were embedding. ROLLBACK discards
+          // the history snapshot along with the version bump, so this is a
+          // clean no-op — the row is untouched and the caller gets the same
+          // `embedding-unavailable` rejection it already handles. Committing
+          // would store a previous-provider vector that no clear and no
+          // NULL-only sweep can ever find again.
+          await client.query('ROLLBACK');
+          return {
+            ok: false,
+            reason: 'embedding-unavailable',
+            message:
+              'Der Embedding-Provider wurde während der Änderung gewechselt — bitte erneut versuchen.',
           };
         }
         embeddingParam = vectorLiteral(embedding);
@@ -352,9 +477,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
     // pure BM25 path (degraded but viable). On the write path embedding is
     // mandatory; query is allowed to be softer.
     let queryEmbedding: number[] | null = null;
-    if (this.embeddingClient) {
+    const embeddingClient = this.currentEmbeddingClient();
+    if (embeddingClient) {
       try {
-        const v = await this.embeddingClient.embed(trimmedQuery);
+        const v = await embeddingClient.embed(trimmedQuery);
         queryEmbedding = Array.isArray(v) && v.length > 0 ? v : null;
       } catch {
         // sidecar transient — degrade silently to BM25-only.
