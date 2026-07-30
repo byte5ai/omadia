@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, before, describe, it } from 'node:test';
 
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
@@ -23,9 +23,12 @@ import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
  *
  * Isolation: every row this suite writes carries the `w04-mcp-` tenant
  * prefix so it cannot collide with the other pg suites sharing the database.
- * The destructive re-apply check runs in its own scratch database for the
- * same reason — re-running 0001/0003 drops and recreates NOTIFY triggers,
- * which must never happen underneath a concurrently running suite.
+ * The destructive re-apply check needs more than a prefix — re-running
+ * 0001/0003 drops and recreates the NOTIFY triggers, taking ACCESS EXCLUSIVE
+ * on shared tables — so it runs against its own schema with `public` off the
+ * search_path. A scratch *database* would also isolate it, but CREATE/DROP
+ * DATABASE is a cluster-wide operation: it stalled the concurrently running
+ * dev-platform pg suites long enough to cancel 29 of their tests.
  * Skips when no test Postgres is reachable, mirroring the other pg tests.
  */
 const PG_URL =
@@ -36,19 +39,23 @@ const PG_URL =
 
 /** Tenant prefix — unique to this suite, see the isolation note above. */
 const TENANT = 'w04-mcp-';
-const SCRATCH_DB = 'w04_mcp_schema_scratch';
+/** Schema the re-apply check builds its own copy of the domain in. */
+const REAPPLY_SCHEMA = 'w04_mcp_reapply';
 
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 
 /**
- * Pools here are deliberately capped. The suite is fully sequential, but the
- * test runner executes files concurrently and ~16 other pg suites each hold a
- * default-sized (max 10) pool — an uncapped third pool in this file is enough
- * to exhaust `max_connections` and cancel an unrelated suite mid-flight.
+ * One capped pool for the whole file. The test runner executes files
+ * concurrently and ~16 other pg suites each hold a default-sized (max 10)
+ * pool, so an uncapped extra pool here is enough to exhaust
+ * `max_connections` and cancel an unrelated suite mid-flight.
  */
-const POOL = { connectionTimeoutMillis: 2000, max: 2, idleTimeoutMillis: 1000 } as const;
-
-const probePool = new Pool({ connectionString: PG_URL, ...POOL });
+const probePool = new Pool({
+  connectionString: PG_URL,
+  connectionTimeoutMillis: 2000,
+  max: 2,
+  idleTimeoutMillis: 1000,
+});
 let pgAvailable = true;
 try {
   await probePool.query('SELECT 1');
@@ -90,10 +97,9 @@ describe('MCP registry + OAuth schema (pg)', { skip: !pgAvailable }, () => {
     await cleanup();
   });
 
-  after(async () => {
-    await cleanup();
-    await pool.end();
-  });
+  // The pool is shared with the re-apply suite below, so it is closed by the
+  // file-level `after` hook rather than here.
+  after(cleanup);
 
   it('seeds the official and smithery registries with their catalog kinds (0010 + 0013)', async () => {
     const { rows } = await pool.query<{ name: string; kind: string; auth_kind: string }>(
@@ -262,99 +268,77 @@ describe('MCP registry + OAuth schema (pg)', { skip: !pgAvailable }, () => {
 });
 
 describe('middleware/migrations idempotency under data (pg)', { skip: !pgAvailable }, () => {
-  // Runs in a throwaway database so the destructive re-apply (0001/0003 drop
-  // and recreate the NOTIFY triggers) cannot disturb a concurrently running
-  // pg suite on the shared test database.
-  const adminUrl = new URL(PG_URL);
-  adminUrl.pathname = '/postgres';
-  const scratchUrl = new URL(PG_URL);
-  scratchUrl.pathname = `/${SCRATCH_DB}`;
-
-  let scratchPool: Pool | undefined;
-  let scratchReady = false;
-
   /**
-   * Admin connections are opened per operation and closed immediately —
-   * holding one open for the suite's lifetime is exactly the connection
-   * pressure the POOL cap above exists to avoid.
+   * Runs against a dedicated schema on a single pinned connection, with
+   * `public` deliberately absent from the search_path: the migrations name
+   * every object unqualified, so they build a private copy of the domain here
+   * and never touch — or lock — the shared tables the other pg suites use.
    */
-  async function withAdmin<T>(fn: (pool: Pool) => Promise<T>): Promise<T> {
-    const admin = new Pool({ connectionString: adminUrl.toString(), ...POOL, max: 1 });
-    try {
-      return await fn(admin);
-    } finally {
-      await admin.end().catch(() => undefined);
-    }
-  }
+  let client: PoolClient | undefined;
 
   before(async () => {
-    try {
-      await withAdmin(async (admin) => {
-        // DROP/CREATE DATABASE cannot run inside a transaction block, so these
-        // must stay separate statements.
-        await admin.query(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`);
-        await admin.query(`CREATE DATABASE ${SCRATCH_DB}`);
-      });
-      scratchReady = true;
-    } catch {
-      // No CREATEDB privilege (or no `postgres` database) — skip rather than
-      // fail, matching how the pg suites degrade when Postgres is absent.
-      scratchReady = false;
-      return;
-    }
-    scratchPool = new Pool({ connectionString: scratchUrl.toString(), ...POOL, max: 1 });
+    client = await probePool.connect();
+    await client.query(`DROP SCHEMA IF EXISTS ${REAPPLY_SCHEMA} CASCADE`);
+    await client.query(`CREATE SCHEMA ${REAPPLY_SCHEMA}`);
+    await client.query(`SET search_path = ${REAPPLY_SCHEMA}`);
   });
 
   after(async () => {
-    await scratchPool?.end().catch(() => undefined);
-    if (scratchReady) {
-      await withAdmin((admin) =>
-        admin.query(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`),
-      ).catch(() => undefined);
-    }
+    if (!client) return;
+    await client.query('RESET search_path').catch(() => undefined);
+    await client.query(`DROP SCHEMA IF EXISTS ${REAPPLY_SCHEMA} CASCADE`).catch(() => undefined);
+    client.release();
   });
 
-  it('re-applies every migration cleanly with rows present', async (t) => {
-    if (!scratchReady || !scratchPool) {
-      t.skip('no CREATEDB privilege on the test Postgres');
-      return;
-    }
-    const pool = scratchPool;
+  it('re-applies every migration cleanly with rows present', async () => {
+    const pool = client!;
     const files = await migrationFiles();
     assert.ok(files.length > 0, 'expected migrations to be discovered');
 
-    // Pass 1 — virgin database. `middleware/migrations` needs no extensions
+    // Pass 1 — virgin schema. `middleware/migrations` needs no extensions
     // (gen_random_uuid is core since pg13) and has no cross-domain FKs, which
     // is why this domain can be applied standalone.
     for (const file of files) {
       await pool.query(await readFile(join(migrationsDir, file), 'utf8'));
     }
 
+    // Guard the isolation itself: if search_path had leaked to `public` the
+    // migrations would have been no-ops against the shared tables and every
+    // assertion below would pass vacuously.
+    const built = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM information_schema.tables WHERE table_schema = $1`,
+      [REAPPLY_SCHEMA],
+    );
+    assert.ok(
+      Number(built.rows[0]!.count) > 25,
+      `expected the domain to be built inside ${REAPPLY_SCHEMA}, saw ${built.rows[0]!.count} tables`,
+    );
+
     // Seed the MCP + dev-platform surfaces so the re-apply runs against real
     // rows — the case the CI gate cannot reach, since it re-applies empty.
     const server = await pool.query<{ id: string }>(
       `INSERT INTO mcp_servers (name, transport, endpoint)
        VALUES ($1, 'http', 'https://srv.invalid/mcp') RETURNING id`,
-      [`${TENANT}scratch-server`],
+      [`${TENANT}reapply-server`],
     );
     const agent = await pool.query<{ id: string }>(
       `INSERT INTO agents (slug, name) VALUES ($1, 'W0-4 Scratch') RETURNING id`,
-      [`${TENANT}scratch-agent`],
+      [`${TENANT}reapply-agent`],
     );
     await pool.query(
       `INSERT INTO mcp_registries (name, url, auth_kind, kind)
        VALUES ($1, 'https://reg.invalid', 'none', 'generic')`,
-      [`${TENANT}scratch-registry`],
+      [`${TENANT}reapply-registry`],
     );
     await pool.query(
       `INSERT INTO agent_tool_grants (agent_id, tool_kind, tool_ref, mcp_server_id)
        VALUES ($1, 'mcp', $2, $3)`,
-      [agent.rows[0]!.id, `${TENANT}scratch-server:ping`, server.rows[0]!.id],
+      [agent.rows[0]!.id, `${TENANT}reapply-server:ping`, server.rows[0]!.id],
     );
     await pool.query(
       `INSERT INTO mcp_oauth_clients (issuer, client_id, registered_via)
        VALUES ($1, 'cid', 'manual')`,
-      [`${TENANT}https://scratch-issuer.invalid`],
+      [`${TENANT}https://reapply-issuer.invalid`],
     );
     await pool.query(
       `INSERT INTO mcp_oauth_tokens (server_id, user_key, access_token_ref)
@@ -384,4 +368,9 @@ describe('middleware/migrations idempotency under data (pg)', { skip: !pgAvailab
     ]);
     assert.equal(tokens.rowCount, 1, 're-applying must not disturb stored OAuth token refs');
   });
+});
+
+// Both suites share the single capped pool, so it is closed once, here.
+after(async () => {
+  if (pgAvailable) await probePool.end().catch(() => undefined);
 });

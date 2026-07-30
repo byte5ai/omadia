@@ -59,12 +59,19 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 - A second suite covers what the CI gate structurally cannot: the CI
   idempotency check re-applies against an **empty** database, so it can never
   catch a migration that only breaks once rows exist. That suite re-applies
-  all 30 files with MCP rows in place, in its own throwaway database —
-  re-running `0001`/`0003` drops and recreates the NOTIFY triggers, which
-  must not happen underneath a concurrently running suite.
+  all 30 files with MCP rows in place. It runs against a dedicated schema on
+  a pinned connection with `public` off the `search_path`, so the migrations
+  build a private copy of the domain: re-running `0001`/`0003` drops and
+  recreates the NOTIFY triggers and takes ACCESS EXCLUSIVE on shared tables,
+  which must not happen underneath a concurrently running suite. A scratch
+  *database* isolates just as well but `CREATE`/`DROP DATABASE` is a
+  cluster-wide operation — it stalled the dev-platform pg suites long enough
+  to cancel 29 of their tests, so the schema is the cheaper boundary. The
+  test asserts the isolation itself, since a leaked `search_path` would make
+  every later assertion pass vacuously.
 - Both suites skip when no test Postgres is reachable, and scope every row
   they write to a `w04-mcp-` tenant prefix, matching the existing pg-suite
-  convention. Their pools are capped: the runner executes test files
+  convention. They share one capped pool: the runner executes test files
   concurrently and ~16 other pg suites each hold a default-sized (max 10)
   pool, so an uncapped extra pool in one file exhausts `max_connections` and
   cancels an unrelated suite mid-run.
