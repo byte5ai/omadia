@@ -475,6 +475,23 @@ export function parseMcpInputReply(
 }
 
 /**
+ * Human-readable stand-in for the envelope, used as the turn's `userMessage`
+ * everywhere the raw envelope would otherwise be persisted or displayed
+ * (session log, memory, chat transcript, privacy receipt).
+ *
+ * Field NAMES only. The values are what the user typed for a third-party MCP
+ * server and may be secrets (the card renders `secret` fields masked), so they
+ * must not land in a log — and the orchestrator does not need them again: the
+ * replay already happened.
+ */
+export function mcpInputReplyLabel(reply: McpInputReply): string {
+  const names = Object.keys(reply.inputResponses);
+  return names.length > 0
+    ? `[Eingaben übermittelt: ${names.join(', ')}]`
+    : '[Eingaben übermittelt]';
+}
+
+/**
  * Executes the replay. Implemented outside the orchestrator (which holds no
  * `McpManager`) and injected, the same way the sticky Direct Line store is —
  * see `OrchestratorDeps`.

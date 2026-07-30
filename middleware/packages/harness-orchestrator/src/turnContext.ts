@@ -187,6 +187,22 @@ export interface TurnContextValue {
    * after persona routing, mutated on the live store so nested scopes see it.
    */
   activePersonaSkillId?: string;
+  /**
+   * W2-1 (#544) — outcome of an MCP `input_required` REPLAY performed at turn
+   * start, as a note to append to the user's wire message so the model can
+   * narrate the result in this same turn.
+   *
+   * Rides the turn context rather than a parameter for the same reason
+   * `privacyHandle` does: it would otherwise need threading through
+   * `runTurn → chatInContext → chatInContextInner` and the streaming mirror of
+   * all three, on both of which every call site already passes `input`. Written
+   * onto the LIVE store inside the turn scope (same technique as
+   * `activePersonaSkillId`), read once when the wire messages are assembled.
+   *
+   * Carries no collected values — those may be secrets the user typed for the
+   * server, and this string reaches the LLM and the session log.
+   */
+  mcpInputReplayNote?: string;
 }
 
 const storage = new AsyncLocalStorage<TurnContextValue>();

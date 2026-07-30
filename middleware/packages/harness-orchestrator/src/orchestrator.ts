@@ -10,6 +10,7 @@ import {
   type DirectLineSessionState,
   type DiagramAttachment,
   type OutgoingFileAttachment,
+  type PendingMcpInputCard,
   type PendingRoutineList,
   type SemanticAnswer,
 } from '@omadia/channel-sdk';
@@ -47,6 +48,16 @@ import type {
   AskUserChoiceTool,
   PendingUserChoice,
 } from './tools/askUserChoiceTool.js';
+import type {
+  McpInputReplayer,
+  McpInputReply,
+  PendingMcpInput,
+  PendingMcpInputStore,
+} from './mcp/pendingMcpInput.js';
+import {
+  mcpInputReplyLabel,
+  parseMcpInputReply,
+} from './mcp/pendingMcpInput.js';
 import {
   ASK_USER_CHOICE_TOOL_NAME,
   askUserChoiceToolSpec,
@@ -371,6 +382,24 @@ export interface OrchestratorOptions {
    */
   askUserChoiceTool?: AskUserChoiceTool;
   /**
+   * W2-1 (#544) — the store an MCP tool's `resultType: "input_required"` result
+   * is parked in. Wired to the SAME instance the `McpManager` writes to, so the
+   * orchestrator can drain the turn slot the manager just filled.
+   *
+   * Injected rather than owned because the manager lives kernel-side; same
+   * shape as the sticky Direct Line store (#445). Absent → the whole MRTR path
+   * is inert and `callTool` degrades an `input_required` result to a plain tool
+   * error, which is deliberate: half-wired is worse than off.
+   */
+  pendingMcpInput?: PendingMcpInputStore;
+  /**
+   * W2-1 (#544) — performs the replay. The orchestrator holds no `McpManager`
+   * (and must not: it would drag the MCP registry into the kernel), so the
+   * forced re-call is injected. Absent → a card answer is treated as an
+   * ordinary user message.
+   */
+  mcpInputReplay?: McpInputReplayer;
+  /**
    * Optional. When set, exposes the `suggest_follow_ups` tool — non-blocking
    * 1-click refinement buttons attached below the answer. Used for Top-N,
    * aggregates, and trend questions where the user typically wants to
@@ -604,6 +633,58 @@ interface IngestedImageBlock {
  * supported, since `ingestAttachments` skips fetching entirely otherwise),
  * so they are simply concatenated when both are non-empty.
  */
+/**
+ * W2-1 (#544) — kernel record → channel card payload.
+ *
+ * `originalArgs` and `replayDepth` are deliberately NOT copied: the arguments
+ * may contain data the user never needs to re-see (and a channel has no use for
+ * them), and the depth is a server-facing guard. Only what a card must render
+ * crosses the boundary — including `serverName`, which is mandatory.
+ */
+function toPendingMcpInputCard(record: PendingMcpInput): PendingMcpInputCard {
+  return {
+    correlationId: record.correlationId,
+    serverId: record.serverId,
+    serverName: record.serverName,
+    toolName: record.toolName,
+    ...(record.prompt !== undefined ? { prompt: record.prompt } : {}),
+    fields: record.inputRequests.map((f) => ({
+      name: f.name,
+      ...(f.label !== undefined ? { label: f.label } : {}),
+      ...(f.description !== undefined ? { description: f.description } : {}),
+      ...(f.secret === true ? { secret: true } : {}),
+      ...(f.required === true ? { required: true } : {}),
+    })),
+  };
+}
+
+/**
+ * W2-1 (#544) — what the session log records for a turn that ended on an input
+ * card. Mirrors the `[Rückfrage] …` convention the choice card uses, so a reader
+ * of the transcript can see WHY the turn produced no answer — and names the
+ * server, because an audit trail that hides who asked for credentials is worse
+ * than useless. Field names only; never the values.
+ */
+function mcpInputCardLogLine(answer: string, card: PendingMcpInputCard): string {
+  const line =
+    `[MCP-Eingabe angefordert] "${card.serverName}" → ${card.toolName}: ` +
+    card.fields.map((f) => f.name).join(', ');
+  return answer.length > 0 ? `${answer}\n\n${line}` : line;
+}
+
+/**
+ * W2-1 (#544) — fold the MCP input-replay outcome into the turn's auto-ingested
+ * trailing text, so the model sees the replayed tool result in the SAME turn the
+ * user answered the card. Returns `ingestedText` untouched on an ordinary turn.
+ */
+function withMcpInputNote(ingestedText: string | undefined): string | undefined {
+  const note = turnContext.current()?.mcpInputReplayNote;
+  if (note === undefined || note.length === 0) return ingestedText;
+  return ingestedText !== undefined && ingestedText.trim().length > 0
+    ? `${ingestedText}\n\n${note}`
+    : `\n\n${note}`;
+}
+
 function buildUserContent(
   input: ChatTurnInput,
   extraText?: string,
@@ -1418,6 +1499,9 @@ export class Orchestrator {
   /** #133 E0 — optional side-channel turn-hook runner (see OrchestratorOptions). */
   private readonly turnHookRegistry: TurnHookRunner | undefined;
   private readonly askUserChoiceTool: AskUserChoiceTool | undefined;
+  /** W2-1 (#544) — see OrchestratorOptions.pendingMcpInput / mcpInputReplay. */
+  private readonly pendingMcpInput: PendingMcpInputStore | undefined;
+  private readonly mcpInputReplay: McpInputReplayer | undefined;
   private readonly suggestFollowUpsTool: SuggestFollowUpsTool | undefined;
   /** #268 — byte source for attachments; drives auto-ingest + read_attachment. */
   private readonly attachmentReader: AttachmentReader | undefined;
@@ -1521,6 +1605,8 @@ export class Orchestrator {
     this.factExtractor = options.factExtractor;
     this.chatParticipantsTool = options.chatParticipantsTool;
     this.askUserChoiceTool = options.askUserChoiceTool;
+    this.pendingMcpInput = options.pendingMcpInput;
+    this.mcpInputReplay = options.mcpInputReplay;
     this.suggestFollowUpsTool = options.suggestFollowUpsTool;
     this.attachmentReader = options.attachmentReader;
     this.readAttachmentTool = options.attachmentReader
@@ -1890,6 +1976,118 @@ export class Orchestrator {
    */
   private drainPendingChoice(): PendingUserChoice | undefined {
     return this.askUserChoiceTool?.takePending();
+  }
+
+  /**
+   * W2-1 (#544) — collect an MCP tool call that parked on
+   * `resultType: "input_required"` during this tool batch.
+   *
+   * Sibling of `drainPendingChoice` and drained through the SAME short-circuit
+   * code path: a non-undefined return terminates the turn so the channel can
+   * render an input card, and the answer arrives as a fresh turn.
+   *
+   * Unlike `askUserChoiceTool`, the pending state cannot live on an instance
+   * field. The store is shared with the kernel's single `McpManager` across
+   * every concurrent turn, so the drain is keyed on the turn id — see
+   * `takePending(turnId)`.
+   */
+  private drainPendingMcpInput(): PendingMcpInput | undefined {
+    if (!this.pendingMcpInput) return undefined;
+    return this.pendingMcpInput.takePending(turnContext.currentTurnId() ?? null);
+  }
+
+  /**
+   * W2-1 (#544) — resolve a card answer and REPLAY the parked MCP tool call.
+   *
+   * Called once at turn start, before the model runs. Deliberately an
+   * orchestrator-driven forced call rather than a prompt that hopes the model
+   * re-calls the tool with the right arguments: the arguments are already known
+   * exactly (`originalArgs` + the collected `inputResponses`), so leaving the
+   * choice to the model could only make it wrong.
+   *
+   * Returns a note to append to the user's wire message so the model can narrate
+   * the outcome in this same turn, or `undefined` for an ordinary message.
+   *
+   * ## The stdio caveat, stated where it bites
+   *
+   * This is a NEW `tools/call` in a LATER turn against a possibly reconnected
+   * transport — not the in-flight retry MRTR describes. Fine for a stateless
+   * HTTP server; wrong for a stdio server holding process state tied to the
+   * original call. See `pendingMcpInput.ts` for why turn suspension is not on
+   * the table.
+   */
+  private async applyMcpInputReplay(
+    reply: McpInputReply,
+    input: ChatTurnInput,
+    turnId: string,
+  ): Promise<void> {
+    const note = await this.runMcpInputReplay(reply, input, turnId);
+    if (note === undefined) return;
+    // Written onto the LIVE context store so the wire-message assembly below
+    // (both the buffered and the streaming path) picks it up without another
+    // parameter on three nested signatures.
+    const ctx = turnContext.current();
+    if (ctx) ctx.mcpInputReplayNote = note;
+  }
+
+  private async runMcpInputReplay(
+    reply: McpInputReply,
+    input: ChatTurnInput,
+    turnId: string,
+  ): Promise<string | undefined> {
+    const store = this.pendingMcpInput;
+    const replayer = this.mcpInputReplay;
+    if (!store || !replayer) {
+      // The user answered a card this deployment can no longer honour (feature
+      // turned off between the two turns, or a restart cleared the store).
+      return (
+        '[MCP-Eingabe] Die Eingabe konnte nicht übermittelt werden — die ' +
+        'Anfrage existiert nicht mehr. Sag dem User, dass er die Aktion neu ' +
+        'starten muss, und ruf kein Tool auf.'
+      );
+    }
+    // The full triple. A card answer arriving with a correlation id that was
+    // parked under a DIFFERENT user or session simply misses — that miss is the
+    // #445 defence, so it must never be widened to "look it up by id".
+    const record = store.take({
+      userId: input.userId ?? null,
+      sessionId: input.sessionScope ?? turnId,
+      correlationId: reply.correlationId,
+    });
+    if (!record) {
+      // Expired, already used, or not ours. Say so plainly rather than
+      // pretending the input was delivered.
+      return (
+        '[MCP-Eingabe] Die Eingabeanfrage ist nicht mehr gültig (abgelaufen oder ' +
+        'schon beantwortet). Sag dem User, dass er die Aktion neu starten muss, ' +
+        'und ruf kein Tool auf.'
+      );
+    }
+    let result: string | undefined;
+    try {
+      result = await replayer.replay(record, reply.inputResponses);
+    } catch (err) {
+      console.error(
+        '[orchestrator] MCP input replay failed:',
+        err instanceof Error ? err.message : err,
+      );
+      result = undefined;
+    }
+    if (result === undefined) {
+      return (
+        `[MCP-Eingabe] Der Server "${record.serverName}" ist nicht mehr erreichbar, ` +
+        `die Eingaben für "${record.toolName}" konnten nicht übermittelt werden. ` +
+        'Sag das dem User und ruf kein Tool auf.'
+      );
+    }
+    // The collected VALUES are deliberately absent from this note: they may be
+    // secrets the user typed for the server, and this text goes on the LLM wire
+    // and into the session log. Only the outcome travels.
+    return (
+      `[MCP-Eingabe] Die Angaben des Users wurden an "${record.serverName}" ` +
+      `übermittelt und "${record.toolName}" erneut ausgeführt. Ergebnis:\n${result}\n` +
+      'Formuliere daraus die Antwort für den User. Ruf das Tool nicht noch einmal auf.'
+    );
   }
 
   /**
@@ -2314,6 +2512,15 @@ export class Orchestrator {
 
   async runTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
     const turnId = randomUUID();
+    // W2-1 (#544) — an MCP input card's answer arrives as a machine envelope in
+    // `userMessage`. Normalise it HERE, before anything downstream reads the
+    // field, so the envelope never reaches the session log, memory, the KG, the
+    // privacy receipt or the chat transcript. The replay itself runs inside the
+    // turn scope below (it needs the turn context for audit attribution).
+    const mcpInputReply = parseMcpInputReply(input.userMessage);
+    if (mcpInputReply) {
+      input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
+    }
     // Inherit optional fields the channel adapter (e.g. Teams bot) set in an
     // outer ALS scope. The new child scope replaces turnId/turnDate for this
     // turn; carry-through fields like `chatParticipants` must be threaded
@@ -2352,6 +2559,9 @@ export class Orchestrator {
         // per-user data with it.
         ...(input.userId ? { userId: input.userId } : {}),
         ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+        // W2-1 (#544) — one component of the MCP pending-input store key. Never
+        // the whole key; see TurnContextValue.sessionScope.
+        sessionScope: sessionId,
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -2367,6 +2577,11 @@ export class Orchestrator {
           : {}),
       },
       async () => {
+        // W2-1 (#544) — forced replay of the parked MCP tool call, before the
+        // model runs. Writes its outcome onto the live turn context.
+        if (mcpInputReply) {
+          await this.applyMcpInputReplay(mcpInputReply, input, turnId);
+        }
         // #332 Layer 2 — Direct Line short-circuit (non-streaming / Teams
         // path). A user-directed specialist turn is dispatched deterministically
         // by the harness; the orchestrator LLM never runs. Still flows through
@@ -3201,7 +3416,12 @@ export class Orchestrator {
         role: 'user',
         content: buildUserContent(
           input,
-          ingestedText,
+          // W2-1 (#544) — appends the MCP replay outcome, when this turn was an
+          // input-card answer. Applied AFTER masking on purpose: the note is
+          // orchestrator-authored prose with no user PII in it (values are
+          // deliberately excluded), and re-masking it would only garble the
+          // server name the model needs in order to attribute the result.
+          withMcpInputNote(ingestedText),
           wireUserMessage,
           ingestedImages,
           visionSupported,
@@ -3614,6 +3834,21 @@ export class Orchestrator {
           this.drainPendingChoice() ??
             this.extractToolEmittedChoice(toolResults),
         );
+        // W2-1 (#544) — the MCP input card rides the SAME short-circuit.
+        //
+        // DETERMINISTIC WINNER: `pendingUserChoice` wins whenever both are
+        // pending in one batch. Two reasons, in order:
+        //   1. Precedence must not depend on tool-dispatch order, and it must
+        //      not change existing behaviour — `ask_user_choice` shipped first
+        //      and its short-circuit is what every channel already renders.
+        //   2. A model that asked its own clarifying question has decided it
+        //      does not yet understand the request; collecting server-specific
+        //      field values first would be answering the wrong question.
+        // The MCP record is NOT discarded when it loses: the turn slot is
+        // drained (so it cannot leak into a later turn's card) but the keyed
+        // record stays replayable until its TTL, so the model can resume after
+        // the clarification instead of the parked call vanishing.
+        const pendingMcpInputCard = this.drainPendingMcpInput();
         if (pendingUserChoice) {
           this.drainAttachments();
           // Follow-up suggestions are incompatible with a blocking choice
@@ -3673,6 +3908,57 @@ export class Orchestrator {
             ...(recalled ? { recalled } : {}),
           };
         }
+        // W2-1 (#544) — MCP input card. Same drain-and-terminate shape as the
+        // choice card above; only reached when no choice card won.
+        if (pendingMcpInputCard) {
+          this.drainAttachments();
+          this.drainFollowUps();
+          this.drainPendingSlotCard();
+          this.drainPendingRoutineList();
+          const card = toPendingMcpInputCard(pendingMcpInputCard);
+          const answer = textParts.join('\n\n').trim();
+          const restoredAnswer = await restorePromptForPersistence(
+            privacyForPrompt,
+            answer,
+          );
+          const iterations = iteration + 1;
+          const runTrace = traceCollector?.finish({
+            iterations,
+            status: 'success',
+          });
+          let persistedTurnId: string | undefined;
+          if (this.sessionLogger && input.sessionScope) {
+            const entityRefs = entityCollection?.drain() ?? [];
+            const loggedAnswer = mcpInputCardLogLine(restoredAnswer, card);
+            try {
+              const logged = await this.sessionLogger.log({
+                scope: input.sessionScope,
+                userMessage: input.userMessage,
+                assistantAnswer: loggedAnswer,
+                toolCalls,
+                iterations,
+                entityRefs,
+                ...(input.userId ? { userId: input.userId } : {}),
+                ...(runTrace ? { runTrace } : {}),
+              });
+              persistedTurnId = logged.turnExternalId;
+            } catch (err) {
+              console.error(
+                '[orchestrator] session log failed (continuing with MCP input card):',
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }
+          return {
+            answer: restoredAnswer,
+            toolCalls,
+            iterations,
+            pendingMcpInput: card,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+            ...(runTrace ? { runTrace } : {}),
+            ...(recalled ? { recalled } : {}),
+          };
+        }
       }
 
       throw new Error(
@@ -3698,6 +3984,12 @@ export class Orchestrator {
     observer?: AskObserver,
   ): AsyncGenerator<ChatStreamEvent> {
     const turnId = randomUUID();
+    // W2-1 (#544) — mirror of `runTurn`: normalise the input-card envelope
+    // before any downstream reader sees it. See the comment there.
+    const mcpInputReply = parseMcpInputReply(input.userMessage);
+    if (mcpInputReply) {
+      input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
+    }
     // `enter` (not `run`) because AsyncLocalStorage.run doesn't compose with
     // async generators. `enter` binds turnId to the current async resource,
     // which the generator's awaits inherit; scope ends when the HTTP request
@@ -3729,7 +4021,13 @@ export class Orchestrator {
       turnDate: today(),
       // Per-orchestrator isolation: see the matching `turnContext.run` above.
       agentSlug: this.agentId,
+      // The streaming path never set `userId` — W2-1 needs it, because the MCP
+      // pending-input key must bind a parked record to the human who will
+      // answer the card, and channel turns (Teams/Telegram) come through here.
+      ...(input.userId ? { userId: input.userId } : {}),
       ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+      // W2-1 (#544) — see the matching `turnContext.run` above.
+      sessionScope: sessionId,
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
@@ -3745,6 +4043,10 @@ export class Orchestrator {
     });
 
     this.applyTurnAuthContext(input);
+    // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.
+    if (mcpInputReply) {
+      await this.applyMcpInputReplay(mcpInputReply, input, turnId);
+    }
     // #133 E0 — streaming-path turn hooks. tool_result events carry only the
     // tool-use id, so track id→name from tool_use events to label
     // onAfterToolCall.
@@ -4008,7 +4310,12 @@ export class Orchestrator {
         role: 'user',
         content: buildUserContent(
           input,
-          ingestedText,
+          // W2-1 (#544) — appends the MCP replay outcome, when this turn was an
+          // input-card answer. Applied AFTER masking on purpose: the note is
+          // orchestrator-authored prose with no user PII in it (values are
+          // deliberately excluded), and re-masking it would only garble the
+          // server name the model needs in order to attribute the result.
+          withMcpInputNote(ingestedText),
           wireUserMessage,
           ingestedImages,
           visionSupported,
@@ -4574,6 +4881,9 @@ export class Orchestrator {
           this.drainPendingChoice() ??
             this.extractToolEmittedChoice(toolResults),
         );
+        // W2-1 (#544) — mirror of chatInContextInner, including the
+        // deterministic winner rule. See the comment there.
+        const pendingMcpInputCard = this.drainPendingMcpInput();
         if (pendingUserChoice) {
           this.drainAttachments();
           // Follow-up suggestions are incompatible with a blocking choice
@@ -4629,6 +4939,64 @@ export class Orchestrator {
             ...(runTrace ? { runTrace } : {}),
             ...(choiceAgentsConsulted && choiceAgentsConsulted.length > 0
               ? { agentsConsulted: choiceAgentsConsulted }
+              : {}),
+            ...(this.directLineSticky
+              ? { directLineSession: { active: false } as const }
+              : {}),
+          };
+          return;
+        }
+        // W2-1 (#544) — MCP input card, streaming mirror.
+        if (pendingMcpInputCard) {
+          this.drainAttachments();
+          this.drainFollowUps();
+          this.drainPendingSlotCard();
+          const card = toPendingMcpInputCard(pendingMcpInputCard);
+          const answer = textParts.join('\n\n').trim();
+          const restoredAnswer = await restorePromptForPersistence(
+            privacyForPrompt,
+            answer,
+          );
+          const iterations = iteration + 1;
+          const runTrace = traceCollector?.finish({
+            iterations,
+            status: 'success',
+          });
+          let persistedTurnId: string | undefined;
+          if (this.sessionLogger && input.sessionScope) {
+            const entityRefs = entityCollection?.drain() ?? [];
+            const loggedAnswer = mcpInputCardLogLine(restoredAnswer, card);
+            try {
+              const logged = await this.sessionLogger.log({
+                scope: input.sessionScope,
+                userMessage: input.userMessage,
+                assistantAnswer: loggedAnswer,
+                toolCalls,
+                iterations,
+                entityRefs,
+                ...(input.userId ? { userId: input.userId } : {}),
+                ...(runTrace ? { runTrace } : {}),
+              });
+              persistedTurnId = logged.turnExternalId;
+            } catch (err) {
+              console.error(
+                '[orchestrator] session log failed (continuing with MCP input card):',
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }
+          const mcpAgentsConsulted = deriveAgentsConsulted(runTrace);
+          yield {
+            type: 'done',
+            answer: restoredAnswer,
+            toolCalls,
+            iterations,
+            model: turnModel,
+            pendingMcpInput: card,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+            ...(runTrace ? { runTrace } : {}),
+            ...(mcpAgentsConsulted && mcpAgentsConsulted.length > 0
+              ? { agentsConsulted: mcpAgentsConsulted }
               : {}),
             ...(this.directLineSticky
               ? { directLineSession: { active: false } as const }
