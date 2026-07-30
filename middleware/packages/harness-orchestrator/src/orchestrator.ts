@@ -80,6 +80,7 @@ import {
   QueryDatasetTool,
   queryDatasetToolSpec,
 } from './tools/queryDatasetTool.js';
+import { sortByToolName } from './toolOrdering.js';
 import { parseAttachmentsInfo } from './attachmentsInfo.js';
 import {
   checkVisionEmbeddable,
@@ -5652,10 +5653,23 @@ export class Orchestrator {
     // Issue #474 — a plugin that hasn't finished its own connection/auth
     // setup is excluded here so the orchestrator never offers a tool it
     // knows will fail, instead of discovering that via a wasted round-trip.
+    //
+    // W0-3 — sorted by name. `listWithHandler()` iterates a Map, so raw order
+    // is plugin LOAD order, which differs between Fly machines and between
+    // deploys. That silently invalidated the `cache_control` block stamped at
+    // the end of this method. Sorting makes the block a function of the tool
+    // set, not of registration timing. Advertisement order only — dispatch
+    // still resolves by name, so precedence is unaffected.
+    const nativeSpecs: unknown[] = [];
     for (const entry of this.nativeTools.listWithHandler()) {
       if (entry.spec && this.isToolAvailable(entry.agentId)) {
-        tools.push(entry.spec);
+        nativeSpecs.push(entry.spec);
       }
+    }
+    for (const spec of sortByToolName(
+      nativeSpecs as ReadonlyArray<{ readonly name: string }>,
+    )) {
+      tools.push(spec);
     }
     // DomainTools dynamically from the map — so hot-registered uploaded
     // agents become visible from the next iteration without reboot.
@@ -5663,10 +5677,20 @@ export class Orchestrator {
     // whose owning plugin hasn't completed its connection/auth setup must
     // not be offered either, otherwise the model discovers the missing
     // access via a failing dispatch instead of the tool being absent.
+    //
+    // W0-3 — sorted for the same reason as the native segment above; this map
+    // is populated in `created_at` row order, which is not stable across
+    // machines that hydrated their registry at different times.
+    const domainSpecs: unknown[] = [];
     for (const tool of this.domainToolsByName.values()) {
       if (this.isToolAvailable(tool.agentId)) {
-        tools.push(tool.spec);
+        domainSpecs.push(tool.spec);
       }
+    }
+    for (const spec of sortByToolName(
+      domainSpecs as ReadonlyArray<{ readonly name: string }>,
+    )) {
+      tools.push(spec);
     }
     // Privacy-Shield v4 — verb + render tools, offered only when the v4
     // data-plane boundary is active for this turn.
@@ -5679,6 +5703,11 @@ export class Orchestrator {
     // marking the final tool makes the whole list a single cacheable chunk.
     // 5-minute TTL comfortably covers a multi-iteration orchestrator turn,
     // so iter 2..N skip re-reading the tool definitions on the server side.
+    //
+    // W0-3 — the cache keys on a byte-exact prefix, so this only pays off
+    // because the dynamic segments above are name-sorted. Do not reorder or
+    // append unsorted segments before this point without re-reading
+    // `toolOrdering.ts`; a reordered block is a silent, signal-free cache miss.
     const last = tools[tools.length - 1];
     if (last) {
       tools[tools.length - 1] = {

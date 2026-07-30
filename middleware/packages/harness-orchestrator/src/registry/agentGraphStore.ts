@@ -2,6 +2,7 @@ import type { Pool } from 'pg';
 
 import { ConfigValidationError, validateModelRef } from './configStore.js';
 import { computeSkillHash } from './skillHash.js';
+import { normalizeDiscoveredToolOrder } from '../toolOrdering.js';
 
 /**
  * Agent Builder graph store (P0).
@@ -2152,11 +2153,17 @@ export class AgentGraphStore {
     id: string,
     tools: readonly unknown[],
   ): Promise<void> {
+    // W0-3 — normalize by name before persisting. An MCP server may return
+    // `tools/list` in a different order on every call; storing that raw makes
+    // each rediscovery rewrite the JSONB with semantically identical content,
+    // churning the row and any grant-epoch diff computed from it. It also
+    // leaks the server's arbitrary ordering into the tool block that
+    // `subAgentToolHydration` later builds from this column.
     await this.pool.query(
       `UPDATE mcp_servers
          SET discovered_tools = $2::jsonb, last_discovered_at = now(), updated_at = now()
        WHERE id = $1`,
-      [id, JSON.stringify(tools)],
+      [id, JSON.stringify(normalizeDiscoveredToolOrder(tools))],
     );
   }
 

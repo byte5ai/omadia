@@ -9,6 +9,7 @@
 
 import type { DomainTool } from './tools/domainQueryTool.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
+import { sortByToolName } from './toolOrdering.js';
 
 export interface ToolDispatchResult {
   readonly content: string;
@@ -135,7 +136,15 @@ export class ToolDispatchService {
       });
     }
 
-    return Array.from(advertised.values());
+    // W0-3 — sort by name so every consumer of this list (the loopback MCP
+    // server, the CLI bridge) advertises a byte-stable order. Both source
+    // iterations above are Map-ordered — plugin load order and `created_at`
+    // row order — which differ across machines and deploys.
+    //
+    // Collision resolution is NOT affected: which spec wins a duplicate name
+    // was already decided by the `advertised.has(...)` guard above (native
+    // tools first), and sorting only reorders the surviving entries.
+    return sortByToolName(Array.from(advertised.values()));
   }
 
   private errMsg(error: unknown): string {
