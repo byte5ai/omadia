@@ -5,6 +5,7 @@ import express, { Router } from 'express';
 import { getJson } from './_helpers/httpInvoke.js';
 
 import { PluginRouteRegistry } from '../src/platform/pluginRouteRegistry.js';
+import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
 import { UiRouteCatalog } from '../src/platform/uiRouteCatalog.js';
 import {
   ToolPluginRuntime,
@@ -43,6 +44,9 @@ function makeRuntime(
   const deps = {
     pluginRouteRegistry,
     uiRouteCatalog,
+    // Service disposal is the sibling of route disposal on the same
+    // deactivate path — see serviceRegistryDisposal.test.ts for its coverage.
+    serviceRegistry: new ServiceRegistry(),
     jobScheduler: {
       stopForPlugin: (id: string): void => {
         stoppedJobsFor.push(id);
@@ -138,6 +142,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
     const deps = {
       pluginRouteRegistry: registry,
       uiRouteCatalog: catalog,
+      serviceRegistry: new ServiceRegistry(),
       jobScheduler: { stopForPlugin: (): void => {} },
       log: (): void => {},
     } as unknown as ToolPluginRuntimeDeps;

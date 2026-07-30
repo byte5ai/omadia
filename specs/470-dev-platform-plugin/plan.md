@@ -60,13 +60,13 @@ work-list in `core-decoupling-checklist.md`. Three of those items are not deleti
 
 | Surface | Size |
 |---|---|
-| `middleware/src/devplatform/**` | 54 files, 14,498 LOC |
+| `middleware/src/devplatform/**` | 53 files, 14,520 LOC |
 | `middleware/src/routes/devPlatform*.ts`, `devRunnerApi.ts`, `devRunnerJobPolicyRoute.ts` | 7 files, 2,733 LOC |
 | `middleware/src/routes/devWebhooks.ts`, `src/conductor/devJobStepEffect.ts` | 2 files, 394 LOC |
 | `middleware/sidecars/dev-runner-daemon/` | 30 files (dockerode) |
 | `middleware/packages/dev-runner-shim/` | 21 files, zero deps |
 | `middleware/test/devplatform/**` | 54 files |
-| `web-ui/app/admin/dev-platform/**` | 20 files, 3,163 LOC |
+| `web-ui/app/admin/dev-platform/**` | 29 files, 4,344 LOC (PR #529) |
 | `web-ui/app/_components/devjobs/**` + `_lib/useDevJobEvents.ts` | 7 files, 884 LOC |
 | Database | 9 tables, 14 indexes, migrations `0022`–`0030` |
 | Config | **41** dev-platform `DEV_*`/`FLY_*` keys — 37 in the `config.ts` dev-platform block plus 4 elsewhere (`DEV_WEBHOOKS_ENABLED`, two webhook rate limits, `DEV_JOB_DEFAULT_BUDGET_USD`). `config.ts` holds 42 distinct `DEV_*`/`FLY_*` identifiers in total; the 42nd, `DEV_ENDPOINTS_ENABLED`, is generic and stays in core |
@@ -99,8 +99,13 @@ only for dev-platform. `dockerode` lives in the sidecar's own package; the GitHu
 are hand-rolled `fetch` by house style.
 
 **Layering is not clean**: `wireDevPlatform.ts:37,45,50,51` imports *up* into
-`src/routes/`, which imports back *down* into `src/devplatform/*` (23 times). Circular by
-layer, resolved only by ESM hoisting. This must be untangled before the code can move.
+`src/routes/`, which imports back *down* into `src/devplatform/*` (23 times).
+
+**Corrected after review:** an earlier revision called this "circular by layer, resolved
+only by ESM hoisting." It is **not** an import cycle — `wireDevPlatform` is imported only
+by `index.ts`, and no route imports back into it. It is a one-way layering inversion.
+Untangling it is boundary cleanup that makes the move mechanical, **not** a fix for
+hoist-dependent runtime behaviour, and it should not be justified as the latter.
 
 ---
 
@@ -117,9 +122,9 @@ files is the easy part.
 | **G4** | **No kernel mechanism for plugin-owned SQL.** `onMigrate` is *config* migration only. | Open (softer than it looks) |
 | **G5** | **No plugin-declared external services.** No `services:`/`image:` in the manifest; sidecars are operator-managed compose overlays. | Won't fix — see below |
 | **G6** | **`publicPaths` is a frozen literal.** A plugin cannot contribute an auth exemption, and core cannot revoke one on uninstall. Needs prefix ownership too, not just a grant. | Open — **hard blocker** (H1) |
-| **G7** | **A distributed plugin cannot ship a React UI.** The ZIP extension allowlist has no `.tsx` — and, verified, **no `.css` either**, so it cannot even carry a compiled SPA's stylesheet. web-ui is built once at image build time. | Open — **hard blocker**, new |
+| **G7** | **A distributed plugin cannot ship a React UI.** The ZIP allowlist has no `.tsx`, and web-ui is built once at image build time. The missing `.css` is **no longer the blocker** — a core-served Tailwind subset removes the need for plugin CSS entirely (§4.3a, measured). | Open — reduced to the JS-bundle question |
 | **G8** | **`DevJob*` are published `@omadia/plugin-api` types.** Removing them is a SemVer-major break for every Hub plugin importing them; `api/admin-v1.ts` leaks `dev_jobs` onto the public admin DTO too. | Open — new |
-| **G9** | **The conductor hardcodes the `dev_job` step kind and channel type** across `runExecutor.ts`, `awaitStore.ts`, and all of `devJobStepEffect.ts`. | Open — **hard blocker** (H2) |
+| **G9** | **The conductor hardcodes the `dev_job` step kind and channel type** — 73 refs across `runExecutor.ts`, `awaitStore.ts`, `routes.ts` and all of `devJobStepEffect.ts`. | **No longer a blocker.** The capability is dead with no demand, so the fix is DELETE (~600 LOC), not a generic registry. See `dormant-capabilities.md` §1 |
 | **G10** | **The chat renderer hardcodes `tool.name === 'dev_job_start'`** and renders a core-compiled React card for it. | Open — **hard blocker** (H3) |
 
 ### G2 is the inverse of the obvious reading — and it is a trap
@@ -183,7 +188,7 @@ There is already a working precedent for plugin-owned migrations:
 step and a `Dockerfile` line to ship the SQL next to the compiled migrator.
 `harness-memory-postgres` does the same.
 
-G4 therefore needs the existing pattern formalised into a shared helper plus a `pgPool`
+G4 therefore needs the existing pattern formalised into a shared helper plus a permission gate on the existing `graphPool@1`
 capability so the plugin can reuse the core pool — not a new kernel subsystem.
 
 **Do not renumber the migrations.** Ledgers key on filename. `0022`–`0030` are already
@@ -284,8 +289,60 @@ page) is exactly one hand-written HTML file.
 | **D. Optional web-ui build variant** | Two images in lockstep, and the plugin's code would still have to live in core's build. Fails constraint 2. |
 | **E. Publish the pages as an npm package web-ui optionally installs** | Keeps React and removes the *source* from core, but core's build must still know the package exists. Weakens constraint 2 to "no source, but a build-time hook". Fallback if B proves too costly. |
 
-**Recommendation: B.** It is the only option that satisfies both constraints without a
-product downgrade. It is also strictly more valuable than a one-off fix — it is the
+### 4.3a Plugins use Tailwind — so they ship no CSS at all
+
+The `.css` gap above is real but it is the **wrong thing to fix**. web-ui is a Tailwind v4
+project; if plugin markup is required to use Tailwind utilities, a plugin never needs to
+ship a stylesheet — it links one that core serves.
+
+The catch, and it is the whole design: **Tailwind emits only classes it has seen.** v4
+detects classes by scanning source files at build time, and a plugin installed at runtime
+from another repository is never scanned. So "plugins use Tailwind" only works if core
+**pre-generates a documented, finite utility vocabulary**. v4 supports exactly this —
+`@source inline(...)` (the replacement for v3's `safelist`, brace-expandable) combined with
+`@import "tailwindcss" source(none)` to disable scanning, producing a stylesheet containing
+precisely that set.
+
+**Measured, not estimated.** Built with the repo's own `tailwindcss@4.3.3` +
+`@tailwindcss/postcss` — see `plugin-tailwind-subset.probe.css`:
+
+| | |
+|---|---|
+| Vocabulary | layout, flex/grid, spacing 0–12, typography, borders, shadows, `sm:`/`md:`/`lg:`, `hover:`/`focus:`/`disabled:` |
+| Colours | **the Lume tokens only** — `bg-accent`, `text-fg-muted`, `border-border`, `text-danger` … verified present |
+| Size | 43,199 B raw → **7,704 B gzip** → 5.7 KB brotli |
+
+Three things that makes better, beyond unblocking the extraction:
+
+1. **Plugins inherit the design system by construction.** They get *our* colour names
+   wired to the runtime CSS variables, so they follow the active palette and light/dark
+   automatically. A plugin cannot hardcode a hex and drift.
+2. **It retires a known drift hazard.** `middleware/src/admin-ui/harness-admin-css.ts` is
+   345 hand-maintained lines whose own header says "mirror `web-ui/app/_lib/theme.css`;
+   keep the two roughly in sync when the design system changes." Generating from the same
+   tokens removes the sync obligation instead of restating it.
+3. **It is enforceable, cheaply.** Reject `[` in class attributes at package ingest.
+
+**The hard constraint to write into the plugin contract:** no **arbitrary values**
+(`w-[137px]`, `bg-[#abc]`). That space is unbounded and cannot be pre-generated, so such a
+class silently renders unstyled — the worst failure mode. The documented vocabulary plus an
+ingest check is the enforcement; widen the vocabulary from what the ported pages actually
+use rather than guessing.
+
+Two implementation notes: the `@theme inline` token bridge currently lives inside
+`globals.css:16-48` and must be **extracted to its own file** that both it and the plugin
+stylesheet import, or the two drift — the exact failure this is meant to end. And an
+iframe is a separate document, so it links the sheet itself; nothing is inherited from the
+parent.
+
+**What remains of G7 after this:** only the JavaScript bundle. `.js` and `.map` are already
+allowlisted, so a compiled SPA can ship today; what is missing is a static-asset serving
+path from the plugin's router. That is a much smaller problem than a styling story.
+
+### Back to the option table
+
+**Recommendation: B**, now materially cheaper than when first written — with §4.3a it is
+the only option that satisfies both constraints without a product downgrade. It is also strictly more valuable than a one-off fix — it is the
 mechanism *any* third-party plugin needs to ship a real UI, which is currently the
 platform's weakest extension point.
 
@@ -431,11 +488,27 @@ single irreversible step moved last.
 | **P2a** | Decide the `ctx.devJobs` contract (§4.2) and the G8 public-contract break: `DevJob*` move to `@omadia/dev-platform-plugin-api`, `plugin-api` gets a SemVer-major bump, `dev_jobs` leaves the admin-v1 DTO. Add capability edges to `dynamicAgentRuntime` or document why agent plugins are excluded. | A written, versioned contract — before any code depends on it |
 | **P2b** | Decide **H3** (chat card): declarative card schema, or accept degradation to `ToolRow` for out-of-repo plugins. Decide **G7 option B vs E**. | Both answers written down before code moves |
 | **P2c** | Mechanical decoupling: break the `wireDevPlatform ↔ routes` cycle; collapse the 41 config keys into one namespaced object. ✅ `mintAppJwt` already moved to `src/services/githubAppJwt.ts`. | `index.ts` wiring reduced to one `assembleDevPlatform(cfg)` call |
-| **P3** | The extension points. **H1** dynamic `publicPaths` + exclusive prefix ownership · **H2** generic conductor step-kind/channel-type registry · **G2** `auth: 'session'` composed *inside* the disposed guard · **G3** route-local raw parser · **G4** `pgPool` capability + shared `runPluginMigrations`. | Any plugin can own routes, exemptions, raw bodies, tables, and long-running steps |
-| **P3b** | **G7**: `.css`/font extensions in the ZIP allowlist, a static-asset serving path for plugin SPAs, Lume tokens published as a consumable package. | Any plugin can ship a real UI — the platform's weakest extension point today |
+| **P3** | The extension points. **H1** dynamic `publicPaths` + exclusive prefix ownership · **H2** generic conductor step-kind/channel-type registry · **G2** `auth: 'session'` composed *inside* the disposed guard · **G3** route-local raw parser · **G4** permission-gated `graphPool@1` + shared `runPluginMigrations`. | Any plugin can own routes, exemptions, raw bodies, tables, and long-running steps |
+| **P3b** | **G7** (§4.3a): extract the `@theme inline` bridge out of `globals.css`; build the plugin Tailwind subset from it and serve it — replacing the 345 hand-written lines of `harness-admin-css.ts`; add a static-asset serving path for plugin SPA bundles; reject arbitrary-value classes at ingest. | Any plugin can ship a real UI in the house design system — the platform's weakest extension point today |
 | **P4** | Stand up `byte5ai/omadia-plugin-dev-platform`; move ~49,100 LOC per `core-decoupling-checklist.md`; port the UI; stand up the repo's own GHCR + SBOM + signing pipeline. **Do not delete the `publicPaths` exemptions until P3 is proven on the live runner phone-home path.** | Dev Platform installs and uninstalls from its own repo |
 | **P5** | Migration ownership handoff (no renumbering) + ledger seed, tested against a database restored from a production snapshot. Its own PR, its own rollback story. | Plugin owns its schema |
-| **P6** | Delete the residue: core's `DEV_*` config, the compose overlay, the CI matrix entries and `id-token: write`, the workflow prompt rules, and every comment reference. | `rg -i 'dev.?platform\|devjob' omadia/` returns nothing |
+| **P6** | Delete the residue: core's `DEV_*` config, the compose overlay, the CI matrix entries and `id-token: write`, the workflow prompt rules, and every comment reference. | `node scripts/check-core-decoupling.mjs --report` reads **0**, and every row of `acceptance.md` §2 and §3 passes |
+
+### How we know it is actually complete
+
+Three documents, three different jobs — a file inventory alone cannot answer either half of
+"all the functions extracted and installable":
+
+| Document | Answers | Enforcement |
+|---|---|---|
+| `core-decoupling-checklist.md` | *What is still coupled?* (276 items, file-level) | Snapshot — goes stale on contact |
+| `acceptance.md` | *Did every capability survive, and does it install?* (34 endpoints, 3 tools, 4 loops, 4 screens + install/uninstall) | Review checklist today; wants a smoke suite in the plugin repo |
+| `scripts/check-core-decoupling.mjs` | *Is core still coupled at all?* | **Automated** — CI job `core decoupling ratchet (#470)`, baseline **3,171**, may only fall |
+
+The ratchet is what makes the checklist's staleness survivable: even if the sweep missed a
+reference, the count still sees it, and the count cannot reach zero while it survives. It
+also stops core re-acquiring a dependency mid-extraction, which is the realistic failure
+mode for a multi-week epic touching ~200 files.
 
 **Config is not 41 `setup.fields`.** The keys are four different things and only one
 belongs in a manifest form: platform-injected env (`FLY_APP_NAME` is a probe, not a
@@ -461,7 +534,8 @@ misconfigured plugin no longer takes the host offline.
 | **Uninstall data lifecycle is undefined** | Must be decided in P4: what happens to 9 tables on uninstall; who cleans `dev_repo_plugin_grants` when a *granted* plugin is removed; what happens to `running` jobs whose runner still holds a valid token |
 | **Secrets are vaulted under core's namespace** | GitHub App private keys, webhook secrets, and the proxy's provider key live under `core:dev-platform`. P4 must re-key into the plugin namespace or grant read access — operator-visible either way |
 | **Half-migrated codebase** | Each phase has an observable outcome above. **Abandonment checkpoint: after P3/P3b, the platform capabilities stand alone and dev-platform stays in core with no partial-move debt.** Half-moved is the only genuinely bad end state |
-| **The UI port is the biggest single risk (G7)** | 3,933 LOC of React must move to a repo that currently cannot ship a stylesheet. P3b de-risks it *before* P4 commits. If P3b proves too costly, fall back to option E (npm-published UI package) and accept the weakened constraint rather than rewriting the UI as hand-rolled HTML |
+| **The UI port is the biggest single risk (G7)** | 3,933 LOC of React must move out of core. §4.3a removes the styling half of the problem for ~7.7 KB gzip, leaving only static-asset serving. P3b de-risks the rest *before* P4 commits. If it still proves too costly, fall back to option E (npm-published UI package) and accept the weakened constraint rather than rewriting the UI as hand-rolled HTML |
+| **Arbitrary Tailwind values fail silently** | `w-[137px]` cannot be pre-generated, so it renders unstyled rather than erroring — a plugin author would see a subtly broken layout with no diagnostic. Mitigation is an ingest-time rejection of `[` in class attributes, not documentation alone |
 | **Cross-repo development loses atomic changes** | Today a change spanning core and dev-platform is one PR with one CI run. Afterwards it is two PRs in two repos with a published contract between them, and no way to land them atomically. This is the standing tax of the split — worth it for installability, but it makes P3's extension points load-bearing: get them wrong and every fix needs a core release |
 | **The new repo needs a real supply chain** | `dev-runner` is currently SBOM'd and keyless-signed in core's `publish-images.yml`. That is not a copy-paste — the new repo needs GHCR publishing, cosign identity, and its own release workflow before the images can move |
 | **`plugin-api` SemVer-major break (G8)** | Third-party plugins importing `DevJobDescriptor` et al. break at compile time. Deliberate, versioned, and announced — not silent. The worse outcome is keeping the types while making the runtime optional, which preserves the signature and breaks the contract invisibly |

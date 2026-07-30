@@ -41,23 +41,42 @@ export type ServiceName =
   | 'memory'
   | (string & {});
 
+/** A registration remembered for its owner so `disposeBySource` can unwind
+ *  it. `dispose` reports whether the call actually changed the map — a
+ *  registration the plugin already released itself returns false, which is
+ *  what makes `disposeBySource` idempotent. */
+interface OwnedRegistration {
+  readonly name: ServiceName;
+  readonly dispose: () => boolean;
+}
+
 export class ServiceRegistry {
   private readonly providers = new Map<ServiceName, unknown>();
 
+  /** Dispose handles from `provide`/`replace`, keyed by the plugin that made
+   *  them. Core's own boot-time registrations pass no owner and are therefore
+   *  never bulk-disposed — nothing tears the kernel down mid-process. */
+  private readonly owned = new Map<string, OwnedRegistration[]>();
+
   /** Register a provider. Throws on duplicate — if two plugins both provide
-   *  'graph', the operator needs to uninstall one. */
-  provide<T>(name: ServiceName, impl: T): () => void {
+   *  'graph', the operator needs to uninstall one.
+   *
+   *  `owner` is the registering plugin's agentId. `createPluginContext`
+   *  supplies it from the kernel-known id, so attribution never comes from
+   *  the caller. Omitted for core's own registrations. */
+  provide<T>(name: ServiceName, impl: T, owner?: string): () => void {
     if (this.providers.has(name)) {
       throw new Error(
         `ServiceRegistry: duplicate provider for '${String(name)}' — uninstall the existing provider first`,
       );
     }
     this.providers.set(name, impl);
-    return () => {
-      if (this.providers.get(name) === impl) {
-        this.providers.delete(name);
-      }
+    const dispose = (): boolean => {
+      if (this.providers.get(name) !== impl) return false;
+      this.providers.delete(name);
+      return true;
     };
+    return this.track(owner, name, dispose);
   }
 
   /**
@@ -72,7 +91,7 @@ export class ServiceRegistry {
    * the underlying KG provider stays live for the rest of the system.
    * Stacking multiple replacements is supported (LIFO restore).
    */
-  replace<T>(name: ServiceName, impl: T): () => void {
+  replace<T>(name: ServiceName, impl: T, owner?: string): () => void {
     const previous = this.providers.get(name);
     if (previous === undefined) {
       throw new Error(
@@ -80,13 +99,14 @@ export class ServiceRegistry {
       );
     }
     this.providers.set(name, impl);
-    return () => {
+    const dispose = (): boolean => {
       // Only restore if our replacement is still the active one. If a
       // later `replace` already shadowed us, our restore is a no-op.
-      if (this.providers.get(name) === impl) {
-        this.providers.set(name, previous);
-      }
+      if (this.providers.get(name) !== impl) return false;
+      this.providers.set(name, previous);
+      return true;
     };
+    return this.track(owner, name, dispose);
   }
 
   get<T>(name: ServiceName): T | undefined {
@@ -99,5 +119,46 @@ export class ServiceRegistry {
 
   names(): readonly string[] {
     return Array.from(this.providers.keys()) as string[];
+  }
+
+  /**
+   * Unregister every service the given plugin still holds. Returns the count
+   * of registrations actually taken down (0 when the plugin owned none or
+   * released them all itself). Idempotent: a second call is a no-op.
+   *
+   * Used by the kernel on plugin deactivate as a fail-safe — the same shape
+   * as `PluginRouteRegistry.disposeBySource`, one layer down. A provider
+   * whose `close()` body forgets to call its dispose handle would otherwise
+   * leave the service registered against a torn-down module: consumers keep
+   * resolving a dead implementation, and the reinstall throws
+   * 'duplicate provider' because nothing ever removed the old entry.
+   */
+  disposeBySource(pluginId: string): number {
+    const registrations = this.owned.get(pluginId);
+    if (registrations === undefined) return 0;
+    this.owned.delete(pluginId);
+    let count = 0;
+    // LIFO: a `replace` restores whatever was live when it ran, so stacked
+    // registrations have to unwind newest-first or an older restore would
+    // reinstate a provider a newer one has since shadowed.
+    for (let i = registrations.length - 1; i >= 0; i -= 1) {
+      const registration = registrations[i];
+      if (registration !== undefined && registration.dispose()) count += 1;
+    }
+    return count;
+  }
+
+  /** Remember a dispose handle against its owner and hand the caller the
+   *  same handle back. Unowned (core) registrations are returned untracked. */
+  private track(
+    owner: string | undefined,
+    name: ServiceName,
+    dispose: () => boolean,
+  ): () => void {
+    if (owner === undefined) return dispose;
+    const registrations = this.owned.get(owner) ?? [];
+    registrations.push({ name, dispose });
+    this.owned.set(owner, registrations);
+    return dispose;
   }
 }
