@@ -103,38 +103,66 @@ export interface PendingMcpInput {
   readonly replayDepth: number;
 }
 
-/** The only valid lookup key. All three components participate. */
-export interface PendingMcpInputKey {
+/** Who a CLAIMED record belongs to. Both components participate in the key. */
+export interface PendingMcpInputOwner {
   readonly userId: string | null;
   readonly sessionId: string | null;
+}
+
+/** The only valid replay lookup key. All three components participate. */
+export interface PendingMcpInputKey extends PendingMcpInputOwner {
   readonly correlationId: string;
 }
 
 /** Outcome of a {@link PendingMcpInputStore.put}. `callTool` maps each to a
- *  different model-facing string, so none of them is silently indistinguishable
- *  from success. */
-export type PutPendingMcpInputResult =
-  | 'stored'
-  | 'already_pending'
-  | 'replay_capped';
+ *  different model-facing string, so neither is silently indistinguishable from
+ *  success. */
+export type PutPendingMcpInputResult = 'stored' | 'replay_capped';
 
+/**
+ * Two-phase by necessity: PARK is performed by the `McpManager`, CLAIM by the
+ * orchestrator.
+ *
+ * ## Why the owner is bound at claim time, not at park time
+ *
+ * `McpManager.callTool` is reached through the published
+ * `NativeToolHandler = (input: unknown) => Promise<string>` contract, so it has
+ * no turn parameter — and it cannot read the turn identity from ambient context
+ * either: on the STREAMING path `turnContext` is established with
+ * `AsyncLocalStorage.enterWith` inside an async generator, which does not
+ * propagate into the generator's own continuations. Verified empirically:
+ * `turnContext.current()` is `undefined` inside a tool handler on every
+ * `chatStream` turn (a pre-existing repo property, and the reason this feature
+ * must not lean on it).
+ *
+ * So the manager parks with no owner and returns a sentinel that CARRIES the
+ * correlation id. The orchestrator — which does hold the turn's `input`
+ * reliably on both paths — reads that sentinel out of the batch's tool results
+ * and claims the record, binding it to `{userId, sessionId}` at that moment.
+ * The linkage is the tool result itself, exactly the mechanism
+ * `extractToolEmittedChoice` already uses for plugin-emitted choice cards.
+ *
+ * The security property is unchanged: a record can only ever be REPLAYED via
+ * `take()` with the full triple, and it only acquires an owner from the turn
+ * that actually made the call. An unclaimed record is replayable by nobody.
+ */
 export interface PendingMcpInputStore {
+  /** Park a record. Unclaimed and ownerless until the orchestrator claims it. */
+  put(record: PendingMcpInput): PutPendingMcpInputResult;
   /**
-   * Park a record. `turnId` (null outside a turn) additionally files it in the
-   * per-turn slot the orchestrator drains to short-circuit — first write per
-   * turn wins, mirroring `AskUserChoiceTool`'s first-call-wins guard.
+   * Bind a parked record to `owner` and return it for rendering. Idempotent:
+   * a second claim of the same correlation id misses, which is what makes the
+   * first sentinel in a batch the winner.
+   *
+   * The keyed record deliberately SURVIVES this call — the replay happens in a
+   * later turn and must still be able to `take()` it.
    */
-  put(
-    key: PendingMcpInputKey,
-    record: PendingMcpInput,
-    turnId: string | null,
-  ): PutPendingMcpInputResult;
-  /**
-   * The record parked during `turnId`, if any. Clears the TURN SLOT only — the
-   * keyed record deliberately survives, because the replay happens in the NEXT
-   * turn and must still be able to `take()` it.
-   */
-  takePending(turnId: string | null): PendingMcpInput | undefined;
+  claim(
+    correlationId: string,
+    owner: PendingMcpInputOwner,
+  ): PendingMcpInput | undefined;
+  /** Discard a parked record outright (a losing sibling in the same batch). */
+  drop(correlationId: string): void;
   /** Single-use consume for replay. A second `take` of the same key misses. */
   take(key: PendingMcpInputKey): PendingMcpInput | undefined;
   /** Test/ops introspection. Never used for control flow. */
@@ -144,7 +172,9 @@ export interface PendingMcpInputStore {
 interface Entry {
   readonly record: PendingMcpInput;
   readonly expiresAt: number;
-  readonly serializedKey: string;
+  /** `undefined` until the orchestrator claims it. An unclaimed record cannot
+   *  be replayed by anyone, because `take` needs a matching owner. */
+  owner?: PendingMcpInputOwner;
 }
 
 /**
@@ -156,8 +186,8 @@ interface Entry {
  * `null` and the string `'null'` also stay distinct, which matters because an
  * unauthenticated turn legitimately has `userId === null`.
  */
-function serializeKey(key: PendingMcpInputKey): string {
-  return JSON.stringify([key.userId, key.sessionId, key.correlationId]);
+function serializeOwner(owner: PendingMcpInputOwner): string {
+  return JSON.stringify([owner.userId, owner.sessionId]);
 }
 
 export interface InMemoryPendingMcpInputStoreOptions {
@@ -174,9 +204,9 @@ export interface InMemoryPendingMcpInputStoreOptions {
  * deployment would need this behind the session store — noted, not built.
  */
 export class InMemoryPendingMcpInputStore implements PendingMcpInputStore {
+  /** correlationId → entry. The id is a random UUID, so it is unguessable; the
+   *  owner bound at claim time is what makes a LEAKED id unusable elsewhere. */
   private readonly entries = new Map<string, Entry>();
-  /** turnId → serialized key parked during that turn. */
-  private readonly turnSlots = new Map<string, string>();
   private readonly ttlMs: number;
   private readonly maxEntries: number;
   private readonly now: () => number;
@@ -187,52 +217,53 @@ export class InMemoryPendingMcpInputStore implements PendingMcpInputStore {
     this.now = options?.now ?? Date.now;
   }
 
-  put(
-    key: PendingMcpInputKey,
-    record: PendingMcpInput,
-    turnId: string | null,
-  ): PutPendingMcpInputResult {
+  put(record: PendingMcpInput): PutPendingMcpInputResult {
     // `replayDepth: n` means "answering this card produces replay n+1". With a
     // max of 1 that permits the original call's card (0) and refuses a card
     // raised BY the replay (1) — the ping-pong cap.
     if (record.replayDepth >= MCP_INPUT_MAX_REPLAY_DEPTH) return 'replay_capped';
     this.sweep();
-    const slotId = turnId !== null && turnId !== '' ? turnId : null;
-    // First-call-wins per turn. Two `input_required` results inside one tool
-    // batch would otherwise race, and only one card can be rendered anyway.
-    if (slotId !== null && this.turnSlots.has(slotId)) return 'already_pending';
-    const serializedKey = serializeKey(key);
-    this.entries.set(serializedKey, {
+    this.entries.set(record.correlationId, {
       record,
       expiresAt: this.now() + this.ttlMs,
-      serializedKey,
     });
-    if (slotId !== null) this.turnSlots.set(slotId, serializedKey);
     this.evictOverflow();
     return 'stored';
   }
 
-  takePending(turnId: string | null): PendingMcpInput | undefined {
-    if (turnId === null || turnId === '') return undefined;
-    const serializedKey = this.turnSlots.get(turnId);
-    if (serializedKey === undefined) return undefined;
-    this.turnSlots.delete(turnId);
-    const entry = this.entries.get(serializedKey);
+  claim(
+    correlationId: string,
+    owner: PendingMcpInputOwner,
+  ): PendingMcpInput | undefined {
+    const entry = this.entries.get(correlationId);
     if (entry === undefined) return undefined;
     if (entry.expiresAt <= this.now()) {
-      this.entries.delete(serializedKey);
+      this.entries.delete(correlationId);
       return undefined;
     }
-    // NOTE: the keyed record is intentionally NOT removed here. Draining the
-    // turn slot renders the card; `take()` in the next turn consumes it.
+    // Already claimed → miss. This is what makes the FIRST sentinel in a batch
+    // the winner, and what stops a replayed sentinel from re-carding.
+    if (entry.owner !== undefined) return undefined;
+    entry.owner = owner;
+    // NOTE: the record is intentionally NOT removed. Claiming renders the card;
+    // `take()` in a later turn consumes it.
     return entry.record;
   }
 
+  drop(correlationId: string): void {
+    this.entries.delete(correlationId);
+  }
+
   take(key: PendingMcpInputKey): PendingMcpInput | undefined {
-    const serializedKey = serializeKey(key);
-    const entry = this.entries.get(serializedKey);
+    const entry = this.entries.get(key.correlationId);
     if (entry === undefined) return undefined;
-    this.entries.delete(serializedKey);
+    // An UNCLAIMED record has no owner and is therefore replayable by nobody —
+    // do not consume it here, or a guessed id could burn someone else's card.
+    if (entry.owner === undefined) return undefined;
+    // The full triple. A mismatch is a miss and must NOT consume the record:
+    // otherwise a wrong-owner attempt would destroy the rightful owner's card.
+    if (serializeOwner(entry.owner) !== serializeOwner(key)) return undefined;
+    this.entries.delete(key.correlationId);
     if (entry.expiresAt <= this.now()) return undefined;
     return entry.record;
   }
@@ -246,9 +277,6 @@ export class InMemoryPendingMcpInputStore implements PendingMcpInputStore {
     const now = this.now();
     for (const [k, entry] of this.entries) {
       if (entry.expiresAt <= now) this.entries.delete(k);
-    }
-    for (const [turnId, serializedKey] of this.turnSlots) {
-      if (!this.entries.has(serializedKey)) this.turnSlots.delete(turnId);
     }
   }
 
@@ -396,24 +424,40 @@ export function extractMcpInputPrompt(res: unknown): string | undefined {
  * first-call-wins guard, a model that re-calls anyway gets
  * {@link MCP_INPUT_ALREADY_PENDING_SENTINEL} rather than a second card.
  */
-export const MCP_INPUT_REQUIRED_SENTINEL_PREFIX = '[mcp_input_required]';
+export const MCP_INPUT_REQUIRED_SENTINEL_PREFIX = '[mcp_input_required:';
 
+/**
+ * The sentinel embeds the correlation id, which is what lets the orchestrator
+ * link a parked record to THIS turn without any ambient context — see
+ * {@link PendingMcpInputStore}. Same idea as the `_pendingUserChoice` payload
+ * plugins emit in their tool-result strings.
+ */
 export function mcpInputRequiredSentinel(record: PendingMcpInput): string {
   const fieldNames = record.inputRequests.map((f) => f.name).join(', ');
   return (
-    `${MCP_INPUT_REQUIRED_SENTINEL_PREFIX} Der MCP-Server "${record.serverName}" ` +
-    `braucht für "${record.toolName}" noch Eingaben vom User (${fieldNames}). ` +
-    'Der Turn endet hier: der User bekommt ein Eingabe-Formular und die Antwort ' +
-    'wird im nächsten Turn automatisch an den Server übermittelt. ' +
-    'Ruf das Tool NICHT erneut auf und erfinde keine Werte.'
+    `${MCP_INPUT_REQUIRED_SENTINEL_PREFIX}${record.correlationId}] ` +
+    `Der MCP-Server "${record.serverName}" braucht für "${record.toolName}" noch ` +
+    `Eingaben vom User (${fieldNames}). Der Turn endet hier: der User bekommt ein ` +
+    'Eingabe-Formular und die Antwort wird im nächsten Turn automatisch an den ' +
+    'Server übermittelt. Ruf das Tool NICHT erneut auf und erfinde keine Werte.'
   );
 }
 
-/** Second `input_required` inside one turn — the first card already won. */
-export const MCP_INPUT_ALREADY_PENDING_SENTINEL =
-  `${MCP_INPUT_REQUIRED_SENTINEL_PREFIX} In diesem Turn wartet bereits eine ` +
-  'User-Eingabe für einen MCP-Server. Nur die erste zählt. Ruf keine weiteren ' +
-  'Tools auf und warte auf die Antwort des Users.';
+/**
+ * Pull the correlation id back out of a tool-result string.
+ *
+ * Deliberately anchored at the START of the string: the sentinel is the WHOLE
+ * result the manager returned, so a server that merely echoes the prefix inside
+ * its own output text cannot forge a card. Returns `undefined` for anything
+ * else, so an ordinary tool result stays an ordinary tool result.
+ */
+export function parseMcpInputSentinel(result: string): string | undefined {
+  if (!result.startsWith(MCP_INPUT_REQUIRED_SENTINEL_PREFIX)) return undefined;
+  const end = result.indexOf(']', MCP_INPUT_REQUIRED_SENTINEL_PREFIX.length);
+  if (end === -1) return undefined;
+  const id = result.slice(MCP_INPUT_REQUIRED_SENTINEL_PREFIX.length, end).trim();
+  return id.length > 0 && id.length <= NAME_MAX ? id : undefined;
+}
 
 /** The bounce cap tripped — tell the model plainly, do not park again. */
 export function mcpInputReplayCappedError(record: PendingMcpInput): string {
@@ -514,6 +558,38 @@ export function parseMcpInputReply(
     inputResponses[k.slice(0, NAME_MAX)] = v.slice(0, RESPONSE_VALUE_MAX);
   }
   return { correlationId, inputResponses };
+}
+
+/**
+ * W2-1 (#544) — claim the card for THIS turn out of the batch's tool results.
+ *
+ * Scans in submission order and claims the FIRST sentinel; every later one in
+ * the same batch is dropped, so a model that fired several MCP calls gets
+ * exactly one card and no orphaned records linger. Deterministic with the
+ * dispatch order, matching `extractToolEmittedChoice`'s documented rule.
+ *
+ * `results` carries the model-facing strings the orchestrator already holds — no
+ * ambient context is consulted, which is the whole point (see
+ * {@link PendingMcpInputStore}).
+ */
+export function claimMcpInputFromResults(
+  store: PendingMcpInputStore,
+  results: readonly string[],
+  owner: PendingMcpInputOwner,
+): PendingMcpInput | undefined {
+  let claimed: PendingMcpInput | undefined;
+  for (const result of results) {
+    const correlationId = parseMcpInputSentinel(result);
+    if (correlationId === undefined) continue;
+    if (claimed === undefined) {
+      claimed = store.claim(correlationId, owner);
+      if (claimed !== undefined) continue;
+    }
+    // Either a later sibling, or a sentinel whose record is already claimed /
+    // expired. Nothing will ever render it, so do not leave it parked.
+    store.drop(correlationId);
+  }
+  return claimed;
 }
 
 /**

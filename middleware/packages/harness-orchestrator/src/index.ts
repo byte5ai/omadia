@@ -161,13 +161,13 @@ export type {
 // W2-1 (#544) — MRTR mid-call user input.
 export {
   InMemoryPendingMcpInputStore,
-  MCP_INPUT_ALREADY_PENDING_SENTINEL,
   MCP_INPUT_MAX_REPLAY_DEPTH,
   MCP_INPUT_REPLY_PREFIX,
   MCP_INPUT_REQUEST_MAX_FIELDS,
   MCP_INPUT_REQUIRED_SENTINEL_PREFIX,
   PENDING_MCP_INPUT_MAX_ENTRIES,
   PENDING_MCP_INPUT_TTL_MS,
+  claimMcpInputFromResults,
   extractMcpInputPrompt,
   formatMcpInputReply,
   mcpInputMalformedError,
@@ -177,6 +177,7 @@ export {
   mcpInputReplyLabel,
   parseMcpInputReply,
   parseMcpInputRequests,
+  parseMcpInputSentinel,
   resetSharedMcpInputWiring,
   setSharedMcpInputReplayer,
   sharedMcpInputReplayer,
@@ -191,6 +192,7 @@ export type {
   McpInputReply,
   PendingMcpInput,
   PendingMcpInputKey,
+  PendingMcpInputOwner,
   PendingMcpInputStore,
   PutPendingMcpInputResult,
 } from './mcp/pendingMcpInput.js';

@@ -55,6 +55,7 @@ import type {
   PendingMcpInputStore,
 } from './mcp/pendingMcpInput.js';
 import {
+  claimMcpInputFromResults,
   mcpInputReplyLabel,
   parseMcpInputReply,
 } from './mcp/pendingMcpInput.js';
@@ -1991,9 +1992,30 @@ export class Orchestrator {
    * every concurrent turn, so the drain is keyed on the turn id — see
    * `takePending(turnId)`.
    */
-  private drainPendingMcpInput(): PendingMcpInput | undefined {
+  private drainPendingMcpInput(
+    toolResults: ContentBlock[],
+    input: ChatTurnInput,
+    turnId: string,
+  ): PendingMcpInput | undefined {
     if (!this.pendingMcpInput) return undefined;
-    return this.pendingMcpInput.takePending(turnContext.currentTurnId() ?? null);
+    const strings: string[] = [];
+    for (const block of toolResults) {
+      if (block.type !== 'tool_result') continue;
+      const shape = block as { content?: unknown; is_error?: boolean };
+      // A failed tool call never parked anything; skip it for the same reason
+      // `extractToolEmittedChoice` does.
+      if (shape.is_error === true) continue;
+      if (typeof shape.content === 'string') strings.push(shape.content);
+    }
+    if (strings.length === 0) return undefined;
+    // The owner is bound HERE, from the turn input the orchestrator holds
+    // reliably on both paths — never from ambient context, which the streaming
+    // path cannot provide. `sessionScope ?? turnId` mirrors the sessionId every
+    // other turn-scoped consumer uses, and is only ONE component of the key.
+    return claimMcpInputFromResults(this.pendingMcpInput, strings, {
+      userId: input.userId ?? null,
+      sessionId: input.sessionScope ?? turnId,
+    });
   }
 
   /**
@@ -3848,7 +3870,11 @@ export class Orchestrator {
         // drained (so it cannot leak into a later turn's card) but the keyed
         // record stays replayable until its TTL, so the model can resume after
         // the clarification instead of the parked call vanishing.
-        const pendingMcpInputCard = this.drainPendingMcpInput();
+        const pendingMcpInputCard = this.drainPendingMcpInput(
+          toolResults,
+          input,
+          turnId,
+        );
         if (pendingUserChoice) {
           this.drainAttachments();
           // Follow-up suggestions are incompatible with a blocking choice
@@ -4883,7 +4909,11 @@ export class Orchestrator {
         );
         // W2-1 (#544) — mirror of chatInContextInner, including the
         // deterministic winner rule. See the comment there.
-        const pendingMcpInputCard = this.drainPendingMcpInput();
+        const pendingMcpInputCard = this.drainPendingMcpInput(
+          toolResults,
+          input,
+          turnId,
+        );
         if (pendingUserChoice) {
           this.drainAttachments();
           // Follow-up suggestions are incompatible with a blocking choice

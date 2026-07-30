@@ -38,7 +38,6 @@ import type {
 import { turnContext } from '../turnContext.js';
 import {
   MCP_INPUT_MAX_REPLAY_DEPTH,
-  MCP_INPUT_ALREADY_PENDING_SENTINEL,
   extractMcpInputPrompt,
   mcpInputMalformedError,
   mcpInputReplayCappedError,
@@ -344,19 +343,6 @@ export interface McpManagerOptions {
    * (`mcpInputUnsupportedError`) rather than vanishing.
    */
   readonly pendingInput?: PendingMcpInputStore;
-  /**
-   * Issue #544 (W2-1) — resolves the identity a parked record is keyed to.
-   *
-   * The manager must NOT invent this: keying on the session alone is the known
-   * cross-user hole from #445 (`resolveScope` returns the literal
-   * `'http-default'`). The host supplies `{userId, sessionId}` from the same
-   * turn state its own auth uses; when it cannot, the record is not parked at
-   * all and the call degrades to an error. Defaults to reading the turn context.
-   */
-  readonly pendingInputOwner?: () => {
-    readonly userId: string | null;
-    readonly sessionId: string | null;
-  };
 }
 
 /** True when an error/result string looks like an authorization failure. */
@@ -570,28 +556,16 @@ export class McpManager {
       // signal available here, since the manager is stateless per call.
       replayDepth: REPLAY_ARG_KEY in args ? MCP_INPUT_MAX_REPLAY_DEPTH : 0,
     };
-    const ctx = turnContext.current();
-    const turnId = ctx !== undefined && ctx.turnId !== '' ? ctx.turnId : null;
-    const owner = this.options?.pendingInputOwner?.() ?? {
-      userId: ctx?.userId ?? null,
-      sessionId: ctx?.sessionScope ?? null,
-    };
-    const outcome = store.put(
-      {
-        userId: owner.userId,
-        sessionId: owner.sessionId,
-        correlationId: record.correlationId,
-      },
-      record,
-      turnId,
-    );
-    if (outcome === 'replay_capped') {
+    // Parked WITHOUT an owner: the manager has no reliable turn identity (see
+    // `PendingMcpInputStore`). The orchestrator binds the owner when it claims
+    // the record via the correlation id embedded in the sentinel below. Until
+    // then the record is replayable by nobody.
+    if (store.put(record) === 'replay_capped') {
       const failure = mcpInputReplayCappedError(record);
       this.emitCall(cfg, toolName, 'fail', failure, startedAt, actingIdentity);
       return failure;
     }
     this.emitCall(cfg, toolName, 'input_required', null, startedAt, actingIdentity);
-    if (outcome === 'already_pending') return MCP_INPUT_ALREADY_PENDING_SENTINEL;
     this.emitInputRequired(cfg, toolName, record);
     return mcpInputRequiredSentinel(record);
   }
