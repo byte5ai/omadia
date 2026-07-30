@@ -18,6 +18,57 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — the CI schema job never applied `middleware/migrations`
+
+- `MIGRATION_DOMAINS` in `.github/workflows/ci.yml` listed five domains and
+  omitted `middleware/migrations` — the core runtime domain holding `0001`
+  through `0030`. Every migration there had therefore shipped without ever
+  being applied, or re-applied for the idempotency check, against a real
+  Postgres in CI: the whole MCP schema (`0003` agent-builder graph, `0008`
+  tool verdicts, `0009` call log, `0010`/`0013` registries, `0012`/`0014`
+  grants, `0015`/`0016` OAuth 2.1 + PKCE, `0017`–`0020`) and every
+  dev-platform migration (`0022`–`0030`). The gap was suspected during #330
+  and is now closed; the domain is applied first, ahead of the knowledge-graph
+  domain.
+- **No latent schema defect was exposed.** All 30 files apply and re-apply
+  cleanly against `pgvector/pgvector:pg16`, in both possible domain
+  orderings, and additionally with rows present. The domain is fully
+  self-contained: no cross-domain foreign keys, no shared object names with
+  the other five domains, and no extension dependency at all
+  (`gen_random_uuid()` is core since pg13). Verified locally with a
+  reproduction of the CI job before the workflow change was pushed.
+- The workflow comment now records the three domains that remain uncovered
+  (`middleware/src/conductor/migrations`,
+  `middleware/src/services/graph/migrations`,
+  `middleware/packages/harness-memory-postgres/src/migrations`), each of which
+  needs its own audit before being enabled.
+
+### Added — first pg coverage for the MCP schema
+
+- `middleware/test/mcpRegistrySchema.pg.test.ts` — no pg test touched MCP
+  before this (only `memoryStoreConformance`, `pluginVerdictStore` and
+  `skillLifecycleStore` existed). Asserts the registry seed and catalog-kind
+  backfill (`0010` + `0013`, including that `0013`'s `UPDATE` actually lifts
+  the official registry off the `generic` column default), the `kind` /
+  `auth_kind` / `source` / `registered_via` CHECK sets, marketplace
+  provenance defaults with `ON DELETE SET NULL` detaching an imported server
+  from a deleted catalog, the `0014` partial unique index on top-level MCP
+  grants (and that it leaves native grants alone), and the `0015`/`0016`
+  OAuth surface — authorize-time endpoint pinning plus token/flow cascade on
+  server delete.
+- A second suite covers what the CI gate structurally cannot: the CI
+  idempotency check re-applies against an **empty** database, so it can never
+  catch a migration that only breaks once rows exist. That suite re-applies
+  all 30 files with MCP rows in place, in its own throwaway database —
+  re-running `0001`/`0003` drops and recreates the NOTIFY triggers, which
+  must not happen underneath a concurrently running suite.
+- Both suites skip when no test Postgres is reachable, and scope every row
+  they write to a `w04-mcp-` tenant prefix, matching the existing pg-suite
+  convention. Their pools are capped: the runner executes test files
+  concurrently and ~16 other pg suites each hold a default-sized (max 10)
+  pool, so an uncapped extra pool in one file exhausts `max_connections` and
+  cancels an unrelated suite mid-run.
+
 ### Added — plugin-contributed navigation (#470, phase 1 of the Dev Platform extraction)
 
 - New plugin capability `ctx.uiRoutes.registerNav({ navId, href, cluster?,
