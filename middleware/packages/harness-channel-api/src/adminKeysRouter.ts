@@ -3,22 +3,31 @@
  *
  * Deliberately NOT exempted in `middleware/src/auth/publicPaths.ts` (only
  * `/api/public/v1/chat` is) — key lifecycle is an operator action, meant to
- * stay behind the same session an operator uses everywhere else. BUT not
- * being in `publicPaths.ts` is NOT what enforces that: `core.registerRouter`
+ * stay behind the same session an operator uses everywhere else. `core.registerRouter`
  * (the kernel API this router is mounted through, in `plugin.ts`) applies
- * only an active/inactive gate, never authentication — see the
+ * only an active/inactive gate, never authentication itself — see the
  * `RoutesAccessor` doc comment on `PluginContext` ("the kernel does not
- * inject middleware around the contributed router"). A previous revision of
- * this file claimed the publicPaths omission alone was the auth story; that
- * was false and left every route here completely unauthenticated.
+ * inject middleware around the contributed router") — but that is not the
+ * whole picture: `middleware/src/index.ts` mounts a broad `app.use('/api',
+ * requireAuth, ...)` ahead of `pluginRouteRegistry.mountAll(app)` in boot
+ * order, so every `/api/*` request, including this plugin's, already passes
+ * through that session gate unless its path is listed in `publicPaths.ts`
+ * (only `.../chat` is). A previous revision of this file's comment claimed
+ * the publicPaths omission alone left these routes reachable by any
+ * anonymous caller; a runtime reproduction mirroring the real mount order
+ * disproved that — see `docs/security-architecture.md` § 9 for the full
+ * account and why that coverage, while real, was an *implicit* invariant
+ * worth replacing with an explicit one.
  *
- * The REAL gate is the middleware below: it calls `ctx.operatorAuth`
- * (`@omadia/plugin-api`, kernel-published, wraps the exact same
- * verification logic `requireAuth` uses for `/api/v1/*`) on every request,
- * BEFORE any handler runs, and fails closed — refuses to serve at all
- * (`503`) — if the host never wired an `operatorAuth` accessor into this
+ * The middleware below adds that explicit, non-implicit gate: it calls
+ * `ctx.operatorAuth` (`@omadia/plugin-api`, kernel-published, wraps the
+ * exact same verification logic `requireAuth` uses for `/api/v1/*`) on every
+ * request, BEFORE any handler runs, and fails closed — refuses to serve at
+ * all (`503`) — if the host never wired an `operatorAuth` accessor into this
  * plugin's context. Missing/invalid session → `401`, in the same
- * `{code, message}` shape `requireAuth` itself returns.
+ * `{code, message}` shape `requireAuth` itself returns. That guarantee no
+ * longer depends on mount order or on this path staying out of
+ * `publicPaths.ts` — it travels with the router regardless.
  *
  * Issue #439 added `scopes` to creation and to the listing, on top of — never
  * instead of — that operator-session gate. Omitting `scopes` yields
