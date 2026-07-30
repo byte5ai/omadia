@@ -835,6 +835,148 @@ die verbleibenden Phasen: `specs/470-dev-platform-plugin/plan.md`.
 
 ---
 
+### Public API Channel (issue #438)
+
+Neues Built-in-Channel-Plugin `packages/harness-channel-api/`
+(`@omadia/channel-api`, `kind: channel`), erster nicht-Session-Cookie-Ingress
+für externe Systeme: **`POST /api/public/v1/chat`** treibt einen Turn genau
+wie jeder andere Channel — über `core.registerRouter` +
+`CoreApi.handleTurnStream` —, authentifiziert aber per **API-Key**
+(`Authorization: Bearer omk_…`) statt Session-Cookie. NDJSON-Framing
+identisch zu `/chat/stream` (`src/routes/chat.ts`); da der Turn über
+`CoreApi.handleTurnStream` läuft, greifen PII-Masking (Privacy-Guard),
+Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
+
+- **Credential-Modell** (geklärte Design-Entscheidung im Issue): ein API-Key
+  **ist** seine eigene Identität — `ChannelUserRef{ kind: 'custom', id:
+  'key:<id>' }` —, kein Delegat für einen menschlichen Endnutzer. Keine
+  Impersonation-Fläche.
+- **Storage:** vault-backed über `ctx.secrets` (eigener Plugin-Namespace,
+  `permissions.secrets.runtime_write: true`) — kein DB-Migration nötig. Nur
+  der sha256-Hash landet im Vault; der Klartext-Key wird genau einmal beim
+  `create()` zurückgegeben (`packages/harness-channel-api/src/apiKeyToken.ts`,
+  spiegelt `src/devplatform/jobToken.ts`s Mint/Hash/Verify-Muster —
+  `crypto.timingSafeEqual`, kein früh-abbrechender String-Vergleich).
+- **Rate-Limiting:** Fixed-Window-Token-Bucket pro Key
+  (`rateLimiter.ts`, spiegelt `platform/httpAccessor.ts`s `TokenBucket`),
+  Kapazität pro Key konfigurierbar (`create({ rateLimitPerMinute })`),
+  Default 60/min. Über Budget → `429`.
+- **Audit-Log:** jeder authentifizierte Call schreibt einen Eintrag
+  (`keyId`, `route`, `method`, `at`, `status`) — vault-backed, auf die
+  letzten `MAX_ENTRIES` (200) gedeckelt, Writes seriell über eine interne
+  Promise-Queue (`auditLog.ts`).
+- **Key-Lifecycle** (`GET`/`POST /api/public/v1/admin/keys`, `POST
+  /api/public/v1/admin/keys/:id/revoke`) liegt bewusst unter demselben
+  `/api/public/v1`-Prefix, ist aber **nicht** in
+  `src/auth/publicPaths.ts`s Exemption-Liste — nur `.../chat` ist public.
+  Ein früherer Stand dieser Notiz behauptete, das sei ein kompletter
+  Auth-Bypass gewesen (jeder anonyme Caller könnte Keys minten/listen/
+  revoken); das war empirisch falsch. `src/index.ts` mountet früh im Boot
+  `app.use('/api', requireAuth, createChatRouter(...))` (der OB-106-Hotfix)
+  — lange bevor `pluginRouteRegistry.mountAll(app)` später im selben Boot
+  läuft. Express wertet Middleware in Mount-Reihenfolge für den gesamten
+  `/api`-Prefix aus, unabhängig davon, welcher Router den Pfad am Ende
+  bedient — `requireAuth` lief also bereits vor JEDEM `/api/*`-Request,
+  auch plugin-gemounteten, außer der Pfad steht in
+  `publicPaths.ts`. `/api/public/v1/admin/keys` stand dort nie, war also
+  schon durch dieses Gate geschützt — genau wie jede andere
+  nicht-exemptierte Channel-Route. Eine Minimal-Reproduktion mit dem
+  echten Mount-Order (echtes `createRequireAuth` + `publicPaths`) bestätigt:
+  ein anonymer Request auf `/api/public/v1/admin/keys` bekommt `401
+  {code:'auth.missing'}` von diesem Gate, bevor er überhaupt den
+  Plugin-Router (der selbst keine eigene Auth hat, da `core.registerRouter`
+  nur active/inactive prüft) erreicht.
+
+  Diese Absicherung ist real, aber implizit — sie hängt an der Mount-
+  Reihenfolge und daran, dass der Pfad nie in `publicPaths.ts` landet.
+  Beides kann ein künftiger Refactor versehentlich brechen, ohne dass
+  etwas sichtbar fehlschlägt. Deshalb der reale Fix (Kernel-Ebene,
+  Security-Nachbesserung), der die Absicherung explizit statt implizit
+  macht: `PluginContext` bekommt ein optionales `ctx.operatorAuth`
+  (`OperatorAuthAccessor`), vom Kernel published und in jede
+  Plugin-Runtime durchgereicht (`ToolPluginRuntime`, `DynamicAgentRuntime`,
+  `DefaultChannelRegistry`). `hasValidSession(cookieHeader)` nutzt exakt
+  dieselbe Verifikationslogik wie `requireAuth`
+  (`evaluateSessionToken` in `src/auth/requireAuth.ts`) — ein Code-Pfad,
+  keine zwei, die auseinanderlaufen können. `adminKeysRouter.ts` wendet das
+  jetzt als Router-Middleware VOR jedem Handler an: fehlende/ungültige
+  Session → `401`; kein `ctx.operatorAuth` verfügbar → `503` (fail closed,
+  nie stillschweigend offen). Der Vorteil ist, dass die Garantie nicht mehr
+  an der Mount-Reihenfolge hängt und künftige Plugins mit Admin-Fläche den
+  Accessor wiederverwenden können, statt sich auf dieselbe Koinzidenz zu
+  verlassen. Siehe `docs/security-architecture.md` § 9 für die volle
+  Mechanik.
+- **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
+  extend to other flows" — weitere Flows sind Folge-Issues).
+
+Tests: `test/channelApi/` — u.a. eine echte Orchestrator- + echte
+Privacy-Guard-Integration (`chatRouterPrivacyIntegration.test.ts`, spiegelt
+`test/orchestrator/promptMaskPipeline.test.ts`s "realer Turn, gefakter LLM"-
+Muster), Auth/Rate-Limit/Revoke/Audit-Wiring (`chatRouter.test.ts`), Key-CRUD
++ die reale `ctx.operatorAuth`-Verifikation inkl. Fail-closed-Pfad
+(`adminKeysRouter.test.ts`), und die `publicPaths`-Exemption
+(`publicPathsExemption.test.ts`).
+
+---
+
+### API-Keys als eigenständige Auth-Methode (issue #439)
+
+Issue #438 hatte die Bearer-Auth plugin-intern gebaut und genau **eine** Route
+abgesichert. #439 macht daraus eine allgemeine Authentifizierungs-Methode
+neben dem Session-Cookie — Zielfall: eine Laravel/PHP-Integration, die omadia
+vom eigenen Server aus aufruft, ohne menschliche Session.
+
+- **Neues Workspace-Package `packages/harness-api-key-auth/`
+  (`@omadia/api-key-auth`).** `apiKeyToken.ts`, `apiKeyStore.ts`,
+  `rateLimiter.ts` und `auditLog.ts` sind aus `harness-channel-api/`
+  hierher gezogen; es gibt danach **genau eine** Implementierung von
+  Mint/Hash/Verify/Store. Warum ein Package und nicht `src/auth/`: der Kernel
+  darf nie aus einem Channel-Plugin importieren, und ein Plugin kann keinen
+  Kernel-Source importieren (eigenes `tsconfig` mit `rootDir: src`, Auflösung
+  ausschließlich über `@omadia/*`). Ein Workspace-Package ist die einzige
+  Stelle, die beide Richtungen bedient — dieselbe Rolle, die
+  `@omadia/plugin-api` und `@omadia/channel-sdk` schon spielen.
+  Das Package ist bewusst dependency-frei (nur `express` als Peer): die
+  Storage-Abhängigkeit ist ein strukturelles Subset (`ApiKeySecretStorage` in
+  `secretStorage.ts`), das `SecretsAccessor` ohne Adapter erfüllt.
+- **`requireApiKey(...)`** (`requireApiKey.ts`) ist die mountbare
+  Express-Middleware: Bearer-Parsing → `verify()` → Rate-Limit → Scope-Check,
+  danach `req.apiKey: ApiKeyPrincipal`. Sie setzt **nicht** `req.session` —
+  `SessionClaims.role` ist hart `'admin'`, eine synthetische Session würde
+  jeden session-lesenden Downstream-Handler einen Key für einen Operator
+  halten lassen. Fehlerform `{ error, message }` wie in #438 (nicht
+  `{ code, message }` wie `createRequireAuth`), damit die Wire-Form von
+  `POST /api/public/v1/chat` unverändert bleibt.
+- **Scopes** (`apiKeyScopes.ts`): `<resource>:<action>` oder globales `*`,
+  exakter Match, keine Prefix-Wildcards. Keys ohne persistiertes `scopes`-Feld
+  (alles aus #438) werden auf `['chat:write']` normalisiert — genau die eine
+  Fähigkeit, die sie beim Minten hatten. `*` als Default wäre eine per Upgrade
+  ausgelieferte Rechteausweitung. Admin-Route nimmt `scopes` bei `POST`
+  entgegen (Zod-validiert → 400 statt 500) und zeigt sie im `GET`.
+  **`normalizeScopes` unterscheidet dabei *fehlend* von *kaputt*:** nur ein
+  komplett fehlendes Feld (`undefined`) bekommt den Legacy-Default; ein
+  vorhandenes, aber unlesbares Feld (kein Array, leeres Array, ungültige oder
+  teilweise ungültige Einträge wie `"memory:read"` als String oder
+  `['Chat:Write']`) ergibt die **leere** Scope-Menge — der Key
+  authentifiziert weiter, ist aber für nichts autorisiert, jeder
+  `hasScope`-Check schlägt fail-closed fehl. Beides in einen Grant zu
+  kollabieren würde einem Key, den ein Operator bewusst von Chat
+  weggeschnitten hat, genau diesen Chat-Zugriff zurückgeben. Jeder solche
+  Fall loggt eine `[api-key-auth] malformed persisted scopes`-Warnung.
+- **`publicPaths.ts` bleibt unverändert eng:** weiterhin nur
+  `/api/public/v1/chat`. Wer `requireApiKey` auf eine neue Route mountet,
+  braucht dort einen eigenen, möglichst engen Eintrag.
+
+Tests: `test/auth/requireApiKey.test.ts` (Auth/Scope/Rate-Limit/Audit der
+Middleware), `test/auth/apiKeyScopes.test.ts` (Scope-Modell inkl.
+Legacy-Default), `test/channelApi/apiKeyAuthReuseSeam.test.ts` (strukturelle
+Zusicherung, dass das Plugin keine zweite Kopie der Primitive hält und der
+Kernel kein Channel-Plugin importiert). Die bestehenden `test/channelApi/`-
+Suites laufen inhaltlich unverändert weiter, nur die Importpfade der
+verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
+
+---
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert

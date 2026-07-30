@@ -17,6 +17,7 @@ import { canvasOutputToolIds } from '../platform/canvasOutputRegistry.js';
 import { deterministicActionToolIds } from '../platform/deterministicActionRegistry.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import { createPluginContext } from '../platform/pluginContext.js';
+import type { OperatorAuthAccessor } from '@omadia/plugin-api';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
@@ -169,6 +170,10 @@ export interface DynamicAgentRuntimeDeps {
   flowPublicBaseUrl?: string;
   /** Spec 004 — backing store for `ctx.status`; cleared on deactivate. */
   pluginStatusRegistry?: PluginStatusRegistry;
+  /** Issue #438 follow-up — kernel-published `ctx.operatorAuth`, threaded
+   *  straight into every `createPluginContext`. Optional so narrow test
+   *  contexts can omit it (an admin router relying on it then fails closed). */
+  operatorAuth?: OperatorAuthAccessor;
   /** Issue #474 (round 5) — automatic OAuth-connection readiness signal,
    *  refreshed from the vault on every activate() and cleared on
    *  deactivate(). Separate from `pluginStatusRegistry` — see
@@ -395,6 +400,7 @@ export class DynamicAgentRuntime {
       flowSigningKey: this.deps.flowSigningKey,
       flowPublicBaseUrl: this.deps.flowPublicBaseUrl,
       pluginStatusRegistry: this.deps.pluginStatusRegistry,
+      operatorAuth: this.deps.operatorAuth,
       logger: (...args) => console.log(`[${agentId}]`, ...args),
     });
 
