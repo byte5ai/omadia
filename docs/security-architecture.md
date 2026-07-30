@@ -212,7 +212,188 @@ At a minimum, your deployment vault holds:
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
 
-## 9. Reviewer checklist
+## 9. API-key authentication (`@omadia/api-key-auth`, issues #438 / #439)
+
+API keys are omadia's **second authentication method**, alongside the
+human-bound `omadia_session` cookie. A server-to-server caller (the driving
+use case is a Laravel/PHP integration) has no human behind it and no cookie
+to present; it authenticates with a bearer key instead.
+
+**Where the code lives.** All of it — mint/hash/verify, the key store, the
+per-key rate limiter, the usage audit log, and the mountable `requireApiKey`
+Express middleware — lives in the workspace package
+`middleware/packages/harness-api-key-auth` (`@omadia/api-key-auth`). Issue
+#438 shipped these inside the `@omadia/channel-api` plugin; issue #439 moved
+them out so the kernel can use them too. The kernel must never import a
+channel plugin, and a plugin cannot import kernel source, so a shared package
+is the only home that lets both consume the same implementation. **There is
+exactly one implementation of the credential** — a second one, however small,
+is how a security-critical primitive quietly diverges.
+
+**Mounting it.** Any Express route, kernel or plugin, can apply
+`requireApiKey({ apiKeys, rateLimiter, auditLog, scope })`. It attaches an
+`ApiKeyPrincipal` to `req.apiKey` and deliberately does **not** populate
+`req.session`: a `SessionClaims` value means "a human logged in", and its
+`role` is hard-typed `'admin'`, so synthesizing one for a machine would make
+every downstream session-reading route silently treat a key as an operator.
+A route has to opt in to machine callers by reading `req.apiKey`.
+
+**Scopes (issue #439).** Every key carries a scope set — `<resource>:<action>`
+strings, or the global `*`. `requireApiKey` answers `403 forbidden` when the
+key lacks the scope the route declares. Matching is exact; there are no
+prefix wildcards (`chat:*`), because a prefix matcher invites the "I thought
+that didn't cover delete" mistake scopes exist to prevent. A key persisted
+before scopes existed has **no** `scopes` field at all and is normalized to
+`['chat:write']` — precisely the one capability it had when it was minted.
+Defaulting such keys to `*` would also keep them working, and would silently
+widen every existing key to whatever scoped surface lands next; that is a
+privilege escalation delivered by an upgrade, so it is not what we do.
+
+**Malformed persisted scopes deny, they do not default.** `normalizeScopes`
+distinguishes *absent* from *malformed*. Absent (`scopes === undefined`, the
+genuine pre-#439 record) → the legacy default above. Present but not an
+array, or an array containing anything that is not a valid scope string
+(`"memory:read"` stored as a bare string, `["Chat:Write"]` with the wrong
+case, `[]`) → the **empty** scope set: the key still authenticates, and every
+`hasScope` check on it fails closed, so it is authorized for nothing. This
+matters because a malformed field is at least as likely to be a key an
+operator deliberately restricted *away* from chat as it is to be corruption,
+and falling back to a capability grant in that case hands the key exactly the
+access the operator removed. Partially-valid arrays deny too rather than
+silently narrowing to the valid subset — a record we cannot read faithfully
+is a record we must not guess at. Each such case emits a
+`[api-key-auth] malformed persisted scopes` warning so an operator can see
+why a key stopped working.
+
+**Session-gate exemption stays narrow.** `POST /api/public/v1/chat` is the
+only API-key route exempted from the session middleware
+(`middleware/src/auth/publicPaths.ts`). Mounting `requireApiKey` on a new
+route requires adding that route to `publicPaths.ts` — add the narrowest
+regex that covers the one route, never a prefix that also catches its
+siblings. Note that omission from `publicPaths.ts` is *necessary but not
+sufficient* for a plugin-contributed router to be authenticated; see the
+admin-keys discussion immediately below for why. `POST /api/public/v1/chat`
+remains the first and only ingress this app exposes that is **not** cookie-
+or provider-JWT-gated.
+
+**Key administration (`/api/public/v1/admin/keys`) — kernel-published
+`ctx.operatorAuth`, in addition to the broad `/api` session gate.**
+`middleware/src/index.ts` mounts `app.use('/api', requireAuth,
+createChatRouter(...))` (the OB-106 hotfix) early in server boot, well
+before `pluginRouteRegistry.mountAll(app)` runs later in the same boot
+sequence. Express evaluates middleware in mount order for the whole `/api`
+prefix regardless of which router ultimately answers a given path, so
+`requireAuth` already runs in front of every `/api/*` request — including
+plugin-mounted routes — unless that specific path is listed in
+`middleware/src/auth/publicPaths.ts`'s exemption list. `/api/public/v1/admin/keys`
+was never added to that list (only `.../chat` was, deliberately), so it was
+already covered by this session gate, the same mechanism that protects
+every other channel's non-exempted routes (see `publicPaths.ts`'s own doc
+comment). An earlier revision of this document instead described the admin
+routes as reachable by any anonymous caller; that was wrong — it read
+`core.registerRouter` (`middleware/src/channels/routeRegistry.ts`, which
+does only gate on the channel's active/inactive state) as the sole gate in
+front of the router, without accounting for the broad `/api` mount that
+Express already applies ahead of it. A minimal reproduction mirroring the
+real mount order (real `createRequireAuth` + `publicPaths`, same mount
+sequence as `index.ts`) confirms an anonymous request to
+`/api/public/v1/admin/keys` gets `401 {code:'auth.missing'}` from that gate
+before ever reaching the plugin router.
+
+That coverage is real, but it depends on an *implicit* invariant: the
+broad `/api` mount happening to run before this plugin's router is mounted,
+and this path happening not to be added to `publicPaths.ts`. Either one is
+easy to break by accident in a future refactor — reordering mounts, moving
+this plugin behind a different prefix, or a well-meaning future PR adding
+`/api/public/v1/admin` to the exemption list by pattern-matching too
+broadly against the neighboring `/chat` entry. None of that would raise an
+error; the admin surface would just quietly stop being gated. So the fix
+below adds an *explicit* check inside the plugin itself, so the guarantee
+travels with the router regardless of where or in what order it gets
+mounted — and publishes a reusable accessor so future plugins that need an
+admin surface don't have to rely on the same mount-order coincidence.
+
+The real fix: `PluginContext` now exposes an optional `ctx.operatorAuth`
+(`OperatorAuthAccessor`, `middleware/packages/plugin-api/src/pluginContext.ts`),
+published by the kernel (`middleware/src/auth/operatorAuthAccessor.ts`) and
+wired into every plugin-context factory
+(`middleware/src/platform/pluginContext.ts`, threaded through
+`ToolPluginRuntime`, `DynamicAgentRuntime`, and `DefaultChannelRegistry`).
+`hasValidSession(cookieHeader)` reuses `evaluateSessionToken` — the EXACT
+SAME session-verification logic `requireAuth` runs (same cookie name, same
+signing key, same Entra-whitelist rule) — extracted into
+`middleware/src/auth/requireAuth.ts` so there is exactly one code path that
+decides session validity, never two that can drift apart.
+`adminKeysRouter.ts` applies this as router-level middleware ahead of every
+route: missing/invalid session → `401` (same `{code, message}` shape as
+`requireAuth`); `ctx.operatorAuth` itself unavailable (an older host that
+never wired it) → `503`, so the router **fails closed** rather than
+silently mounting unauthenticated. See `adminKeysRouter.test.ts`'s
+"operator-session auth" and "fails closed" test blocks for the coverage
+that was missing before this fix.
+
+**Credential model — per-key service identity.** Each API key *is* its own
+identity, not a delegate for a human end-user: `ChannelUserRef{ kind:
+'custom', id: 'key:<keyId>' }`. Every action traces to exactly one key;
+there is no impersonation trust boundary to design or police, and no
+"act on behalf of a user" surface in v1.
+
+**Storage — vault-backed, hash-only-at-rest.** Keys are minted as
+`omk_<32 random bytes, base64url>` (`apiKeyToken.ts`). The plaintext is
+returned to the operator exactly once, at creation time, and is never
+persisted; only its sha256 hex digest is written to this plugin's own
+`ctx.secrets` vault namespace (`apiKeyStore.ts`, one vault entry per key —
+no DB migration for v1). Hashing is deliberately unsalted: the key itself
+is a 256-bit high-entropy random value, not a low-entropy human-chosen
+secret, so there is no dictionary/rainbow-table surface for a salt to
+defend against — the same reasoning applies to GitHub PATs and Stripe API
+keys, which are also hashed unsalted.
+
+**Verification — constant-time.** `verify()` walks every stored,
+non-revoked key and compares each one's hash against the presented token's
+hash with `crypto.timingSafeEqual`, deliberately without an early return on
+the first match, so total work (and the timing signal) never depends on
+which key, if any, matched.
+
+**Rate limiting — fixed-window, per key, in-memory and per-process.** Each
+key gets its own in-memory fixed-window counter (`rateLimiter.ts`, 60s
+window, capacity = `rateLimitPerMinute` set at key-creation time). This
+state lives in a single Node process's memory only — it is **not** shared
+across multiple replicas/instances of this app, and a restart clears every
+counter. If this app is ever run with more than one replica behind a load
+balancer, each replica enforces the limit independently, so the effective
+ceiling for a key is `rateLimitPerMinute × replica count`, not the
+configured value. This is an accepted v1 trade-off, same bar as the
+`TokenBucket` in `httpAccessor.ts` elsewhere in this codebase — "good enough
+to stop a runaway caller", not a precise distributed quota. A shared/
+distributed limiter (e.g. Redis-backed) was explicitly considered and
+declined for v1; revisit only if multi-replica deployment of this app
+becomes real.
+
+**Revocation.** `POST /api/public/v1/admin/keys/:id/revoke` sets
+`revokedAt` on the key's vault record (idempotent — revoking an
+already-revoked key is a no-op that returns its unchanged view). `verify()`
+skips any record with `revokedAt` set, so a revoked key starts failing
+immediately on its very next call — no propagation delay, no cache to
+invalidate.
+
+**Usage audit.** Every call that gets *past key verification* — i.e. every
+authenticated call, regardless of what happens next — is recorded as one
+entry (`auditLog.ts`) with a status reflecting the real outcome: `ok`,
+`rate_limited`, `forbidden` (scope check failed), `invalid_request`, or
+`error` (the handler failed). `requireApiKey` records the outcomes it
+produces itself; the route handler records its own via
+`req.apiKey.audit(...)`, because only the handler knows whether the work
+succeeded. Unauthenticated calls (missing/invalid/revoked key) are not
+audited here — they never got the caller identity that makes an audit
+entry meaningful.
+
+**PII masking.** Chat turns from this ingress go through the exact same
+`CoreApi.handleTurnStream` dispatch as every other channel (Teams,
+Telegram, Omadia UI) — no second, parallel response path — so
+privacy-guard's prompt masking and receipt behavior apply identically.
+
+## 10. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
 

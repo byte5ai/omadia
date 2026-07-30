@@ -1,0 +1,57 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/channel-api"
+  name: "Public API Channel"
+  version: "0.1.0"
+  kind: "channel"
+  domain: "api"
+  description: "Exposes omadia's chat flow over a documented public HTTP API (issue #438) so external systems can integrate without a channel or the operator UI. POST /api/public/v1/chat streams an NDJSON turn, authenticated by a per-key vault-backed API key (constant-time verified, per-key rate limit, usage audit log) instead of the operator session cookie. Key lifecycle (create/list/revoke) is managed under /api/public/v1/admin/keys, which stays behind the normal operator session gate."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "MIT"
+  categories:
+    - "infrastructure"
+    - "channel"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+channel:
+  transport:
+    # Plain HTTP ingress (not a 3rd-party webhook) — callers authenticate with
+    # their own API key rather than a provider-signed payload, so
+    # verify_signature stays false and the router does its own auth.
+    kind: "webhook"
+    routes:
+      - path: "/api/public/v1/chat"
+        method: "POST"
+      - path: "/api/public/v1/admin/keys"
+        method: "GET"
+      - path: "/api/public/v1/admin/keys"
+        method: "POST"
+      - path: "/api/public/v1/admin/keys/:id/revoke"
+        method: "POST"
+    verify_signature: false
+  capabilities:
+    - "text"
+  adapters:
+    - "text"
+  # Classic channel — no dispatch_service set, so turns route to the shared
+  # `chatAgent` like every other non-Omadia-UI channel (see IncomingTurn's
+  # channelType doc).
+
+permissions:
+  filesystem:
+    scratch: false
+  # Vault-backed API-key + usage-audit storage in this plugin's OWN secret
+  # namespace (design decision on issue #438: no DB migration for v1). Never
+  # the raw key — only its sha256 hash (see apiKeyToken.ts).
+  secrets:
+    runtime_write: true

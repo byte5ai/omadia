@@ -1,0 +1,30 @@
+{
+  "name": "@omadia/api-key-auth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "description": "Server-to-server API-key authentication for omadia (issue #439). Owns the ONE implementation of mint/hash/verify, the vault-backed key store with per-key scopes, the per-key rate limiter, the usage audit log, and the mountable `requireApiKey` Express middleware. Deliberately dependency-free (except express types) so both the kernel and any plugin can consume it without a layering inversion.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "express": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
