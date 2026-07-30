@@ -4154,6 +4154,7 @@
       },
       "rateLimitInvalid": "Rate-Limit muss zwischen {min} und {max} Anfragen/Minute liegen.",
       "scopesRequired": "Mindestens einen Scope auswählen — ein Schlüssel ohne Scope kann nichts tun.",
+      "blockedByReveal": "Das Token oben zuerst ausblenden, bevor ein weiterer Schlüssel erstellt wird.",
       "submit": "Schlüssel erstellen",
       "creating": "Wird erstellt"
     },
@@ -4183,6 +4184,13 @@
         "confirm": "Widerruf bestätigen",
         "cancel": "Abbrechen"
       }
+    },
+    "errors": {
+      "notFound": "Dieser Schlüssel existiert nicht mehr — die Liste wurde aktualisiert.",
+      "authUnavailable": "Operator-Authentifizierung ist gerade nicht verfügbar. Bitte in Kürze erneut versuchen.",
+      "sessionExpired": "Die Sitzung ist abgelaufen. Weiterleitung zur Anmeldung …",
+      "invalidRequest": "Die Anfrage war ungültig — bitte die Werte oben prüfen und erneut versuchen.",
+      "generic": "Etwas ist schiefgelaufen (Fehler {status})."
     }
   }
 }

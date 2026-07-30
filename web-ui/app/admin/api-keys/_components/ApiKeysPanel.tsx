@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -12,7 +12,7 @@ import {
   type ApiKeyPublicView,
 } from '@/app/_lib/api';
 
-import { KeyStatusBadge, card, chipCls, inputCls, toFriendlyError } from './shared';
+import { KeyStatusBadge, card, chipCls, errorInlineCls, errorTextCls, inputCls, toFriendlyError } from './shared';
 
 type State =
   | { kind: 'loading' }
@@ -37,13 +37,34 @@ function parseRateLimitInput(raw: string): number | undefined {
   if (trimmed === '') return undefined;
   const n = Number(trimmed);
   if (!Number.isFinite(n)) return undefined;
-  return Math.trunc(n);
+  return n;
+}
+
+/** Immutable add/remove for the per-key id sets below (`pendingIds`,
+ *  `confirmingIds`) — every row's transient UI state is tracked by its own
+ *  key id rather than a single shared value, so two rows can be mid-action
+ *  at once without one clobbering the other's state (codex review finding). */
+function withId(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  if (set.has(id)) return set;
+  return new Set(set).add(id);
+}
+function withoutId(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  if (!set.has(id)) return set;
+  const next = new Set(set);
+  next.delete(id);
+  return next;
 }
 
 export function ApiKeysPanel(): React.ReactElement {
   const t = useTranslations('adminApiKeys');
+  const format = useFormatter();
 
   const [state, setState] = useState<State>({ kind: 'loading' });
+  // Guards against out-of-order responses: only the most recently ISSUED
+  // reload's result is ever applied to `state`. Without this, a slow initial
+  // mount fetch that resolves AFTER a post-create reload (which already
+  // reflects the new key) could stomp the newer state with stale data.
+  const reloadSeqRef = useRef(0);
 
   // Create form.
   const [label, setLabel] = useState('');
@@ -55,23 +76,31 @@ export function ApiKeysPanel(): React.ReactElement {
   // Reveal-once token, set only by a successful create. Cleared by an
   // explicit dismiss — never auto-hidden, never re-derived from a fetch (the
   // list endpoint never returns a token field, so there is nothing to leak
-  // even if this state were repopulated from a reload).
+  // even if this state were repopulated from a reload). Creation is BLOCKED
+  // while a reveal is on screen (see `canSubmit`) — otherwise a second
+  // create would silently overwrite the first key's only-ever-shown token
+  // before the operator had a chance to copy it.
   const [revealed, setRevealed] = useState<{ id: string; token: string } | null>(null);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
 
-  // Revoke flow.
-  const [confirmingId, setConfirmingId] = useState<string | null>(null);
-  const [pendingId, setPendingId] = useState<string | null>(null);
+  // Revoke flow. Both sets are keyed by key id (not a single shared value)
+  // so two different rows can be armed/revoked concurrently without one's
+  // confirm/busy state clobbering the other's.
+  const [confirmingIds, setConfirmingIds] = useState<ReadonlySet<string>>(new Set());
+  const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
 
   const reload = useCallback(async (): Promise<void> => {
+    const seq = ++reloadSeqRef.current;
     try {
       const res = await listApiKeys();
+      if (seq !== reloadSeqRef.current) return; // superseded by a newer reload
       setState({ kind: 'ready', keys: res.keys });
     } catch (err) {
-      setState({ kind: 'error', message: toFriendlyError(err) });
+      if (seq !== reloadSeqRef.current) return;
+      setState({ kind: 'error', message: toFriendlyError(err, t) });
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -81,14 +110,18 @@ export function ApiKeysPanel(): React.ReactElement {
   const rateLimitValue = useMemo(() => parseRateLimitInput(rateLimitInput), [rateLimitInput]);
   const rateLimitInvalid =
     rateLimitInput.trim() !== '' &&
-    (rateLimitValue === undefined || rateLimitValue < MIN_RATE_LIMIT || rateLimitValue > MAX_RATE_LIMIT);
+    (rateLimitValue === undefined ||
+      !Number.isInteger(rateLimitValue) ||
+      rateLimitValue < MIN_RATE_LIMIT ||
+      rateLimitValue > MAX_RATE_LIMIT);
 
   // A key with zero scopes is a credential that authenticates and can do
   // nothing — not a useful thing to mint, and the backend rejects an
   // explicit `scopes: []` outright (see CreateApiKeyInput doc comment).
   // Blocking submission here keeps that a clear, explained dead end instead
-  // of a 400 the operator has to decode.
-  const canSubmit = grantChatWrite && !rateLimitInvalid && !creating;
+  // of a 400 the operator has to decode. `!revealed` blocks a second create
+  // while the previous key's one-time token is still on screen unconfirmed.
+  const canSubmit = grantChatWrite && !rateLimitInvalid && !creating && !revealed;
 
   const onCreate = useCallback(async (): Promise<void> => {
     if (!canSubmit) return;
@@ -110,11 +143,11 @@ export function ApiKeysPanel(): React.ReactElement {
       setRevealed({ id: created.key.id, token: created.token });
       await reload();
     } catch (err) {
-      setCreateError(toFriendlyError(err));
+      setCreateError(toFriendlyError(err, t));
     } finally {
       setCreating(false);
     }
-  }, [canSubmit, label, rateLimitValue, reload]);
+  }, [canSubmit, label, rateLimitValue, reload, t]);
 
   const onCopyToken = useCallback(async (): Promise<void> => {
     if (!revealed) return;
@@ -137,7 +170,7 @@ export function ApiKeysPanel(): React.ReactElement {
   const onConfirmRevoke = useCallback(
     async (id: string): Promise<void> => {
       setActionError(null);
-      setPendingId(id);
+      setPendingIds((prev) => withId(prev, id));
       try {
         const { key } = await revokeApiKey(id);
         setState((prev) =>
@@ -146,16 +179,16 @@ export function ApiKeysPanel(): React.ReactElement {
             : prev,
         );
       } catch (err) {
-        setActionError(toFriendlyError(err));
+        setActionError(toFriendlyError(err, t));
         // The key may have been revoked/removed by someone else already —
         // resync the list rather than leaving a stale row on screen.
         await reload();
       } finally {
-        setPendingId(null);
-        setConfirmingId(null);
+        setPendingIds((prev) => withoutId(prev, id));
+        setConfirmingIds((prev) => withoutId(prev, id));
       }
     },
-    [reload],
+    [reload, t],
   );
 
   return (
@@ -173,6 +206,7 @@ export function ApiKeysPanel(): React.ReactElement {
               className={inputCls}
               value={label}
               maxLength={120}
+              disabled={!!revealed}
               onChange={(e) => setLabel(e.target.value)}
             />
           </label>
@@ -187,6 +221,7 @@ export function ApiKeysPanel(): React.ReactElement {
               max={MAX_RATE_LIMIT}
               placeholder={String(DEFAULT_RATE_LIMIT_HINT)}
               value={rateLimitInput}
+              disabled={!!revealed}
               onChange={(e) => setRateLimitInput(e.target.value)}
             />
           </label>
@@ -194,6 +229,7 @@ export function ApiKeysPanel(): React.ReactElement {
             <input
               type="checkbox"
               checked={grantChatWrite}
+              disabled={!!revealed}
               onChange={(e) => setGrantChatWrite(e.target.checked)}
             />
             <span className="type-mono-data text-[13px] text-[color:var(--fg)]">
@@ -205,14 +241,15 @@ export function ApiKeysPanel(): React.ReactElement {
           </Button>
         </div>
         {rateLimitInvalid && (
-          <p className="mt-2 text-[13px] text-[color:var(--danger)]">
+          <p className={`mt-2 ${errorTextCls}`}>
             {t('create.rateLimitInvalid', { min: MIN_RATE_LIMIT, max: MAX_RATE_LIMIT })}
           </p>
         )}
         {!grantChatWrite && (
-          <p className="mt-2 text-[13px] text-[color:var(--danger)]">{t('create.scopesRequired')}</p>
+          <p className={`mt-2 ${errorTextCls}`}>{t('create.scopesRequired')}</p>
         )}
-        {createError && <p className="mt-2 text-[13px] text-[color:var(--danger)]">{createError}</p>}
+        {revealed && <p className="mt-2 text-[13px] text-[color:var(--fg-muted)]">{t('create.blockedByReveal')}</p>}
+        {createError && <p className={`mt-2 ${errorTextCls}`}>{createError}</p>}
       </section>
 
       {revealed && (
@@ -235,7 +272,7 @@ export function ApiKeysPanel(): React.ReactElement {
               {t('reveal.dismiss')}
             </Button>
             {copyState === 'failed' && (
-              <span className="text-[12px] text-[color:var(--danger)]">{t('reveal.copyFailed')}</span>
+              <span className={errorInlineCls}>{t('reveal.copyFailed')}</span>
             )}
           </div>
         </section>
@@ -249,15 +286,15 @@ export function ApiKeysPanel(): React.ReactElement {
         {state.kind === 'loading' ? (
           <p className="text-sm opacity-70">{t('list.loading')}</p>
         ) : state.kind === 'error' ? (
-          <p className="text-sm text-[color:var(--danger)]">{state.message}</p>
+          <p className={errorTextCls}>{state.message}</p>
         ) : state.keys.length === 0 ? (
           <p className="text-sm text-[color:var(--fg-muted)]">{t('list.empty')}</p>
         ) : (
           <ul className="flex flex-col gap-3">
             {state.keys.map((key) => {
               const isActive = key.revokedAt === undefined;
-              const isPending = pendingId === key.id;
-              const isConfirming = confirmingId === key.id;
+              const isPending = pendingIds.has(key.id);
+              const isConfirming = confirmingIds.has(key.id);
               return (
                 <li key={key.id} className={card}>
                   <div className="flex flex-wrap items-center justify-between gap-4">
@@ -278,11 +315,20 @@ export function ApiKeysPanel(): React.ReactElement {
                       <span className="text-[12px] text-[color:var(--fg-muted)]">
                         {t('list.rateLimitValue', { value: key.rateLimitPerMinute })}
                         {' · '}
-                        {t('list.createdAt', { date: new Date(key.createdAt).toLocaleString() })}
+                        {t('list.createdAt', {
+                          date: format.dateTime(new Date(key.createdAt), {
+                            dateStyle: 'medium',
+                            timeStyle: 'short',
+                          }),
+                        })}
                       </span>
                     </div>
                     {isActive && !isConfirming && (
-                      <Button variant="danger" size="sm" onClick={() => setConfirmingId(key.id)}>
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={() => setConfirmingIds((prev) => withId(prev, key.id))}
+                      >
                         {t('list.revoke')}
                       </Button>
                     )}
@@ -306,7 +352,7 @@ export function ApiKeysPanel(): React.ReactElement {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => setConfirmingId(null)}
+                          onClick={() => setConfirmingIds((prev) => withoutId(prev, key.id))}
                           disabled={isPending}
                         >
                           {t('list.confirmRevoke.cancel')}
@@ -320,7 +366,7 @@ export function ApiKeysPanel(): React.ReactElement {
           </ul>
         )}
 
-        {actionError && <p className="mt-4 text-sm text-[color:var(--danger)]">{actionError}</p>}
+        {actionError && <p className={`mt-4 ${errorTextCls}`}>{actionError}</p>}
       </section>
     </>
   );

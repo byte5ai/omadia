@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../../../_lib/test-utils';
@@ -118,7 +118,7 @@ describe('<ApiKeysPanel />', () => {
     expect(await screen.findByText('sk-live-plaintext-token-value')).toBeTruthy();
     expect(screen.getByText(/only time this token is shown/i)).toBeTruthy();
 
-    fireEvent.click(screen.getByText(/dismiss/i));
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
     expect(screen.queryByText('sk-live-plaintext-token-value')).toBeNull();
   });
 
@@ -185,5 +185,91 @@ describe('<ApiKeysPanel />', () => {
 
     expect(screen.getByText('Create key')).toHaveProperty('disabled', true);
     expect(mockCreateApiKey).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-integer rate limit instead of silently truncating it', async () => {
+    mockListApiKeys.mockResolvedValue({ keys: [] });
+    renderWithIntl(<ApiKeysPanel />);
+
+    await screen.findByText(/No API keys yet/i);
+    fireEvent.change(screen.getByPlaceholderText('60'), { target: { value: '60.7' } });
+
+    expect(screen.getByText('Create key')).toHaveProperty('disabled', true);
+    expect(mockCreateApiKey).not.toHaveBeenCalled();
+  });
+
+  // Regression guard for a codex review finding: creating a second key while
+  // the first one's plaintext token is still displayed would silently
+  // overwrite it in React state before the operator could copy it — the
+  // create form must stay blocked until the reveal is explicitly dismissed.
+  it('blocks creating a second key while a token reveal is still showing', async () => {
+    mockListApiKeys.mockResolvedValue({ keys: [] });
+    mockCreateApiKey.mockResolvedValue({
+      key: key(),
+      token: 'sk-live-plaintext-token-value',
+    });
+    renderWithIntl(<ApiKeysPanel />);
+
+    await screen.findByText(/No API keys yet/i);
+    fireEvent.click(screen.getByText('Create key'));
+
+    expect(await screen.findByText('sk-live-plaintext-token-value')).toBeTruthy();
+    expect(screen.getByText('Create key')).toHaveProperty('disabled', true);
+    expect(screen.getByText(/Dismiss the token above/i)).toBeTruthy();
+    expect(mockCreateApiKey).toHaveBeenCalledTimes(1);
+
+    // Dismissing re-enables it.
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
+    expect(screen.getByText('Create key')).toHaveProperty('disabled', false);
+  });
+
+  // Regression guard for a codex review finding: a single global `pendingId`
+  // meant a second row's revoke could clear the first row's busy/confirm
+  // state (and vice versa) when either promise settled.
+  it('revokes two different keys concurrently without one clobbering the other\'s confirm state', async () => {
+    mockListApiKeys.mockResolvedValue({ keys: [key({ id: 'key-1' }), key({ id: 'key-2', label: 'Second bot' })] });
+    let resolveFirst: ((v: { key: ApiKeyPublicView }) => void) | undefined;
+    mockRevokeApiKey.mockImplementation((id: string) => {
+      if (id === 'key-1') {
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve({ key: key({ id: 'key-2', label: 'Second bot', revokedAt: Date.now() }) });
+    });
+    renderWithIntl(<ApiKeysPanel />);
+
+    await screen.findByText('CI bot');
+    await screen.findByText('Second bot');
+
+    // Arm + confirm the first row — its revoke call hangs (not yet resolved).
+    const firstRevokeButton = screen.getAllByText('Revoke')[0];
+    expect(firstRevokeButton).toBeDefined();
+    fireEvent.click(firstRevokeButton as HTMLElement);
+    fireEvent.click(screen.getByText('Confirm revoke'));
+    await waitFor(() => expect(mockRevokeApiKey).toHaveBeenCalledWith('key-1'));
+
+    // Arm + confirm the second row while the first is still in flight. Only
+    // one "Revoke" button remains (row 1 is now showing its confirm UI).
+    const secondRevokeButton = screen.getAllByText('Revoke')[0];
+    expect(secondRevokeButton).toBeDefined();
+    fireEvent.click(secondRevokeButton as HTMLElement);
+    fireEvent.click(screen.getByText('Confirm revoke'));
+    await waitFor(() => expect(mockRevokeApiKey).toHaveBeenCalledWith('key-2'));
+
+    // Row 2 finishing must not resurrect row 1's plain "Revoke" button or
+    // otherwise clear row 1's still-pending confirm state. Row 1's confirm
+    // button itself now reads "Revoking" (it's genuinely busy), so assert on
+    // the stable confirm-panel copy rather than the label that flips to busy
+    // text — and assert the plain (non-armed) "Revoke" button is gone from
+    // that row.
+    await screen.findByText('Revoked');
+    const row1 = screen.queryByText('CI bot')?.closest('li') as HTMLElement;
+    expect(within(row1).getByText(/can't be undone/i)).toBeTruthy();
+    expect(within(row1).queryByText('Revoke')).toBeNull();
+
+    // Now let row 1 resolve too.
+    resolveFirst?.({ key: key({ id: 'key-1', revokedAt: Date.now() }) });
+    await waitFor(() => expect(screen.getAllByText('Revoked').length).toBe(2));
   });
 });

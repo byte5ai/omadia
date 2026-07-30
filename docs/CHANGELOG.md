@@ -95,6 +95,20 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   primitives, and `middleware/src` imports no channel plugin), because
   "where does this code live" is a property no runtime assertion can express
   and the cheapest one to regress.
+- **Admin UI** (`web-ui/app/admin/api-keys/`): create/list/revoke against
+  `/api/public/v1/admin/keys`. A created key's plaintext token is shown
+  exactly once, right after creation, and creation is blocked while that
+  one-time reveal is still on screen — the create button and every form
+  field stay disabled until the operator explicitly dismisses it, so a
+  second key can never silently overwrite the first one's only-ever-shown
+  token in React state before it's copied. Revoking is a two-step
+  confirm-then-revoke per row, with independent busy/confirm state per key
+  (concurrent revokes on different rows don't clobber each other), and the
+  list reload is guarded against out-of-order responses (a slower in-flight
+  fetch can't stomp a newer one's result). Errors map known backend codes
+  (`not_found`, `operator_auth.unavailable`, `auth.missing`/`auth.invalid`,
+  `invalid_request`) to translated messages rather than surfacing the raw
+  response body.
 
 ### Added — public API channel: chat over HTTP with per-key auth (#438)
 

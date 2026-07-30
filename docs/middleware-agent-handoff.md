@@ -966,6 +966,14 @@ vom eigenen Server aus aufruft, ohne menschliche Session.
 - **`publicPaths.ts` bleibt unverändert eng:** weiterhin nur
   `/api/public/v1/chat`. Wer `requireApiKey` auf eine neue Route mountet,
   braucht dort einen eigenen, möglichst engen Eintrag.
+- **Admin-UI (`web-ui/app/admin/api-keys/`)** — separate, auf diesem Branch
+  gestackte Web-UI-PR. `ApiKeysPanel.tsx` deckt create/list/revoke gegen
+  genau die drei Routen oben ab, keine neuen Backend-Endpunkte. `scopes: []`
+  wird nie gesendet — die Checkbox für `chat:write` muss angehakt bleiben,
+  sonst bleibt der Create-Button deaktiviert, statt den Footgun aus dem
+  `CreateKeyRequestSchema`-Kommentar oben zu reproduzieren. Details zum
+  Reveal-/Revoke-/Fehler-Verhalten stehen direkt nach der Testliste unten,
+  um Doppelung zu vermeiden.
 
 Tests: `test/auth/requireApiKey.test.ts` (Auth/Scope/Rate-Limit/Audit der
 Middleware), `test/auth/apiKeyScopes.test.ts` (Scope-Modell inkl.
@@ -974,6 +982,24 @@ Zusicherung, dass das Plugin keine zweite Kopie der Primitive hält und der
 Kernel kein Channel-Plugin importiert). Die bestehenden `test/channelApi/`-
 Suites laufen inhaltlich unverändert weiter, nur die Importpfade der
 verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
+
+**Admin-UI** (`web-ui/app/admin/api-keys/`, Issue #438/#439): Create/List/
+Revoke gegen `/api/public/v1/admin/keys` (`ApiKeysPanel.tsx`). Das
+Klartext-Token wird — wie beim Webhook-Secret-Reveal — genau einmal direkt
+nach dem Create angezeigt, nie erneut aus einem Reload rekonstruiert (die
+Listen-Response enthält nie ein Token-Feld). Solange dieser Reveal auf dem
+Schirm ist, ist das Erstellen eines weiteren Keys blockiert (Formular
+disabled) — sonst würde ein zweiter Create das erste, noch nicht kopierte
+Token in React-State kommentarlos überschreiben. Revoke ist zweistufig
+(Arm → Confirm) mit Busy-/Confirm-State **pro Key-Id** (Set statt einem
+einzelnen globalen Id-String), damit ein gleichzeitiges Revoke auf einer
+anderen Zeile den Confirm-/Busy-Zustand dieser Zeile nicht zurücksetzt; der
+Listen-Reload trägt eine Sequenznummer, damit ein langsamer, überholter
+Fetch nicht das Ergebnis eines neueren überschreibt. Fehler werden über
+bekannte Backend-Codes (`not_found`, `operator_auth.unavailable`,
+`auth.missing`/`auth.invalid`, `invalid_request`) auf übersetzte
+Catalog-Strings gemappt statt den rohen Response-Body anzuzeigen (web-ui
+i18n Hard Rule, `web-ui/CLAUDE.md`).
 
 ---
 

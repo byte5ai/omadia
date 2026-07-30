@@ -4154,6 +4154,7 @@
       },
       "rateLimitInvalid": "Rate limit must be between {min} and {max} requests/minute.",
       "scopesRequired": "Select at least one scope — a key with none cannot do anything.",
+      "blockedByReveal": "Dismiss the token above before creating another key.",
       "submit": "Create key",
       "creating": "Creating"
     },
@@ -4183,6 +4184,13 @@
         "confirm": "Confirm revoke",
         "cancel": "Cancel"
       }
+    },
+    "errors": {
+      "notFound": "That key no longer exists — the list has been refreshed.",
+      "authUnavailable": "Operator authentication is unavailable right now. Try again shortly.",
+      "sessionExpired": "Your session has expired. Redirecting to sign in…",
+      "invalidRequest": "That request was invalid — check the values above and try again.",
+      "generic": "Something went wrong (error {status})."
     }
   }
 }
