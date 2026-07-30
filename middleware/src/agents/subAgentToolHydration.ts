@@ -184,7 +184,12 @@ export function adaptNativeToolForSubAgent(
 /** Resolve the discovered descriptor for a granted tool from the server row,
  *  so the DomainTool spec carries the real description + inputSchema. Falls
  *  back to a name-only descriptor (schema-less, still callable) when the
- *  server has not been re-discovered since the grant. */
+ *  server has not been re-discovered since the grant.
+ *
+ *  Issue #547 (W1-3): also rehydrates the persisted `outputSchema`. That is
+ *  what makes the schema survive a restart — discovery may not run again for
+ *  the lifetime of the process, and the structured-result sidecar reads the
+ *  schema from the descriptor the adapters seed it with. */
 function discoveredDescriptor(
   row: McpServerRow | undefined,
   toolRef: string,
@@ -198,9 +203,19 @@ function discoveredDescriptor(
       ...(hit['inputSchema'] && typeof hit['inputSchema'] === 'object'
         ? { inputSchema: hit['inputSchema'] as Record<string, unknown> }
         : {}),
+      ...(isPlainObject(hit['outputSchema'])
+        ? { outputSchema: hit['outputSchema'] }
+        : {}),
     };
   }
   return { name: toolRef };
+}
+
+/** True for a non-null, non-array object. Arrays are rejected: an
+ *  `outputSchema` is a JSON-Schema object, and a persisted array would be
+ *  corrupt data rather than a lenient variant. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
 /**
@@ -217,6 +232,11 @@ export function mcpGrantToDomainTool(
   cfg: McpServerConfig,
   descriptor: McpToolDescriptor,
 ): DomainTool {
+  // Issue #547 (W1-3): seed the manager's output-schema cache from this
+  // descriptor. `mcpNativeHandler` only closes over a tool NAME, so without
+  // this the sidecar would lose the schema on any process that never ran
+  // discovery itself (i.e. every restart).
+  manager.rememberToolSchema(cfg.id, descriptor);
   const spec = mcpToolToNativeSpec(cfg.name, descriptor);
   const handler = mcpNativeHandler(manager, cfg, descriptor.name);
   return {

@@ -2216,6 +2216,13 @@ export class AgentGraphStore {
     }
   }
 
+  /**
+   * Persist the discovered-tool descriptors verbatim. `discovered_tools` is a
+   * `jsonb` column and the descriptor is stored whole, so every field a
+   * `McpToolDescriptor` carries round-trips — including the `outputSchema`
+   * added in issue #547 (W1-3). No migration is needed to add descriptor
+   * fields; only the TypeScript shape changes.
+   */
   async setMcpDiscoveredTools(
     id: string,
     tools: readonly unknown[],

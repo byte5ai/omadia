@@ -1175,6 +1175,8 @@
       "filterAll": "All verdicts",
       "acknowledge": "Acknowledge",
       "acked": "Acknowledged by {by}",
+      "structuredOutput": "returns structured output",
+      "structuredOutputHint": "This tool declares an output schema and returns a structured payload alongside its text result.",
       "runDeepScan": "Run deep scan",
       "why": "Heuristic scan flagged: {codes}. This is a signal, not proof the content is safe.",
       "llmRationale": "Deep scan note: {rationale}",

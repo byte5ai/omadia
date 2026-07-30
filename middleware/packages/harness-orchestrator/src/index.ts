@@ -129,10 +129,12 @@ export {
   DEPRECATED_MCP_TRANSPORTS,
   isDeprecatedMcpTransport,
   McpManager,
+  extractStructured,
   mcpNativeHandler,
   mcpNativeToolName,
   mcpToolToLocalSubAgentTool,
   mcpToolToNativeSpec,
+  renderToolResult,
 } from './mcp/mcpClient.js';
 export type {
   DeprecatedMcpTransport,
@@ -143,6 +145,11 @@ export type {
   McpCallObserver,
   McpManagerOptions,
   McpServerConfig,
+  McpSidecarIdentity,
+  McpSidecarKind,
+  McpSidecarPayload,
+  McpStructuredOutputSidecar,
+  McpStructuredSink,
   McpToolDescriptor,
   McpTransportKind,
 } from './mcp/mcpClient.js';

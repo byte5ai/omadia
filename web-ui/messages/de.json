@@ -1175,6 +1175,8 @@
       "filterAll": "Alle Verdicts",
       "acknowledge": "Bestätigen",
       "acked": "Bestätigt von {by}",
+      "structuredOutput": "liefert strukturierte Ausgabe",
+      "structuredOutputHint": "Dieses Tool deklariert ein Output-Schema und liefert zusätzlich zum Text ein strukturiertes Ergebnis.",
       "runDeepScan": "Tiefen-Scan ausführen",
       "why": "Heuristischer Scan hat markiert: {codes}. Das ist ein Signal, kein Beweis, dass der Inhalt sicher ist.",
       "llmRationale": "Tiefen-Scan-Hinweis: {rationale}",
