@@ -18,6 +18,180 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — API keys as a first-class authentication method, with per-key scopes (#439)
+
+- New workspace package `@omadia/api-key-auth`
+  (`middleware/packages/harness-api-key-auth/`). The API-key primitives
+  #438 shipped inside `@omadia/channel-api` — mint/sha256-hash/constant-time
+  verify, the vault-backed key store, the per-key rate limiter, the usage
+  audit log — moved here unchanged, so there is exactly **one**
+  implementation of the credential. A shared workspace package is the only
+  home both sides can reach: the kernel must never import a channel plugin,
+  and a plugin cannot import kernel source (`middleware/src/auth/` is not
+  resolvable from a package whose `tsconfig` has `rootDir: src`). Same role
+  `@omadia/plugin-api` and `@omadia/channel-sdk` already play. The package is
+  dependency-free apart from an `express` peer — its storage dependency is a
+  structural subset (`ApiKeySecretStorage`) that `SecretsAccessor` satisfies
+  without an adapter. No new npm dependencies, matching #438.
+- New mountable Express middleware `requireApiKey({ apiKeys, rateLimiter,
+  auditLog, scope })`: any route or plugin can apply it and be authenticated
+  by a server-to-server bearer key instead of the `omadia_session` cookie
+  (driving use case: a Laravel/PHP integration with no human session behind
+  it). It attaches an `ApiKeyPrincipal` to `req.apiKey` and deliberately does
+  **not** populate `req.session` — `SessionClaims.role` is hard-typed
+  `'admin'`, so synthesizing a session for a machine would make every
+  session-reading route downstream silently treat a key as an operator.
+  401/403/429 use the `{ error, message }` shape #438 established for the
+  public API surface, not the session gate's `{ code, message }`, so the wire
+  format of `POST /api/public/v1/chat` is unchanged.
+- Per-key **scopes**: `<resource>:<action>` strings (or the global `*`),
+  matched exactly — no prefix wildcards, which are how "I thought `admin:*`
+  didn't cover `admin:delete`" happens. A route declares the scope it needs;
+  a key without it gets `403 forbidden` and a `forbidden` audit entry.
+  Backward compatible: a key persisted before scopes existed carries no
+  `scopes` field and is normalized to `['chat:write']` — exactly the one
+  capability it had when it was minted. Defaulting such keys to `*` would
+  also keep them working and would silently widen every existing key to
+  whatever scoped surface lands next, so it is not what we do.
+  `POST /api/public/v1/admin/keys` accepts a `scopes` array (validated, 400
+  on a malformed scope) and `GET` lists it.
+- `normalizeScopes` distinguishes an **absent** `scopes` field from a
+  **malformed** one, because collapsing the two turns a read error into a
+  capability grant. Absent (`undefined`) → the legacy `['chat:write']`.
+  Present but unreadable — not an array (`"memory:read"` stored as a bare
+  string), an empty array, or an array with any invalid entry
+  (`['Chat:Write']`, `['chat:write','nonsense']`) → the **empty** scope set:
+  the key still authenticates, and every scope check on it fails closed with
+  `403`. A malformed record is at least as likely to be a key an operator
+  deliberately restricted *away* from chat as it is to be a lost pre-#439
+  key, and defaulting it to `chat:write` would hand back exactly the access
+  that was removed. Partially-valid arrays deny rather than silently narrow.
+  Every such case logs `[api-key-auth] malformed persisted scopes` so an
+  operator can tell a corrupt record from a revoked key. The scope set is
+  always persisted explicitly at `create()` time, so nothing this store
+  writes can be mistaken for a pre-#439 record.
+- Creation agrees with that read path on the same value. Only an **omitted**
+  `scopes` field resolves to the legacy default; an explicitly supplied `[]`
+  is rejected — `400` at the admin route, and a throw from `create()` for
+  callers using the package directly. Otherwise one field would mean "deny
+  everything" on read and "grant `chat:write`" on write, so an operator asking
+  for a zero-capability key would have been handed a chat-capable one.
+- `@omadia/channel-api` now consumes the shared package instead of owning
+  the code: `chatRouter.ts` mounts `requireApiKey` with `scope: 'chat:write'`
+  rather than parsing bearer headers itself. Behaviour and wire format of
+  `POST /api/public/v1/chat` are unchanged, and its existing test suite
+  passes as written (only the moved modules' import paths were repointed).
+- `middleware/src/auth/publicPaths.ts` is deliberately **not** broadened —
+  `/api/public/v1/chat` is still the only exempted API-key route. Its comment
+  now records what a future route that mounts `requireApiKey` has to do.
+- The `scopes` additions to `/api/public/v1/admin/keys` sit **on top of** the
+  kernel-level `ctx.operatorAuth` session gate that the entry below adds to
+  that router, not beside it: an anonymous `POST` carrying `scopes: ['*']`
+  is rejected `401` before any handler runs, covered by its own regression
+  test in `adminKeysRouter.test.ts`.
+- Tests: `test/auth/requireApiKey.test.ts`, `test/auth/apiKeyScopes.test.ts`,
+  and `test/channelApi/apiKeyAuthReuseSeam.test.ts` — the last one is a
+  structural guard on the seam itself (the plugin holds no second copy of the
+  primitives, and `middleware/src` imports no channel plugin), because
+  "where does this code live" is a property no runtime assertion can express
+  and the cheapest one to regress.
+
+### Added — public API channel: chat over HTTP with per-key auth (#438)
+
+- New built-in channel package `@omadia/channel-api`
+  (`middleware/packages/harness-channel-api/`) exposes `POST
+  /api/public/v1/chat` — a documented, self-authenticating HTTP entry point
+  external systems can drive without a channel adapter or the operator UI.
+  Streams the SAME NDJSON event framing as `/chat/stream` and dispatches
+  through `CoreApi.handleTurnStream`, so PII masking (privacy-guard), memory,
+  and the knowledge graph all apply exactly as they do for every other
+  channel — no second response-masking path.
+- Credential model (locked design decision on the issue): each API key **is**
+  its own identity — `ChannelUserRef{ channel: 'api', id: 'key:<id>' }` —
+  not a delegate for a human end-user. No impersonation surface.
+- Full v1 security posture, not deferred: API keys are vault-backed (this
+  plugin's own `ctx.secrets` namespace, no DB migration) and verified with
+  `crypto.timingSafeEqual` against a sha256 hash — the plaintext is shown
+  exactly once, at creation; per-key configurable rate limits (fixed-window,
+  429 on overage); an explicit revoke endpoint (`POST
+  /api/public/v1/admin/keys/:id/revoke`) that fails the next request
+  immediately; and a usage audit log (who/what/when) recorded on every
+  authenticated call.
+- Key lifecycle (`GET`/`POST /api/public/v1/admin/keys`, revoke) is
+  deliberately mounted under the SAME `/api/public/v1` prefix but NOT added
+  to `middleware/src/auth/publicPaths.ts`'s exemption list — only `.../chat`
+  is public. Key management stays behind the normal operator session, like
+  every other admin surface in this app — see the security-fixup entry below
+  for how that's enforced both implicitly (the kernel's broad `/api`
+  session gate) and, after that entry's change, explicitly as well.
+- Review fixups: the internal `conversationId` handed to `CoreApi` is now
+  namespaced by key id (`${key.id}:${callerConversationId}`) so two
+  different API keys can never collide on the same core-side scope, even
+  when they send an identical caller-supplied `conversationId` — closes a
+  cross-key transcript/context leak. The usage audit log now records one
+  entry for every authenticated call (not just the success path) with a
+  status reflecting the real outcome — `ok` | `rate_limited` |
+  `invalid_request` | `error` — instead of writing `status: 'ok'`
+  optimistically before dispatch.
+- Second review fixup round: the audit-status fix above still had a gap —
+  `deps.core.handleTurnStream` can yield an in-band `{type:'error',
+  message}` event on the already-open stream WITHOUT throwing (same bug
+  class as #403), and the loop completing normally was still recorded as
+  `ok`. `chatRouter.ts` now tracks whether an `error`-type event was
+  forwarded during iteration and audits `error` in that case too, with a
+  regression test covering the no-throw path. Docs: the README's event
+  table no longer claims `agent_bound` is emitted on this route (it isn't —
+  that event is synthesized by the kernel's own `/api/chat/stream` handler,
+  not by `CoreApi.handleTurnStream`) and now documents the verifier-mode
+  `{type:'verifier'}` event that can follow `done`. `docs/security-architecture.md`
+  § 8 and the README's rate-limiting section now say explicitly that the
+  limiter is in-memory and per-process, not shared across replicas
+  (accepted v1 trade-off, no code change). `harness-channel-api`'s
+  `peerDependencies` on `@omadia/channel-sdk` / `@omadia/plugin-api` are now
+  pinned to `^0.1.0` instead of `"*"`, per `CONTRIBUTING.md`'s dependency
+  hardening policy.
+- Security fixup: an earlier note here overstated this as a live
+  authentication bypass. It wasn't — `/api/public/v1/admin/keys` was
+  already covered by the kernel's pre-existing broad `app.use('/api',
+  requireAuth, ...)` mount (`src/index.ts`), which runs ahead of
+  `pluginRouteRegistry.mountAll(app)` in boot order and gates every
+  `/api/*` path not listed in `publicPaths.ts`, same as any other
+  non-exempted channel route. That coverage is real but implicit — it
+  depends on mount order and on this path never being added to
+  `publicPaths.ts`, either of which a future refactor could break silently.
+  Hardened at the kernel level so the guarantee doesn't depend on that
+  coincidence, and so future plugins needing an admin surface get a
+  reusable, explicit check: `PluginContext` gains an optional `ctx.operatorAuth`
+  (`OperatorAuthAccessor`, `packages/plugin-api/src/pluginContext.ts`),
+  published by the kernel and threaded into every plugin runtime
+  (`ToolPluginRuntime`, `DynamicAgentRuntime`, `DefaultChannelRegistry`) so
+  any future plugin needing an operator-only admin surface can reuse it.
+  `hasValidSession(cookieHeader)` reuses the EXACT SAME session-verification
+  logic `requireAuth` runs (extracted to `evaluateSessionToken` in
+  `src/auth/requireAuth.ts`) — one code path, not two that can drift apart.
+  `adminKeysRouter.ts` now applies it as router-level middleware ahead of
+  every route: missing/invalid session → `401`; `ctx.operatorAuth` itself
+  unavailable → `503` (fail closed, never silently unauthenticated). New
+  end-to-end coverage in `adminKeysRouter.test.ts` mounts the router behind
+  the REAL accessor (not a stub) and asserts the no-cookie / invalid-cookie
+  / valid-cookie and fail-closed paths. `docs/security-architecture.md` § 9,
+  this package's `README.md`, and `docs/middleware-agent-handoff.md` are
+  corrected to describe the real mechanism.
+- Third review fixup: the key-id namespacing above (`${key.id}:${callerConversationId}`)
+  was itself still lossy. `SessionLogger`'s `sanitizeScope` collapses any run
+  of punctuation to a single `-`, lowercases, and truncates to 80 chars
+  before persisting — so two DIFFERENT caller-supplied `conversationId`s
+  under the SAME key could still land on the identical sanitized scope (for
+  example `"case/a"` and `"case?a"`, or two long ids differing only past the
+  truncation cutoff), letting one conversation thread recall another
+  thread's memory/graph content. `chatRouter.ts` now derives the internal
+  `conversationId` as `sha256(key.id:callerConversationId)` (hex digest —
+  fixed-width, already lowercase alphanumeric, so nothing about it can be
+  mangled or truncated into colliding with a different digest) instead of
+  plain concatenation. Regression coverage in `chatRouter.test.ts` sends
+  both collision shapes through the real `createApiChatRouter` and asserts
+  the resulting scopes differ after being run through the real
+  `graphScopeFor`/`sanitizeScope`.
 ### Added — pluggable embedding provider (#440)
 
 - The `EmbeddingClient` contract moved from `@omadia/embeddings` (the Ollama
