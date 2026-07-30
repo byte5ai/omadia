@@ -1292,6 +1292,85 @@ function mcpObservationDigest(raw: string): string {
   return `(${String(Buffer.byteLength(raw, 'utf8'))} bytes, values masked)`;
 }
 
+/**
+ * Per-tool dispatch deadline (W0-2). Every tool of an iteration is dispatched
+ * into one `Promise.allSettled` (non-streaming) / race loop (streaming), so a
+ * single sub-agent that never returns used to pin the WHOLE parallel batch for
+ * the rest of the turn — there was no per-tool timeout anywhere.
+ *
+ * 120s is deliberately generous: a domain sub-agent runs its own multi-iteration
+ * LLM loop with its own tool calls, so p99 legitimately reaches tens of seconds.
+ * Operators whose Odoo/Confluence sub-agents run longer raise it via
+ * `OMADIA_TOOL_DISPATCH_TIMEOUT_MS`; `0` disables the deadline entirely.
+ */
+const DEFAULT_TOOL_DISPATCH_TIMEOUT_MS = 120_000;
+const TOOL_DISPATCH_TIMEOUT_ENV = 'OMADIA_TOOL_DISPATCH_TIMEOUT_MS';
+
+/** Resolved per dispatch (not cached at module load) so an operator env change
+ *  applies to the next turn without a restart. */
+function resolveToolDispatchTimeoutMs(): number {
+  const raw = process.env[TOOL_DISPATCH_TIMEOUT_ENV];
+  if (raw === undefined || raw.trim() === '') {
+    return DEFAULT_TOOL_DISPATCH_TIMEOUT_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    console.warn(
+      `[orchestrator] ${TOOL_DISPATCH_TIMEOUT_ENV}="${raw}" is not a non-negative number — using the ${String(DEFAULT_TOOL_DISPATCH_TIMEOUT_MS)}ms default.`,
+    );
+    return DEFAULT_TOOL_DISPATCH_TIMEOUT_MS;
+  }
+  return parsed;
+}
+
+/** Model-facing result for a tool that blew its deadline. `Error:`-prefixed so
+ *  both dispatch loops key `is_error` off it exactly like any other failure. */
+function toolDeadlineError(name: string, timeoutMs: number): string {
+  const seconds = (timeoutMs / 1000).toFixed(timeoutMs % 1000 === 0 ? 0 : 1);
+  return `Error: tool \`${name}\` was aborted after exceeding its ${seconds}s dispatch deadline. Its result (if it ever arrives) is discarded. Continue without it or retry with a narrower request.`;
+}
+
+/** Returned by the abandoned dispatch when it finally settles. Never reaches
+ *  the model — the turn already took {@link toolDeadlineError} for this slot. */
+const TOOL_DISPATCH_DISCARDED = '__omadia_tool_dispatch_discarded__';
+
+/**
+ * Wrap a slot observer so sub-agent events emitted AFTER the deadline are
+ * dropped. A sub-agent that keeps running past its abort would otherwise keep
+ * pushing `sub_tool_use`/`sub_tool_result` events into a turn that already
+ * moved on — the same late-write class the discarded result guards against.
+ */
+function abortGuardedObserver(
+  observer: AskObserver | undefined,
+  signal: AbortSignal,
+): AskObserver | undefined {
+  if (observer === undefined) return undefined;
+  const gate =
+    <E>(fn: ((ev: E) => void) | undefined): ((ev: E) => void) | undefined =>
+    fn === undefined
+      ? undefined
+      : (ev: E): void => {
+          if (signal.aborted) return;
+          fn.call(observer, ev);
+        };
+  const onIteration = gate(observer.onIteration);
+  const onSubToolUse = gate(observer.onSubToolUse);
+  const onSubToolResult = gate(observer.onSubToolResult);
+  const onIterationPhase = gate(observer.onIterationPhase);
+  const onTokenChunk = gate(observer.onTokenChunk);
+  const onIterationUsage = gate(observer.onIterationUsage);
+  const onIterationEnd = gate(observer.onIterationEnd);
+  return {
+    ...(onIteration ? { onIteration } : {}),
+    ...(onSubToolUse ? { onSubToolUse } : {}),
+    ...(onSubToolResult ? { onSubToolResult } : {}),
+    ...(onIterationPhase ? { onIterationPhase } : {}),
+    ...(onTokenChunk ? { onTokenChunk } : {}),
+    ...(onIterationUsage ? { onIterationUsage } : {}),
+    ...(onIterationEnd ? { onIterationEnd } : {}),
+  };
+}
+
 export class Orchestrator {
   /** The Agent (orchestrator instance) this object serves. */
   readonly agentId: string;
@@ -4772,10 +4851,63 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * W0-2 — every tool dispatch runs under a per-tool deadline. Without it a
+   * single hung sub-agent (`domainQueryTool` awaits `agent.ask()` with no
+   * abort) blocks the entire `Promise.allSettled` batch for the whole turn.
+   *
+   * On timeout the slot resolves with a structured `Error:` string and the
+   * abandoned dispatch is marked aborted, so when it eventually settles its
+   * result is DISCARDED instead of being written into a turn that moved on
+   * (raw-result capture, privacy interning, KG ingestion, sub-events).
+   *
+   * The deadline is per tool, not per batch: sibling tools in the same
+   * `allSettled` keep running and resolve normally.
+   */
   private async dispatchTool(
     name: string,
     input: unknown,
     observer?: AskObserver,
+  ): Promise<string> {
+    const timeoutMs = resolveToolDispatchTimeoutMs();
+    if (timeoutMs === 0) {
+      // Deadline explicitly disabled by the operator — legacy behaviour.
+      return this.dispatchToolDeadlined(name, input, observer);
+    }
+    const controller = new AbortController();
+    const work = this.dispatchToolDeadlined(
+      name,
+      input,
+      abortGuardedObserver(observer, controller.signal),
+      controller.signal,
+    );
+    // A dispatch that rejects AFTER the deadline already resolved the race
+    // would otherwise surface as an unhandled rejection and kill the process.
+    work.catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<string>((resolve) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        console.warn(
+          `[orchestrator.dispatchTool:${name}] exceeded the ${String(timeoutMs)}ms dispatch deadline — aborting this slot; siblings are unaffected.`,
+        );
+        resolve(toolDeadlineError(name, timeoutMs));
+      }, timeoutMs);
+      // Never hold the event loop open just to police a deadline.
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([work, deadline]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  private async dispatchToolDeadlined(
+    name: string,
+    input: unknown,
+    observer?: AskObserver,
+    deadlineSignal?: AbortSignal,
   ): Promise<string> {
     // Privacy Shield v4 — Data-Plane Boundary. The privacy handle is
     // threaded through `turnContext.privacyHandle`; absent ⇒ no privacy
@@ -4827,6 +4959,18 @@ export class Orchestrator {
       );
     } else {
       result = await this.dispatchToolInner(name, input, observer);
+    }
+    // W0-2 — late-result firewall. The deadline already fired for this slot:
+    // the turn took `toolDeadlineError` and moved on. Everything below this
+    // line WRITES this result into turn state (raw-result capture, canvas
+    // sentinel tap, KG ingestion, privacy interning/bypass receipts), so a
+    // late arrival must be dropped HERE — before the first side effect —
+    // rather than merely being ignored by the caller.
+    if (deadlineSignal?.aborted === true) {
+      console.warn(
+        `[orchestrator.dispatchTool:${name}] result arrived after the dispatch deadline — discarded.`,
+      );
+      return TOOL_DISPATCH_DISCARDED;
     }
     // Phase C.2 — Raw tool-result capture. Outer scope (routine runner)
     // may install a callback that stashes the raw result keyed by tool
