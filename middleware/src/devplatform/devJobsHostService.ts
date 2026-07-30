@@ -1,60 +1,35 @@
 /**
- * Epic #470 W3 — concrete 'devJobs' host service backing `ctx.devJobs`.
+ * Read-side dev-job service: descriptor/event projection over `DevJobStore`.
  *
- * Registered in the kernel ServiceRegistry under the name `'devJobs'` by the
- * dev-platform boot module; the plugin-side `createPluginDevJobsAccessor`
- * resolves it lazily and layers the repo-scoping / no-existence-oracle contract
- * on top (see src/platform/pluginContext.ts).
+ * HISTORY — this used to be the concrete `'devJobs'` host service backing the
+ * `ctx.devJobs` plugin accessor. That accessor never had a provider or a
+ * consumer and threw on every call, so it was deleted
+ * (`specs/470-dev-platform-plugin/dormant-capabilities.md` §2). What survived
+ * is exactly the part the chat surface already used.
  *
- * This layer owns the two facts the accessor cannot see from a descriptor:
- *   1. the granted-repo set (`dev_repo_plugin_grants`, via the grant store), and
- *   2. the job creator (`dev_jobs.created_by`), used to enforce "only jobs this
- *      plugin created" on cancel.
+ * Shed with the accessor, because every one of them existed only for the
+ * plugin path:
+ *   - `listGrantedRepoIds` + the `grants` dep (`dev_repo_plugin_grants`)
+ *   - `createJob` (hardcoded `source:'plugin'` / `created_by:'plugin:<id>'`)
+ *     and with it the `repoStore`, `resolveJobPlacement` and `mintRunnerToken`
+ *     deps — the chat surface creates jobs itself with `source:'chat'`
+ *   - `cancelJob(jobId, requestedByPluginId)` and its `finalize` dep — the
+ *     `requestedByPluginId` creator check has no meaning without plugin
+ *     callers, and the chat surface never cancelled through here (it passed an
+ *     always-throwing `finalize` stub)
  *
- * Job-placement policy (backend / authMode admissibility) is injected as
- * `resolveJobPlacement` so W0/W2 keep a single source of truth for it — this
- * unit does not re-implement launcher policy.
+ * The sole consumer is `chatDevJobService.ts`, which calls `getJob`,
+ * `listJobs` and `listJobEvents`. Its own authorization envelope
+ * (`allowedRepoIds` ∩ `isPermittedLauncher`) sits ON TOP of this layer — this
+ * unit performs no authorization of its own beyond honouring the `repoIds`
+ * scope it is handed.
  */
 
-import type {
-  DevJobCreateRequest,
-  DevJobDescriptor,
-  DevJobEventRecord,
-  DevJobStatus,
-} from '@omadia/plugin-api';
+import type { DevJobDescriptor, DevJobEventRecord } from './devJobTypes.js';
+import type { DevJob, DevJobEvent, DevJobStatus } from './types.js';
 
-import type { DevJobsHostService } from '../platform/pluginContext.js';
-
-import { mintRunnerToken as defaultMintRunnerToken } from './jobToken.js';
-import type {
-  DevJob,
-  DevJobAuthMode,
-  DevJobEvent,
-  DevRepo,
-  NewDevJob,
-  RunnerBackendKind,
-} from './types.js';
-
-/** `dev_jobs.created_by` marker for a plugin-created job. The `source='plugin'`
- *  column records provenance; this marker records WHICH plugin, so cancel can
- *  enforce single-creator ownership. */
-export const PLUGIN_CREATED_BY_PREFIX = 'plugin:';
-
-export function pluginCreatedByMarker(pluginId: string): string {
-  return `${PLUGIN_CREATED_BY_PREFIX}${pluginId}`;
-}
-
-/** Thrown by `cancelJob` when a plugin tries to cancel a job it did not create. */
-export class DevJobNotCreatedByPluginError extends Error {
-  constructor(jobId: string, pluginId: string) {
-    super(`dev job "${jobId}" was not created by plugin "${pluginId}"`);
-    this.name = 'DevJobNotCreatedByPluginError';
-  }
-}
-
-/** Narrow read/write surface of `DevJobStore` this service needs. */
+/** Narrow read surface of `DevJobStore` this service needs. */
 export interface DevJobsHostJobStore {
-  createJob(input: NewDevJob & { runnerTokenHash: string }): Promise<DevJob>;
   getJob(id: string): Promise<DevJob | null>;
   listJobs(filter?: {
     repoId?: string;
@@ -65,32 +40,24 @@ export interface DevJobsHostJobStore {
   listEvents(jobId: string, afterId?: number, limit?: number): Promise<DevJobEvent[]>;
 }
 
-export interface DevJobsHostRepoStore {
-  getRepo(id: string): Promise<DevRepo | null>;
-}
-
-export interface DevJobsHostGrantStore {
-  listRepoIdsForPlugin(pluginId: string): Promise<string[]>;
+/**
+ * Repo-scoped read surface over dev jobs. `listJobs` is scoped by the caller;
+ * `getJob` / `listJobEvents` are UNSCOPED by design — the caller resolves the
+ * descriptor's `repoId` against its own authorization envelope (see
+ * `chatDevJobService.getJob`).
+ */
+export interface DevJobsHostService {
+  getJob(jobId: string): Promise<DevJobDescriptor | undefined>;
+  /** Scope is narrowed to `repoIds` by the caller. */
+  listJobs(filter: {
+    repoIds: readonly string[];
+    status?: DevJobStatus;
+  }): Promise<readonly DevJobDescriptor[]>;
+  listJobEvents(jobId: string, afterId?: number): Promise<readonly DevJobEventRecord[]>;
 }
 
 export interface DevJobsHostServiceDeps {
   jobStore: DevJobsHostJobStore;
-  repoStore: DevJobsHostRepoStore;
-  grants: DevJobsHostGrantStore;
-  /** Bound terminal-transition choke point (finalizeDevJob) used by cancel. */
-  finalize: (
-    jobId: string,
-    status: DevJobStatus,
-    ctx: { reason?: string },
-  ) => Promise<void>;
-  /** Resolve backend + authMode for a plugin-created job on this repo. Injected
-   *  so W0/W2 launcher-admissibility policy stays authoritative in one place. */
-  resolveJobPlacement: (repo: DevRepo) => {
-    backend: RunnerBackendKind;
-    authMode?: DevJobAuthMode;
-  };
-  /** Override for tests; defaults to the real one-time token minter. */
-  mintRunnerToken?: () => { hash: string };
 }
 
 function toDescriptor(j: DevJob): DevJobDescriptor {
@@ -113,36 +80,7 @@ function toEventRecord(e: DevJobEvent): DevJobEventRecord {
 export function createDevJobsHostService(
   deps: DevJobsHostServiceDeps,
 ): DevJobsHostService {
-  const mint = deps.mintRunnerToken ?? (() => ({ hash: defaultMintRunnerToken().hash }));
-
   return {
-    async listGrantedRepoIds(pluginId: string): Promise<readonly string[]> {
-      return deps.grants.listRepoIdsForPlugin(pluginId);
-    },
-
-    async createJob(
-      input: DevJobCreateRequest & { createdBy: { kind: 'plugin'; id: string } },
-    ): Promise<DevJobDescriptor> {
-      const repo = await deps.repoStore.getRepo(input.repoId);
-      if (!repo) {
-        throw new Error(`dev repo "${input.repoId}" not found`);
-      }
-      const placement = deps.resolveJobPlacement(repo);
-      const minted = mint();
-      const job = await deps.jobStore.createJob({
-        repoId: input.repoId,
-        kind: input.kind,
-        brief: input.brief,
-        source: 'plugin',
-        sourceRef: input.sourceRef ?? null,
-        backend: placement.backend,
-        authMode: placement.authMode ?? 'api_key',
-        createdBy: pluginCreatedByMarker(input.createdBy.id),
-        runnerTokenHash: minted.hash,
-      });
-      return toDescriptor(job);
-    },
-
     async getJob(jobId: string): Promise<DevJobDescriptor | undefined> {
       const job = await deps.jobStore.getJob(jobId);
       return job ? toDescriptor(job) : undefined;
@@ -154,11 +92,11 @@ export function createDevJobsHostService(
     }): Promise<readonly DevJobDescriptor[]> {
       const scope = new Set(filter.repoIds);
       if (scope.size === 0) return [];
-      // Scope to the granted repos IN SQL (before LIMIT), so a caller's own jobs
-      // can never be silently dropped behind other repos' rows under the store
-      // limit (Forge W3 — the earlier list-all-then-narrow could omit them). The
-      // in-memory `scope` filter is kept as defense-in-depth against a store that
-      // ignores the filter.
+      // Scope to the caller's repos IN SQL (before LIMIT), so a caller's own
+      // jobs can never be silently dropped behind other repos' rows under the
+      // store limit (Forge W3 — the earlier list-all-then-narrow could omit
+      // them). The in-memory `scope` filter is kept as defense-in-depth against
+      // a store that ignores the filter.
       const jobs = await deps.jobStore.listJobs({
         repoIds: [...scope],
         ...(filter.status ? { status: filter.status } : {}),
@@ -172,21 +110,6 @@ export function createDevJobsHostService(
     ): Promise<readonly DevJobEventRecord[]> {
       const events = await deps.jobStore.listEvents(jobId, afterId);
       return events.map(toEventRecord);
-    },
-
-    async cancelJob(jobId: string, requestedByPluginId: string): Promise<void> {
-      const job = await deps.jobStore.getJob(jobId);
-      if (!job) {
-        throw new Error(`dev job "${jobId}" not found`);
-      }
-      // Single-creator ownership: only the plugin that created the job may
-      // cancel it. The accessor has already confirmed the repo is granted.
-      if (job.createdBy !== pluginCreatedByMarker(requestedByPluginId)) {
-        throw new DevJobNotCreatedByPluginError(jobId, requestedByPluginId);
-      }
-      await deps.finalize(jobId, 'cancelled', {
-        reason: `cancelled by plugin ${requestedByPluginId}`,
-      });
     },
   };
 }
