@@ -173,6 +173,22 @@ export function buildAgentEnv(
   if (opts.llmEnvAllowed === true) {
     if (opts.proxyBaseUrl) env['ANTHROPIC_BASE_URL'] = opts.proxyBaseUrl;
     if (opts.proxyToken) env['ANTHROPIC_AUTH_TOKEN'] = opts.proxyToken;
+    // Same reason gitOps.ts's runGit() forwards these to git: the job's
+    // isolated network has no route to `ANTHROPIC_BASE_URL` (the middleware)
+    // except through the daemon's egress proxy, and the `claude` CLI is a
+    // SEPARATE process from this shim -- it does not inherit the shim's own
+    // process.env, only what buildAgentEnv hands it here. Without these, the
+    // CLI's first request hangs against an unreachable host with no log
+    // output at all (the shim never sees a stderr line to translate,
+    // because the CLI's own network stack is still trying, not failing) --
+    // the same undici-needs-NODE_USE_ENV_PROXY behaviour gate 6 already
+    // established for this shim's own fetch calls applies equally to the
+    // CLI subprocess, since it is also Node/undici-based.
+    for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy']) {
+      const value = parent[key];
+      if (value) env[key] = value;
+    }
+    if (parent['HTTP_PROXY'] || parent['HTTPS_PROXY']) env['NODE_USE_ENV_PROXY'] = '1';
   }
   return env;
 }

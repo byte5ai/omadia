@@ -618,3 +618,116 @@ describe('llmProxy — accounting failure is surfaced, not swallowed (review S-f
     assert.equal(fx.usageRows.length, 0, 'ledger is not written when the authoritative store failed');
   });
 });
+
+describe('llmProxy — survives a global express.json() ahead of the router (index.ts mount order)', () => {
+  // `makeFixture` above mounts the runner router directly on a bare `express()`
+  // app, which never reproduces the real bug: in `index.ts`, a global
+  // `app.use(express.json())` runs for EVERY path before `mountDevPlatform`
+  // attaches the runner router further down in the boot sequence. body-parser's
+  // `read()` bails out on an already-consumed request stream
+  // (`onFinished.isFinished(req)`) without touching `req.body` again, so the
+  // route's own `express.raw()` would silently no-op and leave `req.body` as
+  // whatever `express.json()` parsed — never a Buffer. `llmProxy.ts`'s
+  // canonicalisation step only trusts a Buffer, so every real request 400'd
+  // with "must name a model". Reproduce that exact mount order here, gated by
+  // the same path exclusion index.ts uses, and prove the request still lands.
+  let server: Server;
+  let base: string;
+  afterEach(async () => {
+    if (server) await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  it('parses the body correctly when a global express.json() precedes the router', async () => {
+    const calls: FetchCall[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body instanceof Buffer ? init.body.toString('utf8') : String(init?.body ?? '');
+      calls.push({ url: String(url), headers: { ...(init?.headers as Record<string, string>) }, body });
+      return sseResponse(FULL_SSE);
+    }) as unknown as typeof fetch;
+
+    const proxyDeps: LlmProxyDeps = {
+      resolveJobByToken: async (t) => (t === VALID ? { id: 'job-1', status: 'running', agentKind: 'claude-cli' } : null),
+      resolvePolicy: async () => ({
+        provider: 'anthropic',
+        upstreamBaseUrl: 'https://upstream.test',
+        allowedModels: ['claude-opus-4-8'],
+      }),
+      resolveProviderKey: async () => REAL_KEY,
+      addJobUsage: async () => {},
+      recordUsage: () => {},
+      fetchImpl,
+    };
+    const runnerDeps: DevRunnerRouterDeps = {
+      store: {
+        verifyRunnerToken: async () => false,
+        getJob: async () => null,
+        markRunning: async () => false,
+        touchHeartbeat: async () => false,
+        appendEvents: async () => 0,
+        addArtifact: async () => 'x',
+        artifactBelongsToJob: async () => false,
+        recordResult: async () => {},
+      },
+      repos: { getRepo: async () => null },
+      scmTokens: { resolve: async () => undefined },
+      finalizeDevJob: async () => null,
+      llmProxyRouter: createLlmProxyRouter(proxyDeps),
+    };
+
+    const app: Express = express();
+    // Mirrors index.ts's path-exclusion gate ahead of the global JSON parser.
+    app.use((req, res, next) => {
+      if (req.path.startsWith('/api/v1/dev-runner/llm/')) {
+        next();
+        return;
+      }
+      express.json({ limit: '10mb' })(req, res, next);
+    });
+    app.use('/api/v1/dev-runner', createDevRunnerRouter(runnerDeps));
+
+    await new Promise<void>((resolve) => {
+      server = app.listen(0, () => {
+        const port = (server.address() as AddressInfo).port;
+        base = `http://127.0.0.1:${String(port)}/api/v1/dev-runner`;
+        resolve();
+      });
+    });
+
+    const res = await post(base, OK_BODY, authed);
+    assert.equal(res.status, 200);
+    await res.text();
+    assert.equal(calls.length, 1);
+    assert.equal(JSON.parse(calls[0]?.body ?? '{}').model, 'claude-opus-4-8');
+  });
+
+  it('still parses unrelated JSON routes normally through the global express.json()', async () => {
+    const app: Express = express();
+    app.use((req, res, next) => {
+      if (req.path.startsWith('/api/v1/dev-runner/llm/')) {
+        next();
+        return;
+      }
+      express.json({ limit: '10mb' })(req, res, next);
+    });
+    app.post('/other', (req, res) => {
+      res.json({ echoed: req.body as unknown });
+    });
+
+    await new Promise<void>((resolve) => {
+      server = app.listen(0, () => {
+        const port = (server.address() as AddressInfo).port;
+        base = `http://127.0.0.1:${String(port)}`;
+        resolve();
+      });
+    });
+
+    const res = await fetch(`${base}/other`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hello: 'world' }),
+    });
+    assert.equal(res.status, 200);
+    const json = (await res.json()) as { echoed: { hello: string } };
+    assert.equal(json.echoed.hello, 'world');
+  });
+});

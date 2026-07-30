@@ -47,6 +47,35 @@ services:
       # Where the runner phones home. The daemon injects this into every job; the
       # runner reaches it across dev-control, never over the public internet.
       DEV_PLATFORM_RUNNER_BASE_URL: http://middleware:8080
+      # The image the middleware derives into every job's policy (served over
+      # GET /internal/job-policy/:jobId, which the daemon fetches at provision
+      # time). Without this, jobPolicyConfig never builds and that endpoint
+      # 503s forever — every DockerBackend provision fails at the first real
+      # container (i.e. the implement phase; analyze/plan/clarify run without
+      # one). Same source var as the daemon's own DEV_RUNNER_IMAGES below, so
+      # both sides always agree on which image a job runs.
+      DEV_RUNNER_DEFAULT_IMAGE: ${DEV_RUNNER_IMAGE:-ghcr.io/byte5ai/omadia-dev-runner:latest}
+      # The LLM proxy's model allowlist (spec §5, wireDevPlatform.ts). An empty
+      # list is a deliberate fail-closed default (config.ts: "always mounted;
+      # an empty allowlist ⇒ it answers 500 'no LLM policy'"), so this is a
+      # real per-deployment setting, not a wiring bug -- but its absence looks
+      # EXACTLY like every earlier gate in this chain from the runner's side:
+      # the CLI reaches the proxy fine (gates 6/10 fixed that) and gets an
+      # instant, silent-to-the-runner 500 with zero tokens spent. Comma-separated,
+      # exact string match (llmProxy.ts: `policy.allowedModels.includes(model)`)
+      # against whatever `--model` the CLI actually reports in its init message.
+      DEV_PLATFORM_LLM_ALLOWED_MODELS: ${DEV_PLATFORM_LLM_ALLOWED_MODELS:-claude-opus-4-8[1m],claude-opus-4-8,claude-sonnet-4-8[1m],claude-sonnet-4-8}
+      # Egress allowlist entries every job gets in ADDITION to the middleware
+      # host + its own repo's forge host (deriveJobPolicy.ts). Absent by
+      # default (config.ts), which is correct for a repo needing no package
+      # install at all -- but for THIS repo (npm workspaces), a job with no
+      # bootstrap_command auto-detects `npm ci`/`npm install` (bootstrapDetect
+      # .ts) and, same as any implement-phase agent legitimately running one
+      # itself, needs a route to the registry or it just hangs retrying
+      # against a proxy default-deny (found live: "install is stalled,
+      # node_modules not growing", no clean error -- npm's own resilience
+      # masks the denial as a hang rather than a fast rejection).
+      DEV_EGRESS_BASE_ALLOWLIST: ${DEV_EGRESS_BASE_ALLOWLIST:-registry.npmjs.org}
       # Neutralise any docker engine address a stray `middleware/.env` (loaded via
       # the base file's env_file) might inject. `environment` wins over env_file,
       # so these empty values are the last word: the middleware CANNOT be handed a
@@ -97,9 +126,18 @@ services:
 
       # The image allowlist is the boundary a compromised middleware cannot cross:
       # it may name a job, never an image. The daemon REFUSES TO BOOT without it.
-      # Digest-pinned by default (DEV_RUNNER_REQUIRE_DIGEST=0 to relax, locally).
       DEV_RUNNER_ALLOWED_IMAGES: ${DEV_RUNNER_ALLOWED_IMAGES:-ghcr.io/byte5ai/omadia-dev-runner}
       DEV_RUNNER_IMAGES: ${DEV_RUNNER_IMAGE:-ghcr.io/byte5ai/omadia-dev-runner:latest}
+      # Digest-pinned by default (true) — the comment above used to be the ONLY
+      # place this knob existed; the var was never actually forwarded into the
+      # container, so `env.DEV_RUNNER_REQUIRE_DIGEST` was always undefined and
+      # `parseRequireDigest` silently fell back to true. Every locally-built
+      # image is a floating tag (no digest, no registry to have digest-pinned
+      # it from), so EVERY provision was refused with the same generic
+      # "the middleware could not supply the job policy" 502 the runner-image
+      # gap produced — a second, distinct cause behind the identical symptom.
+      # Set DEV_RUNNER_REQUIRE_DIGEST=0 in .env to relax this, locally only.
+      DEV_RUNNER_REQUIRE_DIGEST: ${DEV_RUNNER_REQUIRE_DIGEST:-true}
 
       # Pull policy. `always` (the default, and prod on GHCR) re-pulls + digest-pins
       # + cosign-verifies every image on every provision. `if-not-present` skips the
@@ -116,8 +154,21 @@ services:
       # The daemon refuses to boot on a half-configuration.
       DEV_RUNNER_EGRESS_PROXY_URL: http://172.28.5.3:3128
       DEV_RUNNER_EGRESS_PROXY_CONTROL_URL: http://172.28.4.3:3129
-      # The runner reaches the middleware directly, not through the proxy.
-      DEV_RUNNER_NO_PROXY: middleware,localhost,127.0.0.1
+      # The runner does NOT reach the middleware directly -- it CANNOT: job
+      # containers are created by dind on their own per-job network, which has
+      # no route to dev-control (where `middleware` actually lives). Only the
+      # proxy is dual-homed onto both dev-egress (job-reachable) and dev-control
+      # (middleware-reachable), so phone-home traffic must go THROUGH it, not
+      # around it. The proxy's own egress policy (egressPolicy.mjs) already
+      # special-cases exactly this: a request whose host+port equals
+      # OMADIA_INTERNAL_API_URL (this same dev-egress-proxy's own env, set to
+      # http://middleware:8080) is allowed regardless of path -- so listing
+      # "middleware" here to bypass the proxy doesn't skip an unnecessary hop,
+      # it routes phone-home into a dead end: `getaddrinfo ENOTFOUND middleware`
+      # from inside the job's network, which is where every real job died after
+      # the runner-image/digest/token gates were fixed. Only localhost/127.0.0.1
+      # (traffic that never leaves the container) belong on this bypass list.
+      DEV_RUNNER_NO_PROXY: localhost,127.0.0.1
 
       # A lease says "still working"; it can never say "run forever".
       DEV_RUNNER_MAX_JOB_LIFETIME_MS: ${DEV_RUNNER_MAX_JOB_LIFETIME_MS:-21600000}
@@ -144,7 +195,18 @@ services:
 
   # --- the nested engine: the only privileged service in the stack ----------
   dev-dind:
-    image: docker:27-dind
+    # Thin wrapper around docker:27-dind (see middleware/sidecars/dev-dind):
+    # adds ONE static iptables rule in dind's OWN netns so a nested per-job
+    # container's direct-connect bypass attempt (confirmed live, 2026-07-29 —
+    # npm's own proxy resolution occasionally lands on a direct-connect code
+    # path) fails in milliseconds instead of a multi-minute TCP blackhole.
+    # dev-engine/dev-egress are already `internal: true`, so the bypass was
+    # ALWAYS doomed — this only makes the failure deterministic, closing the
+    # timing window that re-triggers npm's own ExitHandler race (npm/cli#9751).
+    # Zero capability change to the job container itself.
+    image: omadia-dev-dind:local
+    build:
+      context: middleware/sidecars/dev-dind
     restart: unless-stopped
     privileged: true
     environment:
@@ -205,6 +267,17 @@ services:
         # reach the DATA plane at 172.28.5.3 (dev-egress). Two planes, two networks,
         # and the daemon never joins the one the jobs are on.
         ipv4_address: 172.28.4.3
+      # The proxy's OWN route to the real internet. dev-egress and dev-control
+      # are BOTH `internal: true` -- correctly, they must never reach outside --
+      # but that left the proxy itself with no path out either, so every job's
+      # egress request failed DNS resolution before the allowlist/CONNECT logic
+      # ever ran (`getaddrinfo EAI_AGAIN github.com` from inside this very
+      # container). The proxy deliberately does NOT join `omadia` for this --
+      # sharing the app's own network would make it reachable from (and able to
+      # reach) middleware/web-ui laterally, which the whole point of a separate
+      # egress plane exists to avoid -- so this is a THIRD, dedicated network
+      # whose only member is the proxy.
+      dev-egress-external: {}
     # No `ports:` — the proxy is not reachable from the host.
 
 volumes:
@@ -240,3 +313,9 @@ networks:
     ipam:
       config:
         - subnet: 172.28.5.0/24
+  # The proxy's real path to the internet — deliberately NOT internal, and
+  # deliberately NOT `omadia` (see the service comment above). No pinned
+  # subnet/address: dev-egress-proxy is this network's only member, and
+  # nothing else ever needs to address it here.
+  dev-egress-external:
+    driver: bridge

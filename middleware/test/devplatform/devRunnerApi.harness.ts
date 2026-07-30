@@ -71,6 +71,13 @@ export class FakeStore implements DevRunnerJobStore {
   async getJob(jobId: string): Promise<DevJob | null> {
     return this.jobs.get(jobId) ?? null;
   }
+  reissueCalls: string[] = [];
+  async reissueRunnerToken(jobId: string): Promise<string> {
+    this.reissueCalls.push(jobId);
+    const fresh = `djr_reissued-${String(this.reissueCalls.length)}`;
+    this.tokens.set(jobId, fresh);
+    return fresh;
+  }
   readonly touchCalls: string[] = [];
   readonly artifactOwner = new Map<string, string>();
 
