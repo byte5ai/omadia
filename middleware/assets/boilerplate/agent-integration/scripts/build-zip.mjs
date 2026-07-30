@@ -68,6 +68,10 @@ const INCLUDE = [
   'manifest.yaml',
   'package.json',
   'dist',
+  // Plugin-owned SQL. The host allows .sql in a package (zipExtractor.ts); without
+  // this entry the directory is silently dropped here and the install succeeds with
+  // no schema at all — a green install and a missing table.
+  'migrations',
   'skills',
   'assets',
   'README.md',
