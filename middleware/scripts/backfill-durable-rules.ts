@@ -51,7 +51,7 @@ async function main(): Promise<void> {
   const graph = new NeonKnowledgeGraph({
     pool,
     tenantId: TENANT,
-    embeddingClient,
+    resolveEmbeddingClient: () => embeddingClient,
   });
 
   // Pre-flight the embedder — a durable MK without an embedding is invisible to

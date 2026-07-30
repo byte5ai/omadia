@@ -205,6 +205,10 @@
           "title": "Storage Backend",
           "description": "Switch memory storage between filesystem and Postgres; Postgres needs DATABASE_URL and takes effect after a restart."
         },
+        "embeddingProvider": {
+          "title": "Embedding Provider",
+          "description": "Switch the active embedding adapter live — no restart. Shows the dimension gate, the stored corpus, and what a switch would discard."
+        },
         "domains": {
           "title": "Domains",
           "description": "Browse registered plugins grouped by domain (read-only)."
@@ -2981,6 +2985,8 @@
       "plan": "Plan",
       "viewPlan": "View plan",
       "noPlan": "No plan artifact",
+      "planLoading": "Loading plan…",
+      "planLoadError": "The plan could not be loaded.",
       "holders": "Holders",
       "noHolders": "none",
       "questions": "Questions",
@@ -3071,6 +3077,7 @@
       "age": "Age",
       "view": "View",
       "cancel": "Cancel",
+      "delete": "Delete",
       "empty": "No jobs yet. Start one from a repository row.",
       "live": "live",
       "liveLost": "connection lost — retrying",
@@ -3100,6 +3107,12 @@
         "body": "The runner is terminated. The branch, the log, and any uploaded diff are kept.",
         "confirm": "Cancel job",
         "cancel": "Keep running"
+      },
+      "deleteConfirm": {
+        "title": "Delete job?",
+        "body": "The job, its log, and its artifacts are removed permanently. Any branch or PR it created is kept.",
+        "confirm": "Delete job",
+        "cancel": "Keep it"
       }
     },
     "newJob": {
@@ -3216,8 +3229,17 @@
         "pr": "pr"
       },
       "phaseSkipped": "skipped — no questions",
-      "noArtifact": "No artifact for this phase yet.",
+      "toolCall": {
+        "pending": "running",
+        "failed": "failed",
+        "noOutput": "(no output)",
+        "prompt": "Prompt",
+        "result": "Result",
+        "output": "Output",
+        "moreDiffLines": "… {count, plural, one {# more line} other {# more lines}}"
+      },
       "openPr": "Open pull request",
+      "artifactError": "This phase's recorded output could not be loaded.",
       "logEmpty": "No log output yet.",
       "scrollToBottom": "Scroll to bottom",
       "connection": {
@@ -3231,6 +3253,13 @@
         "body": "The runner is terminated and the branch is kept.",
         "confirm": "Cancel job",
         "cancelLabel": "Keep running"
+      },
+      "delete": {
+        "action": "Delete",
+        "title": "Delete job?",
+        "body": "The job, its log, and its artifacts are removed permanently. Any branch or PR it created is kept.",
+        "confirm": "Delete job",
+        "cancelLabel": "Keep it"
       },
       "sidebar": {
         "backend": "Backend",
@@ -3769,6 +3798,67 @@
     "dbUrlRequiredError": "Postgres requires DATABASE_URL (Neon KG/graphPool). Set DATABASE_URL and restart before switching to Postgres.",
     "forbiddenError": "Not authorized (403) — switching the backend requires admin rights.",
     "noProviderError": "No memory provider registered (409) — the choice cannot be saved."
+  },
+  "adminEmbeddingProvider": {
+    "title": "Embeddings · Provider",
+    "intro": "Switches the active <code>embeddingClient@1</code> provider <strong>live — without a restart</strong>. The middleware deactivates the current adapter, activates the target and re-runs the knowledge-graph dimension gate, which rewrites the <code>vector(n)</code> columns when the width changes. Every stored embedding is discarded and re-earned by the backfill sweep, one provider call per row.",
+    "loading": "loading…",
+    "loadFailed": "Loading failed: {message}",
+    "pollingNote": "Live state, re-read every {seconds} seconds.",
+    "none": "—",
+    "unknown": "unknown",
+    "dimensionsValue": "{dimensions}d",
+    "currentStateTitle": "Current state",
+    "activeProvider": "Active provider",
+    "activeModel": "Model",
+    "activeDimensions": "Vector width",
+    "providerDriftTitle": "Provider drift",
+    "providerDriftBody": "The registry hands out {activeModelId}, but the verdict governing the knowledge graph was computed against {gateModelId}. Nothing is broken — swapping an adapter through the plugin pages does not re-run the dimension gate. Switch the provider here to re-gate, so the corpus and the verdict describe the same model again.",
+    "capabilityMissing": "The active adapter publishes no client — it is running but not configured (missing API key or base URL).",
+    "corpusTitle": "Stored corpus",
+    "corpusModel": "Recorded model",
+    "corpusDimensions": "Recorded width",
+    "corpusNone": "No model is recorded yet — the corpus is empty, or it predates the model registry.",
+    "corpusClearPending": "A stale-vector clear is still draining. Vector writes resume on their own when the backfill sweep finishes it.",
+    "storedVectors": "Stored vectors",
+    "columnsTitle": "Governed vector columns",
+    "graphUnavailable": "No Postgres knowledge-graph is active, so there are no governed vector columns to report.",
+    "corpusReadFailed": "The corpus could not be read: {message}",
+    "gateTitle": "Dimension gate",
+    "gateWrites": "Vector writes",
+    "gateWritesAllowed": "allowed",
+    "gateWritesBlocked": "blocked",
+    "gateStatus": "Outcome",
+    "gateReason": "Reason",
+    "gateDetail": "Detail",
+    "gateUnavailable": "The knowledge-graph has published no gate verdict — either no Postgres backend is active, or it never got as far as evaluating.",
+    "gateMigrating": "The vector columns were rewritten at the new width. This is not an error: the old corpus was deliberately discarded and the backfill sweep is re-embedding it, so recall stays degraded until it catches up.",
+    "gateClearComplete": "The stale-vector clear finished and vector writes were re-enabled in this process, without a restart. The backfill sweep is re-embedding the corpus.",
+    "gateClearPending": "A stale-vector clear is still owed. Vector writes stay off until the backfill sweep drains it — no restart needed, this page will show the change.",
+    "autoMigrateTitle": "Rewrite vector columns on a width change",
+    "autoMigrateOn": "allowed — a confirmed switch below may rewrite the columns at the new width",
+    "autoMigrateOff": "forbidden — a width change blocks vector writes until you migrate the columns by hand, even from this page",
+    "autoMigrateHint": "This never happens on a restart: only a switch you confirm below can rewrite the columns. Change the master switch in the knowledge-graph plugin settings (auto_migrate_vector_columns).",
+    "switchTitle": "Switch provider",
+    "noAlternatives": "No second embeddingClient@1 provider is installed. Install one from the plugin store first — exactly one may ever be active.",
+    "targetLegend": "Target provider",
+    "widthChangeYes": "changes the column width ({from}d → {to}d)",
+    "widthChangeNo": "keeps the current column width",
+    "widthChangeUnknown": "width impact unknown until the provider activates",
+    "discardTitle": "This discards the stored corpus",
+    "discardCount": "{count, plural, =0 {Nothing is stored right now, so no vectors are lost.} one {# stored vector will be discarded and re-embedded.} other {# stored vectors will be discarded and re-embedded.}}",
+    "discardUnknown": "The number of stored vectors could not be read. Assume the whole corpus is discarded and re-embedded.",
+    "costWarning": "Re-embedding calls the provider once per row. Against a paid API that costs real money.",
+    "confirmLabel": "I understand that the stored vectors are discarded and re-embedded.",
+    "switchButton": "Switch provider",
+    "switching": "switching…",
+    "switchedTitle": "Switched to {provider}.",
+    "switchedHint": "The gate outcome below is what actually happened. It updates on its own while the backfill runs.",
+    "confirmationRequiredError": "Confirmation required — the switch discards the stored vectors.",
+    "unknownTargetError": "That plugin is not an installed embeddingClient@1 provider.",
+    "alreadyActiveError": "That provider is already the active one.",
+    "targetUnavailableError": "The target could not take over, so the previous provider was restored. Configure it first (API key, base URL), then try again.",
+    "forbiddenError": "Not authorized (403) — switching the embedding provider requires admin rights."
   },
   "graph": {
     "page": {

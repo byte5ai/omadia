@@ -74,6 +74,51 @@ describe('CliEventTranslator — event table', () => {
     assert.deepEqual(done?.payload, { state: 'agent_done', usage: { tokensIn: 12, tokensOut: 34, costUsd: 0.05 } });
   });
 
+  it('result with subtype:"success" → still status agent_done (explicit success is not flagged)', () => {
+    const events = drain([
+      JSON.stringify({ type: 'result', subtype: 'success', usage: { input_tokens: 1, output_tokens: 1 } }),
+    ]);
+    const done = events.find((e) => e.type === 'status');
+    assert.equal(done?.payload['state'], 'agent_done');
+  });
+
+  it('result with a non-success subtype → status agent_error, not agent_done', () => {
+    // Regression: found live — a job whose CLI process exited non-zero despite
+    // a `result` line landing right beforehand that the OLD unconditional
+    // mapping would have reported as a clean agent_done, masking the failure
+    // from dev_job_events until the exit code contradicted it much later.
+    const events = drain([
+      JSON.stringify({
+        type: 'result',
+        subtype: 'error_max_turns',
+        result: 'exceeded max turns',
+        usage: { input_tokens: 12, output_tokens: 34 },
+        total_cost_usd: 0.05,
+      }),
+    ]);
+    const done = events.find((e) => e.type === 'status');
+    assert.deepEqual(done?.payload, {
+      state: 'agent_error',
+      subtype: 'error_max_turns',
+      errorText: 'exceeded max turns',
+      usage: { tokensIn: 12, tokensOut: 34, costUsd: 0.05 },
+    });
+  });
+
+  it('result with is_error:true (no subtype) → status agent_error', () => {
+    const events = drain([JSON.stringify({ type: 'result', is_error: true, usage: {} })]);
+    const done = events.find((e) => e.type === 'status');
+    assert.equal(done?.payload['state'], 'agent_error');
+    assert.equal(done?.payload['subtype'], undefined);
+  });
+
+  it('result with neither is_error nor a result-text field omits errorText rather than a placeholder', () => {
+    const events = drain([JSON.stringify({ type: 'result', subtype: 'error_during_execution', usage: {} })]);
+    const done = events.find((e) => e.type === 'status');
+    assert.equal(done?.payload['state'], 'agent_error');
+    assert.equal('errorText' in (done?.payload ?? {}), false);
+  });
+
   it('truncates a large input preview to the 2 KB cap', () => {
     const big = 'x'.repeat(5000);
     const [e] = drain([

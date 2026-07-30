@@ -50,6 +50,66 @@ import {
 /** DNS must not be a way to park a connection forever before the limiter sees it. */
 export const DEFAULT_RESOLVE_TIMEOUT_MS = 5_000;
 
+/**
+ * How long a successful resolution is reused before a fresh lookup, keyed by
+ * hostname and shared across every job. Short enough that the DNS-rebinding
+ * defence (resolve-once/connect-to-what-you-checked, spec §6) stays
+ * meaningful — the resolved addresses are still classified/pinned fresh on
+ * every CONNECT, only the lookup itself is reused; long enough to absorb a
+ * burst of concurrent fetches to the same host (npm's registry traffic:
+ * dozens of package tarballs from registry.npmjs.org at once).
+ */
+export const DEFAULT_RESOLVE_CACHE_TTL_MS = 30_000;
+
+/**
+ * Wrap a raw resolver with the cache + in-flight de-dup described above. npm
+ * ci fires up to `maxsockets` (default 15) concurrent CONNECTs to the SAME
+ * hostname within milliseconds of each other; without this, each one
+ * independently calls dns.lookup(), which runs on Node's libuv threadpool
+ * (default 4 workers, never tuned in this image) — so N concurrent same-host
+ * lookups compete for 4 slots instead of sharing one answer. Confirmed live
+ * (2026-07-28, epic #470): default npm concurrency crashed deterministically
+ * ~70s into `npm ci` with npm's own "Exit handler never called!" bug
+ * (npm/cli#9751 — a re-entrancy race triggered by near-simultaneous registry-
+ * fetch timeouts); raising `--maxsockets` to 1000 turned the same threadpool
+ * contention into outright `EAI_AGAIN` once lookups queued past the 5s
+ * resolve deadline; *lowering* it to 3 only delayed the same crash (70s→
+ * 251s). All three point at resolution contention, not npm itself — this
+ * removes the contention at its source instead of guessing at npm's own
+ * concurrency.
+ *
+ * @param {(host: string) => Promise<Array<{ address: string, family?: number }>>} rawResolve
+ * @param {number} ttlMs
+ */
+function createCachedResolve(rawResolve, ttlMs) {
+  /** @type {Map<string, { addresses: Array<{ address: string, family?: number }>, expiresAt: number }>} */
+  const cache = new Map();
+  /** @type {Map<string, Promise<Array<{ address: string, family?: number }>>>} */
+  const inflight = new Map();
+
+  /** @param {string} host */
+  return function cachedResolve(host) {
+    const cached = cache.get(host);
+    if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.addresses);
+
+    const existing = inflight.get(host);
+    if (existing) return existing;
+
+    const promise = rawResolve(host)
+      .then((addresses) => {
+        // Only a SUCCESS is cached — a failed lookup (or a deadline timeout
+        // racing it from the caller side) must not poison the next attempt.
+        if (ttlMs > 0) cache.set(host, { addresses, expiresAt: Date.now() + ttlMs });
+        return addresses;
+      })
+      .finally(() => {
+        inflight.delete(host);
+      });
+    inflight.set(host, promise);
+    return promise;
+  };
+}
+
 export const DEFAULT_DATA_PORT = 3128;
 /** Control-plane port (spec §6). */
 export const DEFAULT_CONTROL_PORT = 3129;
@@ -102,6 +162,7 @@ async function defaultResolve(host) {
  * @property {ReadonlySet<number>} [allowedPorts]
  * @property {(host: string) => Promise<Array<{ address: string, family?: number }>>} [resolve] DNS seam.
  * @property {number} [resolveTimeoutMs] Deadline on name resolution (default 5 s).
+ * @property {number} [resolveCacheTtlMs] How long a resolution is reused (default 30 s; 0 disables caching).
  * @property {Partial<typeof DEFAULTS>} [limits]
  * @property {{ warn?: (m: string) => void }} [logger]
  * @property {() => number} [now]
@@ -119,8 +180,10 @@ export function createProxy(deps) {
   const allowedPorts = deps.allowedPorts ?? new Set(DEFAULT_ALLOWED_PORTS);
   const rawResolve = deps.resolve ?? defaultResolve;
   const resolveTimeoutMs = deps.resolveTimeoutMs ?? DEFAULT_RESOLVE_TIMEOUT_MS;
+  const resolveCacheTtlMs = deps.resolveCacheTtlMs ?? DEFAULT_RESOLVE_CACHE_TTL_MS;
+  const cachedResolve = createCachedResolve(rawResolve, resolveCacheTtlMs);
   /** @param {string} host */
-  const resolve = (host) => withDeadline(rawResolve(host), resolveTimeoutMs, 'dns resolve');
+  const resolve = (host) => withDeadline(cachedResolve(host), resolveTimeoutMs, 'dns resolve');
   const limits = { ...DEFAULTS, ...(deps.limits ?? {}) };
   const ctx = {
     registry: deps.registry,
@@ -153,12 +216,33 @@ export function createProxy(deps) {
     });
   });
   dataServer.on('connect', (req, socket, head) => {
-    void handleConnect(req, socket, head).catch(() => {
+    // `socket` is the raw net.Socket the CONNECT upgrade hands us — an
+    // EventEmitter with NO listener for 'error' until handleConnect's success
+    // path reaches `clientSocket.on('error', teardown)`, well after DNS
+    // resolution / the allowlist decision. A client that resets the
+    // connection (ECONNRESET) at ANY point before that — observed live —
+    // fires an unhandled 'error' event, and Node's default for a
+    // listener-less EventEmitter 'error' is to throw, which crashed this
+    // entire process (taking down egress control-plane calls for every OTHER
+    // concurrent job until the container restarted). Attach a listener
+    // covering the socket's full lifetime, unconditionally, before anything
+    // else touches it; handleConnect's own later listener simply becomes a
+    // second listener on the same event once the tunnel exists — both firing
+    // is harmless, `destroySocket` is idempotent.
+    socket.on('error', (err) => {
+      logger.warn?.(`[dev-egress-proxy] client socket error: ${err instanceof Error ? err.message : String(err)}`);
+      destroySocket(socket);
+    });
+    void handleConnect(req, socket, head).catch((err) => {
+      logger.warn?.(`[dev-egress-proxy] handleConnect threw: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
       destroySocket(socket);
     });
   });
   // A client that errors before/after the CONNECT upgrade must not throw globally.
-  dataServer.on('clientError', (_err, socket) => destroySocket(socket));
+  dataServer.on('clientError', (err, socket) => {
+    logger.warn?.(`[dev-egress-proxy] clientError: ${err instanceof Error ? err.message : String(err)}`);
+    destroySocket(socket);
+  });
 
   /**
    * CONNECT tunnel: authorise → decide → (only now) resolve → classify → pin →
@@ -287,7 +371,10 @@ export function createProxy(deps) {
       armIdle();
     });
 
-    upstream.on('error', teardown);
+    upstream.on('error', (err) => {
+      logger.warn?.(`[dev-egress-proxy] upstream connection to ${host}:${port} (${pinnedIp}) failed: ${err instanceof Error ? err.message : String(err)}`);
+      teardown();
+    });
     upstream.on('close', teardown);
     clientSocket.on('error', teardown);
     clientSocket.on('close', teardown);
@@ -406,6 +493,41 @@ export function createProxy(deps) {
       return;
     }
     const url = new URL(req.url ?? '/', 'http://proxy.local');
+
+    // POST /resolve — the daemon has no route to the internet by design (only
+    // the proxy does); this lets it pre-resolve a job's allowlist for static
+    // /etc/hosts entries (spec §470, the npm local-DNS-bypass root cause)
+    // using the SAME resolver the data plane trusts, without granting the
+    // daemon egress of its own. Bearer-authed like every other control route;
+    // NOT allowlist-gated — a resolution reveals only a public IP for a name
+    // the caller already supplied, nothing a public DNS query wouldn't.
+    if (url.pathname === '/resolve' && req.method === 'POST') {
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        sendJson(res, 400, { code: 'proxy.bad_body', message: 'invalid JSON body' });
+        return;
+      }
+      const hosts = Array.isArray(body?.hosts) ? body.hosts.filter((h) => typeof h === 'string') : null;
+      if (!hosts || hosts.length === 0 || hosts.length > 100) {
+        sendJson(res, 400, { code: 'proxy.bad_body', message: 'hosts must be a non-empty array of at most 100 strings' });
+        return;
+      }
+      const results = await Promise.all(
+        hosts.map(async (host) => {
+          try {
+            const addresses = await resolve(host);
+            return { host, addresses };
+          } catch {
+            return { host, addresses: null };
+          }
+        }),
+      );
+      sendJson(res, 200, { results });
+      return;
+    }
+
     const m = /^\/jobs\/([^/]+)$/.exec(url.pathname);
     if (!m) {
       sendJson(res, 404, { code: 'proxy.not_found', message: 'no such route' });
@@ -460,12 +582,38 @@ export function createProxy(deps) {
 }
 
 /** Write a raw HTTP status line to a CONNECT client socket (no res object here).
+ *
+ *  ANNOUNCE THE CLOSE. Every non-2xx reply on this path is terminal — the caller
+ *  `end()`s the socket the moment this returns, because node has already detached
+ *  its HTTP parser from the socket at the `connect` event and hands it to us raw,
+ *  so there is no second request to serve on it.
+ *
+ *  That matters most for the 407. Proxy auth over CONNECT is a CHALLENGE-RESPONSE
+ *  ON ONE CONNECTION: libcurl (and therefore `git`, whose default
+ *  `http.proxyAuthMethod` is `anyauth`) sends an unauthenticated CONNECT first,
+ *  reads the 407 + `Proxy-Authenticate`, then re-sends the CONNECT with
+ *  `Proxy-Authorization` ON THAT SAME SOCKET. A 407 that FINs the socket without
+ *  saying so leaves the client writing its authenticated retry into a connection
+ *  we already closed; it reads EOF and reports `Proxy CONNECT aborted`, so auth
+ *  can never succeed and every job's clone fails. `Connection: close` — plus the
+ *  legacy `Proxy-Connection` spelling libcurl also honours — tells it to reconnect
+ *  for the retry instead. `Content-Length: 0` keeps the (absent) body framed
+ *  rather than delimited by the close.
+ *
+ *  Clients that send credentials preemptively (node's `EnvHttpProxyAgent`, a
+ *  hand-rolled CONNECT) never reach the 407 at all, which is exactly why this hid
+ *  behind a working phone-home path.
+ *
  *  @param {import('node:stream').Duplex} socket @param {number} code
  *  @param {string} message @param {Record<string, string>} [headers] */
 function writeConnectStatus(socket, code, message, headers = {}) {
   if (socket.destroyed || socket.writableEnded) return;
+  const isTerminal = code < 200 || code >= 300;
+  const effective = isTerminal
+    ? { ...headers, 'Content-Length': '0', Connection: 'close', 'Proxy-Connection': 'close' }
+    : headers;
   let head = `HTTP/1.1 ${code} ${message}\r\n`;
-  for (const [k, v] of Object.entries(headers)) head += `${k}: ${v}\r\n`;
+  for (const [k, v] of Object.entries(effective)) head += `${k}: ${v}\r\n`;
   head += '\r\n';
   try {
     socket.write(head);

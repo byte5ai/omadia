@@ -7,6 +7,9 @@ import { useTranslations } from 'next-intl';
 import { ScrollToBottomButton } from '@/app/_components/ScrollToBottomButton';
 import { useStickToBottom } from '@/app/_lib/useStickToBottom';
 
+import type { LogItem } from '../_lib/toolCallLog';
+import { ToolCallCard } from './ToolCallCard';
+
 /**
  * Epic #470 W0 — the live log pane (UI spec §5). Monospace, sunken surface,
  * stick-to-bottom via `useStickToBottom` (issue #404): follows while at the
@@ -15,40 +18,34 @@ import { useStickToBottom } from '@/app/_lib/useStickToBottom';
  * a token stream announced line-by-line is noise (§13); a separate polite
  * region carries the connection state instead.
  *
- * Tool-invocation lines are `$`-prefixed in `--fg-strong`, stdout in
- * `--fg-muted`, stderr in `--danger` — text color only, no filled gutters.
- * The pane scrolls inside its own `overflow` box; the page never scrolls
- * sideways. No toast on disconnect.
+ * Items come pre-folded from `toolCallLog.ts`: agent narration renders as
+ * plain text (stdout in `--fg-muted`, stderr in `--danger`), tool calls
+ * render as a collapsible `ToolCallCard` instead of a raw `$ Name {...json}`
+ * dump. The pane scrolls inside its own `overflow` box; the page never
+ * scrolls sideways. No toast on disconnect.
  */
 
-export type LogStream = 'tool' | 'agent' | 'stderr';
-
-export interface LogLine {
-  id: string;
-  stream: LogStream;
-  text: string;
-}
+export type LogTextStream = 'agent' | 'stderr';
 
 export type LogConnection = 'live' | 'reconnecting' | 'closed';
 
-const STREAM_CLASS: Record<LogStream, string> = {
-  tool: 'text-[color:var(--fg-strong)]',
+const STREAM_CLASS: Record<LogTextStream, string> = {
   agent: 'text-[color:var(--fg-muted)]',
   stderr: 'text-[color:var(--danger)]',
 };
 
 export function JobLogPane({
-  lines,
+  items,
   connection,
   lastEventAgoSec,
 }: {
-  lines: LogLine[];
+  items: LogItem[];
   connection: LogConnection;
   lastEventAgoSec: number | null;
 }): React.ReactElement {
   const t = useTranslations('adminDevPlatform.detail');
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { isAtBottom, scrollToBottom } = useStickToBottom(scrollRef, [lines.length]);
+  const { isAtBottom, scrollToBottom } = useStickToBottom(scrollRef, [items.length]);
 
   const connectionText =
     connection === 'live'
@@ -68,15 +65,18 @@ export function JobLogPane({
           aria-live="off"
           className="max-h-[60vh] overflow-x-auto overflow-y-auto rounded-lg border border-[color:var(--border)] lume-surface-sunken p-4 font-mono text-xs leading-[1.6]"
         >
-          {lines.length === 0 ? (
+          {items.length === 0 ? (
             <div className="text-[color:var(--fg-subtle)]">{t('logEmpty')}</div>
           ) : (
-            lines.map((line) => (
-              <div key={line.id} className={`whitespace-pre-wrap ${STREAM_CLASS[line.stream]}`}>
-                {line.stream === 'tool' ? '$ ' : ''}
-                {line.text}
-              </div>
-            ))
+            items.map((item) =>
+              item.kind === 'tool' ? (
+                <ToolCallCard key={item.entry.id} entry={item.entry} />
+              ) : (
+                <div key={item.id} className={`whitespace-pre-wrap ${STREAM_CLASS[item.stream]}`}>
+                  {item.text}
+                </div>
+              ),
+            )
           )}
         </div>
         <ScrollToBottomButton

@@ -21,6 +21,17 @@
  * daemon-owned keys injected, egress canonicalised. This module does NOT re-derive
  * policy; it enforces the CONTAINER shape and refuses anything the clamp forbids
  * with a `spec_rejected`-shaped error rather than silently granting or dropping it.
+ *
+ * ONE exception to "does not re-derive policy": whether a floating tag is allowed
+ * at all. That is the operator's `DEV_RUNNER_REQUIRE_DIGEST` posture, and the clamp
+ * used to hardcode it ON — so `DEV_RUNNER_REQUIRE_DIGEST=0`, the documented local
+ * escape hatch, was a NO-OP and every locally-built (`docker load`ed, registry-less,
+ * therefore un-pinnable) image was refused here after the policy client had already
+ * been told to allow it. Two enforcement points reading the same posture is
+ * defence-in-depth; one of them ignoring it is a contradiction. So the posture is
+ * now passed in EXPLICITLY, defaulting to ON so the clamp fails closed if a caller
+ * forgets to thread it. What no posture relaxes: a digest that is PRESENT must be
+ * a real content address.
  */
 
 /**
@@ -33,9 +44,8 @@ import { parseImageReference } from './policyClient.mjs';
  * A valid content-address digest: `algorithm:hex`, ≥32 hex chars — a stub like
  * `sha256:abc` is refused. Mirrors `policyClient`'s internal `DIGEST_RE`; the
  * `netClassify`↔`ssrfGuard` parity test is the model for keeping such copies
- * honest, but a floating-tag reject here is defence-in-depth: the policy client
- * already enforces the digest when `DEV_RUNNER_REQUIRE_DIGEST` is on (default),
- * so this is the last line if that knob is ever turned off.
+ * honest. This shape check is UNCONDITIONAL: `DEV_RUNNER_REQUIRE_DIGEST` decides
+ * whether a digest is required, never whether a malformed one is tolerated.
  */
 const DIGEST_RE = /^[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[0-9a-f]{32,}$/;
 
@@ -209,22 +219,35 @@ export function jobVolumeName(jobId) {
  * @param {string} args.volumeName Per-job workspace volume; the ONLY bind.
  * @param {string} args.createdBy Principal recorded in the `createdBy` label.
  * @param {ClampLimits} args.limits Resolved resource bounds.
+ * @param {boolean} [args.requireDigest] The operator's `DEV_RUNNER_REQUIRE_DIGEST`
+ *   posture — must the image be digest-pinned? Defaults to TRUE (prod posture), so
+ *   omitting it fails closed. Only an explicit `false` admits a floating tag, and
+ *   only for the local-dev shape the knob exists for: an image `docker load`ed into
+ *   the engine, with no registry to have pinned it from.
  * @param {boolean} [args.dockerInJob] Opt-in DinD (spec §8): the job reaches its
  *   per-job sidecar over TLS. Adds the DOCKER_* env and a READ-ONLY certs bind —
  *   and nothing else. Absent/false ⇒ byte-identical to the plain clamp.
  * @returns {import('dockerode').ContainerCreateOptions}
  */
 export function buildContainerCreateOptions(args) {
-  const { jobId, policy, leaseExpiresAt, networkName, volumeName, createdBy, limits } = args;
+  const { jobId, policy, leaseExpiresAt, networkName, volumeName, createdBy, limits, extraHosts } = args;
   const dockerInJob = args.dockerInJob === true;
+  // Fail closed: only an explicit `false` relaxes the digest requirement.
+  const requireDigest = args.requireDigest !== false;
 
-  // (d) Canonicalise, THEN classify: the image must be digest-pinned. A floating
-  // tag is refused with a spec_rejected error, never launched.
+  // (d) Canonicalise, THEN classify. A floating tag is refused with a
+  // spec_rejected error under the prod posture, never launched. A digest that IS
+  // present must be a real content address whatever the posture — a malformed one
+  // is garbage input, not a relaxation the operator asked for.
   const { digest } = parseImageReference(policy.image);
   if (digest === undefined) {
-    throw new SpecRejectedError('image_not_digest_pinned', 'the job image is a floating tag, not a digest reference');
-  }
-  if (!DIGEST_RE.test(digest)) {
+    if (requireDigest) {
+      throw new SpecRejectedError(
+        'image_not_digest_pinned',
+        'the job image is a floating tag, not a digest reference',
+      );
+    }
+  } else if (!DIGEST_RE.test(digest)) {
     throw new SpecRejectedError('image_bad_digest', 'the job image digest is not a valid content address');
   }
 
@@ -296,6 +319,24 @@ export function buildContainerCreateOptions(args) {
       Ulimits: [{ Name: 'nofile', Soft: limits.nofile, Hard: limits.nofile }],
       // A job container never restarts — a dead job is a dead job.
       RestartPolicy: { Name: 'no' },
+      // Static `host:ip` entries the DAEMON pre-resolved for this job's OWN
+      // egress allowlist (jobs.mjs's resolveAllowlistHosts, using the daemon's
+      // real internet DNS — the job's isolated network has none by design).
+      // This is NOT a general DNS override: unlike the forbidden `Dns` field
+      // (which would let a policy point resolution at an arbitrary server and
+      // escape the allowlist entirely), every entry here names a host the job
+      // could already reach through the CONNECT proxy — it only makes LOCAL
+      // resolution of that SAME already-permitted host succeed too. Root
+      // cause (2026-07-28): npm's own HTTP client (@npmcli/agent) resolves
+      // its target hostname locally before/alongside the CONNECT tunnel; the
+      // job network's embedded resolver (127.0.0.11) has no upstream route
+      // for external names and returns EAI_AGAIN instantly, which — hit for
+      // every concurrent package fetch — triggers npm's own confirmed
+      // ExitHandler re-entrancy race (npm/cli#9751, "Exit handler never
+      // called!"). Always present (possibly empty) so the clamp's own
+      // "exactly these keys" invariant holds regardless of whether this
+      // job's policy allowlisted anything.
+      ExtraHosts: extraHosts ?? [],
     },
   };
 }

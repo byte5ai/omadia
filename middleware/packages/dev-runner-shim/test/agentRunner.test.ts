@@ -133,6 +133,39 @@ describe('buildAgentEnv — allowlist, not scrub', () => {
     assert.equal(allowed['ANTHROPIC_AUTH_TOKEN'], 'bearer');
   });
 
+  it('forwards HTTP_PROXY/NO_PROXY + NODE_USE_ENV_PROXY into the CLI child, same reason gitOps.ts forwards them to git', () => {
+    // The `claude` CLI is a SEPARATE process — it does not inherit this
+    // shim's own process.env, only what buildAgentEnv hands it. The job's
+    // isolated network has no route to ANTHROPIC_BASE_URL except through the
+    // daemon's egress proxy, and the CLI is Node/undici-based like the
+    // shim's own fetch calls, so it needs NODE_USE_ENV_PROXY too (gate 6's
+    // finding applies here as much as to homeClient.ts's fetch).
+    process.env['HTTP_PROXY'] = 'http://job:token@172.28.5.3:3128/';
+    process.env['HTTPS_PROXY'] = 'http://job:token@172.28.5.3:3128/';
+    process.env['NO_PROXY'] = 'localhost,127.0.0.1';
+    try {
+      const withoutAck = buildAgentEnv({ cwd: '/tmp/x', proxyBaseUrl: 'http://proxy', proxyToken: 'bearer' });
+      assert.equal(withoutAck['HTTP_PROXY'], undefined, 'proxy vars stay scoped to the LLM-routing gate, same as the auth pair');
+
+      const withAck = buildAgentEnv({ cwd: '/tmp/x', proxyBaseUrl: 'http://proxy', proxyToken: 'bearer', llmEnvAllowed: true });
+      assert.equal(withAck['HTTP_PROXY'], 'http://job:token@172.28.5.3:3128/');
+      assert.equal(withAck['HTTPS_PROXY'], 'http://job:token@172.28.5.3:3128/');
+      assert.equal(withAck['NO_PROXY'], 'localhost,127.0.0.1');
+      assert.equal(withAck['NODE_USE_ENV_PROXY'], '1');
+    } finally {
+      delete process.env['HTTP_PROXY'];
+      delete process.env['HTTPS_PROXY'];
+      delete process.env['NO_PROXY'];
+    }
+  });
+
+  it('omits proxy keys entirely when none are configured (no empty-string env pollution)', () => {
+    const env = buildAgentEnv({ cwd: '/tmp/x', proxyBaseUrl: 'http://proxy', proxyToken: 'bearer', llmEnvAllowed: true });
+    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'NODE_USE_ENV_PROXY']) {
+      assert.equal(env[k], undefined, `${k} must be absent, not an empty string`);
+    }
+  });
+
   it('HOME is job-scoped and the parent HOME never appears in the child env', () => {
     const prev = process.env['HOME'];
     const canary = '/tmp/parent-home-canary-9f3a1c';

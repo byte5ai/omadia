@@ -95,6 +95,7 @@ import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createAdminProvidersRouter } from './routes/adminProviders.js';
+import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
@@ -222,7 +223,11 @@ import {
 import { createAdminUsersRouter } from './routes/adminUsers.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
-import { buildKgHealth } from './health/kgHealth.js';
+import {
+  EMBEDDING_GATE_STATUS_SERVICE,
+  buildKgHealth,
+  type EmbeddingGateStatus,
+} from './health/kgHealth.js';
 import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
 import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
@@ -313,7 +318,11 @@ import { deriveChannelType } from './channels/channelType.js';
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import { backfillGraph } from '@omadia/orchestrator-extras';
 import { turnContext } from '@omadia/orchestrator';
-import type { EntityRefBus, KnowledgeGraph } from '@omadia/plugin-api';
+import type {
+  EmbeddingClient,
+  EntityRefBus,
+  KnowledgeGraph,
+} from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type {
   ChatAgent,
@@ -1489,8 +1498,15 @@ async function main(): Promise<void> {
   // Graph + Bus lifetime; close() drains everything.
   // - graphPool may be undefined when the in-memory backend is active
   //   (no DATABASE_URL — used by tests + zero-config dev).
-  // - graphTenantId is read at the same place the plugin reads it so
-  //   verifier-store + plugin-internal embedding-backfill use the same key.
+  // - graphTenantId here is the ENV-derived value only. The knowledge-graph
+  //   plugin resolves its own tenant as `ctx.config.get('graph_tenant_id') ??
+  //   GRAPH_TENANT_ID ?? 'default'`, and `graph_tenant_id` is an
+  //   operator-settable setup field — so the two are NOT "read at the same
+  //   place", which an earlier version of this comment claimed. Anything that
+  //   must price or address the plugin's own corpus has to consult the
+  //   registry config first (see `resolveGraphTenantId` in
+  //   routes/adminEmbeddingProvider.ts); the consumers below use this value as
+  //   the deployment-wide default, which is what they have always done.
   const knowledgeGraph = serviceRegistry.get<KnowledgeGraph>('knowledgeGraph');
   if (!knowledgeGraph) {
     throw new Error(
@@ -2139,6 +2155,21 @@ async function main(): Promise<void> {
     console.log('[middleware] dev-platform GitHub webhook router mounted at /api/webhooks/github (raw-body, before express.json)');
   }
 
+  // The LLM proxy (`/api/v1/dev-runner/llm/*`, mounted later at `mountDevPlatform`)
+  // owns its own route-level `express.raw()` so it can canonicalise the exact bytes
+  // it validates before forwarding (see llmProxy.ts). A global body parser that runs
+  // BEFORE that route is reached would drain the request stream first: body-parser's
+  // `read()` bails out via `onFinished.isFinished(req)` on an already-consumed stream
+  // and never touches `req.body` again, so the route's own raw() would then see a
+  // pre-parsed object instead of a Buffer. Skip this one path here, mirroring the
+  // GitHub-webhook router's raw-body-before-json pattern above.
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/v1/dev-runner/llm/')) {
+      next();
+      return;
+    }
+    express.json({ limit: '10mb' })(req, res, next);
+  });
   // Issue #437 — Conductor's generic inbound webhook route. Mounted unconditionally
   // (mirrors the forward-reference pattern, not the `if (graphPool)` gate above): on
   // the in-memory backend `conductorWebhookInboundDepsRef` never gets assigned, so the
@@ -2156,7 +2187,15 @@ async function main(): Promise<void> {
     // embeddings/semantic-recall/durable-tier/process-reuse availability) so a
     // silently-degraded deployment is observable here instead of only in boot
     // logs. Non-sensitive: capability states only, no secrets/URLs.
-    res.json({ status: 'ok', kg: buildKgHealth(installedRegistry) });
+    //
+    // #440 — the installed registry alone cannot see whether the embedding
+    // model/dimension gate actually let the knowledge-graph write vectors, so
+    // the gate outcome is read here too. Resolved per request rather than
+    // captured at boot: plugins can be toggled at runtime.
+    const gate = serviceRegistry.get<EmbeddingGateStatus>(
+      EMBEDDING_GATE_STATUS_SERVICE,
+    );
+    res.json({ status: 'ok', kg: buildKgHealth(installedRegistry, gate) });
   });
 
   // Friction-free pairing discovery (#293). Public-by-design (lives outside
@@ -2618,13 +2657,20 @@ async function main(): Promise<void> {
     // W2: role-principal gates resolve their live holder set against the same
     // conductor role store the conductor await gate uses.
     const devPlatformRoleStore = new ConductorRoleStore(graphPool);
-    // Epic #470 W4 — resolve the FlyMachinesBackend config when a dedicated runner
-    // app is set. The on-/off-Fly selection lives HERE so the assembly layer stays
-    // env-free: on Fly (FLY_APP_NAME injected) use the internal Machines API + a
-    // `.internal` 6PN phone-home address; off Fly use the public endpoints. Requires
-    // a digest-pinned image (DEV_RUNNER_IMAGE, falling back to DEV_RUNNER_DEFAULT_IMAGE).
-    // These operator URLs are DELIBERATELY not SSRF-guarded (`.internal` is valid here).
-    const flyRunnerImage = config.DEV_RUNNER_IMAGE ?? config.DEV_RUNNER_DEFAULT_IMAGE;
+    // The runner image, shared by every backend: FlyMachinesBackend (below) AND
+    // the DockerBackend job-policy config (assembleDevPlatform's `runnerImage`,
+    // further down) both derive from this one resolution. `DEV_RUNNER_IMAGE`
+    // wins when set (it's the name the daemon's own DEV_RUNNER_IMAGES/allowlist
+    // config uses too, so one operator-set var keeps every side in agreement);
+    // `DEV_RUNNER_DEFAULT_IMAGE` is the fallback. A digest-pinned image is
+    // required on Fly (enforced below); locally a floating tag is fine.
+    //
+    // Epic #470 W4 — the on-/off-Fly selection for the Machines backend lives
+    // HERE so the assembly layer stays env-free: on Fly (FLY_APP_NAME injected)
+    // use the internal Machines API + a `.internal` 6PN phone-home address; off
+    // Fly use the public endpoints. These operator URLs are DELIBERATELY not
+    // SSRF-guarded (`.internal` is valid here).
+    const resolvedRunnerImage = config.DEV_RUNNER_IMAGE ?? config.DEV_RUNNER_DEFAULT_IMAGE;
     // The runner app MUST be dedicated — NEVER this middleware's own Fly app, or a
     // job's ephemeral machine (running hostile repo code) would be provisioned into
     // the app that holds the middleware's machines, volumes, and app-level secrets
@@ -2638,13 +2684,13 @@ async function main(): Promise<void> {
       );
     }
     const flyConfig =
-      config.DEV_FLY_RUNNER_APP && flyRunnerImage && !flyAppIsSelf
+      config.DEV_FLY_RUNNER_APP && resolvedRunnerImage && !flyAppIsSelf
         ? {
             runnerApp: config.DEV_FLY_RUNNER_APP,
             apiBase: config.FLY_APP_NAME
               ? 'http://_api.internal:4280/v1'
               : 'https://api.machines.dev/v1',
-            image: flyRunnerImage,
+            image: resolvedRunnerImage,
             phoneHomeUrl:
               config.DEV_FLY_PHONE_HOME_URL ??
               (config.FLY_APP_NAME
@@ -2660,7 +2706,7 @@ async function main(): Promise<void> {
             ...(config.DEV_FLY_REGION ? { region: config.DEV_FLY_REGION } : {}),
           }
         : undefined;
-    if (config.DEV_FLY_RUNNER_APP && !flyRunnerImage) {
+    if (config.DEV_FLY_RUNNER_APP && !resolvedRunnerImage) {
       console.warn(
         '[middleware] DEV_FLY_RUNNER_APP set but no runner image (DEV_RUNNER_IMAGE / DEV_RUNNER_DEFAULT_IMAGE) — FlyMachinesBackend NOT registered',
       );
@@ -2687,7 +2733,7 @@ async function main(): Promise<void> {
       ...(config.DEV_RUNNER_DAEMON_URL ? { daemonUrl: config.DEV_RUNNER_DAEMON_URL } : {}),
       backend: config.DEV_PLATFORM_BACKEND,
       leaseTtlSec: config.DEV_JOB_LEASE_TTL_SEC,
-      ...(config.DEV_RUNNER_DEFAULT_IMAGE ? { runnerImage: config.DEV_RUNNER_DEFAULT_IMAGE } : {}),
+      ...(resolvedRunnerImage ? { runnerImage: resolvedRunnerImage } : {}),
       ...(config.DEV_EGRESS_BASE_ALLOWLIST
         ? { egressBaseAllowlist: csvList(config.DEV_EGRESS_BASE_ALLOWLIST) }
         : {}),
@@ -3434,6 +3480,44 @@ async function main(): Promise<void> {
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
+
+  // Embedding-provider switch (#440 follow-up) — pick which `embeddingClient@1`
+  // adapter is active, LIVE. Unlike the memory-backend router next door this
+  // one does not persist-and-ask-for-a-restart: it deactivates the outgoing
+  // provider, activates the target, and asks the knowledge-graph's gate to
+  // re-evaluate ITSELF against the new provider (rewriting the vector columns
+  // when the width changed and the operator confirmed the discard), inside this
+  // process.
+  //
+  // It deliberately does NOT get `reactivate`. Re-activating the knowledge
+  // graph runs its `close()`, which ends `graphPool` — the pool captured once
+  // right here and shared with ~40 subsystems below. Handing the router that
+  // capability is what made every successful switch poison them all with
+  // "Cannot use a pool after calling end on the pool".
+  app.use(
+    '/api/v1/admin/embedding-provider',
+    requireAuth,
+    createAdminEmbeddingProviderRouter({
+      installedRegistry,
+      catalog: pluginCatalog,
+      getEmbeddingClient: () =>
+        serviceRegistry.get<EmbeddingClient>('embeddingClient'),
+      // Resolved per request, never captured: `vectorWritesAllowed` flips
+      // false→true in-process when a stale-vector clear drains, and the whole
+      // point of the page is that the operator sees that without a reload.
+      getGateStatus: () =>
+        serviceRegistry.get<EmbeddingGateStatus>(EMBEDDING_GATE_STATUS_SERVICE),
+      getGraphPool: () => graphPool,
+      // Env-derived fallback. The router prefers the KG plugin's own
+      // `graph_tenant_id` setup field when one is set.
+      tenantId: graphTenantId,
+      activate: (id) => toolPluginRuntime.activate(id),
+      deactivate: (id) => toolPluginRuntime.deactivate(id),
+    }),
+  );
+  console.log(
+    '[middleware] embedding-provider switch ready at /api/v1/admin/embedding-provider (auth: required)',
+  );
 
   // Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
   // (Claude/Codex/Gemini) so the operator can run agents on a subscription.

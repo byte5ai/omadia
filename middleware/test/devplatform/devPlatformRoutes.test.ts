@@ -18,6 +18,7 @@ import {
   Harness,
   PAT_TOKEN,
   authHeaders,
+  deleteReq,
   hasLeakedSecret,
   makeHarness,
   makeJob,
@@ -238,6 +239,98 @@ describe('devPlatform — cancel routes through finalizeDevJob', () => {
     assert.equal(res.status, 202);
     assert.equal(h.finalizeCalls.length, 1);
     assert.equal(h.finalizeCalls[0]?.status, 'cancelled');
+  });
+});
+
+describe('devPlatform — DELETE /jobs/:id', () => {
+  let h: Harness;
+  afterEach(async () => { if (h) await h.close(); });
+
+  it('204 and removes a terminal job', async () => {
+    h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice' }));
+    h.jobStore.add(makeJob({ id: 'job-1', repoId: 'repo-1', status: 'failed' }));
+    const res = await deleteReq(`${h.baseUrl}/jobs/job-1`, authHeaders());
+    assert.equal(res.status, 204);
+    assert.equal(await h.jobStore.getJob('job-1'), null);
+  });
+
+  it('409 for an active job — never orphans a live backend handle', async () => {
+    h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice' }));
+    h.jobStore.add(makeJob({ id: 'job-1', repoId: 'repo-1', status: 'running' }));
+    const res = await deleteReq(`${h.baseUrl}/jobs/job-1`, authHeaders());
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as { code: string }).code, 'devplatform.job_not_terminal');
+    assert.ok(await h.jobStore.getJob('job-1'), 'the job survives the refused delete');
+  });
+
+  it('404 for a job on a repo the caller may not launch (same as GET /jobs/:id)', async () => {
+    h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice', allowedLaunchers: [] }));
+    h.jobStore.add(makeJob({ id: 'job-1', repoId: 'repo-1', status: 'done' }));
+    const res = await deleteReq(`${h.baseUrl}/jobs/job-1`, authHeaders('bob', 'viewer'));
+    assert.equal(res.status, 404);
+    assert.ok(await h.jobStore.getJob('job-1'), 'unauthorized delete never touches the row');
+  });
+});
+
+describe('devPlatform — POST /jobs/:id/retry', () => {
+  let h: Harness;
+  afterEach(async () => { if (h) await h.close(); });
+
+  it('default: clones into a fresh job starting at analyze, no artifacts carried over', async () => {
+    h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice' }));
+    h.jobStore.add(makeJob({ id: 'job-1', repoId: 'repo-1', status: 'failed', phase: 'bootstrap' }));
+    await h.jobStore.addArtifact('job-1', 'analysis', '{"kind":"analysis"}');
+    const res = await postJson(`${h.baseUrl}/jobs/job-1/retry`, authHeaders(), {});
+    assert.equal(res.status, 202);
+    const body = (await res.json()) as { ok: boolean; jobId: string; resumedAtPhase?: string };
+    assert.equal(body.ok, true);
+    assert.ok(!('resumedAtPhase' in body), 'default retry reports no resumedAtPhase');
+    const next = await h.jobStore.getJob(body.jobId);
+    assert.equal(next?.phase, 'analyze', 'default retry always restarts at analyze');
+    assert.deepEqual(await h.jobStore.listArtifacts(body.jobId), [], 'no artifacts copied without resumeFromPhase');
+  });
+
+  it('resumeFromPhase=true: starts the clone at the failed job\'s own phase and copies its artifacts forward', async () => {
+    h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice' }));
+    h.jobStore.add(makeJob({ id: 'job-1', repoId: 'repo-1', status: 'failed', phase: 'bootstrap' }));
+    await h.jobStore.addArtifact('job-1', 'analysis', '{"kind":"analysis"}', { note: 'from job-1' });
+    const res = await postJson(`${h.baseUrl}/jobs/job-1/retry?resumeFromPhase=true`, authHeaders(), {});
+    assert.equal(res.status, 202);
+    const body = (await res.json()) as { ok: boolean; jobId: string; resumedAtPhase?: string };
+    assert.equal(body.ok, true);
+    assert.equal(body.resumedAtPhase, 'bootstrap');
+    const next = await h.jobStore.getJob(body.jobId);
+    assert.equal(next?.phase, 'bootstrap', 'the clone starts where the source job failed, not at analyze');
+    const copied = await h.jobStore.listArtifacts(body.jobId);
+    assert.equal(copied.length, 1);
+    assert.equal(copied[0]?.kind, 'analysis');
+    assert.equal(copied[0]?.content, '{"kind":"analysis"}');
+    assert.deepEqual(copied[0]?.meta, { note: 'from job-1' });
+    // The copy lands under the NEW job's own id, not the source job's.
+    assert.equal(copied[0]?.jobId, body.jobId);
+  });
+
+  it('resumeFromPhase=true on a job that failed during analyze itself behaves like a normal retry', async () => {
+    h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice' }));
+    h.jobStore.add(makeJob({ id: 'job-1', repoId: 'repo-1', status: 'failed', phase: 'analyze' }));
+    const res = await postJson(`${h.baseUrl}/jobs/job-1/retry?resumeFromPhase=true`, authHeaders(), {});
+    assert.equal(res.status, 202);
+    const next = await h.jobStore.getJob(((await res.json()) as { jobId: string }).jobId);
+    assert.equal(next?.phase, 'analyze');
+  });
+
+  it('409 for a non-terminal job, same as a normal retry, regardless of resumeFromPhase', async () => {
+    h = await makeHarness();
+    h.repoStore.add(makeRepo({ id: 'repo-1', createdBy: 'alice' }));
+    h.jobStore.add(makeJob({ id: 'job-1', repoId: 'repo-1', status: 'running', phase: 'bootstrap' }));
+    const res = await postJson(`${h.baseUrl}/jobs/job-1/retry?resumeFromPhase=true`, authHeaders(), {});
+    assert.equal(res.status, 409);
   });
 });
 

@@ -21,16 +21,20 @@
  *     clamp unit fills them, so an accidental early call fails loudly.
  *
  * SEAM CONTRACT — `ContainerEngine.createJobContainer({ jobId, policy,
- * leaseExpiresAt })`: given a job id, the SERVER-DERIVED `DerivedJobPolicy`
- * (image/env/egressAllowlist, fetched by the daemon — never caller-supplied),
- * and the computed lease expiry, create and start ONE hardened container and
- * return its `{ containerId, networkId, volumeName, imageDigest }`. The clamp,
- * per-job network, and workspace volume are the implementation's responsibility;
- * the JobManager only stores what it returns.
+ * leaseExpiresAt, extraHosts })`: given a job id, the SERVER-DERIVED
+ * `DerivedJobPolicy` (image/env/egressAllowlist, fetched by the daemon —
+ * never caller-supplied), the computed lease expiry, and ALREADY-RESOLVED
+ * `host:ip` entries for the allowlist (JobManager#provision resolves them via
+ * the proxy client — the engine has no route of its own to the internet),
+ * create and start ONE hardened container and return its `{ containerId,
+ * networkId, volumeName, imageDigest }`. The clamp, per-job network, and
+ * workspace volume are the implementation's responsibility; the JobManager
+ * only stores what it returns.
  */
 
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { PassThrough, Readable } from 'node:stream';
 import { join } from 'node:path';
 
@@ -55,6 +59,7 @@ import {
   ROLE_DIND,
   SpecRejectedError,
 } from './clamp.mjs';
+import { parseRequireDigest } from './policyClient.mjs';
 
 /**
  * @typedef {import('./policyClient.mjs').DerivedJobPolicy} DerivedJobPolicy
@@ -132,7 +137,7 @@ export const LEASE_EXPIRES_LABEL = 'ai.omadia.dev.leaseExpiresAt';
  * mutating methods; this unit provides `ping` and the fake used by tests.
  * @typedef {object} ContainerEngine
  * @property {() => Promise<EnginePing>} ping
- * @property {(args: { jobId: string, policy: DerivedJobPolicy, leaseExpiresAt: string }) => Promise<JobContainer>} createJobContainer
+ * @property {(args: { jobId: string, policy: DerivedJobPolicy, leaseExpiresAt: string, extraHosts?: readonly string[] }) => Promise<JobContainer>} createJobContainer
  * @property {(container: JobContainer) => Promise<void>} destroyJobContainer
  * @property {(container: JobContainer, opts: { follow: boolean }) => Promise<import('node:stream').Readable>} streamLogs
  * @property {(refs: readonly string[]) => Promise<string[]>} warmImages
@@ -417,6 +422,7 @@ export class JobManager {
     const leaseExpiresAt = this.#leaseExpiry(leaseTtlSec);
     const hardDeadlineAt = new Date(this.#clock.now() + this.#maxLifetimeMs).toISOString();
 
+    let extraHosts = [];
     if (this.#proxyClient && proxyToken) {
       // BEFORE the container starts: a runner that boots first races its own first
       // request against this call. The TTL is the job's hard deadline, not its
@@ -430,11 +436,23 @@ export class JobManager {
         proxyToken,
         ttlSec,
       });
+      // Pre-resolve the allowlist THROUGH THE PROXY (the only component with a
+      // real route to the internet — confirmed live the daemon itself has none)
+      // so the container's static /etc/hosts covers whatever LOCAL resolution a
+      // tool inside it attempts (resolveAllowlistHosts's own doc comment has the
+      // full story: npm's exit-handler crash traced to exactly this gap). A
+      // resolution failure here must never abort provisioning — it only means
+      // one fewer /etc/hosts entry, not a broken job.
+      try {
+        extraHosts = await resolveAllowlistHosts(policy.egressAllowlist, (hosts) => this.#proxyClient.resolveHosts(hosts));
+      } catch (err) {
+        this.#log(`[jobs] allowlist pre-resolution failed for ${jobId}, continuing without extra /etc/hosts entries: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
     let container;
     try {
-      container = await this.#engine.createJobContainer({ jobId, policy, leaseExpiresAt });
+      container = await this.#engine.createJobContainer({ jobId, policy, leaseExpiresAt, extraHosts });
     } catch (err) {
       // No container exists, so nothing may keep egress authorisation. Failing to
       // withdraw it is not fatal (it expires at the hard deadline) but it is never silent.
@@ -802,6 +820,35 @@ async function ensureImage(docker, ref, pullPolicy = 'always') {
   });
 }
 
+/**
+ * Read an image's content address back FROM THE ENGINE — what actually got
+ * resolved, not what the reference claimed. Preference order:
+ *   1. the RepoDigest belonging to the repository in `ref` — an image pulled under
+ *      several names carries one RepoDigest per repository and they are NOT
+ *      interchangeable, so `[0]` can hand back a digest from another registry;
+ *   2. a digest carried by `ref` itself;
+ *   3. the local image `Id` — the ONLY content address a `docker load`ed image has,
+ *      since it never came from a registry to be assigned a RepoDigest.
+ *
+ * Step 3 is not a weakening: it is reached only for a floating tag, which the clamp
+ * admits only under an explicit `DEV_RUNNER_REQUIRE_DIGEST=0`. It exists because
+ * `imageDigest` is a REQUIRED daemon↔middleware wire field (`z.string().min(1)`),
+ * so an empty one fails the protocol rather than the job — and because an audit
+ * chain wants the content address of what ran even when no registry vouched for it.
+ *
+ * @param {Docker} docker
+ * @param {string} ref
+ * @returns {Promise<string>} '' only if the engine reports neither digest nor Id.
+ */
+async function resolveImageDigest(docker, ref) {
+  const info = await docker.getImage(ref).inspect();
+  const repoDigests = Array.isArray(info.RepoDigests) ? info.RepoDigests : [];
+  const repository = repositoryOf(ref);
+  const match = repoDigests.find((rd) => typeof rd === 'string' && rd.startsWith(`${repository}@`));
+  if (typeof match === 'string') return match.slice(match.indexOf('@') + 1);
+  return imageDigestOf(ref) ?? String(info.Id ?? '');
+}
+
 /** Remove a container after a graceful SIGTERM/10s/SIGKILL stop, then VERIFY it is
  *  gone (lesson (c): a remove call returning is not proof of removal). A 404 at any
  *  step means already-gone (idempotent). Any surviving container or hard error is
@@ -886,6 +933,50 @@ export function resolvePullPolicy(env) {
 }
 
 /**
+ * Pre-resolve a job's egress allowlist so the container can be given static
+ * `/etc/hosts` entries (Docker's `ExtraHosts`) for hosts it can ALREADY reach
+ * through the CONNECT proxy — this adds no new egress capability, it only
+ * makes LOCAL name resolution of those SAME already-permitted hosts succeed.
+ *
+ * Root cause this exists for (2026-07-28, epic #470): npm's own HTTP client
+ * (`@npmcli/agent`) resolves its target hostname locally before/alongside
+ * the CONNECT tunnel. Confirmed live: a direct `dns.lookup()` inside a job
+ * container fails in 4ms with `EAI_AGAIN` — Docker's embedded resolver
+ * (127.0.0.11) has no upstream for external names (spec §6's "DNS-exfil
+ * defence": the job network has no route to a real resolver by design). Hit
+ * for every concurrent package fetch, this triggers npm's own confirmed
+ * ExitHandler re-entrancy race (npm/cli#9751, "Exit handler never called!").
+ * Any tool doing local resolution of an allowlisted host hits the same
+ * wall — this fixes it at the root rather than chasing npm's internals.
+ *
+ * The resolution itself MUST go through the proxy's `resolveHosts` (not the
+ * daemon's own DNS) — confirmed live that the daemon container is ALSO on an
+ * isolated network with no internet route; only the egress proxy is. Batched
+ * into ONE call rather than per-host, since the proxy is reachable but the
+ * daemon otherwise has no network dependency on it for anything but this.
+ *
+ * A host that fails to resolve here is skipped, not fatal — the CONNECT
+ * tunnel path (the proxy's own, independent resolution) still works for it
+ * regardless; this is a best-effort improvement to LOCAL resolution, not a
+ * new correctness requirement for egress itself. An IP literal in the
+ * allowlist is skipped too — nothing to pre-resolve, and it would be a
+ * malformed `ExtraHosts` entry (Docker expects a NAME on the left).
+ *
+ * @param {readonly string[]} allowlist
+ * @param {(hosts: readonly string[]) => Promise<Array<{ host: string, addresses: Array<{ address: string }> | null }>>} resolveHosts
+ *   The proxy client's batched resolver (tests inject a fake).
+ * @returns {Promise<string[]>} `host:ip` entries, Docker's `ExtraHosts` format.
+ */
+export async function resolveAllowlistHosts(allowlist, resolveHosts) {
+  const toResolve = allowlist.filter((host) => isIP(host) === 0);
+  if (toResolve.length === 0) return [];
+  const results = await resolveHosts(toResolve);
+  return results
+    .filter((r) => r.addresses && r.addresses.length > 0)
+    .map((r) => `${r.host}:${/** @type {{ address: string }[]} */ (r.addresses)[0].address}`);
+}
+
+/**
  * A real dockerode-backed engine implementing the full §4 container lifecycle
  * behind the `ContainerEngine` seam. `createJobContainer` builds the create-options
  * via the PURE `buildContainerCreateOptions` and hands THAT EXACT object to
@@ -909,6 +1000,10 @@ export function createDockerEngine(opts = {}) {
   // Resolved once at engine construction: the same policy governs the per-job image
   // pull, the DinD sidecar image pull, and the warm loop, so all three agree.
   const pullPolicy = resolvePullPolicy(env);
+  // The SAME posture the policy client is constructed with, parsed by the SAME
+  // function — the clamp is a second enforcement point for one operator decision,
+  // not a second (contradicting) decision. Defaults to prod posture when unset.
+  const requireDigest = parseRequireDigest(env.DEV_RUNNER_REQUIRE_DIGEST);
 
   return {
     async ping() {
@@ -921,10 +1016,13 @@ export function createDockerEngine(opts = {}) {
       }
     },
 
-    async createJobContainer({ jobId, policy, leaseExpiresAt }) {
+    async createJobContainer({ jobId, policy, leaseExpiresAt, extraHosts = [] }) {
       const networkName = jobNetworkName(jobId);
       const volumeName = jobVolumeName(jobId);
       const dockerInJob = policy.dockerInJob === true;
+      // extraHosts arrives ALREADY resolved — the caller (JobManager#provision)
+      // is the one with a proxy client (this engine has none, and no route of
+      // its own to the internet regardless; see resolveAllowlistHosts's doc).
       // Build (and thereby VALIDATE) the create-options FIRST: a forbidden spec
       // (a floating-tag image) throws SpecRejectedError here, before any docker
       // resource is created — so a rejected job leaks nothing.
@@ -936,16 +1034,26 @@ export function createDockerEngine(opts = {}) {
         volumeName,
         createdBy,
         limits,
+        extraHosts,
+        requireDigest,
         dockerInJob,
       });
-      const imageDigest = imageDigestOf(policy.image);
-      if (imageDigest === undefined) {
-        // Unreachable: buildContainerCreateOptions already rejected a tag-only image.
-        throw new SpecRejectedError('image_not_digest_pinned', 'the job image resolved to no digest');
-      }
       // Resolve the image BY DIGEST (never a floating tag) so the container is
       // created from exactly the vetted content.
       await ensureImage(docker, policy.image, pullPolicy);
+      // A pinned ref already IS the content address — the prod path resolves it
+      // without touching the engine, exactly as before. Only a floating tag (which
+      // the clamp admitted, so DEV_RUNNER_REQUIRE_DIGEST is explicitly off) has to
+      // be read back from the engine, which is why this runs AFTER ensureImage:
+      // an image that is not present yet has no Id to report.
+      const imageDigest = imageDigestOf(policy.image) ?? (await resolveImageDigest(docker, policy.image));
+      if (imageDigest === '') {
+        // Reachable: the engine knows the image but reports neither RepoDigest nor
+        // Id. `imageDigest` is a required wire field, so an empty one would fail
+        // the middleware's response parse with an opaque protocol error instead of
+        // this named one — and would do it AFTER the container was already running.
+        throw new SpecRejectedError('image_not_digest_pinned', 'the job image resolved to no digest');
+      }
 
       const labels = {
         [JOB_ID_LABEL]: jobId,
@@ -1079,19 +1187,7 @@ export function createDockerEngine(opts = {}) {
       const digests = [];
       for (const ref of refs) {
         await ensureImage(docker, ref, pullPolicy);
-        const info = await docker.getImage(ref).inspect();
-        const repoDigests = Array.isArray(info.RepoDigests) ? info.RepoDigests : [];
-        // An image pulled under several names carries one RepoDigest per
-        // repository, and they are NOT interchangeable — taking [0] can hand
-        // back a digest that belongs to a different registry than the ref we
-        // were asked to warm. Match on the repository we actually pulled.
-        const repository = repositoryOf(ref);
-        const match = repoDigests.find((rd) => typeof rd === 'string' && rd.startsWith(`${repository}@`));
-        const resolved =
-          typeof match === 'string'
-            ? match.slice(match.indexOf('@') + 1)
-            : (imageDigestOf(ref) ?? String(info.Id ?? ''));
-        digests.push(resolved);
+        digests.push(await resolveImageDigest(docker, ref));
       }
       return digests;
     },

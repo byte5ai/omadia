@@ -117,10 +117,17 @@ export async function runShim(env: ShimEnv = readShimEnv(), deps: ShimDeps = {})
     // `OMADIA_ANTHROPIC_*` pair is the middleware's own long-lived proxy
     // secret, so it crosses into the child ONLY when the backend was launched
     // with the jail acknowledgment and plumbed `OMADIA_LLM_ENV_ALLOWED=true`.
-    // W1's per-job, short-lived LLM-proxy tokens replace this passthrough.
-    const proxyBaseUrl = process.env['OMADIA_ANTHROPIC_BASE_URL']?.trim();
-    const proxyToken = process.env['OMADIA_ANTHROPIC_AUTH_TOKEN']?.trim();
-    if (proxyToken && !env.llmEnvAllowed) {
+    // W1's per-job, short-lived LLM-proxy tokens replace this passthrough:
+    // `ANTHROPIC_BASE_URL` (policy-supplied, deriveJobPolicy.ts) plus the
+    // per-job bearer already on ShimEnv (`jobToken`) ARE that replacement — a
+    // short-lived, per-job token is a different threat model from W0's
+    // long-lived secret, so its presence stands in for the jail
+    // acknowledgment rather than requiring it.
+    const w1BaseUrl = process.env['ANTHROPIC_BASE_URL']?.trim();
+    const proxyBaseUrl = w1BaseUrl || process.env['OMADIA_ANTHROPIC_BASE_URL']?.trim();
+    const proxyToken = w1BaseUrl ? env.jobToken : process.env['OMADIA_ANTHROPIC_AUTH_TOKEN']?.trim();
+    const llmEnvAllowed = env.llmEnvAllowed || Boolean(w1BaseUrl);
+    if (!w1BaseUrl && process.env['OMADIA_ANTHROPIC_AUTH_TOKEN']?.trim() && !env.llmEnvAllowed) {
       log(
         'OMADIA_ANTHROPIC_AUTH_TOKEN is set but OMADIA_LLM_ENV_ALLOWED!=true — ' +
           'withholding LLM auth from the child (W0 jail acknowledgment missing)',
@@ -135,7 +142,7 @@ export async function runShim(env: ShimEnv = readShimEnv(), deps: ShimDeps = {})
       cwd: repoDir,
       homeDir: agentHome,
       spec,
-      llmEnvAllowed: env.llmEnvAllowed,
+      llmEnvAllowed,
       ...(proxyBaseUrl ? { proxyBaseUrl } : {}),
       ...(proxyToken ? { proxyToken } : {}),
       emit,

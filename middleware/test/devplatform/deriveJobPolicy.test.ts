@@ -282,10 +282,20 @@ describe('devRunnerApi — internal job-policy endpoint', () => {
     };
     assert.equal(body.jobId, 'job-1');
     assert.equal(body.image, CONFIG.image);
-    assert.deepEqual(body.env, { ANTHROPIC_BASE_URL: CONFIG.llmProxyBaseUrl, OMADIA_PIPELINE_MODE: 'gated' });
+    // OMADIA_JOB_TOKEN is the ONE deliberate exception to "no secret in the
+    // derived env" (deriveJobPolicy.ts's own invariant, untouched): this route
+    // IS the docker backend's actual provision moment (DockerBackend.provision()
+    // itself never carries a token, spec S3), so it mints one here and the
+    // daemon's own ALLOWED_ENV_KEYS already treats it as policy-supplied.
+    assert.deepEqual(body.env, {
+      ANTHROPIC_BASE_URL: CONFIG.llmProxyBaseUrl,
+      OMADIA_PIPELINE_MODE: 'gated',
+      OMADIA_JOB_TOKEN: 'djr_reissued-1',
+    });
     assert.ok(body.egressAllowlist.includes('artifactory.internal'), 'repo allowlist entry is present');
     assert.ok(body.egressAllowlist.includes('middleware'));
-    assert.equal(hasCredentialKey(body.env), false, 'policy env carries no credential-like key');
+    const { OMADIA_JOB_TOKEN: _theOneIntentionalToken, ...rest } = body.env;
+    assert.equal(hasCredentialKey(rest), false, 'no OTHER credential-like key beyond the one deliberate token');
   });
 
   it('REJECTS a per-job djr_ runner bearer (S3: no runner may read a policy)', async () => {
