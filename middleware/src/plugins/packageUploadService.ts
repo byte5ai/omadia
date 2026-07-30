@@ -294,11 +294,20 @@ export class PackageUploadService {
       }
 
       // --- 10. Atomic rename into the final directory ----------------------
-      const finalDir = path.join(
+      // Containment is re-asserted here, independently of the charset gate in
+      // the manifest loader: the next two statements are an `fs.rm -rf` and a
+      // rename, so this is the last place where a traversing id/version can
+      // still be stopped, and it must not depend on a single upstream check
+      // staying correct.
+      const contained = resolveContainedPackageDir(
         this.deps.packagesDir,
         plugin.id,
         plugin.version,
       );
+      if (!contained.ok) {
+        return fail('package.path_traversal', contained.message);
+      }
+      const finalDir = contained.dir;
       await fs.mkdir(path.dirname(finalDir), { recursive: true });
       // If leftovers from an aborted installation are lying around → remove.
       await fs.rm(finalDir, { recursive: true, force: true });
@@ -421,6 +430,51 @@ export class PackageUploadService {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Entries that live DIRECTLY under the packages root and are not plugin
+ * directories: the host-node_modules symlink written by
+ * {@link ensureHostNodeModulesLink} and the store index. A plugin id equal to
+ * one of them stays inside the root as a string but would either follow the
+ * symlink out of the packages tree (into the host's real `node_modules`) or
+ * collide with the index file. `.staging` needs no entry — a leading dot is
+ * already outside the id charset.
+ */
+const RESERVED_ROOT_ENTRIES: ReadonlySet<string> = new Set([
+  'node_modules',
+  'index.json',
+]);
+
+/**
+ * Resolves `<packagesDir>/<id>/<version>` and proves it stays under the
+ * packages root. Defence in depth for the manifest loader's charset gate: the
+ * caller is about to `fs.rm -rf` this path, so containment is verified here
+ * from the raw values rather than assumed. Exported so the escape branch can
+ * be exercised directly — through `ingest` the loader's charset gate rejects
+ * a traversing id first, which is the point of having two layers.
+ */
+export function resolveContainedPackageDir(
+  packagesDir: string,
+  pluginId: string,
+  version: string,
+): { ok: true; dir: string } | { ok: false; message: string } {
+  const root = path.resolve(packagesDir);
+  const dir = path.resolve(path.join(root, pluginId, version));
+  if (!dir.startsWith(root + path.sep)) {
+    return {
+      ok: false,
+      message: `manifest.identity id/version resolve outside the packages directory (id=${JSON.stringify(pluginId)}, version=${JSON.stringify(version)}).`,
+    };
+  }
+  const firstSegment = path.relative(root, dir).split(path.sep)[0];
+  if (firstSegment !== undefined && RESERVED_ROOT_ENTRIES.has(firstSegment)) {
+    return {
+      ok: false,
+      message: `manifest.identity.id ${JSON.stringify(pluginId)} collides with the reserved packages-root entry '${firstSegment}'.`,
+    };
+  }
+  return { ok: true, dir };
+}
 
 async function resolvePackageRoot(stagingRoot: string): Promise<string | null> {
   if (await fileExists(path.join(stagingRoot, 'manifest.yaml'))) {
