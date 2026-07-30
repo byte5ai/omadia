@@ -169,8 +169,18 @@ function fakeStreamProvider(
   return {
     id: 'anthropic',
     capabilities: providerCapabilities,
-    complete: async (): Promise<LlmResponse> => {
-      throw new Error('complete() not scripted');
+    // The BUFFERED path (`runTurn`) calls `complete()`, the streaming path
+    // calls `stream()`. Both are served from the same script so a single
+    // scenario definition covers each path identically.
+    complete: async (req: LlmRequest): Promise<LlmResponse> => {
+      seenRequests.push(req);
+      if (idx >= streams.length) {
+        throw new Error(`no scripted stream for provider call ${String(idx + 1)}`);
+      }
+      const events = streams[idx]!;
+      idx += 1;
+      const final = events.at(-1) as { type: string; response: LlmResponse };
+      return final.response;
     },
     stream: (req: LlmRequest): AsyncIterable<LlmStreamEvent> => {
       seenRequests.push(req);
@@ -593,6 +603,119 @@ describe('two-turn replay through the orchestrator (#544 W2-1)', () => {
       'u2',
     );
     assert.equal(h.replayCalls.length, 0, 'a cross-user replay fired');
+  });
+});
+
+// ── 3b. the BUFFERED path (runTurn) ─────────────────────────────────────────
+//
+// `chatInContextInner` carries a hand-mirrored copy of the streaming
+// short-circuit, the winner rule and the envelope normalisation. A mutation run
+// proved these are NOT covered by the streaming tests above: breaking only the
+// buffered copy left the whole suite green. Non-streaming callers (Teams and
+// every `chat()`/`runTurn()` consumer) go through exactly this code, so it gets
+// its own coverage rather than trusting the mirror to stay in sync.
+
+async function runBuffered(
+  orchestrator: Orchestrator,
+  userMessage: string,
+  sessionScope?: string,
+  userId?: string,
+): Promise<{ answer: string; pendingMcpInput?: PendingMcpInputCard; pendingUserChoice?: unknown }> {
+  return orchestrator.runTurn({
+    userMessage,
+    ...(sessionScope !== undefined ? { sessionScope } : {}),
+    ...(userId !== undefined ? { userId } : {}),
+  }) as never;
+}
+
+describe('buffered path — runTurn (#544 W2-1)', () => {
+  it('MUTATION CHECK: short-circuits and reports pendingMcpInput', async () => {
+    const h = harness([
+      toolCallStream([{ id: 'tu-1', name: MCP_TOOL_NAME, input: { subject: 'Drucker' } }]),
+      textStream('sollte nie erreicht werden'),
+    ]);
+    const result = await runBuffered(h.orchestrator, 'Ticket anlegen', 'sess-1', 'u1');
+    assert.ok(result.pendingMcpInput, 'no pendingMcpInput from runTurn');
+    assert.equal(result.pendingMcpInput.serverName, 'Kunden-CRM');
+    assert.equal(h.seenRequests.length, 1, 'the model was called again after the park');
+  });
+
+  it('MUTATION CHECK: pendingUserChoice wins here too', async () => {
+    const h = harness(
+      [
+        toolCallStream([
+          { id: 'tu-1', name: MCP_TOOL_NAME, input: {} },
+          {
+            id: 'tu-2',
+            name: 'ask_user_choice',
+            input: { question: 'Welches System?', options: [{ label: 'CRM' }, { label: 'ERP' }] },
+          },
+        ]),
+        textStream('x'),
+      ],
+      { withChoiceTool: true },
+    );
+    const result = await runBuffered(h.orchestrator, 'Ticket', 'sess-1', 'u1');
+    // The buffered copy of the winner rule, pinned independently of the
+    // streaming one — a change applied to only one of the two turns this red.
+    assert.ok(result.pendingUserChoice, 'the choice card must win on the buffered path');
+    assert.equal(result.pendingMcpInput, undefined);
+    assert.equal(h.store.size(), 1, 'the losing MCP record was discarded');
+  });
+
+  it('MUTATION CHECK: replays on the buffered path, and the envelope never reaches the wire', async () => {
+    serverArgs.length = 0;
+    const h = harness([
+      toolCallStream([{ id: 'tu-1', name: MCP_TOOL_NAME, input: { subject: 'Drucker kaputt' } }]),
+      textStream('Ticket ist angelegt.'),
+    ]);
+    const card = (await runBuffered(h.orchestrator, 'Ticket anlegen', 'sess-1', 'u1'))
+      .pendingMcpInput;
+    assert.ok(card);
+    h.seenRequests.length = 0;
+
+    const second = await runBuffered(
+      h.orchestrator,
+      formatMcpInputReply({
+        correlationId: card.correlationId,
+        inputResponses: { customerNumber: 'K-1234', pin: 'geheim-9876' },
+      }),
+      'sess-1',
+      'u1',
+    );
+
+    assert.equal(h.replayCalls.length, 1, 'the buffered path did not replay');
+    assert.deepEqual(serverArgs.at(-1), {
+      subject: 'Drucker kaputt',
+      inputResponses: { customerNumber: 'K-1234', pin: 'geheim-9876' },
+    });
+    assert.equal(second.answer, 'Ticket ist angelegt.');
+    const wire = wireUserText(h.seenRequests);
+    assert.ok(wire.includes('TCK-77'), `replayed result missing from the wire: ${wire}`);
+    // The envelope normalisation in `runTurn` — its own code, its own test.
+    assert.ok(!wire.includes('__mcp_input_reply__'), `raw envelope reached the wire: ${wire}`);
+    assert.ok(wire.includes('Eingaben übermittelt'));
+    assert.ok(!wire.includes('geheim-9876'), 'a secret value reached the wire');
+  });
+
+  it('a cross-session answer is refused on the buffered path', async () => {
+    const h = harness([
+      toolCallStream([{ id: 'tu-1', name: MCP_TOOL_NAME, input: {} }]),
+      textStream('x'),
+    ]);
+    const card = (await runBuffered(h.orchestrator, 'Ticket', 'sess-VICTIM', 'u1'))
+      .pendingMcpInput;
+    assert.ok(card);
+    await runBuffered(
+      h.orchestrator,
+      formatMcpInputReply({
+        correlationId: card.correlationId,
+        inputResponses: { customerNumber: 'K-STOLEN' },
+      }),
+      'sess-ATTACKER',
+      'u1',
+    );
+    assert.equal(h.replayCalls.length, 0);
   });
 });
 

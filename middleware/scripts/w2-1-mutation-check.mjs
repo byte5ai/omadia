@@ -12,59 +12,60 @@ import { readFileSync, writeFileSync } from 'node:fs';
 
 const CLIENT = 'packages/harness-orchestrator/src/mcp/mcpClient.ts';
 const STORE = 'packages/harness-orchestrator/src/mcp/pendingMcpInput.ts';
+const ORCH = 'packages/harness-orchestrator/src/orchestrator.ts';
 
 const MUTATIONS = [
   {
     id: 'M1',
-    label: 'drop the LENIENT_CALL_TOOL_RESULT_SCHEMA extension (SDK 1.29.0 strips the fields)',
-    file: CLIENT,
-    from: '  resultType: z.string().optional(),\n  inputRequests: z.unknown().optional(),\n',
-    to: '',
+    label: 'claim() also deletes the record (the "symmetry" refactor)',
+    file: STORE,
+    from: '    // NOTE: the record is intentionally NOT removed. Claiming renders the card;',
+    to: '    this.entries.delete(correlationId);\n    // NOTE: the record is intentionally NOT removed. Claiming renders the card;',
   },
   {
     id: 'M2',
-    label: 'takePending also deletes the keyed record (the "symmetry" refactor)',
-    file: STORE,
-    from: '    // NOTE: the keyed record is intentionally NOT removed here.',
-    to: '    this.entries.delete(serializedKey);\n    // NOTE: the keyed record is intentionally NOT removed here.',
-  },
-  {
-    id: 'M3',
     label: "park audits as 'ok' — claims a result that was never delivered",
     file: CLIENT,
     from: "this.emitCall(cfg, toolName, 'input_required', null, startedAt, actingIdentity);",
     to: "this.emitCall(cfg, toolName, 'ok', null, startedAt, actingIdentity);",
   },
   {
-    id: 'M4',
-    label: 'key the store on correlationId alone (the #445 shape)',
+    id: 'M3',
+    label: 'take() ignores the owner entirely (the #445 shape)',
     file: STORE,
-    from: '  return JSON.stringify([key.userId, key.sessionId, key.correlationId]);',
-    to: '  return JSON.stringify([key.correlationId]);',
+    from: '    if (serializeOwner(entry.owner) !== serializeOwner(key)) return undefined;',
+    to: '',
+  },
+  {
+    id: 'M4',
+    label: 'take() compares only the sessionId — session scope without the user',
+    file: STORE,
+    from: '  return JSON.stringify([owner.userId, owner.sessionId]);',
+    to: '  return JSON.stringify([owner.sessionId]);',
   },
   {
     id: 'M5',
-    label: 'key the store on {sessionId, correlationId} — session scope without the user',
+    label: 'take() accepts an UNCLAIMED record (a guessed id becomes redeemable)',
     file: STORE,
-    from: '  return JSON.stringify([key.userId, key.sessionId, key.correlationId]);',
-    to: '  return JSON.stringify([key.sessionId, key.correlationId]);',
+    from: '    if (entry.owner === undefined) return undefined;',
+    to: '',
   },
   {
     id: 'M6',
-    label: 'route the park through handleFailure (error + retry attempt)',
+    label: 'claim() is re-entrant — a leaked sentinel can re-bind ownership',
+    file: STORE,
+    from: '    if (entry.owner !== undefined) return undefined;',
+    to: '',
+  },
+  {
+    id: 'M7',
+    label: 'route the park through the transient retry (extra doomed round trip)',
     file: CLIENT,
     from: `        if (isInputRequiredResult(res)) {
           return this.parkInputRequired(`,
     to: `        if (isInputRequiredResult(res)) {
           if (attempt < 2) { lastFailure = rendered; continue; }
           return this.parkInputRequired(`,
-  },
-  {
-    id: 'M7',
-    label: 'drop the per-turn first-write-wins guard (second card overwrites the first)',
-    file: STORE,
-    from: "    if (slotId !== null && this.turnSlots.has(slotId)) return 'already_pending';",
-    to: '',
   },
   {
     id: 'M8',
@@ -77,18 +78,60 @@ const MUTATIONS = [
     id: 'M9',
     label: 'drop the TTL comparison in take() (expired records stay replayable)',
     file: STORE,
-    from: `    this.entries.delete(serializedKey);
+    from: `    this.entries.delete(key.correlationId);
     if (entry.expiresAt <= this.now()) return undefined;
     return entry.record;`,
-    to: `    this.entries.delete(serializedKey);
+    to: `    this.entries.delete(key.correlationId);
     return entry.record;`,
   },
   {
     id: 'M10',
-    label: 'collapse every parse failure into one reason',
+    label: 'collapse every inputRequests parse failure into one reason',
     file: STORE,
     from: "  if (!Array.isArray(raw)) return { ok: false, reason: 'not_an_array' };",
     to: "  if (!Array.isArray(raw)) return { ok: false, reason: 'empty' };",
+  },
+  {
+    id: 'M11',
+    label: 'sentinel parser uses includes() — a server can forge a card',
+    file: STORE,
+    from: "  if (!result.startsWith(MCP_INPUT_REQUIRED_SENTINEL_PREFIX)) return undefined;\n  const end = result.indexOf(']', MCP_INPUT_REQUIRED_SENTINEL_PREFIX.length);",
+    to: "  const at = result.indexOf(MCP_INPUT_REQUIRED_SENTINEL_PREFIX);\n  if (at === -1) return undefined;\n  result = result.slice(at);\n  const end = result.indexOf(']', MCP_INPUT_REQUIRED_SENTINEL_PREFIX.length);",
+  },
+  {
+    id: 'M12',
+    label: 'claimMcpInputFromResults leaves losing siblings parked',
+    file: STORE,
+    from: '    store.drop(correlationId);',
+    to: '',
+  },
+  {
+    id: 'M13',
+    label: 'the card omits serverName (a hostile server loses attribution)',
+    file: ORCH,
+    from: '    serverName: record.serverName,',
+    to: "    serverName: '',",
+  },
+  {
+    id: 'M14',
+    label: 'the MCP card wins over pendingUserChoice (order-dependent precedence)',
+    file: ORCH,
+    from: '        if (pendingUserChoice) {\n          this.drainAttachments();\n          // Follow-up suggestions are incompatible with a blocking choice',
+    to: '        if (pendingUserChoice && !pendingMcpInputCard) {\n          this.drainAttachments();\n          // Follow-up suggestions are incompatible with a blocking choice',
+  },
+  {
+    id: 'M15',
+    label: 'the reply envelope is left in userMessage (leaks to log + wire)',
+    file: ORCH,
+    from: '      input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };',
+    to: '',
+  },
+  {
+    id: 'M16',
+    label: 'the replay note is never folded into the wire message',
+    file: ORCH,
+    from: '  const note = turnContext.current()?.mcpInputReplayNote;\n  if (note === undefined || note.length === 0) return ingestedText;',
+    to: '  return ingestedText;\n  // eslint-disable-next-line no-unreachable',
   },
 ];
 
@@ -109,7 +152,13 @@ function runTests() {
   try {
     out = execFileSync(
       'npx',
-      ['tsx', '--test', '--test-reporter=tap', 'test/mcpPendingInput.test.ts'],
+      [
+        'tsx',
+        '--test',
+        '--test-reporter=tap',
+        'test/mcpPendingInput.test.ts',
+        'test/orchestrator/mcpInputRequired.test.ts',
+      ],
       { stdio: 'pipe', encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
     );
   } catch (err) {
