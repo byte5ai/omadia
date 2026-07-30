@@ -12,6 +12,29 @@
 set -uo pipefail
 
 cd "$(dirname "$0")/../.." || exit 1
+
+# ── Guard: never run against a dirty tree ───────────────────────────────────
+# This harness EDITS tracked source files in place and restores them with
+# `git checkout --`. Two failure modes made that dangerous in practice, and both
+# actually happened during development:
+#
+#  1. A `git add -A && git commit` running CONCURRENTLY with this script swept a
+#     mid-mutation file into a commit — the per-tool timeout shipped as
+#     `return 2_147_483_647` (i.e. disabled) inside a docs commit.
+#  2. Killing the script mid-run leaves the last mutation applied, and the next
+#     `git checkout --` then restores it from a commit that already contains it.
+#
+# Refusing to start on a dirty tree makes (1) detectable — you cannot have
+# uncommitted work in flight — and `verify_clean` at the end makes (2) loud.
+# NEVER commit while this script is running.
+if ! git diff --quiet -- "$@" 2>/dev/null; then
+  if [ -n "$(git status --porcelain -- packages/harness-api-key-auth/src src/mcp src/auth)" ]; then
+    echo "✖ REFUSING TO RUN: uncommitted changes in the files this harness mutates."
+    echo "  Commit or stash them first — a concurrent commit can capture a mutation."
+    git status --porcelain -- packages/harness-api-key-auth/src src/mcp src/auth
+    exit 2
+  fi
+fi
 SCOPES=packages/harness-api-key-auth/src/apiKeyScopes.ts
 SERVER=src/mcp/publicMcpServer.ts
 BINDINGS=src/mcp/publicMcpKeyBindings.ts
@@ -48,11 +71,24 @@ PY
     fail=$((fail+1)); revert; return
   fi
 
+  # `--test-timeout` is load-bearing, not hygiene. Several mutations make a test
+  # HANG rather than fail — e.g. disabling the per-tool timeout leaves the
+  # "hanging tool" test waiting on a promise that never settles. Without a bound
+  # the harness deadlocks and reports nothing. With one, the hang becomes a real
+  # assertion failure, which is the correct verdict: a mutation that stops the
+  # suite from completing has been detected.
   local out
-  out=$(node --import tsx --test "${TESTS[@]}" 2>&1)
-  if echo "$out" | grep -qE '^# fail [1-9]|ℹ fail [1-9]'; then
+  out=$(node --import tsx --test --test-timeout=20000 "${TESTS[@]}" 2>&1)
+  # A mutation is CAUGHT by a failed assertion OR by a CANCELLED test. The
+  # second matters: removing the concurrency ceiling makes the "at capacity"
+  # test's second call block on a gate that only the first call's completion
+  # releases, so the test deadlocks and hits `--test-timeout` instead of
+  # asserting. An earlier version of this grep looked only for `fail [1-9]` and
+  # reported that as "invariant untested" — it was the harness that was blind,
+  # not the suite. A suite that no longer COMPLETES has detected the regression.
+  if echo "$out" | grep -qE '^# (fail|cancelled) [1-9]|ℹ (fail|cancelled) [1-9]'; then
     local n
-    n=$(echo "$out" | sed -E 's/\x1b\[[0-9;]*m//g' | grep -oE 'fail [0-9]+' | tail -1)
+    n=$(echo "$out" | sed -E 's/\x1b\[[0-9;]*m//g' | grep -oE '(fail|cancelled) [1-9][0-9]*' | tr '\n' ' ')
     echo "✔ CAUGHT ($n): $label"
     pass=$((pass+1))
   else
@@ -97,7 +133,7 @@ run_mutation "an inactive bound agent no longer fails closed" "$SERVER" \
 
 echo "── rate limits, timeout, concurrency, body cap ──────────────────────────"
 run_mutation "the write rate limit is not enforced" "$SERVER" \
-  'if (isWrite && !this.deps.writeRateLimiter.tryConsume(principal.keyId, binding.writeRateLimitPerMinute)) {|||if (false) {'
+  '!this.deps.writeRateLimiter.tryConsume(principal.keyId, binding.writeRateLimitPerMinute)|||false'
 run_mutation "the concurrency ceiling is not enforced" "$SERVER" \
   'if (this.inFlight >= this.maxConcurrentCalls) {|||if (false) {'
 run_mutation "the per-tool timeout never fires" "$SERVER" \
@@ -169,4 +205,20 @@ echo
 echo "════════════════════════════════════════════════════════════════════════"
 echo "caught: $pass    NOT caught / skipped: $fail"
 revert
+
+# ── Guard: prove nothing was left mutated ───────────────────────────────────
+# `revert` runs after every mutation AND here, but a kill -9 between the edit and
+# the revert still leaves a mutated file behind. Anything left dirty at this
+# point is a leaked mutation, and a leaked mutation is a disabled security
+# control — say so loudly rather than exiting 0 on a quiet disaster.
+leftover=$(git status --porcelain -- packages/harness-api-key-auth/src src/mcp src/auth)
+if [ -n "$leftover" ]; then
+  echo
+  echo "✖ LEAKED MUTATION — these files are still modified. DO NOT COMMIT:"
+  echo "$leftover"
+  echo "  Run: git checkout -- packages/harness-api-key-auth/src src/mcp src/auth"
+  exit 3
+fi
+echo "✔ tree clean — no mutation leaked"
+
 [ "$fail" -eq 0 ]

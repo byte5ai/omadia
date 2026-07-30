@@ -206,7 +206,7 @@ export class PublicMcpServer {
   constructor(private readonly deps: PublicMcpServerDeps) {}
 
   private get toolTimeoutMs(): number {
-    return 2_147_483_647;
+    return this.deps.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
   }
 
   private get maxConcurrentCalls(): number {
