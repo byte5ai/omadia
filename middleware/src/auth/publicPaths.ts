@@ -13,6 +13,7 @@
  */
 
 import { CIMD_METADATA_PATH } from '../services/mcpCimd.js';
+import { PUBLIC_MCP_PATH } from '../mcp/publicMcpPath.js';
 
 /** Escape a literal path for embedding in a RegExp, so the shared constant —
  *  not a hand-retyped pattern — is what the allowlist actually matches. */
@@ -79,6 +80,20 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // narrowest regex that covers the one route, never a prefix that also
   // catches its siblings.
   /^\/api\/public\/v1\/chat(?:\/|$|\?)/,
+  // W2-3 (issue #542) — the public, stateless MCP endpoint. Follows the NOTE
+  // directly above to the letter: built from the SHARED `PUBLIC_MCP_PATH`
+  // constant (so the express mount and this allowlist cannot drift), and via
+  // `pathPrefixPattern`, which anchors on `$` or `?` and therefore matches the
+  // ONE path — not `/api/v1/mcp/anything` and not a sibling like
+  // `/api/v1/mcp-servers`. No regex bypass, no prefix that catches neighbours.
+  //
+  // Its authentication is `requireApiKey` from `@omadia/api-key-auth`, mounted
+  // by `mcp/publicMcpRouter.ts`. That is necessary but NOT the whole gate: the
+  // key must additionally hold `mcp:list`/`mcp:invoke` (and the exact
+  // `mcp:write:<tool>` for a write), AND have an enabled
+  // `public_mcp_key_bindings` row naming the one agent and the exact tools it
+  // reaches. A key with no row authenticates and reaches nothing.
+  pathPrefixPattern(PUBLIC_MCP_PATH),
 ];
 
 /**

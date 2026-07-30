@@ -1733,6 +1733,7 @@ function AuditPane(): React.ReactElement {
                 <th className={thCls}>{t('audit.server')}</th>
                 <th className={thCls}>{t('audit.tool')}</th>
                 <th className={thCls}>{t('audit.caller')}</th>
+                <th className={thCls}>{t('audit.identity')}</th>
                 <th className={thCls}>{t('audit.outcome')}</th>
                 <th className={thCls}>{t('audit.duration')}</th>
               </tr>
@@ -1748,6 +1749,14 @@ function AuditPane(): React.ReactElement {
                     {e.callerAgent ? (
                       <span className="text-xs text-[color:var(--fg-muted)]"> · {e.callerAgent}</span>
                     ) : null}
+                  </td>
+                  {/* W2-3 (#542) — the acting identity, so an operator can answer
+                      "whose credentials touched this?" for a public MCP call
+                      (`apikey:<id>`) as well as for a per-user MCP server. */}
+                  <td className={`${tdCls} text-xs`}>
+                    {e.actingIdentity ?? (
+                      <span className="text-[color:var(--fg-muted)]">{t('audit.unresolved')}</span>
+                    )}
                   </td>
                   <td className={tdCls}>
                     {e.ok ? (

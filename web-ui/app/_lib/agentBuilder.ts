@@ -658,13 +658,28 @@ export interface McpCallLogEntry {
   serverId: string | null;
   serverName: string;
   toolName: string;
-  callerKind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+  /** W2-3 (#542) — `api_key` is a call that arrived over the public MCP
+   *  endpoint from a third party holding an API key: no orchestrator turn, no
+   *  sub-agent, no plugin. Migration 0033 widened the matching DB CHECK. */
+  callerKind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed' | 'api_key';
   callerAgent: string | null;
   turnId: string | null;
   ok: boolean;
   error: string | null;
   durationMs: number;
   calledAt: string;
+  /**
+   * W0-1 — WHOSE authority the call acted under. `callerAgent` names the
+   * orchestrator; this names the identity its credentials belonged to
+   * (`apikey:<id>` for a public MCP call, an MCP user key otherwise). The
+   * literal `unresolved` marks a call that had no identity to act as.
+   *
+   * The backend has returned this since the `mcp_call_log.acting_identity`
+   * column landed; it was simply never surfaced, which left "whose credentials
+   * touched that server?" unanswerable in the UI — the exact question the
+   * column was added to answer.
+   */
+  actingIdentity: string | null;
 }
 
 export async function listMcpGrants(): Promise<{ grants: McpGrantMatrixRow[] }> {

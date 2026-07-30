@@ -162,6 +162,11 @@ import {
   type MdnsAdvertisement,
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
+import { mountPublicMcp } from './mcp/wirePublicMcp.js';
+import {
+  PRIVACY_REDACT_SERVICE_NAME,
+  type PrivacyGuardService,
+} from '@omadia/plugin-api';
 import { createRequireAuth } from './auth/requireAuth.js';
 import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
 import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
@@ -2421,6 +2426,29 @@ async function main(): Promise<void> {
       snapshotForAgent: (slug) => getRegistry()?.snapshotForAgent(slug),
     }),
   );
+
+  // W2-3 (issue #542) — the public, stateless MCP endpoint.
+  //
+  // Mounted AFTER the `/api` requireAuth line above ON PURPOSE. That mount runs
+  // for every `/api/*` request whichever router answers it, so being listed in
+  // `auth/publicPaths.ts` is what makes this route reachable at all — and
+  // losing that entry makes it go DARK (401) rather than open. `requireApiKey`
+  // inside the router is the actual authentication; the per-key tool allowlist
+  // and the per-tool write scopes are the actual authorization.
+  mountPublicMcp(app, requireAuth, {
+    enabled: config.PUBLIC_MCP_ENABLED,
+    allowWithoutPrivacyMasking: config.PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING,
+    vault: secretVault,
+    graphPool,
+    getRegistry,
+    nativeToolRegistry,
+    // Resolved LIVE from the service registry, the same late-bound pattern the
+    // orchestrator plugin uses: installing the privacy-guard plugin takes effect
+    // without a restart, and — the direction that matters here — uninstalling it
+    // closes the endpoint's tool calls immediately rather than on next boot.
+    getPrivacyService: () =>
+      serviceRegistry.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME),
+  });
 
   // Chat-sessions CRUD behind `requireAuth` — sessions may contain
   // PII / tool outputs / code snippets and must not be readable anonymously.

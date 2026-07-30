@@ -341,6 +341,15 @@ export {
   currentDispatchCaller,
   runWithDispatchCaller,
 } from './toolCallerContext.js';
+// W2-3 (#542) — the public MCP endpoint dispatches OUTSIDE any turn, so it must
+// build and supply a privacy handle explicitly (the ambient `turnContext`
+// fallback is `undefined` there). It also needs the intern-exemption allowlist:
+// an exempt tool's result is handed over IN CLEAR by design, which is correct
+// for the agent's own infra tools inside a turn and unacceptable for an
+// internet-facing caller — so the endpoint refuses to serve those names at all.
+export { createPrivacyTurnHandle } from './privacyHandle.js';
+export type { PrivacyTurnHandle } from './privacyHandle.js';
+export { INTERN_EXEMPT_TOOLS, isInternExemptTool } from './privacyInternPolicy.js';
 export { LoopbackMcpServer } from './loopbackMcpServer.js';
 export type {
   LoopbackMcpServerDeps,

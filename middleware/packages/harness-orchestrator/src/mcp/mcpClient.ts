@@ -161,10 +161,25 @@ export interface McpToolDescriptor {
   readonly outputSchema?: Record<string, unknown>;
 }
 
-/** Caller taxonomy for the MCP call audit log (epic #459 W2, issue #462).
- *  Defined once here; skill (#456) and plugin (#458) surfaces identify
- *  themselves via `turnContext.mcpCallerKind`. */
-export type McpCallerKind = 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+/**
+ * Caller taxonomy for the MCP call audit log (epic #459 W2, issue #462).
+ * Defined once here; skill (#456) and plugin (#458) surfaces identify
+ * themselves via `turnContext.mcpCallerKind`.
+ *
+ * W2-3 (issue #542) adds `api_key`: a call arriving over the public MCP
+ * endpoint from a third party holding an API key. It is none of the other five
+ * — no orchestrator turn, no sub-agent, no plugin — and squeezing it into
+ * `plugin` or `unattributed` would make the one question that row exists to
+ * answer ("internal turn, or the internet?") unanswerable from the data.
+ * Migration 0033 widens the matching `mcp_call_log.caller_kind` CHECK.
+ */
+export type McpCallerKind =
+  | 'agent'
+  | 'subagent'
+  | 'skill'
+  | 'plugin'
+  | 'unattributed'
+  | 'api_key';
 
 /**
  * Issue #544 (W2-1) — what actually happened on a call.

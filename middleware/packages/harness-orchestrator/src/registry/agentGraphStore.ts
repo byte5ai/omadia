@@ -2,6 +2,7 @@ import type { Pool } from 'pg';
 
 import { ConfigValidationError, validateModelRef } from './configStore.js';
 import { computeSkillHash } from './skillHash.js';
+import type { McpCallerKind } from '../mcp/mcpClient.js';
 import { normalizeDiscoveredToolOrder } from '../toolOrdering.js';
 
 /**
@@ -534,7 +535,9 @@ export interface McpCallLogRow {
   readonly serverId: string | null;
   readonly serverName: string;
   readonly toolName: string;
-  readonly callerKind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+  /** W2-3 (#542) — reuses the shared `McpCallerKind` union rather than a
+   *  retyped copy, which is how the previous copy fell one member behind. */
+  readonly callerKind: McpCallerKind;
   readonly callerAgent: string | null;
   readonly turnId: string | null;
   readonly ok: boolean;
