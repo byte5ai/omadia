@@ -304,5 +304,150 @@ describe('tasks/orphan reaper', () => {
       () => store.reapOrphans({ staleAfterMs: 1, purgeTerminalAfterMs: -1 }),
       TypeError,
     );
+    await assert.rejects(
+      () =>
+        store.reapOrphans({
+          staleAfterMs: 1,
+          purgeTerminalAfterMs: 1,
+          parkedStaleAfterMs: 0,
+        }),
+      TypeError,
+    );
+  });
+});
+
+/**
+ * W4 — the orphan sweep must not kill a task that is waiting on a HUMAN.
+ *
+ * `requireInput` releases the lease and freezes `lastHeartbeatAt`, and nothing
+ * heartbeats a parked row — there is no worker left to do it. Judging a parked
+ * task by the worker-liveness window therefore force-failed every card the user
+ * took longer than the orphan threshold to answer, so an answer typed 16 minutes
+ * after the card appeared landed on a task already marked `failed` with "task
+ * abandoned: no worker heartbeat".
+ */
+describe('tasks/InMemoryTaskStore — human-parked tasks vs the orphan sweep (W4)', () => {
+  /** Park a task on a human, exactly as a gate would. */
+  async function park(
+    store: InMemoryTaskStore,
+  ): Promise<{ id: string; lease: string }> {
+    const t = await store.create({ kind: 'k', input: { q: 'approve?' } });
+    const lease = randomUUID();
+    const claimed = await store.claimNextPending(lease, undefined, t.id);
+    assert.ok(claimed, 'the task must be claimable before it parks');
+    await store.requireInput(t.id, lease, 'awaiting_human');
+    return { id: t.id, lease };
+  }
+
+  it('MUTATION CHECK: a parked task survives well past the orphan threshold and is still answerable', async () => {
+    const { store, advance, nowMs } = driven(1_000_000);
+    const parked = await park(store);
+    // A genuinely abandoned `working` sibling, so this test proves the sweep RAN
+    // and did its job — not merely that it was a no-op.
+    const abandoned = await store.create({ kind: 'k', input: {} });
+
+    // The user takes 16 minutes to read the card and type an answer — one minute
+    // past the shipped 15-minute orphan window.
+    advance(16 * 60_000);
+    const swept = await runTaskReaperOnce(store, {}, new Date(nowMs()));
+
+    assert.equal(swept.staleFailed, 1, 'exactly the abandoned sibling is reaped');
+    assert.equal(
+      (await store.get(abandoned.id))?.status,
+      'failed',
+      'the sweep must still reap a real orphan',
+    );
+
+    const row = await store.get(parked.id);
+    assert.ok(row);
+    assert.equal(
+      row.status,
+      'input_required',
+      'a task waiting on a human was force-failed by the worker-liveness sweep',
+    );
+    assert.equal(row.error, null, 'no abandonment error was written');
+    assert.equal(row.endedAt, null, 'the parked task is still live');
+
+    // Still answerable: the row is non-terminal, so the gate that owns it can
+    // still drive it to an outcome. Under the bug this write was impossible —
+    // `fenced()` rejects any write to a terminal row, so the human's answer had
+    // nowhere to land.
+    const answerLease = randomUUID();
+    await store.heartbeat(parked.id, parked.lease).then(
+      () => assert.fail('a released lease must not still write'),
+      (err: unknown) => assert.ok(err instanceof TaskLeaseLostError),
+    );
+    void answerLease;
+    assert.equal((await store.get(parked.id))?.status, 'input_required');
+
+    // …and hours later it is STILL there, because there is no default window.
+    advance(6 * 60 * 60_000);
+    const later = await runTaskReaperOnce(store, {}, new Date(nowMs()));
+    assert.equal(later.staleFailed, 0);
+    assert.equal((await store.get(parked.id))?.status, 'input_required');
+  });
+
+  it('MUTATION CHECK: the explicit parked window DOES expire it, with its own error', async () => {
+    // The escape hatch must actually work, or "excluded from the sweep" would
+    // quietly mean "immortal". Opt-in, measured from when the task parked.
+    const { store, advance, nowMs } = driven(1_000_000);
+    const parked = await park(store);
+
+    advance(30 * 60_000);
+    const tooSoon = await runTaskReaperOnce(
+      store,
+      { parkedStaleAfterMs: 60 * 60_000 },
+      new Date(nowMs()),
+    );
+    assert.equal(tooSoon.staleFailed, 0, 'inside its own window it survives');
+
+    advance(31 * 60_000);
+    const swept = await runTaskReaperOnce(
+      store,
+      { parkedStaleAfterMs: 60 * 60_000 },
+      new Date(nowMs()),
+    );
+    assert.equal(swept.staleFailed, 1);
+    const row = await store.get(parked.id);
+    assert.equal(row?.status, 'failed');
+    assert.match(
+      String(row?.error),
+      /no human answered/,
+      'a parked expiry must not be reported as a crashed worker',
+    );
+  });
+
+  it('MUTATION CHECK: the parked window is measured from the park, not the frozen heartbeat', async () => {
+    // `lastHeartbeatAt` is stamped at CLAIM time and never moves again once the
+    // task parks, so ageing a parked task by it charges the parked window for
+    // time the worker was still actively running.
+    const { store, advance, nowMs } = driven(1_000_000);
+    const t = await store.create({ kind: 'k', input: {} });
+    const lease = randomUUID();
+    await store.claimNextPending(lease, undefined, t.id);
+    const claimedAt = (await store.get(t.id))?.lastHeartbeatAt;
+
+    // The worker runs for 50 minutes, THEN parks the task on a human.
+    advance(50 * 60_000);
+    await store.requireInput(t.id, lease, 'awaiting_human');
+    assert.equal(
+      (await store.get(t.id))?.lastHeartbeatAt,
+      claimedAt,
+      'precondition: parking does not move the heartbeat',
+    );
+
+    // 20 minutes later — 70 minutes since the claim, 20 since the park.
+    advance(20 * 60_000);
+    const swept = await runTaskReaperOnce(
+      store,
+      { parkedStaleAfterMs: 60 * 60_000 },
+      new Date(nowMs()),
+    );
+    assert.equal(
+      swept.staleFailed,
+      0,
+      'the human has had 20 of their 60 minutes, not 70',
+    );
+    assert.equal((await store.get(t.id))?.status, 'input_required');
   });
 });

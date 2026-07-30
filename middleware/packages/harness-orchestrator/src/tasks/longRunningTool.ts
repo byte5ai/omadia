@@ -43,12 +43,14 @@ import { randomUUID } from 'node:crypto';
 import type { NativeToolHandler, NativeToolSpec } from '@omadia/plugin-api';
 
 import {
+  TaskLeaseLostError,
   isTerminalTaskStatus,
   type TaskCardPayload,
   type TaskDescriptor,
   type TaskEventRecord,
   type TaskLifecycleStatus,
   type TaskStore,
+  type TerminalTaskPatch,
 } from './taskTypes.js';
 
 // ---------------------------------------------------------------------------
@@ -119,6 +121,43 @@ export interface LongRunningToolDefinition {
   readonly execute: TaskExecutor;
   /** Injected for tests; defaults to `console.warn`. */
   readonly onRunnerError?: (err: unknown, taskId: string) => void;
+  /**
+   * Called when a runner produced a real outcome it could NOT record, because
+   * the lease was already gone (almost always: the orphan reaper decided the
+   * worker was dead and wrote its own terminal row first). See
+   * {@link TaskOutcomeLostRecord} — the outcome is real and the store's row is
+   * not, so this is the only place it survives.
+   *
+   * Defaults to a metadata-only `console.warn`. The default deliberately does
+   * NOT print `result`: a task result may carry PII (see
+   * {@link describeDeferredPrivacyPosture}) and the log is outside the Privacy
+   * Shield data-plane boundary. A consumer that wants to persist the payload
+   * opts in by supplying its own handler and taking on that obligation.
+   */
+  readonly onOutcomeLost?: (record: TaskOutcomeLostRecord) => void;
+}
+
+/**
+ * A terminal outcome a runner produced but could not write: `store.finish`
+ * rejected with {@link TaskLeaseLostError}.
+ *
+ * The row the model will poll says something else — for a reaped task, the
+ * reaper's generic "task abandoned". That row cannot be corrected: terminal
+ * immutability in the store is load-bearing (it is what stops a zombie worker
+ * from overwriting an outcome a NEW owner recorded), and relaxing it for this
+ * case would relax it for that one too. So the honest move is to surface the
+ * real outcome here instead of letting it evaporate inside a `catch`.
+ */
+export interface TaskOutcomeLostRecord {
+  readonly taskId: string;
+  /** The lease the runner still believed it held. */
+  readonly lease: string;
+  /** What the runner actually concluded. */
+  readonly status: 'completed' | 'failed';
+  /** Present when `status === 'completed'`. May contain PII — see above. */
+  readonly result?: string;
+  /** Present when `status === 'failed'`. */
+  readonly error?: string;
 }
 
 export interface LongRunningToolHandle {
@@ -265,6 +304,53 @@ export function defineLongRunningTool(
         err,
       );
     });
+  const onOutcomeLost =
+    def.onOutcomeLost ??
+    ((record: TaskOutcomeLostRecord): void => {
+      // Metadata only — never the payload. See `onOutcomeLost`'s doc comment.
+      console.warn(
+        `[longRunningTool:${def.toolName}] task ${record.taskId} finished as ` +
+          `'${record.status}' but its lease was already gone, so the outcome could ` +
+          `not be recorded — the stored row (most likely the reaper's "task ` +
+          `abandoned") does not reflect it. Payload withheld from the log.`,
+      );
+    });
+
+  /**
+   * Record a terminal outcome, or — when the lease is gone — surface it.
+   *
+   * The failure this exists for: `finish(…, 'completed')` throws
+   * {@link TaskLeaseLostError} because the reaper already wrote a terminal row.
+   * The old code caught that in the generic executor `catch` and called
+   * `finish(…, 'failed')` on the now-terminal row, which threw AGAIN and escaped
+   * to `onRunnerError` — so a task that genuinely SUCCEEDED was narrated to the
+   * caller as the reaper's generic "task abandoned", and the real result was
+   * dropped on the floor with no trace.
+   *
+   * Lease loss is a legitimate terminal condition for a runner, not a runner
+   * error: it means someone else owns the outcome now. It is reported through
+   * {@link LongRunningToolDefinition.onOutcomeLost} and never re-thrown. Any
+   * OTHER store failure still propagates to `onRunnerError`, which is what that
+   * hook is for.
+   */
+  async function finishOrReportLoss(
+    taskId: string,
+    lease: string,
+    patch: TerminalTaskPatch,
+  ): Promise<void> {
+    try {
+      await def.store.finish(taskId, lease, patch);
+    } catch (err: unknown) {
+      if (!(err instanceof TaskLeaseLostError)) throw err;
+      onOutcomeLost({
+        taskId,
+        lease,
+        status: patch.status,
+        ...(patch.result !== undefined ? { result: patch.result } : {}),
+        ...(patch.error !== undefined ? { error: patch.error } : {}),
+      });
+    }
+  }
 
   /**
    * Claim the freshly created task and execute it, DETACHED from the turn.
@@ -273,28 +359,60 @@ export function defineLongRunningTool(
    * are funnelled into the task's terminal `failed` state so a poll always gets
    * an answer; an error while RECORDING the failure is the only thing that
    * reaches `onRunnerError`.
+   *
+   * ## Never strand a claim (crossed-claim fix)
+   *
+   * `claimNextPending` used to be called WITHOUT the task id, so it handed back
+   * the pool head — the oldest unclaimed task of this kind, not necessarily the
+   * one this runner was spawned for. Two `_start` calls in one turn therefore
+   * crossed: B's runner claimed A, saw the id mismatch and returned *without
+   * releasing the claim*, while A's runner did the same to B. Both tasks sat
+   * `working` under live-but-dead leases with no executor until the reaper
+   * force-failed them 15 minutes later.
+   *
+   * Two things fix it, and both are needed:
+   *  1. the task id is passed as a claim hint, so a store that can honour it
+   *     (`InMemoryTaskStore`) claims exactly this task or nothing; and
+   *  2. whatever comes back is treated as AUTHORITATIVE. A store that cannot
+   *     honour the hint (`devJobTaskStore`, whose claim is a bare pool pop with
+   *     no release primitive) still gets its claim followed through to a
+   *     terminal state, because a claim this runner cannot hand back is a claim
+   *     it must finish.
    */
   function startRunner(taskId: string): void {
     const lease = randomUUID();
     const run = (async (): Promise<void> => {
-      const claimed = await def.store.claimNextPending(lease, def.kind);
-      // Someone else claimed it (another process, or the reaper already failed
-      // it). Nothing to do — the owner will finish it.
-      if (!claimed || claimed.descriptor.id !== taskId) return;
+      const claimed = await def.store.claimNextPending(lease, def.kind, taskId);
+      // Nothing claimable: someone else owns it (another process), or the
+      // reaper already failed it. No claim was taken, so there is nothing to
+      // release — the owner (or the reaper) finishes it.
+      if (!claimed) return;
+      // Authoritative id. Normally === taskId; differs only for a store that
+      // ignores the hint, and then THIS is the task we hold the lease on.
+      const claimedId = claimed.descriptor.id;
+      if (claimedId !== taskId) {
+        console.warn(
+          `[longRunningTool:${def.toolName}] runner for task ${taskId} was handed ` +
+            `task ${claimedId} by a store that cannot honour the claim hint — ` +
+            `executing the claimed task rather than stranding it.`,
+        );
+      }
       const handle: TaskExecutionHandle = {
-        taskId,
-        setPhase: (phase) => def.store.setPhase(taskId, lease, phase),
+        taskId: claimedId,
+        setPhase: (phase) => def.store.setPhase(claimedId, lease, phase),
         log: (type, message) =>
-          def.store.appendEvents(taskId, lease, [{ type, message }]),
-        heartbeat: () => def.store.heartbeat(taskId, lease),
+          def.store.appendEvents(claimedId, lease, [{ type, message }]),
+        heartbeat: () => def.store.heartbeat(claimedId, lease),
       };
+      let result: string;
       try {
-        const result = await def.execute(claimed.input, handle);
-        await def.store.finish(taskId, lease, { status: 'completed', result });
+        result = await def.execute(claimed.input, handle);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        await def.store.finish(taskId, lease, { status: 'failed', error: message });
+        await finishOrReportLoss(claimedId, lease, { status: 'failed', error: message });
+        return;
       }
+      await finishOrReportLoss(claimedId, lease, { status: 'completed', result });
     })().catch((err: unknown) => {
       onRunnerError(err, taskId);
     });

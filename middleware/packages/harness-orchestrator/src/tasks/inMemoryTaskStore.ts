@@ -44,8 +44,16 @@ import {
  *  is for "what is it doing", not an audit log, so old lines are dropped. */
 const DEFAULT_MAX_EVENTS = 200;
 
-/** Hard ceiling on retained tasks, so an unswept process cannot grow forever
- *  even if the reaper is never scheduled. Oldest terminal tasks evict first. */
+/**
+ * Soft ceiling on retained tasks. NOT a hard bound, and calling it one was
+ * wrong: `evictIfOverCapacity` only ever drops TERMINAL rows (evicting a live
+ * task would strand its worker and make the model's next poll say "not found"
+ * about work that is still running). So the map is bounded at this size only
+ * while terminal rows are available to sacrifice — with N live tasks and no
+ * terminal ones it grows to N regardless. The real bound on live rows is the
+ * orphan sweep, which turns them terminal; this constant bounds the debris the
+ * sweep has not yet purged. Oldest terminal tasks evict first.
+ */
 const DEFAULT_MAX_TASKS = 500;
 
 interface TaskRow {
@@ -157,16 +165,23 @@ export class InMemoryTaskStore implements TaskStore {
   async claimNextPending(
     lease: string,
     kind?: string,
+    taskId?: string,
   ): Promise<{ descriptor: TaskDescriptor; input: unknown } | null> {
     if (!TASK_LEASE_UUID_RE.test(lease)) {
       throw new TypeError(`claimNextPending: lease must be a UUID (got '${lease}')`);
     }
+    // `taskId` narrows the candidate set to exactly one row, which is what makes
+    // a per-task runner claim ITS OWN task instead of the pool head. Without it
+    // two runners started for two same-kind tasks cross their claims (each takes
+    // the other's) — and the crossed pair used to be dropped unfinished under
+    // live leases until the reaper failed them 15 minutes later.
     // Oldest-first, mirroring `claimNextQueued`'s `ORDER BY created_at LIMIT 1`.
     let candidate: TaskRow | undefined;
     for (const row of this.rows.values()) {
       const d = row.descriptor;
       if (d.status !== 'working' || d.claimedBy !== null) continue;
       if (kind !== undefined && d.kind !== kind) continue;
+      if (taskId !== undefined && d.id !== taskId) continue;
       if (!candidate || d.createdAt < candidate.descriptor.createdAt) candidate = row;
     }
     if (!candidate) return null;
@@ -250,6 +265,18 @@ export class InMemoryTaskStore implements TaskStore {
     return row.descriptor;
   }
 
+  /**
+   * The one deliberately UNFENCED writer on this store.
+   *
+   * Every other write goes through {@link fenced} and needs the owning lease.
+   * This one does not, and cannot: the whole premise of an orphan sweep is that
+   * the lease holder is gone, so demanding its lease would make the sweep
+   * unable to do its job. It is the administrative exception the `TaskStore`
+   * doc calls out, not a hole in the fence — and it is why terminal
+   * immutability in `fenced()` is load-bearing rather than redundant: it is what
+   * a zombie worker (which still presents a MATCHING lease, because the sweep
+   * preserves `claimedBy`) runs into afterwards.
+   */
   async reapOrphans(opts: TaskReapOptions): Promise<TaskReapResult> {
     if (!Number.isFinite(opts.staleAfterMs) || opts.staleAfterMs <= 0) {
       throw new TypeError('reapOrphans: staleAfterMs must be a positive number');
@@ -260,6 +287,14 @@ export class InMemoryTaskStore implements TaskStore {
     ) {
       throw new TypeError(
         'reapOrphans: purgeTerminalAfterMs must be a positive number',
+      );
+    }
+    if (
+      opts.parkedStaleAfterMs !== undefined &&
+      (!Number.isFinite(opts.parkedStaleAfterMs) || opts.parkedStaleAfterMs <= 0)
+    ) {
+      throw new TypeError(
+        'reapOrphans: parkedStaleAfterMs, when given, must be a positive number',
       );
     }
     const nowMs = (opts.now ?? new Date(this.clock())).getTime();
@@ -276,11 +311,27 @@ export class InMemoryTaskStore implements TaskStore {
         }
         continue;
       }
+      // A PARKED task is waiting on a human, not on a worker. `requireInput`
+      // released the lease and froze `lastHeartbeatAt`, and nothing heartbeats a
+      // parked row — so judging it by the worker-liveness window force-failed
+      // every card a user took longer than 15 minutes to answer, and the answer
+      // then landed on a task already marked `failed`. It gets its own explicit
+      // window, measured from when it parked, and by default no window at all.
+      // (dev_job never had this bug: its `findStalled` sweeps only
+      // `provisioning|running|applying`, never the `waiting` gate state.)
+      const parked = d.status === 'input_required';
+      if (parked && opts.parkedStaleAfterMs === undefined) continue;
       // Live task. "Last sign of life" is the heartbeat when a worker ever
       // claimed it, else creation — so a task that was NEVER claimed (no worker
       // running, the classic orphan) is reaped too, instead of leaking forever.
-      const lastSeen = Date.parse(d.lastHeartbeatAt ?? d.createdAt);
-      if (Number.isFinite(lastSeen) && nowMs - lastSeen >= opts.staleAfterMs) {
+      // A parked task instead ages from `updatedAt`, the moment it parked.
+      const lastSeen = parked
+        ? Date.parse(d.updatedAt)
+        : Date.parse(d.lastHeartbeatAt ?? d.createdAt);
+      const window = parked
+        ? (opts.parkedStaleAfterMs as number)
+        : opts.staleAfterMs;
+      if (Number.isFinite(lastSeen) && nowMs - lastSeen >= window) {
         const ts = new Date(nowMs).toISOString();
         // `claimedBy` is deliberately PRESERVED. The reaper is not the owner:
         // keeping the lease records who was working when the task died, and —
@@ -291,9 +342,11 @@ export class InMemoryTaskStore implements TaskStore {
         row.descriptor = {
           ...d,
           status: 'failed',
-          error:
-            'task abandoned: no worker heartbeat within the orphan window ' +
-            '(worker crashed, restarted, or was never started)',
+          error: parked
+            ? 'task expired: no human answered the input request within the ' +
+              'parked-task window'
+            : 'task abandoned: no worker heartbeat within the orphan window ' +
+              '(worker crashed, restarted, or was never started)',
           endedAt: ts,
           updatedAt: ts,
         };
@@ -309,9 +362,13 @@ export class InMemoryTaskStore implements TaskStore {
   }
 
   /**
-   * Bound the map even with no reaper scheduled: drop oldest TERMINAL rows
-   * first, and never evict a live task (losing a live handle would strand the
+   * Push back on growth even with no reaper scheduled: drop the oldest TERMINAL
+   * rows, and never evict a live task (losing a live handle would strand the
    * worker and lie to the model on its next poll).
+   *
+   * Consequence, stated rather than implied: when there is nothing terminal to
+   * drop this is a no-op and `maxTasks` is exceeded. See
+   * {@link DEFAULT_MAX_TASKS}.
    */
   private evictIfOverCapacity(): void {
     if (this.rows.size < this.maxTasks) return;

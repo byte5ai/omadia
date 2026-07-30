@@ -215,12 +215,19 @@ export interface TaskReadStore {
  *  - `claimNextPending` atomically hands ONE unclaimed `working` task to the
  *    caller and stamps the caller's lease. Two concurrent workers never get the
  *    same task.
- *  - every subsequent write is FENCED on that lease; a write whose lease no
- *    longer matches throws {@link TaskLeaseLostError} rather than silently
+ *  - every subsequent WORKER write is FENCED on that lease; a write whose lease
+ *    no longer matches throws {@link TaskLeaseLostError} rather than silently
  *    winning.
  *  - `finish` is the single terminal transition, and it is fenced too — so a
  *    worker that lost its lease cannot overwrite the outcome the new owner
  *    recorded.
+ *  - `reapOrphans` is the ONE deliberately unfenced writer, and the qualifier
+ *    above exists for it: an orphan sweep by definition runs when the lease
+ *    holder is gone, so it force-fails rows that still carry a live
+ *    `claimedBy`. It is administrative, not a worker write, and it is why
+ *    terminal immutability is a separate guard from the lease check — that
+ *    guard, not the lease, is what rejects the zombie afterwards. Do not read
+ *    "every write is lease-fenced" as covering the sweep; it never has.
  *
  * An implementor MAY additionally accept a fenced write against a task that
  * currently holds NO lease — the administrative case, where a cancel route or an
@@ -235,10 +242,22 @@ export interface TaskStore extends TaskReadStore {
    * Claim the oldest unclaimed `working` task, optionally restricted to one
    * `kind`. `lease` must be a UUID (see {@link TASK_LEASE_UUID_RE}).
    * Returns the claimed descriptor plus the stored input, or `null`.
+   *
+   * `taskId` is an ADVISORY hint: "I was spawned for this specific task, prefer
+   * it over the pool head". A store that can honour it (see
+   * `InMemoryTaskStore`) claims exactly that task or nothing. A store whose
+   * underlying claim is a pure pool pop and offers no release primitive
+   * (`devJobTaskStore`, backed by `claimNextQueued`) may IGNORE the hint and
+   * return whatever it claimed — which is why the hint is advisory rather than
+   * a filter contract, and why every caller must treat the RETURNED
+   * `descriptor.id` as authoritative and follow it through. Claiming a task and
+   * then walking away because it was not the expected one strands it under a
+   * dead lease until the reaper fails it.
    */
   claimNextPending(
     lease: string,
     kind?: string,
+    taskId?: string,
   ): Promise<{ descriptor: TaskDescriptor; input: unknown } | null>;
   /** Lease-fenced liveness touch. Throws {@link TaskLeaseLostError} on 0 rows. */
   heartbeat(id: string, lease: string): Promise<void>;
@@ -270,16 +289,42 @@ export interface TaskReapOptions {
   /** Injected clock so tests drive it deterministically. */
   readonly now?: Date;
   /**
-   * A `working`/`input_required` task whose last heartbeat is older than this
-   * is failed as abandoned. Its worker is gone (crash, restart, deploy).
+   * A `working` task whose last heartbeat is older than this is failed as
+   * abandoned. Its worker is gone (crash, restart, deploy).
+   *
+   * Deliberately does NOT cover `input_required`. A parked task is waiting on a
+   * HUMAN, not on a worker: `requireInput` releases the lease, nothing
+   * heartbeats it, and its heartbeat is frozen at the instant it parked. Judging
+   * it by the worker-liveness window meant a user who answered an
+   * `input_required` card 16 minutes later landed on a task the generic sweep
+   * had already marked `failed`. Parked tasks have their own, explicit window —
+   * see {@link parkedStaleAfterMs}.
    */
   readonly staleAfterMs: number;
+  /**
+   * Optional, MUCH longer ceiling for `input_required` tasks, measured from
+   * `updatedAt` (when the task parked or last changed) rather than from the
+   * frozen heartbeat.
+   *
+   * OMITTED ⇒ parked tasks are never force-failed by the sweep. That is the
+   * default because a human has no SLA: the honest bound on a parked task is
+   * the store's own retention, not the worker-liveness window. Supply it only
+   * when a deployment genuinely wants parked work to expire, and give it a value
+   * measured in hours, not minutes.
+   */
+  readonly parkedStaleAfterMs?: number;
   /** Terminal tasks older than this are deleted outright. */
   readonly purgeTerminalAfterMs: number;
 }
 
 export interface TaskReapResult {
-  /** `working`/`input_required` tasks force-failed as abandoned. */
+  /**
+   * Tasks force-failed by this sweep: `working` tasks past
+   * {@link TaskReapOptions.staleAfterMs}, plus — only when
+   * {@link TaskReapOptions.parkedStaleAfterMs} was supplied — `input_required`
+   * tasks past that separate window. The two carry different `error` strings on
+   * the row, so an operator can still tell them apart.
+   */
   readonly staleFailed: number;
   /** Terminal tasks deleted. */
   readonly purged: number;

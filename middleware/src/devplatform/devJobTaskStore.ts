@@ -253,12 +253,22 @@ export function createDevJobTaskStore(deps: DevJobTaskStoreDeps): TaskStore {
     async claimNextPending(
       lease: string,
       kind?: string,
+      taskId?: string,
     ): Promise<{ descriptor: TaskDescriptor; input: unknown } | null> {
       if (!TASK_LEASE_UUID_RE.test(lease)) {
         throw new TypeError(`claimNextPending: lease must be a UUID (got '${lease}')`);
       }
       const job = await jobStore.claimNextQueued(lease);
       if (!job) return null;
+      // The `taskId` claim hint is ADVISORY and this store cannot honour it:
+      // `claimNextQueued` is a bare `FOR UPDATE SKIP LOCKED` pool pop with no id
+      // predicate, and dev_job exposes no release primitive, so narrowing here
+      // would mean claiming a job and then abandoning it under a live lease —
+      // exactly the strand the hint exists to prevent. The seam contract
+      // therefore makes the RETURNED descriptor authoritative and requires the
+      // caller to follow its claim through; the hint is recorded as observed and
+      // deliberately not applied.
+      void taskId;
       // dev_job's claim is not kind-filtered (its worker claims any queued job).
       // Surfacing that honestly: a kind filter the underlying store cannot honour
       // is reported as "nothing to claim" rather than silently claiming the wrong

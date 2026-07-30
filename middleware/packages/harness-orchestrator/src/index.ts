@@ -142,6 +142,9 @@ export {
   // W3-A — the inner half of the timeout hierarchy; see the ORDERING INVARIANT
   // block next to `DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS`.
   resolveMcpCallTimeouts,
+  // W4 — attempts per `callTool`. The timeout hierarchy reasons about the
+  // retry-inclusive worst case, so the real number has to be readable.
+  MCP_CALL_MAX_ATTEMPTS,
 } from './mcp/mcpClient.js';
 export type {
   DeprecatedMcpTransport,
@@ -232,6 +235,9 @@ export {
   // W3-A — the outer half of the timeout hierarchy; see the ORDERING INVARIANT
   // block next to `DEFAULT_TOOL_DISPATCH_TIMEOUT_MS`.
   resolveToolDispatchTimeoutMs,
+  // …and its production enforcement. Call at boot: a deployment whose timeout
+  // knobs invert the hierarchy must not start quietly.
+  assertTimeoutHierarchy,
 } from './orchestrator.js';
 export type { OrchestratorOptions } from './orchestrator.js';
 
@@ -409,6 +415,8 @@ export {
   turnContext,
   today,
   buildDateHeader,
+  // Teardown failures are reported, never thrown — see `runGeneratorInContext`.
+  onTurnTeardownError,
 } from './turnContext.js';
 export type { TurnContextValue } from './turnContext.js';
 export {
@@ -561,6 +569,9 @@ export type {
   LongRunningToolRegistration,
   TaskExecutionHandle,
   TaskExecutor,
+  // W4 — a terminal outcome a runner produced but could not record, because the
+  // reaper had already written its own row. The only place it survives.
+  TaskOutcomeLostRecord,
 } from './tasks/longRunningTool.js';
 export {
   DEFAULT_TASK_PURGE_TERMINAL_AFTER_MS,

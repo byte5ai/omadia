@@ -6,7 +6,9 @@ import {
   defineLongRunningTool,
   describeDeferredPrivacyPosture,
   longRunningToolNames,
+  runTaskReaperOnce,
   type LongRunningToolHandle,
+  type TaskOutcomeLostRecord,
 } from '@omadia/orchestrator';
 
 /**
@@ -267,5 +269,231 @@ describe('tasks/deferred-result privacy (criterion 6)', () => {
     assert.match(posture, /interned at POLL time/);
     assert.match(posture, /cards carry no result or input/);
     assert.match(posture, /v1 limitation/);
+  });
+});
+
+/**
+ * A store whose `create` ACKNOWLEDGEMENT is reordered relative to the row write.
+ *
+ * Faithful model of any store with real I/O: the row (and its `createdAt`) is
+ * written when `create` is called, but the promise resolves after a variable
+ * round trip — so the order in which callers learn their task exists is NOT the
+ * order the rows were created in. `defineLongRunningTool` spawns a task's runner
+ * when its `create` resolves, which is exactly how a runner ends up starting for
+ * a task that is not the oldest unclaimed one.
+ *
+ * Everything else delegates to the real `InMemoryTaskStore`: the claim, lease
+ * and terminal semantics under test are the production ones.
+ */
+class AckReorderingTaskStore extends InMemoryTaskStore {
+  /** Extra microtask ticks before `create` resolves, keyed by input marker. */
+  private readonly ackDelayTicks = new Map<string, number>();
+
+  delayAckFor(marker: string, ticks: number): void {
+    this.ackDelayTicks.set(marker, ticks);
+  }
+
+  override async create(
+    input: Parameters<InMemoryTaskStore['create']>[0],
+  ): ReturnType<InMemoryTaskStore['create']> {
+    // Row written NOW — `createdAt` ordering follows call order…
+    const descriptor = await super.create(input);
+    const marker = (input.input as { question?: string } | undefined)?.question;
+    const ticks = marker === undefined ? 0 : (this.ackDelayTicks.get(marker) ?? 0);
+    // …but the caller learns about it later, so runner-start order can differ.
+    for (let i = 0; i < ticks; i += 1) await Promise.resolve();
+    return descriptor;
+  }
+}
+
+describe('tasks/defineLongRunningTool — crossed claims (W4)', () => {
+  it('MUTATION CHECK: two same-kind tasks whose runners start out of order BOTH complete', async () => {
+    // The bug: `claimNextPending(lease, kind)` returns the OLDEST unclaimed task
+    // of that kind, not the one this runner was spawned for. With task A created
+    // first but B's runner starting first, B's runner claimed A, saw the id
+    // mismatch and returned WITHOUT releasing the claim; A's runner then claimed
+    // B and did the same. Both tasks sat `working` under live-but-dead leases
+    // with no executor at all until the orphan reaper failed them 15 minutes
+    // later — so a user who asked two questions got two answers that never came.
+    const store = new AckReorderingTaskStore();
+    // A is created first (older `createdAt`) but acknowledged last, so its
+    // runner starts second and B's runner is the one that reaches the pool head.
+    store.delayAckFor('question-A', 4);
+    store.delayAckFor('question-B', 0);
+
+    const seen: string[] = [];
+    const { handle } = buildTool(async (input) => {
+      const q = (input as { question: string }).question;
+      seen.push(q);
+      return `answer for ${q}`;
+    }, store);
+
+    const [startedA, startedB] = await Promise.all([
+      reg(handle, 'start').handler({ question: 'question-A' }),
+      reg(handle, 'start').handler({ question: 'question-B' }),
+    ]);
+    const idA = (JSON.parse(startedA) as { taskId: string }).taskId;
+    const idB = (JSON.parse(startedB) as { taskId: string }).taskId;
+    assert.notEqual(idA, idB);
+
+    await handle.drainForTest();
+
+    // Both executed, exactly once each.
+    assert.deepEqual([...seen].sort(), ['question-A', 'question-B']);
+
+    // Both reached a terminal state carrying THEIR OWN answer — the property
+    // that fails when a claim is crossed: under the old code both rows stayed
+    // `working` with no result at all.
+    const statusA = JSON.parse(
+      await reg(handle, 'status').handler({ taskId: idA }),
+    ) as Record<string, unknown>;
+    const statusB = JSON.parse(
+      await reg(handle, 'status').handler({ taskId: idB }),
+    ) as Record<string, unknown>;
+
+    assert.equal(statusA['status'], 'completed', 'task A must not be stranded');
+    assert.equal(statusB['status'], 'completed', 'task B must not be stranded');
+    assert.equal(statusA['result'], 'answer for question-A');
+    assert.equal(statusB['result'], 'answer for question-B');
+
+    // And no row is left holding a lease.
+    for (const id of [idA, idB]) {
+      const row = await store.get(id);
+      assert.ok(row);
+      assert.equal(row.claimedBy, null, `task ${id} still holds a lease`);
+    }
+  });
+
+  it('MUTATION CHECK: a claim this runner cannot hand back is finished, never abandoned', async () => {
+    // Defence in depth for a store that CANNOT honour the claim hint — the seam
+    // permits exactly that (`devJobTaskStore`'s claim is a bare pool pop with no
+    // id predicate and no release primitive). The rule the runner must follow is
+    // "whatever you claimed, you finish": walking away from a claim is what
+    // strands a task, regardless of WHY the ids differ.
+    const store = new InMemoryTaskStore();
+    const hintIgnoring = Object.create(store) as InMemoryTaskStore;
+    Object.defineProperty(hintIgnoring, 'claimNextPending', {
+      value: (lease: string, kind?: string) =>
+        InMemoryTaskStore.prototype.claimNextPending.call(store, lease, kind),
+    });
+
+    // A pre-existing unclaimed task of the same kind, older than anything the
+    // tool creates — so the pool head is never the task the runner asks for.
+    const decoy = await store.create({ kind: 'slow', input: { question: 'decoy' } });
+
+    const { handle } = buildTool(async (input) => {
+      const q = (input as { question: string }).question;
+      return `answer for ${q}`;
+    }, hintIgnoring);
+
+    await reg(handle, 'start').handler({ question: 'mine' });
+    await handle.drainForTest();
+
+    // The runner was spawned for the new task and handed `decoy`. It must have
+    // executed and finished the DECOY rather than dropping it: the decoy is the
+    // row it holds the lease on.
+    const decoyRow = await store.get(decoy.id);
+    assert.ok(decoyRow);
+    assert.equal(
+      decoyRow.status,
+      'completed',
+      'the claimed task was abandoned under a live lease',
+    );
+    assert.equal(decoyRow.result, 'answer for decoy');
+    assert.equal(decoyRow.claimedBy, null, 'the lease was never released');
+  });
+});
+
+describe('tasks/defineLongRunningTool — outcome lost to a reaped lease (W4)', () => {
+  /** Drive a runner that finishes AFTER the reaper already failed its task. */
+  async function reapMidFlight(executorOutcome: 'succeed' | 'throw'): Promise<{
+    lost: TaskOutcomeLostRecord[];
+    runnerErrors: unknown[];
+    taskId: string;
+    store: InMemoryTaskStore;
+  }> {
+    let clock = 1_000_000;
+    const store = new InMemoryTaskStore({ clock: () => clock });
+    const lost: TaskOutcomeLostRecord[] = [];
+    const runnerErrors: unknown[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+
+    const handle = defineLongRunningTool({
+      toolName: 'slow_thing',
+      longRunning: true,
+      kind: 'slow',
+      cardLabel: 'Slow Thing',
+      startDescription: 'Start the slow thing.',
+      inputProperties: { question: { type: 'string' } },
+      store,
+      execute: async () => {
+        await gate;
+        if (executorOutcome === 'throw') throw new Error('backend exploded');
+        return 'THE REAL ANSWER';
+      },
+      onRunnerError: (err) => runnerErrors.push(err),
+      onOutcomeLost: (record) => lost.push(record),
+    });
+
+    const started = JSON.parse(
+      await reg(handle, 'start').handler({ question: 'q' }),
+    ) as { taskId: string };
+    // Let the runner claim and enter `execute`.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The reaper decides the worker is dead and writes its own terminal row.
+    clock += 20 * 60_000;
+    const swept = await runTaskReaperOnce(store, { staleAfterMs: 15 * 60_000 });
+    assert.equal(swept.staleFailed, 1, 'the reaper must have force-failed the task');
+
+    release();
+    await handle.drainForTest();
+    return { lost, runnerErrors, taskId: started.taskId, store };
+  }
+
+  it('MUTATION CHECK: a SUCCESSFUL result is surfaced, not swallowed as a runner error', async () => {
+    // The bug: `finish(…, 'completed')` threw `TaskLeaseLostError`, the generic
+    // `catch` then called `finish(…, 'failed')` on the now-terminal row, that
+    // threw AGAIN and escaped to `onRunnerError`. So a task that genuinely
+    // SUCCEEDED left no trace of its result anywhere, and the caller saw the
+    // reaper's generic "task abandoned" as if nothing had ever run.
+    const { lost, runnerErrors, taskId } = await reapMidFlight('succeed');
+
+    assert.deepEqual(runnerErrors, [], 'lease loss is not a runner error');
+    assert.equal(lost.length, 1, 'the lost outcome must be reported exactly once');
+    const record = lost[0];
+    assert.ok(record);
+    assert.equal(record.taskId, taskId);
+    assert.equal(record.status, 'completed');
+    assert.equal(
+      record.result,
+      'THE REAL ANSWER',
+      'the real result must be preserved, not replaced by a generic abandonment',
+    );
+    assert.equal(record.error, undefined);
+  });
+
+  it('MUTATION CHECK: a FAILED outcome hitting the same race is reported, never re-thrown', async () => {
+    const { lost, runnerErrors } = await reapMidFlight('throw');
+    assert.deepEqual(runnerErrors, []);
+    assert.equal(lost.length, 1);
+    assert.equal(lost[0]?.status, 'failed');
+    assert.equal(lost[0]?.error, 'backend exploded');
+  });
+
+  it('the stored row still reflects the reaper — terminal immutability is not relaxed', async () => {
+    // Stated rather than implied: the outcome is surfaced through the hook, NOT
+    // by overwriting a terminal row. That guard is what stops a zombie worker
+    // from overwriting an outcome a new owner recorded, so it stays.
+    const { store, taskId } = await reapMidFlight('succeed');
+    const row = await store.get(taskId);
+    assert.ok(row);
+    assert.equal(row.status, 'failed');
+    assert.match(String(row.error), /task abandoned/);
+    assert.equal(row.result, null);
   });
 });
