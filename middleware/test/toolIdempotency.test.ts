@@ -1,0 +1,317 @@
+import { strict as assert } from 'node:assert';
+import { describe, it } from 'node:test';
+
+import { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
+import { ToolDispatchService } from '../packages/harness-orchestrator/src/toolDispatchService.js';
+import {
+  ToolIdempotencyStore,
+  currentIdempotencyScope,
+  fingerprintToolInput,
+} from '../packages/harness-orchestrator/src/toolIdempotency.js';
+import type { WriteCapability } from '../packages/plugin-api/src/writeCapabilities.js';
+import { isWriteCapableTool } from '../packages/plugin-api/src/writeCapabilities.js';
+
+/**
+ * #542 prerequisite — idempotency for write-capable tool dispatch.
+ *
+ * MUTATION-CHECK DISCIPLINE: the assertions count REAL EXECUTIONS of the
+ * underlying handler (a counter the handler itself increments), never mock
+ * invocation counts on a dedupe helper. A test that asserted "the store was
+ * consulted" would stay green over a store that always misses.
+ */
+
+const CREATE_INVOICE: readonly WriteCapability[] = [
+  { dataClass: 'odoo.invoice', operation: 'create' },
+];
+
+/** A write-capable tool whose handler counts how many times it really ran. */
+function writeToolService(options?: {
+  readonly capabilities?: readonly WriteCapability[];
+  readonly store?: ToolIdempotencyStore;
+  readonly failWith?: () => never;
+}): { service: ToolDispatchService; executions: () => number } {
+  let executions = 0;
+  const nativeTools = new NativeToolRegistry();
+  nativeTools.register('odoo_create_invoice', {
+    handler: async (input) => {
+      executions += 1;
+      options?.failWith?.();
+      return `invoice-created:${JSON.stringify(input)}`;
+    },
+    spec: {
+      name: 'odoo_create_invoice',
+      description: 'creates an invoice — mutates data',
+      input_schema: { type: 'object', properties: {} },
+    },
+    domain: 'test.odoo',
+    ...(options?.capabilities !== undefined
+      ? { writeCapabilities: options.capabilities }
+      : {}),
+  });
+  return {
+    service: new ToolDispatchService({
+      nativeTools,
+      domainTools: [],
+      ...(options?.store !== undefined ? { idempotency: options.store } : {}),
+    }),
+    executions: () => executions,
+  };
+}
+
+describe('write-capability declaration', () => {
+  it('treats a tool with declared write capabilities as write-capable', () => {
+    assert.equal(isWriteCapableTool(CREATE_INVOICE), true);
+  });
+
+  it('treats an unannotated or empty declaration as read-only', () => {
+    assert.equal(isWriteCapableTool(undefined), false);
+    assert.equal(isWriteCapableTool([]), false);
+  });
+
+  it('surfaces the declaration through the registry onto the dispatcher', () => {
+    const { service } = writeToolService({ capabilities: CREATE_INVOICE });
+    assert.equal(service.isWriteCapable('odoo_create_invoice'), true);
+    assert.equal(service.isWriteCapable('nope'), false);
+  });
+});
+
+describe('ToolIdempotencyStore', () => {
+  it('executes once and REPLAYS the stored result for a duplicate key', async () => {
+    const store = new ToolIdempotencyStore();
+    let runs = 0;
+    const exec = async () => {
+      runs += 1;
+      return { content: `run-${String(runs)}` };
+    };
+
+    const a = await store.run('k1', 'tool', { x: 1 }, exec);
+    const b = await store.run('k1', 'tool', { x: 1 }, exec);
+
+    assert.equal(runs, 1, 'the executor must run exactly once');
+    assert.equal(a.result.content, 'run-1');
+    assert.equal(b.result.content, 'run-1', 'the duplicate must see the FIRST result');
+    assert.equal(b.replayed, true);
+  });
+
+  it('COLLAPSES concurrent duplicates onto one execution', async () => {
+    const store = new ToolIdempotencyStore();
+    let runs = 0;
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const exec = async () => {
+      runs += 1;
+      await gate;
+      return { content: 'once' };
+    };
+
+    const both = Promise.all([
+      store.run('k1', 'tool', { x: 1 }, exec),
+      store.run('k1', 'tool', { x: 1 }, exec),
+    ]);
+    release?.();
+    const [a, b] = await both;
+
+    assert.equal(runs, 1, 'a concurrent duplicate must not start a second execution');
+    assert.equal(a.result.content, 'once');
+    assert.equal(b.result.content, 'once');
+  });
+
+  it('REJECTS a reused key carrying a different payload instead of executing', async () => {
+    const store = new ToolIdempotencyStore();
+    let runs = 0;
+    const exec = async () => {
+      runs += 1;
+      return { content: 'ok' };
+    };
+
+    await store.run('k1', 'tool', { amount: 100 }, exec);
+    const conflict = await store.run('k1', 'tool', { amount: 999 }, exec);
+
+    assert.equal(runs, 1, 'a conflicting payload must NOT execute');
+    assert.equal(conflict.result.isError, true);
+    assert.match(conflict.result.content, /idempotency key reused/);
+  });
+
+  it('treats key-equal payloads with reordered object keys as the SAME call', async () => {
+    assert.equal(
+      fingerprintToolInput({ a: 1, b: 2 }),
+      fingerprintToolInput({ b: 2, a: 1 }),
+      'key order must not change the fingerprint, or a benign re-serialisation looks like a conflict',
+    );
+    const store = new ToolIdempotencyStore();
+    let runs = 0;
+    const exec = async () => {
+      runs += 1;
+      return { content: 'ok' };
+    };
+    await store.run('k1', 'tool', { a: 1, b: 2 }, exec);
+    await store.run('k1', 'tool', { b: 2, a: 1 }, exec);
+    assert.equal(runs, 1);
+  });
+
+  it('re-executes after the TTL window expires (bounded, not permanent)', async () => {
+    let now = 1_000;
+    const store = new ToolIdempotencyStore({ ttlMs: 500, now: () => now });
+    let runs = 0;
+    const exec = async () => {
+      runs += 1;
+      return { content: `run-${String(runs)}` };
+    };
+
+    await store.run('k1', 'tool', {}, exec);
+    now += 499;
+    await store.run('k1', 'tool', {}, exec);
+    assert.equal(runs, 1, 'still inside the window — must replay');
+
+    now += 2;
+    const after = await store.run('k1', 'tool', {}, exec);
+    assert.equal(runs, 2, 'past the window — must execute again');
+    assert.equal(after.result.content, 'run-2');
+  });
+
+  it('does NOT retain an isError outcome, so a caller may legitimately retry', async () => {
+    const store = new ToolIdempotencyStore();
+    let runs = 0;
+    const exec = async () => {
+      runs += 1;
+      return runs === 1
+        ? { content: 'Error: downstream refused', isError: true }
+        : { content: 'ok' };
+    };
+
+    const first = await store.run('k1', 'tool', {}, exec);
+    assert.equal(first.result.isError, true);
+    const second = await store.run('k1', 'tool', {}, exec);
+
+    assert.equal(runs, 2, 'a failed call must not be cached as the final answer');
+    assert.equal(second.result.content, 'ok');
+  });
+
+  it('does NOT retain a thrown outcome', async () => {
+    const store = new ToolIdempotencyStore();
+    let runs = 0;
+    const exec = async (): Promise<{ content: string }> => {
+      runs += 1;
+      if (runs === 1) throw new Error('boom');
+      return { content: 'ok' };
+    };
+
+    await assert.rejects(() => store.run('k1', 'tool', {}, exec), /boom/);
+    const second = await store.run('k1', 'tool', {}, exec);
+
+    assert.equal(runs, 2);
+    assert.equal(second.result.content, 'ok');
+    assert.equal(store.size(), 1, 'the rejected entry must not linger alongside the good one');
+  });
+
+  it('bounds retained records', async () => {
+    const store = new ToolIdempotencyStore({ maxEntries: 3 });
+    for (let i = 0; i < 10; i += 1) {
+      await store.run(`k${String(i)}`, 'tool', {}, async () => ({ content: 'ok' }));
+    }
+    assert.equal(store.size(), 3);
+  });
+});
+
+describe('ToolDispatchService — idempotent write dispatch', () => {
+  it('executes a write tool ONCE across duplicate dispatches sharing a key', async () => {
+    const store = new ToolIdempotencyStore();
+    const { service, executions } = writeToolService({
+      capabilities: CREATE_INVOICE,
+      store,
+    });
+
+    const a = await service.dispatch(
+      'odoo_create_invoice',
+      { amount: 100 },
+      { idempotencyKey: 'req-1' },
+    );
+    const b = await service.dispatch(
+      'odoo_create_invoice',
+      { amount: 100 },
+      { idempotencyKey: 'req-1' },
+    );
+
+    assert.equal(executions(), 1, 'the write executed twice — duplicate customer data');
+    assert.equal(a.content, b.content);
+  });
+
+  it('executes a write tool TWICE under DIFFERENT keys (dedupe is per key, not per tool)', async () => {
+    const store = new ToolIdempotencyStore();
+    const { service, executions } = writeToolService({
+      capabilities: CREATE_INVOICE,
+      store,
+    });
+
+    await service.dispatch('odoo_create_invoice', { amount: 1 }, { idempotencyKey: 'req-1' });
+    await service.dispatch('odoo_create_invoice', { amount: 2 }, { idempotencyKey: 'req-2' });
+
+    assert.equal(executions(), 2, 'two distinct requests must both run');
+  });
+
+  it('does NOT dedupe a READ tool — a cached read would serve stale data', async () => {
+    const store = new ToolIdempotencyStore();
+    // Same tool, no write-capability declaration ⇒ read-only.
+    const { service, executions } = writeToolService({ store });
+
+    await service.dispatch('odoo_create_invoice', {}, { idempotencyKey: 'req-1' });
+    await service.dispatch('odoo_create_invoice', {}, { idempotencyKey: 'req-1' });
+
+    assert.equal(executions(), 2, 'a read tool must not be deduplicated');
+  });
+
+  it('is INERT without a store (legacy behaviour preserved)', async () => {
+    const { service, executions } = writeToolService({ capabilities: CREATE_INVOICE });
+
+    await service.dispatch('odoo_create_invoice', {}, { idempotencyKey: 'req-1' });
+    await service.dispatch('odoo_create_invoice', {}, { idempotencyKey: 'req-1' });
+
+    assert.equal(executions(), 2);
+  });
+
+  it('publishes an exactlyOnce scope to layers beneath the handler — for writes only', async () => {
+    const store = new ToolIdempotencyStore();
+    const seen: Array<{ key: string; exactlyOnce: boolean } | undefined> = [];
+    const nativeTools = new NativeToolRegistry();
+    const record = async (): Promise<string> => {
+      const scope = currentIdempotencyScope();
+      seen.push(
+        scope === undefined
+          ? undefined
+          : { key: scope.key, exactlyOnce: scope.exactlyOnce },
+      );
+      return 'ok';
+    };
+    nativeTools.register('write_tool', {
+      handler: record,
+      spec: {
+        name: 'write_tool',
+        description: 'd',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'test.x',
+      writeCapabilities: CREATE_INVOICE,
+    });
+    nativeTools.register('read_tool', {
+      handler: record,
+      spec: {
+        name: 'read_tool',
+        description: 'd',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'test.x',
+    });
+    const service = new ToolDispatchService({
+      nativeTools,
+      domainTools: [],
+      idempotency: store,
+    });
+
+    await service.dispatch('write_tool', {}, { idempotencyKey: 'req-1' });
+    await service.dispatch('read_tool', {}, { idempotencyKey: 'req-2' });
+
+    assert.deepEqual(seen, [{ key: 'req-1', exactlyOnce: true }, undefined]);
+  });
+});
