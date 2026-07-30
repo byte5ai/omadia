@@ -27,6 +27,63 @@ export type {
   EmbeddingBackfillStats,
 } from './embeddingBackfill.js';
 
+// #440 — model/dimension gate. Compares the active embedding provider
+// against the model the stored vectors were produced with and blocks vector
+// writes on an unrecoverable mismatch.
+export {
+  allowsVectorWrites,
+  clearStaleVectors,
+  discoverGovernedVectorColumns,
+  evaluateEmbeddingModelGate,
+  isStaleVectorClearPending,
+  requiresStaleVectorClearResume,
+} from './embeddingModelGate.js';
+export type {
+  ClearOptions,
+  EmbeddingModelGateOptions,
+  EmbeddingModelGateOutcome,
+  GovernedVectorColumn,
+  StaleVectorClearResult,
+} from './embeddingModelGate.js';
+
+// #440 — read-only catalog probe over a governed vector column. Exported so
+// the kernel's embedding-provider admin router can price a provider switch
+// ("how many vectors would this discard?") with the SAME query the migration
+// already uses for its operator warning, instead of hand-rolling a second one
+// that could drift from the column set the gate actually governs.
+export { countVectors } from './vectorColumnCatalog.js';
+export type { ColumnCatalogInfo } from './vectorColumnCatalog.js';
+
+// #440 follow-up — the in-place gate re-evaluation entry point. Exported for
+// the plugin's own wiring and for tests that drive a live provider switch
+// without going near `activate()`/`close()` (which would end the shared pool).
+export { startGateRunner } from './gateReevaluation.js';
+export type { BackfillSync, GateRunner, GateRunnerDeps } from './gateReevaluation.js';
+
+// #440 follow-up — the gate epoch, the fence that keeps a previous provider's
+// vectors out of the corpus when a re-gate lands between an `embed()` and its
+// UPDATE. Every vector writer in this package takes a `gateEpoch` reader.
+export { captureGateEpoch, INITIAL_GATE_EPOCH } from './gateEpoch.js';
+export type { GateEpochFence, GateEpochReader } from './gateEpoch.js';
+export { createEmbeddingGateStatus } from './gateStatusPublication.js';
+export type {
+  EmbeddingGateStatus,
+  EmbeddingGateStatusPublication,
+  GateReevaluate,
+  GateReevaluateRequest,
+} from './gateStatusPublication.js';
+
+// #440 — the runtime vector-column width migration the gate performs when the
+// declared column width disagrees with the active provider. Exported because
+// `EmbeddingModelGateOutcome`'s `column-migrated` arm carries these types.
+export { migrateVectorColumns } from './vectorColumnMigration.js';
+export type {
+  MigratedVectorColumn,
+  VectorColumnMigrationOptions,
+  VectorColumnMigrationResult,
+  VectorColumnTarget,
+} from './vectorColumnMigration.js';
+
 // Palaia-Phase-5 (OB-74) — Per-Agent Block/Boost-Store. Backs the
 // `agentPriorities@1` capability published by activate(). The InMemory
 // sibling falls back to the NoopAgentPrioritiesStore from plugin-api.
