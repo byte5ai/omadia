@@ -512,6 +512,17 @@ const ConfigSchema = z.object({
     .default(() => path.join(os.tmpdir(), 'omadia-dev-jobs')),
   // Where the runner phones home. Defaults to loopback + PORT in loadConfig.
   DEV_PLATFORM_RUNNER_BASE_URL: optionalNonEmpty(z.string().url()),
+  // W2-2 (issue #543) — comma-separated sub-agent tool names (`ask_<slug>`) that
+  // ALSO get the non-blocking `<name>_start`/`_status`/`_list` triple, so a slow
+  // sub-agent stops blocking the chat turn it was delegated from. The blocking
+  // `ask_<slug>` tool stays registered either way; empty (the default) means every
+  // sub-agent keeps today's inline behaviour exactly.
+  LONG_RUNNING_SUBAGENT_TOOLS: z.string().default(''),
+  // Orphan windows for the long-running task seam: a live task silent this long
+  // is failed as abandoned, and a finished task is retained this long so a
+  // following turn can still collect its result.
+  LONG_RUNNING_TASK_STALE_MS: z.coerce.number().int().positive().default(900_000),
+  LONG_RUNNING_TASK_RETAIN_MS: z.coerce.number().int().positive().default(3_600_000),
   DEV_PLATFORM_CLI_BIN: z.string().min(1).default('claude'),
   DEV_PLATFORM_JOB_WALL_CLOCK_MS: z.coerce.number().int().positive().default(1_800_000),
   DEV_PLATFORM_HEARTBEAT_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),

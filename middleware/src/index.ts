@@ -275,6 +275,8 @@ import { DeterministicActionRegistry } from './platform/deterministicActionRegis
 import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
+// W2-2 (issue #543) — generic long-running task seam.
+import { InMemoryTaskStore, startTaskReaper } from '@omadia/orchestrator';
 import { McpManager, type McpCallLogEntry, type McpServerConfig } from '@omadia/orchestrator';
 import { McpOAuthService } from './services/mcpOAuthService.js';
 import { McpConfigService } from './services/mcpConfigService.js';
@@ -392,6 +394,26 @@ async function main(): Promise<void> {
   // plugin would miss those registrations.
   const nativeToolRegistry = new NativeToolRegistry();
   serviceRegistry.provide('nativeToolRegistry', nativeToolRegistry);
+  // W2-2 (issue #543) — the store + orphan reaper backing deferred sub-agent
+  // dispatch. Process-local by design: this unit ships no migration (0031/0032
+  // are taken by parallel units), so a restart drops in-flight deferred tasks
+  // and a poll answers "not found" rather than something wrong. The reaper is
+  // what stops an unpolled task leaking a `working` row forever.
+  const longRunningSubAgentTools = config.LONG_RUNNING_SUBAGENT_TOOLS.split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const subAgentTaskStore = new InMemoryTaskStore();
+  if (longRunningSubAgentTools.length > 0) {
+    startTaskReaper(subAgentTaskStore, {
+      staleAfterMs: config.LONG_RUNNING_TASK_STALE_MS,
+      purgeTerminalAfterMs: config.LONG_RUNNING_TASK_RETAIN_MS,
+      onError: (err: unknown) =>
+        console.warn('[middleware] long-running task reaper sweep failed:', err),
+    });
+    console.log(
+      `[middleware] deferred sub-agent dispatch enabled for: ${longRunningSubAgentTools.join(', ')}`,
+    );
+  }
   // LLM provider catalog: kernel-owned registry of plugin-contributed providers
   // (e.g. @omadia/plugin-llm-minimax). Published pre-activate and populated from
   // installed plugins' `llm_provider` manifest blocks below, so the orchestrator
@@ -1918,6 +1940,10 @@ async function main(): Promise<void> {
             cliModelAlias: (model: string): string =>
               model.replace(/-cli$/, '') || 'sonnet',
             blockedMcpGrant: isMcpGrantBlocked,
+            // W2-2 (issue #543) — deferred sub-agent dispatch. Empty allowlist
+            // (the default) leaves every sub-agent on today's inline path.
+            longRunningSubAgentTools: longRunningSubAgentTools,
+            taskStore: subAgentTaskStore,
             log: (m: string) => console.log(`[middleware] ${m}`),
           },
         );
