@@ -74,6 +74,61 @@ describe('write-capability declaration', () => {
     assert.equal(service.isWriteCapable('odoo_create_invoice'), true);
     assert.equal(service.isWriteCapable('nope'), false);
   });
+
+  it('reaches the dispatcher through the PLUGIN-facing accessor, not just kernel calls', async () => {
+    // The declaration is worthless if a real plugin cannot make it. This walks
+    // the actual `ctx.tools.register(spec, handler, options)` shim the kernel
+    // gives plugins and asserts the capability survives the hop into the
+    // registry — a shim that silently drops the field would leave every real
+    // Odoo/M365 write unprotected while all the unit tests stayed green.
+    const { createPluginContext } = await import('../src/platform/pluginContext.js');
+    const { ServiceRegistry } = await import('../src/platform/serviceRegistry.js');
+    type Opts = Parameters<typeof createPluginContext>[0];
+    const stub = (): (() => void) => (): void => {};
+    const nativeTools = new NativeToolRegistry();
+    const ctx = createPluginContext({
+      agentId: '@omadia/integration-odoo',
+      vault: {
+        get: async () => undefined,
+        listKeys: async () => [],
+      } as unknown as Opts['vault'],
+      registry: {
+        has: () => true,
+        list: () => [],
+        get: () => undefined,
+      } as unknown as Opts['registry'],
+      catalog: new Map() as unknown as Opts['catalog'],
+      serviceRegistry: new ServiceRegistry(),
+      nativeToolRegistry: nativeTools,
+      routeRegistry: {
+        register: stub,
+        disposeBySource: () => 0,
+      } as unknown as Opts['routeRegistry'],
+      jobScheduler: {
+        register: stub,
+        stopForPlugin: () => {},
+      } as unknown as Opts['jobScheduler'],
+      logger: () => {},
+    });
+
+    ctx.tools.register(
+      {
+        name: 'odoo_post_invoice',
+        description: 'posts an invoice',
+        input_schema: { type: 'object', properties: {} },
+      },
+      async () => 'posted',
+      { writeCapabilities: CREATE_INVOICE },
+    );
+
+    assert.deepEqual(
+      nativeTools.get('odoo_post_invoice')?.writeCapabilities,
+      CREATE_INVOICE,
+      'the plugin-facing shim dropped writeCapabilities',
+    );
+    const service = new ToolDispatchService({ nativeTools, domainTools: [] });
+    assert.equal(service.isWriteCapable('odoo_post_invoice'), true);
+  });
 });
 
 describe('ToolIdempotencyStore', () => {

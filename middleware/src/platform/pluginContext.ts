@@ -444,6 +444,13 @@ export function createPluginContext(
         ...(options?.attachmentSink
           ? { attachmentSink: options.attachmentSink }
           : {}),
+        // #542 — carry the plugin's declared write capabilities into the registry
+        // so `ToolDispatchService` can give this tool duplicate-write protection.
+        // Without this forward, only kernel-internal registrations could declare
+        // themselves and no real plugin (Odoo, M365) would ever be protected.
+        ...(options?.writeCapabilities !== undefined
+          ? { writeCapabilities: options.writeCapabilities }
+          : {}),
       });
     },
     registerHandler(name, handler, options) {
@@ -463,6 +470,11 @@ export function createPluginContext(
           : {}),
         ...(options?.attachmentSink
           ? { attachmentSink: options.attachmentSink }
+          : {}),
+        // #542 — same forward as `register()` above; a handler-only tool is
+        // dispatchable by name, so it needs the same protection.
+        ...(options?.writeCapabilities !== undefined
+          ? { writeCapabilities: options.writeCapabilities }
           : {}),
       });
     },
