@@ -87,6 +87,11 @@ export class InMemoryTaskStore implements TaskStore {
   private fenced(id: string, lease: string): TaskRow {
     const row = this.rows.get(id);
     if (!row) throw new TaskLeaseLostError(id);
+    // Terminal immutability. Load-bearing, NOT redundant with the lease check
+    // below: `reapOrphans` deliberately does NOT clear `claimedBy` when it fails
+    // an abandoned task, so a zombie worker that wakes up afterwards still
+    // presents a MATCHING lease. This guard is the only thing stopping it from
+    // resurrecting or overwriting an outcome the reaper already recorded.
     if (isTerminalTaskStatus(row.descriptor.status)) {
       throw new TaskLeaseLostError(id);
     }
@@ -277,6 +282,12 @@ export class InMemoryTaskStore implements TaskStore {
       const lastSeen = Date.parse(d.lastHeartbeatAt ?? d.createdAt);
       if (Number.isFinite(lastSeen) && nowMs - lastSeen >= opts.staleAfterMs) {
         const ts = new Date(nowMs).toISOString();
+        // `claimedBy` is deliberately PRESERVED. The reaper is not the owner:
+        // keeping the lease records who was working when the task died, and —
+        // more importantly — it means a zombie worker waking up later still
+        // presents a matching lease, so the terminal guard in `fenced()` is what
+        // rejects it. Clearing the lease here would make that guard unreachable
+        // and let the lease check alone silently carry the invariant.
         row.descriptor = {
           ...d,
           status: 'failed',
@@ -285,7 +296,6 @@ export class InMemoryTaskStore implements TaskStore {
             '(worker crashed, restarted, or was never started)',
           endedAt: ts,
           updatedAt: ts,
-          claimedBy: null,
         };
         staleFailed += 1;
       }
