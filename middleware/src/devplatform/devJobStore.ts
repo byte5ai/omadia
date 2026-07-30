@@ -16,12 +16,13 @@ import type { Pool } from 'pg';
 import * as artifacts from './devJobArtifactStore.js';
 import type { DevJobEventBus } from './devJobEventBus.js';
 import * as seams from './devJobWorkerSeams.js';
-import { hashRunnerToken, verifyRunnerToken as verifyToken } from './jobToken.js';
+import { hashRunnerToken, mintRunnerToken, verifyRunnerToken as verifyToken } from './jobToken.js';
 import { asObj, iso, isoN, num, str, strN, type Row } from './pgMappers.js';
 import { isLowValueEventType, type ArtifactCeilingOptions } from './retention.js';
 import {
   isDevJobEventType,
   isTerminalDevJobStatus,
+  TERMINAL_DEV_JOB_STATUSES,
   type DevJob,
   type DevJobArtifact,
   type DevJobEvent,
@@ -205,6 +206,16 @@ export class DevJobStore {
     // `status` is threaded so a gated trigger job can be born `'waiting'` in this
     // single INSERT (never transiently `'queued'` and therefore never claimable);
     // omitted ⇒ `'queued'` (the DB default, kept explicit here for the same value).
+    //
+    // `phase` defaults to `'analyze'`, not `'implement'`: every pipeline_mode
+    // (gated AND collapsed) is designed to start there per transitions.ts's own
+    // test suite ("collapsed mode skips THE GATE" still begins `analyze →
+    // implement`) and the dev-runner-shim's own default
+    // (`phaseLoop.ts`: `ctx?.phase ?? 'analyze'`). Only `kind === 'analyze'`
+    // jobs terminate immediately after that phase; `fix_issue` and `implement`
+    // jobs continue through bootstrap/plan/clarify/gate exactly like any other
+    // gated job — an explicit `phase` override (e.g. the gated-webhook trigger
+    // parking straight at `'await_human'`) still wins.
     const r = await this.pool.query<Row>(
       `INSERT INTO dev_jobs
          (repo_id, kind, brief, source, source_ref, base_sha, backend, agent_kind, auth_mode,
@@ -222,7 +233,7 @@ export class DevJobStore {
         input.agentKind ?? 'claude-cli',
         input.authMode ?? 'api_key',
         input.provision ?? 1,
-        input.phase ?? 'implement',
+        input.phase ?? 'analyze',
         input.status ?? 'queued',
         input.branch ?? null,
         input.runnerTokenHash,
@@ -235,6 +246,23 @@ export class DevJobStore {
   async getJob(id: string): Promise<DevJob | null> {
     const r = await this.pool.query<Row>(`SELECT ${JOB_COLS} FROM dev_jobs WHERE id = $1`, [id]);
     return r.rows[0] ? toJob(r.rows[0]) : null;
+  }
+
+  /**
+   * Delete one job's row — `ON DELETE CASCADE` (0022) removes its events and
+   * artifacts in the same statement, same as `retention.purgeTerminalJobs`
+   * (spec §7), just for a single operator-named job instead of an age sweep.
+   * Scoped to terminal statuses only: an active job still has a live backend
+   * handle (container, Fly Machine) that deleting the row would orphan —
+   * terminate it first (which finalizes the job), then delete.
+   */
+  async deleteJob(id: string): Promise<'deleted' | 'not_terminal' | 'not_found'> {
+    const r = await this.pool.query(
+      `DELETE FROM dev_jobs WHERE id = $1 AND status = ANY($2::text[])`,
+      [id, [...TERMINAL_DEV_JOB_STATUSES]],
+    );
+    if ((r.rowCount ?? 0) > 0) return 'deleted';
+    return (await this.getJob(id)) ? 'not_terminal' : 'not_found';
   }
 
   async listJobs(filter: ListJobsFilter = {}): Promise<DevJob[]> {
@@ -718,6 +746,35 @@ export class DevJobStore {
   }
 
   // --- tokens --------------------------------------------------------------
+  /**
+   * Mint a fresh runner token for a job whose container the DockerBackend path
+   * has not yet spawned, and persist only its hash — same one-time-plaintext
+   * contract `mintRunnerToken` documents for every backend, just exercised at a
+   * different moment.
+   *
+   * Why this exists: `createJob` already stamps a `runner_token_hash` for every
+   * job, but for the docker backend that first token's plaintext is discarded
+   * unused — `DockerBackend.provision()` deliberately posts only
+   * `{ protocol, jobId, leaseTtlSec }` to the daemon (spec §4/§5, review finding
+   * S3: "a caller never dictates policy"), so the token can never ride that
+   * call. The daemon fetches the job's policy itself, later, on its own clock
+   * (`GET /internal/job-policy/:jobId`) — THAT is this backend's actual
+   * provision moment, so this reissues the token right there, replacing the
+   * unused original hash, and the plaintext rides the policy response's `env`
+   * (the daemon's own `ALLOWED_ENV_KEYS` already special-cases `OMADIA_JOB_TOKEN`
+   * as policy-supplied — see `policyClient.mjs`). One reissue per policy fetch,
+   * which is one per container spawn, so the token a runner receives always
+   * matches the runner_token_hash a `verifyRunnerToken` call against it will see.
+   */
+  async reissueRunnerToken(jobId: string): Promise<string> {
+    const { token, hash } = mintRunnerToken();
+    await this.pool.query(`UPDATE dev_jobs SET runner_token_hash = $2, updated_at = now() WHERE id = $1`, [
+      jobId,
+      hash,
+    ]);
+    return token;
+  }
+
   /** sha256 + timing-safe check of a presented runner token against the stored
    *  hash. Unknown job ⇒ false. */
   async verifyRunnerToken(jobId: string, token: string): Promise<boolean> {

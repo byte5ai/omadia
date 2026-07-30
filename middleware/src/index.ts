@@ -2117,6 +2117,21 @@ async function main(): Promise<void> {
     console.log('[middleware] dev-platform GitHub webhook router mounted at /api/webhooks/github (raw-body, before express.json)');
   }
 
+  // The LLM proxy (`/api/v1/dev-runner/llm/*`, mounted later at `mountDevPlatform`)
+  // owns its own route-level `express.raw()` so it can canonicalise the exact bytes
+  // it validates before forwarding (see llmProxy.ts). A global body parser that runs
+  // BEFORE that route is reached would drain the request stream first: body-parser's
+  // `read()` bails out via `onFinished.isFinished(req)` on an already-consumed stream
+  // and never touches `req.body` again, so the route's own raw() would then see a
+  // pre-parsed object instead of a Buffer. Skip this one path here, mirroring the
+  // GitHub-webhook router's raw-body-before-json pattern above.
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/v1/dev-runner/llm/')) {
+      next();
+      return;
+    }
+    express.json({ limit: '10mb' })(req, res, next);
+  });
   // Issue #437 — Conductor's generic inbound webhook route. Mounted unconditionally
   // (mirrors the forward-reference pattern, not the `if (graphPool)` gate above): on
   // the in-memory backend `conductorWebhookInboundDepsRef` never gets assigned, so the
@@ -2596,13 +2611,20 @@ async function main(): Promise<void> {
     // W2: role-principal gates resolve their live holder set against the same
     // conductor role store the conductor await gate uses.
     const devPlatformRoleStore = new ConductorRoleStore(graphPool);
-    // Epic #470 W4 — resolve the FlyMachinesBackend config when a dedicated runner
-    // app is set. The on-/off-Fly selection lives HERE so the assembly layer stays
-    // env-free: on Fly (FLY_APP_NAME injected) use the internal Machines API + a
-    // `.internal` 6PN phone-home address; off Fly use the public endpoints. Requires
-    // a digest-pinned image (DEV_RUNNER_IMAGE, falling back to DEV_RUNNER_DEFAULT_IMAGE).
-    // These operator URLs are DELIBERATELY not SSRF-guarded (`.internal` is valid here).
-    const flyRunnerImage = config.DEV_RUNNER_IMAGE ?? config.DEV_RUNNER_DEFAULT_IMAGE;
+    // The runner image, shared by every backend: FlyMachinesBackend (below) AND
+    // the DockerBackend job-policy config (assembleDevPlatform's `runnerImage`,
+    // further down) both derive from this one resolution. `DEV_RUNNER_IMAGE`
+    // wins when set (it's the name the daemon's own DEV_RUNNER_IMAGES/allowlist
+    // config uses too, so one operator-set var keeps every side in agreement);
+    // `DEV_RUNNER_DEFAULT_IMAGE` is the fallback. A digest-pinned image is
+    // required on Fly (enforced below); locally a floating tag is fine.
+    //
+    // Epic #470 W4 — the on-/off-Fly selection for the Machines backend lives
+    // HERE so the assembly layer stays env-free: on Fly (FLY_APP_NAME injected)
+    // use the internal Machines API + a `.internal` 6PN phone-home address; off
+    // Fly use the public endpoints. These operator URLs are DELIBERATELY not
+    // SSRF-guarded (`.internal` is valid here).
+    const resolvedRunnerImage = config.DEV_RUNNER_IMAGE ?? config.DEV_RUNNER_DEFAULT_IMAGE;
     // The runner app MUST be dedicated — NEVER this middleware's own Fly app, or a
     // job's ephemeral machine (running hostile repo code) would be provisioned into
     // the app that holds the middleware's machines, volumes, and app-level secrets
@@ -2616,13 +2638,13 @@ async function main(): Promise<void> {
       );
     }
     const flyConfig =
-      config.DEV_FLY_RUNNER_APP && flyRunnerImage && !flyAppIsSelf
+      config.DEV_FLY_RUNNER_APP && resolvedRunnerImage && !flyAppIsSelf
         ? {
             runnerApp: config.DEV_FLY_RUNNER_APP,
             apiBase: config.FLY_APP_NAME
               ? 'http://_api.internal:4280/v1'
               : 'https://api.machines.dev/v1',
-            image: flyRunnerImage,
+            image: resolvedRunnerImage,
             phoneHomeUrl:
               config.DEV_FLY_PHONE_HOME_URL ??
               (config.FLY_APP_NAME
@@ -2638,7 +2660,7 @@ async function main(): Promise<void> {
             ...(config.DEV_FLY_REGION ? { region: config.DEV_FLY_REGION } : {}),
           }
         : undefined;
-    if (config.DEV_FLY_RUNNER_APP && !flyRunnerImage) {
+    if (config.DEV_FLY_RUNNER_APP && !resolvedRunnerImage) {
       console.warn(
         '[middleware] DEV_FLY_RUNNER_APP set but no runner image (DEV_RUNNER_IMAGE / DEV_RUNNER_DEFAULT_IMAGE) — FlyMachinesBackend NOT registered',
       );
@@ -2665,7 +2687,7 @@ async function main(): Promise<void> {
       ...(config.DEV_RUNNER_DAEMON_URL ? { daemonUrl: config.DEV_RUNNER_DAEMON_URL } : {}),
       backend: config.DEV_PLATFORM_BACKEND,
       leaseTtlSec: config.DEV_JOB_LEASE_TTL_SEC,
-      ...(config.DEV_RUNNER_DEFAULT_IMAGE ? { runnerImage: config.DEV_RUNNER_DEFAULT_IMAGE } : {}),
+      ...(resolvedRunnerImage ? { runnerImage: resolvedRunnerImage } : {}),
       ...(config.DEV_EGRESS_BASE_ALLOWLIST
         ? { egressBaseAllowlist: csvList(config.DEV_EGRESS_BASE_ALLOWLIST) }
         : {}),

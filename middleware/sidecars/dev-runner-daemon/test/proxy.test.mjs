@@ -61,7 +61,7 @@ function closeServer(server) {
 
 /**
  * Boot a real proxy with capturing event sink + a resolver seam.
- * @param {{ internalHost?: string, internalPort?: number, jobs?: Array<{ jobId: string, allowlist: string[], proxyToken: string, ttlSec?: number }>, resolveMap?: Record<string, Array<{ address: string, family?: number }>> }} opts
+ * @param {{ internalHost?: string, internalPort?: number, jobs?: Array<{ jobId: string, allowlist: string[], proxyToken: string, ttlSec?: number }>, resolveMap?: Record<string, Array<{ address: string, family?: number }>>, resolveCacheTtlMs?: number, resolveDelayMs?: number, customResolve?: (host: string) => Promise<Array<{ address: string, family?: number }>> }} opts
  */
 async function startProxy(opts = {}) {
   const events = [];
@@ -73,8 +73,13 @@ async function startProxy(opts = {}) {
   const eventClient = { record: (e) => events.push(e), flush: async () => {}, stop: () => {} };
   const resolve = async (host) => {
     resolveCalls.push(host);
+    if (opts.customResolve) return opts.customResolve(host);
     // A nameserver that never answers: the tarpit the resolve deadline exists for.
     if (opts.resolveHangs) return new Promise(() => {});
+    // A deliberate delay widens the dedup race window for concurrent-CONNECT
+    // tests — without it, a same-tick resolve can settle before a second
+    // caller even asks, which would still be correct but proves nothing.
+    if (opts.resolveDelayMs) await new Promise((r) => setTimeout(r, opts.resolveDelayMs));
     return opts.resolveMap?.[host] ?? [{ address: '127.0.0.1', family: 4 }];
   };
   const proxy = createProxy({
@@ -87,6 +92,7 @@ async function startProxy(opts = {}) {
     logger: { warn() {} },
     limits: { connectMs: 2000, idleMs: 2000, absoluteMs: 5000 },
     ...(opts.resolveTimeoutMs !== undefined ? { resolveTimeoutMs: opts.resolveTimeoutMs } : {}),
+    ...(opts.resolveCacheTtlMs !== undefined ? { resolveCacheTtlMs: opts.resolveCacheTtlMs } : {}),
   });
   const dataPort = await listen(proxy.dataServer);
   const controlPort = await listen(proxy.controlServer);
@@ -111,7 +117,9 @@ function basicAuth(jobId = JOB_ID, token = PROXY_TOKEN) {
 
 /**
  * Send a raw CONNECT through the proxy and resolve once the status line is parsed.
- * @returns {Promise<{ statusCode: number, socket: import('node:net').Socket, buffered: Buffer }>}
+ * `headers` is the lowercased response header block — a CONNECT reply has no
+ * `res` object, so the raw text is the only place its framing is observable.
+ * @returns {Promise<{ statusCode: number, socket: import('node:net').Socket, buffered: Buffer, headers: string }>}
  */
 function sendConnect(dataPort, authority, authHeader) {
   return new Promise((resolve, reject) => {
@@ -124,7 +132,7 @@ function sendConnect(dataPort, authority, authHeader) {
       socket.removeListener('data', onData);
       const headerText = buf.subarray(0, idx).toString('utf8');
       const statusCode = Number(/^HTTP\/1\.1 (\d+)/.exec(headerText)?.[1] ?? 0);
-      resolve({ statusCode, socket, buffered: buf.subarray(idx + 4) });
+      resolve({ statusCode, socket, buffered: buf.subarray(idx + 4), headers: headerText.toLowerCase() });
     };
     socket.on('data', onData);
     socket.on('error', reject);
@@ -225,6 +233,72 @@ describe('egress proxy — CONNECT default-deny + DNS-exfil defence', () => {
       await p.close();
     }
   });
+
+  // The 407 is a CHALLENGE, and a challenge the client cannot answer is a wall.
+  // libcurl (so `git`, whose `http.proxyAuthMethod` defaults to `anyauth`) sends an
+  // unauthenticated CONNECT, reads the 407, then re-sends it WITH credentials. This
+  // proxy cannot serve that retry on the same socket — node detaches its HTTP parser
+  // at the `connect` event — so it closes, and it MUST say so. When it did not, the
+  // client wrote its authenticated retry into an already-FIN'd socket, read EOF, and
+  // every real job's `git clone` died with "Proxy CONNECT aborted".
+  it('announces the close on a 407 so a challenged client can retry authenticated', async () => {
+    // A real tunnel target, so the retry is verified all the way to 200 rather than
+    // stopping at the decision — same internal-destination shape the end-to-end
+    // tunnel test uses (loopback is legitimately internal there).
+    const upstream = await startTcpEcho();
+    const p = await startProxy({
+      internalHost: 'mw.internal',
+      internalPort: upstream.port,
+      jobs: [{ jobId: JOB_ID, allowlist: [], proxyToken: PROXY_TOKEN }],
+      resolveMap: { 'mw.internal': [{ address: '127.0.0.1', family: 4 }] },
+    });
+    const authority = `mw.internal:${upstream.port}`;
+    try {
+      const challenge = await sendConnect(p.dataPort, authority, null);
+      assert.equal(challenge.statusCode, 407);
+      assert.match(challenge.headers, /proxy-authenticate: basic/);
+      // Both spellings: `Connection` is the standard one, `Proxy-Connection` the
+      // legacy hop-by-hop one libcurl also honours.
+      assert.match(challenge.headers, /\r\nconnection: close/);
+      assert.match(challenge.headers, /\r\nproxy-connection: close/);
+      assert.match(challenge.headers, /\r\ncontent-length: 0/);
+      // The announcement must match the behaviour: the proxy really does close.
+      await new Promise((resolve) => challenge.socket.once('end', resolve));
+      challenge.socket.destroy();
+
+      // The retry libcurl then makes on a FRESH connection must reach the upstream.
+      const retry = await sendConnect(p.dataPort, authority, basicAuth());
+      assert.equal(retry.statusCode, 200, 'the authenticated retry establishes the tunnel');
+      // A 2xx must NOT carry the close — it is the tunnel, not a terminal reply.
+      assert.doesNotMatch(retry.headers, /connection: close/);
+      retry.socket.write('ping-after-challenge');
+      const echoed = await nextChunk(retry.socket);
+      assert.equal(echoed.toString('utf8'), 'ping-after-challenge');
+      retry.socket.destroy();
+    } finally {
+      await p.close();
+      await upstream.close();
+    }
+  });
+
+  // Same trap, non-auth path: every non-2xx CONNECT reply is terminal here, so each
+  // one has to announce it rather than only the 407 that happened to be reported.
+  it('announces the close on every non-2xx CONNECT reply, not just the 407', async () => {
+    const p = await startProxy({ jobs: [{ jobId: JOB_ID, allowlist: ['good.test'], proxyToken: PROXY_TOKEN }] });
+    try {
+      const denied = await sendConnect(p.dataPort, 'notallowed.test:443', basicAuth());
+      assert.equal(denied.statusCode, 403);
+      assert.match(denied.headers, /\r\nconnection: close/);
+      denied.socket.destroy();
+
+      const badPort = await sendConnect(p.dataPort, 'good.test:22', basicAuth());
+      assert.equal(badPort.statusCode, 403);
+      assert.match(badPort.headers, /\r\nconnection: close/);
+      badPort.socket.destroy();
+    } finally {
+      await p.close();
+    }
+  });
 });
 
 describe('egress proxy — rebinding defence', () => {
@@ -275,6 +349,108 @@ describe('egress proxy — end-to-end tunnel through the vetted IP', () => {
       assert.ok(close.durationMs >= 0);
       assertEventSafe(allow);
       assertEventSafe(close);
+    } finally {
+      await p.close();
+      await upstream.close();
+    }
+  });
+});
+
+describe('egress proxy — DNS resolution cache (concurrent same-host CONNECTs share one lookup)', () => {
+  it('N concurrent CONNECTs to the same host fire exactly ONE underlying resolve call', async () => {
+    const upstream = await startTcpEcho();
+    const p = await startProxy({
+      internalHost: 'mw.internal',
+      internalPort: upstream.port,
+      jobs: [{ jobId: JOB_ID, allowlist: [], proxyToken: PROXY_TOKEN }],
+      resolveMap: { 'mw.internal': [{ address: '127.0.0.1', family: 4 }] },
+      // Wide enough that all 8 CONNECTs below are dispatched before the
+      // first underlying lookup would have settled without the cache.
+      resolveDelayMs: 100,
+    });
+    try {
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () => sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth())),
+      );
+      for (const r of results) assert.equal(r.statusCode, 200);
+      assert.deepEqual(p.resolveCalls, ['mw.internal'], 'exactly one raw resolve call, not eight');
+      for (const r of results) r.socket.destroy();
+    } finally {
+      await p.close();
+      await upstream.close();
+    }
+  });
+
+  it('a resolution is reused within the cache TTL, without a second CONNECT even in flight', async () => {
+    const upstream = await startTcpEcho();
+    const p = await startProxy({
+      internalHost: 'mw.internal',
+      internalPort: upstream.port,
+      jobs: [{ jobId: JOB_ID, allowlist: [], proxyToken: PROXY_TOKEN }],
+      resolveMap: { 'mw.internal': [{ address: '127.0.0.1', family: 4 }] },
+      resolveCacheTtlMs: 60_000,
+    });
+    try {
+      const first = await sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth());
+      assert.equal(first.statusCode, 200);
+      first.socket.destroy();
+      await waitFor(() => p.events.some((e) => e.decision === 'close'));
+      const second = await sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth());
+      assert.equal(second.statusCode, 200);
+      second.socket.destroy();
+      assert.deepEqual(p.resolveCalls, ['mw.internal'], 'the second CONNECT reused the cached resolution');
+    } finally {
+      await p.close();
+      await upstream.close();
+    }
+  });
+
+  it('a fresh lookup runs again once the cache entry expires', async () => {
+    const upstream = await startTcpEcho();
+    const p = await startProxy({
+      internalHost: 'mw.internal',
+      internalPort: upstream.port,
+      jobs: [{ jobId: JOB_ID, allowlist: [], proxyToken: PROXY_TOKEN }],
+      resolveMap: { 'mw.internal': [{ address: '127.0.0.1', family: 4 }] },
+      resolveCacheTtlMs: 20,
+    });
+    try {
+      const first = await sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth());
+      assert.equal(first.statusCode, 200);
+      first.socket.destroy();
+      await new Promise((r) => setTimeout(r, 40));
+      const second = await sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth());
+      assert.equal(second.statusCode, 200);
+      second.socket.destroy();
+      assert.deepEqual(p.resolveCalls, ['mw.internal', 'mw.internal'], 'the expired entry triggers a fresh lookup');
+    } finally {
+      await p.close();
+      await upstream.close();
+    }
+  });
+
+  it('a failed resolution is never cached — the next CONNECT gets a fresh attempt', async () => {
+    const upstream = await startTcpEcho();
+    let calls = 0;
+    const p = await startProxy({
+      internalHost: 'mw.internal',
+      internalPort: upstream.port,
+      jobs: [{ jobId: JOB_ID, allowlist: [], proxyToken: PROXY_TOKEN }],
+      // First CONNECT's lookup fails outright; the second must not reuse
+      // that failure (there is nothing to reuse) and must succeed on retry.
+      customResolve: async (_host) => {
+        calls += 1;
+        if (calls === 1) throw new Error('simulated transient DNS failure');
+        return [{ address: '127.0.0.1', family: 4 }];
+      },
+    });
+    try {
+      const first = await sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth());
+      assert.equal(first.statusCode, 502, 'the first CONNECT sees the resolve failure');
+      const second = await sendConnect(p.dataPort, `mw.internal:${upstream.port}`, basicAuth());
+      assert.equal(second.statusCode, 200, 'the second CONNECT gets a fresh, successful lookup');
+      second.socket.destroy();
+      assert.equal(calls, 2, 'the failure was not cached — a real second attempt happened');
     } finally {
       await p.close();
       await upstream.close();
@@ -368,6 +544,112 @@ describe('egress proxy — control plane (daemon-token, per-job allowlist push)'
   });
 });
 
+describe('egress proxy — control plane: POST /resolve (the daemon has no internet route of its own)', () => {
+  it('rejects an unauthenticated resolve request', async () => {
+    const p = await startProxy({ resolveMap: { 'a.test': [{ address: '203.0.113.1', family: 4 }] } });
+    try {
+      const res = await controlRequest(p.controlPort, 'POST', '/resolve', 'wrong', { hosts: ['a.test'] });
+      assert.equal(res.statusCode, 401);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it('resolves every requested host in one call using the SAME resolver the data plane trusts', async () => {
+    const p = await startProxy({
+      resolveMap: {
+        'registry.npmjs.org': [{ address: '104.16.0.35', family: 4 }],
+        'github.com': [{ address: '140.82.121.3', family: 4 }],
+      },
+    });
+    try {
+      const res = await controlRequest(p.controlPort, 'POST', '/resolve', DAEMON_TOKEN, {
+        hosts: ['registry.npmjs.org', 'github.com'],
+      });
+      assert.equal(res.statusCode, 200);
+      const byHost = Object.fromEntries(res.body.results.map((r) => [r.host, r.addresses]));
+      assert.deepEqual(byHost['registry.npmjs.org'], [{ address: '104.16.0.35', family: 4 }]);
+      assert.deepEqual(byHost['github.com'], [{ address: '140.82.121.3', family: 4 }]);
+      assert.deepEqual(p.resolveCalls.sort(), ['github.com', 'registry.npmjs.org']);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it('reports null addresses for a host that fails to resolve — one bad host does not fail the whole batch', async () => {
+    const p = await startProxy({
+      customResolve: async (host) => {
+        if (host === 'flaky.example.com') throw new Error('simulated DNS failure');
+        return [{ address: '203.0.113.10', family: 4 }];
+      },
+    });
+    try {
+      const res = await controlRequest(p.controlPort, 'POST', '/resolve', DAEMON_TOKEN, {
+        hosts: ['flaky.example.com', 'good.example.com'],
+      });
+      assert.equal(res.statusCode, 200);
+      const byHost = Object.fromEntries(res.body.results.map((r) => [r.host, r.addresses]));
+      assert.equal(byHost['flaky.example.com'], null);
+      assert.deepEqual(byHost['good.example.com'], [{ address: '203.0.113.10', family: 4 }]);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it('400s on an empty, missing, or oversized hosts array — never a silent no-op', async () => {
+    const p = await startProxy();
+    try {
+      const empty = await controlRequest(p.controlPort, 'POST', '/resolve', DAEMON_TOKEN, { hosts: [] });
+      assert.equal(empty.statusCode, 400);
+      const missing = await controlRequest(p.controlPort, 'POST', '/resolve', DAEMON_TOKEN, {});
+      assert.equal(missing.statusCode, 400);
+      const oversized = await controlRequest(p.controlPort, 'POST', '/resolve', DAEMON_TOKEN, {
+        hosts: Array.from({ length: 101 }, (_, i) => `h${i}.test`),
+      });
+      assert.equal(oversized.statusCode, 400);
+    } finally {
+      await p.close();
+    }
+  });
+});
+
+describe('createProxyClient — resolveHosts (the daemon-side caller of POST /resolve)', () => {
+  it('calls POST /resolve with the bearer token and returns the results array', async () => {
+    const p = await startProxy({
+      resolveMap: { 'registry.npmjs.org': [{ address: '104.16.0.35', family: 4 }] },
+    });
+    try {
+      const client = createProxyClient({ controlUrl: `http://127.0.0.1:${p.controlPort}`, token: DAEMON_TOKEN });
+      const results = await client.resolveHosts(['registry.npmjs.org']);
+      assert.deepEqual(results, [{ host: 'registry.npmjs.org', addresses: [{ address: '104.16.0.35', family: 4 }] }]);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it('an empty hosts array short-circuits — no request is made', async () => {
+    const p = await startProxy();
+    try {
+      const client = createProxyClient({ controlUrl: `http://127.0.0.1:${p.controlPort}`, token: DAEMON_TOKEN });
+      const results = await client.resolveHosts([]);
+      assert.deepEqual(results, []);
+      assert.deepEqual(p.resolveCalls, []);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it('throws ProxyControlError on a wrong token, never silently returning empty', async () => {
+    const p = await startProxy();
+    try {
+      const client = createProxyClient({ controlUrl: `http://127.0.0.1:${p.controlPort}`, token: 'wrong-token' });
+      await assert.rejects(() => client.resolveHosts(['a.test']), /proxy refused to resolve hosts/);
+    } finally {
+      await p.close();
+    }
+  });
+});
+
 /** PUT /jobs/:id on the control plane. */
 function controlPut(controlPort, jobId, body, token) {
   return controlRequest(controlPort, 'PUT', `/jobs/${jobId}`, token, body);
@@ -415,6 +697,71 @@ describe('proxy — a tarpit nameserver cannot park connections before the limit
       const { statusCode, socket } = await sendConnect(p.dataPort, 'good.test:443', basicAuth());
       socket.destroy();
       assert.notEqual(statusCode, 200, 'the tunnel must not be established');
+    } finally {
+      await p.close();
+    }
+  });
+});
+
+describe('proxy — a client socket reset before the tunnel exists must not crash the process', () => {
+  it('an ECONNRESET during the DNS-resolution window is handled, not thrown as an unhandled socket error', async () => {
+    // Found live: `clientSocket` (the raw net.Socket a CONNECT upgrade hands
+    // over) has NO 'error' listener attached until handleConnect's success
+    // path reaches `clientSocket.on('error', teardown)` -- well after the
+    // allowlist decision AND the `await resolve(host)` call. A client
+    // resetting the connection during that window fires an unhandled
+    // 'error' event; Node's default for a listener-less EventEmitter
+    // 'error' is to throw, which crashed the ENTIRE egress proxy process --
+    // taking every OTHER concurrent job's egress down with it, restarted
+    // only by the container's own restart policy.
+    //
+    // resolveHangs keeps the CONNECT stuck in exactly that vulnerable
+    // pre-tunnel window indefinitely, so the reset below is guaranteed to
+    // land while it's still open.
+    const p = await startProxy({
+      jobs: [{ jobId: JOB_ID, allowlist: ['good.test'], proxyToken: PROXY_TOKEN }],
+      resolveHangs: true,
+    });
+    try {
+      const socket = netConnect({ host: '127.0.0.1', port: p.dataPort });
+      await new Promise((resolve, reject) => {
+        socket.once('connect', resolve);
+        socket.once('error', reject);
+      });
+      socket.write(`CONNECT good.test:443 HTTP/1.1\r\nHost: good.test:443\r\nProxy-Authorization: ${basicAuth()}\r\n\r\n`);
+      // Give the proxy a moment to receive the CONNECT and enter
+      // handleConnect's `await resolve(host)` (resolveHangs keeps it
+      // pending forever, so this window stays open indefinitely).
+      await new Promise((r) => setTimeout(r, 50));
+      // resetAndDestroy sends a real TCP RST (Node 16.17+) rather than a
+      // clean FIN, so the SERVER side observes an 'error' event (ECONNRESET),
+      // not just 'close' -- the actual crash-reproducing case, not a milder
+      // graceful-disconnect one `socket.destroy()` alone wouldn't exercise.
+      if (typeof socket.resetAndDestroy === 'function') socket.resetAndDestroy();
+      else socket.destroy(new Error('simulated reset'));
+
+      // If the bug were present, the proxy process would have thrown an
+      // uncaught exception and died right about now — no further code in
+      // this process would ever run again. Reaching this assertion at all
+      // (on a freshly-issued, unrelated request) is itself the proof; a
+      // dead process cannot answer it. (internalHost/resolveMap mirrors the
+      // "end-to-end tunnel" test above — a real upstream + allowInternal so
+      // the loopback resolution isn't itself rejected as a rebind.)
+      const upstream = await startTcpEcho();
+      const other = await startProxy({
+        internalHost: 'still-alive.internal',
+        internalPort: upstream.port,
+        jobs: [{ jobId: JOB_ID, allowlist: [], proxyToken: PROXY_TOKEN }],
+        resolveMap: { 'still-alive.internal': [{ address: '127.0.0.1', family: 4 }] },
+      });
+      try {
+        const res = await sendConnect(other.dataPort, `still-alive.internal:${upstream.port}`, basicAuth());
+        assert.equal(res.statusCode, 200, 'the process survived the reset and can still serve a normal request');
+        res.socket.destroy();
+      } finally {
+        await other.close();
+        await upstream.close();
+      }
     } finally {
       await p.close();
     }

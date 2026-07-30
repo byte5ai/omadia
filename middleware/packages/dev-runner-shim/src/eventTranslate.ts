@@ -14,7 +14,8 @@
  * | assistant text deltas (coalesced per block)| `log {stream:'agent', text}`              |
  * | `tool_use` block                           | `tool {name, inputPreview}` (≤2 KB)       |
  * | `tool_result` block                        | `tool {name, ok, outputPreview}` (≤2 KB)  |
- * | `result`                                   | `status {state:'agent_done', usage}`      |
+ * | `result` (success)                         | `status {state:'agent_done', usage}`      |
+ * | `result` (`is_error`/non-'success' subtype)| `status {state:'agent_error', subtype, errorText, usage}` |
  *
  * stderr lines are translated separately (`log {stream:'stderr', text}`) by the
  * agent runner; they never pass through here.
@@ -143,6 +144,25 @@ export class CliEventTranslator {
         ? { costUsd: payload['total_cost_usd'] as number }
         : {}),
     };
+    // Found live (a job whose CLI process exited non-zero despite an
+    // apparently-clean `result` line landing right beforehand): a `result`
+    // line is not automatically success. The CLI's own `subtype` names it
+    // ('success' | 'error_max_turns' | 'error_during_execution' | ...) and
+    // `is_error` flags it explicitly — surface that here instead of
+    // unconditionally reporting `agent_done`, so an error result is visible
+    // in dev_job_events at the moment it happens rather than only inferable
+    // later from the process's exit code with no explanation attached.
+    const subtype = asString(payload['subtype']);
+    const isError = payload['is_error'] === true || (subtype !== undefined && subtype !== 'success');
+    if (isError) {
+      const errorText = asString(payload['result']);
+      return this.event('status', {
+        state: 'agent_error',
+        ...(subtype !== undefined ? { subtype } : {}),
+        ...(errorText !== undefined ? { errorText } : {}),
+        usage,
+      });
+    }
     return this.event('status', { state: 'agent_done', usage });
   }
 

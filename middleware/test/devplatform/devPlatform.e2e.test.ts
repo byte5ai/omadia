@@ -523,6 +523,38 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
     assert.ok(policy.egressAllowlist.includes('registry.npmjs.org'), 'operator base allowlist folded in');
   });
 
+  it('W1 job-policy endpoint reissues the runner token — DockerBackend.provision() never carries one', async () => {
+    // provisionedJob()'s token comes from prepareProvision(), the LocalProcess/Fly
+    // path's contract. DockerBackend.provision() posts only {protocol, jobId,
+    // leaseTtlSec} (spec S3) — that token is never handed to any container for
+    // this backend, so the job-policy fetch (the docker backend's actual
+    // provision moment) must mint its own and invalidate the unused original.
+    const { jobId, token: original } = await provisionedJob();
+
+    const res = await fetch(`${baseUrl}/api/v1/dev-runner/internal/job-policy/${jobId}`, {
+      headers: { Authorization: `Bearer ${E2E_DAEMON_TOKEN}` },
+    });
+    assert.equal(res.status, 200);
+    const policy = (await res.json()) as { env: Record<string, string> };
+    const reissued = policy.env['OMADIA_JOB_TOKEN'];
+    assert.ok(reissued, 'the policy env carries a fresh runner token');
+    assert.notEqual(reissued, original, 'reissued, not the unused original');
+
+    // The reissued token authenticates the runner phone-home surface...
+    const withNew = await fetch(`${baseUrl}/api/v1/dev-runner/jobs/${jobId}/spec`, {
+      headers: { Authorization: `Bearer ${reissued}` },
+    });
+    assert.equal(withNew.status, 200, 'the reissued token is valid on the phone-home surface');
+
+    // ...and the original, never-used-for-docker token no longer is: reissuing
+    // replaced runner_token_hash, so a stale local/fly-shaped token cannot also
+    // authenticate a docker-backed job's runner.
+    const withOriginal = await fetch(`${baseUrl}/api/v1/dev-runner/jobs/${jobId}/spec`, {
+      headers: { Authorization: `Bearer ${original}` },
+    });
+    assert.equal(withOriginal.status, 401, 'the pre-reissue token is invalidated');
+  });
+
   it('W1 job-policy endpoint accepts EVERY token in a rotation list, and nothing else', async () => {
     const { jobId } = await provisionedJob();
     const ask = (token: string) =>

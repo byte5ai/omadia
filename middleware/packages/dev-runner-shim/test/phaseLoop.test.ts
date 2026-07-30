@@ -8,7 +8,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtemp, rm, writeFile, chmod, readdir, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile, chmod, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -115,7 +115,7 @@ async function writeFakeCli(): Promise<void> {
 const fs = require('fs'); const path = require('path');
 process.stdin.resume(); process.stdin.on('end', () => {
   const artifact = process.env.OMADIA_PHASE_ARTIFACT;
-  try { fs.writeFileSync(path.join(process.env.HOME, 'ran.json'), JSON.stringify({ home: process.env.HOME, artifact: artifact || null })); } catch {}
+  try { fs.writeFileSync(path.join(process.env.HOME, 'ran.json'), JSON.stringify({ home: process.env.HOME, artifact: artifact || null, anthropicAuthToken: process.env.ANTHROPIC_AUTH_TOKEN || null, anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || null })); } catch {}
   if (artifact) {
     const m = /artifact-(.+?)-\\d+\\.json$/.exec(path.basename(artifact));
     const phase = m ? m[1] : '';
@@ -267,5 +267,179 @@ describe('runPhasedShim — bootstrap runs as a command, not a CLI session', () 
     assert.ok(ran, 'the bootstrap command executed on the job volume');
     const homes = await listSessionHomes();
     assert.deepEqual(homes, [], 'bootstrap starts no agent session');
+  });
+
+  it('forwards proxy env vars into the bootstrap command, but never LLM/job-auth secrets', async () => {
+    // Regression: found live (epic #470, 2026-07-29) -- bootstrapEnv() built
+    // an env of ONLY PATH/HOME/LANG, so a bootstrap command had literally no
+    // route to anything (the job's isolated network has no path except
+    // through the daemon's egress proxy). A real npm ci spent its entire
+    // ~240s budget attempting doomed direct connections instead. Bootstrap
+    // MUST see the proxy vars (same reason agentRunner.ts's buildAgentEnv
+    // and gitOps.ts's runGit both forward them) while staying "hermetic"
+    // about anything LLM-session-specific.
+    const originalEnv = { ...process.env };
+    process.env['HTTPS_PROXY'] = 'http://job-id:token@egress-proxy:3128/';
+    process.env['HTTP_PROXY'] = 'http://job-id:token@egress-proxy:3128/';
+    process.env['NO_PROXY'] = 'localhost,127.0.0.1';
+    process.env['npm_config_https_proxy'] = 'http://job-id:token@egress-proxy:3128/';
+    process.env['npm_config_noproxy'] = 'localhost,127.0.0.1';
+    // Something bootstrap must NEVER see, to prove this isn't just "forward everything".
+    process.env['ANTHROPIC_API_KEY'] = 'sk-this-must-not-leak-into-bootstrap';
+    try {
+      const spec = makeSpec({
+        phaseContext: { phase: 'bootstrap' },
+        bootstrap: { command: 'env', timeoutMs: 30_000 },
+      });
+      const home = new ScriptedHome(spec, [{ directive: 'done' }]);
+      await runPhasedShim(env, { home, gitBin, log: () => {} });
+
+      const boot = home.phaseResults[0];
+      const content = boot?.artifact?.content ?? '';
+      assert.match(content, /HTTPS_PROXY=http:\/\/job-id:token@egress-proxy:3128/);
+      assert.match(content, /HTTP_PROXY=http:\/\/job-id:token@egress-proxy:3128/);
+      assert.match(content, /NO_PROXY=localhost,127\.0\.0\.1/);
+      assert.match(content, /npm_config_https_proxy=http:\/\/job-id:token@egress-proxy:3128/);
+      assert.match(content, /npm_config_noproxy=localhost,127\.0\.0\.1/);
+      assert.doesNotMatch(content, /ANTHROPIC_API_KEY/, 'bootstrap stays hermetic about LLM-session secrets');
+    } finally {
+      process.env = originalEnv;
+    }
+  });
+
+  it('captures the command\'s own stdout+stderr into the report, not just its exit code', async () => {
+    // Regression: found live -- a real `npm ci` failure inside a job
+    // container reported only `exitCode:1` with zero further detail; the
+    // command's own output was silently discarded (piped but never read),
+    // unrecoverable even via `docker logs` (piped streams never reach the
+    // container's own stdout/stderr).
+    const spec = makeSpec({
+      phaseContext: { phase: 'bootstrap' },
+      bootstrap: {
+        command: 'echo "line one to stdout"; echo "line two to stderr" 1>&2; exit 1',
+        timeoutMs: 30_000,
+      },
+    });
+    const home = new ScriptedHome(spec, [{ directive: 'failed', reason: 'x' }]);
+    await runPhasedShim(env, { home, gitBin, log: () => {} });
+
+    const boot = home.phaseResults[0];
+    assert.equal(boot?.ok, false);
+    const content = boot?.artifact?.content ?? '';
+    assert.match(content, /"exitCode":1/);
+    assert.match(content, /line one to stdout/, 'stdout was captured');
+    assert.match(content, /line two to stderr/, 'stderr was captured too');
+  });
+
+  it('caps captured output to a bounded tail rather than growing unboundedly', async () => {
+    const spec = makeSpec({
+      phaseContext: { phase: 'bootstrap' },
+      bootstrap: {
+        // Print well past the cap, then a distinctive marker at the very
+        // end -- the tail (not the head) is what a real npm/pip failure
+        // needs, since the actual error line comes last.
+        command: 'for i in $(seq 1 20000); do printf "x"; done; printf "\\nTHE-ACTUAL-ERROR-IS-HERE\\n"',
+        timeoutMs: 30_000,
+      },
+    });
+    const home = new ScriptedHome(spec, [{ directive: 'done' }]);
+    await runPhasedShim(env, { home, gitBin, log: () => {} });
+
+    const boot = home.phaseResults[0];
+    const parsed = JSON.parse(boot?.artifact?.content ?? '{}');
+    assert.ok(parsed.outputTail.length < 20000, 'the captured tail is bounded, not the full 20k+ bytes');
+    assert.match(parsed.outputTail, /THE-ACTUAL-ERROR-IS-HERE/, 'the end of the output (where the real error lives) survives truncation');
+  });
+
+  it('auto-detects a command from the cloned repo root when none is provisioned', async () => {
+    // repoDir is `<workspace>/repo` (gitOps.ts REPO_DIRNAME) — pre-seed it
+    // before the fake clone step runs; clone only adds `.git`, it never wipes
+    // the directory, so this file is still there when bootstrap reads it.
+    const repoDir = path.join(ws, 'repo');
+    await mkdir(repoDir, { recursive: true });
+    // A lockfile alone is not enough (bootstrapDetect.ts requires package.json
+    // too — `npm ci` needs both, found live as a real crash against a repo
+    // with a stray root lockfile and no root manifest).
+    await writeFile(path.join(repoDir, 'package.json'), '{}');
+    await writeFile(path.join(repoDir, 'package-lock.json'), '{}');
+    // The detected command runs with repoDir as cwd — prove that by having it
+    // write a marker INSIDE repoDir via a real shell command substituted in
+    // for the real package manager (this test only proves detection + exec,
+    // not that npm itself is installed in the test sandbox).
+    await writeFile(path.join(repoDir, 'npm'), `#!${process.execPath}\nrequire('fs').writeFileSync('bootstrap-detected-ran', '');\n`);
+    await chmod(path.join(repoDir, 'npm'), 0o755);
+
+    const spec = makeSpec({ phaseContext: { phase: 'bootstrap' } }); // no explicit `bootstrap` field
+    const home = new ScriptedHome(spec, [{ directive: 'done' }]);
+    // bootstrapEnv() (phaseRunner.ts) reads PATH from the real process env at
+    // call time — prepend repoDir so the detected `npm ci` resolves to our fake
+    // npm, then restore it so this doesn't leak into other tests.
+    const originalPath = process.env['PATH'];
+    process.env['PATH'] = `${repoDir}:${originalPath ?? ''}`;
+    let code: number;
+    try {
+      code = await runPhasedShim(env, { home, gitBin, log: () => {} });
+    } finally {
+      process.env['PATH'] = originalPath;
+    }
+    assert.equal(code, 0);
+
+    const boot = home.phaseResults[0];
+    assert.equal(boot?.phase, 'bootstrap');
+    assert.equal(boot?.ok, true);
+    assert.match(boot?.artifact?.content ?? '', /"command":"npm ci"/, 'detected npm ci from package-lock.json');
+    assert.match(boot?.artifact?.content ?? '', /"detected":true/);
+    const ran = await readFile(path.join(repoDir, 'bootstrap-detected-ran'), 'utf8').then(() => true).catch(() => false);
+    assert.ok(ran, 'the auto-detected command actually ran with repoDir as cwd');
+  });
+
+  it('skips gracefully (ok:true) when nothing is provisioned and nothing is detectable', async () => {
+    const repoDir = path.join(ws, 'repo');
+    await mkdir(repoDir, { recursive: true }); // empty — no manifest of any kind
+
+    const spec = makeSpec({ phaseContext: { phase: 'bootstrap' } });
+    const home = new ScriptedHome(spec, [{ directive: 'done' }]);
+    const code = await runPhasedShim(env, { home, gitBin, log: () => {} });
+    assert.equal(code, 0);
+
+    const boot = home.phaseResults[0];
+    assert.equal(boot?.phase, 'bootstrap');
+    assert.equal(boot?.ok, true, 'an undetectable bootstrap is a skip, not a failure');
+    assert.match(boot?.artifact?.content ?? '', /"command":null/);
+    assert.match(boot?.artifact?.content ?? '', /"skipped":true/);
+  });
+});
+
+describe('runPhasedShim — W1 LLM auth passthrough (the docker backend\'s real path)', () => {
+  afterEach(() => {
+    delete process.env['ANTHROPIC_BASE_URL'];
+  });
+
+  it('forwards the policy-supplied ANTHROPIC_BASE_URL + ShimEnv.jobToken into each phase session, with NO jail acknowledgment', async () => {
+    // deriveJobPolicy.ts sets plain ANTHROPIC_BASE_URL (no OMADIA_ prefix) on
+    // the container; there is no OMADIA_ANTHROPIC_AUTH_TOKEN at all for a real
+    // docker job — the per-job jobToken already on ShimEnv is the bearer the
+    // LLM proxy resolves the calling job from (llmProxy.ts). llmEnvAllowed
+    // stays false in the fixture: the short-lived per-job token stands in for
+    // the W0 jail acknowledgment rather than requiring it.
+    process.env['ANTHROPIC_BASE_URL'] = 'http://middleware:8080/api/v1/dev-runner/llm';
+    const home = new ScriptedHome(makeSpec(), [
+      { directive: 'next', phase: 'plan' },
+      { directive: 'next', phase: 'clarify' },
+      { directive: 'park' },
+    ]);
+    const code = await runPhasedShim({ ...env, jobToken: 'djr_w1-gated-token' }, { home, gitBin, log: () => {} });
+    assert.equal(code, 0, 'park exits 0');
+
+    const homes = await listSessionHomes();
+    assert.equal(homes.length, 3, 'one fresh HOME per phase');
+    for (const h of homes) {
+      const ran = JSON.parse(await readFile(path.join(ws, 'home', h, 'ran.json'), 'utf8')) as {
+        anthropicAuthToken: string | null;
+        anthropicBaseUrl: string | null;
+      };
+      assert.equal(ran.anthropicAuthToken, 'djr_w1-gated-token', `${h}: the per-job bearer, not a middleware secret`);
+      assert.equal(ran.anthropicBaseUrl, 'http://middleware:8080/api/v1/dev-runner/llm', `${h}`);
+    }
   });
 });
