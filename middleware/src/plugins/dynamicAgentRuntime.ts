@@ -641,6 +641,13 @@ export class DynamicAgentRuntime {
     // re-runs activate() which registers a fresh DomainTool; without this
     // dispose, ServiceRegistry would throw 'duplicate provider'.
     entry.disposeSubAgentService();
+    // Fail-safe for the services the AGENT itself provided via
+    // ctx.services.provide — the line above only covers the kernel's own
+    // `subAgent:<id>` registration. Before awaiting close() for the same
+    // reason the routes are: a service left registered against a torn-down
+    // module keeps answering consumers, and the reinstall throws
+    // 'duplicate provider'.
+    this.deps.serviceRegistry.disposeBySource(agentId);
     // Symmetric to the activate-time canvas-output registration.
     this.deps.canvasOutputRegistry?.unregister(agentId);
     this.deps.deterministicActionRegistry?.unregister(agentId);

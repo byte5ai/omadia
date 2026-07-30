@@ -31,6 +31,31 @@ permissions:
 
 jobs:
   # ------------------------------------------------------------------
+  # Core-decoupling ratchet (epic #470). The Dev Platform is being
+  # extracted into its own repository; this fails if core re-acquires
+  # references to it. The count may fall freely and never rise without
+  # a hand-edited baseline, so the extraction cannot silently regress
+  # while it is in flight — and "finished" is machine-checked (count 0)
+  # rather than asserted.
+  # ------------------------------------------------------------------
+  decoupling:
+    name: core decoupling ratchet (#470)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Ensure ripgrep
+        run: command -v rg >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep)
+
+      - name: Check core is not re-coupling to the Dev Platform
+        run: node scripts/check-core-decoupling.mjs
+
+  # ------------------------------------------------------------------
   # Middleware: lint + typecheck + node:test against tsx
   # ------------------------------------------------------------------
   middleware:

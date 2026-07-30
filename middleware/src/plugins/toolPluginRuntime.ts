@@ -305,9 +305,13 @@ export class ToolPluginRuntime {
       // return false and never clean up — the orphaned route would keep
       // serving and the orphaned menu entry would keep rendering for the
       // life of the process. Roll back what the context handed out before
-      // letting the failure propagate to the circuit-breaker.
+      // letting the failure propagate to the circuit-breaker. Services are
+      // part of that: a plugin that called ctx.services.provide() and then
+      // threw would otherwise make every retry fail with 'duplicate
+      // provider' instead of the real activation error.
       this.deps.pluginRouteRegistry.disposeBySource(agentId);
       this.deps.uiRouteCatalog.disposeBySource(agentId);
+      this.deps.serviceRegistry.disposeBySource(agentId);
       this.deps.jobScheduler.stopForPlugin(agentId);
       this.deps.pluginStatusRegistry?.clear(agentId);
       throw err;
@@ -405,8 +409,14 @@ export class ToolPluginRuntime {
     // across a hot-upgrade. DynamicAgentRuntime already did this; the tool
     // runtime held the dependency and threaded it into the plugin context
     // but never disposed by source.
+    //
+    // Same reasoning one layer down for the service registry: a provider
+    // whose close() forgets its handle leaves the service registered
+    // against a torn-down module, so consumers keep resolving a dead
+    // implementation and the reinstall throws 'duplicate provider'.
     this.deps.pluginRouteRegistry.disposeBySource(agentId);
     this.deps.uiRouteCatalog.disposeBySource(agentId);
+    this.deps.serviceRegistry.disposeBySource(agentId);
     try {
       await withTimeout(
         entry.handle.close(),
