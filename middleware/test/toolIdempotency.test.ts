@@ -7,6 +7,7 @@ import {
   ToolIdempotencyStore,
   currentIdempotencyScope,
   fingerprintToolInput,
+  idempotencyCacheKey,
 } from '../packages/harness-orchestrator/src/toolIdempotency.js';
 import type { WriteCapability } from '../packages/plugin-api/src/writeCapabilities.js';
 import { isWriteCapableTool } from '../packages/plugin-api/src/writeCapabilities.js';
@@ -204,6 +205,30 @@ describe('ToolIdempotencyStore', () => {
     assert.equal(runs, 2);
     assert.equal(second.result.content, 'ok');
     assert.equal(store.size(), 1, 'the rejected entry must not linger alongside the good one');
+  });
+
+  it('does not let a key containing the separator collide with another tool', async () => {
+    // `("a:b", "t")` and `("b", "t:a")` must stay distinct. A naive
+    // `${toolName}:${key}` composition maps BOTH to `t:a:b`, which would let one
+    // caller's key replay another tool's stored write result.
+    assert.notEqual(
+      idempotencyCacheKey('a:b', 't'),
+      idempotencyCacheKey('b', 't:a'),
+      'cache-key composition is ambiguous — one tool could replay another tool result',
+    );
+
+    const store = new ToolIdempotencyStore();
+    let runs = 0;
+    const exec = async () => {
+      runs += 1;
+      return { content: `run-${String(runs)}` };
+    };
+    const a = await store.run('a:b', 't', {}, exec);
+    const b = await store.run('b', 't:a', {}, exec);
+
+    assert.equal(runs, 2, 'two distinct (key, tool) pairs must both execute');
+    assert.equal(a.result.content, 'run-1');
+    assert.equal(b.result.content, 'run-2');
   });
 
   it('bounds retained records', async () => {
