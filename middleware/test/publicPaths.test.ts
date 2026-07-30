@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import { publicPaths, STATIC_PUBLIC_PATHS } from '../src/auth/publicPaths.js';
+import { CIMD_METADATA_PATH } from '../src/services/mcpCimd.js';
 
 /**
  * Regression guard for the MCP-OAuth-callback 401 bug: the epic #459 W9
@@ -52,6 +53,52 @@ describe('publicPaths — MCP OAuth callback allowlist', () => {
     assert.equal(
       STATIC_PUBLIC_PATHS.some((p) => p.test('/api/v1/operator/mcp-oauth/callback')),
       true,
+    );
+  });
+});
+
+/**
+ * W2-4 (issue #546) — the Client ID Metadata Document. An authorization server
+ * fetches it with NO credential of ours; that is the entire mechanism (the
+ * `client_id` we hand the AS is this URL, which it dereferences). So it must be
+ * public, and it must be public via the SHARED constant: asserting against a
+ * retyped literal here is precisely the drift this module's doc comment warns
+ * about, so the test derives its expectation from `CIMD_METADATA_PATH` itself.
+ */
+describe('publicPaths — MCP client-ID metadata document allowlist', () => {
+  const allowlist = publicPaths({ devEndpointsEnabled: false });
+
+  it('allows the metadata document path built from the shared constant', () => {
+    assert.equal(
+      allowlist.some((p) => p.test(CIMD_METADATA_PATH)),
+      true,
+      `${CIMD_METADATA_PATH} must be public — an AS fetches it uncredentialed`,
+    );
+  });
+
+  it('allows it with a query string appended', () => {
+    assert.equal(
+      allowlist.some((p) => p.test(`${CIMD_METADATA_PATH}?v=1`)),
+      true,
+    );
+  });
+
+  it('is present in STATIC_PUBLIC_PATHS regardless of devEndpointsEnabled', () => {
+    assert.equal(
+      STATIC_PUBLIC_PATHS.some((p) => p.test(CIMD_METADATA_PATH)),
+      true,
+    );
+  });
+
+  it('does NOT widen the bypass to a sibling well-known path', () => {
+    assert.equal(
+      allowlist.some((p) => p.test(`${CIMD_METADATA_PATH}-secret`)),
+      false,
+      'a prefix match would expose neighbouring well-known routes',
+    );
+    assert.equal(
+      allowlist.some((p) => p.test('/.well-known/omadia-mcp-client/../../api/v1/operator/x')),
+      false,
     );
   });
 });

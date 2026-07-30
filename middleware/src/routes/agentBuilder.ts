@@ -120,6 +120,10 @@ export interface AgentBuilderRouterOptions {
       issuer: string | null;
       issuerHost: string | null;
       brokered: boolean;
+      /** W2-4 — which link of the client-acquisition chain applies. */
+      acquisitionMode: 'stored' | 'cimd' | 'dcr' | 'manual';
+      cimdSupported: boolean;
+      cimdBlockedReason: string | null;
     }>;
     beginAuthorization(server: McpServerRow, userKey: string): Promise<{ authorizeUrl: string }>;
     /** `iss` is the RFC 9207 authorization-response parameter (W0-1, D1),
@@ -1468,6 +1472,9 @@ export function createAgentBuilderRouter(
           issuer: null,
           needsClient: false,
           brokered: false,
+          acquisitionMode: 'manual',
+          cimdSupported: false,
+          cimdBlockedReason: null,
           delegation: server.delegation,
           identityResolved: sessionIdentity(req) !== null,
         });
@@ -1481,6 +1488,9 @@ export function createAgentBuilderRouter(
           issuer: null,
           needsClient: false,
           brokered: false,
+          acquisitionMode: 'manual',
+          cimdSupported: false,
+          cimdBlockedReason: null,
           delegation: server.delegation,
           identityResolved: sessionIdentity(req) !== null,
         });
@@ -1501,9 +1511,16 @@ export function createAgentBuilderRouter(
         // whether this session actually has an identity to act as.
         delegation: server.delegation,
         identityResolved: userKey !== null,
-        // A brokered server (offers DCR) needs no manual client even without one
-        // stored — DCR self-registers at connect. Only a delegating server does.
+        // A brokered server needs no manual client even without one stored —
+        // either a Client ID Metadata Document (W2-4) or DCR acquires one at
+        // connect. Only a server with neither does.
         brokered: desc.brokered,
+        // W2-4 — which acquisition mode this issuer is on, so the UI can badge
+        // CIMD, explain a CIMD-capable-but-unreachable install, and make clear
+        // the manual client remains the Entra ID / Okta path.
+        acquisitionMode: desc.acquisitionMode,
+        cimdSupported: desc.cimdSupported,
+        cimdBlockedReason: desc.cimdBlockedReason,
         needsClient: !desc.brokered && desc.issuer !== null && client === undefined,
         redirectUri: options.mcpOAuth.redirectUri,
       });

@@ -882,8 +882,20 @@ export interface McpAuthStatus {
   connected: boolean;
   issuer: string | null;
   issuerHost?: string | null;
-  /** The server offers Dynamic Client Registration — connecting is zero-setup. */
+  /** A client can be acquired with no operator setup — via a Client ID Metadata
+   *  Document (W2-4) or working Dynamic Client Registration. */
   brokered?: boolean;
+  /** W2-4 — which link of the client-acquisition chain this issuer resolves
+   *  through. `manual` is the permanent, supported Entra ID / Okta path, NOT a
+   *  failure state: neither IdP supports CIMD. */
+  acquisitionMode?: 'stored' | 'cimd' | 'dcr' | 'manual';
+  /** W2-4 — the authorization server advertised
+   *  `client_id_metadata_document_supported`. Independent of whether THIS install
+   *  can serve the document (that needs inbound https reachability). */
+  cimdSupported?: boolean;
+  /** W2-4 — why CIMD is unavailable although the AS supports it. Almost always
+   *  because this deployment is not inbound-reachable, which is normal on-prem. */
+  cimdBlockedReason?: string | null;
   needsClient: boolean;
   redirectUri?: string;
   /** W0-1 — the server's delegation mode. */

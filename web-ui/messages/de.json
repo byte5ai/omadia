@@ -2880,7 +2880,18 @@
       "delegationServiceWhy": "Alle Aufrufer teilen eine Autorisierung — deine. Wer einen Orchestrator mit diesem Server erreicht, handelt mit dieser Berechtigung. Behalte das nur für Server, bei denen eine gemeinsame Identität gewollt ist.",
       "delegationSwitchToPerUser": "Identität pro Nutzer verlangen",
       "delegationSwitchToService": "Gemeinsame Service-Identität nutzen",
-      "delegationIdentityMissing": "Diese Sitzung hat keine zugeordnete Nutzeridentität — Aufrufe pro Nutzer an diesen Server schlagen deshalb bewusst fehl. Es wird nichts an den Server gesendet."
+      "delegationIdentityMissing": "Diese Sitzung hat keine zugeordnete Nutzeridentität — Aufrufe pro Nutzer an diesen Server schlagen deshalb bewusst fehl. Es wird nichts an den Server gesendet.",
+      "modeCimd": "Metadaten-Dokument",
+      "modeDcr": "Automatisch registriert",
+      "modeManual": "Registrierte App",
+      "cimdBadgeWhy": "Dieser Server akzeptiert ein Client-ID-Metadaten-Dokument. omadia weist sich dadurch über eine URL aus, die diese Installation veröffentlicht — eine App-Registrierung war nicht nötig.",
+      "modeDcrWhy": "Dieser Server hat omadia automatisch registriert (Dynamic Client Registration). Die MCP-Spezifikation löst das schrittweise durch Metadaten-Dokumente ab, es funktioniert aber weiterhin — es gibt nichts zu tun.",
+      "modeManualWhy": "omadia nutzt eine OAuth-App, die Du einmal bei diesem Issuer registriert hast. Das ist der Standardweg für Microsoft Entra ID und Okta und bleibt vollständig unterstützt.",
+      "hintCimd": "Dieser Server erkennt omadia über ein Metadaten-Dokument, das diese Installation veröffentlicht — nichts zu registrieren, einfach verbinden und anmelden.",
+      "cimdUnreachable": "Dieser Server würde ein Client-ID-Metadaten-Dokument akzeptieren, aber diese Installation kann keines veröffentlichen, das er abrufen kann. Meist heißt das: omadia ist aus dem Internet nicht erreichbar — bei einer On-Premises-Installation normal, denn der Identity Provider muss das Dokument selbst abrufen.",
+      "cimdUnreachableReason": "Grund",
+      "manualStillSupported": "Es ist nichts kaputt: Registriere unten einmalig eine OAuth-App für diesen Issuer und verbinde wie gewohnt.",
+      "manualIsEnterprisePath": "Das ist der reguläre Enterprise-Weg, kein Notbehelf. Microsoft Entra ID und Okta setzen bewusst auf vorab registrierte App-Registrierungen und werden dieses Formular weiterhin nutzen."
     },
     "marketplace": {
       "registry": "Registry",
