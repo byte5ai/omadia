@@ -43,13 +43,16 @@ import { turnContext } from '../turnContext.js';
  * an array. The SDK's strict schema rejects the entire result, and callTool then
  * throws — which we surface as "-32000 Connection closed", making every call on
  * that server look like a dead connection. Accepting any `structuredContent`
- * keeps well-formed servers unchanged while tolerating this one deviation; we
- * only read `content`/`isError` downstream anyway.
+ * keeps well-formed servers unchanged while tolerating this one deviation.
+ *
+ * Issue #547 (W1-3): `structuredContent` is now also read out-of-band via
+ * `extractStructured` and handed to `McpManagerOptions.structuredSink`. The
+ * lenient schema is what makes that possible for off-spec (array-valued)
+ * payloads too — the sink carries whatever the server sent, unnormalised.
  */
 // Cast back to the base schema type: the SDK's callTool overload is typed to the
 // strict CallToolResultSchema, but our runtime schema only *widens* what parses
-// (any structuredContent), so it is a safe superset. We never read
-// structuredContent downstream — only `content`/`isError`.
+// (any structuredContent), so it is a safe superset.
 const LENIENT_CALL_TOOL_RESULT_SCHEMA = CallToolResultSchema.extend({
   structuredContent: z.unknown().optional(),
 }) as unknown as typeof CallToolResultSchema;
@@ -76,6 +79,14 @@ export interface McpToolDescriptor {
   readonly name: string;
   readonly description?: string;
   readonly inputSchema?: Record<string, unknown>;
+  /**
+   * Issue #547 (W1-3) — the tool's declared `outputSchema` from `tools/list`.
+   * Never sent to the model (it would only inflate the prompt); it travels with
+   * the structured-result sidecar so a downstream consumer can render the
+   * payload against its declared shape. Persisted with the discovered-tool row
+   * so it survives a restart without re-discovery.
+   */
+  readonly outputSchema?: Record<string, unknown>;
 }
 
 /** Caller taxonomy for the MCP call audit log (epic #459 W2, issue #462).
@@ -143,10 +154,61 @@ export interface McpAuthProvider {
   getConfigEnv?(cfg: McpServerConfig): Promise<Record<string, string>>;
 }
 
+// ── out-of-band sidecar (issue #547 W1-3) ───────────────────────────────────
+//
+// Everything the model sees still travels as the plain string `callTool`
+// returns. Anything richer — an MCP `structuredContent` payload today, an
+// `input_required` result type tomorrow (#544 MRTR / W2-1) — leaves the manager
+// through this second, out-of-band channel instead of widening the return type.
+//
+// Widening was ruled out deliberately, for two reasons that are not stylistic:
+//   1. `NativeToolHandler = (input: unknown) => Promise<string>` is a published
+//      plugin contract; every in-tree and out-of-tree plugin implements it.
+//   2. The orchestrator gates Privacy Shield masking on
+//      `typeof result === 'string'`. A non-string result would silently skip
+//      masking — i.e. bypass the shield entirely.
+// The sidecar keeps both invariants intact: no downstream hop changes.
+
+/** Discriminator for a sidecar payload. W2-1 adds `'input_required'` here. */
+export type McpSidecarKind = 'structured_output';
+
+/** Identity carried by every sidecar payload: which turn, which server, which
+ *  tool. `turnId` is null outside a turn (e.g. an operator test-call). */
+export interface McpSidecarIdentity {
+  readonly serverId: string;
+  readonly toolName: string;
+  readonly turnId: string | null;
+}
+
+/** An MCP tool returned a `structuredContent` payload alongside its text. */
+export interface McpStructuredOutputSidecar extends McpSidecarIdentity {
+  readonly kind: 'structured_output';
+  /** The parsed payload exactly as the server sent it — object, or an array for
+   *  off-spec hosted servers. Never a re-parse of the rendered string. */
+  readonly structured: unknown;
+  /** The tool's declared `outputSchema`, when discovery captured one. */
+  readonly outputSchema?: Record<string, unknown>;
+}
+
+/** Union of everything the sidecar channel can carry. Add new members here;
+ *  consumers switch on `kind`. */
+export type McpSidecarPayload = McpStructuredOutputSidecar;
+
+/**
+ * Out-of-band sink for payloads that must NOT reach the model as text.
+ * Implementations must be fast and MUST NOT throw; the manager additionally
+ * guards with try/catch so the sidecar can never break a tool call. Mirrors the
+ * `onToolCall` audit-observer contract.
+ */
+export type McpStructuredSink = (payload: McpSidecarPayload) => void;
+
 export interface McpManagerOptions {
   readonly onToolCall?: McpCallObserver;
   readonly guard?: McpCallGuard;
   readonly auth?: McpAuthProvider;
+  /** Issue #547 (W1-3) — see `McpStructuredSink`. Optional: omitting it leaves
+   *  behaviour byte-identical to before. */
+  readonly structuredSink?: McpStructuredSink;
 }
 
 /** True when an error/result string looks like an authorization failure. */
@@ -184,6 +246,11 @@ const CLIENT_INFO = { name: 'omadia-agent-builder', version: '0.1.0' } as const;
 export class McpManager {
   private readonly pool = new Map<string, Pooled>();
   private readonly connecting = new Map<string, Promise<Pooled>>();
+  /** Issue #547 (W1-3) — declared `outputSchema` per `${serverId} ${tool}`.
+   *  `callTool` only receives a name, so the schema learned at discovery (or
+   *  rehydrated from the persisted descriptor by the adapters below) is cached
+   *  here and attached to the sidecar. A miss just omits the schema. */
+  private readonly outputSchemas = new Map<string, Record<string, unknown>>();
 
   /** Optional audit observer + dispatch guard (issues #462/#454). Existing
    *  `new McpManager()` call sites keep working unchanged. */
@@ -230,6 +297,42 @@ export class McpManager {
     }
   }
 
+  /**
+   * Issue #547 (W1-3) — remember a tool's declared `outputSchema` so a later
+   * `callTool` (which only gets a name) can attach it to the sidecar. Called
+   * automatically by `listTools`, and by the adapter factories below so a
+   * descriptor rehydrated from the DB after a restart is just as good as a
+   * freshly discovered one. Idempotent; a schema-less descriptor is a no-op.
+   */
+  rememberToolSchema(serverId: string, tool: McpToolDescriptor): void {
+    if (!tool.outputSchema) return;
+    this.outputSchemas.set(schemaKey(serverId, tool.name), tool.outputSchema);
+  }
+
+  /** Emit one structured-result sidecar. Out-of-band by construction: the
+   *  caller has already produced the model-facing string and ignores this. */
+  private emitStructured(
+    cfg: McpServerConfig,
+    toolName: string,
+    structured: unknown,
+  ): void {
+    if (!this.options?.structuredSink) return;
+    try {
+      const ctx = turnContext.current();
+      const outputSchema = this.outputSchemas.get(schemaKey(cfg.id, toolName));
+      this.options.structuredSink({
+        kind: 'structured_output',
+        serverId: cfg.id,
+        toolName,
+        turnId: ctx !== undefined && ctx.turnId !== '' ? ctx.turnId : null,
+        structured,
+        ...(outputSchema ? { outputSchema } : {}),
+      });
+    } catch {
+      /* the sidecar must never break a tool call */
+    }
+  }
+
   /** Discover the tool list a server exposes. Throws on connection failure so
    *  the operator-facing `/discover` endpoint can report it. */
   async listTools(cfg: McpServerConfig): Promise<McpToolDescriptor[]> {
@@ -248,13 +351,22 @@ export class McpManager {
     const { client } = await this.getOrConnect(await this.withResolvedConfig(cfg), token);
     const res = await client.listTools();
     const tools = Array.isArray(res?.tools) ? res.tools : [];
-    return tools.map((t) => ({
+    const descriptors = tools.map((t) => ({
       name: String(t.name),
       ...(t.description ? { description: String(t.description) } : {}),
       ...(t.inputSchema
         ? { inputSchema: t.inputSchema as Record<string, unknown> }
         : {}),
+      // Issue #547 (W1-3): carry the declared output schema through discovery
+      // so it can be persisted and later attached to the sidecar. Object-only —
+      // a server that sends a non-object here gets it dropped rather than
+      // poisoning the descriptor (arrays are objects in JS, so exclude them).
+      ...(isPlainObject(t.outputSchema)
+        ? { outputSchema: t.outputSchema as Record<string, unknown> }
+        : {}),
     }));
+    for (const d of descriptors) this.rememberToolSchema(cfg.id, d);
+    return descriptors;
   }
 
   /** Invoke a tool. Never throws — returns an `Error: …` string on failure so
@@ -334,6 +446,14 @@ export class McpManager {
           return this.handleFailure(cfg, toolName, token, rendered, startedAt);
         }
         this.emitCall(cfg, toolName, true, null, startedAt);
+        // Issue #547 (W1-3) — hand any `structuredContent` to the out-of-band
+        // sink. `rendered` above is already final and is NOT re-derived from
+        // this: the model-facing string is byte-identical with or without a
+        // sink installed. Error results are skipped by `extractStructured`.
+        const structured = extractStructured(res);
+        if (structured !== undefined) {
+          this.emitStructured(cfg, toolName, structured);
+        }
         return rendered;
       } catch (err) {
         // Drop the connection so the next call reconnects (server may have died).
@@ -565,6 +685,10 @@ export function mcpToolToLocalSubAgentTool(
   cfg: McpServerConfig,
   tool: McpToolDescriptor,
 ): LocalSubAgentTool {
+  // Issue #547 (W1-3): seed the schema cache from the (possibly DB-rehydrated)
+  // descriptor so the sidecar carries an outputSchema even when this process
+  // never ran discovery for this server.
+  manager.rememberToolSchema(cfg.id, tool);
   return {
     spec: {
       name: mcpNativeToolName(cfg.name, tool.name),
@@ -607,6 +731,47 @@ export function renderToolResult(res: any): string {
     return JSON.stringify(res.structuredContent);
   }
   return JSON.stringify(res ?? {});
+}
+
+/**
+ * Issue #547 (W1-3) — pull an MCP result's `structuredContent` out for the
+ * out-of-band sidecar. Deliberately a SEPARATE function from
+ * `renderToolResult`, which stays byte-for-byte unchanged: the model-facing
+ * string must not shift because a sink is installed.
+ *
+ * Returns the payload exactly as the server sent it (object, or array for
+ * off-spec hosted servers — see `LENIENT_CALL_TOOL_RESULT_SCHEMA`), never a
+ * re-parse of the rendered string.
+ *
+ * Returns `undefined` for:
+ *   - a non-object / protocol-error result (nothing trustworthy to read),
+ *   - `isError: true` (a failed call has no result to render structurally),
+ *   - an absent `structuredContent`,
+ *   - an explicit `null` — off-spec (the spec requires an object) and carries
+ *     nothing to render, so it is folded into "absent" rather than emitting an
+ *     empty sidecar. Keeps the sink contract simple: a payload arrives only
+ *     when there is genuinely something in it.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function extractStructured(res: any): unknown | undefined {
+  if (res === null || typeof res !== 'object') return undefined;
+  if (res.isError === true) return undefined;
+  const structured = res.structuredContent;
+  if (structured === undefined || structured === null) return undefined;
+  return structured;
+}
+
+/** Cache key for a per-server tool schema — same shape as the verdict maps in
+ *  `agentBuilder.ts`. `serverId` is a UUID and so contains no space, which makes
+ *  the FIRST space the unambiguous separator no matter what the tool name
+ *  contains; no collision is possible. */
+function schemaKey(serverId: string, toolName: string): string {
+  return `${serverId} ${toolName}`;
+}
+
+/** True for a non-null, non-array object. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
 /** Split a shell command line into argv. Honours simple double/single quotes;

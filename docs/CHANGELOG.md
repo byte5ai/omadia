@@ -18,6 +18,35 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — MCP structured-content sidecar and `outputSchema` capture (#547, W1-3)
+
+- Discovery now keeps a tool's declared `outputSchema`. `McpToolDescriptor`
+  and `McpDiscoveredTool` gained an optional `outputSchema` field, and
+  `McpManager.listTools()` copies it from `tools/list` (object-valued only;
+  anything else is dropped rather than propagated). It is persisted with the
+  rest of the descriptor in the existing `mcp_servers.discovered_tools`
+  `jsonb` column, so it survives a restart without re-discovery — **no
+  migration required**. `subAgentToolHydration` rehydrates it on the way back
+  out.
+- `structuredContent` returned by an MCP tool is no longer discarded. A new
+  `extractStructured(res)` reads it, and `McpManager` hands it to an optional
+  `McpManagerOptions.structuredSink` as `{ kind: 'structured_output',
+  serverId, toolName, turnId, structured, outputSchema? }`, keyed so a
+  consumer can correlate it with the turn that produced it. Error results and
+  absent/null payloads emit nothing.
+- This is deliberately an **out-of-band** channel, not a widened return type.
+  `McpManager.callTool()` still returns `Promise<string>` and
+  `NativeToolHandler` is untouched, which keeps the published plugin contract
+  stable and — more importantly — keeps every MCP result on the
+  `typeof result === 'string'` path that gates Privacy Shield masking in the
+  orchestrator. A non-string result would silently bypass the shield.
+- Operator surface: the MCP Control Center's tool list shows a read-only
+  "returns structured output" badge for any tool that declares an output
+  schema.
+- No canvas/synthesis behaviour is attached yet — this change is plumbing
+  only. The sink's payload union is a discriminated `kind` so the MRTR work
+  (#544) can add `input_required` without another refactor.
+
 ### Added — plugin-contributed navigation (#470, phase 1 of the Dev Platform extraction)
 
 - New plugin capability `ctx.uiRoutes.registerNav({ navId, href, cluster?,

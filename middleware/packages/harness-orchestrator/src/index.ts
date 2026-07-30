@@ -126,10 +126,12 @@ export type {
 } from './registry/agentGraphStore.js';
 export {
   McpManager,
+  extractStructured,
   mcpNativeHandler,
   mcpNativeToolName,
   mcpToolToLocalSubAgentTool,
   mcpToolToNativeSpec,
+  renderToolResult,
 } from './mcp/mcpClient.js';
 export type {
   McpAuthProvider,
@@ -139,6 +141,11 @@ export type {
   McpCallObserver,
   McpManagerOptions,
   McpServerConfig,
+  McpSidecarIdentity,
+  McpSidecarKind,
+  McpSidecarPayload,
+  McpStructuredOutputSidecar,
+  McpStructuredSink,
   McpToolDescriptor,
   McpTransportKind,
 } from './mcp/mcpClient.js';

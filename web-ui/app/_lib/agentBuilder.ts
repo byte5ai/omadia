@@ -202,6 +202,10 @@ export interface McpDiscoveredTool {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  /** Issue #547 (W1-3) — the tool's declared JSON-Schema for its
+   *  `structuredContent` payload. Present ⇒ the tool returns structured output
+   *  in addition to text. Read-only signal for the operator. */
+  outputSchema?: Record<string, unknown>;
   verdict?: McpToolVerdictField;
 }
 

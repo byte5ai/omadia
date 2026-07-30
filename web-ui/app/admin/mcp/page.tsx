@@ -768,6 +768,17 @@ function ServerDetail({
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-medium text-[color:var(--fg-strong)]">{tool.name}</span>
               <div className="flex shrink-0 items-center gap-2">
+                {/* Issue #547 (W1-3) — read-only signal: this tool declares an
+                    outputSchema, so it returns a structured payload alongside
+                    its text. No behaviour attached; purely informational. */}
+                {tool.outputSchema ? (
+                  <span
+                    title={t('servers.structuredOutputHint')}
+                    className="rounded-full border border-[color:var(--border)] px-2 py-0.5 text-[11px] text-[color:var(--fg-muted)]"
+                  >
+                    {t('servers.structuredOutput')}
+                  </span>
+                ) : null}
                 {v?.acked && !v.ackStale ? (
                   <span className="text-[11px] text-[color:var(--fg-muted)]">
                     {t('servers.acked')}
