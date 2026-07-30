@@ -163,6 +163,10 @@ import {
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
 import { mountPublicMcp } from './mcp/wirePublicMcp.js';
+import {
+  PRIVACY_REDACT_SERVICE_NAME,
+  type PrivacyGuardService,
+} from '@omadia/plugin-api';
 import { createRequireAuth } from './auth/requireAuth.js';
 import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
 import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
@@ -2433,11 +2437,17 @@ async function main(): Promise<void> {
   // and the per-tool write scopes are the actual authorization.
   mountPublicMcp(app, requireAuth, {
     enabled: config.PUBLIC_MCP_ENABLED,
-    allowWithoutPrivacySeam: config.PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_SEAM,
+    allowWithoutPrivacyMasking: config.PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING,
     vault: secretVault,
     graphPool,
     getRegistry,
     nativeToolRegistry,
+    // Resolved LIVE from the service registry, the same late-bound pattern the
+    // orchestrator plugin uses: installing the privacy-guard plugin takes effect
+    // without a restart, and — the direction that matters here — uninstalling it
+    // closes the endpoint's tool calls immediately rather than on next boot.
+    getPrivacyService: () =>
+      serviceRegistry.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME),
   });
 
   // Chat-sessions CRUD behind `requireAuth` — sessions may contain

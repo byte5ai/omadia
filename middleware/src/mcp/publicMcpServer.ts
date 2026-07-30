@@ -42,6 +42,8 @@
  * present. Any looser rule turns the list into an inventory of what to attack.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import type { Request, RequestHandler, Response } from 'express';
 import { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -54,9 +56,19 @@ import {
 
 import type { ApiKeyPrincipal, ApiKeyScope, RateLimiter } from '@omadia/api-key-auth';
 import { hasScope, hasWriteScope, MCP_INVOKE_SCOPE, MCP_LIST_SCOPE } from '@omadia/api-key-auth';
-import type { DispatchableToolSpec, ToolDispatchResult } from '@omadia/orchestrator';
+import type {
+  DispatchableToolSpec,
+  PrivacyTurnHandle,
+  ToolDispatchOptions,
+  ToolDispatchResult,
+} from '@omadia/orchestrator';
 
 import type { PublicMcpKeyBinding, PublicMcpKeyBindingStore } from './publicMcpKeyBindings.js';
+import {
+  createFailClosedPrivacyGate,
+  isPubliclyServableTool,
+  type PublicMcpPrivacyGate,
+} from './publicMcpPrivacy.js';
 
 /** Mirrors `LoopbackMcpServer`'s ceiling. See `enforceBodyCap` for why it is
  *  re-checked here instead of being handed to `express.json`. */
@@ -79,35 +91,34 @@ export const DEFAULT_MAX_CONCURRENT_CALLS = 4;
  * per-agent dispatcher without this module importing the orchestrator's
  * construction path — and so tests exercise the real gates against a fake
  * dispatcher instead of a whole orchestrator.
+ *
+ * `isWriteCapable` is the dispatch layer's OWN predicate
+ * (`isWriteCapableTool(writeCapabilities)`): declaration-driven, never derived
+ * from a tool's name. It is the source of truth for "may this mutate data",
+ * and this endpoint reads it rather than inventing a second answer.
  */
 export interface PublicMcpDispatcher {
-  dispatch(name: string, input: unknown): Promise<ToolDispatchResult>;
+  dispatch(
+    name: string,
+    input: unknown,
+    options?: ToolDispatchOptions,
+  ): Promise<ToolDispatchResult>;
   listDispatchableToolSpecs(): readonly DispatchableToolSpec[];
-}
-
-/**
- * WHO is calling — assembled here and handed to dispatch.
- *
- * ─── WHERE THIS BRANCH MEETS `feat/w3-b-dispatch-privacy-seam-and-idempotency`
- *
- * `ToolDispatchService.dispatch(name, input)` today carries no tenant, no user
- * and no principal, and its trailing SEAM comment records that privacy
- * interning and trace capture are NOT replicated versus
- * `Orchestrator.dispatchToolInner`. The sibling unit closes that seam and adds
- * an optional caller-context parameter. This type is the shape this endpoint
- * offers it; `PublicMcpServerDeps.dispatchWithContext` is the single injection
- * point where the two branches join. Nothing in `toolDispatchService.ts` is
- * touched by this branch.
- */
-export interface PublicMcpCallerContext {
-  /** Stable id of the API key. Becomes `apikey:<keyId>` in the audit trail. */
-  readonly keyId: string;
-  readonly label?: string;
-  readonly scopes: readonly ApiKeyScope[];
-  /** The agent whose tools this call runs against. */
-  readonly agentId: string;
-  /** True when the tool is declared write-capable by the key's binding. */
-  readonly write: boolean;
+  isWriteCapable(name: string): boolean;
+  /**
+   * Runs `fn` with `handle` installed as the dispatcher's privacy dependency.
+   *
+   * `ToolDispatchService` takes `privacy` as a per-SERVICE dependency, but this
+   * endpoint needs a per-CALL handle: the fail-closed gate carries per-call
+   * state (`maskingFailed()`), and a shared one would let one caller's masking
+   * failure discard another caller's good result. The wiring builds the
+   * dispatcher around a mutable slot and exposes this to fill it for exactly the
+   * duration of one dispatch — see `wirePublicMcp.ts`.
+   *
+   * Optional so a test (or a future host) may supply a dispatcher with a handle
+   * already bound.
+   */
+  withPrivacy?<T>(handle: PrivacyTurnHandle, fn: () => Promise<T>): Promise<T>;
 }
 
 /** One audit row per call, written by the wiring. Mirrors the vocabulary the
@@ -147,28 +158,34 @@ export interface PublicMcpServerDeps {
   readonly writeRateLimiter: RateLimiter;
   readonly audit?: PublicMcpAuditSink;
   /**
-   * Where the sibling privacy-seam branch plugs in. When present, EVERY tool
-   * call goes through it instead of calling `dispatch` directly.
-   */
-  readonly dispatchWithContext?: (
-    dispatcher: PublicMcpDispatcher,
-    name: string,
-    input: unknown,
-    caller: PublicMcpCallerContext,
-  ) => Promise<ToolDispatchResult>;
-  /**
-   * Whether a call is refused when `dispatchWithContext` is absent.
+   * Builds the privacy data-plane handle for ONE dispatch.
    *
-   * DEFAULTS TO TRUE, i.e. the endpoint refuses to serve tool calls until the
-   * privacy/trace seam is closed. `ToolDispatchService` applies no PII masking
-   * — the chat path's masking lives in `Orchestrator.dispatchToolInner`, which
-   * this dispatcher explicitly does not replicate — so serving without the
-   * seam means a public HTTP response can carry unmasked personal data straight
-   * out of Odoo or M365. That is not a trade to make silently, so the default
-   * is to fail closed and say why. Set false ONLY with a deliberate,
-   * documented operator decision.
+   * REQUIRED in practice — see `requirePrivacyMasking`. This endpoint runs
+   * entirely outside `turnContext.run(...)`, so `ToolDispatchService`'s ambient
+   * fallback resolves to `undefined` here and results would flow to the caller
+   * with PII intact. The handle must be supplied explicitly; the scope ids are
+   * per-request because the Privacy Shield keys its Dataset Store on
+   * `(sessionId, turnId)` and sharing them across callers would let one
+   * caller's digest resolve against another's rows.
+   *
+   * Returns `undefined` when no `privacyRedact` provider is installed at all.
    */
-  readonly requirePrivacySeam?: boolean;
+  readonly privacy?: (scope: { sessionId: string; turnId: string }) => PrivacyTurnHandle | undefined;
+  /**
+   * Whether a tool call is refused when masking is unavailable or fails.
+   *
+   * DEFAULTS TO TRUE. Three fail-open paths sit between a raw tool result and an
+   * internet caller, and `publicMcpPrivacy.ts` documents how each is closed. The
+   * one this flag governs is the coarsest: no privacy provider installed ⇒
+   * `ToolDispatchService` passes results through unchanged, by design and in
+   * parity with the chat path. For an operator's own chat that is an accepted
+   * configuration; for a third party over HTTP it is a data leak with a
+   * config-shaped cause.
+   *
+   * Set false ONLY on a deliberate, documented operator decision — e.g. an
+   * install whose allowlisted tools provably carry no personal data.
+   */
+  readonly requirePrivacyMasking?: boolean;
   readonly serverName?: string;
   readonly serverVersion?: string;
   readonly toolTimeoutMs?: number;
@@ -196,8 +213,37 @@ export class PublicMcpServer {
     return this.deps.maxConcurrentCalls ?? DEFAULT_MAX_CONCURRENT_CALLS;
   }
 
-  private get privacySeamRequired(): boolean {
-    return this.deps.requirePrivacySeam ?? true;
+  private get privacyMaskingRequired(): boolean {
+    return this.deps.requirePrivacyMasking ?? true;
+  }
+
+  /**
+   * Whether a call to `name` may MUTATE data, and therefore needs the per-tool
+   * write scope, the tighter write budget, and at-most-once protection.
+   *
+   * The UNION of two sources, and the union is the security-relevant part:
+   *
+   *  - `dispatcher.isWriteCapable(name)` — the dispatch layer's own
+   *    declaration-driven predicate (`isWriteCapableTool`). Authoritative when a
+   *    tool declares `writeCapabilities`, and the right source of truth: a
+   *    name-derived guess is the silent-rollback failure the contract exists to
+   *    prevent.
+   *  - `binding.writeTools.includes(name)` — the operator's declaration.
+   *
+   * Neither alone is safe. `isWriteCapable` returns FALSE for an unannotated
+   * write tool (its own docs call that a plugin bug, but a plugin bug must not
+   * become a public write escalation), so the operator list covers it. And the
+   * operator list can put a tool under `read_tools` by mistake, which the
+   * annotation then overrides — a tool that declares it mutates data is a write
+   * even if the binding says otherwise. Union, so a MISTAKE IN EITHER DIRECTION
+   * fails toward "treat it as a write".
+   */
+  private isEffectiveWrite(
+    dispatcher: PublicMcpDispatcher,
+    binding: PublicMcpKeyBinding,
+    name: string,
+  ): boolean {
+    return dispatcher.isWriteCapable(name) || binding.writeTools.includes(name);
   }
 
   /**
@@ -340,7 +386,16 @@ export class PublicMcpServer {
 
     mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
-      const result = await this.callToolFor(principal, name, args ?? {});
+      // MCP standardizes no idempotency field, so it rides in `params._meta`,
+      // the spec's designated passthrough. Advisory by construction — see the
+      // idempotency section of the endpoint README for what a consumer may
+      // actually rely on.
+      const meta = request.params._meta as { idempotencyKey?: unknown } | undefined;
+      const idempotencyKey =
+        typeof meta?.idempotencyKey === 'string' && meta.idempotencyKey.length > 0
+          ? meta.idempotencyKey
+          : undefined;
+      const result = await this.callToolFor(principal, name, args ?? {}, idempotencyKey);
       return {
         content: [{ type: 'text' as const, text: result.content }],
         ...(result.isError ? { isError: true } : {}),
@@ -382,7 +437,7 @@ export class PublicMcpServer {
     const dispatcher = this.deps.resolveDispatcher(binding.agentId);
     if (!dispatcher) return [];
 
-    const callable = this.callableToolNames(principal, binding);
+    const callable = this.callableToolNames(principal, binding, dispatcher);
     if (callable.size === 0) return [];
 
     // Filter the AGENT's advertised specs by the KEY's callable set. Both
@@ -410,13 +465,22 @@ export class PublicMcpServer {
   private callableToolNames(
     principal: ApiKeyPrincipal,
     binding: PublicMcpKeyBinding,
+    dispatcher: PublicMcpDispatcher,
   ): ReadonlySet<string> {
     if (!hasScope(principal.scopes, MCP_INVOKE_SCOPE)) return new Set();
-    const callable = new Set(binding.readTools);
-    for (const tool of binding.writeTools) {
-      // Per-tool, and wildcard-proof: `hasWriteScope` routes through `hasScope`,
-      // which refuses to let `*` satisfy a `mcp:write:` scope.
-      if (hasWriteScope(principal.scopes, tool)) callable.add(tool);
+    const callable = new Set<string>();
+    for (const tool of [...binding.readTools, ...binding.writeTools]) {
+      // Never servable regardless of the operator's allowlist: a tool the
+      // Privacy Shield deliberately exempts from masking would reach a third
+      // party in clear. See `publicMcpPrivacy.ts` header, point 3.
+      if (!isPubliclyServableTool(tool)) continue;
+      if (this.isEffectiveWrite(dispatcher, binding, tool)) {
+        // Per-tool, and wildcard-proof: `hasWriteScope` routes through
+        // `hasScope`, which refuses to let `*` satisfy a `mcp:write:` scope.
+        if (hasWriteScope(principal.scopes, tool)) callable.add(tool);
+        continue;
+      }
+      callable.add(tool);
     }
     return callable;
   }
@@ -425,6 +489,7 @@ export class PublicMcpServer {
     principal: ApiKeyPrincipal,
     name: string,
     input: unknown,
+    idempotencyKey?: string,
   ): Promise<ToolDispatchResult> {
     const startedAt = Date.now();
     const binding = await this.deps.bindings.get(principal.keyId);
@@ -436,8 +501,20 @@ export class PublicMcpServer {
       throw new McpError(ErrorCode.InvalidParams, unavailableToolMessage(name));
     }
 
-    const isWrite = binding.writeTools.includes(name);
-    const callable = this.callableToolNames(principal, binding);
+    // The dispatcher is resolved BEFORE the authorization checks now, because
+    // `isEffectiveWrite` consults its declaration-driven `isWriteCapable`. That
+    // reordering is safe — resolving a dispatcher runs no tool and reveals
+    // nothing to the caller — and it is necessary: deciding "is this a write"
+    // from the binding alone would miss an annotated write tool the operator
+    // filed under `read_tools`.
+    const dispatcher = this.deps.resolveDispatcher(binding.agentId);
+    if (!dispatcher) {
+      this.record(principal, binding.agentId, name, false, 'agent not active', startedAt, false);
+      throw new McpError(ErrorCode.InternalError, unavailableToolMessage(name));
+    }
+
+    const isWrite = this.isEffectiveWrite(dispatcher, binding, name);
+    const callable = this.callableToolNames(principal, binding, dispatcher);
     if (!callable.has(name)) {
       this.record(principal, binding.agentId, name, false, 'not allowlisted', startedAt, isWrite);
       throw new McpError(ErrorCode.InvalidParams, unavailableToolMessage(name));
@@ -447,7 +524,10 @@ export class PublicMcpServer {
     // authorization so a caller cannot map the allowlist by watching which
     // names cost quota, and BEFORE the concurrency slot so an over-budget
     // caller cannot occupy one.
-    if (isWrite && !this.deps.writeRateLimiter.tryConsume(principal.keyId, binding.writeRateLimitPerMinute)) {
+    if (
+      isWrite &&
+      !this.deps.writeRateLimiter.tryConsume(principal.keyId, binding.writeRateLimitPerMinute)
+    ) {
       this.record(principal, binding.agentId, name, false, 'write rate limited', startedAt, true);
       throw new McpError(
         ErrorCode.InvalidRequest,
@@ -455,43 +535,85 @@ export class PublicMcpServer {
       );
     }
 
-    const dispatcher = this.deps.resolveDispatcher(binding.agentId);
-    if (!dispatcher) {
-      this.record(principal, binding.agentId, name, false, 'agent not active', startedAt, isWrite);
-      throw new McpError(ErrorCode.InternalError, unavailableToolMessage(name));
+    // The privacy data-plane handle for THIS dispatch. Per-request scope ids:
+    // the Privacy Shield keys its Dataset Store on `(sessionId, turnId)`, so
+    // sharing them across callers would let one caller's digest resolve against
+    // another caller's rows.
+    const scope = { sessionId: `public-mcp:${principal.keyId}`, turnId: randomUUID() };
+    const base = this.deps.privacy?.(scope);
+    if (!base) {
+      // No `privacyRedact` provider installed. `ToolDispatchService` would pass
+      // the raw result straight through — parity with the chat path, and a data
+      // leak here. Refusing at CALL time rather than at boot keeps `tools/list`
+      // honest so an integrator can still discover the contract.
+      if (this.privacyMaskingRequired) {
+        this.record(
+          principal,
+          binding.agentId,
+          name,
+          false,
+          'privacy provider absent',
+          startedAt,
+          isWrite,
+        );
+        throw new McpError(
+          ErrorCode.InternalError,
+          'public MCP tool calls are disabled: no privacy provider is installed, so a response could carry unmasked personal data',
+        );
+      }
     }
-
-    if (this.privacySeamRequired && !this.deps.dispatchWithContext) {
-      // See `requirePrivacySeam`. Refusing here rather than at boot keeps the
-      // endpoint's `tools/list` honest (an integrator can still discover the
-      // contract) while making it impossible to move unmasked data.
-      this.record(principal, binding.agentId, name, false, 'privacy seam absent', startedAt, isWrite);
-      throw new McpError(
-        ErrorCode.InternalError,
-        'public MCP tool calls are disabled: the dispatch privacy/trace seam is not wired, so a response could carry unmasked personal data',
-      );
-    }
+    const gate = base ? createFailClosedPrivacyGate(base) : undefined;
 
     if (this.inFlight >= this.maxConcurrentCalls) {
       this.record(principal, binding.agentId, name, false, 'concurrency ceiling', startedAt, isWrite);
-      throw new McpError(ErrorCode.InternalError, 'public MCP endpoint is at capacity — retry shortly');
+      throw new McpError(
+        ErrorCode.InternalError,
+        'public MCP endpoint is at capacity — retry shortly',
+      );
     }
 
-    const caller: PublicMcpCallerContext = {
-      keyId: principal.keyId,
-      ...(principal.label ? { label: principal.label } : {}),
-      scopes: principal.scopes,
-      agentId: binding.agentId,
-      write: isWrite,
+    // The seam the sibling unit built, consumed. A CARRIER only — it performs no
+    // authorization, which is why every gate above already ran. `principal` is
+    // the API-key id so an audit consumer beneath dispatch can attribute the
+    // call; `scopes` is passed for downstream policy, not because anything under
+    // dispatch enforces it.
+    const options: ToolDispatchOptions = {
+      caller: {
+        principal: principal.keyId,
+        scopes: principal.scopes,
+        requestId: scope.turnId,
+      },
+      // Applied by the dispatch layer to write-capable tools ONLY, and only
+      // when an idempotency store is wired. Advisory — see the README.
+      ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
     };
 
     this.inFlight += 1;
     try {
       const result = await this.withTimeout(name, () =>
-        this.deps.dispatchWithContext
-          ? this.deps.dispatchWithContext(dispatcher, name, input, caller)
-          : dispatcher.dispatch(name, input),
+        this.dispatchWithPrivacy(dispatcher, name, input, options, gate),
       );
+
+      // FAIL CLOSED. The gate turned a masking exception into a placeholder
+      // rather than letting the dispatcher's fail-open branch return the raw
+      // rows, so the result in hand may be that placeholder — or, worse if this
+      // check were missing, a partially-masked body. Discard it entirely.
+      if (gate?.maskingFailed() === true) {
+        this.record(
+          principal,
+          binding.agentId,
+          name,
+          false,
+          'privacy masking failed',
+          startedAt,
+          isWrite,
+        );
+        throw new McpError(
+          ErrorCode.InternalError,
+          'privacy masking failed for this tool result — the result was discarded rather than returned unmasked',
+        );
+      }
+
       this.record(
         principal,
         binding.agentId,
@@ -503,11 +625,40 @@ export class PublicMcpServer {
       );
       return result;
     } catch (error) {
-      this.record(principal, binding.agentId, name, false, String(error), startedAt, isWrite);
+      // An McpError raised above is already audited; re-auditing would double
+      // -count it. Only genuinely unexpected throws land a second row.
+      if (!(error instanceof McpError)) {
+        this.record(principal, binding.agentId, name, false, String(error), startedAt, isWrite);
+      }
       throw error;
     } finally {
       this.inFlight -= 1;
     }
+  }
+
+  /**
+   * Dispatches with the fail-closed privacy gate installed.
+   *
+   * The gate is handed over as `ToolDispatchService`'s `privacy` dependency —
+   * which is a per-SERVICE dep, not a per-call one. Since the gate must be
+   * per-call (its `maskingFailed()` is per-call state), the dispatcher supplied
+   * by the wiring reads the handle through a mutable slot this method fills for
+   * the duration of one dispatch. `PublicMcpDispatcher` therefore carries an
+   * optional `withPrivacy` escape hatch; when the wiring does not provide one,
+   * the dispatcher was built with a handle already bound and this is a plain
+   * call.
+   */
+  private async dispatchWithPrivacy(
+    dispatcher: PublicMcpDispatcher,
+    name: string,
+    input: unknown,
+    options: ToolDispatchOptions,
+    gate: PublicMcpPrivacyGate | undefined,
+  ): Promise<ToolDispatchResult> {
+    if (gate && dispatcher.withPrivacy) {
+      return dispatcher.withPrivacy(gate.handle, () => dispatcher.dispatch(name, input, options));
+    }
+    return dispatcher.dispatch(name, input, options);
   }
 
   /**

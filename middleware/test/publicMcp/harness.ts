@@ -33,7 +33,18 @@ import express, { type Express } from 'express';
 
 import type { ApiKeyRecord, ApiKeyStore, ApiKeyScope } from '@omadia/api-key-auth';
 import { createRateLimiter, sha256Hex } from '@omadia/api-key-auth';
-import type { DispatchableToolSpec, ToolDispatchResult } from '@omadia/orchestrator';
+import {
+  createPrivacyTurnHandle,
+  NativeToolRegistry,
+  ToolDispatchService,
+} from '@omadia/orchestrator';
+import type {
+  DispatchableToolSpec,
+  PrivacyTurnHandle,
+  ToolDispatchResult,
+} from '@omadia/orchestrator';
+import { isWriteCapableTool } from '@omadia/plugin-api';
+import type { PrivacyGuardService, WriteCapability } from '@omadia/plugin-api';
 
 import { publicPaths, STATIC_PUBLIC_PATHS } from '../../src/auth/publicPaths.js';
 import { createRequireAuth } from '../../src/auth/requireAuth.js';
@@ -103,12 +114,33 @@ export interface FakeTool {
   readonly name: string;
   /** Called on dispatch. Default returns a deterministic marker. */
   readonly handle?: (input: unknown) => Promise<ToolDispatchResult>;
+  /**
+   * Declared write capabilities, i.e. what `isWriteCapableTool` reads.
+   * Omitted ⇒ the tool declares nothing and the dispatch layer treats it as a
+   * READ — which is exactly the "unannotated write tool" case the endpoint must
+   * still catch via the operator's `write_tools` list.
+   */
+  readonly writeCapabilities?: readonly WriteCapability[];
 }
 
-/** A dispatcher for ONE agent, advertising exactly `tools`. */
+/** A minimal `update` capability, enough for `isWriteCapableTool` to fire. */
+export const DECLARED_WRITE: readonly WriteCapability[] = [
+  { dataClass: 'test.record', operation: 'update' },
+];
+
+/**
+ * A dispatcher for ONE agent, advertising exactly `tools`.
+ *
+ * A FAKE: it runs no privacy pipeline, so it exercises the endpoint's
+ * authorization gates without the Privacy Shield in the way. `withPrivacy` is
+ * therefore a pass-through that only RECORDS whether a handle was installed —
+ * enough to assert the endpoint supplies one. Real masking behaviour is proven
+ * against `realDispatcher` below, which runs the actual `ToolDispatchService`.
+ */
 export function fakeDispatcher(
   tools: readonly FakeTool[],
   seen?: { name: string; input: unknown }[],
+  privacyInstalled?: { value: boolean },
 ): PublicMcpDispatcher {
   const specs: DispatchableToolSpec[] = tools.map((t) => ({
     name: t.name,
@@ -117,6 +149,8 @@ export function fakeDispatcher(
   }));
   return {
     listDispatchableToolSpecs: () => specs,
+    isWriteCapable: (name) =>
+      isWriteCapableTool(tools.find((t) => t.name === name)?.writeCapabilities),
     async dispatch(name, input) {
       seen?.push({ name, input });
       const tool = tools.find((t) => t.name === name);
@@ -124,7 +158,112 @@ export function fakeDispatcher(
       if (tool.handle) return tool.handle(input);
       return { content: `dispatched:${name}` };
     },
+    async withPrivacy(_handle, fn) {
+      if (privacyInstalled) privacyInstalled.value = true;
+      return fn();
+    },
   };
+}
+
+/**
+ * A dispatcher backed by the REAL `ToolDispatchService`, with the real privacy
+ * data-plane boundary wired the way `wirePublicMcp.ts` wires it.
+ *
+ * Used for the PII assertions. A fake dispatcher could be made to "look masked"
+ * by returning masked text, which would prove nothing — these tests must show
+ * that a tool returning genuine PII produces an HTTP response WITHOUT that PII,
+ * because the real `afterDispatch` pipeline ran.
+ */
+export function realDispatcher(
+  tools: readonly FakeTool[],
+  seen?: { name: string; input: unknown }[],
+): PublicMcpDispatcher {
+  const registry = new NativeToolRegistry();
+  for (const tool of tools) {
+    registry.register(tool.name, {
+      handler: async (input: unknown) => {
+        seen?.push({ name: tool.name, input });
+        const result = tool.handle ? await tool.handle(input) : { content: `dispatched:${tool.name}` };
+        return result.content;
+      },
+      spec: {
+        name: tool.name,
+        description: `desc:${tool.name}`,
+        input_schema: { type: 'object' as const, properties: {} },
+      },
+      ...(tool.writeCapabilities ? { writeCapabilities: tool.writeCapabilities } : {}),
+    });
+  }
+
+  let slot: PrivacyTurnHandle | undefined;
+  const dispatch = new ToolDispatchService({
+    nativeTools: registry,
+    // Explicit, exactly as production does it: this path runs outside any turn,
+    // so the ambient `turnContext` fallback is `undefined` here.
+    privacy: () => slot,
+  });
+
+  return {
+    dispatch: (name, input, options) => dispatch.dispatch(name, input, options),
+    listDispatchableToolSpecs: () => dispatch.listDispatchableToolSpecs(),
+    isWriteCapable: (name) => dispatch.isWriteCapable(name),
+    async withPrivacy(handle, fn) {
+      slot = handle;
+      try {
+        return await fn();
+      } finally {
+        slot = undefined;
+      }
+    },
+  };
+}
+
+/**
+ * A `PrivacyGuardService` stub that genuinely masks.
+ *
+ * `mask` replaces every email-looking span with `[email]`, so a test can assert
+ * the real address never reaches the wire. `failOn` makes `internToolResultV4`
+ * throw for one tool, which is the provider-error case the endpoint must fail
+ * CLOSED on (the dispatch layer's own behaviour there is fail-OPEN).
+ */
+export function maskingPrivacyService(opts?: { failOn?: string }): PrivacyGuardService {
+  return {
+    async internToolResultV4(request) {
+      if (opts?.failOn === request.toolName) {
+        throw new Error('privacy provider is unavailable');
+      }
+      return {
+        digestText: request.rawResult.replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[email]'),
+        datasetId: 'ds-test',
+      };
+    },
+    async recordBypassedTool() {},
+    async runV4Tool() {
+      return { resultText: '' };
+    },
+    async subAgentResultV4() {
+      return { resultText: '' };
+    },
+    async takeRenderedAnswerV4() {
+      return undefined;
+    },
+    v4ToolSpecs() {
+      return [];
+    },
+    async finalizeTurn() {
+      return undefined;
+    },
+  } as unknown as PrivacyGuardService;
+}
+
+/** A privacy provider function shaped the way `PublicMcpServerDeps` wants it. */
+export function privacyProviderFrom(
+  service: PrivacyGuardService | undefined,
+): (scope: { sessionId: string; turnId: string }) => PrivacyTurnHandle | undefined {
+  return (scope) =>
+    service
+      ? createPrivacyTurnHandle({ service, sessionId: scope.sessionId, turnId: scope.turnId })
+      : undefined;
 }
 
 export interface HarnessOptions {
@@ -133,8 +272,18 @@ export interface HarnessOptions {
   readonly bindingRows: readonly Record<string, unknown>[];
   /** agentId → dispatcher. An agent absent here is "not active". */
   readonly dispatchers: Readonly<Record<string, PublicMcpDispatcher>>;
-  /** Default true, matching production's fail-closed default. */
-  readonly allowWithoutPrivacySeam?: boolean;
+  /** Default true in the harness so the authorization tests are not all gated
+   *  behind a privacy provider. Production defaults the OPPOSITE way (masking
+   *  required); the privacy tests set this false explicitly. */
+  readonly allowWithoutPrivacyMasking?: boolean;
+  /** Installed `privacyRedact` provider. Absent ⇒ none installed. */
+  readonly privacyService?: PrivacyGuardService;
+  /** Full override of the per-dispatch handle factory, for tests that need a
+   *  handle built with non-default options (e.g. a firing `resolveBypass`). */
+  readonly privacy?: (scope: {
+    sessionId: string;
+    turnId: string;
+  }) => PrivacyTurnHandle | undefined;
   /**
    * Strips `PUBLIC_MCP_PATH` from the allowlist handed to `requireAuth`, to
    * prove the entry is load-bearing rather than decorative.
@@ -187,7 +336,8 @@ export async function startHarness(opts: HarnessOptions): Promise<Harness> {
   const audit = opts.audit;
   const mounted = mountPublicMcp(app, requireAuth, {
     enabled: true,
-    allowWithoutPrivacySeam: opts.allowWithoutPrivacySeam ?? true,
+    allowWithoutPrivacyMasking: opts.allowWithoutPrivacyMasking ?? true,
+    privacy: opts.privacy ?? privacyProviderFrom(opts.privacyService),
     graphPool: undefined,
     log: () => {},
     apiKeys: fakeApiKeyStore(opts.keys),

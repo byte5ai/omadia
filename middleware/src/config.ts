@@ -502,14 +502,20 @@ const ConfigSchema = z.object({
   // thing is dark by default: false mounts NO router at all, which is a
   // stronger guarantee than mounting one that answers 403.
   PUBLIC_MCP_ENABLED: devFlag(),
-  // Whether tool calls are served while the dispatch privacy/trace seam is
-  // still open. `ToolDispatchService` applies no PII masking — the chat path's
-  // masking lives in `Orchestrator.dispatchToolInner`, which that dispatcher
-  // explicitly does not replicate — so serving without the seam means a public
-  // HTTP response can carry unmasked personal data out of Odoo or M365.
+  // Whether tool calls are served when PII masking is unavailable.
+  //
+  // The dispatch privacy seam is closed — `ToolDispatchService` now replicates
+  // the chat path's data-plane boundary — but it closed it at PARITY, which
+  // includes two behaviours that are wrong for an untrusted caller: masking
+  // fails OPEN on a provider error, and no installed privacy provider means
+  // results pass through unchanged. The endpoint overrides both (see
+  // `mcp/publicMcpPrivacy.ts`); this flag is the escape hatch for the coarsest
+  // one — an install with no privacy provider at all.
+  //
   // Default false ⇒ tools/list works, tools/call refuses and says why.
-  // Set true ONLY on a deliberate, documented operator decision.
-  PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_SEAM: devFlag(),
+  // Set true ONLY on a deliberate, documented operator decision — e.g. an
+  // install whose allowlisted tools provably carry no personal data.
+  PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING: devFlag(),
 
   // --- Dev platform (epic #470 W0) ----------------------------------------
   // Isolated per-job code runners (clone → agent-edit → diff → server-side PR).

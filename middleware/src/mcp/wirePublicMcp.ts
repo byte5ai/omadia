@@ -15,8 +15,18 @@ import type { Pool } from 'pg';
 
 import type { ApiKeySecretStorage, ApiKeyStore, AuditLog, RateLimiter } from '@omadia/api-key-auth';
 import { createApiKeyStore, createRateLimiter } from '@omadia/api-key-auth';
-import { AgentGraphStore, ToolDispatchService } from '@omadia/orchestrator';
-import type { NativeToolRegistry, OrchestratorRegistry } from '@omadia/orchestrator';
+import {
+  AgentGraphStore,
+  createPrivacyTurnHandle,
+  ToolDispatchService,
+  ToolIdempotencyStore,
+} from '@omadia/orchestrator';
+import type {
+  NativeToolRegistry,
+  OrchestratorRegistry,
+  PrivacyTurnHandle,
+} from '@omadia/orchestrator';
+import type { PrivacyGuardService } from '@omadia/plugin-api';
 
 import type { SecretVault } from '../secrets/vault.js';
 import {
@@ -96,8 +106,12 @@ function requireVault(deps: WirePublicMcpDeps): SecretVault {
 
 export interface WirePublicMcpDeps {
   readonly enabled: boolean;
-  /** See `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_SEAM`. */
-  readonly allowWithoutPrivacySeam: boolean;
+  /** See `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING`. */
+  readonly allowWithoutPrivacyMasking: boolean;
+  /** Resolves the installed `privacyRedact` provider. Read LIVE — installing or
+   *  uninstalling the privacy-guard plugin must take effect without a restart,
+   *  and in the closing direction it must take effect IMMEDIATELY. */
+  readonly getPrivacyService?: () => PrivacyGuardService | undefined;
   /** Only read when `apiKeys` is not supplied. */
   readonly vault?: SecretVault;
   /** Bindings and the audit trail both live in the graph DB. Absent ⇒ the
@@ -125,6 +139,11 @@ export interface WirePublicMcpDeps {
   readonly rateLimiter?: RateLimiter;
   readonly keyAuditLog?: AuditLog;
   readonly resolveDispatcher?: (agentId: string) => PublicMcpDispatcher | undefined;
+  readonly idempotency?: ToolIdempotencyStore;
+  readonly privacy?: (scope: {
+    sessionId: string;
+    turnId: string;
+  }) => PrivacyTurnHandle | undefined;
   readonly audit?: (entry: PublicMcpAuditEntry) => void;
   readonly toolTimeoutMs?: number;
   readonly maxConcurrentCalls?: number;
@@ -156,12 +175,83 @@ function makeDispatcherResolver(
       'mountPublicMcp requires getRegistry + nativeToolRegistry (or an explicit resolveDispatcher)',
     );
   }
+  // ONE store per process, shared across agents. Keys are namespaced by tool
+  // name inside the store (`idempotencyCacheKey`), so cross-agent collision
+  // needs the same key AND the same tool name — at which point deduping is the
+  // correct answer anyway. Process-LOCAL: see the README's idempotency section
+  // for what an external consumer may rely on (less than they would assume).
+  const idempotency = deps.idempotency ?? new ToolIdempotencyStore();
+
   return (agentId) => {
     const entry = getRegistry()?.get(agentId);
     if (!entry) return undefined;
-    return new ToolDispatchService({
+
+    // The per-call privacy slot. `ToolDispatchService` takes `privacy` as a
+    // per-SERVICE dep, but the endpoint's fail-closed gate must be per-CALL
+    // (it carries `maskingFailed()` state). A dispatcher instance is already
+    // built per resolve — i.e. per request — so the slot is never shared
+    // between two concurrent callers; `withPrivacy` still nulls it out in a
+    // `finally` so a leaked handle cannot outlive its dispatch.
+    let slot: PrivacyTurnHandle | undefined;
+
+    const dispatch = new ToolDispatchService({
       nativeTools: nativeToolRegistry,
       domainToolsProvider: () => entry.built.orchestrator.listDomainTools(),
+      // Explicit, NOT the ambient `turnContext` fallback: this endpoint runs
+      // outside any turn, so the ambient handle is always `undefined` here and
+      // relying on it would ship an unmasked public endpoint.
+      privacy: () => slot,
+      idempotency,
+      // Raw capture receives the result BEFORE masking. Deliberately records
+      // SIZE ONLY — never content. `mcp_call_log` stores no tool arguments or
+      // results by design (0009), and a public endpoint is the last place to
+      // invent a new sink holding pre-masking PII.
+      captureRawToolResult: (name, result, caller) => {
+        console.log(
+          `[public-mcp] raw tool result captured: tool=${name} bytes=${String(
+            Buffer.byteLength(result, 'utf8'),
+          )} principal=${caller?.principal ?? 'unknown'}`,
+        );
+      },
+    });
+
+    return {
+      dispatch: (name, input, options) => dispatch.dispatch(name, input, options),
+      listDispatchableToolSpecs: () => dispatch.listDispatchableToolSpecs(),
+      isWriteCapable: (name) => dispatch.isWriteCapable(name),
+      async withPrivacy(handle, fn) {
+        slot = handle;
+        try {
+          return await fn();
+        } finally {
+          slot = undefined;
+        }
+      },
+    };
+  };
+}
+
+/**
+ * Builds the per-dispatch privacy handle from the installed `privacyRedact`
+ * provider, or `undefined` when none is installed.
+ *
+ * `resolveBypass` is deliberately NOT passed. The operator's per-plugin
+ * `_privacy_mode: bypass` is a decision about their own agent's chat behaviour;
+ * extending it to an anonymous HTTP caller is not something anyone consented to.
+ * Omitting it here means the handle's own `checkBypass` returns `undefined`, and
+ * `createFailClosedPrivacyGate` pins it off a second time — belt and braces,
+ * because this is the difference between a masked digest and raw customer rows.
+ */
+function makePrivacyProvider(
+  getPrivacyService: () => PrivacyGuardService | undefined,
+): (scope: { sessionId: string; turnId: string }) => PrivacyTurnHandle | undefined {
+  return (scope) => {
+    const service = getPrivacyService();
+    if (!service) return undefined;
+    return createPrivacyTurnHandle({
+      service,
+      sessionId: scope.sessionId,
+      turnId: scope.turnId,
     });
   };
 }
@@ -252,7 +342,9 @@ export function mountPublicMcp(app: Express, requireAuth: RequestHandler, deps: 
       writeRateLimiter: deps.writeRateLimiter ?? createRateLimiter(),
       resolveDispatcher: makeDispatcherResolver(deps),
       ...(audit ? { audit } : {}),
-      requirePrivacySeam: !deps.allowWithoutPrivacySeam,
+      requirePrivacyMasking: !deps.allowWithoutPrivacyMasking,
+      privacy:
+        deps.privacy ?? makePrivacyProvider(deps.getPrivacyService ?? (() => undefined)),
       serverName: PUBLIC_MCP_SERVER_NAME,
       ...(deps.toolTimeoutMs !== undefined ? { toolTimeoutMs: deps.toolTimeoutMs } : {}),
       ...(deps.maxConcurrentCalls !== undefined
@@ -263,9 +355,9 @@ export function mountPublicMcp(app: Express, requireAuth: RequestHandler, deps: 
 
   log(
     `[public-mcp] mounted at POST ${PUBLIC_MCP_PATH} (API-key auth, per-key tool allowlist)${
-      deps.allowWithoutPrivacySeam
-        ? ' ⚠ tool calls ENABLED WITHOUT the dispatch privacy seam — responses may carry unmasked PII'
-        : ' — tool calls REFUSED until the dispatch privacy seam is wired (tools/list works)'
+      deps.allowWithoutPrivacyMasking
+        ? ' ⚠ tool calls ENABLED WITHOUT required privacy masking — responses may carry unmasked PII'
+        : ' — tool calls REFUSED unless privacy masking is available, and DISCARDED if masking fails'
     }`,
   );
   return true;

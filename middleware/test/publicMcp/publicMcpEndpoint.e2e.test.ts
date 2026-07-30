@@ -8,6 +8,7 @@ import { PUBLIC_MCP_PATH } from '../../src/mcp/publicMcpPath.js';
 import type { PublicMcpAuditEntry } from '../../src/mcp/publicMcpServer.js';
 import {
   callResultText,
+  maskingPrivacyService,
   callToolRequest,
   fakeDispatcher,
   isSandboxListenDenied,
@@ -635,21 +636,16 @@ describe('public MCP endpoint', () => {
     assert.equal(callResultText(third.payload), 'slow');
   });
 
-  // ── the privacy-seam gate ─────────────────────────────────────────────────
+  // ── the privacy gate (fail-closed) ───────────────────────────────────────
+  // Real PII assertions live in `publicMcpPrivacy.e2e.test.ts`, against the REAL
+  // `ToolDispatchService`. This one covers the coarsest gate only: no privacy
+  // provider installed at all.
 
-  /**
-   * `ToolDispatchService` applies NO PII masking — its own trailing SEAM comment
-   * records that privacy interning and trace capture are not replicated versus
-   * `Orchestrator.dispatchToolInner`. Until the sibling branch closes that seam,
-   * serving a tool call could put unmasked personal data on a public HTTP
-   * response, so the default refuses and says so. `tools/list` still works, so
-   * an integrator can discover the contract meanwhile.
-   */
-  it('refuses tool calls while the dispatch privacy seam is open, but still lists tools', async (t) => {
+  it('refuses tool calls when no privacy provider is installed, but still lists tools', async (t) => {
     const seen: { name: string; input: unknown }[] = [];
     const h = await start(
       baseOptions({
-        allowWithoutPrivacySeam: false,
+        allowWithoutPrivacyMasking: false,
         dispatchers: { sales: fakeDispatcher([{ name: READ_TOOL }, { name: WRITE_TOOL }], seen) },
       }),
       t,
@@ -660,8 +656,23 @@ describe('public MCP endpoint', () => {
       SORTED_TOOLS,
     );
     const { payload } = await h.rpc(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
-    assert.match(rpcErrorMessage(payload) ?? '', /privacy\/trace seam is not wired/);
-    assert.deepEqual(seen, [], 'nothing may be dispatched while the seam is open');
+    assert.match(rpcErrorMessage(payload) ?? '', /no privacy provider is installed/);
+    assert.deepEqual(seen, [], 'nothing may be dispatched without masking available');
+  });
+
+  it('installs a privacy handle on the dispatcher for every call', async (t) => {
+    const installed = { value: false };
+    const h = await start(
+      baseOptions({
+        privacyService: maskingPrivacyService(),
+        allowWithoutPrivacyMasking: false,
+        dispatchers: { sales: fakeDispatcher([{ name: READ_TOOL }], undefined, installed) },
+      }),
+      t,
+    );
+    if (!h) return;
+    await h.rpc(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
+    assert.equal(installed.value, true, 'the endpoint must supply a privacy handle explicitly');
   });
 
   // ── audit ─────────────────────────────────────────────────────────────────
