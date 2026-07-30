@@ -13,6 +13,10 @@
  *   1. `adaptManifestV1` rejects an id/version outside the documented charset;
  *   2. `resolveContainedPackageDir` re-proves containment inside the upload
  *      service, immediately before the destructive `fs.rm`.
+ *
+ * `pluginPackageSqlAllowlist.test.ts` depends on both holding: `.sql` is only
+ * in the extension allowlist because a package can never land in a
+ * migrator-scanned directory.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -21,18 +25,17 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import yazl from 'yazl';
-
 import { adaptManifestV1 } from '../src/plugins/manifestLoader.js';
-import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import {
   PackageUploadService,
   resolveContainedPackageDir,
 } from '../src/plugins/packageUploadService.js';
-import type {
-  UploadedPackage,
-  UploadedPackageStore,
-} from '../src/plugins/uploadedPackageStore.js';
+import type { UploadedPackage } from '../src/plugins/uploadedPackageStore.js';
+import {
+  fakeCatalog,
+  fakeStore,
+  packageZip,
+} from './_helpers/pluginPackageZip.js';
 
 // ---------------------------------------------------------------------------
 // Layer 1 — manifest loader charset gate
@@ -168,64 +171,6 @@ describe('resolveContainedPackageDir', () => {
 // ---------------------------------------------------------------------------
 // End-to-end — the destructive rm must not be reached for a rejected package
 // ---------------------------------------------------------------------------
-
-function buildZip(files: Record<string, string>): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const zip = new yazl.ZipFile();
-    const chunks: Buffer[] = [];
-    zip.outputStream.on('data', (c: Buffer) => chunks.push(c));
-    zip.outputStream.on('end', () => resolve(Buffer.concat(chunks)));
-    zip.outputStream.on('error', reject);
-    for (const [name, content] of Object.entries(files)) {
-      zip.addBuffer(Buffer.from(content, 'utf-8'), name, { mtime: new Date(0) });
-    }
-    zip.end();
-  });
-}
-
-function manifestYaml(id: string, version: string): string {
-  return `schema_version: "1"
-
-identity:
-  id: ${JSON.stringify(id)}
-  name: "Traversal Fixture"
-  version: ${JSON.stringify(version)}
-  kind: "tool"
-  description: "Fixture plugin for traversal tests."
-
-compat:
-  core: ">=1.0 <2.0"
-
-lifecycle:
-  entry: "dist/plugin.js"
-`;
-}
-
-function packageZip(id: string, version: string): Promise<Buffer> {
-  return buildZip({
-    'manifest.yaml': manifestYaml(id, version),
-    'dist/plugin.js': 'module.exports = { activate() {} };\n',
-  });
-}
-
-function fakeStore(): UploadedPackageStore {
-  const packages = new Map<string, UploadedPackage>();
-  return {
-    get: (id: string) => packages.get(id),
-    list: () => [...packages.values()],
-    register: async (pkg: UploadedPackage) => {
-      packages.set(pkg.id, pkg);
-    },
-  } as unknown as UploadedPackageStore;
-}
-
-function fakeCatalog(): PluginCatalog {
-  return {
-    get: () => undefined,
-    load: async () => undefined,
-    list: () => [],
-  } as unknown as PluginCatalog;
-}
 
 describe('PackageUploadService ingest × path traversal', () => {
   let root: string;
