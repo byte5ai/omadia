@@ -332,11 +332,65 @@ async function* runGeneratorInContext<T>(
     // own `finally` blocks (steering-bus teardown, privacy finalisation) INSIDE
     // the turn scope — outside it they would run context-less, which is the
     // very bug this helper exists to prevent.
+    //
+    // Teardown NEVER replaces the exit reason. `inner.return(undefined)` was
+    // awaited bare, and a throwing finaliser (privacy finalisation is the
+    // realistic one) inside a `finally` block REPLACES the completion of the
+    // whole generator: the client abort or upstream error that actually ended
+    // the turn was overwritten by a secondary teardown failure, and the real
+    // reason — the one worth debugging — was gone. So the teardown failure is
+    // caught and reported here instead of being allowed to propagate. It is not
+    // swallowed: {@link onTurnTeardownError} always sees it, and the caller
+    // still gets the original reason.
     if (!exhausted) {
-      await storage.run(value, async () => {
-        await inner.return(undefined);
-      });
+      try {
+        await storage.run(value, async () => {
+          await inner.return(undefined);
+        });
+      } catch (err: unknown) {
+        reportTurnTeardownError(value.turnId, err);
+      }
     }
+  }
+}
+
+/** Handler for a teardown failure. Overridable so a test can assert the error
+ *  is surfaced rather than inferring it from console output. */
+let turnTeardownErrorHandler: (turnId: string, err: unknown) => void = (
+  turnId,
+  err,
+) => {
+  console.error(
+    `[turnContext] teardown of turn '${turnId}' threw while finalising ` +
+      `(steering-bus teardown / privacy finalisation). The turn's original exit ` +
+      `reason was preserved and is what the caller sees; this is the secondary ` +
+      `failure:`,
+    err,
+  );
+};
+
+/**
+ * Install a teardown-error handler. Returns a restore function.
+ *
+ * Exists because a teardown failure is deliberately not thrown (see
+ * `runGeneratorInContext`), so without a hook the only evidence would be a log
+ * line — which is neither assertable nor routable to real error reporting.
+ */
+export function onTurnTeardownError(
+  handler: (turnId: string, err: unknown) => void,
+): () => void {
+  const previous = turnTeardownErrorHandler;
+  turnTeardownErrorHandler = handler;
+  return (): void => {
+    turnTeardownErrorHandler = previous;
+  };
+}
+
+function reportTurnTeardownError(turnId: string, err: unknown): void {
+  try {
+    turnTeardownErrorHandler(turnId, err);
+  } catch {
+    /* a reporter that throws must not become the exit reason either */
   }
 }
 
