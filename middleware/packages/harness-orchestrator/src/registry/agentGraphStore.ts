@@ -212,7 +212,17 @@ export interface McpServerRow {
   /** Epic #459 — NON-SECRET config values `{ key: value }`. Secrets are in the
    *  Vault, not here. */
   readonly config: Record<string, unknown>;
+  /** W0-1 — whose authority MCP calls to this server act under.
+   *  `per_user`: the acting identity must resolve or the call fails closed —
+   *  no silent inheritance of the operator's authority (confused deputy).
+   *  `service`: one shared identity, the explicit opt-in. Migration 0031 sets
+   *  `service` on pre-existing servers that already hold a token so installed
+   *  deployments keep working; only new rows default to `per_user`. */
+  readonly delegation: McpDelegation;
 }
+
+/** How an MCP server resolves the identity a call acts as (W0-1, D2). */
+export type McpDelegation = 'per_user' | 'service';
 
 export interface ToolGrantRow {
   readonly id: string;
@@ -435,6 +445,8 @@ interface McpServerDbRow {
   kg_ingest?: boolean;
   config_schema?: McpConfigField[];
   config?: Record<string, unknown>;
+  // W0-1 delegation mode; absent on pre-0031 rows in tests.
+  delegation?: McpDelegation;
 }
 
 interface McpRegistryDbRow {
@@ -514,6 +526,10 @@ export interface McpCallLogRow {
   readonly error: string | null;
   readonly durationMs: number;
   readonly calledAt: Date;
+  /** W0-1 — WHOSE authority the call acted under (the resolved MCP user key,
+   *  or `unresolved` when a `per_user` server had no identity to act as).
+   *  `callerAgent` is the orchestrator slug; this is the identity. */
+  readonly actingIdentity: string | null;
 }
 
 interface McpCallLogDbRow {
@@ -528,6 +544,7 @@ interface McpCallLogDbRow {
   error: string | null;
   duration_ms: number;
   called_at: Date;
+  acting_identity?: string | null;
 }
 
 interface ToolGrantDbRow {
@@ -758,6 +775,9 @@ function mapMcpServer(r: McpServerDbRow): McpServerRow {
     kgIngest: r.kg_ingest ?? false,
     configSchema: Array.isArray(r.config_schema) ? r.config_schema : [],
     config: r.config ?? {},
+    // Pre-0031 rows (and hand-built test fixtures) read as the safe mode; the
+    // migration is what grandfathers real installed servers into 'service'.
+    delegation: r.delegation === 'service' ? 'service' : 'per_user',
   };
 }
 
@@ -1403,6 +1423,8 @@ export class AgentGraphStore {
         refreshTokenRef: string | null;
         expiresAt: Date | null;
         scopes: string | null;
+        /** Issuer that minted this token (W0-1) — null on pre-0031 rows. */
+        issuer: string | null;
       }
     | undefined
   > {
@@ -1413,6 +1435,7 @@ export class AgentGraphStore {
       refresh_token_ref: string | null;
       expires_at: Date | null;
       scopes: string | null;
+      issuer?: string | null;
     }>('SELECT * FROM mcp_oauth_tokens WHERE server_id = $1 AND user_key = $2', [serverId, userKey]);
     const r = rows[0];
     return r
@@ -1423,6 +1446,7 @@ export class AgentGraphStore {
           refreshTokenRef: r.refresh_token_ref,
           expiresAt: r.expires_at,
           scopes: r.scopes,
+          issuer: r.issuer ?? null,
         }
       : undefined;
   }
@@ -1434,19 +1458,45 @@ export class AgentGraphStore {
     refreshTokenRef: string | null;
     expiresAt: Date | null;
     scopes: string | null;
+    /** Issuer that minted the token (W0-1) — lets a rotated issuer invalidate
+     *  the stored token instead of replaying it against a different AS. */
+    issuer?: string | null;
   }): Promise<void> {
     await this.pool.query(
       `INSERT INTO mcp_oauth_tokens
-         (server_id, user_key, access_token_ref, refresh_token_ref, expires_at, scopes, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6, now())
+         (server_id, user_key, access_token_ref, refresh_token_ref, expires_at, scopes, issuer, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7, now())
        ON CONFLICT (server_id, user_key) DO UPDATE SET
          access_token_ref = EXCLUDED.access_token_ref,
          refresh_token_ref = EXCLUDED.refresh_token_ref,
          expires_at = EXCLUDED.expires_at,
          scopes = EXCLUDED.scopes,
+         issuer = EXCLUDED.issuer,
          updated_at = now()`,
-      [input.serverId, input.userKey, input.accessTokenRef, input.refreshTokenRef, input.expiresAt, input.scopes],
+      [
+        input.serverId,
+        input.userKey,
+        input.accessTokenRef,
+        input.refreshTokenRef,
+        input.expiresAt,
+        input.scopes,
+        input.issuer ?? null,
+      ],
     );
+  }
+
+  /** Set the delegation mode for a server (W0-1, D2). Returns the updated row,
+   *  or undefined when the server does not exist. */
+  async setMcpServerDelegation(
+    serverId: string,
+    delegation: McpDelegation,
+  ): Promise<McpServerRow | undefined> {
+    const { rows } = await this.pool.query<McpServerDbRow>(
+      'UPDATE mcp_servers SET delegation = $2, updated_at = now() WHERE id = $1 RETURNING *',
+      [serverId, delegation],
+    );
+    const r = rows[0];
+    return r ? mapMcpServer(r) : undefined;
   }
 
   async deleteMcpOAuthToken(serverId: string, userKey: string): Promise<void> {
@@ -1475,13 +1525,17 @@ export class AgentGraphStore {
     scopes: string | null;
     tokenEndpoint: string;
     authorizationEndpoint: string;
+    /** Whether the AS advertised RFC 9207 `authorization_response_iss_parameter_supported`
+     *  at authorize time (W0-1, D1). Captured HERE, never re-discovered at the
+     *  callback — same reasoning as the endpoint binding in migration 0016. */
+    issRequired?: boolean;
   }): Promise<void> {
     // Opportunistic prune of stale flows (older than 15 min) on each create.
     await this.pool.query("DELETE FROM mcp_oauth_flows WHERE created_at < now() - interval '15 minutes'");
     await this.pool.query(
       `INSERT INTO mcp_oauth_flows
-         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint, iss_required)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [
         input.state,
         input.serverId,
@@ -1492,6 +1546,7 @@ export class AgentGraphStore {
         input.scopes,
         input.tokenEndpoint,
         input.authorizationEndpoint,
+        input.issRequired ?? false,
       ],
     );
   }
@@ -1510,6 +1565,9 @@ export class AgentGraphStore {
         scopes: string | null;
         tokenEndpoint: string | null;
         authorizationEndpoint: string | null;
+        /** The AS advertised RFC 9207 when this flow started (W0-1, D1), so an
+         *  authorization response WITHOUT `iss` must be rejected. */
+        issRequired: boolean;
       }
     | undefined
   > {
@@ -1523,6 +1581,7 @@ export class AgentGraphStore {
       scopes: string | null;
       token_endpoint: string | null;
       authorization_endpoint: string | null;
+      iss_required?: boolean | null;
     }>(
       "DELETE FROM mcp_oauth_flows WHERE state = $1 AND created_at > now() - interval '15 minutes' RETURNING *",
       [state],
@@ -1539,6 +1598,9 @@ export class AgentGraphStore {
           scopes: r.scopes,
           tokenEndpoint: r.token_endpoint,
           authorizationEndpoint: r.authorization_endpoint,
+          // Pre-0031 in-flight flows read false — they are not retroactively
+          // rejected for a missing `iss` (a MISMATCHED one still is).
+          issRequired: r.iss_required === true,
         }
       : undefined;
   }
@@ -1714,11 +1776,15 @@ export class AgentGraphStore {
     readonly error: string | null;
     readonly durationMs: number;
     readonly calledAt: Date;
+    /** W0-1 — the resolved acting identity. Always written (never omitted):
+     *  an audit row with no identity cannot answer "whose credentials was
+     *  this?", which is the whole point of the confused-deputy fix. */
+    readonly actingIdentity: string | null;
   }): Promise<void> {
     await this.pool.query(
       `INSERT INTO mcp_call_log
-         (server_id, server_name, tool_name, caller_kind, caller_agent, turn_id, ok, error, duration_ms, called_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+         (server_id, server_name, tool_name, caller_kind, caller_agent, turn_id, ok, error, duration_ms, called_at, acting_identity)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
       [
         entry.serverId,
         entry.serverName,
@@ -1730,6 +1796,7 @@ export class AgentGraphStore {
         entry.error,
         entry.durationMs,
         entry.calledAt,
+        entry.actingIdentity,
       ],
     );
   }
@@ -1770,6 +1837,7 @@ export class AgentGraphStore {
       error: r.error,
       durationMs: r.duration_ms,
       calledAt: r.called_at,
+      actingIdentity: r.acting_identity ?? null,
     }));
   }
 

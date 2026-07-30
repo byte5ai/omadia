@@ -12,6 +12,7 @@
  */
 import { McpAuthDiscovery, serverOrigin, type DiscoveredAuth } from './mcpAuthDiscovery.js';
 import { McpOAuthClient, type OAuthClientCredentials } from './mcpOAuthClient.js';
+import { redactedErrorText } from './secretRedaction.js';
 import { substituteMcpConfig } from '../agents/subAgentToolHydration.js';
 
 import type { AgentGraphStore, McpServerRow } from '@omadia/orchestrator';
@@ -50,6 +51,40 @@ export class McpOAuthNeedsClientError extends Error {
   }
 }
 
+/**
+ * RFC 9207 issuer validation failed at the callback (W0-1, D1).
+ *
+ * The authorization response either carried an `iss` naming a DIFFERENT
+ * authorization server than the one this flow was started against, or omitted
+ * `iss` entirely although that AS advertised support for it. Both are the
+ * mix-up signature: a malicious or compromised MCP server steering the
+ * callback so a code minted by one AS is redeemed at another.
+ *
+ * This is thrown BEFORE the code is exchanged, so nothing is ever persisted.
+ */
+export class McpOAuthIssuerMismatchError extends Error {
+  constructor(
+    readonly expected: string,
+    readonly received: string | null,
+  ) {
+    super(
+      received === null
+        ? `authorization response omitted the "iss" parameter although issuer "${expected}" advertises RFC 9207 support`
+        : `authorization response issuer "${received}" does not match the issuer this flow was started against ("${expected}")`,
+    );
+    this.name = 'McpOAuthIssuerMismatchError';
+  }
+}
+
+/** RFC 9207 §2.4: compare issuer identifiers exactly, modulo one trailing
+ *  slash (`https://as.example` and `https://as.example/` are the same AS).
+ *  Deliberately NOT a loose/normalizing comparison — that would reintroduce
+ *  the mix-up the check exists to prevent. */
+function sameIssuer(a: string, b: string): boolean {
+  const norm = (s: string): string => s.trim().replace(/\/+$/, '');
+  return norm(a) !== '' && norm(a) === norm(b);
+}
+
 const DCR_PROBE_TTL_MS = 10 * 60 * 1000;
 
 export class McpOAuthService {
@@ -60,6 +95,20 @@ export class McpOAuthService {
    *  hard-403s third-party DCR), so "brokered" must reflect a real probe, not
    *  the advertised flag. Cached to avoid re-probing on every status check. */
   private readonly dcrProbeCache = new Map<string, { at: number; ok: boolean }>();
+
+  /** In-flight refreshes, keyed by (serverId, userKey) — W0-1, D3.
+   *
+   *  Without this, N concurrent callers whose token just expired each POST the
+   *  SAME refresh token to the token endpoint. Against an AS with rotating
+   *  refresh tokens (the OAuth 2.1 default) the first response invalidates the
+   *  token the others are still using, so the losers get `invalid_grant` and,
+   *  worse, the last writer can persist a refresh token the AS has already
+   *  retired — the user silently ends up disconnected.
+   *
+   *  Sharing one promise makes exactly one HTTP request per (server, user)
+   *  regardless of caller count. The entry is removed in a `finally` so a
+   *  failed refresh never poisons later attempts. */
+  private readonly refreshInFlight = new Map<string, Promise<string | null>>();
 
   /** The redirect URI the operator must register with the OAuth provider. */
   readonly redirectUri: string;
@@ -96,7 +145,10 @@ export class McpOAuthService {
   }
 
   /** A live access token for (server, user), refreshing if near expiry, or null
-   *  when the user has not authorized. */
+   *  when the user has not authorized.
+   *
+   *  Concurrent callers that all need a refresh share ONE refresh (D3) — see
+   *  `refreshInFlight`. */
   async getValidAccessToken(server: McpServerRow, userKey: string): Promise<string | null> {
     const row = await this.deps.graph.getMcpOAuthToken(server.id, userKey);
     if (!row) return null;
@@ -109,20 +161,53 @@ export class McpOAuthService {
     if (!row.refreshTokenRef || !server.endpoint) {
       return (await this.deps.vault.get(VAULT_NS, row.accessTokenRef)) ?? null;
     }
-    const refreshToken = await this.deps.vault.get(VAULT_NS, row.refreshTokenRef);
-    if (!refreshToken) return (await this.deps.vault.get(VAULT_NS, row.accessTokenRef)) ?? null;
-    try {
-      const discovered = await this.discovery.discover(this.resolveEndpoint(server));
-      if (!discovered) return null;
-      const client = await this.loadClient(discovered.server.issuer);
-      if (!client) return null;
-      const tok = await this.client.refresh({ server: discovered.server, client, refreshToken });
-      await this.persistToken(server.id, userKey, tok);
-      return tok.accessToken;
-    } catch (err) {
-      this.deps.log?.(`[mcpOAuth] refresh failed for ${server.name}: ${String(err)}`);
-      return (await this.deps.vault.get(VAULT_NS, row.accessTokenRef)) ?? null;
-    }
+
+    // ── single-flight (W0-1, D3) ────────────────────────────────────────────
+    // Everything below runs at most once per (server, user) at a time. The
+    // map is checked and populated synchronously — no `await` between the get
+    // and the set — so two callers in the same tick cannot both miss.
+    const key = `${server.id}${userKey}`;
+    const existing = this.refreshInFlight.get(key);
+    if (existing) return existing;
+
+    const refreshRefKey = row.refreshTokenRef;
+    const accessRefKey = row.accessTokenRef;
+    const attempt = (async (): Promise<string | null> => {
+      const refreshToken = await this.deps.vault.get(VAULT_NS, refreshRefKey);
+      if (!refreshToken) return (await this.deps.vault.get(VAULT_NS, accessRefKey)) ?? null;
+      try {
+        const discovered = await this.discovery.discover(this.resolveEndpoint(server));
+        if (!discovered) return null;
+        // The issuer rotated since this token was minted (W0-1): the stored
+        // token belongs to a different authorization server, so replaying it
+        // here would send one AS's credential to another. Drop it and make the
+        // user re-authorize against the new issuer.
+        if (row.issuer !== null && !sameIssuer(row.issuer, discovered.server.issuer)) {
+          this.deps.log?.(
+            `[mcpOAuth] issuer rotated for ${server.name} (stored ${row.issuer} → discovered ${discovered.server.issuer}); dropping the stored token`,
+          );
+          await this.deps.graph.deleteMcpOAuthToken(server.id, userKey);
+          return null;
+        }
+        const client = await this.loadClient(discovered.server.issuer);
+        if (!client) return null;
+        const tok = await this.client.refresh({ server: discovered.server, client, refreshToken });
+        await this.persistToken(server.id, userKey, tok, discovered.server.issuer);
+        return tok.accessToken;
+      } catch (err) {
+        // D5: an OAuth error body routinely echoes the token back — never let
+        // `String(err)` reach a log line unredacted.
+        this.deps.log?.(
+          `[mcpOAuth] refresh failed for ${server.name}: ${redactedErrorText(err, [refreshToken])}`,
+        );
+        return (await this.deps.vault.get(VAULT_NS, accessRefKey)) ?? null;
+      }
+    })().finally(() => {
+      this.refreshInFlight.delete(key);
+    });
+
+    this.refreshInFlight.set(key, attempt);
+    return attempt;
   }
 
   /** Start the authorization flow: returns the URL to send the user to. */
@@ -156,6 +241,11 @@ export class McpOAuthService {
       // that a malicious server could have switched in the meantime.
       tokenEndpoint: discovered.server.tokenEndpoint,
       authorizationEndpoint: discovered.server.authorizationEndpoint,
+      // RFC 9207 (W0-1, D1): remember whether THIS authorization server
+      // promised to send `iss`, captured now rather than re-discovered at the
+      // callback — a server that could flip the flag in between would simply
+      // opt itself out of the check.
+      issRequired: discovered.server.issParameterSupported,
     });
     return { authorizeUrl: url };
   }
@@ -163,11 +253,35 @@ export class McpOAuthService {
   /** Finish the flow at the callback: exchange the code and store the token.
    *  Uses the endpoints captured when the flow started — NOT a fresh discovery
    *  (codex W9 critical fold: a malicious server could otherwise switch its
-   *  token endpoint to steal the code + PKCE verifier + client secret). */
-  async completeAuthorization(state: string, code: string): Promise<{ serverId: string }> {
+   *  token endpoint to steal the code + PKCE verifier + client secret).
+   *
+   *  @param iss the RFC 9207 `iss` authorization-response parameter, or null
+   *  when the provider sent none. Validated against the issuer bound to the
+   *  flow BEFORE the code is exchanged, so a mismatch persists nothing. */
+  async completeAuthorization(
+    state: string,
+    code: string,
+    iss?: string | null,
+  ): Promise<{ serverId: string }> {
     const flow = await this.deps.graph.takeMcpOAuthFlow(state);
     if (!flow) throw new Error('unknown or expired authorization state');
     if (!flow.tokenEndpoint) throw new Error('flow is missing its bound token endpoint');
+    // ── RFC 9207 issuer validation (W0-1, D1) ───────────────────────────────
+    // `state` alone proves only that the response came back to a flow we
+    // started; it does NOT prove WHICH authorization server issued the code.
+    // A malicious MCP server can steer the browser so a code minted by one AS
+    // is redeemed at another. Runs before the exchange — a rejected callback
+    // must leave no token behind.
+    const received = typeof iss === 'string' && iss.trim() !== '' ? iss.trim() : null;
+    if (received !== null) {
+      if (!sameIssuer(flow.issuer, received)) {
+        throw new McpOAuthIssuerMismatchError(flow.issuer, received);
+      }
+    } else if (flow.issRequired) {
+      // The AS advertised RFC 9207 support and then did not send `iss` —
+      // either a stripped parameter or a response that never came from it.
+      throw new McpOAuthIssuerMismatchError(flow.issuer, null);
+    }
     const client = await this.loadClient(flow.issuer);
     if (!client) throw new McpOAuthNeedsClientError(flow.issuer);
     // Reconstruct the minimal server metadata from the FLOW-BOUND values.
@@ -179,6 +293,9 @@ export class McpOAuthService {
       codeChallengeMethods: [] as string[],
       grantTypes: [] as string[],
       scopesSupported: [] as string[],
+      // Irrelevant for the exchange itself; the `iss` decision was already
+      // made above from the flow's persisted `issRequired`.
+      issParameterSupported: flow.issRequired,
     };
     const tok = await this.client.exchangeCode({
       server: boundServer,
@@ -187,7 +304,7 @@ export class McpOAuthService {
       codeVerifier: flow.codeVerifier,
       redirectUri: flow.redirectUri,
     });
-    await this.persistToken(flow.serverId, flow.userKey, tok);
+    await this.persistToken(flow.serverId, flow.userKey, tok, flow.issuer);
     return { serverId: flow.serverId };
   }
 
@@ -328,6 +445,9 @@ export class McpOAuthService {
     serverId: string,
     userKey: string,
     tok: { accessToken: string; refreshToken: string | null; expiresInSec: number | null; scope: string | null },
+    /** Issuer that minted this token (W0-1) — recorded so a later issuer
+     *  rotation invalidates it instead of replaying it at a different AS. */
+    issuer?: string | null,
   ): Promise<void> {
     const accessRef = this.tokenRef(serverId, userKey, 'access');
     await this.deps.vault.set(VAULT_NS, accessRef, tok.accessToken);
@@ -343,6 +463,7 @@ export class McpOAuthService {
       refreshTokenRef: refreshRef,
       expiresAt: tok.expiresInSec ? new Date(Date.now() + tok.expiresInSec * 1000) : null,
       scopes: tok.scope,
+      issuer: issuer ?? null,
     });
   }
 

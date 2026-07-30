@@ -96,6 +96,12 @@ export interface McpCallLogEntry {
   readonly error: string | null;
   readonly durationMs: number;
   readonly calledAt: Date;
+  /** W0-1 — WHOSE authority this call acted under. `callerAgent` names the
+   *  orchestrator; this names the identity its credentials belonged to. The
+   *  literal `unresolved` marks a `per_user` server that had no identity to
+   *  act as (the call fails closed), which is exactly the case an operator
+   *  needs to be able to find in the audit trail. */
+  readonly actingIdentity: string | null;
 }
 
 /** Observer invoked after every tool call. Implementations must be fast and
@@ -128,6 +134,15 @@ export interface McpAuthProvider {
    * decision, so the manager needs no OAuth knowledge.
    */
   onAuthFailure(cfg: McpServerConfig): Promise<string | null>;
+  /**
+   * The identity this server's calls act as, for the audit trail (W0-1). Same
+   * resolution `getToken` uses, exposed separately so EVERY audited call —
+   * including denied ones and calls to servers with no OAuth at all — records
+   * who acted. Returns null when the provider cannot attribute the call.
+   * Optional: providers that predate W0-1 keep working (identity falls back to
+   * the turn context).
+   */
+  resolveIdentity?(cfg: McpServerConfig): Promise<string | null>;
   /**
    * Secret config values to inject as request headers for this server (epic
    * #459). Resolved from the Vault per call so secrets never live on the pooled
@@ -199,6 +214,7 @@ export class McpManager {
     ok: boolean,
     error: string | null,
     startedAt: number,
+    actingIdentity: string | null,
   ): void {
     if (!this.options?.onToolCall) return;
     try {
@@ -224,6 +240,9 @@ export class McpManager {
         error: error === null ? null : error.length > 300 ? `${error.slice(0, 300)}…` : error,
         durationMs: Date.now() - startedAt,
         calledAt: new Date(),
+        // W0-1: never left blank. An unattributable call is recorded AS
+        // unattributable rather than silently omitted.
+        actingIdentity: actingIdentity ?? ctx?.mcpUserKey ?? null,
       });
     } catch {
       /* the audit trail must never break a tool call */
@@ -265,13 +284,24 @@ export class McpManager {
     args: Record<string, unknown>,
   ): Promise<string> {
     const startedAt = Date.now();
+    // Resolve the acting identity FIRST (W0-1), before the guard can short-
+    // circuit: a denied call still has to say whose authority it would have
+    // used. Only paid for when auditing is actually on.
+    let actingIdentity: string | null = null;
+    if (this.options?.onToolCall && this.options.auth?.resolveIdentity) {
+      try {
+        actingIdentity = await this.options.auth.resolveIdentity(cfg);
+      } catch {
+        /* identity resolution must not break the call path */
+      }
+    }
     // Dispatch-time policy gate (issue #454): checked on EVERY call, so a
     // verdict that turned risky on re-discover blocks immediately and an
     // operator ack unblocks immediately — independent of registry rebuilds.
     try {
       const denial = this.options?.guard?.(cfg.id, toolName);
       if (denial) {
-        this.emitCall(cfg, toolName, false, denial, startedAt);
+        this.emitCall(cfg, toolName, false, denial, startedAt, actingIdentity);
         return denial;
       }
     } catch {
@@ -310,7 +340,7 @@ export class McpManager {
           lastFailure = failure;
           continue;
         }
-        return this.handleFailure(cfg, toolName, token, failure, startedAt);
+        return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity);
       }
       try {
         const res = await pooled.client.callTool(
@@ -331,9 +361,9 @@ export class McpManager {
         const protocolError =
           res !== null && typeof res === 'object' && (res as { isError?: unknown }).isError === true;
         if (protocolError) {
-          return this.handleFailure(cfg, toolName, token, rendered, startedAt);
+          return this.handleFailure(cfg, toolName, token, rendered, startedAt, actingIdentity);
         }
-        this.emitCall(cfg, toolName, true, null, startedAt);
+        this.emitCall(cfg, toolName, true, null, startedAt, actingIdentity);
         return rendered;
       } catch (err) {
         // Drop the connection so the next call reconnects (server may have died).
@@ -343,11 +373,11 @@ export class McpManager {
           lastFailure = failure;
           continue;
         }
-        return this.handleFailure(cfg, toolName, token, failure, startedAt);
+        return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity);
       }
     }
     // Both attempts hit a transient failure.
-    return this.handleFailure(cfg, toolName, token, lastFailure, startedAt);
+    return this.handleFailure(cfg, toolName, token, lastFailure, startedAt, actingIdentity);
   }
 
   /**
@@ -363,6 +393,7 @@ export class McpManager {
     token: string | null,
     rawFailure: string,
     startedAt: number,
+    actingIdentity: string | null,
   ): Promise<string> {
     const maybeAuth = token === null || looksUnauthorized(rawFailure);
     if (maybeAuth && this.options?.auth) {
@@ -376,11 +407,11 @@ export class McpManager {
         /* fall back to the raw failure */
       }
       if (authMessage) {
-        this.emitCall(cfg, toolName, false, 'auth_required', startedAt);
+        this.emitCall(cfg, toolName, false, 'auth_required', startedAt, actingIdentity);
         return authMessage;
       }
     }
-    this.emitCall(cfg, toolName, false, rawFailure, startedAt);
+    this.emitCall(cfg, toolName, false, rawFailure, startedAt, actingIdentity);
     return rawFailure;
   }
 

@@ -2862,7 +2862,15 @@
       "readyToLogin": "Client gespeichert. Melde dich jetzt bei {host} an, um den Zugriff zu autorisieren.",
       "continueLogin": "Weiter zum Login bei {host} ↗",
       "afterLoginHint": "Öffnet in einem neuen Tab. Nach der Bestätigung hierher zurückkehren — der Status aktualisiert sich automatisch.",
-      "checkStatus": "Status prüfen"
+      "checkStatus": "Status prüfen",
+      "delegationLabel": "Handelnde Identität",
+      "delegationPerUser": "Jeder Nutzer handelt als er selbst",
+      "delegationService": "Eine gemeinsame Service-Identität",
+      "delegationPerUserWhy": "Jeder Aufrufer nutzt an diesem Server seine eigene Autorisierung. Eine Unterhaltung ohne zugeordnete Nutzeridentität wird abgewiesen und greift nicht auf deine zurück.",
+      "delegationServiceWhy": "Alle Aufrufer teilen eine Autorisierung — deine. Wer einen Orchestrator mit diesem Server erreicht, handelt mit dieser Berechtigung. Behalte das nur für Server, bei denen eine gemeinsame Identität gewollt ist.",
+      "delegationSwitchToPerUser": "Identität pro Nutzer verlangen",
+      "delegationSwitchToService": "Gemeinsame Service-Identität nutzen",
+      "delegationIdentityMissing": "Diese Sitzung hat keine zugeordnete Nutzeridentität — Aufrufe pro Nutzer an diesen Server schlagen deshalb bewusst fehl. Es wird nichts an den Server gesendet."
     },
     "marketplace": {
       "registry": "Registry",

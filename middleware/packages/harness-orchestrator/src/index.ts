@@ -103,6 +103,7 @@ export type {
   CanvasPos,
   McpCallLogRow,
   McpConfigField,
+  McpDelegation,
   McpRegistryRow,
   McpServerInput,
   McpServerRow,

@@ -271,6 +271,12 @@ import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
 import { McpManager, type McpCallLogEntry, type McpServerConfig } from '@omadia/orchestrator';
+import {
+  SERVICE_USER_KEY,
+  auditIdentity,
+  delegationBlockedMessage,
+  resolveMcpUserKey,
+} from './services/mcpDelegation.js';
 import { McpOAuthService } from './services/mcpOAuthService.js';
 import { McpConfigService } from './services/mcpConfigService.js';
 import {
@@ -1486,8 +1492,12 @@ async function main(): Promise<void> {
 
   // Generic MCP OAuth service (epic #459 W9) — outer scope so both the
   // McpManager (auth provider) and the operator router (begin/callback routes)
-  // reference the same instance. userKey='operator' for the operator chat.
-  const mcpOAuthUserKey = 'operator';
+  // reference the same instance.
+  //
+  // W0-1: this is now ONLY the shared key for servers whose `delegation` is
+  // `service`. It is no longer a fallback for unresolved identities — see
+  // services/mcpDelegation.ts.
+  const mcpOAuthUserKey = SERVICE_USER_KEY;
   // Redirect URI the OAuth callback lands on: explicit override, else derived
   // from the public base. The service activates when either is configured.
   const mcpOAuthRedirectUri =
@@ -1791,18 +1801,49 @@ async function main(): Promise<void> {
                   const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                   if (!server) return null;
                   // Per-user token (codex W9 fold): the turn's authenticated
-                  // user when the entry point set it, else the operator scope.
-                  const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
+                  // user when the entry point set it.
+                  //
+                  // W0-1 (D2) — THE confused-deputy fix. This used to end in
+                  // `?? mcpOAuthUserKey`, i.e. `'operator'`. A Teams/Telegram
+                  // turn whose user has no mapped identity therefore reached
+                  // the customer's MCP server holding the OPERATOR's token.
+                  // Now a `per_user` server with no identity gets no token and
+                  // the call fails closed through onAuthFailure below;
+                  // `service` delegation is the explicit shared-identity
+                  // opt-in.
+                  const userKey = resolveMcpUserKey(
+                    server,
+                    turnContext.current()?.mcpUserKey,
+                    mcpOAuthUserKey,
+                  );
+                  if (userKey === null) return null;
                   return mcpOAuthService.getValidAccessToken(server, userKey);
+                },
+                resolveIdentity: async (cfg: McpServerConfig) => {
+                  const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                  if (!server) return null;
+                  // W0-1: every audit row names the identity it acted as —
+                  // `unresolved` when there was none.
+                  return auditIdentity(server, turnContext.current()?.mcpUserKey, mcpOAuthUserKey);
                 },
                 onAuthFailure: async (cfg: McpServerConfig) => {
                   const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                   if (!server) return null;
+                  // W0-1 (D2): fail closed FIRST. A `per_user` server with no
+                  // caller identity must never be "fixed" by starting an OAuth
+                  // flow — that flow would bind a token to whoever happens to
+                  // click through, which is the same confused deputy one step
+                  // removed. Explain instead, and send nothing upstream.
+                  const userKey = resolveMcpUserKey(
+                    server,
+                    turnContext.current()?.mcpUserKey,
+                    mcpOAuthUserKey,
+                  );
+                  if (userKey === null) return delegationBlockedMessage(server.name);
                   // Only OAuth-protected servers get an auth prompt (cached
                   // discovery keeps this cheap per call).
                   const desc = await mcpOAuthService.describeAuth(server);
                   if (!desc.protected) return null;
-                  const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
                   // Machine block the chat parses into an in-line "Connect" card
                   // + modal (web-ui McpAuthRequiredCard). Mirrors the <nudge>
                   // block contract: human text stays readable for the model and

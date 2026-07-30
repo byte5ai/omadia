@@ -856,6 +856,11 @@ export async function importMcpServerFromRegistry(
 
 // ── Generic MCP OAuth (issue #459 W9) ────────────────────────────────────────
 
+/** Whose authority MCP calls to a server act under (W0-1). `per_user` requires
+ *  each caller to have its own identity and fails closed without one;
+ *  `service` is the explicit opt-in to one shared identity. */
+export type McpDelegation = 'per_user' | 'service';
+
 export interface McpAuthStatus {
   protected: boolean;
   connected: boolean;
@@ -865,6 +870,23 @@ export interface McpAuthStatus {
   brokered?: boolean;
   needsClient: boolean;
   redirectUri?: string;
+  /** W0-1 — the server's delegation mode. */
+  delegation?: McpDelegation;
+  /** W0-1 — whether this session has an identity to act as. False on a
+   *  `per_user` server means every call fails closed until an identity is
+   *  available or the operator opts into `service` delegation. */
+  identityResolved?: boolean;
+}
+
+/** Switch a server's delegation mode (W0-1). */
+export async function setMcpServerDelegation(
+  serverId: string,
+  delegation: McpDelegation,
+): Promise<{ id: string; delegation: McpDelegation }> {
+  return callJson(`/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/delegation`, {
+    method: 'PUT',
+    body: JSON.stringify({ delegation }),
+  });
 }
 
 export async function getMcpAuthStatus(serverId: string): Promise<McpAuthStatus> {
