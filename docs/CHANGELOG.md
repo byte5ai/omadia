@@ -18,6 +18,213 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — pluggable embedding provider (#440)
+
+- The `EmbeddingClient` contract moved from `@omadia/embeddings` (the Ollama
+  adapter) to `@omadia/plugin-api`, extended with provider metadata
+  (`modelId`, `dimensions`) via the new `EmbeddingProvider` type — the same
+  split the LLM side already has between `llm-provider-api` and the adapter
+  packages. `@omadia/embeddings` re-exports the contract, so out-of-repo
+  plugins compiled against its `dist/` keep working. The capability name
+  stays `embeddingClient@1`; no consumer manifest changed.
+- New adapter `@omadia/embedding-adapter-openai` provides the same
+  `embeddingClient@1` capability over the OpenAI wire format
+  (`POST {base_url}/v1/embeddings` — OpenAI, Azure behind a gateway, vLLM, LM
+  Studio, LiteLLM). Base URL, model, dimensions, timeout and concurrency are
+  manifest `setup.fields`; the API key is a `secret`-typed field and lives in
+  the vault, never in `installed.json`. Because it declares a secret field the
+  built-in catch-all bootstrap does not auto-install it — installing a second
+  embedding provider stays an explicit operator act, and
+  `ctx.services.provide` still throws if two ever end up active.
+- **Vector width is a hard constraint out of the box.** The knowledge graph
+  creates its vector columns as `vector(768)` (`graph_nodes.embedding` from
+  `0005_turn_embeddings_768.sql`, `processes.embedding` from
+  `0009_process_memory.sql`). Until an operator migrates those columns, only
+  768-dimensional models are usable — `text-embedding-3-small` (1536),
+  `text-embedding-3-large` (3072) and `text-embedding-ada-002` (1536) are
+  refused by the gate rather than silently failing per row. The column
+  migration follows `0005_turn_embeddings_768.sql`: drop index → drop column →
+  re-add at the new size → re-create index, for every governed column.
+- Neither adapter publishes a vector size it has not confirmed. The
+  `dimensions` / `embedding_dimensions` settings carry **no manifest default**
+  any more (a default would be seeded into every install by bootstrap and
+  would contradict whatever model the operator picked). Known models resolve
+  their width from a table in the adapter; an unknown model needs the field;
+  a field that contradicts a known model makes the adapter refuse to publish.
+  The Ollama adapter keeps working unchanged for an unknown model — it then
+  publishes the client *without* provider metadata, and the gate treats the
+  provider as "identity unknown" exactly as before #440, rather than switching
+  an existing deployment to FTS-only on upgrade.
+- Migration `0030_embedding_model_registry.sql` (KG-neon chain): new
+  `graph_embedding_model` table, one row per tenant, recording the model id
+  and vector size the stored embeddings were produced with, plus a
+  `clear_pending` flag that makes a model switch resumable.
+- Knowledge-graph activation now runs a model/dimension gate. It reads the
+  **declared** width of every `vector` column on a tenant-scoped table from
+  the catalog (`pg_attribute` / `format_type`), not from sampled rows, so an
+  empty corpus is checked exactly like a full one. Outcomes: column width ≠
+  provider width → vector writes refused for the boot; empty or unrecorded
+  corpus of matching width → the active model is recorded; same width,
+  different model → every governed vector column is cleared in bounded
+  batches (attempt counters reset) and the `embeddingBackfill` sweep
+  re-embeds, finishing any clear the activation capped; recorded width ≠
+  provider width → refused. Vector columns are discovered rather than
+  hard-coded, so a future migration adding one is covered by the width check.
+- `processes.embedding` is now governed too. It is a second cosine space used
+  for the write-path dedup pre-check and for hybrid process recall; before
+  this it was neither cleared on a model switch nor re-embeddable, so a
+  same-width provider swap corrupted process recall permanently. The backfill
+  sweep gained a process pass (retries capped in memory — `processes` has no
+  attempt column, and the condition is transient).
+- **What the gate does and does not cover.** It governs the knowledge-graph
+  plugin's own embedding client: all vector writes into `graph_nodes` and
+  `processes`, plus the backfill sweep. It does not withdraw the
+  `embeddingClient@1` capability from the service registry, so
+  `contextRetriever`, `inconsistencyDetector`, `mergeCandidateDetector` and
+  `topicDetector` keep resolving and calling the provider on a blocked boot.
+  Their vector queries then fail inside the try/catch each already has, so
+  recall is FTS-only in effect — at the cost of one wasted embed call and one
+  error log per attempt. Withdrawing a published capability centrally would
+  need a kernel-side revoke hook that does not exist yet.
+- Activation is not allowed to stall or crash on the gate. The vector clear
+  runs in bounded batches, each in its own transaction with a
+  `statement_timeout`, capped per activation; the remainder is finished by
+  the backfill sweep. A gate failure degrades to the safe path (no embeddings,
+  FTS-only) instead of throwing out of `activate()` — the kernel treats
+  `knowledgeGraph` as a required service, so a throw there is a boot loop.
+- The `/health` KG snapshot no longer equates "embeddings configured" with
+  "Ollama base URL set" — an active alternative provider counts as well, and
+  it reads the gate outcome rather than the registry alone (see the fixup
+  below).
+- Unchanged for existing deployments: `bootstrapEmbeddingsFromEnv()` still
+  seeds only the Ollama adapter from `OLLAMA_BASE_URL` /
+  `OLLAMA_EMBEDDING_MODEL`, and a deployment with no embedding provider still
+  boots into the FTS-only path.
+- Fixup (round 2, two independent adversarial reviews). Eight blocking
+  findings, all in the gate's failure modes rather than its happy path:
+  - **`/health` no longer reports a blocked gate as healthy.** The KG snapshot
+    was a registry-only projection: with `vector(768)` columns and an active
+    1536-dimensional adapter it answered `embeddings: true, semanticRecall:
+    true, durableTier: true, processReuse: true, warnings: []` for a boot
+    where the gate had refused every vector write and `NeonProcessMemoryStore`
+    was rejecting every `write()`/`edit()` with `embedding-unavailable`. The
+    knowledge-graph plugin now publishes its gate outcome as an
+    `embeddingModelGateStatus` service; `/health` reads it and reports
+    `embeddings: false` plus a warning naming the active model against the
+    recorded one.
+  - **Vector writes are refused while a stale-vector clear is pending.** This
+    changes the write semantics of a same-width model switch. Previously
+    `status: 're-embedding'` kept the live embedding client, so fresh
+    new-model vectors were written while `clear_pending` was still TRUE — and
+    the resumed clear, which selects on `embedding IS NOT NULL` with no model
+    or timestamp discriminator, then destroyed them. On a large corpus (≈21 h
+    of clearing at the defaults) that meant a Turn ingested at T+1min was
+    embedded and wiped at T+5min, and sustained ingest could keep the clear
+    from ever draining. `allowsVectorWrites()` now returns false until the
+    clear completes, which makes the documented invariant ("a non-NULL
+    governed vector is an old-model vector") true by construction. The
+    backfill sweep is still armed in that state — it is the only thing that
+    can finish the clear — and once the flag drops the same sweep re-embeds
+    every NULL vector, including whatever was ingested during the window.
+  - **The `match` path consults `clear_pending`.** A switch flips the registry
+    row *before* clearing, so the boot after an interrupted switch matches and
+    used to return early. The only resumer was the backfill, which is skipped
+    when `graph_embedding_backfill_enabled=false` or when the embeddings
+    plugin is later deactivated — leaving `clear_pending` TRUE forever with
+    two models mixed in one cosine space and nobody reading the flag. The
+    match path now resumes the clear itself.
+  - **The `embedding_attempts = 0` reset got its own statement.** It rode
+    along with `SET embedding = NULL … WHERE embedding IS NOT NULL`, which by
+    construction can never match a row that exhausted its retries — those have
+    `embedding IS NULL`, which is *why* they are exhausted. Such rows stayed
+    at `attempts = maxAttempts` and the backfill's `embedding_attempts <
+    maxAttempts` predicate skipped them forever. A dedicated bounded UPDATE
+    over `embedding IS NULL AND embedding_attempts > 0` now rescues them.
+  - **The process sweep no longer starves itself.** The poison-row filter ran
+    *after* `LIMIT`, so `batchSize` permanently-failing rows filled every page
+    and the healthy rows behind them were unreachable for the lifetime of the
+    handle. The exclusion moved into the SQL (`AND id <> ALL($3::text[])`).
+  - **`INSERT … ON CONFLICT DO NOTHING` is checked with `RETURNING`.** A lost
+    race is a no-op that used to be reported as `{status: 'recorded',
+    modelId: <this instance's model>}`, letting the loser write into a vector
+    space the registry says belongs to the winner. The insert now reports
+    whether it won; a loser that disagrees about the model is blocked with the
+    new `registry-conflict` reason.
+  - **Clear termination is sound.** `rowCount < limit` was treated as "done",
+    but under READ COMMITTED a concurrent updater makes rows drop out of the
+    predicate after the LIMIT was applied — an incomplete clear then lowered
+    `clear_pending`. Batches now use `FOR UPDATE SKIP LOCKED`, the loop only
+    stops on a batch that changed nothing, and a residual probe decides
+    whether the clear may be declared finished. A session-level
+    `pg_try_advisory_lock` keeps two clearers (activation vs. backfill sweep,
+    or two instances) off the same tenant; a clearer that cannot take the lock
+    reports the work as still owed rather than doing nothing quietly.
+  - **The registry flip is serialised and conditional.** Read → decide → flip
+    now runs in one transaction holding `pg_advisory_xact_lock(tenant)`, and
+    the `UPDATE` carries a CAS predicate on the model/dimensions it read.
+    Additionally a switch is refused when the registry row was written within
+    a 10-minute cooldown *and* the corpus still holds vectors: during a
+    rolling deploy where the two machine versions carry different same-width
+    adapters, each side would otherwise switch, clear, and wipe what the other
+    had just re-embedded, oscillating with no error surfaced anywhere.
+  - The clear machinery moved to `staleVectorClear.ts`;
+    `embeddingModelGate.ts` re-exports it, so no import path changed.
+  - New `middleware/test/embeddingModelGate.pg.test.ts` exercises the SQL
+    against a real Postgres + pgvector (catalog width read on an actual
+    `vector(n)` column, the `ON CONFLICT` race, a switch → capped clear →
+    resume cycle, advisory-lock exclusion). It self-skips when no database is
+    reachable, same convention as `test/devplatform/*.pg.test.ts`.
+- Follow-up — **switching the embedding provider without a restart.**
+  - The knowledge-graph stores resolve their embedding client *live* instead
+    of capturing it in their constructors, so a refusal that ends (a drained
+    stale-vector clear, a provider switch) re-enables vector writes in-process
+    rather than needing an operator restart.
+  - New admin page **Admin → Embedding provider**
+    (`/api/v1/admin/embedding-provider`, cookie-session auth) lists every
+    installed `embeddingClient@1` adapter, prices the switch up front (how
+    many stored vectors it discards, whether the column width changes) and
+    performs it: deactivate the outgoing provider, activate the target, then
+    ask the knowledge-graph's gate to **re-evaluate itself in place**. The
+    switch refuses to run without an explicit `confirmDiscardVectors`.
+  - The re-evaluation is an entry point on the published
+    `embeddingModelGateStatus` service (`reevaluate`): it re-resolves the
+    embedding client from the service registry, re-runs the model/dimension
+    gate, replaces the published verdict and re-arms or stands down the
+    backfill sweep. It deliberately does **not** re-activate the
+    knowledge-graph plugin: that would run its `close()`, which ends the
+    `graphPool` the kernel captured once and shares with ~40 subsystems
+    (routines, dev-platform webhooks, agent schedules, cost telemetry, MCP
+    audit, `AgentGraphStore`, `McpConfigService`), poisoning all of them with
+    `Cannot use a pool after calling end on the pool` until the next restart.
+    Re-resolving the client is load-bearing rather than tidy: the plugin used
+    to close over the boot-time client, so a "successful" switch left the
+    registry holding the new provider while the graph kept embedding with the
+    old one, silently.
+  - On a declared-width mismatch the gate can now rewrite the governed
+    `vector(n)` columns at the active provider's width (capture index
+    definitions via `pg_depend` → drop index → drop column → re-add at the new
+    width → replay the index definitions verbatim → reset `embedding_attempts`
+    → flip the registry), under the same anti-oscillation cooldown a
+    same-width switch uses and a wall-clock budget that keeps `activate()`
+    inside its 10 s cap.
+  - **That rewrite never runs on the boot path.** It destroys every stored
+    embedding, so the capability is an explicit parameter of the gate
+    evaluation rather than an ambient default: plugin activation does not pass
+    it and a width mismatch therefore stays `blocked/column-width-mismatch` —
+    reversible, nothing dropped, operator decides — exactly as before this
+    work. Only an operator-confirmed switch through the admin UI passes it.
+    Without this, a deployment already sitting on the documented
+    `blocked/column-width-mismatch` (768-wide columns, a 1536-wide provider)
+    would have lost its entire embedding corpus by doing nothing but upgrading
+    and restarting, with no prompt anywhere — `confirmDiscardVectors` only
+    ever existed on the HTTP route.
+  - `auto_migrate_vector_columns` (KG setup field,
+    `GRAPH_AUTO_MIGRATE_VECTOR_COLUMNS`) is therefore a **master switch over
+    the confirmed path**, not a boot-path behaviour. `'false'` forbids the
+    destructive rewrite even from a confirmed switch in the admin UI, leaving
+    the hand-written `0005_turn_embeddings_768.sql`-style migration as the only
+    route. `'true'` (default) permits it *when an operator confirms it*; it can
+    no longer let a restart wipe a corpus.
 ### Added — plugin-contributed navigation (#470, phase 1 of the Dev Platform extraction)
 
 - New plugin capability `ctx.uiRoutes.registerNav({ navId, href, cluster?,
