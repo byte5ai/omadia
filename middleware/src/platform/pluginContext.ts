@@ -896,6 +896,10 @@ export function createPluginMcpAccessor(
           turnDate: current?.turnDate ?? new Date().toISOString().slice(0, 10),
           ...(current?.agentSlug ? { agentSlug: current.agentSlug } : {}),
           ...(current?.privacyHandle ? { privacyHandle: current.privacyHandle } : {}),
+          // W3-A — the turn's MCP OAuth identity. Dropping it here made every
+          // plugin-attributed call resolve as an unknown caller: `unresolved` in
+          // the audit trail, no token, and a `per_user` server failing closed.
+          ...(current?.mcpUserKey ? { mcpUserKey: current.mcpUserKey } : {}),
           mcpCallerKind: 'plugin',
           mcpCallerId: pluginId,
         },

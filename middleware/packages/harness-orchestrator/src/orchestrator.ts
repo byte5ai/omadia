@@ -168,7 +168,12 @@ import type {
 } from './llmProviderSeam.js';
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
-import { buildDateHeader, today, turnContext } from './turnContext.js';
+import {
+  buildDateHeader,
+  today,
+  turnContext,
+  type TurnContextValue,
+} from './turnContext.js';
 import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
@@ -2587,6 +2592,11 @@ export class Orchestrator {
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
+        // W3-A — MCP OAuth caller identity. Set by an outer scope (channel
+        // adapter / route) and read by the auth provider's `getToken` +
+        // `resolveIdentity`. Without the carry-over a `per_user` server audits
+        // every call as `unresolved` and then fails closed.
+        ...(parent?.mcpUserKey ? { mcpUserKey: parent.mcpUserKey } : {}),
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
@@ -4016,10 +4026,16 @@ export class Orchestrator {
     if (mcpInputReply) {
       input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
     }
-    // `enter` (not `run`) because AsyncLocalStorage.run doesn't compose with
-    // async generators. `enter` binds turnId to the current async resource,
-    // which the generator's awaits inherit; scope ends when the HTTP request
-    // resource is cleaned up.
+    // W3-A — this used to be `turnContext.enter` (AsyncLocalStorage.enterWith).
+    // That does NOT survive a generator's first `yield`: the generator is
+    // resumed in the async context of whoever called `.next()`, so by the time
+    // the tool loop ran, `turnContext.current()` was empty (or, worse, bound to
+    // the consumer's ambient scope). Everything that reads the turn context at
+    // dispatch time was therefore broken on every streaming turn — MCP audit
+    // attribution (`callerKind`/`turnId`/`callerAgent`/`mcpUserKey`), the
+    // skill-binding persona gate, the privacy handle, the KG-ingest owner.
+    // The body now runs through `turnContext.runGenerator`, which wraps every
+    // advance of the inner generator in `storage.run`.
     const parent = turnContext.current();
 
     // Privacy-Proxy Slice 2.1: same handle pattern as `runTurn`. The handle
@@ -4042,7 +4058,7 @@ export class Orchestrator {
       input,
     );
 
-    turnContext.enter({
+    const context: TurnContextValue = {
       turnId,
       turnDate: today(),
       // Per-orchestrator isolation: see the matching `turnContext.run` above.
@@ -4057,6 +4073,8 @@ export class Orchestrator {
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
+      // W3-A — see the matching `turnContext.run` above.
+      ...(parent?.mcpUserKey ? { mcpUserKey: parent.mcpUserKey } : {}),
       ...(privacyHandle ? { privacyHandle } : {}),
       ...(parent?.captureRawToolResult
         ? { captureRawToolResult: parent.captureRawToolResult }
@@ -4066,7 +4084,37 @@ export class Orchestrator {
       ...(parent?.canvasSentinelSink
         ? { canvasSentinelSink: parent.canvasSentinelSink }
         : {}),
-    });
+    };
+    // `input` is re-bound above (envelope normalisation); capture the final
+    // value so the body cannot observe the pre-normalisation message.
+    const turnInput = input;
+    yield* turnContext.runGenerator(context, () =>
+      this.chatStreamInContext({
+        input: turnInput,
+        turnId,
+        sessionId,
+        mcpInputReply,
+        ...(privacyHandle ? { privacyHandle } : {}),
+        ...(observer ? { observer } : {}),
+      }),
+    );
+  }
+
+  /**
+   * The body of {@link chatStream}, run inside the turn's AsyncLocalStorage
+   * scope by `turnContext.runGenerator`. Split out purely so the context can be
+   * established with `run()` semantics instead of `enterWith` — see the comment
+   * at the top of `chatStream`.
+   */
+  private async *chatStreamInContext(args: {
+    readonly input: ChatTurnInput;
+    readonly turnId: string;
+    readonly sessionId: string;
+    readonly mcpInputReply: McpInputReply | undefined;
+    readonly privacyHandle?: PrivacyTurnHandle;
+    readonly observer?: AskObserver;
+  }): AsyncGenerator<ChatStreamEvent> {
+    const { input, turnId, sessionId, mcpInputReply, privacyHandle, observer } = args;
 
     this.applyTurnAuthContext(input);
     // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.

@@ -401,6 +401,10 @@ export function registerDbSubAgentTools(
               turnDate: current.turnDate,
               ...(current.agentSlug ? { agentSlug: current.agentSlug } : {}),
               ...(current.privacyHandle ? { privacyHandle: current.privacyHandle } : {}),
+              // W3-A — same carry-over as the plugin accessor: without it a
+              // skill-bound MCP call reaches a `per_user` server with no
+              // identity, audits as `unresolved` and fails closed.
+              ...(current.mcpUserKey ? { mcpUserKey: current.mcpUserKey } : {}),
               activePersonaSkillId: skillId,
               mcpCallerKind: 'skill',
               mcpCallerId: skillSlug,

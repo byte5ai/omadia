@@ -214,12 +214,38 @@ export const turnContext = {
   },
   /**
    * Sets the turn context for the current async resource and its descendants.
-   * Used from async generators (`chatStream`) because AsyncLocalStorage.run()
-   * doesn't compose with `yield`. Scope is bounded by the enclosing HTTP
-   * request — a new request creates a fresh async resource chain.
+   *
+   * ⚠️ NOT usable from an async generator. `enterWith` binds the store to the
+   * async resource that is executing at that instant, but a generator is
+   * resumed in the async context of whoever called `.next()` — so the store is
+   * gone the moment the generator yields, and every continuation after that
+   * point sees either nothing or the CONSUMER's ambient scope. The streaming
+   * orchestrator entry point used to do exactly this, which silently broke MCP
+   * audit attribution (`callerKind`/`turnId`/`mcpUserKey`) on every streaming
+   * turn. Use {@link runGenerator} from generators.
+   *
+   * Correct uses are plain async functions whose own async chain bounds the
+   * scope — e.g. an Express route handler establishing a per-request identity.
    */
   enter(value: TurnContextValue): void {
     storage.enterWith(value);
+  },
+  /**
+   * Establishes `value` for the entire lifetime of an async generator — the
+   * `run()` equivalent that composes with `yield`.
+   *
+   * Every advance of the inner generator is performed inside `storage.run`, so
+   * the context is active for exactly the spans that execute generator body
+   * code, and is NOT active while the consumer processes a yielded value.
+   * `value` is passed by reference on every step, so writes onto the live store
+   * (`activePersonaSkillId`, `mcpInputReplayNote`) stay visible to later steps
+   * — same semantics `run()` gives a plain async function.
+   */
+  runGenerator<T>(
+    value: TurnContextValue,
+    makeGenerator: () => AsyncGenerator<T>,
+  ): AsyncGenerator<T> {
+    return runGeneratorInContext(value, makeGenerator);
   },
   /**
    * Runs `fn` in an outer scope that only installs a `chatParticipants`
@@ -239,6 +265,10 @@ export const turnContext = {
         turnDate: prev?.turnDate ?? today(),
         ...(prev?.agentSlug ? { agentSlug: prev.agentSlug } : {}),
         chatParticipants,
+        // W3-A: the caller identity MCP OAuth tokens are keyed to must survive
+        // an adapter-established outer scope, or every audited MCP call on a
+        // channel turn records `unresolved` and a `per_user` server fails closed.
+        ...(prev?.mcpUserKey ? { mcpUserKey: prev.mcpUserKey } : {}),
         ...(prev?.privacyHandle ? { privacyHandle: prev.privacyHandle } : {}),
         ...(prev?.captureRawToolResult
           ? { captureRawToolResult: prev.captureRawToolResult }
@@ -274,6 +304,41 @@ export const turnContext = {
     return storage.getStore()?.turnDate ?? today();
   },
 };
+
+/**
+ * Implementation of {@link turnContext.runGenerator}. Kept as a module-level
+ * generator function (rather than inline) so it can `yield` while still owning
+ * the `storage.run` wrapping of every `next()`.
+ */
+async function* runGeneratorInContext<T>(
+  value: TurnContextValue,
+  makeGenerator: () => AsyncGenerator<T>,
+): AsyncGenerator<T> {
+  // Create inside the scope too: a factory that reads the context eagerly
+  // (before its first yield) then behaves the same as one that reads it later.
+  const inner = storage.run(value, makeGenerator);
+  let exhausted = false;
+  try {
+    for (;;) {
+      const step = await storage.run(value, () => inner.next());
+      if (step.done) {
+        exhausted = true;
+        return;
+      }
+      yield step.value;
+    }
+  } finally {
+    // The consumer broke out of its loop or threw. Drive the inner generator's
+    // own `finally` blocks (steering-bus teardown, privacy finalisation) INSIDE
+    // the turn scope — outside it they would run context-less, which is the
+    // very bug this helper exists to prevent.
+    if (!exhausted) {
+      await storage.run(value, async () => {
+        await inner.return(undefined);
+      });
+    }
+  }
+}
 
 /** `YYYY-MM-DD` in Europe/Berlin. Single place this computation lives. */
 export function today(): string {
