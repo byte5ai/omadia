@@ -19,11 +19,13 @@ import {
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import {
   buildSubAgentDomainTools,
+  createLongRunningSubAgentTool,
   mcpNativeHandler,
   mcpToolNameFromRef,
   mcpToolToNativeSpec,
   turnContext,
   type DomainTool,
+  type TaskStore,
   type DomainToolSpec,
   type McpConfigField,
   type McpManager,
@@ -71,6 +73,22 @@ export interface HydrateDeps {
   readonly personaSkills?: readonly SkillRow[];
   /** Operator bindings for skill capability contracts (issue #456). */
   readonly skillToolBindings?: readonly SkillToolBindingRow[];
+  /**
+   * W2-2 (issue #543) — sub-agent tool names (`ask_<slug>`) that ALSO get the
+   * non-blocking `<name>_start`/`_status`/`_list` triple, so a slow sub-agent
+   * stops blocking the chat turn it was delegated from.
+   *
+   * Opt-in per sub-agent, and deliberately NOT a DB column: a column needs a
+   * migration, and `0031`/`0032` are taken by parallel units. Sourced from
+   * `LONG_RUNNING_SUBAGENT_TOOLS` config so it is operator-settable today; the
+   * per-sub-agent DB flag is the follow-up that owns the migration.
+   *
+   * The blocking `ask_<slug>` tool stays registered either way — a sub-agent
+   * that answers in seconds is better inline, and the model picks by name.
+   */
+  readonly longRunningSubAgentTools?: readonly string[];
+  /** Shared store backing the deferred sub-agent tasks. Omit ⇒ feature off. */
+  readonly taskStore?: TaskStore;
   readonly log?: (msg: string) => void;
 }
 
@@ -391,6 +409,49 @@ export function registerDbSubAgentTools(
           );
         },
       });
+    }
+  }
+
+  // W2-2 (issue #543) — deferred sub-agent dispatch. For each opted-in
+  // sub-agent, register the non-blocking triple as NATIVE tools alongside the
+  // blocking `ask_<slug>` DomainTool. Additive: nothing above changes, and with
+  // no allowlist (or no store) this loop does not execute at all.
+  const deferredNames = new Set(deps.longRunningSubAgentTools ?? []);
+  if (deferredNames.size > 0 && deps.taskStore) {
+    const taskStore = deps.taskStore;
+    for (const tool of tools) {
+      if (!deferredNames.has(tool.name)) continue;
+      // Adapt the DomainTool back to an Askable rather than rebuilding the
+      // sub-agent: this reuses the EXACT dispatch path the blocking tool uses
+      // (same LocalSubAgent, same domain logging, same error wrapping), so the
+      // deferred and inline routes cannot drift apart.
+      const handle = createLongRunningSubAgentTool({
+        baseToolName: tool.name,
+        displayName: tool.name.replace(/^ask_/, '') || tool.name,
+        description: tool.spec.description,
+        agent: { ask: (question, observer) => tool.handle({ question }, observer) },
+        store: taskStore,
+        onRunnerError: (err, taskId) => {
+          deps.log?.(
+            `subAgentToolHydration: deferred ${tool.name} task ${taskId} runner failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        },
+      });
+      for (const r of handle.registrations) {
+        if (deps.nativeToolRegistry.get(r.name)) {
+          deps.log?.(
+            `subAgentToolHydration: deferred tool "${r.name}" already registered — skipped`,
+          );
+          continue;
+        }
+        deps.nativeToolRegistry.register(r.name, {
+          handler: r.handler,
+          spec: r.spec,
+          promptDoc: r.promptDoc,
+        });
+      }
     }
   }
 

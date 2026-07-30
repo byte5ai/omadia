@@ -896,6 +896,13 @@
         "error": "Could not resolve the gate."
       }
     },
+    "task": {
+      "started": "Started: {label}",
+      "running": "running in the background",
+      "deferredHint": "This runs on its own — the answer arrives in a follow-up message, not in this one.",
+      "taskId": "task {id}",
+      "phase": "phase {phase}"
+    },
     "inputLabel": "input",
     "outputLabel": "output",
     "persona": {

@@ -439,3 +439,57 @@ export type {
   VerifierResultSummary,
 } from '@omadia/channel-sdk';
 export { toSemanticAnswer } from '@omadia/channel-sdk';
+
+// W2-2 (issue #543, rescoped) — the generic long-running task seam: any tool can
+// be marked `longRunning` and get the non-blocking `<tool>_start`/`_status`/
+// `_list` triple plus a streaming status card, instead of blocking a chat turn.
+// `dev_job` is the first implementor (see `devplatform/devJobTaskStore.ts`);
+// deferred sub-agent dispatch is the second (`tasks/subAgentTaskTool.ts`).
+export {
+  TASK_LIFECYCLE_STATUSES,
+  TERMINAL_TASK_STATUSES,
+  TASK_LEASE_UUID_RE,
+  TaskLeaseLostError,
+  isTaskLifecycleStatus,
+  isTerminalTaskStatus,
+} from './tasks/taskTypes.js';
+export type {
+  NewTaskInput,
+  TaskCardPayload,
+  TaskDescriptor,
+  TaskEventRecord,
+  TaskLifecycleStatus,
+  TaskListFilter,
+  TaskReadStore,
+  TaskReapOptions,
+  TaskReapResult,
+  TaskStore,
+  TerminalTaskPatch,
+} from './tasks/taskTypes.js';
+export { InMemoryTaskStore } from './tasks/inMemoryTaskStore.js';
+export type { InMemoryTaskStoreOptions } from './tasks/inMemoryTaskStore.js';
+export {
+  defineLongRunningTool,
+  describeDeferredPrivacyPosture,
+  longRunningToolNames,
+} from './tasks/longRunningTool.js';
+export type {
+  LongRunningToolDefinition,
+  LongRunningToolHandle,
+  LongRunningToolRegistration,
+  TaskExecutionHandle,
+  TaskExecutor,
+} from './tasks/longRunningTool.js';
+export {
+  DEFAULT_TASK_PURGE_TERMINAL_AFTER_MS,
+  DEFAULT_TASK_REAP_INTERVAL_MS,
+  DEFAULT_TASK_STALE_AFTER_MS,
+  runTaskReaperOnce,
+  startTaskReaper,
+} from './tasks/taskReaper.js';
+export type { TaskReaperOptions } from './tasks/taskReaper.js';
+export {
+  SUB_AGENT_TASK_KIND_PREFIX,
+  createLongRunningSubAgentTool,
+} from './tasks/subAgentTaskTool.js';
+export type { LongRunningSubAgentToolOptions } from './tasks/subAgentTaskTool.js';

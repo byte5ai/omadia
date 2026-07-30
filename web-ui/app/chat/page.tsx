@@ -53,6 +53,11 @@ import { useStreamStore } from '../_lib/streamStore';
 import { ChoiceCard } from '../_components/ChoiceCard';
 import { DevJobChatCard } from '../_components/devjobs/DevJobChatCard';
 import { parseDevJobStartResult } from '../_components/devjobs/devJobChatCardState';
+import { TaskChatCard } from '../_components/tasks/TaskChatCard';
+import {
+  isTaskStartToolName,
+  parseTaskStartResult,
+} from '../_components/tasks/taskChatCardState';
 import { KgWalkPane } from '../_components/KgWalkPane';
 import { PlanDagPane } from '../_components/PlanDagPane';
 import type {
@@ -1051,11 +1056,15 @@ function ToolTrace({ tools }: { tools: ToolEvent[] }): React.ReactElement {
           // (seeded from its tool result) instead of the generic tool row.
           const seed =
             tool.name === 'dev_job_start' ? parseDevJobStartResult(tool.output) : null;
-          return seed ? (
-            <DevJobChatCard key={tool.id} seed={seed} />
-          ) : (
-            <ToolRow key={tool.id} tool={tool} />
-          );
+          if (seed) return <DevJobChatCard key={tool.id} seed={seed} />;
+          // W2-2 (issue #543) — any OTHER `<tool>_start` from the generic
+          // long-running task seam renders the tool-agnostic task card. Checked
+          // second so dev_job keeps its richer, gate-capable card.
+          const taskSeed = isTaskStartToolName(tool.name)
+            ? parseTaskStartResult(tool.output)
+            : null;
+          if (taskSeed) return <TaskChatCard key={tool.id} seed={taskSeed} />;
+          return <ToolRow key={tool.id} tool={tool} />;
         })}
       </div>
     </details>

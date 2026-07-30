@@ -896,6 +896,13 @@
         "error": "Gate konnte nicht aufgelöst werden."
       }
     },
+    "task": {
+      "started": "Gestartet: {label}",
+      "running": "läuft im Hintergrund",
+      "deferredHint": "Das läuft eigenständig weiter — die Antwort kommt in einer Folgemeldung, nicht in dieser.",
+      "taskId": "Task {id}",
+      "phase": "Phase {phase}"
+    },
     "inputLabel": "input",
     "outputLabel": "output",
     "persona": {
