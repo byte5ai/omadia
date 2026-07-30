@@ -9,6 +9,7 @@ import {
   disconnectMcpServer,
   getMcpAuthStatus,
   setMcpOAuthClient,
+  setMcpServerDelegation,
   type McpAuthStatus,
 } from '@/app/_lib/agentBuilder';
 
@@ -87,6 +88,26 @@ export function McpAuthSection({
     }
   }
 
+  /** Flip the delegation mode (W0-1). Surfaced here because it decides WHOSE
+   *  authorization every call to this server uses — the same question the rest
+   *  of this panel is about. */
+  async function toggleDelegation(): Promise<void> {
+    if (!status?.delegation) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setMcpServerDelegation(
+        serverId,
+        status.delegation === 'per_user' ? 'service' : 'per_user',
+      );
+      await refresh();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveClient(): Promise<void> {
     if (!status?.issuer || clientId.trim() === '') return;
     setBusy(true);
@@ -141,6 +162,33 @@ export function McpAuthSection({
           {status.brokered
             ? t('auth.hintBrokered')
             : t('auth.hintDelegated', { host: status.issuerHost ?? status.issuer ?? '?' })}
+        </div>
+      ) : null}
+      {status.delegation ? (
+        <div className="flex flex-col gap-1 border-t border-[color:var(--border)] pt-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-medium">{t('auth.delegationLabel')}:</span>
+            <span className="text-[11px]">
+              {status.delegation === 'per_user'
+                ? t('auth.delegationPerUser')
+                : t('auth.delegationService')}
+            </span>
+            <Button size="sm" variant="ghost" busy={busy} onClick={() => void toggleDelegation()}>
+              {status.delegation === 'per_user'
+                ? t('auth.delegationSwitchToService')
+                : t('auth.delegationSwitchToPerUser')}
+            </Button>
+          </div>
+          <div className="text-[11px] text-[color:var(--fg-muted)]">
+            {status.delegation === 'per_user'
+              ? t('auth.delegationPerUserWhy')
+              : t('auth.delegationServiceWhy')}
+          </div>
+          {status.delegation === 'per_user' && status.identityResolved === false ? (
+            <div className="text-[11px] text-[color:var(--warning)]">
+              {t('auth.delegationIdentityMissing')}
+            </div>
+          ) : null}
         </div>
       ) : null}
       {showClientForm ? (

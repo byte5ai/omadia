@@ -44,7 +44,13 @@ import {
   substituteMcpConfig,
   deriveMcpConfigSchema,
 } from '../agents/subAgentToolHydration.js';
+import {
+  auditIdentity,
+  parseDelegation,
+  resolveMcpUserKey,
+} from '../services/mcpDelegation.js';
 import { rescanAllMcpServers } from '../services/mcpRescan.js';
+import { redactSecrets } from '../services/secretRedaction.js';
 import {
   MCP_SEVERITIES_NEEDING_ACK,
   refreshMcpGrantPolicy,
@@ -115,7 +121,9 @@ export interface AgentBuilderRouterOptions {
       brokered: boolean;
     }>;
     beginAuthorization(server: McpServerRow, userKey: string): Promise<{ authorizeUrl: string }>;
-    completeAuthorization(state: string, code: string): Promise<{ serverId: string }>;
+    /** `iss` is the RFC 9207 authorization-response parameter (W0-1, D1),
+     *  validated against the flow-bound issuer before any exchange. */
+    completeAuthorization(state: string, code: string, iss?: string | null): Promise<{ serverId: string }>;
     setManualClient(issuer: string, clientId: string, clientSecret: string | null): Promise<void>;
     getValidAccessToken(server: McpServerRow, userKey: string): Promise<string | null>;
   };
@@ -221,12 +229,27 @@ export function createAgentBuilderRouter(
           : undefined;
         if (!server) return null;
         // Per-user token (bugfix, mirrors the runtime McpManager in index.ts):
-        // tokens are STORED under the request's session-derived key
-        // (oauthUserKey below) at connect time, so lookup must use the same
-        // key. The static `options.mcpOAuthUserKey` fallback only applies
-        // outside any turn context (no session identity available).
-        const userKey = turnContext.current()?.mcpUserKey ?? options.mcpOAuthUserKey ?? 'operator';
+        // tokens are STORED under the request's session-derived key at connect
+        // time, so lookup must use the same key.
+        //
+        // W0-1 (D2): the previous `?? 'operator'` tail is gone. A `per_user`
+        // server with no resolvable identity now yields no token and the call
+        // fails closed, instead of quietly using the operator's authority.
+        const userKey = resolveMcpUserKey(
+          server,
+          turnContext.current()?.mcpUserKey,
+          options.mcpOAuthUserKey,
+        );
+        if (userKey === null) return null;
         return options.mcpOAuth.getValidAccessToken(server, userKey);
+      },
+      resolveIdentity: async (cfg: McpServerConfig): Promise<string | null> => {
+        const graph = options.getGraphStore();
+        const server = graph
+          ? (await graph.listMcpServers()).find((s) => s.id === cfg.id)
+          : undefined;
+        if (!server) return null;
+        return auditIdentity(server, turnContext.current()?.mcpUserKey, options.mcpOAuthUserKey);
       },
       // Discover/test-call surface needs-auth via the route's describeAuth path,
       // so the manager itself doesn't need to synthesize a prompt here.
@@ -1065,14 +1088,18 @@ export function createAgentBuilderRouter(
     if (!l) return;
     // Establish the per-request MCP OAuth identity (bugfix): the shared
     // McpManager's getToken reads turnContext.mcpUserKey to look up the token
-    // under the SAME key it was stored under (oauthUserKey(req) — see
-    // auth-status/authorize below), instead of silently falling back to the
-    // static 'operator' default and missing it. `enter` (not `run`) because
-    // this scope is naturally bounded by the request's own async chain.
+    // under the SAME key it was stored under (see auth-status/authorize
+    // below), instead of silently missing it. `enter` (not `run`) because this
+    // scope is naturally bounded by the request's own async chain.
+    //
+    // W0-1: this carries the session's CANDIDATE identity. Whether it may be
+    // replaced by a shared one is decided per server by `resolveMcpUserKey` in
+    // the auth provider — not by a default here.
+    const discoverIdentity = sessionIdentity(req);
     turnContext.enter({
       turnId: `mcp-discover-${str(req.params.id)}`,
       turnDate: today(),
-      mcpUserKey: oauthUserKey(req),
+      ...(discoverIdentity ? { mcpUserKey: discoverIdentity } : {}),
     });
     try {
       const servers = await l.graph.listMcpServers();
@@ -1407,10 +1434,18 @@ export function createAgentBuilderRouter(
 
   // ── generic MCP OAuth (epic #459 W9) ──────────────────────────────────────
   // Tokens are keyed to the authenticated operator's identity (codex W9 fold):
-  // one operator's token is never reused for another. Falls back to a shared
-  // key only when no session identity is available (single-admin/dev).
-  const oauthUserKey = (req: Request): string =>
-    req.session?.sub || req.session?.email || options.mcpOAuthUserKey || 'operator';
+  // one operator's token is never reused for another.
+  //
+  // W0-1 (D2): the identity the SESSION offers, with no fallback baked in. The
+  // old `|| 'operator'` tail is gone — whether an unresolved identity may
+  // borrow a shared one is now the server's `delegation` decision, applied by
+  // `resolveMcpUserKey`, never an implicit default here.
+  const sessionIdentity = (req: Request): string | null =>
+    req.session?.sub || req.session?.email || null;
+  /** The key to act as for THIS server, or null when a `per_user` server has
+   *  no resolvable identity (fail closed — never silently the operator). */
+  const oauthUserKeyFor = (req: Request, server: McpServerRow): string | null =>
+    resolveMcpUserKey(server, sessionIdentity(req));
   const escapeHtml = (s: string): string =>
     s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -1426,21 +1461,45 @@ export function createAgentBuilderRouter(
         return;
       }
       if (!options.mcpOAuth) {
-        res.json({ protected: false, connected: false, issuer: null, needsClient: false, brokered: false });
+        res.json({
+          protected: false,
+          connected: false,
+          issuer: null,
+          needsClient: false,
+          brokered: false,
+          delegation: server.delegation,
+          identityResolved: sessionIdentity(req) !== null,
+        });
         return;
       }
       const desc = await options.mcpOAuth.describeAuth(server);
       if (!desc.protected) {
-        res.json({ protected: false, connected: false, issuer: null, needsClient: false, brokered: false });
+        res.json({
+          protected: false,
+          connected: false,
+          issuer: null,
+          needsClient: false,
+          brokered: false,
+          delegation: server.delegation,
+          identityResolved: sessionIdentity(req) !== null,
+        });
         return;
       }
-      const token = await l.graph.getMcpOAuthToken(server.id, oauthUserKey(req));
+      // W0-1: null under `per_user` with no session identity — report it as
+      // not-connected rather than probing the shared operator token.
+      const userKey = oauthUserKeyFor(req, server);
+      const token =
+        userKey === null ? undefined : await l.graph.getMcpOAuthToken(server.id, userKey);
       const client = desc.issuer ? await l.graph.getMcpOAuthClient(desc.issuer) : undefined;
       res.json({
         protected: true,
         connected: token !== undefined,
         issuer: desc.issuer,
         issuerHost: desc.issuerHost,
+        // W0-1 (D2): whose authority calls to this server act under, and
+        // whether this session actually has an identity to act as.
+        delegation: server.delegation,
+        identityResolved: userKey !== null,
         // A brokered server (offers DCR) needs no manual client even without one
         // stored — DCR self-registers at connect. Only a delegating server does.
         brokered: desc.brokered,
@@ -1466,8 +1525,16 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
       }
+      // W0-1 (D2): authorizing under a borrowed identity is exactly the
+      // confused deputy — a `per_user` server with no session identity has
+      // nobody to store the token for, so refuse before starting the flow.
+      const userKey = oauthUserKeyFor(req, server);
+      if (userKey === null) {
+        res.status(403).json({ error: 'delegation_identity_unresolved' });
+        return;
+      }
       try {
-        const { authorizeUrl } = await options.mcpOAuth.beginAuthorization(server, oauthUserKey(req));
+        const { authorizeUrl } = await options.mcpOAuth.beginAuthorization(server, userKey);
         res.json({ authorizeUrl });
       } catch (err) {
         // Issuer without DCR needs a one-time manual client first.
@@ -1514,8 +1581,45 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      await l.graph.deleteMcpOAuthToken(str(req.params.id), oauthUserKey(req));
+      const server = (await l.graph.listMcpServers()).find((s) => s.id === str(req.params.id));
+      if (!server) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      // W0-1: only ever delete the token this caller actually owns. With the
+      // old shared fallback an identity-less session could disconnect the
+      // operator's token.
+      const userKey = oauthUserKeyFor(req, server);
+      if (userKey === null) {
+        res.status(403).json({ error: 'delegation_identity_unresolved' });
+        return;
+      }
+      await l.graph.deleteMcpOAuthToken(server.id, userKey);
       res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Set a server's delegation mode (W0-1, D2). `per_user` requires each
+   *  caller to have its own identity; `service` is the explicit opt-in to one
+   *  shared identity. Migration 0031 grandfathers already-connected servers
+   *  into `service`, so this is how an operator moves one to `per_user`. */
+  router.put('/mcp-servers/:id/delegation', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const delegation = parseDelegation(req.body?.delegation);
+      if (delegation === null) {
+        res.status(400).json({ error: 'invalid_delegation' });
+        return;
+      }
+      const updated = await l.graph.setMcpServerDelegation(str(req.params.id), delegation);
+      if (!updated) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      res.json({ id: updated.id, delegation: updated.delegation });
     } catch (err) {
       fail(res, err);
     }
@@ -1541,6 +1645,16 @@ export function createAgentBuilderRouter(
       const code = typeof req.query['code'] === 'string' ? req.query['code'] : '';
       const state = typeof req.query['state'] === 'string' ? req.query['state'] : '';
       const providerError = typeof req.query['error'] === 'string' ? req.query['error'] : '';
+      // RFC 9207 issuer identifier (W0-1, D1). `state` proves the response
+      // belongs to a flow we started; it does NOT prove which authorization
+      // server minted the code. A repeated `iss` (Express gives an array) is
+      // itself a tampering signal — treat it as a mismatch, not a "pick one".
+      const rawIss = req.query['iss'];
+      if (rawIss !== undefined && typeof rawIss !== 'string') {
+        res.status(400).send(donePage(false, 'The authorization response carried a malformed issuer.'));
+        return;
+      }
+      const iss = typeof rawIss === 'string' ? rawIss : null;
       if (providerError) {
         res.status(400).send(donePage(false, `The provider returned: ${providerError}`));
         return;
@@ -1549,10 +1663,25 @@ export function createAgentBuilderRouter(
         res.status(400).send(donePage(false, 'Missing code or state.'));
         return;
       }
-      await options.mcpOAuth.completeAuthorization(state, code);
+      // The service validates `iss` against the flow-bound issuer BEFORE
+      // exchanging the code, so a rejected callback stores nothing.
+      await options.mcpOAuth.completeAuthorization(state, code, iss);
       res.status(200).send(donePage(true, 'The server is now authorized for you.'));
     } catch (err) {
-      res.status(400).send(donePage(false, msg(err)));
+      // Never echo the raw error here: it can carry the code or the PKCE
+      // verifier (D5). The issuer-mismatch case gets an explicit message.
+      if (err instanceof Error && err.name === 'McpOAuthIssuerMismatchError') {
+        res
+          .status(400)
+          .send(
+            donePage(
+              false,
+              'The authorization response came from an unexpected issuer and was rejected. Nothing was stored. Please start the connection again.',
+            ),
+          );
+        return;
+      }
+      res.status(400).send(donePage(false, redactSecrets(msg(err))));
     }
   });
 

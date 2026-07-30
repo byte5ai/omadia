@@ -75,6 +75,56 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   concurrently and ~16 other pg suites each hold a default-sized (max 10)
   pool, so an uncapped extra pool in one file exhausts `max_connections` and
   cancels an unrelated suite mid-run.
+### Security — MCP OAuth: issuer binding, explicit delegation, refresh race (W0-1)
+
+Three live defects in the MCP OAuth path, one migration
+(`middleware/migrations/0031_mcp_oauth_iss_delegation.sql`).
+
+- **RFC 9207 `iss` validation at the OAuth callback.** The callback trusted the
+  `state` parameter alone. `state` proves a response belongs to a flow we
+  started; it does **not** prove which authorization server issued the code, so
+  a malicious or compromised MCP server could steer the callback and have a code
+  minted by one AS redeemed at another. `iss` is now validated against the
+  issuer bound to the flow **before** the code is exchanged — a mismatch, or an
+  absent `iss` from an AS that advertised
+  `authorization_response_iss_parameter_supported`, is rejected and persists
+  nothing. Whether the AS advertised `iss` is captured at authorize time
+  (`mcp_oauth_flows.iss_required`), never re-discovered at the callback, for the
+  same reason migration 0016 pinned the token endpoint.
+- **Confused deputy removed.** Both the operator router and the runtime
+  `McpManager` resolved the OAuth user key as `… ?? 'operator'`. A Teams or
+  Telegram turn whose user had no mapped identity therefore reached the
+  customer's MCP server holding the **operator's** token. Resolution is now
+  explicit per server via the new `mcp_servers.delegation` column: `per_user`
+  fails closed through the existing `onAuthFailure` path when no identity
+  resolves, and `service` is the explicit opt-in to one shared identity. The
+  fallback literal is gone from every call site.
+- **Refresh race.** `getValidAccessToken` allowed N concurrent refreshes per
+  (server, user). Against an AS with rotating refresh tokens the losers get
+  `invalid_grant` and the last writer can persist an already-retired token,
+  silently disconnecting the user. Concurrent callers now share one in-flight
+  refresh, verified by a test that asserts exactly one token-endpoint **HTTP
+  request** under 8 concurrent callers.
+- `mcp_oauth_tokens.issuer` records which AS minted a token, so a rotated issuer
+  invalidates it instead of replaying it against a different server.
+- `mcp_call_log.acting_identity` records **whose** authority each call used
+  (`caller_agent` is the orchestrator slug, not the identity); an unattributable
+  call is recorded as `unresolved` rather than left blank.
+- OAuth failure logging now goes through a redactor
+  (`middleware/src/services/secretRedaction.ts`) — tokens, `code`, and
+  `code_verifier` can no longer reach a log line, including values echoed back
+  by a provider that we never minted.
+
+> ⚠️ **Operator-visible behaviour change.** A fail-closed `per_user` default for
+> every row would break installed deployments whose channel users reach MCP
+> servers today *because of* the `'operator'` fallback. The migration is
+> therefore deliberately asymmetric: every **existing** `mcp_servers` row that
+> already holds a stored operator token is set to `delegation = 'service'`,
+> preserving today's behaviour, and only **newly created** servers get the safe
+> `per_user` default. Review each grandfathered server in the MCP Control Center
+> and switch the ones that should be per-user — while a server stays on
+> `service`, anyone who can reach an orchestrator it is granted to acts with the
+> operator's authority at that server.
 
 ### Added — pluggable embedding provider (#440)
 

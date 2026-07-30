@@ -2866,7 +2866,15 @@
       "readyToLogin": "Client saved. Now sign in at {host} to authorize access.",
       "continueLogin": "Continue to {host} login ↗",
       "afterLoginHint": "Opens in a new tab. After you approve, come back here — the status refreshes automatically.",
-      "checkStatus": "Check status"
+      "checkStatus": "Check status",
+      "delegationLabel": "Acting identity",
+      "delegationPerUser": "Each user acts as themselves",
+      "delegationService": "One shared service identity",
+      "delegationPerUserWhy": "Every caller uses their own authorization at this server. A conversation with no mapped user identity is refused rather than falling back to yours.",
+      "delegationServiceWhy": "All callers share one authorization — yours. Anyone who can reach an orchestrator with this server granted acts with that authority. Only keep this for servers where a shared identity is intended.",
+      "delegationSwitchToPerUser": "Require per-user identity",
+      "delegationSwitchToService": "Use a shared service identity",
+      "delegationIdentityMissing": "This session has no mapped user identity, so per-user calls to this server fail closed. Nothing is sent to the server."
     },
     "marketplace": {
       "registry": "Registry",

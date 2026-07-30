@@ -34,6 +34,11 @@ export interface AuthServerMetadata {
   readonly codeChallengeMethods: readonly string[];
   readonly grantTypes: readonly string[];
   readonly scopesSupported: readonly string[];
+  /** RFC 9207 `authorization_response_iss_parameter_supported` (W0-1, D1). When
+   *  the AS advertises this, an authorization response WITHOUT `iss` is a
+   *  protocol violation and must be rejected — that is what makes mix-up
+   *  detection enforceable rather than best-effort. */
+  readonly issParameterSupported: boolean;
 }
 
 export interface DiscoveredAuth {
@@ -217,6 +222,7 @@ export class McpAuthDiscovery {
       codeChallengeMethods: strArr(doc['code_challenge_methods_supported']),
       grantTypes: strArr(doc['grant_types_supported']),
       scopesSupported: strArr(doc['scopes_supported']),
+      issParameterSupported: doc['authorization_response_iss_parameter_supported'] === true,
     };
   }
 
