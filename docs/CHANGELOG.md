@@ -18,6 +18,47 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — MCP Client ID Metadata Documents, as a third client-acquisition mode
+
+- omadia can now identify itself to an MCP authorization server by a **Client ID
+  Metadata Document** — an https `client_id` the server dereferences — served at
+  `GET /.well-known/omadia-mcp-client`. This removes the app-registration step at
+  MCP-native brokers that support it.
+- Client acquisition is now an explicit ordered chain:
+  `stored → cimd → dcr (deprecated, warns) → manual`. CIMD is attempted only when
+  the authorization server advertises `client_id_metadata_document_supported`
+  **and** the document is verifiably reachable.
+- **Nothing is deprecated on omadia's side.** Dynamic Client Registration keeps
+  working and merely logs a deprecation notice (the MCP spec's sunset is a
+  12-month clock). The manual OAuth client stays **permanently first-class**: it
+  is the protocol-correct path for Microsoft Entra ID and Okta, neither of which
+  supports CIMD.
+- ⚠️ **Deployment requirement — CIMD needs INBOUND HTTPS reachability.** The
+  identity provider must fetch the document from omadia, which is strictly
+  stronger than the outbound-redirect-only requirement every other mode has. Set
+  `FLOW_PUBLIC_BASE_URL` to an https origin reachable from the internet.
+  Deliberately *not* derived from `PUBLIC_BASE_URL`, whose `localhost` default is
+  exactly the shape that cannot work.
+- **A firewalled or air-gapped install degrades cleanly, it does not break.** The
+  metadata endpoint answers **501 with an actionable message** rather than 500,
+  the acquisition chain falls through to the manual client, and the MCP Control
+  Center explains which mode a server is on plus why CIMD is unavailable when it
+  is. A byte5-hosted metadata relay is **not** offered by default — it would make
+  every customer's `client_id` identify byte5 to that customer's IdP.
+- Migration `0032_mcp_oauth_cimd.sql` adds `'cimd'` to the
+  `mcp_oauth_clients.registered_via` CHECK set and a `client_metadata_url`
+  column. The CHECK is widened, not dropped — an unknown mode is still rejected.
+- Security: the metadata-URL probe reuses the existing `assertPublicHttpsUrl`
+  SSRF guard (no second validator), a CIMD client is public by construction so no
+  secret is stored, the document carries no secret, and the W0-1 RFC 9207 `iss`
+  validation plus flow-bound endpoint pinning are untouched. `mcp_oauth_flows`
+  TTL pruning was verified to actually exist in both places it is claimed.
+- Rationale, rejected options, and the full deployment note:
+  [ADR-0006](adr/0006-mcp-client-id-metadata-documents.md).
+- Note on issue #546: its premise that the registry "supports only static headers
+  with `secretRef`" was incorrect — the provider-agnostic OAuth 2.1 + PKCE stack
+  shipped in epic #459 W9. This release is a delta on that stack.
+
 ### Fixed — the CI schema job never applied `middleware/migrations`
 
 - `MIGRATION_DOMAINS` in `.github/workflows/ci.yml` listed five domains and
