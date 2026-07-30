@@ -28,7 +28,7 @@ stored).
 Mechanically, that session check is enforced by `adminKeysRouter.ts` itself
 via the kernel-published `ctx.operatorAuth` accessor (`@omadia/plugin-api`),
 not by an absence from `publicPaths.ts` — see `docs/security-architecture.md`
-§ 8 for why that distinction matters and the full mechanism.
+§ 9 for why that distinction matters and the full mechanism.
 
 ## Authentication
 
