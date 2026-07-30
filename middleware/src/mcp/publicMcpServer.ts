@@ -54,7 +54,7 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import type { ApiKeyPrincipal, ApiKeyScope, RateLimiter } from '@omadia/api-key-auth';
+import type { ApiKeyPrincipal, RateLimiter } from '@omadia/api-key-auth';
 import { hasScope, hasWriteScope, MCP_INVOKE_SCOPE, MCP_LIST_SCOPE } from '@omadia/api-key-auth';
 import type {
   DispatchableToolSpec,
