@@ -136,7 +136,18 @@ jobs:
       # in lexical (file-name) order — which matches the numbered
       # migration convention. Newline-separated so the shell loop can
       # iterate cleanly.
+      #
+      # `middleware/migrations` is the core runtime domain (multi-
+      # orchestrator, agent-builder graph, MCP, dev-platform). It is
+      # self-contained: no cross-domain FKs and no extension
+      # dependencies, so its position in this list is not load-bearing.
+      #
+      # Still uncovered (each needs its own audit before enabling):
+      # middleware/src/conductor/migrations,
+      # middleware/src/services/graph/migrations,
+      # middleware/packages/harness-memory-postgres/src/migrations.
       MIGRATION_DOMAINS: |
+        middleware/migrations
         middleware/packages/harness-knowledge-graph-neon/src/migrations
         middleware/src/auth/migrations
         middleware/src/plugins/routines/migrations
