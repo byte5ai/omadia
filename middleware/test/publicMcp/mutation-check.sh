@@ -56,15 +56,25 @@ revert() { git checkout -- "$SCOPES" "$SERVER" "$BINDINGS" "$PATHS" "$PRIVACY" 2
 run_mutation() {
   local label="$1" file="$2" mutation="$3"
   revert
+  # A mutation is one or more `old|||new` pairs joined by `@@@`. Multi-edit
+  # support is not a convenience: some invariants cannot be broken with a single
+  # substitution. Sharing the stateless transport across requests — the bare
+  # "flag flip" a naive port would ship — needs a module-level slot, a memoized
+  # assignment, AND the teardown removed. A one-line version of that mutation
+  # only deleted the teardown, which leaks memory without causing reuse (a fresh
+  # pair is still built per request), so it left the suite green and the harness
+  # mis-reported the statelessness invariant as untested.
   if ! python3 - "$file" "$mutation" <<'PY'
-import sys, io
+import sys
 path, mutation = sys.argv[1], sys.argv[2]
 src = open(path).read()
-old, new = mutation.split('|||')
-if old not in src:
-    print(f'MUTATION-NOT-APPLICABLE: {old[:60]!r} not found in {path}')
-    sys.exit(2)
-open(path, 'w').write(src.replace(old, new, 1))
+for pair in mutation.split('@@@'):
+    old, new = pair.split('|||')
+    if old not in src:
+        print(f'MUTATION-NOT-APPLICABLE: {old[:60]!r} not found in {path}')
+        sys.exit(2)
+    src = src.replace(old, new, 1)
+open(path, 'w').write(src)
 PY
   then
     echo "‼ SKIPPED (mutation no longer applies): $label"
@@ -144,9 +154,16 @@ run_mutation "405 on non-POST is removed" "$SERVER" \
   "if (req.method !== 'POST') {|||if (false) {"
 
 echo "── statelessness ────────────────────────────────────────────────────────"
-run_mutation "the transport is reused across requests (the SDK reuse guard)" "$SERVER" \
-  'await session?.transport.close().catch(() => {});
-      await session?.mcp.close().catch(() => {});|||'
+# THE headline invariant of the issue. Three edits, because the failure being
+# guarded against is a SHARED transport, not merely a missing teardown: build the
+# pair once into a module-level slot, reuse it, and skip the close. That is
+# exactly what "just flip sessionIdGenerator to undefined" produces, and it makes
+# only the FIRST request work.
+run_mutation "the transport is shared across requests (the naive flag-flip port)" "$SERVER" \
+  'export const MAX_REQUEST_BYTES = 8 * 1024 * 1024;|||export const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
+let __shared: ReturnType<PublicMcpServer["createRequestScopedServer"]> | undefined;@@@      session = this.createRequestScopedServer(principal);|||      __shared ??= this.createRequestScopedServer(principal);
+      session = __shared;@@@      await session?.transport.close().catch(() => {});
+      await session?.mcp.close().catch(() => {});|||      /* mutation: no teardown */'
 
 echo "── binding normalization ────────────────────────────────────────────────"
 run_mutation "a malformed 'enabled' column defaults to enabled" "$BINDINGS" \
@@ -157,8 +174,18 @@ run_mutation "a malformed 'enabled' column defaults to enabled" "$BINDINGS" \
   if (!raw.enabled) return undefined;|||if (raw.enabled === false) return undefined;"
 run_mutation "a partially-valid tool list narrows to its valid subset" "$BINDINGS" \
   'const invalid = raw.filter((entry) => nonEmptyString(entry) === undefined);|||const invalid: unknown[] = [];'
+# Must replace the null guard's RESULT, not just skip the branch: `!Array.isArray(null)`
+# catches a null anyway, so `if (false)` changed no behaviour and the harness
+# read that as "invariant untested". The real question is whether a null column
+# can ever become an empty GRANT.
 run_mutation "a null tool list becomes an empty grant instead of a denial" "$BINDINGS" \
-  'if (raw === null || raw === undefined) {|||if (false) {'
+  'if (raw === null || raw === undefined) {
+    // Schema says NOT NULL DEFAULT '"'"'{}'"'"', so NULL here is a foreign writer.
+    warnMalformed(`${column} is null`, keyId);
+    return undefined;
+  }
+  if (!Array.isArray(raw)) {|||if (raw === null || raw === undefined) return [];
+  if (!Array.isArray(raw)) {'
 run_mutation "a both-read-and-write tool resolves toward READ" "$BINDINGS" \
   'const readOnly = readTools.filter((t) => !writeSet.has(t));|||const readOnly = readTools;'
 
