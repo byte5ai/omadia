@@ -115,8 +115,11 @@ export interface PublicMcpDispatcher {
    * dispatcher around a mutable slot and exposes this to fill it for exactly the
    * duration of one dispatch — see `wirePublicMcp.ts`.
    *
-   * Optional so a test (or a future host) may supply a dispatcher with a handle
-   * already bound.
+   * Optional in the type, but LOAD-BEARING in practice whenever a privacy
+   * provider is installed: the endpoint gates on `gate.masked()`, and a
+   * dispatcher that never receives the gate's handle can never set it. A host
+   * that omits this while masking is required has every call refused — loudly,
+   * which is the correct direction for a privacy control.
    */
   withPrivacy?<T>(handle: PrivacyTurnHandle, fn: () => Promise<T>): Promise<T>;
 }
@@ -611,6 +614,42 @@ export class PublicMcpServer {
         throw new McpError(
           ErrorCode.InternalError,
           'privacy masking failed for this tool result — the result was discarded rather than returned unmasked',
+        );
+      }
+
+      // FAIL CLOSED, second half: the boundary must have been CROSSED, not
+      // merely "not failed".
+      //
+      // `maskingFailed()` cannot tell "masking succeeded" from "masking never
+      // ran", and "never ran" is the shape every leak in this family has taken:
+      // a dispatch branch that skipped `afterDispatch` entirely (the throwing
+      // -handler bug), a handler returning a non-string that the masker declines
+      // to walk, an intern-exempt name that slipped past the allowlist. In each
+      // case the raw bytes are already in hand and every check above is happy.
+      //
+      // So gate on the positive signal instead. `masked()` is true only when
+      // `internToolResultV4` actually returned a digest for this dispatch, which
+      // is the one thing that cannot be true by accident.
+      //
+      // ONE exception: `origin === 'dispatcher'` marks content the dispatch
+      // layer authored itself — "unknown tool", "plugin not ready" — which
+      // names only the tool the caller asked for and the owning plugin id, and
+      // carries no tool data for masking to have crossed. Anything else,
+      // INCLUDING an `origin`-less result from a dispatcher that predates the
+      // field, must have been masked.
+      if (gate !== undefined && result.origin !== 'dispatcher' && !gate.masked()) {
+        this.record(
+          principal,
+          binding.agentId,
+          name,
+          false,
+          'privacy masking skipped',
+          startedAt,
+          isWrite,
+        );
+        throw new McpError(
+          ErrorCode.InternalError,
+          'privacy masking did not run for this tool result — the result was discarded rather than returned unmasked',
         );
       }
 

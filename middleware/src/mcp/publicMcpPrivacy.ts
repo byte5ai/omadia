@@ -61,8 +61,21 @@ export interface PublicMcpPrivacyGate {
   readonly handle: PrivacyTurnHandle;
   /** True when masking failed during this dispatch — DISCARD the result. */
   maskingFailed(): boolean;
-  /** True when masking ran and produced a digest. Lets the endpoint assert that
-   *  the boundary was actually crossed rather than skipped. */
+  /**
+   * True when masking RAN and produced a digest for this dispatch.
+   *
+   * The positive signal, and the one `PublicMcpServer` actually gates on:
+   * `maskingFailed()` is false both when masking succeeded and when it never
+   * ran, and "never ran" is the shape every leak in this family has taken. A
+   * dispatch branch that skips the boundary, a handler returning a non-string
+   * the masker declines to walk, an intern-exempt name that slipped the
+   * allowlist — all of them leave `maskingFailed()` false with raw bytes in
+   * hand.
+   *
+   * Enforced, not advisory: a result the gate did not mask is discarded. See
+   * the assertion in `PublicMcpServer.callToolFor`, and
+   * `publicMcpMaskingAssertion.test.ts` for what it catches.
+   */
   masked(): boolean;
 }
 
