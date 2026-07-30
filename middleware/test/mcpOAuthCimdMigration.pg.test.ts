@@ -47,13 +47,21 @@ const TENANT = `w24_cimd_${process.pid}_${Date.now().toString(36)}`;
 const MIGRATION_PATH = new URL('../migrations/0032_mcp_oauth_cimd.sql', import.meta.url);
 
 describe('migration 0032 — mcp_oauth_clients CIMD (pg)', { skip: !pgAvailable }, () => {
+  /** Creates and drops the tenant schema. Separate from `pool` because the
+   *  schema must exist before a search_path-scoped connection can resolve. */
+  let admin: Pool;
+  /** Every query in the suite runs here. The search_path is pinned as a
+   *  CONNECTION OPTION, not via a `SET` statement: a `SET` binds only the one
+   *  pooled client that happened to serve it, so the next query — on a
+   *  different client — would silently fall back to `public`. That bug made two
+   *  of these tests fail on the first run, which is exactly the kind of
+   *  cross-connection leakage a scratch database would have hidden. */
   let pool: Pool;
 
   before(async () => {
-    pool = new Pool({ connectionString: PG_URL });
-    await pool.query(`CREATE SCHEMA "${TENANT}"`);
-    // Every statement in this suite resolves inside the tenant schema only.
-    await pool.query(`SET search_path TO "${TENANT}"`);
+    admin = new Pool({ connectionString: PG_URL });
+    await admin.query(`CREATE SCHEMA "${TENANT}"`);
+    pool = new Pool({ connectionString: PG_URL, options: `-c search_path=${TENANT}` });
     // Migration 0015's table shape, verbatim in the parts 0032 alters.
     await pool.query(`
       CREATE TABLE mcp_oauth_clients (
@@ -75,9 +83,11 @@ describe('migration 0032 — mcp_oauth_clients CIMD (pg)', { skip: !pgAvailable 
   });
 
   after(async () => {
-    // Schema-scoped teardown. No CREATE/DROP DATABASE anywhere.
-    await pool.query(`DROP SCHEMA IF EXISTS "${TENANT}" CASCADE`);
+    // Schema-scoped teardown. No CREATE/DROP DATABASE anywhere — those are
+    // cluster-wide and abort other connections to the same cluster.
     await pool.end();
+    await admin.query(`DROP SCHEMA IF EXISTS "${TENANT}" CASCADE`);
+    await admin.end();
   });
 
   it("admits registered_via = 'cimd' after the migration", async () => {
