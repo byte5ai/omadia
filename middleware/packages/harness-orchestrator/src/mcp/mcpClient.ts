@@ -56,6 +56,39 @@ const LENIENT_CALL_TOOL_RESULT_SCHEMA = CallToolResultSchema.extend({
 
 export type McpTransportKind = 'stdio' | 'http' | 'sse';
 
+/**
+ * Transports the MCP specification has formally deprecated (issue #541).
+ *
+ * The MCP 2026-07-28 revision reclassifies the legacy HTTP+SSE transport
+ * (two endpoints: `GET /sse` for the event stream plus a separate POST
+ * endpoint for messages) as **Deprecated**, with a minimum 12-month removal
+ * window. Streamable HTTP (our `'http'`) is the migration target.
+ *
+ * omadia therefore *discourages* `'sse'` for NEW registrations — the operator
+ * picker hides it behind a "show deprecated transports" toggle, and the
+ * marketplace importer prefers an `http` remote when a catalog entry offers
+ * both. Nothing is hard-blocked: the removal window is open, existing rows
+ * keep working unchanged (`SSEClientTransport` stays wired in
+ * `McpManager.transportFor`), and the `agent_mcp_servers.transport` CHECK
+ * constraint still accepts `'sse'`, so a legacy server can be re-created.
+ *
+ * This array is the single source of truth for "which transports are
+ * deprecated" — the API serializer, the marketplace importer, and the web-ui
+ * all derive from it rather than hard-coding `'sse'`.
+ */
+export const DEPRECATED_MCP_TRANSPORTS = ['sse'] as const;
+
+/** A transport listed in {@link DEPRECATED_MCP_TRANSPORTS}. */
+export type DeprecatedMcpTransport = (typeof DEPRECATED_MCP_TRANSPORTS)[number];
+
+/**
+ * True when `transport` is deprecated by the MCP spec. Takes a plain `string`
+ * so callers holding an unvalidated DB/catalog value can ask without casting.
+ */
+export function isDeprecatedMcpTransport(transport: string): boolean {
+  return (DEPRECATED_MCP_TRANSPORTS as readonly string[]).includes(transport);
+}
+
 export interface McpServerConfig {
   readonly id: string;
   readonly name: string;

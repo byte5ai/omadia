@@ -125,6 +125,8 @@ export type {
   ToolGrantRow,
 } from './registry/agentGraphStore.js';
 export {
+  DEPRECATED_MCP_TRANSPORTS,
+  isDeprecatedMcpTransport,
   McpManager,
   mcpNativeHandler,
   mcpNativeToolName,
@@ -132,6 +134,7 @@ export {
   mcpToolToNativeSpec,
 } from './mcp/mcpClient.js';
 export type {
+  DeprecatedMcpTransport,
   McpAuthProvider,
   McpCallerKind,
   McpCallGuard,
