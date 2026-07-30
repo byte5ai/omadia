@@ -14,6 +14,7 @@ import {
   ackMcpToolVerdict,
   addMcpRegistry,
   createMcpServer,
+  DEPRECATED_MCP_TRANSPORTS,
   rescanAllMcpServers,
   testCallMcpTool,
   deleteGraphEdge,
@@ -201,6 +202,15 @@ function worstSeverityOf(server: McpServerNode): SkillVerdictSeverity {
   return worst;
 }
 
+/**
+ * Issue #541 — badge an existing row whose transport MCP 2026-07-28 deprecated.
+ * Trusts the middleware's `transportDeprecated` when present and falls back to
+ * the local list, so the badge still shows against an older middleware build.
+ */
+function isDeprecatedTransport(server: McpServerNode): boolean {
+  return server.transportDeprecated ?? DEPRECATED_MCP_TRANSPORTS.includes(server.transport);
+}
+
 function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): React.ReactElement {
   const t = useTranslations('adminMcp');
   const [servers, setServers] = useState<McpServerNode[] | null>(null);
@@ -212,6 +222,11 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
   const [busy, setBusy] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [transport, setTransport] = useState<McpTransport>('http');
+  // Issue #541 — MCP 2026-07-28 deprecated the legacy HTTP+SSE transport. It is
+  // hidden from the picker by default (http/Streamable HTTP stays the default
+  // choice) but never blocked: the removal window is open, so an operator must
+  // still be able to register a legacy SSE server on purpose.
+  const [showDeprecated, setShowDeprecated] = useState(false);
   const [endpoint, setEndpoint] = useState('');
 
   const refresh = useCallback(async () => {
@@ -288,12 +303,34 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
           <select
             value={transport}
             onChange={(e) => setTransport(e.target.value as McpTransport)}
+            aria-label={t('servers.transport')}
             className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
           >
             <option value="http">http</option>
-            <option value="sse">sse</option>
             <option value="stdio">stdio</option>
+            {showDeprecated
+              ? DEPRECATED_MCP_TRANSPORTS.map((d) => (
+                  <option key={d} value={d}>
+                    {t('servers.deprecatedOption', { transport: d })}
+                  </option>
+                ))
+              : null}
           </select>
+        </label>
+        <label className="flex items-center gap-2 self-center text-xs text-[color:var(--fg-muted)]">
+          <input
+            type="checkbox"
+            checked={showDeprecated}
+            onChange={(e) => {
+              const on = e.target.checked;
+              setShowDeprecated(on);
+              // Turning the toggle off must not leave a now-hidden value selected.
+              if (!on && DEPRECATED_MCP_TRANSPORTS.includes(transport)) setTransport('http');
+            }}
+          />
+          <span title={t('servers.transportDeprecatedHint')}>
+            {t('servers.showDeprecatedTransports')}
+          </span>
         </label>
         <label className="flex grow flex-col gap-1 text-xs">
           {t('servers.endpoint')}
@@ -443,7 +480,19 @@ function ServerRows({
             {server.name}
           </button>
         </td>
-        <td className={tdCls}>{server.transport}</td>
+        <td className={tdCls}>
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            {server.transport}
+            {isDeprecatedTransport(server) ? (
+              <span
+                title={t('servers.transportDeprecatedHint')}
+                className="rounded-full border border-[color:var(--warning)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[color:var(--warning)]"
+              >
+                {t('servers.transportDeprecated')}
+              </span>
+            ) : null}
+          </span>
+        </td>
         <td className={tdCls}>
           <span
             className={

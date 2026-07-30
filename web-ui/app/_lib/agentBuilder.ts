@@ -814,6 +814,8 @@ export interface McpCatalogEntry {
   description: string | null;
   version: string | null;
   transport: McpTransport | null;
+  /** Issue #541 — the catalog only offered a deprecated (HTTP+SSE) remote. */
+  transportDeprecated?: boolean;
   endpoint: string | null;
   license: string | null;
   author: string | null;

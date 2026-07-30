@@ -2790,6 +2790,10 @@
     "servers": {
       "name": "Name",
       "transport": "Transport",
+      "transportDeprecated": "Deprecated",
+      "transportDeprecatedHint": "The legacy HTTP+SSE transport is deprecated as of MCP 2026-07-28 and will be removed after a transition window of at least 12 months. Existing SSE servers keep working — but new servers should use Streamable HTTP (http), and existing ones should be migrated to it.",
+      "showDeprecatedTransports": "Show deprecated transports",
+      "deprecatedOption": "{transport} (deprecated)",
       "endpoint": "Endpoint",
       "status": "Status",
       "tools": "Tools",
