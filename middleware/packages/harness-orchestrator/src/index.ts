@@ -174,8 +174,13 @@ export {
   mcpInputReplayCappedError,
   mcpInputRequiredSentinel,
   mcpInputUnsupportedError,
+  mcpInputReplyLabel,
   parseMcpInputReply,
   parseMcpInputRequests,
+  resetSharedMcpInputWiring,
+  setSharedMcpInputReplayer,
+  sharedMcpInputReplayer,
+  sharedPendingMcpInputStore,
 } from './mcp/pendingMcpInput.js';
 export type {
   InMemoryPendingMcpInputStoreOptions,

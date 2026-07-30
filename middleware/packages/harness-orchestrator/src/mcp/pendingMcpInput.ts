@@ -262,6 +262,48 @@ export class InMemoryPendingMcpInputStore implements PendingMcpInputStore {
   }
 }
 
+// ── process-shared wiring ───────────────────────────────────────────────────
+//
+// The `McpManager` (constructed in the kernel's `index.ts`) WRITES parked
+// records; the Orchestrator (built from `OrchestratorDeps` in this package's
+// `plugin.ts`) READS them. Neither can reach the other's construction site, so
+// the single instance lives here — the same module-singleton shape
+// `mcpGrantPolicy.ts` already uses for the dispatch guard.
+//
+// Not a hidden global with surprise lifetime: the store is process-local by
+// design (see `InMemoryPendingMcpInputStore`), so "one per process" is exactly
+// the correct scope, and both readers go through these two accessors.
+
+let sharedStore: PendingMcpInputStore | undefined;
+let sharedReplayer: McpInputReplayer | undefined;
+
+/** The process-wide store. Created on first access so both sides get the same
+ *  instance regardless of which one runs first. */
+export function sharedPendingMcpInputStore(): PendingMcpInputStore {
+  sharedStore ??= new InMemoryPendingMcpInputStore();
+  return sharedStore;
+}
+
+/**
+ * Register the replayer. Called by the kernel once the `McpManager` and the
+ * server registry exist — those are the only things that can perform a replay.
+ */
+export function setSharedMcpInputReplayer(replayer: McpInputReplayer): void {
+  sharedReplayer = replayer;
+}
+
+/** The registered replayer, or `undefined` when the kernel wired none — in
+ *  which case the orchestrator leaves the whole MRTR path inert. */
+export function sharedMcpInputReplayer(): McpInputReplayer | undefined {
+  return sharedReplayer;
+}
+
+/** Test seam: drop both, so a suite cannot leak state into the next one. */
+export function resetSharedMcpInputWiring(): void {
+  sharedStore = undefined;
+  sharedReplayer = undefined;
+}
+
 // ── parsing a server's `inputRequests` ──────────────────────────────────────
 
 /** Why a server's `input_required` result could not be turned into a card. */

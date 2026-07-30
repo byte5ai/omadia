@@ -276,6 +276,13 @@ import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
 import { McpManager, type McpCallLogEntry, type McpServerConfig } from '@omadia/orchestrator';
+// W2-1 (#544) — MRTR mid-call user input: the process-shared park store and the
+// replayer registration. See `mcp/pendingMcpInput.ts` for why these are shared.
+import {
+  REPLAY_ARG_KEY,
+  setSharedMcpInputReplayer,
+  sharedPendingMcpInputStore,
+} from '@omadia/orchestrator';
 import {
   SERVICE_USER_KEY,
   auditIdentity,
@@ -1798,6 +1805,10 @@ async function main(): Promise<void> {
       // Generic MCP OAuth (epic #459 W9) wired as the manager's auth provider;
       // the service instance is created at outer scope (shared with the router).
       const mcpManager = new McpManager({
+        // W2-1 (#544) — where a `resultType: "input_required"` call is parked.
+        // The process-shared instance, so the Orchestrator's turn drain reads
+        // exactly what this manager wrote.
+        pendingInput: sharedPendingMcpInputStore(),
         ...(mcpAuditStore
           ? {
               onToolCall: (entry: McpCallLogEntry) => {
@@ -1888,6 +1899,39 @@ async function main(): Promise<void> {
             }
           : {}),
       });
+      // W2-1 (#544) — the replayer. Registered here because this is the only
+      // place that holds BOTH the manager and the server registry: a replay is
+      // a fresh `tools/call`, so it needs the server's live config (endpoint,
+      // headers, Vault-resolved env) re-resolved rather than a snapshot taken
+      // when the call was parked.
+      //
+      // A server the operator deleted (or renamed away) between the two turns
+      // returns `undefined`, which the orchestrator surfaces to the user as
+      // "no longer reachable" instead of silently dropping their input.
+      if (mcpAuditStore) {
+        setSharedMcpInputReplayer({
+          replay: async (record, inputResponses) => {
+            const server = (await mcpAuditStore.listMcpServers()).find(
+              (s) => s.id === record.serverId,
+            );
+            if (!server) return undefined;
+            const cfg: McpServerConfig = {
+              id: server.id,
+              name: server.name,
+              transport: server.transport,
+              endpoint: server.endpoint,
+              ...(server.privacyBypass ? { privacyBypass: true } : {}),
+            };
+            // `originalArgs` first: a server that (incorrectly) declared an
+            // `inputResponses` input field must not be able to shadow the
+            // collected answers with a stale value from the original call.
+            return mcpManager.callTool(cfg, record.toolName, {
+              ...record.originalArgs,
+              [REPLAY_ARG_KEY]: inputResponses,
+            });
+          },
+        });
+      }
       // Host MCP service for plugin ctx.mcp (epic #459 W5, issue #458):
       // resolved lazily by createPluginContext, exactly like the 'llm'
       // provider. Grants are read live per call (deny-by-default).
