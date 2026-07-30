@@ -200,6 +200,20 @@ export interface PluginContext {
    *  — a Hub plugin may land on an older core without the broker. */
   readonly oauthTokens?: OAuthTokensAccessor;
 
+  /** Issue #438 follow-up — kernel-published operator-session verifier. Present
+   *  iff the host wires a session-verification backend into
+   *  `createPluginContext` (production always does; older kernels or narrow
+   *  test/migration contexts may not). Lets a plugin gate its OWN admin-only
+   *  HTTP surface behind the SAME operator session cookie the kernel's own
+   *  `requireAuth` middleware checks, WITHOUT re-implementing (and risking
+   *  drifting from) that verification logic. Per {@link RoutesAccessor}'s doc
+   *  comment the kernel does NOT inject auth middleware around a contributed
+   *  router — a plugin whose admin surface needs operator-only access MUST
+   *  check this itself, and MUST fail closed (refuse to serve, never silently
+   *  mount unauthenticated) when it is undefined. Guard with `if
+   *  (ctx.operatorAuth)`. */
+  readonly operatorAuth?: OperatorAuthAccessor;
+
   /** Report an operator-facing action status (e.g. "not connected yet"). The
    *  kernel holds the latest value per plugin and the admin UI renders it as a
    *  badge on the plugin card + a banner on the detail page that clears when
@@ -678,6 +692,27 @@ export interface OAuthTokensAccessor {
 }
 
 export type OAuthTokenErrorCode = 'not_connected' | 'refresh_failed';
+
+/**
+ * Issue #438 follow-up — kernel-published operator-session verifier (see the
+ * `PluginContext.operatorAuth` doc comment for the full contract). The kernel
+ * implementation reuses the EXACT SAME verification logic as its own
+ * `requireAuth` middleware — same cookie name, same signing key, same
+ * Entra-whitelist rule — so there is exactly one code path that decides
+ * session validity, never two that can drift apart. Deliberately decoupled
+ * from Express (this package never imports express types, see
+ * {@link RoutesAccessor}): the caller hands over the raw `Cookie` header
+ * string, not a `Request`.
+ */
+export interface OperatorAuthAccessor {
+  /**
+   * Resolves `true` iff the raw `Cookie` request header carries a currently
+   * valid operator session. Never throws — a missing header, a malformed
+   * cookie, an expired/invalid session token, or (for Entra-issued sessions)
+   * an email that fell off the admin whitelist all resolve `false`.
+   */
+  hasValidSession(cookieHeader: string | undefined): Promise<boolean>;
+}
 
 export class OAuthTokenError extends Error {
   readonly code: OAuthTokenErrorCode;

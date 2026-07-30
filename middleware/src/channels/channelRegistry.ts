@@ -11,6 +11,7 @@ import type { JobScheduler } from '../plugins/jobScheduler.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
+import type { OperatorAuthAccessor } from '@omadia/plugin-api';
 
 import type {
   ChannelHandle,
@@ -47,6 +48,12 @@ export interface ChannelRegistryDeps {
   flowPublicBaseUrl?: string;
   /** Spec 004 — backing store for `ctx.status`; cleared on deactivate. */
   pluginStatusRegistry?: PluginStatusRegistry;
+  /** Issue #438 follow-up — kernel-published `ctx.operatorAuth`, threaded
+   *  straight into every `createPluginContext`. Optional so narrow test
+   *  contexts can omit it (an admin router relying on it then fails closed).
+   *  This is how `@omadia/channel-api`'s `/admin/keys` router — a channel
+   *  plugin — gets a real operator-session check. */
+  operatorAuth?: OperatorAuthAccessor;
   /**
    * US4 event-emit catalog. A channel plugin that declares `event_emit` capabilities (e.g. Teams
    * emitting `teams.message.posted`) has them registered here on activate, so `ctx.events.emit` is
@@ -119,6 +126,7 @@ export class DefaultChannelRegistry implements ChannelRegistry {
       flowSigningKey: this.deps.flowSigningKey,
       flowPublicBaseUrl: this.deps.flowPublicBaseUrl,
       pluginStatusRegistry: this.deps.pluginStatusRegistry,
+      operatorAuth: this.deps.operatorAuth,
     });
 
     const handle = await impl.activate(ctx, this.deps.coreApi);
