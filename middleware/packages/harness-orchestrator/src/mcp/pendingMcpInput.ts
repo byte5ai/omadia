@@ -127,13 +127,22 @@ export type PutPendingMcpInputResult = 'stored' | 'replay_capped';
  *
  * `McpManager.callTool` is reached through the published
  * `NativeToolHandler = (input: unknown) => Promise<string>` contract, so it has
- * no turn parameter — and it cannot read the turn identity from ambient context
- * either: on the STREAMING path `turnContext` is established with
- * `AsyncLocalStorage.enterWith` inside an async generator, which does not
- * propagate into the generator's own continuations. Verified empirically:
- * `turnContext.current()` is `undefined` inside a tool handler on every
- * `chatStream` turn (a pre-existing repo property, and the reason this feature
- * must not lean on it).
+ * no turn parameter.
+ *
+ * HISTORICAL NOTE (W3-A): it could not read the turn identity from ambient
+ * context either, because the streaming path established `turnContext` with
+ * `AsyncLocalStorage.enterWith` inside an async generator — a binding that does
+ * not survive the generator's first suspension, leaving
+ * `turnContext.current()` empty inside every tool handler on a `chatStream`
+ * turn. That defect is FIXED: the entry point now uses
+ * `turnContext.runGenerator`, and `test/orchestrator/turnContextPropagation.test.ts`
+ * pins the context as populated on both paths.
+ *
+ * The two-phase design is deliberately KEPT anyway. Claim-time binding does not
+ * depend on ambient context being correct at park time, so it stays robust
+ * against a future dispatch surface that legitimately has no turn scope (the
+ * standalone `ToolDispatchService`, a public endpoint). Reading the owner from
+ * ambient context would be a regression in robustness, not a simplification.
  *
  * So the manager parks with no owner and returns a sentinel that CARRIES the
  * correlation id. The orchestrator — which does hold the turn's `input`
