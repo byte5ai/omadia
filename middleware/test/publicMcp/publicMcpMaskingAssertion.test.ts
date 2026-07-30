@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 
 import { MCP_INVOKE_SCOPE, MCP_LIST_SCOPE } from '@omadia/api-key-auth';
+import { NativeToolRegistry, ToolDispatchService } from '@omadia/orchestrator';
 import type { PrivacyTurnHandle, ToolDispatchResult } from '@omadia/orchestrator';
 
 import type {
@@ -220,6 +221,71 @@ describe('public MCP endpoint — the masking boundary must be CROSSED (W4)', ()
     await h.rpc(callToolRequest(TOOL), { token: KEY_TOKEN });
     assert.equal(audit.length, 1);
     assert.equal(audit[0]?.ok, false);
+    assert.equal(audit[0]?.error, 'privacy masking skipped');
+  });
+
+  /**
+   * `afterDispatch`'s `typeof result !== 'string'` short-circuit, investigated.
+   *
+   * `NativeToolHandler` is TYPED `(input) => Promise<string>`, but plugins load
+   * dynamically at runtime, so a JavaScript plugin (or a TypeScript one with an
+   * `any` in the wrong place) can resolve an OBJECT. That branch then returns it
+   * untouched: masking genuinely never runs. The branch IS reachable.
+   *
+   * It is NOT, however, a live leak on this endpoint, and the mutation run says
+   * so precisely: with the `masked()` assertion disabled, the raw PII still does
+   * not reach the caller — the MCP SDK's own `CallToolResult` schema rejects a
+   * non-string `text` block and the caller gets a zod validation error instead.
+   * The containment is real but incidental, sitting in a dependency's outgoing
+   * schema rather than in a control this endpoint owns.
+   *
+   * So what this test pins is the DETERMINISTIC refusal: the call is rejected at
+   * the privacy boundary, with an audit row, rather than surviving to be caught
+   * by an SDK schema whose strictness is not this repo's to guarantee. Drives the
+   * REAL `ToolDispatchService` with a handler that violates its own contract,
+   * which is the only honest way to reach the branch.
+   */
+  it('refuses a handler that returns a NON-STRING, which `afterDispatch` never masks', async (t) => {
+    const registry = new NativeToolRegistry();
+    registry.register(TOOL, {
+      // Violates `NativeToolHandler`'s published `Promise<string>` on purpose.
+      handler: (() => Promise.resolve({ email: RAW_EMAIL })) as unknown as (
+        input: unknown,
+      ) => Promise<string>,
+      spec: {
+        name: TOOL,
+        description: `desc:${TOOL}`,
+        input_schema: { type: 'object' as const, properties: {} },
+      },
+    });
+    let slot: PrivacyTurnHandle | undefined;
+    const service = new ToolDispatchService({
+      nativeTools: registry,
+      privacy: () => slot,
+    });
+    const dispatcher = {
+      dispatch: (name: string, input: unknown, opts?: unknown) =>
+        service.dispatch(name, input, opts as never),
+      listDispatchableToolSpecs: () => service.listDispatchableToolSpecs(),
+      isWriteCapable: (name: string) => service.isWriteCapable(name),
+      async withPrivacy(handle: PrivacyTurnHandle, fn: () => Promise<ToolDispatchResult>) {
+        slot = handle;
+        try {
+          return await fn();
+        } finally {
+          slot = undefined;
+        }
+      },
+    } as unknown as PublicMcpDispatcher;
+
+    const audit: PublicMcpAuditEntry[] = [];
+    const h = await start(options({ audit, dispatchers: { sales: dispatcher } }), t);
+    if (!h) return;
+    const res = await h.post(callToolRequest(TOOL), { token: KEY_TOKEN });
+    const body = await res.text();
+    assert.doesNotMatch(body, /sensitive\.person@customer\.example/);
+    // The load-bearing half: refused HERE, by this endpoint, not downstream.
+    assert.match(body, /privacy masking did not run/);
     assert.equal(audit[0]?.error, 'privacy masking skipped');
   });
 
