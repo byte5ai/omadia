@@ -63,12 +63,22 @@ import {
  * payloads too — the sink carries whatever the server sent, unnormalised.
  *
  * Issue #544 (W2-1): `resultType` + `inputRequests` (MRTR mid-call user input)
- * are added here for the same reason. The installed SDK is 1.29.0, whose strict
- * `CallToolResultSchema` does not model either field — and `CallToolResult` is
- * NOT `.passthrough()`, so an unmodelled key is stripped before `callTool`
- * returns and the manager would never see it. Extending the schema is what
- * makes both readable off the SHIPPED SDK: no version bump, and no dependency
- * on the `@modelcontextprotocol/{core,client,server}@2.0.0` family (#540).
+ * are declared here too. Both are readable off the SHIPPED SDK 1.29.0 — no
+ * version bump, and no dependency on the `@modelcontextprotocol/{core,client,
+ * server}@2.0.0` family (#540).
+ *
+ * Be precise about what the declaration buys, because it is NOT "makes the
+ * fields arrive": SDK 1.29.0's `CallToolResultSchema` derives from
+ * `ResultSchema`, which is `.passthrough()`, so an unmodelled key already
+ * survives `parse` at runtime. Verified, and pinned by a characterization test
+ * in `mcpPendingInput.test.ts`. Declaring them explicitly buys two things:
+ *   1. They are typed and intentional rather than an unnamed passthrough
+ *      residue, so a reader can see what we consume off the wire.
+ *   2. The behaviour stops being hostage to an SDK internal. Passthrough is not
+ *      part of the MRTR contract, and this file already carries the scar of a
+ *      strict-vs-lenient result schema breaking every call on a server
+ *      (`structuredContent`, above); a future SDK that tightens it would break
+ *      MRTR silently instead of loudly.
  * Both are typed loosely on purpose — the MRTR shape is not final, so
  * validation lives in `parseMcpInputRequests` where a failure can degrade to a
  * plain tool error instead of rejecting the whole result.
