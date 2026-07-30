@@ -1,12 +1,12 @@
 {
-  "total": 3303,
+  "total": 3220,
   "zones": {
-    "middleware/src": 1636,
-    "middleware/test": 965,
-    "middleware/packages": 97,
+    "middleware/src": 1573,
+    "middleware/test": 957,
+    "middleware/packages": 86,
     "middleware/scripts": 8,
     "middleware/sidecars": 195,
-    "middleware/migrations": 70,
+    "middleware/migrations": 69,
     "middleware/package.json": 0,
     "middleware/env-example": 19,
     "web-ui/app": 227,
