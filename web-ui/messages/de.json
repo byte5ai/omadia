@@ -2965,18 +2965,21 @@
       "server": "Server",
       "tool": "Tool",
       "caller": "Aufrufer",
+      "identity": "Handelnde Identität",
       "outcome": "Ergebnis",
       "duration": "Dauer",
       "empty": "Noch keine MCP-Aufrufe protokolliert.",
       "ok": "ok",
       "failed": "fehlgeschlagen",
       "loadMore": "Mehr laden",
+      "unresolved": "nicht aufgelöst",
       "kind": {
         "agent": "Orchestrator",
         "subagent": "Sub-Agent",
         "skill": "Skill",
         "plugin": "Plugin",
-        "unattributed": "Nicht zugeordnet"
+        "unattributed": "Nicht zugeordnet",
+        "api_key": "API-Key (Public MCP)"
       }
     }
   },

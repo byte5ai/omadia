@@ -18,6 +18,77 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — public, stateless MCP endpoint (`POST /api/v1/mcp`)
+
+- omadia can now expose **its own tools** over a stateless Streamable-HTTP MCP
+  server so an external MCP client (Claude Desktop, an agent framework, your own
+  service) can call them with an API key instead of driving the operator UI.
+  External-consumer documentation: `middleware/src/mcp/README.md`.
+- **Stateless by construction.** `sessionIdGenerator: undefined`, no
+  `initialize` handshake required, no `Mcp-Session-Id` ever issued, and a fresh
+  `Server` + transport pair per request torn down in a `finally`. That is what
+  makes the endpoint horizontally scalable — any instance can answer any
+  request. `POST` only; a non-POST gets `405` (a per-request transport leaks on
+  `GET`, because an SSE stream never ends and the teardown never runs).
+- ⚠️ **DARK BY DEFAULT.** `PUBLIC_MCP_ENABLED=false` mounts **no router at
+  all**. This is the highest-blast-radius surface in the MCP cluster — an
+  internet-facing route that reaches the tool layer, including WRITE tools — so
+  not mounting is a stronger guarantee than mounting something that answers 403.
+
+#### Authorization — default-deny at four independent layers
+
+- New scopes on `@omadia/api-key-auth`: `mcp:list`, `mcp:invoke`, and per-tool
+  `mcp:write:<tool>`.
+- **`mcp:invoke` is not sufficient for a write**, and **`*` (`WILDCARD_SCOPE`)
+  does not grant any write.** The wildcard exclusion lives inside `hasScope`
+  itself, so no caller can reach a permissive matcher by accident. The bare
+  two-segment `mcp:write` is rejected at key creation: it would validate,
+  persist, and grant nothing — indistinguishable from a revoked key.
+- **Allowlist per KEY, not per server** (`public_mcp_key_bindings`, migration
+  `0033`). A key reaches exactly one **agent** and exactly the tool names listed
+  on it. A key with no binding authenticates and reaches **zero** tools, which
+  is how integration-backed and write-capable tools (Odoo, Microsoft 365,
+  Confluence) stay out of reach by default — nothing is included until an
+  operator names it.
+- `tools/list` is filtered per caller to exactly the set the key could
+  successfully **call**. A tool name the caller cannot invoke is itself a
+  disclosure, and a non-allowlisted tool is indistinguishable from a
+  nonexistent one.
+- **Write capability is the union** of the tool's own `writeCapabilities`
+  declaration (`isWriteCapableTool`) and the operator's `write_tools` list, so a
+  mistake in either direction fails toward "treat it as a write".
+
+#### Privacy — fails CLOSED for public callers
+
+- The shared dispatch path masks PII at chat-path **parity**, which includes two
+  behaviours that are wrong for an untrusted caller. This endpoint overrides
+  both, without changing the chat path:
+  - **Masking failure refuses the call** instead of returning the raw result.
+  - **An operator's per-plugin privacy bypass does not extend** to a public
+    caller.
+  - **Intern-exempt tools** (`memory`, `read_attachment`, …) — whose results the
+    Privacy Shield deliberately hands over in clear — are **never servable**
+    here, whatever an operator configures.
+- With **no privacy provider installed**, tool calls are refused and say why
+  (`tools/list` still works). `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING=true` is
+  the documented escape hatch for an install whose allowlisted tools provably
+  carry no personal data.
+
+#### Limits, audit, and what idempotency does NOT promise
+
+- 8 MB request body, 30 s per-tool timeout, endpoint-wide concurrency ceiling,
+  and a **separate, tighter rate-limit budget for writes** — heavy reading
+  cannot fund a write burst.
+- One `mcp_call_log` row per call **including every refusal**, with
+  `caller_kind = 'api_key'` (new in migration `0033`) and the acting identity
+  `apikey:<id>`. The acting identity is now **visible in the admin MCP call-log
+  UI** for every row, not just for public calls — it had been recorded but never
+  surfaced.
+- `_meta.idempotencyKey` is honoured for write-capable tools but is
+  **advisory**: process-local, ~15 minute window, so two instances behind a load
+  balancer can both execute. It is retry safety, **not distributed
+  exactly-once** — see the README before relying on it.
+
 ### Added — MCP Client ID Metadata Documents, as a third client-acquisition mode
 
 - omadia can now identify itself to an MCP authorization server by a **Client ID

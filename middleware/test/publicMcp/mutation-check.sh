@@ -16,16 +16,18 @@ SCOPES=packages/harness-api-key-auth/src/apiKeyScopes.ts
 SERVER=src/mcp/publicMcpServer.ts
 BINDINGS=src/mcp/publicMcpKeyBindings.ts
 PATHS=src/auth/publicPaths.ts
+PRIVACY=src/mcp/publicMcpPrivacy.ts
 
 TESTS=('test/publicMcp/publicMcpScopes.test.ts'
        'test/publicMcp/publicMcpKeyBindings.test.ts'
        'test/publicMcp/publicMcpBodyCap.test.ts'
        'test/publicMcp/publicMcpEndpoint.e2e.test.ts'
+       'test/publicMcp/publicMcpPrivacy.e2e.test.ts'
        'test/publicPaths.test.ts')
 
 pass=0; fail=0
 
-revert() { git checkout -- "$SCOPES" "$SERVER" "$BINDINGS" "$PATHS" 2>/dev/null; }
+revert() { git checkout -- "$SCOPES" "$SERVER" "$BINDINGS" "$PATHS" "$PRIVACY" 2>/dev/null; }
 
 # run_mutation <label> <file> <python-mutation-expression>
 run_mutation() {
@@ -132,6 +134,36 @@ run_mutation "the publicPaths entry widens to a prefix" "$PATHS" \
   'pathPrefixPattern(PUBLIC_MCP_PATH),
 ];|||new RegExp(`^${PUBLIC_MCP_PATH}`),
 ];'
+
+echo "── privacy: fail-closed (the #542 decision) ─────────────────────────────"
+run_mutation "masking failure fails OPEN (the gate stops recording it)" "$PRIVACY" \
+  'failed = true;|||failed = false;'
+run_mutation "the endpoint stops detecting a masking failure" "$SERVER" \
+  "if (gate?.maskingFailed() === true) {|||if (false) {"
+run_mutation "the operator privacy bypass is honoured for public callers" "$PRIVACY" \
+  'checkBypass(): undefined {
+      return undefined;
+    },|||checkBypass(toolName: string) {
+      return base.checkBypass(toolName);
+    },'
+run_mutation "an absent privacy provider no longer refuses the call" "$SERVER" \
+  'if (this.privacyMaskingRequired) {|||if (false) {'
+run_mutation "the privacy handle is never installed on the dispatcher" "$SERVER" \
+  'if (gate && dispatcher.withPrivacy) {|||if (false && dispatcher.withPrivacy) {'
+run_mutation "intern-exempt tools become publicly servable" "$PRIVACY" \
+  'return !isInternExemptTool(name);|||return true;'
+run_mutation "the intern-exemption filter is dropped from the allowlist" "$SERVER" \
+  'if (!isPubliclyServableTool(tool)) continue;|||'
+
+echo "── write capability (declaration UNION operator list) ───────────────────"
+run_mutation "write capability ignores the tool's own declaration" "$SERVER" \
+  'return dispatcher.isWriteCapable(name) || binding.writeTools.includes(name);|||return binding.writeTools.includes(name);'
+run_mutation "write capability ignores the operator's write_tools list" "$SERVER" \
+  'return dispatcher.isWriteCapable(name) || binding.writeTools.includes(name);|||return dispatcher.isWriteCapable(name);'
+
+echo "── caller context propagation ───────────────────────────────────────────"
+run_mutation "the API-key principal is not propagated to dispatch" "$SERVER" \
+  'principal: principal.keyId,|||principal: undefined,'
 
 echo
 echo "════════════════════════════════════════════════════════════════════════"
