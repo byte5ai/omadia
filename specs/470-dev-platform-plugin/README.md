@@ -40,10 +40,33 @@ it at all.
   builder was importing out of the dev-platform tree, which made that tree a dependency of
   core and blocked extraction outright.
 
-### In flight — this PR
+### In flight — this PR (#539)
 
-- The Tailwind-for-plugins decision (§4.3a) and its measured probe.
-- The core-decoupling ratchet + the acceptance matrix.
+- Tailwind-for-plugins (§4.3a) + the measured probe.
+- The core-decoupling ratchet, the acceptance matrix, and the implementation plan.
+- `dormant-capabilities.md` — five capabilities that never ran, each with a verdict.
+- **Shipped code:** `ServiceRegistry` now disposes plugin-provided services on deactivate
+  (owner-tracked, LIFO unwind, before the awaited `close()`), mirrored into both runtimes.
+
+### Landed separately
+
+- **PR #548** — path traversal in the plugin install pipeline. Unvalidated `identity.id`
+  reached `path.join` and then a recursive `fs.rm`; reachable from remote registry ZIPs and
+  imported profile bundles. Kept out of this PR so it does not wait on epic decisions.
+
+### Held back after review
+
+Two fixes were implemented, reviewed, and **not shipped** — the review caught real harm:
+
+- **`.sql` in the ZIP allowlist** — would have escalated the #548 traversal from
+  delete/replace to arbitrary SQL execution. Blocked until #548 lands.
+- **Advisory lock on the 8 migrators** — an unbounded wait, but three migrators run inside a
+  plugin `activate()` capped at 10s, so it would convert a rare race into a deterministic
+  boot failure. Redesign needed (bounded wait); a second attempt also failed review because
+  it never read `pg_advisory_unlock`'s return value.
+- **DynamicAgentRuntime rollback** — the attempt left a zombie entry in `active`, and its
+  by-source rollback tore down the winner's registrations under two concurrent activations
+  of the same id.
 
 ### Next — decisions before code
 
@@ -73,13 +96,18 @@ node scripts/check-core-decoupling.mjs --update   # lower the baseline
 ```
 
 The ratchet counts Dev Platform references across 14 disjoint zones and **fails if the count
-rises, per zone**. Baseline **3,293**. It only ever falls; raising it needs a hand-edited baseline, so
+rises, per zone**. Baseline **3,303**. It only ever falls; raising it needs a hand-edited baseline, so
 a new coupling shows up in review instead of slipping in.
 
 That is what makes the checklist's staleness survivable — a file inventory goes stale on
-contact, but the count does not, and it cannot reach zero while a reference survives. It
+contact, but the count does not, and it cannot reach zero while a reference survives.
+
 But it counts IDENTIFIERS, NOT BEHAVIOUR: zero is a necessary condition for done, not a
 sufficient one. Sections 2 and 3 of `acceptance.md` cover the rest, and neither is automated.
+
+**The baseline rises when main legitimately adds dev-platform code.** That has happened three
+times (PR #529, then #537's embedding work): the guard fires, the raise is hand-edited, and the
+reason is recorded in the commit. A rise is only wrong when *core* re-acquires a dependency.
 
 **Definition of done:** ratchet reads `0`, every row of `acceptance.md` §2 passes, and the
 install/uninstall criteria in `acceptance.md` §3 pass.
