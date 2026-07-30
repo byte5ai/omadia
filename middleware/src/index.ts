@@ -283,6 +283,8 @@ import {
   resolveMcpUserKey,
 } from './services/mcpDelegation.js';
 import { McpOAuthService } from './services/mcpOAuthService.js';
+import { CIMD_METADATA_PATH, cimdMetadataUrl } from './services/mcpCimd.js';
+import { createMcpClientMetadataRouter } from './routes/mcpClientMetadata.js';
 import { McpConfigService } from './services/mcpConfigService.js';
 import {
   McpRegistrySecretService,
@@ -1519,12 +1521,25 @@ async function main(): Promise<void> {
   const mcpOAuthRedirectUri =
     config.MCP_OAUTH_REDIRECT_URI ??
     (flowPublicBaseUrl ? `${flowPublicBaseUrl}/api/v1/operator/mcp-oauth/callback` : undefined);
+  // W2-4 (issue #546) — the CIMD metadata-document URL, i.e. the `client_id` a
+  // CIMD-capable authorization server dereferences.
+  //
+  // Derived from `FLOW_PUBLIC_BASE_URL` ALONE — deliberately NOT the
+  // `?? PUBLIC_BASE_URL` fallback the redirect URI uses. CIMD needs the IdP to
+  // reach IN to this deployment, and `PUBLIC_BASE_URL` defaults to
+  // `http://localhost:3979`, which is exactly the shape that is not inbound
+  // reachable. Requiring the operator to declare the public origin explicitly
+  // means an unconfigured install lands in the clean degraded state (CIMD off,
+  // manual client path fully working) instead of publishing a `client_id` no
+  // provider can fetch.
+  const mcpCimdMetadataUrl = cimdMetadataUrl(config.FLOW_PUBLIC_BASE_URL);
   const mcpOAuthService =
     graphPool && mcpOAuthRedirectUri
       ? new McpOAuthService({
           graph: new AgentGraphStore(graphPool),
           vault: secretVault,
           redirectUri: mcpOAuthRedirectUri,
+          cimdMetadataUrl: mcpCimdMetadataUrl,
           log: (m) => console.log(`[middleware] ${m}`),
         })
       : undefined;
@@ -2246,6 +2261,24 @@ async function main(): Promise<void> {
     );
   });
   console.log(`[middleware] pairing discovery at GET ${WELL_KNOWN_PATH}`);
+
+  // W2-4 (issue #546) — MCP Client ID Metadata Document. Public by necessity:
+  // an authorization server fetches it uncredentialed to resolve the CIMD
+  // `client_id`. Mounted here, outside the `/api` requireAuth mount, AND listed
+  // in auth/publicPaths.ts via the shared `CIMD_METADATA_PATH` constant so the
+  // two can never drift. `redirectUri` is the SAME variable McpOAuthService
+  // holds — if these diverge, every code exchange fails at the provider.
+  app.use(
+    createMcpClientMetadataRouter({
+      metadataUrl: mcpCimdMetadataUrl,
+      redirectUri: mcpOAuthRedirectUri ?? null,
+    }),
+  );
+  console.log(
+    mcpCimdMetadataUrl && mcpOAuthRedirectUri
+      ? `[middleware] MCP client-ID metadata document at GET ${CIMD_METADATA_PATH} (client_id ${mcpCimdMetadataUrl})`
+      : `[middleware] MCP client-ID metadata document at GET ${CIMD_METADATA_PATH} answers 501 — FLOW_PUBLIC_BASE_URL unset, so CIMD is off and issuers use the manual client path`,
+  );
 
   // Harness shared assets — currently the admin-UI baseline stylesheet
   // that plugin-bundled admin UIs `<link>` into their HTML. No auth: the

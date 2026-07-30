@@ -225,6 +225,20 @@ export interface McpServerRow {
 /** How an MCP server resolves the identity a call acts as (W0-1, D2). */
 export type McpDelegation = 'per_user' | 'service';
 
+/**
+ * How omadia acquired the OAuth client it uses at an authorization server
+ * (migration 0032, W2-4). All three modes are first-class and PERMANENT:
+ *
+ *  - `cimd`   Client ID Metadata Document — the client_id is an https URL the
+ *             AS dereferences. Replaces DCR at MCP-native brokers only, and
+ *             requires the AS to reach omadia INBOUND.
+ *  - `dcr`    RFC 7591 Dynamic Client Registration. Deprecated by the MCP spec
+ *             on a 12-month clock; still fully supported here.
+ *  - `manual` An operator-registered app. This is the Entra ID / Okta path —
+ *             neither supports CIMD — and it has NO sunset.
+ */
+export type McpOAuthClientAcquisition = 'dcr' | 'manual' | 'cimd';
+
 export interface ToolGrantRow {
   readonly id: string;
   readonly agentId: string | null;
@@ -1381,18 +1395,34 @@ export class AgentGraphStore {
 
   // ── MCP OAuth (epic #459 W9) — provider-agnostic authorization state ────────
 
-  async getMcpOAuthClient(
-    issuer: string,
-  ): Promise<{ issuer: string; clientId: string; clientSecretRef: string | null; registeredVia: 'dcr' | 'manual' } | undefined> {
+  async getMcpOAuthClient(issuer: string): Promise<
+    | {
+        issuer: string;
+        clientId: string;
+        clientSecretRef: string | null;
+        registeredVia: McpOAuthClientAcquisition;
+        /** W2-4: the CIMD document this client_id resolves to. Null for
+         *  'dcr'/'manual' rows and on pre-0032 databases. */
+        clientMetadataUrl: string | null;
+      }
+    | undefined
+  > {
     const { rows } = await this.pool.query<{
       issuer: string;
       client_id: string;
       client_secret_ref: string | null;
-      registered_via: 'dcr' | 'manual';
+      registered_via: McpOAuthClientAcquisition;
+      client_metadata_url?: string | null;
     }>('SELECT * FROM mcp_oauth_clients WHERE issuer = $1', [issuer]);
     const r = rows[0];
     return r
-      ? { issuer: r.issuer, clientId: r.client_id, clientSecretRef: r.client_secret_ref, registeredVia: r.registered_via }
+      ? {
+          issuer: r.issuer,
+          clientId: r.client_id,
+          clientSecretRef: r.client_secret_ref,
+          registeredVia: r.registered_via,
+          clientMetadataUrl: r.client_metadata_url ?? null,
+        }
       : undefined;
   }
 
@@ -1400,16 +1430,26 @@ export class AgentGraphStore {
     issuer: string;
     clientId: string;
     clientSecretRef: string | null;
-    registeredVia: 'dcr' | 'manual';
+    registeredVia: McpOAuthClientAcquisition;
+    /** W2-4: only set for `registeredVia: 'cimd'` — the self-referential
+     *  metadata-document URL the authorization server dereferenced. */
+    clientMetadataUrl?: string | null;
   }): Promise<void> {
     await this.pool.query(
-      `INSERT INTO mcp_oauth_clients (issuer, client_id, client_secret_ref, registered_via)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO mcp_oauth_clients (issuer, client_id, client_secret_ref, registered_via, client_metadata_url)
+       VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (issuer) DO UPDATE SET
          client_id = EXCLUDED.client_id,
          client_secret_ref = EXCLUDED.client_secret_ref,
-         registered_via = EXCLUDED.registered_via`,
-      [input.issuer, input.clientId, input.clientSecretRef, input.registeredVia],
+         registered_via = EXCLUDED.registered_via,
+         client_metadata_url = EXCLUDED.client_metadata_url`,
+      [
+        input.issuer,
+        input.clientId,
+        input.clientSecretRef,
+        input.registeredVia,
+        input.clientMetadataUrl ?? null,
+      ],
     );
   }
 

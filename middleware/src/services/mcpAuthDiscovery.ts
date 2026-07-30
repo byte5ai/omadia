@@ -39,6 +39,12 @@ export interface AuthServerMetadata {
    *  protocol violation and must be rejected — that is what makes mix-up
    *  detection enforceable rather than best-effort. */
   readonly issParameterSupported: boolean;
+  /** `client_id_metadata_document_supported` (W2-4). True when this AS accepts a
+   *  Client ID Metadata Document — an https `client_id` it DEREFERENCES — in
+   *  place of a pre-registered or dynamically-registered client. Only advertised
+   *  by MCP-native brokers; Entra ID and Okta never set it, which is precisely
+   *  why the manual client path stays permanent. */
+  readonly clientIdMetadataDocumentSupported: boolean;
 }
 
 export interface DiscoveredAuth {
@@ -223,6 +229,11 @@ export class McpAuthDiscovery {
       grantTypes: strArr(doc['grant_types_supported']),
       scopesSupported: strArr(doc['scopes_supported']),
       issParameterSupported: doc['authorization_response_iss_parameter_supported'] === true,
+      // Strict `=== true`: an AS that omits the flag, or sends a truthy-ish
+      // string, has NOT promised to dereference a metadata document. Guessing
+      // here would send a client_id the AS cannot resolve and fail the whole
+      // authorize round-trip instead of falling through to manual.
+      clientIdMetadataDocumentSupported: doc['client_id_metadata_document_supported'] === true,
     };
   }
 

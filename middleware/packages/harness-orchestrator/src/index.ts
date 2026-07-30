@@ -104,6 +104,7 @@ export type {
   McpCallLogRow,
   McpConfigField,
   McpDelegation,
+  McpOAuthClientAcquisition,
   McpRegistryRow,
   McpServerInput,
   McpServerRow,
