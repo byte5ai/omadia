@@ -85,28 +85,51 @@ export function createVerifyOnlyApiKeyStore(vault: SecretVault): ApiKeyStore {
   });
 }
 
+/** The vault is only needed when the caller did not supply an `ApiKeyStore`;
+ *  throwing here keeps that a wiring error rather than a runtime 500. */
+function requireVault(deps: WirePublicMcpDeps): SecretVault {
+  if (!deps.vault) {
+    throw new Error('mountPublicMcp requires a vault (or an explicit apiKeys store)');
+  }
+  return deps.vault;
+}
+
 export interface WirePublicMcpDeps {
   readonly enabled: boolean;
   /** See `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_SEAM`. */
   readonly allowWithoutPrivacySeam: boolean;
-  readonly vault: SecretVault;
+  /** Only read when `apiKeys` is not supplied. */
+  readonly vault?: SecretVault;
   /** Bindings and the audit trail both live in the graph DB. Absent ⇒ the
    *  endpoint is NOT mounted: without bindings every key reaches nothing, and
    *  without the audit trail a public write would be unattributable. */
   readonly graphPool: Pool | undefined;
   /** Resolved LIVE, not captured: the orchestrator plugin republishes the
-   *  registry on reactivation, so a boot-time value would pin a stale set. */
-  readonly getRegistry: () => OrchestratorRegistry | undefined;
+   *  registry on reactivation, so a boot-time value would pin a stale set.
+   *  Only read when `resolveDispatcher` is not supplied. */
+  readonly getRegistry?: () => OrchestratorRegistry | undefined;
   /** The process-wide native tool registry. Shared across agents by design —
    *  which is precisely why per-agent reach is decided by the binding row and
-   *  the agent's OWN `listDomainTools()`, not by this registry. */
-  readonly nativeToolRegistry: NativeToolRegistry;
+   *  the agent's OWN `listDomainTools()`, not by this registry. Only read when
+   *  `resolveDispatcher` is not supplied. */
+  readonly nativeToolRegistry?: NativeToolRegistry;
   readonly log?: (msg: string) => void;
-  /** Test seams. Production passes neither. */
+
+  // ── Test seams. Production supplies none of these. ────────────────────────
+  // Each one substitutes an INFRASTRUCTURE dependency (a pool, a vault, the
+  // orchestrator registry), never a GATE: the allowlist check, the scope
+  // checks, the rate limits and the audit calls all run exactly as they do in
+  // production, which is what lets the e2e tests assert on real refusals.
   readonly bindings?: PublicMcpKeyBindingStore;
   readonly apiKeys?: ApiKeyStore;
   readonly rateLimiter?: RateLimiter;
   readonly keyAuditLog?: AuditLog;
+  readonly resolveDispatcher?: (agentId: string) => PublicMcpDispatcher | undefined;
+  readonly audit?: (entry: PublicMcpAuditEntry) => void;
+  readonly toolTimeoutMs?: number;
+  readonly maxConcurrentCalls?: number;
+  /** Second limiter instance. Defaults to a fresh one — never the read one. */
+  readonly writeRateLimiter?: RateLimiter;
 }
 
 /**
@@ -123,12 +146,21 @@ export interface WirePublicMcpDeps {
  * Returns `undefined` for an unknown or inactive slug, which fails the call
  * closed rather than falling back to the default agent.
  */
-function makeDispatcherResolver(deps: WirePublicMcpDeps): (agentId: string) => PublicMcpDispatcher | undefined {
+function makeDispatcherResolver(
+  deps: WirePublicMcpDeps,
+): (agentId: string) => PublicMcpDispatcher | undefined {
+  if (deps.resolveDispatcher) return deps.resolveDispatcher;
+  const { getRegistry, nativeToolRegistry } = deps;
+  if (!getRegistry || !nativeToolRegistry) {
+    throw new Error(
+      'mountPublicMcp requires getRegistry + nativeToolRegistry (or an explicit resolveDispatcher)',
+    );
+  }
   return (agentId) => {
-    const entry = deps.getRegistry()?.get(agentId);
+    const entry = getRegistry()?.get(agentId);
     if (!entry) return undefined;
     return new ToolDispatchService({
-      nativeTools: deps.nativeToolRegistry,
+      nativeTools: nativeToolRegistry,
       domainToolsProvider: () => entry.built.orchestrator.listDomainTools(),
     });
   };
@@ -196,25 +228,36 @@ export function mountPublicMcp(app: Express, requireAuth: RequestHandler, deps: 
 
   const bindings =
     deps.bindings ?? createPublicMcpKeyBindingStore(deps.graphPool as Pool);
-  const audit = deps.graphPool
-    ? createPublicMcpAuditSink(new AgentGraphStore(deps.graphPool), log)
-    : undefined;
+  const audit =
+    deps.audit ??
+    (deps.graphPool
+      ? createPublicMcpAuditSink(new AgentGraphStore(deps.graphPool), log)
+      : undefined);
+  const apiKeys = deps.apiKeys ?? createVerifyOnlyApiKeyStore(requireVault(deps));
 
+  // Scoped to the ONE path, not `app.use(requireAuth, …)`. An unscoped mount
+  // would run `requireAuth` for every request on the whole app — including the
+  // non-`/api` surfaces (`/health`, static assets) that were never behind it.
   app.use(
+    PUBLIC_MCP_PATH,
     requireAuth,
     createPublicMcpRouter({
-      apiKeys: deps.apiKeys ?? createVerifyOnlyApiKeyStore(deps.vault),
+      apiKeys,
       rateLimiter: deps.rateLimiter ?? createRateLimiter(),
       ...(deps.keyAuditLog ? { keyAuditLog: deps.keyAuditLog } : {}),
       bindings,
       // A SECOND limiter instance, not the one above. Writes get their own
       // budget so a read-heavy integration's unused read headroom cannot fund a
       // write burst.
-      writeRateLimiter: createRateLimiter(),
+      writeRateLimiter: deps.writeRateLimiter ?? createRateLimiter(),
       resolveDispatcher: makeDispatcherResolver(deps),
       ...(audit ? { audit } : {}),
       requirePrivacySeam: !deps.allowWithoutPrivacySeam,
       serverName: PUBLIC_MCP_SERVER_NAME,
+      ...(deps.toolTimeoutMs !== undefined ? { toolTimeoutMs: deps.toolTimeoutMs } : {}),
+      ...(deps.maxConcurrentCalls !== undefined
+        ? { maxConcurrentCalls: deps.maxConcurrentCalls }
+        : {}),
     }),
   );
 

@@ -207,16 +207,26 @@ export class PublicMcpServer {
    * `express.json({ limit: '10mb' })` before every `/api` router (index.ts), so
    * by the time a request reaches this one the stream is already consumed and
    * parsed: a route-level parser would be a silent no-op and the loopback
-   * server's 8 MB ceiling would quietly become the kernel's 10 MB one. So the
-   * check runs on the two signals still available after parsing —
-   * `Content-Length` (the only pre-parse number, sent by any well-behaved
-   * client) and the re-serialized body length (which covers a chunked upload
-   * that carries no `Content-Length` at all).
+   * server's 8 MB ceiling would quietly become the kernel's 10 MB one.
    *
    * Mounting this router BEFORE `express.json` would allow a real streaming
    * cap, but would also put it in front of the `/api` requireAuth mount and
    * throw away the `publicPaths` half of the defense this route is required to
    * use. The cap is the cheaper thing to reimplement.
+   *
+   * Two checks, and they are NOT two independent gates — be precise about which
+   * does the work:
+   *
+   *  - The re-serialized body length is the ACTUAL enforcement. It catches
+   *    every oversized body, including a chunked upload carrying no
+   *    `Content-Length` at all.
+   *  - `Content-Length` is a COST optimization in front of it: re-serializing
+   *    an 8 MB body to measure it is itself expensive, and a client that
+   *    honestly declares an oversized payload can be refused without paying
+   *    that. It is not a security control on its own — a lying header cannot be
+   *    trusted, and one that declares 9 MB while sending 100 bytes never
+   *    reaches this middleware anyway (`express.json` is still waiting for the
+   *    rest of the body). Treat it as the fast path, not as the gate.
    */
   bodyCapMiddleware(): RequestHandler {
     return (req: Request, res: Response, next): void => {

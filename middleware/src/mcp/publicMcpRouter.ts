@@ -28,6 +28,17 @@ import { requireApiKey } from '@omadia/api-key-auth';
 import { PUBLIC_MCP_PATH } from './publicMcpPath.js';
 import { PublicMcpServer, type PublicMcpServerDeps } from './publicMcpServer.js';
 
+/**
+ * The router handles its mount root, NOT an absolute path.
+ *
+ * The caller mounts it at `PUBLIC_MCP_PATH`, so this is `'/'`. Baking the
+ * absolute path in here as well would make `app.use(PUBLIC_MCP_PATH, router)`
+ * resolve to `/api/v1/mcp/api/v1/mcp` — and the version that "works",
+ * `app.use(router)`, would apply the router's own middleware (including
+ * `requireAuth`, which the caller pairs it with) to EVERY request on the app.
+ */
+const ROUTER_ROOT = '/';
+
 export interface PublicMcpRouterDeps extends PublicMcpServerDeps {
   /** The SAME store the operator mints keys with. Reused rather than
    *  duplicated: a second key store would be a second place to revoke. */
@@ -46,7 +57,7 @@ export function createPublicMcpRouter(deps: PublicMcpRouterDeps): Router {
   const router = Router();
 
   router.use(
-    PUBLIC_MCP_PATH,
+    ROUTER_ROOT,
     server.bodyCapMiddleware(),
     requireApiKey({
       apiKeys: deps.apiKeys,

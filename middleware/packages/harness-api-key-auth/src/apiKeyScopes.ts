@@ -96,9 +96,23 @@ const SCOPE_PATTERN = /^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/;
  */
 const MCP_WRITE_SCOPE_PATTERN = /^mcp:write:[a-z][a-z0-9_-]*$/;
 
+/**
+ * The bare two-segment `mcp:write`, rejected outright.
+ *
+ * It is a perfectly well-formed two-segment scope, so `SCOPE_PATTERN` accepts
+ * it — and it is the single most likely thing an operator types when they mean
+ * "let this key write". It would validate, persist, and grant NOTHING (no write
+ * check ever asks for it), which is indistinguishable from a revoked key at
+ * debug time. Rejecting it turns a silent misconfiguration into an error at the
+ * moment of the mistake. There is deliberately no class-wide write scope to
+ * point them at instead: writes are per tool, by design.
+ */
+const REJECTED_SCOPES: readonly string[] = ['mcp:write'];
+
 export function isValidScope(value: unknown): value is ApiKeyScope {
   if (typeof value !== 'string') return false;
   if (value === WILDCARD_SCOPE) return true;
+  if (REJECTED_SCOPES.includes(value)) return false;
   if (MCP_WRITE_SCOPE_PATTERN.test(value)) return true;
   // Checked LAST and unchanged: a `mcp:write:x` string has two colons and
   // never matched `SCOPE_PATTERN` anyway, so nothing that used to validate
