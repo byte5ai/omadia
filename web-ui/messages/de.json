@@ -2790,6 +2790,10 @@
     "servers": {
       "name": "Name",
       "transport": "Transport",
+      "transportDeprecated": "Veraltet",
+      "transportDeprecatedHint": "Der alte HTTP+SSE-Transport ist seit MCP 2026-07-28 als veraltet markiert und wird nach einer Übergangsfrist von mindestens 12 Monaten entfernt. Bestehende SSE-Server funktionieren weiterhin — neue Server sollten aber Streamable HTTP (http) verwenden, bestehende dorthin migriert werden.",
+      "showDeprecatedTransports": "Veraltete Transports anzeigen",
+      "deprecatedOption": "{transport} (veraltet)",
       "endpoint": "Endpoint",
       "status": "Status",
       "tools": "Tools",

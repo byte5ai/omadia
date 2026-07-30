@@ -30,6 +30,7 @@ import {
   type ToolGrantRow,
 } from '@omadia/orchestrator';
 import {
+  isDeprecatedMcpTransport,
   McpManager,
   mcpToolNameFromRef,
   turnContext,
@@ -2607,11 +2608,21 @@ async function withToolVerdicts(
   }));
 }
 
-function mcpNode(s: McpServerRow) {
+/**
+ * Row → API node for an MCP server. Exported for unit tests (issue #541).
+ *
+ * `transportDeprecated` is derived from `DEPRECATED_MCP_TRANSPORTS`, never
+ * hard-coded: the web-ui uses it to badge legacy rows without duplicating the
+ * spec's deprecation list. Purely additive — the row's transport is returned
+ * unchanged and no DB constraint moved.
+ */
+export function mcpNode(s: McpServerRow) {
   return {
     id: s.id,
     name: s.name,
     transport: s.transport,
+    /** MCP 2026-07-28 deprecated this transport (see DEPRECATED_MCP_TRANSPORTS). */
+    transportDeprecated: isDeprecatedMcpTransport(s.transport),
     endpoint: s.endpoint,
     status: s.status,
     lastDiscoveredAt: s.lastDiscoveredAt ? s.lastDiscoveredAt.toISOString() : null,

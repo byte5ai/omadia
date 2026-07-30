@@ -278,5 +278,64 @@ describe('McpRegistryClient', () => {
     const entries = await client.catalog({ ...REGISTRY, id: 'reg-3' });
     assert.equal(entries.length, 1);
     assert.equal(entries[0]?.transport, 'sse');
+    // Issue #541: an sse-only entry stays importable (the MCP removal window is
+    // open) but is flagged so the operator sees what they are signing up for.
+    assert.equal(entries[0]?.transportDeprecated, true);
+  });
+
+  // ── issue #541: deprecated-transport preference on the import path ─────────
+  // The marketplace importer is the SECOND way an `sse` row can be minted (the
+  // operator picker is the first), so the deprecation has to bite here too — a
+  // UI-only change would keep importing legacy SSE servers from catalogs.
+  describe('deprecated transport preference (#541)', () => {
+    async function catalogOf(remotes: unknown[]) {
+      const doc = { servers: [{ name: 'dual', remotes }] };
+      const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes('/v0/servers')) return new Response('nf', { status: 404 });
+        return fetchOk(doc)(input, init);
+      }) as typeof fetch;
+      const client = new McpRegistryClient({ fetchImpl, log: () => {} });
+      return (await client.catalog({ ...REGISTRY, id: 'reg-541' }))[0];
+    }
+
+    it('prefers the streamable-http remote when an entry offers sse too', async () => {
+      const entry = await catalogOf([
+        { type: 'sse', url: 'https://x.example/sse' },
+        { type: 'streamable-http', url: 'https://x.example/mcp' },
+      ]);
+      assert.equal(entry?.transport, 'http');
+      assert.equal(entry?.endpoint, 'https://x.example/mcp');
+      assert.equal(entry?.transportDeprecated, false);
+    });
+
+    it('still imports an sse-only entry, flagged as deprecated', async () => {
+      const entry = await catalogOf([{ type: 'sse', url: 'https://x.example/sse' }]);
+      assert.equal(entry?.transport, 'sse');
+      assert.equal(entry?.endpoint, 'https://x.example/sse');
+      assert.equal(entry?.transportDeprecated, true);
+    });
+
+    it('does not let the preference bypass the untrusted-remote guard', async () => {
+      // The only http remote is plain-http/internal → refused; the safe sse
+      // remote is used instead rather than the preference smuggling it through.
+      const entry = await catalogOf([
+        { type: 'sse', url: 'https://x.example/sse' },
+        { type: 'streamable-http', url: 'http://169.254.169.254/mcp' },
+      ]);
+      assert.equal(entry?.transport, 'sse');
+      assert.equal(entry?.transportDeprecated, true);
+    });
+
+    it('marks a stdio entry as non-deprecated', async () => {
+      const doc = { servers: [{ name: 'local', packages: [{ registry_name: 'npm', name: '@acme/x' }] }] };
+      const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes('/v0/servers')) return new Response('nf', { status: 404 });
+        return fetchOk(doc)(input, init);
+      }) as typeof fetch;
+      const client = new McpRegistryClient({ fetchImpl, log: () => {} });
+      const entry = (await client.catalog({ ...REGISTRY, id: 'reg-541b' }))[0];
+      assert.equal(entry?.transport, 'stdio');
+      assert.equal(entry?.transportDeprecated, false);
+    });
   });
 });

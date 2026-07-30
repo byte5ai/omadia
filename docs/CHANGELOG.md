@@ -125,6 +125,30 @@ Three live defects in the MCP OAuth path, one migration
 > and switch the ones that should be per-user — while a server stays on
 > `service`, anyone who can reach an orchestrator it is granted to acts with the
 > operator's authority at that server.
+### Deprecated — legacy HTTP+SSE MCP transport (#541)
+
+- MCP 2026-07-28 reclassifies the legacy HTTP+SSE transport as **Deprecated**,
+  with a removal window of at least 12 months. omadia now discourages `sse` for
+  **new** registrations while keeping every existing SSE server fully working —
+  this is a discouragement, not a removal. No protocol work: `SSEClientTransport`
+  stays wired, the `agent_mcp_servers.transport` CHECK constraint still accepts
+  `'sse'`, and no migration ships with this change. Streamable HTTP (`http`) is
+  the migration target.
+- `@omadia/orchestrator` exports `DEPRECATED_MCP_TRANSPORTS` and
+  `isDeprecatedMcpTransport()` as the single source of truth. The operator API's
+  MCP server node gained an additive `transportDeprecated: boolean` derived from
+  it; `McpTransport`/`McpTransportKind` keep `'sse'` in every union, so the
+  published plugin contract is unchanged.
+- **MCP Control Center:** `sse` is no longer offered in the transport picker
+  unless "Show deprecated transports" is ticked (`http` remains the default),
+  and existing `sse` servers carry a *Deprecated* badge pointing at Streamable
+  HTTP. Nothing is hard-blocked — an operator can still deliberately register a
+  legacy SSE server while the removal window is open.
+- **Marketplace imports** are covered too, not just the UI: when a catalog entry
+  advertises both a Streamable-HTTP and an HTTP+SSE remote, the importer now
+  picks the `http` one. An `sse`-only entry still imports, flagged via
+  `McpCatalogEntry.transportDeprecated`. The untrusted-remote guard (https only,
+  no internal/metadata hosts) applies to every candidate as before.
 
 ### Added — pluggable embedding provider (#440)
 

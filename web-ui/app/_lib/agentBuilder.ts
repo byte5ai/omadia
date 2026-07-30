@@ -207,10 +207,20 @@ export interface McpDiscoveredTool {
 
 export type McpTransport = 'stdio' | 'http' | 'sse';
 
+/**
+ * Transports MCP 2026-07-28 deprecated (issue #541). Mirrors the middleware's
+ * `DEPRECATED_MCP_TRANSPORTS`; the union above deliberately keeps `'sse'` —
+ * legacy servers stay fully usable during the 12-month removal window, they are
+ * only discouraged for new registrations.
+ */
+export const DEPRECATED_MCP_TRANSPORTS: readonly McpTransport[] = ['sse'];
+
 export interface McpServerNode {
   id: string;
   name: string;
   transport: McpTransport;
+  /** Issue #541 — server-derived deprecation flag; absent on older middleware. */
+  transportDeprecated?: boolean;
   endpoint: string | null;
   status: NodeStatus;
   lastDiscoveredAt: string | null;
@@ -804,6 +814,8 @@ export interface McpCatalogEntry {
   description: string | null;
   version: string | null;
   transport: McpTransport | null;
+  /** Issue #541 — the catalog only offered a deprecated (HTTP+SSE) remote. */
+  transportDeprecated?: boolean;
   endpoint: string | null;
   license: string | null;
   author: string | null;
