@@ -14,6 +14,7 @@ import type {
   NudgeEvent,
   OutgoingFileAttachment,
   PalaiaExcerpt,
+  PendingMcpInput,
   PendingUserChoice,
   PlanSnapshot,
   PrivacyReceipt,
@@ -129,6 +130,8 @@ export type ChatStreamEvent =
       attachments?: DiagramAttachment[];
       fileAttachments?: OutgoingFileAttachment[];
       pendingUserChoice?: PendingUserChoice;
+      /** #544 W2-1 — see `Message.pendingMcpInput`. Sibling of the above. */
+      pendingMcpInput?: PendingMcpInput;
       followUpOptions?: FollowUpOption[];
       privacyReceipt?: PrivacyReceipt;
       maskedValues?: readonly string[];
@@ -357,6 +360,9 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           : {}),
         ...(event.pendingUserChoice
           ? { pendingUserChoice: event.pendingUserChoice }
+          : {}),
+        ...(event.pendingMcpInput
+          ? { pendingMcpInput: event.pendingMcpInput }
           : {}),
         ...(event.followUpOptions && event.followUpOptions.length > 0
           ? { followUpOptions: event.followUpOptions }

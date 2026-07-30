@@ -18,6 +18,75 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — MCP tools can ask the user for input mid-call (MRTR `input_required`, #544)
+
+- An MCP server that answers `tools/call` with
+  `resultType: "input_required"` plus `inputRequests` now gets a real input
+  form instead of a failed tool call. The turn ends, the channel renders the
+  fields, and the user's answer replays the parked call automatically.
+  `resultType` and `inputRequests` are read off the **shipped SDK 1.29.0** —
+  no version bump and no dependency on the `@modelcontextprotocol/*@2.0.0`
+  family (#540).
+- **Two turns, not a suspended one.** MRTR imagines the client retrying the
+  *original* request with the call still in flight. omadia has no per-turn
+  suspend/resume store — `turnContext` is an `AsyncLocalStorage` whose
+  lifetime is the turn — and parking a turn mid-tool-loop would hold the HTTP
+  or Teams connection open past every proxy idle timeout. So the feature rides
+  the existing `ask_user_choice` short-circuit: the turn ends, and the answer
+  arrives as a fresh turn that re-calls the tool with
+  `{...originalArgs, inputResponses}`.
+  **Accepted limitation:** the replay is a NEW `tools/call` in a LATER turn
+  against a possibly reconnected transport. For a stateless HTTP server that
+  is indistinguishable from the retry MRTR describes; for a **stdio server
+  holding process state tied to the original in-flight call** it is not — that
+  state may be gone and the server sees a fresh call rather than a
+  continuation. Servers needing true continuation semantics are out of scope
+  until omadia has a real turn suspend/resume store.
+- **The card always names the asking server.** An MCP server can now make
+  omadia display arbitrary prose and collect arbitrary free text
+  mid-conversation, so a card that hid the asker would let a hostile server
+  phish credentials behind omadia's own chrome. Every surface attributes the
+  request: the web-ui form, the plain-text fallback for channels without form
+  support, and the session-log line. Server-supplied prose is rendered quoted
+  and attributed, never as omadia's own copy, and `secret` fields say plainly
+  that the value still reaches the server as entered.
+- A parked record is bound to `{userId, sessionId, correlationId}` and is
+  replayable by that triple only. `sessionScope` alone is deliberately not a
+  key: `resolveScope` returns the literal `'http-default'` for unscoped HTTP
+  turns, which was the live cross-user hole in #445. Records are single-use,
+  TTL-bounded (15 min), and a second `input_required` raised *by* a replay is
+  capped rather than bouncing the user indefinitely.
+- The MCP call audit gains a three-valued `outcome`
+  (`ok` | `fail` | `input_required`). A parked call previously had nowhere
+  honest to go: `ok: false` would put a phantom failure in front of operators
+  debugging a healthy server, and a bare `ok: true` would claim a result that
+  was never delivered. `ok` keeps its narrower meaning ("did not fail") and
+  the finer truth gets its own field.
+- When both an `ask_user_choice` card and an MCP input request are pending in
+  the same tool batch, **the choice card wins** — deterministically, not by
+  dispatch order. A model that asked its own clarifying question has decided
+  it does not yet understand the request, so collecting server-specific field
+  values first would answer the wrong question. The MCP record is not
+  discarded; it stays replayable until its TTL.
+- Not included: omadia acting as an MCP *server* and signalling
+  `input_required` to its own clients. That needs a `ToolDispatchService`
+  result-type widening touching every plugin dispatch handler, and is a
+  separate issue.
+
+### Fixed — `turnContext` is empty inside tool handlers on the streaming path
+
+- Found while building #544. `Orchestrator.chatStream` establishes the turn
+  context with `turnContext.enter()` (`AsyncLocalStorage.enterWith`) inside an
+  async generator, which does **not** propagate into the generator's own
+  continuations — so `turnContext.current()` is `undefined` in every tool
+  handler on every streaming turn, including the web-ui path. Verified with a
+  probe against both entry points.
+- #544 does not depend on it (the parked-record owner is bound from the turn
+  input the orchestrator holds directly), and `userId` + `sessionScope` are now
+  populated on both entry points. The broader consequences for
+  `mcpCallerKind` / `mcpUserKey` audit attribution on streaming turns are
+  **not** addressed here and want their own issue.
+
 ### Fixed — the CI schema job never applied `middleware/migrations`
 
 - `MIGRATION_DOMAINS` in `.github/workflows/ci.yml` listed five domains and

@@ -913,6 +913,13 @@
       "modalBody": "Authorize {server} so this and future requests can use it.",
       "close": "Close"
     },
+    "mcpInput": {
+      "kicker": "External input request",
+      "heading": "“{server}” needs additional details for “{tool}”.",
+      "secretHint": "Hidden while typing — the value is still sent to the server as entered.",
+      "warning": "Whatever you enter is sent to the external server “{server}”. Only provide details you want that server to have.",
+      "submit": "Send to server"
+    },
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — click for full size",
     "attachmentCachedSuffix": " · cached",
