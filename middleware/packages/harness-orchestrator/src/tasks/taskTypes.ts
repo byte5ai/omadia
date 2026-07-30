@@ -221,6 +221,13 @@ export interface TaskReadStore {
  *  - `finish` is the single terminal transition, and it is fenced too — so a
  *    worker that lost its lease cannot overwrite the outcome the new owner
  *    recorded.
+ *
+ * An implementor MAY additionally accept a fenced write against a task that
+ * currently holds NO lease — the administrative case, where a cancel route or an
+ * orphan reaper legitimately finalizes a task it never claimed. `dev_job` relies
+ * on exactly that (`devJobStore.finishTerminal` is deliberately unfenced for this
+ * reason). What an implementor must NEVER accept is a MISMATCHED lease against a
+ * task that does hold one; that is the property the fence exists for.
  */
 export interface TaskStore extends TaskReadStore {
   create(input: NewTaskInput): Promise<TaskDescriptor>;
