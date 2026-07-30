@@ -104,24 +104,50 @@ import {
   type TurnIngestResult,
   type TurnSearchHit,
   type Visibility,
+  type EmbeddingClient,
 } from '@omadia/plugin-api';
-import type { EmbeddingClient } from '@omadia/embeddings';
 import {
   GRAPH_EDGE_TYPES,
   GRAPH_NODE_TYPES,
   validateNodeProps,
 } from './schema.js';
+import { captureGateEpoch, type GateEpochReader } from './gateEpoch.js';
 
 export interface NeonKnowledgeGraphOptions {
   pool: Pool;
   tenantId?: string;
   /**
-   * Optional embedding client used to populate the Turn `embedding` column on
-   * every ingest. When absent, `embedding` stays NULL and semantic search
-   * falls back to FTS. Embedding failures are logged and non-fatal — the
-   * turn is still written to the graph.
+   * Live lookup for the embedding client that populates the `embedding`
+   * column on every ingest. Resolved AT THE MOMENT OF USE, never cached.
+   *
+   * A resolver that returns `undefined` means "no embedding client right
+   * now": `embedding` stays NULL, semantic search falls back to FTS, nothing
+   * is logged as a failure and no attempt counter is burned. That is
+   * deliberately byte-for-byte the old behaviour of omitting the client, so
+   * "unavailable" stays a SKIP. Only a client that throws counts as a failed
+   * attempt — the two are different states and both callers below rely on it.
+   *
+   * #440: this used to be a fixed `embeddingClient` captured in the
+   * constructor. The model/dimension gate hands the plugin `undefined` while
+   * it refuses vector writes, and with a captured field the only way back was
+   * an operator restart — even once the stale-vector clear that caused the
+   * refusal had finished. A resolver lets the gate re-open writes in-process.
    */
-  embeddingClient?: EmbeddingClient;
+  resolveEmbeddingClient?: () => EmbeddingClient | undefined;
+  /**
+   * #440 follow-up — reads the gate's current epoch, for the write fence.
+   *
+   * The resolve-once contract above is deliberate and stays: re-resolving
+   * between the guard and the `embed()` would turn a clean skip into a crash.
+   * But it means a client resolved before an `await embed()` can be un-approved
+   * by the time the UPDATE runs — a same-width provider switch drains
+   * `clear_pending` and re-opens writes inside exactly that window, and the
+   * previous-provider vector that lands afterwards is unrecoverable (non-NULL,
+   * so no clear and no NULL-only sweep will ever revisit it). Both embedders
+   * below therefore capture this epoch before their embed and drop the write if
+   * it moved. Omitted → never fenced, byte-for-byte the pre-#440 behaviour.
+   */
+  gateEpoch?: GateEpochReader;
   /**
    * OB-73 (Phase 4) — optional read-path access tracker. When wired, every
    * Turn surfaced by `searchTurns`, `searchTurnsByEmbedding`, `getSession`
@@ -360,17 +386,44 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
 
   private readonly tenantId: string;
 
-  private readonly embeddingClient: EmbeddingClient | undefined;
+  /** See `NeonKnowledgeGraphOptions.resolveEmbeddingClient`. Held as the
+   *  resolver, never as its result — the whole point is that the answer can
+   *  change while this instance is alive. */
+  private readonly resolveEmbeddingClient:
+    | (() => EmbeddingClient | undefined)
+    | undefined;
 
   private readonly accessTracker:
     | { markAccessed(externalId: string | null | undefined): void }
     | undefined;
 
+  /** See `NeonKnowledgeGraphOptions.gateEpoch`. */
+  private readonly gateEpoch: GateEpochReader | undefined;
+
   constructor(opts: NeonKnowledgeGraphOptions) {
     this.pool = opts.pool;
     this.tenantId = opts.tenantId ?? 'default';
-    this.embeddingClient = opts.embeddingClient;
+    this.resolveEmbeddingClient = opts.resolveEmbeddingClient;
+    this.gateEpoch = opts.gateEpoch;
     this.accessTracker = opts.accessTracker;
+  }
+
+  /**
+   * The embedding client to use right now, or `undefined` when there is none.
+   *
+   * A resolver that THROWS is treated as "none" rather than propagated: the
+   * callers below are post-commit fire-and-forget paths whose contract is that
+   * a missing embedder never disturbs the write that already succeeded.
+   */
+  private currentEmbeddingClient(): EmbeddingClient | undefined {
+    try {
+      return this.resolveEmbeddingClient?.();
+    } catch (err) {
+      console.error(
+        `[graph] embedding-client resolver threw (treating as unavailable): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
   }
 
   async ingestTurn(turn: TurnIngest): Promise<TurnIngestResult> {
@@ -459,7 +512,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       // Embed the turn *after* commit: a slow embedding sidecar must not
       // block (or roll back) the main ingest. Failure is logged and left
       // as NULL — next retrieval just falls back to FTS for this turn.
-      if (this.embeddingClient) {
+      // Resolved fresh: the gate can have re-enabled vector writes since this
+      // instance was constructed. `embedAndStoreTurn` re-resolves for itself,
+      // so this check only avoids scheduling obvious no-op work.
+      if (this.currentEmbeddingClient()) {
         void this.embedAndStoreTurn(turnUuid, turn.userMessage, turn.assistantAnswer);
       }
 
@@ -888,7 +944,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     userMessage: string,
     assistantAnswer: string,
   ): Promise<void> {
-    if (!this.embeddingClient) return;
+    // Resolve ONCE per call and reuse it below: re-resolving between the
+    // guard and the `embed()` would let a mid-flight gate flip turn a skip
+    // into a crash. `undefined` here is a silent skip — no log, no attempt
+    // counter bump — exactly as when no client was ever configured.
+    const embeddingClient = this.currentEmbeddingClient();
+    if (!embeddingClient) return;
     const text = `${userMessage}\n\n${assistantAnswer}`.trim();
     if (text.length === 0) return;
     // Skip re-embedding a turn that already has a vector. The Markdown replay
@@ -902,9 +963,24 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       [turnUuid],
     );
     if (existing.rows[0]?.has_embedding === true) return;
+    // Captured BEFORE the embed, checked AFTER it. See
+    // `NeonKnowledgeGraphOptions.gateEpoch`.
+    const fence = captureGateEpoch(this.gateEpoch);
     try {
-      const vector = await this.embeddingClient.embed(text);
+      const vector = await embeddingClient.embed(text);
       if (vector.length === 0) return;
+      if (fence.moved()) {
+        // The gate re-evaluated while we were embedding, so this vector came
+        // from a client the current verdict no longer approves. Dropping it is
+        // a clean no-op: the row keeps `embedding IS NULL` and no attempt is
+        // burned, so the backfill sweep — armed with the approved client —
+        // re-embeds it on its next tick. Writing it instead would leave a
+        // previous-model vector nothing can find again.
+        console.error(
+          `[graph] discarded a previous-provider embedding for turn uuid=${turnUuid.slice(0, 8)}… — the model gate re-evaluated mid-embed; the backfill sweep will re-embed it`,
+        );
+        return;
+      }
       await this.pool.query(
         `UPDATE graph_nodes
            SET embedding = $1::vector,
@@ -3200,11 +3276,22 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     externalId: string,
     text: string,
   ): Promise<void> {
-    if (!this.embeddingClient) return;
+    // Same resolve-once contract as `embedAndStoreTurn`: no client is a
+    // silent skip, a throwing client is a counted attempt.
+    const embeddingClient = this.currentEmbeddingClient();
+    if (!embeddingClient) return;
     if (text.trim().length === 0) return;
+    // Same fence as `embedAndStoreTurn`.
+    const fence = captureGateEpoch(this.gateEpoch);
     try {
-      const vector = await this.embeddingClient.embed(text);
+      const vector = await embeddingClient.embed(text);
       if (vector.length === 0) return;
+      if (fence.moved()) {
+        console.error(
+          `[graph] discarded a previous-provider embedding for ${externalId} — the model gate re-evaluated mid-embed; the backfill sweep will re-embed it`,
+        );
+        return;
+      }
       await this.pool.query(
         `UPDATE graph_nodes
            SET embedding = $1::vector,

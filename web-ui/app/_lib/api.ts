@@ -3521,6 +3521,150 @@ export async function setMemoryBackend(
 }
 
 // -----------------------------------------------------------------------------
+// Embedding-provider switch (#440 follow-up). Backed by the admin router at
+// /api/v1/admin/embedding-provider, surfaced to the browser as
+// /bot-api/v1/admin/embedding-provider.
+//
+// Unlike `setMemoryBackend` above, the POST here does NOT just persist a
+// choice: the middleware deactivates the outgoing `embeddingClient@1` adapter,
+// activates the target and re-runs the knowledge-graph's model/dimension gate
+// in-process. No restart. The response therefore carries the resulting gate
+// outcome plus a fresh snapshot.
+//   - GET  /       → providers, active model, corpus, live gate, switch preview
+//   - POST /switch → perform the switch (destructive; needs confirmation)
+// -----------------------------------------------------------------------------
+
+/** What a switch to this provider would cost. `null` fields mean "cannot be
+ *  told before activation" — the gate decides for real. */
+export interface EmbeddingProviderPreview {
+  /** True when the target width differs from the stored column width. */
+  widthChange: boolean | null;
+  /** Stored vectors that would be discarded and re-embedded. */
+  vectorsToDiscard: number | null;
+}
+
+export interface EmbeddingProviderOption {
+  pluginId: string;
+  label: string;
+  active: boolean;
+  registryStatus: 'active' | 'inactive' | 'errored' | null;
+  modelId: string | null;
+  dimensions: number | null;
+  /** `null` for the provider that is already active. */
+  preview: EmbeddingProviderPreview | null;
+}
+
+/** A governed `vector(n)` column and how much corpus it holds. */
+export interface EmbeddingVectorColumn {
+  table: string;
+  column: string;
+  declaredDimensions: number | null;
+  storedVectors: number | null;
+}
+
+/** The #440 gate verdict, live (never a boot snapshot). */
+export interface EmbeddingGateState {
+  vectorWritesAllowed: boolean;
+  status: string;
+  reason?: string;
+  activeModelId?: string;
+  storedModelId?: string;
+  detail?: string;
+}
+
+/**
+ * The registry's live client and the last gate verdict name DIFFERENT models
+ * (#440 follow-up). Not a failure: swapping an `embeddingClient@1` adapter
+ * through the generic plugin-install UI deliberately does not re-gate, so the
+ * graph keeps running under a verdict about a model that is no longer active.
+ * `null` when the two agree, or when either side is unknown.
+ */
+export interface EmbeddingProviderDrift {
+  /** What the registry hands out right now. */
+  activeModelId: string;
+  /** What the governing verdict was computed against. */
+  gateModelId: string;
+}
+
+export interface EmbeddingProviderState {
+  providers: EmbeddingProviderOption[];
+  activeProviderId: string | null;
+  activeModel: { modelId: string; dimensions: number } | null;
+  /** Optional so older middleware builds still satisfy this type. */
+  providerDrift?: EmbeddingProviderDrift | null;
+  capabilityPublished: boolean;
+  /** `graph_embedding_model` — what the stored vectors were produced with. */
+  corpus: { modelId: string; dimensions: number; clearPending: boolean } | null;
+  columns: EmbeddingVectorColumn[];
+  columnDimensions: number | null;
+  storedVectorTotal: number | null;
+  gate: EmbeddingGateState | null;
+  autoMigrateVectorColumns: boolean;
+  knowledgeGraphInstalled: boolean;
+  graphAvailable: boolean;
+  /**
+   * The tenant every corpus number above was priced against — the
+   * knowledge-graph plugin's own `graph_tenant_id` when the operator set one,
+   * otherwise the deployment default. Optional so older middleware builds
+   * still satisfy this type; it exists so a `storedVectorTotal: 0` can be told
+   * apart from "the wrong tenant was counted".
+   */
+  graphTenantId?: string;
+  corpusError: string | null;
+}
+
+export interface SwitchEmbeddingProviderResult extends EmbeddingProviderState {
+  ok: true;
+  switchedTo: string;
+  /**
+   * Did the knowledge-graph's model/dimension gate actually re-run against the
+   * new provider? False on a deployment with no Postgres knowledge-graph
+   * active (nothing to gate) — a legitimate success, but a different one, so
+   * it is reported rather than implied. `gateWarning` says why.
+   * Optional so older middleware builds still satisfy this type.
+   */
+  gateReevaluated?: boolean;
+  gateWarning?: string;
+}
+
+/** Read the current embedding-provider picture. Safe to poll. */
+export async function getEmbeddingProvider(): Promise<EmbeddingProviderState> {
+  return getJson<EmbeddingProviderState>('/v1/admin/embedding-provider');
+}
+
+/**
+ * Switch the active embedding provider, live.
+ *
+ * DESTRUCTIVE: the stored vectors are discarded and re-embedded, one paid
+ * provider call per row. `confirmDiscardVectors` must be `true` or the
+ * middleware answers 400 `embeddingProvider.confirmation_required`. Other
+ * inline-surfaceable failures: 400 `embeddingProvider.unknown_target`, 409
+ * `embeddingProvider.already_active`, 409 `embeddingProvider.target_unavailable`
+ * (the target was not configured; `details.restoredProviderId` names the
+ * provider that is verified live again, or is `null` when NOTHING could be
+ * restored), 409 `embeddingProvider.switch_in_progress` (another switch is
+ * running — re-read the state before retrying) and 500
+ * `embeddingProvider.gate_reevaluation_failed` (the provider switch DID take
+ * effect and the knowledge graph is still up with its pool intact, but
+ * re-evaluating its model/dimension gate against the new provider threw, so
+ * the graph is still governed by the PREVIOUS verdict).
+ *
+ * The switch never re-activates the knowledge-graph plugin — that would end
+ * the pg pool the whole middleware shares — so a successful switch can no
+ * longer leave the graph deactivated. The former
+ * `embeddingProvider.knowledge_graph_down` code is gone with it.
+ */
+export async function switchEmbeddingProvider(
+  pluginId: string,
+  confirmDiscardVectors: boolean,
+): Promise<SwitchEmbeddingProviderResult> {
+  return postJson<SwitchEmbeddingProviderResult>(
+    '/v1/admin/embedding-provider/switch',
+    { pluginId, confirmDiscardVectors },
+  );
+}
+
+// -----------------------------------------------------------------------------
 // Mid-turn steering (2026-06-06).
 // -----------------------------------------------------------------------------
 
