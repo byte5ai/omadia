@@ -333,6 +333,53 @@ describe('write-capable MCP tool — duplicate-write protection (#542 prerequisi
     );
   });
 
+  it('MUTATION CHECK: the retry SHARES the absolute MCP budget instead of doubling it', async (t) => {
+    // W4. The retry used to start with a FRESH `maxTotalTimeout`, so one
+    // `callTool` was worth up to 2 x the absolute ceiling of wall clock — 360s
+    // against a 240s outer dispatch deadline, i.e. the very inversion W3-A
+    // removed, re-created by a knob nobody counted in the invariant.
+    //
+    // Driven through the real knob rather than a stub: with the ceiling set below
+    // the retry's minimum-remaining floor, the budget is provably spent after
+    // attempt 1 no matter how fast the machine is, so no second attempt may
+    // start. The CONTROL test above proves this same proxy produces TWO attempts
+    // when the budget allows it, so a green result here is the budget doing the
+    // work — not the retry having quietly disappeared.
+    const previousCeiling = process.env['OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS'];
+    process.env['OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS'] = '900';
+    try {
+      const writes: string[] = [];
+      const first = await startWriteServer(t, writes);
+      if (!first) return;
+      const second = await startWriteServer(t, writes);
+      if (!second) return;
+      proxy = await startLosingProxy([first, second]);
+
+      manager = new McpManager();
+      // No idempotency key: the `exactlyOnce` clamp is NOT what suppresses the
+      // retry here — this is a plain read-shaped dispatch, exactly the CONTROL
+      // configuration that produced two attempts.
+      const dispatcher = localDispatcher(manager, serverConfig(proxy.url), {
+        declareWrite: false,
+      });
+
+      const result = await dispatcher.dispatch(LOCAL_TOOL, { amount: 100 });
+
+      assert.equal(
+        proxy.toolCallCount(),
+        1,
+        'attempt 2 started with a fresh allowance — the absolute ceiling is not absolute',
+      );
+      assert.match(result.content, /Error:/, 'the failure must still be reported');
+    } finally {
+      if (previousCeiling === undefined) {
+        delete process.env['OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS'];
+      } else {
+        process.env['OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS'] = previousCeiling;
+      }
+    }
+  });
+
   it('a READ tool keeps the once-retry mitigation intact', async (t) => {
     const writes: string[] = [];
     const first = await startWriteServer(t, writes);

@@ -6,6 +6,7 @@ import {
   InMemoryTaskStore,
   TaskLeaseLostError,
   runTaskReaperOnce,
+  startTaskReaper,
 } from '@omadia/orchestrator';
 
 /**
@@ -166,6 +167,37 @@ describe('tasks/InMemoryTaskStore — claim + lease', () => {
     assert.equal(await store.claimNextPending(randomUUID()), null);
   });
 
+  it('MUTATION CHECK: the taskId hint claims THAT task, not the pool head', async () => {
+    // W4. Without the hint a runner spawned for task B is handed the oldest
+    // unclaimed task instead — the crossed claim that stranded two tasks for a
+    // full orphan window. Asserted at the store, because the runner has its own
+    // defence-in-depth layer that would mask a broken filter here.
+    const store = new InMemoryTaskStore();
+    const oldest = await store.create({ kind: 'k', input: { which: 'oldest' } });
+    const wanted = await store.create({ kind: 'k', input: { which: 'wanted' } });
+
+    const claimed = await store.claimNextPending(randomUUID(), 'k', wanted.id);
+    assert.ok(claimed);
+    assert.equal(
+      claimed.descriptor.id,
+      wanted.id,
+      'the hint was ignored and the pool head was claimed instead',
+    );
+    assert.deepEqual(claimed.input, { which: 'wanted' });
+    // The task it skipped is untouched and still claimable by its own runner.
+    assert.equal((await store.get(oldest.id))?.claimedBy, null);
+  });
+
+  it('returns null — rather than someone else\'s task — when the hinted task is gone', async () => {
+    const store = new InMemoryTaskStore();
+    await store.create({ kind: 'k', input: {} });
+    assert.equal(
+      await store.claimNextPending(randomUUID(), 'k', randomUUID()),
+      null,
+      'an unclaimable hint must claim NOTHING, never fall back to the pool head',
+    );
+  });
+
   it('keeps a bounded event tail in order', async () => {
     const store = new InMemoryTaskStore({ maxEvents: 3 });
     const t = await store.create({ kind: 'k', input: {} });
@@ -313,6 +345,52 @@ describe('tasks/orphan reaper', () => {
         }),
       TypeError,
     );
+  });
+});
+
+describe('tasks/startTaskReaper — sweeps do not overlap (W4)', () => {
+  it('MUTATION CHECK: a sweep slower than the interval is not re-entered', async () => {
+    // `setInterval` does not await its callback. Harmless against this store
+    // (its `reapOrphans` never suspends, so it is one atomic JS task), but the
+    // seam exists precisely so a Postgres implementor can back it — and there a
+    // slow sweep would stack concurrent transactions contending on the same rows.
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    let starts = 0;
+    let release!: () => void;
+    const inSweep = new Promise<void>((r) => {
+      release = r;
+    });
+
+    const slowStore = {
+      reapOrphans: async () => {
+        starts += 1;
+        concurrent += 1;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        await inSweep;
+        concurrent -= 1;
+        return { staleFailed: 0, purged: 0 };
+      },
+    } as unknown as InMemoryTaskStore;
+
+    const stop = startTaskReaper(slowStore, { intervalMs: 1 });
+    try {
+      // Several intervals elapse while the first sweep is still running.
+      await new Promise((r) => setTimeout(r, 60));
+      assert.equal(
+        maxConcurrent,
+        1,
+        `a sweep was re-entered while still running (${String(maxConcurrent)} concurrent)`,
+      );
+      assert.equal(starts, 1, 'only one sweep may be in flight at a time');
+      release();
+      // Once it finishes, the schedule resumes.
+      await new Promise((r) => setTimeout(r, 30));
+      assert.ok(starts > 1, 'the reaper must keep sweeping after one completes');
+    } finally {
+      release();
+      stop();
+    }
   });
 });
 
