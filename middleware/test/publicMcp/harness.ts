@@ -40,6 +40,7 @@ import {
 } from '@omadia/orchestrator';
 import type {
   DispatchableToolSpec,
+  DomainTool,
   PrivacyTurnHandle,
   ToolDispatchResult,
 } from '@omadia/orchestrator';
@@ -177,15 +178,40 @@ export function fakeDispatcher(
 export function realDispatcher(
   tools: readonly FakeTool[],
   seen?: { name: string; input: unknown }[],
+  opts?: {
+    /**
+     * Which of `ToolDispatchService`'s TWO dispatch branches to route through.
+     * They are separate code paths with separately-written privacy handling, so
+     * a guarantee proven on one proves nothing about the other.
+     */
+    readonly via?: 'native' | 'domain';
+  },
 ): PublicMcpDispatcher {
   const registry = new NativeToolRegistry();
+  const domainTools: DomainTool[] = [];
+  const run = async (tool: FakeTool, input: unknown): Promise<string> => {
+    seen?.push({ name: tool.name, input });
+    const result = tool.handle ? await tool.handle(input) : { content: `dispatched:${tool.name}` };
+    return result.content;
+  };
+
   for (const tool of tools) {
+    if (opts?.via === 'domain') {
+      domainTools.push({
+        name: tool.name,
+        spec: {
+          name: tool.name,
+          description: `desc:${tool.name}`,
+          input_schema: { type: 'object' as const, properties: {}, required: [] },
+        },
+        domain: 'domain.test',
+        handle: (input: unknown) => run(tool, input),
+        ...(tool.writeCapabilities ? { writeCapabilities: tool.writeCapabilities } : {}),
+      } as unknown as DomainTool);
+      continue;
+    }
     registry.register(tool.name, {
-      handler: async (input: unknown) => {
-        seen?.push({ name: tool.name, input });
-        const result = tool.handle ? await tool.handle(input) : { content: `dispatched:${tool.name}` };
-        return result.content;
-      },
+      handler: (input: unknown) => run(tool, input),
       spec: {
         name: tool.name,
         description: `desc:${tool.name}`,
@@ -198,6 +224,7 @@ export function realDispatcher(
   let slot: PrivacyTurnHandle | undefined;
   const dispatch = new ToolDispatchService({
     nativeTools: registry,
+    domainTools,
     // Explicit, exactly as production does it: this path runs outside any turn,
     // so the ambient `turnContext` fallback is `undefined` here.
     privacy: () => slot,

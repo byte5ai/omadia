@@ -149,6 +149,89 @@ describe('public MCP endpoint — privacy', () => {
     assert.doesNotMatch(body, /sensitive\.person@customer\.example/);
   });
 
+  // ── a THROWING tool leaks nothing either (W4) ─────────────────────────────
+
+  /**
+   * The leak this section exists for: `ToolDispatchService` ran its privacy
+   * pipeline on the SUCCESS branch only, so a handler that threw returned
+   * `error.message` verbatim and the endpoint serialized it straight to the
+   * caller. Handler exceptions are not sanitized strings — the message below is
+   * an ordinary shape for a real Odoo fault, and every byte of it went out.
+   *
+   * Asserted on the RAW HTTP BODY, not on "a masking function was called": the
+   * bytes on the wire are the only thing that actually matters here.
+   */
+  const THROWN_PII = `Fault: Invalid field 'x' on record {"id":42,"name":"Jane Doe","email":"${RAW_EMAIL}","vat":"DE811234567"}`;
+
+  function throwingOptions(via: 'native' | 'domain'): HarnessOptions {
+    return options({
+      dispatchers: {
+        sales: realDispatcher(
+          [
+            {
+              name: READ_TOOL,
+              handle: () => {
+                throw new Error(THROWN_PII);
+              },
+            },
+          ],
+          undefined,
+          { via },
+        ),
+      },
+    });
+  }
+
+  it('masks PII out of a NATIVE tool that THROWS — the raw fault never reaches the wire', async (t) => {
+    const h = await start(throwingOptions('native'), t);
+    if (!h) return;
+    const res = await h.post(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
+    const body = await res.text();
+    assert.doesNotMatch(
+      body,
+      /sensitive\.person@customer\.example/,
+      'a throwing tool leaked the raw error text to a public caller',
+    );
+    // The email is the marker this whole file uses: `maskingPrivacyService`
+    // redacts email spans and nothing else, so its absence proves the digest —
+    // not the surrounding prose — is what came back.
+    assert.match(body, /\[email\]/, 'the error text should have been masked, not dropped');
+    assert.doesNotMatch(
+      body,
+      new RegExp(THROWN_PII.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      'the exception message must not appear verbatim',
+    );
+  });
+
+  it('masks PII out of a DOMAIN tool that THROWS too — both dispatch branches', async (t) => {
+    // The two branches of `dispatchInner` have separately-written error
+    // handling; proving one says nothing about the other.
+    const h = await start(throwingOptions('domain'), t);
+    if (!h) return;
+    const res = await h.post(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
+    const body = await res.text();
+    assert.doesNotMatch(body, /sensitive\.person@customer\.example/);
+    assert.match(body, /\[email\]/);
+  });
+
+  it('still reports the failure as an error rather than swallowing it', async (t) => {
+    const h = await start(throwingOptions('native'), t);
+    if (!h) return;
+    const { payload } = await h.rpc(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
+    const result = payload['result'] as { isError?: boolean } | undefined;
+    assert.equal(result?.isError, true, 'masking must not turn a failure into a success');
+  });
+
+  it('audits a throwing tool as a failed call', async (t) => {
+    const audit: PublicMcpAuditEntry[] = [];
+    const h = await start({ ...throwingOptions('native'), audit }, t);
+    if (!h) return;
+    await h.rpc(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0]?.ok, false);
+    assert.equal(audit[0]?.error, 'tool reported an error');
+  });
+
   // ── fail CLOSED when masking errors ──────────────────────────────────────
 
   /**

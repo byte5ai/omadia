@@ -266,6 +266,238 @@ describe('ToolDispatchService — privacy data-plane boundary (#542 prerequisite
   });
 });
 
+/**
+ * W4 — the ERROR path of the same boundary.
+ *
+ * `afterDispatch` ran only on the success branch; a THROWING handler returned
+ * `error.message` verbatim. Handler exceptions are not sanitized: ORMs echo the
+ * failing row and drivers echo bound parameters, so the message below is an
+ * ordinary shape for a real Odoo/psql failure — and it went out unmasked.
+ *
+ * Same mutation-check discipline as above: every assertion inspects the CONTENT
+ * that leaves the dispatcher. Deleting the `maskErrorText` call, or making it
+ * return its input, fails these.
+ */
+const PII_ERROR = `Fault: Invalid field 'x' on record {"name":"Erika Mustermann","email":"${EMAIL}","iban":"${IBAN}"}`;
+
+/** A registry whose handler THROWS instead of returning. */
+function throwingRegistryWith(name: string, message: string): NativeToolRegistry {
+  const nativeTools = new NativeToolRegistry();
+  nativeTools.register(name, {
+    handler: () => {
+      throw new Error(message);
+    },
+    spec: {
+      name,
+      description: 'always fails, with PII in the message',
+      input_schema: { type: 'object', properties: {} },
+    },
+    domain: 'test.pii',
+  });
+  return nativeTools;
+}
+
+/** A domain tool whose `handle` THROWS instead of returning. */
+function throwingDomainTool(name: string, message: string): DomainTool {
+  return {
+    name,
+    spec: {
+      name,
+      description: 'sub-agent that always fails',
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    domain: 'domain.hr',
+    handle() {
+      throw new Error(message);
+    },
+  };
+}
+
+describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
+  it('MASKS PII out of a NATIVE handler exception message', async () => {
+    const service = new ToolDispatchService({
+      nativeTools: throwingRegistryWith('odoo_search_partner', PII_ERROR),
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+    });
+
+    const result = await service.dispatch('odoo_search_partner', {});
+
+    assert.equal(result.content.includes(EMAIL), false, 'error path leaked the email');
+    assert.equal(result.content.includes(IBAN), false, 'error path leaked the IBAN');
+    assert.equal(
+      result.content.includes('Erika Mustermann'),
+      false,
+      'error path leaked the person name',
+    );
+    assert.match(result.content, /\[masked:email\]/, 'the masked digest should have replaced it');
+    assert.equal(result.isError, true, 'masking must not swallow the error signal');
+  });
+
+  it('MASKS PII out of a DOMAIN tool exception message too (both branches)', async () => {
+    const service = new ToolDispatchService({
+      nativeTools: new NativeToolRegistry(),
+      domainTools: [throwingDomainTool('ask_hr', PII_ERROR)],
+      privacy: () => redactingPrivacyHandle(),
+    });
+
+    const result = await service.dispatch('ask_hr', {});
+
+    assert.equal(result.content.includes(EMAIL), false, 'domain-tool error path leaked the email');
+    assert.equal(result.content.includes(IBAN), false, 'domain-tool error path leaked the IBAN');
+    assert.match(result.content, /\[masked:email\]/);
+    assert.equal(result.isError, true);
+  });
+
+  it('marks a masked error as `origin: tool` so a consumer knows it had to cross the boundary', async () => {
+    const service = new ToolDispatchService({
+      nativeTools: throwingRegistryWith('odoo_search_partner', PII_ERROR),
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+    });
+
+    const result = await service.dispatch('odoo_search_partner', {});
+
+    assert.equal(result.origin, 'tool');
+  });
+
+  it("marks this service's OWN refusals as `origin: dispatcher` — they carry no tool data", async () => {
+    const service = new ToolDispatchService({
+      nativeTools: new NativeToolRegistry(),
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+    });
+
+    const unknown = await service.dispatch('no_such_tool', {});
+    assert.equal(unknown.origin, 'dispatcher');
+    assert.equal(unknown.isError, true);
+
+    const notReady = new ToolDispatchService({
+      nativeTools: registryWith('odoo_read_partner', PII_RESULT, { agentId: '@omadia/odoo' }),
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+      isPluginToolsReady: () => false,
+    });
+    const unavailable = await notReady.dispatch('odoo_read_partner', {});
+    assert.equal(unavailable.origin, 'dispatcher');
+    assert.equal(unavailable.isError, true);
+  });
+
+  it('does NOT feed the exception text to `captureRawToolResult` — that sink is for tool RESULTS', async () => {
+    // The KG-ingest / trace consumers behind this callback treat what they get
+    // as business data. A driver stack trace is not, and reusing the whole
+    // `afterDispatch` chain would have handed them one.
+    const captured: string[] = [];
+    const service = new ToolDispatchService({
+      nativeTools: throwingRegistryWith('odoo_search_partner', PII_ERROR),
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+      captureRawToolResult: (_name, result) => captured.push(result),
+    });
+
+    await service.dispatch('odoo_search_partner', {});
+
+    assert.deepEqual(captured, []);
+  });
+
+  it('does NOT honour the operator BYPASS for an exception, and records no receipt', async () => {
+    // `_privacy_mode: bypass` is consent about a plugin's DECLARED output shape.
+    // An exception message is arbitrary — anything the driver was holding — so
+    // the consent does not transfer, and a byte-counted "bypassed" receipt would
+    // mis-describe what was disclosed.
+    const receipts: RecordedBypass[] = [];
+    const service = new ToolDispatchService({
+      nativeTools: throwingRegistryWith('odoo_search_partner', PII_ERROR),
+      domainTools: [],
+      privacy: () =>
+        redactingPrivacyHandle({
+          bypassTools: new Set(['odoo_search_partner']),
+          bypassReceipts: receipts,
+        }),
+    });
+
+    const result = await service.dispatch('odoo_search_partner', {});
+
+    assert.equal(result.content.includes(EMAIL), false, 'a bypass let raw error text through');
+    assert.match(result.content, /\[masked:email\]/);
+    assert.deepEqual(receipts, []);
+  });
+
+  it('honours the intern EXEMPTION for an error, exactly as for a result', async () => {
+    // A self/infra tool's failure IS the agent's own operational state — the
+    // case the allowlist exists for. (Such tools are unreachable from the public
+    // endpoint anyway; `isPubliclyServableTool` filters them at the allowlist.)
+    const service = new ToolDispatchService({
+      nativeTools: throwingRegistryWith('memory', PII_ERROR),
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+    });
+
+    const result = await service.dispatch('memory', {});
+
+    assert.equal(result.content, PII_ERROR);
+    assert.equal(result.isError, true);
+  });
+
+  it('leaves the error message UNCHANGED when no privacy provider is installed', async () => {
+    // Parity with `afterDispatch`. The public endpoint refuses to call at all in
+    // this configuration (`requirePrivacyMasking`), so this is the loopback/CLI
+    // case, where the reader is the local operator.
+    const service = new ToolDispatchService({
+      nativeTools: throwingRegistryWith('odoo_search_partner', PII_ERROR),
+      domainTools: [],
+    });
+
+    const result = await service.dispatch('odoo_search_partner', {});
+
+    assert.equal(result.content, PII_ERROR);
+    assert.equal(result.isError, true);
+  });
+
+  it('falls back to the raw message when masking itself throws — and still flags the error', async () => {
+    // Documented fail-OPEN, safe ONLY because `publicMcpPrivacy.ts`'s gate never
+    // lets `internToolResultV4` throw and `PublicMcpServer` refuses an unmasked
+    // result. Asserted so the branch cannot change silently.
+    const service = new ToolDispatchService({
+      nativeTools: throwingRegistryWith('odoo_search_partner', PII_ERROR),
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle({ internThrows: true }),
+    });
+
+    const result = await service.dispatch('odoo_search_partner', {});
+
+    assert.equal(result.content, PII_ERROR);
+    assert.equal(result.isError, true);
+  });
+
+  it('masks a non-Error throw (a bare string) too — `errMsg` stringifies, it does not sanitize', async () => {
+    const nativeTools = new NativeToolRegistry();
+    nativeTools.register('odoo_search_partner', {
+      handler: () => {
+        // Deliberately not an Error: `errMsg` falls back to `String(error)`,
+        // which stringifies without sanitizing anything.
+        throw PII_ERROR;
+      },
+      spec: {
+        name: 'odoo_search_partner',
+        description: 'throws a bare string',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'test.pii',
+    });
+    const service = new ToolDispatchService({
+      nativeTools,
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+    });
+
+    const result = await service.dispatch('odoo_search_partner', {});
+
+    assert.equal(result.content.includes(EMAIL), false);
+    assert.match(result.content, /\[masked:email\]/);
+  });
+});
+
 describe('ToolDispatchService — raw-result capture (#542 prerequisite)', () => {
   it('captures the RAW result before masking, while the caller gets the MASKED one', async () => {
     const captured: Array<{ name: string; result: string; caller?: ToolDispatchCallerContext }> = [];

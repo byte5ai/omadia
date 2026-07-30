@@ -324,6 +324,7 @@ export type {
 export { ToolDispatchService } from './toolDispatchService.js';
 export type {
   DispatchableToolSpec,
+  ToolDispatchContentOrigin,
   ToolDispatchResult,
   ToolDispatchCallerContext,
   ToolDispatchOptions,
