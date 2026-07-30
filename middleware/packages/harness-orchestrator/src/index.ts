@@ -310,7 +310,28 @@ export { ToolDispatchService } from './toolDispatchService.js';
 export type {
   DispatchableToolSpec,
   ToolDispatchResult,
+  ToolDispatchCallerContext,
+  ToolDispatchOptions,
 } from './toolDispatchService.js';
+export {
+  ToolIdempotencyStore,
+  currentIdempotencyScope,
+  runWithIdempotencyScope,
+  fingerprintToolInput,
+  idempotencyCacheKey,
+  idempotencyConflictMessage,
+  DEFAULT_IDEMPOTENCY_TTL_MS,
+  DEFAULT_IDEMPOTENCY_MAX_ENTRIES,
+} from './toolIdempotency.js';
+export type {
+  ToolIdempotencyScope,
+  ToolIdempotencyResult,
+  ToolIdempotencyOutcome,
+} from './toolIdempotency.js';
+export {
+  currentDispatchCaller,
+  runWithDispatchCaller,
+} from './toolCallerContext.js';
 export { LoopbackMcpServer } from './loopbackMcpServer.js';
 export type {
   LoopbackMcpServerDeps,
