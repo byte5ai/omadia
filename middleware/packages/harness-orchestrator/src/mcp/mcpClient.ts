@@ -36,6 +36,7 @@ import type {
 } from '@omadia/plugin-api';
 
 import { turnContext } from '../turnContext.js';
+import { currentIdempotencyScope } from '../toolIdempotency.js';
 import {
   MCP_INPUT_MAX_REPLAY_DEPTH,
   extractMcpInputPrompt,
@@ -706,8 +707,21 @@ export class McpManager {
     // that intermittently returns "-32001 Request timed out" or drops the
     // connection). The retry drops the pooled connection first so it reconnects
     // fresh; auth-looking and real tool errors are NOT retried.
+    //
+    // #542 prerequisite — EXCEPT under an exactly-once idempotency scope. A
+    // transient failure is indistinguishable from "the server executed the write
+    // and the response was lost", so retrying a WRITE-capable call can duplicate
+    // a mutation (a second Odoo/M365 write = customer-data damage). When
+    // `ToolDispatchService` dispatched this call as write-capable with an
+    // idempotency key it publishes `exactlyOnce`, and this loop then makes ONE
+    // attempt: at-most-once beats at-least-once for writes.
+    //
+    // The mitigation itself is untouched for everything else — read tools, and
+    // write tools dispatched without an idempotency key, still get the retry.
+    const idempotency = currentIdempotencyScope();
+    const maxAttempts = idempotency?.exactlyOnce === true ? 1 : 2;
     let lastFailure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed.`;
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       let pooled: Pooled;
       try {
         pooled = await this.getOrConnect(cfg, token);
@@ -716,7 +730,7 @@ export class McpManager {
         // (streamable-HTTP surfaces the 401 as "-32000 Connection closed"), so
         // this path must also offer the auth prompt — not just tool-level errors.
         const failure = `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
-        if (attempt < 2 && looksTransient(failure) && token !== null) {
+        if (attempt < maxAttempts && looksTransient(failure) && token !== null) {
           await this.close(this.poolKey(cfg, token));
           lastFailure = failure;
           continue;
@@ -728,6 +742,16 @@ export class McpManager {
           {
             name: toolName,
             arguments: args,
+            // #542 prerequisite — advertise the idempotency key so a server that
+            // implements dedupe can recognise a duplicate as the SAME call.
+            // Advisory only: MCP defines no standard idempotency field and no
+            // server is obliged to honour this, so it is never the protection —
+            // the `maxAttempts` clamp above and the dispatcher's dedupe store
+            // are. Rides `_meta`, the spec's extension channel, so a server that
+            // ignores it sees byte-identical arguments.
+            ...(idempotency !== undefined
+              ? { _meta: { idempotencyKey: idempotency.key } }
+              : {}),
           },
           // Tolerate off-spec `structuredContent` (some third-party MCP servers —
           // e.g. the hosted Strava proxy — return it as a JSON array instead of an
@@ -783,7 +807,7 @@ export class McpManager {
         // Drop the connection so the next call reconnects (server may have died).
         await this.close(this.poolKey(cfg, token));
         const failure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed: ${msg(err)}`;
-        if (attempt < 2 && looksTransient(failure)) {
+        if (attempt < maxAttempts && looksTransient(failure)) {
           lastFailure = failure;
           continue;
         }
