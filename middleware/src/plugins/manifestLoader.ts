@@ -162,6 +162,21 @@ async function loadManifestV1Entries(
   return entries;
 }
 
+/**
+ * `identity.id` — an npm package name, optionally scoped. Deliberately
+ * narrower than npm's own rules (lowercase only, no URL-escapes, exactly one
+ * `/` and only after a `@scope`): every legitimate omadia plugin id is either
+ * scoped (`@omadia/plugin-office`) or a reverse-FQDN (`de.byte5.agent.foo`),
+ * and both fit. Matches the Builder's `AgentIdSchema` in builder/agentSpec.ts
+ * modulo the `_`/leading-digit tolerance npm allows.
+ */
+const PLUGIN_ID_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+/** npm's own package-name cap, including the scope. */
+const PLUGIN_ID_MAX_LENGTH = 214;
+/** `identity.version` — semver `x.y.z` with optional prerelease/build. */
+const PLUGIN_VERSION_PATTERN =
+  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
 export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   if (doc['schema_version'] !== '1') return null;
 
@@ -172,6 +187,27 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   const name = asString(identity['name']);
   const version = asString(identity['version']);
   if (!id || !name || !version) return null;
+
+  // `id` and `version` are path segments downstream (the install directory is
+  // `<packagesDir>/<id>/<version>`), so they are security fields, not cosmetic
+  // metadata: an id of `..` plus a version of `migrations` would resolve to a
+  // sibling of the packages root and get `fs.rm`'d before the rename. Both are
+  // therefore REJECTED rather than sanitised — a manifest that cannot state
+  // its own identity in the documented charset is not a manifest we install.
+  // This is a hard reject (`null`), not the graceful degradation the optional
+  // blocks below use; the upload path turns it into `package.manifest_invalid`.
+  if (id.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(id)) {
+    console.warn(
+      `[catalog] manifest rejected: identity.id ${JSON.stringify(id)} is not a lowercase npm-style package name (optionally @scoped, max ${PLUGIN_ID_MAX_LENGTH} chars).`,
+    );
+    return null;
+  }
+  if (!PLUGIN_VERSION_PATTERN.test(version)) {
+    console.warn(
+      `[catalog] manifest rejected: plugin '${id}' has identity.version ${JSON.stringify(version)}, which is not semver (x.y.z[-prerelease][+build]).`,
+    );
+    return null;
+  }
 
   const compat = asRecord(doc['compat']);
   const setup = asRecord(doc['setup']);
