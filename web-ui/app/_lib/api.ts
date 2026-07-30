@@ -4525,3 +4525,57 @@ export async function listWebhookSubscriptionDeliveries(
 ): Promise<{ deliveries: ConductorWebhookOutboundDelivery[] }> {
   return getJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/deliveries`);
 }
+
+// -----------------------------------------------------------------------------
+// Public API keys (issues #438/#439) — /api/public/v1/admin/keys.
+//
+// This router lives in @omadia/channel-api, not under /v1/operator/* like the
+// rest of this file's admin surfaces — it is mounted at API_PREFIX
+// `/api/public/v1`, gated by the same operator-session cookie via its own
+// `operatorAuth` middleware (see adminKeysRouter.ts). getJson/postJson still
+// apply here unchanged: same cookie, same 401-bounces-to-/login behavior.
+// -----------------------------------------------------------------------------
+
+const API_KEYS_BASE = '/public/v1/admin/keys';
+
+export interface ApiKeyPublicView {
+  id: string;
+  label?: string;
+  rateLimitPerMinute: number;
+  scopes: string[];
+  /** Epoch ms. */
+  createdAt: number;
+  /** Epoch ms. Present iff the key has been revoked. */
+  revokedAt?: number;
+}
+
+export interface CreateApiKeyInput {
+  label?: string;
+  rateLimitPerMinute?: number;
+  /**
+   * Omit this field entirely to accept the backend's legacy default
+   * (`['chat:write']`). An explicitly empty array is REJECTED by the
+   * backend with 400 — it reads `[]` as a deliberate "grant nothing"
+   * request, never as "use the default". Callers must never pass `[]`.
+   */
+  scopes?: string[];
+}
+
+export interface CreateApiKeyResult {
+  key: ApiKeyPublicView;
+  /** Plaintext — present only in this one response. Never returned again by
+   *  any other endpoint; do not persist it beyond the reveal-once UI. */
+  token: string;
+}
+
+export async function listApiKeys(): Promise<{ keys: ApiKeyPublicView[] }> {
+  return getJson(API_KEYS_BASE);
+}
+
+export async function createApiKey(input: CreateApiKeyInput): Promise<CreateApiKeyResult> {
+  return postJson(API_KEYS_BASE, input);
+}
+
+export async function revokeApiKey(id: string): Promise<{ key: ApiKeyPublicView }> {
+  return postJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/revoke`, {});
+}
