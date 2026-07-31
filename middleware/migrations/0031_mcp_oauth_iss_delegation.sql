@@ -24,40 +24,29 @@
 -- A fail-closed `per_user` default for EVERY row would break installed systems
 -- whose channel users reach MCP servers today precisely BECAUSE of the
 -- 'operator' fallback. So this migration is deliberately asymmetric:
---   • existing rows that already hold an operator token keep today's shared
---     behaviour (delegation = 'service'), and
---   • only NEWLY created servers get the safe 'per_user' default.
--- Operators who want per-user delegation on an existing server must opt in via
--- the MCP Control Center (or UPDATE the column directly).
+--   • when `mcp_servers.delegation` is introduced, pre-existing rows that
+--     already hold an operator token are grandfathered to today's shared
+--     behaviour (`delegation = 'service'`),
+--   • operators who later opt an existing server into `per_user` stay there on
+--     every re-apply, because that grandfathering runs only on the first
+--     application that adds the column, and
+--   • only NEWLY created servers get the safe `per_user` default.
+-- That one-time asymmetry is intentional. A new server that later acquires an
+-- operator token is still `per_user` unless an operator deliberately chooses
+-- shared delegation in the MCP Control Center (or UPDATEs the column directly).
 
 -- ── D2: explicit delegation mode per MCP server ─────────────────────────────
-ALTER TABLE mcp_servers
-  ADD COLUMN IF NOT EXISTS delegation TEXT NOT NULL DEFAULT 'per_user';
-
--- `conname` is unique per (connamespace, conrelid), NOT cluster-wide, so an
--- unanchored lookup reports "exists" for a same-named constraint sitting in any
--- other schema and the ALTER below is silently skipped. Anchoring on
--- `conrelid = 'mcp_servers'::regclass` resolves the relation through
--- `search_path`, matching every other unqualified reference in this file. The
--- cast cannot raise here: the ALTER TABLE above already required the table to
--- resolve.
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conname = 'mcp_servers_delegation_chk'
-       AND conrelid = 'mcp_servers'::regclass
-  ) THEN
-    ALTER TABLE mcp_servers
-      ADD CONSTRAINT mcp_servers_delegation_chk
-      CHECK (delegation IN ('per_user', 'service'));
-  END IF;
-END $$;
-
--- Backward compatibility (see the warning above): every EXISTING server that
+-- The column introduction and the compatibility backfill are one decision and
+-- must happen exactly once. Re-applying 0031 after an operator has opted an
+-- existing server into `per_user` must preserve that operator decision:
+-- changing `delegation` does NOT delete the stored operator token row, so a
+-- standing backfill would silently flip the server back to `service` on the
+-- next apply and reopen D2 for unmapped channel users.
+--
+-- Backward compatibility on that first apply only: every EXISTING server that
 -- already holds an OPERATOR token keeps the shared identity it is working with
--- today. Guarded by to_regclass so the migration is safe on a database where
--- mcp_oauth_tokens has not been created yet. The argument is UNQUALIFIED on
+-- today. Guarded by `to_regclass` so the migration is safe on a database where
+-- `mcp_oauth_tokens` has not been created yet. The argument is UNQUALIFIED on
 -- purpose: it must resolve through `search_path` like every other reference in
 -- this file. A hardcoded `public.` would probe the wrong schema wherever the
 -- domain is applied outside `public` — the guard would then answer about a
@@ -69,25 +58,67 @@ END $$;
 -- producing (see D2 above), and that fallback only ever applied where an
 -- operator token existed to borrow. A server holding only per-user tokens —
 -- `user_key = 'alice@corp.com'` and nothing else — was never using a shared
--- identity, so flipping it to 'service' would be a silent identity change no
+-- identity, so flipping it to `service` would be a silent identity change no
 -- operator decided on: `resolveMcpUserKey` would hand every caller the shared
 -- `operator` key, and once anyone completed a re-auth the minted operator token
 -- would be shared by every caller, including unmapped channel users. The
--- narrow predicate leaves such a server on the safe 'per_user' default, which
+-- narrow predicate leaves such a server on the safe `per_user` default, which
 -- is the choice its stored tokens already imply.
 --
 -- The literal must stay in sync with `SERVICE_USER_KEY` in
 -- `src/services/mcpDelegation.ts` (a migration cannot import it).
 DO $$
+DECLARE
+  delegation_exists BOOLEAN;
 BEGIN
-  IF to_regclass('mcp_oauth_tokens') IS NOT NULL THEN
-    UPDATE mcp_servers s
-       SET delegation = 'service'
-     WHERE EXISTS (
-       SELECT 1 FROM mcp_oauth_tokens t
-        WHERE t.server_id = s.id
-          AND t.user_key = 'operator'
-     );
+  SELECT EXISTS (
+    SELECT 1
+      FROM pg_attribute
+     WHERE attrelid = 'mcp_servers'::regclass
+       AND attname = 'delegation'
+       AND NOT attisdropped
+  )
+    INTO delegation_exists;
+
+  IF NOT delegation_exists THEN
+    -- Plain ADD COLUMN, not IF NOT EXISTS: the catalog gate above already
+    -- proved absence, and masking a broken gate here would turn a logic error
+    -- into silent drift instead of failing loudly at the statement that broke.
+    ALTER TABLE mcp_servers
+      ADD COLUMN delegation TEXT NOT NULL DEFAULT 'per_user';
+
+    IF to_regclass('mcp_oauth_tokens') IS NOT NULL THEN
+      UPDATE mcp_servers s
+         SET delegation = 'service'
+       WHERE EXISTS (
+         SELECT 1 FROM mcp_oauth_tokens t
+          WHERE t.server_id = s.id
+            AND t.user_key = 'operator'
+       );
+    END IF;
+  END IF;
+END $$;
+
+-- `conname` is unique per (connamespace, conrelid), NOT cluster-wide, so an
+-- unanchored lookup reports "exists" for a same-named constraint sitting in any
+-- other schema and the ALTER below is silently skipped. Anchoring on
+-- `conrelid = 'mcp_servers'::regclass` resolves the relation through
+-- `search_path`, matching every other unqualified reference in this file. The
+-- cast cannot raise here for any new reason: this migration still requires
+-- `mcp_servers` to resolve, the gate block above already resolved the same
+-- regclass while checking whether `delegation` exists, and the old `ALTER TABLE
+-- ... ADD COLUMN IF NOT EXISTS` would likewise have failed on a missing table
+-- because `IF NOT EXISTS` guards the column name, not the relation.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'mcp_servers_delegation_chk'
+       AND conrelid = 'mcp_servers'::regclass
+  ) THEN
+    ALTER TABLE mcp_servers
+      ADD CONSTRAINT mcp_servers_delegation_chk
+      CHECK (delegation IN ('per_user', 'service'));
   END IF;
 END $$;
 

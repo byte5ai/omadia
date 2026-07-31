@@ -50,9 +50,9 @@ import { SERVICE_USER_KEY } from '../src/services/mcpDelegation.js';
  * answered about a table this migration never touches, and this file had to
  * rewrite the literal before running it. The guard is now unqualified and
  * resolves through `search_path` like everything else, so the file is applied
- * AS SHIPPED and `assertSchemaRelative()` fails loudly if a qualified reference
- * is ever reintroduced — a silent short-circuit would otherwise make every
- * assertion below pass vacuously.
+ * AS SHIPPED and `migrationSql()` fails loudly if an executable `public.`-
+ * qualified reference is ever reintroduced — a silent short-circuit would
+ * otherwise make every assertion below pass vacuously.
  */
 
 const PG_URL =
@@ -75,14 +75,25 @@ const TENANT = `w4_deleg_${process.pid}_${Date.now().toString(36)}`;
 
 const MIGRATION_PATH = new URL('../migrations/0031_mcp_oauth_iss_delegation.sql', import.meta.url);
 
+function stripWholeLineSqlComments(sql: string): string {
+  // Whole-line `--` stripping is sufficient for this file: the migration's
+  // false positives live in prose comments, and its executable statements do
+  // not use trailing `--` comments that would need SQL-aware parsing.
+  return sql
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('--'))
+    .join('\n');
+}
+
 /** The migration text, applied verbatim. See the header for why no rewrite is
- *  needed, and what the schema-relative guard protects. */
+ *  needed, and what the public-qualified guard protects. */
 async function migrationSql(): Promise<string> {
   const raw = await readFile(MIGRATION_PATH, 'utf8');
+  const executable = stripWholeLineSqlComments(raw);
   assert.equal(
-    raw.split("'public.").length - 1,
-    0,
-    'migration 0031 gained a schema-qualified reference — it must resolve through search_path, ' +
+    /\bpublic\s*\.|"public"\s*\./i.test(executable),
+    false,
+    'migration 0031 gained an executable public-qualified reference — it must resolve through search_path, ' +
       'or this suite runs it against tables it does not own and passes vacuously',
   );
   return raw;
@@ -170,6 +181,41 @@ describe('migration 0031 — delegation backfill predicate (pg)', { skip: !pgAva
     return rows[0]?.delegation;
   }
 
+  async function applyMigration(): Promise<void> {
+    await pool.query(await migrationSql());
+  }
+
+  async function hasDelegationConstraint(): Promise<boolean> {
+    const { rows } = await pool.query<{ present: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_constraint
+          WHERE conname = 'mcp_servers_delegation_chk'
+            AND connamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)
+            AND conrelid = 'mcp_servers'::regclass
+       ) AS present`,
+      [TENANT],
+    );
+    return rows[0]?.present ?? false;
+  }
+
+  async function ensureDelegationConstraint(): Promise<void> {
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+           WHERE conname = 'mcp_servers_delegation_chk'
+             AND conrelid = 'mcp_servers'::regclass
+        ) THEN
+          ALTER TABLE mcp_servers
+            ADD CONSTRAINT mcp_servers_delegation_chk
+            CHECK (delegation IN ('per_user', 'service'));
+        END IF;
+      END $$;
+    `);
+  }
+
   it('does NOT flip a server holding only a NON-operator token', async () => {
     // THE regression. The broad `EXISTS (… WHERE server_id = s.id)` predicate
     // matched this row and handed every future caller the shared operator key.
@@ -199,14 +245,7 @@ describe('migration 0031 — delegation backfill predicate (pg)', { skip: !pgAva
     // The migration cannot import `SERVICE_USER_KEY`, so the two literals can
     // drift. If they ever do, the backfill grandfathers a different set of
     // servers than the runtime can actually resolve tokens for.
-    //
-    // Comments are stripped first: the file DISCUSSES the predicate in prose
-    // right above it, so matching the raw text would stay green over a backfill
-    // that no longer filters at all.
-    const executable = (await readFile(MIGRATION_PATH, 'utf8'))
-      .split('\n')
-      .filter((line) => !line.trimStart().startsWith('--'))
-      .join('\n');
+    const executable = stripWholeLineSqlComments(await readFile(MIGRATION_PATH, 'utf8'));
     assert.equal(SERVICE_USER_KEY, 'operator');
     assert.match(executable, new RegExp(`user_key\\s*=\\s*'${SERVICE_USER_KEY}'`));
   });
@@ -222,15 +261,9 @@ describe('migration 0031 — delegation backfill predicate (pg)', { skip: !pgAva
   // assertions below are scoped to THIS suite's schema for the same reason.
 
   it('creates the delegation CHECK in THIS schema, not merely somewhere in the cluster', async () => {
-    const { rows } = await pool.query<{ n: string }>(
-      `SELECT count(*)::text AS n FROM pg_constraint
-        WHERE conname = 'mcp_servers_delegation_chk'
-          AND connamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)`,
-      [TENANT],
-    );
     assert.equal(
-      rows[0]?.n,
-      '1',
+      await hasDelegationConstraint(),
+      true,
       'the CHECK was skipped in this schema — the guard matched a constraint owned by another schema',
     );
   });
@@ -244,16 +277,54 @@ describe('migration 0031 — delegation backfill predicate (pg)', { skip: !pgAva
           `INSERT INTO mcp_servers (name, transport, endpoint, delegation)
            VALUES ('bad-delegation', 'http', 'https://e.example', 'telepathy')`,
         ),
-      (err: unknown) => (err as { code?: string }).code === '23514',
+      (err: unknown) => {
+        const pgErr = err as { code?: string; constraint?: string };
+        assert.equal(pgErr.code, '23514');
+        assert.equal(pgErr.constraint, 'mcp_servers_delegation_chk');
+        return true;
+      },
       'delegation accepted a value outside (per_user, service)',
     );
+  });
+
+  it('re-applying preserves an operator opt-in from service back to per_user', async () => {
+    try {
+      await pool.query(`UPDATE mcp_servers SET delegation = 'per_user' WHERE name = 'operator-only'`);
+      await applyMigration();
+      assert.equal(
+        await delegationOf('operator-only'),
+        'per_user',
+        're-applying 0031 silently overrode an operator opt-in back to service',
+      );
+    } finally {
+      await pool.query(`UPDATE mcp_servers SET delegation = 'service' WHERE name = 'operator-only'`);
+    }
+  });
+
+  it('re-applying recreates the delegation CHECK even when the column already exists', async () => {
+    let dropped = false;
+    try {
+      await pool.query(`ALTER TABLE mcp_servers DROP CONSTRAINT mcp_servers_delegation_chk`);
+      dropped = true;
+      assert.equal(await hasDelegationConstraint(), false);
+      await applyMigration();
+      assert.equal(
+        await hasDelegationConstraint(),
+        true,
+        'the top-level CHECK guard stopped repairing a table that already had the delegation column',
+      );
+    } finally {
+      if (dropped) {
+        await ensureDelegationConstraint();
+      }
+    }
   });
 
   it('is idempotent — re-applying flips nothing further', async () => {
     // A second run must be a no-op, not a second chance to convert a per-user
     // server (e.g. if one acquired an operator token in between, that is a real
     // change; if not, nothing may move).
-    await pool.query(await migrationSql());
+    await applyMigration();
     assert.equal(await delegationOf('per-user-only'), 'per_user');
     assert.equal(await delegationOf('operator-only'), 'service');
     assert.equal(await delegationOf('no-tokens'), 'per_user');
