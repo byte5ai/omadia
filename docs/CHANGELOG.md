@@ -92,20 +92,36 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   changes is that `rg` no longer classifies these files as binary and stops
   searching partway through, silently truncating every audit that crosses them.
 
-### Known limitation — #547 structured content cannot be rendered yet
+### Fixed — the MCP input-replay path put raw tool output on the LLM wire
 
-- `emitStructured` fires inside `McpManager.callTool`, strictly beneath every
-  dispatcher, while both client-facing paths take their tool text from
-  `dispatchTool` → `internToolResultV4`. The sidecar therefore never crosses the
-  privacy handle, and wiring it onto the `done` event — which is the client wire —
-  would put raw MCP tool output in the browser on turns where the equivalent text
-  is interned by Privacy Shield v4.
-- `PrivacyTurnHandle` is string-in/string-out, so masking a structured payload
-  while preserving its structure needs a new method on the published
-  `@omadia/plugin-api` surface. `middleware/test/mcpStructuredOutputPrivacy.test.ts`
-  pins the bypass over a real MCP socket so it cannot silently widen, and confirms
-  `outputSchema` and `turnId` already reach the sidecar — the renderer is buildable
-  the moment masking exists. **Do not wire `structuredSink` until then.**
+- Privacy Shield v4's boundary is **server ↔ LLM provider**, not server ↔ browser:
+  `internToolResultV4` returns an identity-free digest for the `tool_result` block
+  while the real rows stay server-side behind a `datasetId`, and the browser
+  legitimately receives real values (`PrivacyRenderedAnswer.text`, highlighted via
+  `maskedValues` so the user can see what the server resolved).
+- The replay that runs after a user answers an MCP input card called
+  `mcpManager.callTool` **directly** rather than going through `dispatchTool`, so
+  the result was never interned — and was then interpolated verbatim into the note
+  folded into the turn's ingested text. A replayed HR or accounting tool returning a
+  personnel row sent that row to the model in cleartext, where the identical tool on
+  an ordinary turn would have yielded only a digest.
+- The comment above the interpolation shows this was a near-miss rather than a
+  decision: it reasons explicitly about the LLM wire, but only about the user's
+  typed values, and overlooks the tool result two lines below. Found by
+  cross-vendor review, live in any deployment with a graph pool.
+
+### Known limitation — #547 structured content still has no renderer
+
+- `emitStructured` fires inside `McpManager.callTool`, beneath every dispatcher, so
+  the sidecar is not interned. `middleware/test/mcpStructuredOutputPrivacy.test.ts`
+  pins that mechanism over a real MCP socket, and confirms `outputSchema` and
+  `turnId` already reach the sidecar.
+- **This is not a leak to the browser** — an earlier reading of it as one was
+  corrected by cross-vendor review; the browser is the trusted side. The renderer is
+  deferred for two ordinary reasons instead: it is a full-stack change across eight
+  web-ui files on an already-large PR, and the sidecar bypasses Privacy Shield's
+  receipt and dataset *accounting* even where masking is not owed, which wants a
+  decision before anything renders from it.
 
 ### Added — public, stateless MCP endpoint (`POST /api/v1/mcp`)
 
