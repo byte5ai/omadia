@@ -74,30 +74,63 @@ describe('PostgresMemoryStore path validation', () => {
     const store = new PostgresMemoryStore(poolThatMustNotBeQueried());
     const bad = '/memories/core/no\0tes.md';
 
-    // Each of these normalises before its first query. A future refactor that
-    // validates in only one of them is the failure this pins.
+    // ALL EIGHT path-taking methods, not a sample. An earlier version of this
+    // test covered four and still called itself "every entry point"; a refactor
+    // that added an early return to `delete` — bypassing normalize on the most
+    // destructive method — would have passed it.
     await assert.rejects(() => store.list(bad), MemoryInvalidPathError);
     await assert.rejects(() => store.fileExists(bad), MemoryInvalidPathError);
+    await assert.rejects(() => store.directoryExists(bad), MemoryInvalidPathError);
     await assert.rejects(() => store.readFile(bad), MemoryInvalidPathError);
+    await assert.rejects(() => store.createFile(bad, 'x'), MemoryInvalidPathError);
     await assert.rejects(() => store.writeFile(bad, 'x'), MemoryInvalidPathError);
+    await assert.rejects(() => store.delete(bad), MemoryInvalidPathError);
+    await assert.rejects(() => store.rename(bad, '/memories/core/ok.md'), MemoryInvalidPathError);
   });
 
-  it('accepts an ordinary path far enough to reach the pool', async () => {
-    // The negative control. Without it, a `normalize` that rejected EVERY path
-    // would satisfy all three tests above.
+  it("normalises rename's DESTINATION, not only its source", async () => {
+    // `rename` is the one method taking two paths, and the second was entirely
+    // unpinned: a refactor keeping `normalize(from)` and dropping `normalize(to)`
+    // passed the whole suite. Defence in depth rather than an injection hole —
+    // pg parameterisation rejects a NUL in a bind parameter at the driver — but
+    // the guard should not depend on the driver to hold.
     const store = new PostgresMemoryStore(poolThatMustNotBeQueried());
 
     await assert.rejects(
-      () => store.fileExists('/memories/core/notes.md'),
-      (err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        assert.match(
-          message,
-          /before validating the path/,
-          `a clean path must survive validation and reach the pool, got: ${message}`,
-        );
-        return true;
-      },
+      () => store.rename('/memories/core/from.md', '/memories/core/no\0tes.md'),
+      MemoryInvalidPathError,
     );
+  });
+
+  it('accepts ordinary paths far enough to reach the pool', async () => {
+    // The negative control, and it has to be wider than one tidy path.
+    //
+    // The bug this file exists for was a NUL branch reporting 'Path contains a
+    // space.' Someone reading that message in a stale checkout "fixes" it the
+    // other way round and adds a real space rejection. With a single
+    // space-free control path, every test above stays green while every memory
+    // file whose name contains a space breaks at runtime — the suite built to
+    // protect this line would say nothing.
+    const store = new PostgresMemoryStore(poolThatMustNotBeQueried());
+
+    for (const clean of [
+      '/memories/core/notes.md',
+      '/memories/core/my notes.md', // a space is legal, and must stay legal
+      '/memories/core/notes.v2.md', // a dot that is not a traversal
+      '/memories/core/Ünïcödé.md',
+    ]) {
+      await assert.rejects(
+        () => store.fileExists(clean),
+        (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          assert.match(
+            message,
+            /before validating the path/,
+            `${clean} must survive validation and reach the pool, got: ${message}`,
+          );
+          return true;
+        },
+      );
+    }
   });
 });
