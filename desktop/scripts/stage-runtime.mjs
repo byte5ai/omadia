@@ -152,6 +152,49 @@ if (missing.length) {
 }
 console.log(`[stage-runtime] staged Postgres engine (${pgPlat}) + pgvector (control + ${moduleName} + install SQL)`);
 
+// --- drop build-time-only files from the staged tree ---------------------
+// The staged middleware ships its FULL node_modules as unpacked extraResources,
+// which is ~34k files — and over half of them can never be loaded at runtime:
+// the kernel runs compiled JS (`middleware/dist/index.js`), so TypeScript
+// declarations, TypeScript sources and source maps are pure ballast.
+//
+// This is not just about size. macOS signing hashes EVERY file in the bundle,
+// and the kernel caps concurrent open files per process at `kern.maxfilesperproc`
+// REGARDLESS of `ulimit -n` — so on a ~44k-file bundle electron-builder dies with
+// "EMFILE: too many open files" and the app cannot be signed at all. Raising the
+// fd limit does not help (setting it to `unlimited` on macOS actually lowers the
+// effective ceiling); cutting the file count does.
+//
+// Deliberately does NOT touch *.md — LICENSE.md and friends must ship.
+const BALLAST = /\.(ts|mts|cts|map)$/;
+function pruneBuildTimeOnlyFiles(root) {
+  let pruned = 0;
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const p = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) continue; // handled by the dangling sweep below
+      if (entry.isDirectory()) {
+        walk(p);
+      } else if (entry.isFile() && BALLAST.test(entry.name)) {
+        fs.rmSync(p, { force: true });
+        pruned++;
+      }
+    }
+  };
+  walk(root);
+  return pruned;
+}
+
+console.log(
+  `[stage-runtime] pruned ${pruneBuildTimeOnlyFiles(mwDest)} build-time-only file(s) (*.d.ts, *.ts, *.map)`,
+);
+
 // --- prune dangling symlinks from the whole staged tree ------------------
 // `fs.cpSync({ dereference: true })` does not materialise EVERY symlink: npm's
 // `node_modules/.bin/*` entries survive the copy as ABSOLUTE links back into the

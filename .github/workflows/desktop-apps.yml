@@ -294,15 +294,17 @@ jobs:
       - name: Package installers
         working-directory: desktop
         run: |
-          # Raise the file-descriptor limit before packaging. Signing walks and
-          # hashes EVERY file in the bundle — ~44k of them, since the staged
-          # middleware ships its full node_modules as extraResources — and the
-          # macOS runner's default soft limit (256) is nowhere near enough:
-          # electron-builder dies with "EMFILE: too many open files" partway
-          # through. This never surfaced before because with no certificate
-          # electron-builder skipped signing altogether and never opened them.
-          ulimit -n "$(ulimit -Hn)" 2>/dev/null || ulimit -n 65536 || true
-          echo "file-descriptor limit: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+          # Belt-and-braces only. Signing hashes EVERY file in the bundle, and
+          # this step used to die with "EMFILE: too many open files" — but the fd
+          # limit is NOT the real lever: macOS caps concurrent open files at
+          # `kern.maxfilesperproc` regardless of `ulimit -n`, and setting the
+          # limit to `unlimited` actively LOWERS the effective ceiling. The fix
+          # is the file-count reduction in stage-runtime.mjs; this just avoids a
+          # needlessly small default. Keep it an explicit number, never
+          # "unlimited".
+          ulimit -n 65536 2>/dev/null || true
+          echo "fd soft=$(ulimit -Sn) kern.maxfilesperproc=$(sysctl -n kern.maxfilesperproc 2>/dev/null || echo n/a)"
+          echo "files in staged runtime: $(find runtime -type f | wc -l)"
           # electron-builder retries a failing `codesign` four times and then
           # reports only the LAST error, which masks the real cause. Debug output
           # surfaces the actual command + stderr.
