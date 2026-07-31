@@ -1040,6 +1040,63 @@ export async function exportSkill(id: string): Promise<string> {
 }
 
 // -----------------------------------------------------------------------------
+// Public MCP key bindings (W5-1)
+// -----------------------------------------------------------------------------
+
+/**
+ * A row of `public_mcp_key_bindings` — the per-API-key allowlist behind the
+ * public MCP endpoint. `enabled: false` is a PARKED binding: the key reaches
+ * nothing, but what it was configured to reach is still on the row.
+ */
+export interface PublicMcpKeyBinding {
+  keyId: string;
+  agentId: string;
+  readTools: string[];
+  writeTools: string[];
+  writeRateLimitPerMinute: number;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PublicMcpKeyBindingsResponse {
+  bindings: PublicMcpKeyBinding[];
+}
+
+export interface UpsertPublicMcpKeyBindingInput {
+  keyId: string;
+  agentId: string;
+  readTools: string[];
+  writeTools: string[];
+  writeRateLimitPerMinute?: number;
+  enabled?: boolean;
+}
+
+export async function listPublicMcpKeyBindings(): Promise<PublicMcpKeyBindingsResponse> {
+  return callJson<PublicMcpKeyBindingsResponse>('/v1/operator/public-mcp-bindings');
+}
+
+export async function upsertPublicMcpKeyBinding(
+  input: UpsertPublicMcpKeyBindingInput,
+): Promise<{ binding: PublicMcpKeyBinding }> {
+  return callJson<{ binding: PublicMcpKeyBinding }>('/v1/operator/public-mcp-bindings', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+/** Parks the binding. Deliberately not a delete — the configured reach stays
+ *  visible so an operator can see what the integration used to have. */
+export async function revokePublicMcpKeyBinding(
+  keyId: string,
+): Promise<{ binding: PublicMcpKeyBinding }> {
+  return callJson<{ binding: PublicMcpKeyBinding }>(
+    `/v1/operator/public-mcp-bindings/${encodeURIComponent(keyId)}/revoke`,
+    { method: 'POST' },
+  );
+}
+
+// -----------------------------------------------------------------------------
 // MCP servers
 // -----------------------------------------------------------------------------
 
