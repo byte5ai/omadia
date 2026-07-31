@@ -204,7 +204,7 @@ export class PostgresMemoryStore implements MemoryStore {
       throw new MemoryInvalidPathError('Path must be a non-empty string.');
     }
     if (virtualPath.includes('\0')) {
-      throw new MemoryInvalidPathError('Path contains a space.');
+      throw new MemoryInvalidPathError('Path contains a NUL byte.');
     }
     const lowered = virtualPath.toLowerCase();
     if (
