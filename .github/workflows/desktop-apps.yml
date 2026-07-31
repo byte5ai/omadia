@@ -30,6 +30,18 @@ on:
         description: 'Release tag to build + attach to (e.g. v0.3.0)'
         required: true
         type: string
+      notarize:
+        # Notarization needs an in-effect Apple Developer Program agreement. When
+        # one lapses, notarytool returns "HTTP 403: A required agreement is
+        # missing or has expired" and the whole build fails — even though signing
+        # itself is fine. Set false to validate the signing path meanwhile.
+        # NEVER ship a release built with this off: unnotarized apps are blocked
+        # by Gatekeeper on first launch.
+        description: 'Notarize with Apple (false = validate signing only, NOT releasable)'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
   # Called in-run from auto-release.yml: a GITHUB_TOKEN-created release does NOT
   # fire the `release` event, so the apps must be built from within the same run
   # that cut the release (same pattern as publish-images.yml).
@@ -68,6 +80,10 @@ jobs:
     timeout-minutes: 30
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      # 'yes' unless a workflow_dispatch explicitly passed notarize=false. The
+      # `release` event and workflow_call leave the input undefined, so they
+      # always notarize — a release can never accidentally skip it.
+      NOTARIZE: ${{ inputs.notarize != 'false' && 'yes' || 'no' }}
       # Must match Supervisor.KERNEL_PORT in desktop/src/supervisor.ts — the
       # web-ui bakes this kernel URL into its routes-manifest at BUILD time, so
       # it cannot be a per-launch random port.
@@ -275,7 +291,14 @@ jobs:
             echo "APPLE_API_KEY=$RUNNER_TEMP/asc-key.p8"
             echo "APPLE_API_KEY_ID=$APPLE_ASC_KEY_ID"
             echo "APPLE_API_ISSUER=$APPLE_ASC_ISSUER_ID"
-            echo "EB_NOTARIZE=--config.mac.notarize=true"
+            # Must be set EXPLICITLY either way: electron-builder auto-notarizes
+            # as soon as APPLE_API_KEY/_ID/_ISSUER are in the environment, so
+            # simply leaving the flag off does NOT disable it.
+            if [ "${NOTARIZE:-yes}" = yes ]; then
+              echo "EB_NOTARIZE=--config.mac.notarize=true"
+            else
+              echo "EB_NOTARIZE=--config.mac.notarize=false"
+            fi
             echo "MAC_SIGN_KEYCHAIN=$KEYCHAIN"
             echo "MAC_SIGN_EXPECTED=1"
           } >> "$GITHUB_ENV"
@@ -293,12 +316,60 @@ jobs:
 
       - name: Package installers
         working-directory: desktop
-        run: npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
+        run: |
+          # Belt-and-braces only. Signing hashes EVERY file in the bundle, and
+          # this step used to die with "EMFILE: too many open files" — but the fd
+          # limit is NOT the real lever: macOS caps concurrent open files at
+          # `kern.maxfilesperproc` regardless of `ulimit -n`, and setting the
+          # limit to `unlimited` actively LOWERS the effective ceiling. The fix
+          # is the file-count reduction in stage-runtime.mjs; this just avoids a
+          # needlessly small default. Keep it an explicit number, never
+          # "unlimited".
+          ulimit -n 65536 2>/dev/null || true
+          echo "fd soft=$(ulimit -Sn) kern.maxfilesperproc=$(sysctl -n kern.maxfilesperproc 2>/dev/null || echo n/a)"
+          echo "files in staged runtime: $(find runtime -type f | wc -l)"
+          # Debugging note: electron-builder retries a failing `codesign` four
+          # times and then reports only the LAST error, which masks the real
+          # cause. Re-run this step with `DEBUG=electron-builder` to see the
+          # actual command and its stderr.
+          npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
+
+      # ALWAYS runs on macOS — signed or not. Without it, a build whose signature
+      # macOS considers corrupt sails through CI green and ships an app that
+      # cannot be opened at all ("omadia is damaged and can't be opened"), which
+      # is exactly what happened to v0.56.0 and v0.57.0. The stricter Developer ID
+      # assertions (not-adhoc, notarized, stapled) stay in the gate below; this one
+      # only asserts the bundle is STRUCTURALLY valid, which must hold either way.
+      - name: Verify the macOS bundle is structurally signed (always)
+        if: ${{ startsWith(matrix.os, 'macos') }}
+        working-directory: desktop
+        run: |
+          set -e
+          shopt -s nullglob
+          apps=(release/mac*/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then
+            echo "FAIL: no .app produced under release/mac*/ — nothing to verify" >&2
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
+            if [ ! -e "$app/Contents/_CodeSignature/CodeResources" ]; then
+              echo "FAIL: $app has no _CodeSignature/CodeResources — the bundle was never sealed." >&2
+              echo "      macOS reads this as corrupt and refuses to launch it." >&2
+              exit 1
+            fi
+            # `--deep` is required HERE: a plain `--verify --strict` passes even
+            # when a nested bundle (e.g. Electron Framework.framework) was never
+            # sealed, which is precisely the state that makes the app unopenable.
+            # Catches both that and a tree codesign cannot walk (e.g. dangling
+            # node_modules/.bin symlinks → "No such file or directory").
+            codesign --verify --deep --strict --verbose=2 "$app"
+          done
+          echo "✓ macOS bundle carries a structurally valid signature (nested code included)"
 
       # The .app is notarized + stapled by electron-builder above; the DMG needs
       # its own ticket so `stapler validate` passes on the disk image itself.
       - name: Notarize + staple the DMGs
-        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' }}
+        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' && env.NOTARIZE == 'yes' }}
         working-directory: desktop
         run: |
           for dmg in release/*.dmg; do
@@ -311,7 +382,7 @@ jobs:
           done
 
       - name: Verify macOS signatures (acceptance gate)
-        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' }}
+        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' && env.NOTARIZE == 'yes' }}
         working-directory: desktop
         run: |
           set -e
