@@ -84,8 +84,13 @@ jobs:
           - os: windows-latest
             args: --win
     runs-on: ${{ matrix.os }}
-    # Hard cap so a stuck native build can never run for hours.
-    timeout-minutes: 30
+    # Hard cap so a stuck native build can never run for hours. Measured on a
+    # full signed+notarized run: linux 5 min, windows 9 min, macOS arm64 21 min,
+    # macOS Intel >30 min — the Intel runner is materially slower and blew the
+    # previous 30-minute cap mid-signing, which then took the update-feed merge
+    # down with it. 60 keeps the runaway protection with real headroom, and
+    # notarization wait times are set by Apple, not by us.
+    timeout-minutes: 60
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       # 'yes' unless a workflow_dispatch explicitly passed notarize=false. The
