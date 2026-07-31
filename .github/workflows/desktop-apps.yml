@@ -341,7 +341,12 @@ jobs:
             # and set its partition list with the CORRECT password, so point
             # electron-builder at it and skip the buggy detour.
             echo "CSC_KEYCHAIN=$KEYCHAIN"
-            echo "CSC_NAME=$IDENT"
+            # WITHOUT the "Developer ID Application: " prefix — electron-builder
+            # rejects it outright ("Please remove prefix ... from the specified
+            # name"); it adds the certificate type itself. afterPack, which calls
+            # codesign directly, still gets the full identity via
+            # MAC_SIGN_IDENTITY below.
+            echo "CSC_NAME=${IDENT#Developer ID Application: }"
             echo "APPLE_API_KEY=$RUNNER_TEMP/asc-key.p8"
             echo "APPLE_API_KEY_ID=$APPLE_ASC_KEY_ID"
             echo "APPLE_API_ISSUER=$APPLE_ASC_ISSUER_ID"
