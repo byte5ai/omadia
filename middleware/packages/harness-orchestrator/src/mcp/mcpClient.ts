@@ -1089,6 +1089,16 @@ function inputSchemaOrEmpty(tool: McpToolDescriptor): {
   return { type: 'object', properties: {}, required: [] };
 }
 
+/**
+ * The `domain` an MCP server's tools are attributed to. Single derivation:
+ * `mcpToolToNativeSpec` stamps it onto every hydrated DomainTool, and the
+ * orchestrator's MCP input-replay privacy guard reuses it so a replay's
+ * bypass-receipt entry carries the SAME plugin id an ordinary dispatch would.
+ */
+export function mcpDomainForServer(serverName: string): string {
+  return `mcp.${slugifyDomain(serverName)}`;
+}
+
 /** Adapt an MCP tool into a top-level orchestrator NativeToolSpec. */
 export function mcpToolToNativeSpec(
   serverName: string,
@@ -1099,7 +1109,7 @@ export function mcpToolToNativeSpec(
     description:
       tool.description ?? `MCP tool "${tool.name}" from server "${serverName}".`,
     input_schema: inputSchemaOrEmpty(tool),
-    domain: `mcp.${slugifyDomain(serverName)}`,
+    domain: mcpDomainForServer(serverName),
   };
 }
 

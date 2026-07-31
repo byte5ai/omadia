@@ -1,22 +1,35 @@
 /**
- * Issue #547 (W5-2) — WHY the structured-output sidecar is NOT wired to the
- * chat client.
+ * Issue #547 (W5-2) — WHY the structured-output sidecar is NOT wired onward.
  *
  * #547 landed the producer (`McpManager.structuredSink`) as plumbing only. The
  * obvious next step is to wire that sink through the orchestrator onto the
- * terminal `done` stream event so the UI can render a card. This file is the
- * evidence that doing so, as the seam stands today, would be a PII leak — and
- * it is a regression guard: if someone later makes the sidecar mask, the
- * `LEAK` test below turns red and this file must be revisited on purpose.
+ * terminal `done` stream event so the UI can render a card. This file pins the
+ * property that decides whether that is safe: the sidecar never crosses the
+ * interning seam, so it still carries exactly what the server sent. It is also
+ * a regression guard — if someone later makes the sidecar mask, the sidecar
+ * test below turns red and this file must be revisited on purpose.
+ *
+ * WHICH BOUNDARY THIS IS ABOUT — read this before calling anything a leak.
+ * Privacy Shield v4's data-plane boundary is server <-> LLM PROVIDER, not
+ * server <-> browser. The browser sits on the TRUSTED side and legitimately
+ * receives real values: that is precisely what `takeRenderedAnswerV4` hands
+ * back (`plugin-api/src/privacyReceipt.ts:164-174`), rendered with
+ * `highlightTerms={message.maskedValues}` in the chat page. So "the sidecar is
+ * not interned" is NOT by itself a leak to the browser, and this file
+ * deliberately does not call it one. What it IS: an asymmetry that makes the
+ * sidecar unsafe to forward across the MODEL boundary, and unsafe for any
+ * future consumer to assume masked. An earlier revision of this file named one
+ * test `LEAK` and described the interned text as what "a client receives";
+ * both encoded a misreading of which side the browser is on.
  *
  * The asymmetry, stated exactly:
  *
  *   - A tool's TEXT result is interned at the dispatch seam. `dispatchTool`
- *     returns `internToolResultV4(...).digestText`, and the client-facing
- *     `tool_result` stream event carries precisely that return value
+ *     returns `internToolResultV4(...).digestText`, so the string the MODEL
+ *     sees is a digest, not the rows. That same return value is what the
+ *     client-facing `tool_result` stream event carries
  *     (`orchestrator.ts:5330` builds the slot promise from `dispatchTool`;
- *     `:4934` resolves it; `:4977` puts it on the wire as `output`). So the
- *     browser sees the digest, not the rows.
+ *     `:4934` resolves it; `:4977` puts it on the wire as `output`).
  *
  *   - The STRUCTURED payload is emitted from inside `McpManager.callTool`
  *     (`mcpClient.ts:~880`), which sits strictly BELOW every dispatcher. It
@@ -26,11 +39,11 @@
  *
  * That "strictly below every dispatcher" is why this file proves the property
  * using `ToolDispatchService` rather than a full `Orchestrator` turn: the sink
- * fires beneath the dispatcher, so the leak is dispatcher-independent. The
+ * fires beneath the dispatcher, so the asymmetry is dispatcher-independent. The
  * interning contract asserted here is the same one the chat path uses and is
  * documented as parity in `toolDispatchPrivacySeam.test.ts`.
  *
- * There is also no way to fix this inside W5-2's scope. The whole privacy
+ * There is also no way to close that asymmetry inside W5-2's scope. The whole privacy
  * contract (`PrivacyTurnHandle`) is string-in/string-out:
  * `internToolResultV4({rawResult: string}) -> {digestText: string}`. Feeding a
  * structured payload through it returns a digest STRING — the structure the
@@ -295,12 +308,15 @@ function structuredSidecars(
 // ── the finding ─────────────────────────────────────────────────────────────
 
 describe('#547 structured-output sidecar vs. the privacy boundary (W5-2)', () => {
-  it('BASELINE — the TEXT result a client receives IS masked at the dispatch seam', async () => {
+  it('the TEXT result IS interned at the dispatch seam, so the MODEL sees a digest', async () => {
     const h = harness();
 
     const result = await h.service.dispatch(TOOL, {});
 
     // This is the benchmark the brief calls "the same terms as text output".
+    // `result.content` is the dispatcher's return value — the string bound for
+    // the model. What the BROWSER ultimately renders is a separate question
+    // (see the header): it is on the trusted side and gets real values.
     assert.equal(
       result.content.includes(EMAIL),
       false,
@@ -317,7 +333,7 @@ describe('#547 structured-output sidecar vs. the privacy boundary (W5-2)', () =>
     assert.match(result.content, /«dataset:crm_lookup_customer»/);
   });
 
-  it('LEAK — the STRUCTURED sidecar carries the same PII in CLEAR on the same call', async () => {
+  it('the STRUCTURED sidecar is NOT interned, so it still carries the raw values', async () => {
     const h = harness();
 
     const result = await h.service.dispatch(TOOL, {});
@@ -330,8 +346,10 @@ describe('#547 structured-output sidecar vs. the privacy boundary (W5-2)', () =>
     const payload = structured[0]!.structured as Record<string, unknown>;
 
     // The load-bearing assertions: raw values, byte-identical to what the
-    // server sent. Wiring this payload onto the `done` event would put every
-    // one of these into the browser on a turn where the text was masked.
+    // server sent. Not a leak in itself — the browser is trusted — but it
+    // pins that ANY future consumer of this payload must treat it as unmasked,
+    // and that forwarding it across the model boundary would undo the
+    // interning the text path just performed.
     assert.equal(payload['email'], EMAIL);
     assert.equal(payload['iban'], IBAN);
     assert.equal(payload['name'], PERSON);
@@ -339,7 +357,7 @@ describe('#547 structured-output sidecar vs. the privacy boundary (W5-2)', () =>
   });
 
   it('the sidecar is emitted BENEATH the dispatcher, so no dispatcher can mask it', async () => {
-    // Proves the leak is structural rather than a property of one dispatcher:
+    // Proves the asymmetry is structural rather than a property of one dispatcher:
     // the payload is already in the sink by the time `dispatch` returns, and
     // the value in the sink is unaffected by the masking that produced
     // `result.content`.
@@ -358,7 +376,7 @@ describe('#547 structured-output sidecar vs. the privacy boundary (W5-2)', () =>
   });
 
   it('carries the declared `outputSchema`, so a generic renderer is buildable once masking exists', async () => {
-    // Not a leak assertion — it records that the ONLY blocker is masking. The
+    // Not an exposure assertion — it records that the ONLY blocker is masking. The
     // renderer contract the brief specifies (render from `outputSchema`, never
     // by tool name) is already satisfiable end-to-end over a real wire.
     const h = harness();

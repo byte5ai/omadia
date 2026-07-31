@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
-import { resolveMcpCallTimeouts } from './mcp/mcpClient.js';
+import {
+  mcpDomainForServer,
+  resolveMcpCallTimeouts,
+} from './mcp/mcpClient.js';
 import {
   deriveAgentsConsulted,
   toSemanticAnswer,
@@ -2171,14 +2174,80 @@ export class Orchestrator {
         'Sag das dem User und ruf kein Tool auf.'
       );
     }
+    const guardedResult = await this.guardReplayResult(record, result);
     // The collected VALUES are deliberately absent from this note: they may be
     // secrets the user typed for the server, and this text goes on the LLM wire
     // and into the session log. Only the outcome travels.
     return (
       `[MCP-Eingabe] Die Angaben des Users wurden an "${record.serverName}" ` +
-      `übermittelt und "${record.toolName}" erneut ausgeführt. Ergebnis:\n${result}\n` +
+      `übermittelt und "${record.toolName}" erneut ausgeführt. Ergebnis:\n${guardedResult}\n` +
       'Formuliere daraus die Antwort für den User. Ruf das Tool nicht noch einmal auf.'
     );
+  }
+
+  /**
+   * Privacy Shield v4 boundary for MCP input replay: this note crosses only the
+   * server ↔ LLM-provider seam. The browser stays on the trusted side and is
+   * unaffected — it may still render the real values server-side.
+   *
+   * Shape (b) ("route replay through dispatchTool") was rejected and must stay
+   * rejected here: the parked record keeps the RAW MCP tool name while
+   * `dispatchTool` keys on the hydrated native/namespaced one; replay must use
+   * the server's LIVE config rather than a hydration-time closure; it must stay
+   * reachable even when the tool is no longer granted/hydrated; and it must not
+   * re-enter dispatch-only deadline/audit/park semantics. So replay resolves the
+   * live call where it already does today and applies the SAME privacy boundary
+   * here, immediately before the note is put on the LLM wire.
+   *
+   * Fail-open is deliberate parity with ordinary dispatch: if receipt recording
+   * or interning throws, we warn and continue with the raw result rather than
+   * breaking the turn after the user already supplied the requested input.
+   */
+  private async guardReplayResult(
+    record: PendingMcpInput,
+    rawResult: string,
+  ): Promise<string> {
+    const privacy = turnContext.current()?.privacyHandle;
+    if (privacy === undefined) return rawResult;
+
+    if (isMcpServerPrivacyBypassed(record.serverId)) {
+      const effective = resolveEffectivePrivacyMode({
+        storedMode: 'bypass',
+        storedScopes: undefined,
+        toolName: record.toolName,
+        env: process.env,
+      });
+      if (effective === 'bypass') {
+        try {
+          await privacy.recordBypassedTool({
+            toolName: record.toolName,
+            pluginId: mcpDomainForServer(record.serverName),
+            reason: 'operator_setting',
+            bytes: Buffer.byteLength(rawResult, 'utf8'),
+          });
+        } catch (err) {
+          console.warn(
+            `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.recordBypassedTool threw — bypass still applied:`,
+            err,
+          );
+        }
+        return rawResult;
+      }
+    }
+
+    try {
+      const v4 = await privacy.internToolResultV4({
+        toolName: record.toolName,
+        rawResult,
+      });
+      return v4.digestText;
+    } catch (err) {
+      console.warn(
+        `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.internToolResultV4 threw — sending raw replay result:`,
+        err,
+      );
+      return rawResult;
+    }
   }
 
   /**
