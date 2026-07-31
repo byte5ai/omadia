@@ -293,7 +293,17 @@ jobs:
 
       - name: Package installers
         working-directory: desktop
-        run: npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
+        run: |
+          # Raise the file-descriptor limit before packaging. Signing walks and
+          # hashes EVERY file in the bundle — ~44k of them, since the staged
+          # middleware ships its full node_modules as extraResources — and the
+          # macOS runner's default soft limit (256) is nowhere near enough:
+          # electron-builder dies with "EMFILE: too many open files" partway
+          # through. This never surfaced before because with no certificate
+          # electron-builder skipped signing altogether and never opened them.
+          ulimit -n 65536 || ulimit -n "$(ulimit -Hn)" || true
+          echo "file-descriptor limit: $(ulimit -n)"
+          npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
 
       # ALWAYS runs on macOS — signed or not. Without it, a build whose signature
       # macOS considers corrupt sails through CI green and ships an app that
