@@ -4,9 +4,8 @@
  * any plugin can share the SAME implementation (core must never import from a
  * channel plugin).
  *
- * Mirrors `middleware/src/devplatform/jobToken.ts` (the dev-runner's one-time
- * job token), the closest existing precedent for a bearer credential this
- * codebase hashes at rest and verifies in constant time. The plaintext exists
+ * Follows this codebase's standing shape for a bearer credential that is hashed
+ * at rest and verified in constant time. The plaintext exists
  * exactly once — at creation time, returned to the operator — and is never
  * persisted. Only its sha256 hex lands in the vault (`apiKeyStore.ts`).
  * Verification hashes the presented token and compares digests with
@@ -16,7 +15,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 /** Every minted key carries this prefix so it is greppable in logs/incidents
- *  and visually distinct from other omadia tokens (e.g. `djr_`). */
+ *  and visually distinct from other omadia token families. */
 export const API_KEY_PREFIX = 'omk_';
 
 /** 32 random bytes → 43 base64url chars; with the prefix, a 47-char key. */

@@ -11,8 +11,8 @@
  * durable second implementor is the follow-up. The consequence is honest and
  * bounded: tasks held here do not survive a restart, so a restart is treated
  * exactly like a crashed worker — the state is simply gone and the model's
- * `<tool>_status` poll answers "not found". `dev_job`, the other implementor, is
- * Postgres-backed and unaffected.
+ * `<tool>_status` poll answers "not found". A Postgres-backed implementor is
+ * unaffected.
  *
  * ## Atomicity
  *
@@ -40,8 +40,8 @@ import {
   type TerminalTaskPatch,
 } from './taskTypes.js';
 
-/** Per-task event cap. Mirrors dev_job's `DEV_JOB_MAX_EVENTS` intent: the tail
- *  is for "what is it doing", not an audit log, so old lines are dropped. */
+/** Per-task event cap. The tail is for "what is it doing", not an audit log,
+ *  so old lines are dropped. */
 const DEFAULT_MAX_EVENTS = 200;
 
 /**
@@ -150,7 +150,8 @@ export class InMemoryTaskStore implements TaskStore {
       }
       out.push(row.descriptor);
     }
-    // Newest first, matching `devJobStore.listJobs`' `ORDER BY created_at DESC`.
+    // Newest first — the contract's list order, equivalent to a SQL-backed
+    // implementor's `ORDER BY created_at DESC`.
     out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
     return out.slice(0, limit);
   }
@@ -317,8 +318,8 @@ export class InMemoryTaskStore implements TaskStore {
       // every card a user took longer than 15 minutes to answer, and the answer
       // then landed on a task already marked `failed`. It gets its own explicit
       // window, measured from when it parked, and by default no window at all.
-      // (dev_job never had this bug: its `findStalled` sweeps only
-      // `provisioning|running|applying`, never the `waiting` gate state.)
+      // An implementor whose stall sweep already excludes its own gate state
+      // never had this bug; the generic sweep has to exclude it explicitly.
       const parked = d.status === 'input_required';
       if (parked && opts.parkedStaleAfterMs === undefined) continue;
       // Live task. "Last sign of life" is the heartbeat when a worker ever

@@ -10,10 +10,10 @@
  * minutes must NOT block the turn — it returns a HANDLE immediately and the
  * model says "started, I'll report back".
  *
- * `devplatform/devJobOrchestratorTool.ts` already implements exactly that shape
- * (`dev_job_start` returns `{status:'job_started', jobId, phase:'queued'}` at
- * once). This module lifts that shape out of the dev platform so ANY tool can
- * opt in, without a second bespoke job store.
+ * That shape was first hand-rolled inside a single tool, which returned
+ * `{status:'started', id, phase:'queued'}` at once and left the caller to poll.
+ * This module lifts the shape out into a seam so ANY tool can opt in, without a
+ * second bespoke job store.
  *
  * Deliberately NOT the MCP Tasks extension. Internal sub-agent dispatches never
  * cross an MCP boundary, so MCP Tasks solves nothing for the motivating case,
@@ -28,8 +28,9 @@
  * `TaskStore` adds the write half: create, claim-with-lease, heartbeat, event
  * append, and the terminal transition. Splitting them lets a consumer expose
  * reads to a tool while keeping the write half behind its own choke point —
- * which is exactly what `dev_job` needs, because its terminal write is
- * brand-gated through `finalizeDevJob.ts`.
+ * which is what an implementor needs whenever its terminal write must pass its
+ * own gate (an approval step, a policy check) rather than being reachable by
+ * anything holding the read surface.
  *
  * This module has NO dependencies beyond the type system so both the
  * orchestrator package and the middleware app can import it freely.
@@ -47,9 +48,9 @@
  *  - `completed`      — finished successfully; `result` is populated.
  *  - `failed`         — finished unsuccessfully; `error` is populated.
  *
- * A richer per-implementor status set (e.g. dev_job's ten-value
- * `DevJobStatus`) projects DOWN onto this; the implementor keeps its own
- * vocabulary internally and reports the projection here. `phase` carries the
+ * A richer per-implementor status set (a ten-value pipeline vocabulary, say)
+ * projects DOWN onto this; the implementor keeps its own vocabulary internally
+ * and reports the projection here. `phase` carries the
  * implementor-specific progress label so the projection loses no information
  * the model or a card actually needs.
  */
@@ -80,7 +81,7 @@ export function isTerminalTaskStatus(x: unknown): x is TaskLifecycleStatus {
 }
 
 /**
- * Lease tokens are UUIDs. Mirrors `devJobStore`'s `UUID_RE`: a non-UUID is
+ * Lease tokens are UUIDs, and a non-UUID is
  * rejected LOUDLY at the seam rather than surfacing as an opaque Postgres
  * `22P02` from a `uuid` column cast further down.
  */
@@ -157,8 +158,7 @@ export interface TaskListFilter {
 /**
  * Thrown when a lease-fenced write updates 0 rows — the task's lease no longer
  * matches this worker's (another worker claimed it, or it is already terminal).
- * The worker catches this and stops. Mirrors `DevJobLeaseLostError` /
- * conductor's `RunLeaseLostError`.
+ * The worker catches this and stops. Mirrors conductor's `RunLeaseLostError`.
  */
 export class TaskLeaseLostError extends Error {
   constructor(taskId: string) {
@@ -211,7 +211,7 @@ export interface TaskReadStore {
 /**
  * The full seam: reads plus the write half.
  *
- * Claim/lease semantics (mirroring `devJobStore.claimNextQueued`):
+ * Claim/lease semantics:
  *  - `claimNextPending` atomically hands ONE unclaimed `working` task to the
  *    caller and stamps the caller's lease. Two concurrent workers never get the
  *    same task.
@@ -231,10 +231,11 @@ export interface TaskReadStore {
  *
  * An implementor MAY additionally accept a fenced write against a task that
  * currently holds NO lease — the administrative case, where a cancel route or an
- * orphan reaper legitimately finalizes a task it never claimed. `dev_job` relies
- * on exactly that (`devJobStore.finishTerminal` is deliberately unfenced for this
- * reason). What an implementor must NEVER accept is a MISMATCHED lease against a
- * task that does hold one; that is the property the fence exists for.
+ * orphan reaper legitimately finalizes a task it never claimed. Any implementor
+ * that exposes a cancel route relies on exactly that, so its terminal write is
+ * deliberately unfenced against a row holding NO lease. What an implementor must
+ * NEVER accept is a MISMATCHED lease against a task that does hold one; that is
+ * the property the fence exists for.
  */
 export interface TaskStore extends TaskReadStore {
   create(input: NewTaskInput): Promise<TaskDescriptor>;
@@ -246,8 +247,8 @@ export interface TaskStore extends TaskReadStore {
    * `taskId` is an ADVISORY hint: "I was spawned for this specific task, prefer
    * it over the pool head". A store that can honour it (see
    * `InMemoryTaskStore`) claims exactly that task or nothing. A store whose
-   * underlying claim is a pure pool pop and offers no release primitive
-   * (`devJobTaskStore`, backed by `claimNextQueued`) may IGNORE the hint and
+   * underlying claim is a pure pool pop, and which offers no release primitive,
+   * may IGNORE the hint and
    * return whatever it claimed — which is why the hint is advisory rather than
    * a filter contract, and why every caller must treat the RETURNED
    * `descriptor.id` as authoritative and follow it through. Claiming a task and

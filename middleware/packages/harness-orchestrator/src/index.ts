@@ -534,8 +534,8 @@ export { toSemanticAnswer } from '@omadia/channel-sdk';
 // W2-2 (issue #543, rescoped) — the generic long-running task seam: any tool can
 // be marked `longRunning` and get the non-blocking `<tool>_start`/`_status`/
 // `_list` triple plus a streaming status card, instead of blocking a chat turn.
-// `dev_job` is the first implementor (see `devplatform/devJobTaskStore.ts`);
-// deferred sub-agent dispatch is the second (`tasks/subAgentTaskTool.ts`).
+// Deferred sub-agent dispatch is the in-package implementor
+// (`tasks/subAgentTaskTool.ts`); consumers supply their own `TaskStore`.
 export {
   TASK_LIFECYCLE_STATUSES,
   TERMINAL_TASK_STATUSES,

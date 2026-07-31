@@ -12,9 +12,8 @@ import {
 } from '../../packages/harness-api-key-auth/src/apiKeyToken.js';
 
 /**
- * Issue #438 — pure-unit coverage for the API-key token, mirroring
- * `test/devplatform/jobToken.test.ts` (the closest existing precedent for a
- * hashed, constant-time-verified bearer credential in this codebase).
+ * Issue #438 — pure-unit coverage for the API-key token: a hashed,
+ * constant-time-verified bearer credential.
  */
 describe('channelApi/apiKeyToken', () => {
   it('mints `omk_` + 32 random bytes base64url, and stores only the sha256 hex', () => {

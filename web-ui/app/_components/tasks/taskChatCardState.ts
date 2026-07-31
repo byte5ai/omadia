@@ -7,8 +7,8 @@
  * documented contract string
  * `{"status":"task_started","taskId":…,"tool":…,"kind":…,"phase":"queued"}`.
  * The chat UI detects any tool whose name ends in `_start`, parses the seed
- * below, and renders a card. Same mechanism `parseDevJobStartResult` already
- * uses for `dev_job_start` — this is its tool-agnostic sibling.
+ * below, and renders a card. This is the tool-agnostic sibling of the bespoke
+ * per-tool card parsers, which use the same mechanism for their own tool.
  *
  * PRIVACY: the seed is metadata only (ids, kind, progress label). The task's
  * RESULT deliberately never rides on the card: it is delivered by the model

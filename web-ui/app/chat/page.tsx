@@ -1066,7 +1066,7 @@ function ToolTrace({ tools }: { tools: ToolEvent[] }): React.ReactElement {
           if (seed) return <DevJobChatCard key={tool.id} seed={seed} />;
           // W2-2 (issue #543) — any OTHER `<tool>_start` from the generic
           // long-running task seam renders the tool-agnostic task card. Checked
-          // second so dev_job keeps its richer, gate-capable card.
+          // second so a tool with its own richer, gate-capable card keeps it.
           const taskSeed = isTaskStartToolName(tool.name)
             ? parseTaskStartResult(tool.output)
             : null;

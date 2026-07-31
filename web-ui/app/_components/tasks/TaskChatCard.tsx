@@ -8,9 +8,9 @@ import { taskCardLabel, type TaskCardSeed } from './taskChatCardState';
  * W2-2 (issue #543) — the generic long-running task card, rendered inline in
  * chat whenever the orchestrator calls any `<tool>_start` from the task seam.
  *
- * Deliberately minimal, and deliberately NOT a live view. `dev_job` has its own
- * richer card (`DevJobChatCard`) because it has an authorized SSE event tail and
- * a human gate to offer; a generic task has neither — its only read path is the
+ * Deliberately minimal, and deliberately NOT a live view. A tool that has an
+ * authorized SSE event tail and a human gate to offer registers its own richer
+ * card; a generic task has neither — its only read path is the
  * model calling `<tool>_status`. So this card states what was started and that
  * the answer arrives separately, which is the honest UX for the deferred shape.
  *

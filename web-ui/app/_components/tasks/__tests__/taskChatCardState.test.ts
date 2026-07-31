@@ -42,9 +42,9 @@ describe('parseTaskStartResult', () => {
     expect(parseTaskStartResult('Error: `question` must be a non-empty string.')).toBeNull();
   });
 
-  it('returns null for dev_job_start, which has its own richer card', () => {
-    // Must not be hijacked by the generic card: `dev_job_start` emits
-    // `status: "job_started"`, not `task_started`.
+  it('returns null for a start payload using a different status envelope', () => {
+    // A tool that ships its own richer card emits its own status value, not
+    // `task_started`. The generic card must not hijack it.
     expect(
       parseTaskStartResult(
         JSON.stringify({ status: 'job_started', jobId: 'j-1', repoId: 'r-1' }),

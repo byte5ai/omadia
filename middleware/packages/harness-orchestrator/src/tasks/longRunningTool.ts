@@ -3,8 +3,8 @@
  * the non-blocking `<tool>_start` / `<tool>_status` / `<tool>_list` triple plus
  * a streaming status card, for free.
  *
- * Generalized from `devplatform/devJobOrchestratorTool.ts`, which hand-rolled
- * exactly this shape for `dev_job_*`.
+ * Generalized from the first tool that needed it, which hand-rolled exactly this
+ * `_start` / `_status` / `_list` shape for itself.
  *
  * ## The contract the model sees
  *
@@ -54,9 +54,9 @@ import {
 } from './taskTypes.js';
 
 // ---------------------------------------------------------------------------
-// Registration shape. Structurally identical to
-// `devplatform/devJobOrchestratorTool.ts`'s `KernelToolRegistration` and
-// `plugins/selfExtension/requestSelfExtensionTool.ts`'s, so boot registers these
+// Registration shape. Structurally identical to the hand-rolled
+// `KernelToolRegistration` shapes elsewhere (e.g.
+// `plugins/selfExtension/requestSelfExtensionTool.ts`), so boot registers these
 // through the very same `nativeToolRegistry.register(name, {…})` call.
 // ---------------------------------------------------------------------------
 
@@ -67,7 +67,7 @@ export interface LongRunningToolRegistration {
   readonly handler: NativeToolHandler;
 }
 
-/** How many event lines `<tool>_status` returns. Matches `dev_job_status`. */
+/** How many event lines `<tool>_status` returns. */
 const STATUS_EVENT_TAIL = 5;
 
 // ---------------------------------------------------------------------------
@@ -165,8 +165,7 @@ export interface LongRunningToolHandle {
   /**
    * Returns and CLEARS the cards queued by `<tool>_start` calls this turn.
    * Accumulates (a turn may start more than one task) and does NOT
-   * short-circuit the turn. Mirrors
-   * `DevJobOrchestratorTool.takePendingCards()`.
+   * short-circuit the turn.
    */
   takePendingCards(): readonly TaskCardPayload[];
   hasPendingCards(): boolean;
@@ -287,8 +286,8 @@ export function longRunningToolNames(base: string): {
  * Turn one long-running operation into the non-blocking tool triple.
  *
  * The returned registrations go to `nativeToolRegistry.register(name, {handler,
- * spec, promptDoc})` exactly like `dev_job_*`'s do, and `takePendingCards()`
- * feeds the chat card stream.
+ * spec, promptDoc})` exactly like any hand-rolled native tool's do, and
+ * `takePendingCards()` feeds the chat card stream.
  */
 export function defineLongRunningTool(
   def: LongRunningToolDefinition,
@@ -374,10 +373,9 @@ export function defineLongRunningTool(
    *  1. the task id is passed as a claim hint, so a store that can honour it
    *     (`InMemoryTaskStore`) claims exactly this task or nothing; and
    *  2. whatever comes back is treated as AUTHORITATIVE. A store that cannot
-   *     honour the hint (`devJobTaskStore`, whose claim is a bare pool pop with
-   *     no release primitive) still gets its claim followed through to a
-   *     terminal state, because a claim this runner cannot hand back is a claim
-   *     it must finish.
+   *     honour the hint — one whose claim is a bare pool pop with no release
+   *     primitive — still gets its claim followed through to a terminal state,
+   *     because a claim this runner cannot hand back is a claim it must finish.
    */
   function startRunner(taskId: string): void {
     const lease = randomUUID();

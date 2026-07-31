@@ -27,8 +27,8 @@ import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
  * 0001/0003 drops and recreates the NOTIFY triggers, taking ACCESS EXCLUSIVE
  * on shared tables — so it runs against its own schema with `public` off the
  * search_path. A scratch *database* would also isolate it, but CREATE/DROP
- * DATABASE is a cluster-wide operation: it stalled the concurrently running
- * dev-platform pg suites long enough to cancel 29 of their tests.
+ * DATABASE is a cluster-wide operation: it stalled the other pg suites running
+ * concurrently for long enough to cancel 29 of their tests.
  * Skips when no test Postgres is reachable, mirroring the other pg tests.
  */
 const PG_URL =
@@ -314,7 +314,7 @@ describe('middleware/migrations idempotency under data (pg)', { skip: !pgAvailab
       `expected the domain to be built inside ${REAPPLY_SCHEMA}, saw ${built.rows[0]!.count} tables`,
     );
 
-    // Seed the MCP + dev-platform surfaces so the re-apply runs against real
+    // Seed the MCP + agent surfaces so the re-apply runs against real
     // rows — the case the CI gate cannot reach, since it re-applies empty.
     const server = await pool.query<{ id: string }>(
       `INSERT INTO mcp_servers (name, transport, endpoint)

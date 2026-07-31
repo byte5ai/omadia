@@ -366,8 +366,8 @@ describe('tasks/defineLongRunningTool — crossed claims (W4)', () => {
 
   it('MUTATION CHECK: a claim this runner cannot hand back is finished, never abandoned', async () => {
     // Defence in depth for a store that CANNOT honour the claim hint — the seam
-    // permits exactly that (`devJobTaskStore`'s claim is a bare pool pop with no
-    // id predicate and no release primitive). The rule the runner must follow is
+    // permits exactly that, e.g. a store whose claim is a bare pool pop with no
+    // id predicate and no release primitive. The rule the runner must follow is
     // "whatever you claimed, you finish": walking away from a claim is what
     // strands a task, regardless of WHY the ids differ.
     const store = new InMemoryTaskStore();

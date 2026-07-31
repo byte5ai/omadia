@@ -1,7 +1,7 @@
 /**
  * W2-3 (issue #542) — assembles and mounts the public MCP endpoint.
  *
- * A separate wire module (mirroring `devplatform/wireDevPlatform.ts`) for two
+ * A separate wire module, following the existing `wire*.ts` convention, for two
  * reasons: `index.ts` is already ~4500 lines, and — more usefully — the whole
  * assembly becomes testable end-to-end against the real router chain instead of
  * a bare `express()` app. Mounting a bare app is exactly the epic #470 bug the

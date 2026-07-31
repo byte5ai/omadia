@@ -2,8 +2,7 @@
  * W2-2 criterion 7 — orphan handling for long-running tasks.
  *
  * A task nobody polls must not leak a `working` row forever. Two distinct
- * leaks exist and both are swept here, mirroring the two-tier shape of
- * `devplatform/retention.ts`:
+ * leaks exist and both are swept here, in the usual two-tier retention shape:
  *
  *  1. ABANDONED live tasks. The worker crashed, the process restarted mid-run,
  *     or the runner was never started at all. The row stays `working` with a
