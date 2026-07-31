@@ -328,10 +328,11 @@ jobs:
           ulimit -n 65536 2>/dev/null || true
           echo "fd soft=$(ulimit -Sn) kern.maxfilesperproc=$(sysctl -n kern.maxfilesperproc 2>/dev/null || echo n/a)"
           echo "files in staged runtime: $(find runtime -type f | wc -l)"
-          # electron-builder retries a failing `codesign` four times and then
-          # reports only the LAST error, which masks the real cause. Debug output
-          # surfaces the actual command + stderr.
-          DEBUG=electron-builder npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
+          # Debugging note: electron-builder retries a failing `codesign` four
+          # times and then reports only the LAST error, which masks the real
+          # cause. Re-run this step with `DEBUG=electron-builder` to see the
+          # actual command and its stderr.
+          npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
 
       # ALWAYS runs on macOS — signed or not. Without it, a build whose signature
       # macOS considers corrupt sails through CI green and ships an app that
