@@ -373,12 +373,22 @@ function textStream(): LlmStreamEvent[] {
 }
 
 const CANONICAL_UUID = '3f5a6b1c-0000-4000-8000-00000000beef';
+const CANONICAL_UUID_B = '3f5a6b1c-0000-4000-8000-0000000000b0';
+
+/** Cluster roots by channel-native id, so two channel users are genuinely two
+ *  different humans rather than one id the fake hands out twice. */
+const CLUSTER_BY_CHANNEL_USER: Record<string, string> = {
+  'aad-oid-1234': CANONICAL_UUID,
+  'aad-oid-5678': CANONICAL_UUID_B,
+};
 
 /** The one KG method `resolveTurnOwnerIdentity` calls. */
 function fakeKnowledgeGraph(): KnowledgeGraph {
   return {
-    resolveOrCreateChannelIdentity: async () =>
-      Promise.resolve({ omadiaUserId: CANONICAL_UUID }),
+    resolveOrCreateChannelIdentity: async (ingest: { channelUserId: string }) =>
+      Promise.resolve({
+        omadiaUserId: CLUSTER_BY_CHANNEL_USER[ingest.channelUserId] ?? CANONICAL_UUID,
+      }),
   } as unknown as KnowledgeGraph;
 }
 
@@ -501,6 +511,39 @@ describe('W4-1 producer — channel turns (orchestrator, option (b))', () => {
       h.probes[0]!.perUser.userKey,
       'alice@example.com',
       'the orchestrator overrode an identity the route had already established',
+    );
+  });
+
+  it('MUTATION CHECK: two INTERLEAVED channel turns from different users never cross identities', async () => {
+    // The #445 class applied to this producer, and the case the HTTP
+    // concurrency test does NOT reach: two channel turns advanced alternately
+    // at the generator level, so a shared store — or a scope bound to the wrong
+    // async resource — shows up as one identity serving both humans. That is
+    // the failure mode where user B's turn would reach an MCP server holding
+    // user A's token, which is strictly worse than failing closed.
+    const a = channelHarness();
+    const b = channelHarness();
+    const genA = a.orchestrator.chatStream(teamsTurn as never);
+    const genB = b.orchestrator.chatStream({
+      ...teamsTurn,
+      sessionScope: 'teams-19:def',
+      userId: 'aad-oid-5678',
+      channelIdentity: { channelKind: 'teams' as const, channelUserId: 'aad-oid-5678' },
+    } as never);
+    let doneA = false;
+    let doneB = false;
+    while (!doneA || !doneB) {
+      if (!doneA) doneA = (await genA.next()).done === true;
+      if (!doneB) doneB = (await genB.next()).done === true;
+    }
+    assert.equal(a.probes.length, 1, 'turn A never dispatched the probe');
+    assert.equal(b.probes.length, 1, 'turn B never dispatched the probe');
+    assert.equal(a.probes[0]!.perUser.userKey, CANONICAL_UUID);
+    assert.equal(b.probes[0]!.perUser.userKey, CANONICAL_UUID_B);
+    assert.notEqual(
+      a.probes[0]!.perUser.userKey,
+      b.probes[0]!.perUser.userKey,
+      'two interleaved channel turns shared one MCP identity',
     );
   });
 
