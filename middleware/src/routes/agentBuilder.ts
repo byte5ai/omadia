@@ -2629,15 +2629,15 @@ async function withToolVerdicts(
     l.graph.listMcpToolVerdicts(CURRENT_VERIFIER_VERSION),
     l.graph.listMcpToolVerdictAcks(CURRENT_VERIFIER_VERSION),
   ]);
-  const vmap = new Map(verdicts.map((v) => [`${v.serverId} ${v.toolName}`, v]));
-  const amap = new Map(acks.map((a) => [`${a.serverId} ${a.toolName}`, a]));
+  const vmap = new Map(verdicts.map((v) => [`${v.serverId}\0${v.toolName}`, v]));
+  const amap = new Map(acks.map((a) => [`${a.serverId}\0${a.toolName}`, a]));
   return servers.map((s) => ({
     ...s,
     discoveredTools: (s.discoveredTools as ReadonlyArray<Record<string, unknown>>).map(
       (tool) => {
         const name = typeof tool['name'] === 'string' ? (tool['name'] as string) : '';
-        const v = vmap.get(`${s.id} ${name}`);
-        const a = amap.get(`${s.id} ${name}`);
+        const v = vmap.get(`${s.id}\0${name}`);
+        const a = amap.get(`${s.id}\0${name}`);
         const ackValid = v !== undefined && a !== undefined && a.contentHash === v.contentHash;
         const verdict: McpToolVerdictField = v
           ? {
