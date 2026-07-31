@@ -14,7 +14,7 @@ import {
   type LlmProxyJob,
   type LlmProxyUsageRecord,
 } from '../../src/devplatform/llmProxy.js';
-import { createDevRunnerRouter, type DevRunnerRouterDeps } from '../../src/routes/devRunnerApi.js';
+import { createDevRunnerRouter, type DevRunnerRouterDeps } from '../../src/devplatform/routes/devRunnerApi.js';
 import type { DevJobStatus } from '../../src/devplatform/types.js';
 
 /**

@@ -17,7 +17,7 @@
 
 import type { Router, Request } from 'express';
 
-import type { DevRepo, DevRepoCredentialKind, NewDevRepo } from '../devplatform/types.js';
+import type { DevRepo, DevRepoCredentialKind, NewDevRepo } from '../types.js';
 import {
   DevPlatformError,
   defaultCheckBranchProtection,

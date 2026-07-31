@@ -29,8 +29,8 @@ import {
   deriveJobPolicy,
   JobPolicyError,
   type DeriveJobPolicyConfig,
-} from '../devplatform/deriveJobPolicy.js';
-import type { DevJob, DevRepo } from '../devplatform/types.js';
+} from '../deriveJobPolicy.js';
+import type { DevJob, DevRepo } from '../types.js';
 
 /** The narrow slices this route needs from the runner router's deps. */
 export interface JobPolicyRouteDeps {

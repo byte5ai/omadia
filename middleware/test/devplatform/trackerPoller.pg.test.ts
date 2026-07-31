@@ -21,7 +21,7 @@ import {
   PgTrackerPollStore,
 } from '../../src/devplatform/triggers/trackerPoller.js';
 import type { Ticket } from '../../src/devplatform/githubIssuesTracker.js';
-import type { DevPlatformTracker } from '../../src/routes/devPlatformShared.js';
+import type { DevPlatformTracker } from '../../src/devplatform/routes/devPlatformShared.js';
 import type { DevRepo, RunnerBackendKind } from '../../src/devplatform/types.js';
 
 /**

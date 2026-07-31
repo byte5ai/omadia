@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
 import { DeviceFlowStore } from '../../src/issues/deviceFlowStore.js';
-import type { DevPlatformDeviceFlow } from '../../src/routes/devPlatformShared.js';
+import type { DevPlatformDeviceFlow } from '../../src/devplatform/routes/devPlatformShared.js';
 import { authHeaders, makeHarness, postJson } from './devPlatformRoutes.harness.js';
 
 /**

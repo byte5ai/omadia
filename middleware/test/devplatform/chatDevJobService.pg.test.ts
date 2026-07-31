@@ -12,7 +12,7 @@ import { createChatDevJobService } from '../../src/devplatform/chatDevJobService
 import { DevJobEventBus } from '../../src/devplatform/devJobEventBus.js';
 import { DevJobStore } from '../../src/devplatform/devJobStore.js';
 import { DevRepoStore } from '../../src/devplatform/devRepoStore.js';
-import { isPermittedLauncher } from '../../src/routes/devPlatformShared.js';
+import { isPermittedLauncher } from '../../src/devplatform/routes/devPlatformShared.js';
 import type { DevRepo } from '../../src/devplatform/types.js';
 
 /**
