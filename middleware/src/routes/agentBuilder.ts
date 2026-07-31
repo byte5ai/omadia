@@ -80,6 +80,11 @@ import {
   type LlmVerdictStore,
   type LlmVerifier,
 } from '../services/skillVerdictLlmVerifier.js';
+import {
+  createPublicMcpBindingsRouter,
+  type OperatorSessionCheck,
+} from './publicMcpBindingsRouter.js';
+import type { PublicMcpKeyBindingAdminStore } from '../mcp/publicMcpKeyBindingsAdmin.js';
 
 export interface AgentBuilderRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
@@ -151,6 +156,15 @@ export interface AgentBuilderRouterOptions {
     setToken(registryId: string, value: string): Promise<void>;
     deleteToken(registryId: string): Promise<void>;
   };
+  /** W5-1 — the WRITE half of `public_mcp_key_bindings`, for the MCP Control
+   *  Center's Bindings tab. The public MCP endpoint gets the READ store and
+   *  only the read store (`wirePublicMcp.ts`); this one never reaches it.
+   *  Absent (no graph pool) ⇒ the sub-routes 503. */
+  readonly getPublicMcpBindingStore?: () => PublicMcpKeyBindingAdminStore | undefined;
+  /** W5-1 — operator-session check for the binding routes. Absent ⇒ they refuse
+   *  to serve at all, rather than relying on the `requireAuth` that happens to
+   *  sit in front of this router's mount. */
+  readonly operatorAuth?: OperatorSessionCheck;
 }
 
 interface Live {
@@ -218,6 +232,19 @@ export function createAgentBuilderRouter(
   options: AgentBuilderRouterOptions,
 ): Router {
   const router = Router();
+
+  // W5-1 — public MCP key bindings. Its own router because its auth gate must
+  // travel with it rather than depend on this mount sitting behind
+  // `requireAuth`; see `publicMcpBindingsRouter.ts`. Mounted first so the
+  // prefix cannot be shadowed by a later `/:slug`-shaped route.
+  router.use(
+    '/public-mcp-bindings',
+    createPublicMcpBindingsRouter({
+      getStore: () => options.getPublicMcpBindingStore?.(),
+      ...(options.operatorAuth ? { operatorAuth: options.operatorAuth } : {}),
+    }),
+  );
+
   const mcp = new McpManager({
     ...(options.mcpCallObserver ? { onToolCall: options.mcpCallObserver } : {}),
     ...(options.mcpCallGuard ? { guard: options.mcpCallGuard } : {}),
