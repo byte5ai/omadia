@@ -32,6 +32,7 @@ import {
   listMcpServers,
   listPublicMcpKeyBindings,
   revokePublicMcpKeyBinding,
+  restorePublicMcpKeyBinding,
   upsertPublicMcpKeyBinding,
   revokeMcpGrant,
   revokePluginMcpServer,
@@ -1812,6 +1813,7 @@ function BindingsPane(): React.ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<PublicMcpKeyBinding | null>(null);
+  const [confirmRestore, setConfirmRestore] = useState<PublicMcpKeyBinding | null>(null);
 
   const [keyId, setKeyId] = useState('');
   const [agentId, setAgentId] = useState('');
@@ -1864,6 +1866,28 @@ function BindingsPane(): React.ReactElement {
     setError(null);
     try {
       await revokePublicMcpKeyBinding(binding.keyId);
+      await refresh();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * The only way back from a revoke.
+   *
+   * `save()` above never sends `enabled`, and the server preserves the stored
+   * flag when it is absent — so re-submitting the form over a revoked binding
+   * edits its tool lists and leaves it parked. That is the point: un-parking a
+   * key after an incident must be something an operator asks for, not something
+   * that falls out of pressing Save on a stale tab.
+   */
+  async function restore(binding: PublicMcpKeyBinding): Promise<void> {
+    setBusy(`restore:${binding.keyId}`);
+    setError(null);
+    try {
+      await restorePublicMcpKeyBinding(binding.keyId);
       await refresh();
     } catch (err) {
       setError(errText(err));
@@ -2012,7 +2036,23 @@ function BindingsPane(): React.ReactElement {
                 {t('bindings.revoke')}
               </Button>
             </div>
-          ) : null}
+          ) : (
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] text-[color:var(--fg-muted)]">
+                {t('bindings.restoreHint')}
+              </span>
+              <div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  busy={busy === `restore:${b.keyId}`}
+                  onClick={() => setConfirmRestore(b)}
+                >
+                  {t('bindings.restore')}
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       ))}
 
@@ -2028,6 +2068,29 @@ function BindingsPane(): React.ReactElement {
           const target = confirmRevoke;
           setConfirmRevoke(null);
           if (target) void revoke(target);
+        }}
+      />
+
+      {/* Un-parking hands a third-party key its whole allowlist back, so it is
+          confirmed exactly like the revoke that parked it. */}
+      <ConfirmDialog
+        open={confirmRestore !== null}
+        title={t('bindings.restoreTitle')}
+        body={
+          confirmRestore
+            ? t('bindings.restoreBody', {
+                keyId: confirmRestore.keyId,
+                tools: [...confirmRestore.readTools, ...confirmRestore.writeTools].join(', '),
+              })
+            : undefined
+        }
+        confirmLabel={t('bindings.restoreConfirm')}
+        cancelLabel={t('cancel')}
+        onCancel={() => setConfirmRestore(null)}
+        onConfirm={() => {
+          const target = confirmRestore;
+          setConfirmRestore(null);
+          if (target) void restore(target);
         }}
       />
     </div>

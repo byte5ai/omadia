@@ -1069,6 +1069,9 @@ export interface UpsertPublicMcpKeyBindingInput {
   readTools: string[];
   writeTools: string[];
   writeRateLimitPerMinute?: number;
+  /** OMIT to leave the revoked/active state exactly as stored. Sending `true`
+   *  RE-ARMS a revoked key, so this pane never sends it implicitly — un-parking
+   *  goes through `restorePublicMcpKeyBinding` instead. */
   enabled?: boolean;
 }
 
@@ -1092,6 +1095,18 @@ export async function revokePublicMcpKeyBinding(
 ): Promise<{ binding: PublicMcpKeyBinding }> {
   return callJson<{ binding: PublicMcpKeyBinding }>(
     `/v1/operator/public-mcp-bindings/${encodeURIComponent(keyId)}/revoke`,
+    { method: 'POST' },
+  );
+}
+
+/** Un-parks a revoked binding, restoring the reach it already had on the row.
+ *  Its own call, not a side effect of saving: a save that never mentions
+ *  `enabled` deliberately CANNOT re-arm a key an operator revoked. */
+export async function restorePublicMcpKeyBinding(
+  keyId: string,
+): Promise<{ binding: PublicMcpKeyBinding }> {
+  return callJson<{ binding: PublicMcpKeyBinding }>(
+    `/v1/operator/public-mcp-bindings/${encodeURIComponent(keyId)}/restore`,
     { method: 'POST' },
   );
 }
