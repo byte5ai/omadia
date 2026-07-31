@@ -195,20 +195,33 @@ console.log(
   `[stage-runtime] pruned ${pruneBuildTimeOnlyFiles(mwDest)} build-time-only file(s) (*.d.ts, *.ts, *.map)`,
 );
 
-// --- prune dangling symlinks from the whole staged tree ------------------
+// --- prune symlinks that escape the staged tree --------------------------
 // `fs.cpSync({ dereference: true })` does not materialise EVERY symlink: npm's
 // `node_modules/.bin/*` entries survive the copy as ABSOLUTE links back into the
-// BUILD machine's checkout (on CI: `/Users/runner/work/omadia/omadia/...`), so
-// they dangle on every other machine. Nothing execs them at runtime — but they
-// are FATAL to macOS signing: `codesign` walks the bundle, hits the first dead
-// link and aborts with "No such file or directory". The .app then ships with no
-// valid signature at all and Gatekeeper refuses to launch it ("omadia is damaged
-// and can't be opened") — which is exactly how v0.56.0 and v0.57.0 shipped.
+// BUILD machine's checkout (on CI: `/Users/runner/work/omadia/omadia/...`).
+// There are 58 of them; nothing execs any of them at runtime.
 //
-// Runs LAST, after every stage step (including the Postgres relink above), so a
-// dead link introduced by any of them is caught. Live links — e.g. the engine's
-// relative `libicudata.68.dylib` chain — resolve and are kept.
-function pruneDanglingSymlinks(root) {
+// They are FATAL to macOS signing, in two different ways depending on where you
+// look from — which is what makes them easy to misdiagnose:
+//   • ON THE BUILD MACHINE the targets still exist, so the links RESOLVE. They
+//     point outside the .app, and `codesign --verify` rejects the bundle with
+//     "invalid destination for symbolic link in bundle".
+//   • ANYWHERE ELSE the targets are gone, so they DANGLE, and codesign aborts
+//     walking the tree with "No such file or directory".
+// Testing "does the target exist?" therefore passes on CI and prunes nothing —
+// the check has to be "does the target stay INSIDE the staged tree?".
+//
+// Either way the .app ends up with no valid signature and Gatekeeper refuses to
+// launch it ("omadia is damaged and can't be opened") — exactly how v0.56.0 and
+// v0.57.0 shipped.
+//
+// Runs LAST, after every stage step (including the Postgres relink above). The
+// 31 legitimate in-tree links — Electron's `Versions/Current` framework layout
+// and the engine's relative `libicudata.68.dylib` chain — resolve inside the
+// tree and are kept.
+function pruneEscapingSymlinks(root) {
+  const rootReal = fs.realpathSync(root);
+  const inside = (p) => p === rootReal || p.startsWith(rootReal + path.sep);
   let pruned = 0;
   const walk = (dir) => {
     let entries;
@@ -221,8 +234,15 @@ function pruneDanglingSymlinks(root) {
       const p = path.join(dir, entry.name);
       // Dirent flags are lstat-based, so a symlink is never mistaken for a dir.
       if (entry.isSymbolicLink()) {
-        // existsSync FOLLOWS the link: false ⇒ the target is gone ⇒ dead link.
-        if (!fs.existsSync(p)) {
+        let keep = false;
+        try {
+          // realpathSync throws on a dangling link and fully resolves an
+          // absolute or `../`-escaping one — both are handled by this branch.
+          keep = inside(fs.realpathSync(p));
+        } catch {
+          keep = false;
+        }
+        if (!keep) {
           fs.rmSync(p, { force: true });
           pruned++;
         }
@@ -235,15 +255,15 @@ function pruneDanglingSymlinks(root) {
   return pruned;
 }
 
-console.log(`[stage-runtime] pruned ${pruneDanglingSymlinks(runtime)} dangling symlink(s)`);
+console.log(`[stage-runtime] pruned ${pruneEscapingSymlinks(runtime)} escaping symlink(s)`);
 
 // Hard gate: re-scan and require a clean tree. A second pass must find nothing —
 // if it does, the prune itself is broken and we must not ship a tree that
 // `codesign` (and therefore notarization) will choke on.
-const stillDangling = pruneDanglingSymlinks(runtime);
+const stillDangling = pruneEscapingSymlinks(runtime);
 if (stillDangling !== 0) {
   console.error(
-    `[stage-runtime] FATAL: ${stillDangling} dangling symlink(s) survived the prune — ` +
+    `[stage-runtime] FATAL: ${stillDangling} escaping symlink(s) survived the prune — ` +
       'refusing to stage a tree that macOS codesign cannot walk.',
   );
   process.exit(1);
