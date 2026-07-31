@@ -69,6 +69,28 @@ function mountRouter(opts: {
   return { server, baseUrl: `http://127.0.0.1:${String(addr.port)}/public-mcp-bindings` };
 }
 
+/**
+ * Runs `fn` against a throwaway mount and ALWAYS closes the listener.
+ *
+ * Not incidental hygiene — found by the mutation check. Closing after the
+ * assertions means a failing assertion skips the close, the listening handle
+ * keeps the event loop alive, and `node --test` hangs instead of reporting the
+ * failure. A test that hangs when the invariant breaks is not a red test, and
+ * under a mutation run it looks like a timeout rather than the specific
+ * assertion the mutation was supposed to trip.
+ */
+async function withRouter(
+  opts: Parameters<typeof mountRouter>[0],
+  fn: (baseUrl: string) => Promise<void>,
+): Promise<void> {
+  const { server, baseUrl } = mountRouter(opts);
+  try {
+    await fn(baseUrl);
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+}
+
 // ── The gate ────────────────────────────────────────────────────────────────
 
 describe('publicMcpBindingsRouter — fails closed without operatorAuth', () => {
@@ -94,15 +116,15 @@ describe('publicMcpBindingsRouter — fails closed without operatorAuth', () => 
    *  authorization table open to anyone who can reach the port. */
   it('POST / → 503, and creates NOTHING', async () => {
     const store = createInMemoryPublicMcpKeyBindingAdminStore();
-    const bare = mountRouter({ store });
-    const res = await fetch(bare.baseUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(VALID_INPUT),
+    await withRouter({ store }, async (url) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(VALID_INPUT),
+      });
+      assert.equal(res.status, 503);
+      assert.deepEqual(await store.list(), [], 'the refused POST must not have written a row');
     });
-    assert.equal(res.status, 503);
-    assert.deepEqual(await store.list(), [], 'the refused POST must not have written a row');
-    await new Promise<void>((r) => bare.server.close(() => r()));
   });
 
   it('POST /:keyId/revoke → 503', async () => {
@@ -147,17 +169,19 @@ describe('publicMcpBindingsRouter — operator-session gate', () => {
   });
 
   it('an accessor that THROWS is treated as invalid, never as valid', async () => {
-    const throwing = mountRouter({
-      store: createInMemoryPublicMcpKeyBindingAdminStore(),
-      operatorAuth: {
-        async hasValidSession() {
-          throw new Error('accessor blew up');
+    await withRouter(
+      {
+        store: createInMemoryPublicMcpKeyBindingAdminStore(),
+        operatorAuth: {
+          async hasValidSession() {
+            throw new Error('accessor blew up');
+          },
         },
       },
-    });
-    const res = await fetch(throwing.baseUrl);
-    assert.equal(res.status, 401);
-    await new Promise<void>((r) => throwing.server.close(() => r()));
+      async (url) => {
+        assert.equal((await fetch(url)).status, 401);
+      },
+    );
   });
 });
 
@@ -286,18 +310,21 @@ describe('publicMcpBindingsRouter — CRUD (auth stubbed valid)', () => {
   });
 
   it('503s when there is no store (no graph pool), rather than pretending to save', async () => {
-    const poolless = mountRouter({ store: undefined, operatorAuth: alwaysValidOperatorAuth() });
-    const res = await fetch(poolless.baseUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(VALID_INPUT),
-    });
-    assert.equal(res.status, 503);
-    assert.equal(
-      ((await res.json()) as { code: string }).code,
-      'public_mcp_bindings.unavailable',
+    await withRouter(
+      { store: undefined, operatorAuth: alwaysValidOperatorAuth() },
+      async (url) => {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(VALID_INPUT),
+        });
+        assert.equal(res.status, 503);
+        assert.equal(
+          ((await res.json()) as { code: string }).code,
+          'public_mcp_bindings.unavailable',
+        );
+      },
     );
-    await new Promise<void>((r) => poolless.server.close(() => r()));
   });
 });
 
