@@ -152,4 +152,121 @@ if (missing.length) {
 }
 console.log(`[stage-runtime] staged Postgres engine (${pgPlat}) + pgvector (control + ${moduleName} + install SQL)`);
 
+// --- drop build-time-only files from the staged tree ---------------------
+// The staged middleware ships its FULL node_modules as unpacked extraResources,
+// which is ~34k files — and over half of them can never be loaded at runtime:
+// the kernel runs compiled JS (`middleware/dist/index.js`), so TypeScript
+// declarations, TypeScript sources and source maps are pure ballast.
+//
+// This is not just about size. macOS signing hashes EVERY file in the bundle,
+// and the kernel caps concurrent open files per process at `kern.maxfilesperproc`
+// REGARDLESS of `ulimit -n` — so on a ~44k-file bundle electron-builder dies with
+// "EMFILE: too many open files" and the app cannot be signed at all. Raising the
+// fd limit does not help (setting it to `unlimited` on macOS actually lowers the
+// effective ceiling); cutting the file count does.
+//
+// Deliberately does NOT touch *.md — LICENSE.md and friends must ship.
+const BALLAST = /\.(ts|mts|cts|map)$/;
+function pruneBuildTimeOnlyFiles(root) {
+  let pruned = 0;
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const p = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) continue; // handled by the dangling sweep below
+      if (entry.isDirectory()) {
+        walk(p);
+      } else if (entry.isFile() && BALLAST.test(entry.name)) {
+        fs.rmSync(p, { force: true });
+        pruned++;
+      }
+    }
+  };
+  walk(root);
+  return pruned;
+}
+
+console.log(
+  `[stage-runtime] pruned ${pruneBuildTimeOnlyFiles(mwDest)} build-time-only file(s) (*.d.ts, *.ts, *.map)`,
+);
+
+// --- prune symlinks that escape the staged tree --------------------------
+// `fs.cpSync({ dereference: true })` does not materialise EVERY symlink: npm's
+// `node_modules/.bin/*` entries survive the copy as ABSOLUTE links back into the
+// BUILD machine's checkout (on CI: `/Users/runner/work/omadia/omadia/...`).
+// There are 58 of them; nothing execs any of them at runtime.
+//
+// They are FATAL to macOS signing, in two different ways depending on where you
+// look from — which is what makes them easy to misdiagnose:
+//   • ON THE BUILD MACHINE the targets still exist, so the links RESOLVE. They
+//     point outside the .app, and `codesign --verify` rejects the bundle with
+//     "invalid destination for symbolic link in bundle".
+//   • ANYWHERE ELSE the targets are gone, so they DANGLE, and codesign aborts
+//     walking the tree with "No such file or directory".
+// Testing "does the target exist?" therefore passes on CI and prunes nothing —
+// the check has to be "does the target stay INSIDE the staged tree?".
+//
+// Either way the .app ends up with no valid signature and Gatekeeper refuses to
+// launch it ("omadia is damaged and can't be opened") — exactly how v0.56.0 and
+// v0.57.0 shipped.
+//
+// Runs LAST, after every stage step (including the Postgres relink above). The
+// 31 legitimate in-tree links — Electron's `Versions/Current` framework layout
+// and the engine's relative `libicudata.68.dylib` chain — resolve inside the
+// tree and are kept.
+function pruneEscapingSymlinks(root) {
+  const rootReal = fs.realpathSync(root);
+  const inside = (p) => p === rootReal || p.startsWith(rootReal + path.sep);
+  let pruned = 0;
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const p = path.join(dir, entry.name);
+      // Dirent flags are lstat-based, so a symlink is never mistaken for a dir.
+      if (entry.isSymbolicLink()) {
+        let keep = false;
+        try {
+          // realpathSync throws on a dangling link and fully resolves an
+          // absolute or `../`-escaping one — both are handled by this branch.
+          keep = inside(fs.realpathSync(p));
+        } catch {
+          keep = false;
+        }
+        if (!keep) {
+          fs.rmSync(p, { force: true });
+          pruned++;
+        }
+        continue; // never descend THROUGH a symlink — avoids cycles
+      }
+      if (entry.isDirectory()) walk(p);
+    }
+  };
+  walk(root);
+  return pruned;
+}
+
+console.log(`[stage-runtime] pruned ${pruneEscapingSymlinks(runtime)} escaping symlink(s)`);
+
+// Hard gate: re-scan and require a clean tree. A second pass must find nothing —
+// if it does, the prune itself is broken and we must not ship a tree that
+// `codesign` (and therefore notarization) will choke on.
+const stillDangling = pruneEscapingSymlinks(runtime);
+if (stillDangling !== 0) {
+  console.error(
+    `[stage-runtime] FATAL: ${stillDangling} escaping symlink(s) survived the prune — ` +
+      'refusing to stage a tree that macOS codesign cannot walk.',
+  );
+  process.exit(1);
+}
+
 console.log('[stage-runtime] done →', runtime);
