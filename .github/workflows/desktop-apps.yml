@@ -301,9 +301,12 @@ jobs:
           # electron-builder dies with "EMFILE: too many open files" partway
           # through. This never surfaced before because with no certificate
           # electron-builder skipped signing altogether and never opened them.
-          ulimit -n 65536 || ulimit -n "$(ulimit -Hn)" || true
-          echo "file-descriptor limit: $(ulimit -n)"
-          npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
+          ulimit -n "$(ulimit -Hn)" 2>/dev/null || ulimit -n 65536 || true
+          echo "file-descriptor limit: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+          # electron-builder retries a failing `codesign` four times and then
+          # reports only the LAST error, which masks the real cause. Debug output
+          # surfaces the actual command + stderr.
+          DEBUG=electron-builder npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
 
       # ALWAYS runs on macOS — signed or not. Without it, a build whose signature
       # macOS considers corrupt sails through CI green and ships an app that
