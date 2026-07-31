@@ -18,6 +18,95 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — `per_user` MCP delegation was unreachable from chat
+
+- Migration `0031` made delegation explicit per MCP server and gave new servers a
+  fail-closed `per_user` default. `resolveMcpUserKey` reads
+  `turnContext.current()?.mcpUserKey` — but **the only thing that ever set it was
+  the operator discover route.** `routes/chat.ts` did not so much as import
+  `turnContext`. Every newly created `per_user` server was therefore dead from
+  chat out of the box: no token sent, the audit row recording the literal
+  `unresolved`, and the turn failing closed. Existing installs were masked only
+  because `0031` backfills token-holding servers to `service`.
+- Both HTTP chat entries now open a turn scope carrying `mcpUserKey`. The
+  streaming entry uses `turnContext.runGenerator`, not `enter`: `enterWith` binds
+  to the async resource executing at that instant, and an async generator resumes
+  in the caller's context, so the identity would be gone by the orchestrator's
+  first yield — before any tool, and therefore before any MCP call, runs.
+- The value is `sessionIdentity(req)` (`session.sub || session.email`), extracted
+  from `routes/agentBuilder.ts` into `src/auth/sessionIdentity.ts`. Deliberately
+  **not** `resolveUserId(req)`, which falls through to the client-sent
+  `x-user-id` header — keying MCP tokens on a client-controlled header would let
+  any caller act as any user. When nothing resolves, `mcpUserKey` stays unset and
+  a `per_user` server fails closed exactly as intended; there is no fallback.
+- Channel turns set `mcpUserKey` inside the orchestrator from the already-resolved
+  `resolvedOmadiaUserId`, gated on `channelIdentity` — which only the dispatcher
+  mints, from the adapter's authenticated `userRef`, so it is server-attested end
+  to end. ⚠️ **Known limit:** channel turns key on the canonical omadia uuid while
+  `/authorize` stores tokens under the session-shaped key, so an affected user
+  still fails closed rather than reaching their server. Closing that needs a new
+  method on the `KnowledgeGraph` contract. Narrower than it sounds: a `per_user`
+  token can only exist for someone who completed `/authorize`, which requires a
+  session, so a channel-only user has no token and failing closed is correct.
+
+### Fixed — migration `0031` built neither of its guards reliably
+
+- The CHECK guard looked up `pg_constraint` by `conname` alone. `conname` is
+  unique per `(connamespace, conrelid)`, not cluster-wide, so a same-named
+  constraint in **any** other schema made the guard true and the `ALTER TABLE` was
+  silently skipped — the migration did not build the constraint it claims to. Now
+  anchored on `conrelid = 'mcp_servers'::regclass`.
+- The backfill guard hardcoded `to_regclass('public.mcp_oauth_tokens')` in a file
+  that is otherwise entirely unqualified, so wherever the domain is applied outside
+  `public` it answered about a table the statement never touches. Demonstrated on a
+  database with an empty `public`: the old guard left an operator-token server on
+  `per_user`, losing its grandfathering and breaking it fail-closed.
+- The backfill test previously **rewrote** the migration to make it apply; it now
+  applies verbatim, with a guard that fails if a schema-qualified reference is ever
+  reintroduced, plus the assertion the suite had dropped as a known flake.
+
+### Fixed — the middleware suite had no per-test timeout
+
+- `--test-timeout=120000`. Previously unset, so Node's default of `Infinity`
+  applied and a hung test burned the CI job's 15-minute wall with no attribution.
+  Note the ceiling is **per file**, not per leaf — a file whose total exceeds it is
+  killed as a unit — so the value is sized on the slowest file (18.4 s), not the
+  slowest test (7.8 s). `web-ui` needs no change; vitest already bounds at 5 s.
+
+### Added — operator surface for public MCP key bindings
+
+- The public MCP endpoint's authorization is driven entirely by rows in
+  `public_mcp_key_bindings`, and there was **no way to create one** except
+  hand-written SQL — the endpoint was inert as shipped. A Public API keys tab in
+  the MCP Control Center now lists, creates and revokes bindings.
+- The public endpoint's dependency bag is unchanged and still receives the
+  read-only store: it gains no write path to its own authorization table. The
+  admin path validates through the same `normalizeBindingRow` the enforcement path
+  uses, so the two cannot drift. Revoke parks the row rather than deleting it.
+
+### Fixed — raw NUL bytes made ripgrep silently truncate eight source files
+
+- Fifteen literal `0x00` bytes, used as composite map-key separators, are now
+  written as `\0`. Provably a no-op — none is followed by an ASCII digit, the only
+  case where the escape would change meaning. Behaviour is bit-identical; what
+  changes is that `rg` no longer classifies these files as binary and stops
+  searching partway through, silently truncating every audit that crosses them.
+
+### Known limitation — #547 structured content cannot be rendered yet
+
+- `emitStructured` fires inside `McpManager.callTool`, strictly beneath every
+  dispatcher, while both client-facing paths take their tool text from
+  `dispatchTool` → `internToolResultV4`. The sidecar therefore never crosses the
+  privacy handle, and wiring it onto the `done` event — which is the client wire —
+  would put raw MCP tool output in the browser on turns where the equivalent text
+  is interned by Privacy Shield v4.
+- `PrivacyTurnHandle` is string-in/string-out, so masking a structured payload
+  while preserving its structure needs a new method on the published
+  `@omadia/plugin-api` surface. `middleware/test/mcpStructuredOutputPrivacy.test.ts`
+  pins the bypass over a real MCP socket so it cannot silently widen, and confirms
+  `outputSchema` and `turnId` already reach the sidecar — the renderer is buildable
+  the moment masking exists. **Do not wire `structuredSink` until then.**
+
 ### Added — public, stateless MCP endpoint (`POST /api/v1/mcp`)
 
 - omadia can now expose **its own tools** over a stateless Streamable-HTTP MCP
