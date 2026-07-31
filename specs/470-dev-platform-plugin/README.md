@@ -97,7 +97,7 @@ node scripts/check-core-decoupling.mjs --update   # lower the baseline
 ```
 
 The ratchet counts Dev Platform references across 14 disjoint zones and **fails if the count
-rises, per zone**. Baseline **3,303**. It only ever falls; raising it needs a hand-edited baseline, so
+rises, per zone**. Baseline **3,365**. It only ever falls; raising it needs a hand-edited baseline, so
 a new coupling shows up in review instead of slipping in.
 
 That is what makes the checklist's staleness survivable — a file inventory goes stale on
@@ -106,7 +106,12 @@ contact, but the count does not, and it cannot reach zero while a reference surv
 But it counts IDENTIFIERS, NOT BEHAVIOUR: zero is a necessary condition for done, not a
 sufficient one. Sections 2 and 3 of `acceptance.md` cover the rest, and neither is automated.
 
-**The baseline rises when main legitimately adds dev-platform code.** That has happened three
+**The baseline rises for two reasons, and only two.** (1) main legitimately adds dev-platform
+code. (2) A refactor concentrates coupling into a namespace whose own name matches the
+pattern — C3 is the one instance: collapsing 41 flat config keys into `config.devPlatform`
+added a mapping layer that names each key a second time (+48 in config.ts, +36 in the new
+type file, against −33 in index.ts). All of it deletes at extraction. Everything else is a
+regression. That has happened three
 times (PR #529, then #537's embedding work): the guard fires, the raise is hand-edited, and the
 reason is recorded in the commit. A rise is only wrong when *core* re-acquires a dependency.
 
