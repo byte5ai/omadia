@@ -2659,10 +2659,23 @@ export class Orchestrator {
     // Keying MCP tokens on it would let any caller act as any user — W0-1's
     // confused deputy, re-opened one door along. A `channelIdentity` is minted
     // only by `createOrchestratorDispatcher` from the adapter's authenticated
-    // `userRef` and is resolved through the KG, so it is server-attested end to
-    // end.
+    // `userRef` and is resolved through the KG.
+    //
+    // Precisely how far that attestation reaches: the dispatcher copies
+    // `userRef.id` verbatim and verifies nothing itself, so the guarantee is
+    // exactly as strong as the inbound-webhook authentication in the Teams /
+    // Telegram / Slack adapters — which live outside this repo. It is
+    // adapter-attested, not attested here. Bounded, though:
+    // `resolveOrCreateChannelIdentity` creates on miss, so a forged id matching
+    // no known identity mints a fresh uuid holding no token and fails closed.
+    // Impersonation needs an already-known channel user id.
+    // `||`, not `??`: every other link in this chain guards on truthiness (the
+    // spread below, `chat.ts`'s producer, `turnContext`'s carry-over). With
+    // `??`, a parent carrying an empty string would short-circuit, suppress the
+    // valid key this branch would have produced, and then be dropped by the
+    // truthy spread — silently downgrading a resolvable turn to `unresolved`.
     const mcpUserKey =
-      parent?.mcpUserKey ??
+      parent?.mcpUserKey ||
       (input.channelIdentity ? resolvedOmadiaUserId : undefined);
 
     return turnContext.run(
@@ -4168,10 +4181,23 @@ export class Orchestrator {
     // Keying MCP tokens on it would let any caller act as any user — W0-1's
     // confused deputy, re-opened one door along. A `channelIdentity` is minted
     // only by `createOrchestratorDispatcher` from the adapter's authenticated
-    // `userRef` and is resolved through the KG, so it is server-attested end to
-    // end.
+    // `userRef` and is resolved through the KG.
+    //
+    // Precisely how far that attestation reaches: the dispatcher copies
+    // `userRef.id` verbatim and verifies nothing itself, so the guarantee is
+    // exactly as strong as the inbound-webhook authentication in the Teams /
+    // Telegram / Slack adapters — which live outside this repo. It is
+    // adapter-attested, not attested here. Bounded, though:
+    // `resolveOrCreateChannelIdentity` creates on miss, so a forged id matching
+    // no known identity mints a fresh uuid holding no token and fails closed.
+    // Impersonation needs an already-known channel user id.
+    // `||`, not `??`: every other link in this chain guards on truthiness (the
+    // spread below, `chat.ts`'s producer, `turnContext`'s carry-over). With
+    // `??`, a parent carrying an empty string would short-circuit, suppress the
+    // valid key this branch would have produced, and then be dropped by the
+    // truthy spread — silently downgrading a resolvable turn to `unresolved`.
     const mcpUserKey =
-      parent?.mcpUserKey ??
+      parent?.mcpUserKey ||
       (input.channelIdentity ? resolvedOmadiaUserId : undefined);
 
     const context: TurnContextValue = {
