@@ -295,6 +295,38 @@ jobs:
         working-directory: desktop
         run: npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
 
+      # ALWAYS runs on macOS — signed or not. Without it, a build whose signature
+      # macOS considers corrupt sails through CI green and ships an app that
+      # cannot be opened at all ("omadia is damaged and can't be opened"), which
+      # is exactly what happened to v0.56.0 and v0.57.0. The stricter Developer ID
+      # assertions (not-adhoc, notarized, stapled) stay in the gate below; this one
+      # only asserts the bundle is STRUCTURALLY valid, which must hold either way.
+      - name: Verify the macOS bundle is structurally signed (always)
+        if: ${{ startsWith(matrix.os, 'macos') }}
+        working-directory: desktop
+        run: |
+          set -e
+          shopt -s nullglob
+          apps=(release/mac*/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then
+            echo "FAIL: no .app produced under release/mac*/ — nothing to verify" >&2
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
+            if [ ! -e "$app/Contents/_CodeSignature/CodeResources" ]; then
+              echo "FAIL: $app has no _CodeSignature/CodeResources — the bundle was never sealed." >&2
+              echo "      macOS reads this as corrupt and refuses to launch it." >&2
+              exit 1
+            fi
+            # `--deep` is required HERE: a plain `--verify --strict` passes even
+            # when a nested bundle (e.g. Electron Framework.framework) was never
+            # sealed, which is precisely the state that makes the app unopenable.
+            # Catches both that and a tree codesign cannot walk (e.g. dangling
+            # node_modules/.bin symlinks → "No such file or directory").
+            codesign --verify --deep --strict --verbose=2 "$app"
+          done
+          echo "✓ macOS bundle carries a structurally valid signature (nested code included)"
+
       # The .app is notarized + stapled by electron-builder above; the DMG needs
       # its own ticket so `stapler validate` passes on the disk image itself.
       - name: Notarize + staple the DMGs

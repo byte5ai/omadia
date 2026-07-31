@@ -152,4 +152,58 @@ if (missing.length) {
 }
 console.log(`[stage-runtime] staged Postgres engine (${pgPlat}) + pgvector (control + ${moduleName} + install SQL)`);
 
+// --- prune dangling symlinks from the whole staged tree ------------------
+// `fs.cpSync({ dereference: true })` does not materialise EVERY symlink: npm's
+// `node_modules/.bin/*` entries survive the copy as ABSOLUTE links back into the
+// BUILD machine's checkout (on CI: `/Users/runner/work/omadia/omadia/...`), so
+// they dangle on every other machine. Nothing execs them at runtime — but they
+// are FATAL to macOS signing: `codesign` walks the bundle, hits the first dead
+// link and aborts with "No such file or directory". The .app then ships with no
+// valid signature at all and Gatekeeper refuses to launch it ("omadia is damaged
+// and can't be opened") — which is exactly how v0.56.0 and v0.57.0 shipped.
+//
+// Runs LAST, after every stage step (including the Postgres relink above), so a
+// dead link introduced by any of them is caught. Live links — e.g. the engine's
+// relative `libicudata.68.dylib` chain — resolve and are kept.
+function pruneDanglingSymlinks(root) {
+  let pruned = 0;
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const p = path.join(dir, entry.name);
+      // Dirent flags are lstat-based, so a symlink is never mistaken for a dir.
+      if (entry.isSymbolicLink()) {
+        // existsSync FOLLOWS the link: false ⇒ the target is gone ⇒ dead link.
+        if (!fs.existsSync(p)) {
+          fs.rmSync(p, { force: true });
+          pruned++;
+        }
+        continue; // never descend THROUGH a symlink — avoids cycles
+      }
+      if (entry.isDirectory()) walk(p);
+    }
+  };
+  walk(root);
+  return pruned;
+}
+
+console.log(`[stage-runtime] pruned ${pruneDanglingSymlinks(runtime)} dangling symlink(s)`);
+
+// Hard gate: re-scan and require a clean tree. A second pass must find nothing —
+// if it does, the prune itself is broken and we must not ship a tree that
+// `codesign` (and therefore notarization) will choke on.
+const stillDangling = pruneDanglingSymlinks(runtime);
+if (stillDangling !== 0) {
+  console.error(
+    `[stage-runtime] FATAL: ${stillDangling} dangling symlink(s) survived the prune — ` +
+      'refusing to stage a tree that macOS codesign cannot walk.',
+  );
+  process.exit(1);
+}
+
 console.log('[stage-runtime] done →', runtime);
