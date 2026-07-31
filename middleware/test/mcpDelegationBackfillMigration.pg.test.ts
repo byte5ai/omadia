@@ -42,18 +42,17 @@ import { SERVICE_USER_KEY } from '../src/services/mcpDelegation.js';
  * Only the tables 0031 touches are hand-built, at migrations 0003/0009/0015
  * shapes — not the whole chain. What is under test is 0031's own DML.
  *
- * ─── The ONE rewrite applied to the migration text ──────────────────────────
+ * ─── The migration text is used verbatim ────────────────────────────────────
  *
- * 0031's backfill is guarded by `to_regclass('public.mcp_oauth_tokens')`, the
- * only schema-QUALIFIED reference in the file (every DDL statement is
- * unqualified and follows `search_path`). Under rule 1 the tables live in the
- * tenant schema, so that guard would be NULL and the backfill would silently not
- * run — the tests would pass by never executing the thing under test.
- *
- * `migrationSql()` therefore repoints that one literal at the tenant schema, and
- * asserts it replaced EXACTLY one occurrence. If a future edit adds another
- * `public.`-qualified reference, the count assertion fails rather than letting a
- * second guard quietly short-circuit.
+ * 0031 used to guard its backfill with `to_regclass('public.mcp_oauth_tokens')`
+ * — the one schema-QUALIFIED reference in a file that is otherwise entirely
+ * unqualified. Under rule 1 the tables live in the tenant schema, so that guard
+ * answered about a table this migration never touches, and this file had to
+ * rewrite the literal before running it. The guard is now unqualified and
+ * resolves through `search_path` like everything else, so the file is applied
+ * AS SHIPPED and `assertSchemaRelative()` fails loudly if a qualified reference
+ * is ever reintroduced — a silent short-circuit would otherwise make every
+ * assertion below pass vacuously.
  */
 
 const PG_URL =
@@ -76,17 +75,17 @@ const TENANT = `w4_deleg_${process.pid}_${Date.now().toString(36)}`;
 
 const MIGRATION_PATH = new URL('../migrations/0031_mcp_oauth_iss_delegation.sql', import.meta.url);
 
-/** The migration text, with its single `public.`-qualified guard repointed at
- *  the tenant schema. See the header for why, and what the count guards. */
+/** The migration text, applied verbatim. See the header for why no rewrite is
+ *  needed, and what the schema-relative guard protects. */
 async function migrationSql(): Promise<string> {
   const raw = await readFile(MIGRATION_PATH, 'utf8');
-  const occurrences = raw.split("'public.").length - 1;
   assert.equal(
-    occurrences,
-    1,
-    'migration 0031 gained a schema-qualified reference — review it before this rewrite hides a guard',
+    raw.split("'public.").length - 1,
+    0,
+    'migration 0031 gained a schema-qualified reference — it must resolve through search_path, ' +
+      'or this suite runs it against tables it does not own and passes vacuously',
   );
-  return raw.replaceAll("'public.", `'${TENANT}.`);
+  return raw;
 }
 
 describe('migration 0031 — delegation backfill predicate (pg)', { skip: !pgAvailable }, () => {
@@ -212,19 +211,43 @@ describe('migration 0031 — delegation backfill predicate (pg)', { skip: !pgAva
     assert.match(executable, new RegExp(`user_key\\s*=\\s*'${SERVICE_USER_KEY}'`));
   });
 
-  // NOT TESTED HERE: that 0031's `mcp_servers_delegation_chk` CHECK is created.
-  //
-  // It looked like an easy extra assertion and it is a FLAKE. 0031 guards that
-  // ALTER with `IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname =
-  // 'mcp_servers_delegation_chk')` — a lookup with no `connamespace` filter, so
-  // it is cluster-wide. Under the per-suite schema isolation this file requires,
-  // a CONCURRENT pg suite that created the constraint in ITS schema makes the
-  // guard true here and the constraint is skipped in ours. The assertion passed
-  // in isolation and failed in the full-suite run, which is exactly the
-  // false-confidence shape this repo has been bitten by.
-  //
-  // Harmless in production (one schema), out of scope for this fix, and left
-  // documented rather than silently dropped so nobody re-adds it.
+  // These two used to be a documented NOT-TESTED hole. 0031 guarded its ALTER
+  // with `IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = …)` — no
+  // relation and no namespace filter, so the lookup was cluster-wide. Under the
+  // per-suite schema isolation this file requires, a CONCURRENT pg suite that
+  // created the constraint in ITS schema made the guard true here and the
+  // constraint was skipped in ours: the assertion passed in isolation and failed
+  // in the full-suite run. The guard is now anchored on
+  // `conrelid = 'mcp_servers'::regclass`, so the coverage is real, and the
+  // assertions below are scoped to THIS suite's schema for the same reason.
+
+  it('creates the delegation CHECK in THIS schema, not merely somewhere in the cluster', async () => {
+    const { rows } = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM pg_constraint
+        WHERE conname = 'mcp_servers_delegation_chk'
+          AND connamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)`,
+      [TENANT],
+    );
+    assert.equal(
+      rows[0]?.n,
+      '1',
+      'the CHECK was skipped in this schema — the guard matched a constraint owned by another schema',
+    );
+  });
+
+  it('the created CHECK actually constrains — an unknown delegation mode is rejected', async () => {
+    // Existence alone would still pass if the constraint were created empty or
+    // over the wrong column. This proves the predicate 0031 claims to install.
+    await assert.rejects(
+      () =>
+        pool.query(
+          `INSERT INTO mcp_servers (name, transport, endpoint, delegation)
+           VALUES ('bad-delegation', 'http', 'https://e.example', 'telepathy')`,
+        ),
+      (err: unknown) => (err as { code?: string }).code === '23514',
+      'delegation accepted a value outside (per_user, service)',
+    );
+  });
 
   it('is idempotent — re-applying flips nothing further', async () => {
     // A second run must be a no-op, not a second chance to convert a per-user

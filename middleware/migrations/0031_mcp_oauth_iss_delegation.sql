@@ -34,10 +34,19 @@
 ALTER TABLE mcp_servers
   ADD COLUMN IF NOT EXISTS delegation TEXT NOT NULL DEFAULT 'per_user';
 
+-- `conname` is unique per (connamespace, conrelid), NOT cluster-wide, so an
+-- unanchored lookup reports "exists" for a same-named constraint sitting in any
+-- other schema and the ALTER below is silently skipped. Anchoring on
+-- `conrelid = 'mcp_servers'::regclass` resolves the relation through
+-- `search_path`, matching every other unqualified reference in this file. The
+-- cast cannot raise here: the ALTER TABLE above already required the table to
+-- resolve.
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'mcp_servers_delegation_chk'
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'mcp_servers_delegation_chk'
+       AND conrelid = 'mcp_servers'::regclass
   ) THEN
     ALTER TABLE mcp_servers
       ADD CONSTRAINT mcp_servers_delegation_chk
@@ -48,7 +57,12 @@ END $$;
 -- Backward compatibility (see the warning above): every EXISTING server that
 -- already holds an OPERATOR token keeps the shared identity it is working with
 -- today. Guarded by to_regclass so the migration is safe on a database where
--- mcp_oauth_tokens has not been created yet.
+-- mcp_oauth_tokens has not been created yet. The argument is UNQUALIFIED on
+-- purpose: it must resolve through `search_path` like every other reference in
+-- this file. A hardcoded `public.` would probe the wrong schema wherever the
+-- domain is applied outside `public` — the guard would then answer about a
+-- table this statement does not touch, and the backfill would be skipped (or
+-- run) for a reason unrelated to the data in front of it.
 --
 -- The predicate is `user_key = 'operator'`, NOT "has any token row". This
 -- backfill exists solely to preserve the behaviour the 'operator' fallback was
@@ -66,7 +80,7 @@ END $$;
 -- `src/services/mcpDelegation.ts` (a migration cannot import it).
 DO $$
 BEGIN
-  IF to_regclass('public.mcp_oauth_tokens') IS NOT NULL THEN
+  IF to_regclass('mcp_oauth_tokens') IS NOT NULL THEN
     UPDATE mcp_servers s
        SET delegation = 'service'
      WHERE EXISTS (
