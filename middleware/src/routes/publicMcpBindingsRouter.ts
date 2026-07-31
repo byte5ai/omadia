@@ -86,6 +86,20 @@ export function createPublicMcpBindingsRouter(
     );
   });
 
+  /**
+   * Logs the real error and answers with a fixed string.
+   *
+   * The operator gate runs first, so nothing here reaches an anonymous caller —
+   * but pg errors name tables, columns and constraints, sometimes carry the
+   * connection host, and land verbatim in browser devtools and whatever ships
+   * the UI's logs. None of that helps the operator and all of it helps whoever
+   * reads those logs next.
+   */
+  function fail(res: Response, code: string, err: unknown): void {
+    console.error('[public-mcp-bindings]', code, err);
+    res.status(500).json({ code, message: 'the request could not be completed' });
+  }
+
   function storeOr503(res: Response): PublicMcpKeyBindingAdminStore | undefined {
     const store = options.getStore();
     if (!store) {
@@ -105,7 +119,7 @@ export function createPublicMcpBindingsRouter(
     try {
       res.json({ bindings: await store.list() });
     } catch (err) {
-      res.status(500).json({ code: 'public_mcp_bindings.list_failed', message: String(err) });
+      fail(res, 'public_mcp_bindings.list_failed', err);
     }
   });
 
@@ -115,6 +129,39 @@ export function createPublicMcpBindingsRouter(
     if (!store) return;
 
     const body = (req.body ?? {}) as Record<string, unknown>;
+
+    // TYPE-CHECK, NEVER COERCE, on both optional fields.
+    //
+    // The previous `body[x] === undefined ? {} : Number(body[x])` guard let JSON
+    // `null` through — `null` is not `undefined` — and `Number(null)` is `0`,
+    // which is a VALID write budget. A client sending `null` to mean "use the
+    // default" got a key that authenticates, resolves its binding, and is
+    // throttled to nothing on every write while the UI shows write tools listed.
+    // `[]`, `false` and `""` coerce to `0` identically; `true` coerces to `1`.
+    // Both fields decide what an internet-facing key may do, so a value we
+    // cannot read at face value is a 400, not a guess.
+    const rawRate = body['writeRateLimitPerMinute'];
+    if (rawRate !== undefined && typeof rawRate !== 'number') {
+      res.status(400).json({
+        error: 'invalid_request',
+        code: 'write_rate_limit_invalid_type',
+        message: 'writeRateLimitPerMinute must be a number, or omitted to take the default',
+      });
+      return;
+    }
+    // Same class of silence on the other side: a present-but-non-boolean
+    // `enabled` used to be dropped on the floor, and under the old
+    // `?? true` default "dropped" meant "activate".
+    const rawEnabled = body['enabled'];
+    if (rawEnabled !== undefined && typeof rawEnabled !== 'boolean') {
+      res.status(400).json({
+        error: 'invalid_request',
+        code: 'enabled_invalid_type',
+        message: 'enabled must be a boolean, or omitted to leave the current state untouched',
+      });
+      return;
+    }
+
     const input: PublicMcpKeyBindingInput = {
       keyId: typeof body['keyId'] === 'string' ? body['keyId'].trim() : '',
       agentId: typeof body['agentId'] === 'string' ? body['agentId'].trim() : '',
@@ -122,10 +169,10 @@ export function createPublicMcpBindingsRouter(
       writeTools: Array.isArray(body['writeTools'])
         ? (body['writeTools'] as readonly string[])
         : [],
-      ...(body['writeRateLimitPerMinute'] === undefined
-        ? {}
-        : { writeRateLimitPerMinute: Number(body['writeRateLimitPerMinute']) }),
-      ...(typeof body['enabled'] === 'boolean' ? { enabled: body['enabled'] } : {}),
+      ...(rawRate === undefined ? {} : { writeRateLimitPerMinute: rawRate }),
+      // Absent stays absent all the way to the store — that is what keeps a
+      // revoked binding revoked across a save that never mentions it.
+      ...(rawEnabled === undefined ? {} : { enabled: rawEnabled }),
     };
 
     // The reader's own rules decide. See `validateBindingInput`.
@@ -136,40 +183,54 @@ export function createPublicMcpBindingsRouter(
     }
 
     try {
-      res.status(201).json({ binding: await store.upsert(validated.value) });
+      const { binding, created } = await store.upsert(validated.value);
+      // 201 only for a row that did not exist. "Created" over an existing
+      // binding is the operator's only per-request hint that they landed on
+      // somebody else's row — spending it on every save makes it worthless.
+      res.status(created ? 201 : 200).json({ binding });
     } catch (err) {
-      res.status(500).json({ code: 'public_mcp_bindings.upsert_failed', message: String(err) });
+      fail(res, 'public_mcp_bindings.upsert_failed', err);
     }
   });
 
-  // ── Revoke (park, never delete) ─────────────────────────────────────────
+  // ── Revoke / restore (park and un-park, never delete) ───────────────────
   // A revoked binding keeps its configured tool lists so an operator can see
   // what the integration USED to reach, and can restore it without
   // reconstructing the allowlist from memory. `DELETE` exists on the store for
   // completeness but is deliberately not exposed here: the destructive path
   // wants a deliberate decision, and parking already stops every call.
-  router.post('/:keyId/revoke', async (req: Request, res: Response) => {
-    const store = storeOr503(res);
-    if (!store) return;
+  //
+  // RESTORE IS ITS OWN ROUTE rather than a side effect of saving. Since an
+  // upsert now preserves `enabled`, re-arming a key had to become something an
+  // operator does ON PURPOSE — and a dedicated route makes that intent legible
+  // in an access log, where `POST /:keyId` would not be.
+  function setEnabledRoute(enabled: boolean, code: string) {
+    return async (req: Request, res: Response): Promise<void> => {
+      const store = storeOr503(res);
+      if (!store) return;
 
-    const rawKeyId = req.params['keyId'];
-    const keyId = Array.isArray(rawKeyId) ? rawKeyId[0] : rawKeyId;
-    if (!keyId) {
-      res.status(400).json({ error: 'invalid_request', message: 'missing key id' });
-      return;
-    }
-
-    try {
-      const binding = await store.setEnabled(keyId, false);
-      if (!binding) {
-        res.status(404).json({ error: 'not_found', keyId });
+      const rawKeyId = req.params['keyId'];
+      const keyId = Array.isArray(rawKeyId) ? rawKeyId[0] : rawKeyId;
+      if (!keyId) {
+        res.status(400).json({ error: 'invalid_request', message: 'missing key id' });
         return;
       }
-      res.json({ binding });
-    } catch (err) {
-      res.status(500).json({ code: 'public_mcp_bindings.revoke_failed', message: String(err) });
-    }
-  });
+
+      try {
+        const binding = await store.setEnabled(keyId, enabled);
+        if (!binding) {
+          res.status(404).json({ error: 'not_found', keyId });
+          return;
+        }
+        res.json({ binding });
+      } catch (err) {
+        fail(res, code, err);
+      }
+    };
+  }
+
+  router.post('/:keyId/revoke', setEnabledRoute(false, 'public_mcp_bindings.revoke_failed'));
+  router.post('/:keyId/restore', setEnabledRoute(true, 'public_mcp_bindings.restore_failed'));
 
   return router;
 }

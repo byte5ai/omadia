@@ -83,6 +83,27 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   read-only store: it gains no write path to its own authorization table. The
   admin path validates through the same `normalizeBindingRow` the enforcement path
   uses, so the two cannot drift. Revoke parks the row rather than deleting it.
+- **Revoke is sticky.** A cross-vendor review found that saving a binding
+  re-enabled it: an omitted `enabled` was defaulted to `true` and written over the
+  stored value, so any later save — a stale browser tab, a second operator, a
+  config replay, or this pane's own form, which does not round-trip the field —
+  silently handed a revoked key its whole allowlist back. An absent `enabled` now
+  preserves the stored flag (a genuinely new row still starts enabled), and
+  un-parking is an explicit act: `POST /:keyId/restore`, or an explicit
+  `enabled: true` on the upsert. The pane grew a confirmed **Restore access**
+  button so the stricter server does not strand an operator in psql.
+- `POST /` answers **200** for a row it replaced and keeps 201 for one it created
+  — "Created" is the operator's only per-request signal that they landed on a
+  binding somebody else had already configured, or parked.
+- `writeRateLimitPerMinute` and `enabled` are type-checked rather than coerced. A
+  JSON `null` reached `Number(null)` → `0`, a valid write budget, so a client
+  sending `null` to mean "use the default" got an integration that authenticates,
+  resolves its binding, and is throttled to nothing on every write while the UI
+  showed write tools listed. `[]`, `false` and `""` coerced identically; `true`
+  became 1. Bad values are now a 400.
+- 500 bodies no longer carry `String(err)`. pg errors name tables, columns and
+  constraints and sometimes the connection host, and those bodies land in browser
+  devtools and UI logs; the detail is logged server-side instead.
 
 ### Fixed — raw NUL bytes made ripgrep silently truncate eight source files
 

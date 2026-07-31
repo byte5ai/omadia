@@ -66,14 +66,38 @@ export interface PublicMcpKeyBindingAdminRow {
   readonly updatedAt: string;
 }
 
-/** What an operator submits. Optional fields take the migration's defaults. */
+/**
+ * What an operator submits. Optional fields take the migration's defaults.
+ *
+ * `enabled` is the exception, and the asymmetry is the whole point: OMITTING it
+ * means "do not touch the parked/active state", not "activate". A binding is the
+ * entire authorization model for an internet-facing endpoint, and revoke is the
+ * incident response — a field the operator never mentioned must not be able to
+ * undo it. On a NEW row there is no prior state to preserve, so it starts
+ * `true`; on an existing row the stored value survives. Re-arming a revoked key
+ * therefore requires an explicit `enabled: true` (or the `/restore` route).
+ */
 export interface PublicMcpKeyBindingInput {
   readonly keyId: string;
   readonly agentId: string;
   readonly readTools: readonly string[];
   readonly writeTools: readonly string[];
   readonly writeRateLimitPerMinute?: number;
+  /** Absent ⇒ preserve whatever the row says today (new rows start enabled). */
   readonly enabled?: boolean;
+}
+
+/**
+ * The stored row plus whether this call CREATED it.
+ *
+ * The router needs the distinction to answer `201 Created` honestly. Returning
+ * "Created" for a write that overwrote an existing binding is not merely a
+ * cosmetic lie: it is the operator's only per-request signal that they landed on
+ * a row somebody else had already configured — or parked.
+ */
+export interface PublicMcpKeyBindingUpsertResult {
+  readonly binding: PublicMcpKeyBindingAdminRow;
+  readonly created: boolean;
 }
 
 export interface BindingValidationFailure {
@@ -94,8 +118,9 @@ export interface PublicMcpKeyBindingAdminStore {
   /** Every row, parked ones included. An operator reviewing what a key may do
    *  needs to see the disabled rows; the endpoint never does. */
   list(): Promise<readonly PublicMcpKeyBindingAdminRow[]>;
-  /** Creates or replaces the row for `input.keyId`. */
-  upsert(input: PublicMcpKeyBindingInput): Promise<PublicMcpKeyBindingAdminRow>;
+  /** Creates or replaces the row for `input.keyId`. An absent `input.enabled`
+   *  PRESERVES the stored flag rather than defaulting it — see the input type. */
+  upsert(input: PublicMcpKeyBindingInput): Promise<PublicMcpKeyBindingUpsertResult>;
   /** Parks (or un-parks) a binding without losing what it was configured to
    *  grant. `undefined` when there is no such row. */
   setEnabled(keyId: string, enabled: boolean): Promise<PublicMcpKeyBindingAdminRow | undefined>;
@@ -119,6 +144,13 @@ export interface PublicMcpKeyBindingAdminStore {
  * for: a parked row is a row the reader denies BY DESIGN, so running the check
  * with the operator's `false` would reject every attempt to save a parked
  * binding.
+ *
+ * It is also carried through UNTOUCHED — absent stays absent. The previous
+ * `input.enabled ?? true` here is what made revoke undoable: it turned "the
+ * submission said nothing about enabled" into "the submission asked for
+ * enabled", and the upsert then wrote that manufactured `true` over a row an
+ * operator had deliberately parked. Only the store knows the current state, so
+ * only the store may decide what "unspecified" resolves to.
  */
 export function validateBindingInput(input: PublicMcpKeyBindingInput): BindingValidationResult {
   const writeRateLimitPerMinute =
@@ -166,7 +198,7 @@ export function validateBindingInput(input: PublicMcpKeyBindingInput): BindingVa
       readTools: normalized.readTools,
       writeTools: normalized.writeTools,
       writeRateLimitPerMinute: normalized.writeRateLimitPerMinute,
-      enabled: input.enabled ?? true,
+      ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
     },
   };
 }
@@ -238,28 +270,45 @@ export function createPublicMcpKeyBindingAdminStore(pool: Pool): PublicMcpKeyBin
     },
 
     async upsert(input) {
+      // `enabled` binds NULL when the operator did not mention it, and the two
+      // branches then resolve that NULL differently — `true` on insert (a new
+      // binding has no prior state), the CURRENT COLUMN on conflict.
+      //
+      // Note it is `public_mcp_key_bindings.enabled` and NOT `EXCLUDED.enabled`
+      // in the DO UPDATE branch: EXCLUDED holds the row this statement PROPOSED,
+      // so coalescing against it would resolve back to the insert's `true` and
+      // re-arm the very binding this is meant to leave parked.
+      //
+      // `(created_at = updated_at)` is the created/updated discriminator. Both
+      // columns resolve to `now()` — the transaction timestamp — on the insert
+      // branch, while the conflict branch moves only `updated_at` and leaves
+      // `created_at` at an earlier transaction's clock. That uses documented
+      // `now()` semantics rather than the usual `xmax = 0` idiom, which reads a
+      // storage-layer detail that also moves when an unrelated transaction holds
+      // a row lock.
       const { rows } = await pool.query(
         `INSERT INTO public_mcp_key_bindings
            (key_id, agent_id, read_tools, write_tools, write_rate_limit_per_minute, enabled, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, now())
+         VALUES ($1, $2, $3, $4, $5, COALESCE($6::boolean, true), now())
          ON CONFLICT (key_id) DO UPDATE SET
            agent_id = EXCLUDED.agent_id,
            read_tools = EXCLUDED.read_tools,
            write_tools = EXCLUDED.write_tools,
            write_rate_limit_per_minute = EXCLUDED.write_rate_limit_per_minute,
-           enabled = EXCLUDED.enabled,
+           enabled = COALESCE($6::boolean, public_mcp_key_bindings.enabled),
            updated_at = now()
-         RETURNING ${SELECT_COLUMNS}`,
+         RETURNING ${SELECT_COLUMNS}, (created_at = updated_at) AS inserted`,
         [
           input.keyId,
           input.agentId,
           input.readTools,
           input.writeTools,
           input.writeRateLimitPerMinute ?? DEFAULT_WRITE_RATE_LIMIT_PER_MINUTE,
-          input.enabled ?? true,
+          input.enabled ?? null,
         ],
       );
-      return toAdminRow(rows[0] as AdminRowShape);
+      const raw = rows[0] as AdminRowShape & { inserted?: unknown };
+      return { binding: toAdminRow(raw), created: raw.inserted === true };
     },
 
     async setEnabled(keyId, enabled) {
@@ -310,12 +359,15 @@ export function createInMemoryPublicMcpKeyBindingAdminStore(
         writeTools: [...input.writeTools],
         writeRateLimitPerMinute:
           input.writeRateLimitPerMinute ?? DEFAULT_WRITE_RATE_LIMIT_PER_MINUTE,
-        enabled: input.enabled ?? true,
+        // Mirrors the SQL's `COALESCE($6, public_mcp_key_bindings.enabled)`: an
+        // unspecified flag preserves the stored state, and only a row that does
+        // not exist yet falls through to `true`.
+        enabled: input.enabled ?? existing?.enabled ?? true,
         createdAt: existing?.createdAt ?? stamp,
         updatedAt: stamp,
       };
       byKey.set(row.keyId, row);
-      return row;
+      return { binding: row, created: existing === undefined };
     },
     async setEnabled(keyId, enabled) {
       const existing = byKey.get(keyId);

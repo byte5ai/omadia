@@ -2823,7 +2823,12 @@
       "revoke": "Widerrufen",
       "revokeTitle": "Dieses Binding widerrufen?",
       "revokeBody": "Der Key {keyId} erreicht ab sofort kein Tool mehr. Das Binding bleibt erhalten und wird nicht gelöscht — du siehst weiterhin, was es erlaubt hat.",
-      "revokeConfirm": "Widerrufen"
+      "revokeConfirm": "Widerrufen",
+      "restore": "Zugriff wiederherstellen",
+      "restoreHint": "Erneutes Speichern ändert die Tools, hebt den Widerruf aber nicht auf. Nur Wiederherstellen macht den Key wieder nutzbar.",
+      "restoreTitle": "Dieses Binding wiederherstellen?",
+      "restoreBody": "Der Key {keyId} erhält sofort alles zurück, was auf dieser Zeile steht: {tools}.",
+      "restoreConfirm": "Wiederherstellen"
     },
     "plugins": {
       "intro": "Plugins, die im Manifest MCP-Zugriff deklarieren. Weise jedem gezielt die Server zu, die es erreichen darf — nichts ist implizit. Die Per-Tool-Sicherheit greift weiterhin: ein ungescanntes oder hochriskantes Tool wird zur Aufrufzeit abgelehnt.",
