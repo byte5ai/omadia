@@ -2639,6 +2639,32 @@ export class Orchestrator {
       input,
     );
 
+    // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
+    // HTTP routes establish the identity in an outer scope (see
+    // `middleware/src/routes/chat.ts`) and that ALWAYS wins. A channel turn
+    // (Teams/Telegram/Slack) has no session to read, so the canonical omadia
+    // user id resolved just above IS the caller identity — without this, every
+    // `per_user` MCP server audits the call as `unresolved` and fails closed on
+    // every channel turn.
+    //
+    // Chosen over resolving at the adapter (`createOrchestratorDispatcher`)
+    // because the adapter holds no `KnowledgeGraph`: doing it there means a new
+    // dependency, new boot wiring, and a SECOND identity round-trip per turn
+    // for a value this scope has already computed.
+    //
+    // Gated on `input.channelIdentity` — NOT applied to every resolved id.
+    // With no `channelIdentity`, `resolveTurnOwnerIdentity` returns
+    // `input.userId` verbatim, and on the HTTP path that can originate in the
+    // client-controlled `x-user-id` header (`chat.ts`'s `resolveUserId`).
+    // Keying MCP tokens on it would let any caller act as any user — W0-1's
+    // confused deputy, re-opened one door along. A `channelIdentity` is minted
+    // only by `createOrchestratorDispatcher` from the adapter's authenticated
+    // `userRef` and is resolved through the KG, so it is server-attested end to
+    // end.
+    const mcpUserKey =
+      parent?.mcpUserKey ??
+      (input.channelIdentity ? resolvedOmadiaUserId : undefined);
+
     return turnContext.run(
       {
         turnId,
@@ -2656,11 +2682,11 @@ export class Orchestrator {
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
-        // W3-A — MCP OAuth caller identity. Set by an outer scope (channel
-        // adapter / route) and read by the auth provider's `getToken` +
-        // `resolveIdentity`. Without the carry-over a `per_user` server audits
-        // every call as `unresolved` and then fails closed.
-        ...(parent?.mcpUserKey ? { mcpUserKey: parent.mcpUserKey } : {}),
+        // W3-A — MCP OAuth caller identity. Read by the auth provider's
+        // `getToken` + `resolveIdentity`. Without it a `per_user` server audits
+        // every call as `unresolved` and then fails closed. See the W4-1 block
+        // above for where the value comes from.
+        ...(mcpUserKey ? { mcpUserKey } : {}),
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
@@ -4122,6 +4148,32 @@ export class Orchestrator {
       input,
     );
 
+    // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
+    // HTTP routes establish the identity in an outer scope (see
+    // `middleware/src/routes/chat.ts`) and that ALWAYS wins. A channel turn
+    // (Teams/Telegram/Slack) has no session to read, so the canonical omadia
+    // user id resolved just above IS the caller identity — without this, every
+    // `per_user` MCP server audits the call as `unresolved` and fails closed on
+    // every channel turn.
+    //
+    // Chosen over resolving at the adapter (`createOrchestratorDispatcher`)
+    // because the adapter holds no `KnowledgeGraph`: doing it there means a new
+    // dependency, new boot wiring, and a SECOND identity round-trip per turn
+    // for a value this scope has already computed.
+    //
+    // Gated on `input.channelIdentity` — NOT applied to every resolved id.
+    // With no `channelIdentity`, `resolveTurnOwnerIdentity` returns
+    // `input.userId` verbatim, and on the HTTP path that can originate in the
+    // client-controlled `x-user-id` header (`chat.ts`'s `resolveUserId`).
+    // Keying MCP tokens on it would let any caller act as any user — W0-1's
+    // confused deputy, re-opened one door along. A `channelIdentity` is minted
+    // only by `createOrchestratorDispatcher` from the adapter's authenticated
+    // `userRef` and is resolved through the KG, so it is server-attested end to
+    // end.
+    const mcpUserKey =
+      parent?.mcpUserKey ??
+      (input.channelIdentity ? resolvedOmadiaUserId : undefined);
+
     const context: TurnContextValue = {
       turnId,
       turnDate: today(),
@@ -4137,8 +4189,8 @@ export class Orchestrator {
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
-      // W3-A — see the matching `turnContext.run` above.
-      ...(parent?.mcpUserKey ? { mcpUserKey: parent.mcpUserKey } : {}),
+      // W3-A / W4-1 — see the matching `turnContext.run` above.
+      ...(mcpUserKey ? { mcpUserKey } : {}),
       ...(privacyHandle ? { privacyHandle } : {}),
       ...(parent?.captureRawToolResult
         ? { captureRawToolResult: parent.captureRawToolResult }

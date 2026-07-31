@@ -45,6 +45,7 @@ import {
   substituteMcpConfig,
   deriveMcpConfigSchema,
 } from '../agents/subAgentToolHydration.js';
+import { sessionIdentity } from '../auth/sessionIdentity.js';
 import {
   auditIdentity,
   parseDelegation,
@@ -1445,8 +1446,9 @@ export function createAgentBuilderRouter(
   // old `|| 'operator'` tail is gone — whether an unresolved identity may
   // borrow a shared one is now the server's `delegation` decision, applied by
   // `resolveMcpUserKey`, never an implicit default here.
-  const sessionIdentity = (req: Request): string | null =>
-    req.session?.sub || req.session?.email || null;
+  //
+  // W4-1: `sessionIdentity` now lives in `../auth/sessionIdentity.js` (behaviour
+  // unchanged) so the chat routes can produce the SAME key these routes consume.
   /** The key to act as for THIS server, or null when a `per_user` server has
    *  no resolvable identity (fail closed — never silently the operator). */
   const oauthUserKeyFor = (req: Request, server: McpServerRow): string | null =>
