@@ -291,7 +291,14 @@ jobs:
             echo "APPLE_API_KEY=$RUNNER_TEMP/asc-key.p8"
             echo "APPLE_API_KEY_ID=$APPLE_ASC_KEY_ID"
             echo "APPLE_API_ISSUER=$APPLE_ASC_ISSUER_ID"
-            if [ "${NOTARIZE:-yes}" = yes ]; then echo "EB_NOTARIZE=--config.mac.notarize=true"; fi
+            # Must be set EXPLICITLY either way: electron-builder auto-notarizes
+            # as soon as APPLE_API_KEY/_ID/_ISSUER are in the environment, so
+            # simply leaving the flag off does NOT disable it.
+            if [ "${NOTARIZE:-yes}" = yes ]; then
+              echo "EB_NOTARIZE=--config.mac.notarize=true"
+            else
+              echo "EB_NOTARIZE=--config.mac.notarize=false"
+            fi
             echo "MAC_SIGN_KEYCHAIN=$KEYCHAIN"
             echo "MAC_SIGN_EXPECTED=1"
           } >> "$GITHUB_ENV"
