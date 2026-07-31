@@ -74,14 +74,30 @@ macOS):
   Developer ID cert, notarizes the `.app` via electron-builder, then
   `notarytool submit --wait` + `stapler staple` the DMG and verifies (rejects
   ad-hoc) — identical to the omadia-ui flow.
-- **Windows** (new, optional Authenticode — ideally an EV cert to avoid
-  SmartScreen): `WINDOWS_CSC_LINK_BASE64` (base64 of the `.p12`),
-  `WINDOWS_CSC_KEY_PASSWORD`.
+- **Windows — Azure Trusted Signing** (preferred): `AZURE_TENANT_ID`,
+  `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGN_ENDPOINT`,
+  `AZURE_SIGN_ACCOUNT`, `AZURE_SIGN_CERT_PROFILE`. electron-builder drives this
+  natively via `win.azureSignOptions` and installs the `TrustedSigning`
+  PowerShell module itself; the workflow passes the three account coordinates on
+  the CLI so no byte5-specific value is baked into the repo. No hardware token,
+  runs on GitHub-hosted runners.
+- **Windows — legacy Authenticode `.p12`**: `WINDOWS_CSC_LINK_BASE64`,
+  `WINDOWS_CSC_KEY_PASSWORD`. Only usable with certificates issued **before
+  2023-06-01**. Since then the CA/Browser Forum requires every code-signing
+  private key — OV *and* EV — to be generated and held in a FIPS 140-2 Level 2 /
+  EAL4+ HSM, so a newly issued certificate cannot be exported to a file at all.
+  Used only when the Azure secrets are absent.
 
 > Add the secrets under **byte5ai/omadia → Settings → Secrets → Actions**. The
 > Apple values are the same ones already in the omadia-ui repo (one Developer ID
 > per Apple account). Until the Windows secrets exist, Windows installers ship
-> unsigned.
+> unsigned — the installer still runs, but SmartScreen shows an "unknown
+> publisher" warning.
+>
+> Both platforms have an **always-on verification gate**: if signing is
+> configured but the artifact comes out unsigned, the build fails rather than
+> going green and shipping it. That failure mode is not hypothetical — v0.56.0
+> and v0.57.0 shipped a macOS app that could not be opened at all (#558).
 
 **Not yet CI-validated:** the cross-platform middleware build + native rebuild on
 the Windows/macOS runners has only been exercised locally on macOS — the first
