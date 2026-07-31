@@ -54,19 +54,20 @@ it at all.
   reached `path.join` and then a recursive `fs.rm`; reachable from remote registry ZIPs and
   imported profile bundles. Kept out of this PR so it does not wait on epic decisions.
 
-### Held back after review
+### Wave 2 — shipped after #548 landed
 
-Two fixes were implemented, reviewed, and **not shipped** — the review caught real harm:
+- **`.sql` in the ZIP allowlist** — unblocked once the traversal fix merged. Also adds
+  `migrations` to both boilerplate `build-zip.mjs` INCLUDE lists, without which the
+  directory is silently dropped and the install succeeds with no schema.
+- **Migrator concurrency** — shipped on the third attempt. Two prior designs were rejected:
+  an unbounded `pg_advisory_lock` inside a 10s `activate()` budget, and a retry that never
+  read `pg_advisory_unlock`'s return value.
 
-- **`.sql` in the ZIP allowlist** — would have escalated the #548 traversal from
-  delete/replace to arbitrary SQL execution. Blocked until #548 lands.
-- **Advisory lock on the 8 migrators** — an unbounded wait, but three migrators run inside a
-  plugin `activate()` capped at 10s, so it would convert a rare race into a deterministic
-  boot failure. Redesign needed (bounded wait); a second attempt also failed review because
-  it never read `pg_advisory_unlock`'s return value.
-- **DynamicAgentRuntime rollback** — the attempt left a zombie entry in `active`, and its
-  by-source rollback tore down the winner's registrations under two concurrent activations
-  of the same id.
+### Still held back
+
+- **DynamicAgentRuntime rollback** — two attempts rejected. The current one does not cover
+  the timeout path: `withTimeout` does not cancel, so after the rollback the orphaned
+  `activate()` keeps running and re-registers.
 
 ### Next — decisions before code
 
@@ -96,7 +97,7 @@ node scripts/check-core-decoupling.mjs --update   # lower the baseline
 ```
 
 The ratchet counts Dev Platform references across 14 disjoint zones and **fails if the count
-rises, per zone**. Baseline **3,220**. It only ever falls; raising it needs a hand-edited baseline, so
+rises, per zone**. Baseline **3,217**. It only ever falls; raising it needs a hand-edited baseline, so
 a new coupling shows up in review instead of slipping in.
 
 That is what makes the checklist's staleness survivable — a file inventory goes stale on

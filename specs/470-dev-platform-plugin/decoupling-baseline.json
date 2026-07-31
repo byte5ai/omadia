@@ -1,9 +1,9 @@
 {
-  "total": 3220,
+  "total": 3217,
   "zones": {
     "middleware/src": 1573,
-    "middleware/test": 957,
-    "middleware/packages": 86,
+    "middleware/test": 956,
+    "middleware/packages": 84,
     "middleware/scripts": 8,
     "middleware/sidecars": 195,
     "middleware/migrations": 69,
