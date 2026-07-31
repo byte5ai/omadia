@@ -1,13 +1,4 @@
 {
-  "_comment": [
-    "Hand-raised 3303 -> 3441 for the W2-2 long-running task seam.",
-    "See 'Baseline raises' in core-decoupling-checklist.md for the full argument.",
-    "137 of the 138 are the dev_job TaskStore adapter and its tests, which live",
-    "inside src/devplatform/ + test/devplatform/ and leave core with the",
-    "extraction. 1 is a genuine new core reference. The generic seam itself",
-    "(packages/harness-orchestrator/src/tasks/) is CLEAN and must stay clean.",
-    "This key is advisory: `--update` rewrites the file and will drop it."
-  ],
   "total": 3441,
   "zones": {
     "middleware/src": 1702,

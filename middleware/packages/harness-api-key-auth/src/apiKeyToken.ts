@@ -4,8 +4,11 @@
  * any plugin can share the SAME implementation (core must never import from a
  * channel plugin).
  *
- * Follows this codebase's standing shape for a bearer credential that is hashed
- * at rest and verified in constant time. The plaintext exists
+ * Follows the shape this codebase already uses for one-time bearer credentials
+ * elsewhere: hashed at rest, verified in constant time, plaintext shown once.
+ * (The path is deliberately not cited — the closest precedent lives in the Dev
+ * Platform, which epic #470 is extracting into its own repository.) The
+ * plaintext exists
  * exactly once — at creation time, returned to the operator — and is never
  * persisted. Only its sha256 hex lands in the vault (`apiKeyStore.ts`).
  * Verification hashes the presented token and compares digests with
@@ -15,7 +18,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 /** Every minted key carries this prefix so it is greppable in logs/incidents
- *  and visually distinct from other omadia token families. */
+ *  and visually distinct from the other prefixed token families omadia mints. */
 export const API_KEY_PREFIX = 'omk_';
 
 /** 32 random bytes → 43 base64url chars; with the prefix, a 47-char key. */

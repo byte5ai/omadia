@@ -37,6 +37,15 @@ const EXTENSION_ALLOWLIST: ReadonlySet<string> = new Set([
   // fills via the `admin-ui-body` slot; without `.html` here the upload
   // pipeline rejects the package as "disallowed extension".
   '.html',
+  // #548 follow-up — a distributed plugin ships its own schema as
+  // `migrations/*.sql` next to its manifest. Inert on extraction: every
+  // migrator resolves its directory from its own `import.meta.url` (or the
+  // fixed `middleware/migrations`), and an uploaded package can only land
+  // under the packages root, whose `<id>/<version>` segments are charset-
+  // gated in manifestLoader and containment-re-checked in
+  // packageUploadService. Adding this before 09ff9cd0 would have turned that
+  // traversal into arbitrary SQL executed at boot.
+  '.sql',
 ]);
 
 const DECL_EXTENSIONS: ReadonlySet<string> = new Set(['.ts', '.mts', '.cts']);

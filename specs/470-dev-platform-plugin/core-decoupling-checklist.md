@@ -252,7 +252,13 @@ A raise is hand-edited, and each one is argued for here. A raise is legitimate
 only when the added references **leave core with the extraction**; a raise that
 absorbs new *core* coupling is the ratchet failing at its job.
 
-### 3303 → 3441 — W2-2 long-running task seam
+### 3306 -> 3441 - W2-2 long-running task seam
+
+> Re-based after `main` advanced (#552, #553): main lowered its own baseline to 3306 by dropping
+> dev-platform cross-references from API-key comments, so this raise is +135, not the +138 first
+> recorded. `middleware/packages` is deliberately set to 97, BELOW main's 99 - the generic task
+> seam was scrubbed of implementor names and that gain is locked in rather than left as headroom.
+
 
 The W2-2 unit generalised the existing `dev_job` machinery into a reusable
 `TaskStore` seam plus `defineLongRunningTool()`, with `dev_job` as its first
