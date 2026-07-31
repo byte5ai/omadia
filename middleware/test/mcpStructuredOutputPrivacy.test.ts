@@ -64,16 +64,23 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
+// Imported from SOURCE, not from the `@omadia/orchestrator` barrel. The barrel
+// resolves to `dist/`, so a mutation applied to `src/` would not be visible
+// without a rebuild — and a mutation check that silently exercises a stale
+// artifact reports GREEN over broken production code. Same convention as
+// `toolDispatchPrivacySeam.test.ts`. Keeping every orchestrator import on the
+// source path also guarantees ONE module instance, so the `turnContext`
+// AsyncLocalStorage the sidecar reads is the one this file writes.
 import {
   McpManager,
-  NativeToolRegistry,
-  ToolDispatchService,
   mcpNativeHandler,
-  turnContext,
   type McpServerConfig,
   type McpSidecarPayload,
   type McpStructuredOutputSidecar,
-} from '@omadia/orchestrator';
+} from '../packages/harness-orchestrator/src/mcp/mcpClient.js';
+import { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
+import { ToolDispatchService } from '../packages/harness-orchestrator/src/toolDispatchService.js';
+import { turnContext } from '../packages/harness-orchestrator/src/turnContext.js';
 import type { PrivacyTurnHandle } from '../packages/harness-orchestrator/src/privacyHandle.js';
 
 // ── fixtures ────────────────────────────────────────────────────────────────
