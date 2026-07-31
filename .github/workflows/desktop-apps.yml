@@ -288,12 +288,11 @@ jobs:
           printf '%s' "$APPLE_P12_BASE64" | base64 -d > "$RUNNER_TEMP/developer-id.p12"
           printf '%s' "$APPLE_ASC_KEY_P8_BASE64" | base64 -d > "$RUNNER_TEMP/asc-key.p8"
 
-          # Import the Developer ID into a keychain NOW (before afterPack signs the
-          # nested native modules). electron-builder imports CSC_LINK into its own
-          # temp keychain only during its sign step, which runs AFTER afterPack —
-          # so afterPack would otherwise have no usable private key. We create our
-          # own keychain, import the key, and put it on the search list so both
-          # afterPack's `codesign --sign` and electron-builder find the key.
+          # This keychain is the ONLY one used for signing — see the CSC_KEYCHAIN
+          # note below for why electron-builder is deliberately kept from making
+          # its own. It must exist before afterPack, which signs the nested
+          # extraResources binaries and runs ahead of electron-builder's own sign
+          # step. Put it on the search list so both find the key.
           KEYCHAIN="$RUNNER_TEMP/omadia-signing.keychain-db"
           KCPASS="$(openssl rand -base64 24)"
           security create-keychain -p "$KCPASS" "$KEYCHAIN"
@@ -318,9 +317,31 @@ jobs:
           IDENT=$(security find-identity -v -p codesigning "$KEYCHAIN" \
             | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)
 
+          if [ -z "$IDENT" ]; then
+            echo "FAIL: the Developer ID was imported but no codesigning identity" >&2
+            echo "      is visible in the keychain — refusing to continue." >&2
+            exit 1
+          fi
+
           {
-            echo "CSC_LINK=file://$RUNNER_TEMP/developer-id.p12"
-            echo "CSC_KEY_PASSWORD=$APPLE_P12_PASSWORD"
+            # Deliberately NOT CSC_LINK. With CSC_LINK set, electron-builder
+            # builds its OWN temp keychain and then runs:
+            #
+            #   security set-key-partition-list -S apple-tool:,apple: -s -k <pw> <keychain>
+            #
+            # passing the *P12 passphrase* as <pw> while the keychain was created
+            # with a different, random password (app-builder-lib macCodeSign.js
+            # importCerts). That only works while the keychain happens to still be
+            # unlocked from moments earlier — it broke outright on the Intel
+            # runner with "SecKeychainUnlock: The user name or passphrase you
+            # entered is not correct", and was luck on arm64.
+            #
+            # macPackager.js: when CSC_LINK is absent it skips that path entirely
+            # and uses CSC_KEYCHAIN + CSC_NAME. We already built a keychain above
+            # and set its partition list with the CORRECT password, so point
+            # electron-builder at it and skip the buggy detour.
+            echo "CSC_KEYCHAIN=$KEYCHAIN"
+            echo "CSC_NAME=$IDENT"
             echo "APPLE_API_KEY=$RUNNER_TEMP/asc-key.p8"
             echo "APPLE_API_KEY_ID=$APPLE_ASC_KEY_ID"
             echo "APPLE_API_ISSUER=$APPLE_ASC_ISSUER_ID"
@@ -334,8 +355,10 @@ jobs:
             fi
             echo "MAC_SIGN_KEYCHAIN=$KEYCHAIN"
             echo "MAC_SIGN_EXPECTED=1"
+            # afterPack signs the nested extraResources binaries with this.
+            echo "MAC_SIGN_IDENTITY=$IDENT"
           } >> "$GITHUB_ENV"
-          if [ -n "$IDENT" ]; then echo "MAC_SIGN_IDENTITY=$IDENT" >> "$GITHUB_ENV"; fi
+          echo "signing identity: $IDENT"
 
       # --- Windows Authenticode signing (optional) --------------------------
       - name: Prepare Windows signing (optional — needs WINDOWS_CSC_* secrets)
