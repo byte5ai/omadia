@@ -163,6 +163,11 @@ import {
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
 import { mountPublicMcp } from './mcp/wirePublicMcp.js';
+// W5-1 — the WRITE half of `public_mcp_key_bindings`. Imported for the
+// OPERATOR router only. `mountPublicMcp` above must never be handed this: the
+// internet-facing endpoint gets `createPublicMcpKeyBindingStore` (read-only)
+// and nothing else.
+import { createPublicMcpKeyBindingAdminStore } from './mcp/publicMcpKeyBindingsAdmin.js';
 import {
   PRIVACY_REDACT_SERVICE_NAME,
   type PrivacyGuardService,
@@ -2741,6 +2746,15 @@ async function main(): Promise<void> {
       ...(mcpOAuthService ? { mcpOAuth: mcpOAuthService, mcpOAuthUserKey } : {}),
       ...(mcpConfigService ? { mcpConfig: mcpConfigService } : {}),
       ...(mcpRegistrySecrets ? { mcpRegistrySecrets } : {}),
+      // W5-1 — the operator surface for `public_mcp_key_bindings`, without
+      // which the public MCP endpoint cannot be configured except by hand in
+      // psql. A fresh store per call so a graphPool that arrives later is
+      // picked up without a restart, matching `getGraphStore` above.
+      getPublicMcpBindingStore: () =>
+        graphPool ? createPublicMcpKeyBindingAdminStore(graphPool) : undefined,
+      // Explicit gate on those routes, independent of the `requireAuth` that
+      // sits in front of this mount.
+      operatorAuth,
     }),
   );
   console.log(
