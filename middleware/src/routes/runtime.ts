@@ -501,9 +501,13 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
           code: 'runtime.setup_field_invalid',
           message: `value for '${violation.field}' does not match the expected format`,
           field: violation.field,
-          // Only ever the manifest's own localized hint. When the manifest
-          // declared none, `hint` is absent and the UI renders its own
-          // localized copy — the API never invents user-facing prose.
+          // Only ever the manifest's own hint, resolved to ENGLISH — this
+          // process has no request locale, and guessing one would smuggle an
+          // untranslatable string through the API. It is the fallback for
+          // clients without a manifest; the web-ui resolves `pattern_hint`
+          // itself from `field`. When the manifest declared no hint, this is
+          // absent and the UI renders its own localized copy.
+          // See `setupFieldPattern.ts` → `PatternViolation.hint`.
           ...(violation.hint !== undefined ? { hint: violation.hint } : {}),
         });
         return;

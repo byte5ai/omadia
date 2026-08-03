@@ -15,19 +15,44 @@ import type { InstallSetupField } from '../../_lib/storeTypes';
  * coercion rules, same secret/url/integer/enum/boolean handling.
  */
 
+/**
+ * One server-side validation failure for one field, as the install API reports
+ * it (`details: [{ key, code, message }]`).
+ *
+ * The `code` is carried through — rather than flattening to the message string
+ * on arrival — so this component can tell a `pattern_mismatch` apart from the
+ * other codes. It has to: for a pattern mismatch the server's `message` IS the
+ * manifest's `pattern_hint`, resolved to English because the middleware has no
+ * request locale. We hold the whole localized map and render it under this very
+ * input, so we can do better. See `resolveSetupFieldHint`.
+ */
+export interface SetupFieldError {
+  code?: string;
+  message: string;
+}
+
 export function FieldRow({
   field,
   error,
   idPrefix = 'install-field',
 }: {
   field: InstallSetupField;
-  error?: string;
+  error?: SetupFieldError;
   idPrefix?: string;
 }): React.ReactElement {
   const t = useTranslations('store.setupForm');
   const locale = useLocale();
   const id = `${idPrefix}-${field.key}`;
   const patternHint = pickLocalized(field.pattern_hint, locale);
+  // OM-17 — a German operator must not read an English rejection. Only the
+  // pattern code is overridden: every other install error is either already a
+  // catalog string or a value-shape message the manifest cannot explain.
+  const errorText =
+    error === undefined
+      ? undefined
+      : error.code === 'pattern_mismatch' && patternHint
+        ? patternHint
+        : error.message;
   // OM-17 — honour the manifest placeholder. The hardcoded `••••••••` told the
   // operator only "this is masked", which is exactly the signal that reads as
   // "type your password here". A manifest that says what shape it wants gets to
@@ -195,9 +220,12 @@ export function FieldRow({
           {field.help}
         </p>
       ) : null}
-      {error ? (
-        <p className="font-mono-num mt-1 text-[11px] text-[color:var(--oxblood)]">
-          {error}
+      {errorText ? (
+        <p
+          role="alert"
+          className="font-mono-num mt-1 text-[11px] text-[color:var(--oxblood)]"
+        >
+          {errorText}
         </p>
       ) : null}
     </div>

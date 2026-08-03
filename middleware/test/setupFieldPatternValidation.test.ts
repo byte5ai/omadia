@@ -257,6 +257,27 @@ describe('OM-17 — compileSetupPattern safety screen', () => {
     assert.equal(violation?.field, 'k');
   });
 
+  it('`hint` is the ENGLISH entry, and that is the documented contract', async () => {
+    // The middleware has no request locale — nothing reads Accept-Language and
+    // `NEXT_LOCALE` never leaves the Next.js layer — so it must not pretend to
+    // pick one. English is the fallback for API clients with no manifest; a
+    // client that HOLDS the manifest resolves `pattern_hint` itself, keyed on
+    // `violation.field`. Pinned so nobody "fixes" this into a guessed locale.
+    const violation = await checkSetupFieldPattern(
+      {
+        key: 'gw_sa_client_email',
+        pattern: SA_EMAIL_PATTERN,
+        pattern_hint: {
+          en: 'expects …@….iam.gserviceaccount.com',
+          de: 'erwartet …@….iam.gserviceaccount.com',
+        },
+      },
+      'tester@customer-company.de',
+    );
+    assert.equal(violation?.field, 'gw_sa_client_email');
+    assert.equal(violation?.hint, 'expects …@….iam.gserviceaccount.com');
+  });
+
   it('omits `hint` when the manifest declared no pattern_hint', async () => {
     // The API must never invent user-facing prose; the web-ui owns that copy.
     const violation = await checkSetupFieldPattern(
@@ -359,8 +380,22 @@ const REDOS_ALREADY_BLOCKED = [
   '^(a{1,10}){1,10}b$',
 ];
 
-/** The two shapes this whole feature exists for. These MUST keep working. */
-const REALISTIC_PATTERNS = [SA_EMAIL_PATTERN, '^-----BEGIN [A-Z ]*PRIVATE KEY-----'];
+/**
+ * Every pattern in the FIRST real manifest written against this feature
+ * (byte5ai/omadia-google-workspace#1). These MUST keep working — the feature is
+ * worthless if the manifest it exists for cannot express what it needs.
+ *
+ * `^…\.[A-Za-z]{2,}$` is here because the allowlist used to refuse `{n,}` while
+ * accepting `+`, which is the same construct. The manifest author had to write
+ * `[A-Za-z][A-Za-z]+` — identical language, worse to read — to get it past the
+ * screen. See {@link screenPatternSource}.
+ */
+const REALISTIC_PATTERNS = [
+  SA_EMAIL_PATTERN,
+  '^-----BEGIN [A-Z ]*PRIVATE KEY-----',
+  '^[^@\\s]+@[^@\\s]+\\.[A-Za-z]{2,}$',
+  '^[^@\\s]+@[^@\\s]+\\.[A-Za-z]{2,63}$',
+];
 
 describe('OM-17 / F1 — allowlist grammar replaces the bypassable blacklist', () => {
   beforeEach(() => {
@@ -401,15 +436,155 @@ describe('OM-17 / F1 — allowlist grammar replaces the bypassable blacklist', (
     assert.notEqual(screenPatternSource('^(?=.*a+)b$'), null);
   });
 
-  it('rejects group nesting deeper than 2 and open-ended/large {n,m}', () => {
+  it('rejects group nesting deeper than 2 and oversized {n,m}', () => {
     assert.notEqual(screenPatternSource('^(((a)))b$'), null);
-    assert.notEqual(screenPatternSource('a{2,}'), null);
     assert.notEqual(screenPatternSource('a{1,5000}'), null);
     assert.equal(screenPatternSource('^\\d{3}-\\d{4}$'), null);
   });
 
   it('accepts UNQUANTIFIED alternation — a plain enum check is fine', () => {
     assert.equal(screenPatternSource('^(?:prod|dev|staging)$'), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F5 — the allowlist refused `{n,}` while accepting `+`, which IS `{1,}`
+// ---------------------------------------------------------------------------
+
+/**
+ * The rule bought no safety and only cost manifest authors: the very first
+ * realistic pattern written against this feature — an email TLD,
+ * `^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$` — was refused and had to ship as
+ * `[A-Za-z][A-Za-z]+`, which is the identical language spelled worse.
+ *
+ * Counted quantifiers are now screened by exactly the rules `*` and `+` go
+ * through: refused on a group containing alternation or another quantifier,
+ * accepted on a simple atom or character class, with a numeric cap on both
+ * bounds. The `REDOS_BYPASSES` table above is the other half of this change —
+ * every hostile shape there must still be rejected, and each of those shapes
+ * would also be rejected written as `{n,}` (see below).
+ */
+describe('OM-17 / F5 — `{n,}` is screened exactly like the `+` it is equal to', () => {
+  beforeEach(() => {
+    resetSetupPatternCache();
+  });
+
+  const ACCEPTED: ReadonlyArray<readonly [string, string]> = [
+    ['^[A-Za-z]{2,}$', 'open-ended counted repetition on a character class'],
+    ['^a{2,}$', 'open-ended counted repetition on a literal'],
+    ['^[A-Za-z]{2,63}$', 'the bounded form of the same thing'],
+    ['^\\d{4}$', 'an exact count'],
+    ['^[a-z]{0,}$', '`{0,}` — i.e. `*`'],
+    ['^[a-z]{2,}?$', 'the lazy form'],
+    ['^a{100}$', 'exactly at the counted-repetition cap'],
+    ['^a{100,}$', 'the cap applied to the MINIMUM of an open-ended form'],
+  ];
+
+  for (const [pattern, why] of ACCEPTED) {
+    it(`accepts ${pattern} (${why})`, () => {
+      assert.equal(
+        screenPatternSource(pattern),
+        null,
+        `${pattern} must be accepted — it is exactly what \`+\`/\`*\` express`,
+      );
+      assert.ok(compileSetupPattern(pattern, 'test') instanceof RegExp);
+    });
+  }
+
+  const REJECTED: ReadonlyArray<readonly [string, string]> = [
+    ['^a{101}$', 'one above the counted-repetition cap'],
+    ['^a{101,}$', 'the MINIMUM of an open-ended form is capped too — without '
+      + 'that, allowing `{n,}` would hand a manifest an unbounded knob'],
+    ['^a{1,101}$', 'upper bound above the cap'],
+    ['^a{100000,}$', 'an absurd open-ended minimum'],
+    // The hostile shapes from REDOS_BYPASSES, rewritten with `{n,}`. Allowing
+    // the counted spelling must not open a door the `+` spelling keeps shut.
+    ['^(a|a){1,}$', '`^(a|a)+$` in counted clothing — quantified alternation'],
+    ['^(a{1,})+$', '`^(a+)+$` in counted clothing — nested quantifier'],
+    ['^(a{1,}){1,}$', 'both halves counted'],
+    ['^((a{2,})){2,}$', '`^((a+))+$` in counted clothing — laundering by nesting'],
+    ['^(?:a|a){2,}$', 'non-capturing group does not launder it either'],
+    // No `.*` here on purpose — the counted quantifier must be the ONLY thing
+    // that trips the lookaround rule, otherwise the case proves nothing.
+    ['^(?=a{1,})b$', 'lookaround containing an open-ended counted repetition'],
+  ];
+
+  for (const [pattern, why] of REJECTED) {
+    it(`still rejects ${pattern} (${why})`, () => {
+      assert.notEqual(
+        screenPatternSource(pattern),
+        null,
+        `${pattern} was accepted by the screen`,
+      );
+      assert.equal(compileSetupPattern(pattern, 'test'), null);
+    });
+  }
+
+  it('an accepted `{n,}` pattern MATCHES correctly end to end', async () => {
+    // Compiling is not the bar — the pattern has to do its job. This is the
+    // literal OM-17 confusion, on the field the real manifest declares with
+    // `{2,}`: a plausible-looking address must pass and a password must not.
+    const field = {
+      key: 'gw_impersonated_user',
+      pattern: '^[^@\\s]+@[^@\\s]+\\.[A-Za-z]{2,}$',
+    };
+    assert.equal(
+      await checkSetupFieldPattern(field, 'tester@customer-company.de'),
+      null,
+    );
+    assert.equal(await checkSetupFieldPattern(field, 'admin@byte5.io'), null);
+    // `{2,}` really is open-ended: a long TLD must pass, where `{2}` would not.
+    assert.equal(
+      await checkSetupFieldPattern(field, 'ops@example.technology'),
+      null,
+    );
+    // …and it really is a MINIMUM of two: a 1-char TLD must fail.
+    assert.equal(
+      (await checkSetupFieldPattern(field, 'ops@example.x'))?.field,
+      'gw_impersonated_user',
+    );
+    // What the tester actually typed into a field like this.
+    assert.equal(
+      (await checkSetupFieldPattern(field, 'hunter2'))?.field,
+      'gw_impersonated_user',
+    );
+  });
+
+  it('the bounded `{2,63}` form matches the same way, and enforces its cap', async () => {
+    const field = { key: 'email', pattern: '^[^@\\s]+@[^@\\s]+\\.[A-Za-z]{2,63}$' };
+    assert.equal(await checkSetupFieldPattern(field, 'a@b.de'), null);
+    assert.equal(
+      (await checkSetupFieldPattern(field, `a@b.${'x'.repeat(64)}`))?.field,
+      'email',
+    );
+  });
+
+  it('a whole realistic manifest field set loads with every pattern intact', async () => {
+    // Mirrors the field set of the first real manifest written against this
+    // feature. Inlined rather than read from that repo: the assertion is about
+    // OUR screen, and a test must not depend on a sibling checkout existing.
+    const plugin = adaptManifestV1({
+      schema_version: '1',
+      identity: { id: 'gw', name: 'Google Workspace', version: '1.0.0' },
+      setup: {
+        fields: REALISTIC_PATTERNS.map((pattern, idx) => ({
+          key: `f${String(idx)}`,
+          type: 'secret',
+          pattern,
+          pattern_hint: { en: 'en hint', de: 'de hint' },
+        })),
+      },
+    });
+    assert.equal(plugin?.setup_fields.length, REALISTIC_PATTERNS.length);
+    for (const f of plugin?.setup_fields ?? []) {
+      assert.equal(
+        f.pattern_unavailable,
+        undefined,
+        `${String(f.pattern)} came back pattern_unavailable`,
+      );
+      assert.ok(f.pattern, `${f.key} lost its pattern`);
+    }
+    assert.deepEqual(getPatternProblems(), []);
   });
 });
 

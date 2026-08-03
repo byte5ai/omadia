@@ -35,8 +35,10 @@
  *   (b) ALLOWLIST GRAMMAR — {@link screenPatternSource} parses the pattern
  *       source and accepts only shapes that cannot blow up: no backreferences,
  *       no quantifier applied to a group that contains alternation or another
- *       quantifier, no quantified lookaround, bounded group nesting, and no
- *       open-ended or huge counted repetition. Applied at manifest LOAD time.
+ *       quantifier, no quantified lookaround, bounded group nesting, and a cap
+ *       on how large a counted repetition may be. Applied at manifest LOAD
+ *       time. Counted repetition (`{n}` / `{n,}` / `{n,m}`) is governed by
+ *       exactly the same rules as `*` and `+` — see {@link checkCountedBounds}.
  *
  * (b) is deliberately conservative and WILL reject legitimate-looking patterns
  * (`^[a-z]+(-[a-z]+)*$` is a real catastrophic-backtracking shape even though a
@@ -90,7 +92,23 @@ export const PATTERN_MATCH_BUDGET_MS = 50;
 /** Deepest group nesting the allowlist accepts (root counts as depth 0). */
 const MAX_GROUP_DEPTH = 2;
 
-/** Largest explicit repetition count the allowlist accepts. */
+/**
+ * Largest explicit repetition count the allowlist accepts, applied to BOTH
+ * bounds of a counted quantifier (`{n}`, `{n,}`, `{n,m}`).
+ *
+ * This is defence in depth, not the safety floor. Measured on node 22:
+ * `^[a-z]{1,100000}[a-z]{1,100000}$` against an 8191-char non-matching subject
+ * takes 71 ms, versus 39 ms for `^[a-z]+[a-z]+$` — the same polynomial class as
+ * the `+` form the allowlist has always accepted, not a new one. (V8 compiles
+ * counted repetition with a counter rather than unrolling it, so a huge bound
+ * is not a compile-time blowup either: `^a{100000,}$` compiles AND matches a
+ * 100k subject in 0.43 ms.) The load-bearing bound is the 50 ms worker budget.
+ *
+ * The cap is kept because it is free and it keeps an untrusted manifest from
+ * naming an arbitrary number, and it is kept at 100 rather than raised because
+ * 100 covers every credential shape this feature exists for: DNS label ≤ 63,
+ * TLD 2-63, SHA-256 hex 64, UUID segments, PIN/OTP lengths.
+ */
 const MAX_COUNTED_REPETITION = 100;
 
 /** How long to wait for a freshly spawned worker to come online before giving
@@ -106,6 +124,8 @@ interface QuantifierToken {
   readonly length: number;
   /** True for `{n}` / `{n,}` / `{n,m}` — the counted forms. */
   readonly counted: boolean;
+  /** Lower bound for a counted form. */
+  readonly min?: number;
   /** Upper bound for a counted form; `undefined` means open-ended (`{n,}`). */
   readonly max?: number;
 }
@@ -133,15 +153,26 @@ function parseQuantifier(src: string, i: number): QuantifierToken | null {
       ? undefined
       : Number(maxRaw);
   return max === undefined
-    ? { length, counted: true }
-    : { length, counted: true, max };
+    ? { length, counted: true, min }
+    : { length, counted: true, min, max };
 }
 
+/**
+ * Size check for a counted quantifier. SHAPE is not this function's business:
+ * `{n,}` is exactly `{1,}`-style open-ended repetition, i.e. the same thing `+`
+ * and `*` express, and it is screened by the same group-content rules those go
+ * through (see the `)` branch of {@link screenPatternSource}). Refusing `{n,}`
+ * while accepting `+` bought no safety at all — it only forced manifest authors
+ * to write `[A-Za-z][A-Za-z]+` where they meant `[A-Za-z]{2,}`, which is the
+ * identical language spelled worse. All that is left here is the numeric cap.
+ *
+ * Both bounds are capped. For `{n,}` the only number an author supplies is the
+ * MINIMUM, so leaving `min` unchecked would have handed an untrusted manifest
+ * an unbounded knob the moment `{n,}` became legal.
+ */
 function checkCountedBounds(q: QuantifierToken): string | null {
-  if (q.max === undefined) {
-    return 'open-ended counted repetition `{n,}` is not allowed';
-  }
-  if (q.max > MAX_COUNTED_REPETITION) {
+  const largest = Math.max(q.min ?? 0, q.max ?? 0);
+  if (largest > MAX_COUNTED_REPETITION) {
     return `counted repetition above ${MAX_COUNTED_REPETITION} is not allowed`;
   }
   return null;
@@ -166,10 +197,17 @@ interface GroupFrame {
  *   - lookaround containing a quantifier     — same blowup, hidden behind `(?=)`
  *   - group nesting > 2                      — bounds what the two rules above
  *                                              have to reason about
- *   - `{n,}` / `{n,m}` with a huge m         — bounded but arbitrarily large work
+ *   - a counted repetition above 100         — see {@link MAX_COUNTED_REPETITION}
  *
  * Alternation and quantifiers are PROPAGATED to the enclosing frame on close,
  * so wrapping a hostile shape in another group cannot launder it.
+ *
+ * The rules deliberately do NOT distinguish quantifier SPELLINGS. `+`, `*`,
+ * `{2,}` and `{2,63}` are all "a quantifier": each is refused on a group that
+ * contains alternation or another quantifier, and each is accepted on a simple
+ * atom or character class. An earlier revision refused `{n,}` outright while
+ * accepting `+` — logically the same construct — which bought no safety and
+ * made `^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$` unwritable.
  */
 export function screenPatternSource(source: string): string | null {
   const stack: GroupFrame[] = [
@@ -599,12 +637,28 @@ export interface PatternViolation {
   /** The setup-field key that failed. */
   field: string;
   /**
-   * The manifest's own explanation of the expected shape, when it declared one.
+   * The manifest's own explanation of the expected shape, when it declared one,
+   * resolved to ENGLISH.
    *
    * DELIBERATELY OPTIONAL and never server-generated: the web-ui owns all
    * user-facing copy (`messages/{en,de}.json`) and renders its own localized
    * fallback when this is absent. A generated English or German sentence here
    * would be an untranslatable string smuggled in through the API.
+   *
+   * WHY ENGLISH, ALWAYS — and why that is not a localization bug. The middleware
+   * has no notion of a request locale: nothing reads `Accept-Language`, no
+   * locale cookie reaches it, and the web-ui's `NEXT_LOCALE` never leaves the
+   * Next.js layer. Manufacturing one just for this field would be the same
+   * "untranslatable string smuggled in through the API" mistake in a different
+   * costume — the server would be picking a language for a client it cannot see.
+   *
+   * So this stays the documented fallback for API clients that have no manifest
+   * of their own (curl, the install CLI, third-party integrations). Anything
+   * that HOLDS the manifest — i.e. the web-ui, which renders
+   * `field.pattern_hint` next to the input already — must resolve the localized
+   * map itself, keyed on {@link PatternViolation.field}, and use this only when
+   * the key matches no field it knows about. See
+   * `web-ui/app/_lib/setupFieldPattern.ts` → `resolveSetupFieldHint`.
    */
   hint?: string;
 }
@@ -613,6 +667,10 @@ export interface PatternViolation {
  * Pick the best hint string out of a `{ locale: text }` map. Mirrors the
  * web-ui's `pickLocalized`: preferred locale, then `en`, then `de`, then
  * anything. Kept local so this module stays dependency-free.
+ *
+ * `locale` exists for callers that genuinely have one. The middleware does not
+ * (see {@link PatternViolation.hint}), so every production call resolves to
+ * English by default and the CLIENT does the localized pick.
  */
 export function pickPatternHint(
   map: Record<string, string> | undefined,
@@ -648,12 +706,13 @@ export async function checkSetupFieldPattern(
   field: PatternCheckableField,
   value: string,
   context = field.key,
-  locale = 'en',
 ): Promise<PatternViolation | null> {
   if (!field.pattern) return null;
   if (value.length === 0) return null;
 
-  const hint = pickPatternHint(field.pattern_hint, locale);
+  // English on purpose, and no `locale` parameter to imply otherwise: there is
+  // no request locale on this side of the wire. See `PatternViolation.hint`.
+  const hint = pickPatternHint(field.pattern_hint);
   const violation: PatternViolation = hint
     ? { field: field.key, hint }
     : { field: field.key };
