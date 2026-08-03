@@ -25,6 +25,7 @@
  * and has been replaced. See the server module header for the full rationale.
  */
 
+import { pickLocalized } from './localized';
 import type { PluginSetupField } from './storeTypes';
 
 /** Mirrors the server's `MAX_PATTERN_SOURCE_LENGTH`. */
@@ -42,6 +43,7 @@ const MAX_COUNTED_REPETITION = 100;
 interface QuantifierToken {
   readonly length: number;
   readonly counted: boolean;
+  readonly min?: number;
   readonly max?: number;
 }
 
@@ -65,13 +67,18 @@ function parseQuantifier(src: string, i: number): QuantifierToken | null {
       ? undefined
       : Number(maxRaw);
   return max === undefined
-    ? { length, counted: true }
-    : { length, counted: true, max };
+    ? { length, counted: true, min }
+    : { length, counted: true, min, max };
 }
 
+/**
+ * Size cap only — shape is the group-content rules' job, and they treat `{n,}`
+ * exactly like the `+` it is equivalent to. Both bounds are capped because for
+ * `{n,}` the minimum is the only number the manifest supplies.
+ */
 function checkCountedBounds(q: QuantifierToken): string | null {
-  if (q.max === undefined) return 'open-ended counted repetition';
-  if (q.max > MAX_COUNTED_REPETITION) return 'counted repetition too large';
+  const largest = Math.max(q.min ?? 0, q.max ?? 0);
+  if (largest > MAX_COUNTED_REPETITION) return 'counted repetition too large';
   return null;
 }
 
@@ -303,4 +310,51 @@ export function violatesSetupPattern(
   if (!regex) return false;
   regex.lastIndex = 0;
   return !regex.test(value);
+}
+
+// ---------------------------------------------------------------------------
+// Localizing the server's pattern rejection
+// ---------------------------------------------------------------------------
+
+/** The subset of a setup field the hint resolution needs. Structurally shared by
+ *  `PluginSetupField` (post-install editor) and `InstallSetupField` (wizard). */
+interface HintableField {
+  key: string;
+  pattern_hint?: Record<string, string> | undefined;
+}
+
+/**
+ * Resolve the operator-facing text for a server-side pattern rejection, in the
+ * ACTIVE locale.
+ *
+ * WHY THIS EXISTS. The middleware has no request locale — nothing there reads
+ * `Accept-Language` and `NEXT_LOCALE` never leaves the Next.js layer — so its
+ * `hint` is always the English entry of the manifest's `pattern_hint` map. A
+ * German operator hitting the server check (install wizard, an API client, any
+ * route where the client-side check is bypassed) got an English sentence.
+ * "English field labels and help texts in a German UI" was itself one of the
+ * named contributing factors of OM-17, so shipping the OM-17 fix that way would
+ * have been an own goal.
+ *
+ * The fix needs no API change: we are holding the whole `{ locale: text }` map
+ * already — the editor and the wizard both render it under the input — so we
+ * pick from it ourselves, keyed on the `field`/`key` the server named. The
+ * server's English `hint` stays the fallback for the one case where that cannot
+ * work: a key matching no field this client knows about.
+ *
+ * @param fields      the manifest setup fields this view is rendering
+ * @param fieldKey    the offending key as named by the server (may be unknown)
+ * @param serverHint  the server's English hint, used only as a fallback
+ * @param locale      the active UI locale
+ */
+export function resolveSetupFieldHint(
+  fields: ReadonlyArray<HintableField>,
+  fieldKey: string | undefined,
+  serverHint: string | undefined,
+  locale: string,
+): string | undefined {
+  const field = fieldKey
+    ? fields.find((f) => f.key === fieldKey)
+    : undefined;
+  return pickLocalized(field?.pattern_hint, locale) ?? serverHint;
 }
