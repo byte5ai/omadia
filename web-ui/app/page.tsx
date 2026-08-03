@@ -11,10 +11,11 @@ import {
   Store,
 } from 'lucide-react';
 
-import { getProviders, listStorePlugins } from './_lib/api';
+import { getCliBackends, getProviders, listStorePlugins } from './_lib/api';
 import { getMcpServerSummary, listOperatorAgents } from './_lib/agents';
 import { redirectIfUnauthorized } from './_lib/authRedirect';
 import { cn } from './_lib/cn';
+import { isInstalled, isReady } from './_lib/pluginCounts';
 import { DashboardOnboarding } from './_components/dashboard/DashboardOnboarding';
 
 /**
@@ -40,15 +41,19 @@ type Tone = 'ok' | 'warn' | 'down' | 'neutral';
 export default async function DashboardPage(): Promise<React.ReactElement> {
   const t = await getTranslations('dashboard');
 
-  const [provP, plugP, agentP, mcpP] = await Promise.allSettled([
+  const [provP, plugP, agentP, mcpP, cliP] = await Promise.allSettled([
     getProviders(),
     listStorePlugins(),
     listOperatorAgents(),
     getMcpServerSummary(),
+    // OM-01/12 — `loggedIn: 'yes'` is the only genuinely verified LLM signal
+    // besides a probed provider key, and onboarding ignored it entirely: a user
+    // logged into the Claude CLI was still told "Schritt 1: LLM verbinden".
+    getCliBackends(),
   ]);
 
   // 401 anywhere → re-login (redirect throws and escapes before render).
-  for (const r of [provP, plugP, agentP, mcpP]) {
+  for (const r of [provP, plugP, agentP, mcpP, cliP]) {
     if (r.status === 'rejected') await redirectIfUnauthorized(r.reason);
   }
 
@@ -56,30 +61,64 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   const plugins = plugP.status === 'fulfilled' ? plugP.value : null;
   const agents = agentP.status === 'fulfilled' ? agentP.value : null;
   const mcp = mcpP.status === 'fulfilled' ? mcpP.value : null;
+  const cliLoggedIn =
+    cliP.status === 'fulfilled'
+      ? cliP.value.backends.some((b) => b.loggedIn === 'yes')
+      : false;
 
   // Middleware is "connected" if any call came back at all — a transport
   // failure rejects every call with the same network error.
   const middlewareOk = providers !== null || plugins !== null || agents !== null;
 
-  const connected = providers?.providers.filter((p) => p.connected) ?? [];
-  const llmOk = connected.length > 0;
+  // OM-02/03/04: this tile used to read "VERBUNDEN · Aktiv: Anthropic" purely
+  // because a non-empty string sat in the vault — while every chat request
+  // failed with `invalid x-api-key`. "OK" now requires a provider whose key was
+  // actually probed successfully; a merely-stored key reads as a warning.
+  // (`connected` — "a key is on file" — deliberately has no consumer left on
+  // this page. Every surface here now reads `status`; see OM-01/12 below.)
+  const verified = providers?.providers.filter((p) => p.status === 'verified') ?? [];
+  const unverified =
+    providers?.providers.filter((p) => p.status === 'unverified') ?? [];
+  const rejected = providers?.providers.filter((p) => p.status === 'invalid') ?? [];
+  const llmOk = verified.length > 0;
   const activeAssignment =
     providers?.assignments.find((a) => a.installed) ??
     providers?.assignments[0];
   const activeLabel =
     providers?.providers.find(
-      (p) => p.id === activeAssignment?.provider && p.connected,
+      (p) => p.id === activeAssignment?.provider && p.status === 'verified',
     )?.label ??
-    connected[0]?.label ??
+    verified[0]?.label ??
     null;
+  // A rejected key is the most actionable signal, so it wins the detail line.
+  const llmDetail = ((): string => {
+    if (rejected.length > 0) return t('health.llm.invalid');
+    if (llmOk) {
+      const head = t('health.llm.connected', { count: verified.length });
+      const withActive = activeLabel
+        ? `${head} · ${t('health.llm.active', { name: activeLabel })}`
+        : head;
+      return unverified.length > 0
+        ? `${withActive} · ${t('health.llm.unverified', { count: unverified.length })}`
+        : withActive;
+    }
+    if (unverified.length > 0) {
+      return t('health.llm.unverified', { count: unverified.length });
+    }
+    return t('health.llm.none');
+  })();
+  // Any stored-but-unproven or rejected key degrades the tile to "warn" even
+  // when another provider verified — the operator needs to know.
+  const llmTone =
+    llmOk && rejected.length === 0 && unverified.length === 0 ? 'ok' : 'warn';
 
   const orchestratorCount = agents?.agents.length ?? 0;
-  const installedCount =
-    plugins?.items.filter(
-      (p) =>
-        p.install_state === 'installed' ||
-        p.install_state === 'update-available',
-    ).length ?? 0;
+  // OM-27 — one shared predicate for every plugin count in the app. This tile
+  // and the store's "Installiert" tab used to disagree because each carried its
+  // own inline filter (the store's omitted `update-available`).
+  const installedPlugins = (plugins?.items ?? []).filter(isInstalled);
+  const installedCount = installedPlugins.length;
+  const readyCount = installedPlugins.filter(isReady).length;
 
   const cards: HealthCardProps[] = [
     {
@@ -94,13 +133,9 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     },
     {
       title: t('health.llm.title'),
-      tone: !middlewareOk ? 'down' : llmOk ? 'ok' : 'warn',
-      status: llmOk ? t('health.ok') : t('health.warn'),
-      detail: llmOk
-        ? activeLabel
-          ? `${t('health.llm.connected', { count: connected.length })} · ${t('health.llm.active', { name: activeLabel })}`
-          : t('health.llm.connected', { count: connected.length })
-        : t('health.llm.none'),
+      tone: !middlewareOk ? 'down' : llmTone,
+      status: llmTone === 'ok' ? t('health.ok') : t('health.warn'),
+      detail: llmDetail,
       href: '/admin/providers',
       manage: t('health.manage'),
     },
@@ -117,12 +152,29 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     },
     {
       title: t('health.plugins.title'),
-      tone: !middlewareOk ? 'down' : installedCount > 0 ? 'ok' : 'neutral',
-      status: installedCount > 0 ? t('health.ok') : t('health.warn'),
+      tone: !middlewareOk
+        ? 'down'
+        : installedCount === 0
+          ? 'neutral'
+          : readyCount < installedCount
+            ? 'warn'
+            : 'ok',
+      status:
+        installedCount > 0 && readyCount === installedCount
+          ? t('health.ok')
+          : t('health.warn'),
+      // OM-16/OM-27 — "installed" alone hid the OM-16 failure mode: a plugin
+      // present in the registry with every credential emptied. Report the
+      // readiness split whenever it differs from the raw install count.
       detail:
-        installedCount > 0
-          ? t('health.plugins.installed', { count: installedCount })
-          : t('health.plugins.none'),
+        installedCount === 0
+          ? t('health.plugins.none')
+          : readyCount < installedCount
+            ? `${t('health.plugins.installed', { count: installedCount })} · ${t(
+                'health.plugins.ready',
+                { n: readyCount, total: installedCount },
+              )}`
+            : t('health.plugins.installed', { count: installedCount }),
       href: '/store',
       manage: t('health.manage'),
     },
@@ -177,7 +229,21 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
       </header>
 
       <div className="flex flex-col gap-12">
-        <DashboardOnboarding plugins={plugins?.items ?? null} llmConnected={llmOk} />
+        {/* OM-01/12 (Wave 5) — this deliberately switched FROM the looser "a
+            key is on file" test TO `verified`. Wave 1 left the loose test in
+            place so this wave could decide the semantics, and the decision is:
+            a step may only be ticked on a signal that was actually proved. The
+            loose test is the same one that rendered "VERBUNDEN" while every
+            request failed with `invalid x-api-key`; promoting that lie into a
+            checked-off step would make it more authoritative, not less.
+            The offline/air-gapped case is covered by `cliLoggedIn` — a locally
+            authenticated subscription CLI needs no network probe. */}
+        <DashboardOnboarding
+          plugins={plugins?.items ?? null}
+          llmVerified={verified.length > 0}
+          cliLoggedIn={cliLoggedIn}
+          hasInstalledPlugin={installedCount > 0}
+        />
 
         <section aria-labelledby="dash-quick-heading">
           <SectionHead

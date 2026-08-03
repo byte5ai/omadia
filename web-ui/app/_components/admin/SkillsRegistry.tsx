@@ -116,14 +116,18 @@ export function SkillsRegistry({
           {t('scopeHint')}
         </p>
       )}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-        <section className="flex flex-col gap-3">
-        <div className="flex gap-2">
+      {/* OM-30a: the left column used to be `minmax(0,1fr)`, which at the
+          desktop shell's 1100px window squeezed the search field to ~230px and
+          clipped its own placeholder. A 320px floor plus a filter row that
+          stacks below `sm` keeps the placeholder readable at every width. */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(320px,1fr)_minmax(0,1.4fr)]">
+        <section className="flex min-w-0 flex-col gap-3">
+        <div className="flex min-w-0 flex-col gap-2 sm:flex-row">
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t('search')}
-            className="w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-2 text-sm"
+            className="w-full min-w-0 flex-1 rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-2 text-sm"
           />
           <select
             value={verdictFilter}
@@ -161,7 +165,11 @@ export function SkillsRegistry({
                       : 'border-[color:var(--border)] hover:border-[color:var(--accent)]'
                   }`}
                 >
-                  <span className="truncate text-[color:var(--fg-strong)]">{s.name}</span>
+                  {/* OM-30b: a truncated id is unreadable and unrecoverable —
+                      the native tooltip gives the full name back. */}
+                  <span className="min-w-0 truncate text-[color:var(--fg-strong)]" title={s.name}>
+                    {s.name}
+                  </span>
                   <span className="flex shrink-0 items-center gap-1.5">
                     <SkillVerdictBadge severity={s.verdict?.severity ?? 'not_yet_scanned'} />
                     <span className="rounded-full border border-[color:var(--border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[color:var(--fg-muted)]">
@@ -253,9 +261,21 @@ export function SkillsRegistry({
       {importing && (
         <SkillImportModal
           onClose={() => setImporting(false)}
-          onImported={() => {
+          onImported={(result) => {
             setImporting(false);
-            void refresh();
+            // OM-25 — this used to discard the import result entirely and just
+            // refresh the list, so a skill that landed as "⚠ MARKIERT" was
+            // indistinguishable from a clean one until the operator happened to
+            // scroll to it. Select it instead: the editor opens on the freshly
+            // imported skill with its verdict badge and reason in view.
+            void refresh().then(() => {
+              const imported = result.skillId;
+              if (!imported) return;
+              void listSkills().then(({ skills: rows }) => {
+                const row = rows.find((s) => s.id === imported);
+                if (row) void select(row);
+              });
+            });
           }}
         />
       )}

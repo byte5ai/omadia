@@ -38,6 +38,7 @@ import { humanizeProviderError } from '../../../../_lib/providerErrorMessage';
 import { ChoiceCard } from '../../../../_components/ChoiceCard';
 
 import { BuilderMarkdown } from './BuilderMarkdown';
+import { isSendKey } from '../../../../_lib/composerKeys';
 
 type ChatItem =
   | { kind: 'message'; key: string; role: 'user' | 'assistant'; text: string; ts: number }
@@ -469,7 +470,7 @@ export function BuilderChatPane({
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (isSendKey(e)) {
         e.preventDefault();
         void onSend();
       }

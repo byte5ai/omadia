@@ -17,8 +17,14 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, KeyRound, Plug, Trash2 } from 'lucide-react';
-import { useTranslations } from 'next-intl';
+import {
+  CheckCircle2,
+  KeyRound,
+  Plug,
+  ShieldAlert,
+  Trash2,
+} from 'lucide-react';
+import { useLocale, useTranslations } from 'next-intl';
 
 import {
   ApiError,
@@ -28,6 +34,8 @@ import {
   patchInstalledSecrets,
   type SetupOption,
 } from '../../_lib/api';
+import { pickLocalized } from '../../_lib/localized';
+import { violatesSetupPattern } from '../../_lib/setupFieldPattern';
 import type { PluginSetupField } from '../../_lib/storeTypes';
 import { Button } from '@/app/_components/ui/Button';
 
@@ -57,6 +65,7 @@ export function CredentialsEditor({
   setupFields,
 }: CredentialsEditorProps): React.ReactElement {
   const t = useTranslations('store.credentials');
+  const locale = useLocale();
   const [storedKeys, setStoredKeys] = useState<Set<string> | null>(null);
   // Actual stored values for non-secret fields. Secrets stay server-side
   // and are absent here even when stored. Used to (a) display the
@@ -114,8 +123,29 @@ export function CredentialsEditor({
     (s) => (s.dirty && s.draft.length > 0) || s.pendingDelete,
   ).length;
 
+  /**
+   * OM-17 — keys whose pending draft violates the manifest `pattern`.
+   *
+   * Only DIRTY drafts are checked: a stored value that predates the pattern
+   * (or a non-secret value echoed back from `config_values`) must not
+   * retroactively block an unrelated edit. Mirrors the server, which also only
+   * validates the values in the incoming patch.
+   */
+  const invalidKeys = useMemo(() => {
+    const out = new Set<string>();
+    for (const f of setupFields) {
+      if (f.options_provider && f.multi) continue;
+      const s = fieldStates[f.key];
+      if (!s?.dirty || s.pendingDelete) continue;
+      if (violatesSetupPattern(f, s.draft)) out.add(f.key);
+    }
+    return out;
+  }, [setupFields, fieldStates]);
+
   const onSave = useCallback(async () => {
-    if (saving || dirtyCount === 0) return;
+    // The server rejects these too (that check is the load-bearing one); this
+    // just spares the operator a round trip and an all-or-nothing 400.
+    if (saving || dirtyCount === 0 || invalidKeys.size > 0) return;
     setSaving(true);
     setError(null);
     setSavedAt(null);
@@ -166,7 +196,7 @@ export function CredentialsEditor({
     } finally {
       setSaving(false);
     }
-  }, [saving, dirtyCount, setupFields, fieldStates, pluginId]);
+  }, [saving, dirtyCount, invalidKeys, setupFields, fieldStates, pluginId]);
 
   if (setupFields.length === 0) {
     return (
@@ -213,6 +243,13 @@ export function CredentialsEditor({
           // anything that wasn't already in `installed.config`. Secrets
           // never get a value here — server elides them.
           const storedValue = isSecret ? undefined : storedValues[field.key];
+          const isInvalid = invalidKeys.has(field.key);
+          // OM-17 — the manifest's own explanation of the expected shape. An
+          // OAuth field has no typeable value, so no shape to explain.
+          const patternHint =
+            field.type === 'oauth'
+              ? undefined
+              : pickLocalized(field.pattern_hint, locale);
           return (
             <li
               key={field.key}
@@ -255,6 +292,48 @@ export function CredentialsEditor({
                   <div className="mt-1 text-[11px] leading-relaxed text-[color:var(--faint-ink)]">
                     {field.help}
                   </div>
+                ) : null}
+                {/* OM-17 — THE single highest-value line in this file.
+                    A customer saw a masked input under an email field and
+                    entered their real Google account password; the system said
+                    "gespeichert". omadia never asks for an account password —
+                    every `secret` field wants a technical key from a provider
+                    console. This warning is unconditional and manifest-
+                    independent so it protects EVERY plugin, including ones
+                    whose manifests we do not control. */}
+                {field.type === 'secret' ? (
+                  <p className="mt-1.5 flex items-start gap-1.5 text-[11px] font-medium leading-relaxed text-[color:var(--warning)]">
+                    <ShieldAlert
+                      className="mt-px size-3.5 shrink-0"
+                      aria-hidden
+                    />
+                    <span>{t('noPasswordWarning')}</span>
+                  </p>
+                ) : null}
+                {patternHint ? (
+                  <div className="mt-1 text-[11px] leading-relaxed text-[color:var(--muted-ink)]">
+                    {patternHint}
+                  </div>
+                ) : null}
+                {/* OM-17 — the manifest declared a format check the server
+                    refused, so this field is NOT validated. Say so instead of
+                    rendering a field that merely looks checked. */}
+                {field.pattern_unavailable ? (
+                  <p className="mt-1 flex items-start gap-1.5 text-[11px] leading-relaxed text-[color:var(--warning)]">
+                    <ShieldAlert
+                      className="mt-px size-3.5 shrink-0"
+                      aria-hidden
+                    />
+                    <span>{t('patternUnavailable')}</span>
+                  </p>
+                ) : null}
+                {isInvalid ? (
+                  <p
+                    role="alert"
+                    className="mt-1 text-[11px] leading-relaxed text-[color:var(--danger)]"
+                  >
+                    {patternHint ?? t('patternMismatch')}
+                  </p>
                 ) : null}
               </div>
               <div className="flex flex-1 items-center gap-2">
@@ -327,18 +406,25 @@ export function CredentialsEditor({
                     const inputValue = state.dirty
                       ? state.draft
                       : (storedValue ?? '');
+                    // OM-17 — the manifest's `placeholder` was parsed
+                    // server-side and then thrown away here, overridden by
+                    // state-derived text. It is the cheapest way to show the
+                    // SHAPE of the expected value, so it now wins whenever
+                    // there is nothing more urgent to say (no pending delete,
+                    // nothing stored yet).
                     const placeholder = state.pendingDelete
                       ? t('pendingDelete')
                       : isStored
                         ? isSecret
                           ? t('storedRetypeToOverwrite')
                           : t('clearToDelete')
-                        : t('notSetYet');
+                        : (field.placeholder ?? t('notSetYet'));
                     return (
                       <input
                         type={isSecret ? 'password' : 'text'}
                         value={inputValue}
                         disabled={state.pendingDelete || saving}
+                        aria-invalid={isInvalid || undefined}
                         onChange={(e) =>
                           setFieldStates((prev) => ({
                             ...prev,
@@ -350,7 +436,11 @@ export function CredentialsEditor({
                           }))
                         }
                         placeholder={placeholder}
-                        className="min-w-0 flex-1 rounded-md border border-[color:var(--rule)] bg-[color:var(--bg)] px-3 py-2 text-[12px] text-[color:var(--ink)] placeholder:text-[color:var(--faint-ink)] focus:border-[color:var(--accent)] focus:outline-none disabled:opacity-50"
+                        className={`min-w-0 flex-1 rounded-md border bg-[color:var(--bg)] px-3 py-2 text-[12px] text-[color:var(--ink)] placeholder:text-[color:var(--faint-ink)] focus:outline-none disabled:opacity-50 ${
+                          isInvalid
+                            ? 'border-[color:var(--danger)] focus:border-[color:var(--danger)]'
+                            : 'border-[color:var(--rule)] focus:border-[color:var(--accent)]'
+                        }`}
                       />
                     );
                   })()
@@ -395,7 +485,7 @@ export function CredentialsEditor({
         <Button
           variant="primary"
           onClick={() => void onSave()}
-          disabled={saving || dirtyCount === 0}
+          disabled={saving || dirtyCount === 0 || invalidKeys.size > 0}
           busy={saving}
           busyLabel={
             dirtyCount > 0
@@ -670,7 +760,18 @@ function MultiselectField({
 function humanizeError(err: unknown): string {
   if (err instanceof ApiError) {
     try {
-      const body = JSON.parse(err.body) as { code?: string; message?: string };
+      const body = JSON.parse(err.body) as {
+        code?: string;
+        message?: string;
+        field?: string;
+        hint?: string;
+      };
+      // OM-17 — the server's field-level rejection. Prefer the manifest's own
+      // hint ("expects …@….iam.gserviceaccount.com") over the generic
+      // `code: message` line, which tells the operator nothing actionable.
+      if (body.code === 'runtime.setup_field_invalid' && body.hint) {
+        return body.field ? `${body.field}: ${body.hint}` : body.hint;
+      }
       if (body.code && body.message) return `${body.code}: ${body.message}`;
       if (body.message) return body.message;
     } catch {

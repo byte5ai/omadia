@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
   assignProvider,
   getProviders,
   patchSettings,
+  verifyProvider,
   ApiError,
   type AdminProvider,
   type ProviderAssignment,
@@ -24,6 +25,24 @@ import {
  */
 function providerKeyEnv(id: string): string {
   return `${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
+}
+
+/**
+ * Stable provider ordering, mirroring the server's comparator (OM-10b): keyed
+ * providers first, then by label, then by id. The server already sorts, but
+ * saving a key re-activates the plugin and re-registers its models, which used
+ * to bounce the provider the operator just configured to the bottom of the
+ * list — so the presentation order is pinned here too and never depends on the
+ * order the response happened to arrive in.
+ *
+ * Deliberately NOT `localeCompare`: server and client can resolve different
+ * collations, and a mismatch would break hydration (see `_components/Nav.tsx`).
+ */
+function compareProviders(a: AdminProvider, b: AdminProvider): number {
+  if (a.connected !== b.connected) return a.connected ? -1 : 1;
+  if (a.label !== b.label) return a.label < b.label ? -1 : 1;
+  if (a.id === b.id) return 0;
+  return a.id < b.id ? -1 : 1;
 }
 
 /** Pull the backend's `message` out of an ApiError JSON body when present. */
@@ -152,7 +171,7 @@ export function ProvidersPanel({
               {t('providers.heading')}
             </h2>
             <ul className="flex flex-col gap-3">
-              {state.data.providers.map((p) => (
+              {[...state.data.providers].sort(compareProviders).map((p) => (
                 <ProviderRow
                   key={p.id}
                   provider={p}
@@ -217,8 +236,28 @@ function ProviderRow({
   const [keyValue, setKeyValue] = useState('');
   const [saveStatus, setSaveStatus] = useState<Status>('idle');
   const [saveError, setSaveError] = useState<string | undefined>(undefined);
+  const [verifying, setVerifying] = useState(false);
   const envKey = providerKeyEnv(p.id);
   const inputId = `provider-key-${p.id}`;
+  // OM-11 — the CLI this provider needs is not on this server. `undefined`
+  // means a pre-OM-11 middleware that cannot tell us, so we assume present and
+  // keep the previous behaviour rather than disabling an action that works.
+  const cliMissing = p.toolLess && p.installed === false;
+
+  /** Probe the stored key and refresh the row. Swallowing a failure here is
+   *  deliberate: an unreachable probe leaves the status at `unverified`, which
+   *  is exactly the honest outcome — it must never be reported as a bad key. */
+  const runVerify = async (): Promise<void> => {
+    setVerifying(true);
+    try {
+      await verifyProvider(p.id);
+      await onReload();
+    } catch {
+      await onReload();
+    } finally {
+      setVerifying(false);
+    }
+  };
 
   const saveKey = async (): Promise<void> => {
     const value = keyValue.trim();
@@ -236,7 +275,10 @@ function ProviderRow({
       setSaveStatus('saved');
       setKeyValue('');
       setEditing(false);
-      await onReload();
+      // Probe the key the operator just pasted BEFORE reloading, so the row
+      // never flashes a stale verdict — and so a typo is caught here rather
+      // than surfacing later as an unexplained failure on every chat message.
+      await runVerify();
     } catch (err) {
       setSaveStatus('error');
       setSaveError(friendlyError(err));
@@ -277,26 +319,54 @@ function ProviderRow({
           </span>
         </span>
         <span className="flex items-center gap-3">
-          <span
-            className={[
-              'inline-flex items-center rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
-              p.connected
-                ? 'bg-[color:var(--success)]/10 text-[color:var(--success)]'
-                : 'bg-[color:var(--border)]/40 text-[color:var(--fg-muted)]',
-            ].join(' ')}
-          >
-            {p.connected ? t('providers.connected') : t('providers.notConnected')}
-          </span>
+          <ConnectionChip provider={p} t={t} />
+          {/* Explicit re-probe. Only offered where there is a credential to
+              probe — the CLI provider authenticates on the Subscriptions tab. */}
+          {!p.toolLess && p.status !== 'no_key' && (
+            <button
+              type="button"
+              onClick={() => void runVerify()}
+              disabled={verifying || saveStatus === 'saving'}
+              className="text-[13px] font-medium text-[color:var(--accent)] disabled:opacity-50"
+            >
+              {verifying ? t('providers.testing') : t('providers.testKey')}
+            </button>
+          )}
           {p.toolLess ? (
             // Subscription CLI: connect/manage via the in-app login on the
             // Subscriptions tab, not a vault key — switch tabs in place.
-            <button
-              type="button"
-              onClick={onSwitchToSubscriptions}
-              className="text-[13px] font-medium text-[color:var(--accent)]"
-            >
-              {(p.connected ? t('providers.manageCli') : t('providers.logIn'))} →
-            </button>
+            //
+            // OM-11: this used to offer "Anmelden" unconditionally, because the
+            // DTO carried only `connected`/`status` and no way to know whether
+            // the CLI is even on this server. Clicking it landed the operator on
+            // a tab that said "NICHT GEFUNDEN" with no action available. When
+            // the binary is missing the action is now disabled AND says why —
+            // an offer you cannot accept is worse than no offer.
+            // `installed === undefined` (pre-OM-11 middleware) counts as
+            // installed, preserving the old behaviour on older servers.
+            cliMissing ? (
+              <span className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled
+                  title={t('providers.cliNotInstalledReason')}
+                  className="cursor-not-allowed text-[13px] font-medium text-[color:var(--fg-muted)] opacity-60"
+                >
+                  {t('providers.logIn')} →
+                </button>
+                <span className="text-[12px] text-[color:var(--fg-muted)]">
+                  {t('providers.cliNotInstalledReason')}
+                </span>
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={onSwitchToSubscriptions}
+                className="text-[13px] font-medium text-[color:var(--accent)]"
+              >
+                {(p.connected ? t('providers.manageCli') : t('providers.logIn'))} →
+              </button>
+            )
           ) : (
             !editing &&
             (p.connected ? (
@@ -381,12 +451,78 @@ function ProviderRow({
         </div>
       )}
 
+      {/* The provider's own explanation for a rejected key — the single most
+          useful string on this page when chat is failing.
+          OM-09: contextual help, wired here first because a rejected key is the
+          state that generates most support requests and the product had NO help
+          affordance anywhere. */}
+      {p.status === 'invalid' && p.verifyError && (
+        <p className="text-[12px] text-[color:var(--danger)]">
+          {p.verifyError}{' '}
+          <a
+            href="/help"
+            className="underline underline-offset-2 text-[color:var(--accent)]"
+          >
+            {t('providers.helpLink')}
+          </a>
+        </p>
+      )}
+
       {/* removeKey runs while `editing` is false, so surface its failures here —
           otherwise a destructive remove that errors gives the operator no feedback. */}
       {!p.toolLess && !editing && saveError && (
         <p className="text-[12px] text-[color:var(--danger)]">{saveError}</p>
       )}
     </li>
+  );
+}
+
+/** Chip colours per Lume: text + edge only, never a filled state block. */
+const CHIP_CLASS: Record<AdminProvider['status'], string> = {
+  verified: 'border-[color:var(--success)]/40 text-[color:var(--success)]',
+  unverified: 'border-[color:var(--warning)]/40 text-[color:var(--warning)]',
+  invalid: 'border-[color:var(--danger)]/40 text-[color:var(--danger)]',
+  no_key: 'border-[color:var(--border)] text-[color:var(--fg-muted)]',
+};
+
+const CHIP_LABEL_KEY: Record<AdminProvider['status'], string> = {
+  verified: 'providers.verified',
+  unverified: 'providers.unverified',
+  invalid: 'providers.invalid',
+  no_key: 'providers.notConnected',
+};
+
+/**
+ * Four-state credential chip. The old two-state version showed "CONNECTED" for
+ * any non-empty vault string, which is what let a dead key look healthy — so
+ * "a key exists" and "the key works" are now visibly different states.
+ */
+function ConnectionChip({
+  provider: p,
+  t,
+}: {
+  provider: AdminProvider;
+  t: T;
+}): React.ReactElement {
+  const format = useFormatter();
+  return (
+    <span className="flex items-center gap-2">
+      <span
+        className={[
+          'inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
+          CHIP_CLASS[p.status],
+        ].join(' ')}
+      >
+        {t(CHIP_LABEL_KEY[p.status])}
+      </span>
+      {p.status === 'verified' && p.verifiedAt && (
+        <span className="text-[11px] text-[color:var(--fg-muted)]">
+          {t('providers.verifiedAt', {
+            time: format.relativeTime(new Date(p.verifiedAt)),
+          })}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -489,6 +625,14 @@ function AssignmentRow({
         </select>
       </div>
 
+      {/* OM-10: the copy is now present-tense, because `a.provider` is the
+          ALREADY-PERSISTED provider and the select above applies immediately —
+          there is no code path where the old conditional "if you switch to X"
+          phrasing was true. NOTE: on stock config the built-in `anthropic`
+          descriptor sets `requiresAvvDisclosure: false`, so this banner should
+          not render for Anthropic at all; the tester reported seeing it, which
+          means the render condition itself is worth reproducing separately.
+          The gate is deliberately left unchanged here. */}
       {showDisclosure && (
         <p className="rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-3 py-2 text-[12px] leading-[1.5] text-[color:var(--warning)]">
           {t('assignments.avvDisclosure', { provider: selectedProvider?.label ?? a.provider })}

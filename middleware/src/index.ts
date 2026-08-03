@@ -3177,6 +3177,9 @@ async function main(): Promise<void> {
       registry: installedRegistry,
       client: registryClient,
       pluginStatusRegistry,
+      // OM-16 — key-name-only vault access so the store can report whether an
+      // installed plugin is actually configured (never reads secret VALUES).
+      vault: secretVault,
       // Issue #453 — read-only code-scan verdict on the detail response
       // plus the operator ack endpoint. Lookup only, never scans on GET.
       verdicts: pluginVerdictLookup,
