@@ -209,6 +209,10 @@
           "title": "Embedding-Provider",
           "description": "Aktiven Embedding-Adapter im laufenden Betrieb wechseln — ohne Neustart. Zeigt Dimensions-Gate, gespeicherten Korpus und was ein Wechsel verwirft."
         },
+        "datasets": {
+          "title": "Datensätze",
+          "description": "CSV-Datensätze hochladen, das abgeleitete Schema und eine Zeilen-Vorschau ansehen und löschen. Jeder Upload wird vor der Ablage im Graph auf PII geprüft."
+        },
         "domains": {
           "title": "Domains",
           "description": "Registrierte Plugins nach Domain gruppiert ansehen (read-only)."
@@ -3798,6 +3802,50 @@
     "dbUrlRequiredError": "Postgres benötigt DATABASE_URL (Neon-KG/graphPool). Setze DATABASE_URL und starte neu, bevor du auf Postgres wechselst.",
     "forbiddenError": "Nicht berechtigt (403) — das Umschalten des Backends erfordert Admin-Rechte.",
     "noProviderError": "Kein Memory-Provider registriert (409) — die Auswahl kann nicht gespeichert werden."
+  },
+  "adminDatasets": {
+    "title": "Wissen · Datensätze",
+    "intro": "CSV hochladen, das abgeleitete Schema und eine Zeilen-Vorschau ansehen und löschen. Jeder Upload wird vor der Ablage im Knowledge-Graph auf PII geprüft.",
+    "loading": "lädt…",
+    "loadError": "Laden fehlgeschlagen: {message}",
+    "empty": "Noch keine Datensätze — lade eine CSV hoch, um zu starten.",
+    "errorByCode": "Anfrage fehlgeschlagen ({code}).",
+    "upload": {
+      "heading": "CSV hochladen",
+      "fileLabel": "CSV-Datei",
+      "nameLabel": "Name des Datensatzes",
+      "namePlaceholder": "Standard ist der Dateiname",
+      "submit": "Hochladen",
+      "uploading": "lädt hoch…",
+      "success": "{rows, plural, one {# Zeile} other {# Zeilen}} importiert.",
+      "privacyScan": "Privacy-Scan: {masked} von {scanned} Zellen maskiert.",
+      "truncation": "{cells, plural, one {# Zelle wurde} other {# Zellen wurden}} gekürzt in: {columns}."
+    },
+    "list": {
+      "heading": "Datensätze",
+      "colName": "Name",
+      "colRows": "Zeilen",
+      "colColumns": "Spalten",
+      "colCreated": "Erstellt",
+      "colActions": "Aktionen",
+      "delete": "Löschen",
+      "confirmDelete": "Löschen bestätigen",
+      "deleting": "löscht…",
+      "cancel": "Abbrechen"
+    },
+    "detail": {
+      "heading": "{name}",
+      "close": "Schließen",
+      "schemaHeading": "Schema",
+      "colColumn": "Spalte",
+      "colType": "Typ",
+      "colSample": "Beispiel",
+      "rowsHeading": "Zeilen-Vorschau",
+      "rowsShowing": "Zeige {from}–{to} von {total}",
+      "noRows": "Keine Zeilen.",
+      "prev": "← Zurück",
+      "next": "Weiter →"
+    }
   },
   "adminEmbeddingProvider": {
     "title": "Embeddings · Provider",

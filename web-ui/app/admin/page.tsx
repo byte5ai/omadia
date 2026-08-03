@@ -59,6 +59,8 @@ const GROUPS: readonly GroupDef[] = [
       { href: '/admin/memory-backend', key: 'memoryBackend' },
       // #440 follow-up — live embeddingClient@1 provider switch.
       { href: '/admin/embedding-provider', key: 'embeddingProvider' },
+      // #532 — admin UI for the #430 CSV-dataset ingestion path.
+      { href: '/admin/datasets', key: 'datasets' },
     ],
   },
   {

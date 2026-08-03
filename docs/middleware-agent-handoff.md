@@ -1646,17 +1646,21 @@ gekettet, weil `requires` beim Boot enforced wird): docs-RFC (diese PR)
 omadia-ui-Orchestrator-Consumer. Details + per-PR-Doc-Pflichten in §15
 des RFC.
 
-### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up)
+### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up) — ✅ ERLEDIGT (#532)
 
-Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckt
-absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete bleibt
+Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckte
+absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete blieb
 API-only (`POST/GET/DELETE /api/v1/datasets*`, siehe §3). #430's eigene
-Triage-Acceptance-Criteria verlangen aber genau diese UI; der Branch
-schließt das Issue deshalb NICHT, sondern "addresses" es — ein
-Folge-Issue für die Admin-UI-Seite (`web-ui/app/admin/datasets/` o.ä.,
-Upload-Dropzone + Schema-Tabelle + Zeilen-Preview + Delete-Bestätigung,
-Pattern analog zur bestehenden Package-Upload-Seite) ist offen zu
-erfassen.
+Triage-Acceptance-Criteria verlangten aber genau diese UI.
+
+Geschlossen durch #532: `web-ui/app/admin/datasets/page.tsx` (Upload +
+Schema-Tabelle + Zeilen-Preview mit Pagination + zweistufige
+Delete-Bestätigung), API-Client in `web-ui/app/_lib/api.ts`
+(`listDatasets`/`getDataset`/`getDatasetRows`/`uploadDataset`/`deleteDataset`),
+i18n-Namespace `adminDatasets` in `messages/{en,de}.json`, Card im
+`/admin`-Index unter der Knowledge-Gruppe. Der Upload surfacet die
+Privacy-Scan- und Truncation-Stats aus der Ingest-Pipeline. Component-Test:
+`web-ui/app/admin/datasets/__tests__/page.test.tsx`.
 
 ---
 
