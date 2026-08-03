@@ -768,6 +768,11 @@ async function validateValues(
           // The manifest's own hint when it declared one, otherwise the
           // pre-existing generic message (kept byte-identical so existing
           // install-flow assertions and operator muscle memory still hold).
+          //
+          // The hint is ENGLISH — this process has no request locale. The
+          // wizard's `FieldRow` re-resolves it from `field.pattern_hint` in the
+          // active locale, keyed on this entry's `code`, so a German operator
+          // reads German. See `setupFieldPattern.ts` → `PatternViolation.hint`.
           message:
             violation.hint ??
             `"${field.label}" entspricht nicht dem erwarteten Muster.`,

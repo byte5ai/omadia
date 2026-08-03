@@ -4,6 +4,7 @@ import {
   anchorPatternSource,
   isPatternUsable,
   nativePatternAttribute,
+  resolveSetupFieldHint,
   screenPatternSource,
   violatesSetupPattern,
 } from '../setupFieldPattern';
@@ -106,5 +107,123 @@ describe('F4 — anchoring agrees with the server and with HTML `pattern=`', () 
     expect(nativePatternAttribute('abc$')).toBeUndefined();
     expect(nativePatternAttribute('^(a|a)+$')).toBeUndefined();
     expect(nativePatternAttribute(undefined)).toBeUndefined();
+  });
+});
+
+/**
+ * F5 — the screen refused `{n,}` while accepting `+`, which IS `{1,}`.
+ *
+ * This half matters as much as the server's: when only the server accepted
+ * `{2,}`, the client would call the pattern unusable, emit no native
+ * `pattern=` attribute, and let `violatesSetupPattern` fail OPEN — the operator
+ * would type a bad value, see no error, hit Save, and get a 400 from a check
+ * the client had silently opted out of. Keep the two grammars identical.
+ */
+describe('F5 — counted repetition is screened exactly like `+` and `*`', () => {
+  const EMAIL_TLD = '^[^@\\s]+@[^@\\s]+\\.[A-Za-z]{2,}$';
+
+  it.each([
+    '^[A-Za-z]{2,}$',
+    '^[A-Za-z]{2,63}$',
+    '^a{2,}$',
+    '^[a-z]{0,}$',
+    '^a{100,}$',
+    EMAIL_TLD,
+  ])('accepts %s', (pattern) => {
+    expect(screenPatternSource(pattern)).toBeNull();
+    expect(isPatternUsable(pattern)).toBe(true);
+  });
+
+  it.each([
+    '^a{101}$',
+    '^a{101,}$',
+    '^a{1,101}$',
+    // The hostile shapes, respelled with `{n,}` — the counted spelling must not
+    // open a door the `+` spelling keeps shut.
+    '^(a|a){1,}$',
+    '^(a{1,})+$',
+    '^(a{1,}){1,}$',
+    '^(?:a|a){2,}$',
+  ])('still rejects %s', (pattern) => {
+    expect(screenPatternSource(pattern)).not.toBeNull();
+    expect(isPatternUsable(pattern)).toBe(false);
+  });
+
+  it('an accepted `{n,}` pattern MATCHES correctly, it does not merely compile', () => {
+    // Compiling is not the bar. A pattern that is accepted but fails open is
+    // worse than one that is refused, because nothing tells the operator.
+    expect(violatesSetupPattern({ pattern: EMAIL_TLD }, 'tester@customer-company.de')).toBe(false);
+    expect(violatesSetupPattern({ pattern: EMAIL_TLD }, 'ops@example.technology')).toBe(false);
+    // `{2,}` really is a minimum of two…
+    expect(violatesSetupPattern({ pattern: EMAIL_TLD }, 'ops@example.x')).toBe(true);
+    // …and this is the value the OM-17 tester actually typed.
+    expect(violatesSetupPattern({ pattern: EMAIL_TLD }, 'hunter2')).toBe(true);
+    // A usable pattern also reaches the browser as a native attribute.
+    expect(nativePatternAttribute(EMAIL_TLD)).toBe(EMAIL_TLD);
+  });
+});
+
+/**
+ * OM-17 follow-up — the server can only ever send an ENGLISH `pattern_hint`.
+ *
+ * The middleware has no request locale (nothing reads `Accept-Language`,
+ * `NEXT_LOCALE` never leaves the Next.js layer), so a German operator hitting
+ * the server check read an English sentence. "English field labels and help
+ * texts in a German UI" was itself a named contributing factor of OM-17.
+ */
+describe('resolveSetupFieldHint — the CLIENT owns the locale pick', () => {
+  const FIELDS = [
+    {
+      key: 'gw_sa_client_email',
+      pattern_hint: {
+        en: 'expects …@….iam.gserviceaccount.com',
+        de: 'erwartet …@….iam.gserviceaccount.com',
+      },
+    },
+  ];
+
+  it('prefers the German hint over the English one the server sent', () => {
+    expect(
+      resolveSetupFieldHint(
+        FIELDS,
+        'gw_sa_client_email',
+        'expects …@….iam.gserviceaccount.com',
+        'de',
+      ),
+    ).toBe('erwartet …@….iam.gserviceaccount.com');
+  });
+
+  it('returns the English hint for an English operator', () => {
+    expect(
+      resolveSetupFieldHint(FIELDS, 'gw_sa_client_email', 'ignored', 'en'),
+    ).toBe('expects …@….iam.gserviceaccount.com');
+  });
+
+  it('falls back to the server hint for a key it does not know', () => {
+    // A field the client never rendered (a manifest newer than this page).
+    // The English sentence beats no sentence at all.
+    expect(
+      resolveSetupFieldHint(FIELDS, 'some_other_key', 'server says this', 'de'),
+    ).toBe('server says this');
+    expect(
+      resolveSetupFieldHint(FIELDS, undefined, 'server says this', 'de'),
+    ).toBe('server says this');
+  });
+
+  it('returns undefined when neither side has a hint', () => {
+    expect(
+      resolveSetupFieldHint([{ key: 'k' }], 'k', undefined, 'de'),
+    ).toBeUndefined();
+  });
+
+  it('falls back across locales when the manifest omits the active one', () => {
+    expect(
+      resolveSetupFieldHint(
+        [{ key: 'k', pattern_hint: { en: 'only english' } }],
+        'k',
+        undefined,
+        'de',
+      ),
+    ).toBe('only english');
   });
 });

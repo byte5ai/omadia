@@ -36,7 +36,11 @@ import type {
 import { PostInstallNextSteps } from './PostInstallNextSteps';
 import { pickLocalized } from '../../_lib/localized';
 import { RequiresWizard } from './RequiresWizard';
-import { FieldRow, extractValues } from './setupForm';
+import {
+  FieldRow,
+  extractValues,
+  type SetupFieldError,
+} from './setupForm';
 import { Markdown } from '../Markdown';
 import { Button } from '@/app/_components/ui/Button';
 
@@ -93,8 +97,11 @@ export function InstallButton({
   const locale = useLocale();
   const setupGuideText = pickLocalized(setupGuide, locale);
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
+  // OM-17 — the whole validation entry, not just its `message`: `FieldRow`
+  // needs the `code` to recognise a `pattern_mismatch` and swap the server's
+  // English hint for the localized one out of the manifest.
   const [fieldErrors, setFieldErrors] = useState<
-    Record<string, string>
+    Record<string, SetupFieldError>
   >({});
 
   const drawerOpen =
@@ -314,7 +321,7 @@ export function InstallButton({
 
   function applyDetails(details: unknown): void {
     if (!Array.isArray(details)) return;
-    const next: Record<string, string> = {};
+    const next: Record<string, SetupFieldError> = {};
     for (const entry of details as InstallValidationError[]) {
       if (
         entry &&
@@ -322,7 +329,10 @@ export function InstallButton({
         typeof entry.key === 'string' &&
         typeof entry.message === 'string'
       ) {
-        next[entry.key] = entry.message;
+        next[entry.key] =
+          typeof entry.code === 'string'
+            ? { code: entry.code, message: entry.message }
+            : { message: entry.message };
       }
     }
     setFieldErrors(next);
@@ -611,7 +621,7 @@ function InstalledPanel({
 interface InstallDrawerProps {
   phase: Phase;
   pluginName: string;
-  fieldErrors: Record<string, string>;
+  fieldErrors: Record<string, SetupFieldError>;
   onClose: () => void;
   onSubmit: (values: Record<string, unknown>) => void | Promise<void>;
   /** Markdown setup guide rendered above the fields. */

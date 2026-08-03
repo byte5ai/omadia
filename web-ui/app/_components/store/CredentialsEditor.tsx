@@ -35,7 +35,10 @@ import {
   type SetupOption,
 } from '../../_lib/api';
 import { pickLocalized } from '../../_lib/localized';
-import { violatesSetupPattern } from '../../_lib/setupFieldPattern';
+import {
+  resolveSetupFieldHint,
+  violatesSetupPattern,
+} from '../../_lib/setupFieldPattern';
 import type { PluginSetupField } from '../../_lib/storeTypes';
 import { Button } from '@/app/_components/ui/Button';
 
@@ -192,11 +195,19 @@ export function CredentialsEditor({
       );
       setSavedAt(Date.now());
     } catch (err) {
-      setError(humanizeError(err));
+      setError(humanizeSecretsPatchError(err, setupFields, locale));
     } finally {
       setSaving(false);
     }
-  }, [saving, dirtyCount, invalidKeys, setupFields, fieldStates, pluginId]);
+  }, [
+    saving,
+    dirtyCount,
+    invalidKeys,
+    setupFields,
+    fieldStates,
+    pluginId,
+    locale,
+  ]);
 
   if (setupFields.length === 0) {
     return (
@@ -763,15 +774,7 @@ function humanizeError(err: unknown): string {
       const body = JSON.parse(err.body) as {
         code?: string;
         message?: string;
-        field?: string;
-        hint?: string;
       };
-      // OM-17 — the server's field-level rejection. Prefer the manifest's own
-      // hint ("expects …@….iam.gserviceaccount.com") over the generic
-      // `code: message` line, which tells the operator nothing actionable.
-      if (body.code === 'runtime.setup_field_invalid' && body.hint) {
-        return body.field ? `${body.field}: ${body.hint}` : body.hint;
-      }
       if (body.code && body.message) return `${body.code}: ${body.message}`;
       if (body.message) return body.message;
     } catch {
@@ -781,4 +784,48 @@ function humanizeError(err: unknown): string {
   }
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/**
+ * {@link humanizeError} plus the OM-17 field-level rejection, which only the
+ * secrets PATCH can return.
+ *
+ * Prefers the manifest's own hint ("expects …@….iam.gserviceaccount.com") over
+ * the generic `code: message` line, which tells the operator nothing
+ * actionable — and resolves it from OUR copy of `pattern_hint`, not from
+ * `body.hint`. The middleware has no request locale, so its hint is always
+ * English and a German operator would read an English sentence: exactly the
+ * English-in-a-German-UI confusion that was a named contributing factor of
+ * OM-17. `body.hint` remains the fallback for a key we do not know about.
+ *
+ * @param setupFields the manifest fields this editor renders — the source of
+ *   the localized `pattern_hint` map
+ * @param locale      the active UI locale
+ */
+function humanizeSecretsPatchError(
+  err: unknown,
+  setupFields: ReadonlyArray<PluginSetupField>,
+  locale: string,
+): string {
+  if (err instanceof ApiError) {
+    try {
+      const body = JSON.parse(err.body) as {
+        code?: string;
+        field?: string;
+        hint?: string;
+      };
+      if (body.code === 'runtime.setup_field_invalid') {
+        const hint = resolveSetupFieldHint(
+          setupFields,
+          body.field,
+          body.hint,
+          locale,
+        );
+        if (hint) return body.field ? `${body.field}: ${hint}` : hint;
+      }
+    } catch {
+      // fall through to the generic handling
+    }
+  }
+  return humanizeError(err);
 }
