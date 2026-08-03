@@ -190,6 +190,28 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Asserts that a list endpoint really returned an array under `key`.
+ *
+ * A 200 response whose body is the wrong shape used to sail straight through
+ * into the page, where the first `.filter()` / `.map()` threw *outside* the
+ * try/catch that was supposed to protect the load — turning a bad payload into
+ * an unrecoverable render crash instead of the page's own error card.
+ * Throwing an ApiError here keeps the failure inside the caller's catch.
+ *
+ * Deliberately hand-rolled: web-ui has no schema-validation dependency and
+ * this file already hand-rolls ApiError / maybeNavigateToLogin / cookie
+ * forwarding. Applied only to the list endpoints whose pages dereference the
+ * array immediately — not retrofitted across every call site.
+ */
+function expectArray<T>(value: unknown, path: string, key: string): T[] {
+  if (Array.isArray(value)) return value as T[];
+  throw new ApiError(
+    200,
+    `GET ${path}: malformed body — "${key}" is not an array`,
+  );
+}
+
 // -----------------------------------------------------------------------------
 // Admin settings — the .env-based config/vault overview (/api/v1/admin/settings)
 // -----------------------------------------------------------------------------
@@ -284,10 +306,34 @@ export interface AdminProviderModel {
   vision: boolean;
 }
 
+/**
+ * Four-state credential verdict from the middleware (OM-02/03/04):
+ *  - `no_key`     nothing stored
+ *  - `unverified` a key is stored, but no probe has ever proved it works
+ *  - `verified`   a probe against the provider's API succeeded
+ *  - `invalid`    the provider rejected the key (401/403)
+ *
+ * Only `verified` may ever be presented as a working provider. `unverified` is
+ * the state that used to be rendered as a green "connected" badge while every
+ * request failed.
+ */
+export type ProviderCredentialStatus =
+  | 'no_key'
+  | 'unverified'
+  | 'verified'
+  | 'invalid';
+
 export interface AdminProvider {
   id: string;
   label: string;
-  /** True when an API key for this provider is present in the vault. */
+  /** Credential verdict. Prefer this over `connected` everywhere. */
+  status: ProviderCredentialStatus;
+  /** ISO timestamp of the last successful probe (`verified` only). */
+  verifiedAt?: string;
+  /** User-facing rejection reason (`invalid` only). */
+  verifyError?: string;
+  /** Legacy: "a key is on file" — i.e. `status !== 'no_key'`. Retained for
+   *  backwards compatibility; it does NOT mean the key works. */
   connected: boolean;
   /** Data-protection hints for the UI (data-driven; defaulted server-side).
    *  `requiresAvvDisclosure`: show the Art. 28 DSGVO third-party disclosure.
@@ -297,6 +343,12 @@ export interface AdminProvider {
   /** Tool-less Shape-2 CLI provider — cannot drive a tool loop, so the UI
    *  disables it for tool-dependent plugins. */
   toolLess?: boolean;
+  /** OM-11 — is the host capability this provider needs actually present?
+   *  For a CLI-backed provider this is "the binary exists on this server";
+   *  key-based providers need no binary and report `true`. The UI must not
+   *  offer "Anmelden" for a CLI that isn't there. Absent on payloads from a
+   *  pre-OM-11 middleware — treat `undefined` as installed. */
+  installed?: boolean;
   models: AdminProviderModel[];
 }
 
@@ -340,6 +392,24 @@ export async function assignProvider(
   body: AssignProviderRequest,
 ): Promise<AssignProviderResponse> {
   return postJson<AssignProviderResponse>('/v1/admin/providers/assignment', body);
+}
+
+export interface ProviderVerification {
+  status: ProviderCredentialStatus;
+  verifiedAt?: string;
+  checkedAt?: string;
+  error?: string;
+}
+
+/** Force a live probe of a provider's stored key. This is the only providers
+ *  call that hits the vendor's API — the listing endpoint never does. */
+export async function verifyProvider(
+  providerId: string,
+): Promise<ProviderVerification> {
+  return postJson<ProviderVerification>(
+    `/v1/admin/providers/${encodeURIComponent(providerId)}/verify`,
+    {},
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -485,7 +555,16 @@ export async function listStorePlugins(
   if (query.search) params.set('search', query.search);
   if (query.category) params.set('category', query.category);
   const suffix = params.toString() ? `?${params.toString()}` : '';
-  return getJson<StoreListResponse>(`/v1/store/plugins${suffix}`);
+  const path = `/v1/store/plugins${suffix}`;
+  const resp = await getJson<StoreListResponse>(path);
+  return {
+    ...resp,
+    items: expectArray<StoreListResponse['items'][number]>(
+      resp?.items,
+      path,
+      'items',
+    ),
+  };
 }
 
 export async function getStorePlugin(id: string): Promise<StoreGetResponse> {
@@ -2306,7 +2385,16 @@ export interface RoutineResponse {
 }
 
 export async function listRoutines(): Promise<ListRoutinesResponse> {
-  return getJson<ListRoutinesResponse>('/v1/routines');
+  const resp = await getJson<ListRoutinesResponse>('/v1/routines');
+  const routines = expectArray<RoutineDto>(
+    resp?.routines,
+    '/v1/routines',
+    'routines',
+  );
+  return {
+    routines,
+    count: typeof resp?.count === 'number' ? resp.count : routines.length,
+  };
 }
 
 export async function setRoutineStatus(

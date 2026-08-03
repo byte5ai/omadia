@@ -12,6 +12,21 @@
  *                          endpoint (plugin id in the body, not the URL) avoids
  *                          the encoded-slash proxy 404 the runtime config route
  *                          hits from the browser.
+ * POST /:id/verify       → probe the stored key against the provider's API and
+ *                          record the verdict.
+ *
+ * CONNECTION STATUS (OM-02/03/04): "connected" used to mean nothing more than
+ * "the vault holds a non-empty string". A stale env-seeded key therefore
+ * rendered as a green badge while every chat turn failed with
+ * `invalid x-api-key`. The status is now a four-state verdict from
+ * `providerCredentialVerifier` — `no_key` / `unverified` / `verified` /
+ * `invalid`. `connected` is retained as `status !== 'no_key'` for
+ * backwards-compatible consumers.
+ *
+ * HARD CONTRACT: the GET handler NEVER makes a network call. It serves the
+ * cached verdict (or `unverified`), exactly like `detectCliBackends()` already
+ * does here. Probing on read would make the dashboard slow, rate-limitable and
+ * dependent on the provider being up.
  */
 import {
   legacyProviderApiKeyVaultKey,
@@ -27,6 +42,16 @@ import type { Request, Response } from 'express';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { detectCliBackends } from '../platform/cliBackendDetector.js';
+import {
+  decodeVerifiedRecord,
+  encodeVerifiedRecord,
+  getCachedVerification,
+  keyFingerprint,
+  primeVerification,
+  providerVerifiedAtVaultKey,
+  verifyProviderCredential,
+  type ProviderVerification,
+} from '../platform/providerCredentialVerifier.js';
 
 export interface AdminProvidersDeps {
   readonly installedRegistry: InstalledRegistry;
@@ -40,14 +65,21 @@ export interface AdminProvidersDeps {
       | {
           readonly label: string;
           readonly wireFormat?: string;
+          readonly baseURL?: string;
           readonly policy?: {
             readonly requiresAvvDisclosure?: boolean;
             readonly euHosted?: boolean;
+            readonly requiresApiKey?: boolean;
           };
         }
       | undefined;
   };
 }
+
+/** The subset of a catalog descriptor the credential probe needs. */
+type ProviderDescriptorView = NonNullable<
+  ReturnType<NonNullable<AdminProvidersDeps['llmProviderCatalog']>['get']>
+>;
 
 /**
  * LLM-consuming plugins whose provider/model is operator-selectable. The
@@ -111,31 +143,98 @@ function providerLabel(id: ProviderId): string {
   }
 }
 
-async function nonEmptySecret(
-  vault: SecretVault | undefined,
-  scope: string,
-  key: string,
-): Promise<boolean> {
-  if (!vault) return false;
-  const v = await vault.get(scope, key);
-  return typeof v === 'string' && v.trim().length > 0;
+interface StoredProviderKey {
+  /** The LLM-plugin vault scope the key was found in. Durable verification
+   *  records are written to (and read from) this same scope, so the two never
+   *  disagree about which scope owns the provider's state. */
+  readonly scope: string;
+  readonly apiKey: string;
 }
 
-/** A provider is "connected" if any LLM plugin scope holds its API key
- *  (canonical, or the legacy flat key for Anthropic). */
-async function isConnected(
+/** First LLM-plugin scope holding this provider's API key (canonical, or the
+ *  legacy flat key for Anthropic), or `undefined` if no scope has one. */
+async function findProviderKey(
   vault: SecretVault | undefined,
   provider: ProviderId,
-): Promise<boolean> {
+): Promise<StoredProviderKey | undefined> {
+  if (!vault) return undefined;
   const canonical = providerApiKeyVaultKey(provider);
   const legacy = legacyProviderApiKeyVaultKey(provider);
   for (const desc of LLM_PLUGINS) {
-    if (await nonEmptySecret(vault, desc.id, canonical)) return true;
-    if (legacy !== undefined && (await nonEmptySecret(vault, desc.id, legacy))) {
-      return true;
+    for (const key of legacy === undefined ? [canonical] : [canonical, legacy]) {
+      const v = await vault.get(desc.id, key);
+      if (typeof v === 'string' && v.trim().length > 0) {
+        return { scope: desc.id, apiKey: v.trim() };
+      }
     }
   }
-  return false;
+  return undefined;
+}
+
+/**
+ * The provider's credential verdict, WITHOUT touching the network:
+ *   - no key in any scope                       → `no_key`
+ *   - keyless provider (local/self-hosted)      → `verified`
+ *   - a fresh cached probe for THIS key         → that verdict
+ *   - a durable `verified_at` record for THIS key → `verified`
+ *   - otherwise                                 → `unverified`
+ *
+ * `unverified` is the honest default: a key exists, but nothing has ever proved
+ * it works. That is precisely the state the old boolean rendered as "connected".
+ */
+async function resolveStatus(
+  vault: SecretVault | undefined,
+  provider: ProviderId,
+  descriptor: ProviderDescriptorView | undefined,
+): Promise<ProviderVerification> {
+  // Local / self-hosted providers have no credential to reject.
+  if (descriptor?.policy?.requiresApiKey === false) {
+    return { status: 'verified' };
+  }
+  const found = await findProviderKey(vault, provider);
+  if (found === undefined) return { status: 'no_key' };
+
+  const cached = getCachedVerification(provider, found.apiKey);
+  if (cached !== undefined) return cached;
+
+  // Cold cache (fresh process). A durable record proves an earlier probe
+  // succeeded — but only if it was written for the key that is stored NOW.
+  const raw = await vault?.get(
+    found.scope,
+    providerVerifiedAtVaultKey(provider),
+  );
+  const verifiedAt = decodeVerifiedRecord(raw, found.apiKey);
+  if (verifiedAt !== undefined) {
+    const verification: ProviderVerification = {
+      status: 'verified',
+      verifiedAt,
+      checkedAt: verifiedAt,
+    };
+    primeVerification(provider, found.apiKey, verification);
+    return verification;
+  }
+  return { status: 'unverified' };
+}
+
+/**
+ * Stable provider ordering (OM-10b). `listModels()` returns providers in plugin
+ * ACTIVATION order, and `reactivate()` after a key save disposes + re-registers
+ * that plugin's models — moving the provider the operator just configured to the
+ * bottom of the list. Sort explicitly instead: usable providers first, then by
+ * label, then by id as the final tiebreaker.
+ *
+ * Deliberately NOT `localeCompare` — see `web-ui/app/_components/Nav.tsx`: the
+ * server and the client can resolve different collations, which makes the
+ * rendered order differ from the server order and trips React hydration.
+ */
+function compareProviders(
+  a: { connected: boolean; label: string; id: string },
+  b: { connected: boolean; label: string; id: string },
+): number {
+  if (a.connected !== b.connected) return a.connected ? -1 : 1;
+  if (a.label !== b.label) return a.label < b.label ? -1 : 1;
+  if (a.id === b.id) return 0;
+  return a.id < b.id ? -1 : 1;
 }
 
 function readStringConfig(
@@ -159,13 +258,44 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
       const cliSnap = await detectCliBackends().catch(() => undefined);
       const cliConnected = (cliId: string): boolean =>
         cliSnap?.backends.find((b) => b.id === cliId)?.loggedIn === 'yes';
-      const providers = await Promise.all(
+      // OM-11: "is the host binary this provider needs actually present?".
+      // Distinct from `connected` — a CLI that is absent can never be logged
+      // into, and the UI must not offer "Anmelden" as if it could. Detection
+      // failure is treated as "present" so a probe outage never disables a
+      // working action.
+      const cliInstalled = (cliId: string): boolean =>
+        cliSnap === undefined
+          ? true
+          : (cliSnap.backends.find((b) => b.id === cliId)?.installed ?? false);
+      const providerRows = await Promise.all(
         providerIds.map(async (id) => {
           const descriptor = deps.llmProviderCatalog?.get(id);
+          // #309: a CLI-backed provider is keyless — its "does it work" probe is
+          // the CLI login check above, not a credential probe.
+          const verification: ProviderVerification =
+            id === 'claude-cli'
+              ? cliConnected('claude')
+                ? { status: 'verified' }
+                : { status: 'no_key' }
+              : await resolveStatus(deps.vault, id, descriptor);
           return {
           id,
           label: descriptor?.label ?? providerLabel(id),
-          connected: id === 'claude-cli' ? cliConnected('claude') : await isConnected(deps.vault, id),
+          status: verification.status,
+          ...(verification.verifiedAt !== undefined
+            ? { verifiedAt: verification.verifiedAt }
+            : {}),
+          ...(verification.error !== undefined
+            ? { verifyError: verification.error }
+            : {}),
+          // Retained for backwards compatibility: "a key is on file". Callers
+          // that need "the key actually works" must read `status` instead.
+          connected: verification.status !== 'no_key',
+          // OM-11: the customer clicked "Anmelden →" on a provider whose CLI is
+          // not on this server and landed on a page with no possible action.
+          // The DTO carried no way to know that. Key-based providers need no
+          // host binary, so they are always `true`.
+          installed: id === 'claude-cli' ? cliInstalled('claude') : true,
           // Tool-less (Shape-2 CLI) providers can't drive a tool loop — the UI
           // uses this to disable them for tool-dependent plugins.
           toolLess: descriptor?.wireFormat === 'claude-cli',
@@ -185,6 +315,8 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           };
         }),
       );
+      // OM-10b: pin the order here rather than inheriting plugin activation order.
+      const providers = [...providerRows].sort(compareProviders);
 
       const assignments = LLM_PLUGINS.map((p) => {
         const installed = deps.installedRegistry.has(p.id);
@@ -211,6 +343,93 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
     } catch (err) {
       res.status(500).json({
         code: 'providers.read_failed',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  /**
+   * Force a live probe of a provider's stored key and record the verdict. This
+   * is the ONLY path in this router that touches the network — the operator
+   * asked for it explicitly, so latency and rate limits are acceptable here in a
+   * way they never are on the dashboard's read path.
+   *
+   * On success the verdict is also persisted to a vault sibling key so it
+   * survives a restart; on rejection that record is deleted, so a revoked key
+   * cannot come back as `verified` after a reboot.
+   */
+  router.post('/:providerId/verify', async (req: Request, res: Response) => {
+    const raw = (req.params as Record<string, string | string[] | undefined>)[
+      'providerId'
+    ];
+    const providerId = typeof raw === 'string' ? raw : '';
+    const known = new Set(listModels().map((m) => m.provider));
+    if (!known.has(providerId as ProviderId)) {
+      res.status(404).json({
+        code: 'providers.unknown_provider',
+        message: `'${providerId}' is not a registered provider`,
+      });
+      return;
+    }
+
+    try {
+      const descriptor = deps.llmProviderCatalog?.get(providerId);
+      const found = await findProviderKey(deps.vault, providerId as ProviderId);
+      if (found === undefined) {
+        // Keyless providers verify without a credential; everything else needs
+        // one before there is anything to probe.
+        if (descriptor?.policy?.requiresApiKey === false) {
+          res.json({ status: 'verified' } satisfies ProviderVerification);
+          return;
+        }
+        res.json({ status: 'no_key' } satisfies ProviderVerification);
+        return;
+      }
+
+      const verification = await verifyProviderCredential({
+        providerId,
+        apiKey: found.apiKey,
+        ...(descriptor?.wireFormat !== undefined
+          ? { wireFormat: descriptor.wireFormat }
+          : {}),
+        ...(descriptor?.baseURL !== undefined
+          ? { baseURL: descriptor.baseURL }
+          : {}),
+        ...(descriptor?.policy?.requiresApiKey !== undefined
+          ? { requiresApiKey: descriptor.policy.requiresApiKey }
+          : {}),
+        force: true,
+      });
+
+      // Durability. Written ONLY here and on a key save — never on a read: the
+      // vault is a single encrypted blob rewritten in full on every write.
+      if (deps.vault) {
+        const vaultKey = providerVerifiedAtVaultKey(providerId);
+        try {
+          if (verification.status === 'verified') {
+            await deps.vault.setMany(found.scope, {
+              [vaultKey]: encodeVerifiedRecord(
+                verification.verifiedAt ?? new Date().toISOString(),
+                keyFingerprint(found.apiKey),
+              ),
+            });
+          } else if (verification.status === 'invalid') {
+            await deps.vault.deleteKey(found.scope, vaultKey);
+          }
+        } catch (err) {
+          // The verdict itself is still valid and cached in memory — a vault
+          // write failure must not turn a successful probe into an error.
+          console.warn(
+            `[adminProviders] could not persist verification for ${providerId}:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+
+      res.json(verification);
+    } catch (err) {
+      res.status(500).json({
+        code: 'providers.verify_failed',
         message: err instanceof Error ? err.message : String(err),
       });
     }

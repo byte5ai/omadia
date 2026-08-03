@@ -268,9 +268,8 @@ function OutcomeBody({
         <div className="text-[12px]">
           <div className="font-medium">
             {t.rich('outcomeAppliedTitle', {
-              id: () => (
-                <span className="font-mono">{outcome.profile_id}</span>
-              ),
+              profileId: outcome.profile_id,
+              id: (chunks) => <span className="font-mono">{chunks}</span>,
             })}
           </div>
           <div className="mt-0.5 text-[11px]">
@@ -329,8 +328,7 @@ function OutcomeBody({
       ) : (
         <p className="text-[12px] leading-relaxed text-[color:var(--muted-ink)]">
           {t.rich('secretsHint', {
-            erroredTag: () => <code>errored</code>,
-            reactivateTag: () => <>&quot;Reactivate&quot;</>,
+            erroredTag: (chunks) => <code>{chunks}</code>,
           })}
         </p>
       )}
@@ -355,7 +353,8 @@ function ErrorBody({
         <div className="text-[12px]">
           <div className="font-medium">
             {t.rich('errorTitle', {
-              id: () => <span className="font-mono">{profileId}</span>,
+              profileId,
+              id: (chunks) => <span className="font-mono">{chunks}</span>,
             })}
           </div>
           <div className="mt-1 break-all text-[11px] font-mono">{message}</div>

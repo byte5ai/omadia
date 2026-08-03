@@ -80,6 +80,10 @@ interface PluginsDndProps {
  */
 export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
   const t = useTranslations('operatorAgents');
+  // OM-27 — the shared count vocabulary lives under `store.page.counts` so the
+  // store, the dashboard and this page phrase their three different numbers
+  // from one catalogue.
+  const tCounts = useTranslations('store.page.counts');
   const initialMap = useMemo(() => {
     const m = new Map<string, SelectedEntry>();
     for (const p of props.agent.plugins) {
@@ -298,6 +302,18 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
           {t('save')}
         </Button>
       </h4>
+      {/* OM-27 — these numbers count ATTACHMENT to this orchestrator, not
+          installation. The store tab and the dashboard tile count installed
+          plugins; spelling the difference out here stops the three from
+          reading as one inconsistent number. */}
+      <p className="mb-3 text-xs text-[color:var(--fg-muted)]">
+        {tCounts('attached', {
+          n: enabledOrdered.length + orphans.length,
+          agent: props.agent.name,
+        })}
+        {' · '}
+        {tCounts('available', { n: availableOrdered.length })}
+      </p>
       <DndContext
         sensors={sensors}
         collisionDetection={closestCorners}
@@ -307,7 +323,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
         <div className="grid gap-3 lg:grid-cols-2">
           <Column
             id={AVAILABLE_ID}
-            title={t('pluginsAvailable')}
+            title={t('pluginsAvailableToAttach')}
             count={availableOrdered.length}
             emptyLabel={t('pluginsAvailableEmpty')}
           >
@@ -335,7 +351,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
 
           <Column
             id={ENABLED_ID}
-            title={t('pluginsEnabled')}
+            title={t('pluginsAttachedHere')}
             count={enabledOrdered.length + orphans.length}
             emptyLabel={t('pluginsEnabledEmpty')}
           >

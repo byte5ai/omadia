@@ -104,15 +104,14 @@ export class FileInstalledRegistry implements InstalledRegistry {
     this.ensureLoaded();
     const current = this.agents.get(id);
     if (!current) return;
-    if (
-      !current.activation_failure_count &&
-      !current.last_activation_error &&
-      !current.last_activation_error_at &&
-      !current.unresolved_requires
-    ) {
-      return;
-    }
-    const next: InstalledAgent = { ...current };
+    // OM-16 — `last_activated_at` is stamped on EVERY success, so the previous
+    // "nothing to clear → skip the write" short-circuit no longer applies:
+    // `readiness.verified_at` is derived from this timestamp and a stale one
+    // would misreport when the plugin was last proven to work.
+    const next: InstalledAgent = {
+      ...current,
+      last_activated_at: new Date().toISOString(),
+    };
     delete next.activation_failure_count;
     delete next.last_activation_error;
     delete next.last_activation_error_at;

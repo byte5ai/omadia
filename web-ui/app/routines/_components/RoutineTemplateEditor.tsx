@@ -217,10 +217,11 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
 
       <p className="text-[12px] leading-relaxed text-[color:var(--fg-muted)]">
         {t.rich('description', {
-          schema: () => (
-            <code className="font-mono text-[11px]">
-              {`{ format, sections: [...] }`}
-            </code>
+          // Passed as a plain ICU value, not baked into the message: the
+          // literal contains braces, which ICU would parse as placeholders.
+          schemaShape: '{ format, sections: [...] }',
+          schema: (chunks) => (
+            <code className="font-mono text-[11px]">{chunks}</code>
           ),
         })}
       </p>

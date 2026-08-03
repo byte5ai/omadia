@@ -8,7 +8,7 @@ import {
   previewImportSkill,
   type SkillImportResult,
 } from '../../_lib/agentBuilder';
-import { ApiError } from '../../_lib/api';
+import { supportDetail } from '../../_lib/scanFailure';
 
 /**
  * Import a SKILL.md (paste or file) into the skills registry. Shows a dry-run
@@ -48,7 +48,7 @@ export function SkillImportModal({
     try {
       setPreview(await previewImportSkill({ raw, sourcePath }));
     } catch (err) {
-      setError(err instanceof ApiError ? err.body : String(err));
+      setError(supportDetail(err));
     } finally {
       setBusy(false);
     }
@@ -60,7 +60,7 @@ export function SkillImportModal({
     try {
       onImported(await importSkill({ raw, sourcePath }));
     } catch (err) {
-      setError(err instanceof ApiError ? err.body : String(err));
+      setError(supportDetail(err));
       setBusy(false);
     }
   }, [raw, sourcePath, onImported]);
@@ -128,10 +128,21 @@ export function SkillImportModal({
           </div>
         )}
 
+        {/* OM-26 — the raw API body is never the headline. `supportDetail`
+            has already stripped request ids and key-shaped tokens; what is
+            left sits behind a disclosure aimed at a support thread. */}
         {error && (
-          <p className="rounded-md bg-[color:var(--danger)]/10 px-2 py-1 text-xs text-[color:var(--danger)]">
-            {error}
-          </p>
+          <div className="rounded-md bg-[color:var(--danger)]/10 px-2 py-1 text-xs text-[color:var(--danger)]">
+            <p>{t('importFailed')}</p>
+            <details className="mt-1">
+              <summary className="cursor-pointer text-[color:var(--fg-muted)]">
+                {t('supportDetails')}
+              </summary>
+              <pre className="mt-1 whitespace-pre-wrap break-all text-[color:var(--fg-muted)]">
+                {error}
+              </pre>
+            </details>
+          </div>
         )}
 
         <div className="flex justify-end gap-2">

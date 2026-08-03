@@ -36,6 +36,7 @@ import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
 import { Markdown } from '../_components/Markdown';
 import { resetChatSession, steerActiveTurn } from '../_lib/api';
+import { isSendKey } from '../_lib/composerKeys';
 import {
   deriveTitle,
   newSessionId,
@@ -392,14 +393,17 @@ export default function ChatPage(): React.ReactElement {
     };
   }, [steerNotice]);
 
+  // OM-21/37: plain Enter sends, matching every other composer in the app.
+  // ⌘/Ctrl+Enter stays an accepted alias (it was the only documented shortcut
+  // here), Shift+Enter falls through to the browser's own newline, and an
+  // in-flight IME composition never sends — see `isSendKey`.
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-      event.preventDefault();
-      if (sending) {
-        void steer();
-      } else {
-        send();
-      }
+    if (!isSendKey(event)) return;
+    event.preventDefault();
+    if (sending) {
+      void steer();
+    } else {
+      send();
     }
   };
 
@@ -710,6 +714,12 @@ export default function ChatPage(): React.ReactElement {
               </Button>
             )}
           </div>
+          {/* OM-21/37: the send shortcut was documented only in the empty
+              state, so anyone past their first message had no way to learn it.
+              Keep it visible under the field. */}
+          <p className="mt-1 pl-11 text-[11px] text-[color:var(--fg-subtle)]">
+            {t('composerSendHint')}
+          </p>
         </div>
       </footer>
 

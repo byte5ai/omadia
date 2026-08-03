@@ -1,8 +1,11 @@
 'use client';
 
-import { useTranslations } from 'next-intl';
+import { ShieldAlert } from 'lucide-react';
+import { useLocale, useTranslations } from 'next-intl';
 
 import { cn } from '../../_lib/cn';
+import { pickLocalized } from '../../_lib/localized';
+import { nativePatternAttribute } from '../../_lib/setupFieldPattern';
 import type { InstallSetupField } from '../../_lib/storeTypes';
 
 /**
@@ -22,7 +25,14 @@ export function FieldRow({
   idPrefix?: string;
 }): React.ReactElement {
   const t = useTranslations('store.setupForm');
+  const locale = useLocale();
   const id = `${idPrefix}-${field.key}`;
+  const patternHint = pickLocalized(field.pattern_hint, locale);
+  // OM-17 — honour the manifest placeholder. The hardcoded `••••••••` told the
+  // operator only "this is masked", which is exactly the signal that reads as
+  // "type your password here". A manifest that says what shape it wants gets to
+  // say it; only the fallback stays masked.
+  const secretPlaceholder = field.placeholder ?? '••••••••';
   const common = cn(
     'w-full border bg-[color:var(--paper)] px-3 py-2 text-sm',
     'focus:outline-none focus:ring-1',
@@ -101,7 +111,9 @@ export function FieldRow({
             name={field.key}
             rows={6}
             required={field.required}
-            placeholder={field.type === 'secret' ? '••••••••' : undefined}
+            placeholder={
+              field.type === 'secret' ? secretPlaceholder : field.placeholder
+            }
             defaultValue={
               typeof field.default === 'string' ? field.default : ''
             }
@@ -121,12 +133,26 @@ export function FieldRow({
                   : 'text'
             }
             required={field.required}
+            // OM-17 — client-side mirror of the server's `pattern` check. The
+            // server is the load-bearing half (it owns the vault write); this
+            // makes the browser refuse the submit before the round trip.
+            //
+            // `nativePatternAttribute` (NOT `field.pattern`) because the browser
+            // implicitly anchors the attribute as `^(?:…)$`. For a HALF-anchored
+            // pattern that is stricter than what the server enforces, and it
+            // would block the submit of a perfectly valid value — e.g. the
+            // prefix check `^-----BEGIN [A-Z ]*PRIVATE KEY-----` against a real
+            // multi-line PEM block. In that case we emit no attribute and let
+            // the authority decide.
+            pattern={nativePatternAttribute(field.pattern)}
+            title={patternHint}
             placeholder={
-              field.type === 'url'
+              field.placeholder ??
+              (field.type === 'url'
                 ? 'https://…'
                 : field.type === 'secret'
-                  ? '••••••••'
-                  : undefined
+                  ? secretPlaceholder
+                  : undefined)
             }
             defaultValue={
               typeof field.default === 'string' ? field.default : ''
@@ -137,6 +163,32 @@ export function FieldRow({
           />
         )}
       </div>
+
+      {/* OM-17 — unconditional caution under EVERY secret input, in both
+          renderers. A customer typed their real Google account password into a
+          masked field that wanted a service-account private key, and the system
+          accepted it silently. omadia never asks for an account password. */}
+      {field.type === 'secret' ? (
+        <p className="mt-1.5 flex items-start gap-1.5 text-[11px] font-medium leading-relaxed text-[color:var(--warning)]">
+          <ShieldAlert className="mt-px size-3.5 shrink-0" aria-hidden />
+          <span>{t('noPasswordWarning')}</span>
+        </p>
+      ) : null}
+      {patternHint ? (
+        <p className="mt-1 text-[11px] leading-relaxed text-[color:var(--muted-ink)]">
+          {patternHint}
+        </p>
+      ) : null}
+      {/* OM-17 — the manifest asked for a format check and the server refused
+          the regex, so this field is going UNCHECKED. Fail-open is right for
+          the write; failing SILENT is what let a Google account password into a
+          private-key field in the first place. */}
+      {field.pattern_unavailable ? (
+        <p className="mt-1 flex items-start gap-1.5 text-[11px] leading-relaxed text-[color:var(--warning)]">
+          <ShieldAlert className="mt-px size-3.5 shrink-0" aria-hidden />
+          <span>{t('patternUnavailable')}</span>
+        </p>
+      ) : null}
 
       {field.help && field.type !== 'boolean' ? (
         <p className="mt-1 text-[11px] leading-relaxed text-[color:var(--faint-ink)]">
