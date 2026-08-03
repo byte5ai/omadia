@@ -35,9 +35,9 @@ import {
 
 const ROWS_PAGE_SIZE = 25;
 
-// Match the admin table idiom (app/admin/users, app/admin/dev-platform): a
-// bordered `overflow-x-auto` wrapper, a faint `bg-card/40` head, `px-4 py-3`
-// cells and subtle `border-t` row separators — no per-row hover fill.
+// Match the admin table idiom (app/admin/users, app/admin/mcp): a bordered
+// `overflow-x-auto` wrapper, a faint `bg-card/40` head, `px-4 py-3` cells and
+// subtle `border-t` row separators — no per-row hover fill.
 const TABLE_WRAP =
   'overflow-x-auto rounded-lg border border-[color:var(--border)]';
 const TH_CLS =
