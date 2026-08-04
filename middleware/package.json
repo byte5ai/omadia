@@ -38,7 +38,8 @@
     "smoke:package-roundtrip": "tsx scripts/smoke-package-roundtrip.ts",
     "setup:tigris-lifecycle": "tsx scripts/setup-tigris-lifecycle.ts",
     "pretest": "node scripts/check-node-version.mjs",
-    "test": "node --import tsx --test --test-reporter=spec 'test/**/*.test.ts'"
+    "test": "node --import tsx --test --test-reporter=spec 'test/**/*.test.ts'",
+    "test:pg": "node --import tsx --test --test-concurrency=1 --test-reporter=spec 'test/**/*.pg.test.ts'"
   },
   "engines": {
     "node": ">=22.13.0 <23"
