@@ -704,11 +704,19 @@ export interface KnowledgeGraph {
    * KnowledgeGraph boundary, never inside it.
    */
   ingestDataset(input: DatasetIngest): Promise<DatasetIngestResult>;
-  /** #430 — list datasets owned by the caller, most-recent first. */
+  /**
+   * #430 — list datasets owned by the caller, most-recent first.
+   * `limit` clamped to [1, 200] server-side (default 50); `offset` skips
+   * that many rows for pagination. Pair with {@link countDatasets} to render
+   * a "showing N of M" hint instead of silently truncating at the cap.
+   */
   listDatasets(opts: {
     ownerOmadiaUserId: string;
     limit?: number;
+    offset?: number;
   }): Promise<DatasetSummary[]>;
+  /** #430 — total datasets owned by the caller, ignoring limit/offset. */
+  countDatasets(opts: { ownerOmadiaUserId: string }): Promise<number>;
   /**
    * #430 — read one dataset's metadata + inferred schema. Null when
    * missing or the viewer doesn't own it (ACL mirrors `/api/v1/memory`:

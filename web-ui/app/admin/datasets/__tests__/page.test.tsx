@@ -10,10 +10,11 @@ import AdminDatasetsPage from '../page';
 
 /**
  * Coverage for /admin/datasets (issue #532):
- *   - lists the owner's datasets,
- *   - deletes only after the inline confirm step (two-click guard),
- *   - opens a detail view with the inferred schema + a row preview,
- *   - surfaces the mandatory privacy-scan stats after an upload.
+ *   - lists the owner's datasets (paginated),
+ *   - deletes only after the inline confirm step (two-click guard), and
+ *     reports a delete failure as a delete error (not a load error),
+ *   - opens a detail view with the inferred schema + a paginated row preview,
+ *   - surfaces the mandatory privacy-scan + truncation stats after an upload.
  */
 
 const {
@@ -53,7 +54,7 @@ function peopleDataset() {
     name: 'People',
     sourceFileName: 'people.csv',
     ownerOmadiaUserId: 'user-1',
-    rowCount: 2,
+    rowCount: 60,
     columns: [
       { name: 'name', type: 'string' as const, sample: 'Ada' },
       { name: 'age', type: 'number' as const, sample: '36' },
@@ -62,17 +63,30 @@ function peopleDataset() {
   };
 }
 
+/** A page-of-25 rows keyed on the requested offset, over a 60-row dataset — so
+ *  the prev/next controls and their offset arithmetic actually render. */
+function rowsPage(offset: number) {
+  return {
+    rows: Array.from({ length: Math.min(25, 60 - offset) }, (_, i) => ({
+      name: `person-${String(offset + i)}`,
+      age: offset + i,
+    })),
+    totalMatched: 60,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
-  mockListDatasets.mockResolvedValue([peopleDataset()]);
-  mockGetDataset.mockResolvedValue(peopleDataset());
-  mockGetDatasetRows.mockResolvedValue({
-    rows: [
-      { name: 'Ada', age: 36 },
-      { name: 'Alan', age: 41 },
-    ],
-    totalMatched: 2,
+  mockListDatasets.mockResolvedValue({
+    items: [peopleDataset()],
+    total: 1,
+    limit: 50,
+    offset: 0,
   });
+  mockGetDataset.mockResolvedValue(peopleDataset());
+  mockGetDatasetRows.mockImplementation((_id: string, opts?: { offset?: number }) =>
+    Promise.resolve(rowsPage(opts?.offset ?? 0)),
+  );
   mockDeleteDataset.mockResolvedValue(undefined);
 });
 
@@ -80,7 +94,7 @@ describe('AdminDatasetsPage', () => {
   it('lists datasets from the API', async () => {
     renderWithIntl(<AdminDatasetsPage />);
     expect(await screen.findByText('People')).toBeInTheDocument();
-    expect(mockListDatasets).toHaveBeenCalledOnce();
+    expect(mockListDatasets).toHaveBeenCalledWith({ limit: 50, offset: 0 });
   });
 
   it('requires a confirm click before deleting', async () => {
@@ -88,11 +102,38 @@ describe('AdminDatasetsPage', () => {
     renderWithIntl(<AdminDatasetsPage />);
     await screen.findByText('People');
 
-    await user.click(screen.getByRole('button', { name: /delete/i }));
+    await user.click(screen.getByRole('button', { name: /^delete people$/i }));
     expect(mockDeleteDataset).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole('button', { name: /confirm delete/i }));
+    await user.click(
+      screen.getByRole('button', { name: /confirm delete of people/i }),
+    );
     await waitFor(() => expect(mockDeleteDataset).toHaveBeenCalledWith('ds-1'));
+  });
+
+  it('reports a failed delete as a delete error and keeps the confirm armed', async () => {
+    const user = userEvent.setup();
+    mockDeleteDataset.mockRejectedValue(
+      new ApiError(
+        404,
+        'DELETE failed: 404',
+        JSON.stringify({ code: 'dataset.not_found' }),
+      ),
+    );
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('People');
+
+    await user.click(screen.getByRole('button', { name: /^delete people$/i }));
+    await user.click(
+      screen.getByRole('button', { name: /confirm delete of people/i }),
+    );
+
+    // Rendered via the dedicated delete-error key, not the load-error banner.
+    expect(await screen.findByText(/delete failed/i)).toBeInTheDocument();
+    // Confirm stays armed for a retry.
+    expect(
+      screen.getByRole('button', { name: /confirm delete of people/i }),
+    ).toBeInTheDocument();
   });
 
   it('opens the detail view with schema and row preview', async () => {
@@ -103,12 +144,35 @@ describe('AdminDatasetsPage', () => {
     await user.click(screen.getByRole('button', { name: 'People' }));
 
     await waitFor(() => expect(mockGetDataset).toHaveBeenCalledWith('ds-1'));
-    // Row preview is rendered ('Alan' is unique to the rows, not the schema sample).
-    expect(await screen.findByText('Alan')).toBeInTheDocument();
+    expect(await screen.findByText('person-0')).toBeInTheDocument();
     expect(mockGetDatasetRows).toHaveBeenCalledWith('ds-1', {
       limit: 25,
       offset: 0,
     });
+  });
+
+  it('pages the row preview forward with the right offset', async () => {
+    const user = userEvent.setup();
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('People');
+    await user.click(screen.getByRole('button', { name: 'People' }));
+    await screen.findByText('person-0');
+
+    // Both the list footer and the row preview have a "Next" — the list one is
+    // disabled (total 1), so page the enabled (row-preview) control.
+    const nextButtons = screen.getAllByRole('button', { name: /next/i });
+    const rowsNext = nextButtons.find(
+      (b) => !(b as HTMLButtonElement).disabled,
+    );
+    await user.click(rowsNext as HTMLElement);
+
+    await waitFor(() =>
+      expect(mockGetDatasetRows).toHaveBeenCalledWith('ds-1', {
+        limit: 25,
+        offset: 25,
+      }),
+    );
+    expect(await screen.findByText('person-25')).toBeInTheDocument();
   });
 
   it('surfaces the privacy-scan stats after an upload', async () => {
@@ -128,11 +192,33 @@ describe('AdminDatasetsPage', () => {
     await user.upload(input, file);
     await user.click(screen.getByRole('button', { name: /^upload$/i }));
 
-    await waitFor(() => expect(mockUploadDataset).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      // The name is auto-derived from the file name (nameTouched === false).
+      expect(mockUploadDataset).toHaveBeenCalledWith(file, 'people'),
+    );
     expect(await screen.findByText(/3 of 20 cells masked/i)).toBeInTheDocument();
   });
 
-  it('surfaces a friendly message from the {code} of a 422 upload error', async () => {
+  it('renders the truncation warning when cells were cut', async () => {
+    const user = userEvent.setup();
+    mockUploadDataset.mockResolvedValue({
+      dataset: { datasetId: 'ds-3', rowCount: 5, graphNodeId: 'n-3' },
+      privacyScan: { scannedCells: 20, maskedCells: 0 },
+      truncation: { truncatedCellCount: 2, truncatedColumns: ['bio'] },
+    });
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('People');
+
+    const file = new File(['name,bio\nAda,x\n'], 'people.csv', {
+      type: 'text/csv',
+    });
+    await user.upload(screen.getByLabelText(/csv file/i), file);
+    await user.click(screen.getByRole('button', { name: /^upload$/i }));
+
+    expect(await screen.findByText(/truncated in: bio/i)).toBeInTheDocument();
+  });
+
+  it('surfaces a friendly per-code message from a 422 upload error', async () => {
     const user = userEvent.setup();
     mockUploadDataset.mockRejectedValue(
       new ApiError(
@@ -147,17 +233,69 @@ describe('AdminDatasetsPage', () => {
     renderWithIntl(<AdminDatasetsPage />);
     await screen.findByText('People');
 
-    // A .csv passes the input's `accept` filter; the 422 is simulated by the
-    // mock, so the file's actual content is irrelevant.
     const file = new File(['x,y\n1,2\n'], 'bad.csv', { type: 'text/csv' });
     await user.upload(screen.getByLabelText(/csv file/i), file);
     await user.click(screen.getByRole('button', { name: /^upload$/i }));
 
     await waitFor(() => expect(mockUploadDataset).toHaveBeenCalledOnce());
-    // errorByCode: "Request failed ({code})." — the structured code, not the
-    // raw ApiError message, reaches the UI.
+    // The per-code catalog line, wrapped in the uploadError key.
     expect(
-      await screen.findByText(/dataset\.unsupported_type/),
+      await screen.findByText(/only csv files are supported/i),
     ).toBeInTheDocument();
+  });
+
+  it('paginates the dataset list and disables Prev on the first page', async () => {
+    const user = userEvent.setup();
+    mockListDatasets.mockResolvedValueOnce({
+      items: [peopleDataset()],
+      total: 60,
+      limit: 50,
+      offset: 0,
+    });
+    mockListDatasets.mockResolvedValueOnce({
+      items: [{ ...peopleDataset(), id: 'ds-2', name: 'Later' }],
+      total: 60,
+      limit: 50,
+      offset: 50,
+    });
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('People');
+
+    const footer = screen.getByText(/showing 1–1 of 60/i);
+    expect(footer).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /prev/i })).toBeDisabled();
+
+    await user.click(screen.getByRole('button', { name: /next/i }));
+    await waitFor(() =>
+      expect(mockListDatasets).toHaveBeenLastCalledWith({
+        limit: 50,
+        offset: 50,
+      }),
+    );
+  });
+
+  it('shows the empty state', async () => {
+    mockListDatasets.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+    });
+    renderWithIntl(<AdminDatasetsPage />);
+    expect(await screen.findByText(/no datasets yet/i)).toBeInTheDocument();
+  });
+
+  it('closes the detail panel and dismisses a detail error', async () => {
+    const user = userEvent.setup();
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('People');
+    await user.click(screen.getByRole('button', { name: 'People' }));
+    const panel = await screen.findByText('person-0');
+    expect(panel).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /close/i }));
+    await waitFor(() =>
+      expect(screen.queryByText('person-0')).not.toBeInTheDocument(),
+    );
   });
 });

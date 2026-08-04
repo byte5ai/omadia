@@ -4560,16 +4560,34 @@ export interface DatasetUploadResult {
   truncation: { truncatedCellCount: number; truncatedColumns: string[] };
 }
 
-/** GET /api/v1/datasets/:id/rows — no aggregate, so `rows` is populated. */
+/**
+ * GET /api/v1/datasets/:id/rows. `rows` is populated for a row query (no
+ * aggregate) — but `KnowledgeGraph.DatasetQueryResult.rows` is optional, so
+ * mirror that and let callers guard rather than assume it's always present.
+ */
 export interface DatasetRowsResult {
-  rows: Array<Record<string, unknown>>;
+  rows?: Array<Record<string, unknown>>;
   /** Pre-limit match count, for a "showing X of Y" hint. */
   totalMatched: number;
 }
 
-export async function listDatasets(): Promise<DatasetSummary[]> {
-  const body = await getJson<{ items: DatasetSummary[] }>(DATASETS_BASE);
-  return body.items;
+/** GET /api/v1/datasets — the owner-scoped, paginated dataset list. */
+export interface DatasetListResult {
+  items: DatasetSummary[];
+  /** Total datasets the caller owns, before limit/offset. */
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export async function listDatasets(
+  opts: { limit?: number; offset?: number } = {},
+): Promise<DatasetListResult> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) params.set('offset', String(opts.offset));
+  const qs = params.toString();
+  return getJson<DatasetListResult>(`${DATASETS_BASE}${qs ? `?${qs}` : ''}`);
 }
 
 export async function getDataset(id: string): Promise<DatasetSummary> {

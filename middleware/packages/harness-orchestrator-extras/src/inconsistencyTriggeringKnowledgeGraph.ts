@@ -542,8 +542,12 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
   listDatasets(opts: {
     ownerOmadiaUserId: string;
     limit?: number;
+    offset?: number;
   }): Promise<DatasetSummary[]> {
     return this.inner.listDatasets(opts);
+  }
+  countDatasets(opts: { ownerOmadiaUserId: string }): Promise<number> {
+    return this.inner.countDatasets(opts);
   }
   getDataset(
     datasetId: string,
