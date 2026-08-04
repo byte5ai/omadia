@@ -52,7 +52,8 @@ They sound small. They are not, and they invalidate two decisions in the first d
 Concretely: **276 hardcoded items across 18 zones, ≈49,100 LOC across ~200 files.** Full
 work-list in `core-decoupling-checklist.md`. Three of those items are not deletions at all
 — core has no extension point for them, so a new generic mechanism has to be built first
-(H1 public paths, H2 conductor step kinds, H3 chat tool-card renderers).
+(H1 public paths, H3 chat tool-card renderers). H2 turned out NOT to need one: the
+conductor coupling was dead, so C5 deleted it rather than genericising it.
 
 ---
 
@@ -488,7 +489,7 @@ single irreversible step moved last.
 | **P2a** | Decide the `ctx.devJobs` contract (§4.2) and the G8 public-contract break: `DevJob*` move to `@omadia/dev-platform-plugin-api`, `plugin-api` gets a SemVer-major bump, `dev_jobs` leaves the admin-v1 DTO. Add capability edges to `dynamicAgentRuntime` or document why agent plugins are excluded. | A written, versioned contract — before any code depends on it |
 | **P2b** | Decide **H3** (chat card): declarative card schema, or accept degradation to `ToolRow` for out-of-repo plugins. Decide **G7 option B vs E**. | Both answers written down before code moves |
 | **P2c** | Mechanical decoupling: break the `wireDevPlatform ↔ routes` cycle; collapse the 41 config keys into one namespaced object. ✅ `mintAppJwt` already moved to `src/services/githubAppJwt.ts`. | `index.ts` wiring reduced to one `assembleDevPlatform(cfg)` call |
-| **P3** | The extension points. **H1** dynamic `publicPaths` + exclusive prefix ownership · **H2** generic conductor step-kind/channel-type registry · **G2** `auth: 'session'` composed *inside* the disposed guard · **G3** route-local raw parser · **G4** permission-gated `graphPool@1` + shared `runPluginMigrations`. | Any plugin can own routes, exemptions, raw bodies, tables, and long-running steps |
+| **P3** | The extension points. **H1** dynamic `publicPaths` + exclusive prefix ownership · **G2** `auth: 'session'` composed *inside* the disposed guard · **G3** route-local raw parser · **G4** permission-gated `graphPool@1` + shared `runPluginMigrations`. | Any plugin can own routes, exemptions, raw bodies and tables |
 | **P3b** | **G7** (§4.3a): extract the `@theme inline` bridge out of `globals.css`; build the plugin Tailwind subset from it and serve it — replacing the 345 hand-written lines of `harness-admin-css.ts`; add a static-asset serving path for plugin SPA bundles; reject arbitrary-value classes at ingest. | Any plugin can ship a real UI in the house design system — the platform's weakest extension point today |
 | **P4** | Stand up `byte5ai/omadia-plugin-dev-platform`; move ~49,100 LOC per `core-decoupling-checklist.md`; port the UI; stand up the repo's own GHCR + SBOM + signing pipeline. **Do not delete the `publicPaths` exemptions until P3 is proven on the live runner phone-home path.** | Dev Platform installs and uninstalls from its own repo |
 | **P5** | Migration ownership handoff (no renumbering) + ledger seed, tested against a database restored from a production snapshot. Its own PR, its own rollback story. | Plugin owns its schema |

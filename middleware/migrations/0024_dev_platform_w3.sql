@@ -15,8 +15,15 @@ ALTER TABLE dev_repos
   ADD COLUMN IF NOT EXISTS policy_overrides jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 -- --- link a parked job to its holding conductor await (W3 §5) ---------------
--- Nullable: only Conductor-driven jobs park on an await. One-await invariant is
--- enforced in conductorBridge, not by a DB constraint here.
+-- ORPHANED COLUMN — do NOT read this as evidence of a live feature.
+-- It was added for the Conductor `dev.job` step, which was built but never wired:
+-- the run executor was always constructed without the port, so the dispatch branch
+-- was permanently false and NOTHING EVER WROTE THIS COLUMN. That step was deleted
+-- in epic #470 C5 (see the dormant-capabilities spec, §1). The column stays only
+-- because migrations are forward-only here and a DROP is the one irreversible act
+-- in that change. It has no reader and no writer in `src/`, and it is always NULL.
+-- If the step is ever rebuilt (as a new feature, in the plugin repo) it may reclaim
+-- this column; otherwise a future migration squash may drop it.
 ALTER TABLE dev_jobs
   ADD COLUMN IF NOT EXISTS conductor_await_id text;
 
