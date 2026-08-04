@@ -107,6 +107,12 @@ export type CanvasDatasetResolver = (
   datasetId: string,
 ) => PrivacyResolvedDataset | 'unavailable' | undefined;
 
+interface DatasetPublishColumn {
+  fieldKey: string;
+  label: string;
+  privacy?: 'guard-protected';
+}
+
 /** Privacy Shield v4: a dataset reference the LLM mistakenly wrapped INTO the
  *  rows array instead of passing `datasetId` top-level. Detecting it turns a
  *  silent one-garbage-row publish into a self-correcting tool error. */
@@ -116,6 +122,17 @@ const looksLikeDatasetRef = (rows: ReadonlyArray<Record<string, unknown>>): bool
   Object.keys(rows[0]).length === 1 &&
   (typeof rows[0]['datasetId'] === 'string' ||
     Object.values(rows[0]).some((v) => typeof v === 'string' && /^ds_[0-9a-f-]{8,}$/i.test(v)));
+
+/** Dataset paths are authoritative row keys; humanise them for a fallback
+ *  label when the skeleton has no column at the same position. */
+function humanizePath(path: string): string {
+  const collapsed = path.replace(/[._]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (collapsed.length === 0) return '';
+  return collapsed
+    .split(' ')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
 
 /** Hard cap for dataset publishes — the canvas viewState budget is finite;
  *  bigger sets belong in a file (create_xlsx) or a filtered view. */
@@ -191,6 +208,7 @@ export async function handleCanvasPublishRows(
         (r): r is Record<string, unknown> => typeof r === 'object' && r !== null && !Array.isArray(r),
       )
     : [];
+  let datasetColumns: DatasetPublishColumn[] | undefined;
   if (datasetId === undefined && hasRows && looksLikeDatasetRef(rows)) {
     return (
       'Error: that rows array contains a dataset REFERENCE, not data. Pass the id as the ' +
@@ -214,6 +232,15 @@ export async function handleCanvasPublishRows(
       );
     }
     rows = resolved.rows.map((r) => ({ ...r }));
+    datasetColumns = resolved.columns.map((column) => {
+      const privacy =
+        column.classification === 'sensitive-masked' ? 'guard-protected' : undefined;
+      return {
+        fieldKey: column.path,
+        label: humanizePath(column.path),
+        ...(privacy ? { privacy } : {}),
+      };
+    });
     if (rows.length > MAX_DATASET_PUBLISH_ROWS) {
       truncatedFrom = rows.length;
       rows = rows.slice(0, MAX_DATASET_PUBLISH_ROWS);
@@ -276,6 +303,7 @@ export async function handleCanvasPublishRows(
         // A fields publish targets a scalar/KPI container; omit `rows` so the
         // synthesis layer routes it through the fields branch, not the table one.
         ...(hasMappableFields ? { fields } : { rows }),
+        ...(datasetColumns ? { columns: datasetColumns } : {}),
         ...(source ? { source } : {}),
         ...(actions.length > 0 ? { actions } : {}),
         ...(chartType ? { chartType } : {}),

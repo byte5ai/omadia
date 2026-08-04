@@ -200,8 +200,12 @@ export interface PrivacyBypassedToolRequest {
 export interface PrivacyResolvedDataset {
   /** Number of rows the dataset holds (the postcondition target). */
   readonly rowCount: number;
-  /** Column schema — `path` is the row-object key, `type` the field type. */
-  readonly columns: ReadonlyArray<{ readonly path: string; readonly type: string }>;
+  /** Column schema — `path` is the row-object key, `type` the field type, `classification` (when present) marks masked vs cleartext fields. */
+  readonly columns: ReadonlyArray<{
+    readonly path: string;
+    readonly type: string;
+    readonly classification?: 'sensitive-masked' | 'safe-cleartext';
+  }>;
   /** The full real rows, keyed by column `path`. */
   readonly rows: ReadonlyArray<Record<string, unknown>>;
 }
