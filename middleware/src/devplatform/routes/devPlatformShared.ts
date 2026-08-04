@@ -10,16 +10,16 @@
 
 import type { Request, Response } from 'express';
 
-import { checkBranchProtection as realCheckBranchProtection } from '../devplatform/branchProtectionCheck.js';
-import type { BranchProtectionResult } from '../devplatform/branchProtectionCheck.js';
-import type { DevJobEventBus } from '../devplatform/devJobEventBus.js';
-import type { DevRepoConnection } from '../devplatform/devRepoCredentials.js';
-import type { ListJobsFilter } from '../devplatform/devJobStore.js';
-import type { FinalizeContext } from '../devplatform/finalizeDevJob.js';
-import type { ApplyJobOutcome } from '../devplatform/devJobWorker.js';
-import type { GitHubDeviceFlowProvider } from '../issues/githubOAuthProvider.js';
-import type { DeviceFlowStore } from '../issues/deviceFlowStore.js';
-import type { Ticket } from '../devplatform/githubIssuesTracker.js';
+import { checkBranchProtection as realCheckBranchProtection } from '../branchProtectionCheck.js';
+import type { BranchProtectionResult } from '../branchProtectionCheck.js';
+import type { DevJobEventBus } from '../devJobEventBus.js';
+import type { DevRepoConnection } from '../devRepoCredentials.js';
+import type { ListJobsFilter } from '../devJobStore.js';
+import type { FinalizeContext } from '../finalizeDevJob.js';
+import type { ApplyJobOutcome } from '../devJobWorker.js';
+import type { GitHubDeviceFlowProvider } from '../../issues/githubOAuthProvider.js';
+import type { DeviceFlowStore } from '../../issues/deviceFlowStore.js';
+import type { Ticket } from '../githubIssuesTracker.js';
 import {
   isTerminalDevJobStatus,
   type DevJob,
@@ -34,7 +34,7 @@ import {
   type NewDevJob,
   type NewDevRepo,
   type RunnerBackendKind,
-} from '../devplatform/types.js';
+} from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Injected store / service seams.

@@ -28,9 +28,9 @@ import crypto from 'node:crypto';
 import express, { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import type { DevRepo, RunnerBackendKind } from '../devplatform/types.js';
-import type { CreateTriggerJobInput, CreateTriggerJobResult } from '../devplatform/triggers/triggerJobService.js';
-import type { WebhookDeliveryOutcome } from '../devplatform/triggers/webhookDeliveryStore.js';
+import type { DevRepo, RunnerBackendKind } from '../types.js';
+import type { CreateTriggerJobInput, CreateTriggerJobResult } from '../triggers/triggerJobService.js';
+import type { WebhookDeliveryOutcome } from '../triggers/webhookDeliveryStore.js';
 
 const RAW_BODY_LIMIT = '512kb';
 const ONE_HOUR_MS = 3_600_000;

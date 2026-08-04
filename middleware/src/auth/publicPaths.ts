@@ -28,7 +28,7 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // Epic #470 — the dev-platform runner phone-home router. A runner is a
   // process, not an operator: it holds a one-time job token and no session
   // cookie. Every request is authenticated against the job-token hash in
-  // routes/devRunnerApi.ts — that IS its authentication.
+  // devplatform/routes/devRunnerApi.ts — that IS its authentication.
   /^\/api\/v1\/dev-runner(?:\/|$|\?)/,
   // Epic #470 — GitHub redirects finish the dev-platform GitHub-App setup on a
   // signed state token / installation ownership check, not on an operator session.

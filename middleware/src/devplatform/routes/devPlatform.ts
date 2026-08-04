@@ -19,9 +19,9 @@
 import { Router, json as expressJson } from 'express';
 import type { NextFunction, Request, Response } from 'express';
 
-import { composeBrief } from '../devplatform/briefComposer.js';
-import { mintRunnerToken } from '../devplatform/jobToken.js';
-import type { ListJobsFilter } from '../devplatform/devJobStore.js';
+import { composeBrief } from '../briefComposer.js';
+import { mintRunnerToken } from '../jobToken.js';
+import type { ListJobsFilter } from '../devJobStore.js';
 import {
   isDevJobAuthMode,
   isDevJobKind,
@@ -32,7 +32,7 @@ import {
   type DevJobEvent,
   type DevJobKind,
   type DevJobSource,
-} from '../devplatform/types.js';
+} from '../types.js';
 import { registerDevPlatformRepoRoutes } from './devPlatformRepos.js';
 import {
   DevPlatformError,

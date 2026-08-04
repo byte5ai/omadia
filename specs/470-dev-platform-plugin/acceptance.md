@@ -16,7 +16,7 @@ every row passes *and* the decoupling ratchet reads zero.
 
 | Guard | What it proves | Status |
 |---|---|---|
-| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight | **In place.** Baseline **3,303** across **14** zones, per-zone regression check |
+| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight | **In place.** Baseline **3,365** across **14** zones, per-zone regression check |
 | `middleware/test/devplatform/**` (54 files) | The behaviour itself, at unit/integration level. These **move with the plugin** and must stay green in the new repo | In place, moves in P4 |
 | §2 capability matrix below | Nothing is silently dropped in the move | **Written here; not yet automated** |
 | §3 install/uninstall | The result is genuinely installable | **Not yet built** — needs P3/P4 |
