@@ -67,7 +67,7 @@ jobs:
         working-directory: middleware
     # Postgres for the *.pg.test.ts suites. Without this the whole
     # Postgres-backed layer (migration backfills, embedding-gate suites,
-    # devJob/webhook/memory stores, ~21 files) self-skips on an unreachable
+    # job/webhook/memory stores, ~21 files) self-skips on an unreachable
     # DB and the job still reports green — the silent-coverage hole from
     # issue #565. pgvector image because several suites create a vector(n)
     # column as the thing under test.
