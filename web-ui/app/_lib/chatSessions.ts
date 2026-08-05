@@ -752,7 +752,16 @@ export interface UseChatSessionsResult {
   setActive(id: string): void;
   clearMessages(id: string): Promise<void>;
   mutateActive(mutator: (session: ChatSession) => ChatSession): void;
+  /**
+   * Mutate a session by id, whether or not it is the active tab. This is the
+   * primitive `mutateActive` delegates to; the stream-runner uses it directly
+   * so a background turn writes into the session that owns it (#617) rather
+   * than into whichever tab the user happens to be looking at.
+   */
+  mutateById(id: string, mutator: (session: ChatSession) => ChatSession): void;
   persistActive(): Promise<void>;
+  /** Persist a session by id — the by-id counterpart of `persistActive` (#617). */
+  persistById(id: string): Promise<void>;
 }
 
 /**
@@ -1009,13 +1018,18 @@ export function useChatSessions(): UseChatSessionsResult {
     [],
   );
 
+  const mutateById = useCallback(
+    (id: string, mutator: (session: ChatSession) => ChatSession): void => {
+      setSessions((prev) => prev.map((s) => (s.id === id ? mutator(s) : s)));
+    },
+    [],
+  );
+
   const mutateActive = useCallback(
     (mutator: (session: ChatSession) => ChatSession): void => {
-      setSessions((prev) =>
-        prev.map((s) => (s.id === activeId ? mutator(s) : s)),
-      );
+      mutateById(activeId, mutator);
     },
-    [activeId],
+    [activeId, mutateById],
   );
 
   // Refs kept in sync with state so persistActive reads the latest snapshot
@@ -1033,18 +1047,23 @@ export function useChatSessions(): UseChatSessionsResult {
     activeIdRef.current = activeId;
   }, [activeId]);
 
-  const persistActive = useCallback(async (): Promise<void> => {
-    const snapshot = sessionsRef.current.find((s) => s.id === activeIdRef.current);
+  const persistById = useCallback(async (id: string): Promise<void> => {
+    const snapshot = sessionsRef.current.find((s) => s.id === id);
     if (!snapshot) return;
     try {
       await putRemoteSession(snapshot);
     } catch (err) {
       console.warn(
-        '[chat-sessions] persistActive failed:',
+        '[chat-sessions] persistById failed:',
         err instanceof Error ? err.message : err,
       );
     }
   }, []);
+
+  const persistActive = useCallback(
+    (): Promise<void> => persistById(activeIdRef.current),
+    [persistById],
+  );
 
   // Always return *some* active session so the caller doesn't have to guard.
   // Build an ephemeral empty one during the brief hydrating window.
@@ -1064,6 +1083,8 @@ export function useChatSessions(): UseChatSessionsResult {
     setActive: setActiveId,
     clearMessages,
     mutateActive,
+    mutateById,
     persistActive,
+    persistById,
   };
 }

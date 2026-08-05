@@ -1,7 +1,11 @@
 import { act, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { UseChatSessionsResult } from '../../_lib/chatSessions';
+import type {
+  ChatSession,
+  Message,
+  UseChatSessionsResult,
+} from '../../_lib/chatSessions';
 import {
   StreamStoreProvider,
   useStreamStore,
@@ -45,14 +49,14 @@ function captureStore(): { latest: () => StoreValue } {
 }
 
 /**
- * Minimal chat-sessions stub. `runOneTurn` only ever touches `mutateActive`
- * (via applyStreamEvent + finalizePending) and `persistActive`; everything else
+ * Minimal chat-sessions stub. `runOneTurn` only ever touches `mutateById`
+ * (via applyStreamEvent + finalizePending) and `persistById`; everything else
  * on the context is irrelevant to the store-outcome decision under test.
  */
 function stubSessions(): UseChatSessionsResult {
   return {
-    mutateActive: vi.fn(),
-    persistActive: vi.fn().mockResolvedValue(undefined),
+    mutateById: vi.fn(),
+    persistById: vi.fn().mockResolvedValue(undefined),
   } as unknown as UseChatSessionsResult;
 }
 
@@ -153,5 +157,119 @@ describe('runOneTurn — in-band error on a 200 stream (#403)', () => {
     const record = latest().get(sessionId);
     expect(record?.phase).toBe('done');
     expect(record?.error).toBeUndefined();
+  });
+});
+
+/**
+ * #617 — a background turn (its tab is NOT the active one) must fold every
+ * event into the session that OWNS it. The pre-fix route went through
+ * `mutateActive`/`persistActive`, which only ever touched the active tab, so
+ * switching away mid-stream truncated the answer and discarded the `done`
+ * event even though the tab advertised "response ready".
+ *
+ * The stateful fake below is the point of the test: it distinguishes writes by
+ * id (like the real store) instead of stubbing them into a black hole, so the
+ * assertions fail if the runner ever routes back through the active-tab
+ * helpers.
+ */
+describe('runOneTurn — background session (non-active tab) (#617)', () => {
+  /** A stateful sessions fake that routes writes by id, like the real store. */
+  function fakeSessions(
+    initial: ChatSession[],
+    activeId: string,
+  ): {
+    ctx: UseChatSessionsResult;
+    session: (id: string) => ChatSession | undefined;
+    persistActiveSpy: ReturnType<typeof vi.fn>;
+    persistByIdSpy: ReturnType<typeof vi.fn>;
+  } {
+    let sessions = initial;
+    const persistActiveSpy = vi.fn().mockResolvedValue(undefined);
+    const persistByIdSpy = vi.fn().mockResolvedValue(undefined);
+    const mutateById = (
+      id: string,
+      mut: (s: ChatSession) => ChatSession,
+    ): void => {
+      sessions = sessions.map((s) => (s.id === id ? mut(s) : s));
+    };
+    const ctx = {
+      mutateById,
+      mutateActive: (mut: (s: ChatSession) => ChatSession) =>
+        mutateById(activeId, mut),
+      persistById: persistByIdSpy,
+      persistActive: persistActiveSpy,
+    } as unknown as UseChatSessionsResult;
+    return {
+      ctx,
+      session: (id: string) => sessions.find((s) => s.id === id),
+      persistActiveSpy,
+      persistByIdSpy,
+    };
+  }
+
+  function streamingAssistant(id: string): Message {
+    return { id, role: 'assistant', content: '', streaming: true, startedAt: 0 };
+  }
+
+  function sessionWith(id: string, messages: Message[]): ChatSession {
+    return { id, title: id, createdAt: 0, updatedAt: 0, messages };
+  }
+
+  async function driveInto(
+    store: StoreValue,
+    ctx: UseChatSessionsResult,
+    sessionId: string,
+    pendingMessageId: string,
+    response: Response,
+  ): Promise<void> {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
+    let claim: ClaimedRequest | undefined;
+    await act(async () => {
+      store.startTurn({ sessionId, pendingMessageId, message: 'hi' });
+      claim = store.claimRequest();
+    });
+    if (!claim) throw new Error('claimRequest returned nothing');
+    const depsRef: DepsRef = { current: { t: tStub, sessions: ctx, store } };
+    await act(async () => {
+      await runOneTurn(claim as ClaimedRequest, depsRef);
+    });
+  }
+
+  it('lands the streamed deltas AND the done answer in a non-active session', async () => {
+    const { latest } = captureStore();
+    const store = latest();
+
+    const bgId = 'session-bg';
+    const pendingId = 'pending-bg';
+    const fake = fakeSessions(
+      [
+        sessionWith('session-active', []), // the tab the user is looking at
+        sessionWith(bgId, [streamingAssistant(pendingId)]),
+      ],
+      'session-active', // active tab is NOT the streaming one
+    );
+
+    // A delta, then the authoritative done answer — as two NDJSON lines.
+    const body =
+      `${JSON.stringify({ type: 'text_delta', text: 'partial ' })}\n` +
+      `${JSON.stringify({
+        type: 'done',
+        answer: 'the complete answer',
+        toolCalls: 0,
+        iterations: 1,
+      })}\n`;
+
+    await driveInto(store, fake.ctx, bgId, pendingId, ndjson200(body));
+
+    const msg = fake.session(bgId)?.messages.find((m) => m.id === pendingId);
+    // Content is the done answer (mutation guard: 'partial ' alone or '' both fail).
+    expect(msg?.content).toBe('the complete answer');
+    // Turn is finalized on its own session, not left mid-stream.
+    expect(msg?.streaming).toBe(false);
+    // The active tab was never touched.
+    expect(fake.session('session-active')?.messages).toHaveLength(0);
+    // Persistence targeted the turn's session, never the active-tab helper.
+    expect(fake.persistByIdSpy).toHaveBeenCalledWith(bgId);
+    expect(fake.persistActiveSpy).not.toHaveBeenCalled();
   });
 });
