@@ -85,8 +85,8 @@ export default function AdminDomainsPage(): React.ReactElement {
         </h1>
         <p className="mt-3 max-w-2xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
           {t.rich('intro', {
-            manifest: () => <code>manifest.yaml</code>,
-            domain: () => <code>domain</code>,
+            manifest: (chunks) => <code>{chunks}</code>,
+            domain: (chunks) => <code>{chunks}</code>,
           })}
         </p>
       </header>
@@ -136,12 +136,16 @@ function Content({ data }: { data: DomainsResponse }): React.ReactElement {
         <p className="mt-8 rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 p-4 text-sm text-[color:var(--warning)]">
           {t.rich('fallbackWarning', {
             count: data.totals.fallbackDomains,
-            fallbackDomain: () => (
-              <code className="text-[color:var(--warning)]">unknown.&lt;id&gt;</code>
+            // Passed as a plain ICU value, not baked into the message: the
+            // literal contains angle brackets, which next-intl would try to
+            // parse as rich-text tags.
+            fallbackDomainName: 'unknown.<id>',
+            fallbackDomain: (chunks) => (
+              <code className="text-[color:var(--warning)]">{chunks}</code>
             ),
-            manifestKey: () => <code>identity.domain</code>,
-            exampleOne: () => <code>&quot;confluence&quot;</code>,
-            exampleTwo: () => <code>&quot;odoo.hr&quot;</code>,
+            manifestKey: (chunks) => <code>{chunks}</code>,
+            exampleOne: (chunks) => <code>{chunks}</code>,
+            exampleTwo: (chunks) => <code>{chunks}</code>,
           })}
         </p>
       ) : null}

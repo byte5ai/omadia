@@ -43,6 +43,26 @@ export interface PluginSetupField {
   /** Holds multiple selected values (stored as a JSON-encoded `string[]`).
    *  Only meaningful with `options_provider`. */
   multi?: boolean;
+  /** OM-16 — required-by-default: a manifest field that omits `required` IS
+   *  required. Absent on payloads from a pre-OM-16 middleware. */
+  required?: boolean;
+  /** Optional validation regex (source form, no delimiters). */
+  pattern?: string;
+  /** OM-17 — localized explanation of what `pattern` expects, e.g.
+   *  "erwartet …@….iam.gserviceaccount.com". Same `{ locale: text }` shape as
+   *  `setup_guide`; render with `pickLocalized`. Absent on payloads from a
+   *  pre-OM-17 middleware. */
+  pattern_hint?: LocalizedMarkdown;
+  /** OM-17 — the manifest declared a `pattern` the server REFUSED (uncompilable,
+   *  or rejected by the catastrophic-backtracking allowlist), so this field is
+   *  NOT format-checked and `pattern` is absent. The UI must say so: a field
+   *  that looks validated and is not is the exact defect OM-17 exists to fix. */
+  pattern_unavailable?: boolean;
+  /** Manifest-declared input placeholder. Was parsed server-side but ignored
+   *  by both renderers before OM-17 — the whole point of a placeholder is to
+   *  show the SHAPE of the expected value, which is exactly the information a
+   *  tester lacked when they typed a password into a private-key field. */
+  placeholder?: string;
 }
 
 /** Spec 005 — how a declarative OAuth descriptor authenticates to the token
@@ -147,6 +167,26 @@ export interface PluginActionStatus {
   detail?: string;
 }
 
+/** OM-16 — kernel-derived plugin readiness (mirror of middleware admin-v1).
+ *  `install_state` answers "is it present?", readiness answers "can it
+ *  actually work?". Unlike `PluginActionStatus` (push-only, from plugins that
+ *  call `ctx.status`), this is computed for every plugin. */
+export type PluginReadinessState =
+  | 'not_installed'
+  | 'config_required'
+  | 'ready'
+  | 'errored';
+
+export interface PluginReadiness {
+  state: PluginReadinessState;
+  /** Keys of required setup fields with no stored value. */
+  missing_fields: string[];
+  /** ISO8601 of the last successful activation; `null` unless `ready`. */
+  verified_at: string | null;
+  /** Tail of the last activation error; only for `errored`. */
+  error_detail?: string;
+}
+
 export interface Plugin {
   id: string;
   kind: PluginKind;
@@ -195,6 +235,12 @@ export interface Plugin {
    *  `ctx.status`. Present only while `needs_action` / `error`; absent for
    *  `ok` or inactive. Drives the card badge + detail-page banner. */
   action_status?: PluginActionStatus;
+  /** OM-16 — kernel-derived readiness, orthogonal to `install_state`. A plugin
+   *  can be `install_state: 'installed'` while every required credential is
+   *  empty; readiness is what tells the two apart. Optional: absent on payloads
+   *  from a pre-OM-16 middleware, in which case the UI falls back to the old
+   *  install-state-only rendering. */
+  readiness?: PluginReadiness;
   /** Present only for entries sourced from a remote registry that are not yet
    *  ingested locally. Drives the remote-install flow (fetch-then-ingest
    *  before the normal install job). Mirrors middleware admin-v1. */
@@ -279,6 +325,16 @@ export interface InstallSetupField {
   provider?: string;
   scopes?: string[];
   pattern?: string;
+  /** OM-17 — localized explanation of what `pattern` expects. Rendered under
+   *  the input so a rejected value says WHY. See `PluginSetupField`. */
+  pattern_hint?: LocalizedMarkdown;
+  /** OM-17 — the manifest declared a `pattern` the server refused, so this
+   *  field goes UNCHECKED. See `PluginSetupField.pattern_unavailable`. */
+  pattern_unavailable?: boolean;
+  /** OM-17 — manifest-declared input placeholder. Previously hardcoded to
+   *  `'••••••••'` for every secret field, hiding the one piece of information
+   *  that distinguishes a service-account key from an account password. */
+  placeholder?: string;
   multiline?: boolean;
   /** Omitted from the install flyout (flow-managed / editable later). */
   install_hidden?: boolean;

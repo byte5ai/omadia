@@ -13,6 +13,11 @@ import type {
   UserRecord,
   UserStore,
 } from '../../src/auth/userStore.js';
+import {
+  __clearVerificationCache,
+  decodeVerifiedRecord,
+  providerVerifiedAtVaultKey,
+} from '../../src/platform/providerCredentialVerifier.js';
 import type { SecretVault } from '../../src/secrets/vault.js';
 
 /**
@@ -130,6 +135,10 @@ async function startHarness(opts: {
   /** When provided, the stubbed fetch returns this status for the
    *  `/v1/models` ping — defaults to 200 (key accepted). */
   anthropicPingStatus?: number;
+  /** Body for a NON-2xx ping. Load-bearing for 403: a bare 403 is a region or
+   *  permission block, but a 403 whose body says `authentication_error` is a
+   *  genuine rejection, and only the body tells the two apart. */
+  anthropicPingBody?: string;
 }): Promise<Harness> {
   const store = new InMemoryUserStore();
   const vault = new InMemoryVault();
@@ -179,7 +188,17 @@ async function startHarness(opts: {
     const url = typeof input === 'string' ? input : input.toString();
     if (url.includes('api.anthropic.com')) {
       const status = opts.anthropicPingStatus ?? 200;
-      return new Response('', { status });
+      // A 2xx only counts as `verified` when it carries a JSON model list — a
+      // bare 200 is what a corporate proxy's block page looks like, and the
+      // probe deliberately refuses to call that a working credential. The happy
+      // path therefore has to answer like the real `models` endpoint does.
+      if (status >= 200 && status < 300) {
+        return new Response(JSON.stringify({ data: [{ id: 'model-1' }] }), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(opts.anthropicPingBody ?? '', { status });
     }
     return originalFetch(input as RequestInfo, init);
   }) as typeof fetch;
@@ -214,6 +233,9 @@ describe('POST /api/v1/auth/setup (OB-61)', () => {
 
   after(async () => {
     h.restoreFetch();
+    // The probe caches per provider id — clear it so a verdict cannot leak
+    // into the next harness (or another test file).
+    __clearVerificationCache();
     await h.close();
   });
 
@@ -256,6 +278,23 @@ describe('POST /api/v1/auth/setup (OB-61)', () => {
       '@omadia/verifier',
     ]);
   });
+
+  it('records that the ping succeeded (OM-08) instead of discarding the result', async () => {
+    // The probe always ran here — but nothing wrote it down, so one line later
+    // an accepted key was indistinguishable from a never-checked one, and the
+    // providers page had to fall back to "some string is in the vault".
+    const record = h.vault.writes[0]?.entries[
+      providerVerifiedAtVaultKey('anthropic')
+    ];
+    assert.ok(record, 'a durable verification record must be written');
+    assert.equal(
+      decodeVerifiedRecord(record, 'sk-ant-api03-validlooking-key'),
+      JSON.parse(record).at,
+      'the record must be readable back for this exact key',
+    );
+    // …and NOT readable back for a different key.
+    assert.equal(decodeVerifiedRecord(record, 'sk-ant-some-other-key'), undefined);
+  });
 });
 
 describe('POST /api/v1/auth/setup — no-key path', () => {
@@ -265,6 +304,9 @@ describe('POST /api/v1/auth/setup — no-key path', () => {
   });
   after(async () => {
     h.restoreFetch();
+    // The probe caches per provider id — clear it so a verdict cannot leak
+    // into the next harness (or another test file).
+    __clearVerificationCache();
     await h.close();
   });
 
@@ -291,6 +333,9 @@ describe('POST /api/v1/auth/setup — invalid-key-format path', () => {
   });
   after(async () => {
     h.restoreFetch();
+    // The probe caches per provider id — clear it so a verdict cannot leak
+    // into the next harness (or another test file).
+    __clearVerificationCache();
     await h.close();
   });
 
@@ -312,6 +357,41 @@ describe('POST /api/v1/auth/setup — invalid-key-format path', () => {
   });
 });
 
+describe('POST /api/v1/auth/setup — provider-outage path', () => {
+  let h: Harness;
+  before(async () => {
+    h = await startHarness({ anthropicPingStatus: 503 });
+  });
+  after(async () => {
+    h.restoreFetch();
+    __clearVerificationCache();
+    await h.close();
+  });
+
+  it('still accepts the key on a 5xx — an outage is not the operator\'s fault', async () => {
+    const res = await fetch(`${h.baseUrl}/api/v1/auth/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        email: 'admin@example.com',
+        password: 'pw-with-12-chars',
+        anthropic_api_key: 'sk-ant-api03-probably-fine',
+      }),
+    });
+    assert.equal(res.status, 200, await res.text());
+    assert.equal(h.store.rows.length, 1);
+    assert.equal(h.vault.writes.length, 3, 'the key is still seeded');
+    // …but it is NOT claimed as verified: no durable record was written.
+    for (const w of h.vault.writes) {
+      assert.equal(
+        w.entries[providerVerifiedAtVaultKey('anthropic')],
+        undefined,
+        'an unproven key must not be recorded as verified',
+      );
+    }
+  });
+});
+
 describe('POST /api/v1/auth/setup — anthropic-rejects-key path', () => {
   let h: Harness;
   before(async () => {
@@ -319,7 +399,67 @@ describe('POST /api/v1/auth/setup — anthropic-rejects-key path', () => {
   });
   after(async () => {
     h.restoreFetch();
+    // The probe caches per provider id — clear it so a verdict cannot leak
+    // into the next harness (or another test file).
+    __clearVerificationCache();
     await h.close();
+  });
+
+  // A BARE 403 IS NOT A REJECTION. OpenAI answers 403 for "Country, region, or
+  // territory not supported" and Anthropic for org-permission and region
+  // blocks. This used to hard-block setup on any 403, which bricks the install
+  // for an operator whose key is perfectly good but whose region is fenced —
+  // and sends them off to rotate a credential that was never the problem.
+  it('lets a bare 403 through — a region/permission block is not a bad key', async () => {
+    const alt = await startHarness({ anthropicPingStatus: 403 });
+    try {
+      const res = await fetch(`${alt.baseUrl}/api/v1/auth/setup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: 'admin@example.com',
+          password: 'pw-with-12-chars',
+          anthropic_api_key: 'sk-ant-api03-region-blocked',
+        }),
+      });
+      assert.equal(
+        res.status,
+        200,
+        'an inconclusive probe must not block setup, same as the 5xx path',
+      );
+    } finally {
+      alt.restoreFetch();
+      __clearVerificationCache();
+      await alt.close();
+    }
+  });
+
+  it('still rejects a 403 that self-identifies as an authentication error', async () => {
+    const alt = await startHarness({
+      anthropicPingStatus: 403,
+      anthropicPingBody: JSON.stringify({
+        type: 'error',
+        error: { type: 'authentication_error', message: 'invalid x-api-key' },
+      }),
+    });
+    try {
+      const res = await fetch(`${alt.baseUrl}/api/v1/auth/setup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: 'admin@example.com',
+          password: 'pw-with-12-chars',
+          anthropic_api_key: 'sk-ant-api03-forbidden',
+        }),
+      });
+      assert.equal(res.status, 400);
+      const body = (await res.json()) as { code?: string };
+      assert.equal(body.code, 'auth.setup_anthropic_key_rejected');
+    } finally {
+      alt.restoreFetch();
+      __clearVerificationCache();
+      await alt.close();
+    }
   });
 
   it('surfaces a 401 from the Anthropic ping as 400 setup_anthropic_key_rejected', async () => {

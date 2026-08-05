@@ -26,6 +26,10 @@ import { extractTemplateDeclarations } from './manifestLoader.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 import { loadPluginTemplates } from './pluginTemplates.js';
 import type { PluginTemplateRegistrar } from './pluginTemplates.js';
+import {
+  checkSetupFieldPattern,
+  compileSetupPattern,
+} from './setupFieldPattern.js';
 
 export interface InstallServiceDeps {
   catalog: PluginCatalog;
@@ -213,7 +217,7 @@ export class InstallService {
 
     this.transition(job, 'configuring', 'Validiere Eingaben');
 
-    const validated = validateValues(schema, values);
+    const validated = await validateValues(schema, values);
     if (validated.errors.length > 0) {
       this.fail(job, {
         code: 'install.validation_failed',
@@ -511,9 +515,30 @@ export function extractSetupSchema(
     };
     const help = asString(f['help']);
     if (help) field.help = help;
+    // OM-17 — forward the manifest placeholder to the install wizard, which
+    // previously masked every secret field with a hardcoded `••••••••`.
+    const placeholder = asString(f['placeholder']);
+    if (placeholder) field.placeholder = placeholder;
     if (f['default'] !== undefined) field.default = f['default'];
+    // OM-17 — same load-time compile gate as manifestLoader: an uncompilable or
+    // catastrophically-backtracking pattern is dropped (warned once, cached) so
+    // it can never reach the request path. Keeps the install-schema projection
+    // byte-for-byte in agreement with the catalog projection.
     const pattern = asString(f['pattern']);
-    if (pattern) field.pattern = pattern;
+    if (pattern) {
+      if (compileSetupPattern(pattern, `install/${key}`)) {
+        field.pattern = pattern;
+        const patternHint = asLocalizedHint(f['pattern_hint']);
+        if (patternHint) field.pattern_hint = patternHint;
+      } else {
+        // OM-17 / F2 — a DROPPED pattern must never silently look like a field
+        // that was never pattern-checked. The manifest asked for a format check
+        // and is not getting one; say so at the field instead of only in a log
+        // line, otherwise this path quietly reinstates the very defect the
+        // module exists to prevent.
+        field.pattern_unavailable = true;
+      }
+    }
     if ((type === 'string' || type === 'secret') && f['multiline'] === true) {
       field.multiline = true;
     }
@@ -679,10 +704,10 @@ interface ValidationResult {
   errors: Array<{ key: string; code: string; message: string }>;
 }
 
-function validateValues(
+async function validateValues(
   schema: InstallSetupSchema,
   incoming: Record<string, unknown>,
-): ValidationResult {
+): Promise<ValidationResult> {
   const values: Record<string, unknown> = {};
   const errors: Array<{ key: string; code: string; message: string }> = [];
 
@@ -725,20 +750,34 @@ function validateValues(
       continue;
     }
 
-    if (field.pattern && typeof coerced.value === 'string') {
-      try {
-        const re = new RegExp(field.pattern);
-        if (!re.test(coerced.value)) {
-          errors.push({
-            key: field.key,
-            code: 'pattern_mismatch',
-            message: `"${field.label}" entspricht nicht dem erwarteten Muster.`,
-          });
-          continue;
-        }
-      } catch {
-        // Ignore invalid regex in manifest; a separate manifest-lint step
-        // will catch these later.
+    if (typeof coerced.value === 'string') {
+      // OM-17 — one shared implementation with the post-install secrets patch
+      // (routes/runtime.ts), so an install-time reject and a later credential
+      // edit can never disagree about what a field accepts. `checkSetupFieldPattern`
+      // returns null for fields without a pattern and for patterns that were
+      // dropped by the load-time safety screen — backward compatible by design.
+      const violation = await checkSetupFieldPattern(
+        field,
+        coerced.value,
+        `install/${field.key}`,
+      );
+      if (violation) {
+        errors.push({
+          key: field.key,
+          code: 'pattern_mismatch',
+          // The manifest's own hint when it declared one, otherwise the
+          // pre-existing generic message (kept byte-identical so existing
+          // install-flow assertions and operator muscle memory still hold).
+          //
+          // The hint is ENGLISH — this process has no request locale. The
+          // wizard's `FieldRow` re-resolves it from `field.pattern_hint` in the
+          // active locale, keyed on this entry's `code`, so a German operator
+          // reads German. See `setupFieldPattern.ts` → `PatternViolation.hint`.
+          message:
+            violation.hint ??
+            `"${field.label}" entspricht nicht dem erwarteten Muster.`,
+        });
+        continue;
       }
     }
 
@@ -922,4 +961,25 @@ function isSupportedType(t: string): t is InstallSetupField['type'] {
 
 function asString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+/**
+ * OM-17 — normalise a manifest `pattern_hint` into a `{ locale: text }` map.
+ * Mirrors `manifestLoader.asLocalizedGuide`: accepts the canonical object form
+ * and tolerates a bare string (treated as English).
+ */
+function asLocalizedHint(value: unknown): Record<string, string> | undefined {
+  if (typeof value === 'string') {
+    return value.trim().length > 0 ? { en: value } : undefined;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const out: Record<string, string> = {};
+  for (const [locale, text] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    if (typeof text === 'string' && text.trim().length > 0) out[locale] = text;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }

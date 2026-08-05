@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import {
+  AlertTriangle,
   ArrowRight,
   Check,
     Lock,
@@ -30,10 +31,16 @@ import type {
   InstallSetupField,
   InstallValidationError,
   LocalizedMarkdown,
+  PluginReadiness,
 } from '../../_lib/storeTypes';
+import { PostInstallNextSteps } from './PostInstallNextSteps';
 import { pickLocalized } from '../../_lib/localized';
 import { RequiresWizard } from './RequiresWizard';
-import { FieldRow, extractValues } from './setupForm';
+import {
+  FieldRow,
+  extractValues,
+  type SetupFieldError,
+} from './setupForm';
 import { Markdown } from '../Markdown';
 import { Button } from '@/app/_components/ui/Button';
 
@@ -57,6 +64,11 @@ interface InstallButtonProps {
    *  drawer, above the credential fields, so the operator sees how to obtain
    *  those values before filling them in. */
   setupGuide?: LocalizedMarkdown;
+  /** OM-16 — kernel-derived readiness for this plugin. Drives the installed
+   *  pill (which used to be an unconditional green "Installiert · AKTIV") and
+   *  the post-install next-step links. Absent on a pre-OM-16 middleware, in
+   *  which case the pill renders as before. */
+  readiness?: PluginReadiness;
 }
 
 type Phase =
@@ -78,14 +90,18 @@ export function InstallButton({
   installedVersion,
   availableVersion,
   setupGuide,
+  readiness,
 }: InstallButtonProps): React.ReactElement {
   const t = useTranslations('store.install');
   const router = useRouter();
   const locale = useLocale();
   const setupGuideText = pickLocalized(setupGuide, locale);
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
+  // OM-17 — the whole validation entry, not just its `message`: `FieldRow`
+  // needs the `code` to recognise a `pattern_mismatch` and swap the server's
+  // English hint for the localized one out of the manifest.
   const [fieldErrors, setFieldErrors] = useState<
-    Record<string, string>
+    Record<string, SetupFieldError>
   >({});
 
   const drawerOpen =
@@ -101,6 +117,7 @@ export function InstallButton({
       <InstalledPanel
         pluginId={pluginId}
         pluginName={pluginName}
+        {...(readiness ? { readiness } : {})}
         {...(installState === 'update-available' && availableVersion
           ? { update: { from: installedVersion ?? '', to: availableVersion } }
           : {})}
@@ -304,7 +321,7 @@ export function InstallButton({
 
   function applyDetails(details: unknown): void {
     if (!Array.isArray(details)) return;
-    const next: Record<string, string> = {};
+    const next: Record<string, SetupFieldError> = {};
     for (const entry of details as InstallValidationError[]) {
       if (
         entry &&
@@ -312,7 +329,10 @@ export function InstallButton({
         typeof entry.key === 'string' &&
         typeof entry.message === 'string'
       ) {
-        next[entry.key] = entry.message;
+        next[entry.key] =
+          typeof entry.code === 'string'
+            ? { code: entry.code, message: entry.message }
+            : { message: entry.message };
       }
     }
     setFieldErrors(next);
@@ -330,14 +350,37 @@ function InstalledPanel({
   pluginId,
   pluginName,
   update,
+  readiness,
 }: {
   pluginId: string;
   pluginName: string;
   /** C6 — present when a registry advertises a newer version. */
   update?: { from: string; to: string };
+  /** OM-16 — kernel-derived readiness; drives the state word on the pill. */
+  readiness?: PluginReadiness;
 }): React.ReactElement {
   const t = useTranslations('store.install');
+  const tState = useTranslations('store.stateBadge');
   const router = useRouter();
+  // OM-16 — readiness → pill tone + state word. No readiness (older
+  // middleware) keeps the previous unqualified "active".
+  const readinessTone: 'ok' | 'warning' | 'danger' =
+    readiness?.state === 'errored'
+      ? 'danger'
+      : readiness?.state === 'config_required'
+        ? 'warning'
+        : 'ok';
+  const readinessLabel =
+    readiness?.state === 'errored'
+      ? tState('errored')
+      : readiness?.state === 'config_required'
+        ? tState('configRequired')
+        : t('active');
+  const missingFieldsTitle =
+    readiness?.state === 'config_required' &&
+    readiness.missing_fields.length > 0
+      ? tState('missingFields', { fields: readiness.missing_fields.join(', ') })
+      : undefined;
   const [state, setState] = useState<
     | { kind: 'idle' }
     | { kind: 'confirming' }
@@ -441,19 +484,37 @@ function InstalledPanel({
           ) : null}
         </div>
       ) : null}
+      {/* OM-16 — this pill used to read "Installiert · AKTIV" unconditionally,
+          purely because the plugin was in the registry. A plugin whose
+          credentials were all deleted cannot serve one request, so the state
+          word now comes from the kernel's readiness verdict. Lume: state is
+          carried by text + ring colour only, no spinner. */}
       <div
         className={cn(
-          'flex w-full items-center gap-3 rounded-full px-6 py-3',
-          'bg-[color:var(--success)]/10 ring-1 ring-inset ring-[color:var(--success)]/40',
-          'text-[color:var(--success)]',
+          'flex w-full items-center gap-3 rounded-full px-6 py-3 ring-1 ring-inset',
+          readinessTone === 'danger'
+            ? 'bg-[color:var(--danger)]/8 ring-[color:var(--danger)]/40 text-[color:var(--danger)]'
+            : readinessTone === 'warning'
+              ? 'bg-[color:var(--warning)]/12 ring-[color:var(--warning)]/40 text-[color:var(--warning)]'
+              : 'bg-[color:var(--success)]/10 ring-[color:var(--success)]/40 text-[color:var(--success)]',
         )}
+        title={readiness?.error_detail ?? missingFieldsTitle}
       >
-        <Check className="size-5" aria-hidden />
+        {readinessTone === 'ok' ? (
+          <Check className="size-5" aria-hidden />
+        ) : (
+          <AlertTriangle className="size-5" aria-hidden />
+        )}
         <span className="text-[15px] font-semibold">{t('installed')}</span>
-        <span className="ml-auto text-[11px] uppercase tracking-[0.16em] text-[color:var(--success)]/80">
-          {t('active')}
+        <span className="ml-auto text-[11px] uppercase tracking-[0.16em] opacity-80">
+          {readinessLabel}
         </span>
       </div>
+
+      {/* OM-06/07 — installing is not the finish line: a plugin does nothing
+          until it is attached to an orchestrator. Mirrors the skill-import
+          success flow in DashboardOnboarding → BringYourSkills. */}
+      <PostInstallNextSteps pluginName={pluginName} readiness={readiness} />
 
       {/* Slice 2.5 — Privacy-Mode quick-picker. Operator-owned per-plugin
           setting that decides whether the orchestrator dispatch hook
@@ -560,7 +621,7 @@ function InstalledPanel({
 interface InstallDrawerProps {
   phase: Phase;
   pluginName: string;
-  fieldErrors: Record<string, string>;
+  fieldErrors: Record<string, SetupFieldError>;
   onClose: () => void;
   onSubmit: (values: Record<string, unknown>) => void | Promise<void>;
   /** Markdown setup guide rendered above the fields. */
