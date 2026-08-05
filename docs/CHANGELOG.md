@@ -23,12 +23,16 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 - **Removed `StreamToasts`** (the bottom-right floating cards for background
   chat turns). Per the Lume visual spec §7.6, toasts / floating notifications
   are a ship-blocking anti-pattern; §7.4 makes the chat the surface of record.
-- **Background-stream state now lives on the chat tab**: a running background
-  turn shows a pulsing accent dot, a finished one a filled accent dot, an
-  errored one a hollow `!` glyph in danger. Shape and glyph differ per state,
-  so colour is never the sole signal (§8) — each also carries an `aria-label`
-  and `title`. Selecting the tab clears its unread marker; active-session
-  errors continue to render inline on the turn.
+- **Background-stream state now lives on the chat tab**: a running turn shows a
+  hollow accent ring (pulsing), a finished one a solid accent disc, an errored
+  one a hollow danger ring carrying a `!` glyph. The states differ by *shape*,
+  so colour is never the sole signal (§8) and the distinction survives
+  `prefers-reduced-motion` disabling the pulse — running vs done separates on
+  fill, error vs running on the glyph. The state also reaches the tab's
+  accessible name via an `sr-only` label (the glyph itself is `aria-hidden`, so
+  screen readers don't speak it twice). Switching tabs clears the unread marker
+  on the tab being left as well as the one entered; active-session errors
+  continue to render inline on the turn.
 - **A polite live region** (`ChatTabs`) announces background turns that finish
   or fail, replacing the `aria-live` container the removed toast overlay
   carried. Announcements fire only for non-active tabs.

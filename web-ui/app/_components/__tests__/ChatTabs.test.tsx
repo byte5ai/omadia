@@ -253,6 +253,44 @@ describe('StreamAnnouncer — polite live region', () => {
     expect(liveRegion().textContent).toBe('Beta: response failed');
   });
 
+  it('announces a marker that was already terminal when the strip mounted', () => {
+    // A turn that finished while the user sat on /admin renders its marker the
+    // moment ChatTabs mounts. Seeding that silently would give the sighted
+    // user a signal the screen-reader user never gets — the exact asymmetry
+    // this region exists to close.
+    let store: ReturnType<typeof useStreamStore> | null = null;
+    function Capture(): null {
+      store = useStreamStore();
+      return null;
+    }
+    const sessions = [session('a', 'Alpha'), session('b', 'Beta')];
+    function Tree({ mounted }: { mounted: boolean }): ReactElement {
+      return (
+        <StreamStoreProvider>
+          <Capture />
+          {mounted && (
+            <ChatTabs
+              sessions={sessions}
+              activeId="a"
+              onSelect={() => undefined}
+              onCreate={() => undefined}
+              onClose={() => undefined}
+              onRename={() => undefined}
+            />
+          )}
+        </StreamStoreProvider>
+      );
+    }
+    const { rerender } = renderWithIntl(<Tree mounted={false} />);
+    if (!store) throw new Error('store never captured');
+    finishTurn(store, 'b', 'done');
+    // Strip was not mounted while the turn ran — nothing could have announced.
+    expect(screen.queryByRole('status')).toBeNull();
+
+    rerender(<Tree mounted />);
+    expect(screen.getByRole('status').textContent).toBe('Beta: response ready');
+  });
+
   it('stays silent for the active tab and for an abort', () => {
     const { store } = renderTabs(
       [session('a', 'Alpha'), session('b', 'Beta')],
@@ -332,6 +370,39 @@ describe('dismiss-on-switch', () => {
     });
     expect(store().get('a')?.phase).toBe('error');
     expect(store().get('b')).toBeDefined();
+  });
+
+  it('forgets the leaving tab when a NEW chat is created', () => {
+    // `createSession` changes activeId without going through handleSelect, so
+    // the tab just left would otherwise flag itself as unread. ChatPage's
+    // handleCreate calls the rule with the leaving id only.
+    const { store } = renderTabs(
+      [session('a', 'Alpha'), session('b', 'Beta')],
+      'a',
+    );
+    finishTurn(store(), 'a', 'done');
+
+    act(() => {
+      dismissSeenTurns(store(), 'a');
+    });
+    expect(store().get('a')).toBeUndefined();
+  });
+
+  it('drops a closed tab record outright so it cannot hold a store slot', () => {
+    // The tab is gone, so nothing can surface the record again; leaving it
+    // would occupy one of the store's 12 slots until GC.
+    const { store } = renderTabs(
+      [session('a', 'Alpha'), session('b', 'Beta')],
+      'a',
+    );
+    finishTurn(store(), 'b', 'error');
+    expect(store().get('b')?.phase).toBe('error');
+
+    // Mirrors handleClose: dismiss regardless of phase, then delete.
+    act(() => {
+      store().dismiss('b');
+    });
+    expect(store().get('b')).toBeUndefined();
   });
 
   it('is a no-op when re-selecting the already-active tab mid-stream', () => {

@@ -105,23 +105,25 @@ function StreamAnnouncer({
 }): React.ReactElement {
   const t = useTranslations('chatTabs');
   const { records } = useStreamStore();
-  // `null` until the first run — see the seeding note below.
-  const seenRef = useRef<Map<string, StreamPhase> | null>(null);
+  const seenRef = useRef<Map<string, StreamPhase>>(new Map());
   const [announcement, setAnnouncement] = useState({ text: '', seq: 0 });
 
   useEffect(() => {
-    // First run only seeds. Records that were already terminal when the strip
-    // mounted (route re-entry, or a turn finished while the user sat on
-    // /admin) must not replay as if they had just happened.
-    const seeded = seenRef.current !== null;
-    const seen = seenRef.current ?? new Map<string, StreamPhase>();
-    seenRef.current = seen;
+    // The first pass deliberately does NOT seed silently. A turn that finished
+    // while the user sat on /admin has its marker rendered the moment the
+    // strip mounts, so that is exactly when a screen-reader user should hear
+    // it — suppressing it would hand the sighted user a signal the
+    // screen-reader user never gets, which is the asymmetry this region
+    // exists to close. Announcing on mount mirrors the markers actually on
+    // screen, and re-entering /chat re-shows those same markers visually too.
+    // (The store is in-memory, so a cold page load starts empty and announces
+    // nothing.)
+    const seen = seenRef.current;
 
     const fresh: string[] = [];
     for (const [sessionId, rec] of records) {
       if (seen.get(sessionId) === rec.phase) continue;
       seen.set(sessionId, rec.phase);
-      if (!seeded) continue;
       // The active tab's stream is already visible inline, and it renders no
       // marker — announcing it would duplicate what the transcript shows.
       if (sessionId === activeId) continue;

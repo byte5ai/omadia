@@ -65,7 +65,19 @@ needs, so the change is a relocation of existing state, not new machinery.
   removed overlay carried `aria-live="polite"`; that region now lives on the
   tab strip (`StreamAnnouncer`), so it announces exactly where a sighted user
   gets the visual marker and nowhere else — the two channels stay in step
-  rather than one silently outliving the other.
+  rather than one silently outliving the other. That parity is why the region
+  also announces markers that were **already terminal when the strip mounted**
+  (a turn that finished while the user was on `/admin`): those markers are
+  rendered on arrival, so suppressing their announcement would hand the
+  sighted user a signal the screen-reader user never receives. Re-entering
+  `/chat` re-shows the same markers visually, so re-announcing them is
+  symmetric rather than noisy.
+- ⚪ **Neutral:** Every transition that changes the active session runs the
+  dismissal rule — select, create, and close — not just tab clicks. Creating a
+  chat moves `activeId` without a select, so the tab being left would
+  otherwise flag itself as unread the moment it was abandoned. Closing a tab
+  drops its record outright: nothing can surface it again, and leaving it
+  would hold one of the store's 12 slots until GC.
 - ⚪ **Neutral:** The unread dot clears on tab select only. Select forgets a
   `done` record; `error` / `aborted` / running records are kept — the
   agent_unavailable recovery banner and inline error read them off the store,
