@@ -95,6 +95,7 @@ import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createAdminProvidersRouter } from './routes/adminProviders.js';
+import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
@@ -162,12 +163,18 @@ import {
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
 import { createRequireAuth } from './auth/requireAuth.js';
+import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
 import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
 import { createChatDevJobOrchestratorTools } from './devplatform/chatDevJobToolWiring.js';
 import { isPermittedLauncher } from './routes/devPlatformShared.js';
 import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from './routes/devWebhooks.js';
 import { WebhookDeliveryStore } from './devplatform/triggers/webhookDeliveryStore.js';
 import { DevGithubAppStore } from './devplatform/githubApp/appStore.js';
+import {
+  createConductorWebhooksInboundRouter,
+  type ConductorWebhookInboundDeps,
+} from './routes/conductorWebhooksInbound.js';
+import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
 import { DevJobStore as DevJobStoreForWebhooks } from './devplatform/devJobStore.js';
 import { DevRepoStore as DevRepoStoreForWebhooks } from './devplatform/devRepoStore.js';
 import { DevJobGateStore as DevJobGateStoreForWebhooks } from './devplatform/pipeline/gateStore.js';
@@ -216,7 +223,11 @@ import {
 import { createAdminUsersRouter } from './routes/adminUsers.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
-import { buildKgHealth } from './health/kgHealth.js';
+import {
+  EMBEDDING_GATE_STATUS_SERVICE,
+  buildKgHealth,
+  type EmbeddingGateStatus,
+} from './health/kgHealth.js';
 import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
 import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
@@ -239,6 +250,7 @@ import {
   retryErroredPlugins,
   runLegacyBootstrap,
 } from './plugins/bootstrap.js';
+import { warmPatternWorker } from './plugins/setupFieldPattern.js';
 import { BuiltInPackageStore } from './plugins/builtInPackageStore.js';
 import { LocalDevPackageStore } from './plugins/localDevPackageStore.js';
 import { FileSecretVault, resolveMasterKey } from './secrets/fileVault.js';
@@ -258,6 +270,7 @@ import { NotificationRouter } from './platform/notificationRouter.js';
 import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
 import { OAuthReadinessTracker } from './plugins/oauth/oauthReadinessTracker.js';
 import { UiRouteCatalog } from './platform/uiRouteCatalog.js';
+import { createUiNavigationRouter } from './routes/uiNavigation.js';
 import { CanvasOutputRegistry } from './platform/canvasOutputRegistry.js';
 import { EventCatalogRegistry } from './platform/eventCatalogRegistry.js';
 import { DeterministicActionRegistry } from './platform/deterministicActionRegistry.js';
@@ -306,7 +319,11 @@ import { deriveChannelType } from './channels/channelType.js';
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import { backfillGraph } from '@omadia/orchestrator-extras';
 import { turnContext } from '@omadia/orchestrator';
-import type { EntityRefBus, KnowledgeGraph } from '@omadia/plugin-api';
+import type {
+  EmbeddingClient,
+  EntityRefBus,
+  KnowledgeGraph,
+} from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type {
   ChatAgent,
@@ -328,6 +345,17 @@ interface Microsoft365AccessorShim {
 
 /** Escape a value for safe inclusion inside a double-quoted XML/HTML attribute
  *  (used for the <mcp-auth-required> chat block, #459 W9). */
+/**
+ * Locales the operator web UI ships message catalogues for
+ * (`web-ui/messages/*.json`). Used to validate `?locale=` on the
+ * navigation endpoint before it reaches label resolution — an unknown
+ * locale renders English chrome rather than an error. Keep in sync with
+ * web-ui's catalogue; a missing entry here only costs a fallback to
+ * English, never a failure.
+ */
+const WEB_UI_LOCALES = ['en', 'de'] as const;
+const WEB_UI_DEFAULT_LOCALE = 'en';
+
 function xmlAttr(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -640,6 +668,24 @@ async function main(): Promise<void> {
   const flowPublicBaseUrl =
     config.FLOW_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL;
 
+  // Admin email whitelist — resolved here (ahead of its original A.1 spot
+  // below) because it's now ALSO a dependency of `operatorAuth`
+  // (`ctx.operatorAuth`, issue #438 follow-up), which the plugin runtimes
+  // constructed further down need at construction time. The `requireAuth`
+  // Express middleware built at the original A.1 site still uses this same
+  // instance — nothing there changes.
+  const emailWhitelist = new EmailWhitelist(config.ADMIN_ALLOWED_EMAILS);
+  // Issue #438 follow-up — kernel-published `ctx.operatorAuth`. Wraps the
+  // EXACT SAME session-verification logic `requireAuth` uses (see
+  // `operatorAuthAccessor.ts`), so a plugin's admin-only HTTP surface (e.g.
+  // `@omadia/channel-api`'s `/admin/keys`) can check the real operator
+  // session without re-implementing it. Threaded into every plugin runtime
+  // below so any plugin — not just channel plugins — can use it.
+  const operatorAuth = createOperatorAuthAccessor({
+    signingKey: sessionSigningKey,
+    whitelist: emailWhitelist,
+  });
+
   const installedRegistry = new FileInstalledRegistry(
     INSTALLED_REGISTRY_PATH,
   );
@@ -819,6 +865,7 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    operatorAuth,
     oauthConnectionTracker,
     canvasOutputRegistry,
     eventCatalogRegistry,
@@ -892,6 +939,7 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    operatorAuth,
     oauthConnectionTracker,
     selfExtendRegistry,
     extensionStore,
@@ -969,6 +1017,14 @@ async function main(): Promise<void> {
   // undefined on the in-memory backend (conductor inert); the install-time
   // template VALIDATION gate runs regardless.
   let conductorTemplateRegistrarRef: PluginTemplateRegistrar | undefined;
+
+  // Forward reference for the Conductor inbound-webhook router deps (issue #437) —
+  // same pattern as the template registrar above. The router itself is mounted
+  // further down, BEFORE express.json() (raw-body HMAC verification needs the
+  // untouched bytes); the real deps (endpoint store, event router, vault) are only
+  // built later inside the graphPool block's `wireConductor` call. By the time a real
+  // request arrives, the assignment there has already run.
+  let conductorWebhookInboundDepsRef: ConductorWebhookInboundDeps | undefined;
 
   // Forward refs — runtime propagation of a POST-BOOT agent-plugin
   // (de)activation into the per-Agent registry orchestrators + the fallback
@@ -1314,9 +1370,10 @@ async function main(): Promise<void> {
   });
 
   // ── Admin auth (A.1) ──────────────────────────────────────────────────────
-  // `sessionSigningKey` is resolved earlier (right after the vault loads) so
-  // the plugin runtimes can also use it for `ctx.flows` state signing.
-  const emailWhitelist = new EmailWhitelist(config.ADMIN_ALLOWED_EMAILS);
+  // `sessionSigningKey` (and `emailWhitelist`) are resolved earlier (right
+  // after the vault loads) so the plugin runtimes can also use them —
+  // `sessionSigningKey` for `ctx.flows` state signing, both together for
+  // `ctx.operatorAuth` (issue #438 follow-up).
   if (emailWhitelist.isEmpty()) {
     console.warn(
       '[middleware] ⚠ ADMIN_ALLOWED_EMAILS is empty — every sign-in will 403 until the secret is set',
@@ -1442,8 +1499,15 @@ async function main(): Promise<void> {
   // Graph + Bus lifetime; close() drains everything.
   // - graphPool may be undefined when the in-memory backend is active
   //   (no DATABASE_URL — used by tests + zero-config dev).
-  // - graphTenantId is read at the same place the plugin reads it so
-  //   verifier-store + plugin-internal embedding-backfill use the same key.
+  // - graphTenantId here is the ENV-derived value only. The knowledge-graph
+  //   plugin resolves its own tenant as `ctx.config.get('graph_tenant_id') ??
+  //   GRAPH_TENANT_ID ?? 'default'`, and `graph_tenant_id` is an
+  //   operator-settable setup field — so the two are NOT "read at the same
+  //   place", which an earlier version of this comment claimed. Anything that
+  //   must price or address the plugin's own corpus has to consult the
+  //   registry config first (see `resolveGraphTenantId` in
+  //   routes/adminEmbeddingProvider.ts); the consumers below use this value as
+  //   the deployment-wide default, which is what they have always done.
   const knowledgeGraph = serviceRegistry.get<KnowledgeGraph>('knowledgeGraph');
   if (!knowledgeGraph) {
     throw new Error(
@@ -2092,6 +2156,30 @@ async function main(): Promise<void> {
     console.log('[middleware] dev-platform GitHub webhook router mounted at /api/webhooks/github (raw-body, before express.json)');
   }
 
+  // The LLM proxy (`/api/v1/dev-runner/llm/*`, mounted later at `mountDevPlatform`)
+  // owns its own route-level `express.raw()` so it can canonicalise the exact bytes
+  // it validates before forwarding (see llmProxy.ts). A global body parser that runs
+  // BEFORE that route is reached would drain the request stream first: body-parser's
+  // `read()` bails out via `onFinished.isFinished(req)` on an already-consumed stream
+  // and never touches `req.body` again, so the route's own raw() would then see a
+  // pre-parsed object instead of a Buffer. Skip this one path here, mirroring the
+  // GitHub-webhook router's raw-body-before-json pattern above.
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/v1/dev-runner/llm/')) {
+      next();
+      return;
+    }
+    express.json({ limit: '10mb' })(req, res, next);
+  });
+  // Issue #437 — Conductor's generic inbound webhook route. Mounted unconditionally
+  // (mirrors the forward-reference pattern, not the `if (graphPool)` gate above): on
+  // the in-memory backend `conductorWebhookInboundDepsRef` never gets assigned, so the
+  // handler's `getDeps()` resolves undefined and every call answers 503 — the router
+  // itself must still be registered here, before express.json(), for the raw-body HMAC
+  // verification to ever see real request bytes once Conductor IS wired.
+  app.use(createConductorWebhooksInboundRouter(() => conductorWebhookInboundDepsRef));
+  console.log('[middleware] conductor webhook inbound router mounted at /api/hooks/:endpointId (raw-body, before express.json)');
+
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -2100,7 +2188,15 @@ async function main(): Promise<void> {
     // embeddings/semantic-recall/durable-tier/process-reuse availability) so a
     // silently-degraded deployment is observable here instead of only in boot
     // logs. Non-sensitive: capability states only, no secrets/URLs.
-    res.json({ status: 'ok', kg: buildKgHealth(installedRegistry) });
+    //
+    // #440 — the installed registry alone cannot see whether the embedding
+    // model/dimension gate actually let the knowledge-graph write vectors, so
+    // the gate outcome is read here too. Resolved per request rather than
+    // captured at boot: plugins can be toggled at runtime.
+    const gate = serviceRegistry.get<EmbeddingGateStatus>(
+      EMBEDDING_GATE_STATUS_SERVICE,
+    );
+    res.json({ status: 'ok', kg: buildKgHealth(installedRegistry, gate) });
   });
 
   // Friction-free pairing discovery (#293). Public-by-design (lives outside
@@ -2190,6 +2286,23 @@ async function main(): Promise<void> {
   // the sessions router to a different base path, the auth guarantee
   // travels with it.
   app.use('/api/chat', requireAuth, createChatSessionsRouter({ getStore: getChatSessionStore }));
+
+  // Plugin-contributed navigation. The web-ui shell renders a static nav for
+  // its own compiled surfaces and merges this for everything a plugin adds,
+  // which is what makes a feature genuinely installable: deactivate its
+  // plugin and the menu entry is gone without a frontend rebuild.
+  // `requireAuth` is defence-in-depth over the `/api` mount — the entry list
+  // discloses which features an operator has installed.
+  app.use(
+    '/api',
+    requireAuth,
+    createUiNavigationRouter({
+      catalog: uiRouteCatalog,
+      supportedLocales: WEB_UI_LOCALES,
+      defaultLocale: WEB_UI_DEFAULT_LOCALE,
+    }),
+  );
+  console.log('[middleware] ui navigation endpoint ready at /api/v1/ui/navigation');
 
   // In-app "Create Issue" button: operator connects their own GitHub
   // account via the device flow (only a public client id, no secret — so
@@ -2545,13 +2658,20 @@ async function main(): Promise<void> {
     // W2: role-principal gates resolve their live holder set against the same
     // conductor role store the conductor await gate uses.
     const devPlatformRoleStore = new ConductorRoleStore(graphPool);
-    // Epic #470 W4 — resolve the FlyMachinesBackend config when a dedicated runner
-    // app is set. The on-/off-Fly selection lives HERE so the assembly layer stays
-    // env-free: on Fly (FLY_APP_NAME injected) use the internal Machines API + a
-    // `.internal` 6PN phone-home address; off Fly use the public endpoints. Requires
-    // a digest-pinned image (DEV_RUNNER_IMAGE, falling back to DEV_RUNNER_DEFAULT_IMAGE).
-    // These operator URLs are DELIBERATELY not SSRF-guarded (`.internal` is valid here).
-    const flyRunnerImage = config.DEV_RUNNER_IMAGE ?? config.DEV_RUNNER_DEFAULT_IMAGE;
+    // The runner image, shared by every backend: FlyMachinesBackend (below) AND
+    // the DockerBackend job-policy config (assembleDevPlatform's `runnerImage`,
+    // further down) both derive from this one resolution. `DEV_RUNNER_IMAGE`
+    // wins when set (it's the name the daemon's own DEV_RUNNER_IMAGES/allowlist
+    // config uses too, so one operator-set var keeps every side in agreement);
+    // `DEV_RUNNER_DEFAULT_IMAGE` is the fallback. A digest-pinned image is
+    // required on Fly (enforced below); locally a floating tag is fine.
+    //
+    // Epic #470 W4 — the on-/off-Fly selection for the Machines backend lives
+    // HERE so the assembly layer stays env-free: on Fly (FLY_APP_NAME injected)
+    // use the internal Machines API + a `.internal` 6PN phone-home address; off
+    // Fly use the public endpoints. These operator URLs are DELIBERATELY not
+    // SSRF-guarded (`.internal` is valid here).
+    const resolvedRunnerImage = config.DEV_RUNNER_IMAGE ?? config.DEV_RUNNER_DEFAULT_IMAGE;
     // The runner app MUST be dedicated — NEVER this middleware's own Fly app, or a
     // job's ephemeral machine (running hostile repo code) would be provisioned into
     // the app that holds the middleware's machines, volumes, and app-level secrets
@@ -2565,13 +2685,13 @@ async function main(): Promise<void> {
       );
     }
     const flyConfig =
-      config.DEV_FLY_RUNNER_APP && flyRunnerImage && !flyAppIsSelf
+      config.DEV_FLY_RUNNER_APP && resolvedRunnerImage && !flyAppIsSelf
         ? {
             runnerApp: config.DEV_FLY_RUNNER_APP,
             apiBase: config.FLY_APP_NAME
               ? 'http://_api.internal:4280/v1'
               : 'https://api.machines.dev/v1',
-            image: flyRunnerImage,
+            image: resolvedRunnerImage,
             phoneHomeUrl:
               config.DEV_FLY_PHONE_HOME_URL ??
               (config.FLY_APP_NAME
@@ -2587,7 +2707,7 @@ async function main(): Promise<void> {
             ...(config.DEV_FLY_REGION ? { region: config.DEV_FLY_REGION } : {}),
           }
         : undefined;
-    if (config.DEV_FLY_RUNNER_APP && !flyRunnerImage) {
+    if (config.DEV_FLY_RUNNER_APP && !resolvedRunnerImage) {
       console.warn(
         '[middleware] DEV_FLY_RUNNER_APP set but no runner image (DEV_RUNNER_IMAGE / DEV_RUNNER_DEFAULT_IMAGE) — FlyMachinesBackend NOT registered',
       );
@@ -2614,7 +2734,7 @@ async function main(): Promise<void> {
       ...(config.DEV_RUNNER_DAEMON_URL ? { daemonUrl: config.DEV_RUNNER_DAEMON_URL } : {}),
       backend: config.DEV_PLATFORM_BACKEND,
       leaseTtlSec: config.DEV_JOB_LEASE_TTL_SEC,
-      ...(config.DEV_RUNNER_DEFAULT_IMAGE ? { runnerImage: config.DEV_RUNNER_DEFAULT_IMAGE } : {}),
+      ...(resolvedRunnerImage ? { runnerImage: resolvedRunnerImage } : {}),
       ...(config.DEV_EGRESS_BASE_ALLOWLIST
         ? { egressBaseAllowlist: csvList(config.DEV_EGRESS_BASE_ALLOWLIST) }
         : {}),
@@ -2715,6 +2835,26 @@ async function main(): Promise<void> {
       `[middleware] dev platform ENABLED — worker running (max ${String(config.DEV_PLATFORM_MAX_CONCURRENT_JOBS)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
     );
 
+    // Contribute the operator menu entry instead of hardcoding it in the
+    // web-ui shell. This is the first consumer of the nav catalogue and the
+    // reason it exists: dev-platform is being extracted into a plugin
+    // (specs/470-dev-platform-plugin/plan.md), and its menu entry has to
+    // travel with it. Registering from here — still core, still inside the
+    // DEV_PLATFORM_ENABLED gate — proves the whole loop before any code
+    // moves. When the plugin package lands, this call becomes
+    // `ctx.uiRoutes.registerNav(...)` inside its activate() and nothing
+    // else about the shell changes.
+    //
+    // The `core:` prefix marks a kernel-registered source; a real plugin's
+    // entries are keyed by its plugin id, which the kernel injects.
+    uiRouteCatalog.registerNav('core:dev-platform', {
+      navId: 'devPlatform',
+      href: '/admin/dev-platform',
+      cluster: 'adminCluster',
+      order: 50,
+      label: { en: 'Dev Platform', de: 'Dev-Plattform' },
+    });
+
     // W5 data lifecycle — the daily retention sweep (two-tier event prune). The
     // per-job event cap + artifact ceiling are enforced inline at write time; this
     // cron only prunes aged rows. Terminal-job purge stays operator-driven via
@@ -2764,8 +2904,12 @@ async function main(): Promise<void> {
       app,
       requireAuth,
       getRegistry,
-      invokeAction: (toolId, input) => dynamicAgentRuntime.invokeAgentTool(toolId, input),
-      listActions: () => deterministicActionRegistry.list(),
+      // `webhook.post` (issue #437) is a built-in action, not a plugin tool — special-cased
+      // ahead of the dynamicAgentRuntime dispatch so a Designer action step can fire an
+      // ad-hoc outbound webhook without an installed connector.
+      invokeAction: (toolId, input) =>
+        toolId === WEBHOOK_POST_ACTION_ID ? invokeWebhookPostAction(input) : dynamicAgentRuntime.invokeAgentTool(toolId, input),
+      listActions: () => [WEBHOOK_POST_ACTION_ID, ...deterministicActionRegistry.list()],
       eventCatalog: eventCatalogRegistry,
       // US5 reminders: resolve a channel's proactive sender from the routines senderRegistry. Adapt
       // ProactiveSender → the worker's minimal shape ({ text } is a valid SemanticAnswer).
@@ -2773,8 +2917,22 @@ async function main(): Promise<void> {
         const sender = routinesHandle?.senderRegistry.get(channel);
         return sender ? { send: (opts) => sender.send(opts) } : undefined;
       },
+      // Issue #437 — inbound endpoint secrets + outbound subscription signing secrets
+      // live in the same per-agent-scoped vault as every other subsystem's credentials.
+      vault: secretVault,
+      webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
+      webhookInboundMaxPerMinute: config.CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE,
+      // Review finding — the operator UI must display an inbound endpoint URL it can
+      // actually reach; PUBLIC_BASE_URL alone isn't reliable here since it may
+      // deliberately point at the Next.js dev-server origin (browser-facing), which
+      // doesn't proxy /api/hooks/*. CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL overrides it
+      // when the two must differ.
+      webhookInboundBaseUrl: config.CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL,
       log: (m) => console.log(m),
     });
+    // Issue #437 — resolve the inbound-webhook forward reference mounted earlier
+    // (before express.json()); requests arriving from here on reach the real deps.
+    conductorWebhookInboundDepsRef = conductorWiring.webhookInboundDeps;
     // Expose the event router so plugin contexts (ctx.events.emit) resolve it lazily — US4.
     serviceRegistry.provide('conductorEventRouter', conductorWiring.eventRouter);
     // Expose the channel-binding store so the routines turn-capture hook can populate it — US5.
@@ -3020,6 +3178,9 @@ async function main(): Promise<void> {
       registry: installedRegistry,
       client: registryClient,
       pluginStatusRegistry,
+      // OM-16 — key-name-only vault access so the store can report whether an
+      // installed plugin is actually configured (never reads secret VALUES).
+      vault: secretVault,
       // Issue #453 — read-only code-scan verdict on the detail response
       // plus the operator ack endpoint. Lookup only, never scans on GET.
       verdicts: pluginVerdictLookup,
@@ -3323,6 +3484,44 @@ async function main(): Promise<void> {
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
+
+  // Embedding-provider switch (#440 follow-up) — pick which `embeddingClient@1`
+  // adapter is active, LIVE. Unlike the memory-backend router next door this
+  // one does not persist-and-ask-for-a-restart: it deactivates the outgoing
+  // provider, activates the target, and asks the knowledge-graph's gate to
+  // re-evaluate ITSELF against the new provider (rewriting the vector columns
+  // when the width changed and the operator confirmed the discard), inside this
+  // process.
+  //
+  // It deliberately does NOT get `reactivate`. Re-activating the knowledge
+  // graph runs its `close()`, which ends `graphPool` — the pool captured once
+  // right here and shared with ~40 subsystems below. Handing the router that
+  // capability is what made every successful switch poison them all with
+  // "Cannot use a pool after calling end on the pool".
+  app.use(
+    '/api/v1/admin/embedding-provider',
+    requireAuth,
+    createAdminEmbeddingProviderRouter({
+      installedRegistry,
+      catalog: pluginCatalog,
+      getEmbeddingClient: () =>
+        serviceRegistry.get<EmbeddingClient>('embeddingClient'),
+      // Resolved per request, never captured: `vectorWritesAllowed` flips
+      // false→true in-process when a stale-vector clear drains, and the whole
+      // point of the page is that the operator sees that without a reload.
+      getGateStatus: () =>
+        serviceRegistry.get<EmbeddingGateStatus>(EMBEDDING_GATE_STATUS_SERVICE),
+      getGraphPool: () => graphPool,
+      // Env-derived fallback. The router prefers the KG plugin's own
+      // `graph_tenant_id` setup field when one is set.
+      tenantId: graphTenantId,
+      activate: (id) => toolPluginRuntime.activate(id),
+      deactivate: (id) => toolPluginRuntime.deactivate(id),
+    }),
+  );
+  console.log(
+    '[middleware] embedding-provider switch ready at /api/v1/admin/embedding-provider (auth: required)',
+  );
 
   // Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
   // (Claude/Codex/Gemini) so the operator can run agents on a subscription.
@@ -4168,6 +4367,7 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    operatorAuth,
     eventCatalogRegistry,
     resolver: channelPluginResolver,
     coreApi: channelCoreApi,
@@ -4225,6 +4425,12 @@ async function main(): Promise<void> {
   // IPv4 (legacy + local dev) clients are served. Default `0.0.0.0` would
   // miss IPv6-only Fly-internal traffic — Stolperfalle #4 in
   // memory/feedback-fly-operational.
+  // Boot the setup-field pattern worker now, so the first operator to save a
+  // plugin credential does not pay thread creation inside their request's
+  // match budget (#607). Fire-and-forget: the worker is created on demand
+  // anyway, this only moves the cost off the critical path.
+  void warmPatternWorker();
+
   const server = app.listen(config.PORT, config.HOST, () => {
     console.log(`[middleware] listening on [${config.HOST}]:${config.PORT}`);
     console.log(`[middleware] skills dir: ${config.SKILLS_DIR}`);

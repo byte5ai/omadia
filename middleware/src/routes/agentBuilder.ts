@@ -60,6 +60,7 @@ import { importSkillMarkdown } from '../services/skillImport.js';
 import { serializeSkillMarkdown } from '../services/skillLoader.js';
 import {
   combineWithLlmSeverity,
+  computeVerdict,
   CURRENT_VERIFIER_VERSION,
   getOrComputeVerdict,
   type Severity,
@@ -69,6 +70,7 @@ import {
 } from '../services/skillVerdict.js';
 import {
   getOrComputeLlmVerdict,
+  sanitizeVerdictRationale,
   type LlmVerdictStore,
   type LlmVerifier,
 } from '../services/skillVerdictLlmVerifier.js';
@@ -642,8 +644,16 @@ export function createAgentBuilderRouter(
             llmRow && deterministicField.severity
               ? combineWithLlmSeverity(deterministicField.severity, llmRow.severity)
               : llmRow?.severity ?? deterministicField.severity,
+          // OM-26 read-path scrub: rows persisted BEFORE the verifier started
+          // storing `scan_failed:<code>` still hold the raw provider JSON
+          // (`request_id` and all). Redacting only in the web-ui renderer would
+          // still put it in this response body.
           llm: llmRow
-            ? { severity: llmRow.severity, rationale: llmRow.rationale, computedAt: llmRow.computedAt }
+            ? {
+                severity: llmRow.severity,
+                rationale: sanitizeVerdictRationale(llmRow.severity, llmRow.rationale),
+                computedAt: llmRow.computedAt,
+              }
             : null,
         },
         usedByCount: usedBy.length,
@@ -751,7 +761,15 @@ export function createAgentBuilderRouter(
         skill.frontmatter,
         skill.body,
       );
-      res.json({ llm: { severity: row.severity, rationale: row.rationale, computedAt: row.computedAt } });
+      // Same OM-26 read-path scrub as GET /skills/:id — this endpoint also
+      // serves whatever is already persisted when the verdict is cache-hit.
+      res.json({
+        llm: {
+          severity: row.severity,
+          rationale: sanitizeVerdictRationale(row.severity, row.rationale),
+          computedAt: row.computedAt,
+        },
+      });
     } catch (err) {
       fail(res, err);
     }
@@ -817,19 +835,40 @@ export function createAgentBuilderRouter(
       const result = await importSkillMarkdown(l.graph, { raw, sourcePath, resources }, { dryRun });
       if (!dryRun && result.outcome !== 'unchanged') {
         await reload(l);
-        // Post-review fix: the deterministic verdict was previously only ever
-        // computed by the offline backfill script — a skill imported through
-        // this route (the primary onboarding path) never got scanned until
-        // someone manually ran that script. Cheap (regex-only), so safe to
-        // await inline here, unlike the Phase 1b LLM path.
-        await getOrComputeVerdict(
-          deterministicVerdictStoreFor(l),
-          result.contentHash,
-          result.skill.frontmatter,
-          result.skill.body,
-        );
       }
-      res.json(result);
+      // Post-review fix: the deterministic verdict was previously only ever
+      // computed by the offline backfill script — a skill imported through
+      // this route (the primary onboarding path) never got scanned until
+      // someone manually ran that script. Cheap (regex-only), so safe to
+      // await inline here, unlike the Phase 1b LLM path.
+      //
+      // OM-25: the verdict used to be computed and then THROWN AWAY, so an
+      // import that landed as "⚠ MARKIERT — PRÜFUNG EMPFOHLEN" in the registry
+      // was confirmed to the user as a plain success. It now travels on the
+      // response. Deriving it client-side from `result.risks` was rejected on
+      // purpose: `risks` cannot express `too_large_to_scan` or `scan_failed`,
+      // and duplicating `computeVerdict`'s thresholds guarantees drift.
+      const verdict = dryRun
+        ? // Dry run persists nothing, so read no store — `computeVerdict` is the
+          // same pure thresholding the persisted path uses, so the preview and
+          // the committed verdict cannot disagree.
+          computeVerdict(result.contentHash, result.risks)
+        : await getOrComputeVerdict(
+            deterministicVerdictStoreFor(l),
+            result.contentHash,
+            result.skill.frontmatter,
+            result.skill.body,
+          );
+      res.json({
+        ...result,
+        // Flatten to the plain code list the web-ui's `SkillVerdict.riskCodes`
+        // expects — the nested per-verifier shape crashed the "why" panel once
+        // already (see `flattenRiskCodes`).
+        verdict: {
+          severity: verdict.severity,
+          riskCodes: flattenRiskCodes(verdict.riskCodes),
+        },
+      });
     } catch (err) {
       fail(res, err);
     }

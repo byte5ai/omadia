@@ -41,6 +41,7 @@ import {
   type NotificationsAccessor,
   type OAuthTokensAccessor,
   OAuthTokenError,
+  type OperatorAuthAccessor,
   type PluginContext,
   type RoutesAccessor,
   type PluginActionStatus,
@@ -168,6 +169,11 @@ export interface CreatePluginContextOptions {
   /** Spec 004 — kernel store backing `ctx.status`. Optional: when absent the
    *  accessor is a no-op (test/migration contexts don't surface status). */
   pluginStatusRegistry?: PluginStatusRegistry;
+  /** Issue #438 follow-up — kernel-published `ctx.operatorAuth`. Optional:
+   *  absent in narrow test/migration contexts, in which case `ctx.operatorAuth`
+   *  is `undefined` and any plugin admin-router relying on it MUST fail closed
+   *  (see the `PluginContext.operatorAuth` doc comment). */
+  operatorAuth?: OperatorAuthAccessor;
   logger?: (...args: unknown[]) => void;
 }
 
@@ -234,11 +240,14 @@ export function createPluginContext(
     has(name: string): boolean {
       return serviceRegistry.has(name);
     },
+    // Owner attribution comes from the kernel-known `agentId`, never from
+    // the caller — it is what lets `disposeBySource(agentId)` unregister a
+    // plugin's services on deactivate.
     provide<T>(name: string, impl: T): () => void {
-      return serviceRegistry.provide(name, impl);
+      return serviceRegistry.provide(name, impl, agentId);
     },
     replace<T>(name: string, impl: T): () => void {
-      return serviceRegistry.replace(name, impl);
+      return serviceRegistry.replace(name, impl, agentId);
     },
   };
 
@@ -691,6 +700,9 @@ export function createPluginContext(
     register(input) {
       return opts.uiRouteCatalog.register(agentId, input);
     },
+    registerNav(input) {
+      return opts.uiRouteCatalog.registerNav(agentId, input);
+    },
   };
 
   // OB-29-1 — SubAgentAccessor: present iff the manifest declares
@@ -791,6 +803,7 @@ export function createPluginContext(
     ...(flows ? { flows } : {}),
     ...(oauthTokens ? { oauthTokens } : {}),
     ...(events ? { events } : {}),
+    ...(opts.operatorAuth ? { operatorAuth: opts.operatorAuth } : {}),
     status,
     log,
   };

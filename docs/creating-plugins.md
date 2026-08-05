@@ -456,6 +456,7 @@ lokal und startet dann den normalen Install-Job.
 - Admin-UI-Constraints: `middleware/assets/boilerplate/agent-integration/assets/admin-ui/CLAUDE.md`
 - Kanonischer Agent: `middleware/packages/agent-seo-analyst/`
 - Channel-SDK: `middleware/packages/harness-channel-sdk/src/` (`@omadia/channel-sdk`) — inkl. `getChatAgent(ctx)`
+- API-Key-Auth (server-to-server Bearer statt Session-Cookie): `middleware/packages/harness-api-key-auth/src/` (`@omadia/api-key-auth`) — `requireApiKey(...)` als mountbare Express-Middleware, inkl. Key-Store, Scopes, Rate-Limit, Audit-Log
 - Öffentliches Channel-Referenz-Plugin: `byte5ai/omadia-channel-whatsapp`
 - Runtime-Contract: `middleware/packages/plugin-api/src/pluginContext.ts` (`@omadia/plugin-api`)
 - Manifest-Schema (inkl. `channel:`-Block §14): `docs/harness-platform/manifest-schema.v1.yaml`

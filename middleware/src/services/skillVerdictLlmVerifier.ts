@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 
 import { collectText, textMessage, type LlmProvider } from '@omadia/llm-provider';
 
+import { redactProviderInternals } from './providerInternalsRedaction.js';
 import {
   CURRENT_VERIFIER_VERSION,
   type Severity,
@@ -17,6 +18,91 @@ export type LlmSeverity =
 export interface LlmVerdict {
   readonly severity: LlmSeverity;
   readonly rationale: string;
+}
+
+/**
+ * OM-26 — machine-readable failure codes carried in `rationale`.
+ *
+ * A customer saw this in the UI:
+ *
+ *   Tiefen-Scan-Hinweis: llm completion failed: 401 {"type":"error","error":
+ *   {"type":"authentication_error","message":"invalid x-api-key"},
+ *   "request_id":"req_011CdcPnpMTB8iyAmMBnbem8"}
+ *
+ * The raw provider payload — including a provider-internal request id — was
+ * interpolated straight into `rationale` and rendered verbatim. A provider
+ * request id must NEVER reach the UI: it is an internal correlation handle,
+ * it is meaningless to the operator, and it invites pasting vendor internals
+ * into support channels.
+ *
+ * Rather than add a column to `skill_verdicts`, failures now store one of these
+ * stable codes IN `rationale`. The prefix makes them unambiguously
+ * distinguishable from a genuine free-text LLM rationale, and the UI maps them
+ * to localized copy (with an actionable link for `auth`). The raw error is
+ * logged server-side only.
+ *
+ * `auth` / `rate_limit` / `overloaded` / `provider_error` come straight from
+ * `LlmProvider.classifyError()` — the existing, already-tested primitive — so
+ * this file does not re-invent per-vendor error parsing.
+ */
+export const SCAN_FAILED_CODE_PREFIX = 'scan_failed:';
+
+export type ScanFailedCode =
+  | 'auth'
+  | 'rate_limit'
+  | 'overloaded'
+  | 'provider_error'
+  | 'timeout'
+  | 'malformed_json'
+  | 'unsupported_severity'
+  | 'missing_rationale'
+  | 'unexpected';
+
+const SCAN_FAILED_CODES: ReadonlySet<string> = new Set<ScanFailedCode>([
+  'auth',
+  'rate_limit',
+  'overloaded',
+  'provider_error',
+  'timeout',
+  'malformed_json',
+  'unsupported_severity',
+  'missing_rationale',
+  'unexpected',
+]);
+
+/** Build the sentinel rationale for a failure code. */
+export function scanFailedRationale(code: ScanFailedCode): string {
+  return `${SCAN_FAILED_CODE_PREFIX}${code}`;
+}
+
+/**
+ * OM-26 — make ANY rationale safe to serialize, on the write path and the read
+ * path alike.
+ *
+ * Two distinct cases, because they need different treatment:
+ *
+ *  - `scan_failed` rows. Post-fix these are always a `scan_failed:<code>`
+ *    sentinel. Anything else in that field is a row persisted by the OLD
+ *    verifier, i.e. a raw provider payload — and token-scrubbing a raw payload
+ *    is a losing game: masking `request_id` still leaves `x-api-key`,
+ *    `authentication_error`, and whatever the next vendor decides to put in a
+ *    body we have never seen. So a legacy value is not scrubbed, it is
+ *    REPLACED by the generic code. The UI already renders that code as
+ *    localized copy, so the operator ends up better informed than before.
+ *  - Everything else is a genuine free-text LLM judgment about the skill. It
+ *    must survive, so it only gets the token scrubber — the model quotes the
+ *    skill body back at us and a skill body can contain anything.
+ */
+export function sanitizeVerdictRationale(
+  severity: Severity,
+  rationale: string | null,
+): string | null {
+  if (rationale === null) return null;
+  if (severity !== 'scan_failed') return redactProviderInternals(rationale);
+  const code = rationale.startsWith(SCAN_FAILED_CODE_PREFIX)
+    ? rationale.slice(SCAN_FAILED_CODE_PREFIX.length).trim()
+    : '';
+  return SCAN_FAILED_CODES.has(code) ? rationale : scanFailedRationale('provider_error');
 }
 
 /**
@@ -157,20 +243,21 @@ ${body}
         );
         text = collectText(response.content);
       } catch (err) {
-        return scanFailedVerdict(
-          `llm completion failed: ${err instanceof Error ? err.message : 'unknown'}`,
-        );
+        // OM-26 — classify, log the detail SERVER-SIDE, and return only a code.
+        // The previous `${err.message}` interpolation shipped the provider's raw
+        // 401 body (with its `request_id`) to the browser.
+        return scanFailedVerdict(classifyScanFailure(opts.provider, err));
       }
 
       const parsed = parseJsonObject(text);
       if (!parsed) {
-        return scanFailedVerdict('llm returned malformed verdict JSON');
+        return scanFailedVerdict('malformed_json');
       }
       if (!isLlmOutputSeverity(parsed.severity)) {
-        return scanFailedVerdict('llm returned an unsupported severity');
+        return scanFailedVerdict('unsupported_severity');
       }
       if (typeof parsed.rationale !== 'string' || parsed.rationale.trim().length === 0) {
-        return scanFailedVerdict('llm returned a missing rationale');
+        return scanFailedVerdict('missing_rationale');
       }
 
       return {
@@ -272,6 +359,15 @@ function startBackgroundScan(
         }),
       );
     } catch (err) {
+      // OM-26 twin of the in-verifier catch: the raw throw is logged here and
+      // NEVER persisted, because whatever lands in `rationale` is rendered to
+      // the operator. `verify()` already converts provider errors into codes,
+      // so reaching this branch means the verifier itself broke — an
+      // implementation bug, and the operator gets a generic code for it.
+      console.error(
+        `[skill-verdict] llm verifier threw unexpectedly (model=${verifier.modelId}):`,
+        err instanceof Error ? (err.stack ?? err.message) : String(err),
+      );
       await store.upsertVerdict(
         buildVerdictRow({
           contentHash,
@@ -279,9 +375,7 @@ function startBackgroundScan(
           modelId: verifier.modelId,
           promptHash,
           severity: 'scan_failed',
-          rationale: `llm verifier threw unexpectedly: ${
-            err instanceof Error ? err.message : 'unknown'
-          }`,
+          rationale: scanFailedRationale('unexpected'),
         }),
       );
     }
@@ -308,13 +402,54 @@ function buildVerdictRow(input: {
     promptHash: input.promptHash,
     severity: input.severity,
     riskCodes: [],
-    rationale: input.rationale,
+    // OM-26 write-path scrub. The failure branches already store a
+    // `scan_failed:<code>` sentinel, but the SUCCESS branch persists free text
+    // the model produced — and the model is quoting the skill body back at us.
+    // Same function as the read path, so the two cannot drift.
+    rationale: sanitizeVerdictRationale(input.severity, input.rationale),
     computedAt: new Date(),
   };
 }
 
-function scanFailedVerdict(rationale: string): LlmVerdict {
-  return { severity: 'scan_failed', rationale };
+function scanFailedVerdict(code: ScanFailedCode): LlmVerdict {
+  return { severity: 'scan_failed', rationale: scanFailedRationale(code) };
+}
+
+/**
+ * OM-26 — turn a thrown provider error into a UI-safe code, logging the raw
+ * detail server-side.
+ *
+ * Delegates to `LlmProvider.classifyError()` (the vendor knowledge already
+ * lives there and is already tested — Anthropic maps 401 → `auth`) instead of
+ * re-parsing status codes here. A provider whose `classifyError` itself throws
+ * must not take the scan down with it, hence the inner guard.
+ */
+function classifyScanFailure(provider: LlmProvider, err: unknown): ScanFailedCode {
+  const detail = err instanceof Error ? err.message : String(err);
+  // Server-side only. This is the ONLY place the raw provider payload appears;
+  // the returned code is all the UI ever sees.
+  console.error(
+    `[skill-verdict] llm completion failed (provider=${provider.id}):`,
+    detail,
+  );
+
+  if (err instanceof TimeoutError) return 'timeout';
+
+  try {
+    const kind = provider.classifyError(err).kind;
+    switch (kind) {
+      case 'auth':
+        return 'auth';
+      case 'rate_limit':
+        return 'rate_limit';
+      case 'overloaded':
+        return 'overloaded';
+      default:
+        return 'provider_error';
+    }
+  } catch {
+    return 'provider_error';
+  }
 }
 
 function parseJsonObject(

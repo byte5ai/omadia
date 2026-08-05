@@ -12,7 +12,13 @@ const LAST_STEP = 4;
 const state = {
   step: 0,
   dataDir: null,
+  /* True only after `testLlmKey` came back ok for the CURRENTLY entered
+     provider+key. Reset on every edit below — a verdict about a previous key
+     says nothing about this one. */
   keyVerified: false,
+  /* Set when the user pressed Continue on the key step without a successful
+     probe. The next press goes through. */
+  unverifiedAcknowledged: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -76,8 +82,30 @@ function validateCurrent() {
       flashTest('Please enter your API key first.', false);
       return false;
     }
+    /* The wizard used to run the key probe and then throw the result away, so a
+       typo'd or revoked key sailed through setup and resurfaced much later as an
+       unexplained "invalid x-api-key" on every chat message. Consult the probe
+       here instead. It is an acknowledgement, not a hard block: the probe also
+       fails on an air-gapped or offline machine, and the wizard has to stay
+       usable there — so the first Continue explains, the second proceeds. */
+    if (!state.keyVerified && !state.unverifiedAcknowledged) {
+      state.unverifiedAcknowledged = true;
+      flashTest(
+        'This key has not been verified yet. Press "Test key" to check it — or press Continue again to set it up unverified.',
+        false,
+      );
+      return false;
+    }
   }
   return true;
+}
+
+/* Any edit to the provider or the key invalidates the previous probe result —
+   otherwise "Test key" on a good key followed by pasting a bad one would still
+   read as verified. */
+function resetKeyVerification() {
+  state.keyVerified = false;
+  state.unverifiedAcknowledged = false;
 }
 
 function flashTest(msg, ok) {
@@ -171,6 +199,9 @@ $('#next').addEventListener('click', () => {
 $('#back').addEventListener('click', () => {
   if (state.step > 0) goto(state.step - 1);
 });
+
+$('#apiKey').addEventListener('input', resetKeyVerification);
+$('#provider').addEventListener('change', resetKeyVerification);
 
 $('#testKey').addEventListener('click', async () => {
   if (!bridgeOk()) return;

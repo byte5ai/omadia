@@ -251,6 +251,20 @@ describe('dev-platform compose overlay — one image, two services, two commands
     // never an image. `parseAllowedImages` throws when this is absent.
     assert.ok(overlay.services['dev-runner-daemon']!.environment!['DEV_RUNNER_ALLOWED_IMAGES']);
   });
+
+  it('actually forwards DEV_RUNNER_REQUIRE_DIGEST into the daemon container', () => {
+    // A var that only exists in a comment is not configuration. Before this key
+    // was added to `environment:`, `env.DEV_RUNNER_REQUIRE_DIGEST` was always
+    // undefined inside the container regardless of what .env said, and
+    // `parseRequireDigest` silently defaults undefined to `true` — so every
+    // locally-built, non-digest-pinned image was refused, no matter how the
+    // operator set the var. The key must be PRESENT (any value, incl. the
+    // default 'true'); its absence is the actual bug this guards.
+    assert.ok(
+      'DEV_RUNNER_REQUIRE_DIGEST' in (overlay.services['dev-runner-daemon']!.environment ?? {}),
+      'DEV_RUNNER_REQUIRE_DIGEST must be forwarded, not just documented in a comment',
+    );
+  });
 });
 
 describe('dev-platform compose overlay — the MERGED config, not just the overlay map', { skip: !merged }, () => {
@@ -270,5 +284,73 @@ describe('dev-platform compose overlay — the MERGED config, not just the overl
       const src = typeof v === 'string' ? v : `${v.source ?? ''}:${v.target ?? ''}`;
       assert.ok(!src.includes('docker.sock'), `merged middleware has a docker socket: ${JSON.stringify(v)}`);
     }
+  });
+});
+
+describe('dev-platform compose overlay — the middleware can actually derive a job policy', () => {
+  // Without a runner image, `wireDevPlatform`'s jobPolicyConfig never builds and
+  // GET /internal/job-policy/:jobId 503s forever — every DockerBackend provision
+  // fails at the first real container (the implement phase; analyze/plan/clarify
+  // don't need one, so this gap is invisible until a real job actually runs).
+  // This was true of the shipped overlay for the whole life of the epic.
+  it('gives the middleware a runner image, not just the daemon', () => {
+    const env = overlay.services['middleware']?.environment ?? {};
+    assert.ok(
+      env['DEV_RUNNER_DEFAULT_IMAGE'] || env['DEV_RUNNER_IMAGE'],
+      'middleware needs DEV_RUNNER_DEFAULT_IMAGE (or DEV_RUNNER_IMAGE) or every job dies at implement with a 502',
+    );
+  });
+
+  it('agrees with the daemon on which image that is', () => {
+    // Same source var (DEV_RUNNER_IMAGE) feeds both sides, so an operator who
+    // sets it once cannot end up with the daemon allowing image A while the
+    // middleware's policy names image B.
+    const middlewareImage = overlay.services['middleware']?.environment?.['DEV_RUNNER_DEFAULT_IMAGE'];
+    const daemonImages = overlay.services['dev-runner-daemon']?.environment?.['DEV_RUNNER_IMAGES'];
+    assert.ok(middlewareImage, 'middleware image must be set to compare');
+    assert.ok(daemonImages?.includes(middlewareImage as string), 'daemon and middleware must name the same image');
+  });
+
+  it('never tells the runner to bypass the proxy for the middleware', () => {
+    // Job containers are created by dind on their own per-job network, which has
+    // NO route to dev-control -- the network `middleware` actually lives on.
+    // Only the proxy is dual-homed onto dev-egress (job-reachable) and
+    // dev-control (middleware-reachable). Bypassing the proxy for "middleware"
+    // routes phone-home into `getaddrinfo ENOTFOUND middleware` from inside the
+    // job's network -- exactly where every real job died after the
+    // runner-image/digest/token gates were fixed. The proxy's own egress policy
+    // already allows this host+port through (egressPolicy.mjs's `allowInternal`
+    // match against OMADIA_INTERNAL_API_URL), so there is no reason to bypass it.
+    const noProxy = overlay.services['dev-runner-daemon']?.environment?.['DEV_RUNNER_NO_PROXY'] ?? '';
+    const entries = noProxy.split(',').map((s) => s.trim());
+    assert.ok(!entries.includes('middleware'), 'middleware must route THROUGH the proxy, never around it');
+  });
+});
+
+describe('dev-platform compose overlay — the egress proxy can actually reach the internet', () => {
+  // Every job-egress network (dev-control, dev-engine, dev-egress) is
+  // deliberately `internal: true` -- correctly, none of them may reach
+  // outside. But dev-egress-proxy's ONLY job is being the one path a job
+  // container has to the real internet, and its `networks:` list used to name
+  // ONLY those internal ones -- so the proxy itself had no route out either,
+  // and every job's egress (git clone, npm install, ...) failed DNS resolution
+  // before the allowlist/CONNECT logic ever ran (verified live:
+  // `getaddrinfo EAI_AGAIN github.com` from inside the proxy container).
+  it('joins at least one network that is not internal: true', () => {
+    const proxyNetNames = networkNames(overlay.services['dev-egress-proxy']);
+    const external = proxyNetNames.filter((n) => overlay.networks?.[n]?.internal !== true);
+    assert.ok(
+      external.length > 0,
+      `dev-egress-proxy's networks (${proxyNetNames.join(', ')}) are ALL internal -- it has no path to the real internet`,
+    );
+  });
+
+  it('does not reach that network by sharing `omadia` with the app services', () => {
+    // Sharing the app's own bridge would make the proxy reachable from (and
+    // able to reach) middleware/web-ui laterally -- exactly what a separate
+    // egress plane exists to avoid. Its external route must be a network
+    // dedicated to it alone.
+    const proxyNetNames = networkNames(overlay.services['dev-egress-proxy']);
+    assert.ok(!proxyNetNames.includes('omadia'), 'the proxy must not join the app network for its egress route');
   });
 });

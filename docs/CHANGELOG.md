@@ -18,6 +18,538 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — API keys as a first-class authentication method, with per-key scopes (#439)
+
+- New workspace package `@omadia/api-key-auth`
+  (`middleware/packages/harness-api-key-auth/`). The API-key primitives
+  #438 shipped inside `@omadia/channel-api` — mint/sha256-hash/constant-time
+  verify, the vault-backed key store, the per-key rate limiter, the usage
+  audit log — moved here unchanged, so there is exactly **one**
+  implementation of the credential. A shared workspace package is the only
+  home both sides can reach: the kernel must never import a channel plugin,
+  and a plugin cannot import kernel source (`middleware/src/auth/` is not
+  resolvable from a package whose `tsconfig` has `rootDir: src`). Same role
+  `@omadia/plugin-api` and `@omadia/channel-sdk` already play. The package is
+  dependency-free apart from an `express` peer — its storage dependency is a
+  structural subset (`ApiKeySecretStorage`) that `SecretsAccessor` satisfies
+  without an adapter. No new npm dependencies, matching #438.
+- New mountable Express middleware `requireApiKey({ apiKeys, rateLimiter,
+  auditLog, scope })`: any route or plugin can apply it and be authenticated
+  by a server-to-server bearer key instead of the `omadia_session` cookie
+  (driving use case: a Laravel/PHP integration with no human session behind
+  it). It attaches an `ApiKeyPrincipal` to `req.apiKey` and deliberately does
+  **not** populate `req.session` — `SessionClaims.role` is hard-typed
+  `'admin'`, so synthesizing a session for a machine would make every
+  session-reading route downstream silently treat a key as an operator.
+  401/403/429 use the `{ error, message }` shape #438 established for the
+  public API surface, not the session gate's `{ code, message }`, so the wire
+  format of `POST /api/public/v1/chat` is unchanged.
+- Per-key **scopes**: `<resource>:<action>` strings (or the global `*`),
+  matched exactly — no prefix wildcards, which are how "I thought `admin:*`
+  didn't cover `admin:delete`" happens. A route declares the scope it needs;
+  a key without it gets `403 forbidden` and a `forbidden` audit entry.
+  Backward compatible: a key persisted before scopes existed carries no
+  `scopes` field and is normalized to `['chat:write']` — exactly the one
+  capability it had when it was minted. Defaulting such keys to `*` would
+  also keep them working and would silently widen every existing key to
+  whatever scoped surface lands next, so it is not what we do.
+  `POST /api/public/v1/admin/keys` accepts a `scopes` array (validated, 400
+  on a malformed scope) and `GET` lists it.
+- `normalizeScopes` distinguishes an **absent** `scopes` field from a
+  **malformed** one, because collapsing the two turns a read error into a
+  capability grant. Absent (`undefined`) → the legacy `['chat:write']`.
+  Present but unreadable — not an array (`"memory:read"` stored as a bare
+  string), an empty array, or an array with any invalid entry
+  (`['Chat:Write']`, `['chat:write','nonsense']`) → the **empty** scope set:
+  the key still authenticates, and every scope check on it fails closed with
+  `403`. A malformed record is at least as likely to be a key an operator
+  deliberately restricted *away* from chat as it is to be a lost pre-#439
+  key, and defaulting it to `chat:write` would hand back exactly the access
+  that was removed. Partially-valid arrays deny rather than silently narrow.
+  Every such case logs `[api-key-auth] malformed persisted scopes` so an
+  operator can tell a corrupt record from a revoked key. The scope set is
+  always persisted explicitly at `create()` time, so nothing this store
+  writes can be mistaken for a pre-#439 record.
+- Creation agrees with that read path on the same value. Only an **omitted**
+  `scopes` field resolves to the legacy default; an explicitly supplied `[]`
+  is rejected — `400` at the admin route, and a throw from `create()` for
+  callers using the package directly. Otherwise one field would mean "deny
+  everything" on read and "grant `chat:write`" on write, so an operator asking
+  for a zero-capability key would have been handed a chat-capable one.
+- `@omadia/channel-api` now consumes the shared package instead of owning
+  the code: `chatRouter.ts` mounts `requireApiKey` with `scope: 'chat:write'`
+  rather than parsing bearer headers itself. Behaviour and wire format of
+  `POST /api/public/v1/chat` are unchanged, and its existing test suite
+  passes as written (only the moved modules' import paths were repointed).
+- `middleware/src/auth/publicPaths.ts` is deliberately **not** broadened —
+  `/api/public/v1/chat` is still the only exempted API-key route. Its comment
+  now records what a future route that mounts `requireApiKey` has to do.
+- The `scopes` additions to `/api/public/v1/admin/keys` sit **on top of** the
+  kernel-level `ctx.operatorAuth` session gate that the entry below adds to
+  that router, not beside it: an anonymous `POST` carrying `scopes: ['*']`
+  is rejected `401` before any handler runs, covered by its own regression
+  test in `adminKeysRouter.test.ts`.
+- Tests: `test/auth/requireApiKey.test.ts`, `test/auth/apiKeyScopes.test.ts`,
+  and `test/channelApi/apiKeyAuthReuseSeam.test.ts` — the last one is a
+  structural guard on the seam itself (the plugin holds no second copy of the
+  primitives, and `middleware/src` imports no channel plugin), because
+  "where does this code live" is a property no runtime assertion can express
+  and the cheapest one to regress.
+
+### Added — public API channel: chat over HTTP with per-key auth (#438)
+
+- New built-in channel package `@omadia/channel-api`
+  (`middleware/packages/harness-channel-api/`) exposes `POST
+  /api/public/v1/chat` — a documented, self-authenticating HTTP entry point
+  external systems can drive without a channel adapter or the operator UI.
+  Streams the SAME NDJSON event framing as `/chat/stream` and dispatches
+  through `CoreApi.handleTurnStream`, so PII masking (privacy-guard), memory,
+  and the knowledge graph all apply exactly as they do for every other
+  channel — no second response-masking path.
+- Credential model (locked design decision on the issue): each API key **is**
+  its own identity — `ChannelUserRef{ channel: 'api', id: 'key:<id>' }` —
+  not a delegate for a human end-user. No impersonation surface.
+- Full v1 security posture, not deferred: API keys are vault-backed (this
+  plugin's own `ctx.secrets` namespace, no DB migration) and verified with
+  `crypto.timingSafeEqual` against a sha256 hash — the plaintext is shown
+  exactly once, at creation; per-key configurable rate limits (fixed-window,
+  429 on overage); an explicit revoke endpoint (`POST
+  /api/public/v1/admin/keys/:id/revoke`) that fails the next request
+  immediately; and a usage audit log (who/what/when) recorded on every
+  authenticated call.
+- Key lifecycle (`GET`/`POST /api/public/v1/admin/keys`, revoke) is
+  deliberately mounted under the SAME `/api/public/v1` prefix but NOT added
+  to `middleware/src/auth/publicPaths.ts`'s exemption list — only `.../chat`
+  is public. Key management stays behind the normal operator session, like
+  every other admin surface in this app — see the security-fixup entry below
+  for how that's enforced both implicitly (the kernel's broad `/api`
+  session gate) and, after that entry's change, explicitly as well.
+- Review fixups: the internal `conversationId` handed to `CoreApi` is now
+  namespaced by key id (`${key.id}:${callerConversationId}`) so two
+  different API keys can never collide on the same core-side scope, even
+  when they send an identical caller-supplied `conversationId` — closes a
+  cross-key transcript/context leak. The usage audit log now records one
+  entry for every authenticated call (not just the success path) with a
+  status reflecting the real outcome — `ok` | `rate_limited` |
+  `invalid_request` | `error` — instead of writing `status: 'ok'`
+  optimistically before dispatch.
+- Second review fixup round: the audit-status fix above still had a gap —
+  `deps.core.handleTurnStream` can yield an in-band `{type:'error',
+  message}` event on the already-open stream WITHOUT throwing (same bug
+  class as #403), and the loop completing normally was still recorded as
+  `ok`. `chatRouter.ts` now tracks whether an `error`-type event was
+  forwarded during iteration and audits `error` in that case too, with a
+  regression test covering the no-throw path. Docs: the README's event
+  table no longer claims `agent_bound` is emitted on this route (it isn't —
+  that event is synthesized by the kernel's own `/api/chat/stream` handler,
+  not by `CoreApi.handleTurnStream`) and now documents the verifier-mode
+  `{type:'verifier'}` event that can follow `done`. `docs/security-architecture.md`
+  § 8 and the README's rate-limiting section now say explicitly that the
+  limiter is in-memory and per-process, not shared across replicas
+  (accepted v1 trade-off, no code change). `harness-channel-api`'s
+  `peerDependencies` on `@omadia/channel-sdk` / `@omadia/plugin-api` are now
+  pinned to `^0.1.0` instead of `"*"`, per `CONTRIBUTING.md`'s dependency
+  hardening policy.
+- Security fixup: an earlier note here overstated this as a live
+  authentication bypass. It wasn't — `/api/public/v1/admin/keys` was
+  already covered by the kernel's pre-existing broad `app.use('/api',
+  requireAuth, ...)` mount (`src/index.ts`), which runs ahead of
+  `pluginRouteRegistry.mountAll(app)` in boot order and gates every
+  `/api/*` path not listed in `publicPaths.ts`, same as any other
+  non-exempted channel route. That coverage is real but implicit — it
+  depends on mount order and on this path never being added to
+  `publicPaths.ts`, either of which a future refactor could break silently.
+  Hardened at the kernel level so the guarantee doesn't depend on that
+  coincidence, and so future plugins needing an admin surface get a
+  reusable, explicit check: `PluginContext` gains an optional `ctx.operatorAuth`
+  (`OperatorAuthAccessor`, `packages/plugin-api/src/pluginContext.ts`),
+  published by the kernel and threaded into every plugin runtime
+  (`ToolPluginRuntime`, `DynamicAgentRuntime`, `DefaultChannelRegistry`) so
+  any future plugin needing an operator-only admin surface can reuse it.
+  `hasValidSession(cookieHeader)` reuses the EXACT SAME session-verification
+  logic `requireAuth` runs (extracted to `evaluateSessionToken` in
+  `src/auth/requireAuth.ts`) — one code path, not two that can drift apart.
+  `adminKeysRouter.ts` now applies it as router-level middleware ahead of
+  every route: missing/invalid session → `401`; `ctx.operatorAuth` itself
+  unavailable → `503` (fail closed, never silently unauthenticated). New
+  end-to-end coverage in `adminKeysRouter.test.ts` mounts the router behind
+  the REAL accessor (not a stub) and asserts the no-cookie / invalid-cookie
+  / valid-cookie and fail-closed paths. `docs/security-architecture.md` § 9,
+  this package's `README.md`, and `docs/middleware-agent-handoff.md` are
+  corrected to describe the real mechanism.
+- Third review fixup: the key-id namespacing above (`${key.id}:${callerConversationId}`)
+  was itself still lossy. `SessionLogger`'s `sanitizeScope` collapses any run
+  of punctuation to a single `-`, lowercases, and truncates to 80 chars
+  before persisting — so two DIFFERENT caller-supplied `conversationId`s
+  under the SAME key could still land on the identical sanitized scope (for
+  example `"case/a"` and `"case?a"`, or two long ids differing only past the
+  truncation cutoff), letting one conversation thread recall another
+  thread's memory/graph content. `chatRouter.ts` now derives the internal
+  `conversationId` as `sha256(key.id:callerConversationId)` (hex digest —
+  fixed-width, already lowercase alphanumeric, so nothing about it can be
+  mangled or truncated into colliding with a different digest) instead of
+  plain concatenation. Regression coverage in `chatRouter.test.ts` sends
+  both collision shapes through the real `createApiChatRouter` and asserts
+  the resulting scopes differ after being run through the real
+  `graphScopeFor`/`sanitizeScope`.
+### Added — pluggable embedding provider (#440)
+
+- The `EmbeddingClient` contract moved from `@omadia/embeddings` (the Ollama
+  adapter) to `@omadia/plugin-api`, extended with provider metadata
+  (`modelId`, `dimensions`) via the new `EmbeddingProvider` type — the same
+  split the LLM side already has between `llm-provider-api` and the adapter
+  packages. `@omadia/embeddings` re-exports the contract, so out-of-repo
+  plugins compiled against its `dist/` keep working. The capability name
+  stays `embeddingClient@1`; no consumer manifest changed.
+- New adapter `@omadia/embedding-adapter-openai` provides the same
+  `embeddingClient@1` capability over the OpenAI wire format
+  (`POST {base_url}/v1/embeddings` — OpenAI, Azure behind a gateway, vLLM, LM
+  Studio, LiteLLM). Base URL, model, dimensions, timeout and concurrency are
+  manifest `setup.fields`; the API key is a `secret`-typed field and lives in
+  the vault, never in `installed.json`. Because it declares a secret field the
+  built-in catch-all bootstrap does not auto-install it — installing a second
+  embedding provider stays an explicit operator act, and
+  `ctx.services.provide` still throws if two ever end up active.
+- **Vector width is a hard constraint out of the box.** The knowledge graph
+  creates its vector columns as `vector(768)` (`graph_nodes.embedding` from
+  `0005_turn_embeddings_768.sql`, `processes.embedding` from
+  `0009_process_memory.sql`). Until an operator migrates those columns, only
+  768-dimensional models are usable — `text-embedding-3-small` (1536),
+  `text-embedding-3-large` (3072) and `text-embedding-ada-002` (1536) are
+  refused by the gate rather than silently failing per row. The column
+  migration follows `0005_turn_embeddings_768.sql`: drop index → drop column →
+  re-add at the new size → re-create index, for every governed column.
+- Neither adapter publishes a vector size it has not confirmed. The
+  `dimensions` / `embedding_dimensions` settings carry **no manifest default**
+  any more (a default would be seeded into every install by bootstrap and
+  would contradict whatever model the operator picked). Known models resolve
+  their width from a table in the adapter; an unknown model needs the field;
+  a field that contradicts a known model makes the adapter refuse to publish.
+  The Ollama adapter keeps working unchanged for an unknown model — it then
+  publishes the client *without* provider metadata, and the gate treats the
+  provider as "identity unknown" exactly as before #440, rather than switching
+  an existing deployment to FTS-only on upgrade.
+- Migration `0030_embedding_model_registry.sql` (KG-neon chain): new
+  `graph_embedding_model` table, one row per tenant, recording the model id
+  and vector size the stored embeddings were produced with, plus a
+  `clear_pending` flag that makes a model switch resumable.
+- Knowledge-graph activation now runs a model/dimension gate. It reads the
+  **declared** width of every `vector` column on a tenant-scoped table from
+  the catalog (`pg_attribute` / `format_type`), not from sampled rows, so an
+  empty corpus is checked exactly like a full one. Outcomes: column width ≠
+  provider width → vector writes refused for the boot; empty or unrecorded
+  corpus of matching width → the active model is recorded; same width,
+  different model → every governed vector column is cleared in bounded
+  batches (attempt counters reset) and the `embeddingBackfill` sweep
+  re-embeds, finishing any clear the activation capped; recorded width ≠
+  provider width → refused. Vector columns are discovered rather than
+  hard-coded, so a future migration adding one is covered by the width check.
+- `processes.embedding` is now governed too. It is a second cosine space used
+  for the write-path dedup pre-check and for hybrid process recall; before
+  this it was neither cleared on a model switch nor re-embeddable, so a
+  same-width provider swap corrupted process recall permanently. The backfill
+  sweep gained a process pass (retries capped in memory — `processes` has no
+  attempt column, and the condition is transient).
+- **What the gate does and does not cover.** It governs the knowledge-graph
+  plugin's own embedding client: all vector writes into `graph_nodes` and
+  `processes`, plus the backfill sweep. It does not withdraw the
+  `embeddingClient@1` capability from the service registry, so
+  `contextRetriever`, `inconsistencyDetector`, `mergeCandidateDetector` and
+  `topicDetector` keep resolving and calling the provider on a blocked boot.
+  Their vector queries then fail inside the try/catch each already has, so
+  recall is FTS-only in effect — at the cost of one wasted embed call and one
+  error log per attempt. Withdrawing a published capability centrally would
+  need a kernel-side revoke hook that does not exist yet.
+- Activation is not allowed to stall or crash on the gate. The vector clear
+  runs in bounded batches, each in its own transaction with a
+  `statement_timeout`, capped per activation; the remainder is finished by
+  the backfill sweep. A gate failure degrades to the safe path (no embeddings,
+  FTS-only) instead of throwing out of `activate()` — the kernel treats
+  `knowledgeGraph` as a required service, so a throw there is a boot loop.
+- The `/health` KG snapshot no longer equates "embeddings configured" with
+  "Ollama base URL set" — an active alternative provider counts as well, and
+  it reads the gate outcome rather than the registry alone (see the fixup
+  below).
+- Unchanged for existing deployments: `bootstrapEmbeddingsFromEnv()` still
+  seeds only the Ollama adapter from `OLLAMA_BASE_URL` /
+  `OLLAMA_EMBEDDING_MODEL`, and a deployment with no embedding provider still
+  boots into the FTS-only path.
+- Fixup (round 2, two independent adversarial reviews). Eight blocking
+  findings, all in the gate's failure modes rather than its happy path:
+  - **`/health` no longer reports a blocked gate as healthy.** The KG snapshot
+    was a registry-only projection: with `vector(768)` columns and an active
+    1536-dimensional adapter it answered `embeddings: true, semanticRecall:
+    true, durableTier: true, processReuse: true, warnings: []` for a boot
+    where the gate had refused every vector write and `NeonProcessMemoryStore`
+    was rejecting every `write()`/`edit()` with `embedding-unavailable`. The
+    knowledge-graph plugin now publishes its gate outcome as an
+    `embeddingModelGateStatus` service; `/health` reads it and reports
+    `embeddings: false` plus a warning naming the active model against the
+    recorded one.
+  - **Vector writes are refused while a stale-vector clear is pending.** This
+    changes the write semantics of a same-width model switch. Previously
+    `status: 're-embedding'` kept the live embedding client, so fresh
+    new-model vectors were written while `clear_pending` was still TRUE — and
+    the resumed clear, which selects on `embedding IS NOT NULL` with no model
+    or timestamp discriminator, then destroyed them. On a large corpus (≈21 h
+    of clearing at the defaults) that meant a Turn ingested at T+1min was
+    embedded and wiped at T+5min, and sustained ingest could keep the clear
+    from ever draining. `allowsVectorWrites()` now returns false until the
+    clear completes, which makes the documented invariant ("a non-NULL
+    governed vector is an old-model vector") true by construction. The
+    backfill sweep is still armed in that state — it is the only thing that
+    can finish the clear — and once the flag drops the same sweep re-embeds
+    every NULL vector, including whatever was ingested during the window.
+  - **The `match` path consults `clear_pending`.** A switch flips the registry
+    row *before* clearing, so the boot after an interrupted switch matches and
+    used to return early. The only resumer was the backfill, which is skipped
+    when `graph_embedding_backfill_enabled=false` or when the embeddings
+    plugin is later deactivated — leaving `clear_pending` TRUE forever with
+    two models mixed in one cosine space and nobody reading the flag. The
+    match path now resumes the clear itself.
+  - **The `embedding_attempts = 0` reset got its own statement.** It rode
+    along with `SET embedding = NULL … WHERE embedding IS NOT NULL`, which by
+    construction can never match a row that exhausted its retries — those have
+    `embedding IS NULL`, which is *why* they are exhausted. Such rows stayed
+    at `attempts = maxAttempts` and the backfill's `embedding_attempts <
+    maxAttempts` predicate skipped them forever. A dedicated bounded UPDATE
+    over `embedding IS NULL AND embedding_attempts > 0` now rescues them.
+  - **The process sweep no longer starves itself.** The poison-row filter ran
+    *after* `LIMIT`, so `batchSize` permanently-failing rows filled every page
+    and the healthy rows behind them were unreachable for the lifetime of the
+    handle. The exclusion moved into the SQL (`AND id <> ALL($3::text[])`).
+  - **`INSERT … ON CONFLICT DO NOTHING` is checked with `RETURNING`.** A lost
+    race is a no-op that used to be reported as `{status: 'recorded',
+    modelId: <this instance's model>}`, letting the loser write into a vector
+    space the registry says belongs to the winner. The insert now reports
+    whether it won; a loser that disagrees about the model is blocked with the
+    new `registry-conflict` reason.
+  - **Clear termination is sound.** `rowCount < limit` was treated as "done",
+    but under READ COMMITTED a concurrent updater makes rows drop out of the
+    predicate after the LIMIT was applied — an incomplete clear then lowered
+    `clear_pending`. Batches now use `FOR UPDATE SKIP LOCKED`, the loop only
+    stops on a batch that changed nothing, and a residual probe decides
+    whether the clear may be declared finished. A session-level
+    `pg_try_advisory_lock` keeps two clearers (activation vs. backfill sweep,
+    or two instances) off the same tenant; a clearer that cannot take the lock
+    reports the work as still owed rather than doing nothing quietly.
+  - **The registry flip is serialised and conditional.** Read → decide → flip
+    now runs in one transaction holding `pg_advisory_xact_lock(tenant)`, and
+    the `UPDATE` carries a CAS predicate on the model/dimensions it read.
+    Additionally a switch is refused when the registry row was written within
+    a 10-minute cooldown *and* the corpus still holds vectors: during a
+    rolling deploy where the two machine versions carry different same-width
+    adapters, each side would otherwise switch, clear, and wipe what the other
+    had just re-embedded, oscillating with no error surfaced anywhere.
+  - The clear machinery moved to `staleVectorClear.ts`;
+    `embeddingModelGate.ts` re-exports it, so no import path changed.
+  - New `middleware/test/embeddingModelGate.pg.test.ts` exercises the SQL
+    against a real Postgres + pgvector (catalog width read on an actual
+    `vector(n)` column, the `ON CONFLICT` race, a switch → capped clear →
+    resume cycle, advisory-lock exclusion). It self-skips when no database is
+    reachable, same convention as `test/devplatform/*.pg.test.ts`.
+- Follow-up — **switching the embedding provider without a restart.**
+  - The knowledge-graph stores resolve their embedding client *live* instead
+    of capturing it in their constructors, so a refusal that ends (a drained
+    stale-vector clear, a provider switch) re-enables vector writes in-process
+    rather than needing an operator restart.
+  - New admin page **Admin → Embedding provider**
+    (`/api/v1/admin/embedding-provider`, cookie-session auth) lists every
+    installed `embeddingClient@1` adapter, prices the switch up front (how
+    many stored vectors it discards, whether the column width changes) and
+    performs it: deactivate the outgoing provider, activate the target, then
+    ask the knowledge-graph's gate to **re-evaluate itself in place**. The
+    switch refuses to run without an explicit `confirmDiscardVectors`.
+  - The re-evaluation is an entry point on the published
+    `embeddingModelGateStatus` service (`reevaluate`): it re-resolves the
+    embedding client from the service registry, re-runs the model/dimension
+    gate, replaces the published verdict and re-arms or stands down the
+    backfill sweep. It deliberately does **not** re-activate the
+    knowledge-graph plugin: that would run its `close()`, which ends the
+    `graphPool` the kernel captured once and shares with ~40 subsystems
+    (routines, dev-platform webhooks, agent schedules, cost telemetry, MCP
+    audit, `AgentGraphStore`, `McpConfigService`), poisoning all of them with
+    `Cannot use a pool after calling end on the pool` until the next restart.
+    Re-resolving the client is load-bearing rather than tidy: the plugin used
+    to close over the boot-time client, so a "successful" switch left the
+    registry holding the new provider while the graph kept embedding with the
+    old one, silently.
+  - On a declared-width mismatch the gate can now rewrite the governed
+    `vector(n)` columns at the active provider's width (capture index
+    definitions via `pg_depend` → drop index → drop column → re-add at the new
+    width → replay the index definitions verbatim → reset `embedding_attempts`
+    → flip the registry), under the same anti-oscillation cooldown a
+    same-width switch uses and a wall-clock budget that keeps `activate()`
+    inside its 10 s cap.
+  - **That rewrite never runs on the boot path.** It destroys every stored
+    embedding, so the capability is an explicit parameter of the gate
+    evaluation rather than an ambient default: plugin activation does not pass
+    it and a width mismatch therefore stays `blocked/column-width-mismatch` —
+    reversible, nothing dropped, operator decides — exactly as before this
+    work. Only an operator-confirmed switch through the admin UI passes it.
+    Without this, a deployment already sitting on the documented
+    `blocked/column-width-mismatch` (768-wide columns, a 1536-wide provider)
+    would have lost its entire embedding corpus by doing nothing but upgrading
+    and restarting, with no prompt anywhere — `confirmDiscardVectors` only
+    ever existed on the HTTP route.
+  - `auto_migrate_vector_columns` (KG setup field,
+    `GRAPH_AUTO_MIGRATE_VECTOR_COLUMNS`) is therefore a **master switch over
+    the confirmed path**, not a boot-path behaviour. `'false'` forbids the
+    destructive rewrite even from a confirmed switch in the admin UI, leaving
+    the hand-written `0005_turn_embeddings_768.sql`-style migration as the only
+    route. `'true'` (default) permits it *when an operator confirms it*; it can
+    no longer let a restart wipe a corpus.
+### Added — plugin-contributed navigation (#470, phase 1 of the Dev Platform extraction)
+
+- New plugin capability `ctx.uiRoutes.registerNav({ navId, href, cluster?,
+  order?, label })` lets an installed plugin contribute entries to the
+  operator navigation. Backed by `UiRouteCatalog.registerNav()` /
+  `listNav(locale)` and served by a new session-gated route
+  `GET /api/v1/ui/navigation?locale=<l>`, which returns labels **already
+  resolved** for the requested locale — the browser never receives the
+  per-locale map, so the web UI stays on next-intl's single i18n clock.
+- The web-ui shell (`Nav.tsx`) now merges its static nav with the
+  contributed entries, fetched server-side in the root layout. An entry
+  joins the cluster it names; an unknown or absent cluster promotes it to
+  top level; an href colliding with a static one is dropped so a plugin
+  cannot shadow a core destination. Every plugin-supplied field is
+  validated as untrusted input (canonical in-app hrefs only; labels
+  length-capped and screened for control, bidi and zero-width codepoints).
+- Dev Platform is the first consumer: its menu entry and its `/admin` grid
+  card now come from that registration instead of being hardcoded, so
+  disabling the feature removes both with no frontend rebuild. Removes the
+  now-unused `nav.devPlatform` key from `messages/{en,de}.json`.
+- Rationale and the remaining extraction phases:
+  `specs/470-dev-platform-plugin/plan.md`.
+
+### Fixed — deactivated tool plugins kept serving their Express routes
+
+- `ToolPluginRuntime.deactivate()` stopped background jobs and disposed UI
+  routes but never called `pluginRouteRegistry.disposeBySource()`, although
+  it held that dependency and threaded it into every plugin context
+  (`DynamicAgentRuntime` already did). Express cannot unmount, so an
+  uninstalled or hot-upgraded plugin's routers stayed live and — because
+  Express matches first-mount-wins — kept answering and shadowed anything
+  later mounted at the same prefix.
+- Disposal now also runs **before** the plugin-controlled `close()` is
+  awaited; previously a plugin whose `close()` hung kept its routes and menu
+  entry live for the full 5s budget after the operator triggered
+  deactivation. `activate()` additionally rolls back its own route/nav/job
+  registrations when a plugin registers and then throws or times out —
+  such a plugin never reaches the active set, so `deactivate()` could never
+  clean it up and the orphan survived for the life of the process.
+
+### Added — Conductor generic webhook support, inbound + outbound (#437)
+
+- **Inbound**: `POST /api/hooks/:endpointId` (unauthenticated mount, raw-body
+  HMAC verification ahead of the global `express.json()` — same pattern as
+  `routes/devWebhooks.ts`). An endpoint maps to a Conductor `eventId`; a
+  verified delivery calls the existing `ConductorEventRouter.emit()`, so any
+  workflow with a matching `event` **or** `webhook` trigger starts a run — the
+  previously declared-but-dead `'webhook'` `TriggerKind`
+  (`conductor-core/src/types.ts`) is now implemented as `event`'s sibling, not
+  a separate mechanism. Every claimed delivery id lands in
+  `conductor_webhook_inbound_deliveries` with a terminal outcome (dedupe +
+  audit ledger); noise (disabled endpoint, malformed JSON, no subscriber)
+  always answers 2xx to avoid a redelivery storm, while a bad/absent signature
+  and an unknown endpoint id answer byte-for-byte the same 401.
+- **Outbound**: `ConductorWebhookDispatcher` fires an HMAC-signed delivery to
+  every enabled `conductor_webhook_subscriptions` row matching an internal
+  event (`run.completed` / `run.failed`, wired via a new
+  `ConductorRunExecutor` terminal-run hook), with exponential backoff up to a
+  configurable attempt cap and a persisted `conductor_webhook_deliveries` log
+  (`ConductorWebhookRetryWorker` re-attempts anything still `pending` on a
+  poll loop, so a delivery survives a process restart).
+- **Designer action**: a new built-in `webhook.post` action lets a workflow
+  step fire an ad-hoc outbound POST to an operator-supplied URL.
+- **Security**: inbound endpoint secrets and outbound subscription signing
+  secrets live in the secret vault (`core:conductor` namespace, metadata in
+  Postgres / secret in Vault split, modeled on `DevGithubAppStore`) — never in
+  graph JSON or an API response beyond their one-time creation/rotation
+  reply. Both the dispatcher and `webhook.post` share one SSRF guard
+  (`conductor/webhookOutbound.ts`, reusing the existing
+  `platform/ssrfGuard.ts` guarded-`Agent` defence) that rejects a private /
+  loopback / link-local / cloud-metadata target before a request is ever
+  attempted.
+- New config: `CONDUCTOR_WEBHOOKS_ENABLED` (global inbound kill switch,
+  default `true`) — see `middleware/.env.example`.
+- New migration: `middleware/src/conductor/migrations/0007_webhooks.sql`
+  (`conductor_webhook_endpoints`, `conductor_webhook_inbound_deliveries`,
+  `conductor_webhook_subscriptions`, `conductor_webhook_deliveries`).
+- Admin CRUD (list/create/rotate-secret/enable-disable/delivery-log) is
+  exposed under the existing auth-gated
+  `/api/v1/operator/conductors/webhooks/*`, with a minimal admin UI at
+  `/admin/webhooks` (endpoints + subscriptions, secret rotation, delivery
+  history) satisfying the issue's admin-surface acceptance criterion.
+- **Rate limiting**: the inbound route enforces a per-endpoint cap over a
+  rolling minute (`CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE`, default 60),
+  atomically alongside the delivery-id dedupe claim — a correctly-signed
+  sender minting a fresh delivery id on every call can no longer start an
+  unbounded number of workflow runs.
+- **Dedupe fix**: the inbound delivery ledger's dedupe key is scoped per
+  `(endpoint_id, delivery_id)`, not globally on `delivery_id` alone — two
+  endpoints can now each process their own delivery id '1' without one
+  shadowing the other.
+- **Outbound durability fix**: a periodic reconciliation pass (run by the
+  existing retry worker) finds terminal, non-dry-run runs from the last 24h
+  with no delivery row yet for an enabled subscription and creates the
+  missing one — closing the gap where a process kill between a run's
+  terminal-status commit and its fire-and-forget delivery-row creation lost
+  the webhook permanently.
+- **Outbound race fix**: the first, inline delivery attempt now claims its
+  row (`FOR UPDATE SKIP LOCKED`, same claim the retry worker's poll loop
+  uses) before sending, so the inline path and a concurrent retry-worker
+  tick can never attempt — and duplicate-report the outcome of — the same
+  delivery.
+- **Second-review fixups (#437):**
+  - **Inbound claim/emit ordering**: `ConductorWebhookEndpointStore.claim()`
+    inserts the delivery row (`outcome='received'`) BEFORE the route calls
+    `emit()`, so a crash between the two (e.g. `emit()` throwing on a
+    Postgres error) used to strand the row at `'received'` forever — a
+    retry with the same `X-Webhook-Delivery-Id` then got a cached
+    `'duplicate'` 200 without `emit()` ever running again, losing the event
+    permanently. `claim()` now treats a still-`'received'` row older than
+    `IN_FLIGHT_CLAIM_STALE_MS` (30s) as an abandoned claim and lets a
+    legitimate retry re-attempt processing, while a genuinely concurrent
+    redelivery within that window is still reported `'duplicate'` as
+    before.
+  - **Outbound reconciliation lifecycle bound**: `listMissingRunDeliveries`
+    previously only bounded its backfill by the caller's lookback window,
+    so creating a subscription — or re-enabling a disabled one — resurrected
+    every matching run in that whole window, including runs that ended
+    before the subscription existed or while it was disabled. A new
+    `conductor_webhook_subscriptions.enabled_since` column (defaults to
+    creation time, bumped on every transition into the enabled state) now
+    also bounds the reconciliation JOIN, so only runs that ended while the
+    subscription was genuinely active are ever backfilled.
+  - **Outbound delivery uniqueness**: reconciliation's unlocked `NOT EXISTS`
+    read followed by an unconstrained insert could race the live
+    terminal-run hook (or a second replica's reconciliation pass) into
+    creating two deliveries for the same run+subscription. A generated
+    `conductor_webhook_deliveries.run_id` column (from `payload->>'runId'`)
+    plus a partial unique index on `(subscription_id, run_id)` now cap this
+    at one delivery per run per subscription; `createDelivery` is
+    conflict-safe (`ON CONFLICT ... DO NOTHING`, returning the row that
+    already won on a race) instead of erroring or silently returning
+    nothing.
+  - **Admin UI inbound URL**: the endpoint list/create response now includes
+    a server-computed `inboundUrl` (`CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL` —
+    new, optional — falling back to `PUBLIC_BASE_URL`) and the admin UI
+    displays that instead of building the URL from
+    `window.location.origin`. In the standard local dev setup that origin is
+    the Next.js dev server, which only proxies `/bot-api/*`
+    (`web-ui/next.config.ts`) — a copied `window.location.origin` URL 404s
+    instead of reaching the middleware.
+  - **Webhook trigger validation**: `conductor-core/src/validate.ts` now
+    requires `eventId` for `kind === 'webhook'` triggers, the same
+    validation `kind === 'event'` already had. `eventRouter.ts#emit` matches
+    a trigger by `(kind === 'event' || kind === 'webhook') && eventId ===
+    <emitted id>`, so a `webhook` trigger with no/invalid `eventId` used to
+    publish successfully but could never actually fire.
+  - **Docs**: added a webhook section to `docs/security-architecture.md`
+    (secret placement, inbound auth model, outbound SSRF guard) and fixed
+    the stale "admin UI is not part of this change" claim in
+    `docs/middleware-agent-handoff.md`.
 ### Added — structured dataset ingestion (CSV import) for the Knowledge Graph (#430)
 
 - New `KnowledgeGraph` surface (`ingestDataset`, `listDatasets`, `getDataset`,
@@ -1253,16 +1785,762 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   translates through `llmProviderSeam`, including streaming final-event usage
   telemetry and provider-based retry classification.
 
-### Changed — background chat streams surface in-context, not as toasts
+### Fixed
 
-- **Removed `StreamToasts`** (the bottom-right floating cards for background
-  chat turns). Per the Lume visual spec §7.6, toasts / floating notifications
-  are a ship-blocking anti-pattern; §7.4 makes the chat the surface of record.
-- **Background-stream state now lives on the chat tab**: a running background
-  turn shows a pulsing accent dot, a finished one an accent dot, an errored one
-  a danger dot — each carrying an aria-label + title so colour is never the sole
-  signal (§8). Selecting the tab clears its unread marker; active-session errors
-  continue to render inline on the turn. See [ADR-0006](adr/0006-in-context-background-stream-surfacing.md).
+- **web-ui/chat**: provider errors (quota, rate-limit, billing) are now surfaced
+  as the provider's human-readable sentence across all chat surfaces — the main
+  chat bubble, the builder chat, the preview chat, and the default simple
+  builder intake — with a translated generic fallback, instead of the raw HTTP
+  status and JSON envelope. On the primary path the orchestrator failure arrives
+  as an in-band error event on an already-streaming 200 response; the background
+  stream toast now finishes that turn as a failure showing the same humanized
+  sentence, instead of reporting it as 'done' (a successful turn) as it did
+  before (#403).
+
+---
+
+## [0.54.0] - 2026-07-06
+
+### Added
+
+- **web-ui/chat**: collapsible debug-chat intro banner (#428)
+
+---
+
+## [0.53.0] - 2026-07-06
+
+### Added
+
+- **web-ui**: restore Days One face for the omadia wordmark (#427)
+
+---
+
+## [0.52.3] - 2026-07-06
+
+### Fixed
+
+- **channels**: rebind inbound route handler on hot-reinstall (#395) (#407)
+
+---
+
+## [0.52.2] - 2026-07-06
+
+### Changed
+
+- move Orchestrators/Conductor into Admin cluster, enlarge chevron (#424)
+
+### Fixed
+
+- **web-ui**: stop chat auto-scroll from yanking user back to bottom (#404) (#425)
+
+---
+
+## [0.52.1] - 2026-07-06
+
+### Fixed
+
+- **web-ui**: allow changing or removing an LLM provider's API key (#402) (#423)
+
+---
+
+## [0.52.0] - 2026-07-03
+
+### Added
+
+- **builder**: wire type:oauth UI + gate provider/scopes
+- **builder**: add oauth_providers descriptor + type:oauth wiring for AgentSpec (#371)
+
+---
+
+## [0.51.0] - 2026-07-03
+
+### Added
+
+- **skills**: skill lifecycle — import, edit, safety guard, multi-source adapters, bundles, and direct-answer persona skills (#411)
+
+---
+
+## [0.50.1] - 2026-07-03
+
+### Fixed
+
+- **store**: portal install drawer above global header
+
+---
+
+## [0.50.0] - 2026-07-02
+
+### Added
+
+- **orchestrator**: per-Agent LLM model selection
+
+### Fixed
+
+- **orchestrator**: address per-Agent model selection review
+
+---
+
+## [0.49.0] - 2026-07-02
+
+### Added
+
+- **ui-prefs**: persist Lume palette/appearance server-side per user (#287)
+
+### Fixed
+
+- **ui-prefs**: avoid 401 bounce; clear prefs cookie on logout
+
+---
+
+## [0.48.0] - 2026-07-01
+
+### Added
+
+- **store**: dynamic post-install setup options for plugin fields (#393)
+
+---
+
+## [0.47.0] - 2026-07-01
+
+### Added
+
+- **conductor**: guided designer UX — dropdowns + builders replace raw ISO/cron/JSON inputs (#398)
+
+---
+
+## [0.46.1] - 2026-06-30
+
+### Fixed
+
+- **ui**: update table rendering behavior (#366)
+
+---
+
+## [0.46.0] - 2026-06-30
+
+### Added
+
+- **conductor**: approval-card reminder contract + holder-authorized await resolution (#394)
+
+---
+
+## [0.45.0] - 2026-06-30
+
+### Added
+
+- **conductor**: principalRef identity-bridge for channel-binding delivery (P2a) (#389)
+
+---
+
+## [0.44.0] - 2026-06-30
+
+### Added
+
+- Omadia Conductor — deterministic workflow engine (Spec 005, US1–US9 + waves 1–6 + channel event-emit) (#388)
+
+---
+
+## [0.43.1] - 2026-06-29
+
+### Fixed
+
+- implement pr feedback
+- **ui**: update dropdown font + bg color
+
+---
+
+## [0.43.0] - 2026-06-29
+
+### Added
+
+- **platform**: plugin egress primitives — ctx.net (raw TCP) + $config.* in network.outbound (#370)
+
+---
+
+## [0.42.0] - 2026-06-29
+
+### Added
+
+- implement pr feedback
+
+### Fixed
+
+- **auth**: redirect /login to dashboard if already logged in
+
+---
+
+## [0.41.0] - 2026-06-24
+
+### Added
+
+- **#309**: run agents on LLM subscriptions via the official CLIs (#367)
+
+---
+
+## [0.40.0] - 2026-06-24
+
+### Added
+
+- in-app "Create Issue" button (operator GitHub device flow) (#363)
+
+---
+
+## [0.39.0] - 2026-06-23
+
+### Added
+
+- **builder**: run codegen + preview on any configured LLM provider (#297) (#320)
+
+---
+
+## [0.38.0] - 2026-06-22
+
+### Added
+
+- **platform**: declarative kernel OAuth broker (descriptor engine) — spec 005 core (#325)
+
+---
+
+## [0.37.3] - 2026-06-22
+
+### Fixed
+
+- **web-ui**: lowercase the omadia brand name in user-facing text (#359)
+
+---
+
+## [0.37.2] - 2026-06-22
+
+### Fixed
+
+- **desktop**: rename wizard bridge const to avoid global name collision (#358)
+
+---
+
+## [0.37.1] - 2026-06-22
+
+### Fixed
+
+- **desktop**: bundle preload so the onboarding wizard works (+ install verbosity) (#357)
+
+---
+
+## [0.37.0] - 2026-06-22
+
+### Added
+
+- **desktop**: native one-click installer with bundled PostgreSQL 17 + pgvector (macOS/Linux/Windows) (#355)
+
+---
+
+## [0.36.0] - 2026-06-19
+
+### Added
+
+- **desktop**: native one-click installer (Electron + embedded PGlite) + signing CI (#341)
+
+---
+
+## [0.35.1] - 2026-06-19
+
+### Fixed
+
+- **ci**: publish versioned + latest images on auto-release (#340)
+
+---
+
+## [0.35.0] - 2026-06-19
+
+### Added
+
+- minimal-core onboarding stack (prebuilt images + opt-in overlays) (#339)
+
+---
+
+## [0.34.0] - 2026-06-18
+
+### Added
+
+- **orchestrator**: agent transparency + Direct Line + forced delegation (#332) (#335)
+
+---
+
+## [0.33.2] - 2026-06-18
+
+### Fixed
+
+- **builder**: persist preview test-credentials on apply + host-backed preview ctx.llm (#334)
+
+---
+
+## [0.33.1] - 2026-06-18
+
+### Fixed
+
+- **builder**: provide ctx.jobs + ctx.status stubs in preview harness (#328)
+
+---
+
+## [0.33.0] - 2026-06-17
+
+### Added
+
+- **privacy-guard**: render V4 results as a structured, guard-flagged canvas table (#324)
+
+---
+
+## [0.32.0] - 2026-06-17
+
+### Added
+
+- **llm**: contract-only SDK-free core + wire-format adapter packages (#298) (#323)
+
+---
+
+## [0.31.0] - 2026-06-16
+
+### Added
+
+- **kg**: automatic self-curation — durable coverage grows + duplicates auto-merge (#322)
+
+---
+
+## [0.30.0] - 2026-06-16
+
+### Added
+
+- **platform**: runtime credentials + flow toolkit + plugin status (spec 004) (#318)
+
+---
+
+## [0.29.0] - 2026-06-16
+
+### Added
+
+- Lumens (Live Interactivity) 1.1 — canvas-core + Tier-2 producer (server) (#315)
+
+---
+
+## [0.28.0] - 2026-06-16
+
+### Added
+
+- **orchestrator**: durable long-term knowledge tier + auto-promotion (#317)
+
+---
+
+## [0.27.1] - 2026-06-16
+
+### Fixed
+
+- **web-ui**: widen markdown table cell spacing to Lume density (#316)
+
+---
+
+## [0.27.0] - 2026-06-15
+
+### Added
+
+- **orchestrator-extras**: relevance-gate + LLM-agnostic judge for cross-session recall (#310)
+
+---
+
+## [0.26.0] - 2026-06-15
+
+### Added
+
+- **llm-provider**: support keyless local providers (e.g. Ollama) (#308)
+
+---
+
+## [0.25.2] - 2026-06-15
+
+### Fixed
+
+- **ui-orchestrator**: canvas composition uses model classes + mirror provider keys (fixes stuck "Working on it…") (#307)
+
+---
+
+## [0.25.1] - 2026-06-15
+
+### Fixed
+
+- **llm**: register provider plugins on hot-install, not just at boot (#306)
+
+---
+
+## [0.25.0] - 2026-06-15
+
+### Added
+
+- **install**: multiline setup fields for string/secret values (#305)
+
+---
+
+## [0.24.1] - 2026-06-15
+
+### Fixed
+
+- **llm**: preserve server tools through the provider seam (live 400 hotfix) (#304)
+
+---
+
+## [0.24.0] - 2026-06-15
+
+### Added
+
+- **pairing**: friction-free Omadia UI ↔ host pairing — server side (#293) (#303)
+
+---
+
+## [0.23.0] - 2026-06-15
+
+### Added
+
+- **admin**: data-driven provider compliance flags (requiresAvvDisclosure/euHosted) (#302)
+
+---
+
+## [0.22.0] - 2026-06-15
+
+### Added
+
+- **llm**: everything-is-a-plugin — pluggable provider seam + empty core (Anthropic/OpenAI/Mistral/MiniMax plugins) (#300)
+
+---
+
+## [0.21.0] - 2026-06-14
+
+### Added
+
+- **llm**: Mistral as a first-class admin-selectable provider (#299)
+
+---
+
+## [0.20.0] - 2026-06-14
+
+### Added
+
+- **llm**: pluggable LLM provider — OpenAI (GPT-5.x) as admin-selectable provider (#292)
+
+---
+
+## [0.19.0] - 2026-06-14
+
+### Added
+
+- **canvas**: publish privacy-shield datasets — canvas_publish_rows accepts datasetId
+
+### Fixed
+
+- **canvas**: carry the sentinel sink through the STREAMING turn scope too
+- **canvas**: carry the sentinel sink into the turn scope — the tap never fired
+- **canvas**: tap raw sentinels before privacy interning — guarded servers never rendered
+
+---
+
+## [0.18.0] - 2026-06-12
+
+### Added
+
+- **omadia-ui**: Tier-2 canvas pipeline — skeleton fix, producer tools (rows/charts/choice), typed UI actions, per-user canvas registry (#277)
+
+---
+
+## [0.17.1] - 2026-06-12
+
+### Fixed
+
+- **builder**: resolve Anthropic client per turn so vault-seeded keys reach the Builder (#281)
+
+---
+
+## [0.17.0] - 2026-06-10
+
+### Added
+
+- **builder**: one-click agent export from dashboard cards (#270) (#279)
+
+---
+
+## [0.16.2] - 2026-06-10
+
+### Changed
+
+- **plan-runner**: reuse stored processes + batch plan-step reads, cache overlay (#276)
+
+### Fixed
+
+- **memory**: stop logging expected memory-tool errors as crashes (#278)
+
+---
+
+## [0.16.1] - 2026-06-10
+
+### Fixed
+
+- **builder-preview**: wire ctx.http into the preview runtime (#275)
+
+---
+
+## [0.16.0] - 2026-06-09
+
+### Added
+
+- **ui-orchestrator**: skeleton composition + requirement handoff (#273)
+
+---
+
+## [0.15.0] - 2026-06-09
+
+### Added
+
+- **ui-channel**: thread localOperations + turn action into metadata (#272)
+
+---
+
+## [0.14.0] - 2026-06-08
+
+### Added
+
+- **admin**: de-duplicate per-plugin settings out of the .env admin page (#265)
+
+---
+
+## [0.13.2] - 2026-06-08
+
+### Fixed
+
+- **agent-builder**: propagate runtime agent installs to fallback even when boot was chat-disabled (#266)
+
+---
+
+## [0.13.1] - 2026-06-08
+
+### Fixed
+
+- **orchestrator**: forward modelRouting to per-Agent orchestrators (#263)
+
+---
+
+## [0.13.0] - 2026-06-08
+
+### Added
+
+- **chat**: show the Haiku-triage decision inline in the turn card (#261)
+
+---
+
+## [0.12.1] - 2026-06-08
+
+### Fixed
+
+- **web-ui**: dismiss stream toasts visually + explicit abort with confirm (#260)
+
+---
+
+## [0.12.0] - 2026-06-08
+
+### Added
+
+- **admin**: .env-based settings overview with live auto-apply + model-routing env wiring (#259)
+
+---
+
+## [0.11.1] - 2026-06-07
+
+### Fixed
+
+- **web-ui**: usage dashboard 404 + show per-turn model & tokens in chat (#258)
+
+---
+
+## [0.11.0] - 2026-06-07
+
+### Added
+
+- **plugins**: auto-author self-extension + standalone-plugin SDK (#255)
+
+---
+
+## [0.10.0] - 2026-06-07
+
+### Added
+
+- LLM cost telemetry, dashboard & per-turn Sonnet/Opus routing (#253)
+
+---
+
+## [0.9.0] - 2026-06-07
+
+### Added
+
+- **routines**: cold-start delivery-target model for proactive 1:1 outreach (#252)
+
+---
+
+## [0.8.2] - 2026-06-07
+
+### Fixed
+
+- **middleware**: propagate runtime plugin (de)activation to per-Agent orchestrators (#257)
+
+---
+
+## [0.8.1] - 2026-06-07
+
+### Fixed
+
+- **dynamic-runtime**: late-resolve vault-armed Anthropic client for sub-agents (#256)
+
+---
+
+## [0.8.0] - 2026-06-07
+
+### Added
+
+- **plugins**: operator-gated, non-escalating plugin self-extension (#254)
+
+---
+
+## [0.7.0] - 2026-06-07
+
+### Added
+
+- **plan-runner**: GC semantically-duplicate plans on materialise (#241)
+
+---
+
+## [0.6.1] - 2026-06-06
+
+### Fixed
+
+- **orchestrator**: raise tool-loop cap 25→100 with round-loop guard + best-effort finalize (#240)
+
+---
+
+## [0.6.0] - 2026-06-06
+
+### Added
+
+- **orchestrator**: live mid-turn steering of a running chat turn (#239)
+
+---
+
+## [0.5.2] - 2026-06-06
+
+### Fixed
+
+- **orchestrator**: raise tool-loop cap 12→25 with floor on stale configs (#237)
+
+---
+
+## [0.5.1] - 2026-06-06
+
+### Fixed
+
+- **config**: treat empty optional diagram/S3 env vars as unset, not a boot-crash (#238)
+
+---
+
+## [0.5.0] - 2026-06-06
+
+### Added
+
+- **ui-orchestrator**: Tier-2 surface synthesis in canvasChatAgent (PR-9b-1) (#235)
+
+---
+
+## [0.4.0] - 2026-06-06
+
+### Added
+
+- **builder**: codegen/build/runtime observability tools for the Builder agent (#227) (#236)
+
+---
+
+## [0.3.8] - 2026-06-05
+
+### Fixed
+
+- **middleware**: arm host-LLM plugins on vault key-entry so plan-runner works on fresh installs (#234)
+
+---
+
+## [0.3.7] - 2026-06-05
+
+### Fixed
+
+- **builder**: author plugins from spec.author, not hardcoded "byte5 GmbH" (#225) (#233)
+
+---
+
+## [0.3.6] - 2026-06-05
+
+### Fixed
+
+- **builder**: prevent message loss when toggling simple/extended view (#224) (#231)
+
+---
+
+## [0.3.5] - 2026-06-05
+
+### Fixed
+
+- **web-ui**: install drawer overlays render above global header (#232)
+
+---
+
+## [0.3.4] - 2026-06-05
+
+### Fixed
+
+- **web-ui**: survive stale/foreign chat-session shapes instead of a blank crash (#230)
+
+---
+
+## [0.3.3] - 2026-06-05
+
+### Fixed
+
+- **builder**: raise report_platform_issue summary cap 280→500 (#229)
+
+---
+
+## [0.3.2] - 2026-06-05
+
+### Fixed
+
+- **orchestrator**: boot gracefully without ANTHROPIC_API_KEY (Setup-Wizard key entry) (#228)
+
+---
+
+## [0.3.1] - 2026-06-05
+
+### Fixed
+
+- **knowledge-graph**: survive first-boot Postgres race instead of crash-looping (#226)
+
+---
+
+## [0.3.0] - 2026-06-05
+
+### Added
+
+- **builder**: native core-bug reporting — GitHub App direct-create + UI (#223)
+
+---
+
+## [0.2.1] - 2026-06-05
+
+### Changed
+
+- **builder**: user-facing 'Veröffentlichen' → 'Bereitstellen' (i18n de, redo of #208) (#217)
+
+### Fixed
+
+- **ci**: set git identity before annotated release tag (#218)
+- **builder**: ctx.memory in preview runtime, accessor permission lint, and setup_fields rename (#207)
 
 ---
 

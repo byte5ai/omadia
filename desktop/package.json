@@ -18,6 +18,7 @@
     "build": "tsc -p tsconfig.json && node scripts/bundle-preload.mjs && node scripts/copy-renderer.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "stage": "node scripts/stage-runtime.mjs",
+    "test": "node --test scripts/*.test.mjs",
     "start": "npm run build && electron .",
     "dev": "OMADIA_DESKTOP_DEV=1 npm run start",
     "pack:mac": "npm run build && npm run stage && electron-builder --mac --publish never",

@@ -10,6 +10,11 @@ import {
   settingPluginIds,
   type SettingDef,
 } from '../platform/settingsCatalog.js';
+import {
+  invalidate as invalidateProviderVerification,
+  providerIdFromApiKeyVaultKey,
+  providerVerifiedAtVaultKey,
+} from '../platform/providerCredentialVerifier.js';
 
 /**
  * Operator settings overview — a single editable view of every `.env`-based
@@ -154,6 +159,10 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
     const secretSet = new Map<string, Record<string, string>>();
     const secretDelete = new Map<string, string[]>();
     const affected = new Set<string>();
+    /** Providers whose API key this batch writes or clears. Their cached
+     *  "the key works" verdict must be dropped, or a replaced key would keep
+     *  serving the previous key's `verified` until the TTL expires. */
+    const touchedProviders = new Set<string>();
 
     for (const raw of rawChanges) {
       if (typeof raw !== 'object' || raw === null) {
@@ -218,6 +227,8 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
 
       if (def.secret) {
         const legacyKey = def.secret.legacyVaultKey;
+        const providerId = providerIdFromApiKeyVaultKey(def.secret.vaultKey);
+        if (providerId !== undefined) touchedProviders.add(providerId);
         for (const scope of def.secret.scopes) {
           if (cleared) {
             const list = secretDelete.get(scope) ?? [];
@@ -280,6 +291,16 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
         }
         for (const [scope, keys] of secretDelete) {
           for (const k of keys) await deps.vault.deleteKey(scope, k);
+        }
+        // The credential changed → every recorded verdict about the OLD key is
+        // now meaningless. Drop the in-memory cache and the durable record so
+        // the provider falls back to an honest "unverified" until re-probed.
+        for (const providerId of touchedProviders) {
+          invalidateProviderVerification(providerId);
+          const vaultKey = providerVerifiedAtVaultKey(providerId);
+          for (const scope of affected) {
+            await deps.vault.deleteKey(scope, vaultKey);
+          }
         }
       }
       // Live apply: reactivate every touched plugin so it re-reads config.

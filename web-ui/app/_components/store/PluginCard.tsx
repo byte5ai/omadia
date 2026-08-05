@@ -9,9 +9,16 @@ import { StateBadge } from './StateBadge';
 
 interface PluginCardProps {
   plugin: Plugin;
+  /** OM-31 — collision-resolved initials computed once for the whole grid by
+   *  `deriveInitialsForSet`. Optional: the card falls back to the pure
+   *  single-name derivation when the caller has no full list. */
+  initials?: string;
 }
 
-export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
+export function PluginCard({
+  plugin,
+  initials,
+}: PluginCardProps): React.ReactElement {
   const t = useTranslations('store.card');
   const isLegacy = plugin.categories.includes('legacy');
   const visibleCategories = plugin.categories
@@ -56,6 +63,8 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
           iconUrl={plugin.icon_url}
           size="md"
           tone={isLegacy ? 'legacy' : 'default'}
+          id={plugin.id}
+          initials={initials}
         />
         <div className="flex min-w-0 flex-1 flex-col">
           <h3 className="font-display text-[22px] leading-[1.15] text-[color:var(--fg-strong)]">
@@ -69,7 +78,13 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
         </div>
       </div>
 
-      <p className="mt-4 line-clamp-3 text-[14px] leading-relaxed text-[color:var(--fg-muted)]">
+      {/* OM-31 — `line-clamp-3` hides the tail with no affordance. A native
+          title tooltip surfaces the full text without nesting interactive
+          content (e.g. <details>) inside this card's <Link>. */}
+      <p
+        className="mt-4 line-clamp-3 text-[14px] leading-relaxed text-[color:var(--fg-muted)]"
+        title={plugin.description || undefined}
+      >
         {plugin.description || <em>{t('noDescription')}</em>}
       </p>
 
@@ -79,6 +94,7 @@ export function PluginCard({ plugin }: PluginCardProps): React.ReactElement {
         <StateBadge
           state={hasUpdate ? 'installed' : plugin.install_state}
           isLegacy={isLegacy}
+          readiness={plugin.readiness}
         />
         {/* Spec 004 — operator-action signal pushed by the active plugin via
             ctx.status. Persists across visits and clears once the plugin

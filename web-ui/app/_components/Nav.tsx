@@ -3,7 +3,9 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+
+import type { NavEntryDto } from '../_lib/navigation';
 
 /**
  * Phase B (B2) — top nav with cluster dropdowns.
@@ -14,6 +16,21 @@ import { useEffect, useId, useRef, useState } from 'react';
  * across every leaf href so nested routes (`/store/builder` over `/store`)
  * keep working; the cluster header gets a subtle `contains-active` style
  * when any of its children matches.
+ *
+ * Two sources feed this bar (specs/470-dev-platform-plugin):
+ *
+ *   1. `NAV` below — the shell's own compiled surfaces. Labels come from
+ *      the `nav.*` message catalogue, per web-ui/CLAUDE.md.
+ *   2. `entries` prop — surfaces contributed by installed plugins, fetched
+ *      server-side in the root layout. These carry their label as a plain
+ *      string because the shell cannot know a third-party plugin's strings
+ *      at build time; the middleware resolves them for the active locale
+ *      before they ever reach the browser.
+ *
+ * (2) is the deliberate, and only, exception to "no user-facing literals
+ * outside the catalogue": the string is plugin-owned data, not a hardcoded
+ * literal in this file. Everything the shell itself renders still goes
+ * through `useTranslations`.
  */
 
 type NavLeaf = { readonly kind: 'link'; readonly href: string; readonly key: string };
@@ -23,6 +40,15 @@ type NavCluster = {
   readonly children: readonly NavLeaf[];
 };
 type NavItem = NavLeaf | NavCluster;
+
+/**
+ * A leaf after merging. Static leaves resolve their label through the
+ * message catalogue; plugin leaves carry a pre-resolved one.
+ */
+type ResolvedLeaf = {
+  readonly href: string;
+  readonly label: string;
+};
 
 const NAV: readonly NavItem[] = [
   { kind: 'link', href: '/', key: 'dashboard' },
@@ -47,55 +73,174 @@ const NAV: readonly NavItem[] = [
       // operator-facing configuration surfaces, same audience as Admin/System.
       { kind: 'link', href: '/operator/agents', key: 'agentsCluster' },
       { kind: 'link', href: '/conductor', key: 'conductor' },
-      // Dev platform (epic #470) — operator surface for isolated code-runner jobs.
-      { kind: 'link', href: '/admin/dev-platform', key: 'devPlatform' },
+      // Dev Platform used to be hardcoded here. It is now contributed at
+      // runtime (middleware registers it while DEV_PLATFORM_ENABLED), so the
+      // entry disappears when the feature is off — see mergeNav below.
     ],
   },
+  // OM-09 — there was NO in-product help at all: no help route, no `?`, no
+  // mailto, no docs link, no search. A customer stuck on a broken provider key
+  // wrote "Klingt blöd, aber ein Hilfebot wäre jetzt echt super." Top level and
+  // last, so it is reachable from every page without competing for attention.
+  { kind: 'link', href: '/help', key: 'help' },
 ] as const;
 
-function collectLeaves(items: readonly NavItem[]): readonly NavLeaf[] {
-  const out: NavLeaf[] = [];
+/** A static or plugin-contributed item, with its label already resolved. */
+export type ResolvedNavItem =
+  | { readonly kind: 'link'; readonly href: string; readonly label: string }
+  | {
+      readonly kind: 'cluster';
+      readonly key: string;
+      readonly label: string;
+      readonly children: readonly ResolvedLeaf[];
+    };
+
+/**
+ * Merge the shell's static nav with the plugin-contributed entries.
+ *
+ * Rules, in order:
+ *   - A plugin entry naming an existing cluster is appended inside it.
+ *   - A plugin entry with no cluster — or one naming a cluster this shell
+ *     does not have — becomes a top-level entry, so a menu item is never
+ *     silently swallowed by a typo or a shell/plugin version skew.
+ *   - Plugin entries sort among themselves by `order`, then label. They
+ *     never reorder the static items around them.
+ *   - A plugin entry whose href collides with a static one is dropped.
+ *     The shell's own surfaces win; a plugin must not be able to shadow
+ *     a core destination with its own label.
+ *
+ * Pure and exported so the merge is unit-testable without a DOM.
+ */
+export function mergeNav(
+  staticItems: readonly NavItem[],
+  entries: readonly NavEntryDto[],
+  translate: (key: string) => string,
+): readonly ResolvedNavItem[] {
+  const staticHrefs = new Set<string>();
+  for (const item of staticItems) {
+    if (item.kind === 'link') staticHrefs.add(item.href);
+    else for (const child of item.children) staticHrefs.add(child.href);
+  }
+
+  const clusterKeys = new Set(
+    staticItems.filter((i) => i.kind === 'cluster').map((i) => i.key),
+  );
+
+  const ordered = [...entries]
+    .filter((e) => !staticHrefs.has(e.href))
+    // Plain codepoint comparison, not localeCompare: this runs on both the
+    // server and the client, and a locale-sensitive collator can order the
+    // same two labels differently under Node's ICU than under the visitor's
+    // browser, producing a hydration mismatch. Ties broken by pluginId +
+    // navId so the order is total and stable.
+    .sort(
+      (a, b) =>
+        a.order - b.order ||
+        (a.label < b.label ? -1 : a.label > b.label ? 1 : 0) ||
+        (a.pluginId < b.pluginId ? -1 : a.pluginId > b.pluginId ? 1 : 0) ||
+        (a.navId < b.navId ? -1 : a.navId > b.navId ? 1 : 0),
+    );
+
+  const byCluster = new Map<string, ResolvedLeaf[]>();
+  const topLevel: ResolvedLeaf[] = [];
+  // Two plugins can legitimately register the same href. Rendering both
+  // would duplicate the React key (`key={item.href}`) and light up two
+  // entries as active. First wins, deterministically, by the sort above.
+  const claimed = new Set<string>();
+  for (const entry of ordered) {
+    if (claimed.has(entry.href)) continue;
+    claimed.add(entry.href);
+    const leaf: ResolvedLeaf = { href: entry.href, label: entry.label };
+    if (entry.cluster !== undefined && clusterKeys.has(entry.cluster)) {
+      const bucket = byCluster.get(entry.cluster) ?? [];
+      bucket.push(leaf);
+      byCluster.set(entry.cluster, bucket);
+    } else {
+      topLevel.push(leaf);
+    }
+  }
+
+  const merged: ResolvedNavItem[] = staticItems.map((item) =>
+    item.kind === 'link'
+      ? { kind: 'link', href: item.href, label: translate(item.key) }
+      : {
+          kind: 'cluster',
+          key: item.key,
+          label: translate(item.key),
+          children: [
+            ...item.children.map(
+              (c): ResolvedLeaf => ({ href: c.href, label: translate(c.key) }),
+            ),
+            ...(byCluster.get(item.key) ?? []),
+          ],
+        },
+  );
+
+  return [...merged, ...topLevel.map((l) => ({ kind: 'link' as const, ...l }))];
+}
+
+function collectLeaves(items: readonly ResolvedNavItem[]): readonly ResolvedLeaf[] {
+  const out: ResolvedLeaf[] = [];
   for (const item of items) {
-    if (item.kind === 'link') out.push(item);
+    if (item.kind === 'link') out.push({ href: item.href, label: item.label });
     else out.push(...item.children);
   }
   return out;
 }
 
-const ALL_LEAVES = collectLeaves(NAV);
-
-function bestPrefixMatch(pathname: string | null): string {
+/**
+ * Longest-prefix match on *segment boundaries*. A bare `startsWith` would
+ * light up `/admin` while the operator is on `/administrator`, and a plugin
+ * leaf `/reports` would claim `/reports-old`.
+ */
+export function bestPrefixMatch(
+  pathname: string | null,
+  leaves: readonly ResolvedLeaf[],
+): string {
   if (!pathname) return '';
-  return ALL_LEAVES.reduce((acc, candidate) => {
+  return leaves.reduce((acc, candidate) => {
     const match =
       candidate.href === '/'
         ? pathname === '/'
-        : pathname.startsWith(candidate.href);
+        : pathname === candidate.href ||
+          pathname.startsWith(`${candidate.href}/`);
     if (!match) return acc;
     return candidate.href.length > acc.length ? candidate.href : acc;
   }, '');
 }
 
-export function Nav(): React.ReactElement {
+export function Nav({
+  entries = [],
+}: {
+  /** Plugin-contributed entries, fetched server-side in the root layout. */
+  readonly entries?: readonly NavEntryDto[];
+}): React.ReactElement {
   const pathname = usePathname();
   const t = useTranslations('nav');
-  const activeHref = bestPrefixMatch(pathname);
+  // Recomputed when entries change (plugin installed/uninstalled) — the
+  // leaf set is no longer fixed at module scope.
+  const items = useMemo(() => mergeNav(NAV, entries, t), [entries, t]);
+  const activeHref = useMemo(
+    () => bestPrefixMatch(pathname, collectLeaves(items)),
+    [pathname, items],
+  );
   return (
-    <nav className="flex items-center gap-4 text-[13px] uppercase tracking-[0.18em]">
-      {NAV.map((item) =>
+    // Tighter gap/tracking below xl so the bar stays inside the desktop
+    // shell's 1100px window instead of overflowing its container (OM-30).
+    // `min-w-0` lets it actually shrink — flex items default to min-width:auto.
+    <nav className="flex min-w-0 items-center gap-2 text-[13px] uppercase tracking-[0.12em] xl:gap-4 xl:tracking-[0.18em]">
+      {items.map((item) =>
         item.kind === 'link' ? (
           <LeafLink
             key={item.href}
             href={item.href}
-            label={t(item.key)}
+            label={item.label}
             active={activeHref === item.href}
           />
         ) : (
           <ClusterDropdown
             key={item.key}
             cluster={item}
-            label={t(item.key)}
-            renderChildLabel={(child) => t(child.key)}
             activeHref={activeHref}
           />
         ),
@@ -117,7 +262,7 @@ function LeafLink({
     <Link
       href={href}
       className={[
-        'relative py-1 transition-colors',
+        'relative whitespace-nowrap py-1 transition-colors',
         active
           ? 'text-[color:var(--ink)]'
           : 'text-[color:var(--muted-ink)] hover:text-[color:var(--ink)]',
@@ -131,31 +276,78 @@ function LeafLink({
   );
 }
 
+/**
+ * Why three states instead of one boolean (OM-20/40):
+ *
+ * The menu used to be a single `open` flag that `mouseenter` set to true and
+ * `click` toggled. A pointer always enters the button *before* it clicks it, so
+ * the click handler invariably observed `open === true` and toggled the menu
+ * shut — the dropdown flicked closed at the exact moment the user tried to open
+ * it, which reads as "the menu never opens".
+ *
+ * Splitting "open because the pointer is here" from "open because the user
+ * pinned it" makes the two inputs monotonic: hover can only raise `closed →
+ * hover`, click owns `pinned` exclusively, and neither can undo the other.
+ */
+type DropdownMode = 'closed' | 'hover' | 'pinned';
+
+/** Grace period before a hover-opened menu closes, so travelling diagonally
+ *  from the trigger toward the menu body does not dismiss it mid-move. */
+const HOVER_CLOSE_GRACE_MS = 150;
+
 function ClusterDropdown({
   cluster,
-  label,
-  renderChildLabel,
   activeHref,
 }: {
-  readonly cluster: NavCluster;
-  readonly label: string;
-  readonly renderChildLabel: (child: NavLeaf) => string;
+  readonly cluster: Extract<ResolvedNavItem, { kind: 'cluster' }>;
   readonly activeHref: string;
 }): React.ReactElement {
-  const [open, setOpen] = useState(false);
+  const label = cluster.label;
+  const [mode, setMode] = useState<DropdownMode>('closed');
+  const open = mode !== 'closed';
   const rootRef = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuId = useId();
   const containsActive = cluster.children.some(
     (child) => child.href === activeHref,
   );
 
+  const cancelClose = useCallback((): void => {
+    if (closeTimer.current === null) return;
+    clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  }, []);
+
+  const close = useCallback((): void => {
+    cancelClose();
+    setMode('closed');
+  }, [cancelClose]);
+
+  /** Hover only ever *raises* the menu — it can never demote a pinned one. */
+  const hoverOpen = useCallback((): void => {
+    cancelClose();
+    setMode((m) => (m === 'pinned' ? m : 'hover'));
+  }, [cancelClose]);
+
+  /** A hover-opened menu closes after a short grace period, so a diagonal
+   *  cursor path from the button toward the menu does not dismiss it. */
+  const hoverClose = useCallback((): void => {
+    cancelClose();
+    closeTimer.current = setTimeout(() => {
+      closeTimer.current = null;
+      setMode((m) => (m === 'pinned' ? m : 'closed'));
+    }, HOVER_CLOSE_GRACE_MS);
+  }, [cancelClose]);
+
+  useEffect(() => cancelClose, [cancelClose]);
+
   useEffect(() => {
     if (!open) return;
     const onDocClick = (e: MouseEvent): void => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(e.target as Node)) close();
     };
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') close();
     };
     document.addEventListener('mousedown', onDocClick);
     document.addEventListener('keydown', onKey);
@@ -163,23 +355,29 @@ function ClusterDropdown({
       document.removeEventListener('mousedown', onDocClick);
       document.removeEventListener('keydown', onKey);
     };
-  }, [open]);
+  }, [open, close]);
 
   return (
     <div
       ref={rootRef}
       className="relative"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
+      onMouseEnter={hoverOpen}
+      onMouseLeave={hoverClose}
     >
       <button
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={menuId}
-        onClick={() => setOpen((v) => !v)}
+        // Keyboard parity: focusing the trigger raises the menu the same way
+        // hovering does, so a Tab-only user sees the children too.
+        onFocus={hoverOpen}
+        onClick={() => {
+          cancelClose();
+          setMode((m) => (m === 'pinned' ? 'closed' : 'pinned'));
+        }}
         className={[
-          'relative inline-flex items-center gap-1 py-1 transition-colors uppercase tracking-[0.18em]',
+          'relative inline-flex items-center gap-1 whitespace-nowrap py-1 uppercase tracking-[0.12em] transition-colors xl:tracking-[0.18em]',
           containsActive
             ? 'text-[color:var(--ink)]'
             : 'text-[color:var(--muted-ink)] hover:text-[color:var(--ink)]',
@@ -212,7 +410,7 @@ function ClusterDropdown({
                   key={child.href}
                   href={child.href}
                   role="menuitem"
-                  onClick={() => setOpen(false)}
+                  onClick={close}
                   className={[
                     'block px-3 py-2 text-[12px] uppercase tracking-[0.16em] transition-colors',
                     active
@@ -220,7 +418,7 @@ function ClusterDropdown({
                       : 'text-[color:var(--muted-ink)] hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--ink)]',
                   ].join(' ')}
                 >
-                  {renderChildLabel(child)}
+                  {child.label}
                 </Link>
               );
             })}

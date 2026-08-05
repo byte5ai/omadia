@@ -19,7 +19,9 @@
         "title": "LLM provider",
         "connected": "{count, plural, one {# provider connected} other {# providers connected}}",
         "none": "No provider connected",
-        "active": "Active: {name}"
+        "active": "Active: {name}",
+        "unverified": "{count, plural, one {# provider unverified} other {# providers unverified}}",
+        "invalid": "Provider key rejected"
       },
       "orchestrators": {
         "title": "Orchestrators",
@@ -29,6 +31,7 @@
       "plugins": {
         "title": "Plugins",
         "installed": "{count, plural, one {# plugin installed} other {# plugins installed}}",
+        "ready": "{n} of {total} ready",
         "none": "No plugins installed yet"
       },
       "mcp": {
@@ -102,27 +105,18 @@
         "open": "Open",
         "build": "Build in Builder",
         "request": "Request",
-        "missingHint": "Not in the Hub yet",
-        "sectionEmpty": "No recommendation in this category."
+        "missingHint": "Not in the Hub yet"
       },
-      "step": "Step {n}",
-      "rolesHeading": "Choose a role",
       "llmStep": {
         "connect": "Open LLM access",
         "title": "Connect an LLM",
         "description": "Without a connected LLM no orchestrator can run. Connect an API provider or a subscription CLI first.",
-        "connectProvider": "Connect provider",
-        "connectCli": "Connect subscription CLI"
+        "doneViaProvider": "An LLM provider is connected and its key has been verified.",
+        "doneViaCli": "You are logged into a subscription CLI — that is enough to run orchestrators."
       },
       "heading": "Get started",
-      "subtitle": "Pick a role to install a recommended set of plugins. You can fine-tune everything later.",
       "kicker": "Setup",
-      "pluginCount": "{count, plural, one {# plugin} other {# plugins}}",
-      "apply": "Install set",
-      "applying": "Installing",
       "applied": "Installed",
-      "failed": "Could not install",
-      "retry": "Try again",
       "browseAll": "Browse all plugins",
       "bringSkills": {
         "kicker": "Optional",
@@ -136,8 +130,13 @@
       },
       "dismiss": "Hide onboarding",
       "reenable": "Show onboarding",
-      "empty": "No role profiles available. Connect a registry to see recommendations.",
-      "outcome": "{installed} installed, {skipped} skipped, {errored} failed"
+      "stepOfTotal": "Step {n} of {total}",
+      "progress": "{done} of {total} done",
+      "caseChosen": "Business case: {name}",
+      "installStep": {
+        "title": "Install plugins",
+        "pickCaseFirst": "Pick a business case above to see matching recommendations."
+      }
     }
   },
   "adminLlm": {
@@ -205,6 +204,10 @@
           "title": "Storage Backend",
           "description": "Switch memory storage between filesystem and Postgres; Postgres needs DATABASE_URL and takes effect after a restart."
         },
+        "embeddingProvider": {
+          "title": "Embedding Provider",
+          "description": "Switch the active embedding adapter live — no restart. Shows the dimension gate, the stored corpus, and what a switch would discard."
+        },
         "domains": {
           "title": "Domains",
           "description": "Browse registered plugins grouped by domain (read-only)."
@@ -220,6 +223,10 @@
         "devPlatform": {
           "title": "Dev Platform",
           "description": "Register repositories and launch isolated code-runner jobs that open a pull request from a reviewed diff."
+        },
+        "webhooks": {
+          "title": "Conductor Webhooks",
+          "description": "Inbound endpoints and outbound subscriptions, with secret rotation and delivery history."
         },
         "auth": {
           "title": "Authentication Providers",
@@ -285,7 +292,9 @@
             "credential_harvest": "Collect API keys, passwords, or secrets",
             "silent_permission_escalation": "Request broader access without telling the user"
           }
-        }
+        },
+        "importFailed": "The import did not work.",
+        "supportDetails": "Details for support"
       },
       "toolbox": {
         "native": "Native tools",
@@ -412,7 +421,7 @@
     "channels": "Channels",
     "pluginsCluster": "Plugins",
     "adminCluster": "Admin",
-    "devPlatform": "Dev Platform"
+    "help": "Help"
   },
   "conductor": {
     "title": "Conductor",
@@ -710,12 +719,12 @@
     "paletteAriaLabel": "Accent palette",
     "appearanceAriaLabel": "Appearance",
     "palette": {
-      "lagoon": "Lagoon",
-      "petrol": "Petrol",
-      "atelier": "Atelier"
+      "lagoon": "Lagoon (teal)",
+      "petrol": "Petrol (blue)",
+      "atelier": "Atelier (warm)"
     },
     "appearance": {
-      "system": "System",
+      "system": "Automatic",
       "light": "Light",
       "dark": "Dark"
     }
@@ -725,7 +734,7 @@
     "shellLoading": "Loading login…",
     "loadingProviders": "Loading login…",
     "errorPrefix": "Failed to load login providers:",
-    "noProviders": "No auth providers are configured. Set {envVar} in the middleware environment and restart.",
+    "noProviders": "No auth providers are configured. Set <envVar>AUTH_PROVIDERS</envVar> in the middleware environment and restart.",
     "emailLabel": "Email",
     "passwordLabel": "Password",
     "submit": "Sign in",
@@ -772,13 +781,13 @@
     "apply": "Apply",
     "applying": "Installing…",
     "pluginCount": "{count, plural, one {# plugin} other {# plugins}}",
-    "outcomeAppliedTitle": "Profile {id} applied",
+    "outcomeAppliedTitle": "Profile <id>{profileId}</id> applied",
     "outcomeStats": "{installed} installed, {skipped} skipped, {errored} failed",
     "sectionInstalled": "Newly installed",
     "sectionSkipped": "Already installed (skipped)",
     "sectionErrored": "Errors — please check manually",
-    "secretsHint": "Plugins that need operator secrets (e.g. anthropic_api_key, telegram_bot_token) start in status {erroredTag} until you set the secrets via the wizard on the respective detail page. Then activate via {reactivateTag}.",
-    "errorTitle": "Profile {id} could not be applied",
+    "secretsHint": "Plugins that need operator secrets (e.g. anthropic_api_key, telegram_bot_token) start in status <erroredTag>errored</erroredTag> until you set the secrets via the wizard on the respective detail page. Then activate via \"Reactivate\".",
+    "errorTitle": "Profile <id>{profileId}</id> could not be applied",
     "tryAnother": "Pick another profile"
   },
   "chatTabs": {
@@ -803,7 +812,9 @@
     "description": "This page hit an unexpected error and couldn't finish loading.",
     "reload": "Reload",
     "resetData": "Reset local chat data",
-    "resetDataHint": "Clears chats stored locally in this browser, then reloads. Your server-side data is untouched — use this if reloading alone doesn't help."
+    "resetDataHint": "Clears chats stored locally in this browser, then reloads. Your server-side data is untouched — use this if reloading alone doesn't help.",
+    "digestLabel": "Error reference",
+    "digestHint": "Quote this reference when reporting the problem — the full message is in the server log."
   },
   "session": {
     "expiresAtLabel": "Session valid until",
@@ -875,7 +886,8 @@
     "steerTraceLabel": "Steered mid-turn:",
     "sessionsLoading": "Loading sessions…",
     "emptyStatePrompt": "Ask the orchestrator — the answer streams live including tool calls.",
-    "emptyStateShortcut": "Shortcut: ⌘↵ / Ctrl↵ · new tab via „+ New chat\"",
+    "emptyStateShortcut": "Shortcut: ↵ to send · ⇧↵ for a new line · new tab via „+ New chat\"",
+    "composerSendHint": "↵ to send · ⇧↵ for a new line",
     "streamingSuffix": "· streaming…",
     "toolTraceHeading": "Tool trace ({count})",
     "subCallCount": "{count, plural, one {# sub-call} other {# sub-calls}}",
@@ -1061,7 +1073,10 @@
     "viewTrace": "trace ▾",
     "stepsCount": "{count, plural, one {# step} other {# steps}}",
     "delegatedAnswerFrom": "Direct answer from {label}",
-    "delegatedAnswerCaption": "Delivered verbatim — the orchestrator cannot edit or remove this answer."
+    "delegatedAnswerCaption": "Delivered verbatim — the orchestrator cannot edit or remove this answer.",
+    "stickyActive": "Talking directly to {label} — every message goes straight there.",
+    "stickyExit": "Back to orchestrator",
+    "stickyPlaceholder": "Message to {label}…"
   },
   "privacyOperator": {
     "eyebrow": "Privacy Operator",
@@ -1144,7 +1159,9 @@
       "save": "Save",
       "forkAndSave": "Save as editable copy",
       "forkNotice": "This is an imported skill. Saving creates an editable copy and keeps the original as its source.",
-      "export": "Export"
+      "export": "Export",
+      "actionFailed": "That did not work. The skill was not changed.",
+      "supportDetails": "Details for support"
     },
     "capabilities": {
       "heading": "Required tools",
@@ -1179,6 +1196,18 @@
         "hidden_content": "Contain hidden or obfuscated content",
         "credential_harvest": "Collect API keys, passwords, or secrets",
         "silent_permission_escalation": "Request broader access without telling the user"
+      },
+      "scanFailure": {
+        "auth": "The deep scan could not run: the stored API key was rejected by the provider.",
+        "rate_limit": "The deep scan could not run: the provider's rate limit was reached. Try again shortly.",
+        "overloaded": "The deep scan could not run: the provider is currently overloaded. Try again shortly.",
+        "provider_error": "The deep scan could not run: the LLM provider returned an error.",
+        "timeout": "The deep scan could not run: the provider did not answer in time.",
+        "malformed_json": "The deep scan could not be evaluated: the model returned an unreadable result.",
+        "unsupported_severity": "The deep scan could not be evaluated: the model returned an unknown rating.",
+        "missing_rationale": "The deep scan could not be evaluated: the model returned no reasoning.",
+        "unexpected": "The deep scan failed unexpectedly.",
+        "fixProviderLink": "Check LLM access"
       }
     }
   },
@@ -1245,9 +1274,11 @@
     "routingTesterRunning": "Testing…",
     "routingTesterMatched": "→ Orchestrator \"{slug}\" (via {via})",
     "routingTesterNoMatch": "No match — and no standard orchestrator configured.",
-    "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · plugins: {plugins} · bindings: {bindings}",
+    "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · {plugins} plugins attached · {bindings} bindings",
     "sessionsLabel": "Sessions:",
     "pluginsAvailable": "Available",
+    "pluginsAvailableToAttach": "Available to attach",
+    "pluginsAttachedHere": "Attached to this orchestrator",
     "pluginsAvailableEmpty": "All installed plugins are already attached.",
     "pluginsEnabled": "Attached",
     "pluginsEnabledEmpty": "Drag-and-drop or click \"Attach\" to add plugins.",
@@ -1583,7 +1614,7 @@
         },
         "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the agent correctly detects the missing service and throws. Publish the agent to the platform store to test the real data path.",
         "agentStuck": {
-          "title": "Builder agent is stuck on slot {slot} ({attempts, plural, one {# attempt} other {# attempts}})",
+          "title": "Builder agent is stuck on slot <slot>{slotKey}</slot> ({attempts, plural, one {# attempt} other {# attempts}})",
           "body": "{summary}. Open the slot editor, review the errors manually and fix the code — the agent won't retry on its own.",
           "dismiss": "Dismiss",
           "dismissTooltip": "Dismiss banner"
@@ -2310,7 +2341,7 @@
       }
     },
     "title": "Configuration",
-    "intro": "All {envFile} values that are written to the config store or the secret vault at startup. Changes are saved automatically and the affected plugin is re-activated — they take effect immediately, without a restart. Secrets only show whether a value is set; the value itself is never displayed.",
+    "intro": "All <envFile>.env</envFile> values that are written to the config store or the secret vault at startup. Changes are saved automatically and the affected plugin is re-activated — they take effect immediately, without a restart. Secrets only show whether a value is set; the value itself is never displayed.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "vaultUnavailable": "Vault unavailable — secrets cannot be edited.",
@@ -2343,6 +2374,12 @@
       "modelCount": "{count, plural, one {# model} other {# models}}",
       "connected": "connected",
       "notConnected": "no key",
+      "unverified": "key stored, not verified",
+      "verified": "verified",
+      "invalid": "key rejected",
+      "verifiedAt": "verified {time}",
+      "testKey": "Test key",
+      "testing": "Testing …",
       "addKey": "Add key",
       "changeKey": "Change key",
       "removeKey": "Remove key",
@@ -2352,7 +2389,9 @@
       "keyInputLabel": "{provider} API key",
       "keyPlaceholder": "Paste API key …",
       "saveKey": "Save key",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "cliNotInstalledReason": "The Claude CLI is not installed on this server.",
+      "helpLink": "What does this mean?"
     },
     "assignments": {
       "heading": "Per-agent assignment",
@@ -2362,8 +2401,8 @@
       "providerLabel": "Provider",
       "modelLabel": "Model",
       "pickModel": "Select a model …",
-      "avvDisclosure": "Routing this agent to {provider} sends its prompt data to a third-party processor. Ensure a data-processing agreement (DSGVO Art. 28) is in place before using it for personal data.",
-      "euHostedNote": "{provider} is hosted in the EU. An Art. 28 DSGVO processing agreement is still required, but there is no third-country transfer — unlike US-based providers."
+      "avvDisclosure": "This agent runs on {provider}. Its prompt data is sent to a third-party processor. Ensure a data-processing agreement (GDPR Art. 28) is in place before using it for personal data.",
+      "euHostedNote": "{provider} is hosted in the EU. An Art. 28 GDPR processing agreement is still required, but there is no third-country transfer — unlike US-based providers."
     },
     "status": {
       "saving": "saving …",
@@ -2427,6 +2466,12 @@
       "loggedIn": "logged in",
       "subscription": "subscription",
       "needsVerification": "needs verification"
+    },
+    "lastChecked": "Last checked at {time}",
+    "refreshed": "Updated just now",
+    "install": {
+      "heading": "Install the CLI",
+      "intro": "This CLI is not present on this server. Install it there, then log in — afterwards the in-app login becomes available here."
     }
   },
   "createIssue": {
@@ -2503,6 +2548,12 @@
       "sourceHub": "Registry",
       "sourceLocal": "Local",
       "sourceInstalled": "Installed",
+      "counts": {
+        "installed": "{n} installed",
+        "ready": "{n} of {total} ready",
+        "attached": "{n} attached to {agent}",
+        "available": "{n} available to attach"
+      },
       "emptyFilteredTitle": "No {category} in this view.",
       "emptyFilteredHint": "Switch the category or the source above.",
       "emptyInstalledTitle": "No plugins installed yet.",
@@ -2573,7 +2624,11 @@
       "installed": "Installed",
       "updateAvailable": "Update available",
       "incompatible": "Incompatible",
-      "migrationNeeded": "Migration needed"
+      "migrationNeeded": "Migration needed",
+      "configRequired": "Configuration required",
+      "errored": "Activation failed",
+      "readyVerified": "Active · verified {time}",
+      "missingFields": "Missing: {fields}"
     },
     "workaroundBadge": {
       "active": "Workaround active",
@@ -2597,6 +2652,10 @@
       "update": "Update",
       "installed": "Installed",
       "active": "active",
+      "installedNext": "\"{name}\" installed — attach it to an orchestrator to start using it.",
+      "toOrchestrators": "Attach to an orchestrator",
+      "toSetup": "Complete setup ({count} missing)",
+      "toChat": "Try it in chat",
       "uninstallAria": "Uninstall {name}",
       "uninstall": "Uninstall",
       "confirmRemove": "Remove <strong>{name}</strong>? The tool is immediately removed from the orchestrator, the vault namespace is cleared, and the registry entry is deleted.",
@@ -2670,7 +2729,10 @@
       "saving": "Saving",
       "saveSelection": "Save selection",
       "saveSelectionWithCount": "Save selection ({count})",
-      "refreshList": "Refresh list"
+      "refreshList": "Refresh list",
+      "noPasswordWarning": "No account password belongs here. This expects a technical key from the provider's console.",
+      "patternMismatch": "This value does not have the expected format.",
+      "patternUnavailable": "This field declares a format check that could not be applied — its value is not validated."
     },
     "editFromStore": {
       "cloning": "Cloning draft …",
@@ -2723,12 +2785,14 @@
     },
     "setupForm": {
       "enable": "Enable",
-      "dontSet": "(leave unset)"
+      "dontSet": "(leave unset)",
+      "noPasswordWarning": "No account password belongs here. This expects a technical key from the provider's console.",
+      "patternUnavailable": "This field declares a format check that could not be applied — its value is not validated."
     }
   },
   "adminAuth": {
     "title": "Authentication Providers",
-    "intro": "Enable or disable the sign-in methods. The {envVar} env variable defines the permitted providers; here you choose which of them are currently active.",
+    "intro": "Enable or disable the sign-in methods. The <envVar>AUTH_PROVIDERS</envVar> env variable defines the permitted providers; here you choose which of them are currently active.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "statusActive": "active",
@@ -2959,6 +3023,8 @@
       "plan": "Plan",
       "viewPlan": "View plan",
       "noPlan": "No plan artifact",
+      "planLoading": "Loading plan…",
+      "planLoadError": "The plan could not be loaded.",
       "holders": "Holders",
       "noHolders": "none",
       "questions": "Questions",
@@ -3049,6 +3115,7 @@
       "age": "Age",
       "view": "View",
       "cancel": "Cancel",
+      "delete": "Delete",
       "empty": "No jobs yet. Start one from a repository row.",
       "live": "live",
       "liveLost": "connection lost — retrying",
@@ -3078,6 +3145,12 @@
         "body": "The runner is terminated. The branch, the log, and any uploaded diff are kept.",
         "confirm": "Cancel job",
         "cancel": "Keep running"
+      },
+      "deleteConfirm": {
+        "title": "Delete job?",
+        "body": "The job, its log, and its artifacts are removed permanently. Any branch or PR it created is kept.",
+        "confirm": "Delete job",
+        "cancel": "Keep it"
       }
     },
     "newJob": {
@@ -3194,8 +3267,17 @@
         "pr": "pr"
       },
       "phaseSkipped": "skipped — no questions",
-      "noArtifact": "No artifact for this phase yet.",
+      "toolCall": {
+        "pending": "running",
+        "failed": "failed",
+        "noOutput": "(no output)",
+        "prompt": "Prompt",
+        "result": "Result",
+        "output": "Output",
+        "moreDiffLines": "… {count, plural, one {# more line} other {# more lines}}"
+      },
       "openPr": "Open pull request",
+      "artifactError": "This phase's recorded output could not be loaded.",
       "logEmpty": "No log output yet.",
       "scrollToBottom": "Scroll to bottom",
       "connection": {
@@ -3209,6 +3291,13 @@
         "body": "The runner is terminated and the branch is kept.",
         "confirm": "Cancel job",
         "cancelLabel": "Keep running"
+      },
+      "delete": {
+        "action": "Delete",
+        "title": "Delete job?",
+        "body": "The job, its log, and its artifacts are removed permanently. Any branch or PR it created is kept.",
+        "confirm": "Delete job",
+        "cancelLabel": "Keep it"
       },
       "sidebar": {
         "backend": "Backend",
@@ -3264,7 +3353,7 @@
   },
   "adminRegistries": {
     "title": "Plugin Registries",
-    "intro": "Sources from which plugins are pulled into the store. New instances start with {hub}. The token is stored encrypted and never shown again — only whether one is set. Changes take effect without a restart.",
+    "intro": "Sources from which plugins are pulled into the store. New instances start with <hub>hub.omadia.ai</hub>. The token is stored encrypted and never shown again — only whether one is set. Changes take effect without a restart.",
     "addHeading": "Add registry",
     "fields": {
       "name": "Name",
@@ -3300,9 +3389,76 @@
       "generic": "Error {status}."
     }
   },
+  "adminWebhooks": {
+    "title": "Conductor Webhooks",
+    "intro": "Inbound endpoints start subscribed workflow runs; outbound subscriptions receive an HMAC-signed delivery on run completion or failure. A created or rotated secret is shown once — it is never returned again.",
+    "badge": {
+      "enabled": "enabled",
+      "disabled": "disabled"
+    },
+    "endpoints": {
+      "heading": "Inbound endpoints",
+      "hint": "POST to the endpoint's URL with a valid HMAC signature to start every workflow subscribed to its event.",
+      "fields": {
+        "eventId": "Event id",
+        "description": "Description (optional)"
+      },
+      "create": "Create endpoint",
+      "loading": "Loading …",
+      "empty": "No inbound endpoints configured.",
+      "viewHistory": "View history",
+      "hideHistory": "Hide history",
+      "enable": "Enable",
+      "disable": "Disable",
+      "rotateSecret": "Rotate secret",
+      "rotating": "Rotating",
+      "delete": "Delete",
+      "deleting": "Deleting",
+      "secretRevealed": "New secret — copy it now, it will not be shown again:",
+      "dismiss": "Dismiss",
+      "noDeliveries": "No deliveries recorded yet.",
+      "confirmDelete": "Really delete this endpoint? Any sender using it will start getting 401s.",
+      "table": {
+        "deliveryId": "Delivery id",
+        "outcome": "Outcome",
+        "receivedAt": "Received"
+      }
+    },
+    "subscriptions": {
+      "heading": "Outbound subscriptions",
+      "hint": "Receives an HMAC-signed POST whenever the subscribed event fires. Failed deliveries retry with backoff until the attempt cap is reached.",
+      "fields": {
+        "url": "URL",
+        "event": "Event",
+        "description": "Description (optional)"
+      },
+      "create": "Create subscription",
+      "loading": "Loading …",
+      "empty": "No outbound subscriptions configured.",
+      "viewHistory": "View history",
+      "hideHistory": "Hide history",
+      "enable": "Enable",
+      "disable": "Disable",
+      "rotateSecret": "Rotate secret",
+      "rotating": "Rotating",
+      "delete": "Delete",
+      "deleting": "Deleting",
+      "secretRevealed": "New secret — copy it now, it will not be shown again:",
+      "dismiss": "Dismiss",
+      "noDeliveries": "No deliveries recorded yet.",
+      "confirmDelete": "Really delete this subscription?",
+      "table": {
+        "status": "Status",
+        "attempts": "Attempts",
+        "lastError": "Last error",
+        "nextAttemptAt": "Next attempt",
+        "createdAt": "Created"
+      }
+    }
+  },
   "adminDomains": {
     "title": "Plugin Domains",
-    "intro": "Overview of all registered plugins, grouped by the {domain} declared in their {manifest}. Domains are read by the Phase 8 nudge-pipeline multi-domain trigger and used by the operator UI for cross-agent grouping. Curation (renaming / merging / hierarchies) follows with OB-78 (Phase 9 agent profiles).",
+    "intro": "Overview of all registered plugins, grouped by the <domain>domain</domain> declared in their <manifest>manifest.yaml</manifest>. Domains are read by the Phase 8 nudge-pipeline multi-domain trigger and used by the operator UI for cross-agent grouping. Curation (renaming / merging / hierarchies) follows with OB-78 (Phase 9 agent profiles).",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "noData": "No data.",
@@ -3313,10 +3469,10 @@
       "fallbacks": "Fallbacks"
     },
     "pluginCount": "{count, plural, one {# plugin} other {# plugins}}",
-    "fallbackWarning": "{count, plural, one {# plugin} other {# plugins}} without a declared domain — auto-fallback to {fallbackDomain}. Add an {manifestKey} line to the manifest (e.g. {exampleOne}, {exampleTwo}) or re-upload the agent via the Builder."
+    "fallbackWarning": "{count, plural, one {# plugin} other {# plugins}} without a declared domain — auto-fallback to <fallbackDomain>{fallbackDomainName}</fallbackDomain>. Add an <manifestKey>identity.domain</manifestKey> line to the manifest (e.g. <exampleOne>\"confluence\"</exampleOne>, <exampleTwo>\"odoo.hr\"</exampleTwo>) or re-upload the agent via the Builder."
   },
   "adminUsage": {
-    "title": "Costs",
+    "title": "Usage & Cost",
     "intro": "Token consumption and LLM costs per model, source and time. Captures every Anthropic call — orchestrator, sub-agents and the Haiku background tasks.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
@@ -3643,7 +3799,9 @@
   },
   "adminKgLifecycle": {
     "quotaTooltip": "{percent}% of the quota",
-    "quotaOverTooltip": "{percent}% — will be evicted on the next GC sweep"
+    "quotaOverTooltip": "{percent}% — will be evicted on the next GC sweep",
+    "unavailableTitle": "Knowledge-graph lifecycle is not available",
+    "unavailableBody": "This page needs the Postgres/knowledge-graph backend. The lifecycle endpoints are only mounted when the KG plugin is installed and a database is configured — until then there is nothing to show here."
   },
   "adminKgPriorities": {
     "intro": "Per-agent block/boost list for the token-budget assembler. Block drops a turn from the recall pool; boost multiplies the score by `weight` (default 1.3). `manuallyAuthored=true` additionally applies an independent ×1.3 boost — both combine.",
@@ -3680,6 +3838,67 @@
     "dbUrlRequiredError": "Postgres requires DATABASE_URL (Neon KG/graphPool). Set DATABASE_URL and restart before switching to Postgres.",
     "forbiddenError": "Not authorized (403) — switching the backend requires admin rights.",
     "noProviderError": "No memory provider registered (409) — the choice cannot be saved."
+  },
+  "adminEmbeddingProvider": {
+    "title": "Embeddings · Provider",
+    "intro": "Switches the active <code>embeddingClient@1</code> provider <strong>live — without a restart</strong>. The middleware deactivates the current adapter, activates the target and re-runs the knowledge-graph dimension gate, which rewrites the <code>vector(n)</code> columns when the width changes. Every stored embedding is discarded and re-earned by the backfill sweep, one provider call per row.",
+    "loading": "loading…",
+    "loadFailed": "Loading failed: {message}",
+    "pollingNote": "Live state, re-read every {seconds} seconds.",
+    "none": "—",
+    "unknown": "unknown",
+    "dimensionsValue": "{dimensions}d",
+    "currentStateTitle": "Current state",
+    "activeProvider": "Active provider",
+    "activeModel": "Model",
+    "activeDimensions": "Vector width",
+    "providerDriftTitle": "Provider drift",
+    "providerDriftBody": "The registry hands out {activeModelId}, but the verdict governing the knowledge graph was computed against {gateModelId}. Nothing is broken — swapping an adapter through the plugin pages does not re-run the dimension gate. Switch the provider here to re-gate, so the corpus and the verdict describe the same model again.",
+    "capabilityMissing": "The active adapter publishes no client — it is running but not configured (missing API key or base URL).",
+    "corpusTitle": "Stored corpus",
+    "corpusModel": "Recorded model",
+    "corpusDimensions": "Recorded width",
+    "corpusNone": "No model is recorded yet — the corpus is empty, or it predates the model registry.",
+    "corpusClearPending": "A stale-vector clear is still draining. Vector writes resume on their own when the backfill sweep finishes it.",
+    "storedVectors": "Stored vectors",
+    "columnsTitle": "Governed vector columns",
+    "graphUnavailable": "No Postgres knowledge-graph is active, so there are no governed vector columns to report.",
+    "corpusReadFailed": "The corpus could not be read: {message}",
+    "gateTitle": "Dimension gate",
+    "gateWrites": "Vector writes",
+    "gateWritesAllowed": "allowed",
+    "gateWritesBlocked": "blocked",
+    "gateStatus": "Outcome",
+    "gateReason": "Reason",
+    "gateDetail": "Detail",
+    "gateUnavailable": "The knowledge-graph has published no gate verdict — either no Postgres backend is active, or it never got as far as evaluating.",
+    "gateMigrating": "The vector columns were rewritten at the new width. This is not an error: the old corpus was deliberately discarded and the backfill sweep is re-embedding it, so recall stays degraded until it catches up.",
+    "gateClearComplete": "The stale-vector clear finished and vector writes were re-enabled in this process, without a restart. The backfill sweep is re-embedding the corpus.",
+    "gateClearPending": "A stale-vector clear is still owed. Vector writes stay off until the backfill sweep drains it — no restart needed, this page will show the change.",
+    "autoMigrateTitle": "Rewrite vector columns on a width change",
+    "autoMigrateOn": "allowed — a confirmed switch below may rewrite the columns at the new width",
+    "autoMigrateOff": "forbidden — a width change blocks vector writes until you migrate the columns by hand, even from this page",
+    "autoMigrateHint": "This never happens on a restart: only a switch you confirm below can rewrite the columns. Change the master switch in the knowledge-graph plugin settings (auto_migrate_vector_columns).",
+    "switchTitle": "Switch provider",
+    "noAlternatives": "No second embeddingClient@1 provider is installed. Install one from the plugin store first — exactly one may ever be active.",
+    "targetLegend": "Target provider",
+    "widthChangeYes": "changes the column width ({from}d → {to}d)",
+    "widthChangeNo": "keeps the current column width",
+    "widthChangeUnknown": "width impact unknown until the provider activates",
+    "discardTitle": "This discards the stored corpus",
+    "discardCount": "{count, plural, =0 {Nothing is stored right now, so no vectors are lost.} one {# stored vector will be discarded and re-embedded.} other {# stored vectors will be discarded and re-embedded.}}",
+    "discardUnknown": "The number of stored vectors could not be read. Assume the whole corpus is discarded and re-embedded.",
+    "costWarning": "Re-embedding calls the provider once per row. Against a paid API that costs real money.",
+    "confirmLabel": "I understand that the stored vectors are discarded and re-embedded.",
+    "switchButton": "Switch provider",
+    "switching": "switching…",
+    "switchedTitle": "Switched to {provider}.",
+    "switchedHint": "The gate outcome below is what actually happened. It updates on its own while the backfill runs.",
+    "confirmationRequiredError": "Confirmation required — the switch discards the stored vectors.",
+    "unknownTargetError": "That plugin is not an installed embeddingClient@1 provider.",
+    "alreadyActiveError": "That provider is already the active one.",
+    "targetUnavailableError": "The target could not take over, so the previous provider was restored. Configure it first (API key, base URL), then try again.",
+    "forbiddenError": "Not authorized (403) — switching the embedding provider requires admin rights."
   },
   "graph": {
     "page": {
@@ -3858,7 +4077,7 @@
       "columnLastRun": "Last run",
       "columnActions": "Actions",
       "emptyTitle": "No routines yet.",
-      "emptyBody": "Routines are created when a user says something like “remind me about X every Monday at 9 am” in the chat — the agent calls the {toolName} tool and creates it."
+      "emptyBody": "Routines are created when a user says something like “remind me about X every Monday at 9 am” in the chat — the agent calls the <toolName>manage_routine</toolName> tool and creates it."
     },
     "row": {
       "neverRan": "never",
@@ -3885,7 +4104,7 @@
     },
     "templateEditor": {
       "badgeActive": "active · {format}",
-      "description": "JSON schema: {schema}. On trigger the server renders all data + static sections itself; the LLM only fills the narrative-slot strings. Empty editor = remove the template, the routine runs on the legacy path again.",
+      "description": "JSON schema: <schema>{schemaShape}</schema>. On trigger the server renders all data + static sections itself; the LLM only fills the narrative-slot strings. Empty editor = remove the template, the routine runs on the legacy path again.",
       "templatePlaceholder": "'{ \"format\": \"markdown\", \"sections\": [ { \"kind\": \"narrative-slot\", \"id\": \"intro\", \"hint\": \"One sentence of introduction.\" } ] }'",
       "saveFailedLabel": "Save failed:",
       "saved": "Saved.",
@@ -3958,6 +4177,49 @@
       "dotInactive": "Inactive",
       "keySourceDevFile": "dev file (not for production)",
       "keySourceDevFileCreated": "dev file (newly generated — DEV ONLY)"
+    }
+  },
+  "help": {
+    "kicker": "Help",
+    "title": "Help & support",
+    "intro": "Answers to the states you are most likely to get stuck in, plus where to reach us when they do not help.",
+    "faq": {
+      "heading": "Frequently asked",
+      "invalidKey": {
+        "question": "My API key is reported as invalid",
+        "answer": "A stored key is not a working key. Open LLM access, use “Test key”, and check the key in the provider's console — an expired or revoked key looks identical until it is probed.",
+        "action": "Open LLM access"
+      },
+      "pluginNeedsConfig": {
+        "question": "A plugin says it needs configuration",
+        "answer": "The plugin is installed but at least one required field has no value. Open the plugin in the store and fill in the setup fields. Secret fields never want an account password — they want a technical key from the provider's console.",
+        "action": "Open the store"
+      },
+      "cliNotInstalled": {
+        "question": "A subscription CLI shows as not installed",
+        "answer": "The CLI has to be installed on the server that runs omadia, not on your laptop. The Subscriptions tab shows the exact install command; after installing, use “Re-check”.",
+        "action": "Open LLM access"
+      },
+      "noModels": {
+        "question": "No models show up for a provider",
+        "answer": "Models are contributed by the provider plugin. If the list is empty, the plugin is not active — check LLM access and the plugin's status in the store.",
+        "action": "Open LLM access"
+      }
+    },
+    "docs": {
+      "heading": "Documentation",
+      "documentation": "Documentation",
+      "repository": "Source code on GitHub",
+      "discussions": "Ask in Discussions"
+    },
+    "support": {
+      "heading": "Contact",
+      "body": "Found a bug or something that does not make sense? Open an issue — include the version below and what you were doing.",
+      "openIssue": "Open an issue"
+    },
+    "build": {
+      "heading": "Build",
+      "version": "Web UI version {version}"
     }
   }
 }

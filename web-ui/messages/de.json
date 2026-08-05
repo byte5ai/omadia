@@ -19,7 +19,9 @@
         "title": "LLM-Provider",
         "connected": "{count, plural, one {# Provider verbunden} other {# Provider verbunden}}",
         "none": "Kein Provider verbunden",
-        "active": "Aktiv: {name}"
+        "active": "Aktiv: {name}",
+        "unverified": "{count, plural, one {# Provider ungeprüft} other {# Provider ungeprüft}}",
+        "invalid": "Provider-Schlüssel abgelehnt"
       },
       "orchestrators": {
         "title": "Orchestratoren",
@@ -29,6 +31,7 @@
       "plugins": {
         "title": "Plugins",
         "installed": "{count, plural, one {# Plugin installiert} other {# Plugins installiert}}",
+        "ready": "{n} von {total} einsatzbereit",
         "none": "Noch keine Plugins installiert"
       },
       "mcp": {
@@ -102,27 +105,18 @@
         "open": "Öffnen",
         "build": "Im Builder bauen",
         "request": "Anfragen",
-        "missingHint": "Noch nicht im Hub",
-        "sectionEmpty": "Keine Empfehlung in dieser Kategorie."
+        "missingHint": "Noch nicht im Hub"
       },
-      "step": "Schritt {n}",
-      "rolesHeading": "Rolle wählen",
       "llmStep": {
         "connect": "LLM-Zugang öffnen",
         "title": "LLM verbinden",
         "description": "Ohne verbundenes LLM kann kein Orchestrator laufen. Verbinde zuerst einen API-Provider oder ein Abo-CLI.",
-        "connectProvider": "Provider verbinden",
-        "connectCli": "Abo-CLI verbinden"
+        "doneViaProvider": "Ein LLM-Anbieter ist verbunden und sein Schlüssel wurde geprüft.",
+        "doneViaCli": "Du bist in einer Abo-CLI angemeldet — das reicht, um Orchestratoren zu betreiben."
       },
       "heading": "Erste Schritte",
-      "subtitle": "Wähle eine Rolle, um einen empfohlenen Satz Plugins zu installieren. Alles lässt sich später anpassen.",
       "kicker": "Einrichtung",
-      "pluginCount": "{count, plural, one {# Plugin} other {# Plugins}}",
-      "apply": "Set installieren",
-      "applying": "Wird installiert",
       "applied": "Installiert",
-      "failed": "Installation fehlgeschlagen",
-      "retry": "Erneut versuchen",
       "browseAll": "Alle Plugins ansehen",
       "bringSkills": {
         "kicker": "Optional",
@@ -136,8 +130,13 @@
       },
       "dismiss": "Onboarding ausblenden",
       "reenable": "Onboarding anzeigen",
-      "empty": "Keine Rollenprofile verfügbar. Verbinde eine Registry, um Empfehlungen zu sehen.",
-      "outcome": "{installed} installiert, {skipped} übersprungen, {errored} fehlgeschlagen"
+      "stepOfTotal": "Schritt {n} von {total}",
+      "progress": "{done} von {total} erledigt",
+      "caseChosen": "Business-Case: {name}",
+      "installStep": {
+        "title": "Plugins installieren",
+        "pickCaseFirst": "Wähle oben einen Business-Case, um passende Empfehlungen zu sehen."
+      }
     }
   },
   "adminLlm": {
@@ -205,6 +204,10 @@
           "title": "Speicher-Backend",
           "description": "Memory-Speicher zwischen Dateisystem und Postgres umschalten; Postgres benötigt DATABASE_URL und greift erst nach Neustart."
         },
+        "embeddingProvider": {
+          "title": "Embedding-Provider",
+          "description": "Aktiven Embedding-Adapter im laufenden Betrieb wechseln — ohne Neustart. Zeigt Dimensions-Gate, gespeicherten Korpus und was ein Wechsel verwirft."
+        },
         "domains": {
           "title": "Domains",
           "description": "Registrierte Plugins nach Domain gruppiert ansehen (read-only)."
@@ -220,6 +223,10 @@
         "devPlatform": {
           "title": "Dev-Plattform",
           "description": "Repositories registrieren und isolierte Code-Runner-Jobs starten, die aus einem geprüften Diff einen Pull Request öffnen."
+        },
+        "webhooks": {
+          "title": "Conductor-Webhooks",
+          "description": "Eingehende Endpunkte und ausgehende Subscriptions, mit Secret-Rotation und Zustellungsverlauf."
         },
         "auth": {
           "title": "Authentifizierungs-Provider",
@@ -285,7 +292,9 @@
             "credential_harvest": "API-Schlüssel, Passwörter oder Geheimnisse zu sammeln",
             "silent_permission_escalation": "Erweiterten Zugriff anzufordern, ohne den Nutzer zu informieren"
           }
-        }
+        },
+        "importFailed": "Der Import hat nicht geklappt.",
+        "supportDetails": "Details für den Support"
       },
       "toolbox": {
         "native": "Native Tools",
@@ -412,7 +421,7 @@
     "channels": "Channels",
     "pluginsCluster": "Plugins",
     "adminCluster": "Admin",
-    "devPlatform": "Dev-Plattform"
+    "help": "Hilfe"
   },
   "conductor": {
     "title": "Conductor",
@@ -710,12 +719,12 @@
     "paletteAriaLabel": "Akzent-Palette",
     "appearanceAriaLabel": "Darstellung",
     "palette": {
-      "lagoon": "Lagoon",
-      "petrol": "Petrol",
-      "atelier": "Atelier"
+      "lagoon": "Lagoon (Türkis)",
+      "petrol": "Petrol (Blau)",
+      "atelier": "Atelier (Warm)"
     },
     "appearance": {
-      "system": "System",
+      "system": "Automatisch",
       "light": "Hell",
       "dark": "Dunkel"
     }
@@ -725,7 +734,7 @@
     "shellLoading": "Lade Login…",
     "loadingProviders": "Lade Login…",
     "errorPrefix": "Login-Provider konnten nicht geladen werden:",
-    "noProviders": "Es sind keine Auth-Provider konfiguriert. Setze {envVar} im Middleware-Environment und starte neu.",
+    "noProviders": "Es sind keine Auth-Provider konfiguriert. Setze <envVar>AUTH_PROVIDERS</envVar> im Middleware-Environment und starte neu.",
     "emailLabel": "E-Mail",
     "passwordLabel": "Passwort",
     "submit": "Anmelden",
@@ -772,13 +781,13 @@
     "apply": "Anwenden",
     "applying": "Installiere…",
     "pluginCount": "{count, plural, one {# Plugin} other {# Plugins}}",
-    "outcomeAppliedTitle": "Profil {id} angewendet",
+    "outcomeAppliedTitle": "Profil <id>{profileId}</id> angewendet",
     "outcomeStats": "{installed} installiert, {skipped} übersprungen, {errored} fehlgeschlagen",
     "sectionInstalled": "Neu installiert",
     "sectionSkipped": "Bereits installiert (übersprungen)",
     "sectionErrored": "Fehler — bitte manuell prüfen",
-    "secretsHint": "Plugins, die operator-Secrets benötigen (z.B. anthropic_api_key, telegram_bot_token), starten im Status {erroredTag} bis du die Secrets über den Wizard auf der jeweiligen Detail-Seite setzt. Aktiviere danach via {reactivateTag}.",
-    "errorTitle": "Profil {id} konnte nicht angewendet werden",
+    "secretsHint": "Plugins, die operator-Secrets benötigen (z.B. anthropic_api_key, telegram_bot_token), starten im Status <erroredTag>errored</erroredTag> bis du die Secrets über den Wizard auf der jeweiligen Detail-Seite setzt. Aktiviere danach via \"Reactivate\".",
+    "errorTitle": "Profil <id>{profileId}</id> konnte nicht angewendet werden",
     "tryAnother": "Anderes Profil wählen"
   },
   "chatTabs": {
@@ -803,7 +812,9 @@
     "description": "Diese Seite hat einen unerwarteten Fehler ausgelöst und konnte nicht vollständig geladen werden.",
     "reload": "Neu laden",
     "resetData": "Lokale Chat-Daten zurücksetzen",
-    "resetDataHint": "Löscht die lokal in diesem Browser gespeicherten Chats und lädt neu. Deine serverseitigen Daten bleiben unberührt — nutze dies, wenn ein Neu-Laden allein nicht hilft."
+    "resetDataHint": "Löscht die lokal in diesem Browser gespeicherten Chats und lädt neu. Deine serverseitigen Daten bleiben unberührt — nutze dies, wenn ein Neu-Laden allein nicht hilft.",
+    "digestLabel": "Fehler-Referenz",
+    "digestHint": "Gib diese Referenz bei einer Fehlermeldung an — die vollständige Meldung steht im Server-Log."
   },
   "session": {
     "expiresAtLabel": "Sitzung gültig bis",
@@ -875,7 +886,8 @@
     "steerTraceLabel": "Mitten im Turn nachgesteuert:",
     "sessionsLoading": "Sessions werden geladen…",
     "emptyStatePrompt": "Frage an den Orchestrator stellen — Antwort streamt live inkl. Tool-Aufrufen.",
-    "emptyStateShortcut": "Shortcut: ⌘↵ / Ctrl↵ · Neuer Tab über „+ Neuer Chat\"",
+    "emptyStateShortcut": "Shortcut: ↵ senden · ⇧↵ neue Zeile · Neuer Tab über „+ Neuer Chat\"",
+    "composerSendHint": "↵ senden · ⇧↵ neue Zeile",
     "streamingSuffix": "· streamt…",
     "toolTraceHeading": "Tool-Trace ({count})",
     "subCallCount": "{count, plural, one {# Sub-Call} other {# Sub-Calls}}",
@@ -1061,7 +1073,10 @@
     "viewTrace": "Trace ▾",
     "stepsCount": "{count, plural, one {# Schritt} other {# Schritte}}",
     "delegatedAnswerFrom": "Direkte Antwort von {label}",
-    "delegatedAnswerCaption": "Wortgetreu übermittelt — der Orchestrator kann diese Antwort nicht bearbeiten oder entfernen."
+    "delegatedAnswerCaption": "Wortgetreu übermittelt — der Orchestrator kann diese Antwort nicht bearbeiten oder entfernen.",
+    "stickyActive": "Direkter Draht zu {label} — jede Nachricht geht dorthin.",
+    "stickyExit": "Zurück zum Orchestrator",
+    "stickyPlaceholder": "Nachricht an {label}…"
   },
   "privacyOperator": {
     "eyebrow": "Privacy Operator",
@@ -1144,7 +1159,9 @@
       "save": "Speichern",
       "forkAndSave": "Als bearbeitbare Kopie speichern",
       "forkNotice": "Dies ist ein importierter Skill. Beim Speichern wird eine bearbeitbare Kopie erstellt; das Original bleibt als Quelle erhalten.",
-      "export": "Exportieren"
+      "export": "Exportieren",
+      "actionFailed": "Das hat nicht geklappt. Der Skill wurde nicht geändert.",
+      "supportDetails": "Details für den Support"
     },
     "capabilities": {
       "heading": "Benötigte Tools",
@@ -1179,6 +1196,18 @@
         "hidden_content": "Versteckten oder verschleierten Inhalt enthalten",
         "credential_harvest": "API-Schlüssel, Passwörter oder Geheimnisse sammeln",
         "silent_permission_escalation": "Erweiterten Zugriff anfordern, ohne den Nutzer zu informieren"
+      },
+      "scanFailure": {
+        "auth": "Der Tiefen-Scan konnte nicht laufen: Der hinterlegte API-Schlüssel ist ungültig.",
+        "rate_limit": "Der Tiefen-Scan konnte nicht laufen: Das Limit des Anbieters ist erreicht. Bitte in Kürze erneut versuchen.",
+        "overloaded": "Der Tiefen-Scan konnte nicht laufen: Der Anbieter ist gerade überlastet. Bitte in Kürze erneut versuchen.",
+        "provider_error": "Der Tiefen-Scan konnte nicht laufen: Der LLM-Anbieter hat einen Fehler gemeldet.",
+        "timeout": "Der Tiefen-Scan konnte nicht laufen: Der Anbieter hat nicht rechtzeitig geantwortet.",
+        "malformed_json": "Der Tiefen-Scan konnte nicht ausgewertet werden: Das Modell hat ein unlesbares Ergebnis geliefert.",
+        "unsupported_severity": "Der Tiefen-Scan konnte nicht ausgewertet werden: Das Modell hat eine unbekannte Bewertung geliefert.",
+        "missing_rationale": "Der Tiefen-Scan konnte nicht ausgewertet werden: Das Modell hat keine Begründung geliefert.",
+        "unexpected": "Der Tiefen-Scan ist unerwartet fehlgeschlagen.",
+        "fixProviderLink": "LLM-Zugang prüfen"
       }
     }
   },
@@ -1245,9 +1274,11 @@
     "routingTesterRunning": "Prüfe …",
     "routingTesterMatched": "→ Orchestrator „{slug}\" (via {via})",
     "routingTesterNoMatch": "Kein Match — und kein Standard-Orchestrator konfiguriert.",
-    "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · plugins: {plugins} · bindings: {bindings}",
+    "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · {plugins} Plugins angehängt · {bindings} Bindings",
     "sessionsLabel": "Sessions:",
     "pluginsAvailable": "Verfügbar",
+    "pluginsAvailableToAttach": "Zum Anhängen verfügbar",
+    "pluginsAttachedHere": "An diesen Orchestrator angehängt",
     "pluginsAvailableEmpty": "Alle installierten Plugins sind bereits angehängt.",
     "pluginsEnabled": "Angehängt",
     "pluginsEnabledEmpty": "Drag-and-drop oder „Attach\" benutzen, um Plugins anzuhängen.",
@@ -1583,7 +1614,7 @@
         },
         "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — der Agent erkennt den fehlenden Service korrekt und wirft. Stelle den Agent in deiner Instanz bereit, um den echten Datenpfad zu testen.",
         "agentStuck": {
-          "title": "Builder-Agent kommt bei Slot {slot} nicht weiter ({attempts, plural, one {# Versuch} other {# Versuche}})",
+          "title": "Builder-Agent kommt bei Slot <slot>{slotKey}</slot> nicht weiter ({attempts, plural, one {# Versuch} other {# Versuche}})",
           "body": "{summary}. Öffne den Slot-Editor, prüf die Errors manuell und korrigier den Code — der Agent versucht es nicht von alleine erneut.",
           "dismiss": "Schließen",
           "dismissTooltip": "Banner schließen"
@@ -2310,7 +2341,7 @@
       }
     },
     "title": "Konfiguration",
-    "intro": "Alle {envFile}-Werte, die beim Start in den Config-Store bzw. den Secret-Vault geschrieben werden. Änderungen werden automatisch gespeichert und das betroffene Plugin neu aktiviert — sie wirken sofort, ohne Neustart. Secrets zeigen nur, ob ein Wert hinterlegt ist; der Wert selbst wird nie angezeigt.",
+    "intro": "Alle <envFile>.env</envFile>-Werte, die beim Start in den Config-Store bzw. den Secret-Vault geschrieben werden. Änderungen werden automatisch gespeichert und das betroffene Plugin neu aktiviert — sie wirken sofort, ohne Neustart. Secrets zeigen nur, ob ein Wert hinterlegt ist; der Wert selbst wird nie angezeigt.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
     "vaultUnavailable": "Vault nicht verfügbar — Secrets können nicht bearbeitet werden.",
@@ -2343,6 +2374,12 @@
       "modelCount": "{count, plural, one {# Modell} other {# Modelle}}",
       "connected": "verbunden",
       "notConnected": "kein Schlüssel",
+      "unverified": "Schlüssel hinterlegt, nicht geprüft",
+      "verified": "geprüft",
+      "invalid": "Schlüssel abgelehnt",
+      "verifiedAt": "geprüft {time}",
+      "testKey": "Schlüssel testen",
+      "testing": "Wird geprüft …",
       "addKey": "Schlüssel hinterlegen",
       "changeKey": "Schlüssel ändern",
       "removeKey": "Schlüssel entfernen",
@@ -2352,7 +2389,9 @@
       "keyInputLabel": "{provider} API-Key",
       "keyPlaceholder": "API-Key einfügen …",
       "saveKey": "Schlüssel speichern",
-      "cancel": "Abbrechen"
+      "cancel": "Abbrechen",
+      "cliNotInstalledReason": "Die Claude-CLI ist auf diesem Server nicht installiert.",
+      "helpLink": "Was bedeutet das?"
     },
     "assignments": {
       "heading": "Zuordnung pro Agent",
@@ -2362,7 +2401,7 @@
       "providerLabel": "Provider",
       "modelLabel": "Modell",
       "pickModel": "Modell wählen …",
-      "avvDisclosure": "Wird dieser Agent auf {provider} umgestellt, werden seine Prompt-Daten an einen Drittanbieter (Auftragsverarbeiter) übermittelt. Stelle sicher, dass ein Auftragsverarbeitungsvertrag (DSGVO Art. 28) vorliegt, bevor du ihn für personenbezogene Daten nutzt.",
+      "avvDisclosure": "Dieser Agent läuft über {provider}. Seine Prompt-Daten werden an einen Drittanbieter (Auftragsverarbeiter) übermittelt. Stelle sicher, dass ein Auftragsverarbeitungsvertrag (DSGVO Art. 28) vorliegt, bevor du ihn für personenbezogene Daten nutzt.",
       "euHostedNote": "{provider} wird in der EU gehostet. Ein Auftragsverarbeitungsvertrag nach DSGVO Art. 28 ist weiterhin erforderlich, aber es findet keine Drittlandübermittlung statt — anders als bei US-Anbietern."
     },
     "status": {
@@ -2427,6 +2466,12 @@
       "loggedIn": "angemeldet",
       "subscription": "Abo",
       "needsVerification": "Prüfung nötig"
+    },
+    "lastChecked": "Zuletzt geprüft um {time}",
+    "refreshed": "Gerade aktualisiert",
+    "install": {
+      "heading": "CLI installieren",
+      "intro": "Diese CLI ist auf diesem Server nicht vorhanden. Dort installieren und anmelden — danach steht die Anmeldung auch hier zur Verfügung."
     }
   },
   "createIssue": {
@@ -2503,6 +2548,12 @@
       "sourceHub": "Registry",
       "sourceLocal": "Lokal",
       "sourceInstalled": "Installiert",
+      "counts": {
+        "installed": "{n} installiert",
+        "ready": "{n} von {total} einsatzbereit",
+        "attached": "{n} an {agent} angehängt",
+        "available": "{n} zum Anhängen verfügbar"
+      },
       "emptyFilteredTitle": "Keine {category} in dieser Ansicht.",
       "emptyFilteredHint": "Wechsle die Kategorie oder die Quelle oben.",
       "emptyInstalledTitle": "Noch keine Plugins installiert.",
@@ -2573,7 +2624,11 @@
       "installed": "Installiert",
       "updateAvailable": "Update verfügbar",
       "incompatible": "Inkompatibel",
-      "migrationNeeded": "Migration nötig"
+      "migrationNeeded": "Migration nötig",
+      "configRequired": "Konfiguration erforderlich",
+      "errored": "Aktivierung fehlgeschlagen",
+      "readyVerified": "Aktiv · geprüft {time}",
+      "missingFields": "Fehlt: {fields}"
     },
     "workaroundBadge": {
       "active": "Workaround aktiv",
@@ -2597,6 +2652,10 @@
       "update": "Aktualisieren",
       "installed": "Installiert",
       "active": "aktiv",
+      "installedNext": "\"{name}\" installiert — jetzt an einen Orchestrator anhängen.",
+      "toOrchestrators": "An Orchestrator anhängen",
+      "toSetup": "Einrichtung abschließen ({count} fehlen)",
+      "toChat": "Im Chat ausprobieren",
       "uninstallAria": "{name} deinstallieren",
       "uninstall": "Deinstallieren",
       "confirmRemove": "<strong>{name}</strong> entfernen? Tool wird sofort aus dem Orchestrator abgebaut, der Vault-Namespace wird geleert, Registry-Eintrag gelöscht.",
@@ -2670,7 +2729,10 @@
       "saving": "Speichern",
       "saveSelection": "Auswahl speichern",
       "saveSelectionWithCount": "Auswahl speichern ({count})",
-      "refreshList": "Liste aktualisieren"
+      "refreshList": "Liste aktualisieren",
+      "noPasswordWarning": "Hier gehört kein Konto-Passwort hinein. Erwartet wird ein technischer Schlüssel aus der Anbieter-Konsole.",
+      "patternMismatch": "Dieser Wert hat nicht das erwartete Format.",
+      "patternUnavailable": "Dieses Feld deklariert eine Formatprüfung, die nicht angewendet werden konnte — der Wert wird nicht validiert."
     },
     "editFromStore": {
       "cloning": "Klone Draft …",
@@ -2723,12 +2785,14 @@
     },
     "setupForm": {
       "enable": "Aktivieren",
-      "dontSet": "(nicht setzen)"
+      "dontSet": "(nicht setzen)",
+      "noPasswordWarning": "Hier gehört kein Konto-Passwort hinein. Erwartet wird ein technischer Schlüssel aus der Anbieter-Konsole.",
+      "patternUnavailable": "Dieses Feld deklariert eine Formatprüfung, die nicht angewendet werden konnte — der Wert wird nicht validiert."
     }
   },
   "adminAuth": {
     "title": "Authentifizierungs-Provider",
-    "intro": "Aktiviere oder deaktiviere die Anmelde-Verfahren. Die env-Variable {envVar} definiert die zulässigen Provider; hier wählst du, welche davon aktuell aktiv sind.",
+    "intro": "Aktiviere oder deaktiviere die Anmelde-Verfahren. Die env-Variable <envVar>AUTH_PROVIDERS</envVar> definiert die zulässigen Provider; hier wählst du, welche davon aktuell aktiv sind.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
     "statusActive": "aktiv",
@@ -2959,6 +3023,8 @@
       "plan": "Plan",
       "viewPlan": "Plan ansehen",
       "noPlan": "Kein Plan-Artefakt",
+      "planLoading": "Plan wird geladen…",
+      "planLoadError": "Der Plan konnte nicht geladen werden.",
       "holders": "Holder",
       "noHolders": "keine",
       "questions": "Rückfragen",
@@ -3049,6 +3115,7 @@
       "age": "Alter",
       "view": "Ansehen",
       "cancel": "Abbrechen",
+      "delete": "Löschen",
       "empty": "Noch keine Jobs. Starte einen aus einer Repository-Zeile.",
       "live": "live",
       "liveLost": "Verbindung verloren — versucht erneut",
@@ -3078,6 +3145,12 @@
         "body": "Der Runner wird beendet. Branch, Log und ein bereits hochgeladener Diff bleiben erhalten.",
         "confirm": "Job abbrechen",
         "cancel": "Weiterlaufen lassen"
+      },
+      "deleteConfirm": {
+        "title": "Job löschen?",
+        "body": "Der Job, sein Log und seine Artefakte werden endgültig entfernt. Ein bereits erstellter Branch oder PR bleibt erhalten.",
+        "confirm": "Job löschen",
+        "cancel": "Behalten"
       }
     },
     "newJob": {
@@ -3194,8 +3267,17 @@
         "pr": "pr"
       },
       "phaseSkipped": "übersprungen — keine Fragen",
-      "noArtifact": "Für diese Phase gibt es noch kein Artefakt.",
+      "toolCall": {
+        "pending": "läuft",
+        "failed": "fehlgeschlagen",
+        "noOutput": "(keine Ausgabe)",
+        "prompt": "Prompt",
+        "result": "Ergebnis",
+        "output": "Ausgabe",
+        "moreDiffLines": "… {count, plural, one {# weitere Zeile} other {# weitere Zeilen}}"
+      },
       "openPr": "Pull Request öffnen",
+      "artifactError": "Das Ergebnis dieser Phase konnte nicht geladen werden.",
       "logEmpty": "Noch keine Log-Ausgabe.",
       "scrollToBottom": "Nach unten scrollen",
       "connection": {
@@ -3209,6 +3291,13 @@
         "body": "Der Runner wird beendet, der Branch bleibt erhalten.",
         "confirm": "Job abbrechen",
         "cancelLabel": "Weiterlaufen lassen"
+      },
+      "delete": {
+        "action": "Löschen",
+        "title": "Job löschen?",
+        "body": "Der Job, sein Log und seine Artefakte werden endgültig entfernt. Ein bereits erstellter Branch oder PR bleibt erhalten.",
+        "confirm": "Job löschen",
+        "cancelLabel": "Behalten"
       },
       "sidebar": {
         "backend": "Backend",
@@ -3264,7 +3353,7 @@
   },
   "adminRegistries": {
     "title": "Plugin-Registries",
-    "intro": "Quellen, aus denen Plugins in den Store gezogen werden. Neue Instanzen starten mit {hub}. Der Token wird verschlüsselt gespeichert und nie wieder angezeigt — nur, ob einer hinterlegt ist. Änderungen wirken ohne Neustart.",
+    "intro": "Quellen, aus denen Plugins in den Store gezogen werden. Neue Instanzen starten mit <hub>hub.omadia.ai</hub>. Der Token wird verschlüsselt gespeichert und nie wieder angezeigt — nur, ob einer hinterlegt ist. Änderungen wirken ohne Neustart.",
     "addHeading": "Registry hinzufügen",
     "fields": {
       "name": "Name",
@@ -3300,9 +3389,76 @@
       "generic": "Fehler {status}."
     }
   },
+  "adminWebhooks": {
+    "title": "Conductor-Webhooks",
+    "intro": "Eingehende Endpunkte starten abonnierte Workflow-Runs; ausgehende Subscriptions erhalten eine HMAC-signierte Zustellung bei Run-Abschluss oder -Fehlschlag. Ein erzeugtes oder rotiertes Secret wird einmalig angezeigt — danach nie wieder.",
+    "badge": {
+      "enabled": "aktiv",
+      "disabled": "inaktiv"
+    },
+    "endpoints": {
+      "heading": "Eingehende Endpunkte",
+      "hint": "POST an die Endpunkt-URL mit gültiger HMAC-Signatur startet jeden Workflow, der dessen Event abonniert hat.",
+      "fields": {
+        "eventId": "Event-ID",
+        "description": "Beschreibung (optional)"
+      },
+      "create": "Endpunkt anlegen",
+      "loading": "Lädt …",
+      "empty": "Keine eingehenden Endpunkte konfiguriert.",
+      "viewHistory": "Verlauf anzeigen",
+      "hideHistory": "Verlauf ausblenden",
+      "enable": "Aktivieren",
+      "disable": "Deaktivieren",
+      "rotateSecret": "Secret rotieren",
+      "rotating": "Rotiert",
+      "delete": "Löschen",
+      "deleting": "Löscht",
+      "secretRevealed": "Neues Secret — jetzt kopieren, es wird nicht erneut angezeigt:",
+      "dismiss": "Ausblenden",
+      "noDeliveries": "Noch keine Zustellungen aufgezeichnet.",
+      "confirmDelete": "Diesen Endpunkt wirklich löschen? Jeder Sender, der ihn nutzt, erhält danach 401.",
+      "table": {
+        "deliveryId": "Delivery-ID",
+        "outcome": "Ergebnis",
+        "receivedAt": "Empfangen"
+      }
+    },
+    "subscriptions": {
+      "heading": "Ausgehende Subscriptions",
+      "hint": "Erhält ein HMAC-signiertes POST, sobald das abonnierte Event feuert. Fehlgeschlagene Zustellungen werden mit Backoff wiederholt, bis das Versuchslimit erreicht ist.",
+      "fields": {
+        "url": "URL",
+        "event": "Event",
+        "description": "Beschreibung (optional)"
+      },
+      "create": "Subscription anlegen",
+      "loading": "Lädt …",
+      "empty": "Keine ausgehenden Subscriptions konfiguriert.",
+      "viewHistory": "Verlauf anzeigen",
+      "hideHistory": "Verlauf ausblenden",
+      "enable": "Aktivieren",
+      "disable": "Deaktivieren",
+      "rotateSecret": "Secret rotieren",
+      "rotating": "Rotiert",
+      "delete": "Löschen",
+      "deleting": "Löscht",
+      "secretRevealed": "Neues Secret — jetzt kopieren, es wird nicht erneut angezeigt:",
+      "dismiss": "Ausblenden",
+      "noDeliveries": "Noch keine Zustellungen aufgezeichnet.",
+      "confirmDelete": "Diese Subscription wirklich löschen?",
+      "table": {
+        "status": "Status",
+        "attempts": "Versuche",
+        "lastError": "Letzter Fehler",
+        "nextAttemptAt": "Nächster Versuch",
+        "createdAt": "Erstellt"
+      }
+    }
+  },
   "adminDomains": {
     "title": "Plugin-Domains",
-    "intro": "Übersicht aller registrierten Plugins, gruppiert nach ihrer in der {manifest} deklarierten {domain}. Domains werden vom Phase-8 Nudge-Pipeline-Multi-Domain-Trigger gelesen und vom Operator-UI für Cross-Agent-Gruppierung verwendet. Curation (Umbenennen / Mergen / Hierarchien) folgt mit OB-78 (Phase 9 Agent-Profile).",
+    "intro": "Übersicht aller registrierten Plugins, gruppiert nach ihrer in der <manifest>manifest.yaml</manifest> deklarierten <domain>domain</domain>. Domains werden vom Phase-8 Nudge-Pipeline-Multi-Domain-Trigger gelesen und vom Operator-UI für Cross-Agent-Gruppierung verwendet. Curation (Umbenennen / Mergen / Hierarchien) folgt mit OB-78 (Phase 9 Agent-Profile).",
     "loading": "Lade …",
     "loadError": "Fehler beim Laden: {message}",
     "noData": "Keine Daten.",
@@ -3313,10 +3469,10 @@
       "fallbacks": "Fallbacks"
     },
     "pluginCount": "{count, plural, one {# Plugin} other {# Plugins}}",
-    "fallbackWarning": "{count, plural, one {# Plugin} other {# Plugins}} ohne deklarierte Domain — auto-fallback auf {fallbackDomain}. Füge dem Manifest eine {manifestKey}-Zeile hinzu (z.B. {exampleOne}, {exampleTwo}) oder lade den Agent über den Builder neu hoch."
+    "fallbackWarning": "{count, plural, one {# Plugin} other {# Plugins}} ohne deklarierte Domain — auto-fallback auf <fallbackDomain>{fallbackDomainName}</fallbackDomain>. Füge dem Manifest eine <manifestKey>identity.domain</manifestKey>-Zeile hinzu (z.B. <exampleOne>\"confluence\"</exampleOne>, <exampleTwo>\"odoo.hr\"</exampleTwo>) oder lade den Agent über den Builder neu hoch."
   },
   "adminUsage": {
-    "title": "Kosten",
+    "title": "Nutzung & Kosten",
     "intro": "Token-Verbrauch und LLM-Kosten pro Modell, Quelle und Zeit. Erfasst jeden Anthropic-Call — Orchestrator, Sub-Agents und die Haiku-Background-Tasks.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
@@ -3643,7 +3799,9 @@
   },
   "adminKgLifecycle": {
     "quotaTooltip": "{percent}% des Quota",
-    "quotaOverTooltip": "{percent}% — wird beim nächsten GC-Sweep evicted"
+    "quotaOverTooltip": "{percent}% — wird beim nächsten GC-Sweep evicted",
+    "unavailableTitle": "Knowledge-Graph-Lifecycle ist nicht verfügbar",
+    "unavailableBody": "Diese Seite benötigt das Postgres-/Knowledge-Graph-Backend. Die Lifecycle-Endpoints werden nur eingebunden, wenn das KG-Plugin installiert und eine Datenbank konfiguriert ist — bis dahin gibt es hier nichts anzuzeigen."
   },
   "adminKgPriorities": {
     "intro": "Per-Agent Block/Boost-Liste für den Token-Budget-Assembler. Block droppt einen Turn aus dem Recall-Pool; Boost multipliziert den Score mit `weight` (Default 1.3). `manuallyAuthored=true` bringt zusätzlich einen unabhängigen ×1.3 Boost — beide kombinieren.",
@@ -3680,6 +3838,67 @@
     "dbUrlRequiredError": "Postgres benötigt DATABASE_URL (Neon-KG/graphPool). Setze DATABASE_URL und starte neu, bevor du auf Postgres wechselst.",
     "forbiddenError": "Nicht berechtigt (403) — das Umschalten des Backends erfordert Admin-Rechte.",
     "noProviderError": "Kein Memory-Provider registriert (409) — die Auswahl kann nicht gespeichert werden."
+  },
+  "adminEmbeddingProvider": {
+    "title": "Embeddings · Provider",
+    "intro": "Wechselt den aktiven <code>embeddingClient@1</code>-Provider <strong>im laufenden Betrieb — ohne Neustart</strong>. Die Middleware deaktiviert den aktuellen Adapter, aktiviert den neuen und lässt das Dimensions-Gate des Knowledge-Graph erneut laufen; bei abweichender Vektorbreite baut es die <code>vector(n)</code>-Spalten um. Jedes gespeicherte Embedding wird dabei verworfen und vom Backfill neu berechnet — ein Provider-Call pro Zeile.",
+    "loading": "lädt…",
+    "loadFailed": "Laden fehlgeschlagen: {message}",
+    "pollingNote": "Live-Zustand, wird alle {seconds} Sekunden neu gelesen.",
+    "none": "—",
+    "unknown": "unbekannt",
+    "dimensionsValue": "{dimensions}d",
+    "currentStateTitle": "Aktueller Stand",
+    "activeProvider": "Aktiver Provider",
+    "activeModel": "Modell",
+    "activeDimensions": "Vektorbreite",
+    "providerDriftTitle": "Provider-Drift",
+    "providerDriftBody": "Die Registry liefert {activeModelId} aus, das für den Knowledge Graph geltende Verdikt wurde aber gegen {gateModelId} berechnet. Kaputt ist damit nichts — ein Adapter-Wechsel über die Plugin-Seiten führt das Dimensions-Gate nicht erneut aus. Wechsle den Provider hier, um neu zu gaten, damit Korpus und Verdikt wieder dasselbe Modell beschreiben.",
+    "capabilityMissing": "Der aktive Adapter published keinen Client — er läuft, ist aber nicht konfiguriert (API-Key oder Base-URL fehlt).",
+    "corpusTitle": "Gespeicherter Korpus",
+    "corpusModel": "Registriertes Modell",
+    "corpusDimensions": "Registrierte Breite",
+    "corpusNone": "Noch kein Modell registriert — der Korpus ist leer oder stammt aus der Zeit vor der Modell-Registry.",
+    "corpusClearPending": "Ein Clear alter Vektoren läuft noch. Vektor-Writes gehen von selbst wieder an, sobald der Backfill-Sweep damit durch ist.",
+    "storedVectors": "Gespeicherte Vektoren",
+    "columnsTitle": "Verwaltete Vektor-Spalten",
+    "graphUnavailable": "Kein Postgres-Knowledge-Graph aktiv — entsprechend gibt es keine verwalteten Vektor-Spalten.",
+    "corpusReadFailed": "Der Korpus konnte nicht gelesen werden: {message}",
+    "gateTitle": "Dimensions-Gate",
+    "gateWrites": "Vektor-Writes",
+    "gateWritesAllowed": "erlaubt",
+    "gateWritesBlocked": "blockiert",
+    "gateStatus": "Ergebnis",
+    "gateReason": "Grund",
+    "gateDetail": "Detail",
+    "gateUnavailable": "Der Knowledge-Graph hat kein Gate-Ergebnis veröffentlicht — entweder läuft kein Postgres-Backend, oder er ist gar nicht bis zur Auswertung gekommen.",
+    "gateMigrating": "Die Vektor-Spalten wurden auf die neue Breite umgebaut. Das ist kein Fehler: Der alte Korpus wurde bewusst verworfen, der Backfill rechnet ihn gerade neu — bis er durch ist, bleibt die Recall-Qualität eingeschränkt.",
+    "gateClearComplete": "Das Clear alter Vektoren ist durch, die Vektor-Writes laufen in diesem Prozess wieder — ohne Neustart. Der Backfill berechnet den Korpus neu.",
+    "gateClearPending": "Ein Clear alter Vektoren steht noch aus. Vektor-Writes bleiben so lange aus, bis der Backfill-Sweep durch ist — kein Neustart nötig, diese Seite zeigt den Wechsel an.",
+    "autoMigrateTitle": "Vektor-Spalten bei abweichender Breite umbauen",
+    "autoMigrateOn": "erlaubt — ein unten bestätigter Wechsel darf die Spalten auf die neue Breite umbauen",
+    "autoMigrateOff": "verboten — bei abweichender Breite bleiben Vektor-Writes blockiert, bis du die Spalten von Hand migrierst; auch von dieser Seite aus",
+    "autoMigrateHint": "Beim Neustart passiert das nie: umgebaut wird nur durch einen Wechsel, den du unten bestätigst. Den Hauptschalter findest du in den Plugin-Einstellungen des Knowledge-Graph (auto_migrate_vector_columns).",
+    "switchTitle": "Provider wechseln",
+    "noAlternatives": "Es ist kein zweiter embeddingClient@1-Provider installiert. Installiere zuerst einen aus dem Plugin-Store — aktiv sein darf immer nur genau einer.",
+    "targetLegend": "Ziel-Provider",
+    "widthChangeYes": "ändert die Spaltenbreite ({from}d → {to}d)",
+    "widthChangeNo": "behält die aktuelle Spaltenbreite",
+    "widthChangeUnknown": "Auswirkung auf die Breite erst bei Aktivierung bekannt",
+    "discardTitle": "Damit ist der gespeicherte Korpus weg",
+    "discardCount": "{count, plural, =0 {Aktuell ist nichts gespeichert, es gehen also keine Vektoren verloren.} one {# gespeicherter Vektor wird verworfen und neu berechnet.} other {# gespeicherte Vektoren werden verworfen und neu berechnet.}}",
+    "discardUnknown": "Die Zahl der gespeicherten Vektoren war nicht lesbar. Geh davon aus, dass der komplette Korpus verworfen und neu berechnet wird.",
+    "costWarning": "Für jede Zeile geht ein Provider-Call raus. Bei einer kostenpflichtigen API kostet das echtes Geld.",
+    "confirmLabel": "Mir ist klar, dass die gespeicherten Vektoren verworfen und neu berechnet werden.",
+    "switchButton": "Provider wechseln",
+    "switching": "wechselt…",
+    "switchedTitle": "Auf {provider} gewechselt.",
+    "switchedHint": "Was unten als Gate-Ergebnis steht, ist das, was tatsächlich passiert ist. Es aktualisiert sich von selbst, während der Backfill läuft.",
+    "confirmationRequiredError": "Bestätigung fehlt — der Wechsel verwirft die gespeicherten Vektoren.",
+    "unknownTargetError": "Dieses Plugin ist kein installierter embeddingClient@1-Provider.",
+    "alreadyActiveError": "Dieser Provider ist bereits aktiv.",
+    "targetUnavailableError": "Der Ziel-Provider konnte nicht übernehmen, deshalb ist der vorherige wieder aktiv. Konfiguriere ihn erst (API-Key, Base-URL) und versuch es dann noch mal.",
+    "forbiddenError": "Nicht berechtigt (403) — der Provider-Wechsel erfordert Admin-Rechte."
   },
   "graph": {
     "page": {
@@ -3858,7 +4077,7 @@
       "columnLastRun": "Letzter Lauf",
       "columnActions": "Aktionen",
       "emptyTitle": "Noch keine Routinen.",
-      "emptyBody": "Routinen entstehen, wenn ein User im Chat etwas wie „erinnere mich jeden Montag um 9 Uhr an X“ sagt — der Agent ruft das {toolName} Tool und legt sie an."
+      "emptyBody": "Routinen entstehen, wenn ein User im Chat etwas wie „erinnere mich jeden Montag um 9 Uhr an X“ sagt — der Agent ruft das <toolName>manage_routine</toolName> Tool und legt sie an."
     },
     "row": {
       "neverRan": "noch nie",
@@ -3885,7 +4104,7 @@
     },
     "templateEditor": {
       "badgeActive": "aktiv · {format}",
-      "description": "JSON-Schema: {schema}. Beim Trigger rendert der Server alle data- + static-Sektionen selbst; der LLM füllt nur die narrative-slot-Strings. Leerer Editor = Template entfernen, Routine läuft wieder im Legacy-Pfad.",
+      "description": "JSON-Schema: <schema>{schemaShape}</schema>. Beim Trigger rendert der Server alle data- + static-Sektionen selbst; der LLM füllt nur die narrative-slot-Strings. Leerer Editor = Template entfernen, Routine läuft wieder im Legacy-Pfad.",
       "templatePlaceholder": "'{ \"format\": \"markdown\", \"sections\": [ { \"kind\": \"narrative-slot\", \"id\": \"intro\", \"hint\": \"Ein Satz Einleitung.\" } ] }'",
       "saveFailedLabel": "Save fehlgeschlagen:",
       "saved": "Gespeichert.",
@@ -3958,6 +4177,49 @@
       "dotInactive": "Inaktiv",
       "keySourceDevFile": "dev-file (nicht für Produktion)",
       "keySourceDevFileCreated": "dev-file (neu generiert — DEV ONLY)"
+    }
+  },
+  "help": {
+    "kicker": "Hilfe",
+    "title": "Hilfe & Support",
+    "intro": "Antworten auf die Zustände, in denen man am ehesten hängenbleibt — und wohin du dich wenden kannst, wenn sie nicht reichen.",
+    "faq": {
+      "heading": "Häufige Fragen",
+      "invalidKey": {
+        "question": "Mein API-Schlüssel wird als ungültig gemeldet",
+        "answer": "Ein hinterlegter Schlüssel ist noch kein funktionierender Schlüssel. Öffne den LLM-Zugang, nutze „Schlüssel testen“ und prüfe ihn in der Anbieter-Konsole — ein abgelaufener oder widerrufener Schlüssel sieht bis zum Test genauso aus.",
+        "action": "LLM-Zugang öffnen"
+      },
+      "pluginNeedsConfig": {
+        "question": "Ein Plugin meldet, dass es Konfiguration braucht",
+        "answer": "Das Plugin ist installiert, aber mindestens ein Pflichtfeld hat keinen Wert. Öffne das Plugin im Store und fülle die Setup-Felder aus. Secret-Felder wollen nie ein Konto-Passwort — sie wollen einen technischen Schlüssel aus der Anbieter-Konsole.",
+        "action": "Store öffnen"
+      },
+      "cliNotInstalled": {
+        "question": "Eine Abo-CLI wird als nicht installiert angezeigt",
+        "answer": "Die CLI muss auf dem Server installiert sein, der omadia betreibt — nicht auf deinem Laptop. Der Abo-Tab zeigt den genauen Installationsbefehl; danach „Erneut prüfen“ nutzen.",
+        "action": "LLM-Zugang öffnen"
+      },
+      "noModels": {
+        "question": "Für einen Anbieter erscheinen keine Modelle",
+        "answer": "Modelle kommen vom Anbieter-Plugin. Ist die Liste leer, ist das Plugin nicht aktiv — prüfe den LLM-Zugang und den Status des Plugins im Store.",
+        "action": "LLM-Zugang öffnen"
+      }
+    },
+    "docs": {
+      "heading": "Dokumentation",
+      "documentation": "Dokumentation",
+      "repository": "Quellcode auf GitHub",
+      "discussions": "In Discussions fragen"
+    },
+    "support": {
+      "heading": "Kontakt",
+      "body": "Fehler gefunden oder etwas ergibt keinen Sinn? Leg ein Issue an — mit der Version unten und dem, was du gerade gemacht hast.",
+      "openIssue": "Issue anlegen"
+    },
+    "build": {
+      "heading": "Build",
+      "version": "Web-UI-Version {version}"
     }
   }
 }

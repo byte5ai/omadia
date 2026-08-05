@@ -1,0 +1,19 @@
+{
+  "total": 3306,
+  "zones": {
+    "middleware/src": 1636,
+    "middleware/test": 966,
+    "middleware/packages": 99,
+    "middleware/scripts": 8,
+    "middleware/sidecars": 195,
+    "middleware/migrations": 70,
+    "middleware/package.json": 0,
+    "middleware/env-example": 19,
+    "web-ui/app": 227,
+    "web-ui/messages": 4,
+    "web-ui/config": 0,
+    "ci-workflows": 16,
+    "scripts": 30,
+    "compose": 36
+  }
+}

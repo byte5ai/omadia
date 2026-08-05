@@ -15,6 +15,7 @@ import { GateInbox } from './_components/GateInbox';
 import {
   cancelJob,
   checkRepo,
+  deleteJob,
   deleteRepo,
   listJobs,
   listRepos,
@@ -239,6 +240,9 @@ function JobsTab(): React.ReactElement {
         repos={repos}
         onCancel={(job) => {
           void cancelJob(job.id).then(load, load);
+        }}
+        onDelete={(job) => {
+          void deleteJob(job.id).then(load, load);
         }}
       />
     </div>

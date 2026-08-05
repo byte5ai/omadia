@@ -186,6 +186,30 @@ export type {
   DirectLineMode,
 } from './directLine.js';
 
+// #445 — sticky Direct Line: the pure target-selection layer. Exported so the
+// decision table, the scope allow-gate and the binding store can be unit-tested
+// without an Orchestrator, and so the store can be constructed once at boot and
+// injected (it must outlive any single Orchestrator instance).
+export {
+  classifyStickyScope,
+  decideDirectLineTurn,
+  isDirectLineExitMessage,
+  stickyKeyFor,
+  InMemoryDirectLineStickyStore,
+  DIRECT_LINE_EXIT_TOKENS,
+  SHARED_SCOPES,
+  SYNTHETIC_SCOPE_PREFIXES,
+  STICKY_IDLE_TTL_MS,
+  STICKY_MAX_BINDINGS,
+} from './directLineSticky.js';
+export type {
+  DirectLineBinding,
+  DirectLineDecision,
+  DirectLineStickyStore,
+  StickyScopeClassification,
+  StickyScopeRefusal,
+} from './directLineSticky.js';
+
 // Round-loop guard — exported so it can be unit-tested in isolation and reused
 // by other agentic loops (e.g. the Builder).
 export { LoopGuard, canonicalize } from './loopGuard.js';

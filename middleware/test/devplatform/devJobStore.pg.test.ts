@@ -92,11 +92,14 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     await pool.end();
   });
 
-  it('createJob defaults: queued, provision 1, phase implement, api_key', async () => {
+  it('createJob defaults: queued, provision 1, phase analyze, api_key', async () => {
     const job = await newQueuedJob(repo.id);
     assert.equal(job.status, 'queued');
     assert.equal(job.provision, 1);
-    assert.equal(job.phase, 'implement');
+    // Every pipeline_mode starts at 'analyze' (transitions.ts's own test suite:
+    // even collapsed mode begins `analyze → implement`); an explicit `phase`
+    // override (e.g. the gated-webhook trigger parking at `await_human`) wins.
+    assert.equal(job.phase, 'analyze');
     assert.equal(job.authMode, 'api_key');
     // Only the sha256 hash is stored — never the plaintext token.
     assert.match(job.runnerTokenHash ?? '', /^[0-9a-f]{64}$/);
@@ -230,6 +233,19 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     assert.equal(await store.verifyRunnerToken(randomUUID(), token), false, 'unknown job → false');
   });
 
+  it('reissueRunnerToken mints a fresh token and invalidates the one it replaces', async () => {
+    const job = await newQueuedJob(repo.id);
+    const original = mintRunnerToken().token; // the token createJob's hash matched, never a docker container's
+    // newQueuedJob mints its own; overwrite the row to a known original for this test.
+    await pool.query('UPDATE dev_jobs SET runner_token_hash = $2 WHERE id = $1', [job.id, hashRunnerToken(original)]);
+    assert.equal(await store.verifyRunnerToken(job.id, original), true, 'precondition: original verifies');
+
+    const reissued = await store.reissueRunnerToken(job.id);
+    assert.notEqual(reissued, original, 'a genuinely new token, not the input echoed back');
+    assert.equal(await store.verifyRunnerToken(job.id, reissued), true, 'the reissued token verifies');
+    assert.equal(await store.verifyRunnerToken(job.id, original), false, 'the replaced token no longer verifies');
+  });
+
   it('resolveJobByToken verifies constant-time and excludes terminal jobs (no state oracle)', async () => {
     const { token } = mintRunnerToken();
     const hash = hashRunnerToken(token);
@@ -322,6 +338,27 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     const again = await store.finishTerminal(TERMINAL_FINISH_BRAND, job.id, 'failed', { error: 'x' });
     assert.equal(again?.status, 'done', 'idempotent — status unchanged, not flipped to failed');
     assert.equal(again?.error, null, 'the no-op did not write the failure error');
+  });
+
+  it('deleteJob refuses an active job, deletes a terminal one, and reports a missing id', async () => {
+    // Active (queued) — never deleted, it still has (or will have) a live backend
+    // handle; deleting the row out from under it would orphan a container/Machine.
+    const active = await newQueuedJob(repo.id);
+    assert.equal(await store.deleteJob(active.id), 'not_terminal');
+    assert.ok(await store.getJob(active.id), 'the active job row is untouched');
+
+    // Terminal — deleted, and CASCADE (0022) takes its events with it.
+    const terminal = await newQueuedJob(repo.id);
+    await store.appendEvents(terminal.id, 1, [{ seq: 0, type: 'log', payload: { line: 'hi' } }]);
+    await store.finishTerminal(TERMINAL_FINISH_BRAND, terminal.id, 'failed', { error: 'x' });
+    assert.equal(await store.deleteJob(terminal.id), 'deleted');
+    assert.equal(await store.getJob(terminal.id), null, 'the row is gone');
+    const events = await pool.query('SELECT 1 FROM dev_job_events WHERE job_id = $1', [terminal.id]);
+    assert.equal(events.rowCount, 0, 'its events cascaded away with it');
+
+    // Unknown id — distinct outcome from "exists but active", so the route can
+    // answer 404 instead of a misleading 409.
+    assert.equal(await store.deleteJob(randomUUID()), 'not_found');
   });
 
   it('findStalled surfaces active jobs past the heartbeat cutoff', async () => {
@@ -421,7 +458,7 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
       repoId: repo.id, kind: 'fix_issue', brief: 'fence', source: 'admin',
       backend: 'docker', createdBy: MARK, runnerTokenHash: hash,
     });
-    // Job is at the default phase (implement/analyze), NOT await_human.
+    // Job is at its default starting phase ('analyze'), NOT await_human.
     assert.equal(await store.requeueAtPhase(job.id, 'implement'), false, 'a non-parked job is not re-queued');
     const still = await store.getJob(job.id);
     assert.equal(still?.status, 'queued', 'and its status is untouched by the no-op');
@@ -430,7 +467,7 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
     const lease = randomUUID();
     let claimed = await store.claimNextQueued(lease);
     while (claimed && claimed.id !== job.id) claimed = await store.claimNextQueued(lease);
-    await store.advancePhase(job.id, 'implement', 'await_human');
+    await store.advancePhase(job.id, job.phase, 'await_human');
     await store.parkForGate(job.id);
     assert.equal(await store.requeueAtPhase(job.id, 'implement'), true, 'a parked job re-queues');
     const requeued = await store.getJob(job.id);

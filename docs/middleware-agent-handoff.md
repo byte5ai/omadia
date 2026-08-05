@@ -671,6 +671,79 @@ durch `runTurn({ ..., viewer })`. Tests: `test/conductorBuilder.test.ts`
 (Digest-Sichtbarkeit inkl. pending/fremd-privat, Proposal-Vetting,
 Malformed-Blocks, No-Proposal-Regression).
 
+### Conductor Webhooks — Inbound + Outbound (#437)
+
+Generischer Webhook-Mechanismus für Conductor, symmetrisch zum bisher
+declared-but-dead `'webhook'`-`TriggerKind` (`conductor-core/src/types.ts`).
+
+**Inbound:** `POST /api/hooks/:endpointId` — unauthenticated Mount **vor**
+`app.use(express.json(...))` in `src/index.ts` (Forward-Reference-Pattern wie
+`conductorTemplateRegistrarRef`: `conductorWebhookInboundDepsRef` wird früh
+deklariert, der Router (`src/routes/conductorWebhooksInbound.ts`) mountet
+sofort mit einem `getDeps()`-Getter darauf, die echten Deps werden erst tief
+im `graphPool`-Block nach `wireConductor(...)` zugewiesen — by request time
+immer aufgelöst). Raw-Body-HMAC (`x-webhook-signature: sha256=<hex>`) gegen
+das per-Endpoint-Secret aus dem Vault (`webhookEndpointStore.ts`,
+`core:conductor`-Namespace); unbekannte Endpoint-Id und falsches Secret
+antworten **byte-identisch** mit `401` (kein Existenz-Leak). Verifizierte
+Delivery → atomarer Claim der Delivery-Id (`x-webhook-delivery-id`, sonst
+Server-generiert = kein Dedupe, aber kein stiller Drop) in
+`conductor_webhook_inbound_deliveries`, dann `ConductorEventRouter.emit(
+endpoint.eventId, payload, 'webhook:<endpointId>')` — jeder Workflow mit
+passendem `event`- **oder** `webhook`-Trigger (`eventRouter.ts` matcht jetzt
+beide Kinds identisch) startet einen Run. Jede geclaimte Delivery landet mit
+genau einem terminalen `outcome`; Noise (disabled, malformed JSON, kein
+Subscriber) antwortet immer `2xx` (Redelivery-Storm-Vermeidung), der globale
+Kill-Switch ist `CONDUCTOR_WEBHOOKS_ENABLED` (§10).
+
+**Outbound:** `ConductorWebhookDispatcher` (`webhookDispatcher.ts`) — ein
+neuer `notifyRunEnded`-Hook in `ConductorRunExecutor` (feuert exakt an jedem
+Punkt, an dem ein echter, nicht-Dry-Run-Run terminal wird — `driveFrom`s
+Loop-Exit UND die drei direkten Terminal-Returns in `resolveAwait`/
+`resolveDevJobAwait`/`expireAwait`, zentralisiert in `finalizeIfEnded`) löst
+`run.completed`/`run.failed` aus. Der Dispatcher fächert an jede enabled
+`conductor_webhook_subscriptions`-Row für das Event auf, signiert HMAC
+(`x-omadia-signature`), und retried mit exponentiellem Backoff (Default 6
+Attempts, 30s verdoppelnd bis 30min Cap) — `conductor_webhook_deliveries` ist
+das persistente Delivery-Log; `ConductorWebhookRetryWorker` pollt fällige
+Retries (überlebt Prozess-Restart). Zusätzlich: ein Built-in-Action
+`webhook.post` (`webhookPostAction.ts`, special-cased in `src/index.ts`s
+`invokeAction`-Wiring VOR dem `dynamicAgentRuntime`-Dispatch, kein Plugin
+nötig) für Ad-hoc-Outbound-POST aus einem Workflow-Step.
+
+**Security:** Secrets (Inbound-Endpoint + Outbound-Subscription) leben
+ausschließlich im Vault (`core:conductor`, Split Metadata-in-Postgres /
+Secret-in-Vault nach `DevGithubAppStore`-Vorbild) — nie in Graph-JSON, nie in
+einer List/Get-Response (nur einmalig bei Create/Rotate). SSRF-Guard
+(`webhookOutbound.ts`) wiederverwendet den bestehenden
+`platform/ssrfGuard.ts`-Mechanismus (Literal-IP-Precheck + guarded undici
+`Agent` gegen DNS-Rebinding) für **beide** Outbound-Pfade (Dispatcher +
+`webhook.post`).
+
+**Migration:** `src/conductor/migrations/0007_webhooks.sql` (eigene
+`_conductor_migrations`-Chain, nächste freie Nummer nach `0006_templates.sql`)
+— `conductor_webhook_endpoints`, `conductor_webhook_inbound_deliveries`,
+`conductor_webhook_subscriptions`, `conductor_webhook_deliveries`.
+
+**Admin-API:** CRUD + Secret-Rotation + Delivery-Logs unter dem bestehenden
+auth-gated `/api/v1/operator/conductors/webhooks/*`
+(`webhookRoutes.ts`, registriert **vor** `/:slug` wie die Template-Routes).
+Eine minimale Admin-UI-Seite (`web-ui/app/admin/webhooks/`, Endpoints +
+Subscriptions, Secret-Rotation, Delivery-History) **ist** Teil dieser
+Änderung — sie erfüllt das Issue-Akzeptanzkriterium einer Admin-Oberfläche.
+Die inbound-Endpoint-URL wird server-seitig aus `webhookInboundBaseUrl`
+(`CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL`, fällt zurück auf `PUBLIC_BASE_URL`)
+gebaut und als `inboundUrl`-Feld zurückgegeben — die UI zeigt diesen Wert an,
+nie `window.location.origin` (im lokalen Standard-Dev-Setup ist das der
+Next.js-Dev-Server, der nur `/bot-api/*` proxied, nicht `/api/hooks/*`,
+siehe `web-ui/next.config.ts`).
+
+Tests: `test/conductorWebhookInbound.test.ts` (Route, Signatur/Dedupe/2xx-
+Noise), `test/conductorWebhookDispatcher.test.ts` (Signing/Retry/Backoff),
+`test/conductorWebhookEndpointStore.test.ts` (Vault-Split, Dedupe-Claim),
+`test/conductorWebhookPostAction.test.ts` + SSRF-Guard-Unit-Tests,
+`test/conductorEventRouterWebhookTrigger.test.ts` (`webhook`-Trigger-Kind
+Matching, keine Regression auf `event`).
 ### Dataset-Routen + `query_dataset`-Tool (#430)
 
 Neue REST-Oberfläche `src/routes/datasets.ts`, gemountet unter
@@ -711,6 +784,196 @@ Feld für die Dataset-ACL (niemals das rohe `TurnContextValue.userId`) — vorhe
 schrieb der Import-Pfad unter der kanonischen id, während der Query-Pfad die
 rohe id las, sodass ein Channel-User sein eigenes gerade importiertes Dataset
 nie wiederfinden konnte.
+
+### Plugin-contributed Navigation (#470, Phase 1 der Dev-Platform-Extraktion)
+
+Damit ein Feature wirklich *installierbar* ist, muss sein Menü-Eintrag mit
+dem Plugin mitreisen — bisher war die Navigation ein eingefrorenes Literal in
+`web-ui/app/_components/Nav.tsx`. Neue Plugin-Fähigkeit:
+
+```ts
+ctx.uiRoutes.registerNav({ navId, href, cluster?, order?, label })
+```
+
+Bewusst getrennt von `ctx.uiRoutes.register()`: ein uiRoute-Descriptor
+adressiert relativ zum `/p/<pluginId>`-Mount des Plugins, ein Nav-Eintrag
+adressiert einen absoluten In-App-Pfad. Beides in einen Descriptor zu falten
+würde eines der zwei Pfad-Felder zur Lüge machen. Beide teilen sich denselben
+Lifecycle in `UiRouteCatalog` (`disposeBySource` räumt beide ab).
+
+Neue Route: **`GET /api/v1/ui/navigation?locale=<l>`**
+(`src/routes/uiNavigation.ts`), gemountet unter `/api` und zusätzlich
+explizit hinter `requireAuth` — die Einträge verraten, welche Features
+installiert sind. Antwort ist `no-store` und enthält **bereits aufgelöste**
+Labels: der Browser bekommt die Locale-Map nie zu sehen, dadurch bleibt das
+Web-UI auf genau einer i18n-Uhr (next-intl) statt auf zwei, die beim
+Sprachwechsel auseinanderlaufen.
+
+Die Shell holt die Einträge **server-seitig im Root-Layout** (`fetchNavEntries`
+in `web-ui/app/_lib/navigation.ts`, 2s-Timeout, degradiert lautlos auf die
+statische Navigation) und merged sie in `Nav.tsx`. Merge-Regeln: Eintrag
+landet im benannten Cluster; unbekannter/fehlender Cluster wird zum
+Top-Level-Eintrag (statt still verschluckt zu werden); ein href-Konflikt mit
+einem statischen Eintrag wird verworfen, damit ein Plugin kein Core-Ziel
+überschatten kann.
+
+Jedes vom Plugin gelieferte Feld gilt als **untrusted input**, weil es im
+vertrauenswürdigen Header gerendert wird: `href` nur in kanonischer In-App-Form
+(kein `//host`, keine Dot-Segments, keine Query/Fragment/Prozent-Kodierung —
+sonst wäre die „Core gewinnt"-Regel per Alias umgehbar), Labels längenbegrenzt
+und gegen Control-, Bidi- und Zero-Width-Codepoints geprüft (Trojan-Source-
+Spoofing benachbarter Core-Einträge). Dazu Obergrenzen für href-/navId-Länge,
+Locale-Map-Größe und Einträge pro Plugin, weil der Katalog in jede
+Root-Layout-RSC-Antwort serialisiert wird.
+
+Erster Consumer ist die Dev Platform selbst: ihr Eintrag wird aus dem
+bestehenden `DEV_PLATFORM_ENABLED`-Block in `index.ts` registriert
+(`core:dev-platform`), nicht mehr in `Nav.tsx` hardcodiert. Wenn das Plugin-
+Package landet, wird daraus `ctx.uiRoutes.registerNav(...)` in dessen
+`activate()` — an der Shell ändert sich dabei nichts. Vollständiger Plan und
+die verbleibenden Phasen: `specs/470-dev-platform-plugin/plan.md`.
+
+---
+
+### Public API Channel (issue #438)
+
+Neues Built-in-Channel-Plugin `packages/harness-channel-api/`
+(`@omadia/channel-api`, `kind: channel`), erster nicht-Session-Cookie-Ingress
+für externe Systeme: **`POST /api/public/v1/chat`** treibt einen Turn genau
+wie jeder andere Channel — über `core.registerRouter` +
+`CoreApi.handleTurnStream` —, authentifiziert aber per **API-Key**
+(`Authorization: Bearer omk_…`) statt Session-Cookie. NDJSON-Framing
+identisch zu `/chat/stream` (`src/routes/chat.ts`); da der Turn über
+`CoreApi.handleTurnStream` läuft, greifen PII-Masking (Privacy-Guard),
+Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
+
+- **Credential-Modell** (geklärte Design-Entscheidung im Issue): ein API-Key
+  **ist** seine eigene Identität — `ChannelUserRef{ kind: 'custom', id:
+  'key:<id>' }` —, kein Delegat für einen menschlichen Endnutzer. Keine
+  Impersonation-Fläche.
+- **Storage:** vault-backed über `ctx.secrets` (eigener Plugin-Namespace,
+  `permissions.secrets.runtime_write: true`) — kein DB-Migration nötig. Nur
+  der sha256-Hash landet im Vault; der Klartext-Key wird genau einmal beim
+  `create()` zurückgegeben (`packages/harness-channel-api/src/apiKeyToken.ts`,
+  spiegelt `src/devplatform/jobToken.ts`s Mint/Hash/Verify-Muster —
+  `crypto.timingSafeEqual`, kein früh-abbrechender String-Vergleich).
+- **Rate-Limiting:** Fixed-Window-Token-Bucket pro Key
+  (`rateLimiter.ts`, spiegelt `platform/httpAccessor.ts`s `TokenBucket`),
+  Kapazität pro Key konfigurierbar (`create({ rateLimitPerMinute })`),
+  Default 60/min. Über Budget → `429`.
+- **Audit-Log:** jeder authentifizierte Call schreibt einen Eintrag
+  (`keyId`, `route`, `method`, `at`, `status`) — vault-backed, auf die
+  letzten `MAX_ENTRIES` (200) gedeckelt, Writes seriell über eine interne
+  Promise-Queue (`auditLog.ts`).
+- **Key-Lifecycle** (`GET`/`POST /api/public/v1/admin/keys`, `POST
+  /api/public/v1/admin/keys/:id/revoke`) liegt bewusst unter demselben
+  `/api/public/v1`-Prefix, ist aber **nicht** in
+  `src/auth/publicPaths.ts`s Exemption-Liste — nur `.../chat` ist public.
+  Ein früherer Stand dieser Notiz behauptete, das sei ein kompletter
+  Auth-Bypass gewesen (jeder anonyme Caller könnte Keys minten/listen/
+  revoken); das war empirisch falsch. `src/index.ts` mountet früh im Boot
+  `app.use('/api', requireAuth, createChatRouter(...))` (der OB-106-Hotfix)
+  — lange bevor `pluginRouteRegistry.mountAll(app)` später im selben Boot
+  läuft. Express wertet Middleware in Mount-Reihenfolge für den gesamten
+  `/api`-Prefix aus, unabhängig davon, welcher Router den Pfad am Ende
+  bedient — `requireAuth` lief also bereits vor JEDEM `/api/*`-Request,
+  auch plugin-gemounteten, außer der Pfad steht in
+  `publicPaths.ts`. `/api/public/v1/admin/keys` stand dort nie, war also
+  schon durch dieses Gate geschützt — genau wie jede andere
+  nicht-exemptierte Channel-Route. Eine Minimal-Reproduktion mit dem
+  echten Mount-Order (echtes `createRequireAuth` + `publicPaths`) bestätigt:
+  ein anonymer Request auf `/api/public/v1/admin/keys` bekommt `401
+  {code:'auth.missing'}` von diesem Gate, bevor er überhaupt den
+  Plugin-Router (der selbst keine eigene Auth hat, da `core.registerRouter`
+  nur active/inactive prüft) erreicht.
+
+  Diese Absicherung ist real, aber implizit — sie hängt an der Mount-
+  Reihenfolge und daran, dass der Pfad nie in `publicPaths.ts` landet.
+  Beides kann ein künftiger Refactor versehentlich brechen, ohne dass
+  etwas sichtbar fehlschlägt. Deshalb der reale Fix (Kernel-Ebene,
+  Security-Nachbesserung), der die Absicherung explizit statt implizit
+  macht: `PluginContext` bekommt ein optionales `ctx.operatorAuth`
+  (`OperatorAuthAccessor`), vom Kernel published und in jede
+  Plugin-Runtime durchgereicht (`ToolPluginRuntime`, `DynamicAgentRuntime`,
+  `DefaultChannelRegistry`). `hasValidSession(cookieHeader)` nutzt exakt
+  dieselbe Verifikationslogik wie `requireAuth`
+  (`evaluateSessionToken` in `src/auth/requireAuth.ts`) — ein Code-Pfad,
+  keine zwei, die auseinanderlaufen können. `adminKeysRouter.ts` wendet das
+  jetzt als Router-Middleware VOR jedem Handler an: fehlende/ungültige
+  Session → `401`; kein `ctx.operatorAuth` verfügbar → `503` (fail closed,
+  nie stillschweigend offen). Der Vorteil ist, dass die Garantie nicht mehr
+  an der Mount-Reihenfolge hängt und künftige Plugins mit Admin-Fläche den
+  Accessor wiederverwenden können, statt sich auf dieselbe Koinzidenz zu
+  verlassen. Siehe `docs/security-architecture.md` § 9 für die volle
+  Mechanik.
+- **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
+  extend to other flows" — weitere Flows sind Folge-Issues).
+
+Tests: `test/channelApi/` — u.a. eine echte Orchestrator- + echte
+Privacy-Guard-Integration (`chatRouterPrivacyIntegration.test.ts`, spiegelt
+`test/orchestrator/promptMaskPipeline.test.ts`s "realer Turn, gefakter LLM"-
+Muster), Auth/Rate-Limit/Revoke/Audit-Wiring (`chatRouter.test.ts`), Key-CRUD
++ die reale `ctx.operatorAuth`-Verifikation inkl. Fail-closed-Pfad
+(`adminKeysRouter.test.ts`), und die `publicPaths`-Exemption
+(`publicPathsExemption.test.ts`).
+
+---
+
+### API-Keys als eigenständige Auth-Methode (issue #439)
+
+Issue #438 hatte die Bearer-Auth plugin-intern gebaut und genau **eine** Route
+abgesichert. #439 macht daraus eine allgemeine Authentifizierungs-Methode
+neben dem Session-Cookie — Zielfall: eine Laravel/PHP-Integration, die omadia
+vom eigenen Server aus aufruft, ohne menschliche Session.
+
+- **Neues Workspace-Package `packages/harness-api-key-auth/`
+  (`@omadia/api-key-auth`).** `apiKeyToken.ts`, `apiKeyStore.ts`,
+  `rateLimiter.ts` und `auditLog.ts` sind aus `harness-channel-api/`
+  hierher gezogen; es gibt danach **genau eine** Implementierung von
+  Mint/Hash/Verify/Store. Warum ein Package und nicht `src/auth/`: der Kernel
+  darf nie aus einem Channel-Plugin importieren, und ein Plugin kann keinen
+  Kernel-Source importieren (eigenes `tsconfig` mit `rootDir: src`, Auflösung
+  ausschließlich über `@omadia/*`). Ein Workspace-Package ist die einzige
+  Stelle, die beide Richtungen bedient — dieselbe Rolle, die
+  `@omadia/plugin-api` und `@omadia/channel-sdk` schon spielen.
+  Das Package ist bewusst dependency-frei (nur `express` als Peer): die
+  Storage-Abhängigkeit ist ein strukturelles Subset (`ApiKeySecretStorage` in
+  `secretStorage.ts`), das `SecretsAccessor` ohne Adapter erfüllt.
+- **`requireApiKey(...)`** (`requireApiKey.ts`) ist die mountbare
+  Express-Middleware: Bearer-Parsing → `verify()` → Rate-Limit → Scope-Check,
+  danach `req.apiKey: ApiKeyPrincipal`. Sie setzt **nicht** `req.session` —
+  `SessionClaims.role` ist hart `'admin'`, eine synthetische Session würde
+  jeden session-lesenden Downstream-Handler einen Key für einen Operator
+  halten lassen. Fehlerform `{ error, message }` wie in #438 (nicht
+  `{ code, message }` wie `createRequireAuth`), damit die Wire-Form von
+  `POST /api/public/v1/chat` unverändert bleibt.
+- **Scopes** (`apiKeyScopes.ts`): `<resource>:<action>` oder globales `*`,
+  exakter Match, keine Prefix-Wildcards. Keys ohne persistiertes `scopes`-Feld
+  (alles aus #438) werden auf `['chat:write']` normalisiert — genau die eine
+  Fähigkeit, die sie beim Minten hatten. `*` als Default wäre eine per Upgrade
+  ausgelieferte Rechteausweitung. Admin-Route nimmt `scopes` bei `POST`
+  entgegen (Zod-validiert → 400 statt 500) und zeigt sie im `GET`.
+  **`normalizeScopes` unterscheidet dabei *fehlend* von *kaputt*:** nur ein
+  komplett fehlendes Feld (`undefined`) bekommt den Legacy-Default; ein
+  vorhandenes, aber unlesbares Feld (kein Array, leeres Array, ungültige oder
+  teilweise ungültige Einträge wie `"memory:read"` als String oder
+  `['Chat:Write']`) ergibt die **leere** Scope-Menge — der Key
+  authentifiziert weiter, ist aber für nichts autorisiert, jeder
+  `hasScope`-Check schlägt fail-closed fehl. Beides in einen Grant zu
+  kollabieren würde einem Key, den ein Operator bewusst von Chat
+  weggeschnitten hat, genau diesen Chat-Zugriff zurückgeben. Jeder solche
+  Fall loggt eine `[api-key-auth] malformed persisted scopes`-Warnung.
+- **`publicPaths.ts` bleibt unverändert eng:** weiterhin nur
+  `/api/public/v1/chat`. Wer `requireApiKey` auf eine neue Route mountet,
+  braucht dort einen eigenen, möglichst engen Eintrag.
+
+Tests: `test/auth/requireApiKey.test.ts` (Auth/Scope/Rate-Limit/Audit der
+Middleware), `test/auth/apiKeyScopes.test.ts` (Scope-Modell inkl.
+Legacy-Default), `test/channelApi/apiKeyAuthReuseSeam.test.ts` (strukturelle
+Zusicherung, dass das Plugin keine zweite Kopie der Primitive hält und der
+Kernel kein Channel-Plugin importiert). Die bestehenden `test/channelApi/`-
+Suites laufen inhaltlich unverändert weiter, nur die Importpfade der
+verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
 
 ---
 
@@ -1082,6 +1345,9 @@ DIAGRAM_MAX_SOURCE_BYTES=64000             # Quellcode-Cap
 DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
 # Object-storage (Tigris auf Fly, MinIO lokal — auto-provisioniert via `fly storage create`)
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# Conductor generic webhooks (issue #437) — Kill-Switch für POST /api/hooks/:endpointId
+CONDUCTOR_WEBHOOKS_ENABLED=true
+CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE=60   # Rate-Limit pro Endpoint (rolling minute)
 # Tenant-Scope (auch für Diagramm-Cache-Keys genutzt)
 GRAPH_TENANT_ID=byte5
 # Prompt-PII C1-Detector (GLiNER-Sidecar, #361) — optional

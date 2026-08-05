@@ -67,20 +67,33 @@ jobs:
           if [ -z "$latest" ]; then latest="v0.0.0"; range="HEAD"; else range="${latest}..HEAD"; fi
           echo "latest tag: $latest (range: $range)"
 
-          msgs=$(git log --no-merges --pretty=format:'%s%n%b' $range)
+          # Write the log to a file rather than piping it into `grep -q`.
+          # `grep -q` exits at the first match, so a pipe writer that still has
+          # data buffered gets EPIPE — and under `set -o pipefail` that failed
+          # writer, not grep's 0, becomes the pipeline's status. The condition
+          # then reads as "no match" precisely BECAUSE there was a match. It only
+          # bites once the log exceeds the 64 KiB pipe buffer, so the release
+          # workflow worked until enough commits accumulated and then wedged
+          # permanently: no release -> no new tag -> a longer range next time.
+          # See v0.56.0 (2026-06-30) .. v0.57.0. grep reading a file cannot EPIPE.
+          msgs=$(mktemp)
+          git log --no-merges --pretty=format:'%s%n%b' $range > "$msgs"
 
           bump=""
-          if printf '%s\n' "$msgs" | grep -qE 'BREAKING CHANGE' \
-             || printf '%s\n' "$msgs" | grep -qE '^[a-z]+(\(.+\))?!:'; then
+          if grep -qE 'BREAKING CHANGE' "$msgs" \
+             || grep -qE '^[a-z]+(\(.+\))?!:' "$msgs"; then
             bump="minor"                       # pre-1.0: breaking -> minor
-          elif printf '%s\n' "$msgs" | grep -qE '^feat(\(.+\))?:'; then
+          elif grep -qE '^feat(\(.+\))?:' "$msgs"; then
             bump="minor"
-          elif printf '%s\n' "$msgs" | grep -qE '^fix(\(.+\))?:'; then
+          elif grep -qE '^fix(\(.+\))?:' "$msgs"; then
             bump="patch"
           fi
 
           if [ -z "$bump" ]; then
-            echo "No feat/fix commits since $latest — skipping release."
+            # Print the range size too: "0 commits" is a normal skip, whereas
+            # "no feat/fix among N commits" for a large N is the signature of a
+            # detection bug and should be visible in the log, not silent.
+            echo "No feat/fix commits among $(git rev-list --no-merges --count $range) commit(s) since $latest — skipping release."
             exit 0
           fi
 

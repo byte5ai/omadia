@@ -44,6 +44,7 @@ import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
 import { Orchestrator, type OrchestratorPersonaSkill } from './orchestrator.js';
+import type { DirectLineStickyStore } from './directLineSticky.js';
 import { CliChatAgent } from './cliChatAgent.js';
 import { ToolDispatchService } from './toolDispatchService.js';
 import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
@@ -80,6 +81,8 @@ export interface AgentRuntimeConfig {
   readonly loopRepeatHard?: number;
   /** Optional per-turn wall-clock budget in seconds (0 / omitted = off). */
   readonly maxTurnSeconds?: number;
+  /** #445 — sticky Direct Line for this Agent (see {@link OrchestratorOptions}). */
+  readonly directLineSticky?: boolean;
   /** Wave 8 — this Agent's direct-answer persona-skill candidates, resolved
    *  by the caller from `agent_persona_skills` (see {@link OrchestratorOptions}).
    *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
@@ -99,6 +102,13 @@ export interface OrchestratorDeps {
   readonly entityRefBus: EntityRefBus;
   readonly nativeToolRegistry: NativeToolRegistry;
   readonly nudgeRegistry: NudgeRegistry;
+  /**
+   * #445 — process-shared sticky Direct Line binding store. Deps, not
+   * per-Agent config, because the registry REPLACES an Orchestrator instance
+   * on any config diff: a per-instance store would silently unbind every live
+   * conversation whenever an operator tweaked something unrelated.
+   */
+  readonly directLineStickyStore?: DirectLineStickyStore;
   /** Late-bound `responseGuard@1` lookup (see `OrchestratorOptions`). */
   readonly responseGuard: () => ResponseGuardService | undefined;
   /** Late-bound `privacy.redact@1` lookup (see `OrchestratorOptions`). */
@@ -253,6 +263,10 @@ export function buildOrchestratorForAgent(
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
+    ...(config.directLineSticky ? { directLineSticky: true } : {}),
+    ...(deps.directLineStickyStore
+      ? { directLineStickyStore: deps.directLineStickyStore }
+      : {}),
     ...(config.personaSkills?.length
       ? { personaSkills: config.personaSkills }
       : {}),

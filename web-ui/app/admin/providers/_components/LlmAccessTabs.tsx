@@ -74,7 +74,7 @@ export function LlmAccessTabs({
       {tab === 'providers' ? (
         <ProvidersPanel onSwitchToSubscriptions={() => setTab('subscriptions')} />
       ) : (
-        <SubscriptionClisPanel />
+        <SubscriptionClisPanel onSwitchToProviders={() => setTab('providers')} />
       )}
     </main>
   );

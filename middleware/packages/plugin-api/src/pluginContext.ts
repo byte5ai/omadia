@@ -200,6 +200,20 @@ export interface PluginContext {
    *  — a Hub plugin may land on an older core without the broker. */
   readonly oauthTokens?: OAuthTokensAccessor;
 
+  /** Issue #438 follow-up — kernel-published operator-session verifier. Present
+   *  iff the host wires a session-verification backend into
+   *  `createPluginContext` (production always does; older kernels or narrow
+   *  test/migration contexts may not). Lets a plugin gate its OWN admin-only
+   *  HTTP surface behind the SAME operator session cookie the kernel's own
+   *  `requireAuth` middleware checks, WITHOUT re-implementing (and risking
+   *  drifting from) that verification logic. Per {@link RoutesAccessor}'s doc
+   *  comment the kernel does NOT inject auth middleware around a contributed
+   *  router — a plugin whose admin surface needs operator-only access MUST
+   *  check this itself, and MUST fail closed (refuse to serve, never silently
+   *  mount unauthenticated) when it is undefined. Guard with `if
+   *  (ctx.operatorAuth)`. */
+  readonly operatorAuth?: OperatorAuthAccessor;
+
   /** Report an operator-facing action status (e.g. "not connected yet"). The
    *  kernel holds the latest value per plugin and the admin UI renders it as a
    *  badge on the plugin card + a banner on the detail page that clears when
@@ -679,6 +693,27 @@ export interface OAuthTokensAccessor {
 
 export type OAuthTokenErrorCode = 'not_connected' | 'refresh_failed';
 
+/**
+ * Issue #438 follow-up — kernel-published operator-session verifier (see the
+ * `PluginContext.operatorAuth` doc comment for the full contract). The kernel
+ * implementation reuses the EXACT SAME verification logic as its own
+ * `requireAuth` middleware — same cookie name, same signing key, same
+ * Entra-whitelist rule — so there is exactly one code path that decides
+ * session validity, never two that can drift apart. Deliberately decoupled
+ * from Express (this package never imports express types, see
+ * {@link RoutesAccessor}): the caller hands over the raw `Cookie` header
+ * string, not a `Request`.
+ */
+export interface OperatorAuthAccessor {
+  /**
+   * Resolves `true` iff the raw `Cookie` request header carries a currently
+   * valid operator session. Never throws — a missing header, a malformed
+   * cookie, an expired/invalid session token, or (for Entra-issued sessions)
+   * an email that fell off the admin whitelist all resolve `false`.
+   */
+  hasValidSession(cookieHeader: string | undefined): Promise<boolean>;
+}
+
 export class OAuthTokenError extends Error {
   readonly code: OAuthTokenErrorCode;
   constructor(code: OAuthTokenErrorCode, message: string) {
@@ -708,6 +743,22 @@ export interface UiRoutesAccessor {
    * into the catalogue.
    */
   register(descriptor: UiRouteDescriptorInput): () => void;
+
+  /**
+   * Publish a top-level navigation entry for the operator web UI.
+   *
+   * This is deliberately separate from `register()`: a uiRoute
+   * descriptor addresses a plugin-served surface *relative to* the
+   * plugin's `/p/<pluginId>` mount, whereas a nav entry addresses an
+   * absolute in-app route. A plugin whose UI ships as compiled
+   * web-ui pages (a built-in package) has a nav entry and no uiRoute;
+   * a plugin serving its own HTML has both.
+   *
+   * Returns a dispose handle the plugin MUST call from its `close()`.
+   * The kernel additionally drops every entry by source on deactivate,
+   * so a leaked handle cannot outlive the plugin.
+   */
+  registerNav(entry: UiNavEntryInput): () => void;
 }
 
 export interface UiRouteDescriptorInput {
@@ -731,6 +782,58 @@ export interface UiRouteDescriptorInput {
  */
 export interface UiRouteDescriptor extends UiRouteDescriptorInput {
   readonly pluginId: string;
+}
+
+/**
+ * A navigation entry contributed by a plugin to the operator web UI.
+ *
+ * Labels are plugin-owned and localized here rather than in web-ui's
+ * `messages/*.json`, because the shell cannot know a third-party
+ * plugin's strings at build time. The kernel resolves the label for
+ * the requested locale before it ever reaches the browser, so the UI
+ * never has to merge a second message catalogue at runtime.
+ */
+export interface UiNavEntryInput {
+  /** Stable id within the plugin. Combined with pluginId as the key. */
+  readonly navId: string;
+  /**
+   * Absolute in-app path (e.g. `/admin/dev-platform`). Must start with
+   * exactly one `/` — protocol-relative (`//host`) and scheme-bearing
+   * values are rejected so a manifest cannot point the nav off-origin.
+   */
+  readonly href: string;
+  /**
+   * Optional cluster to nest under (e.g. `adminCluster`). Rendered as a
+   * top-level entry when omitted, or when the shell has no cluster by
+   * that key.
+   */
+  readonly cluster?: string;
+  /** Ordering hint within the cluster — lower comes first. Default 100. */
+  readonly order?: number;
+  /**
+   * Locale code → label. An `en` entry is required as the fallback for
+   * locales the plugin does not translate.
+   */
+  readonly label: Readonly<Record<string, string>>;
+}
+
+/** Catalogue-resolved nav entry — pluginId injected by the kernel. */
+export interface UiNavEntry extends UiNavEntryInput {
+  readonly pluginId: string;
+}
+
+/**
+ * A nav entry flattened for one locale. This is the shape the HTTP
+ * surface returns and the web UI consumes; `label` is already resolved,
+ * so no locale negotiation happens in the browser.
+ */
+export interface ResolvedUiNavEntry {
+  readonly pluginId: string;
+  readonly navId: string;
+  readonly href: string;
+  readonly cluster?: string;
+  readonly order: number;
+  readonly label: string;
 }
 
 /**

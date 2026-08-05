@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
-import type { CanvasNodeKind } from '../../../_lib/agentBuilder';
+import type { CanvasNodeKind, SkillImportResult } from '../../../_lib/agentBuilder';
 import { SkillImportModal } from '../../../_components/admin/SkillImportModal';
 
 /** Node kinds the operator can drag onto the canvas to create new entities. */
@@ -24,7 +24,9 @@ export function PalettePanel({
   onImported,
 }: {
   /** Called after a skill is imported so the canvas can reload its graph. */
-  onImported?: () => void;
+  /** OM-25 — receives the import result so a caller can react to a flagged
+   *  verdict. Optional payload keeps existing callers source-compatible. */
+  onImported?: (result: SkillImportResult) => void;
 }): React.ReactElement {
   const t = useTranslations('admin.builder');
   const [importing, setImporting] = useState(false);
@@ -56,9 +58,12 @@ export function PalettePanel({
       {importing && (
         <SkillImportModal
           onClose={() => setImporting(false)}
-          onImported={() => {
+          // OM-25 — the import result (which now carries the security verdict)
+          // used to be dropped on the floor here. Forward it so the canvas host
+          // can surface a flagged import instead of silently adding the node.
+          onImported={(result) => {
             setImporting(false);
-            onImported?.();
+            onImported?.(result);
           }}
         />
       )}

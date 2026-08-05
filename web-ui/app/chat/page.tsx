@@ -23,6 +23,7 @@ import { AutoPromotedBanner } from '../_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from '../_components/chat/CaptureDisclosure';
 import { ConfirmDialog } from '../_components/ConfirmDialog';
 import { DelegatedAnswerCard } from '../_components/chat/DelegatedAnswerCard';
+import { DirectLineStickyBanner } from '../_components/chat/DirectLineStickyBanner';
 import { NudgeCard, parseNudgeBlock } from '../_components/chat/NudgeCard';
 import {
   McpAuthRequiredCard,
@@ -35,6 +36,7 @@ import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
 import { Markdown } from '../_components/Markdown';
 import { resetChatSession, steerActiveTurn } from '../_lib/api';
+import { isSendKey } from '../_lib/composerKeys';
 import {
   deriveTitle,
   newSessionId,
@@ -54,7 +56,11 @@ import { DevJobChatCard } from '../_components/devjobs/DevJobChatCard';
 import { parseDevJobStartResult } from '../_components/devjobs/devJobChatCardState';
 import { KgWalkPane } from '../_components/KgWalkPane';
 import { PlanDagPane } from '../_components/PlanDagPane';
-import type { KgWalkPayload, PlanSnapshot } from '../_lib/chatSessions';
+import type {
+  DirectLineSessionState,
+  KgWalkPayload,
+  PlanSnapshot,
+} from '../_lib/chatSessions';
 
 /**
  * Dev-only KG-walk fixture. Rendered in the floating pane when the URL carries
@@ -197,6 +203,18 @@ export default function ChatPage(): React.ReactElement {
     }
     return kgMockEnabled ? MOCK_KG_WALK : null;
   }, [activeSession.messages, kgMockEnabled]);
+
+  // #445 — the sticky Direct-Line binding = whatever the most recent carrier
+  // says. The server stamps EVERY turn while the feature is on (including
+  // `{active:false}`), so scanning back to the newest carrier and trusting it
+  // is what keeps the banner from outliving the binding it describes.
+  const activeDirectLine = useMemo<DirectLineSessionState | null>(() => {
+    for (let i = activeSession.messages.length - 1; i >= 0; i -= 1) {
+      const m = activeSession.messages[i];
+      if (m?.directLineSession) return m.directLineSession;
+    }
+    return null;
+  }, [activeSession.messages]);
 
   // The live plan surfaced in the left pane = the most recent assistant message
   // carrying a plan snapshot (re-emitted on every step change / replan).
@@ -375,14 +393,17 @@ export default function ChatPage(): React.ReactElement {
     };
   }, [steerNotice]);
 
+  // OM-21/37: plain Enter sends, matching every other composer in the app.
+  // ⌘/Ctrl+Enter stays an accepted alias (it was the only documented shortcut
+  // here), Shift+Enter falls through to the browser's own newline, and an
+  // in-flight IME composition never sends — see `isSendKey`.
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-      event.preventDefault();
-      if (sending) {
-        void steer();
-      } else {
-        send();
-      }
+    if (!isSendKey(event)) return;
+    event.preventDefault();
+    if (sending) {
+      void steer();
+    } else {
+      send();
     }
   };
 
@@ -623,6 +644,17 @@ export default function ChatPage(): React.ReactElement {
 
       <footer className="border-t border-[color:var(--border)] bg-[color:var(--bg-elevated)]/85 px-6 py-4 backdrop-blur">
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
+          {/* #445 — persistent "you are talking to X" indicator, directly above
+              the composer. Exits via the normal turn path (no new endpoint). */}
+          {activeDirectLine && (
+            <DirectLineStickyBanner
+              session={activeDirectLine}
+              onExit={() => {
+                send('#end');
+              }}
+              disabled={sending || hydrating}
+            />
+          )}
           {/* Mid-turn steering hint / feedback — only while a turn streams. */}
           {sending && (
             <div className="flex items-center gap-2 text-[11px]">
@@ -696,6 +728,12 @@ export default function ChatPage(): React.ReactElement {
               </Button>
             )}
           </div>
+          {/* OM-21/37: the send shortcut was documented only in the empty
+              state, so anyone past their first message had no way to learn it.
+              Keep it visible under the field. */}
+          <p className="mt-1 pl-11 text-[11px] text-[color:var(--fg-subtle)]">
+            {t('composerSendHint')}
+          </p>
         </div>
       </footer>
 

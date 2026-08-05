@@ -34,6 +34,7 @@ import {
   type PluginCategory,
 } from '../../_lib/businessCases';
 import { SkillImportModal } from '../admin/SkillImportModal';
+import { SkillVerdictBadge } from '../admin/SkillVerdictBadge';
 import type { SkillImportResult } from '../../_lib/agentBuilder';
 
 /**
@@ -50,6 +51,61 @@ import type { SkillImportResult } from '../../_lib/agentBuilder';
  */
 
 const HIDDEN_KEY = 'omadia.dashboard.onboarding.hidden';
+
+/**
+ * OM-01/12 — the selected business case, persisted.
+ *
+ * It used to live in plain `useState`, so it reset on EVERY navigation. That is
+ * why the card looked byte-for-byte identical after the tester had installed
+ * plugins and worked in admin for half an hour: the wizard had no memory of
+ * anything they had done. Sits next to `HIDDEN_KEY` deliberately — same
+ * lifetime, same storage, same failure modes.
+ */
+const CASE_KEY = 'omadia.dashboard.onboarding.case';
+
+// Read through `useSyncExternalStore` for the same reason `hidden` is: the
+// server snapshot has no localStorage, so seeding `useState` from it would be a
+// hydration mismatch, and a setState-in-effect is forbidden by the
+// cascading-render lint rule.
+let caseCache: string | null | undefined;
+const caseListeners = new Set<() => void>();
+
+function subscribeCase(cb: () => void): () => void {
+  caseListeners.add(cb);
+  return () => caseListeners.delete(cb);
+}
+
+function getCaseSnapshot(): string | null {
+  if (caseCache === undefined) {
+    try {
+      caseCache = window.localStorage.getItem(CASE_KEY);
+    } catch {
+      caseCache = null;
+    }
+  }
+  return caseCache;
+}
+
+function getCaseServerSnapshot(): string | null {
+  return null;
+}
+
+function setCasePersisted(value: string | null): void {
+  caseCache = value;
+  try {
+    if (value) window.localStorage.setItem(CASE_KEY, value);
+    else window.localStorage.removeItem(CASE_KEY);
+  } catch {
+    /* private mode / no storage */
+  }
+  for (const l of caseListeners) l();
+}
+
+/** Test seam: drop the module-level caches between renders. */
+export function __resetOnboardingStores(): void {
+  hiddenCache = null;
+  caseCache = undefined;
+}
 
 // Module-level store for the persisted "hidden" flag. Backed by localStorage
 // and read through useSyncExternalStore so the server snapshot (always visible)
@@ -137,22 +193,58 @@ function requestPluginUrl(title: string, body: string): string {
   return `https://github.com/byte5ai/omadia/issues/new?${params.toString()}`;
 }
 
-export function DashboardOnboarding({
-  plugins,
-  llmConnected,
-}: {
+export interface DashboardOnboardingProps {
   /** Live Hub catalog, or null when the catalog fetch failed — so the
    *  recommender can tell "plugin missing" apart from "catalog unavailable". */
   plugins: Plugin[] | null;
-  llmConnected: boolean;
-}): React.ReactElement | null {
+  /**
+   * A provider key that was actually PROBED and worked (`status === 'verified'`).
+   *
+   * OM-01/12 + Wave 1: step 1 must not tick on the old `connected` signal.
+   * `connected` only means "a non-empty string sits in the vault" — exactly the
+   * state that rendered a green badge while every request failed with
+   * `invalid x-api-key`. Marking the step done on that signal would take the
+   * existing lie and give it a MORE prominent widget to be told in.
+   */
+  llmVerified: boolean;
+  /**
+   * The operator is logged into a subscription CLI (`loggedIn === 'yes'`).
+   *
+   * The only other genuinely verified LLM signal in the codebase, and the
+   * dashboard ignored it: a user logged into the Claude CLI was still told
+   * "Schritt 1: LLM verbinden". Counts as satisfying step 1.
+   */
+  cliLoggedIn: boolean;
+  /** At least one plugin is installed — satisfies step 3. */
+  hasInstalledPlugin: boolean;
+}
+
+/** One onboarding step. `done` is computed, never stored — there is no way for
+ *  a persisted "completed" flag to drift from reality. */
+interface OnboardingStep {
+  readonly id: 'llmAccess' | 'businessCase' | 'install';
+  readonly done: boolean;
+}
+
+export function DashboardOnboarding({
+  plugins,
+  llmVerified,
+  cliLoggedIn,
+  hasInstalledPlugin,
+}: DashboardOnboardingProps): React.ReactElement | null {
   const t = useTranslations('dashboard.onboarding');
   const hidden = useSyncExternalStore(
     subscribeHidden,
     getHiddenSnapshot,
     getHiddenServerSnapshot,
   );
-  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  const persistedCaseId = useSyncExternalStore(
+    subscribeCase,
+    getCaseSnapshot,
+    getCaseServerSnapshot,
+  );
+  const selectedCaseId = persistedCaseId;
+  const setSelectedCaseId = setCasePersisted;
 
   if (hidden) {
     return (
@@ -172,6 +264,23 @@ export function DashboardOnboarding({
   const selectedCase =
     BUSINESS_CASES.find((c) => c.id === selectedCaseId) ?? null;
 
+  // OM-01/12 — the card was titled "Erste Schritte" and its first visible
+  // content was "SCHRITT 2 · BUSINESS-CASE WÄHLEN". There was no step 1,
+  // because the three `t('step', {n})` calls lived inside a mutually-exclusive
+  // ternary: step 1 VANISHED once satisfied instead of being checked off, so
+  // the numbering started at 2 and no progress was ever visible. All three
+  // steps now render always; `done` decides the checkmark, not the visibility.
+  //
+  // Step 1 is LLM access — the actual blocker the card never mentioned.
+  // A fixed-length tuple, not a bare array: the three steps are a closed set,
+  // and `noUncheckedIndexedAccess` would otherwise make every read optional.
+  const steps: readonly [OnboardingStep, OnboardingStep, OnboardingStep] = [
+    { id: 'llmAccess', done: llmVerified || cliLoggedIn },
+    { id: 'businessCase', done: selectedCase !== null },
+    { id: 'install', done: hasInstalledPlugin },
+  ];
+  const llmDone = steps[0].done;
+
   return (
     <section
       aria-labelledby="dash-onboarding-heading"
@@ -189,8 +298,14 @@ export function DashboardOnboarding({
           >
             {t('heading')}
           </h2>
-          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[color:var(--fg-muted)]">
-            {t('subtitle')}
+          {/* OM-01/12 — `subtitle` and `chooseCaseSubtitle` said the same thing
+              in two places. The one that stayed is the one attached to the step
+              it actually describes; this slot now carries progress instead. */}
+          <p className="mt-2 text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
+            {t('progress', {
+              done: steps.filter((s) => s.done).length,
+              total: steps.length,
+            })}
           </p>
         </div>
         <button
@@ -204,42 +319,155 @@ export function DashboardOnboarding({
         </button>
       </div>
 
-      {/* Step 1 — connect an LLM. Gates everything below: without a model no
-          orchestrator can run, so a business case would install plugins that
-          can't act. */}
-      {!llmConnected ? (
-        <div className="mt-6 rounded-lg border border-[color:var(--accent)]/50 bg-[color:var(--accent-subtle)] p-5">
-          <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--accent)]">
-            <Cpu className="size-3.5" aria-hidden />
-            {t('step', { n: 1 })}
-          </div>
-          <h3 className="font-display mt-1 text-lg font-medium text-[color:var(--fg-strong)]">
-            {t('llmStep.title')}
-          </h3>
+      {/* Step 1 — LLM access. Gates everything below: without a working model
+          no orchestrator can run, so a business case would install plugins that
+          cannot act. It stays VISIBLE once done — a checked-off step is what
+          makes the numbering honest and the progress legible. */}
+      <StepShell
+        n={1}
+        total={steps.length}
+        done={llmDone}
+        icon={Cpu}
+        title={t('llmStep.title')}
+      >
+        {llmDone ? (
           <p className="mt-2 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg-muted)]">
-            {t('llmStep.description')}
+            {cliLoggedIn && !llmVerified
+              ? t('llmStep.doneViaCli')
+              : t('llmStep.doneViaProvider')}
           </p>
-          <div className="mt-4">
-            <Link
-              href="/admin/providers"
-              className="inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-colors hover:bg-[color:var(--accent-hover)]"
+        ) : (
+          <>
+            <p className="mt-2 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg-muted)]">
+              {t('llmStep.description')}
+            </p>
+            <div className="mt-4">
+              <Link
+                href="/admin/providers"
+                className="inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-colors hover:bg-[color:var(--accent-hover)]"
+              >
+                {t('llmStep.connect')}
+                <ArrowRight className="size-3.5" aria-hidden />
+              </Link>
+            </div>
+          </>
+        )}
+      </StepShell>
+
+      {/* Step 2 — business case. */}
+      <StepShell
+        n={2}
+        total={steps.length}
+        done={steps[1].done}
+        icon={Briefcase}
+        title={t('chooseCaseHeading')}
+      >
+        {selectedCase === null ? (
+          <ChooseCase onSelect={setSelectedCaseId} />
+        ) : (
+          <p className="mt-2 flex flex-wrap items-center gap-3 text-[13px] text-[color:var(--fg-muted)]">
+            <span>
+              {t('caseChosen', { name: t(`cases.${selectedCase.id}.name`) })}
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelectedCaseId(null)}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)] transition-colors hover:text-[color:var(--fg-strong)]"
             >
-              {t('llmStep.connect')}
-              <ArrowRight className="size-3.5" aria-hidden />
-            </Link>
-          </div>
-        </div>
-      ) : selectedCase === null ? (
-        <ChooseCase onSelect={setSelectedCaseId} />
-      ) : (
-        <Recommendations
-          businessCase={selectedCase}
-          plugins={plugins ?? []}
-          catalogAvailable={plugins !== null}
-          onBack={() => setSelectedCaseId(null)}
-        />
-      )}
+              <ArrowLeft className="size-3.5" aria-hidden />
+              {t('recommend.back')}
+            </button>
+          </p>
+        )}
+      </StepShell>
+
+      {/* Step 3 — install the recommended set. */}
+      <StepShell
+        n={3}
+        total={steps.length}
+        done={steps[2].done}
+        icon={Boxes}
+        title={t('installStep.title')}
+      >
+        {selectedCase === null ? (
+          <p className="mt-2 text-[13px] leading-relaxed text-[color:var(--fg-muted)]">
+            {t('installStep.pickCaseFirst')}
+          </p>
+        ) : (
+          <Recommendations
+            businessCase={selectedCase}
+            plugins={plugins ?? []}
+            catalogAvailable={plugins !== null}
+          />
+        )}
+      </StepShell>
     </section>
+  );
+}
+
+/**
+ * OM-01/12 — the shared frame for a step: number, "n of total", a checkmark
+ * when done, and the step's own content.
+ *
+ * The old card had three bare `t('step', {n})` labels inside a ternary, so the
+ * user saw a number with nothing to compare it to and no indication that
+ * anything had been achieved. `n of total` and the checked state are the whole
+ * point of this component.
+ */
+function StepShell({
+  n,
+  total,
+  done,
+  icon: Icon,
+  title,
+  children,
+}: {
+  n: number;
+  total: number;
+  done: boolean;
+  icon: LucideIcon;
+  title: string;
+  children: React.ReactNode;
+}): React.ReactElement {
+  const t = useTranslations('dashboard.onboarding');
+  return (
+    <div
+      data-testid={`onboarding-step-${n}`}
+      data-done={done ? 'true' : 'false'}
+      className={`mt-6 rounded-lg border p-5 ${
+        done
+          ? 'border-[color:var(--border)] bg-[color:var(--card)]/40'
+          : 'border-[color:var(--accent)]/50 bg-[color:var(--accent-subtle)]'
+      }`}
+    >
+      <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em]">
+        {done ? (
+          <Check
+            className="size-3.5 text-[color:var(--success)]"
+            aria-hidden
+            data-testid={`onboarding-step-${n}-check`}
+          />
+        ) : (
+          <Icon className="size-3.5 text-[color:var(--accent)]" aria-hidden />
+        )}
+        <span
+          className={
+            done
+              ? 'text-[color:var(--fg-subtle)]'
+              : 'text-[color:var(--accent)]'
+          }
+        >
+          {t('stepOfTotal', { n, total })}
+        </span>
+        {done ? (
+          <span className="text-[color:var(--success)]">{t('applied')}</span>
+        ) : null}
+      </div>
+      <h3 className="font-display mt-1 text-lg font-medium text-[color:var(--fg-strong)]">
+        {title}
+      </h3>
+      {children}
+    </div>
   );
 }
 
@@ -250,11 +478,10 @@ function ChooseCase({
 }): React.ReactElement {
   const t = useTranslations('dashboard.onboarding');
   return (
-    <div className="mt-6">
-      <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
-        {t('step', { n: 2 })} · {t('chooseCaseHeading')}
-      </div>
-      <p className="mt-1 text-sm text-[color:var(--fg-muted)]">
+    <div className="mt-2">
+      {/* The step number and title now live in `StepShell`; this component owns
+          only the choices themselves. */}
+      <p className="text-sm text-[color:var(--fg-muted)]">
         {t('chooseCaseSubtitle')}
       </p>
       <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -306,8 +533,16 @@ function ChooseCase({
  */
 function BringYourSkills(): React.ReactElement {
   const t = useTranslations('dashboard.onboarding.bringSkills');
+  const tVerdict = useTranslations('skills.verdict');
   const [importing, setImporting] = useState(false);
   const [imported, setImported] = useState<SkillImportResult | null>(null);
+  const importVerdict = imported?.verdict;
+  /** Falls back to a humanized raw code for an unmapped verifier pattern —
+   *  same graceful degradation as the skill editor. */
+  function riskCodeLabel(code: string): string {
+    const key = `riskCode.${code}`;
+    return tVerdict.has(key) ? tVerdict(key) : code.replace(/_/g, ' ');
+  }
 
   return (
     <div className="mt-8 rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-5">
@@ -327,6 +562,28 @@ function BringYourSkills(): React.ReactElement {
             <Check className="size-4" aria-hidden />
             {t('imported', { name: imported.skill.name })}
           </span>
+          {/* OM-25 — the imported skill carried "⚠ MARKIERT — PRÜFUNG
+              EMPFOHLEN" in the registry while this toast said only
+              "…importiert — jetzt einen Agenten damit bauen". The flag was
+              discovered by chance. It now travels on the import response and is
+              shown right here, next to the success. */}
+          {importVerdict && importVerdict.severity !== 'no_signals' ? (
+            <span
+              className="inline-flex flex-wrap items-center gap-2"
+              data-testid="import-verdict"
+            >
+              <SkillVerdictBadge severity={importVerdict.severity} />
+              {importVerdict.riskCodes.length > 0 ? (
+                <span className="text-[12px] text-[color:var(--warning)]">
+                  {tVerdict('why', {
+                    codes: importVerdict.riskCodes
+                      .map(riskCodeLabel)
+                      .join(', '),
+                  })}
+                </span>
+              ) : null}
+            </span>
+          ) : null}
           <Link href="/operator/skills" className="text-[12px] font-semibold text-[color:var(--accent)] hover:underline">
             {t('toRegistry')}
           </Link>
@@ -369,12 +626,10 @@ function Recommendations({
   businessCase,
   plugins,
   catalogAvailable,
-  onBack,
 }: {
   businessCase: BusinessCase;
   plugins: Plugin[];
   catalogAvailable: boolean;
-  onBack: () => void;
 }): React.ReactElement {
   const t = useTranslations('dashboard.onboarding');
   const caseName = t(`cases.${businessCase.id}.name`);
@@ -385,25 +640,12 @@ function Recommendations({
   );
 
   return (
-    <div className="mt-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-subtle)]">
-            {t('step', { n: 3 })} · {caseName}
-          </div>
-          <p className="mt-1 text-sm text-[color:var(--fg-muted)]">
-            {t('recommend.subtitle')}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onBack}
-          className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)] transition-colors hover:text-[color:var(--fg-strong)]"
-        >
-          <ArrowLeft className="size-3.5" aria-hidden />
-          {t('recommend.back')}
-        </button>
-      </div>
+    <div className="mt-2">
+      {/* Step framing (number, title, back-to-case) belongs to `StepShell` and
+          step 2 now; this component is just the recommendation list. */}
+      <p className="text-sm text-[color:var(--fg-muted)]">
+        {t('recommend.subtitle')}
+      </p>
 
       {!catalogAvailable ? (
         <p className="mt-5 rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-4 py-3 text-[13px] text-[color:var(--warning)]">

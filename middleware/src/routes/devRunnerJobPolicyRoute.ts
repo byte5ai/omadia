@@ -10,6 +10,15 @@
  * bearer: a runner token is rejected here, or any runner could read another
  * job's policy. It therefore does NOT use the runner router's job-bearer
  * `authMw`; it has its own daemon-token guard below.
+ *
+ * This request IS the docker backend's actual provision moment (`DockerBackend
+ * .provision()` itself posts only `{ protocol, jobId, leaseTtlSec }` — no env,
+ * spec §4/§5). So `env` carries a freshly-reissued `OMADIA_JOB_TOKEN` alongside
+ * `deriveJobPolicy`'s non-secret fields — the daemon's own `ALLOWED_ENV_KEYS`
+ * already treats it as policy-supplied (`policyClient.mjs`). Reissuing here
+ * (rather than reusing `createJob`'s original, unused-for-this-backend token)
+ * replaces `runner_token_hash`, so exactly the token this response hands out is
+ * the one a later `verifyRunnerToken` call will accept.
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -25,7 +34,10 @@ import type { DevJob, DevRepo } from '../devplatform/types.js';
 
 /** The narrow slices this route needs from the runner router's deps. */
 export interface JobPolicyRouteDeps {
-  store: { getJob(jobId: string): Promise<DevJob | null> };
+  store: {
+    getJob(jobId: string): Promise<DevJob | null>;
+    reissueRunnerToken(jobId: string): Promise<string>;
+  };
   repos: {
     getRepo(id: string): Promise<Pick<DevRepo, 'cloneUrl' | 'egressAllowlist' | 'dockerInJob'> | null>;
   };
@@ -124,10 +136,16 @@ export function mountJobPolicyRoute(router: Router, deps: JobPolicyRouteDeps): v
       fail(res, 500, code, 'job policy could not be derived');
       return;
     }
+    // The docker backend's actual provision moment (see file docstring) — mint
+    // the token the runner authenticates back to the middleware with here,
+    // never earlier: `createJob`'s original token was never handed to a
+    // container for this backend, so reissuing (not reusing it) keeps exactly
+    // one plaintext copy in existence, matching every other backend's contract.
+    const runnerToken = await store.reissueRunnerToken(job.id);
     res.json({
       jobId: job.id,
       image: policy.image,
-      env: policy.env,
+      env: { ...policy.env, OMADIA_JOB_TOKEN: runnerToken },
       egressAllowlist: policy.egressAllowlist,
       // W5 (spec §8): the daemon reads this to decide whether to run a DinD sidecar.
       dockerInJob: policy.dockerInJob,

@@ -48,6 +48,7 @@ import {
 
 import { BuilderMarkdown } from './BuilderMarkdown';
 import { SecretsDrawer } from './SecretsDrawer';
+import { isSendKey } from '../../../../_lib/composerKeys';
 
 type ChatItem =
   | { kind: 'message'; key: string; role: 'user' | 'assistant'; text: string }
@@ -401,7 +402,7 @@ export function PreviewChatPane({
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (isSendKey(e)) {
         e.preventDefault();
         void onSend();
       }
@@ -480,10 +481,9 @@ export function PreviewChatPane({
             <div className="font-semibold">
               {t.rich('agentStuck.title', {
                 attempts: agentStuck.attempts,
-                slot: () => (
-                  <code className="font-mono text-[11px]">
-                    {agentStuck.slotKey}
-                  </code>
+                slotKey: agentStuck.slotKey,
+                slot: (chunks) => (
+                  <code className="font-mono text-[11px]">{chunks}</code>
                 ),
               })}
             </div>

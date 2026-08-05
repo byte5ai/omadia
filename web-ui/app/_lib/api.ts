@@ -190,6 +190,28 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Asserts that a list endpoint really returned an array under `key`.
+ *
+ * A 200 response whose body is the wrong shape used to sail straight through
+ * into the page, where the first `.filter()` / `.map()` threw *outside* the
+ * try/catch that was supposed to protect the load — turning a bad payload into
+ * an unrecoverable render crash instead of the page's own error card.
+ * Throwing an ApiError here keeps the failure inside the caller's catch.
+ *
+ * Deliberately hand-rolled: web-ui has no schema-validation dependency and
+ * this file already hand-rolls ApiError / maybeNavigateToLogin / cookie
+ * forwarding. Applied only to the list endpoints whose pages dereference the
+ * array immediately — not retrofitted across every call site.
+ */
+function expectArray<T>(value: unknown, path: string, key: string): T[] {
+  if (Array.isArray(value)) return value as T[];
+  throw new ApiError(
+    200,
+    `GET ${path}: malformed body — "${key}" is not an array`,
+  );
+}
+
 // -----------------------------------------------------------------------------
 // Admin settings — the .env-based config/vault overview (/api/v1/admin/settings)
 // -----------------------------------------------------------------------------
@@ -284,10 +306,34 @@ export interface AdminProviderModel {
   vision: boolean;
 }
 
+/**
+ * Four-state credential verdict from the middleware (OM-02/03/04):
+ *  - `no_key`     nothing stored
+ *  - `unverified` a key is stored, but no probe has ever proved it works
+ *  - `verified`   a probe against the provider's API succeeded
+ *  - `invalid`    the provider rejected the key (401/403)
+ *
+ * Only `verified` may ever be presented as a working provider. `unverified` is
+ * the state that used to be rendered as a green "connected" badge while every
+ * request failed.
+ */
+export type ProviderCredentialStatus =
+  | 'no_key'
+  | 'unverified'
+  | 'verified'
+  | 'invalid';
+
 export interface AdminProvider {
   id: string;
   label: string;
-  /** True when an API key for this provider is present in the vault. */
+  /** Credential verdict. Prefer this over `connected` everywhere. */
+  status: ProviderCredentialStatus;
+  /** ISO timestamp of the last successful probe (`verified` only). */
+  verifiedAt?: string;
+  /** User-facing rejection reason (`invalid` only). */
+  verifyError?: string;
+  /** Legacy: "a key is on file" — i.e. `status !== 'no_key'`. Retained for
+   *  backwards compatibility; it does NOT mean the key works. */
   connected: boolean;
   /** Data-protection hints for the UI (data-driven; defaulted server-side).
    *  `requiresAvvDisclosure`: show the Art. 28 DSGVO third-party disclosure.
@@ -297,6 +343,12 @@ export interface AdminProvider {
   /** Tool-less Shape-2 CLI provider — cannot drive a tool loop, so the UI
    *  disables it for tool-dependent plugins. */
   toolLess?: boolean;
+  /** OM-11 — is the host capability this provider needs actually present?
+   *  For a CLI-backed provider this is "the binary exists on this server";
+   *  key-based providers need no binary and report `true`. The UI must not
+   *  offer "Anmelden" for a CLI that isn't there. Absent on payloads from a
+   *  pre-OM-11 middleware — treat `undefined` as installed. */
+  installed?: boolean;
   models: AdminProviderModel[];
 }
 
@@ -340,6 +392,24 @@ export async function assignProvider(
   body: AssignProviderRequest,
 ): Promise<AssignProviderResponse> {
   return postJson<AssignProviderResponse>('/v1/admin/providers/assignment', body);
+}
+
+export interface ProviderVerification {
+  status: ProviderCredentialStatus;
+  verifiedAt?: string;
+  checkedAt?: string;
+  error?: string;
+}
+
+/** Force a live probe of a provider's stored key. This is the only providers
+ *  call that hits the vendor's API — the listing endpoint never does. */
+export async function verifyProvider(
+  providerId: string,
+): Promise<ProviderVerification> {
+  return postJson<ProviderVerification>(
+    `/v1/admin/providers/${encodeURIComponent(providerId)}/verify`,
+    {},
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -485,7 +555,16 @@ export async function listStorePlugins(
   if (query.search) params.set('search', query.search);
   if (query.category) params.set('category', query.category);
   const suffix = params.toString() ? `?${params.toString()}` : '';
-  return getJson<StoreListResponse>(`/v1/store/plugins${suffix}`);
+  const path = `/v1/store/plugins${suffix}`;
+  const resp = await getJson<StoreListResponse>(path);
+  return {
+    ...resp,
+    items: expectArray<StoreListResponse['items'][number]>(
+      resp?.items,
+      path,
+      'items',
+    ),
+  };
 }
 
 export async function getStorePlugin(id: string): Promise<StoreGetResponse> {
@@ -2306,7 +2385,16 @@ export interface RoutineResponse {
 }
 
 export async function listRoutines(): Promise<ListRoutinesResponse> {
-  return getJson<ListRoutinesResponse>('/v1/routines');
+  const resp = await getJson<ListRoutinesResponse>('/v1/routines');
+  const routines = expectArray<RoutineDto>(
+    resp?.routines,
+    '/v1/routines',
+    'routines',
+  );
+  return {
+    routines,
+    count: typeof resp?.count === 'number' ? resp.count : routines.length,
+  };
 }
 
 export async function setRoutineStatus(
@@ -3521,6 +3609,150 @@ export async function setMemoryBackend(
 }
 
 // -----------------------------------------------------------------------------
+// Embedding-provider switch (#440 follow-up). Backed by the admin router at
+// /api/v1/admin/embedding-provider, surfaced to the browser as
+// /bot-api/v1/admin/embedding-provider.
+//
+// Unlike `setMemoryBackend` above, the POST here does NOT just persist a
+// choice: the middleware deactivates the outgoing `embeddingClient@1` adapter,
+// activates the target and re-runs the knowledge-graph's model/dimension gate
+// in-process. No restart. The response therefore carries the resulting gate
+// outcome plus a fresh snapshot.
+//   - GET  /       → providers, active model, corpus, live gate, switch preview
+//   - POST /switch → perform the switch (destructive; needs confirmation)
+// -----------------------------------------------------------------------------
+
+/** What a switch to this provider would cost. `null` fields mean "cannot be
+ *  told before activation" — the gate decides for real. */
+export interface EmbeddingProviderPreview {
+  /** True when the target width differs from the stored column width. */
+  widthChange: boolean | null;
+  /** Stored vectors that would be discarded and re-embedded. */
+  vectorsToDiscard: number | null;
+}
+
+export interface EmbeddingProviderOption {
+  pluginId: string;
+  label: string;
+  active: boolean;
+  registryStatus: 'active' | 'inactive' | 'errored' | null;
+  modelId: string | null;
+  dimensions: number | null;
+  /** `null` for the provider that is already active. */
+  preview: EmbeddingProviderPreview | null;
+}
+
+/** A governed `vector(n)` column and how much corpus it holds. */
+export interface EmbeddingVectorColumn {
+  table: string;
+  column: string;
+  declaredDimensions: number | null;
+  storedVectors: number | null;
+}
+
+/** The #440 gate verdict, live (never a boot snapshot). */
+export interface EmbeddingGateState {
+  vectorWritesAllowed: boolean;
+  status: string;
+  reason?: string;
+  activeModelId?: string;
+  storedModelId?: string;
+  detail?: string;
+}
+
+/**
+ * The registry's live client and the last gate verdict name DIFFERENT models
+ * (#440 follow-up). Not a failure: swapping an `embeddingClient@1` adapter
+ * through the generic plugin-install UI deliberately does not re-gate, so the
+ * graph keeps running under a verdict about a model that is no longer active.
+ * `null` when the two agree, or when either side is unknown.
+ */
+export interface EmbeddingProviderDrift {
+  /** What the registry hands out right now. */
+  activeModelId: string;
+  /** What the governing verdict was computed against. */
+  gateModelId: string;
+}
+
+export interface EmbeddingProviderState {
+  providers: EmbeddingProviderOption[];
+  activeProviderId: string | null;
+  activeModel: { modelId: string; dimensions: number } | null;
+  /** Optional so older middleware builds still satisfy this type. */
+  providerDrift?: EmbeddingProviderDrift | null;
+  capabilityPublished: boolean;
+  /** `graph_embedding_model` — what the stored vectors were produced with. */
+  corpus: { modelId: string; dimensions: number; clearPending: boolean } | null;
+  columns: EmbeddingVectorColumn[];
+  columnDimensions: number | null;
+  storedVectorTotal: number | null;
+  gate: EmbeddingGateState | null;
+  autoMigrateVectorColumns: boolean;
+  knowledgeGraphInstalled: boolean;
+  graphAvailable: boolean;
+  /**
+   * The tenant every corpus number above was priced against — the
+   * knowledge-graph plugin's own `graph_tenant_id` when the operator set one,
+   * otherwise the deployment default. Optional so older middleware builds
+   * still satisfy this type; it exists so a `storedVectorTotal: 0` can be told
+   * apart from "the wrong tenant was counted".
+   */
+  graphTenantId?: string;
+  corpusError: string | null;
+}
+
+export interface SwitchEmbeddingProviderResult extends EmbeddingProviderState {
+  ok: true;
+  switchedTo: string;
+  /**
+   * Did the knowledge-graph's model/dimension gate actually re-run against the
+   * new provider? False on a deployment with no Postgres knowledge-graph
+   * active (nothing to gate) — a legitimate success, but a different one, so
+   * it is reported rather than implied. `gateWarning` says why.
+   * Optional so older middleware builds still satisfy this type.
+   */
+  gateReevaluated?: boolean;
+  gateWarning?: string;
+}
+
+/** Read the current embedding-provider picture. Safe to poll. */
+export async function getEmbeddingProvider(): Promise<EmbeddingProviderState> {
+  return getJson<EmbeddingProviderState>('/v1/admin/embedding-provider');
+}
+
+/**
+ * Switch the active embedding provider, live.
+ *
+ * DESTRUCTIVE: the stored vectors are discarded and re-embedded, one paid
+ * provider call per row. `confirmDiscardVectors` must be `true` or the
+ * middleware answers 400 `embeddingProvider.confirmation_required`. Other
+ * inline-surfaceable failures: 400 `embeddingProvider.unknown_target`, 409
+ * `embeddingProvider.already_active`, 409 `embeddingProvider.target_unavailable`
+ * (the target was not configured; `details.restoredProviderId` names the
+ * provider that is verified live again, or is `null` when NOTHING could be
+ * restored), 409 `embeddingProvider.switch_in_progress` (another switch is
+ * running — re-read the state before retrying) and 500
+ * `embeddingProvider.gate_reevaluation_failed` (the provider switch DID take
+ * effect and the knowledge graph is still up with its pool intact, but
+ * re-evaluating its model/dimension gate against the new provider threw, so
+ * the graph is still governed by the PREVIOUS verdict).
+ *
+ * The switch never re-activates the knowledge-graph plugin — that would end
+ * the pg pool the whole middleware shares — so a successful switch can no
+ * longer leave the graph deactivated. The former
+ * `embeddingProvider.knowledge_graph_down` code is gone with it.
+ */
+export async function switchEmbeddingProvider(
+  pluginId: string,
+  confirmDiscardVectors: boolean,
+): Promise<SwitchEmbeddingProviderResult> {
+  return postJson<SwitchEmbeddingProviderResult>(
+    '/v1/admin/embedding-provider/switch',
+    { pluginId, confirmDiscardVectors },
+  );
+}
+
+// -----------------------------------------------------------------------------
 // Mid-turn steering (2026-06-06).
 // -----------------------------------------------------------------------------
 
@@ -4250,4 +4482,134 @@ export function createGithubIssue(input: {
   diagnostics?: string;
 }): Promise<CreatedIssue> {
   return postJson<CreatedIssue>('/v1/issues/create', input);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Conductor webhooks (issue #437) — inbound endpoints that start subscribed
+// workflow runs, and outbound subscriptions that receive run-lifecycle events.
+// Backed by /api/v1/operator/conductors/webhooks/* (cookie auth, same router
+// as the rest of Conductor's operator surface). A create/rotate-secret call
+// returns the plaintext secret exactly ONCE — never again, and never in a
+// list/get response.
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface ConductorWebhookEndpoint {
+  endpointId: string;
+  eventId: string;
+  description: string | null;
+  enabled: boolean;
+  createdBy: string;
+  createdAt: string;
+  /** Absolute inbound URL (`<middleware base>/api/hooks/:endpointId`), computed
+   *  server-side from the middleware's configured base URL — review finding: the
+   *  admin UI must never build this from `window.location.origin`, which in the
+   *  standard local dev setup is the Next.js dev server (does not proxy
+   *  `/api/hooks/*`). Absent only if the middleware has no base URL configured. */
+  inboundUrl?: string;
+}
+
+export interface ConductorWebhookInboundDelivery {
+  deliveryId: string;
+  endpointId: string;
+  outcome: string;
+  receivedAt: string;
+}
+
+export interface ConductorWebhookSubscription {
+  id: string;
+  url: string;
+  event: string;
+  description: string | null;
+  enabled: boolean;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ConductorWebhookOutboundDelivery {
+  id: string;
+  subscriptionId: string;
+  event: string;
+  payload: unknown;
+  status: 'pending' | 'delivered' | 'failed' | 'exhausted';
+  attempts: number;
+  lastError: string | null;
+  nextAttemptAt: string;
+  deliveredAt: string | null;
+  createdAt: string;
+}
+
+const WEBHOOKS_BASE = `${CONDUCTOR_BASE}/webhooks`;
+
+async function deleteRequest(path: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi(path), {
+    method: 'DELETE',
+    headers: { accept: 'application/json', ...forwarded },
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}`, text);
+  }
+}
+
+export async function listWebhookEndpoints(): Promise<{ endpoints: ConductorWebhookEndpoint[] }> {
+  return getJson(`${WEBHOOKS_BASE}/endpoints`);
+}
+
+export async function createWebhookEndpoint(input: {
+  eventId: string;
+  description?: string;
+}): Promise<{ endpoint: ConductorWebhookEndpoint; secret: string }> {
+  return postJson(`${WEBHOOKS_BASE}/endpoints`, input);
+}
+
+export async function rotateWebhookEndpointSecret(endpointId: string): Promise<{ secret: string }> {
+  return postJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/rotate-secret`, {});
+}
+
+export async function setWebhookEndpointEnabled(endpointId: string, enabled: boolean): Promise<void> {
+  return postJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/status`, { enabled });
+}
+
+export async function deleteWebhookEndpoint(endpointId: string): Promise<void> {
+  return deleteRequest(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}`);
+}
+
+export async function listWebhookEndpointDeliveries(
+  endpointId: string,
+): Promise<{ deliveries: ConductorWebhookInboundDelivery[] }> {
+  return getJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/deliveries`);
+}
+
+export async function listWebhookSubscriptions(): Promise<{ subscriptions: ConductorWebhookSubscription[] }> {
+  return getJson(`${WEBHOOKS_BASE}/subscriptions`);
+}
+
+export async function createWebhookSubscription(input: {
+  url: string;
+  event: string;
+  description?: string;
+}): Promise<{ subscription: ConductorWebhookSubscription; secret: string }> {
+  return postJson(`${WEBHOOKS_BASE}/subscriptions`, input);
+}
+
+export async function rotateWebhookSubscriptionSecret(id: string): Promise<{ secret: string }> {
+  return postJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/rotate-secret`, {});
+}
+
+export async function setWebhookSubscriptionEnabled(id: string, enabled: boolean): Promise<void> {
+  return postJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/status`, { enabled });
+}
+
+export async function deleteWebhookSubscription(id: string): Promise<void> {
+  return deleteRequest(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}`);
+}
+
+export async function listWebhookSubscriptionDeliveries(
+  id: string,
+): Promise<{ deliveries: ConductorWebhookOutboundDelivery[] }> {
+  return getJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/deliveries`);
 }

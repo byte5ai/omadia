@@ -58,6 +58,12 @@ export interface DevPlatformJobStore {
   listEvents(jobId: string, afterId?: number, limit?: number): Promise<DevJobEvent[]>;
   listArtifacts(jobId: string): Promise<DevJobArtifact[]>;
   getArtifact(id: string): Promise<DevJobArtifact | null>;
+  deleteJob(id: string): Promise<'deleted' | 'not_terminal' | 'not_found'>;
+  /** Used only by `/jobs/:id/retry?resumeFromPhase=true` to seed a fresh job's
+   *  artifacts from the failed job it's resuming, so a later phase (e.g. `plan`
+   *  reading `analysis`) still finds what it needs without re-running the
+   *  phases that already succeeded. */
+  addArtifact(jobId: string, kind: string, content: string, meta?: Record<string, unknown>): Promise<string>;
 }
 
 /** The `DevRepoCredentialStore` surface. Never returns a token to the browser —

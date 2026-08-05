@@ -23,6 +23,7 @@ import type {
   PluginSetupField,
   ServiceTypeDecl,
 } from '../api/admin-v1.js';
+import { compileSetupPattern } from './setupFieldPattern.js';
 
 /**
  * Loads plugin manifests from a single source:
@@ -162,6 +163,21 @@ async function loadManifestV1Entries(
   return entries;
 }
 
+/**
+ * `identity.id` — an npm package name, optionally scoped. Deliberately
+ * narrower than npm's own rules (lowercase only, no URL-escapes, exactly one
+ * `/` and only after a `@scope`): every legitimate omadia plugin id is either
+ * scoped (`@omadia/plugin-office`) or a reverse-FQDN (`de.byte5.agent.foo`),
+ * and both fit. Matches the Builder's `AgentIdSchema` in builder/agentSpec.ts
+ * modulo the `_`/leading-digit tolerance npm allows.
+ */
+const PLUGIN_ID_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+/** npm's own package-name cap, including the scope. */
+const PLUGIN_ID_MAX_LENGTH = 214;
+/** `identity.version` — semver `x.y.z` with optional prerelease/build. */
+const PLUGIN_VERSION_PATTERN =
+  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
 export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   if (doc['schema_version'] !== '1') return null;
 
@@ -172,6 +188,27 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   const name = asString(identity['name']);
   const version = asString(identity['version']);
   if (!id || !name || !version) return null;
+
+  // `id` and `version` are path segments downstream (the install directory is
+  // `<packagesDir>/<id>/<version>`), so they are security fields, not cosmetic
+  // metadata: an id of `..` plus a version of `migrations` would resolve to a
+  // sibling of the packages root and get `fs.rm`'d before the rename. Both are
+  // therefore REJECTED rather than sanitised — a manifest that cannot state
+  // its own identity in the documented charset is not a manifest we install.
+  // This is a hard reject (`null`), not the graceful degradation the optional
+  // blocks below use; the upload path turns it into `package.manifest_invalid`.
+  if (id.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(id)) {
+    console.warn(
+      `[catalog] manifest rejected: identity.id ${JSON.stringify(id)} is not a lowercase npm-style package name (optionally @scoped, max ${PLUGIN_ID_MAX_LENGTH} chars).`,
+    );
+    return null;
+  }
+  if (!PLUGIN_VERSION_PATTERN.test(version)) {
+    console.warn(
+      `[catalog] manifest rejected: plugin '${id}' has identity.version ${JSON.stringify(version)}, which is not semver (x.y.z[-prerelease][+build]).`,
+    );
+    return null;
+  }
 
   const compat = asRecord(doc['compat']);
   const setup = asRecord(doc['setup']);
@@ -189,6 +226,32 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     const label = asString(f['label']) ?? key;
     if (!isSetupFieldType(type)) continue;
     const entry: PluginSetupField = { key, label, type };
+    // OM-16 — required-by-default. MUST stay byte-for-byte the same rule as
+    // installService.ts's install-schema projection (`f['required'] !== false`),
+    // otherwise the store's "configuration required" view and the install
+    // wizard's validation silently disagree. A shared-fixture test asserts the
+    // two paths agree (test/manifestLoaderSetupFields.test.ts).
+    entry.required = f['required'] !== false;
+    // OM-17 — compile the pattern at LOAD time, not at request time. A manifest
+    // is untrusted input: an uncompilable or catastrophically-backtracking
+    // pattern is dropped here with a warning (never a throw, never a 500), so a
+    // bad manifest degrades to "field has no pattern" instead of breaking the
+    // catalog or the vault write. `compileSetupPattern` caches, so the request
+    // path pays nothing.
+    const pattern = asString(f['pattern']);
+    if (pattern) {
+      if (compileSetupPattern(pattern, `${id}/${key}`)) {
+        entry.pattern = pattern;
+        const patternHint = asLocalizedGuide(f['pattern_hint']);
+        if (patternHint) entry.pattern_hint = patternHint;
+      } else {
+        // OM-17 / F2 — fail-open for the WRITE (bricking a plugin because its
+        // author wrote an over-clever regex is worse), but never fail SILENT.
+        // This flag is what the setup form and the credentials editor render as
+        // "this field declares a format check that could not be applied".
+        entry.pattern_unavailable = true;
+      }
+    }
     const help = asString(f['help']);
     if (help) entry.help = help;
     const placeholder = asString(f['placeholder']);
