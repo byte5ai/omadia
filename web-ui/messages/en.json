@@ -208,6 +208,10 @@
           "title": "Embedding Provider",
           "description": "Switch the active embedding adapter live — no restart. Shows the dimension gate, the stored corpus, and what a switch would discard."
         },
+        "datasets": {
+          "title": "Datasets",
+          "description": "Upload CSV datasets, browse the inferred schema and a row preview, and delete. Lists the datasets you own — CSVs other users imported from chat are not shown. Every upload is privacy-scanned for PII before it lands in the graph."
+        },
         "domains": {
           "title": "Domains",
           "description": "Browse registered plugins grouped by domain (read-only)."
@@ -3854,6 +3858,65 @@
     "dbUrlRequiredError": "Postgres requires DATABASE_URL (Neon KG/graphPool). Set DATABASE_URL and restart before switching to Postgres.",
     "forbiddenError": "Not authorized (403) — switching the backend requires admin rights.",
     "noProviderError": "No memory provider registered (409) — the choice cannot be saved."
+  },
+  "adminDatasets": {
+    "title": "Knowledge · Datasets",
+    "intro": "Upload a CSV, browse its inferred schema and a row preview, and delete it. Every upload is privacy-scanned for PII before it lands in the knowledge graph. Lists the datasets you own — CSVs other users imported from chat attachments are not shown here.",
+    "loading": "loading…",
+    "loadError": "Loading failed: {message}",
+    "empty": "No datasets yet — upload a CSV to get started.",
+    "errorByCode": "Request failed ({code}).",
+    "errorCode": {
+      "limit_file_size": "The file is too large — the upload limit is 25 MB.",
+      "unsupported_type": "Only CSV files are supported.",
+      "import_failed": "The CSV could not be imported — check that it has a header row and valid rows.",
+      "not_found": "That dataset no longer exists — it may have been deleted already."
+    },
+    "uploadError": "Upload failed: {message}",
+    "detailError": "Could not open the dataset: {message}",
+    "upload": {
+      "heading": "Upload CSV",
+      "fileLabel": "CSV file",
+      "fileHint": "CSV only, up to 25 MB.",
+      "nameLabel": "Dataset name",
+      "namePlaceholder": "Defaults to the file name",
+      "submit": "Upload",
+      "uploading": "uploading…",
+      "success": "Imported {rows, plural, one {# row} other {# rows}}.",
+      "privacyScan": "Privacy scan: {masked, number} of {scanned, number} cells masked.",
+      "truncation": "{cells, plural, one {# cell was} other {# cells were}} truncated in: {columns}."
+    },
+    "list": {
+      "heading": "Datasets",
+      "colName": "Name",
+      "colRows": "Rows",
+      "colColumns": "Columns",
+      "colCreated": "Created",
+      "colActions": "Actions",
+      "delete": "Delete",
+      "deleteAria": "Delete {name}",
+      "confirmDelete": "Confirm delete",
+      "confirmDeleteAria": "Confirm delete of {name}",
+      "deleting": "deleting…",
+      "deleteFailed": "Delete failed: {message}",
+      "cancel": "Cancel",
+      "showing": "Showing {from, number}–{to, number} of {total, number}",
+      "prev": "← Prev",
+      "next": "Next →"
+    },
+    "detail": {
+      "heading": "Dataset · {name}",
+      "close": "Close",
+      "schemaHeading": "Schema",
+      "colColumn": "Column",
+      "colType": "Type",
+      "colSample": "Sample",
+      "rowsHeading": "Row preview",
+      "rowsShowing": "Showing {from, number}–{to, number} of {total, number}",
+      "noRows": "No rows.",
+      "prev": "← Prev",
+      "next": "Next →"
+    }
   },
   "adminEmbeddingProvider": {
     "title": "Embeddings · Provider",

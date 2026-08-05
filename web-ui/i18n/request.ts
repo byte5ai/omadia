@@ -99,5 +99,9 @@ export default getRequestConfig(async () => {
 
 async function loadConfig(locale: Locale) {
   const messages = (await import(`../messages/${locale}.json`)).default;
-  return { locale, messages };
+  // An explicit zone is required app-wide: without it, next-intl's
+  // `format.dateTime` raises IntlError ENVIRONMENT_FALLBACK (logged via
+  // console.error, in production too) on every call. UTC keeps rendered
+  // dates deterministic instead of drifting with the server/viewer zone.
+  return { locale, messages, timeZone: 'UTC' };
 }

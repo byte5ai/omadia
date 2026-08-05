@@ -103,9 +103,17 @@ describe('POST /api/v1/datasets', () => {
     const { datasetId } = uploadBody.dataset;
 
     const listRes = await fetch(h.baseUrl);
-    const listBody = (await listRes.json()) as { items: Array<{ id: string; name: string }> };
+    const listBody = (await listRes.json()) as {
+      items: Array<{ id: string; name: string }>;
+      total: number;
+      limit: number;
+      offset: number;
+    };
     assert.equal(listBody.items.length, 1);
     assert.equal(listBody.items[0]?.name, 'People');
+    assert.equal(listBody.total, 1);
+    assert.equal(listBody.limit, 50);
+    assert.equal(listBody.offset, 0);
 
     const schemaRes = await fetch(`${h.baseUrl}/${datasetId}`);
     const schemaBody = (await schemaRes.json()) as { columns: Array<{ name: string }> };
@@ -122,6 +130,41 @@ describe('POST /api/v1/datasets', () => {
     assert.equal(deleteRes.status, 204);
     const afterDeleteRes = await fetch(`${h.baseUrl}/${datasetId}`);
     assert.equal(afterDeleteRes.status, 404);
+  });
+
+  it('paginates the list with limit/offset and reports the pre-limit total', async () => {
+    const paged = await makeHarness('user-1');
+    for (const nm of ['A', 'B', 'C']) {
+      const form = new FormData();
+      form.append('file', new Blob([CSV], { type: 'text/csv' }), 'people.csv');
+      form.append('name', nm);
+      const res = await fetch(paged.baseUrl, { method: 'POST', body: form });
+      assert.equal(res.status, 201);
+    }
+
+    const firstPage = (await (await fetch(`${paged.baseUrl}?limit=2&offset=0`)).json()) as {
+      items: Array<{ name: string }>;
+      total: number;
+      limit: number;
+      offset: number;
+    };
+    assert.equal(firstPage.total, 3);
+    assert.equal(firstPage.limit, 2);
+    assert.equal(firstPage.offset, 0);
+    assert.equal(firstPage.items.length, 2);
+
+    const secondPage = (await (await fetch(`${paged.baseUrl}?limit=2&offset=2`)).json()) as {
+      items: Array<{ name: string }>;
+      total: number;
+    };
+    assert.equal(secondPage.items.length, 1);
+    assert.equal(secondPage.total, 3);
+
+    // A malformed query is a 400, not a silent full-list dump.
+    const bad = await fetch(`${paged.baseUrl}?limit=-1`);
+    assert.equal(bad.status, 400);
+
+    await paged.close();
   });
 
   it('returns a JSON {code, message} body — not an unhandled rejection / Express default page — when importCsvDataset throws', async () => {

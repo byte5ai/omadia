@@ -18,6 +18,25 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — admin UI for Knowledge-Graph datasets: upload / schema / delete (#532)
+
+- New page `web-ui/app/admin/datasets/page.tsx` — the web-ui face of the #430
+  CSV-import path, closing the admin-UI gap that #430's triage acceptance
+  criteria called for and that was deliberately deferred to Phase 14
+  (`docs/middleware-agent-handoff.md` §13). Upload a CSV, browse the inferred
+  schema and a paginated row preview, and delete a dataset behind a two-step
+  confirm. The upload surfaces the mandatory privacy-scan (`masked / scanned`
+  cells) and truncation stats returned by the ingest pipeline, so the operator
+  sees what was masked before it landed in the graph.
+- API client added to `web-ui/app/_lib/api.ts`
+  (`listDatasets` / `getDataset` / `getDatasetRows` / `uploadDataset` /
+  `deleteDataset`) over the existing `/api/v1/datasets*` REST surface
+  (cookie-session auth, owner-scoped). No new backend — the routes shipped in
+  #430 and are tested server-side.
+- i18n namespace `adminDatasets` mirrored across `messages/{en,de}.json`; a
+  card in the `/admin` index under the Knowledge group. Component test in
+  `web-ui/app/admin/datasets/__tests__/page.test.tsx`.
+
 ### Added — API keys as a first-class authentication method, with per-key scopes (#439)
 
 - New workspace package `@omadia/api-key-auth`

@@ -4613,3 +4613,115 @@ export async function listWebhookSubscriptionDeliveries(
 ): Promise<{ deliveries: ConductorWebhookOutboundDelivery[] }> {
   return getJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/deliveries`);
 }
+
+// -----------------------------------------------------------------------------
+// Knowledge-Graph datasets (issue #532 — admin UI for the #430 CSV-import path).
+// The full REST surface lives in middleware/src/routes/datasets.ts under
+// /api/v1/datasets (cookie-session auth, owner-scoped — cross-owner reads 404).
+// -----------------------------------------------------------------------------
+
+const DATASETS_BASE = '/v1/datasets';
+
+export type DatasetColumnType = 'string' | 'number' | 'boolean' | 'date';
+
+export interface DatasetColumnSchema {
+  name: string;
+  type: DatasetColumnType;
+  /** First non-empty value, surfaced as a schema-preview hint. */
+  sample?: string;
+}
+
+export interface DatasetSummary {
+  id: string;
+  name: string;
+  sourceFileName: string;
+  ownerOmadiaUserId: string;
+  rowCount: number;
+  columns: DatasetColumnSchema[];
+  createdAt: string;
+}
+
+/** 201 body of POST /api/v1/datasets — the multipart CSV upload. */
+export interface DatasetUploadResult {
+  dataset: { datasetId: string; rowCount: number; graphNodeId: string };
+  privacyScan: { scannedCells: number; maskedCells: number };
+  truncation: { truncatedCellCount: number; truncatedColumns: string[] };
+}
+
+/**
+ * GET /api/v1/datasets/:id/rows. `rows` is populated for a row query (no
+ * aggregate) — but `KnowledgeGraph.DatasetQueryResult.rows` is optional, so
+ * mirror that and let callers guard rather than assume it's always present.
+ */
+export interface DatasetRowsResult {
+  rows?: Array<Record<string, unknown>>;
+  /** Pre-limit match count, for a "showing X of Y" hint. */
+  totalMatched: number;
+}
+
+/** GET /api/v1/datasets — the owner-scoped, paginated dataset list. */
+export interface DatasetListResult {
+  items: DatasetSummary[];
+  /** Total datasets the caller owns, before limit/offset. */
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export async function listDatasets(
+  opts: { limit?: number; offset?: number } = {},
+): Promise<DatasetListResult> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) params.set('offset', String(opts.offset));
+  const qs = params.toString();
+  return getJson<DatasetListResult>(`${DATASETS_BASE}${qs ? `?${qs}` : ''}`);
+}
+
+export async function getDataset(id: string): Promise<DatasetSummary> {
+  return getJson<DatasetSummary>(`${DATASETS_BASE}/${encodeURIComponent(id)}`);
+}
+
+export async function getDatasetRows(
+  id: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<DatasetRowsResult> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) params.set('offset', String(opts.offset));
+  const qs = params.toString();
+  return getJson<DatasetRowsResult>(
+    `${DATASETS_BASE}/${encodeURIComponent(id)}/rows${qs ? `?${qs}` : ''}`,
+  );
+}
+
+/**
+ * Uploads a CSV as `multipart/form-data`. Content-Type is NOT set manually —
+ * the browser generates the boundary (mirrors `uploadPackage`).
+ */
+export async function uploadDataset(
+  file: File,
+  name: string,
+): Promise<DatasetUploadResult> {
+  const forwarded = await forwardCookieHeader();
+  const form = new FormData();
+  form.append('file', file, file.name);
+  if (name.trim().length > 0) form.append('name', name.trim());
+  const res = await fetch(botApi(DATASETS_BASE), {
+    method: 'POST',
+    body: form,
+    headers: { accept: 'application/json', ...forwarded },
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `POST ${DATASETS_BASE} failed: ${res.status}`, text);
+  }
+  return JSON.parse(text) as DatasetUploadResult;
+}
+
+export async function deleteDataset(id: string): Promise<void> {
+  return deleteRequest(`${DATASETS_BASE}/${encodeURIComponent(id)}`);
+}

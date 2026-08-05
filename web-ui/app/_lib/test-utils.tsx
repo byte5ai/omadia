@@ -31,7 +31,11 @@ export function renderWithIntl(
   const { locale = 'en', ...rest } = options;
   function Wrapper({ children }: { children: ReactNode }): ReactElement {
     return (
-      <NextIntlClientProvider locale={locale} messages={MESSAGES[locale]}>
+      <NextIntlClientProvider
+        locale={locale}
+        messages={MESSAGES[locale]}
+        timeZone="UTC"
+      >
         {children}
       </NextIntlClientProvider>
     );

@@ -29,6 +29,12 @@ const RowsQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).optional(),
 });
 
+// Same shape as RowsQuerySchema — the dataset list is paginated too, so the
+// admin UI can page past the 50-row default cap instead of silently hiding
+// older datasets (they'd otherwise be un-viewable and un-deletable here).
+const ListQuerySchema = RowsQuerySchema;
+const DEFAULT_LIST_LIMIT = 50;
+
 function requireSessionUserId(req: Request, res: Response): string | null {
   const id = req.session?.omadia_user_id;
   if (!id) {
@@ -134,9 +140,19 @@ export function createDatasetsRouter(deps: { graph: KnowledgeGraph }): Router {
   router.get('/', async (req: Request, res: Response) => {
     const sessionUserId = requireSessionUserId(req, res);
     if (!sessionUserId) return;
+    const parsed = ListQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ code: 'dataset.invalid_query', issues: parsed.error.issues });
+      return;
+    }
+    const limit = parsed.data.limit ?? DEFAULT_LIST_LIMIT;
+    const offset = parsed.data.offset ?? 0;
     try {
-      const items = await deps.graph.listDatasets({ ownerOmadiaUserId: sessionUserId });
-      res.json({ items });
+      const [items, total] = await Promise.all([
+        deps.graph.listDatasets({ ownerOmadiaUserId: sessionUserId, limit, offset }),
+        deps.graph.countDatasets({ ownerOmadiaUserId: sessionUserId }),
+      ]);
+      res.json({ items, total, limit, offset });
     } catch (err) {
       const { status, code, message } = mapErrorToHttp(err);
       res.status(status).json({ code, message });

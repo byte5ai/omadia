@@ -1646,18 +1646,6 @@ gekettet, weil `requires` beim Boot enforced wird): docs-RFC (diese PR)
 omadia-ui-Orchestrator-Consumer. Details + per-PR-Doc-Pflichten in §15
 des RFC.
 
-### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up)
-
-Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckt
-absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete bleibt
-API-only (`POST/GET/DELETE /api/v1/datasets*`, siehe §3). #430's eigene
-Triage-Acceptance-Criteria verlangen aber genau diese UI; der Branch
-schließt das Issue deshalb NICHT, sondern "addresses" es — ein
-Folge-Issue für die Admin-UI-Seite (`web-ui/app/admin/datasets/` o.ä.,
-Upload-Dropzone + Schema-Tabelle + Zeilen-Preview + Delete-Bestätigung,
-Pattern analog zur bestehenden Package-Upload-Seite) ist offen zu
-erfassen.
-
 ---
 
 ## 14. Commands (vom `middleware/`-Dir aus)

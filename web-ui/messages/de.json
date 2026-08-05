@@ -208,6 +208,10 @@
           "title": "Embedding-Provider",
           "description": "Aktiven Embedding-Adapter im laufenden Betrieb wechseln — ohne Neustart. Zeigt Dimensions-Gate, gespeicherten Korpus und was ein Wechsel verwirft."
         },
+        "datasets": {
+          "title": "Datensätze",
+          "description": "CSV-Datensätze hochladen, das abgeleitete Schema und eine Zeilen-Vorschau ansehen und löschen. Zeigt die Datensätze, die dir gehören — CSVs, die andere aus dem Chat importiert haben, erscheinen nicht. Jeder Upload wird vor der Ablage im Graph auf PII geprüft."
+        },
         "domains": {
           "title": "Domains",
           "description": "Registrierte Plugins nach Domain gruppiert ansehen (read-only)."
@@ -3854,6 +3858,65 @@
     "dbUrlRequiredError": "Postgres benötigt DATABASE_URL (Neon-KG/graphPool). Setze DATABASE_URL und starte neu, bevor du auf Postgres wechselst.",
     "forbiddenError": "Nicht berechtigt (403) — das Umschalten des Backends erfordert Admin-Rechte.",
     "noProviderError": "Kein Memory-Provider registriert (409) — die Auswahl kann nicht gespeichert werden."
+  },
+  "adminDatasets": {
+    "title": "Wissen · Datensätze",
+    "intro": "CSV hochladen, das abgeleitete Schema und eine Zeilen-Vorschau ansehen und löschen. Jeder Upload wird vor der Ablage im Knowledge-Graph auf PII geprüft. Zeigt die Datensätze, die dir gehören — CSVs, die andere aus Chat-Anhängen importiert haben, erscheinen hier nicht.",
+    "loading": "lädt…",
+    "loadError": "Laden fehlgeschlagen: {message}",
+    "empty": "Noch keine Datensätze — lade eine CSV hoch, um zu starten.",
+    "errorByCode": "Anfrage fehlgeschlagen ({code}).",
+    "errorCode": {
+      "limit_file_size": "Die Datei ist zu groß — das Upload-Limit liegt bei 25 MB.",
+      "unsupported_type": "Es werden nur CSV-Dateien unterstützt.",
+      "import_failed": "Die CSV konnte nicht importiert werden — prüfe, ob sie eine Kopfzeile und gültige Zeilen hat.",
+      "not_found": "Dieser Datensatz existiert nicht mehr — er wurde möglicherweise bereits gelöscht."
+    },
+    "uploadError": "Upload fehlgeschlagen: {message}",
+    "detailError": "Der Datensatz konnte nicht geöffnet werden: {message}",
+    "upload": {
+      "heading": "CSV hochladen",
+      "fileLabel": "CSV-Datei",
+      "fileHint": "Nur CSV, bis zu 25 MB.",
+      "nameLabel": "Name des Datensatzes",
+      "namePlaceholder": "Standard ist der Dateiname",
+      "submit": "Hochladen",
+      "uploading": "lädt hoch…",
+      "success": "{rows, plural, one {# Zeile} other {# Zeilen}} importiert.",
+      "privacyScan": "Privacy-Scan: {masked, number} von {scanned, number} Zellen maskiert.",
+      "truncation": "{cells, plural, one {# Zelle wurde} other {# Zellen wurden}} gekürzt in: {columns}."
+    },
+    "list": {
+      "heading": "Datensätze",
+      "colName": "Name",
+      "colRows": "Zeilen",
+      "colColumns": "Spalten",
+      "colCreated": "Erstellt",
+      "colActions": "Aktionen",
+      "delete": "Löschen",
+      "deleteAria": "{name} löschen",
+      "confirmDelete": "Löschen bestätigen",
+      "confirmDeleteAria": "Löschen von {name} bestätigen",
+      "deleting": "löscht…",
+      "deleteFailed": "Löschen fehlgeschlagen: {message}",
+      "cancel": "Abbrechen",
+      "showing": "Zeige {from, number}–{to, number} von {total, number}",
+      "prev": "← Zurück",
+      "next": "Weiter →"
+    },
+    "detail": {
+      "heading": "Datensatz · {name}",
+      "close": "Schließen",
+      "schemaHeading": "Schema",
+      "colColumn": "Spalte",
+      "colType": "Typ",
+      "colSample": "Beispiel",
+      "rowsHeading": "Zeilen-Vorschau",
+      "rowsShowing": "Zeige {from, number}–{to, number} von {total, number}",
+      "noRows": "Keine Zeilen.",
+      "prev": "← Zurück",
+      "next": "Weiter →"
+    }
   },
   "adminEmbeddingProvider": {
     "title": "Embeddings · Provider",
