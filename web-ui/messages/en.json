@@ -797,9 +797,11 @@
     "closeAriaLabel": "Close tab: {title}",
     "closeWhileBusyTitle": "Wait until the turn is done",
     "closeTitle": "Close tab",
-    "streamRunningAria": "{title}: response in progress",
-    "streamDoneAria": "{title}: response ready",
-    "streamErrorAria": "{title}: response failed"
+    "streamRunningAria": "Response in progress",
+    "streamDoneAria": "Response ready",
+    "streamErrorAria": "Response failed",
+    "streamDoneAnnounce": "{title}: response ready",
+    "streamErrorAnnounce": "{title}: response failed"
   },
   "authBadge": {
     "loginLink": "Login",

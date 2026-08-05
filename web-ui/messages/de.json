@@ -797,9 +797,11 @@
     "closeAriaLabel": "Tab schließen: {title}",
     "closeWhileBusyTitle": "Warten bis der Turn durch ist",
     "closeTitle": "Tab schließen",
-    "streamRunningAria": "{title}: Antwort wird erstellt",
-    "streamDoneAria": "{title}: Antwort fertig",
-    "streamErrorAria": "{title}: Antwort fehlgeschlagen"
+    "streamRunningAria": "Antwort wird erstellt",
+    "streamDoneAria": "Antwort fertig",
+    "streamErrorAria": "Antwort fehlgeschlagen",
+    "streamDoneAnnounce": "{title}: Antwort fertig",
+    "streamErrorAnnounce": "{title}: Antwort fehlgeschlagen"
   },
   "authBadge": {
     "loginLink": "Login",

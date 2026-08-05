@@ -15,7 +15,7 @@ import { runOneTurn, type DepsRef } from '../StreamRunner';
  * in-band NDJSON `error` event rather than a non-200 status or a thrown fetch.
  * `runOneTurn` humanizes that message for the chat bubble, but must ALSO finish
  * the stream record as 'error' carrying the humanized sentence — otherwise the
- * background stream toast reports success for a turn that actually failed.
+ * background stream tab marker reports success for a turn that actually failed.
  *
  * These tests assert the terminal STORE outcome (phase + record.error), not the
  * rendered bubble, because the bug was a state-transition bug: the bubble was

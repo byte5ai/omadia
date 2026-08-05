@@ -12,6 +12,8 @@ import type { ChatSession } from '../_lib/chatSessions';
 import {
   isStreamActive,
   useStreamRecord,
+  useStreamStore,
+  type StreamPhase,
   type StreamRecord,
 } from '../_lib/streamStore';
 
@@ -42,6 +44,7 @@ export function ChatTabs({
 }: ChatTabsProps): React.ReactElement {
   const t = useTranslations('chatTabs');
   return (
+    <>
     <div
       className="flex items-center gap-1 overflow-x-auto border-b border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 text-xs"
       role="tablist"
@@ -72,15 +75,99 @@ export function ChatTabs({
       >
         + {t('newChat')}
       </button>
+      </div>
+      <StreamAnnouncer sessions={sessions} activeId={activeId} />
+    </>
+  );
+}
+
+/**
+ * Polite live region for background turns that reach a terminal state.
+ *
+ * The removed `StreamToasts` overlay carried `aria-live="polite"` on its
+ * container; deleting it took the only screen-reader announcement of a
+ * background stream with it. This region restores it.
+ *
+ * It lives on the tab strip rather than back in the root layout on purpose:
+ * the visible marker is scoped to `/chat`, so scoping the announcement the
+ * same way keeps the two channels in step — wherever a sighted user gets a
+ * signal, a screen-reader user gets one too, and neither gets a phantom
+ * signal for a marker that isn't on screen. That background streams surface
+ * nowhere at all off `/chat` is a consequence of the toast removal itself,
+ * recorded as accepted in ADR-0006.
+ */
+function StreamAnnouncer({
+  sessions,
+  activeId,
+}: {
+  sessions: ChatSession[];
+  activeId: string;
+}): React.ReactElement {
+  const t = useTranslations('chatTabs');
+  const { records } = useStreamStore();
+  // `null` until the first run — see the seeding note below.
+  const seenRef = useRef<Map<string, StreamPhase> | null>(null);
+  const [announcement, setAnnouncement] = useState({ text: '', seq: 0 });
+
+  useEffect(() => {
+    // First run only seeds. Records that were already terminal when the strip
+    // mounted (route re-entry, or a turn finished while the user sat on
+    // /admin) must not replay as if they had just happened.
+    const seeded = seenRef.current !== null;
+    const seen = seenRef.current ?? new Map<string, StreamPhase>();
+    seenRef.current = seen;
+
+    const fresh: string[] = [];
+    for (const [sessionId, rec] of records) {
+      if (seen.get(sessionId) === rec.phase) continue;
+      seen.set(sessionId, rec.phase);
+      if (!seeded) continue;
+      // The active tab's stream is already visible inline, and it renders no
+      // marker — announcing it would duplicate what the transcript shows.
+      if (sessionId === activeId) continue;
+      // Only the two phases that render a marker are announced. `aborted` is
+      // the user's own action and shows nothing (ADR-0006).
+      if (rec.phase !== 'done' && rec.phase !== 'error') continue;
+      const title = sessions.find((s) => s.id === sessionId)?.title;
+      if (title === undefined) continue;
+      fresh.push(
+        t(
+          rec.phase === 'error' ? 'streamErrorAnnounce' : 'streamDoneAnnounce',
+          { title },
+        ),
+      );
+    }
+    // Forget GC'd records so a later turn on the same session announces again
+    // instead of being swallowed as "unchanged".
+    for (const sessionId of [...seen.keys()]) {
+      if (!records.has(sessionId)) seen.delete(sessionId);
+    }
+
+    if (fresh.length > 0) {
+      // Announcing IS the effect here: the trigger is a store transition, not
+      // a render, and the text must land in the live region only after the
+      // record has actually flipped. Deriving it during render would replay
+      // every announcement on every unrelated re-render.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAnnouncement((prev) => ({ text: fresh.join(' '), seq: prev.seq + 1 }));
+    }
+  }, [records, sessions, activeId, t]);
+
+  return (
+    <div role="status" aria-live="polite" className="sr-only">
+      {/* Keyed so an identical message (same tab finishing twice in a row)
+          still remounts the node — live regions announce on DOM mutation,
+          not on string inequality. */}
+      <span key={announcement.seq}>{announcement.text}</span>
     </div>
   );
 }
 
-/** Background-stream state a tab surfaces as a dot. `null` = nothing to show
+/** Background-stream state a tab surfaces as a marker. `null` = nothing to show
  *  (active tab, no record, or a user-aborted turn). */
-type TabStreamState = 'running' | 'done' | 'error';
+export type TabStreamState = 'running' | 'done' | 'error';
 
-function tabStreamState(
+export function tabStreamState(
   active: boolean,
   rec: StreamRecord | undefined,
 ): TabStreamState | null {
@@ -91,22 +178,55 @@ function tabStreamState(
   return null;
 }
 
-function streamAriaKey(state: TabStreamState): string {
-  return state === 'running'
-    ? 'streamRunningAria'
-    : state === 'error'
-      ? 'streamErrorAria'
-      : 'streamDoneAria';
+/** Exhaustive by construction: no `default` arm, so adding a `TabStreamState`
+ *  member is a typecheck error here rather than a silent fall-through to the
+ *  success mapping. Same shape `phaseLabelFor` used in the removed
+ *  `StreamToasts`. */
+export function streamAriaKey(state: TabStreamState): string {
+  switch (state) {
+    case 'running':
+      return 'streamRunningAria';
+    case 'done':
+      return 'streamDoneAria';
+    case 'error':
+      return 'streamErrorAria';
+  }
 }
 
-/** A dot, never a status pill (§7.6). Colour is never the sole signal —
- *  each dot carries an aria-label + title (§8). */
-function streamDotClass(state: TabStreamState): string {
-  const base = 'ml-1 inline-block size-1.5 shrink-0 rounded-full';
-  if (state === 'error') return `${base} bg-[color:var(--danger)]`;
-  if (state === 'running')
-    return `${base} bg-[color:var(--accent)] animate-pulse`;
-  return `${base} bg-[color:var(--accent)]`;
+/**
+ * A dot, never a status pill (§7.6).
+ *
+ * §8 forbids colour as the sole signal, and an `aria-label` does not satisfy
+ * it — the distinction has to survive for a sighted colour-blind user who
+ * never hovers. Each state therefore carries a distinct *shape*, and the pairs
+ * stay distinguishable with both colour and motion removed:
+ *
+ *   running → hollow accent ring (+ pulse)   outline
+ *   done    → solid accent disc              filled
+ *   error   → hollow ring + `!` glyph        outline + glyph
+ *
+ * running vs done separates on fill, so it survives `prefers-reduced-motion`
+ * killing the pulse (globals.css universal reset). error vs running separates
+ * on the glyph. State colour stays text/edge-only — never a solid `--danger`
+ * fill (house rule, cf. `chat/page.tsx:932`).
+ */
+export function streamDotClass(state: TabStreamState): string {
+  const base =
+    'ml-1 inline-flex size-3 shrink-0 items-center justify-center rounded-full text-[9px] font-bold leading-none';
+  switch (state) {
+    case 'running':
+      return `${base} ring-1 ring-[color:var(--accent)] animate-pulse`;
+    case 'done':
+      return `${base} bg-[color:var(--accent)]`;
+    case 'error':
+      return `${base} ring-1 ring-[color:var(--danger-edge)] text-[color:var(--danger)]`;
+  }
+}
+
+/** The visible non-colour cue carried *inside* the marker. Only `error` needs
+ *  a glyph; `running`/`done` are already separated by ring-vs-fill. */
+export function streamDotGlyph(state: TabStreamState): string {
+  return state === 'error' ? '!' : '';
 }
 
 interface TabProps {
@@ -210,12 +330,21 @@ function Tab({
         <span className="max-w-[18ch] truncate">{session.title}</span>
       )}
       {streamState && !editing && (
-        <span
-          role="img"
-          aria-label={t(streamAriaKey(streamState), { title: session.title })}
-          title={t(streamAriaKey(streamState), { title: session.title })}
-          className={streamDotClass(streamState)}
-        />
+        <>
+          {/* The glyph is decorative — `role="tab"` takes its accessible name
+              from content, so the state is contributed once by the sr-only
+              span below. Setting aria-label *and* title to the same string
+              made several screen readers speak the sentence twice. `title`
+              stays as the sighted-user hover tooltip. */}
+          <span
+            aria-hidden
+            title={t(streamAriaKey(streamState))}
+            className={streamDotClass(streamState)}
+          >
+            {streamDotGlyph(streamState)}
+          </span>
+          <span className="sr-only">{t(streamAriaKey(streamState))}</span>
+        </>
       )}
       {canClose && !editing && (
         <button

@@ -18,6 +18,25 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — background chat streams surface in-context, not as toasts (#286)
+
+- **Removed `StreamToasts`** (the bottom-right floating cards for background
+  chat turns). Per the Lume visual spec §7.6, toasts / floating notifications
+  are a ship-blocking anti-pattern; §7.4 makes the chat the surface of record.
+- **Background-stream state now lives on the chat tab**: a running background
+  turn shows a pulsing accent dot, a finished one a filled accent dot, an
+  errored one a hollow `!` glyph in danger. Shape and glyph differ per state,
+  so colour is never the sole signal (§8) — each also carries an `aria-label`
+  and `title`. Selecting the tab clears its unread marker; active-session
+  errors continue to render inline on the turn.
+- **A polite live region** (`ChatTabs`) announces background turns that finish
+  or fail, replacing the `aria-live` container the removed toast overlay
+  carried. Announcements fire only for non-active tabs.
+- **Known consequence**: background-stream state is now visible only on
+  `/chat`. `StreamToasts` was mounted in the root layout and rendered on every
+  route; the tab strip renders only from the chat page. Accepted in
+  [ADR-0006](adr/0006-in-context-background-stream-surfacing.md).
+
 ### Added — API keys as a first-class authentication method, with per-key scopes (#439)
 
 - New workspace package `@omadia/api-key-auth`

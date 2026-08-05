@@ -52,6 +52,20 @@ needs, so the change is a relocation of existing state, not new machinery.
   new error UI was needed.
 - 🔴 **Bad:** Stopping a *background* stream now takes one extra click — open the
   tab, then use the existing in-chat stop button. The toast's inline abort is gone.
+- 🔴 **Bad, accepted:** Background-stream state is now visible **only on
+  `/chat`**. `StreamToasts` was mounted in the root layout and therefore
+  rendered on every route; the tab strip renders only from the chat page. A
+  user sitting on `/admin` or `/store` while a background turn finishes or
+  fails now sees nothing until they navigate back. This is the direct cost of
+  making the tab the surface of record — a cross-route surface would be a
+  notification centre, i.e. option B under another name. Accepted: the state
+  is not lost, only deferred; `streamStore` keeps terminal records for 5
+  minutes, so the marker is waiting on return.
+- ⚪ **Neutral:** The screen-reader announcement follows the same scope. The
+  removed overlay carried `aria-live="polite"`; that region now lives on the
+  tab strip (`StreamAnnouncer`), so it announces exactly where a sighted user
+  gets the visual marker and nowhere else — the two channels stay in step
+  rather than one silently outliving the other.
 - ⚪ **Neutral:** The unread dot clears on tab select only. Select forgets a
   `done` record; `error` / `aborted` / running records are kept — the
   agent_unavailable recovery banner and inline error read them off the store,
@@ -78,6 +92,12 @@ needs, so the change is a relocation of existing state, not new machinery.
 - Issue #286; base Lume integration #284; adoption tracking #282.
 - Lume visual spec §7.4 (Errors / surface of record), §7.6 (anti-pattern list),
   §8 (accessibility floor) — `byte5ai/omadia-ui` `docs/visual-spec.md`.
-- Implementation: `web-ui/app/_components/ChatTabs.tsx` (tab dot),
-  `web-ui/app/chat/page.tsx` (`handleSelect` clear-on-select),
-  `web-ui/app/layout.tsx` (toast mount removed).
+- Implementation: `web-ui/app/_components/ChatTabs.tsx` (tab marker +
+  `StreamAnnouncer` live region), `web-ui/app/_lib/streamStore.tsx`
+  (`dismissSeenTurns`), `web-ui/app/chat/page.tsx` (`handleSelect`
+  clear-on-switch), `web-ui/app/layout.tsx` (toast mount removed).
+- §8 compliance: the three marker states differ by *shape*, not hue —
+  hollow accent ring (running), solid accent disc (done), hollow danger ring
+  carrying a `!` glyph (error). Fill separates running from done so the
+  distinction survives `prefers-reduced-motion` disabling the pulse; the glyph
+  separates error from running. An `aria-label` alone does not satisfy §8.
