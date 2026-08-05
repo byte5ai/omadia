@@ -50,7 +50,7 @@ import {
   type ToolEvent,
 } from '../_lib/chatSessions';
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
-import { useStreamStore } from '../_lib/streamStore';
+import { dismissSeenTurns, useStreamStore } from '../_lib/streamStore';
 import { ChoiceCard } from '../_components/ChoiceCard';
 import { DevJobChatCard } from '../_components/devjobs/DevJobChatCard';
 import { parseDevJobStartResult } from '../_components/devjobs/devJobChatCardState';
@@ -460,8 +460,30 @@ export default function ChatPage(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSession.messages.length, resetPending]);
 
+  // Every transition that changes which session is active has to run the
+  // dismissal rule, not just tab clicks — otherwise the tab being left keeps a
+  // `done` record and immediately flags itself as unread (issue #286).
   const handleClose = (id: string): void => {
+    // The tab is going away, so no UI can ever surface this record again.
+    // Drop it outright rather than leaving it to occupy one of the store's 12
+    // slots until GC — a run of closes could otherwise evict a still-visible
+    // unread record early. This is display-only; it does not abort the stream.
+    streamStore.dismiss(id);
     void deleteSession(id);
+  };
+
+  const handleCreate = (): void => {
+    // Creating a chat switches away from the active tab exactly like selecting
+    // another one does, so the same read semantics apply.
+    dismissSeenTurns(streamStore, activeId);
+    createSession();
+  };
+
+  // Switching tabs marks a seen background answer as read (issue #286). The
+  // tab being LEFT is the one that matters — see `dismissSeenTurns`.
+  const handleSelect = (id: string): void => {
+    dismissSeenTurns(streamStore, activeId, id);
+    setActive(id);
   };
 
   const canReset =
@@ -472,8 +494,8 @@ export default function ChatPage(): React.ReactElement {
       <ChatTabs
         sessions={sessions}
         activeId={activeId}
-        onSelect={setActive}
-        onCreate={createSession}
+        onSelect={handleSelect}
+        onCreate={handleCreate}
         onClose={handleClose}
         onRename={(id, title) => {
           void renameSession(id, title);

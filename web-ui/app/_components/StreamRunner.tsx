@@ -87,14 +87,14 @@ export async function runOneTurn(
   // Per-turn accumulators. Kept local to the runner so the store stays
   // thin — it just receives the resulting patches. The content buffer
   // powers a rolling preview tail that survives multiple `text_delta`
-  // chunks (otherwise the toast would only ever show the last delta).
+  // chunks (otherwise the preview would only ever show the last delta).
   let contentBuffer = '';
   let tokensIn = 0;
   let tokensOut = 0;
   let cacheTokens = 0;
   // #403 — an in-band `error` event on a 200 stream still means the turn
   // failed. Capture its humanized message here so the terminal record (and
-  // the background stream toast) can report the failure instead of a false
+  // the background stream tab marker) can report the failure instead of a false
   // 'done'. Stays null on a clean turn.
   let inbandErrorMessage: string | null = null;
 
@@ -126,7 +126,7 @@ export async function runOneTurn(
       // The `done` event carries the authoritative answer; the live
       // text_delta buffer can legitimately be shorter than this (e.g.
       // Privacy Shield v4 server-side materialization). Mirror it so
-      // toasts that linger after `done` show the real final text.
+      // a preview that lingers after `done` shows the real final text.
       contentBuffer = event.answer;
     }
 
@@ -281,10 +281,12 @@ function derivePhasePatch(
 } | null {
   switch (event.type) {
     case 'text_delta':
-      return {
-        phase: 'streaming',
-        previewTail: tailOf(acc.contentBuffer),
-      };
+      // `previewTail` is deliberately NOT recomputed per delta. `tailOf` runs
+      // a regex over the whole accumulated answer, so doing it once per token
+      // is O(n²) across a turn — worth it while the toast overlay rendered the
+      // preview live, pure waste now that the tab marker doesn't (#286). The
+      // terminal snapshot below still populates it.
+      return { phase: 'streaming' };
     case 'tool_use':
       return { phase: 'tool_running', toolName: event.name };
     case 'tool_result':
@@ -328,7 +330,7 @@ function mapHeartbeatPhase(
 }
 
 /** Last ~160 chars of normalized text, sliced at a word boundary so the
- *  toast never opens mid-word (otherwise we'd routinely see "ach den…"
+ *  preview never opens mid-word (otherwise we'd routinely see "ach den…"
  *  when the buffer was cut from "nach den…"). Prefixes an ellipsis when
  *  the original was actually trimmed. */
 function tailOf(text: string): string {

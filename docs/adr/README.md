@@ -33,6 +33,7 @@ decision, write a new ADR and mark the old one **Superseded by …**.
 | 0003 | [Capability-based, multi-provider middleware](0003-capability-based-multi-provider-middleware.md) | Accepted | 2026-06-03 |
 | 0004 | [Knowledge graph as the agent memory substrate](0004-knowledge-graph-as-memory-substrate.md) | Accepted | 2026-06-03 |
 | 0005 | [Two-phase confirmation for write-capable connectors](0005-two-phase-confirmation-for-writes.md) | Accepted | 2026-06-03 |
+| 0006 | [In-context surfacing for background chat streams (no toasts)](0006-in-context-background-stream-surfacing.md) | Accepted | 2026-07-02 |
 
 > These first records are written *retroactively* — they document decisions that
 > were already implemented and proven in the product. New decisions should be
