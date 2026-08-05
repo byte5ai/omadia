@@ -439,6 +439,7 @@ function ServerRows({
     <>
       <tr className="border-b border-[color:var(--border)]/60">
         <td className={tdCls}>
+          {/* eslint-disable-next-line no-restricted-syntax -- inline text link (underline-on-hover, no border/bg) */}
           <button className="text-left underline-offset-2 hover:underline" onClick={onToggle}>
             {server.name}
           </button>
@@ -1430,6 +1431,7 @@ function GrantsPane({
               key={g.key}
               className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40"
             >
+              {/* eslint-disable-next-line no-restricted-syntax -- chevron/expander (aria-expanded) */}
               <button
                 type="button"
                 onClick={() => toggleGroup(g.key)}

@@ -39,6 +39,7 @@ export function DirectLineStickyBanner({
       <span className="text-[color:var(--accent)]">
         {t('stickyActive', { label: session.label })}
       </span>
+      {/* eslint-disable-next-line no-restricted-syntax -- bespoke accent-ring action (ring-1 accent), no §4.2 variant */}
       <button
         type="button"
         onClick={onExit}

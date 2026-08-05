@@ -457,6 +457,7 @@ export function CredentialsEditor({
                   })()
                 )}
                 {isStored && !isMultiselect ? (
+                  // eslint-disable-next-line no-restricted-syntax -- icon-only chrome (size-7 trashcan, Trash2 icon only)
                   <button
                     type="button"
                     onClick={() =>
@@ -755,6 +756,7 @@ function MultiselectField({
           </span>
         ) : null}
         {status === 'loaded' ? (
+          // eslint-disable-next-line no-restricted-syntax -- inline text link (underlined bare text, no border/bg)
           <button
             type="button"
             onClick={() => void load()}

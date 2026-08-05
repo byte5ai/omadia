@@ -62,15 +62,13 @@ export default function Error({
         </h1>
         <p className="text-sm text-[color:var(--fg-muted)]">{t('description')}</p>
         <div className="mt-2 flex flex-wrap items-center justify-center gap-3">
-          <button
-            type="button"
+          <Button
             onClick={() => {
               reset();
             }}
-            className="rounded bg-[color:var(--bg-inverse)] px-4 py-2 text-sm font-medium text-[color:var(--fg-on-dark)] transition hover:bg-[color:var(--fg-muted)]"
           >
             {t('reload')}
-          </button>
+          </Button>
         </div>
 
         {/*

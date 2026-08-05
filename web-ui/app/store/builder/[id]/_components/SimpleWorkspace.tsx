@@ -197,6 +197,7 @@ export function SimpleWorkspace({
 
           {/* Persona — opt-in, collapsed by default to keep things calm. */}
           <div className="overflow-hidden rounded-lg border border-[color:var(--divider)]">
+            {/* eslint-disable-next-line no-restricted-syntax -- full-width expand/collapse disclosure header (aria-expanded, icon + text + chevron) */}
             <button
               type="button"
               onClick={() => setPersonaOpen((v) => !v)}

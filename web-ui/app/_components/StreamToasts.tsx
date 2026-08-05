@@ -159,6 +159,7 @@ function StreamToast({
                 </span>
               ) : null}
             </div>
+            {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (× dismiss glyph) */}
             <button
               type="button"
               onClick={(e) => {
@@ -216,6 +217,7 @@ function StreamToast({
           aborts the underlying fetch. Separate from the top-right X, which
           only hides the toast. */}
       {!isTerminal ? (
+        // eslint-disable-next-line no-restricted-syntax -- bespoke danger (filled at rest bg-danger/8 + icon), not transparent §4.2 danger
         <button
           type="button"
           onClick={(e) => {
@@ -315,17 +317,17 @@ function AbortConfirmModal({
           {t('abortConfirmBody')}
         </p>
         <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             autoFocus
             onClick={(e) => {
               e.stopPropagation();
               onCancel();
             }}
-            className="rounded-md border border-[color:var(--border)] px-3 py-2 text-xs font-medium text-[color:var(--fg)] transition hover:bg-[color:var(--bg-soft)]"
           >
             {t('abortConfirmKeep')}
-          </button>
+          </Button>
           <Button
             variant="danger"
             size="sm"

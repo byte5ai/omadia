@@ -206,6 +206,7 @@ export function DevJobPhaseRail({
                   className={`h-px w-4 ${idx <= activeIndex ? 'bg-[color:var(--border-strong)]' : 'bg-[color:var(--divider)]'}`}
                 />
               ) : null}
+              {/* eslint-disable-next-line no-restricted-syntax -- stateful segmented selector (role=tab, aria-selected/aria-current) */}
               <button
                 type="button"
                 role="tab"

@@ -161,6 +161,7 @@ export default function InconsistencyDetailPage(): React.ReactElement {
               )}
               <div className="grid gap-2 sm:grid-cols-2">
                 {(['a_wins', 'b_wins', 'both', 'dismiss'] as const).map((r) => (
+                  // eslint-disable-next-line no-restricted-syntax -- selection tile/row (label + description)
                   <button
                     key={r}
                     type="button"

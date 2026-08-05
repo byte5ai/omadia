@@ -129,6 +129,7 @@ function CollapsibleNode({
   const [expanded, setExpanded] = useState(defaultExpanded);
   return (
     <div style={{ paddingLeft: depth === 0 ? 0 : 16 }}>
+      {/* eslint-disable-next-line no-restricted-syntax -- chevron collapsible JSON-node toggle, not a §4.2 CTA */}
       <button
         type="button"
         onClick={(): void => setExpanded((v) => !v)}
@@ -207,6 +208,7 @@ function StringLine({
       {tooLong && !expanded ? (
         <>
           <span className="text-[color:var(--ok)]">…</span>
+          {/* eslint-disable-next-line no-restricted-syntax -- inline accent show-more text link expanding a truncated string, not a §4.2 CTA */}
           <button
             type="button"
             onClick={(): void => setExpanded(true)}
@@ -219,6 +221,7 @@ function StringLine({
       {tooLong && expanded ? (
         <>
           <span className="text-[color:var(--ok)]">&quot;</span>
+          {/* eslint-disable-next-line no-restricted-syntax -- inline accent show-less text link collapsing an expanded string, not a §4.2 CTA */}
           <button
             type="button"
             onClick={(): void => setExpanded(false)}

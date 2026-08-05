@@ -504,6 +504,7 @@ export default function ChatPage(): React.ReactElement {
               KG-walk (indigo) auto-opens the right pane on KG access; Plan (sky)
               auto-opens the left pane on plan fetch/extend. Both default ON. */}
           <div className="flex flex-wrap items-center gap-2">
+            {/* eslint-disable-next-line no-restricted-syntax -- role="switch" toggle pill (stateful), not a §4.2 Button candidate */}
             <button
               type="button"
               role="switch"
@@ -529,6 +530,7 @@ export default function ChatPage(): React.ReactElement {
                 ].join(' ')}
               />
             </button>
+            {/* eslint-disable-next-line no-restricted-syntax -- role="switch" toggle pill (stateful), not a §4.2 Button candidate */}
             <button
               type="button"
               role="switch"
@@ -663,6 +665,7 @@ export default function ChatPage(): React.ReactElement {
           {/* §5.3 Spotlight: the composer is the stage — radial accent glow
               behind it, three-stop showcase glow on the focused input. */}
           <div className="lume-spotlight-stage flex items-end gap-2">
+            {/* eslint-disable-next-line no-restricted-syntax -- icon-only composer reset chrome, not a §4.2 Button candidate */}
             <button
               type="button"
               onClick={requestReset}
@@ -687,6 +690,7 @@ export default function ChatPage(): React.ReactElement {
             />
             {sending ? (
               <>
+                {/* eslint-disable-next-line no-restricted-syntax -- warning-outline steer action; §10 forbids a warning Button variant and mapping to danger/secondary would mis-signal caution (documented §2.6 exception) */}
                 <button
                   type="button"
                   onClick={() => {
@@ -802,6 +806,7 @@ function ChatIntro(): React.ReactElement {
   return (
     <div className="b5-hero-bg border-b border-[color:var(--border)] px-6 py-4">
       <div className="mx-auto max-w-4xl">
+        {/* eslint-disable-next-line no-restricted-syntax -- chevron disclosure header (aria-expanded), not a §4.2 Button candidate */}
         <button
           type="button"
           onClick={() => setChatIntroCollapsedPersisted(!collapsed)}

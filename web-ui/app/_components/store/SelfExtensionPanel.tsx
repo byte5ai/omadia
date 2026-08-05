@@ -356,6 +356,7 @@ export function SelfExtensionPanel({ agentId }: { agentId: string }): React.Reac
                     >
                       {t('confirmDeny')}
                     </Button>
+                    {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text, no border/bg) */}
                     <button
                       type="button"
                       onClick={() => {
