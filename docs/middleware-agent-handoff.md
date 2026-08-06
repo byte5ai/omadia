@@ -1029,14 +1029,25 @@ spiegelt den Code: `store.list_failed` liegt unter
 
 **Einen Code ergänzen:** `code: '<family>.<name>'` in einer der fünf Dateien
 emittieren → `what` + `next` in `en.json` → beide nach `de.json` spiegeln →
-`npm test` in `web-ui/` wird grün.
+Code in `ERROR_HELP_CODES` (`web-ui/app/_lib/errorHelp.ts`) eintragen →
+`npm test` in `web-ui/` wird grün. Die vollständige Key-Doku für die Web-UI-
+Seite steht in `web-ui/messages/README.md`.
 - **Abgedeckt sind nur** die Codes aus `src/routes/{install,runtime,`
   `adminProviders,store,adminSettings}.ts`. `web-ui/app/_lib/__tests__/`
   `errorHelpCoverage.test.ts` liest diese Dateien direkt und wird rot, sobald
-  eine davon einen Code ohne Copy emittiert — **oder** sobald sie auf
-  `sendError(...)` bzw. einen `error: '…'`-Envelope umstellt, den der Scan
-  nicht sieht. Wer eine dieser fünf Dateien um einen Fehlerfall erweitert,
-  braucht im selben PR zwei Sätze in beiden Locales.
+  eine davon einen Code ohne Copy emittiert. Wer eine dieser fünf Dateien um
+  einen Fehlerfall erweitert, braucht im selben PR zwei Sätze in beiden
+  Locales.
+- **Ein `code:`, das kein Literal ist, ist der gefährliche Fall.**
+  `handleError` in `src/routes/install.ts` beantwortet einen geworfenen
+  `InstallError` mit `{ code: err.code }` — zehn `install.*`-Codes stehen
+  damit nirgends als Literal in der Route-Datei. Der Guard folgt diesem
+  Forwarder nach `src/plugins/installService.ts` und verlangt auch dafür
+  Copy. Jedes weitere nicht-literale `code:` in einer der fünf Dateien muss in
+  `ACKNOWLEDGED_NON_LITERAL_CODE` mit Begründung eingetragen werden (Typ-
+  Annotation, OAuth-Authorization-Code) — sonst wird der Test rot, statt den
+  Code stillschweigend durchzulassen. Dasselbe gilt für eine Umstellung auf
+  `sendError(...)` oder einen `error: '…'`-Envelope.
 
 Tests: `test/providerCredentialVerifier.test.ts` (401 → `code`, jedes andere
 Verdikt ohne `code`), `test/adminProvidersRoute.test.ts` (DTO trägt

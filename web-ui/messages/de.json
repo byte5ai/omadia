@@ -820,6 +820,22 @@
   },
   "errorHelp": {
     "install": {
+      "already_installed": {
+        "what": "Dieses Plugin ist auf diesem Server bereits installiert.",
+        "next": "Deinstalliere die vorhandene Kopie zuerst, wenn du es neu installieren willst."
+      },
+      "blocked": {
+        "what": "Der Store markiert dieses Plugin als inkompatibel mit diesem Server, deshalb wurde die Installation abgelehnt.",
+        "next": "Lies die Inkompatibilitätsgründe in den Details unten, bevor du es erneut versuchst."
+      },
+      "capability_already_provided": {
+        "what": "Ein anderes installiertes Plugin liefert die Capability bereits, die dieses hier liefern will.",
+        "next": "Deinstalliere das Plugin, das die Capability hält, und installiere danach dieses."
+      },
+      "has_dependents": {
+        "what": "Andere installierte Plugins hängen noch von diesem ab, deshalb lässt es sich nicht deinstallieren.",
+        "next": "Deinstalliere zuerst die Plugins, die in den Details unten stehen."
+      },
       "invalid_body": {
         "what": "Der Setup-Schritt hat seine Eingaben in einer Form geschickt, die der Server ablehnt.",
         "next": "Lade die Seite neu und fülle den Schritt erneut aus."
@@ -832,9 +848,34 @@
         "what": "Die Installationsanfrage kam ohne Plugin-Id an.",
         "next": "Öffne das Plugin in der Store-Liste und installiere es von dort."
       },
+      "job_not_found": {
+        "what": "Der Installationslauf, zu dem dieser Schritt gehört, liegt nicht mehr auf dem Server.",
+        "next": "Starte die Installation erneut über das Plugin im Store."
+      },
+      "missing_capability": {
+        "what": "Das Plugin braucht Capabilities, die noch kein installiertes Plugin liefert.",
+        "next": "Installiere zuerst die Plugins, die sie liefern — der Installationsassistent kann sie verketten."
+      },
+      "missing_dependencies": {
+        "what": "Das Plugin hängt von anderen Plugins ab, die hier nicht installiert sind.",
+        "next": "Installiere die in den Details unten genannten Plugins und danach dieses."
+      },
+      "no_schema": {
+        "what": "Dieser Installationslauf hat kein Setup-Formular, es gibt also nichts zu konfigurieren.",
+        "next": "Schließ die Installation ohne den Konfigurationsschritt ab."
+      },
+      "not_installed": {
+        "what": "Dieses Plugin ist auf diesem Server nicht installiert.",
+        "next": "Installiere es zuerst aus dem Store.",
+        "action": "Zum Store"
+      },
       "unexpected": {
         "what": "Die Installation ist an einem Fehler abgebrochen, mit dem der Server nicht gerechnet hat.",
         "next": "Versuch es erneut und schick die Details unten an den Support, falls es wieder passiert."
+      },
+      "wrong_state": {
+        "what": "Dieser Installationslauf ist bereits über den Konfigurationsschritt hinaus.",
+        "next": "Lade die Seite neu, um zu sehen, wo die Installation wirklich steht."
       }
     },
     "providers": {

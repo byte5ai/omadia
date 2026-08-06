@@ -71,9 +71,9 @@ type EditorError =
 
 /**
  * A translator passed to a helper outside a component — the pattern
- * `messages/README.md` prescribes for anything that formats copy but is not
- * itself a hook. Values are accepted because the fallback line interpolates
- * the HTTP status.
+ * `messages/README.md` § "Helper functions that need to translate" prescribes
+ * for anything that formats copy but is not itself a hook. Values are accepted
+ * because the fallback line interpolates the HTTP status.
  */
 type TFn = (key: string, values?: Record<string, string | number>) => string;
 

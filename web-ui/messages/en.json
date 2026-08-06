@@ -820,6 +820,22 @@
   },
   "errorHelp": {
     "install": {
+      "already_installed": {
+        "what": "This plugin is already installed on this server.",
+        "next": "Uninstall the installed copy first if you want to install it again."
+      },
+      "blocked": {
+        "what": "The store marks this plugin as incompatible with this server, so the install was refused.",
+        "next": "Read the incompatibility reasons in the details below before you try again."
+      },
+      "capability_already_provided": {
+        "what": "Another installed plugin already provides the capability this one wants to provide.",
+        "next": "Uninstall the plugin that holds the capability, then install this one."
+      },
+      "has_dependents": {
+        "what": "Other installed plugins still depend on this one, so it cannot be uninstalled.",
+        "next": "Uninstall the plugins named in the details below first."
+      },
       "invalid_body": {
         "what": "The setup step sent its answers in a shape the server rejected.",
         "next": "Reload the page and fill the step in again."
@@ -832,9 +848,34 @@
         "what": "The install request arrived without a plugin id.",
         "next": "Open the plugin from the store list and install it from there."
       },
+      "job_not_found": {
+        "what": "The install run this step belongs to is no longer on the server.",
+        "next": "Start the installation again from the plugin in the store."
+      },
+      "missing_capability": {
+        "what": "The plugin needs capabilities that nothing installed provides yet.",
+        "next": "Install the plugins that provide them first — the install wizard can chain them for you."
+      },
+      "missing_dependencies": {
+        "what": "The plugin depends on other plugins that are not installed here.",
+        "next": "Install the plugins named in the details below, then install this one."
+      },
+      "no_schema": {
+        "what": "This install run has no setup form, so there is nothing to configure.",
+        "next": "Finish the installation without the configuration step."
+      },
+      "not_installed": {
+        "what": "That plugin is not installed on this server.",
+        "next": "Install it from the store first.",
+        "action": "Open the store"
+      },
       "unexpected": {
         "what": "The installation stopped on an error the server did not expect.",
         "next": "Try again, and send the details below to support if it repeats."
+      },
+      "wrong_state": {
+        "what": "This install run has already moved past the configuration step.",
+        "next": "Reload the page to see where the installation actually stands."
       }
     },
     "providers": {

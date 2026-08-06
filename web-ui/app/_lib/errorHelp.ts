@@ -19,8 +19,15 @@
  * `install.ts`, `runtime.ts`, `adminProviders.ts`, `store.ts` and
  * `adminSettings.ts`, plus `providers.key_rejected`, which the credential
  * verifier sets rather than a route. The rest of the middleware's codes are
- * deliberately not covered yet; `__tests__/errorHelpCoverage.test.ts` fails
- * the moment one of the five files grows a code with no copy behind it.
+ * deliberately not covered yet.
+ *
+ * `__tests__/errorHelpCoverage.test.ts` holds the scope to that promise. It
+ * reads `code: '…'` literals out of the five files, FOLLOWS `install.ts`'s
+ * `handleError` into `plugins/installService.ts` for the codes it re-emits
+ * from a thrown `InstallError`, and fails on any `code:` in a covered file
+ * that is neither a literal nor a registered, explained non-literal. Within
+ * those five files it fails the moment one grows a code with no copy behind
+ * it; outside them it claims nothing.
  */
 
 /**
@@ -32,11 +39,22 @@
  * fails as an orphan.
  */
 export const ERROR_HELP_CODES = [
-  // install.ts
+  // install.ts — the four it emits as literals, plus the ten its handleError
+  // re-emits from an InstallError thrown in plugins/installService.ts.
+  'install.already_installed',
+  'install.blocked',
+  'install.capability_already_provided',
+  'install.has_dependents',
   'install.invalid_body',
   'install.invalid_job_id',
   'install.invalid_plugin_id',
+  'install.job_not_found',
+  'install.missing_capability',
+  'install.missing_dependencies',
+  'install.no_schema',
+  'install.not_installed',
   'install.unexpected',
+  'install.wrong_state',
   // adminProviders.ts (+ providerCredentialVerifier.ts for key_rejected)
   'providers.apply_failed',
   'providers.invalid_request',
@@ -105,6 +123,7 @@ export interface ErrorHelp {
  * operator is already on is noise, not help.
  */
 export const ERROR_HELP_ACTIONS: Readonly<Record<string, string>> = {
+  'install.not_installed': '/store',
   'providers.not_installed': '/store',
   'runtime.not_installed': '/store',
   'store.plugin_not_found': '/store',

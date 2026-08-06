@@ -36,14 +36,23 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   admin-providers DTO. Both are additive — `verifyError` keeps its value and
   meaning, so an older web-ui against a new middleware, and a new web-ui
   against an older middleware, both keep working.
-- Scope is bounded and guarded. The catalogue covers the 45 codes emitted by
+- Scope is bounded and guarded. The catalogue covers the 55 codes emitted by
   `middleware/src/routes/{install,runtime,adminProviders,store,adminSettings}.ts`
-  plus `providers.key_rejected`. `errorHelpCoverage.test.ts` fails when one of
-  those files emits a code with no copy in any locale, when copy exists with no
-  emitter, and when a covered file starts using an error shape the scan cannot
-  see. NOT covered: the other middleware route families, shipped
+  plus `providers.key_rejected`. That count includes the ten `install.*` codes
+  that never appear as a literal in a route file at all: `install.ts`'s
+  `handleError` re-emits them from an `InstallError` thrown in
+  `plugins/installService.ts`, and `errorHelpCoverage.test.ts` follows that
+  forwarder rather than assume the file only writes literals. The guard fails
+  when a covered file emits a code with no copy in any locale, when copy exists
+  with no emitter, and when a covered file writes a `code:` the extractor
+  cannot read — an unregistered forwarding shape is a failure, not a silent
+  gap. NOT covered: the other middleware route families, shipped
   troubleshooting pages, and any LLM-backed help assistant — the issue's own
   corrected scope rules the last one out.
+- `web-ui/messages/README.md` documents the `errorHelp.<code>.{what,next}` key
+  convention, the optional `action` label, how to add a code, and why adding a
+  `code:` literal to one of the five covered route files turns the web-ui suite
+  red until the copy exists in both locales.
 
 ### Fixed — background chat turns write into their own session (#617)
 
