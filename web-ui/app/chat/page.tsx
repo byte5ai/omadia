@@ -185,7 +185,7 @@ export default function ChatPage(): React.ReactElement {
     renameSession,
     setActive,
     clearMessages,
-    mutateActive,
+    mutateById,
   } = useChatSessionsCtx();
   const streamStore = useStreamStore();
   const sending = streamStore.isActive(activeId);
@@ -253,7 +253,7 @@ export default function ChatPage(): React.ReactElement {
   // the user can re-save with their own classification.
   const clearAutoPromoted = useCallback(
     (messageId: string): void => {
-      mutateActive((session) => {
+      mutateById(activeId, (session) => {
         const nextMessages = session.messages.map((m) => {
           if (m.id !== messageId) return m;
           const { autoPromotedMkId: _drop, ...rest } = m;
@@ -262,7 +262,7 @@ export default function ChatPage(): React.ReactElement {
         return { ...session, messages: nextMessages, updatedAt: Date.now() };
       });
     },
-    [mutateActive],
+    [mutateById, activeId],
   );
 
   const send = useCallback(
@@ -290,8 +290,7 @@ export default function ChatPage(): React.ReactElement {
         streaming: true,
       };
 
-      mutateActive((session) => {
-        if (session.id !== targetSessionId) return session;
+      mutateById(targetSessionId, (session) => {
         const isFirst = session.messages.length === 0;
         // Strip pendingUserChoice AND followUpOptions from older assistant
         // messages so the button rows disappear as soon as the user commits
@@ -339,7 +338,7 @@ export default function ChatPage(): React.ReactElement {
       sending,
       hydrating,
       activeId,
-      mutateActive,
+      mutateById,
       streamStore,
       activeSession.messages.length,
       selectedAgentSlug,
@@ -597,8 +596,7 @@ export default function ChatPage(): React.ReactElement {
               streamStore.patch(activeId, { agentUnavailableSlug: undefined });
               // Drop the pinned snapshot in the local session so the
               // header picker becomes available again for the next turn.
-              mutateActive((s) => {
-                if (s.id !== activeId) return s;
+              mutateById(activeId, (s) => {
                 const { snapshot: _drop, ...rest } = s;
                 return rest;
               });
