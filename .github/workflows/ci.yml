@@ -65,6 +65,25 @@ jobs:
     defaults:
       run:
         working-directory: middleware
+    # Postgres for the *.pg.test.ts suites. Without this the whole
+    # Postgres-backed layer (migration backfills, embedding-gate suites,
+    # job/webhook/memory stores, ~21 files) self-skips on an unreachable
+    # DB and the job still reports green — the silent-coverage hole from
+    # issue #565. pgvector image because several suites create a vector(n)
+    # column as the thing under test.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: omadia
+          POSTGRES_USER: omadia
+          POSTGRES_PASSWORD: omadia-ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U omadia -d omadia"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v7
 
@@ -93,8 +112,67 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Non-Postgres suites, run in parallel as before. No pg DSN is set for
+      # this step, so the *.pg.test.ts files probe the unreachable default
+      # and self-skip — same as today. They get real coverage in the
+      # dedicated serial step below.
       - name: Test (node --test via tsx)
         run: npm run test
+
+      # Anti-silent-skip guard (#565). The pg suites self-skip when the DB
+      # is unreachable, so a broken/renamed service would once again pass
+      # green with zero Postgres coverage. Fail loudly here instead if the
+      # exact DSN the suites use can't be reached, and enable pgvector once
+      # up-front so every suite has it.
+      - name: Verify Postgres is reachable (fail loud, don't skip green)
+        run: |
+          PGPASSWORD=omadia-ci psql -h localhost -U omadia -d omadia \
+            -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS vector;" \
+            -c "SELECT 1;"
+
+      # Postgres-backed suites (#565). Test-scoped DSNs only, set on this
+      # step alone. Every *.pg.test.ts resolves its pool as
+      # GRAPH_PG_TEST_URL ?? MEMORY_PG_TEST_URL ?? DATABASE_URL, and each
+      # runs its own migrations against a fresh pool, so these two vars
+      # activate all 21 suites. Deliberately NOT DATABASE_URL: two live-Neon
+      # tests (palaiaHybridRetrievalNeon, neonDatasetFilterEscaping) gate
+      # solely on DATABASE_URL and need external fixtures / pre-applied
+      # migrations — pointing it at this blank throwaway DB would activate
+      # them and red-line on missing data. They stay correctly skipped
+      # (out of #565).
+      #
+      # test:pg pins --test-concurrency=1: these suites share one database
+      # and were written to each own a private DB (locally each defaults to
+      # its own port), so running the files in parallel lets one suite's job
+      # poller claim another's rows. Serial file execution isolates them;
+      # the whole set runs in ~20s.
+      #
+      # The test-count ratchet below is the real anti-#565 guard. node --test
+      # exits 0 when a suite self-skips, and — critically — a describe-level
+      # skip does NOT increment "skipped": its tests simply never register
+      # and vanish from the total. So "skipped == 0" is blind to exactly the
+      # silent-skip this issue is about; only a floor on the test COUNT
+      # catches it. The 21 *.pg.test.ts files register 202 tests today. If
+      # the count drops (broken DSN, a future suite reading an env var we
+      # don't set here, a cold-connection flake), a suite silently vanished —
+      # go red. Raise PG_TEST_FLOOR when you add Postgres tests, same
+      # baseline-ratchet convention as the core-decoupling job above.
+      - name: Test — Postgres suites (serial, real pgvector)
+        env:
+          GRAPH_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
+          MEMORY_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
+          PG_TEST_FLOOR: '202'
+        run: |
+          set -eo pipefail
+          npm run test:pg 2>&1 | tee pg-test.out
+          ran=$(grep -m1 -oE '^ℹ tests [0-9]+' pg-test.out | grep -oE '[0-9]+' || echo 0)
+          skipped=$(grep -m1 -oE '^ℹ skipped [0-9]+' pg-test.out | grep -oE '[0-9]+' || echo 0)
+          echo "Postgres suites: ran=${ran} skipped=${skipped} (floor=${PG_TEST_FLOOR})"
+          if [ "${ran:-0}" -lt "${PG_TEST_FLOOR}" ] || [ "${skipped:-0}" -ne 0 ]; then
+            echo "::error::Postgres coverage regressed (#565): expected >=${PG_TEST_FLOOR} tests and 0 skipped, got ran=${ran} skipped=${skipped}. A suite silently self-skipped — check the DSN and *.pg.test.ts env-var resolution."
+            exit 1
+          fi
 
       # Smoke scripts (middleware/scripts/smoke-*.ts) live outside this
       # public repo by design — they hit byte5-internal endpoints. The
