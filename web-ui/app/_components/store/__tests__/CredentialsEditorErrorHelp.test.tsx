@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../../../_lib/api';
+import de from '../../../../messages/de.json';
 import en from '../../../../messages/en.json';
 import { renderWithIntl } from '../../../_lib/test-utils';
 import { CredentialsEditor } from '../CredentialsEditor';
@@ -19,18 +20,23 @@ import type { PluginSetupField } from '../../../_lib/storeTypes';
  * must NOT be swallowed by the catalogue: the manifest's `pattern_hint` names
  * the field and the format it wants, which is strictly more useful than "one
  * value has the wrong format". That is the OM-17 fix, and it stays first.
+ *
+ * The third case is the floor: a failure with NO code (an older middleware, an
+ * uncatalogued family) still has to read in the operator's language. It used
+ * to render the literal `HTTP 500`.
  */
 
-const { mockListKeys, mockPatchSecrets } = vi.hoisted(() => ({
+const { mockListKeys, mockPatchSecrets, mockFetchOptions } = vi.hoisted(() => ({
   mockListKeys: vi.fn(),
   mockPatchSecrets: vi.fn(),
+  mockFetchOptions: vi.fn(),
 }));
 
 vi.mock('../../../_lib/api', () => ({
   listInstalledSecretKeys: mockListKeys,
   patchInstalledSecrets: mockPatchSecrets,
   patchInstalledConfig: vi.fn(),
-  fetchSetupFieldOptions: vi.fn(),
+  fetchSetupFieldOptions: mockFetchOptions,
   // Mirrors the real ApiError, including the OM-09 `code` parse.
   ApiError: class ApiError extends Error {
     public readonly code: string | null;
@@ -140,5 +146,32 @@ describe('<CredentialsEditor /> — OM-09 error help', () => {
     expect(
       screen.queryByText(en.errorHelp.runtime.setup_field_invalid.what),
     ).toBeNull();
+  });
+
+  it('falls back to the localized HTTP-status line when the failure carries no code', async () => {
+    // No JSON body at all: `ApiError.code` is null and the catalogue has
+    // nothing to resolve. This is the multiselect's degraded path, the one
+    // place a one-liner is all there is room for.
+    mockFetchOptions.mockRejectedValue(
+      new ApiError(500, 'GET /v1/admin/runtime/installed/gw/options failed', ''),
+    );
+
+    renderWithIntl(
+      <CredentialsEditor
+        pluginId="gw"
+        setupFields={[
+          field({ key: 'channels', options_provider: 'channels', multi: true }),
+        ]}
+      />,
+      { locale: 'de' },
+    );
+
+    // The whole German sentence, not the bare `HTTP 500` this used to render.
+    const localized = de.errorHelpUi.httpStatus.replace('{status}', '500');
+    expect(
+      await screen.findByText(
+        de.store.credentials.optionsUnavailable.replace('{error}', localized),
+      ),
+    ).toBeTruthy();
   });
 });

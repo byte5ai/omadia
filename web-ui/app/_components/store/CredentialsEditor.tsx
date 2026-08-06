@@ -69,6 +69,14 @@ type EditorError =
   | { kind: 'hint'; text: string }
   | { kind: 'api'; err: unknown };
 
+/**
+ * A translator passed to a helper outside a component — the pattern
+ * `messages/README.md` prescribes for anything that formats copy but is not
+ * itself a hook. Values are accepted because the fallback line interpolates
+ * the HTTP status.
+ */
+type TFn = (key: string, values?: Record<string, string | number>) => string;
+
 interface FieldState {
   draft: string;
   /** True when the operator typed something (vs leaving the prefill alone). */
@@ -797,16 +805,18 @@ function MultiselectField({
  *
  * OM-09: this used to return `` `${body.code}: ${body.message}` `` — the raw
  * identifier `runtime.vault_unavailable` on screen, next to an English
- * sentence. It now resolves the code through the message catalogue and falls
- * back to a localized "HTTP nnn" rather than to the server's own prose.
+ * sentence. It now resolves the code through the message catalogue, and where
+ * there is no code to resolve (an older middleware, an uncatalogued family)
+ * falls back to `errorHelpUi.httpStatus` rather than to the server's own
+ * prose — a bare `HTTP 500` would be an English literal in a German UI.
  *
  * @param t a translator scoped at the message ROOT
  */
-function humanizeError(err: unknown, t: (key: string) => string): string {
+function humanizeError(err: unknown, t: TFn): string {
   if (err instanceof ApiError) {
     const help = resolveErrorHelp(err.code, t);
     if (help) return `${help.what} ${help.next}`;
-    return `HTTP ${String(err.status)}`;
+    return t('errorHelpUi.httpStatus', { status: err.status });
   }
   if (err instanceof Error) return err.message;
   return String(err);
