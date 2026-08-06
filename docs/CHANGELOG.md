@@ -18,6 +18,30 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — a mistyped id no longer produces a dead-but-configured-looking public MCP binding
+
+- `public_mcp_key_bindings.key_id` and `agent_id` are not foreign keys — the key
+  records live in the secret vault and the agents in the in-process registry, not
+  in Postgres (`migrations/0033`) — and nothing in the application layer compensated.
+  A one-character typo in either id got `201 Created`, a row in the list, and a
+  fully-configured-**looking** binding that reached zero tools forever, visually
+  indistinguishable from a working one.
+- The operator write path now resolves both ids against the same sources a real
+  request does. A `agent_id` the registry does not know is a **hard `400`
+  (`agent_not_found`)** with no row written — the registry is cheap and
+  authoritative in-process. A `key_id` that matches no vault record is a
+  **warning, not a rejection** (the honest interim until the key-lister UI from
+  #438/#439 ships): the row still saves, but the write response and every list
+  row carry a `key_id_unknown` warning so the operator sees it reaches nothing.
+- The list endpoint annotates **pre-existing** rows too, so a binding that was
+  already dead — created before this shipped, or bound to an agent later deleted —
+  is flagged the next time the pane is opened, not only on save. The MCP Control
+  Center's Public API keys tab renders these warnings inline.
+- Fail-honest, never fail-red: when a source cannot be read (no registry wired, a
+  vault that failed to load) the check returns "cannot tell" and neither rejects
+  the agent nor invents a warning, so a transient read failure never paints a
+  working install as broken.
+
 ### Fixed — `per_user` MCP delegation was unreachable from chat
 
 - Migration `0031` made delegation explicit per MCP server and gave new servers a

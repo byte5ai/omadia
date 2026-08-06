@@ -1048,6 +1048,15 @@ export async function exportSkill(id: string): Promise<string> {
  * public MCP endpoint. `enabled: false` is a PARKED binding: the key reaches
  * nothing, but what it was configured to reach is still on the row.
  */
+/** #571 — a non-fatal note that a binding points at an id that does not
+ *  resolve, so it reaches nothing despite looking configured. `code` is the
+ *  stable, locale-independent discriminator the pane renders from; `message` is
+ *  the server's English fallback, for API consumers and logs. */
+export interface PublicMcpKeyBindingWarning {
+  code: 'key_id_unknown' | 'agent_id_unknown';
+  message: string;
+}
+
 export interface PublicMcpKeyBinding {
   keyId: string;
   agentId: string;
@@ -1057,6 +1066,9 @@ export interface PublicMcpKeyBinding {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+  /** #571 — present only when the key or agent this row names does not resolve.
+   *  Absent on a clean row, so a healthy binding is unchanged from before. */
+  warnings?: PublicMcpKeyBindingWarning[];
 }
 
 export interface PublicMcpKeyBindingsResponse {

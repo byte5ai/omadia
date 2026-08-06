@@ -2828,7 +2828,11 @@
       "restoreHint": "Erneutes Speichern ändert die Tools, hebt den Widerruf aber nicht auf. Nur Wiederherstellen macht den Key wieder nutzbar.",
       "restoreTitle": "Dieses Binding wiederherstellen?",
       "restoreBody": "Der Key {keyId} erhält sofort alles zurück, was auf dieser Zeile steht: {tools}.",
-      "restoreConfirm": "Wiederherstellen"
+      "restoreConfirm": "Wiederherstellen",
+      "warnings": {
+        "keyUnknown": "Es existiert noch kein API-Key mit dieser ID. Das Binding wurde gespeichert, erreicht aber nichts, solange kein solcher Key angelegt ist – prüfe die ID auf einen Tippfehler.",
+        "agentUnknown": "Dieses Binding nennt einen Agenten, der nicht mehr registriert ist, und erreicht daher nichts. Verknüpfe es mit einem existierenden Agenten."
+      }
     },
     "plugins": {
       "intro": "Plugins, die im Manifest MCP-Zugriff deklarieren. Weise jedem gezielt die Server zu, die es erreichen darf — nichts ist implizit. Die Per-Tool-Sicherheit greift weiterhin: ein ungescanntes oder hochriskantes Tool wird zur Aufrufzeit abgelehnt.",
