@@ -18,6 +18,33 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — errors on the LLM-access and credential screens now explain themselves (#604)
+
+- The providers panel used to render the middleware's English rejection
+  sentence verbatim in every locale, and the plugin credential editor rendered
+  `runtime.vault_unavailable: vault not wired into runtime route` — an internal
+  identifier next to an English sentence. Neither told the operator what to do
+  next, which is what the customer report was about.
+- `ApiError` now parses the machine code out of the JSON error body once
+  (`ApiError.code`), and a localized catalogue (`errorHelp.<code>.{what,next}`
+  in `messages/en.json` + `de.json`) turns it into two sentences: what
+  happened, and the one action that fixes it. The server's own text survives
+  only inside a collapsed "details for support" disclosure, redacted through
+  `supportDetail()`.
+- A rejected provider key now carries a machine-readable code end to end:
+  `ProviderVerification.code` and a new optional `verifyErrorCode` on the
+  admin-providers DTO. Both are additive — `verifyError` keeps its value and
+  meaning, so an older web-ui against a new middleware, and a new web-ui
+  against an older middleware, both keep working.
+- Scope is bounded and guarded. The catalogue covers the 45 codes emitted by
+  `middleware/src/routes/{install,runtime,adminProviders,store,adminSettings}.ts`
+  plus `providers.key_rejected`. `errorHelpCoverage.test.ts` fails when one of
+  those files emits a code with no copy in any locale, when copy exists with no
+  emitter, and when a covered file starts using an error shape the scan cannot
+  see. NOT covered: the other middleware route families, shipped
+  troubleshooting pages, and any LLM-backed help assistant — the issue's own
+  corrected scope rules the last one out.
+
 ### Fixed — background chat turns write into their own session (#617)
 
 - A turn that was still streaming when the user switched to another chat tab

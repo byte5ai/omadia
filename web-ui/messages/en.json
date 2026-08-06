@@ -818,6 +818,210 @@
     "digestLabel": "Error reference",
     "digestHint": "Quote this reference when reporting the problem — the full message is in the server log."
   },
+  "errorHelp": {
+    "install": {
+      "invalid_body": {
+        "what": "The setup step sent its answers in a shape the server rejected.",
+        "next": "Reload the page and fill the step in again."
+      },
+      "invalid_job_id": {
+        "what": "The request did not say which install run it belongs to.",
+        "next": "Go back to the plugin and start the installation again."
+      },
+      "invalid_plugin_id": {
+        "what": "The install request arrived without a plugin id.",
+        "next": "Open the plugin from the store list and install it from there."
+      },
+      "unexpected": {
+        "what": "The installation stopped on an error the server did not expect.",
+        "next": "Try again, and send the details below to support if it repeats."
+      }
+    },
+    "providers": {
+      "apply_failed": {
+        "what": "The assignment was accepted but could not be written to the plugin.",
+        "next": "Save again. If it keeps failing, the middleware cannot write to its config store."
+      },
+      "invalid_request": {
+        "what": "The assignment was missing the plugin, the provider or the model.",
+        "next": "Pick a provider and a model, then save again."
+      },
+      "key_rejected": {
+        "what": "The provider refused this API key.",
+        "next": "Copy the key from the provider console once more and paste it here."
+      },
+      "model_provider_mismatch": {
+        "what": "The chosen model belongs to a different provider than the one selected.",
+        "next": "Pick a model this provider serves, or switch to the provider the model belongs to."
+      },
+      "not_installed": {
+        "what": "The plugin you are assigning a provider to is not installed here.",
+        "next": "Install the plugin first, then set its provider.",
+        "action": "Open the store"
+      },
+      "read_failed": {
+        "what": "The provider list could not be read.",
+        "next": "Reload the page. If it stays empty, the middleware cannot reach its config store."
+      },
+      "tool_incompatible": {
+        "what": "This plugin drives a tool loop and the selected provider cannot do that.",
+        "next": "Give this plugin a key-based provider and keep the subscription CLI for tool-less roles."
+      },
+      "unknown_plugin": {
+        "what": "That plugin is not one this page can assign a provider to.",
+        "next": "Reload the page and pick a plugin from the list."
+      },
+      "unknown_provider": {
+        "what": "The server does not know a provider with that id.",
+        "next": "Reload the page and pick a provider from the list."
+      },
+      "verify_failed": {
+        "what": "The key check did not run to the end, so the verdict is unchanged.",
+        "next": "Start the check once more. Repeated failures mean the provider is unreachable from this server."
+      }
+    },
+    "runtime": {
+      "agent_inactive": {
+        "what": "The plugin is installed but not running, so it cannot answer right now.",
+        "next": "Activate the plugin, then reload this page."
+      },
+      "empty_secrets_patch": {
+        "what": "The save carried no changed value.",
+        "next": "Change or clear at least one field before saving."
+      },
+      "invalid_audit_mode": {
+        "what": "That audit mode is not one the server accepts.",
+        "next": "Pick one of the offered modes and save again."
+      },
+      "invalid_config": {
+        "what": "The configuration was sent in a shape the server rejected.",
+        "next": "Reload the page and enter the values again."
+      },
+      "invalid_id": {
+        "what": "The request did not name which plugin it is about.",
+        "next": "Reload the page and repeat the action from the plugin screen."
+      },
+      "invalid_multiselect": {
+        "what": "One of the selected values is not in a shape the server accepts.",
+        "next": "Clear the selection and pick the entries again from the list."
+      },
+      "invalid_secrets_body": {
+        "what": "The credential change was sent in a shape the server rejected.",
+        "next": "Reload the page and enter the credentials again."
+      },
+      "no_options_provider": {
+        "what": "This field has no live option source, so nothing can be fetched for it.",
+        "next": "Type the value in by hand."
+      },
+      "not_installed": {
+        "what": "This plugin is not installed on this server.",
+        "next": "Install it first, then come back to this screen.",
+        "action": "Open the store"
+      },
+      "not_web_scanner": {
+        "what": "Audit mode applies only to plugins that scan the web, and this one does not.",
+        "next": "Leave the audit mode unset for this plugin."
+      },
+      "options_provider_bad_shape": {
+        "what": "The plugin answered the option request with something that is not a list.",
+        "next": "Update the plugin. Its option provider returns the wrong shape."
+      },
+      "options_provider_failed": {
+        "what": "The plugin could not deliver the options for this field.",
+        "next": "Check the credentials this plugin needs, then load the list again."
+      },
+      "options_provider_timeout": {
+        "what": "The plugin took too long to deliver the options.",
+        "next": "Load the list again. If it keeps timing out, the system behind the plugin is slow or unreachable."
+      },
+      "options_unavailable": {
+        "what": "This core cannot fetch setup options from a running plugin.",
+        "next": "Enter the value by hand."
+      },
+      "setup_field_invalid": {
+        "what": "One of the values does not match the format this field expects.",
+        "next": "Correct the flagged field and save again."
+      },
+      "update_failed": {
+        "what": "The change could not be written.",
+        "next": "Save again. If it repeats, the middleware cannot write to its config store."
+      },
+      "value_not_offered": {
+        "what": "One of the selected values is not on the list the plugin offers.",
+        "next": "Reload the list and pick from the current entries."
+      },
+      "vault_read_failed": {
+        "what": "The stored credentials could not be read from the vault.",
+        "next": "Reload once the vault is reachable again."
+      },
+      "vault_unavailable": {
+        "what": "No secret vault is wired into this deployment, so credentials cannot be stored.",
+        "next": "Configure a vault in the deployment before entering credentials here."
+      },
+      "vault_write_failed": {
+        "what": "The credentials could not be written to the vault.",
+        "next": "Save again once the vault is reachable."
+      }
+    },
+    "settings": {
+      "invalid_request": {
+        "what": "The settings change was sent in a shape the server rejected.",
+        "next": "Reload the page and make the change again."
+      },
+      "no_valid_changes": {
+        "what": "None of the submitted values belongs to a setting this server knows.",
+        "next": "Reload the page so the field list matches the server, then save again."
+      },
+      "read_failed": {
+        "what": "The settings could not be read.",
+        "next": "Reload the page. If it stays empty, the middleware cannot reach its config store."
+      },
+      "vault_unavailable": {
+        "what": "No secret vault is wired into this deployment, so secrets cannot be edited.",
+        "next": "Configure a vault in the deployment. Non-secret settings keep working without one."
+      },
+      "write_failed": {
+        "what": "The settings could not be written.",
+        "next": "Save again. If it repeats, the middleware cannot write to its config store."
+      }
+    },
+    "store": {
+      "ack_failed": {
+        "what": "The acknowledgement could not be recorded.",
+        "next": "Acknowledge again. The verdict stays open until it goes through."
+      },
+      "get_failed": {
+        "what": "The plugin details could not be loaded.",
+        "next": "Reload the page. If it repeats, the store index on this server is unreadable."
+      },
+      "invalid_id": {
+        "what": "The request did not name which plugin it is about.",
+        "next": "Go back to the store list and open the plugin from there."
+      },
+      "list_failed": {
+        "what": "The plugin list could not be loaded.",
+        "next": "Reload the page. If it stays empty, the middleware cannot reach its registry."
+      },
+      "plugin_not_found": {
+        "what": "No plugin with that id exists on this server.",
+        "next": "Pick a plugin from the store list.",
+        "action": "Open the store"
+      },
+      "verdict_not_found": {
+        "what": "No code-scan verdict has been recorded for this plugin.",
+        "next": "Run the code scan first, then acknowledge it."
+      },
+      "verdicts_unavailable": {
+        "what": "Code-scan verdicts are switched off on this deployment.",
+        "next": "Enable the scanner in the deployment configuration if you need verdicts."
+      }
+    }
+  },
+  "errorHelpUi": {
+    "supportDetails": "Details for support",
+    "unknownFailure": "That request failed, and the server sent no code this page can explain.",
+    "httpStatus": "That request failed (HTTP {status})."
+  },
   "session": {
     "expiresAtLabel": "Session valid until",
     "warningTitle": "Session expiring soon",

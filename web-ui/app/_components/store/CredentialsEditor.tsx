@@ -41,6 +41,8 @@ import {
 } from '../../_lib/setupFieldPattern';
 import type { PluginSetupField } from '../../_lib/storeTypes';
 import { Button } from '@/app/_components/ui/Button';
+import { ErrorHelp } from '@/app/_components/ErrorHelp';
+import { resolveErrorHelp } from '../../_lib/errorHelp';
 
 interface CredentialsEditorProps {
   pluginId: string;
@@ -54,6 +56,18 @@ interface CredentialsEditorProps {
    */
   setupFields: ReadonlyArray<PluginSetupField>;
 }
+
+/**
+ * What went wrong on the last save or load.
+ *
+ * Two shapes because two things beat each other: the OM-17 manifest hint names
+ * the offending field and the format it wants, so it outranks anything the
+ * generic error-help catalogue could say; everything else is a code the
+ * catalogue resolves, with the raw body disclosed behind it.
+ */
+type EditorError =
+  | { kind: 'hint'; text: string }
+  | { kind: 'api'; err: unknown };
 
 interface FieldState {
   draft: string;
@@ -87,7 +101,7 @@ export function CredentialsEditor({
       ),
   );
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<EditorError | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
   const refreshKeys = useCallback(async () => {
@@ -109,7 +123,7 @@ export function CredentialsEditor({
         setStoredValues({});
         return;
       }
-      setError(humanizeError(err));
+      setError({ kind: 'api', err });
       setStoredKeys(new Set());
       setStoredValues({});
     }
@@ -195,7 +209,8 @@ export function CredentialsEditor({
       );
       setSavedAt(Date.now());
     } catch (err) {
-      setError(humanizeSecretsPatchError(err, setupFields, locale));
+      const hint = resolveSecretsPatchHint(err, setupFields, locale);
+      setError(hint !== undefined ? { kind: 'hint', text: hint } : { kind: 'api', err });
     } finally {
       setSaving(false);
     }
@@ -492,7 +507,7 @@ export function CredentialsEditor({
         })}
       </ul>
 
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Button
           variant="primary"
           onClick={() => void onSave()}
@@ -514,11 +529,16 @@ export function CredentialsEditor({
             {t('savedCheck')}
           </span>
         ) : null}
-        {error ? (
+        {error === null ? null : error.kind === 'hint' ? (
           <span className="text-[11px] text-[color:var(--danger)]">
-            {error}
+            {error.text}
           </span>
-        ) : null}
+        ) : (
+          <ErrorHelp
+            code={error.err instanceof ApiError ? error.err.code : null}
+            rawDetail={error.err}
+          />
+        )}
       </div>
     </div>
   );
@@ -605,6 +625,9 @@ function MultiselectField({
   storedValue: string | undefined;
 }): React.ReactElement {
   const t = useTranslations('store.credentials');
+  // Root-scoped as well, because the error-help catalogue keys carry the
+  // dotted code (`errorHelp.runtime.options_provider_failed.what`).
+  const tRoot = useTranslations();
   const [selected, setSelected] = useState<string[]>([]);
   const [options, setOptions] = useState<SetupOption[] | null>(null);
   const [status, setStatus] = useState<'loading' | 'loaded' | 'degraded'>(
@@ -637,10 +660,10 @@ function MultiselectField({
       setOptions(opts);
       setStatus('loaded');
     } catch (err) {
-      setError(humanizeError(err));
+      setError(humanizeError(err, tRoot));
       setStatus('degraded');
     }
-  }, [pluginId, fieldKey]);
+  }, [pluginId, fieldKey, tRoot]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -667,11 +690,11 @@ function MultiselectField({
       await patchInstalledConfig(pluginId, { [fieldKey]: values });
       setSavedAt(Date.now());
     } catch (err) {
-      setError(humanizeError(err));
+      setError(humanizeError(err, tRoot));
     } finally {
       setSaving(false);
     }
-  }, [status, freeText, selected, pluginId, fieldKey]);
+  }, [status, freeText, selected, pluginId, fieldKey, tRoot]);
 
   const groups = useMemo(() => {
     const m = new Map<string, SetupOption[]>();
@@ -768,18 +791,21 @@ function MultiselectField({
   );
 }
 
-function humanizeError(err: unknown): string {
+/**
+ * A one-line, localized rendering of a failure, for the places that only have
+ * room for a line (the degraded multiselect hint).
+ *
+ * OM-09: this used to return `` `${body.code}: ${body.message}` `` — the raw
+ * identifier `runtime.vault_unavailable` on screen, next to an English
+ * sentence. It now resolves the code through the message catalogue and falls
+ * back to a localized "HTTP nnn" rather than to the server's own prose.
+ *
+ * @param t a translator scoped at the message ROOT
+ */
+function humanizeError(err: unknown, t: (key: string) => string): string {
   if (err instanceof ApiError) {
-    try {
-      const body = JSON.parse(err.body) as {
-        code?: string;
-        message?: string;
-      };
-      if (body.code && body.message) return `${body.code}: ${body.message}`;
-      if (body.message) return body.message;
-    } catch {
-      // fall through
-    }
+    const help = resolveErrorHelp(err.code, t);
+    if (help) return `${help.what} ${help.next}`;
     return `HTTP ${String(err.status)}`;
   }
   if (err instanceof Error) return err.message;
@@ -787,45 +813,47 @@ function humanizeError(err: unknown): string {
 }
 
 /**
- * {@link humanizeError} plus the OM-17 field-level rejection, which only the
- * secrets PATCH can return.
+ * The OM-17 field-level rejection, which only the secrets PATCH can return.
  *
  * Prefers the manifest's own hint ("expects …@….iam.gserviceaccount.com") over
- * the generic `code: message` line, which tells the operator nothing
- * actionable — and resolves it from OUR copy of `pattern_hint`, not from
+ * anything generic, and resolves it from OUR copy of `pattern_hint`, not from
  * `body.hint`. The middleware has no request locale, so its hint is always
  * English and a German operator would read an English sentence: exactly the
  * English-in-a-German-UI confusion that was a named contributing factor of
  * OM-17. `body.hint` remains the fallback for a key we do not know about.
  *
+ * OM-09 deliberately did NOT route this through the error-help catalogue.
+ * `errorHelp.runtime.setup_field_invalid` can only say "one value has the
+ * wrong format"; the manifest names the field AND the format it wants, so it
+ * stays strictly ahead of the catalogue. Returns `undefined` when this is not
+ * a field rejection, leaving the caller on the catalogue path.
+ *
  * @param setupFields the manifest fields this editor renders — the source of
  *   the localized `pattern_hint` map
  * @param locale      the active UI locale
  */
-function humanizeSecretsPatchError(
+function resolveSecretsPatchHint(
   err: unknown,
   setupFields: ReadonlyArray<PluginSetupField>,
   locale: string,
-): string {
-  if (err instanceof ApiError) {
-    try {
-      const body = JSON.parse(err.body) as {
-        code?: string;
-        field?: string;
-        hint?: string;
-      };
-      if (body.code === 'runtime.setup_field_invalid') {
-        const hint = resolveSetupFieldHint(
-          setupFields,
-          body.field,
-          body.hint,
-          locale,
-        );
-        if (hint) return body.field ? `${body.field}: ${hint}` : hint;
-      }
-    } catch {
-      // fall through to the generic handling
-    }
+): string | undefined {
+  if (!(err instanceof ApiError)) return undefined;
+  try {
+    const body = JSON.parse(err.body) as {
+      code?: string;
+      field?: string;
+      hint?: string;
+    };
+    if (body.code !== 'runtime.setup_field_invalid') return undefined;
+    const hint = resolveSetupFieldHint(
+      setupFields,
+      body.field,
+      body.hint,
+      locale,
+    );
+    if (hint) return body.field ? `${body.field}: ${hint}` : hint;
+  } catch {
+    // Not a JSON body: nothing field-specific to prefer.
   }
-  return humanizeError(err);
+  return undefined;
 }
