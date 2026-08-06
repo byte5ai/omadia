@@ -1009,9 +1009,13 @@
         "what": "Die Änderung kam in einer Form an, die der Server ablehnt.",
         "next": "Lade die Seite neu und nimm die Änderung erneut vor."
       },
+      "invalid_values": {
+        "what": "Der Server hat bei jeder Änderung den Wert abgelehnt, es wurde nichts geschrieben.",
+        "next": "Korrigiere den Wert, den die Details unten nennen — dort steht zu jedem Feld der Grund — und speichere erneut."
+      },
       "no_valid_changes": {
-        "what": "Keiner der gesendeten Werte gehört zu einer Einstellung, die dieser Server kennt.",
-        "next": "Lade die Seite neu, damit die Feldliste zum Server passt, und speichere erneut."
+        "what": "Keine der gesendeten Änderungen passt zu einer Einstellung, die dieser Server aktuell anbietet.",
+        "next": "Lade die Seite neu, damit die Feldliste zum Server passt, und nimm die Änderung erneut vor."
       },
       "read_failed": {
         "what": "Die Einstellungen konnten nicht gelesen werden.",
@@ -2614,7 +2618,7 @@
     "title": "LLM-Provider",
     "intro": "Verbinde LLM-Provider und lege fest, mit welchem jeder Agent läuft. Schlüssel werden verschlüsselt im Vault gespeichert und verlassen deinen Server nie. Anthropic ist der Standard; ein Provider-Wechsel pro Agent wirkt sofort.",
     "loading": "Lädt …",
-    "loadError": "Fehler beim Laden: {message}",
+    "loadError": "Die Provider-Liste konnte nicht geladen werden.",
     "vaultUnavailable": "Vault nicht verfügbar — Provider-Schlüssel können nicht gelesen werden.",
     "providers": {
       "heading": "Provider",

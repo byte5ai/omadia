@@ -1009,9 +1009,13 @@
         "what": "The settings change was sent in a shape the server rejected.",
         "next": "Reload the page and make the change again."
       },
+      "invalid_values": {
+        "what": "The server refused the value of every change in that save, so nothing was written.",
+        "next": "Correct the value the details below flag — they name each rejected field and why — then save again."
+      },
       "no_valid_changes": {
-        "what": "None of the submitted values belongs to a setting this server knows.",
-        "next": "Reload the page so the field list matches the server, then save again."
+        "what": "None of the submitted changes matches a setting this server currently offers.",
+        "next": "Reload the page so the field list matches the server, then make the change again."
       },
       "read_failed": {
         "what": "The settings could not be read.",
@@ -2614,7 +2618,7 @@
     "title": "LLM providers",
     "intro": "Connect LLM providers and choose which one each agent runs on. Keys are stored encrypted in the vault and never leave your server. Anthropic is the default; switching an agent to another provider takes effect live.",
     "loading": "Loading …",
-    "loadError": "Failed to load: {message}",
+    "loadError": "The provider list could not be loaded.",
     "vaultUnavailable": "Vault unavailable — provider keys cannot be read.",
     "providers": {
       "heading": "Providers",

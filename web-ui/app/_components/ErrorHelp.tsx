@@ -16,10 +16,12 @@ interface ErrorHelpProps {
    */
   rawDetail?: unknown;
   /**
-   * What to show as the headline when the code resolves to nothing. The one
-   * legitimate use is a server string that is all an older middleware sent
-   * (a provider's `verifyError`); leave it undefined and the component falls
-   * back to its own localized "that failed" line.
+   * What to show as the headline when the code resolves to nothing. Two
+   * legitimate sources: a server string that is all an older middleware sent
+   * (a provider's `verifyError`), or the caller's own localized line for the
+   * operation that failed, which beats the generic one whenever the caller
+   * knows what it was doing. Leave it undefined and the component falls back
+   * to its own localized "that failed" line.
    */
   fallback?: string;
 }

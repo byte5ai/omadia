@@ -115,7 +115,7 @@ const ACKNOWLEDGED_NON_LITERAL_CODE: Readonly<
  * typo, a renamed file or a broken regex would otherwise scan an empty set and
  * pass while covering nothing.
  */
-const MIN_SCANNED_CODES = 55;
+const MIN_SCANNED_CODES = 56;
 
 const CODE_LITERAL = /\bcode:\s*'([A-Za-z0-9_.]+)'/g;
 const ANY_CODE_KEY = /\bcode:/g;

@@ -80,7 +80,9 @@ type Status = 'idle' | 'saving' | 'saved' | 'error';
 type State =
   | { kind: 'loading' }
   | { kind: 'ready'; data: ProvidersResponse }
-  | { kind: 'error'; message: string };
+  // The thrown error itself, for the same reason `errors` below keeps it: a
+  // pre-flattened string is already past the point where the code is readable.
+  | { kind: 'error'; error: unknown };
 
 export function ProvidersPanel({
   onSwitchToSubscriptions,
@@ -101,10 +103,7 @@ export function ProvidersPanel({
       const data = await getProviders();
       setState({ kind: 'ready', data });
     } catch (err) {
-      setState({
-        kind: 'error',
-        message: err instanceof Error ? err.message : String(err),
-      });
+      setState({ kind: 'error', error: err });
     }
   }, []);
 
@@ -155,9 +154,16 @@ export function ProvidersPanel({
       {state.kind === 'loading' ? (
         <p className="text-sm opacity-70">{t('loading')}</p>
       ) : state.kind === 'error' ? (
-        <p className="text-sm text-[color:var(--danger)]">
-          {t('loadError', { message: state.message })}
-        </p>
+        // OM-09: this rendered `GET /v1/admin/providers failed: 500` — an
+        // English sentence the client itself assembled — as the whole message,
+        // in every locale. The catalogue answers `providers.read_failed` in the
+        // operator's language; `loadError` says which read failed when the
+        // server sent no code this page knows.
+        <ErrorHelp
+          code={errorCode(state.error)}
+          rawDetail={state.error}
+          fallback={t('loadError')}
+        />
       ) : (
         <div className="flex flex-col gap-10">
           {!state.data.vault_available && (

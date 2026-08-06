@@ -89,6 +89,7 @@ export const ERROR_HELP_CODES = [
   'runtime.vault_write_failed',
   // adminSettings.ts
   'settings.invalid_request',
+  'settings.invalid_values',
   'settings.no_valid_changes',
   'settings.read_failed',
   'settings.vault_unavailable',

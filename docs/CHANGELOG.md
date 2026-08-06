@@ -36,7 +36,7 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   admin-providers DTO. Both are additive — `verifyError` keeps its value and
   meaning, so an older web-ui against a new middleware, and a new web-ui
   against an older middleware, both keep working.
-- Scope is bounded and guarded. The catalogue covers the 55 codes emitted by
+- Scope is bounded and guarded. The catalogue covers the 56 codes emitted by
   `middleware/src/routes/{install,runtime,adminProviders,store,adminSettings}.ts`
   plus `providers.key_rejected`. That count includes the ten `install.*` codes
   that never appear as a literal in a route file at all: `install.ts`'s
@@ -53,6 +53,19 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   convention, the optional `action` label, how to add a code, and why adding a
   `code:` literal to one of the five covered route files turns the web-ui suite
   red until the copy exists in both locales.
+- The providers panel's very first request is on that path too. A failed
+  `GET /v1/admin/providers` used to render the client-assembled
+  `GET /v1/admin/providers failed: 500` as the entire message, in every locale;
+  it now resolves `providers.read_failed` through the catalogue, keeps the
+  request line for the support disclosure, and falls back to a localized "the
+  provider list could not be loaded" when the server sends no code.
+- `PATCH /v1/admin/settings` now answers a fully-rejected batch with two codes
+  instead of one, because the operator's next step differs:
+  `settings.invalid_values` when the server refused the values (correct the
+  value the details flag) and `settings.no_valid_changes` when no submitted key
+  is a setting it currently offers (reload — the page's field list is stale).
+  With one code, saving a malformed `ANTHROPIC_API_KEY` was reported as an
+  unknown setting and the operator was told to reload, which cannot fix it.
 
 ### Fixed — background chat turns write into their own session (#617)
 

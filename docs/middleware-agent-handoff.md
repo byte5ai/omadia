@@ -995,6 +995,16 @@ behalten wir für Logs.**
   (`src/routes/adminProviders.ts`): konditionaler Spread neben dem bestehenden
   `verifyError`. Rein additiv — fehlt der Code, fehlt das Feld komplett, und
   ein Client von vor #604 sieht exakt die alte Payload.
+- **Zwei Codes statt einem bei `PATCH /v1/admin/settings`**
+  (`src/routes/adminSettings.ts`): Wird der ganze Batch abgelehnt, antwortet
+  die Route mit `settings.invalid_values`, wenn der *Wert* mindestens einer
+  bekannten Einstellung durch die Validierung gefallen ist, sonst weiter mit
+  `settings.no_valid_changes` (kein gesendeter Key ist eine Einstellung, die
+  dieser Server aktuell anbietet). Ein Code für beides hieß Copy, die im einen
+  Fall lügt: ein `ANTHROPIC_API_KEY` im falschen Format wurde als unbekannte
+  Einstellung gemeldet, mit "Seite neu laden" als Aktion. **Wer eine neue
+  Wert-Validierung ergänzt, nutzt `rejectValue(key, message)` statt
+  `errors.push(...)`** — sonst landet der Fall wieder im falschen Code.
 - **Web-UI-Seite:** `ApiError.code` parst den Code einmal zentral,
   `web-ui/app/_lib/errorHelp.ts` löst ihn gegen
   `messages/{en,de}.json → errorHelp.<code>.{what,next}` auf, und
@@ -1051,7 +1061,9 @@ Seite steht in `web-ui/messages/README.md`.
 
 Tests: `test/providerCredentialVerifier.test.ts` (401 → `code`, jedes andere
 Verdikt ohne `code`), `test/adminProvidersRoute.test.ts` (DTO trägt
-`verifyErrorCode` beim abgelehnten Key, lässt das Feld sonst weg).
+`verifyErrorCode` beim abgelehnten Key, lässt das Feld sonst weg),
+`test/adminSettingsRoute.test.ts` (abgelehnter Wert → `settings.invalid_values`,
+unbekannter Key bzw. nicht installiertes Ziel-Plugin → `settings.no_valid_changes`).
 
 ---
 

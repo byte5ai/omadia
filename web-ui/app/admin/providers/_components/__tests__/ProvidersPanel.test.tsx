@@ -417,6 +417,73 @@ describe('<ProvidersPanel />', () => {
     expect(headline.textContent).not.toContain('settings.vault_unavailable');
   });
 
+  // The FIRST request the panel makes, and the one it had no catalogue path
+  // for: a failed load rendered `GET /v1/admin/providers failed: 500` as the
+  // whole message — assembled client-side, English in every locale.
+  it('OM-09: a failed LOAD renders the catalogue copy, not the request line', async () => {
+    mockGetProviders.mockRejectedValue(
+      new ApiError(
+        500,
+        'GET /v1/admin/providers failed: 500',
+        '{"code":"providers.read_failed","message":"database unavailable"}',
+      ),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    expect(
+      await screen.findByText(en.errorHelp.providers.read_failed.what),
+    ).toBeTruthy();
+    expect(screen.getByText(en.errorHelp.providers.read_failed.next)).toBeTruthy();
+    expect(screen.queryByText(/GET \/v1\/admin\/providers failed/)).toBeNull();
+    // The server's own English sentence survives only inside the disclosure.
+    expect(screen.queryByText('database unavailable')).toBeNull();
+  });
+
+  it('OM-09: a failed LOAD with no code falls back to the localized load line', async () => {
+    mockGetProviders.mockRejectedValue(
+      new ApiError(502, 'GET /v1/admin/providers failed: 502', 'Bad Gateway'),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    expect(await screen.findByText(en.adminProviders.loadError)).toBeTruthy();
+    expect(screen.queryByText(/GET \/v1\/admin\/providers failed/)).toBeNull();
+  });
+
+  // #604 fixup: `settings.no_valid_changes` used to answer a rejected VALUE
+  // too, and its copy told the operator to reload — a false diagnosis and an
+  // action that cannot work. The route now separates the two codes.
+  it('OM-09: a key the server refuses says to correct the value, not to reload', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
+    );
+    mockPatchSettings.mockRejectedValue(
+      new ApiError(
+        400,
+        'PATCH /v1/admin/settings failed: 400',
+        '{"code":"settings.invalid_values","errors":[{"key":"ANTHROPIC_API_KEY",' +
+          '"message":"Anthropic-Keys beginnen mit \\"sk-ant-\\""}]}',
+      ),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    fireEvent.click(await screen.findByText(/Change key/));
+    const input = await screen.findByPlaceholderText('Paste API key …');
+    fireEvent.change(input, { target: { value: 'not-an-anthropic-key' } });
+    fireEvent.click(screen.getByText('Save key'));
+
+    expect(
+      await screen.findByText(en.errorHelp.settings.invalid_values.what),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(en.errorHelp.settings.invalid_values.next),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(en.errorHelp.settings.no_valid_changes.next),
+    ).toBeNull();
+  });
+
   it('OM-09: the raw body is disclosed only through supportDetail, redacted', async () => {
     mockGetProviders.mockResolvedValue(
       providersResponse({
