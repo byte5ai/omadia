@@ -93,6 +93,13 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # The root tsconfig only includes src/, so `typecheck` above never sees
+      # test/ or scripts/. This ratchet typechecks those trees against a
+      # committed baseline: it blocks NEW type errors while the pre-existing
+      # debt burns down (issue #573, same pattern as the decoupling ratchet).
+      - name: Typecheck (test + scripts trees, ratchet)
+        run: npm run typecheck:test
+
       - name: Test (node --test via tsx)
         run: npm run test
 
