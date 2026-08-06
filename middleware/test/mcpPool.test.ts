@@ -1,9 +1,14 @@
-import { describe, it } from 'node:test';
+import { describe, it, after, before, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+
+import express from 'express';
+import type { Express } from 'express';
 
 import {
   McpManager,
@@ -11,6 +16,8 @@ import {
   type McpAuthProvider,
   type McpServerConfig,
 } from '@omadia/orchestrator';
+
+import { createAgentBuilderRouter } from '../src/routes/agentBuilder.js';
 
 /**
  * Connection-lifetime rules of the MCP pool (issue #563).
@@ -22,7 +29,16 @@ import {
  * fixture appends to is the spawn counter, so "one process per server" is
  * asserted on process identity, not on an internal map.
  *
- * Network-free: stdio only, no ports, no external I/O.
+ * FOOTPRINT: `npm test` runs one OS process per test *file*, all of them in
+ * parallel, and this is the only file in the suite that spawns grandchildren.
+ * It therefore keeps both halves of the issue — the pool rules and the route
+ * handlers that drive them — in a single file, runs its suites at
+ * `concurrency: 1`, and boots exactly one loopback listener for all three
+ * route assertions. Splitting this back into two files buys nothing and costs
+ * the timing-sensitive suites elsewhere in the repo real wall-clock; AGENTS.md
+ * documents that cross-file pollution as a known, still-open bug class.
+ *
+ * No external I/O: stdio children plus one 127.0.0.1 listener.
  */
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'stdioMcpServer.mjs');
@@ -108,8 +124,11 @@ async function bench(): Promise<Bench> {
   };
 }
 
-describe('McpManager connection pooling (#563)', () => {
-  it('spawns ONE stdio child for two different bearer tokens (AC1)', async () => {
+// `concurrency: 1` is the subtest default, but it is spelled out because it is
+// load-bearing here: these tests count child processes, so overlapping them
+// would both break the counting and multiply this file's footprint.
+describe('McpManager connection pooling (#563)', { concurrency: 1 }, () => {
+  it('spawns ONE stdio child for two tokens and kills it on closeAll (AC1, AC4)', async () => {
     const { marker, cleanup } = await bench();
     const log = marker('single');
     const manager = new McpManager({ auth: authWithTokens('token-a', 'token-b') });
@@ -121,6 +140,17 @@ describe('McpManager connection pooling (#563)', () => {
       // sees the token, so a token-keyed pool bought a second identical child.
       assert.equal((await readStarts(log)).length, 1);
       assert.equal(manager.poolSize, 1);
+
+      // AC4 rides on this child rather than spawning one of its own: the
+      // shutdown rule is about the pooled process, and this IS a pooled
+      // process.
+      const [pid] = await readPids(log);
+      assert.ok(pid !== undefined && Number.isInteger(pid), 'fixture must report its pid');
+      assert.equal(isDead(pid), false);
+
+      await manager.closeAll();
+      assert.equal(manager.poolSize, 0);
+      await waitFor(`pid ${String(pid)} to exit`, () => isDead(pid), 2_000);
     } finally {
       await manager.closeAll();
       await cleanup();
@@ -186,25 +216,6 @@ describe('McpManager connection pooling (#563)', () => {
     }
   });
 
-  it('terminates pooled stdio children on closeAll (AC4)', async () => {
-    const { marker, cleanup } = await bench();
-    const log = marker('shutdown');
-    const manager = new McpManager({ auth: authWithTokens('token-a') });
-    try {
-      assert.equal(await manager.callTool(stdioServer('bd91a4c7-shutdown', log), 'ping', {}), 'pong');
-      const [pid] = await readPids(log);
-      assert.ok(pid !== undefined && Number.isInteger(pid), 'fixture must report its pid');
-      assert.equal(isDead(pid), false);
-
-      await manager.closeAll();
-      assert.equal(manager.poolSize, 0);
-      await waitFor(`pid ${String(pid)} to exit`, () => isDead(pid), 2_000);
-    } finally {
-      await manager.closeAll();
-      await cleanup();
-    }
-  });
-
   it('drops the failing server on a rejected token and nothing else (AC5)', async () => {
     const { marker, cleanup } = await bench();
     const logOk = marker('ok');
@@ -230,5 +241,122 @@ describe('McpManager connection pooling (#563)', () => {
       await manager.closeAll();
       await cleanup();
     }
+  });
+});
+
+/**
+ * Server-state mutations must reach the live connection (issue #563).
+ *
+ * `mcpConfigService` documents that a config change applies on the next call,
+ * but nothing dropped the pooled connection, so a deleted / reconfigured /
+ * disconnected server kept being served by a client holding the OLD command,
+ * env, headers and bearer token. These tests assert at the ROUTE boundary —
+ * the boundary the operator actually crosses — that each of the three mutating
+ * handlers announces the change exactly once, for its own server id.
+ */
+
+const SERVER_ID = '7c1a9f10-4d0e-4a71-9c0b-2f5a1e3b8d44';
+
+function serverRow(): Record<string, unknown> {
+  return {
+    id: SERVER_ID,
+    name: 'fixture-server',
+    transport: 'stdio',
+    endpoint: 'node ./server.mjs',
+    headers: {},
+    secretRef: null,
+    status: 'enabled',
+    lastDiscoveredAt: null,
+    discoveredTools: [],
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    source: 'manual',
+    registryId: null,
+    license: null,
+    author: null,
+    sourceUrl: null,
+    privacyBypass: false,
+    kgIngest: false,
+    configSchema: [],
+    config: {},
+  };
+}
+
+/** Minimal stub of the store surface the three handlers touch. Anything else
+ *  is absent, so the harness cannot silently drift onto another code path.
+ *  Every stub is stateless, which is what lets the three tests share one
+ *  listener instead of booting — and leaking — three. */
+function makeStubGraph(): Record<string, unknown> {
+  return {
+    listMcpServers: () => Promise.resolve([serverRow()]),
+    deleteMcpServer: () => Promise.resolve(),
+    setMcpServerConfig: () => Promise.resolve(),
+    setMcpServerConfigSchema: () => Promise.resolve(),
+    bumpMcpGrantEpoch: () => Promise.resolve(),
+    deleteMcpOAuthToken: () => Promise.resolve(),
+    // Read by refreshMcpGrantPolicy on the config-save path.
+    listMcpToolVerdicts: () => Promise.resolve([]),
+    listMcpToolVerdictAcks: () => Promise.resolve([]),
+  };
+}
+
+describe('MCP server mutations invalidate the pooled connection (#563)', { concurrency: 1 }, () => {
+  const changed: string[] = [];
+  let server: Server | undefined;
+  let baseUrl = '';
+
+  before(async () => {
+    const app: Express = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/operator',
+      createAgentBuilderRouter({
+        getConfigStore: () => ({}) as never,
+        getGraphStore: () => makeStubGraph() as never,
+        getRegistry: () => undefined,
+        onMcpServerChanged: (serverId: string) => changed.push(serverId),
+      }),
+    );
+    const started = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, () => resolve(s));
+    });
+    server = started;
+    baseUrl = `http://127.0.0.1:${String((started.address() as AddressInfo).port)}`;
+  });
+
+  after(async () => {
+    const running = server;
+    server = undefined;
+    if (running) await new Promise<void>((resolve) => running.close(() => resolve()));
+  });
+
+  beforeEach(() => {
+    changed.length = 0;
+  });
+
+  it('DELETE /mcp-servers/:id announces the deleted server once', async () => {
+    const res = await fetch(`${baseUrl}/api/v1/operator/mcp-servers/${SERVER_ID}`, {
+      method: 'DELETE',
+    });
+    assert.equal(res.status, 204);
+    assert.deepEqual(changed, [SERVER_ID]);
+  });
+
+  it('PUT /mcp-servers/:id/config announces the reconfigured server once', async () => {
+    const res = await fetch(`${baseUrl}/api/v1/operator/mcp-servers/${SERVER_ID}/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ config: { API_BASE: 'https://example.invalid' } }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(changed, [SERVER_ID]);
+  });
+
+  it('DELETE /mcp-servers/:id/token announces the disconnected server once', async () => {
+    const res = await fetch(`${baseUrl}/api/v1/operator/mcp-servers/${SERVER_ID}/token`, {
+      method: 'DELETE',
+    });
+    assert.equal(res.status, 204);
+    assert.deepEqual(changed, [SERVER_ID]);
   });
 });
