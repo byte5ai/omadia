@@ -128,6 +128,9 @@ export {
   McpManager,
   mcpNativeHandler,
   mcpNativeToolName,
+  // Exported so the no-collateral-invalidation rule of `McpManager.close(id)`
+  // can be unit tested and reused by ops tooling (issue #563).
+  mcpPoolScopeMatches,
   mcpToolToLocalSubAgentTool,
   mcpToolToNativeSpec,
 } from './mcp/mcpClient.js';
