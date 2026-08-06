@@ -17,13 +17,13 @@ const {
   mockStartTurn,
   mockAbort,
   mockIsActive,
-  mockMutateActive,
+  mockMutateById,
   mockSteerActiveTurn,
 } = vi.hoisted(() => ({
   mockStartTurn: vi.fn(),
   mockAbort: vi.fn(),
   mockIsActive: vi.fn(() => false),
-  mockMutateActive: vi.fn(),
+  mockMutateById: vi.fn(),
   mockSteerActiveTurn: vi.fn(),
 }));
 
@@ -71,7 +71,7 @@ vi.mock('../../_lib/chatSessionsContext', () => ({
     renameSession: vi.fn(),
     setActive: vi.fn(),
     clearMessages: vi.fn(),
-    mutateActive: mockMutateActive,
+    mutateById: mockMutateById,
   }),
 }));
 

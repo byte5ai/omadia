@@ -1,7 +1,11 @@
 import { act, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { UseChatSessionsResult } from '../../_lib/chatSessions';
+import type {
+  ChatSession,
+  Message,
+  UseChatSessionsResult,
+} from '../../_lib/chatSessions';
 import {
   StreamStoreProvider,
   useStreamStore,
@@ -44,16 +48,78 @@ function captureStore(): { latest: () => StoreValue } {
   };
 }
 
-/**
- * Minimal chat-sessions stub. `runOneTurn` only ever touches `mutateActive`
- * (via applyStreamEvent + finalizePending) and `persistActive`; everything else
- * on the context is irrelevant to the store-outcome decision under test.
- */
-function stubSessions(): UseChatSessionsResult {
+interface StatefulSessions {
+  sessions: UseChatSessionsResult;
+  /** Live transcript, so a test can assert the content actually landed. */
+  get(id: string): ChatSession | undefined;
+  /** Every id `runOneTurn` asked to persist, in call order. */
+  persisted: string[];
+}
+
+function pendingMessage(): Message {
   return {
-    mutateActive: vi.fn(),
-    persistActive: vi.fn().mockResolvedValue(undefined),
+    id: 'pending-1',
+    role: 'assistant',
+    content: '',
+    tools: [],
+    startedAt: 1_000,
+    streaming: true,
+  };
+}
+
+/**
+ * Stateful chat-sessions fake. A `vi.fn()`-only stub can assert that
+ * `mutateById` was called but not that the answer arrived, which is precisely
+ * the failure mode of #617 — so this one holds a real transcript and applies
+ * the mutator with production semantics (`id` match, otherwise untouched).
+ *
+ * `activeId` is deliberately a session that is NOT the one being streamed:
+ * that is the "user switched chat tabs mid-stream" situation.
+ */
+function statefulSessions(activeId = 'other'): StatefulSessions {
+  let state: ChatSession[] = [
+    {
+      id: 'other',
+      title: 'Foreground',
+      createdAt: 1_000,
+      updatedAt: 1_000,
+      messages: [],
+    },
+    {
+      id: 'bg',
+      title: 'Background',
+      createdAt: 1_000,
+      updatedAt: 1_000,
+      messages: [pendingMessage()],
+    },
+    {
+      id: 'session-403',
+      title: '#403',
+      createdAt: 1_000,
+      updatedAt: 1_000,
+      messages: [pendingMessage()],
+    },
+  ];
+  const persisted: string[] = [];
+
+  const sessions = {
+    activeId,
+    mutateById(
+      sessionId: string,
+      mutator: (session: ChatSession) => ChatSession,
+    ): void {
+      state = state.map((s) => (s.id === sessionId ? mutator(s) : s));
+    },
+    persistById(sessionId: string): void {
+      persisted.push(sessionId);
+    },
   } as unknown as UseChatSessionsResult;
+
+  return {
+    sessions,
+    get: (id: string) => state.find((s) => s.id === id),
+    persisted,
+  };
 }
 
 const GENERIC_FALLBACK = 'Something went wrong talking to the provider.';
@@ -75,8 +141,12 @@ function ndjson200(body: string): Response {
  * sessions/translations. Returns the sessionId so the caller can read the
  * terminal record.
  */
-async function drive(store: StoreValue, response: Response): Promise<string> {
-  const sessionId = 'session-403';
+async function drive(
+  store: StoreValue,
+  response: Response,
+  opts: { sessionId?: string; sessions?: StatefulSessions } = {},
+): Promise<string> {
+  const sessionId = opts.sessionId ?? 'session-403';
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(response);
 
   let claim: ClaimedRequest | undefined;
@@ -87,7 +157,11 @@ async function drive(store: StoreValue, response: Response): Promise<string> {
   if (!claim) throw new Error('claimRequest returned nothing');
 
   const depsRef: DepsRef = {
-    current: { t: tStub, sessions: stubSessions(), store },
+    current: {
+      t: tStub,
+      sessions: (opts.sessions ?? statefulSessions()).sessions,
+      store,
+    },
   };
   await act(async () => {
     await runOneTurn(claim as ClaimedRequest, depsRef);
@@ -153,5 +227,78 @@ describe('runOneTurn — in-band error on a 200 stream (#403)', () => {
     const record = latest().get(sessionId);
     expect(record?.phase).toBe('done');
     expect(record?.error).toBeUndefined();
+  });
+});
+
+/**
+ * #617 — a turn whose session is NOT the active one used to write into the
+ * void: every store write went through the active-session mutator, so the
+ * answer arrived in the tab marker but never in the transcript. These tests drive a real
+ * background turn ('bg' streaming while 'other' is active) against a stateful
+ * sessions fake and assert the content landed.
+ */
+describe('runOneTurn — background session (#617)', () => {
+  it('folds a background turn into its own session, not the active one', async () => {
+    const { latest } = captureStore();
+    const store = latest();
+    const fake = statefulSessions('other');
+
+    const body = [
+      JSON.stringify({ type: 'text_delta', text: 'partial ' }),
+      JSON.stringify({ type: 'text_delta', text: 'stream' }),
+      JSON.stringify({
+        type: 'done',
+        answer: 'the authoritative answer',
+        toolCalls: 0,
+        iterations: 1,
+      }),
+      '',
+    ].join('\n');
+
+    await drive(store, ndjson200(body), { sessionId: 'bg', sessions: fake });
+
+    const pending = fake.get('bg')?.messages[0];
+    expect(pending?.content).toBe('the authoritative answer');
+    expect(pending?.streaming).toBe(false);
+    // The active session must not have been touched at all.
+    expect(fake.get('other')?.messages).toHaveLength(0);
+  });
+
+  it('keeps the streamed deltas when the stream ends without a done event', async () => {
+    const { latest } = captureStore();
+    const store = latest();
+    const fake = statefulSessions('other');
+
+    const body = [
+      JSON.stringify({ type: 'text_delta', text: 'half an ' }),
+      JSON.stringify({ type: 'text_delta', text: 'answer' }),
+      '',
+    ].join('\n');
+
+    await drive(store, ndjson200(body), { sessionId: 'bg', sessions: fake });
+
+    const pending = fake.get('bg')?.messages[0];
+    expect(pending?.content).toBe('half an answer');
+    // finalizePending must clear the flag even without `done`, otherwise the
+    // bubble animates its dots forever.
+    expect(pending?.streaming).toBe(false);
+  });
+
+  it('persists the session the turn belongs to', async () => {
+    const { latest } = captureStore();
+    const store = latest();
+    const fake = statefulSessions('other');
+
+    const body = `${JSON.stringify({
+      type: 'done',
+      answer: 'persisted',
+      toolCalls: 0,
+      iterations: 1,
+    })}\n`;
+
+    await drive(store, ndjson200(body), { sessionId: 'bg', sessions: fake });
+
+    expect(fake.persisted).toEqual(['bg']);
+    expect(fake.persisted).not.toContain('other');
   });
 });

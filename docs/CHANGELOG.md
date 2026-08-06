@@ -18,6 +18,26 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — background chat turns write into their own session (#617)
+
+- A turn that was still streaming when the user switched to another chat tab
+  lost its content: every transcript write went through the active-session
+  helpers, so the fold landed in whichever session happened to be in the
+  foreground — nowhere at all, in practice. The tab marker reported a finished
+  answer that the transcript never received, and the pending bubble stayed
+  stuck in its `streaming` state.
+- The chat-sessions store now exposes `mutateById(sessionId, mutator)` and
+  `persistById(sessionId)`; `applyStreamEvent`, `finalizePending` and the
+  stream runner's terminal persist all address the session the turn belongs to.
+  `mutateActive` / `persistActive` are gone — the active-scoped call sites on
+  the chat page pass their id explicitly.
+- `persistById` also fixes a second half of the bug: it enqueues rather than
+  reading an effect-synced ref, so the PUT carries state from *after* the
+  `done` fold committed. Without that, a background answer survived in memory
+  but not across a reload — a background turn gets no corrective follow-up turn
+  to repair the snapshot. A session deleted mid-stream is never resurrected:
+  the queued write is dropped when the id is gone.
+
 ### Changed — background chat streams surface in-context, not as toasts (#286)
 
 - **Removed `StreamToasts`** (the bottom-right floating cards for background

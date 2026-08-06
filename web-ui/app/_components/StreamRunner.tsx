@@ -238,7 +238,7 @@ export async function runOneTurn(
     }
   } finally {
     finalizePending(depsRef.current.sessions, sessionId, pendingMessageId);
-    void depsRef.current.sessions.persistActive();
+    depsRef.current.sessions.persistById(sessionId);
   }
 }
 
@@ -247,18 +247,15 @@ function finalizePending(
   sessionId: string,
   pendingMessageId: string,
 ): void {
-  sessions.mutateActive((session) => {
-    if (session.id !== sessionId) return session;
-    return {
-      ...session,
-      messages: session.messages.map((m) =>
-        m.id === pendingMessageId && m.streaming
-          ? { ...m, streaming: false, finishedAt: Date.now() }
-          : m,
-      ),
-      updatedAt: Date.now(),
-    };
-  });
+  sessions.mutateById(sessionId, (session) => ({
+    ...session,
+    messages: session.messages.map((m) =>
+      m.id === pendingMessageId && m.streaming
+        ? { ...m, streaming: false, finishedAt: Date.now() }
+        : m,
+    ),
+    updatedAt: Date.now(),
+  }));
 }
 
 interface AccumulatorState {
