@@ -206,6 +206,66 @@ describe('public MCP endpoint — privacy', () => {
     assert.equal(executions, 1, 'the write executed twice — no replay actually happened');
   });
 
+  // The ordering flaw the replay exemption originally introduced, and the case
+  // the happy-path replay test above cannot see because it starts from an
+  // already-masked cached body.
+  //
+  // The store used to retain the dispatch result BEFORE the endpoint asserted
+  // that masking ran. So an unmasked body was cached, the first request was
+  // correctly refused — and the retry replayed that raw body, flagged
+  // `replayed` and therefore exempt from the very assertion that had just
+  // rejected it. The assertion now runs inside the store's `exec`, so a body
+  // that fails it is never retained and there is nothing for a replay to
+  // smuggle back out.
+  it('does not let a refused unmasked result be replayed on retry', async (t) => {
+    // `withPrivacy` omitted — the interface permits it, and then the gate's
+    // handle never reaches the dispatcher, so masking cannot run.
+    const unmaskedDispatcher: import('../../src/mcp/publicMcpServer.js').PublicMcpDispatcher = {
+      dispatch: async (_name, _input, options) => {
+        const produced = { content: RAW_RESULT };
+        options?.validateResult?.(produced);
+        return produced;
+      },
+      listDispatchableToolSpecs: () => [
+        {
+          name: WRITE_TOOL,
+          description: 'w',
+          input_schema: { type: 'object' as const, properties: {} },
+        },
+      ],
+      isWriteCapable: () => true,
+    };
+    const h = await start(options({ dispatchers: { sales: unmaskedDispatcher } }), t);
+    if (!h) return;
+
+    const withKey = (id: number): unknown => ({
+      jsonrpc: '2.0',
+      id,
+      method: 'tools/call',
+      params: { name: WRITE_TOOL, arguments: {}, _meta: { idempotencyKey: 'poison-1' } },
+    });
+
+    const first = await h.rpc(withKey(1), { token: KEY_TOKEN });
+    assert.match(
+      rpcErrorMessage(first.payload) ?? '',
+      /privacy masking/,
+      'an unmasked result must be refused on the first call',
+    );
+
+    const retry = await h.rpc(withKey(2), { token: KEY_TOKEN });
+    const retryBody = JSON.stringify(retry.payload);
+    assert.doesNotMatch(
+      retryBody,
+      /sensitive\.person@customer\.example/,
+      'the retry replayed the cached UNMASKED body past the assertion',
+    );
+    assert.match(
+      rpcErrorMessage(retry.payload) ?? '',
+      /privacy masking/,
+      'the retry must be refused too, not served from cache',
+    );
+  });
+
   /** Belt-and-braces: the raw string must not appear ANYWHERE in the response
    *  body, not merely outside the content block. */
   it('leaks no PII anywhere in the raw HTTP body', async (t) => {

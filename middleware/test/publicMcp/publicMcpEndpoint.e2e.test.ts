@@ -896,6 +896,54 @@ describe('public MCP endpoint', () => {
     assert.equal(audit[0]?.actingIdentity, `apikey:${KEY_ID}`);
   });
 
+  // A timeout is an `McpError` minted inside `withTimeout`, which records
+  // nothing. The catch used to treat "is an McpError" as "already audited", so
+  // a timed-out call left NO row — the worst case being a write whose external
+  // mutation committed while the response hung: the caller gets a timeout, the
+  // work may finish later, and nothing anywhere records that it was attempted.
+  it('records an audit row for a call that times out', async (t) => {
+    const audit: PublicMcpAuditEntry[] = [];
+    const h = await start(
+      baseOptions({
+        audit,
+        toolTimeoutMs: 60,
+        dispatchers: {
+          sales: fakeDispatcher([
+            { name: READ_TOOL, handle: () => new Promise(() => {/* never settles */}) },
+          ]),
+        },
+      }),
+      t,
+    );
+    if (!h) return;
+
+    const { payload } = await h.rpc(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
+    assert.match(rpcErrorMessage(payload) ?? '', /exceeded the 60ms public MCP timeout/);
+    assert.equal(audit.length, 1, 'a timed-out call produced no audit row');
+    assert.equal(audit[0]?.ok, false);
+    assert.match(audit[0]?.error ?? '', /timeout/i);
+  });
+
+  it('records exactly ONE row for a masking refusal, not zero and not two', async (t) => {
+    // The masking assertion now throws from inside `dispatch` (so a bad body is
+    // never cached), which moved it out of reach of the explicit record that
+    // used to sit beside the check. The audit flag is what keeps it at one.
+    const audit: PublicMcpAuditEntry[] = [];
+    const h = await start(
+      baseOptions({
+        audit,
+        allowWithoutPrivacyMasking: false,
+        privacyService: undefined,
+      }),
+      t,
+    );
+    if (!h) return;
+
+    await h.rpc(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
+    assert.equal(audit.length, 1, `expected exactly one row, got ${String(audit.length)}`);
+    assert.equal(audit[0]?.ok, false);
+  });
+
   it('records a REFUSED call too — a refusal with no trace is uninvestigable', async (t) => {
     const audit: PublicMcpAuditEntry[] = [];
     const h = await start(

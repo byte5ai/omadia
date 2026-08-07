@@ -119,6 +119,29 @@ export interface ToolDispatchOptions {
    * flaky-proxy retry mitigation must stay in force for them.
    */
   readonly idempotencyKey?: string;
+  /**
+   * Caller's own admissibility check, run on a freshly-produced result BEFORE
+   * the idempotency store retains it. Throw to reject.
+   *
+   * Exists because "may this body be returned" and "may this body be CACHED"
+   * are the same question, and asking it only at the caller answers it too
+   * late. The public MCP endpoint asserts that privacy masking actually ran; it
+   * does so after `dispatch()` returns, by which point the store has already
+   * retained the result. An unmasked body was therefore cached, the first
+   * request correctly refused — and the retry replayed the cached RAW body,
+   * flagged `replayed` and so exempt from the very assertion that had just
+   * rejected it.
+   *
+   * Running it inside the store's `exec` makes a rejected result throw before
+   * retention, and the store does not keep a rejected outcome. That also covers
+   * the concurrent duplicate, which collapses onto the same execution and would
+   * otherwise be handed the poisoned body before any after-the-fact
+   * invalidation could run.
+   *
+   * Applied on the non-idempotent path too, so the check does not depend on
+   * whether a caller happened to send a key.
+   */
+  readonly validateResult?: (result: ToolDispatchResult) => void;
 }
 
 export class ToolDispatchService {
@@ -238,12 +261,21 @@ export class ToolDispatchService {
         key,
         name,
         input,
-        () =>
+        async () => {
           // The scope must wrap the EXECUTION, not the cache lookup, so the MCP
           // transport layer beneath the handler can read it and suppress its retry.
-          runWithIdempotencyScope({ key, toolName: name, exactlyOnce: true }, () =>
-            this.dispatchInner(name, input, options),
-          ),
+          const produced = await runWithIdempotencyScope(
+            { key, toolName: name, exactlyOnce: true },
+            () => this.dispatchInner(name, input, options),
+          );
+          // INSIDE the exec on purpose — see `validateResult`. A throw here
+          // happens before the store retains anything, so a body the caller
+          // would refuse can never be replayed back to it later, and a
+          // concurrent duplicate collapsing onto this execution inherits the
+          // rejection rather than the body.
+          options?.validateResult?.(produced);
+          return produced;
+        },
         // The trust boundary. `caller.principal` is the API-key id on the public
         // MCP path, so two keys cannot collide on a guessable key like
         // `invoice-42` and replay each other's writes. Absent caller ⇒ the
@@ -256,7 +288,12 @@ export class ToolDispatchService {
       // masking". See `ToolDispatchResult.replayed`.
       return outcome.replayed ? { ...outcome.result, replayed: true } : outcome.result;
     }
-    return this.dispatchInner(name, input, options);
+    const produced = await this.dispatchInner(name, input, options);
+    // Same check on the path with no idempotency key, so a caller's
+    // admissibility rule does not silently depend on whether the request
+    // happened to carry one.
+    options?.validateResult?.(produced);
+    return produced;
   }
 
   private async dispatchInner(

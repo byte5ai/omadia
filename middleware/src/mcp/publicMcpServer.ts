@@ -690,6 +690,27 @@ export class PublicMcpServer {
       // Applied by the dispatch layer to write-capable tools ONLY, and only
       // when an idempotency store is wired. Advisory — see the README.
       ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+      // The masking assertion, moved to where it can also stop a bad body being
+      // CACHED. Running it only after `dispatch()` returned was too late: the
+      // idempotency store had already retained an unmasked result, so the first
+      // request was correctly refused and the RETRY replayed that raw body —
+      // flagged `replayed`, and therefore exempt from the assertion that had
+      // just rejected it. Throwing from inside the store's `exec` means nothing
+      // is retained, and a concurrent duplicate inherits the rejection instead
+      // of the body. The post-dispatch check below stays as defence in depth.
+      validateResult: (produced) => {
+        this.assertMaskingCrossed(produced, gate);
+      },
+    };
+
+    // One row per call, written exactly once. The flag is what lets the catch
+    // below audit a failure without risking a double-count, whatever kind of
+    // error it was.
+    let audited = false;
+    const audit = (ok: boolean, error: string | null): void => {
+      if (audited) return;
+      audited = true;
+      this.record(principal, binding.agentId, name, ok, error, startedAt, isWrite);
     };
 
     this.inFlight += 1;
@@ -721,95 +742,30 @@ export class PublicMcpServer {
       void work.then(releaseSlot, releaseSlot);
       const result = await this.withTimeout(name, work);
 
-      // FAIL CLOSED. The gate turned a masking exception into a placeholder
-      // rather than letting the dispatcher's fail-open branch return the raw
-      // rows, so the result in hand may be that placeholder — or, worse if this
-      // check were missing, a partially-masked body. Discard it entirely.
-      if (gate?.maskingFailed() === true) {
-        this.record(
-          principal,
-          binding.agentId,
-          name,
-          false,
-          'privacy masking failed',
-          startedAt,
-          isWrite,
-        );
-        throw new McpError(
-          ErrorCode.InternalError,
-          'privacy masking failed for this tool result — the result was discarded rather than returned unmasked',
-        );
-      }
+      // Defence in depth. `validateResult` already ran this on the freshly
+      // produced body, inside the idempotency `exec` so a refused result is
+      // never retained. Repeating it here covers the replay path and any future
+      // dispatcher that ignores the option, and costs two boolean reads.
+      this.assertMaskingCrossed(result, gate);
 
-      // FAIL CLOSED, second half: the boundary must have been CROSSED, not
-      // merely "not failed".
-      //
-      // `maskingFailed()` cannot tell "masking succeeded" from "masking never
-      // ran", and "never ran" is the shape every leak in this family has taken:
-      // a dispatch branch that skipped `afterDispatch` entirely (the throwing
-      // -handler bug), a handler returning a non-string that the masker declines
-      // to walk, an intern-exempt name that slipped past the allowlist. In each
-      // case the raw bytes are already in hand and every check above is happy.
-      //
-      // So gate on the positive signal instead. `masked()` is true only when
-      // `internToolResultV4` actually returned a digest for this dispatch, which
-      // is the one thing that cannot be true by accident.
-      //
-      // TWO exceptions, both narrow.
-      //
-      // 1. `origin === 'dispatcher'` marks content the dispatch layer authored
-      //    itself — "unknown tool", "plugin not ready" — which names only the
-      //    tool the caller asked for and the owning plugin id, and carries no
-      //    tool data for masking to have crossed. Anything else, INCLUDING an
-      //    `origin`-less result from a dispatcher that predates the field, must
-      //    have been masked.
-      //
-      // 2. `replayed` marks an idempotency cache hit: no handler ran for THIS
-      //    request, so the per-request gate cannot have observed a masking call
-      //    however well the cached body was masked when it was produced. Without
-      //    this the endpoint refuses a legitimate retry with "privacy masking did
-      //    not run" — the worst possible answer to a retried write, because the
-      //    caller learns nothing about whether the mutation committed. The body
-      //    is safe: it crossed this same boundary on the way in, and since
-      //    idempotency is namespaced by principal a replay can only ever be
-      //    returned to the principal that produced it. What does NOT carry over
-      //    is digest resolution — those bindings belong to the earlier turn.
-      if (
-        gate !== undefined &&
-        result.origin !== 'dispatcher' &&
-        result.replayed !== true &&
-        !gate.masked()
-      ) {
-        this.record(
-          principal,
-          binding.agentId,
-          name,
-          false,
-          'privacy masking skipped',
-          startedAt,
-          isWrite,
-        );
-        throw new McpError(
-          ErrorCode.InternalError,
-          'privacy masking did not run for this tool result — the result was discarded rather than returned unmasked',
-        );
-      }
-
-      this.record(
-        principal,
-        binding.agentId,
-        name,
+      audit(
         result.isError !== true,
         result.isError === true ? 'tool reported an error' : null,
-        startedAt,
-        isWrite,
       );
       return result;
     } catch (error) {
-      // An McpError raised above is already audited; re-auditing would double
-      // -count it. Only genuinely unexpected throws land a second row.
-      if (!(error instanceof McpError)) {
-        this.record(principal, binding.agentId, name, false, String(error), startedAt, isWrite);
+      // EVERY failure lands exactly one row, and the bookkeeping is a flag
+      // rather than "is it an McpError".
+      //
+      // That heuristic was wrong in both directions. It over-assumed: the
+      // TIMEOUT is an `McpError` minted inside `withTimeout`, which audits
+      // nothing — so a write that may well have committed upstream produced no
+      // row at all. And it grew a second hole when the masking assertion moved
+      // into `validateResult`: that throw now surfaces from inside `dispatch`,
+      // so it never reaches the explicit record that used to sit beside the
+      // check.
+      if (!audited) {
+        audit(false, this.maskingRefusalReason(error, gate) ?? String(error));
       }
       throw error;
     }
@@ -862,6 +818,79 @@ export class PublicMcpServer {
    * Takes the already-started promise rather than a thunk, so there is exactly
    * one execution for both the race and the slot release to observe.
    */
+  /**
+   * FAIL CLOSED, both halves. Throws rather than returning a verdict so it can
+   * be handed to `ToolDispatchOptions.validateResult` and run BEFORE the
+   * idempotency store retains anything — see that field for why "may this be
+   * returned" and "may this be cached" have to be the same question.
+   *
+   * Half one: the gate turned a masking exception into a placeholder rather
+   * than letting the dispatcher's fail-open branch return the raw rows, so the
+   * body in hand may be that placeholder — or, worse if this were missing, a
+   * partially-masked one. Discard it entirely.
+   *
+   * Half two: the boundary must have been CROSSED, not merely "not failed".
+   * `maskingFailed()` cannot tell "masking succeeded" from "masking never ran",
+   * and "never ran" is the shape every leak in this family has taken: a
+   * dispatch branch that skipped `afterDispatch` (the throwing-handler bug), a
+   * handler returning a non-string the masker declines to walk, an
+   * intern-exempt name that slipped past the allowlist. In each case the raw
+   * bytes are already in hand and every other check is happy. So gate on the
+   * POSITIVE signal: `masked()` is true only when `internToolResultV4` actually
+   * returned a digest for this dispatch, which cannot be true by accident.
+   *
+   * TWO exceptions, both narrow.
+   *
+   * 1. `origin === 'dispatcher'` marks content the dispatch layer authored
+   *    itself — "unknown tool", "plugin not ready" — naming only the tool asked
+   *    for and the owning plugin id, with no tool data for masking to have
+   *    crossed. Anything else, INCLUDING an `origin`-less result from a
+   *    dispatcher predating the field, must have been masked.
+   *
+   * 2. `replayed` marks an idempotency cache hit: no handler ran for THIS
+   *    request, so the per-request gate cannot have observed a masking call
+   *    however well the cached body was masked when produced. Without it a
+   *    legitimate retry is refused with "privacy masking did not run" — the
+   *    worst answer to a retried write, since the caller learns nothing about
+   *    whether the mutation committed. Safe ONLY because this same assertion
+   *    now runs before retention: a body that would fail it never enters the
+   *    cache, so `replayed` cannot smuggle one back out.
+   */
+  /** Audit reason for a masking refusal, or `undefined` when `error` is
+   *  something else. Keeps the two refusals distinguishable in `mcp_call_log`
+   *  now that they surface from inside `dispatch` rather than beside the check. */
+  private maskingRefusalReason(
+    error: unknown,
+    gate: PublicMcpPrivacyGate | undefined,
+  ): string | undefined {
+    if (!(error instanceof McpError)) return undefined;
+    if (!/privacy masking/.test(error.message)) return undefined;
+    return gate?.maskingFailed() === true ? 'privacy masking failed' : 'privacy masking skipped';
+  }
+
+  private assertMaskingCrossed(
+    result: ToolDispatchResult,
+    gate: PublicMcpPrivacyGate | undefined,
+  ): void {
+    if (gate?.maskingFailed() === true) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        'privacy masking failed for this tool result — the result was discarded rather than returned unmasked',
+      );
+    }
+    if (
+      gate !== undefined &&
+      result.origin !== 'dispatcher' &&
+      result.replayed !== true &&
+      !gate.masked()
+    ) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        'privacy masking did not run for this tool result — the result was discarded rather than returned unmasked',
+      );
+    }
+  }
+
   private async withTimeout(
     toolName: string,
     work: Promise<ToolDispatchResult>,

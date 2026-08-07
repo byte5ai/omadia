@@ -91,7 +91,16 @@ function assertLiteralHostAllowed(input: Parameters<typeof fetch>[0]): void {
  */
 export async function readTextCapped(res: Response, maxBytes: number): Promise<string | null> {
   const declared = Number(res.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > maxBytes) return null;
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    // Returning without cancelling leaves the body attached and its undici
+    // socket occupied — the caller then clears its abort timer, so nothing ever
+    // tears it down. A server answering `Content-Length: 100000000` and then
+    // trickling forever would pin one connection per probe until the remote
+    // closed or GC got round to it, which is socket exhaustion by a slower
+    // route than the one the cap was added to stop.
+    await res.body?.cancel().catch(() => undefined);
+    return null;
+  }
 
   const body: ReadableStream<Uint8Array> | null = res.body;
   if (body === null) {
