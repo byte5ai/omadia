@@ -8,6 +8,11 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 import type { AuthServerMetadata } from './mcpAuthDiscovery.js';
+import { guardedOutboundFetch, readTextCapped } from './guardedOutboundFetch.js';
+
+/** Token and registration responses are small JSON documents by spec; 256 KB is
+ *  already generous. Matches `MAX_METADATA_BYTES` in `mcpAuthDiscovery`. */
+const MAX_TOKEN_RESPONSE_BYTES = 256 * 1024;
 import { assertPublicHttpsUrl } from './ssrfGuard.js';
 
 export interface OAuthClientCredentials {
@@ -60,7 +65,11 @@ export class McpOAuthClient {
   private readonly timeoutMs: number;
 
   constructor(deps?: McpOAuthClientDeps) {
-    this.fetchImpl = deps?.fetchImpl ?? globalThis.fetch;
+    // Guarded by default (see `guardedOutboundFetch`). This client POSTs
+    // authorization codes, PKCE verifiers, refresh tokens and the client secret
+    // to an endpoint named by a discovered document — the one outbound path
+    // where a rebind costs credentials. Tests still inject their own.
+    this.fetchImpl = deps?.fetchImpl ?? guardedOutboundFetch;
     this.timeoutMs = deps?.timeoutMs ?? 15_000;
   }
 
@@ -185,7 +194,16 @@ export class McpOAuthClient {
         signal: controller.signal,
         redirect: 'error',
       });
-      const text = await res.text();
+      // Capped while reading. A token endpoint is named by a DISCOVERED
+      // document, so an attacker-controlled host can stream an unbounded body
+      // inside the request timeout; this response previously had no cap at all.
+      const text = await readTextCapped(res, MAX_TOKEN_RESPONSE_BYTES);
+      if (text === null) {
+        throw new McpOAuthError(
+          'token_request_failed',
+          `${url} → response exceeded ${String(MAX_TOKEN_RESPONSE_BYTES)} bytes`,
+        );
+      }
       let doc: Record<string, unknown> = {};
       try {
         doc = JSON.parse(text) as Record<string, unknown>;
@@ -217,7 +235,9 @@ export class McpOAuthClient {
         signal: controller.signal,
         redirect: 'error',
       });
-      const text = await res.text();
+      // Same cap as the token path — a registration endpoint is discovered too.
+      const text = await readTextCapped(res, MAX_TOKEN_RESPONSE_BYTES);
+      if (text === null) return {};
       try {
         return JSON.parse(text) as Record<string, unknown>;
       } catch {

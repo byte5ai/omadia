@@ -55,6 +55,10 @@ import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { Orchestrator } from './orchestrator.js';
 import { InMemoryDirectLineStickyStore } from './directLineSticky.js';
+import {
+  sharedMcpInputReplayer,
+  sharedPendingMcpInputStore,
+} from './mcp/pendingMcpInput.js';
 import { DEFAULT_ORCHESTRATOR_MODEL } from './registry/agentRuntime.js';
 import { ConfigStore } from './registry/configStore.js';
 import {
@@ -583,6 +587,15 @@ export async function activate(
     // in deps means toggling the flag at runtime never strands a binding in a
     // store that has been thrown away.
     directLineStickyStore: new InMemoryDirectLineStickyStore(),
+    // W2-1 (#544) — the SAME store instance the kernel's `McpManager` parks
+    // into, plus the replayer the kernel registered once it had a manager and a
+    // server registry. Unconditional store (empty until something parks);
+    // `buildOrchestrator` only enables the path when BOTH are present, so a
+    // deployment without the kernel wiring stays fully inert.
+    pendingMcpInput: sharedPendingMcpInputStore(),
+    ...(sharedMcpInputReplayer()
+      ? { mcpInputReplay: sharedMcpInputReplayer()! }
+      : {}),
     attachmentReader,
   };
   // Per-turn Sonnet/Opus routing (opt-in). When `orchestrator_model_routing`

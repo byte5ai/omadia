@@ -19,7 +19,7 @@
 # dev-runner-shim). It has ONLY devDependencies (typescript/tsx/@types/node) and
 # no runtime node_modules, so we compile it with tsc and ship the emitted dist/
 # tree — no bundler, and zero runtime dependency surface in the final image.
-FROM node:22.23.1-slim AS shim-builder
+FROM node:22.23.2-slim AS shim-builder
 WORKDIR /build
 COPY middleware/packages/dev-runner-shim/package.json ./
 # No package-lock.json in the workspace package (the root middleware lockfile
@@ -29,7 +29,7 @@ COPY middleware/packages/dev-runner-shim/ ./
 RUN npm run build
 
 # --- runtime stage ----------------------------------------------------------
-FROM node:22.23.1-slim
+FROM node:22.23.2-slim
 # Pin the Claude CLI to the SAME version as the middleware Dockerfile (repo-root
 # ./Dockerfile ARG CLAUDE_CODE_VERSION). Bump both together — a drift here means
 # a dev job runs a different CLI than the rest of the platform.

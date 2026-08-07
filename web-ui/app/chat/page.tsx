@@ -40,6 +40,7 @@ import { isSendKey } from '../_lib/composerKeys';
 import {
   deriveTitle,
   newSessionId,
+  stripStaleInteractives,
   type ChatSession,
   type DiagramAttachment,
   type OutgoingFileAttachment,
@@ -50,10 +51,16 @@ import {
   type ToolEvent,
 } from '../_lib/chatSessions';
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
-import { useStreamStore } from '../_lib/streamStore';
+import { dismissSeenTurns, useStreamStore } from '../_lib/streamStore';
 import { ChoiceCard } from '../_components/ChoiceCard';
+import { McpInputCard } from '../_components/chat/McpInputCard';
 import { DevJobChatCard } from '../_components/devjobs/DevJobChatCard';
 import { parseDevJobStartResult } from '../_components/devjobs/devJobChatCardState';
+import { TaskChatCard } from '../_components/tasks/TaskChatCard';
+import {
+  isTaskStartToolName,
+  parseTaskStartResult,
+} from '../_components/tasks/taskChatCardState';
 import { KgWalkPane } from '../_components/KgWalkPane';
 import { PlanDagPane } from '../_components/PlanDagPane';
 import type {
@@ -185,7 +192,7 @@ export default function ChatPage(): React.ReactElement {
     renameSession,
     setActive,
     clearMessages,
-    mutateActive,
+    mutateById,
   } = useChatSessionsCtx();
   const streamStore = useStreamStore();
   const sending = streamStore.isActive(activeId);
@@ -253,7 +260,7 @@ export default function ChatPage(): React.ReactElement {
   // the user can re-save with their own classification.
   const clearAutoPromoted = useCallback(
     (messageId: string): void => {
-      mutateActive((session) => {
+      mutateById(activeId, (session) => {
         const nextMessages = session.messages.map((m) => {
           if (m.id !== messageId) return m;
           const { autoPromotedMkId: _drop, ...rest } = m;
@@ -262,7 +269,7 @@ export default function ChatPage(): React.ReactElement {
         return { ...session, messages: nextMessages, updatedAt: Date.now() };
       });
     },
-    [mutateActive],
+    [mutateById, activeId],
   );
 
   const send = useCallback(
@@ -290,21 +297,14 @@ export default function ChatPage(): React.ReactElement {
         streaming: true,
       };
 
-      mutateActive((session) => {
-        if (session.id !== targetSessionId) return session;
+      mutateById(targetSessionId, (session) => {
         const isFirst = session.messages.length === 0;
-        // Strip pendingUserChoice AND followUpOptions from older assistant
-        // messages so the button rows disappear as soon as the user commits
-        // to a choice or types a fresh message.
-        const cleanedMessages = session.messages.map((m) => {
-          if (!m.pendingUserChoice && !m.followUpOptions) return m;
-          const {
-            pendingUserChoice: _dropChoice,
-            followUpOptions: _dropFollowUps,
-            ...rest
-          } = m;
-          return rest;
-        });
+        // Strip pendingUserChoice, pendingMcpInput AND followUpOptions from
+        // older assistant messages so the button rows / input forms disappear as
+        // soon as the user commits to a choice or types a fresh message. Lives
+        // in `chatSessions.ts` so it is actually covered by tests — see
+        // `stripStaleInteractives`.
+        const cleanedMessages = stripStaleInteractives(session.messages);
         return {
           ...session,
           title: isFirst ? deriveTitle(trimmed) : session.title,
@@ -339,7 +339,7 @@ export default function ChatPage(): React.ReactElement {
       sending,
       hydrating,
       activeId,
-      mutateActive,
+      mutateById,
       streamStore,
       activeSession.messages.length,
       selectedAgentSlug,
@@ -460,8 +460,30 @@ export default function ChatPage(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSession.messages.length, resetPending]);
 
+  // Every transition that changes which session is active has to run the
+  // dismissal rule, not just tab clicks — otherwise the tab being left keeps a
+  // `done` record and immediately flags itself as unread (issue #286).
   const handleClose = (id: string): void => {
+    // The tab is going away, so no UI can ever surface this record again.
+    // Drop it outright rather than leaving it to occupy one of the store's 12
+    // slots until GC — a run of closes could otherwise evict a still-visible
+    // unread record early. This is display-only; it does not abort the stream.
+    streamStore.dismiss(id);
     void deleteSession(id);
+  };
+
+  const handleCreate = (): void => {
+    // Creating a chat switches away from the active tab exactly like selecting
+    // another one does, so the same read semantics apply.
+    dismissSeenTurns(streamStore, activeId);
+    createSession();
+  };
+
+  // Switching tabs marks a seen background answer as read (issue #286). The
+  // tab being LEFT is the one that matters — see `dismissSeenTurns`.
+  const handleSelect = (id: string): void => {
+    dismissSeenTurns(streamStore, activeId, id);
+    setActive(id);
   };
 
   const canReset =
@@ -472,8 +494,8 @@ export default function ChatPage(): React.ReactElement {
       <ChatTabs
         sessions={sessions}
         activeId={activeId}
-        onSelect={setActive}
-        onCreate={createSession}
+        onSelect={handleSelect}
+        onCreate={handleCreate}
         onClose={handleClose}
         onRename={(id, title) => {
           void renameSession(id, title);
@@ -575,8 +597,7 @@ export default function ChatPage(): React.ReactElement {
               streamStore.patch(activeId, { agentUnavailableSlug: undefined });
               // Drop the pinned snapshot in the local session so the
               // header picker becomes available again for the next turn.
-              mutateActive((s) => {
-                if (s.id !== activeId) return s;
+              mutateById(activeId, (s) => {
                 const { snapshot: _drop, ...rest } = s;
                 return rest;
               });
@@ -981,6 +1002,17 @@ function MessageRow({
                 onChoose={onChoose}
               />
             )}
+            {/* #544 W2-1 — MCP mid-call input form. Mutually exclusive with the
+                choice card server-side (the choice card wins), so the two can
+                never render together. `onChoose` submits the returned envelope
+                as a fresh user turn, exactly like a choice-card click. */}
+            {message.pendingMcpInput && (
+              <McpInputCard
+                request={message.pendingMcpInput}
+                disabled={disabled}
+                onSubmit={onChoose}
+              />
+            )}
             {message.attachments && message.attachments.length > 0 && (
               <AttachmentGrid attachments={message.attachments} />
             )}
@@ -1061,11 +1093,15 @@ function ToolTrace({ tools }: { tools: ToolEvent[] }): React.ReactElement {
           // (seeded from its tool result) instead of the generic tool row.
           const seed =
             tool.name === 'dev_job_start' ? parseDevJobStartResult(tool.output) : null;
-          return seed ? (
-            <DevJobChatCard key={tool.id} seed={seed} />
-          ) : (
-            <ToolRow key={tool.id} tool={tool} />
-          );
+          if (seed) return <DevJobChatCard key={tool.id} seed={seed} />;
+          // W2-2 (issue #543) — any OTHER `<tool>_start` from the generic
+          // long-running task seam renders the tool-agnostic task card. Checked
+          // second so a tool with its own richer, gate-capable card keeps it.
+          const taskSeed = isTaskStartToolName(tool.name)
+            ? parseTaskStartResult(tool.output)
+            : null;
+          if (taskSeed) return <TaskChatCard key={tool.id} seed={taskSeed} />;
+          return <ToolRow key={tool.id} tool={tool} />;
         })}
       </div>
     </details>
