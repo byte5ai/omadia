@@ -1155,6 +1155,13 @@
         "error": "Gate konnte nicht aufgelöst werden."
       }
     },
+    "task": {
+      "started": "Gestartet: {label}",
+      "running": "läuft im Hintergrund",
+      "deferredHint": "Das läuft eigenständig weiter — die Antwort kommt in einer Folgemeldung, nicht in dieser.",
+      "taskId": "Task {id}",
+      "phase": "Phase {phase}"
+    },
     "inputLabel": "input",
     "outputLabel": "output",
     "persona": {
@@ -1171,6 +1178,13 @@
       "modalTitle": "{server} verbinden",
       "modalBody": "Autorisiere {server}, damit diese und künftige Anfragen es nutzen können.",
       "close": "Schließen"
+    },
+    "mcpInput": {
+      "kicker": "Externe Eingabe-Anfrage",
+      "heading": "„{server}“ braucht für „{tool}“ noch weitere Angaben.",
+      "secretHint": "Bei der Eingabe verborgen — an den Server geht der Wert unverändert.",
+      "warning": "Was du hier eingibst, geht an den externen Server „{server}“. Gib nur Daten ein, die dieser Server bekommen darf.",
+      "submit": "An Server senden"
     },
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
@@ -1316,7 +1330,13 @@
     "explainerBypassed": "Der Operator hat für mindestens ein Plugin den Privacy-Mode auf »Bypass« gestellt — dessen Tool-Ergebnisse erreichten das Modell unmaskiert. Eingesetzt für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht sinnvoll digestieren kann.",
     "summaryPromptMasked": "Prompt: {count} maskiert",
     "factPromptMasked": "Maskierte PII in deiner Nachricht",
-    "explainerPromptMasked": "In deiner eigenen Nachricht erkannte Identifikatoren wurden vor dem Modellaufruf durch Pseudonyme ersetzt und in der Antwort wiederhergestellt."
+    "explainerPromptMasked": "In deiner eigenen Nachricht erkannte Identifikatoren wurden vor dem Modellaufruf durch Pseudonyme ersetzt und in der Antwort wiederhergestellt.",
+    "summaryStructured": "{count, plural, one {# strukturiertes Ergebnis} other {# strukturierte Ergebnisse}}",
+    "factStructured": "Strukturierte Ausgabe empfangen",
+    "structuredBytes": "{kb} KB",
+    "structuredSchemaYes": "Output-Schema",
+    "structuredSchemaNo": "kein Schema",
+    "explainerStructured": "Ein verbundenes Tool lieferte strukturierte Daten. Sie erreichten den Browser — die vertrauenswürdige Seite — aber nie das Modell, das nur den internen Digest sah. Hier zur Transparenz aufgeführt; es wurde nichts maskiert, weil auf diesem Pfad nichts zu maskieren war."
   },
   "directLine": {
     "consultedLabel": "🔎 Konsultiert",
@@ -1436,6 +1456,8 @@
       "filterAll": "Alle Verdicts",
       "acknowledge": "Bestätigen",
       "acked": "Bestätigt von {by}",
+      "structuredOutput": "liefert strukturierte Ausgabe",
+      "structuredOutputHint": "Dieses Tool deklariert ein Output-Schema und liefert zusätzlich zum Text ein strukturiertes Ergebnis.",
       "runDeepScan": "Tiefen-Scan ausführen",
       "why": "Heuristischer Scan hat markiert: {codes}. Das ist ein Signal, kein Beweis, dass der Inhalt sicher ist.",
       "llmRationale": "Tiefen-Scan-Hinweis: {rationale}",
@@ -3068,7 +3090,44 @@
       "marketplace": "Marketplace",
       "grants": "Grants",
       "plugins": "Plugin-Zugriff",
+      "bindings": "Öffentliche API-Keys",
       "audit": "Audit-Log"
+    },
+    "bindings": {
+      "intro": "Über den öffentlichen MCP-Endpunkt ruft eine externe Integration Tools mit einem API-Key auf. Jeder Key erreicht genau einen Agenten und genau die Tools, die hier eingetragen sind — ein Key ohne Binding erreicht gar nichts.",
+      "keyIdHint": "Trag die Key-ID ein, die beim Anlegen des API-Keys zurückkam. Eine Auswahlliste gibt es noch nicht: Keys verwaltet die Channel-API über einen eigenen Endpunkt.",
+      "keyId": "Key-ID",
+      "keyIdPlaceholder": "z. B. 8f3c1a90-…",
+      "agentId": "Agent",
+      "agentIdPlaceholder": "Agent wählen",
+      "readTools": "Lese-Tools",
+      "writeTools": "Schreib-Tools",
+      "toolsPlaceholder": "Tool-Namen, per Komma getrennt",
+      "writeRate": "Writes/Min.",
+      "writeToolsHint": "Ein Schreib-Tool verlangt zusätzlich den passenden mcp:write-Scope auf dem Key und geht auf das engere Schreib-Budget. Steht ein Tool in beiden Listen, zählt es als Schreib-Tool.",
+      "save": "Binding speichern",
+      "saving": "Speichert",
+      "empty": "Noch keine Bindings. Solange keines existiert, erreicht über den öffentlichen Endpunkt kein API-Key irgendein Tool.",
+      "boundTo": "gebunden an {agent}",
+      "enabled": "Aktiv",
+      "parked": "Widerrufen",
+      "readToolsLabel": "Lesen",
+      "writeToolsLabel": "Schreiben",
+      "none": "keine",
+      "meta": "{rate} Writes/Min. · zuletzt geändert {updated}",
+      "revoke": "Widerrufen",
+      "revokeTitle": "Dieses Binding widerrufen?",
+      "revokeBody": "Der Key {keyId} erreicht ab sofort kein Tool mehr. Das Binding bleibt erhalten und wird nicht gelöscht — du siehst weiterhin, was es erlaubt hat.",
+      "revokeConfirm": "Widerrufen",
+      "restore": "Zugriff wiederherstellen",
+      "restoreHint": "Erneutes Speichern ändert die Tools, hebt den Widerruf aber nicht auf. Nur Wiederherstellen macht den Key wieder nutzbar.",
+      "restoreTitle": "Dieses Binding wiederherstellen?",
+      "restoreBody": "Der Key {keyId} erhält sofort alles zurück, was auf dieser Zeile steht: {tools}.",
+      "restoreConfirm": "Wiederherstellen",
+      "warnings": {
+        "keyUnknown": "Es existiert noch kein API-Key mit dieser ID. Das Binding wurde gespeichert, erreicht aber nichts, solange kein solcher Key angelegt ist – prüfe die ID auf einen Tippfehler.",
+        "agentUnknown": "Dieses Binding nennt einen Agenten, der nicht mehr registriert ist, und erreicht daher nichts. Verknüpfe es mit einem existierenden Agenten."
+      }
     },
     "plugins": {
       "intro": "Plugins, die im Manifest MCP-Zugriff deklarieren. Weise jedem gezielt die Server zu, die es erreichen darf — nichts ist implizit. Die Per-Tool-Sicherheit greift weiterhin: ein ungescanntes oder hochriskantes Tool wird zur Aufrufzeit abgelehnt.",
@@ -3079,6 +3138,10 @@
     "servers": {
       "name": "Name",
       "transport": "Transport",
+      "transportDeprecated": "Veraltet",
+      "transportDeprecatedHint": "Der alte HTTP+SSE-Transport ist seit MCP 2026-07-28 als veraltet markiert und wird nach einer Übergangsfrist von mindestens 12 Monaten entfernt. Bestehende SSE-Server funktionieren weiterhin — neue Server sollten aber Streamable HTTP (http) verwenden, bestehende dorthin migriert werden.",
+      "showDeprecatedTransports": "Veraltete Transports anzeigen",
+      "deprecatedOption": "{transport} (veraltet)",
       "endpoint": "Endpoint",
       "status": "Status",
       "tools": "Tools",
@@ -3155,7 +3218,26 @@
       "readyToLogin": "Client gespeichert. Melde dich jetzt bei {host} an, um den Zugriff zu autorisieren.",
       "continueLogin": "Weiter zum Login bei {host} ↗",
       "afterLoginHint": "Öffnet in einem neuen Tab. Nach der Bestätigung hierher zurückkehren — der Status aktualisiert sich automatisch.",
-      "checkStatus": "Status prüfen"
+      "checkStatus": "Status prüfen",
+      "delegationLabel": "Handelnde Identität",
+      "delegationPerUser": "Jeder Nutzer handelt als er selbst",
+      "delegationService": "Eine gemeinsame Service-Identität",
+      "delegationPerUserWhy": "Jeder Aufrufer nutzt an diesem Server seine eigene Autorisierung. Eine Unterhaltung ohne zugeordnete Nutzeridentität wird abgewiesen und greift nicht auf deine zurück.",
+      "delegationServiceWhy": "Alle Aufrufer teilen eine Autorisierung — deine. Wer einen Orchestrator mit diesem Server erreicht, handelt mit dieser Berechtigung. Behalte das nur für Server, bei denen eine gemeinsame Identität gewollt ist.",
+      "delegationSwitchToPerUser": "Identität pro Nutzer verlangen",
+      "delegationSwitchToService": "Gemeinsame Service-Identität nutzen",
+      "delegationIdentityMissing": "Diese Sitzung hat keine zugeordnete Nutzeridentität — Aufrufe pro Nutzer an diesen Server schlagen deshalb bewusst fehl. Es wird nichts an den Server gesendet.",
+      "modeCimd": "Metadaten-Dokument",
+      "modeDcr": "Automatisch registriert",
+      "modeManual": "Registrierte App",
+      "cimdBadgeWhy": "Dieser Server akzeptiert ein Client-ID-Metadaten-Dokument. omadia weist sich dadurch über eine URL aus, die diese Installation veröffentlicht — eine App-Registrierung war nicht nötig.",
+      "modeDcrWhy": "Dieser Server hat omadia automatisch registriert (Dynamic Client Registration). Die MCP-Spezifikation löst das schrittweise durch Metadaten-Dokumente ab, es funktioniert aber weiterhin — es gibt nichts zu tun.",
+      "modeManualWhy": "omadia nutzt eine OAuth-App, die Du einmal bei diesem Issuer registriert hast. Das ist der Standardweg für Microsoft Entra ID und Okta und bleibt vollständig unterstützt.",
+      "hintCimd": "Dieser Server erkennt omadia über ein Metadaten-Dokument, das diese Installation veröffentlicht — nichts zu registrieren, einfach verbinden und anmelden.",
+      "cimdUnreachable": "Dieser Server würde ein Client-ID-Metadaten-Dokument akzeptieren, aber diese Installation kann keines veröffentlichen, das er abrufen kann. Meist heißt das: omadia ist aus dem Internet nicht erreichbar — bei einer On-Premises-Installation normal, denn der Identity Provider muss das Dokument selbst abrufen.",
+      "cimdUnreachableReason": "Grund",
+      "manualStillSupported": "Es ist nichts kaputt: Registriere unten einmalig eine OAuth-App für diesen Issuer und verbinde wie gewohnt.",
+      "manualIsEnterprisePath": "Das ist der reguläre Enterprise-Weg, kein Notbehelf. Microsoft Entra ID und Okta setzen bewusst auf vorab registrierte App-Registrierungen und werden dieses Formular weiterhin nutzen."
     },
     "marketplace": {
       "registry": "Registry",
@@ -3215,18 +3297,21 @@
       "server": "Server",
       "tool": "Tool",
       "caller": "Aufrufer",
+      "identity": "Handelnde Identität",
       "outcome": "Ergebnis",
       "duration": "Dauer",
       "empty": "Noch keine MCP-Aufrufe protokolliert.",
       "ok": "ok",
       "failed": "fehlgeschlagen",
       "loadMore": "Mehr laden",
+      "unresolved": "nicht aufgelöst",
       "kind": {
         "agent": "Orchestrator",
         "subagent": "Sub-Agent",
         "skill": "Skill",
         "plugin": "Plugin",
-        "unattributed": "Nicht zugeordnet"
+        "unattributed": "Nicht zugeordnet",
+        "api_key": "API-Key (Public MCP)"
       }
     }
   },

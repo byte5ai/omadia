@@ -96,6 +96,66 @@ export interface PendingUserChoice {
 }
 
 /**
+ * Strip every one-shot interactive affordance from older assistant messages.
+ *
+ * Called when a new user message is sent, so button rows and input forms
+ * disappear from the history instead of inviting a second click. Extracted from
+ * `chat/page.tsx` to be testable: a mutation run showed the inline version was
+ * completely uncovered, and a stale MCP input form is worse than a stale button
+ * row — its `correlationId` is single-use server-side, so re-submitting it can
+ * only fail.
+ *
+ * Pure and non-mutating: messages with nothing to strip are returned by
+ * identity, so React's reference equality still short-circuits their re-render.
+ */
+export function stripStaleInteractives(messages: readonly Message[]): Message[] {
+  return messages.map((m) => {
+    if (!m.pendingUserChoice && !m.followUpOptions && !m.pendingMcpInput) return m;
+    const {
+      pendingUserChoice: _dropChoice,
+      pendingMcpInput: _dropMcpInput,
+      followUpOptions: _dropFollowUps,
+      ...rest
+    } = m;
+    return rest;
+  });
+}
+
+/** One free-text field an MCP server asked for (#544 W2-1). */
+export interface McpInputCardField {
+  name: string;
+  label?: string;
+  description?: string;
+  /**
+   * Render the input masked. ADVISORY: the value still travels to the
+   * third-party MCP server verbatim, so the UI must not imply it is protected.
+   */
+  secret?: boolean;
+  required?: boolean;
+}
+
+/**
+ * Mid-call input request from an MCP tool (#544 W2-1, MRTR
+ * `resultType: "input_required"`). The turn ended so the user can fill the
+ * fields in; submitting sends a fresh turn carrying the reply envelope, and the
+ * orchestrator replays the parked tool call.
+ *
+ * Mirrors the backend's `PendingMcpInputCard`. A SIBLING of
+ * {@link PendingUserChoice}, not a variant of it: free-text fields, not buttons.
+ *
+ * `serverName` MUST be rendered — see `McpInputCard.tsx`.
+ */
+export interface PendingMcpInput {
+  correlationId: string;
+  serverName: string;
+  serverId: string;
+  toolName: string;
+  /** Server-supplied prose. UNTRUSTED text — render as text, never as markup. */
+  prompt?: string;
+  fields: McpInputCardField[];
+}
+
+/**
  * Non-blocking 1-click refinement options attached below an answer. Each
  * click submits `prompt` as a fresh user message. Mirrors the backend's
  * `FollowUpOption[]`.
@@ -170,6 +230,24 @@ export interface PrivacyReceipt {
    * carry the span TYPE + detector id only, never the value.
    */
   maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
+  /**
+   * #547 / #569 — external MCP tools that returned `structuredContent` this
+   * turn. NOT a masking record: the payload is emitted out-of-band and never
+   * crossed the model boundary (the browser is the trusted side), so nothing
+   * was masked. This is the accounting entry — surfaced as a neutral "received
+   * structured output" section so an operator audit sees it. Absent / empty
+   * when no connected tool emitted structured output. PII-free.
+   */
+  structuredPayloads?: readonly StructuredPayloadEntry[];
+}
+
+/** #547 / #569 — one entry in `PrivacyReceipt.structuredPayloads`. Mirrors
+ *  `StructuredPayloadEntry` from `@omadia/plugin-api`. PII-free. */
+export interface StructuredPayloadEntry {
+  toolName: string;
+  serverName: string;
+  bytes: number;
+  hasOutputSchema: boolean;
 }
 
 /** #361 — PII-free record of one prompt span masked before the LLM wire.
@@ -408,6 +486,13 @@ export interface Message {
    * the buttons disappear on re-renders of the conversation history.
    */
   pendingUserChoice?: PendingUserChoice;
+  /**
+   * #544 W2-1 — set when the turn ended because an MCP tool needs mid-call user
+   * input. Cleared once the user submits (or types a fresh message) so the form
+   * disappears on re-renders of the conversation history, exactly like
+   * `pendingUserChoice`.
+   */
+  pendingMcpInput?: PendingMcpInput;
   /**
    * Refinement buttons attached below the answer (from `suggest_follow_ups`).
    * Cleared once the user commits to a follow-up or types a fresh message,

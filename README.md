@@ -77,6 +77,26 @@ docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
 > release, so a brand-new checkout can briefly predate the first published
 > image. Build from source with the `--build` line above until a release lands.
 
+### No Docker? Let your AI assistant install it
+
+Prefer not to touch a terminal? If you have the **Claude** desktop app (or
+another AI assistant that can run commands on your machine, such as Codex), paste
+the prompt below into a chat. The assistant fetches a public skill file and
+installs the native omadia desktop app (no Docker, no build tools) from the
+newest GitHub Release that has a build for your OS, then opens the onboarding
+wizard for you.
+
+```text
+Install omadia on my machine by following this skill file, step by step:
+https://raw.githubusercontent.com/byte5ai/omadia/main/docs/onboarding/SKILL.md
+```
+
+On a **Claude Pro/Max** subscription you can pick the CLI-subscription provider in
+the wizard instead of a metered API key — provided the `claude` CLI is installed
+and signed in on the same machine (omadia detects it there). Otherwise the API-key
+option always works. See
+[`docs/onboarding/SKILL.md`](docs/onboarding/SKILL.md) for exactly what it runs.
+
 ## 🎬 The 2-minute pitch
 
 https://github.com/user-attachments/assets/644f9dae-c8a9-44af-a47f-183d2fcdcf34
