@@ -108,6 +108,11 @@ export interface AgentBuilderRouterOptions {
    *  enforcement + audit trail as runtime dispatch. */
   readonly mcpCallObserver?: (entry: McpCallLogEntry) => void;
   readonly mcpCallGuard?: (serverId: string, toolName: string) => string | null;
+  /** Issue #563 — invoked after a request changed an MCP server's identity,
+   *  config or token. The router already drops its OWN pooled connection; this
+   *  is how the runtime `McpManager` in `index.ts` (a different instance, with
+   *  a different auth provider) gets told to drop this server's too. */
+  readonly onMcpServerChanged?: (serverId: string) => void;
   /** Epic #459 W7 (issue #458 UX): lists installed plugins so the operator
    *  grant surface can show which plugins declare `permissions.mcp` and their
    *  manifest `servers_hint`. Returns the plugin id, display name, the mcp
@@ -309,6 +314,22 @@ export function createAgentBuilderRouter(
         : {}),
     },
   });
+  /** Issue #563 — a server's identity, config or token just changed on disk, so
+   *  every live connection built from the old values is stale. Drops this
+   *  router's own pooled connection and lets the runtime manager drop its one.
+   *  The notification is best-effort: an invalidation failure must never turn a
+   *  successful write into a failed request. */
+  const invalidateMcpServer = async (serverId: string): Promise<void> => {
+    await mcp.close(serverId).catch(() => {
+      /* best-effort — the entry is already removed from the pool */
+    });
+    try {
+      options.onMcpServerChanged?.(serverId);
+    } catch {
+      /* an observer must never break the route */
+    }
+  };
+
   // Marketplace catalog client (epic #459 W3, issue #455): server-side proxy
   // with a 5-minute cache, so registry tokens never reach the browser.
   const mcpRegistryClient = new McpRegistryClient();
@@ -1157,7 +1178,9 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      await l.graph.deleteMcpServer(str(req.params.id));
+      const id = str(req.params.id);
+      await l.graph.deleteMcpServer(id);
+      await invalidateMcpServer(id);
       await reload(l);
       res.status(204).end();
     } catch (err) {
@@ -1336,6 +1359,8 @@ export function createAgentBuilderRouter(
       // Config feeds connect-time substitution — refresh + reload so it applies.
       await refreshMcpGrantPolicy(l.graph);
       await l.graph.bumpMcpGrantEpoch(id);
+      // …and drop the live connection, which still holds the OLD env/headers.
+      await invalidateMcpServer(id);
       await reload(l);
       const updated = (await l.graph.listMcpServers()).find((s) => s.id === id);
       const [decorated] = await withToolVerdicts(l, [updated ?? row]);
@@ -1691,6 +1716,9 @@ export function createAgentBuilderRouter(
         return;
       }
       await l.graph.deleteMcpOAuthToken(server.id, userKey);
+      // The revoked token is still attached to a pooled connection; without
+      // this, "Disconnect" leaves an authorized session serving calls.
+      await invalidateMcpServer(server.id);
       res.status(204).end();
     } catch (err) {
       fail(res, err);

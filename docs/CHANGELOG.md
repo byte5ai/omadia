@@ -18,6 +18,27 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — MCP connection lifetime is now explicit (#563)
+
+- The MCP pool kept its state in two parallel maps keyed by server id **plus** a
+  hash of the caller's bearer token. Since a stdio child process never sees that
+  token, N callers with N tokens spawned N identical child processes for the
+  same server. Pool keys now carry exactly what the transport consumes: stdio is
+  keyed by server id alone, http/sse by server id + token.
+- Pooled connections are dropped when a server is deleted
+  (`DELETE /mcp-servers/:id`), when its config is saved
+  (`PUT /mcp-servers/:id/config`) and when its token is revoked
+  (`DELETE /mcp-servers/:id/token`) — previously the live connection kept
+  running with the old command, env, headers and token — and on SIGTERM/SIGINT,
+  which no longer leaves MCP stdio children behind.
+- Connections idle longer than `McpManagerOptions.idleTtlMs` (default 5 minutes)
+  are evicted on the next connect attempt, which bounds a pool that previously
+  grew by one entry — and, for stdio, one process — per OAuth token rotation.
+- **Behaviour change for out-of-repo callers:** `McpManager.close(serverId)` now
+  closes every token-scoped connection of that server instead of a single exact
+  pool key. Passing a full pool key still matches only itself, and a server id
+  never matches a different server whose id shares its prefix.
+- Rationale and rejected alternatives: `docs/adr/0008-mcp-connection-lifetime.md`.
 ### Added — MCP structured output is accounted in the privacy receipt (#547 / #569)
 
 - External MCP tools that return `structuredContent` now surface in the turn's

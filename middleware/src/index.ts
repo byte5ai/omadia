@@ -1627,6 +1627,11 @@ async function main(): Promise<void> {
   const mcpConfigService = graphPool
     ? new McpConfigService({ graph: new AgentGraphStore(graphPool), vault: secretVault })
     : undefined;
+  // Issue #563 — the runtime MCP connection pool, hoisted out of the
+  // `if (orchestrator)` block below so the operator router (which invalidates a
+  // changed server) and `shutdownBuilder` (which must terminate the pooled
+  // stdio children) can both reach it. Stays `undefined` when chat is disabled.
+  let runtimeMcpManager: McpManager | undefined;
 
   // Plugin code scanning (issue #453) — SkillSpector sidecar behind the
   // PluginScanner seam. Requires the Postgres graph backend for the verdict
@@ -1950,7 +1955,7 @@ async function main(): Promise<void> {
       };
       // Generic MCP OAuth (epic #459 W9) wired as the manager's auth provider;
       // the service instance is created at outer scope (shared with the router).
-      const mcpManager = new McpManager({
+      const mcpManager: McpManager = new McpManager({
         // #547 / #569 — see `mcpStructuredSink` above (accounting only).
         structuredSink: mcpStructuredSink,
         // W2-1 (#544) — where a `resultType: "input_required"` call is parked.
@@ -2066,6 +2071,9 @@ async function main(): Promise<void> {
             }
           : {}),
       });
+      // Publish the handle so the operator router can invalidate a changed
+      // server and `shutdownBuilder` can close the pooled stdio children.
+      runtimeMcpManager = mcpManager;
       // W2-1 (#544) — the replayer. Registered here because this is the only
       // place that holds BOTH the manager and the server registry: a replay is
       // a fresh `tools/call`, so it needs the server's live config (endpoint,
@@ -2831,6 +2839,15 @@ async function main(): Promise<void> {
           }
         : {}),
       mcpCallGuard: mcpDispatchDenial,
+      // Issue #563 — a server deleted / reconfigured / disconnected through the
+      // operator UI must also drop out of the RUNTIME pool, not just the
+      // router's own. Fire-and-forget: an invalidation failure must never
+      // reject inside a request handler.
+      onMcpServerChanged: (serverId: string) => {
+        void runtimeMcpManager?.close(serverId).catch((err: unknown) => {
+          console.warn(`[middleware] mcp pool invalidation failed: ${String(err)}`);
+        });
+      },
       // W7 UX (issue #458): MCP-capable plugins + their manifest servers_hint,
       // for the operator grant surface. Read live from the catalog so a
       // freshly-installed plugin shows up without a restart.
@@ -4441,6 +4458,9 @@ async function main(): Promise<void> {
         // best-effort
       });
       await previewCache.closeAll();
+      // Issue #563 — terminate pooled MCP connections; for stdio servers those
+      // are child processes that would otherwise outlive the middleware.
+      await runtimeMcpManager?.closeAll();
       previewSecretBuffer.clear();
       // Wake any pending ask_user_choice promises so the turns waiting
       // on them resolve before we close the DB.
