@@ -1,0 +1,566 @@
+/**
+ * Issue #547 (W5-2) — WHY the structured-output sidecar is NOT wired onward.
+ *
+ * #547 landed the producer (`McpManager.structuredSink`) as plumbing only. The
+ * obvious next step is to wire that sink through the orchestrator onto the
+ * terminal `done` stream event so the UI can render a card. This file pins the
+ * property that decides whether that is safe: the sidecar never crosses the
+ * interning seam, so it still carries exactly what the server sent. It is also
+ * a regression guard — if someone later makes the sidecar mask, the sidecar
+ * test below turns red and this file must be revisited on purpose.
+ *
+ * REVISITED ON PURPOSE (#569). The sink now HAS a first consumer, and it is
+ * accounting — NOT rendering. `index.ts` wires `structuredSink` to
+ * `PrivacyGuardService.recordStructuredPayload`, which records a PII-free entry
+ * (tool + server + byte count + schema flag) into the turn's privacy receipt.
+ * That closes #569: the sidecar fired beneath every dispatcher, so structured
+ * content appeared in no receipt at all even though masking was never owed on
+ * this path. The final describe block below pins that the accounting seam is
+ * PII-free by construction — the recorded metadata carries none of the raw
+ * values the sidecar payload legitimately still holds. The renderer (the `done`
+ * stream event + UI card) remains deliberately unbuilt: this commit is the
+ * accounting decision #569 asked for BEFORE anything renders.
+ *
+ * WHICH BOUNDARY THIS IS ABOUT — read this before calling anything a leak.
+ * Privacy Shield v4's data-plane boundary is server <-> LLM PROVIDER, not
+ * server <-> browser. The browser sits on the TRUSTED side and legitimately
+ * receives real values: that is precisely what `takeRenderedAnswerV4` hands
+ * back (`plugin-api/src/privacyReceipt.ts:164-174`), rendered with
+ * `highlightTerms={message.maskedValues}` in the chat page. So "the sidecar is
+ * not interned" is NOT by itself a leak to the browser, and this file
+ * deliberately does not call it one. What it IS: an asymmetry that makes the
+ * sidecar unsafe to forward across the MODEL boundary, and unsafe for any
+ * future consumer to assume masked. An earlier revision of this file named one
+ * test `LEAK` and described the interned text as what "a client receives";
+ * both encoded a misreading of which side the browser is on.
+ *
+ * The asymmetry, stated exactly:
+ *
+ *   - A tool's TEXT result is interned at the dispatch seam. `dispatchTool`
+ *     returns `internToolResultV4(...).digestText`, so the string the MODEL
+ *     sees is a digest, not the rows. That same return value is what the
+ *     client-facing `tool_result` stream event carries
+ *     (`orchestrator.ts:5330` builds the slot promise from `dispatchTool`;
+ *     `:4934` resolves it; `:4977` puts it on the wire as `output`).
+ *
+ *   - The STRUCTURED payload is emitted from inside `McpManager.callTool`
+ *     (`mcpClient.ts:~880`), which sits strictly BELOW every dispatcher. It
+ *     never crosses the privacy handle at all. `extractStructured` documents
+ *     this intent outright: "Returns the payload exactly as the server sent
+ *     it ... never a re-parse of the rendered string."
+ *
+ * That "strictly below every dispatcher" is why this file proves the property
+ * using `ToolDispatchService` rather than a full `Orchestrator` turn: the sink
+ * fires beneath the dispatcher, so the asymmetry is dispatcher-independent. The
+ * interning contract asserted here is the same one the chat path uses and is
+ * documented as parity in `toolDispatchPrivacySeam.test.ts`.
+ *
+ * That asymmetry is NOT closed by masking, and #569 corrected the earlier
+ * reading that it needed to be. The whole privacy contract (`PrivacyTurnHandle`)
+ * is string-in/string-out: `internToolResultV4({rawResult: string}) ->
+ * {digestText: string}`. Feeding a structured payload through it returns a
+ * digest STRING — the structure the card exists to render is destroyed. But
+ * masking is not owed here at all: the boundary is server <-> LLM provider, and
+ * the payload never crosses it. What WAS owed, and was missing, is accounting —
+ * an operator auditing the turn could not see the structured payload. That is
+ * the NEW method on the published `@omadia/plugin-api` surface this file's
+ * header now points at (`recordStructuredPayload`), with a privacy-guard
+ * implementation and boot wiring — shipped, PII-free, and pinned below. The
+ * renderer that consumes the accounted payload is the remaining, separate half.
+ *
+ * MUTATION-CHECK DISCIPLINE (same as `toolDispatchPrivacySeam.test.ts`): every
+ * assertion inspects CONTENT that crosses a boundary. None asserts "a masking
+ * function was called" — a call-count assertion stays green over a masking
+ * function that returns its input unchanged, the exact false-green this repo
+ * has been burned by. The privacy handle here performs a REAL redaction.
+ */
+
+import { after, describe, it } from 'node:test';
+import { strict as assert } from 'node:assert';
+import {
+  createServer,
+  type IncomingMessage,
+  type Server as HttpServer,
+  type ServerResponse,
+} from 'node:http';
+import type { AddressInfo, Socket } from 'node:net';
+
+import { Server as McpSdkServer } from '@modelcontextprotocol/sdk/server/index.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
+
+// Imported from SOURCE, not from the `@omadia/orchestrator` barrel. The barrel
+// resolves to `dist/`, so a mutation applied to `src/` would not be visible
+// without a rebuild — and a mutation check that silently exercises a stale
+// artifact reports GREEN over broken production code. Same convention as
+// `toolDispatchPrivacySeam.test.ts`. Keeping every orchestrator import on the
+// source path also guarantees ONE module instance, so the `turnContext`
+// AsyncLocalStorage the sidecar reads is the one this file writes.
+import {
+  McpManager,
+  mcpNativeHandler,
+  type McpServerConfig,
+  type McpSidecarPayload,
+  type McpStructuredOutputSidecar,
+} from '../packages/harness-orchestrator/src/mcp/mcpClient.js';
+import { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
+import { ToolDispatchService } from '../packages/harness-orchestrator/src/toolDispatchService.js';
+import { turnContext } from '../packages/harness-orchestrator/src/turnContext.js';
+import type { PrivacyTurnHandle } from '../packages/harness-orchestrator/src/privacyHandle.js';
+
+// ── fixtures ────────────────────────────────────────────────────────────────
+
+const EMAIL = 'erika.mustermann@example.com';
+const IBAN = 'DE89370400440532013000';
+const PERSON = 'Erika Mustermann';
+
+/** The tool's declared output shape — what a generic renderer would key off. */
+const OUTPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    name: { type: 'string' },
+    email: { type: 'string' },
+    iban: { type: 'string' },
+  },
+} as const;
+
+/** The server answers with the SAME PII in both channels: the text block (which
+ *  the dispatcher interns) and `structuredContent` (which nothing interns). */
+const STRUCTURED_PAYLOAD = {
+  name: PERSON,
+  email: EMAIL,
+  iban: IBAN,
+} as const;
+
+const TEXT_PAYLOAD = `{"name":"${PERSON}","email":"${EMAIL}","iban":"${IBAN}"}`;
+
+const TOOL = 'crm_lookup_customer';
+
+/**
+ * A privacy handle that genuinely redacts, so a missing masking call shows up
+ * as surviving raw PII rather than as an unmet expectation.
+ */
+function redactingPrivacyHandle(): PrivacyTurnHandle {
+  return {
+    async internToolResultV4({ toolName, rawResult }) {
+      const redacted = rawResult
+        .replaceAll(EMAIL, '[masked:email]')
+        .replaceAll(IBAN, '[masked:iban]')
+        .replaceAll(PERSON, '[masked:person]');
+      return { digestText: `«dataset:${toolName}» ${redacted}`, datasetId: `ds-${toolName}` };
+    },
+    async recordBypassedTool() {
+      /* no bypass configured in this file */
+    },
+    checkBypass() {
+      return undefined;
+    },
+    async runV4Tool() {
+      throw new Error('not used on this path');
+    },
+    async subAgentResultV4() {
+      throw new Error('not used on this path');
+    },
+    async takeRenderedAnswerV4() {
+      return undefined;
+    },
+    v4ToolSpecs() {
+      return [];
+    },
+    async maskUserPrompt() {
+      return { outcome: 'disabled' };
+    },
+    async restorePromptPseudonyms(text) {
+      return text;
+    },
+    snapshotPromptRestorer() {
+      return undefined;
+    },
+    async finalize() {
+      return undefined;
+    },
+  };
+}
+
+// ── a real MCP server over a real socket ────────────────────────────────────
+
+interface FakeServerHandle {
+  readonly url: string;
+  close(): Promise<void>;
+}
+
+function buildMcpServerInstance(): McpSdkServer {
+  const mcp = new McpSdkServer(
+    { name: 'crm', version: '1.0.0' },
+    { capabilities: { tools: {} } },
+  );
+  mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: TOOL,
+        description: 'look up a customer record',
+        inputSchema: { type: 'object' as const, properties: {} },
+        outputSchema: OUTPUT_SCHEMA,
+      },
+    ],
+  }));
+  mcp.setRequestHandler(CallToolRequestSchema, async () => ({
+    content: [{ type: 'text' as const, text: TEXT_PAYLOAD }],
+    structuredContent: STRUCTURED_PAYLOAD,
+  }));
+  return mcp;
+}
+
+async function startFakeMcpServer(): Promise<FakeServerHandle> {
+  const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const mcp = buildMcpServerInstance();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+    res.on('close', () => {
+      void transport.close().catch(() => {});
+      void mcp.close().catch(() => {});
+    });
+    await mcp.connect(transport);
+    if (req.method === 'POST') {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const raw = Buffer.concat(chunks).toString('utf8');
+      await transport.handleRequest(req, res, raw.length > 0 ? JSON.parse(raw) : undefined);
+      return;
+    }
+    await transport.handleRequest(req, res);
+  };
+  const http: HttpServer = createServer((req, res) => {
+    void handle(req, res).catch(() => {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
+  });
+  const sockets = new Set<Socket>();
+  http.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', () => resolve()));
+  const { port } = http.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}/mcp`,
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      sockets.clear();
+      await new Promise<void>((resolve) => http.close(() => resolve()));
+    },
+  };
+}
+
+const fake = await startFakeMcpServer();
+const managers: McpManager[] = [];
+
+// Teardown runs regardless of assertion outcome — a server closed only after a
+// passing assertion turns a red run into a HANG, which is how a sibling agent's
+// mutation check failed to report in this wave.
+after(async () => {
+  for (const m of managers) {
+    try {
+      await m.closeAll();
+    } catch {
+      /* teardown must not mask a test failure */
+    }
+  }
+  await fake.close();
+});
+
+const CFG: McpServerConfig = {
+  id: '00000000-0000-4000-8000-000000000547',
+  name: 'Kunden-CRM',
+  transport: 'http',
+  endpoint: fake.url,
+};
+
+interface Harness {
+  readonly manager: McpManager;
+  readonly sidecars: McpSidecarPayload[];
+  readonly service: ToolDispatchService;
+}
+
+/** Wire the REAL production chain: `ToolDispatchService` -> `NativeToolRegistry`
+ *  -> `mcpNativeHandler` -> `McpManager.callTool` -> `structuredSink`. */
+function harness(): Harness {
+  const sidecars: McpSidecarPayload[] = [];
+  const manager = new McpManager({ structuredSink: (p) => sidecars.push(p) });
+  managers.push(manager);
+  const nativeTools = new NativeToolRegistry();
+  nativeTools.register(TOOL, {
+    handler: mcpNativeHandler(manager, CFG, TOOL),
+    spec: {
+      name: TOOL,
+      description: 'look up a customer record',
+      input_schema: { type: 'object', properties: {} },
+    },
+    domain: 'mcp.kunden-crm',
+  });
+  const service = new ToolDispatchService({
+    nativeTools,
+    domainTools: [],
+    privacy: () => redactingPrivacyHandle(),
+  });
+  return { manager, sidecars, service };
+}
+
+function structuredSidecars(
+  sidecars: readonly McpSidecarPayload[],
+): McpStructuredOutputSidecar[] {
+  return sidecars.filter(
+    (p): p is McpStructuredOutputSidecar => p.kind === 'structured_output',
+  );
+}
+
+// ── the finding ─────────────────────────────────────────────────────────────
+
+describe('#547 structured-output sidecar vs. the privacy boundary (W5-2)', () => {
+  it('the TEXT result IS interned at the dispatch seam, so the MODEL sees a digest', async () => {
+    const h = harness();
+
+    const result = await h.service.dispatch(TOOL, {});
+
+    // This is the benchmark the brief calls "the same terms as text output".
+    // `result.content` is the dispatcher's return value — the string bound for
+    // the model. What the BROWSER ultimately renders is a separate question
+    // (see the header): it is on the trusted side and gets real values.
+    assert.equal(
+      result.content.includes(EMAIL),
+      false,
+      'the email reached the caller in clear — the text seam did not mask',
+    );
+    assert.equal(result.content.includes(IBAN), false, 'the IBAN reached the caller in clear');
+    assert.equal(
+      result.content.includes(PERSON),
+      false,
+      'the person name reached the caller in clear',
+    );
+    // Masked rather than dropped.
+    assert.match(result.content, /\[masked:email\]/);
+    assert.match(result.content, /«dataset:crm_lookup_customer»/);
+  });
+
+  it('the STRUCTURED sidecar is NOT interned, so it still carries the raw values', async () => {
+    const h = harness();
+
+    const result = await h.service.dispatch(TOOL, {});
+
+    // Same dispatch, same privacy handle installed, same PII.
+    assert.equal(result.content.includes(EMAIL), false, 'precondition: the text WAS masked');
+
+    const structured = structuredSidecars(h.sidecars);
+    assert.equal(structured.length, 1, 'exactly one structured sidecar for one call');
+    const payload = structured[0]!.structured as Record<string, unknown>;
+
+    // The load-bearing assertions: raw values, byte-identical to what the
+    // server sent. Not a leak in itself — the browser is trusted — but it
+    // pins that ANY future consumer of this payload must treat it as unmasked,
+    // and that forwarding it across the model boundary would undo the
+    // interning the text path just performed.
+    assert.equal(payload['email'], EMAIL);
+    assert.equal(payload['iban'], IBAN);
+    assert.equal(payload['name'], PERSON);
+    assert.deepEqual(payload, STRUCTURED_PAYLOAD);
+  });
+
+  it('the sidecar is emitted BENEATH the dispatcher, so no dispatcher can mask it', async () => {
+    // Proves the asymmetry is structural rather than a property of one dispatcher:
+    // the payload is already in the sink by the time `dispatch` returns, and
+    // the value in the sink is unaffected by the masking that produced
+    // `result.content`.
+    const h = harness();
+
+    const result = await h.service.dispatch(TOOL, {});
+
+    const structured = structuredSidecars(h.sidecars);
+    assert.equal(structured.length, 1);
+    assert.match(result.content, /\[masked:person\]/, 'the string path was masked');
+    assert.equal(
+      (structured[0]!.structured as Record<string, unknown>)['name'],
+      PERSON,
+      'the sidecar payload was NOT masked by the same dispatch',
+    );
+  });
+
+  it('carries the declared `outputSchema`, so a generic renderer is buildable on top of the accounted payload', async () => {
+    // Not an exposure assertion. #569 corrected the earlier reading that masking
+    // was the blocker — it is not owed here (see the header). What was owed,
+    // accounting, ships in this commit; the renderer contract the brief
+    // specifies (render from `outputSchema`, never by tool name) is already
+    // satisfiable end-to-end over a real wire, and is the remaining half.
+    const h = harness();
+    await h.manager.listTools(CFG); // discovery caches the schema
+
+    await h.service.dispatch(TOOL, {});
+
+    const structured = structuredSidecars(h.sidecars);
+    assert.equal(structured.length, 1);
+    assert.deepEqual(structured[0]!.outputSchema, OUTPUT_SCHEMA);
+  });
+
+  it('attaches the ambient `turnId`, so correlation onto a done event is already possible', async () => {
+    const h = harness();
+
+    await turnContext.run(
+      { turnId: 't-547', turnDate: '2026-07-31', agentSlug: 'main', userId: 'u1' } as never,
+      () => h.service.dispatch(TOOL, {}),
+    );
+
+    const structured = structuredSidecars(h.sidecars);
+    assert.equal(structured.length, 1);
+    assert.equal(structured[0]!.turnId, 't-547');
+  });
+
+  it('emits NO sidecar for a tool whose result has no structuredContent', async () => {
+    // The `ToolRow` fallback case the brief requires to survive untouched.
+    const sidecars: McpSidecarPayload[] = [];
+    const manager = new McpManager({ structuredSink: (p) => sidecars.push(p) });
+    managers.push(manager);
+    const nativeTools = new NativeToolRegistry();
+    nativeTools.register('plain_tool', {
+      handler: async () => 'just text',
+      spec: {
+        name: 'plain_tool',
+        description: 'no structured output',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'test.plain',
+    });
+    const service = new ToolDispatchService({ nativeTools, domainTools: [] });
+
+    const result = await service.dispatch('plain_tool', {});
+
+    assert.equal(result.content, 'just text');
+    assert.deepEqual(structuredSidecars(sidecars), []);
+  });
+});
+
+// ── #569 accounting: the sink's first consumer records PII-free metadata ─────
+
+/**
+ * A minimal recorder that reproduces the boot sink's contract
+ * (`index.ts` -> `PrivacyGuardService.recordStructuredPayload`) so the seam can
+ * be exercised over the same real socket the block above uses. The point is not
+ * the recorder — it is that the ACCOUNTING PAYLOAD the seam produces carries
+ * only metadata, never the raw values the sidecar legitimately still holds.
+ */
+interface AccountedStructured {
+  readonly turnId: string;
+  readonly toolName: string;
+  readonly serverName: string;
+  readonly bytes: number;
+  readonly hasOutputSchema: boolean;
+}
+
+/** Reproduces the boot sink's field mapping (`index.ts`) on the happy path:
+ *  discriminate on `kind`, skip a null `turnId`, and derive `bytes` +
+ *  `hasOutputSchema`. The production sink additionally fails `bytes` closed to 0
+ *  on an unserialisable payload — not reproduced here because these fixtures are
+ *  always serialisable, and the assertions below are about the field mapping,
+ *  not that guard. */
+function accountingSink(sink: AccountedStructured[]): (p: McpSidecarPayload) => void {
+  return (payload) => {
+    if (payload.kind !== 'structured_output') return;
+    if (payload.turnId === null) return; // no receipt to attribute to
+    sink.push({
+      turnId: payload.turnId,
+      toolName: payload.toolName,
+      serverName: payload.serverName,
+      bytes: Buffer.byteLength(JSON.stringify(payload.structured), 'utf8'),
+      hasOutputSchema: payload.outputSchema !== undefined,
+    });
+  };
+}
+
+describe('#569 structured-output accounting seam (PII-free by construction)', () => {
+  it('records tool + server + byte count + schema flag, and NONE of the raw values', async () => {
+    const accounted: AccountedStructured[] = [];
+    const rawSidecars: McpSidecarPayload[] = [];
+    const manager = new McpManager({
+      structuredSink: (p) => {
+        rawSidecars.push(p);
+        accountingSink(accounted)(p);
+      },
+    });
+    managers.push(manager);
+    await manager.listTools(CFG); // discovery caches the outputSchema
+
+    const nativeTools = new NativeToolRegistry();
+    nativeTools.register(TOOL, {
+      handler: mcpNativeHandler(manager, CFG, TOOL),
+      spec: {
+        name: TOOL,
+        description: 'look up a customer record',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'mcp.kunden-crm',
+    });
+    const service = new ToolDispatchService({
+      nativeTools,
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+    });
+
+    await turnContext.run(
+      { turnId: 't-569', turnDate: '2026-07-31', agentSlug: 'main', userId: 'u1' } as never,
+      () => service.dispatch(TOOL, {}),
+    );
+
+    assert.equal(accounted.length, 1, 'one structured tool result -> one accounting entry');
+    const entry = accounted[0]!;
+    assert.equal(entry.turnId, 't-569');
+    assert.equal(entry.toolName, TOOL);
+    assert.equal(entry.serverName, CFG.name);
+    assert.equal(entry.hasOutputSchema, true, 'discovery captured the outputSchema');
+    assert.equal(
+      entry.bytes,
+      Buffer.byteLength(JSON.stringify(STRUCTURED_PAYLOAD), 'utf8'),
+      'byte count is the payload size, computed at the seam',
+    );
+
+    // The load-bearing privacy assertion: the raw sidecar still carries the PII
+    // (the browser is the trusted side), but the ACCOUNTING entry the receipt
+    // will hold carries none of it. Serialize the whole entry and prove it.
+    const rawStructured = structuredSidecars(rawSidecars)[0]!;
+    assert.equal(
+      (rawStructured.structured as Record<string, unknown>)['email'],
+      EMAIL,
+      'precondition: the sidecar payload itself is unmasked',
+    );
+    const accountedJson = JSON.stringify(entry);
+    assert.equal(accountedJson.includes(EMAIL), false, 'the email never reaches the receipt entry');
+    assert.equal(accountedJson.includes(IBAN), false, 'the IBAN never reaches the receipt entry');
+    assert.equal(accountedJson.includes(PERSON), false, 'the name never reaches the receipt entry');
+  });
+
+  it('accounts nothing for a payload with no turn identity (nothing to attribute to)', async () => {
+    const accounted: AccountedStructured[] = [];
+    const manager = new McpManager({ structuredSink: accountingSink(accounted) });
+    managers.push(manager);
+
+    const nativeTools = new NativeToolRegistry();
+    nativeTools.register(TOOL, {
+      handler: mcpNativeHandler(manager, CFG, TOOL),
+      spec: {
+        name: TOOL,
+        description: 'look up a customer record',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'mcp.kunden-crm',
+    });
+    const service = new ToolDispatchService({ nativeTools, domainTools: [] });
+
+    // No turnContext.run wrapper -> the sidecar's turnId is null.
+    await service.dispatch(TOOL, {});
+
+    assert.deepEqual(accounted, [], 'a turnId-less payload is skipped, not mis-filed');
+  });
+});

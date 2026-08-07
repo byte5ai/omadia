@@ -1,4 +1,4 @@
-# 0007 — MCP connection lifetime and pooling
+# 0008 — MCP connection lifetime and pooling
 
 ## Status
 

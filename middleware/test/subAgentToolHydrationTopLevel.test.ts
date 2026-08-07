@@ -90,6 +90,9 @@ function fakeDeps(calls: Array<{ server: string; tool: string; args: Record<stri
       calls.push({ server: cfg.name, tool: toolName, args });
       return 'tool-result';
     },
+    // Issue #547 (W1-3): the adapters seed the manager's output-schema cache
+    // from the (possibly DB-rehydrated) descriptor. No-op for this fake.
+    rememberToolSchema: () => {},
   } as unknown as McpManager;
   return {
     client: {} as unknown as AnthropicClient,
@@ -187,7 +190,10 @@ describe('registerDbSubAgentTools: top-level MCP grants (#457)', () => {
 
 describe('mcpGrantToDomainTool', () => {
   it('carries description and input schema from the discovered descriptor', () => {
-    const manager = { callTool: async () => 'x' } as unknown as McpManager;
+    const manager = {
+      callTool: async () => 'x',
+      rememberToolSchema: () => {},
+    } as unknown as McpManager;
     const tool = mcpGrantToDomainTool(
       manager,
       { id: SERVER_ID, name: 'billing', transport: 'http', endpoint: 'http://x' },

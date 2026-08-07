@@ -103,6 +103,8 @@ export type {
   CanvasPos,
   McpCallLogRow,
   McpConfigField,
+  McpDelegation,
+  McpOAuthClientAcquisition,
   McpRegistryRow,
   McpServerInput,
   McpServerRow,
@@ -125,7 +127,13 @@ export type {
   ToolGrantRow,
 } from './registry/agentGraphStore.js';
 export {
+  DEPRECATED_MCP_TRANSPORTS,
+  isDeprecatedMcpTransport,
   McpManager,
+  MCP_RESULT_TYPE_INPUT_REQUIRED,
+  REPLAY_ARG_KEY,
+  extractStructured,
+  isInputRequiredResult,
   mcpNativeHandler,
   mcpNativeToolName,
   // Exported so the no-collateral-invalidation rule of `McpManager.close(id)`
@@ -133,18 +141,71 @@ export {
   mcpPoolScopeMatches,
   mcpToolToLocalSubAgentTool,
   mcpToolToNativeSpec,
+  renderToolResult,
+  // W3-A — the inner half of the timeout hierarchy; see the ORDERING INVARIANT
+  // block next to `DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS`.
+  resolveMcpCallTimeouts,
+  // W4 — attempts per `callTool`. The timeout hierarchy reasons about the
+  // retry-inclusive worst case, so the real number has to be readable.
+  MCP_CALL_MAX_ATTEMPTS,
 } from './mcp/mcpClient.js';
 export type {
+  DeprecatedMcpTransport,
   McpAuthProvider,
   McpCallerKind,
   McpCallGuard,
   McpCallLogEntry,
   McpCallObserver,
+  McpCallOutcome,
+  McpInputRequiredSidecar,
   McpManagerOptions,
   McpServerConfig,
+  McpSidecarIdentity,
+  McpSidecarKind,
+  McpSidecarPayload,
+  McpStructuredOutputSidecar,
+  McpStructuredSink,
   McpToolDescriptor,
   McpTransportKind,
 } from './mcp/mcpClient.js';
+// W2-1 (#544) — MRTR mid-call user input.
+export {
+  InMemoryPendingMcpInputStore,
+  MCP_INPUT_MAX_REPLAY_DEPTH,
+  MCP_INPUT_REPLY_PREFIX,
+  MCP_INPUT_REQUEST_MAX_FIELDS,
+  MCP_INPUT_REQUIRED_SENTINEL_PREFIX,
+  PENDING_MCP_INPUT_MAX_ENTRIES,
+  PENDING_MCP_INPUT_TTL_MS,
+  claimMcpInputFromResults,
+  extractMcpInputPrompt,
+  formatMcpInputReply,
+  mcpInputMalformedError,
+  mcpInputReplayCappedError,
+  mcpInputRequiredSentinel,
+  mcpInputUnsupportedError,
+  mcpInputReplyLabel,
+  parseMcpInputReply,
+  parseMcpInputRequests,
+  parseMcpInputSentinel,
+  resetSharedMcpInputWiring,
+  setSharedMcpInputReplayer,
+  sharedMcpInputReplayer,
+  sharedPendingMcpInputStore,
+} from './mcp/pendingMcpInput.js';
+export type {
+  InMemoryPendingMcpInputStoreOptions,
+  McpInputField,
+  McpInputParseFailure,
+  McpInputParseOutcome,
+  McpInputReplayer,
+  McpInputReply,
+  PendingMcpInput,
+  PendingMcpInputKey,
+  PendingMcpInputOwner,
+  PendingMcpInputStore,
+  PutPendingMcpInputResult,
+} from './mcp/pendingMcpInput.js';
 export {
   buildSubAgentDomainTools,
   mcpToolNameFromRef,
@@ -171,7 +232,16 @@ export type {
 } from './buildOrchestrator.js';
 
 // Orchestrator class + options
-export { Orchestrator, parseToolEmittedChoice } from './orchestrator.js';
+export {
+  Orchestrator,
+  parseToolEmittedChoice,
+  // W3-A — the outer half of the timeout hierarchy; see the ORDERING INVARIANT
+  // block next to `DEFAULT_TOOL_DISPATCH_TIMEOUT_MS`.
+  resolveToolDispatchTimeoutMs,
+  // …and its production enforcement. Call at boot: a deployment whose timeout
+  // knobs invert the hierarchy must not start quietly.
+  assertTimeoutHierarchy,
+} from './orchestrator.js';
 export type { OrchestratorOptions } from './orchestrator.js';
 
 // #332 Layer 2 — Direct Line directive parsing & target resolution (exported
@@ -257,8 +327,39 @@ export type {
 export { ToolDispatchService } from './toolDispatchService.js';
 export type {
   DispatchableToolSpec,
+  ToolDispatchContentOrigin,
   ToolDispatchResult,
+  ToolDispatchCallerContext,
+  ToolDispatchOptions,
 } from './toolDispatchService.js';
+export {
+  ToolIdempotencyStore,
+  currentIdempotencyScope,
+  runWithIdempotencyScope,
+  fingerprintToolInput,
+  idempotencyCacheKey,
+  idempotencyConflictMessage,
+  DEFAULT_IDEMPOTENCY_TTL_MS,
+  DEFAULT_IDEMPOTENCY_MAX_ENTRIES,
+} from './toolIdempotency.js';
+export type {
+  ToolIdempotencyScope,
+  ToolIdempotencyResult,
+  ToolIdempotencyOutcome,
+} from './toolIdempotency.js';
+export {
+  currentDispatchCaller,
+  runWithDispatchCaller,
+} from './toolCallerContext.js';
+// W2-3 (#542) — the public MCP endpoint dispatches OUTSIDE any turn, so it must
+// build and supply a privacy handle explicitly (the ambient `turnContext`
+// fallback is `undefined` there). It also needs the intern-exemption allowlist:
+// an exempt tool's result is handed over IN CLEAR by design, which is correct
+// for the agent's own infra tools inside a turn and unacceptable for an
+// internet-facing caller — so the endpoint refuses to serve those names at all.
+export { createPrivacyTurnHandle } from './privacyHandle.js';
+export type { PrivacyTurnHandle } from './privacyHandle.js';
+export { INTERN_EXEMPT_TOOLS, isInternExemptTool } from './privacyInternPolicy.js';
 export { LoopbackMcpServer } from './loopbackMcpServer.js';
 export type {
   LoopbackMcpServerDeps,
@@ -318,6 +419,8 @@ export {
   turnContext,
   today,
   buildDateHeader,
+  // Teardown failures are reported, never thrown — see `runGeneratorInContext`.
+  onTurnTeardownError,
 } from './turnContext.js';
 export type { TurnContextValue } from './turnContext.js';
 export {
@@ -430,3 +533,60 @@ export type {
   VerifierResultSummary,
 } from '@omadia/channel-sdk';
 export { toSemanticAnswer } from '@omadia/channel-sdk';
+
+// W2-2 (issue #543, rescoped) — the generic long-running task seam: any tool can
+// be marked `longRunning` and get the non-blocking `<tool>_start`/`_status`/
+// `_list` triple plus a streaming status card, instead of blocking a chat turn.
+// Deferred sub-agent dispatch is the in-package implementor
+// (`tasks/subAgentTaskTool.ts`); consumers supply their own `TaskStore`.
+export {
+  TASK_LIFECYCLE_STATUSES,
+  TERMINAL_TASK_STATUSES,
+  TASK_LEASE_UUID_RE,
+  TaskLeaseLostError,
+  isTaskLifecycleStatus,
+  isTerminalTaskStatus,
+} from './tasks/taskTypes.js';
+export type {
+  NewTaskInput,
+  TaskCardPayload,
+  TaskDescriptor,
+  TaskEventRecord,
+  TaskLifecycleStatus,
+  TaskListFilter,
+  TaskReadStore,
+  TaskReapOptions,
+  TaskReapResult,
+  TaskStore,
+  TerminalTaskPatch,
+} from './tasks/taskTypes.js';
+export { InMemoryTaskStore } from './tasks/inMemoryTaskStore.js';
+export type { InMemoryTaskStoreOptions } from './tasks/inMemoryTaskStore.js';
+export {
+  defineLongRunningTool,
+  describeDeferredPrivacyPosture,
+  longRunningToolNames,
+} from './tasks/longRunningTool.js';
+export type {
+  LongRunningToolDefinition,
+  LongRunningToolHandle,
+  LongRunningToolRegistration,
+  TaskExecutionHandle,
+  TaskExecutor,
+  // W4 — a terminal outcome a runner produced but could not record, because the
+  // reaper had already written its own row. The only place it survives.
+  TaskOutcomeLostRecord,
+} from './tasks/longRunningTool.js';
+export {
+  DEFAULT_TASK_PURGE_TERMINAL_AFTER_MS,
+  DEFAULT_TASK_REAP_INTERVAL_MS,
+  DEFAULT_TASK_STALE_AFTER_MS,
+  runTaskReaperOnce,
+  startTaskReaper,
+} from './tasks/taskReaper.js';
+export type { TaskReaperOptions } from './tasks/taskReaper.js';
+export {
+  SUB_AGENT_TASK_KIND_PREFIX,
+  createLongRunningSubAgentTool,
+} from './tasks/subAgentTaskTool.js';
+export type { LongRunningSubAgentToolOptions } from './tasks/subAgentTaskTool.js';

@@ -624,7 +624,7 @@ export function validateSnapshot(
 
   const seenBindings = new Set<string>();
   for (const binding of snap.channelBindings) {
-    const key = `${binding.channelType} ${binding.channelKey}`;
+    const key = `${binding.channelType}\0${binding.channelKey}`;
     if (seenBindings.has(key)) {
       throw new ConfigValidationError(
         `duplicate channel binding (${binding.channelType}, ${binding.channelKey})`,

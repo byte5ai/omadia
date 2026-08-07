@@ -279,6 +279,13 @@ function serverRow(): Record<string, unknown> {
     kgIngest: false,
     configSchema: [],
     config: {},
+    // W0-1 (#550): the token routes fail closed with 403 unless an acting
+    // identity resolves. `service` is what migration 0031 sets on pre-existing
+    // servers that already hold a token — exactly what this fixture is: a
+    // connected server whose token the operator is about to revoke. Leaving it
+    // unset would make these tests assert on the delegation guard instead of on
+    // the pool invalidation they exist to pin.
+    delegation: 'service',
   };
 }
 

@@ -27,6 +27,7 @@ import type {
   NativeToolAttachmentSink,
   NativeToolHandler,
   NativeToolSpec,
+  WriteCapability,
 } from '@omadia/plugin-api';
 
 export interface NativeToolRegistration {
@@ -68,6 +69,23 @@ export interface NativeToolRegistration {
    * without restart. Absent for marker-only kernel registrations.
    */
   readonly readConfig?: (key: string) => unknown | undefined;
+  /**
+   * #542 prerequisite — the tool's declared write capabilities, i.e. the
+   * assertion "dispatching me may MUTATE data".
+   *
+   * This is the carrier the `WriteCapability` contract was always meant to land
+   * on. `plugin-api`'s `pluginContext.ts` notes that the annotation deliberately
+   * does NOT go on `NativeToolSpec`, because the whole spec is forwarded verbatim
+   * into the Anthropic tools list and unknown fields are rejected there — it
+   * belongs on "a non-model-facing carrier (manifest annotation / registration
+   * metadata)". This registration IS that carrier.
+   *
+   * Read by `ToolDispatchService` to decide whether a dispatch needs at-most-once
+   * protection. Absent or empty ⇒ treated as read-only: no idempotency dedupe,
+   * and the MCP transient-retry mitigation stays fully in force. A plugin that
+   * mutates data MUST declare this or it forfeits duplicate-write protection.
+   */
+  readonly writeCapabilities?: readonly WriteCapability[];
 }
 
 export interface NativeToolRegistrationOptions {
@@ -84,6 +102,8 @@ export interface NativeToolRegistrationOptions {
   /** Slice 2.5 — see `NativeToolRegistration.readConfig`. Set by
    *  `ToolsAccessor.register` as `(k) => config.get(k)`. */
   readConfig?: (key: string) => unknown | undefined;
+  /** #542 — see `NativeToolRegistration.writeCapabilities`. */
+  writeCapabilities?: readonly WriteCapability[];
 }
 
 /**
@@ -104,6 +124,10 @@ export interface NativeToolHandlerRegistrationOptions {
    *  such an entry stays always-available, matching `register()`'s
    *  kernel-internal (marker-only) convention. */
   agentId?: string;
+  /** #542 — see `NativeToolRegistration.writeCapabilities`. Honoured on this
+   *  path too: a handler-only registration is dispatchable by name, so it needs
+   *  the same duplicate-write protection as a `register()`-contributed tool. */
+  writeCapabilities?: readonly WriteCapability[];
 }
 
 export class NativeToolRegistry {
@@ -142,6 +166,9 @@ export class NativeToolRegistry {
           ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
           ...(options.readConfig !== undefined
             ? { readConfig: options.readConfig }
+            : {}),
+          ...(options.writeCapabilities !== undefined
+            ? { writeCapabilities: options.writeCapabilities }
             : {}),
         }
       : { name };
@@ -182,6 +209,9 @@ export class NativeToolRegistry {
         ? { attachmentSink: options.attachmentSink }
         : {}),
       ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
+      ...(options.writeCapabilities !== undefined
+        ? { writeCapabilities: options.writeCapabilities }
+        : {}),
     };
     this.entries.set(name, entry);
     return () => {
