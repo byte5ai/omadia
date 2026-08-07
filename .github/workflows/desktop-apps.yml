@@ -16,7 +16,13 @@
 #     APPLE_CERTIFICATE_P12_BASE64_HIGH5, APPLE_CERTIFICATE_PASSWORD_HIGH5,
 #     APPLE_ASC_KEY_ID_HIGH5, APPLE_ASC_ISSUER_ID_HIGH5,
 #     APPLE_ASC_KEY_P8_BASE64_HIGH5, APPLE_TEAM_ID_HIGH5
-#   Windows (optional Authenticode p12 — ideally an EV cert to avoid SmartScreen):
+#   Windows — Azure Trusted Signing (preferred; no hardware token, works on
+#   GitHub-hosted runners). Since 2023-06-01 the CA/Browser Forum requires every
+#   code-signing key (OV *and* EV) to live in an HSM, so a plain .pfx in a secret
+#   is no longer obtainable for newly issued certificates:
+#     AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
+#     AZURE_SIGN_ENDPOINT, AZURE_SIGN_ACCOUNT, AZURE_SIGN_CERT_PROFILE
+#   Windows — legacy Authenticode p12 (only certs issued before 2023-06-01):
 #     WINDOWS_CSC_LINK_BASE64, WINDOWS_CSC_KEY_PASSWORD
 
 name: Desktop apps
@@ -110,7 +116,24 @@ jobs:
       APPLE_ASC_ISSUER_ID: ${{ secrets.APPLE_ASC_ISSUER_ID_HIGH5 }}
       APPLE_ASC_KEY_P8_BASE64: ${{ secrets.APPLE_ASC_KEY_P8_BASE64_HIGH5 }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID_HIGH5 }}
-      # Windows signing (optional).
+      # Windows signing — PREFERRED path: Azure Trusted Signing (rebranded Azure
+      # Artifact Signing). electron-builder 25.1.8 supports it natively via
+      # `win.azureSignOptions` and installs the required TrustedSigning
+      # PowerShell module itself. Credentials are read by Azure's
+      # EnvironmentCredential, so the three AZURE_* names below are fixed by
+      # Azure, not chosen by us.
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      # Non-secret account coordinates, kept as secrets purely for consistency.
+      AZURE_SIGN_ENDPOINT: ${{ secrets.AZURE_SIGN_ENDPOINT }}
+      AZURE_SIGN_ACCOUNT: ${{ secrets.AZURE_SIGN_ACCOUNT }}
+      AZURE_SIGN_CERT_PROFILE: ${{ secrets.AZURE_SIGN_CERT_PROFILE }}
+      # Windows signing — LEGACY path: a .p12/.pfx in a secret. Only works with
+      # certificates issued BEFORE 2023-06-01. Since then the CA/Browser Forum
+      # requires every code-signing private key (OV *and* EV) to live in a
+      # FIPS 140-2 L2 / EAL4+ HSM, so no newly issued certificate can be exported
+      # to a file at all. Kept for existing certs; prefer Azure above.
       WINDOWS_CSC_LINK_BASE64: ${{ secrets.WINDOWS_CSC_LINK_BASE64 }}
       WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
     defaults:
@@ -366,13 +389,38 @@ jobs:
           echo "signing identity: $IDENT"
 
       # --- Windows Authenticode signing (optional) --------------------------
-      - name: Prepare Windows signing (optional — needs WINDOWS_CSC_* secrets)
-        if: ${{ matrix.os == 'windows-latest' && env.WINDOWS_CSC_LINK_BASE64 != '' }}
+      # --- Windows signing: Azure Trusted Signing (preferred) ----------------
+      # The three coordinates are passed on the CLI rather than hard-coded in
+      # electron-builder.yml so the config stays generic — a fork without these
+      # secrets simply builds unsigned instead of failing on someone else's
+      # Azure account. Presence of win.azureSignOptions is what switches
+      # electron-builder to the Azure path.
+      - name: Prepare Windows signing (Azure Trusted Signing)
+        if: ${{ matrix.os == 'windows-latest' && env.AZURE_CLIENT_ID != '' }}
+        run: |
+          for v in AZURE_TENANT_ID AZURE_CLIENT_SECRET AZURE_SIGN_ENDPOINT AZURE_SIGN_ACCOUNT AZURE_SIGN_CERT_PROFILE; do
+            if [ -z "${!v}" ]; then
+              echo "FAIL: AZURE_CLIENT_ID is set but $v is empty — Azure signing needs all six." >&2
+              exit 1
+            fi
+          done
+          {
+            printf 'EB_WIN_SIGN=--config.win.azureSignOptions.endpoint=%s' "$AZURE_SIGN_ENDPOINT"
+            printf ' --config.win.azureSignOptions.codeSigningAccountName=%s' "$AZURE_SIGN_ACCOUNT"
+            printf ' --config.win.azureSignOptions.certificateProfileName=%s\n' "$AZURE_SIGN_CERT_PROFILE"
+            echo "WIN_SIGN_EXPECTED=1"
+          } >> "$GITHUB_ENV"
+          echo "Azure Trusted Signing configured for account $AZURE_SIGN_ACCOUNT"
+
+      # --- Windows signing: legacy .pfx (pre-2023 certificates only) ---------
+      - name: Prepare Windows signing (legacy CSC — pre-2023 certs only)
+        if: ${{ matrix.os == 'windows-latest' && env.AZURE_CLIENT_ID == '' && env.WINDOWS_CSC_LINK_BASE64 != '' }}
         run: |
           printf '%s' "$WINDOWS_CSC_LINK_BASE64" | base64 -d > "$RUNNER_TEMP/win-cert.p12"
           {
             echo "CSC_LINK=$RUNNER_TEMP/win-cert.p12"
             echo "CSC_KEY_PASSWORD=$WINDOWS_CSC_KEY_PASSWORD"
+            echo "WIN_SIGN_EXPECTED=1"
           } >> "$GITHUB_ENV"
 
       - name: Package installers
@@ -393,7 +441,7 @@ jobs:
           # times and then reports only the LAST error, which masks the real
           # cause. Re-run this step with `DEBUG=electron-builder` to see the
           # actual command and its stderr.
-          npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
+          npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} ${EB_WIN_SIGN:-} --publish never
 
       # ALWAYS runs on macOS — signed or not. Without it, a build whose signature
       # macOS considers corrupt sails through CI green and ships an app that
@@ -426,6 +474,35 @@ jobs:
             codesign --verify --deep --strict --verbose=2 "$app"
           done
           echo "✓ macOS bundle carries a structurally valid signature (nested code included)"
+
+      # Same lesson as macOS: without a gate, CI goes green while shipping an
+      # unsigned installer. Runs whenever signing was CONFIGURED, so "secrets are
+      # present but the installer came out unsigned" fails the build instead of
+      # reaching users as a SmartScreen warning.
+      # Uses Get-AuthenticodeSignature rather than signtool.exe — it is built into
+      # PowerShell, so there is no Windows SDK path to hunt for.
+      - name: Verify the Windows installer is signed
+        if: ${{ matrix.os == 'windows-latest' && env.WIN_SIGN_EXPECTED == '1' }}
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = @(Get-ChildItem -Path release -Filter *.exe -ErrorAction SilentlyContinue)
+          if ($installers.Count -eq 0) {
+            Write-Error "FAIL: no .exe produced under release/ — nothing to verify"
+          }
+          foreach ($exe in $installers) {
+            $sig = Get-AuthenticodeSignature $exe.FullName
+            Write-Host "$($exe.Name): status=$($sig.Status) signer=$($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') {
+              Write-Error "FAIL: $($exe.Name) is not validly signed (status=$($sig.Status)). Signing was configured, so this must not ship."
+            }
+            if (-not $sig.TimeStamperCertificate) {
+              # Without a countersignature the signature dies with the cert.
+              Write-Error "FAIL: $($exe.Name) has no trusted timestamp."
+            }
+          }
+          Write-Host "✓ Windows installer(s) carry a valid, timestamped Authenticode signature"
 
       # The .app is notarized + stapled by electron-builder above; the DMG needs
       # its own ticket so `stapler validate` passes on the disk image itself.
