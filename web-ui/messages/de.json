@@ -796,7 +796,12 @@
     "tabTitleSuffix": "ID: {id}\nDoppelklick zum Umbenennen",
     "closeAriaLabel": "Tab schließen: {title}",
     "closeWhileBusyTitle": "Warten bis der Turn durch ist",
-    "closeTitle": "Tab schließen"
+    "closeTitle": "Tab schließen",
+    "streamRunningAria": "Antwort wird erstellt",
+    "streamDoneAria": "Antwort fertig",
+    "streamErrorAria": "Antwort fehlgeschlagen",
+    "streamDoneAnnounce": "{title}: Antwort fertig",
+    "streamErrorAnnounce": "{title}: Antwort fehlgeschlagen"
   },
   "authBadge": {
     "loginLink": "Login",
@@ -812,6 +817,255 @@
     "resetDataHint": "Löscht die lokal in diesem Browser gespeicherten Chats und lädt neu. Deine serverseitigen Daten bleiben unberührt — nutze dies, wenn ein Neu-Laden allein nicht hilft.",
     "digestLabel": "Fehler-Referenz",
     "digestHint": "Gib diese Referenz bei einer Fehlermeldung an — die vollständige Meldung steht im Server-Log."
+  },
+  "errorHelp": {
+    "install": {
+      "already_installed": {
+        "what": "Dieses Plugin ist auf diesem Server bereits installiert.",
+        "next": "Deinstalliere die vorhandene Kopie zuerst, wenn du es neu installieren willst."
+      },
+      "blocked": {
+        "what": "Der Store markiert dieses Plugin als inkompatibel mit diesem Server, deshalb wurde die Installation abgelehnt.",
+        "next": "Lies die Inkompatibilitätsgründe in den Details unten, bevor du es erneut versuchst."
+      },
+      "capability_already_provided": {
+        "what": "Ein anderes installiertes Plugin liefert die Capability bereits, die dieses hier liefern will.",
+        "next": "Deinstalliere das Plugin, das die Capability hält, und installiere danach dieses."
+      },
+      "has_dependents": {
+        "what": "Andere installierte Plugins hängen noch von diesem ab, deshalb lässt es sich nicht deinstallieren.",
+        "next": "Deinstalliere zuerst die Plugins, die in den Details unten stehen."
+      },
+      "invalid_body": {
+        "what": "Der Setup-Schritt hat seine Eingaben in einer Form geschickt, die der Server ablehnt.",
+        "next": "Lade die Seite neu und fülle den Schritt erneut aus."
+      },
+      "invalid_job_id": {
+        "what": "Die Anfrage sagt nicht, zu welchem Installationslauf sie gehört.",
+        "next": "Geh zurück zum Plugin und starte die Installation erneut."
+      },
+      "invalid_plugin_id": {
+        "what": "Die Installationsanfrage kam ohne Plugin-Id an.",
+        "next": "Öffne das Plugin in der Store-Liste und installiere es von dort."
+      },
+      "job_not_found": {
+        "what": "Der Installationslauf, zu dem dieser Schritt gehört, liegt nicht mehr auf dem Server.",
+        "next": "Starte die Installation erneut über das Plugin im Store."
+      },
+      "missing_capability": {
+        "what": "Das Plugin braucht Capabilities, die noch kein installiertes Plugin liefert.",
+        "next": "Installiere zuerst die Plugins, die sie liefern — der Installationsassistent kann sie verketten."
+      },
+      "missing_dependencies": {
+        "what": "Das Plugin hängt von anderen Plugins ab, die hier nicht installiert sind.",
+        "next": "Installiere die in den Details unten genannten Plugins und danach dieses."
+      },
+      "no_schema": {
+        "what": "Dieser Installationslauf hat kein Setup-Formular, es gibt also nichts zu konfigurieren.",
+        "next": "Schließ die Installation ohne den Konfigurationsschritt ab."
+      },
+      "not_installed": {
+        "what": "Dieses Plugin ist auf diesem Server nicht installiert.",
+        "next": "Installiere es zuerst aus dem Store.",
+        "action": "Zum Store"
+      },
+      "unexpected": {
+        "what": "Die Installation ist an einem Fehler abgebrochen, mit dem der Server nicht gerechnet hat.",
+        "next": "Versuch es erneut und schick die Details unten an den Support, falls es wieder passiert."
+      },
+      "wrong_state": {
+        "what": "Dieser Installationslauf ist bereits über den Konfigurationsschritt hinaus.",
+        "next": "Lade die Seite neu, um zu sehen, wo die Installation wirklich steht."
+      }
+    },
+    "providers": {
+      "apply_failed": {
+        "what": "Die Zuordnung wurde angenommen, konnte aber nicht ins Plugin geschrieben werden.",
+        "next": "Speichere erneut. Bleibt es dabei, kann die Middleware ihren Config-Store nicht schreiben."
+      },
+      "invalid_request": {
+        "what": "In der Zuordnung fehlte das Plugin, der Provider oder das Modell.",
+        "next": "Wähle Provider und Modell und speichere erneut."
+      },
+      "key_rejected": {
+        "what": "Der Provider hat diesen API-Key abgelehnt.",
+        "next": "Kopiere den Schlüssel noch einmal aus der Provider-Konsole und füge ihn hier ein."
+      },
+      "model_provider_mismatch": {
+        "what": "Das gewählte Modell gehört zu einem anderen Provider als dem ausgewählten.",
+        "next": "Wähle ein Modell dieses Providers oder wechsle zum Provider des Modells."
+      },
+      "not_installed": {
+        "what": "Das Plugin, dem du einen Provider zuordnest, ist hier nicht installiert.",
+        "next": "Installiere das Plugin zuerst und setze danach seinen Provider.",
+        "action": "Zum Store"
+      },
+      "read_failed": {
+        "what": "Die Provider-Liste konnte nicht gelesen werden.",
+        "next": "Lade die Seite neu. Bleibt sie leer, erreicht die Middleware ihren Config-Store nicht."
+      },
+      "tool_incompatible": {
+        "what": "Dieses Plugin braucht eine Tool-Schleife, die der gewählte Provider nicht kann.",
+        "next": "Gib diesem Plugin einen Key-basierten Provider und nutze die Abo-CLI für Tool-lose Rollen."
+      },
+      "unknown_plugin": {
+        "what": "Diesem Plugin kann auf dieser Seite kein Provider zugeordnet werden.",
+        "next": "Lade die Seite neu und wähle ein Plugin aus der Liste."
+      },
+      "unknown_provider": {
+        "what": "Der Server kennt keinen Provider mit dieser Id.",
+        "next": "Lade die Seite neu und wähle einen Provider aus der Liste."
+      },
+      "verify_failed": {
+        "what": "Die Schlüsselprüfung lief nicht zu Ende, das Ergebnis bleibt unverändert.",
+        "next": "Starte die Prüfung noch einmal. Wiederholte Fehlschläge heißen: der Provider ist von diesem Server nicht erreichbar."
+      }
+    },
+    "runtime": {
+      "agent_inactive": {
+        "what": "Das Plugin ist installiert, läuft aber nicht und kann deshalb gerade nicht antworten.",
+        "next": "Aktiviere das Plugin und lade diese Seite neu."
+      },
+      "empty_secrets_patch": {
+        "what": "Beim Speichern war kein geänderter Wert dabei.",
+        "next": "Ändere oder leere mindestens ein Feld, bevor du speicherst."
+      },
+      "invalid_audit_mode": {
+        "what": "Diesen Audit-Modus akzeptiert der Server nicht.",
+        "next": "Wähle einen der angebotenen Modi und speichere erneut."
+      },
+      "invalid_config": {
+        "what": "Die Konfiguration kam in einer Form an, die der Server ablehnt.",
+        "next": "Lade die Seite neu und trage die Werte erneut ein."
+      },
+      "invalid_id": {
+        "what": "Die Anfrage nennt nicht, um welches Plugin es geht.",
+        "next": "Lade die Seite neu und wiederhole die Aktion auf dem Plugin-Screen."
+      },
+      "invalid_multiselect": {
+        "what": "Einer der ausgewählten Werte hat nicht die Form, die der Server akzeptiert.",
+        "next": "Leere die Auswahl und wähle die Einträge erneut aus der Liste."
+      },
+      "invalid_secrets_body": {
+        "what": "Die Zugangsdaten kamen in einer Form an, die der Server ablehnt.",
+        "next": "Lade die Seite neu und trage die Zugangsdaten erneut ein."
+      },
+      "no_options_provider": {
+        "what": "Dieses Feld hat keine Live-Quelle für Optionen, es lässt sich also nichts nachladen.",
+        "next": "Trag den Wert von Hand ein."
+      },
+      "not_installed": {
+        "what": "Dieses Plugin ist auf diesem Server nicht installiert.",
+        "next": "Installiere es zuerst und komm dann auf diesen Screen zurück.",
+        "action": "Zum Store"
+      },
+      "not_web_scanner": {
+        "what": "Der Audit-Modus gilt nur für Plugins, die das Web scannen. Dieses tut das nicht.",
+        "next": "Lass den Audit-Modus für dieses Plugin ungesetzt."
+      },
+      "options_provider_bad_shape": {
+        "what": "Das Plugin hat auf die Options-Anfrage etwas geantwortet, das keine Liste ist.",
+        "next": "Aktualisiere das Plugin. Sein Options-Provider liefert die falsche Form."
+      },
+      "options_provider_failed": {
+        "what": "Das Plugin konnte die Optionen für dieses Feld nicht liefern.",
+        "next": "Prüfe die Zugangsdaten, die dieses Plugin braucht, und lade die Liste erneut."
+      },
+      "options_provider_timeout": {
+        "what": "Das Plugin hat für die Optionen zu lange gebraucht.",
+        "next": "Lade die Liste erneut. Läuft sie weiter in den Timeout, ist das System hinter dem Plugin langsam oder nicht erreichbar."
+      },
+      "options_unavailable": {
+        "what": "Dieser Core kann keine Setup-Optionen aus einem laufenden Plugin holen.",
+        "next": "Trag den Wert von Hand ein."
+      },
+      "setup_field_invalid": {
+        "what": "Einer der Werte passt nicht zum Format, das dieses Feld erwartet.",
+        "next": "Korrigiere das markierte Feld und speichere erneut."
+      },
+      "update_failed": {
+        "what": "Die Änderung konnte nicht geschrieben werden.",
+        "next": "Speichere erneut. Bleibt es dabei, kann die Middleware ihren Config-Store nicht schreiben."
+      },
+      "value_not_offered": {
+        "what": "Einer der ausgewählten Werte steht nicht auf der Liste, die das Plugin anbietet.",
+        "next": "Lade die Liste neu und wähle aus den aktuellen Einträgen."
+      },
+      "vault_read_failed": {
+        "what": "Die gespeicherten Zugangsdaten konnten nicht aus dem Vault gelesen werden.",
+        "next": "Lade neu, sobald der Vault wieder erreichbar ist."
+      },
+      "vault_unavailable": {
+        "what": "In diesem Deployment ist kein Secret-Vault verdrahtet, Zugangsdaten lassen sich nicht ablegen.",
+        "next": "Richte im Deployment einen Vault ein, bevor du hier Zugangsdaten einträgst."
+      },
+      "vault_write_failed": {
+        "what": "Die Zugangsdaten konnten nicht in den Vault geschrieben werden.",
+        "next": "Speichere erneut, sobald der Vault erreichbar ist."
+      }
+    },
+    "settings": {
+      "invalid_request": {
+        "what": "Die Änderung kam in einer Form an, die der Server ablehnt.",
+        "next": "Lade die Seite neu und nimm die Änderung erneut vor."
+      },
+      "invalid_values": {
+        "what": "Der Server hat bei jeder Änderung den Wert abgelehnt, es wurde nichts geschrieben.",
+        "next": "Korrigiere den Wert, den die Details unten nennen — dort steht zu jedem Feld der Grund — und speichere erneut."
+      },
+      "no_valid_changes": {
+        "what": "Keine der gesendeten Änderungen passt zu einer Einstellung, die dieser Server aktuell anbietet.",
+        "next": "Lade die Seite neu, damit die Feldliste zum Server passt, und nimm die Änderung erneut vor."
+      },
+      "read_failed": {
+        "what": "Die Einstellungen konnten nicht gelesen werden.",
+        "next": "Lade die Seite neu. Bleibt sie leer, erreicht die Middleware ihren Config-Store nicht."
+      },
+      "vault_unavailable": {
+        "what": "In diesem Deployment ist kein Secret-Vault verdrahtet, Secrets lassen sich nicht bearbeiten.",
+        "next": "Richte im Deployment einen Vault ein. Nicht-geheime Einstellungen funktionieren auch ohne."
+      },
+      "write_failed": {
+        "what": "Die Einstellungen konnten nicht geschrieben werden.",
+        "next": "Speichere erneut. Bleibt es dabei, kann die Middleware ihren Config-Store nicht schreiben."
+      }
+    },
+    "store": {
+      "ack_failed": {
+        "what": "Die Bestätigung konnte nicht festgehalten werden.",
+        "next": "Bestätige erneut. Bis dahin bleibt das Scan-Ergebnis offen."
+      },
+      "get_failed": {
+        "what": "Die Plugin-Details konnten nicht geladen werden.",
+        "next": "Lade die Seite neu. Passiert es wieder, ist der Store-Index auf diesem Server nicht lesbar."
+      },
+      "invalid_id": {
+        "what": "Die Anfrage nennt nicht, um welches Plugin es geht.",
+        "next": "Geh zurück zur Store-Liste und öffne das Plugin von dort."
+      },
+      "list_failed": {
+        "what": "Die Plugin-Liste konnte nicht geladen werden.",
+        "next": "Lade die Seite neu. Bleibt sie leer, erreicht die Middleware ihre Registry nicht."
+      },
+      "plugin_not_found": {
+        "what": "Auf diesem Server gibt es kein Plugin mit dieser Id.",
+        "next": "Wähle ein Plugin aus der Store-Liste.",
+        "action": "Zum Store"
+      },
+      "verdict_not_found": {
+        "what": "Für dieses Plugin wurde noch kein Code-Scan-Ergebnis festgehalten.",
+        "next": "Lass zuerst den Code-Scan laufen und bestätige ihn danach."
+      },
+      "verdicts_unavailable": {
+        "what": "Code-Scan-Ergebnisse sind in diesem Deployment abgeschaltet.",
+        "next": "Aktiviere den Scanner in der Deployment-Konfiguration, wenn du Ergebnisse brauchst."
+      }
+    }
+  },
+  "errorHelpUi": {
+    "supportDetails": "Details für den Support",
+    "unknownFailure": "Die Anfrage ist fehlgeschlagen, und der Server hat keinen Code geschickt, den diese Seite erklären kann.",
+    "httpStatus": "Die Anfrage ist fehlgeschlagen (HTTP {status})."
   },
   "session": {
     "expiresAtLabel": "Sitzung gültig bis",
@@ -901,6 +1155,13 @@
         "error": "Gate konnte nicht aufgelöst werden."
       }
     },
+    "task": {
+      "started": "Gestartet: {label}",
+      "running": "läuft im Hintergrund",
+      "deferredHint": "Das läuft eigenständig weiter — die Antwort kommt in einer Folgemeldung, nicht in dieser.",
+      "taskId": "Task {id}",
+      "phase": "Phase {phase}"
+    },
     "inputLabel": "input",
     "outputLabel": "output",
     "persona": {
@@ -917,6 +1178,13 @@
       "modalTitle": "{server} verbinden",
       "modalBody": "Autorisiere {server}, damit diese und künftige Anfragen es nutzen können.",
       "close": "Schließen"
+    },
+    "mcpInput": {
+      "kicker": "Externe Eingabe-Anfrage",
+      "heading": "„{server}“ braucht für „{tool}“ noch weitere Angaben.",
+      "secretHint": "Bei der Eingabe verborgen — an den Server geht der Wert unverändert.",
+      "warning": "Was du hier eingibst, geht an den externen Server „{server}“. Gib nur Daten ein, die dieser Server bekommen darf.",
+      "submit": "An Server senden"
     },
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
@@ -1062,7 +1330,13 @@
     "explainerBypassed": "Der Operator hat für mindestens ein Plugin den Privacy-Mode auf »Bypass« gestellt — dessen Tool-Ergebnisse erreichten das Modell unmaskiert. Eingesetzt für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht sinnvoll digestieren kann.",
     "summaryPromptMasked": "Prompt: {count} maskiert",
     "factPromptMasked": "Maskierte PII in deiner Nachricht",
-    "explainerPromptMasked": "In deiner eigenen Nachricht erkannte Identifikatoren wurden vor dem Modellaufruf durch Pseudonyme ersetzt und in der Antwort wiederhergestellt."
+    "explainerPromptMasked": "In deiner eigenen Nachricht erkannte Identifikatoren wurden vor dem Modellaufruf durch Pseudonyme ersetzt und in der Antwort wiederhergestellt.",
+    "summaryStructured": "{count, plural, one {# strukturiertes Ergebnis} other {# strukturierte Ergebnisse}}",
+    "factStructured": "Strukturierte Ausgabe empfangen",
+    "structuredBytes": "{kb} KB",
+    "structuredSchemaYes": "Output-Schema",
+    "structuredSchemaNo": "kein Schema",
+    "explainerStructured": "Ein verbundenes Tool lieferte strukturierte Daten. Sie erreichten den Browser — die vertrauenswürdige Seite — aber nie das Modell, das nur den internen Digest sah. Hier zur Transparenz aufgeführt; es wurde nichts maskiert, weil auf diesem Pfad nichts zu maskieren war."
   },
   "directLine": {
     "consultedLabel": "🔎 Konsultiert",
@@ -1182,6 +1456,8 @@
       "filterAll": "Alle Verdicts",
       "acknowledge": "Bestätigen",
       "acked": "Bestätigt von {by}",
+      "structuredOutput": "liefert strukturierte Ausgabe",
+      "structuredOutputHint": "Dieses Tool deklariert ein Output-Schema und liefert zusätzlich zum Text ein strukturiertes Ergebnis.",
       "runDeepScan": "Tiefen-Scan ausführen",
       "why": "Heuristischer Scan hat markiert: {codes}. Das ist ein Signal, kein Beweis, dass der Inhalt sicher ist.",
       "llmRationale": "Tiefen-Scan-Hinweis: {rationale}",
@@ -1291,25 +1567,6 @@
     "orphanDetachAllTooltip": "Entfernt alle veralteten Plugin-Zuordnungen (alte IDs aus früheren Deployments) auf einmal.",
     "orphanExplain": "Plugin-IDs aus früheren Seeds, die im aktuellen Katalog nicht mehr existieren (typisch: Umbenennung de.byte5.agent.* → @omadia/*). Werden beim nächsten „Speichern\" verworfen, außer du markierst sie als „Behalten\".",
     "orphanKeep": "Behalten"
-  },
-  "streamToasts": {
-    "phaseThinking": "Agent denkt",
-    "phaseStreaming": "Antwort läuft",
-    "phaseToolRunning": "Tool läuft",
-    "phaseDone": "Antwort fertig",
-    "phaseError": "Fehler",
-    "phaseAborted": "Abgebrochen",
-    "elapsedSec": "{sec}s",
-    "tokensInTitle": "{n} Input-Tokens (kumuliert über Iterationen)",
-    "tokensOutTitle": "{n} Output-Tokens (kumuliert über Iterationen)",
-    "cacheHitTitle": "{n} Cache-Read-Tokens",
-    "dismissAriaLabel": "Benachrichtigung schließen (Stream läuft weiter)",
-    "dismissTitle": "Schließen",
-    "abortButton": "Stream stoppen",
-    "abortConfirmTitle": "Stream wirklich stoppen?",
-    "abortConfirmBody": "Die laufende Antwort wird sofort abgebrochen und kann nicht fortgesetzt werden.",
-    "abortConfirmKeep": "Weiter laufen lassen",
-    "abortConfirmStop": "Ja, stoppen"
   },
   "builder": {
     "issueReport": {
@@ -2383,7 +2640,7 @@
     "title": "LLM-Provider",
     "intro": "Verbinde LLM-Provider und lege fest, mit welchem jeder Agent läuft. Schlüssel werden verschlüsselt im Vault gespeichert und verlassen deinen Server nie. Anthropic ist der Standard; ein Provider-Wechsel pro Agent wirkt sofort.",
     "loading": "Lädt …",
-    "loadError": "Fehler beim Laden: {message}",
+    "loadError": "Die Provider-Liste konnte nicht geladen werden.",
     "vaultUnavailable": "Vault nicht verfügbar — Provider-Schlüssel können nicht gelesen werden.",
     "providers": {
       "heading": "Provider",
@@ -2833,7 +3090,44 @@
       "marketplace": "Marketplace",
       "grants": "Grants",
       "plugins": "Plugin-Zugriff",
+      "bindings": "Öffentliche API-Keys",
       "audit": "Audit-Log"
+    },
+    "bindings": {
+      "intro": "Über den öffentlichen MCP-Endpunkt ruft eine externe Integration Tools mit einem API-Key auf. Jeder Key erreicht genau einen Agenten und genau die Tools, die hier eingetragen sind — ein Key ohne Binding erreicht gar nichts.",
+      "keyIdHint": "Trag die Key-ID ein, die beim Anlegen des API-Keys zurückkam. Eine Auswahlliste gibt es noch nicht: Keys verwaltet die Channel-API über einen eigenen Endpunkt.",
+      "keyId": "Key-ID",
+      "keyIdPlaceholder": "z. B. 8f3c1a90-…",
+      "agentId": "Agent",
+      "agentIdPlaceholder": "Agent wählen",
+      "readTools": "Lese-Tools",
+      "writeTools": "Schreib-Tools",
+      "toolsPlaceholder": "Tool-Namen, per Komma getrennt",
+      "writeRate": "Writes/Min.",
+      "writeToolsHint": "Ein Schreib-Tool verlangt zusätzlich den passenden mcp:write-Scope auf dem Key und geht auf das engere Schreib-Budget. Steht ein Tool in beiden Listen, zählt es als Schreib-Tool.",
+      "save": "Binding speichern",
+      "saving": "Speichert",
+      "empty": "Noch keine Bindings. Solange keines existiert, erreicht über den öffentlichen Endpunkt kein API-Key irgendein Tool.",
+      "boundTo": "gebunden an {agent}",
+      "enabled": "Aktiv",
+      "parked": "Widerrufen",
+      "readToolsLabel": "Lesen",
+      "writeToolsLabel": "Schreiben",
+      "none": "keine",
+      "meta": "{rate} Writes/Min. · zuletzt geändert {updated}",
+      "revoke": "Widerrufen",
+      "revokeTitle": "Dieses Binding widerrufen?",
+      "revokeBody": "Der Key {keyId} erreicht ab sofort kein Tool mehr. Das Binding bleibt erhalten und wird nicht gelöscht — du siehst weiterhin, was es erlaubt hat.",
+      "revokeConfirm": "Widerrufen",
+      "restore": "Zugriff wiederherstellen",
+      "restoreHint": "Erneutes Speichern ändert die Tools, hebt den Widerruf aber nicht auf. Nur Wiederherstellen macht den Key wieder nutzbar.",
+      "restoreTitle": "Dieses Binding wiederherstellen?",
+      "restoreBody": "Der Key {keyId} erhält sofort alles zurück, was auf dieser Zeile steht: {tools}.",
+      "restoreConfirm": "Wiederherstellen",
+      "warnings": {
+        "keyUnknown": "Es existiert noch kein API-Key mit dieser ID. Das Binding wurde gespeichert, erreicht aber nichts, solange kein solcher Key angelegt ist – prüfe die ID auf einen Tippfehler.",
+        "agentUnknown": "Dieses Binding nennt einen Agenten, der nicht mehr registriert ist, und erreicht daher nichts. Verknüpfe es mit einem existierenden Agenten."
+      }
     },
     "plugins": {
       "intro": "Plugins, die im Manifest MCP-Zugriff deklarieren. Weise jedem gezielt die Server zu, die es erreichen darf — nichts ist implizit. Die Per-Tool-Sicherheit greift weiterhin: ein ungescanntes oder hochriskantes Tool wird zur Aufrufzeit abgelehnt.",
@@ -2844,6 +3138,10 @@
     "servers": {
       "name": "Name",
       "transport": "Transport",
+      "transportDeprecated": "Veraltet",
+      "transportDeprecatedHint": "Der alte HTTP+SSE-Transport ist seit MCP 2026-07-28 als veraltet markiert und wird nach einer Übergangsfrist von mindestens 12 Monaten entfernt. Bestehende SSE-Server funktionieren weiterhin — neue Server sollten aber Streamable HTTP (http) verwenden, bestehende dorthin migriert werden.",
+      "showDeprecatedTransports": "Veraltete Transports anzeigen",
+      "deprecatedOption": "{transport} (veraltet)",
       "endpoint": "Endpoint",
       "status": "Status",
       "tools": "Tools",
@@ -2920,7 +3218,26 @@
       "readyToLogin": "Client gespeichert. Melde dich jetzt bei {host} an, um den Zugriff zu autorisieren.",
       "continueLogin": "Weiter zum Login bei {host} ↗",
       "afterLoginHint": "Öffnet in einem neuen Tab. Nach der Bestätigung hierher zurückkehren — der Status aktualisiert sich automatisch.",
-      "checkStatus": "Status prüfen"
+      "checkStatus": "Status prüfen",
+      "delegationLabel": "Handelnde Identität",
+      "delegationPerUser": "Jeder Nutzer handelt als er selbst",
+      "delegationService": "Eine gemeinsame Service-Identität",
+      "delegationPerUserWhy": "Jeder Aufrufer nutzt an diesem Server seine eigene Autorisierung. Eine Unterhaltung ohne zugeordnete Nutzeridentität wird abgewiesen und greift nicht auf deine zurück.",
+      "delegationServiceWhy": "Alle Aufrufer teilen eine Autorisierung — deine. Wer einen Orchestrator mit diesem Server erreicht, handelt mit dieser Berechtigung. Behalte das nur für Server, bei denen eine gemeinsame Identität gewollt ist.",
+      "delegationSwitchToPerUser": "Identität pro Nutzer verlangen",
+      "delegationSwitchToService": "Gemeinsame Service-Identität nutzen",
+      "delegationIdentityMissing": "Diese Sitzung hat keine zugeordnete Nutzeridentität — Aufrufe pro Nutzer an diesen Server schlagen deshalb bewusst fehl. Es wird nichts an den Server gesendet.",
+      "modeCimd": "Metadaten-Dokument",
+      "modeDcr": "Automatisch registriert",
+      "modeManual": "Registrierte App",
+      "cimdBadgeWhy": "Dieser Server akzeptiert ein Client-ID-Metadaten-Dokument. omadia weist sich dadurch über eine URL aus, die diese Installation veröffentlicht — eine App-Registrierung war nicht nötig.",
+      "modeDcrWhy": "Dieser Server hat omadia automatisch registriert (Dynamic Client Registration). Die MCP-Spezifikation löst das schrittweise durch Metadaten-Dokumente ab, es funktioniert aber weiterhin — es gibt nichts zu tun.",
+      "modeManualWhy": "omadia nutzt eine OAuth-App, die Du einmal bei diesem Issuer registriert hast. Das ist der Standardweg für Microsoft Entra ID und Okta und bleibt vollständig unterstützt.",
+      "hintCimd": "Dieser Server erkennt omadia über ein Metadaten-Dokument, das diese Installation veröffentlicht — nichts zu registrieren, einfach verbinden und anmelden.",
+      "cimdUnreachable": "Dieser Server würde ein Client-ID-Metadaten-Dokument akzeptieren, aber diese Installation kann keines veröffentlichen, das er abrufen kann. Meist heißt das: omadia ist aus dem Internet nicht erreichbar — bei einer On-Premises-Installation normal, denn der Identity Provider muss das Dokument selbst abrufen.",
+      "cimdUnreachableReason": "Grund",
+      "manualStillSupported": "Es ist nichts kaputt: Registriere unten einmalig eine OAuth-App für diesen Issuer und verbinde wie gewohnt.",
+      "manualIsEnterprisePath": "Das ist der reguläre Enterprise-Weg, kein Notbehelf. Microsoft Entra ID und Okta setzen bewusst auf vorab registrierte App-Registrierungen und werden dieses Formular weiterhin nutzen."
     },
     "marketplace": {
       "registry": "Registry",
@@ -2980,18 +3297,21 @@
       "server": "Server",
       "tool": "Tool",
       "caller": "Aufrufer",
+      "identity": "Handelnde Identität",
       "outcome": "Ergebnis",
       "duration": "Dauer",
       "empty": "Noch keine MCP-Aufrufe protokolliert.",
       "ok": "ok",
       "failed": "fehlgeschlagen",
       "loadMore": "Mehr laden",
+      "unresolved": "nicht aufgelöst",
       "kind": {
         "agent": "Orchestrator",
         "subagent": "Sub-Agent",
         "skill": "Skill",
         "plugin": "Plugin",
-        "unattributed": "Nicht zugeordnet"
+        "unattributed": "Nicht zugeordnet",
+        "api_key": "API-Key (Public MCP)"
       }
     }
   },

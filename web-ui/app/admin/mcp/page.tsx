@@ -14,6 +14,7 @@ import {
   ackMcpToolVerdict,
   addMcpRegistry,
   createMcpServer,
+  DEPRECATED_MCP_TRANSPORTS,
   rescanAllMcpServers,
   testCallMcpTool,
   deleteGraphEdge,
@@ -29,6 +30,10 @@ import {
   listMcpPluginCandidates,
   listMcpRegistries,
   listMcpServers,
+  listPublicMcpKeyBindings,
+  revokePublicMcpKeyBinding,
+  restorePublicMcpKeyBinding,
+  upsertPublicMcpKeyBinding,
   revokeMcpGrant,
   revokePluginMcpServer,
   searchMcpCatalog,
@@ -46,10 +51,12 @@ import {
   type McpRegistryInfo,
   type McpServerNode,
   type McpTransport,
+  type PublicMcpKeyBinding,
+  type PublicMcpKeyBindingWarning,
   type SkillVerdictSeverity,
 } from '../../_lib/agentBuilder';
 
-type Tab = 'servers' | 'marketplace' | 'grants' | 'plugins' | 'audit';
+type Tab = 'servers' | 'marketplace' | 'grants' | 'plugins' | 'bindings' | 'audit';
 
 /**
  * MCP Control Center v1 (epic #459 W2, issues #460/#461/#462): the standalone
@@ -76,7 +83,7 @@ export default function AdminMcpPage(): React.ReactElement {
         {t('intro')}
       </p>
       <div className="mt-8 flex flex-wrap gap-2">
-        {(['servers', 'marketplace', 'grants', 'plugins', 'audit'] as const).map((k) => (
+        {(['servers', 'marketplace', 'grants', 'plugins', 'bindings', 'audit'] as const).map((k) => (
           <Button
             key={k}
             size="sm"
@@ -94,6 +101,7 @@ export default function AdminMcpPage(): React.ReactElement {
           <GrantsPane initialServer={assignServer} onConsumed={() => setAssignServer(null)} />
         ) : null}
         {tab === 'plugins' ? <PluginGrantsPane /> : null}
+        {tab === 'bindings' ? <BindingsPane /> : null}
         {tab === 'audit' ? <AuditPane /> : null}
       </div>
     </div>
@@ -201,6 +209,15 @@ function worstSeverityOf(server: McpServerNode): SkillVerdictSeverity {
   return worst;
 }
 
+/**
+ * Issue #541 — badge an existing row whose transport MCP 2026-07-28 deprecated.
+ * Trusts the middleware's `transportDeprecated` when present and falls back to
+ * the local list, so the badge still shows against an older middleware build.
+ */
+function isDeprecatedTransport(server: McpServerNode): boolean {
+  return server.transportDeprecated ?? DEPRECATED_MCP_TRANSPORTS.includes(server.transport);
+}
+
 function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): React.ReactElement {
   const t = useTranslations('adminMcp');
   const [servers, setServers] = useState<McpServerNode[] | null>(null);
@@ -212,6 +229,11 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
   const [busy, setBusy] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [transport, setTransport] = useState<McpTransport>('http');
+  // Issue #541 — MCP 2026-07-28 deprecated the legacy HTTP+SSE transport. It is
+  // hidden from the picker by default (http/Streamable HTTP stays the default
+  // choice) but never blocked: the removal window is open, so an operator must
+  // still be able to register a legacy SSE server on purpose.
+  const [showDeprecated, setShowDeprecated] = useState(false);
   const [endpoint, setEndpoint] = useState('');
 
   const refresh = useCallback(async () => {
@@ -288,12 +310,34 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
           <select
             value={transport}
             onChange={(e) => setTransport(e.target.value as McpTransport)}
+            aria-label={t('servers.transport')}
             className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
           >
             <option value="http">http</option>
-            <option value="sse">sse</option>
             <option value="stdio">stdio</option>
+            {showDeprecated
+              ? DEPRECATED_MCP_TRANSPORTS.map((d) => (
+                  <option key={d} value={d}>
+                    {t('servers.deprecatedOption', { transport: d })}
+                  </option>
+                ))
+              : null}
           </select>
+        </label>
+        <label className="flex items-center gap-2 self-center text-xs text-[color:var(--fg-muted)]">
+          <input
+            type="checkbox"
+            checked={showDeprecated}
+            onChange={(e) => {
+              const on = e.target.checked;
+              setShowDeprecated(on);
+              // Turning the toggle off must not leave a now-hidden value selected.
+              if (!on && DEPRECATED_MCP_TRANSPORTS.includes(transport)) setTransport('http');
+            }}
+          />
+          <span title={t('servers.transportDeprecatedHint')}>
+            {t('servers.showDeprecatedTransports')}
+          </span>
         </label>
         <label className="flex grow flex-col gap-1 text-xs">
           {t('servers.endpoint')}
@@ -444,7 +488,19 @@ function ServerRows({
             {server.name}
           </button>
         </td>
-        <td className={tdCls}>{server.transport}</td>
+        <td className={tdCls}>
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            {server.transport}
+            {isDeprecatedTransport(server) ? (
+              <span
+                title={t('servers.transportDeprecatedHint')}
+                className="rounded-full border border-[color:var(--warning)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[color:var(--warning)]"
+              >
+                {t('servers.transportDeprecated')}
+              </span>
+            ) : null}
+          </span>
+        </td>
         <td className={tdCls}>
           <span
             className={
@@ -769,6 +825,17 @@ function ServerDetail({
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-medium text-[color:var(--fg-strong)]">{tool.name}</span>
               <div className="flex shrink-0 items-center gap-2">
+                {/* Issue #547 (W1-3) — read-only signal: this tool declares an
+                    outputSchema, so it returns a structured payload alongside
+                    its text. No behaviour attached; purely informational. */}
+                {tool.outputSchema ? (
+                  <span
+                    title={t('servers.structuredOutputHint')}
+                    className="rounded-full border border-[color:var(--border)] px-2 py-0.5 text-[11px] text-[color:var(--fg-muted)]"
+                  >
+                    {t('servers.structuredOutput')}
+                  </span>
+                ) : null}
                 {v?.acked && !v.ackStale ? (
                   <span className="text-[11px] text-[color:var(--fg-muted)]">
                     {t('servers.acked')}
@@ -1675,6 +1742,7 @@ function AuditPane(): React.ReactElement {
                 <th className={thCls}>{t('audit.server')}</th>
                 <th className={thCls}>{t('audit.tool')}</th>
                 <th className={thCls}>{t('audit.caller')}</th>
+                <th className={thCls}>{t('audit.identity')}</th>
                 <th className={thCls}>{t('audit.outcome')}</th>
                 <th className={thCls}>{t('audit.duration')}</th>
               </tr>
@@ -1690,6 +1758,14 @@ function AuditPane(): React.ReactElement {
                     {e.callerAgent ? (
                       <span className="text-xs text-[color:var(--fg-muted)]"> · {e.callerAgent}</span>
                     ) : null}
+                  </td>
+                  {/* W2-3 (#542) — the acting identity, so an operator can answer
+                      "whose credentials touched this?" for a public MCP call
+                      (`apikey:<id>`) as well as for a per-user MCP server. */}
+                  <td className={`${tdCls} text-xs`}>
+                    {e.actingIdentity ?? (
+                      <span className="text-[color:var(--fg-muted)]">{t('audit.unresolved')}</span>
+                    )}
                   </td>
                   <td className={tdCls}>
                     {e.ok ? (
@@ -1714,4 +1790,363 @@ function AuditPane(): React.ReactElement {
       ) : null}
     </div>
   );
+}
+
+// ── Public MCP key bindings (W5-1) ───────────────────────────────────────────
+
+/**
+ * The operator surface for `public_mcp_key_bindings` — the per-API-key
+ * allowlist that decides what the public MCP endpoint lets a third-party
+ * integration reach. Before this pane existed the endpoint could only be
+ * configured by hand in psql, which made it inert as shipped.
+ *
+ * KEY PICKER: the operator PASTES a key id. A binding is keyed on
+ * `ApiKeyRecord.id`, and the only place that lists those ids is the channel-api
+ * plugin's admin router under a different prefix (`/api/public/v1/admin/keys`),
+ * which is mounted only when that plugin is active and has no web-ui client at
+ * all. Rendering a dropdown from it would couple the MCP Control Center to a
+ * plugin-owned endpoint and give this tab a second way to fail on installs that
+ * do not run the plugin. Building the missing channel-API key UI is its own
+ * unit; this pane's job is to make the endpoint configurable.
+ */
+function BindingsPane(): React.ReactElement {
+  const t = useTranslations('adminMcp');
+  const [bindings, setBindings] = useState<PublicMcpKeyBinding[] | null>(null);
+  const [orchestrators, setOrchestrators] = useState<McpOrchestrator[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [confirmRevoke, setConfirmRevoke] = useState<PublicMcpKeyBinding | null>(null);
+  const [confirmRestore, setConfirmRestore] = useState<PublicMcpKeyBinding | null>(null);
+  // #571 — warnings the server returned for the row we just saved. A save
+  // succeeds even when the key/agent does not resolve, so this is the operator's
+  // immediate signal that the row they just created reaches nothing.
+  const [savedWarnings, setSavedWarnings] = useState<PublicMcpKeyBindingWarning[]>([]);
+
+  const [keyId, setKeyId] = useState('');
+  const [agentId, setAgentId] = useState('');
+  const [readTools, setReadTools] = useState('');
+  const [writeTools, setWriteTools] = useState('');
+  const [writeRate, setWriteRate] = useState('5');
+
+  const refresh = useCallback(async () => {
+    try {
+      setBindings((await listPublicMcpKeyBindings()).bindings);
+      setError(null);
+    } catch (err) {
+      setError(errText(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    // A missing orchestrator list must not break the pane — the agent field
+    // falls back to free text below.
+    void listMcpOrchestrators()
+      .then((r) => setOrchestrators(r.orchestrators))
+      .catch(() => setOrchestrators([]));
+  }, [refresh]);
+
+  async function save(): Promise<void> {
+    setBusy('save');
+    setError(null);
+    setSavedWarnings([]);
+    try {
+      const { binding } = await upsertPublicMcpKeyBinding({
+        keyId: keyId.trim(),
+        agentId: agentId.trim(),
+        readTools: parseToolList(readTools),
+        writeTools: parseToolList(writeTools),
+        writeRateLimitPerMinute: Number(writeRate),
+      });
+      // A typo'd key still saves (warning, not rejection) — surface it now so it
+      // is not mistaken for a working binding. A typo'd agent never reaches here:
+      // the server 400s and we land in `catch` above.
+      setSavedWarnings(binding.warnings ?? []);
+      setKeyId('');
+      setReadTools('');
+      setWriteTools('');
+      await refresh();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function revoke(binding: PublicMcpKeyBinding): Promise<void> {
+    setBusy(`revoke:${binding.keyId}`);
+    setError(null);
+    try {
+      await revokePublicMcpKeyBinding(binding.keyId);
+      await refresh();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * The only way back from a revoke.
+   *
+   * `save()` above never sends `enabled`, and the server preserves the stored
+   * flag when it is absent — so re-submitting the form over a revoked binding
+   * edits its tool lists and leaves it parked. That is the point: un-parking a
+   * key after an incident must be something an operator asks for, not something
+   * that falls out of pressing Save on a stale tab.
+   */
+  async function restore(binding: PublicMcpKeyBinding): Promise<void> {
+    setBusy(`restore:${binding.keyId}`);
+    setError(null);
+    try {
+      await restorePublicMcpKeyBinding(binding.keyId);
+      await refresh();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const inputCls =
+    'rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]';
+  // Deliberately still just non-empty — existence is NOT re-checked here (#571).
+  // The agent field is a constrained dropdown whenever the orchestrator list
+  // loaded, so a typo is impossible on that path; when the list is unavailable
+  // the field falls back to free text and there is nothing to validate against.
+  // The key has no client-side lister at all. So the authoritative existence
+  // check lives on the server (agent → 400, key → warning); mirroring a weaker
+  // copy of it here would only drift.
+  const canSave = keyId.trim().length > 0 && agentId.trim().length > 0;
+
+  // Rendered from the stable `code`, never the server's English `message`, so
+  // the note follows the operator's locale. See `PublicMcpKeyBindingWarning`.
+  const warningText = (code: PublicMcpKeyBindingWarning['code']): string =>
+    code === 'key_id_unknown'
+      ? t('bindings.warnings.keyUnknown')
+      : t('bindings.warnings.agentUnknown');
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-xs text-[color:var(--fg-muted)]">{t('bindings.intro')}</p>
+      <p className="text-xs text-[color:var(--fg-muted)]">{t('bindings.keyIdHint')}</p>
+      {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
+      {savedWarnings.length > 0 ? (
+        <div className="flex flex-col gap-0.5 rounded-md border border-[color:var(--warning)] bg-[color:var(--warning)]/[0.06] px-3 py-2">
+          {savedWarnings.map((w) => (
+            <span key={w.code} className="text-xs text-[color:var(--warning)]">
+              {warningText(w.code)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-end gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
+        <label className="flex flex-col gap-1 text-xs">
+          {t('bindings.keyId')}
+          <input
+            value={keyId}
+            onChange={(e) => setKeyId(e.target.value)}
+            placeholder={t('bindings.keyIdPlaceholder')}
+            className={`${inputCls} font-mono`}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
+          {t('bindings.agentId')}
+          {orchestrators.length > 0 ? (
+            <select
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              aria-label={t('bindings.agentId')}
+              className={inputCls}
+            >
+              <option value="">{t('bindings.agentIdPlaceholder')}</option>
+              {orchestrators.map((o) => (
+                <option key={o.id} value={o.slug}>
+                  {o.name} ({o.slug})
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              placeholder={t('bindings.agentIdPlaceholder')}
+              className={inputCls}
+            />
+          )}
+        </label>
+        <label className="flex grow flex-col gap-1 text-xs">
+          {t('bindings.readTools')}
+          <input
+            value={readTools}
+            onChange={(e) => setReadTools(e.target.value)}
+            placeholder={t('bindings.toolsPlaceholder')}
+            className={inputCls}
+          />
+        </label>
+        <label className="flex grow flex-col gap-1 text-xs">
+          {t('bindings.writeTools')}
+          <input
+            value={writeTools}
+            onChange={(e) => setWriteTools(e.target.value)}
+            placeholder={t('bindings.toolsPlaceholder')}
+            className={inputCls}
+          />
+        </label>
+        <label className="flex w-28 flex-col gap-1 text-xs">
+          {t('bindings.writeRate')}
+          <input
+            type="number"
+            min={0}
+            max={600}
+            value={writeRate}
+            onChange={(e) => setWriteRate(e.target.value)}
+            className={inputCls}
+          />
+        </label>
+        <Button
+          size="sm"
+          disabled={!canSave}
+          busy={busy === 'save'}
+          busyLabel={t('bindings.saving')}
+          onClick={() => void save()}
+        >
+          {t('bindings.save')}
+        </Button>
+      </div>
+      <p className="text-xs text-[color:var(--fg-muted)]">{t('bindings.writeToolsHint')}</p>
+
+      {!bindings ? (
+        <div className="text-sm text-[color:var(--fg-muted)]">{t('loading')}</div>
+      ) : null}
+      {bindings && bindings.length === 0 ? (
+        <div className="text-sm text-[color:var(--fg-muted)]">{t('bindings.empty')}</div>
+      ) : null}
+
+      {bindings?.map((b) => (
+        <div
+          key={b.keyId}
+          className="flex flex-col gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="font-mono text-sm">{b.keyId}</div>
+              <div className="text-[10px] text-[color:var(--fg-muted)]">
+                {t('bindings.boundTo', { agent: b.agentId })}
+              </div>
+            </div>
+            <span
+              className={
+                b.enabled
+                  ? 'rounded-md border border-[color:var(--border)] px-2 py-0.5 text-[10px] text-[color:var(--success)]'
+                  : 'rounded-md border border-[color:var(--danger-edge)] px-2 py-0.5 text-[10px] text-[color:var(--danger)]'
+              }
+            >
+              {b.enabled ? t('bindings.enabled') : t('bindings.parked')}
+            </span>
+          </div>
+          {b.warnings && b.warnings.length > 0 ? (
+            <div className="flex flex-col gap-0.5 rounded-md border border-[color:var(--warning)] bg-[color:var(--warning)]/[0.06] px-2 py-1">
+              {b.warnings.map((w) => (
+                <span key={w.code} className="text-[11px] text-[color:var(--warning)]">
+                  {warningText(w.code)}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <div className="text-xs text-[color:var(--fg-muted)]">
+            {t('bindings.readToolsLabel')}:{' '}
+            {b.readTools.length > 0 ? b.readTools.join(', ') : t('bindings.none')}
+          </div>
+          <div className="text-xs text-[color:var(--fg-muted)]">
+            {t('bindings.writeToolsLabel')}:{' '}
+            {b.writeTools.length > 0 ? b.writeTools.join(', ') : t('bindings.none')}
+          </div>
+          <div className="text-[10px] text-[color:var(--fg-muted)]">
+            {t('bindings.meta', {
+              rate: b.writeRateLimitPerMinute,
+              updated: b.updatedAt.slice(0, 19).replace('T', ' '),
+            })}
+          </div>
+          {b.enabled ? (
+            <div>
+              <Button
+                size="sm"
+                variant="ghost"
+                busy={busy === `revoke:${b.keyId}`}
+                onClick={() => setConfirmRevoke(b)}
+              >
+                {t('bindings.revoke')}
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] text-[color:var(--fg-muted)]">
+                {t('bindings.restoreHint')}
+              </span>
+              <div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  busy={busy === `restore:${b.keyId}`}
+                  onClick={() => setConfirmRestore(b)}
+                >
+                  {t('bindings.restore')}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+
+      <ConfirmDialog
+        open={confirmRevoke !== null}
+        title={t('bindings.revokeTitle')}
+        body={confirmRevoke ? t('bindings.revokeBody', { keyId: confirmRevoke.keyId }) : undefined}
+        confirmLabel={t('bindings.revokeConfirm')}
+        cancelLabel={t('cancel')}
+        tone="danger"
+        onCancel={() => setConfirmRevoke(null)}
+        onConfirm={() => {
+          const target = confirmRevoke;
+          setConfirmRevoke(null);
+          if (target) void revoke(target);
+        }}
+      />
+
+      {/* Un-parking hands a third-party key its whole allowlist back, so it is
+          confirmed exactly like the revoke that parked it. */}
+      <ConfirmDialog
+        open={confirmRestore !== null}
+        title={t('bindings.restoreTitle')}
+        body={
+          confirmRestore
+            ? t('bindings.restoreBody', {
+                keyId: confirmRestore.keyId,
+                tools: [...confirmRestore.readTools, ...confirmRestore.writeTools].join(', '),
+              })
+            : undefined
+        }
+        confirmLabel={t('bindings.restoreConfirm')}
+        cancelLabel={t('cancel')}
+        onCancel={() => setConfirmRestore(null)}
+        onConfirm={() => {
+          const target = confirmRestore;
+          setConfirmRestore(null);
+          if (target) void restore(target);
+        }}
+      />
+    </div>
+  );
+}
+
+/** Comma- or newline-separated, trimmed, blanks dropped. The server rejects an
+ *  empty string inside a tool list (the reader denies the whole row for one),
+ *  so a trailing comma must not become one. */
+function parseToolList(raw: string): string[] {
+  return raw
+    .split(/[,\n]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }

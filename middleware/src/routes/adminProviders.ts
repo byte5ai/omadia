@@ -288,6 +288,13 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           ...(verification.error !== undefined
             ? { verifyError: verification.error }
             : {}),
+          // OM-09: the machine-readable twin of `verifyError`. Additive and
+          // conditional — a verdict without a code (every non-`invalid` one)
+          // leaves the field off entirely, so nothing about the existing DTO
+          // shape changes for a client that does not know about it.
+          ...(verification.code !== undefined
+            ? { verifyErrorCode: verification.code }
+            : {}),
           // Retained for backwards compatibility: "a key is on file". Callers
           // that need "the key actually works" must read `status` instead.
           connected: verification.status !== 'no_key',

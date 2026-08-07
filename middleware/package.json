@@ -38,7 +38,7 @@
     "smoke:package-roundtrip": "tsx scripts/smoke-package-roundtrip.ts",
     "setup:tigris-lifecycle": "tsx scripts/setup-tigris-lifecycle.ts",
     "pretest": "node scripts/check-node-version.mjs",
-    "test": "node --import tsx --test --test-reporter=spec 'test/**/*.test.ts'"
+    "test": "node --import tsx --test --test-timeout=120000 --test-reporter=spec 'test/**/*.test.ts'"
   },
   "engines": {
     "node": ">=22.13.0 <23"
@@ -50,6 +50,7 @@
     "@aws-sdk/client-s3": "^3.1075.0",
     "@azure/msal-node": "^5.3.1",
     "@microsoft/microsoft-graph-client": "^3.0.7",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/cookie": "^0.6.0",
     "@types/cookie-parser": "^1.4.10",
@@ -96,8 +97,8 @@
   "overrides": {
     "esbuild": "^0.28.1",
     "axios": "1.18.1",
-    "fast-uri": "3.1.4",
+    "fast-uri": "3.1.5",
     "postcss": "8.5.23",
-    "brace-expansion": "5.0.8"
+    "brace-expansion": "5.0.9"
   }
 }
