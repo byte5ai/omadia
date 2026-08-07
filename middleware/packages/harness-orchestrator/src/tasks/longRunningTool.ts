@@ -84,7 +84,8 @@ function currentTaskOwner(): string {
 }
 
 /** A task with no recorded owner belongs to an implementor that scopes no reads
- *  (dev_job); anything else must match the caller exactly. */
+ *  — one whose tasks are started through an already-authorized surface rather
+ *  than by arbitrary tool callers. Anything else must match the caller exactly. */
 function ownsTask(descriptor: TaskDescriptor): boolean {
   return descriptor.createdBy === null || descriptor.createdBy === currentTaskOwner();
 }
@@ -329,6 +330,23 @@ export function defineLongRunningTool(
   def: LongRunningToolDefinition,
 ): LongRunningToolHandle {
   const names = longRunningToolNames(def.toolName);
+  /**
+   * Undrained cards must not accumulate for the life of the process.
+   *
+   * `takePendingCards()` is how a card reaches the chat stream, and the deferred
+   * SUB-AGENT path has no production consumer for it: `subAgentToolHydration`
+   * keeps `handle.registrations` and discards the handle itself, so nothing ever
+   * drains this array. (Implementors that ship their own card consumer are
+   * unaffected; this is about the seam's default path.)
+   * Every `_start` therefore added a permanently-retained card, and the task
+   * reaper cannot help — it clears task ROWS, not this closure's array.
+   *
+   * Bounding it is the containment, not the feature: surfacing these cards for
+   * deferred sub-agents is unshipped work. Dropping the OLDEST is right for a
+   * stream nobody is reading — the newest card is the one a consumer would want
+   * if one ever attaches.
+   */
+  const MAX_PENDING_CARDS = 100;
   const pendingCards: TaskCardPayload[] = [];
   const inFlight = new Set<Promise<void>>();
   const onRunnerError =
@@ -538,6 +556,11 @@ export function defineLongRunningTool(
         label: def.cardLabel,
         eventsUrl: def.eventsUrlFor?.(descriptor.id) ?? null,
       });
+      // See MAX_PENDING_CARDS: with no consumer attached this array would grow
+      // for the life of the process.
+      if (pendingCards.length > MAX_PENDING_CARDS) {
+        pendingCards.splice(0, pendingCards.length - MAX_PENDING_CARDS);
+      }
       startRunner(descriptor.id);
       return JSON.stringify({
         status: 'task_started',
@@ -565,7 +588,7 @@ export function defineLongRunningTool(
       // them turns this handler into an existence oracle over other callers'
       // task ids, which is the same disclosure the ownership check exists to
       // prevent. A store that tracks no owner (`createdBy: null`) is unscoped
-      // by design — see `toTaskDescriptor` in devJobTaskStore.
+      // by design — see `ownsTask`.
       if (!descriptor || !ownsTask(descriptor)) {
         return `Error: task "${taskId}" was not found or is no longer retained.`;
       }

@@ -222,6 +222,26 @@ describe('tasks/defineLongRunningTool — non-blocking', () => {
     assert.match(alice, /alice-result/, 'Alice can no longer poll her own task');
   });
 
+  // Nothing drains cards on the deferred sub-agent path — hydration keeps
+  // `handle.registrations` and discards the handle — so an unbounded array grew
+  // for the life of the process, one entry per `_start`. The task reaper clears
+  // task ROWS and cannot touch this closure's array.
+  it('bounds undrained pending cards instead of retaining every start', async () => {
+    const { handle } = buildTool(async () => 'x');
+    for (let i = 0; i < 250; i += 1) {
+      await reg(handle, 'start').handler({ question: `q${String(i)}` });
+    }
+    await handle.drainForTest();
+    const cards = handle.takePendingCards();
+    assert.ok(
+      cards.length <= 100,
+      `undrained cards grew without bound: ${String(cards.length)} retained after 250 starts`,
+    );
+    // Oldest dropped, newest kept — the newest is what a consumer would want if
+    // one ever attaches.
+    assert.equal(cards.at(-1)?.taskId !== undefined, true);
+  });
+
   it('lists only its own kind', async () => {
     const store = new InMemoryTaskStore();
     await store.create({ kind: 'someone-elses-kind', input: {} });
