@@ -8,6 +8,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 import type { AuthServerMetadata } from './mcpAuthDiscovery.js';
+import { guardedOutboundFetch } from './guardedOutboundFetch.js';
 import { assertPublicHttpsUrl } from './ssrfGuard.js';
 
 export interface OAuthClientCredentials {
@@ -60,7 +61,11 @@ export class McpOAuthClient {
   private readonly timeoutMs: number;
 
   constructor(deps?: McpOAuthClientDeps) {
-    this.fetchImpl = deps?.fetchImpl ?? globalThis.fetch;
+    // Guarded by default (see `guardedOutboundFetch`). This client POSTs
+    // authorization codes, PKCE verifiers, refresh tokens and the client secret
+    // to an endpoint named by a discovered document — the one outbound path
+    // where a rebind costs credentials. Tests still inject their own.
+    this.fetchImpl = deps?.fetchImpl ?? guardedOutboundFetch;
     this.timeoutMs = deps?.timeoutMs ?? 15_000;
   }
 

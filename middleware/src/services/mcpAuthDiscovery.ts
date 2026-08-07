@@ -14,6 +14,7 @@
  * falls back to the raw error.
  */
 
+import { guardedOutboundFetch } from './guardedOutboundFetch.js';
 import { assertPublicHttpsUrl } from './ssrfGuard.js';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -101,7 +102,10 @@ export class McpAuthDiscovery {
   private readonly cache = new Map<string, { at: number; value: DiscoveredAuth | null }>();
 
   constructor(deps?: McpAuthDiscoveryDeps) {
-    this.fetchImpl = deps?.fetchImpl ?? globalThis.fetch;
+    // Guarded by default (see `guardedOutboundFetch`): discovery follows a URL
+    // the REMOTE MCP server chose, so the connect-time address check is the
+    // boundary. Tests still inject their own.
+    this.fetchImpl = deps?.fetchImpl ?? guardedOutboundFetch;
     this.timeoutMs = deps?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 

@@ -24,6 +24,7 @@
  * than throwing, and why the metadata route answers 501 instead of 500.
  */
 
+import { guardedOutboundFetch } from './guardedOutboundFetch.js';
 import { assertPublicHttpsUrl } from './ssrfGuard.js';
 
 /**
@@ -151,7 +152,10 @@ export async function probeCimdReachable(input: {
   } catch {
     return { reachable: false, reason: 'not_public_https' };
   }
-  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+  // Guarded by default (see `guardedOutboundFetch`): this probe dereferences a
+  // URL derived from operator config, and the pre-flight `assertPublicHttpsUrl`
+  // above cannot bind its answer to the connection this fetch opens.
+  const fetchImpl = input.fetchImpl ?? guardedOutboundFetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? PROBE_TIMEOUT_MS);
   try {
