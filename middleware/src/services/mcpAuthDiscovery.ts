@@ -70,6 +70,19 @@ function str(v: unknown): string | null {
   return typeof v === 'string' && v.trim() !== '' ? v : null;
 }
 
+/** RFC 9207 §2.4 / RFC 8414 §3.3: compare issuer identifiers exactly, modulo one
+ *  trailing slash (`https://as.example` and `https://as.example/` are the same
+ *  AS). Deliberately NOT a loose/normalizing comparison — that would reintroduce
+ *  the mix-up the check exists to prevent.
+ *
+ *  Lives here, next to the metadata fetch that must apply it, and is imported by
+ *  `mcpOAuthService` rather than duplicated: two copies of an identity
+ *  comparison is two places for one of them to drift loose. */
+export function sameIssuer(a: string, b: string): boolean {
+  const norm = (s: string): string => s.trim().replace(/\/+$/, '');
+  return norm(a) !== '' && norm(a) === norm(b);
+}
+
 /** The origin an MCP server's well-known documents live under (scheme+host). */
 export function serverOrigin(endpoint: string): string {
   return new URL(endpoint).origin;
@@ -215,13 +228,36 @@ export class McpAuthDiscovery {
         `issuer ${issuer} metadata is missing authorization or token endpoint`,
       );
     }
+    // RFC 8414 §3.3 — the document MUST claim the issuer it was fetched under.
+    //
+    // Without this check the metadata is self-certifying, and the claimed value
+    // is not inert: `McpOAuthService.ensureClient` calls `loadClient(issuer)`
+    // with it, and `tokenRequest` then POSTs that client's `client_secret` to
+    // the `token_endpoint` from THIS SAME untrusted document. So a hostile MCP
+    // server advertises its own authorization server; that AS answers with
+    // `issuer: https://login.company.example` — an issuer this install already
+    // holds a pre-registered enterprise client secret for — plus its own
+    // `token_endpoint`. omadia loads the enterprise secret and hands it to the
+    // attacker. Binding the claim to the URL we actually fetched closes it.
+    //
+    // ABSENT is tolerated: some deployed ASes omit the field, and a claim that
+    // was never made is not a claim an attacker can forge — the fallback below
+    // keeps the issuer we asked for. A claim that is PRESENT and different is
+    // refused outright; there is no legitimate reason for it.
+    const claimedIssuer = str(doc['issuer']);
+    if (claimedIssuer !== null && !sameIssuer(claimedIssuer, issuer)) {
+      throw new McpAuthDiscoveryError(
+        'issuer_mismatch',
+        `authorization-server metadata fetched for ${issuer} claims a different issuer (${claimedIssuer}) — refusing it, because the claimed issuer selects which stored client secret is sent to this document's token endpoint`,
+      );
+    }
     // A registration_endpoint that merely points at the authorize URL is not a
     // real RFC 7591 DCR endpoint — treat it as absent so we don't POST junk.
     const registration = str(doc['registration_endpoint']);
     const registrationEndpoint =
       registration && registration !== authorizationEndpoint ? registration : null;
     return {
-      issuer: str(doc['issuer']) ?? issuer,
+      issuer: claimedIssuer ?? issuer,
       authorizationEndpoint,
       tokenEndpoint,
       registrationEndpoint,

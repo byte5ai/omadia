@@ -10,7 +10,12 @@
  *  - completeAuthorization(state, code) → consume the flow, exchange the code,
  *    store the token in the vault. Called by the OAuth callback route.
  */
-import { McpAuthDiscovery, serverOrigin, type DiscoveredAuth } from './mcpAuthDiscovery.js';
+import {
+  McpAuthDiscovery,
+  sameIssuer,
+  serverOrigin,
+  type DiscoveredAuth,
+} from './mcpAuthDiscovery.js';
 import { McpOAuthClient, type OAuthClientCredentials } from './mcpOAuthClient.js';
 import {
   CIMD_CLIENT_NAME,
@@ -110,14 +115,10 @@ export class McpOAuthIssuerMismatchError extends Error {
   }
 }
 
-/** RFC 9207 §2.4: compare issuer identifiers exactly, modulo one trailing
- *  slash (`https://as.example` and `https://as.example/` are the same AS).
- *  Deliberately NOT a loose/normalizing comparison — that would reintroduce
- *  the mix-up the check exists to prevent. */
-function sameIssuer(a: string, b: string): boolean {
-  const norm = (s: string): string => s.trim().replace(/\/+$/, '');
-  return norm(a) !== '' && norm(a) === norm(b);
-}
+// `sameIssuer` now lives in `mcpAuthDiscovery`, next to the RFC 8414 §3.3 check
+// that binds a metadata document to the issuer it was fetched under. Imported
+// rather than re-declared so the callback's RFC 9207 comparison and discovery's
+// cannot drift apart.
 
 const DCR_PROBE_TTL_MS = 10 * 60 * 1000;
 

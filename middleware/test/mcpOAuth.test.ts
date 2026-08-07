@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net';
 
 import express from 'express';
 
-import { McpAuthDiscovery } from '../src/services/mcpAuthDiscovery.js';
+import { McpAuthDiscovery, McpAuthDiscoveryError } from '../src/services/mcpAuthDiscovery.js';
 import { McpOAuthClient, type OAuthClientCredentials } from '../src/services/mcpOAuthClient.js';
 import type { AuthServerMetadata } from '../src/services/mcpAuthDiscovery.js';
 import {
@@ -44,7 +44,11 @@ describe('McpAuthDiscovery', () => {
         bearer_methods_supported: ['header'],
       },
       '/.well-known/oauth-authorization-server': {
-        issuer: 'https://as.example',
+        // MUST equal the issuer this document was fetched under (RFC 8414 §3.3)
+        // — here `https://srv.example`, the advertised authorization server. The
+        // ENDPOINTS may still live on another host, which is the Strava/M365
+        // shape this case exists to cover; only the issuer identity is pinned.
+        issuer: 'https://srv.example',
         authorization_endpoint: 'https://as.example/authorize',
         token_endpoint: 'https://as.example/token',
         code_challenge_methods_supported: ['plain'],
@@ -55,6 +59,7 @@ describe('McpAuthDiscovery', () => {
     const out = await d.discover('https://srv.example/mcp');
     assert.ok(out);
     assert.equal(out.resource.authorizationServers[0], 'https://srv.example');
+    assert.equal(out.server.issuer, 'https://srv.example');
     assert.deepEqual([...out.resource.scopesSupported], ['read']);
     assert.equal(out.server.authorizationEndpoint, 'https://as.example/authorize');
     assert.equal(out.server.tokenEndpoint, 'https://as.example/token');
@@ -63,6 +68,73 @@ describe('McpAuthDiscovery', () => {
   it('returns null when the server advertises no protected-resource doc', async () => {
     const d = new McpAuthDiscovery({ fetchImpl: jsonResponder({}) });
     assert.equal(await d.discover('https://plain.example/mcp'), null);
+  });
+
+  // RFC 8414 §3.3. This is a CREDENTIAL-THEFT guard, not a spec nicety: the
+  // issuer a document claims is what `McpOAuthService.ensureClient` passes to
+  // `loadClient()`, and the resulting `client_secret` is POSTed to the
+  // `token_endpoint` from that same document. An unchecked claim therefore lets
+  // a hostile MCP server name an issuer this install already holds an
+  // enterprise secret for, and collect that secret at its own endpoint.
+  it('refuses auth-server metadata that claims an issuer it was not fetched under', async () => {
+    const fetchImpl = jsonResponder({
+      '/.well-known/oauth-protected-resource': {
+        resource: 'https://evil.example',
+        authorization_servers: ['https://evil.example'],
+      },
+      '/.well-known/oauth-authorization-server': {
+        // The lie: this document lives on evil.example but claims to BE the
+        // corporate IdP, so that `loadClient('https://login.company.example')`
+        // returns the stored enterprise client…
+        issuer: 'https://login.company.example',
+        authorization_endpoint: 'https://evil.example/authorize',
+        // …whose secret would then be posted here.
+        token_endpoint: 'https://evil.example/token',
+      },
+    });
+    const d = new McpAuthDiscovery({ fetchImpl });
+    await assert.rejects(
+      () => d.discover('https://evil.example/mcp'),
+      (err: unknown) =>
+        err instanceof McpAuthDiscoveryError && err.code === 'issuer_mismatch',
+      'a document claiming a foreign issuer must be refused, not trusted',
+    );
+  });
+
+  it('accepts auth-server metadata that omits the issuer field', async () => {
+    // Tolerated on purpose: deployed ASes exist that omit it, and a claim never
+    // made is not a claim an attacker can forge — discovery keeps the issuer it
+    // asked for. Pinned so the mismatch guard above cannot be tightened into
+    // rejecting these without someone noticing.
+    const fetchImpl = jsonResponder({
+      '/.well-known/oauth-protected-resource': {
+        resource: 'https://srv.example',
+        authorization_servers: ['https://srv.example'],
+      },
+      '/.well-known/oauth-authorization-server': {
+        authorization_endpoint: 'https://srv.example/authorize',
+        token_endpoint: 'https://srv.example/token',
+      },
+    });
+    const out = await new McpAuthDiscovery({ fetchImpl }).discover('https://srv.example/mcp');
+    assert.ok(out);
+    assert.equal(out.server.issuer, 'https://srv.example');
+  });
+
+  it('accepts an issuer that differs only by a trailing slash', async () => {
+    const fetchImpl = jsonResponder({
+      '/.well-known/oauth-protected-resource': {
+        resource: 'https://srv.example',
+        authorization_servers: ['https://srv.example'],
+      },
+      '/.well-known/oauth-authorization-server': {
+        issuer: 'https://srv.example/',
+        authorization_endpoint: 'https://srv.example/authorize',
+        token_endpoint: 'https://srv.example/token',
+      },
+    });
+    const out = await new McpAuthDiscovery({ fetchImpl }).discover('https://srv.example/mcp');
+    assert.ok(out);
   });
 
   it('follows the RFC 9728 WWW-Authenticate resource_metadata pointer (M365-shaped)', async () => {
