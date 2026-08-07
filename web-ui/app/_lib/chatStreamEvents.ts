@@ -152,15 +152,11 @@ export type ChatStreamEvent =
 
 /**
  * Fold one stream event into the session that owns the pending assistant
- * message. Pure-ish: writes go through `sessions.mutateActive`. The session
- * is matched by id; events for non-active sessions are no-ops here — the
- * caller (StreamRunner) is responsible for routing to the right pending id.
- *
- * Note: mutateActive only writes to the *currently active* session. The
- * stream-runner uses it because in practice a stream's session and the
- * active session coincide while a turn is firing. If we ever want to run
- * background turns for a non-active session we'll need a per-session
- * `mutateById` helper.
+ * message. Pure-ish: writes go through `sessions.mutateById`, so the fold
+ * lands in the session the turn belongs to and not in whichever session
+ * happens to be active. That is what lets a background turn keep filling its
+ * own transcript after the user switched chat tabs mid-stream (#617); the
+ * caller (StreamRunner) stays responsible for routing to the right pending id.
  */
 export function applyStreamEvent(
   sessions: UseChatSessionsResult,
@@ -168,10 +164,9 @@ export function applyStreamEvent(
   pendingMessageId: string,
   event: ChatStreamEvent,
 ): void {
-  sessions.mutateActive((session) => {
-    if (session.id !== sessionId) return session;
-    return foldEvent(session, pendingMessageId, event);
-  });
+  sessions.mutateById(sessionId, (session) =>
+    foldEvent(session, pendingMessageId, event),
+  );
 }
 
 function foldEvent(

@@ -260,6 +260,7 @@ import {
   retryErroredPlugins,
   runLegacyBootstrap,
 } from './plugins/bootstrap.js';
+import { warmPatternWorker } from './plugins/setupFieldPattern.js';
 import { BuiltInPackageStore } from './plugins/builtInPackageStore.js';
 import { LocalDevPackageStore } from './plugins/localDevPackageStore.js';
 import { FileSecretVault, resolveMasterKey } from './secrets/fileVault.js';
@@ -3419,6 +3420,9 @@ async function main(): Promise<void> {
       registry: installedRegistry,
       client: registryClient,
       pluginStatusRegistry,
+      // OM-16 — key-name-only vault access so the store can report whether an
+      // installed plugin is actually configured (never reads secret VALUES).
+      vault: secretVault,
       // Issue #453 — read-only code-scan verdict on the detail response
       // plus the operator ack endpoint. Lookup only, never scans on GET.
       verdicts: pluginVerdictLookup,
@@ -4663,6 +4667,12 @@ async function main(): Promise<void> {
   // IPv4 (legacy + local dev) clients are served. Default `0.0.0.0` would
   // miss IPv6-only Fly-internal traffic — Stolperfalle #4 in
   // memory/feedback-fly-operational.
+  // Boot the setup-field pattern worker now, so the first operator to save a
+  // plugin credential does not pay thread creation inside their request's
+  // match budget (#607). Fire-and-forget: the worker is created on demand
+  // anyway, this only moves the cost off the critical path.
+  void warmPatternWorker();
+
   const server = app.listen(config.PORT, config.HOST, () => {
     console.log(`[middleware] listening on [${config.HOST}]:${config.PORT}`);
     console.log(`[middleware] skills dir: ${config.SKILLS_DIR}`);

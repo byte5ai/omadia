@@ -17,6 +17,7 @@ import {
   type ConductorValidationError,
   type ConductorValidationResult,
 } from '@/app/_lib/api';
+import { isSendKey } from '../../_lib/composerKeys';
 
 // Conversational builder (US7). The user co-designs a Conductor workflow by chatting; each turn the
 // builder agent returns a patched draft graph + a reply. The draft lives here (client-side), so the
@@ -288,7 +289,7 @@ export function ConductorChatPane({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (isSendKey(e)) {
                 e.preventDefault();
                 void send();
               }

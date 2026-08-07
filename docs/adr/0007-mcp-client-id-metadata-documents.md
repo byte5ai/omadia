@@ -1,4 +1,4 @@
-# 0006 — Client ID Metadata Documents coexist permanently with manual OAuth clients
+# 0007 — Client ID Metadata Documents coexist permanently with manual OAuth clients
 
 ## Status
 

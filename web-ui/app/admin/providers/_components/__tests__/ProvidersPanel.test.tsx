@@ -5,16 +5,23 @@ import { renderWithIntl } from '../../../../_lib/test-utils';
 import { ProvidersPanel } from '../ProvidersPanel';
 import type { AdminProvider, ProvidersResponse } from '../../../../_lib/api';
 
-const { mockGetProviders, mockAssignProvider, mockPatchSettings } = vi.hoisted(() => ({
+const {
+  mockGetProviders,
+  mockAssignProvider,
+  mockPatchSettings,
+  mockVerifyProvider,
+} = vi.hoisted(() => ({
   mockGetProviders: vi.fn(),
   mockAssignProvider: vi.fn(),
   mockPatchSettings: vi.fn(),
+  mockVerifyProvider: vi.fn(),
 }));
 
 vi.mock('../../../../_lib/api', () => ({
   getProviders: mockGetProviders,
   assignProvider: mockAssignProvider,
   patchSettings: mockPatchSettings,
+  verifyProvider: mockVerifyProvider,
   ApiError: class ApiError extends Error {
     constructor(
       public status: number,
@@ -30,6 +37,7 @@ function provider(over: Partial<AdminProvider> = {}): AdminProvider {
   return {
     id: 'anthropic',
     label: 'Anthropic',
+    status: 'no_key',
     connected: false,
     models: [],
     ...over,
@@ -49,6 +57,7 @@ describe('<ProvidersPanel />', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal('confirm', vi.fn(() => true));
+    mockVerifyProvider.mockResolvedValue({ status: 'verified' });
   });
   afterEach(() => {
     vi.clearAllMocks();
@@ -66,7 +75,9 @@ describe('<ProvidersPanel />', () => {
 
   it('shows "Change key" and "Remove key" (not "Add key") for a connected provider — regression guard for #402', async () => {
     mockGetProviders.mockResolvedValue(
-      providersResponse({ providers: [provider({ connected: true })] }),
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
     );
     renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
 
@@ -77,7 +88,9 @@ describe('<ProvidersPanel />', () => {
 
   it('opens the key input and PATCHes the new key when "Change key" is clicked', async () => {
     mockGetProviders.mockResolvedValue(
-      providersResponse({ providers: [provider({ connected: true })] }),
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
     );
     mockPatchSettings.mockResolvedValue({ updated: [], errors: [] });
     renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
@@ -96,7 +109,9 @@ describe('<ProvidersPanel />', () => {
 
   it('confirms and PATCHes a clearing value when "Remove key" is clicked', async () => {
     mockGetProviders.mockResolvedValue(
-      providersResponse({ providers: [provider({ connected: true })] }),
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
     );
     mockPatchSettings.mockResolvedValue({ updated: [], errors: [] });
     renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
@@ -113,7 +128,9 @@ describe('<ProvidersPanel />', () => {
 
   it('surfaces an error when removing the key fails (no silent destructive failure)', async () => {
     mockGetProviders.mockResolvedValue(
-      providersResponse({ providers: [provider({ connected: true })] }),
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
     );
     mockPatchSettings.mockResolvedValue({
       updated: [],
@@ -126,10 +143,115 @@ describe('<ProvidersPanel />', () => {
     expect(await screen.findByText('vault offline')).toBeTruthy();
   });
 
+  // ── credential-verification chip (OM-02/03/04) ───────────────────────────
+  // The old chip had two states and showed "CONNECTED" for any non-empty vault
+  // string, which is exactly how a dead key looked healthy for 76 minutes.
+
+  it('shows "no key" for a provider with nothing stored', async () => {
+    mockGetProviders.mockResolvedValue(providersResponse());
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    expect(await screen.findByText('no key')).toBeTruthy();
+    expect(screen.queryByText('verified')).toBeNull();
+  });
+
+  it('shows "key stored, not verified" — never "connected" — for an unprobed key', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    expect(await screen.findByText('key stored, not verified')).toBeTruthy();
+    expect(screen.queryByText('verified')).toBeNull();
+    expect(screen.queryByText('connected')).toBeNull();
+  });
+
+  it('shows "verified" plus the verification time for a probed key', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [
+          provider({
+            connected: true,
+            status: 'verified',
+            verifiedAt: new Date(Date.now() - 60_000).toISOString(),
+          }),
+        ],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    expect(await screen.findByText('verified')).toBeTruthy();
+    expect(screen.getByText(/^verified .+/)).toBeTruthy();
+  });
+
+  it('shows "key rejected" and the provider\'s reason for a rejected key', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [
+          provider({
+            connected: true,
+            status: 'invalid',
+            verifyError: 'The provider rejected this API key (HTTP 401).',
+          }),
+        ],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    expect(await screen.findByText('key rejected')).toBeTruthy();
+    expect(
+      screen.getByText('The provider rejected this API key (HTTP 401).'),
+    ).toBeTruthy();
+  });
+
+  it('offers "Test key" once a key exists, and probes on click', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    fireEvent.click(await screen.findByText('Test key'));
+
+    await waitFor(() => expect(mockVerifyProvider).toHaveBeenCalledWith('anthropic'));
+    // …and the row is re-read so the new verdict is what the operator sees.
+    await waitFor(() => expect(mockGetProviders).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not offer "Test key" when there is no key to test', async () => {
+    mockGetProviders.mockResolvedValue(providersResponse());
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    await screen.findByText('no key');
+    expect(screen.queryByText('Test key')).toBeNull();
+  });
+
+  it('auto-verifies a freshly saved key so a typo surfaces here, not in chat', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
+    );
+    mockPatchSettings.mockResolvedValue({ updated: [], errors: [] });
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    fireEvent.click(await screen.findByText(/Change key/));
+    const input = await screen.findByPlaceholderText('Paste API key …');
+    fireEvent.change(input, { target: { value: 'sk-ant-new-value' } });
+    fireEvent.click(screen.getByText('Save key'));
+
+    await waitFor(() => expect(mockVerifyProvider).toHaveBeenCalledWith('anthropic'));
+  });
+
   it('does not PATCH when the remove confirmation is declined', async () => {
     vi.stubGlobal('confirm', vi.fn(() => false));
     mockGetProviders.mockResolvedValue(
-      providersResponse({ providers: [provider({ connected: true })] }),
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
     );
     renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
 
@@ -137,5 +259,93 @@ describe('<ProvidersPanel />', () => {
 
     expect(confirm).toHaveBeenCalled();
     expect(mockPatchSettings).not.toHaveBeenCalled();
+  });
+  // OM-11 — "Anmelden →" was offered unconditionally, because the provider DTO
+  // carried only `connected`/`status` and no way to know whether the CLI is
+  // even on this server. Clicking it landed the operator on a tab that said
+  // "NICHT GEFUNDEN" with no action available. An offer you cannot accept is
+  // worse than no offer.
+  it('OM-11: a CLI provider whose binary is missing offers a DISABLED login with a reason', async () => {
+    const onSwitch = vi.fn();
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [
+          provider({
+            id: 'claude-cli',
+            label: 'Claude CLI',
+            toolLess: true,
+            connected: false,
+            status: 'no_key',
+            installed: false,
+          }),
+        ],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={onSwitch} />);
+
+    const button = (await screen.findByRole('button', {
+      name: /Log in/i,
+    })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+
+    // The reason must be visible, not only in a tooltip.
+    expect(
+      screen.getByText(/Claude CLI is not installed on this server/i),
+    ).toBeTruthy();
+
+    fireEvent.click(button);
+    expect(onSwitch).not.toHaveBeenCalled();
+  });
+
+  it('OM-11: an INSTALLED CLI provider still offers a working login', async () => {
+    const onSwitch = vi.fn();
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [
+          provider({
+            id: 'claude-cli',
+            label: 'Claude CLI',
+            toolLess: true,
+            connected: false,
+            status: 'no_key',
+            installed: true,
+          }),
+        ],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={onSwitch} />);
+
+    const button = (await screen.findByRole('button', {
+      name: /Log in/i,
+    })) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    expect(onSwitch).toHaveBeenCalled();
+  });
+
+  // Backward compatibility: a pre-OM-11 middleware sends no `installed` at all.
+  // Treating that as "missing" would disable a working action on every older
+  // server, so `undefined` must keep the previous behaviour.
+  it('OM-11: `installed` absent from the DTO keeps the login enabled', async () => {
+    const onSwitch = vi.fn();
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [
+          provider({
+            id: 'claude-cli',
+            label: 'Claude CLI',
+            toolLess: true,
+            connected: false,
+            status: 'no_key',
+          }),
+        ],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={onSwitch} />);
+
+    const button = (await screen.findByRole('button', {
+      name: /Log in/i,
+    })) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
   });
 });
