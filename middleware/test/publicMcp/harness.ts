@@ -50,7 +50,10 @@ import type { PrivacyGuardService, WriteCapability } from '@omadia/plugin-api';
 import { publicPaths, STATIC_PUBLIC_PATHS } from '../../src/auth/publicPaths.js';
 import { createRequireAuth } from '../../src/auth/requireAuth.js';
 import { EmailWhitelist } from '../../src/auth/whitelist.js';
-import { createInMemoryPublicMcpKeyBindingStore } from '../../src/mcp/publicMcpKeyBindings.js';
+import {
+  createInMemoryPublicMcpKeyBindingStore,
+  type PublicMcpKeyBindingStore,
+} from '../../src/mcp/publicMcpKeyBindings.js';
 import { PUBLIC_MCP_PATH } from '../../src/mcp/publicMcpPath.js';
 import { mountPublicMcp } from '../../src/mcp/wirePublicMcp.js';
 import type {
@@ -297,6 +300,9 @@ export interface HarnessOptions {
   readonly keys: readonly FakeKey[];
   /** Raw binding rows — normalized by the production code path, not bypassed. */
   readonly bindingRows: readonly Record<string, unknown>[];
+  /** Replaces the whole binding store. For proving what an external caller sees
+   *  when the store itself FAILS, which `bindingRows` cannot express. */
+  readonly bindingStore?: PublicMcpKeyBindingStore;
   /** agentId → dispatcher. An agent absent here is "not active". */
   readonly dispatchers: Readonly<Record<string, PublicMcpDispatcher>>;
   /** Default true in the harness so the authorization tests are not all gated
@@ -369,9 +375,11 @@ export async function startHarness(opts: HarnessOptions): Promise<Harness> {
     log: () => {},
     apiKeys: fakeApiKeyStore(opts.keys),
     rateLimiter: createRateLimiter(),
-    bindings: createInMemoryPublicMcpKeyBindingStore(
-      opts.bindingRows as Parameters<typeof createInMemoryPublicMcpKeyBindingStore>[0],
-    ),
+    bindings:
+      opts.bindingStore ??
+      createInMemoryPublicMcpKeyBindingStore(
+        opts.bindingRows as Parameters<typeof createInMemoryPublicMcpKeyBindingStore>[0],
+      ),
     resolveDispatcher: (agentId) => opts.dispatchers[agentId],
     ...(audit ? { audit: (entry: PublicMcpAuditEntry) => audit.push(entry) } : {}),
     ...(opts.toolTimeoutMs !== undefined ? { toolTimeoutMs: opts.toolTimeoutMs } : {}),

@@ -682,6 +682,51 @@ describe('public MCP endpoint', () => {
     assert.equal(callResultText(read.payload), `dispatched:${READ_TOOL}`);
   });
 
+  // ── internal errors must not reach the caller ─────────────────────────────
+
+  // `handleHttp` has a catch that answers a bare "Internal server error", and it
+  // is UNREACHABLE for anything a request handler throws: the SDK converts a
+  // handler rejection into a JSON-RPC error built from `error.message` and then
+  // resolves, so the raw text is already on the wire before that catch could
+  // run. A failing binding query therefore handed an external caller a Postgres
+  // diagnostic naming the relation, the host, or the driver.
+  it('does not leak a store failure message to the caller', async (t) => {
+    const leaky = 'relation "public_mcp_key_bindings" does not exist at db-prod-7.internal:5432';
+    const h = await start(
+      baseOptions({
+        bindingStore: {
+          get: () => Promise.reject(new Error(leaky)),
+        } as unknown as Parameters<typeof baseOptions>[0]['bindingStore'],
+      }),
+      t,
+    );
+    if (!h) return;
+
+    const { payload } = await h.rpc(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
+    const message = rpcErrorMessage(payload) ?? '';
+    assert.doesNotMatch(message, /public_mcp_key_bindings/, 'leaked the relation name');
+    assert.doesNotMatch(message, /db-prod-7\.internal/, 'leaked an internal hostname');
+    assert.match(message, /Internal server error/);
+  });
+
+  it('does not leak a store failure message through tools/list either', async (t) => {
+    const leaky = 'password authentication failed for user "omadia" on db-prod-7.internal';
+    const h = await start(
+      baseOptions({
+        bindingStore: {
+          get: () => Promise.reject(new Error(leaky)),
+        } as unknown as Parameters<typeof baseOptions>[0]['bindingStore'],
+      }),
+      t,
+    );
+    if (!h) return;
+
+    const { payload } = await h.rpc(listToolsRequest(), { token: KEY_TOKEN });
+    const message = rpcErrorMessage(payload) ?? '';
+    assert.doesNotMatch(message, /password authentication/, 'leaked a credential diagnostic');
+    assert.doesNotMatch(message, /db-prod-7\.internal/, 'leaked an internal hostname');
+  });
+
   // ── timeout + concurrency ─────────────────────────────────────────────────
 
   it('times out a hanging tool without hanging the request', async (t) => {
@@ -699,6 +744,62 @@ describe('public MCP endpoint', () => {
     if (!h) return;
     const { payload } = await h.rpc(callToolRequest(READ_TOOL), { token: KEY_TOKEN });
     assert.match(rpcErrorMessage(payload) ?? '', /exceeded the 60ms public MCP timeout/);
+  });
+
+  // The timeout answers the CALLER; it does not cancel the work — nothing in
+  // ToolDispatchService accepts an AbortSignal, and the loser of a Promise.race
+  // keeps running. So the slot must stay held until the work actually settles.
+  // Releasing it when the race settled meant a caller hammering a tool that
+  // hangs on an upstream connection reopened a slot every timeout while every
+  // one of those calls stayed alive — unbounded sockets and external work
+  // behind a ceiling that still claimed to be `maxConcurrentCalls`.
+  it('keeps the concurrency slot held after a timeout, until the work settles', async (t) => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const h = await start(
+      baseOptions({
+        maxConcurrentCalls: 1,
+        toolTimeoutMs: 60,
+        dispatchers: {
+          sales: fakeDispatcher([
+            {
+              name: READ_TOOL,
+              handle: async () => {
+                await gate;
+                return { content: 'eventually' };
+              },
+            },
+          ]),
+        },
+      }),
+      t,
+    );
+    if (!h) return;
+
+    // First call times out — but its work is still running behind the gate.
+    const first = await h.rpc(callToolRequest(READ_TOOL, {}, 30), { token: KEY_TOKEN });
+    assert.match(rpcErrorMessage(first.payload) ?? '', /exceeded the 60ms public MCP timeout/);
+
+    // The slot must NOT have reopened: the abandoned call still occupies it.
+    const second = await h.rpc(callToolRequest(READ_TOOL, {}, 31), { token: KEY_TOKEN });
+    assert.match(
+      rpcErrorMessage(second.payload) ?? '',
+      /at capacity/,
+      'a timed-out call still running must keep holding its slot',
+    );
+
+    // Once the abandoned work finally settles, the slot comes back — the hold
+    // is until-settled, not permanent.
+    release?.();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const third = await h.rpc(callToolRequest(READ_TOOL, {}, 32), { token: KEY_TOKEN });
+    assert.equal(
+      callResultText(third.payload),
+      'eventually',
+      'the slot must be returned once the abandoned work settles',
+    );
   });
 
   it('refuses a call once the concurrency ceiling is reached', async (t) => {

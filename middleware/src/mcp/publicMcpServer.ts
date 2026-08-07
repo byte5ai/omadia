@@ -337,6 +337,35 @@ export class PublicMcpServer {
     };
   }
 
+  /**
+   * Anything a request handler throws that is not already an `McpError` becomes
+   * a generic one.
+   *
+   * The outer `handleHttp` catch LOOKS like it covers this and does not. The SDK
+   * turns a handler rejection into a JSON-RPC error response built from
+   * `error.message` (`shared/protocol.js`: `message: error.message ?? 'Internal
+   * error'`) and then RESOLVES normally — so `handleRequest` never rejects, the
+   * catch never runs, and the raw message is already on the wire.
+   *
+   * Concretely: `bindings.get` failing hands an external, merely
+   * API-key-authenticated caller a Postgres diagnostic — `relation
+   * "public_mcp_key_bindings" does not exist`, a host name, a driver string.
+   * Exactly the class of detail `handleHttp`'s catch exists to withhold.
+   *
+   * `McpError`s raised deliberately by this class are caller-facing text by
+   * design ("not allowlisted", "at capacity", the masking refusals) and pass
+   * through untouched.
+   */
+  private async sanitized<T>(what: string, run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof McpError) throw error;
+      console.warn(`[public-mcp] ${what} handler failed: ${String(error)}`);
+      throw new McpError(ErrorCode.InternalError, 'Internal server error');
+    }
+  }
+
   private async handleHttp(req: Request, res: Response): Promise<void> {
     // POST only, for the same two reasons `LoopbackMcpServer` gives: the MCP
     // spec makes the standalone GET SSE stream optional and blesses 405 when a
@@ -417,27 +446,31 @@ export class PublicMcpServer {
       { capabilities: { tools: {} } },
     );
 
-    mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: await this.listToolsFor(principal),
-    }));
+    mcp.setRequestHandler(ListToolsRequestSchema, async () =>
+      this.sanitized('tools/list', async () => ({
+        tools: await this.listToolsFor(principal),
+      })),
+    );
 
-    mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;
-      // MCP standardizes no idempotency field, so it rides in `params._meta`,
-      // the spec's designated passthrough. Advisory by construction — see the
-      // idempotency section of the endpoint README for what a consumer may
-      // actually rely on.
-      const meta = request.params._meta as { idempotencyKey?: unknown } | undefined;
-      const idempotencyKey =
-        typeof meta?.idempotencyKey === 'string' && meta.idempotencyKey.length > 0
-          ? meta.idempotencyKey
-          : undefined;
-      const result = await this.callToolFor(principal, name, args ?? {}, idempotencyKey);
-      return {
-        content: [{ type: 'text' as const, text: result.content }],
-        ...(result.isError ? { isError: true } : {}),
-      };
-    });
+    mcp.setRequestHandler(CallToolRequestSchema, async (request) =>
+      this.sanitized('tools/call', async () => {
+        const { name, arguments: args } = request.params;
+        // MCP standardizes no idempotency field, so it rides in `params._meta`,
+        // the spec's designated passthrough. Advisory by construction — see the
+        // idempotency section of the endpoint README for what a consumer may
+        // actually rely on.
+        const meta = request.params._meta as { idempotencyKey?: unknown } | undefined;
+        const idempotencyKey =
+          typeof meta?.idempotencyKey === 'string' && meta.idempotencyKey.length > 0
+            ? meta.idempotencyKey
+            : undefined;
+        const result = await this.callToolFor(principal, name, args ?? {}, idempotencyKey);
+        return {
+          content: [{ type: 'text' as const, text: result.content }],
+          ...(result.isError ? { isError: true } : {}),
+        };
+      }),
+    );
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -648,10 +681,33 @@ export class PublicMcpServer {
     };
 
     this.inFlight += 1;
+    // The slot is released when the WORK settles, not when this request's race
+    // does. `withTimeout` is a `Promise.race`, and losing a race does not cancel
+    // the loser: the Odoo/M365/MCP/sub-agent call keeps running with no
+    // AbortSignal to stop it. Releasing in a `finally` on the race therefore
+    // reopened the slot while the call was still alive, so a caller hammering a
+    // tool that hangs on an upstream connection accumulates unbounded sockets,
+    // promises and external work — all while the endpoint still advertises a
+    // ceiling of `maxConcurrentCalls`.
+    //
+    // Cancelling the work outright would mean threading an AbortSignal through
+    // ToolDispatchService into every handler; that is a real change and belongs
+    // on its own. Holding the slot until the work actually finishes is what
+    // makes the ceiling mean what it says in the meantime: at most N tool calls
+    // in flight, timed out or not.
+    let released = false;
+    const releaseSlot = (): void => {
+      if (released) return;
+      released = true;
+      this.inFlight -= 1;
+    };
     try {
-      const result = await this.withTimeout(name, () =>
-        this.dispatchWithPrivacy(dispatcher, name, input, options, gate),
-      );
+      const work = this.dispatchWithPrivacy(dispatcher, name, input, options, gate);
+      // Attached to the WORK, so a post-timeout settle still frees the slot.
+      // Both arms, so a late rejection is handled rather than surfacing as an
+      // unhandled rejection once the race has already rejected.
+      void work.then(releaseSlot, releaseSlot);
+      const result = await this.withTimeout(name, work);
 
       // FAIL CLOSED. The gate turned a masking exception into a placeholder
       // rather than letting the dispatcher's fail-open branch return the raw
@@ -726,9 +782,10 @@ export class PublicMcpServer {
         this.record(principal, binding.agentId, name, false, String(error), startedAt, isWrite);
       }
       throw error;
-    } finally {
-      this.inFlight -= 1;
     }
+    // No `finally` releasing the slot: that is the defect this shape fixes. The
+    // release rides on `work` above and fires whenever the work settles, which
+    // may be long after this request has answered with a timeout.
   }
 
   /**
@@ -765,18 +822,24 @@ export class PublicMcpServer {
    * fast tool would leak one timer per successful call.
    *
    * Note the dispatch itself is not cancelled (nothing in `ToolDispatchService`
-   * accepts an AbortSignal); the SLOT is released, which is what the
-   * concurrency ceiling needs. Recorded here so nobody reads this as
-   * cancellation.
+   * accepts an AbortSignal). Recorded here so nobody reads this as
+   * cancellation: the caller gets a timeout, the WORK carries on. The
+   * concurrency slot therefore stays held until the work settles — see the
+   * release wired to `work` in `callTool`, which is what keeps
+   * `maxConcurrentCalls` an honest ceiling rather than a ceiling on
+   * *un-timed-out* calls only.
+   *
+   * Takes the already-started promise rather than a thunk, so there is exactly
+   * one execution for both the race and the slot release to observe.
    */
   private async withTimeout(
     toolName: string,
-    run: () => Promise<ToolDispatchResult>,
+    work: Promise<ToolDispatchResult>,
   ): Promise<ToolDispatchResult> {
     let timer: NodeJS.Timeout | undefined;
     try {
       return await Promise.race([
-        run(),
+        work,
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
             () =>
