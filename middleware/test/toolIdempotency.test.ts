@@ -12,6 +12,25 @@ import {
 import type { WriteCapability } from '../packages/plugin-api/src/writeCapabilities.js';
 import { isWriteCapableTool } from '../packages/plugin-api/src/writeCapabilities.js';
 
+/** The principal every single-tenant case below runs as. `run()` requires a
+ *  namespace on purpose — omitting it is a cross-tenant leak, not a shorthand —
+ *  so these cases name one explicitly instead of relying on a default. The
+ *  cross-principal isolation cases pass their own. */
+const NS = 'principal-a';
+
+/** Keeps the single-tenant call sites readable while the store's signature stays
+ *  explicit about the trust boundary. */
+function runNs(
+  store: ToolIdempotencyStore,
+  key: string,
+  toolName: string,
+  input: unknown,
+  exec: () => Promise<{ content: string; isError?: boolean }>,
+  namespace: string = NS,
+): ReturnType<ToolIdempotencyStore['run']> {
+  return store.run(key, toolName, input, exec, namespace);
+}
+
 /**
  * #542 prerequisite — idempotency for write-capable tool dispatch.
  *
@@ -140,8 +159,8 @@ describe('ToolIdempotencyStore', () => {
       return { content: `run-${String(runs)}` };
     };
 
-    const a = await store.run('k1', 'tool', { x: 1 }, exec);
-    const b = await store.run('k1', 'tool', { x: 1 }, exec);
+    const a = await runNs(store, 'k1', 'tool', { x: 1 }, exec);
+    const b = await runNs(store, 'k1', 'tool', { x: 1 }, exec);
 
     assert.equal(runs, 1, 'the executor must run exactly once');
     assert.equal(a.result.content, 'run-1');
@@ -163,8 +182,8 @@ describe('ToolIdempotencyStore', () => {
     };
 
     const both = Promise.all([
-      store.run('k1', 'tool', { x: 1 }, exec),
-      store.run('k1', 'tool', { x: 1 }, exec),
+      runNs(store, 'k1', 'tool', { x: 1 }, exec),
+      runNs(store, 'k1', 'tool', { x: 1 }, exec),
     ]);
     release?.();
     const [a, b] = await both;
@@ -182,8 +201,8 @@ describe('ToolIdempotencyStore', () => {
       return { content: 'ok' };
     };
 
-    await store.run('k1', 'tool', { amount: 100 }, exec);
-    const conflict = await store.run('k1', 'tool', { amount: 999 }, exec);
+    await runNs(store, 'k1', 'tool', { amount: 100 }, exec);
+    const conflict = await runNs(store, 'k1', 'tool', { amount: 999 }, exec);
 
     assert.equal(runs, 1, 'a conflicting payload must NOT execute');
     assert.equal(conflict.result.isError, true);
@@ -202,8 +221,8 @@ describe('ToolIdempotencyStore', () => {
       runs += 1;
       return { content: 'ok' };
     };
-    await store.run('k1', 'tool', { a: 1, b: 2 }, exec);
-    await store.run('k1', 'tool', { b: 2, a: 1 }, exec);
+    await runNs(store, 'k1', 'tool', { a: 1, b: 2 }, exec);
+    await runNs(store, 'k1', 'tool', { b: 2, a: 1 }, exec);
     assert.equal(runs, 1);
   });
 
@@ -216,13 +235,13 @@ describe('ToolIdempotencyStore', () => {
       return { content: `run-${String(runs)}` };
     };
 
-    await store.run('k1', 'tool', {}, exec);
+    await runNs(store, 'k1', 'tool', {}, exec);
     now += 499;
-    await store.run('k1', 'tool', {}, exec);
+    await runNs(store, 'k1', 'tool', {}, exec);
     assert.equal(runs, 1, 'still inside the window — must replay');
 
     now += 2;
-    const after = await store.run('k1', 'tool', {}, exec);
+    const after = await runNs(store, 'k1', 'tool', {}, exec);
     assert.equal(runs, 2, 'past the window — must execute again');
     assert.equal(after.result.content, 'run-2');
   });
@@ -237,9 +256,9 @@ describe('ToolIdempotencyStore', () => {
         : { content: 'ok' };
     };
 
-    const first = await store.run('k1', 'tool', {}, exec);
+    const first = await runNs(store, 'k1', 'tool', {}, exec);
     assert.equal(first.result.isError, true);
-    const second = await store.run('k1', 'tool', {}, exec);
+    const second = await runNs(store, 'k1', 'tool', {}, exec);
 
     assert.equal(runs, 2, 'a failed call must not be cached as the final answer');
     assert.equal(second.result.content, 'ok');
@@ -254,12 +273,70 @@ describe('ToolIdempotencyStore', () => {
       return { content: 'ok' };
     };
 
-    await assert.rejects(() => store.run('k1', 'tool', {}, exec), /boom/);
-    const second = await store.run('k1', 'tool', {}, exec);
+    await assert.rejects(() => runNs(store, 'k1', 'tool', {}, exec), /boom/);
+    const second = await runNs(store, 'k1', 'tool', {}, exec);
 
     assert.equal(runs, 2);
     assert.equal(second.result.content, 'ok');
     assert.equal(store.size(), 1, 'the rejected entry must not linger alongside the good one');
+  });
+
+  // The store is process-wide and shared by every public MCP dispatcher, so the
+  // namespace is the only thing separating two API keys. Without it, key B
+  // calling `create_invoice` with the obvious string `invoice-42` receives key
+  // A's cached RESULT and B's write silently never runs — and any key holder can
+  // pre-claim guessable keys to suppress another tenant's writes.
+  it('does not replay one principal result to another principal', async () => {
+    const store = new ToolIdempotencyStore();
+    const executed: string[] = [];
+    const execFor = (who: string) => async () => {
+      executed.push(who);
+      return { content: `receipt-for-${who}` };
+    };
+
+    const a = await runNs(store, 'invoice-42', 'create_invoice', { amount: 1 }, execFor('a'), 'key-a');
+    const b = await runNs(store, 'invoice-42', 'create_invoice', { amount: 1 }, execFor('b'), 'key-b');
+
+    // Counting REAL executions, not cache internals: B's handler must have run.
+    assert.deepEqual(executed, ['a', 'b'], "B's write was suppressed by A's cache entry");
+    assert.equal(a.result.content, 'receipt-for-a');
+    assert.equal(b.result.content, 'receipt-for-b', "B received A's result");
+    assert.equal(b.replayed, false);
+  });
+
+  it('does not let one principal pre-claim another principal idempotency key', async () => {
+    // The denial half of the same defect: a conflicting payload under a key
+    // somebody else is about to use must not refuse their write.
+    const store = new ToolIdempotencyStore();
+    let victimRuns = 0;
+
+    await runNs(store, 'invoice-42', 'create_invoice', { amount: 9999 }, async () => ({
+      content: 'attacker-preclaim',
+    }), 'key-attacker');
+
+    const victim = await runNs(store, 'invoice-42', 'create_invoice', { amount: 1 }, async () => {
+      victimRuns += 1;
+      return { content: 'victim-receipt' };
+    }, 'key-victim');
+
+    assert.equal(victimRuns, 1, "the victim's write was refused as an idempotency conflict");
+    assert.equal(victim.result.isError, undefined);
+    assert.equal(victim.result.content, 'victim-receipt');
+  });
+
+  it('still dedupes within one principal', async () => {
+    // Guard rail: the isolation above must not have been achieved by disabling
+    // deduping altogether, which would make both cases above vacuous.
+    const store = new ToolIdempotencyStore();
+    let runs = 0;
+    const exec = async () => {
+      runs += 1;
+      return { content: 'once' };
+    };
+    await runNs(store, 'k', 'create_invoice', { a: 1 }, exec, 'key-a');
+    const second = await runNs(store, 'k', 'create_invoice', { a: 1 }, exec, 'key-a');
+    assert.equal(runs, 1, 'same principal + same key must still execute at most once');
+    assert.equal(second.replayed, true);
   });
 
   it('does not let a key containing the separator collide with another tool', async () => {
@@ -267,9 +344,17 @@ describe('ToolIdempotencyStore', () => {
     // `${toolName}:${key}` composition maps BOTH to `t:a:b`, which would let one
     // caller's key replay another tool's stored write result.
     assert.notEqual(
-      idempotencyCacheKey('a:b', 't'),
-      idempotencyCacheKey('b', 't:a'),
+      idempotencyCacheKey('a:b', 't', NS),
+      idempotencyCacheKey('b', 't:a', NS),
       'cache-key composition is ambiguous — one tool could replay another tool result',
+    );
+
+    // Same ambiguity, one component further out: the namespace must not be able
+    // to bleed into the tool name either.
+    assert.notEqual(
+      idempotencyCacheKey('k', 't', 'a:b'),
+      idempotencyCacheKey('k', 'b:t', 'a'),
+      'namespace/tool composition is ambiguous — one principal could replay another principal result',
     );
 
     const store = new ToolIdempotencyStore();
@@ -278,8 +363,8 @@ describe('ToolIdempotencyStore', () => {
       runs += 1;
       return { content: `run-${String(runs)}` };
     };
-    const a = await store.run('a:b', 't', {}, exec);
-    const b = await store.run('b', 't:a', {}, exec);
+    const a = await runNs(store, 'a:b', 't', {}, exec);
+    const b = await runNs(store, 'b', 't:a', {}, exec);
 
     assert.equal(runs, 2, 'two distinct (key, tool) pairs must both execute');
     assert.equal(a.result.content, 'run-1');
@@ -289,7 +374,7 @@ describe('ToolIdempotencyStore', () => {
   it('bounds retained records', async () => {
     const store = new ToolIdempotencyStore({ maxEntries: 3 });
     for (let i = 0; i < 10; i += 1) {
-      await store.run(`k${String(i)}`, 'tool', {}, async () => ({ content: 'ok' }));
+      await runNs(store, `k${String(i)}`, 'tool', {}, async () => ({ content: 'ok' }));
     }
     assert.equal(store.size(), 3);
   });
@@ -417,7 +502,7 @@ describe('ToolIdempotencyStore — in-flight entries are bounded (W4)', () => {
     const store = new ToolIdempotencyStore({ ttlMs: 1_000, now: () => clock });
 
     // Fire and DO NOT await — this one never settles.
-    void store.run('k1', 'write_tool', { a: 1 }, hung).catch(() => undefined);
+    void runNs(store, 'k1', 'write_tool', { a: 1 }, hung).catch(() => undefined);
 
     clock += 2_000;
 
@@ -425,7 +510,7 @@ describe('ToolIdempotencyStore — in-flight entries are bounded (W4)', () => {
     // resolved, so the test would time out rather than fail — which is why the
     // assertion below is guarded by an explicit race instead of a bare await.
     let executed = 0;
-    const fresh = store.run('k1', 'write_tool', { a: 1 }, async () => {
+    const fresh = runNs(store, 'k1', 'write_tool', { a: 1 }, async () => {
       executed += 1;
       return { content: 'fresh result' };
     });
@@ -454,12 +539,12 @@ describe('ToolIdempotencyStore — in-flight entries are bounded (W4)', () => {
       release = r;
     });
 
-    const first = store.run('k1', 'write_tool', { a: 1 }, () => {
+    const first = runNs(store, 'k1', 'write_tool', { a: 1 }, () => {
       executed += 1;
       return gate;
     });
     clock += 500;
-    const second = store.run('k1', 'write_tool', { a: 1 }, () => {
+    const second = runNs(store, 'k1', 'write_tool', { a: 1 }, () => {
       executed += 1;
       return gate;
     });
@@ -482,7 +567,7 @@ describe('ToolIdempotencyStore — in-flight entries are bounded (W4)', () => {
     });
 
     for (let i = 0; i < 5; i += 1) {
-      void store.run(`k${String(i)}`, 'write_tool', { i }, hung).catch(() => undefined);
+      void runNs(store, `k${String(i)}`, 'write_tool', { i }, hung).catch(() => undefined);
     }
     // While genuinely live, in-flight entries are correctly protected from
     // eviction — losing one would break duplicate collapsing.
@@ -493,7 +578,7 @@ describe('ToolIdempotencyStore — in-flight entries are bounded (W4)', () => {
     // One more dispatch. Its own entry is live; the five stale ones are not, and
     // the evictor now runs on the in-flight path too (it used to run only after
     // a SUCCESSFUL completion, so a burst of hung calls never triggered it).
-    void store.run('k-new', 'write_tool', { n: 1 }, hung).catch(() => undefined);
+    void runNs(store, 'k-new', 'write_tool', { n: 1 }, hung).catch(() => undefined);
 
     assert.ok(
       store.size() <= 2,
@@ -512,9 +597,9 @@ describe('ToolIdempotencyStore — in-flight entries are bounded (W4)', () => {
       releaseOld = r;
     });
 
-    const first = store.run('k1', 'write_tool', { a: 1 }, () => old);
+    const first = runNs(store, 'k1', 'write_tool', { a: 1 }, () => old);
     clock += 2_000;
-    const second = await store.run('k1', 'write_tool', { a: 1 }, async () => ({
+    const second = await runNs(store, 'k1', 'write_tool', { a: 1 }, async () => ({
       content: 'newer',
     }));
     assert.deepEqual(second.result, { content: 'newer' });
@@ -523,7 +608,7 @@ describe('ToolIdempotencyStore — in-flight entries are bounded (W4)', () => {
     await first;
 
     // The newer result is what a replay gets.
-    const replay = await store.run('k1', 'write_tool', { a: 1 }, async () => {
+    const replay = await runNs(store, 'k1', 'write_tool', { a: 1 }, async () => {
       assert.fail('a live cached entry must not re-execute');
     });
     assert.equal(replay.replayed, true);

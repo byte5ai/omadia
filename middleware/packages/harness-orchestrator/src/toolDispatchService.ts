@@ -221,12 +221,22 @@ export class ToolDispatchService {
     // Idempotency applies to write-capable tools only. A read tool keeps the
     // transport-retry mitigation and never replays a cached body.
     if (key !== undefined && store !== undefined && this.isWriteCapable(name)) {
-      const outcome = await store.run(key, name, input, () =>
-        // The scope must wrap the EXECUTION, not the cache lookup, so the MCP
-        // transport layer beneath the handler can read it and suppress its retry.
-        runWithIdempotencyScope({ key, toolName: name, exactlyOnce: true }, () =>
-          this.dispatchInner(name, input, options),
-        ),
+      const outcome = await store.run(
+        key,
+        name,
+        input,
+        () =>
+          // The scope must wrap the EXECUTION, not the cache lookup, so the MCP
+          // transport layer beneath the handler can read it and suppress its retry.
+          runWithIdempotencyScope({ key, toolName: name, exactlyOnce: true }, () =>
+            this.dispatchInner(name, input, options),
+          ),
+        // The trust boundary. `caller.principal` is the API-key id on the public
+        // MCP path, so two keys cannot collide on a guessable key like
+        // `invoice-42` and replay each other's writes. Absent caller ⇒ the
+        // in-process chat/loopback path, which is one trusted principal and
+        // shares a namespace exactly as before.
+        options?.caller?.principal ?? '',
       );
       return outcome.result;
     }

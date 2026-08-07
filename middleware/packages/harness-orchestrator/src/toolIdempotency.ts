@@ -141,15 +141,32 @@ export function fingerprintToolInput(input: unknown): string {
 }
 
 /**
- * Cache key for a `(key, toolName)` pair.
+ * Cache key for a `(namespace, key, toolName)` triple.
  *
- * Length-prefixed on the tool name so the two components cannot be confused by a
- * caller-supplied key that happens to contain the separator — `("a:b", "t")` and
+ * `namespace` is the TRUST BOUNDARY, and it is required rather than defaulted
+ * because omitting it is not a smaller version of this feature — it is a
+ * cross-tenant leak. The store is process-wide and shared by every public MCP
+ * dispatcher. Keyed on tool name and the caller-supplied key alone, API key A
+ * calling `create_invoice` with `invoice-42` and API key B — a different
+ * customer, bound to a different agent — using the same obvious string collide:
+ * B receives A's cached RESULT and B's write never executes. It also hands any
+ * key holder a denial primitive, since idempotency keys are guessable and
+ * pre-claiming one suppresses the real caller's write.
+ *
+ * "Same key and same tool ⇒ deduping is the right answer" holds for one tenant.
+ * Across principals it is exactly the wrong answer.
+ *
+ * Length-prefixed on each component so they cannot be confused by a
+ * caller-supplied key containing the separator — `("a:b", "t")` and
  * `("b", "t:a")` must not collide. Plain ASCII and deliberately serialisable, so
  * a future distributed store can reuse this exact composition.
  */
-export function idempotencyCacheKey(key: string, toolName: string): string {
-  return `${String(toolName.length)}:${toolName}:${key}`;
+export function idempotencyCacheKey(
+  key: string,
+  toolName: string,
+  namespace: string,
+): string {
+  return `${String(namespace.length)}:${namespace}:${String(toolName.length)}:${toolName}:${key}`;
 }
 
 /**
@@ -184,7 +201,8 @@ export class ToolIdempotencyStore {
   }
 
   /**
-   * Execute `exec` at most once per `(key, toolName)` while the entry is live.
+   * Execute `exec` at most once per `(namespace, key, toolName)` while the entry
+   * is live.
    *
    * - Live completed entry, same payload ⇒ replay it, `exec` is NOT called.
    * - Live entry, DIFFERENT payload ⇒ conflict error, `exec` is NOT called.
@@ -192,14 +210,18 @@ export class ToolIdempotencyStore {
    * - No live entry ⇒ run `exec` and store the result.
    *
    * A rejected or `isError` outcome is NOT retained (see module header).
+   *
+   * `namespace` scopes the guarantee to one principal — see
+   * {@link idempotencyCacheKey} for why it is required and not defaulted.
    */
   async run(
     key: string,
     toolName: string,
     input: unknown,
     exec: () => Promise<ToolIdempotencyResult>,
+    namespace: string,
   ): Promise<ToolIdempotencyOutcome> {
-    const cacheKey = idempotencyCacheKey(key, toolName);
+    const cacheKey = idempotencyCacheKey(key, toolName, namespace);
     const fingerprint = fingerprintToolInput(input);
     const existing = this.live(cacheKey);
 
