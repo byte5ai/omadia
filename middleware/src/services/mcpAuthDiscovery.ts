@@ -14,7 +14,7 @@
  * falls back to the raw error.
  */
 
-import { guardedOutboundFetch } from './guardedOutboundFetch.js';
+import { guardedOutboundFetch, readTextCapped } from './guardedOutboundFetch.js';
 import { assertPublicHttpsUrl } from './ssrfGuard.js';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -261,7 +261,15 @@ export class McpAuthDiscovery {
     const registrationEndpoint =
       registration && registration !== authorizationEndpoint ? registration : null;
     return {
-      issuer: claimedIssuer ?? issuer,
+      // The issuer we FETCHED, not the string the document echoed back. The
+      // guard above has already proven they are the same identifier, so the
+      // only thing the claimed spelling can still differ in is trailing
+      // slashes — and that spelling is what keys `loadClient()` and the stored
+      // token rows. Taking the canonical one means a document answering
+      // `https://as.example/` cannot miss a client stored under
+      // `https://as.example`, and removes the question of how many trailing
+      // slashes `sameIssuer` should tolerate from everything downstream.
+      issuer,
       authorizationEndpoint,
       tokenEndpoint,
       registrationEndpoint,
@@ -334,8 +342,10 @@ export class McpAuthDiscovery {
       });
       if (res.status === 404) return null;
       if (!res.ok) return null;
-      const text = await res.text();
-      if (Buffer.byteLength(text, 'utf8') > MAX_METADATA_BYTES) return null;
+      // Metered while reading, not measured after: `res.text()` would have the
+      // whole body resident before the cap could reject it.
+      const text = await readTextCapped(res, MAX_METADATA_BYTES);
+      if (text === null) return null;
       const parsed = JSON.parse(text) as unknown;
       return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
     } catch {

@@ -24,7 +24,7 @@
  * than throwing, and why the metadata route answers 501 instead of 500.
  */
 
-import { guardedOutboundFetch } from './guardedOutboundFetch.js';
+import { guardedOutboundFetch, readTextCapped } from './guardedOutboundFetch.js';
 import { assertPublicHttpsUrl } from './ssrfGuard.js';
 
 /**
@@ -167,8 +167,10 @@ export async function probeCimdReachable(input: {
       redirect: 'error',
     });
     if (!res.ok) return { reachable: false, reason: 'fetch_failed' };
-    const text = await res.text();
-    if (Buffer.byteLength(text, 'utf8') > MAX_DOCUMENT_BYTES) {
+    // Metered while reading, not measured after: `res.text()` would have the
+    // whole body resident before the cap could reject it.
+    const text = await readTextCapped(res, MAX_DOCUMENT_BYTES);
+    if (text === null) {
       return { reachable: false, reason: 'document_mismatch' };
     }
     const doc = JSON.parse(text) as unknown;

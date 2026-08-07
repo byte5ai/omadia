@@ -77,6 +77,53 @@ function assertLiteralHostAllowed(input: Parameters<typeof fetch>[0]): void {
   }
 }
 
+/**
+ * Read a response body as text, refusing anything over `maxBytes` WITHOUT
+ * buffering it first.
+ *
+ * `await res.text()` followed by a length check is not a cap — by the time the
+ * check runs the whole body is already resident. A discovered authorization
+ * server can stream hundreds of megabytes inside the request timeout and the
+ * process allocates all of it before deciding it was too big.
+ *
+ * Returns `null` when the body exceeds the cap, so callers treat "too large"
+ * exactly as they already treat "unusable document".
+ */
+export async function readTextCapped(res: Response, maxBytes: number): Promise<string | null> {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) return null;
+
+  const body: ReadableStream<Uint8Array> | null = res.body;
+  if (body === null) {
+    // No stream to meter (an empty body, or a hand-built `Response` in a test
+    // fake). Fall back to the buffered read plus the same cap — no worse than
+    // before, and unreachable for real network responses.
+    const text = await res.text();
+    return Buffer.byteLength(text, 'utf8') > maxBytes ? null : text;
+  }
+
+  const reader = body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        // Stop pulling immediately; the socket is torn down rather than drained.
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 /** Built once and reused: a fresh `Agent` per request would discard undici's
  *  connection pool and leak sockets under any real call volume. */
 let agent: Agent | undefined;
