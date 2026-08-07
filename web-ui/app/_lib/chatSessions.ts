@@ -230,6 +230,24 @@ export interface PrivacyReceipt {
    * carry the span TYPE + detector id only, never the value.
    */
   maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
+  /**
+   * #547 / #569 — external MCP tools that returned `structuredContent` this
+   * turn. NOT a masking record: the payload is emitted out-of-band and never
+   * crossed the model boundary (the browser is the trusted side), so nothing
+   * was masked. This is the accounting entry — surfaced as a neutral "received
+   * structured output" section so an operator audit sees it. Absent / empty
+   * when no connected tool emitted structured output. PII-free.
+   */
+  structuredPayloads?: readonly StructuredPayloadEntry[];
+}
+
+/** #547 / #569 — one entry in `PrivacyReceipt.structuredPayloads`. Mirrors
+ *  `StructuredPayloadEntry` from `@omadia/plugin-api`. PII-free. */
+export interface StructuredPayloadEntry {
+  toolName: string;
+  serverName: string;
+  bytes: number;
+  hasOutputSchema: boolean;
 }
 
 /** #361 — PII-free record of one prompt span masked before the LLM wire.

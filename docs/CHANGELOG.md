@@ -18,6 +18,38 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — MCP structured output is accounted in the privacy receipt (#547 / #569)
+
+- External MCP tools that return `structuredContent` now surface in the turn's
+  Privacy Shield receipt, as a neutral "structured output received" section
+  (tool name, server name, byte count, and whether the tool declared an
+  `outputSchema`). This closes the #569 gap: the structured-content sidecar
+  fires inside `McpManager.callTool`, beneath every dispatcher, so structured
+  content previously appeared in **no** receipt or dataset accounting at all —
+  an operator auditing what a turn touched could not see it. Scope note: like
+  every receipt line, this appears only when a `privacy.redact@1` provider is
+  active; with no Privacy Shield installed there is no receipt and the sink
+  no-ops (it produces no receipt entry and nothing observable — the one change
+  in that case is that the previously-inert structured sidecar now has a wired
+  consumer at all).
+- **Accounting, not masking.** Privacy Shield's data-plane boundary is server ↔
+  LLM provider, not server ↔ browser. The structured payload is emitted
+  out-of-band and never crosses the model wire (the model still sees only the
+  interned digest of the tool's text result), so nothing is masked — the browser
+  is the trusted side. The receipt entry is PII-free by construction: counts and
+  names only, never the structured value. A regression test pins that the
+  accounting metadata carries none of the raw values the sidecar legitimately
+  still holds, over a real MCP socket.
+- New optional `PrivacyGuardService.recordStructuredPayload` on the published
+  `@omadia/plugin-api` surface, mirroring `recordBypassedTool`; the boot-wired
+  `McpManager.structuredSink` is its first consumer. Fail-closed: an accounting
+  failure never breaks a tool call, and a payload with no turn identity is
+  skipped rather than mis-filed.
+- Deliberately **not** included: a renderer that draws a canvas card from the
+  structured payload. That is #547's remaining half, unblocked by this
+  accounting decision — the decision #569 asked for *before* anything renders
+  from the sidecar.
+
 ### Fixed — a mistyped id no longer produces a dead-but-configured-looking public MCP binding
 
 - `public_mcp_key_bindings.key_id` and `agent_id` are not foreign keys — the key

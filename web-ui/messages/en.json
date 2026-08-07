@@ -1081,7 +1081,13 @@
     "explainerBypassed": "The operator set Privacy Mode to »Bypass« for at least one plugin — its tool results reached the model unmasked. Used for trusted internal sources whose content the Privacy Shield cannot usefully digest structurally.",
     "summaryPromptMasked": "prompt: {count} masked",
     "factPromptMasked": "PII masked in your prompt",
-    "explainerPromptMasked": "Identifiers detected in your own message were replaced with pseudonyms before the model call and restored in the answer."
+    "explainerPromptMasked": "Identifiers detected in your own message were replaced with pseudonyms before the model call and restored in the answer.",
+    "summaryStructured": "{count, plural, one {# structured result} other {# structured results}}",
+    "factStructured": "Structured output received",
+    "structuredBytes": "{kb} KB",
+    "structuredSchemaYes": "output schema",
+    "structuredSchemaNo": "no schema",
+    "explainerStructured": "A connected tool returned structured data. It reached the browser — the trusted side — but never the model, which saw only the interned digest. Listed here for transparency; nothing was masked because none was owed on this path."
   },
   "directLine": {
     "consultedLabel": "🔎 Consulted",
