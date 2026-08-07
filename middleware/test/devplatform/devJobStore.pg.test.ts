@@ -8,6 +8,7 @@ import { Pool } from 'pg';
 
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
+import { probePgTest } from '../_helpers/pgTestDb.js';
 import { DevJobEventBus } from '../../src/devplatform/devJobEventBus.js';
 import {
   DevJobLeaseLostError,
@@ -24,24 +25,14 @@ import type { DevRepo } from '../../src/devplatform/types.js';
  * test Postgres is reachable, mirroring the other `*.pg.test.ts`. Applies the
  * real top-level migrations (0022_dev_platform included) via the same runner the app uses.
  */
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['WS5_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
-
 const MARK = 'pg-devplatform-test';
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
 
-const probePool = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 2000 });
-let pgAvailable = true;
-try {
-  await probePool.query('SELECT 1');
-} catch {
-  pgAvailable = false;
-  await probePool.end().catch(() => undefined);
-}
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'devJobStore',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL', 'DATABASE_URL'],
+});
+const probePool = new Pool({ connectionString: PG_URL });
 
 describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
   const pool = probePool;

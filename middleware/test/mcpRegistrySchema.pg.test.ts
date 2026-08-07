@@ -8,6 +8,8 @@ import { Pool, type PoolClient } from 'pg';
 
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
+import { probePgTest } from './_helpers/pgTestDb.js';
+
 /**
  * PG-gated coverage for the MCP registry / OAuth schema in
  * `middleware/migrations` (0010 registries, 0013 registry kinds, 0014 the
@@ -31,11 +33,10 @@ import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
  * concurrently for long enough to cancel 29 of their tests.
  * Skips when no test Postgres is reachable, mirroring the other pg tests.
  */
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['WS5_PG_TEST_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'mcpRegistrySchema',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL'],
+});
 
 /** Tenant prefix — unique to this suite, see the isolation note above. */
 const TENANT = 'w04-mcp-';
@@ -52,17 +53,9 @@ const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'mi
  */
 const probePool = new Pool({
   connectionString: PG_URL,
-  connectionTimeoutMillis: 2000,
   max: 2,
   idleTimeoutMillis: 1000,
 });
-let pgAvailable = true;
-try {
-  await probePool.query('SELECT 1');
-} catch {
-  pgAvailable = false;
-  await probePool.end().catch(() => undefined);
-}
 
 async function migrationFiles(): Promise<readonly string[]> {
   return (await readdir(migrationsDir)).filter((f) => f.endsWith('.sql')).sort();

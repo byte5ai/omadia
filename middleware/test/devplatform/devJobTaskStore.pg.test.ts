@@ -8,6 +8,7 @@ import { Pool } from 'pg';
 
 import { TaskLeaseLostError, runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
+import { probePgTest } from '../_helpers/pgTestDb.js';
 import { DevJobEventBus } from '../../src/devplatform/devJobEventBus.js';
 import {
   DevJobStore,
@@ -39,25 +40,15 @@ import type { DevJob, DevJobStatus, DevRepo } from '../../src/devplatform/types.
  * rows (the migration advisory lock is database-wide, and `CREATE/DROP DATABASE`
  * is cluster-wide — hence neither is used here).
  */
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['WS5_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
-
 /** Unique per run — this is the tenant id. */
 const MARK = `pg-task-seam-${randomUUID()}`;
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
 
-const probePool = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 2000 });
-let pgAvailable = true;
-try {
-  await probePool.query('SELECT 1');
-} catch {
-  pgAvailable = false;
-  await probePool.end().catch(() => undefined);
-}
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'devJobTaskStore',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL', 'DATABASE_URL'],
+});
+const probePool = new Pool({ connectionString: PG_URL });
 
 describe('devplatform/devJobTaskStore — seam conformance (pg)', { skip: !pgAvailable }, () => {
   const pool = probePool;
