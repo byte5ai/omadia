@@ -26,7 +26,7 @@ const CALLER = { sub: `${OWNER}:operator`, email: 'op@acme.test', role: 'dev' };
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
-  label: 'chatDevJobService',
+  label: 'chatJobService',
   vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL', 'DATABASE_URL'],
 });
 const probePool = new Pool({ connectionString: PG_URL });

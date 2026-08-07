@@ -20,7 +20,7 @@ import type { TokenFetch } from '../../src/devplatform/githubApp/installationTok
 import type { PhaseDirective } from '../../src/devplatform/pipeline/phaseEngine.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
-  label: 'devPlatformPipeline.wire',
+  label: 'pipeline.wire',
   vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'DATABASE_URL'],
   timeoutMs: 1_500,
 });

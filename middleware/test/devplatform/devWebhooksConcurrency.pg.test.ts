@@ -31,7 +31,7 @@ import type { DevRepo } from '../../src/devplatform/types.js';
  * Skips when no test Postgres is reachable, like the other `*.pg.test.ts`.
  */
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
-  label: 'devWebhooksConcurrency',
+  label: 'webhooksConcurrency',
   vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL', 'DATABASE_URL'],
 });
 

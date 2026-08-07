@@ -51,7 +51,7 @@ this change:
 | Var | Suites |
 | --- | --- |
 | `GRAPH_PG_TEST_URL` | graph / store / migration suites |
-| `WS5_PG_TEST_URL` | dev-platform + scratch-promotion suites |
+| `WS5_PG_TEST_URL` | Dev Platform + scratch-promotion suites |
 | `KG_PG_TEST_URL` | KG-walk subgraph suite |
 | `DATABASE_URL` | last-resort fallback where already wired |
 | `MEMORY_PG_TEST_URL` | accepted by all suites |

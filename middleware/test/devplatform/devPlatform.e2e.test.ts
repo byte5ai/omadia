@@ -115,7 +115,7 @@ describe('devplatform boot refusals', () => {
 // ---------------------------------------------------------------------------
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
-  label: 'devPlatform.e2e',
+  label: 'platform.e2e',
   vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL', 'DATABASE_URL'],
 });
 
