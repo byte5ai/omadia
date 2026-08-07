@@ -18,6 +18,21 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — AI-assistant install path via a public skill file (#338)
+
+- New `docs/onboarding/SKILL.md`: a public, copy-paste onboarding path for
+  non-technical evaluators. Pasting a short prompt into the Claude or Codex
+  desktop app points the assistant at the skill file, which installs the native
+  omadia desktop app and opens the onboarding wizard — no Docker, no build tools.
+  The skill is idempotent (re-running only relaunches an existing install) and
+  resolves each release asset by its API `browser_download_url`, so it survives
+  the independently-pinned desktop version. It scans recent releases for the
+  newest one that actually carries a build for the user's OS, rather than assuming
+  `releases/latest` is complete — a release whose macOS/Windows build failed can
+  ship Linux-only.
+- `README.md` gains a copy-paste setup prompt next to the Quickstart, including
+  the key-free note for Claude Pro/Max subscriptions (#309).
+
 ### Changed — MCP connection lifetime is now explicit (#563)
 
 - The MCP pool kept its state in two parallel maps keyed by server id **plus** a
