@@ -324,11 +324,10 @@ describe('errorHelp catalogue coverage', () => {
   it('covered files use no error envelope the extractor cannot see', () => {
     // Two further emission shapes exist in this repo and neither scan above
     // can see them: positional `sendError(res, err, 'code')`
-    // (routes/builder.ts:164, routes/builderPreview.ts:919,
-    // routes/devPlatformGates.ts:51) and the `error: '…'` envelope key
-    // (routes/builderPreview.ts). Introducing either into a covered file must
-    // fail here and force the extractor to be extended, not let the guard
-    // under-report in silence.
+    // (routes/builder.ts:164, routes/builderPreview.ts:919) and the
+    // `error: '…'` envelope key (routes/builderPreview.ts). Introducing either
+    // into a covered file must fail here and force the extractor to be
+    // extended, not let the guard under-report in silence.
     const offenders: string[] = [];
     for (const file of COVERED_ROUTE_FILES) {
       const source = readRouteFile(file);
