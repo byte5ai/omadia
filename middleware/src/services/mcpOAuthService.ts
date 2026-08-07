@@ -12,6 +12,7 @@
  */
 import {
   McpAuthDiscovery,
+  canonicalIssuer,
   sameIssuer,
   serverOrigin,
   type DiscoveredAuth,
@@ -358,8 +359,30 @@ export class McpOAuthService {
   }
 
   /** Load a stored OAuth client for an issuer, resolving its secret. */
+  /**
+   * Client rows are keyed by the issuer STRING, but `sameIssuer` treats
+   * `https://as.example` and `https://as.example/` as the same identifier. Two
+   * different rules over the same value, so a client stored under one spelling
+   * is invisible to a lookup using the other: rotation detection says "same
+   * issuer", `loadClient` says "no client", and the install is pushed into
+   * another acquisition flow — or simply cannot refresh.
+   *
+   * Both spellings are tried rather than normalising the key outright, because
+   * normalising the READ alone would orphan every row already written with a
+   * trailing slash. Exact first, so an install that has never seen the problem
+   * keeps its single lookup.
+   */
+  private issuerKeyCandidates(issuer: string): readonly string[] {
+    const canonical = canonicalIssuer(issuer);
+    return [...new Set([issuer, canonical, `${canonical}/`])];
+  }
+
   private async loadClient(issuer: string): Promise<OAuthClientCredentials | null> {
-    const row = await this.deps.graph.getMcpOAuthClient(issuer);
+    let row: Awaited<ReturnType<typeof this.deps.graph.getMcpOAuthClient>> | null = null;
+    for (const candidate of this.issuerKeyCandidates(issuer)) {
+      row = await this.deps.graph.getMcpOAuthClient(candidate);
+      if (row) break;
+    }
     if (!row) return null;
     const secret = row.clientSecretRef
       ? ((await this.deps.vault.get(VAULT_NS, row.clientSecretRef)) ?? null)

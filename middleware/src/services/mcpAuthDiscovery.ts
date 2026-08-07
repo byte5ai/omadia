@@ -79,9 +79,12 @@ function str(v: unknown): string | null {
  *  Lives here, next to the metadata fetch that must apply it, and is imported by
  *  `mcpOAuthService` rather than duplicated: two copies of an identity
  *  comparison is two places for one of them to drift loose. */
+export function canonicalIssuer(s: string): string {
+  return s.trim().replace(/\/+$/, '');
+}
+
 export function sameIssuer(a: string, b: string): boolean {
-  const norm = (s: string): string => s.trim().replace(/\/+$/, '');
-  return norm(a) !== '' && norm(a) === norm(b);
+  return canonicalIssuer(a) !== '' && canonicalIssuer(a) === canonicalIssuer(b);
 }
 
 /** The origin an MCP server's well-known documents live under (scheme+host). */

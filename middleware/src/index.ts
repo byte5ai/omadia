@@ -2807,7 +2807,18 @@ async function main(): Promise<void> {
             serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
           if (!configStore) return undefined;
           try {
-            return new Set((await configStore.listAgents()).map((a) => a.slug));
+            // ENABLED only. "Known" here has to mean "a real request would
+            // resolve it", and dispatch resolves against the ACTIVE registry —
+            // a disabled agent is not in it. Counting every configured row let
+            // an operator bind to a disabled agent, see a clean green row, and
+            // discover at call time that it reaches nothing: the same
+            // dead-but-configured-looking state this check exists to prevent,
+            // one layer along.
+            return new Set(
+              (await configStore.listAgents())
+                .filter((a) => a.status !== 'disabled')
+                .map((a) => a.slug),
+            );
           } catch (err) {
             console.warn(
               `[middleware] public-mcp binding agent lister unavailable: ${String(err)}`,
@@ -2825,7 +2836,12 @@ async function main(): Promise<void> {
             // rather than hidden in a closure.
             const keyStore = createVerifyOnlyApiKeyStore(secretVault);
             const keys = await keyStore.list();
-            return new Set(keys.map((k) => k.id));
+            // NOT revoked. Authentication skips a revoked record, so counting
+            // one as "known" reports a binding as healthy that can only ever
+            // 401. Same reasoning as the enabled-agent filter above: this set
+            // answers "would a real request resolve this id", not "is there a
+            // row somewhere".
+            return new Set(keys.filter((k) => k.revokedAt === undefined).map((k) => k.id));
           } catch (err) {
             console.warn(
               `[middleware] public-mcp binding key lister unavailable: ${String(err)}`,
