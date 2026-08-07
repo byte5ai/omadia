@@ -16,7 +16,11 @@ import {
   parseDelegation,
   resolveMcpUserKey,
 } from '../src/services/mcpDelegation.js';
-import { redactSecrets, redactedErrorText } from '../src/services/secretRedaction.js';
+import {
+  redactAuditError,
+  redactSecrets,
+  redactedErrorText,
+} from '../src/services/secretRedaction.js';
 
 function jsonResponder(routes: Record<string, unknown | number>): typeof fetch {
   return (async (input: RequestInfo | URL) => {
@@ -878,6 +882,50 @@ describe('W0-1 D5 — no token, code, or code_verifier can reach a log line', ()
     const secret = 'tok/with+special=chars';
     const out = redactSecrets(`error: value=${encodeURIComponent(secret)}`, [secret]);
     assert.ok(!out.includes(encodeURIComponent(secret)), out);
+  });
+
+  // This redactor picked up a second caller — `mcp_call_log` stores error text
+  // from ARBITRARY upstream MCP servers. Those are not OAuth providers and do
+  // not use RFC 6749 spelling, so the original snake_case-only set matched
+  // nothing and the credential was persisted verbatim.
+  it('redacts an X-API-Key header an upstream server echoed back', () => {
+    const out = redactSecrets('authentication failed; X-API-Key: sk_live_1234567890');
+    assert.ok(!out.includes('sk_live_1234567890'), out);
+    // The header NAME is diagnostic and must survive — knowing which credential
+    // was rejected is the point of keeping the line at all.
+    assert.ok(/x-api-key/i.test(out), out);
+  });
+
+  it('redacts Basic auth, not only Bearer', () => {
+    const out = redactSecrets('401 from upstream: Authorization: Basic dXNlcjpodW50ZXIy');
+    assert.ok(!out.includes('dXNlcjpodW50ZXIy'), out);
+    assert.ok(/basic/i.test(out), out);
+  });
+
+  it('redacts camelCase and generic credential field names', () => {
+    const body =
+      '{"accessToken":"AT-1","clientSecret":"CS-2","api_key":"AK-3","password":"PW-4"}';
+    const out = redactSecrets(body);
+    for (const secret of ['AT-1', 'CS-2', 'AK-3', 'PW-4']) {
+      assert.ok(!out.includes(secret), `${secret} survived: ${out}`);
+    }
+  });
+
+  it('leaves ordinary error text alone', () => {
+    // Guard rail: over-broad patterns would shred the diagnostic value of every
+    // log line, which is its own failure mode.
+    const text = 'connection refused to inventory-service after 3 attempts (code 502)';
+    const out = redactSecrets(text);
+    assert.equal(out, text);
+  });
+
+  it('redacts an audit entry error through the shared helper', () => {
+    // Both `mcp_call_log` sinks go through this; only one used to redact.
+    const entry = { error: 'X-API-Key: sk_live_9999', ok: false } as const;
+    const out = redactAuditError(entry);
+    assert.ok(!out.error.includes('sk_live_9999'), out.error);
+    assert.equal(out.ok, false, 'the helper must not disturb other fields');
+    assert.equal(redactAuditError({ error: null }).error, null);
   });
 
   it('redacts token fields in a JSON error body we did not mint', () => {

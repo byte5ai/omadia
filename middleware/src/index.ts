@@ -163,7 +163,7 @@ import {
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
 import { recordRawBodyBytes } from './http/rawBodySize.js';
-import { redactSecrets } from './services/secretRedaction.js';
+import { redactAuditError } from './services/secretRedaction.js';
 import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp.js';
 // W5-1 — the WRITE half of `public_mcp_key_bindings`. Imported for the
 // OPERATOR router only. `mountPublicMcp` above must never be handed this: the
@@ -1913,11 +1913,7 @@ async function main(): Promise<void> {
                 // name or address still lands in `mcp_call_log`. Masking that
                 // would mean running the privacy pipeline inside the audit
                 // writer, which is a design decision rather than a patch.
-                const redacted: McpCallLogEntry =
-                  entry.error === null
-                    ? entry
-                    : { ...entry, error: redactSecrets(entry.error) };
-                void mcpAuditStore.insertMcpCallLog(redacted).catch((err: unknown) => {
+                void mcpAuditStore.insertMcpCallLog(redactAuditError(entry)).catch((err: unknown) => {
                   console.warn(`[middleware] mcp call audit write failed: ${String(err)}`);
                 });
               },
@@ -2755,9 +2751,16 @@ async function main(): Promise<void> {
       ...(graphPool
         ? {
             mcpCallObserver: (entry: McpCallLogEntry) => {
-              void new AgentGraphStore(graphPool).insertMcpCallLog(entry).catch((err: unknown) => {
-                console.warn(`[middleware] mcp sandbox audit write failed: ${String(err)}`);
-              });
+              // Same redaction as the runtime observer — this sink writes to the
+              // same `mcp_call_log` table from sandbox test-calls, and was the
+              // half that had none. Shared helper, not a second copy of the
+              // expression: one redacting sink and one not is exactly what a
+              // copy-pasted transform produces.
+              void new AgentGraphStore(graphPool)
+                .insertMcpCallLog(redactAuditError(entry))
+                .catch((err: unknown) => {
+                  console.warn(`[middleware] mcp sandbox audit write failed: ${String(err)}`);
+                });
             },
           }
         : {}),
