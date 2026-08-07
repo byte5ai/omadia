@@ -9,6 +9,18 @@
  * a regression guard — if someone later makes the sidecar mask, the sidecar
  * test below turns red and this file must be revisited on purpose.
  *
+ * REVISITED ON PURPOSE (#569). The sink now HAS a first consumer, and it is
+ * accounting — NOT rendering. `index.ts` wires `structuredSink` to
+ * `PrivacyGuardService.recordStructuredPayload`, which records a PII-free entry
+ * (tool + server + byte count + schema flag) into the turn's privacy receipt.
+ * That closes #569: the sidecar fired beneath every dispatcher, so structured
+ * content appeared in no receipt at all even though masking was never owed on
+ * this path. The final describe block below pins that the accounting seam is
+ * PII-free by construction — the recorded metadata carries none of the raw
+ * values the sidecar payload legitimately still holds. The renderer (the `done`
+ * stream event + UI card) remains deliberately unbuilt: this commit is the
+ * accounting decision #569 asked for BEFORE anything renders.
+ *
  * WHICH BOUNDARY THIS IS ABOUT — read this before calling anything a leak.
  * Privacy Shield v4's data-plane boundary is server <-> LLM PROVIDER, not
  * server <-> browser. The browser sits on the TRUSTED side and legitimately
@@ -43,15 +55,18 @@
  * interning contract asserted here is the same one the chat path uses and is
  * documented as parity in `toolDispatchPrivacySeam.test.ts`.
  *
- * There is also no way to close that asymmetry inside W5-2's scope. The whole privacy
- * contract (`PrivacyTurnHandle`) is string-in/string-out:
- * `internToolResultV4({rawResult: string}) -> {digestText: string}`. Feeding a
- * structured payload through it returns a digest STRING — the structure the
- * card exists to render is destroyed, leaving something strictly worse than
- * the `ToolRow` that already shows that digest. Masking structure while
- * preserving it needs a NEW method on the published `@omadia/plugin-api`
- * surface plus a privacy-guard implementation and boot wiring. That is an
- * issue, not a commit.
+ * That asymmetry is NOT closed by masking, and #569 corrected the earlier
+ * reading that it needed to be. The whole privacy contract (`PrivacyTurnHandle`)
+ * is string-in/string-out: `internToolResultV4({rawResult: string}) ->
+ * {digestText: string}`. Feeding a structured payload through it returns a
+ * digest STRING — the structure the card exists to render is destroyed. But
+ * masking is not owed here at all: the boundary is server <-> LLM provider, and
+ * the payload never crosses it. What WAS owed, and was missing, is accounting —
+ * an operator auditing the turn could not see the structured payload. That is
+ * the NEW method on the published `@omadia/plugin-api` surface this file's
+ * header now points at (`recordStructuredPayload`), with a privacy-guard
+ * implementation and boot wiring — shipped, PII-free, and pinned below. The
+ * renderer that consumes the accounted payload is the remaining, separate half.
  *
  * MUTATION-CHECK DISCIPLINE (same as `toolDispatchPrivacySeam.test.ts`): every
  * assertion inspects CONTENT that crosses a boundary. None asserts "a masking
@@ -68,7 +83,7 @@ import {
   type Server as HttpServer,
   type ServerResponse,
 } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 
 import { Server as McpSdkServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -226,7 +241,7 @@ async function startFakeMcpServer(): Promise<FakeServerHandle> {
       res.end();
     });
   });
-  const sockets = new Set<import('node:net').Socket>();
+  const sockets = new Set<Socket>();
   http.on('connection', (socket) => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
@@ -375,10 +390,12 @@ describe('#547 structured-output sidecar vs. the privacy boundary (W5-2)', () =>
     );
   });
 
-  it('carries the declared `outputSchema`, so a generic renderer is buildable once masking exists', async () => {
-    // Not an exposure assertion — it records that the ONLY blocker is masking. The
-    // renderer contract the brief specifies (render from `outputSchema`, never
-    // by tool name) is already satisfiable end-to-end over a real wire.
+  it('carries the declared `outputSchema`, so a generic renderer is buildable on top of the accounted payload', async () => {
+    // Not an exposure assertion. #569 corrected the earlier reading that masking
+    // was the blocker — it is not owed here (see the header). What was owed,
+    // accounting, ships in this commit; the renderer contract the brief
+    // specifies (render from `outputSchema`, never by tool name) is already
+    // satisfiable end-to-end over a real wire, and is the remaining half.
     const h = harness();
     await h.manager.listTools(CFG); // discovery caches the schema
 
@@ -423,5 +440,127 @@ describe('#547 structured-output sidecar vs. the privacy boundary (W5-2)', () =>
 
     assert.equal(result.content, 'just text');
     assert.deepEqual(structuredSidecars(sidecars), []);
+  });
+});
+
+// ── #569 accounting: the sink's first consumer records PII-free metadata ─────
+
+/**
+ * A minimal recorder that reproduces the boot sink's contract
+ * (`index.ts` -> `PrivacyGuardService.recordStructuredPayload`) so the seam can
+ * be exercised over the same real socket the block above uses. The point is not
+ * the recorder — it is that the ACCOUNTING PAYLOAD the seam produces carries
+ * only metadata, never the raw values the sidecar legitimately still holds.
+ */
+interface AccountedStructured {
+  readonly turnId: string;
+  readonly toolName: string;
+  readonly serverName: string;
+  readonly bytes: number;
+  readonly hasOutputSchema: boolean;
+}
+
+/** Reproduces the boot sink's field mapping (`index.ts`) on the happy path:
+ *  discriminate on `kind`, skip a null `turnId`, and derive `bytes` +
+ *  `hasOutputSchema`. The production sink additionally fails `bytes` closed to 0
+ *  on an unserialisable payload — not reproduced here because these fixtures are
+ *  always serialisable, and the assertions below are about the field mapping,
+ *  not that guard. */
+function accountingSink(sink: AccountedStructured[]): (p: McpSidecarPayload) => void {
+  return (payload) => {
+    if (payload.kind !== 'structured_output') return;
+    if (payload.turnId === null) return; // no receipt to attribute to
+    sink.push({
+      turnId: payload.turnId,
+      toolName: payload.toolName,
+      serverName: payload.serverName,
+      bytes: Buffer.byteLength(JSON.stringify(payload.structured), 'utf8'),
+      hasOutputSchema: payload.outputSchema !== undefined,
+    });
+  };
+}
+
+describe('#569 structured-output accounting seam (PII-free by construction)', () => {
+  it('records tool + server + byte count + schema flag, and NONE of the raw values', async () => {
+    const accounted: AccountedStructured[] = [];
+    const rawSidecars: McpSidecarPayload[] = [];
+    const manager = new McpManager({
+      structuredSink: (p) => {
+        rawSidecars.push(p);
+        accountingSink(accounted)(p);
+      },
+    });
+    managers.push(manager);
+    await manager.listTools(CFG); // discovery caches the outputSchema
+
+    const nativeTools = new NativeToolRegistry();
+    nativeTools.register(TOOL, {
+      handler: mcpNativeHandler(manager, CFG, TOOL),
+      spec: {
+        name: TOOL,
+        description: 'look up a customer record',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'mcp.kunden-crm',
+    });
+    const service = new ToolDispatchService({
+      nativeTools,
+      domainTools: [],
+      privacy: () => redactingPrivacyHandle(),
+    });
+
+    await turnContext.run(
+      { turnId: 't-569', turnDate: '2026-07-31', agentSlug: 'main', userId: 'u1' } as never,
+      () => service.dispatch(TOOL, {}),
+    );
+
+    assert.equal(accounted.length, 1, 'one structured tool result -> one accounting entry');
+    const entry = accounted[0]!;
+    assert.equal(entry.turnId, 't-569');
+    assert.equal(entry.toolName, TOOL);
+    assert.equal(entry.serverName, CFG.name);
+    assert.equal(entry.hasOutputSchema, true, 'discovery captured the outputSchema');
+    assert.equal(
+      entry.bytes,
+      Buffer.byteLength(JSON.stringify(STRUCTURED_PAYLOAD), 'utf8'),
+      'byte count is the payload size, computed at the seam',
+    );
+
+    // The load-bearing privacy assertion: the raw sidecar still carries the PII
+    // (the browser is the trusted side), but the ACCOUNTING entry the receipt
+    // will hold carries none of it. Serialize the whole entry and prove it.
+    const rawStructured = structuredSidecars(rawSidecars)[0]!;
+    assert.equal(
+      (rawStructured.structured as Record<string, unknown>)['email'],
+      EMAIL,
+      'precondition: the sidecar payload itself is unmasked',
+    );
+    const accountedJson = JSON.stringify(entry);
+    assert.equal(accountedJson.includes(EMAIL), false, 'the email never reaches the receipt entry');
+    assert.equal(accountedJson.includes(IBAN), false, 'the IBAN never reaches the receipt entry');
+    assert.equal(accountedJson.includes(PERSON), false, 'the name never reaches the receipt entry');
+  });
+
+  it('accounts nothing for a payload with no turn identity (nothing to attribute to)', async () => {
+    const accounted: AccountedStructured[] = [];
+    const manager = new McpManager({ structuredSink: accountingSink(accounted) });
+    managers.push(manager);
+
+    const nativeTools = new NativeToolRegistry();
+    nativeTools.register(TOOL, {
+      handler: mcpNativeHandler(manager, CFG, TOOL),
+      spec: {
+        name: TOOL,
+        description: 'look up a customer record',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'mcp.kunden-crm',
+    });
+    const service = new ToolDispatchService({ nativeTools, domainTools: [] });
+
+    // No turnContext.run wrapper -> the sidecar's turnId is null.
+    await service.dispatch(TOOL, {});
+
+    assert.deepEqual(accounted, [], 'a turnId-less payload is skipped, not mis-filed');
   });
 });

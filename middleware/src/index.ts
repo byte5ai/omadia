@@ -293,7 +293,13 @@ import { NativeToolRegistry } from '@omadia/orchestrator';
 import { assertTimeoutHierarchy } from '@omadia/orchestrator';
 // W2-2 (issue #543) — generic long-running task seam.
 import { InMemoryTaskStore, startTaskReaper } from '@omadia/orchestrator';
-import { McpManager, type McpCallLogEntry, type McpServerConfig } from '@omadia/orchestrator';
+import {
+  McpManager,
+  type McpCallLogEntry,
+  type McpServerConfig,
+  type McpSidecarPayload,
+  type McpStructuredSink,
+} from '@omadia/orchestrator';
 // W2-1 (#544) — MRTR mid-call user input: the process-shared park store and the
 // replayer registration. See `mcp/pendingMcpInput.ts` for why these are shared.
 import {
@@ -1884,9 +1890,69 @@ async function main(): Promise<void> {
       // mcp_call_log, fire-and-forget so the tool-call path never blocks on
       // the database. Identity comes from turnContext inside the manager.
       const mcpAuditStore = graphPool ? new AgentGraphStore(graphPool) : undefined;
+      // #547 / #569 — the structured-output sidecar's first consumer: privacy
+      // ACCOUNTING, not rendering. The payload is emitted out-of-band from
+      // `McpManager.callTool` and never reaches the model wire (the model sees
+      // only the interned digest of the TEXT result), so nothing here is
+      // masked — but the sidecar fired beneath every dispatcher, so structured
+      // content appeared in no turn receipt at all. This records a PII-free
+      // entry (tool + server + byte count + schema flag) into the turn's
+      // privacy receipt so an operator audit accounts for it. Deliberately does
+      // NOT forward the payload anywhere a renderer could consume it — that is
+      // #547's remaining half, unblocked by this accounting decision but out of
+      // scope here. Fail-closed: an accounting failure must never break a tool
+      // call, and a payload with no turn identity is skipped (there is no
+      // receipt to attribute it to) rather than mis-filed.
+      const mcpStructuredSink: McpStructuredSink = (payload: McpSidecarPayload) => {
+        if (payload.kind !== 'structured_output') return;
+        if (payload.turnId === null) {
+          console.warn(
+            `[middleware] structured sidecar for '${payload.toolName}' has no turnId — not accounted`,
+          );
+          return;
+        }
+        const privacy = serviceRegistry.get<PrivacyGuardService>(
+          PRIVACY_REDACT_SERVICE_NAME,
+        );
+        // Feature-detected: a privacy provider that predates #569 (or none
+        // installed at all) makes the sink a no-op — no receipt entry, no side
+        // effect. (Not byte-identical at the manager: wiring this sink means
+        // `emitStructured` now runs its body per structured result where before
+        // it early-returned on the absent sink. The work is a turnContext read
+        // and a Map lookup, and produces nothing observable without a provider.)
+        if (privacy?.recordStructuredPayload === undefined) return;
+        // Fail closed on our OWN terms, not on the manager's `emitStructured`
+        // try/catch: `structuredContent` is a post-`JSON.parse` value so
+        // re-serialising it cannot realistically throw, but a byte count that
+        // could take down accounting is not worth trusting a caller's guard
+        // for. An unmeasurable payload is still worth accounting — record it
+        // with `bytes: 0` rather than dropping the entry.
+        let bytes = 0;
+        try {
+          bytes = Buffer.byteLength(JSON.stringify(payload.structured), 'utf8');
+        } catch {
+          /* leave bytes at 0 — the entry still records that structured output
+             was received, which is the load-bearing accounting fact */
+        }
+        void privacy
+          .recordStructuredPayload({
+            turnId: payload.turnId,
+            toolName: payload.toolName,
+            serverName: payload.serverName,
+            bytes,
+            hasOutputSchema: payload.outputSchema !== undefined,
+          })
+          .catch((err: unknown) => {
+            console.warn(
+              `[middleware] structured sidecar accounting failed for '${payload.toolName}': ${String(err)}`,
+            );
+          });
+      };
       // Generic MCP OAuth (epic #459 W9) wired as the manager's auth provider;
       // the service instance is created at outer scope (shared with the router).
       const mcpManager = new McpManager({
+        // #547 / #569 — see `mcpStructuredSink` above (accounting only).
+        structuredSink: mcpStructuredSink,
         // W2-1 (#544) — where a `resultType: "input_required"` call is parked.
         // The process-shared instance, so the Orchestrator's turn drain reads
         // exactly what this manager wrote.

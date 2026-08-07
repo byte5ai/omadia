@@ -343,6 +343,9 @@ describe('structured-content sidecar over a real MCP connection (#547 W1-3)', ()
     const payload = seen[0]!;
     assert.equal(payload.kind, 'structured_output');
     assert.equal(payload.serverId, FAKE_CFG.id);
+    // #569 — the readable server name rides the sidecar so the receipt can
+    // attribute the payload without the opaque UUID.
+    assert.equal(payload.serverName, FAKE_CFG.name);
     assert.equal(payload.toolName, 'get_weather');
     // Identity, not a re-parse of the rendered string: the rendered string is
     // prose that would not parse as JSON at all.

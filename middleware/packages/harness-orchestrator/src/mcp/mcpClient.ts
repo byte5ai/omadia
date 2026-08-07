@@ -308,6 +308,11 @@ export interface McpSidecarIdentity {
 /** An MCP tool returned a `structuredContent` payload alongside its text. */
 export interface McpStructuredOutputSidecar extends McpSidecarIdentity {
   readonly kind: 'structured_output';
+  /** The operator-configured server display name (`cfg.name`), so a consumer
+   *  (e.g. #569 receipt accounting) can attribute the payload to a readable
+   *  source rather than the opaque `serverId` UUID. Mirrors why the
+   *  `input_required` sidecar carries `pending.serverName`. */
+  readonly serverName: string;
   /** The parsed payload exactly as the server sent it — object, or an array for
    *  off-spec hosted servers. Never a re-parse of the rendered string. */
   readonly structured: unknown;
@@ -577,6 +582,7 @@ export class McpManager {
       this.options.structuredSink({
         kind: 'structured_output',
         serverId: cfg.id,
+        serverName: cfg.name,
         toolName,
         turnId: ctx !== undefined && ctx.turnId !== '' ? ctx.turnId : null,
         structured,
