@@ -567,6 +567,22 @@ export interface SkillImportResult {
   risks: SkillRisk[];
   resourceCount: number;
   skillId?: string;
+  /**
+   * OM-25 — the security verdict the import just produced.
+   *
+   * The server computed this all along and threw it away, so a skill that
+   * landed in the registry as "⚠ MARKIERT — PRÜFUNG EMPFOHLEN" was confirmed to
+   * the user as a plain success and the flag was discovered only by chance.
+   *
+   * NOT derivable from `risks`: that array cannot express `too_large_to_scan`
+   * or `scan_failed`, and re-implementing `computeVerdict`'s thresholds
+   * client-side would guarantee drift. Optional so a pre-OM-25 middleware still
+   * type-checks.
+   */
+  verdict?: {
+    severity: SkillVerdictSeverity;
+    riskCodes: string[];
+  };
 }
 
 export interface SkillResource {

@@ -30,6 +30,12 @@ export interface InstalledAgent {
   last_activation_error?: string;
   /** ISO8601 of the last activation failure. */
   last_activation_error_at?: ISO8601;
+  /** OM-16 — ISO8601 of the last SUCCESSFUL activation. Written by
+   *  `markActivationSucceeded`; surfaced through `Plugin.readiness.verified_at`
+   *  so the store can say "Aktiv · geprüft <time>" instead of an unqualified
+   *  "AKTIV". Optional and absent from registry files written before this
+   *  field existed — readers must fall back to `installed_at`. */
+  last_activated_at?: ISO8601;
   /** Raw `<name>@<major>` strings that the resolver could not satisfy on
    *  the most recent boot. Persisted by `toolPluginRuntime` when a
    *  consumer is dropped from the eligible set; consumed by
@@ -182,7 +188,12 @@ export class InMemoryInstalledRegistry implements InstalledRegistry {
   async markActivationSucceeded(id: AgentId): Promise<void> {
     const current = this.agents.get(id);
     if (!current) return;
-    this.agents.set(id, clearFailure(current));
+    // OM-16 — stamp the successful activation even when there was no error to
+    // clear; `readiness.verified_at` is derived from it.
+    this.agents.set(id, {
+      ...clearFailure(current),
+      last_activated_at: new Date().toISOString(),
+    });
   }
 
   async clearActivationError(id: AgentId): Promise<void> {

@@ -251,7 +251,7 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   validation plus flow-bound endpoint pinning are untouched. `mcp_oauth_flows`
   TTL pruning was verified to actually exist in both places it is claimed.
 - Rationale, rejected options, and the full deployment note:
-  [ADR-0006](adr/0006-mcp-client-id-metadata-documents.md).
+  [ADR-0007](adr/0007-mcp-client-id-metadata-documents.md).
 - Note on issue #546: its premise that the registry "supports only static headers
   with `secretRef`" was incorrect — the provider-agnostic OAuth 2.1 + PKCE stack
   shipped in epic #459 W9. This release is a delta on that stack.
@@ -527,6 +527,49 @@ Three live defects in the MCP OAuth path, one migration
   MCP boundary, and the redesigned extension (SEP-2663) is unshipped even in SDK
   v2 (`tasks/update` does not exist). The status vocabulary above was chosen to
   match MCP Tasks so a later protocol projection is mechanical.
+
+### Fixed — background chat turns write into their own session (#617)
+
+- A turn that was still streaming when the user switched to another chat tab
+  lost its content: every transcript write went through the active-session
+  helpers, so the fold landed in whichever session happened to be in the
+  foreground — nowhere at all, in practice. The tab marker reported a finished
+  answer that the transcript never received, and the pending bubble stayed
+  stuck in its `streaming` state.
+- The chat-sessions store now exposes `mutateById(sessionId, mutator)` and
+  `persistById(sessionId)`; `applyStreamEvent`, `finalizePending` and the
+  stream runner's terminal persist all address the session the turn belongs to.
+  `mutateActive` / `persistActive` are gone — the active-scoped call sites on
+  the chat page pass their id explicitly.
+- `persistById` also fixes a second half of the bug: it enqueues rather than
+  reading an effect-synced ref, so the PUT carries state from *after* the
+  `done` fold committed. Without that, a background answer survived in memory
+  but not across a reload — a background turn gets no corrective follow-up turn
+  to repair the snapshot. A session deleted mid-stream is never resurrected:
+  the queued write is dropped when the id is gone.
+
+### Changed — background chat streams surface in-context, not as toasts (#286)
+
+- **Removed `StreamToasts`** (the bottom-right floating cards for background
+  chat turns). Per the Lume visual spec §7.6, toasts / floating notifications
+  are a ship-blocking anti-pattern; §7.4 makes the chat the surface of record.
+- **Background-stream state now lives on the chat tab**: a running turn shows a
+  hollow accent ring (pulsing), a finished one a solid accent disc, an errored
+  one a hollow danger ring carrying a `!` glyph. The states differ by *shape*,
+  so colour is never the sole signal (§8) and the distinction survives
+  `prefers-reduced-motion` disabling the pulse — running vs done separates on
+  fill, error vs running on the glyph. The state also reaches the tab's
+  accessible name via an `sr-only` label (the glyph itself is `aria-hidden`, so
+  screen readers don't speak it twice). Switching tabs clears the unread marker
+  on the tab being left as well as the one entered; active-session errors
+  continue to render inline on the turn.
+- **A polite live region** (`ChatTabs`) announces background turns that finish
+  or fail, replacing the `aria-live` container the removed toast overlay
+  carried. Announcements fire only for non-active tabs.
+- **Known consequence**: background-stream state is now visible only on
+  `/chat`. `StreamToasts` was mounted in the root layout and rendered on every
+  route; the tab strip renders only from the chat page. Accepted in
+  [ADR-0006](adr/0006-in-context-background-stream-surfacing.md).
 
 ### Added — API keys as a first-class authentication method, with per-key scopes (#439)
 

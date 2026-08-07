@@ -24,10 +24,6 @@ data stays in the house and never leaves in clear text. Every answer is checked
 before it ships. Every action carries a receipt. Bring your own LLM key and switch
 providers by config, not code.
 
-#### 🎬 The 2-minute pitch
-
-https://github.com/user-attachments/assets/644f9dae-c8a9-44af-a47f-183d2fcdcf34
-
 ---
 
 ## Prerequisites
@@ -80,6 +76,10 @@ docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
 > **Pull fails with `manifest unknown`?** The GHCR images publish on each
 > release, so a brand-new checkout can briefly predate the first published
 > image. Build from source with the `--build` line above until a release lands.
+
+## 🎬 The 2-minute pitch
+
+https://github.com/user-attachments/assets/644f9dae-c8a9-44af-a47f-183d2fcdcf34
 
 ## 🚀 First run: from prompt to audit receipt
 

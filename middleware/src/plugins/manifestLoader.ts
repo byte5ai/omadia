@@ -23,6 +23,7 @@ import type {
   PluginSetupField,
   ServiceTypeDecl,
 } from '../api/admin-v1.js';
+import { compileSetupPattern } from './setupFieldPattern.js';
 
 /**
  * Loads plugin manifests from a single source:
@@ -225,6 +226,32 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     const label = asString(f['label']) ?? key;
     if (!isSetupFieldType(type)) continue;
     const entry: PluginSetupField = { key, label, type };
+    // OM-16 — required-by-default. MUST stay byte-for-byte the same rule as
+    // installService.ts's install-schema projection (`f['required'] !== false`),
+    // otherwise the store's "configuration required" view and the install
+    // wizard's validation silently disagree. A shared-fixture test asserts the
+    // two paths agree (test/manifestLoaderSetupFields.test.ts).
+    entry.required = f['required'] !== false;
+    // OM-17 — compile the pattern at LOAD time, not at request time. A manifest
+    // is untrusted input: an uncompilable or catastrophically-backtracking
+    // pattern is dropped here with a warning (never a throw, never a 500), so a
+    // bad manifest degrades to "field has no pattern" instead of breaking the
+    // catalog or the vault write. `compileSetupPattern` caches, so the request
+    // path pays nothing.
+    const pattern = asString(f['pattern']);
+    if (pattern) {
+      if (compileSetupPattern(pattern, `${id}/${key}`)) {
+        entry.pattern = pattern;
+        const patternHint = asLocalizedGuide(f['pattern_hint']);
+        if (patternHint) entry.pattern_hint = patternHint;
+      } else {
+        // OM-17 / F2 — fail-open for the WRITE (bricking a plugin because its
+        // author wrote an over-clever regex is worse), but never fail SILENT.
+        // This flag is what the setup form and the credentials editor render as
+        // "this field declares a format check that could not be applied".
+        entry.pattern_unavailable = true;
+      }
+    }
     const help = asString(f['help']);
     if (help) entry.help = help;
     const placeholder = asString(f['placeholder']);

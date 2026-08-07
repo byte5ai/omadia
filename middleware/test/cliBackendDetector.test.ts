@@ -47,6 +47,29 @@ describe('cliBackendDetector', () => {
     }
   });
 
+  // OM-22 — "Erneut prüfen" appeared to do nothing. The report blamed a missing
+  // spinner, but a busy state already existed and simply finishes in under
+  // 100 ms on a local `--version` probe. The real defect: `generatedAt` was
+  // already on the wire and had ZERO render sites, so a re-check whose result
+  // was unchanged produced no observable change at all. It must therefore be
+  // present on every snapshot — including one where nothing is installed, which
+  // is exactly the case a self-hoster hits first.
+  it('an installed:false snapshot still carries generatedAt', async () => {
+    const before = Date.now();
+    const snap = await detectCliBackends({ force: true });
+    const after = Date.now();
+
+    assert.equal(typeof snap.generatedAt, 'number');
+    assert.ok(snap.generatedAt >= before && snap.generatedAt <= after);
+
+    // The assertion is about the snapshot, not about this machine's tooling —
+    // assert the invariant for whichever backends happen to be absent here.
+    for (const b of snap.backends.filter((x) => !x.installed)) {
+      assert.equal(b.loggedIn, 'no');
+      assert.ok(snap.generatedAt > 0, `generatedAt missing while ${b.id} is absent`);
+    }
+  });
+
   it('caches within the TTL and re-detects on force', async () => {
     const first = await detectCliBackends({ force: true });
     const cached = await detectCliBackends();

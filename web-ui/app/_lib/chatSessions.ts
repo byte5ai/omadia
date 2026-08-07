@@ -818,8 +818,11 @@ export interface UseChatSessionsResult {
   renameSession(id: string, title: string): Promise<void>;
   setActive(id: string): void;
   clearMessages(id: string): Promise<void>;
-  mutateActive(mutator: (session: ChatSession) => ChatSession): void;
-  persistActive(): Promise<void>;
+  mutateById(
+    sessionId: string,
+    mutator: (session: ChatSession) => ChatSession,
+  ): void;
+  persistById(sessionId: string): void;
 }
 
 /**
@@ -1076,42 +1079,58 @@ export function useChatSessions(): UseChatSessionsResult {
     [],
   );
 
-  const mutateActive = useCallback(
-    (mutator: (session: ChatSession) => ChatSession): void => {
+  // #617 — mutation is addressed by session id, never by "whatever is active".
+  // A background turn (the user switched chat tabs while it was streaming)
+  // must fold its events into its OWN session. Note the empty dep array: the
+  // callback closes over nothing, so its identity is stable for the lifetime
+  // of the hook and a long-running stream closure can never go stale.
+  const mutateById = useCallback(
+    (
+      sessionId: string,
+      mutator: (session: ChatSession) => ChatSession,
+    ): void => {
       setSessions((prev) =>
-        prev.map((s) => (s.id === activeId ? mutator(s) : s)),
+        prev.map((s) => (s.id === sessionId ? mutator(s) : s)),
       );
     },
-    [activeId],
+    [],
   );
 
-  // Refs kept in sync with state so persistActive reads the latest snapshot
-  // without forcing callers to resubscribe on every message delta. Declared —
-  // and synced — *before* persistActive so the React-Compiler `immutability`
-  // rule sees the `.current` writes happen before the useCallback closes over
-  // the refs. Initialised with throwaway literals (identical to the `useState`
-  // initial values); the effects below own the actual sync.
-  const sessionsRef = useRef<ChatSession[]>([]);
-  const activeIdRef = useRef<string>('');
-  useEffect(() => {
-    sessionsRef.current = sessions;
-  }, [sessions]);
-  useEffect(() => {
-    activeIdRef.current = activeId;
-  }, [activeId]);
+  // #617 — commit-ordered persistence. A background turn is followed by no
+  // corrective user turn in its session, so the PUT it fires from the stream
+  // runner's `finally` is the FINAL persisted state; reading the snapshot from
+  // an effect-synced ref would write state that predates the `done` fold.
+  // Instead `persistById` only enqueues, and the effect below drains the queue
+  // against the `sessions` value from render scope — i.e. state that has
+  // already committed. Deliberately NOT resolved inside a `setSessions`
+  // updater: that is a side effect in a function React may double-invoke, and
+  // it conflicts with the React-Compiler `immutability` rule.
+  const persistQueueRef = useRef<Set<string>>(new Set());
+  const [persistTick, setPersistTick] = useState(0);
 
-  const persistActive = useCallback(async (): Promise<void> => {
-    const snapshot = sessionsRef.current.find((s) => s.id === activeIdRef.current);
-    if (!snapshot) return;
-    try {
-      await putRemoteSession(snapshot);
-    } catch (err) {
-      console.warn(
-        '[chat-sessions] persistActive failed:',
-        err instanceof Error ? err.message : err,
-      );
-    }
+  const persistById = useCallback((sessionId: string): void => {
+    persistQueueRef.current.add(sessionId);
+    setPersistTick((n) => n + 1);
   }, []);
+
+  useEffect(() => {
+    if (persistQueueRef.current.size === 0) return;
+    const queued = [...persistQueueRef.current];
+    persistQueueRef.current.clear();
+    for (const id of queued) {
+      const snapshot = sessions.find((s) => s.id === id);
+      // Deleted or cleared while the turn was still in flight. Dropping the
+      // PUT is what keeps a late background turn from resurrecting a session
+      // the user already threw away.
+      if (!snapshot) continue;
+      putRemoteSession(snapshot).catch((err: unknown) => {
+        console.warn(
+          '[chat-sessions] persistById failed:',
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }
+  }, [persistTick, sessions]);
 
   // Always return *some* active session so the caller doesn't have to guard.
   // Build an ephemeral empty one during the brief hydrating window.
@@ -1130,7 +1149,7 @@ export function useChatSessions(): UseChatSessionsResult {
     renameSession,
     setActive: setActiveId,
     clearMessages,
-    mutateActive,
-    persistActive,
+    mutateById,
+    persistById,
   };
 }
