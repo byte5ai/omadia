@@ -7,6 +7,7 @@ import {
   describeDeferredPrivacyPosture,
   longRunningToolNames,
   runTaskReaperOnce,
+  runWithDispatchCaller,
   type LongRunningToolHandle,
   type TaskOutcomeLostRecord,
 } from '@omadia/orchestrator';
@@ -161,6 +162,64 @@ describe('tasks/defineLongRunningTool — non-blocking', () => {
       await reg(handle, 'status').handler({ taskId: 'ghost' }),
       /^Error: task "ghost" was not found/,
     );
+  });
+
+  // The pre-existing "lists only its own kind" case below seeds someone else's
+  // task under a DIFFERENT kind, so it cannot see the leak that matters: two
+  // callers of the SAME tool. `_list` filtered on `kind` alone and `_status`
+  // accepted any task id, so Bob could enumerate Alice's tasks — terminal ones
+  // included, which carry `result` and `error` — and then poll each id for its
+  // full output.
+  it('does not list another caller tasks of the same kind', async () => {
+    const store = new InMemoryTaskStore();
+    const { handle } = buildTool(async () => 'x', store);
+
+    await runWithDispatchCaller({ principal: 'alice', scopes: [], requestId: 'r1' }, async () => {
+      await reg(handle, 'start').handler({ question: 'alice-secret' });
+    });
+    await handle.drainForTest();
+
+    const bobSees = await runWithDispatchCaller(
+      { principal: 'bob', scopes: [], requestId: 'r2' },
+      async () => JSON.parse(await reg(handle, 'list').handler({})) as unknown[],
+    );
+    assert.deepEqual(bobSees, [], "Bob listed Alice's task");
+
+    const aliceSees = await runWithDispatchCaller(
+      { principal: 'alice', scopes: [], requestId: 'r3' },
+      async () => JSON.parse(await reg(handle, 'list').handler({})) as unknown[],
+    );
+    // Guard rail: scoping must not have been achieved by listing nothing at all.
+    assert.equal(aliceSees.length, 1, 'Alice can no longer see her own task');
+  });
+
+  it('does not let another caller poll a task by id', async () => {
+    const store = new InMemoryTaskStore();
+    const { handle } = buildTool(async () => 'alice-result', store);
+
+    const started = await runWithDispatchCaller(
+      { principal: 'alice', scopes: [], requestId: 'r1' },
+      async () =>
+        JSON.parse(await reg(handle, 'start').handler({ question: 'q' })) as {
+          taskId: string;
+        },
+    );
+    await handle.drainForTest();
+
+    const bob = await runWithDispatchCaller(
+      { principal: 'bob', scopes: [], requestId: 'r2' },
+      async () => reg(handle, 'status').handler({ taskId: started.taskId }),
+    );
+    // Same wording as a genuinely unknown id: distinguishing them would make
+    // this an existence oracle over other callers' task ids.
+    assert.match(bob, /^Error: task ".*" was not found/, "Bob polled Alice's task");
+    assert.doesNotMatch(bob, /alice-result/, "Bob received Alice's result");
+
+    const alice = await runWithDispatchCaller(
+      { principal: 'alice', scopes: [], requestId: 'r3' },
+      async () => reg(handle, 'status').handler({ taskId: started.taskId }),
+    );
+    assert.match(alice, /alice-result/, 'Alice can no longer poll her own task');
   });
 
   it('lists only its own kind', async () => {

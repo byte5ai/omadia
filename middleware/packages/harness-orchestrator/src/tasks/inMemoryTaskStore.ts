@@ -122,6 +122,7 @@ export class InMemoryTaskStore implements TaskStore {
       lastHeartbeatAt: null,
       result: null,
       error: null,
+      createdBy: input.createdBy ?? null,
     };
     this.rows.set(descriptor.id, {
       descriptor,

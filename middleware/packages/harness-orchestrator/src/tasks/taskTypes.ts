@@ -119,6 +119,16 @@ export interface TaskDescriptor {
   readonly result: string | null;
   /** Populated on `failed`. */
   readonly error: string | null;
+  /**
+   * Who asked for this task, or `null` when the implementor tracks no owner.
+   *
+   * Exposed on the descriptor — not only accepted on `create` and filterable on
+   * `list` — because a READ has to be able to check it. `_status` takes a task
+   * id and nothing else, so without this the only options are "trust the id" or
+   * "re-list and hope the task is inside the page limit". A caller must never be
+   * able to poll a task it did not start.
+   */
+  readonly createdBy: string | null;
 }
 
 /** One line of a task's event tail. `seq` is monotonic per task. */

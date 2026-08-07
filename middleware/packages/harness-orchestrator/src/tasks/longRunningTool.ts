@@ -52,6 +52,42 @@ import {
   type TaskStore,
   type TerminalTaskPatch,
 } from './taskTypes.js';
+import { currentDispatchCaller } from '../toolCallerContext.js';
+import { turnContext } from '../turnContext.js';
+
+/**
+ * Owner recorded when nothing identifies the caller.
+ *
+ * A literal, not `undefined`: `TaskListFilter.createdBy` is optional, so an
+ * absent owner would DROP the filter and list every caller's tasks — the exact
+ * leak this scoping closes, reintroduced by the one path that has no identity.
+ * Grouping all unidentified callers together is the honest floor, not a
+ * guarantee; a deployment that wants real isolation on those paths has to give
+ * them an identity.
+ */
+const UNIDENTIFIED_OWNER = 'unidentified';
+
+/**
+ * Who is asking, for `createdBy`.
+ *
+ * `currentDispatchCaller()` is set on the public MCP path (the API-key id);
+ * `turnContext` carries the per-user MCP key on chat and channel turns. Both are
+ * server-attested — neither is derived from anything a client sends — so neither
+ * can be spoofed into reading someone else's task.
+ */
+function currentTaskOwner(): string {
+  return (
+    currentDispatchCaller()?.principal ??
+    turnContext.current()?.mcpUserKey ??
+    UNIDENTIFIED_OWNER
+  );
+}
+
+/** A task with no recorded owner belongs to an implementor that scopes no reads
+ *  (dev_job); anything else must match the caller exactly. */
+function ownsTask(descriptor: TaskDescriptor): boolean {
+  return descriptor.createdBy === null || descriptor.createdBy === currentTaskOwner();
+}
 
 // ---------------------------------------------------------------------------
 // Registration shape. Structurally identical to the hand-rolled
@@ -487,7 +523,11 @@ export function defineLongRunningTool(
       return `Error: ${refusal}`;
     }
     try {
-      const descriptor = await def.store.create({ kind: def.kind, input: raw });
+      const descriptor = await def.store.create({
+        kind: def.kind,
+        input: raw,
+        createdBy: currentTaskOwner(),
+      });
       // Card = non-sensitive metadata ONLY. See describeDeferredPrivacyPosture.
       pendingCards.push({
         taskId: descriptor.id,
@@ -521,7 +561,12 @@ export function defineLongRunningTool(
     }
     try {
       const descriptor = await def.store.get(taskId);
-      if (!descriptor) {
+      // Identical message for "no such task" and "not yours". Distinguishing
+      // them turns this handler into an existence oracle over other callers'
+      // task ids, which is the same disclosure the ownership check exists to
+      // prevent. A store that tracks no owner (`createdBy: null`) is unscoped
+      // by design — see `toTaskDescriptor` in devJobTaskStore.
+      if (!descriptor || !ownsTask(descriptor)) {
         return `Error: task "${taskId}" was not found or is no longer retained.`;
       }
       const events = await def.store.eventTail(taskId, STATUS_EVENT_TAIL);
@@ -546,6 +591,11 @@ export function defineLongRunningTool(
     try {
       const tasks = await def.store.list({
         kind: def.kind,
+        // Scoped to the caller. Filtering on `kind` alone listed every caller's
+        // tasks of this kind — including terminal ones, which carry `result`
+        // and `error` — so one user could enumerate another's work and then
+        // poll each id for its full output.
+        createdBy: currentTaskOwner(),
         ...(statusRaw !== undefined
           ? { status: statusRaw as TaskLifecycleStatus }
           : {}),

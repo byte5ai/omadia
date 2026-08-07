@@ -112,6 +112,11 @@ export function toTaskDescriptor(job: DevJob): TaskDescriptor {
     lastHeartbeatAt: job.lastHeartbeatAt,
     result: job.result ? JSON.stringify(job.result) : null,
     error: job.error,
+    // dev_job tracks no per-caller owner: its tasks are operator-initiated
+    // through an already-authenticated admin surface, not started by arbitrary
+    // tool callers. `null` means "this implementor scopes no reads", which the
+    // tool layer treats as unowned rather than as owned-by-nobody.
+    createdBy: null,
   };
 }
 
