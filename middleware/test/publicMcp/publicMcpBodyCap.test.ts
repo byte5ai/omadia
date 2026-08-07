@@ -119,6 +119,27 @@ describe('public MCP body cap', () => {
     assert.equal(out.status, undefined);
   });
 
+  // JSON is mostly insignificant whitespace, so the re-serialized length is not
+  // the wire length. A chunked body of megabytes of spaces around `{}` declares
+  // no Content-Length and re-serializes to two bytes — it passed both other
+  // checks while costing the full transfer to receive and parse. The global
+  // parser's `verify` hook records what actually arrived; this gate now uses it.
+  it('413s on a body that was huge on the wire but re-serializes small', () => {
+    const out = run({
+      body: { a: 1 },
+      rawBodyBytes: MAX_REQUEST_BYTES + 1,
+    } as Partial<Request>);
+    assert.equal(out.nextCalled, false, 'whitespace padding slipped past the cap');
+    assert.equal(out.status, 413);
+  });
+
+  it('passes a body whose recorded wire size is under the cap', () => {
+    // Guard rail: the new check must not reject ordinary traffic, which would
+    // make the case above vacuous.
+    const out = run({ body: { a: 1 }, rawBodyBytes: 128 } as Partial<Request>);
+    assert.equal(out.nextCalled, true);
+  });
+
   it('413s on a declared Content-Length over the cap', () => {
     const out = run({
       headers: { 'content-length': String(MAX_REQUEST_BYTES + 1) },

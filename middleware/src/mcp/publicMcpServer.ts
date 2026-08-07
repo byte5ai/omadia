@@ -66,6 +66,7 @@ import type {
   ToolDispatchResult,
 } from '@omadia/orchestrator';
 
+import { rawBodyBytes } from '../http/rawBodySize.js';
 import type { PublicMcpKeyBinding, PublicMcpKeyBindingStore } from './publicMcpKeyBindings.js';
 import {
   createFailClosedPrivacyGate,
@@ -285,9 +286,20 @@ export class PublicMcpServer {
     return (req: Request, res: Response, next): void => {
       const declared = Number(req.headers['content-length']);
       const declaredTooLarge = Number.isFinite(declared) && declared > MAX_REQUEST_BYTES;
+      // What actually arrived on the wire, recorded by the global parser's
+      // `verify` hook. Preferred over the re-serialized length because JSON is
+      // mostly insignificant whitespace: a chunked body of 9 MB of spaces around
+      // `{}` declares no `Content-Length`, re-serializes to two bytes, and so
+      // passed both of the other two checks while costing the full 9 MB to
+      // receive and parse.
+      const received = rawBodyBytes(req);
+      const receivedTooLarge = received !== undefined && received > MAX_REQUEST_BYTES;
+      // Kept as the fallback for a request that never met a `verify`-wired
+      // parser (a raw-body route, a hand-built test request). Weaker, but a
+      // weaker check is better than none where the real figure is unknown.
       const actualTooLarge =
         req.body !== undefined && Buffer.byteLength(JSON.stringify(req.body) ?? '', 'utf8') > MAX_REQUEST_BYTES;
-      if (declaredTooLarge || actualTooLarge) {
+      if (declaredTooLarge || receivedTooLarge || actualTooLarge) {
         res.status(413).json({
           jsonrpc: '2.0',
           error: { code: 413, message: 'Payload Too Large' },

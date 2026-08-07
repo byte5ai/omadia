@@ -162,6 +162,7 @@ import {
   type MdnsAdvertisement,
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
+import { recordRawBodyBytes } from './http/rawBodySize.js';
 import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp.js';
 // W5-1 — the WRITE half of `public_mcp_key_bindings`. Imported for the
 // OPERATOR router only. `mountPublicMcp` above must never be handed this: the
@@ -2315,7 +2316,7 @@ async function main(): Promise<void> {
       next();
       return;
     }
-    express.json({ limit: '10mb' })(req, res, next);
+    express.json({ limit: '10mb', verify: recordRawBodyBytes })(req, res, next);
   });
   // Issue #437 — Conductor's generic inbound webhook route. Mounted unconditionally
   // (mirrors the forward-reference pattern, not the `if (graphPool)` gate above): on
@@ -2326,7 +2327,11 @@ async function main(): Promise<void> {
   app.use(createConductorWebhooksInboundRouter(() => conductorWebhookInboundDepsRef));
   console.log('[middleware] conductor webhook inbound router mounted at /api/hooks/:endpointId (raw-body, before express.json)');
 
-  app.use(express.json({ limit: '10mb' }));
+  // `verify` records the RAW byte count (see `http/rawBodySize.ts`). Route-level
+  // size gates downstream can only measure `JSON.stringify(req.body)`, which is
+  // a different number: 9 MB of insignificant whitespace re-serialises to a
+  // handful of bytes and walks through a cap written against it.
+  app.use(express.json({ limit: '10mb', verify: recordRawBodyBytes }));
   app.use(cookieParser());
 
   app.get('/health', (_req, res) => {

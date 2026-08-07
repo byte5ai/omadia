@@ -235,9 +235,14 @@ echo "── W4: the masking boundary must be CROSSED, not merely un-failed ─�
 # endpoint gates on the positive `masked()` signal. These three mutations cover
 # the assertion itself and both halves of its `origin` exception.
 run_mutation "the endpoint stops requiring that masking actually RAN" "$SERVER" \
-  "if (gate !== undefined && result.origin !== 'dispatcher' && !gate.masked()) {|||if (false) {"
+  "        !gate.masked()|||        false"
 run_mutation "an origin-less result is exempted from the masking assertion" "$SERVER" \
-  "gate !== undefined && result.origin !== 'dispatcher' && !gate.masked()|||gate !== undefined && result.origin === 'tool' && !gate.masked()"
+  "        result.origin !== 'dispatcher' &&|||        result.origin === 'tool' &&"
+# The replay exemption is the newest hole in this assertion, so it gets its own
+# mutation: dropping it (every result treated as non-replay) must make the
+# idempotent-retry case fail, or the exemption is load-bearing but untested.
+run_mutation "the idempotency-replay exemption is removed" "$SERVER" \
+  "        result.replayed !== true &&|||        true &&"
 run_mutation "the gate stops recording that masking ran" "$PRIVACY" \
   'didMask = true;|||'
 
