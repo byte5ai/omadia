@@ -187,6 +187,7 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
         <ul className="grid gap-2">
           {runs.map((r) => (
             <li key={r.id}>
+              {/* eslint-disable-next-line no-restricted-syntax -- full-width run-list row selector opening a trace, not a §4.2 CTA */}
               <button
                 className="flex w-full items-center justify-between gap-3 rounded-md border border-[color:var(--border)] px-3 py-2 text-left hover:bg-white/5"
                 onClick={() => void openRun(r.id)}

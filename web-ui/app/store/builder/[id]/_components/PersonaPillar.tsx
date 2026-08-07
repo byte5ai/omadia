@@ -316,6 +316,7 @@ export function PersonaPillar({
 
       {/* Extended axes — collapsible */}
       <div className="space-y-3" data-testid="persona-extended-axes">
+        {/* eslint-disable-next-line no-restricted-syntax -- collapsible section disclosure toggle (aria-expanded/aria-controls + chevron), not a §4.2 CTA */}
         <button
           type="button"
           onClick={() => setExtendedOpen((v) => !v)}

@@ -66,6 +66,7 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
     <>
       <tr className="border-t border-[color:var(--border)] align-top">
         <td className="px-4 py-3">
+          {/* eslint-disable-next-line no-restricted-syntax -- chevron row-details expand/collapse toggle (aria-expanded), not a §4.2 CTA */}
           <button
             type="button"
             onClick={handleDetailsToggle}
@@ -156,6 +157,7 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
                   {routine.lastRunError}
                 </div>
               ) : null}
+              {/* eslint-disable-next-line no-restricted-syntax -- chevron run-history expand/collapse toggle (aria-expanded), not a §4.2 CTA */}
               <button
                 type="button"
                 onClick={handleToggle}

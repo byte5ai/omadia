@@ -127,6 +127,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
               maxLength={200}
               className="w-full rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 font-display text-[20px] leading-tight text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
             />
+            {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (Check icon, p-2, no text) */}
             <button
               type="submit"
               aria-label={t('save')}
@@ -135,6 +136,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
             >
               <Check className="size-4" aria-hidden />
             </button>
+            {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (X icon, p-2, no text) */}
             <button
               type="button"
               aria-label={t('cancel')}
@@ -154,6 +156,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
               {draft.name}
             </h3>
             {!deleted && (
+              // eslint-disable-next-line no-restricted-syntax -- icon-only chrome (Pencil icon, p-1, no text)
               <button
                 type="button"
                 aria-label={t('rename')}
@@ -224,6 +227,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
               {t('workspace')}
               <ArrowRight className="size-3.5" aria-hidden />
             </Link>
+            {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (Trash2 icon, p-2, no text) */}
             <button
               type="button"
               onClick={onDelete}

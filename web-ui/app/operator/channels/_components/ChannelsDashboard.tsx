@@ -158,6 +158,7 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
                   </select>
                 </label>
                 {c.stale && (
+                  // eslint-disable-next-line no-restricted-syntax -- warning-outline clear-stale-binding action (§10 no warning variant)
                   <button
                     type="button"
                     className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"

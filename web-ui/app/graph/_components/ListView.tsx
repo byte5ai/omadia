@@ -89,6 +89,7 @@ function TurnCard({
       {entities.length > 0 ? (
         <div className="flex flex-wrap gap-1">
           {entities.map((e) => (
+            // eslint-disable-next-line no-restricted-syntax -- bespoke entity pill (per-type accent/success ring), no §4.2 variant
             <button
               key={e.id}
               type="button"
@@ -247,6 +248,7 @@ function ToolCallRow({
         <span className="flex flex-wrap items-center gap-1">
           <span className="text-[color:var(--fg-subtle)]">↳</span>
           {tc.producedEntities.map((e) => (
+            // eslint-disable-next-line no-restricted-syntax -- bespoke success-tinted entity pill, no §4.2 variant
             <button
               key={e.id}
               type="button"

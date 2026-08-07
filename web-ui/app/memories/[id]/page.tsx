@@ -655,6 +655,7 @@ export default function MemoryDetailPage(): React.ReactElement {
               <h2 className="text-xs font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
                 {t('detail.auditHeading')}
               </h2>
+              {/* eslint-disable-next-line no-restricted-syntax -- inline hover-underline text link (no fill/border/padding), not a CTA */}
               <button
                 type="button"
                 onClick={() => void loadAudit()}

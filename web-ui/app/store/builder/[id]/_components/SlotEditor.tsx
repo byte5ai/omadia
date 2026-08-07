@@ -544,6 +544,7 @@ function TemplateSlotsPanel({
                 ) : null}
               </div>
               {!filled && onPrefillBuilderChat ? (
+                // eslint-disable-next-line no-restricted-syntax -- bespoke accent pill chip (uppercase accent-tint, icon + text + arrow), no §4.2 variant
                 <button
                   type="button"
                   onClick={(e) => {
