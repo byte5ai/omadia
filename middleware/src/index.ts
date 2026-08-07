@@ -162,7 +162,7 @@ import {
   type MdnsAdvertisement,
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
-import { mountPublicMcp } from './mcp/wirePublicMcp.js';
+import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp.js';
 // W5-1 — the WRITE half of `public_mcp_key_bindings`. Imported for the
 // OPERATOR router only. `mountPublicMcp` above must never be handed this: the
 // internet-facing endpoint gets `createPublicMcpKeyBindingStore` (read-only)
@@ -2756,6 +2756,52 @@ async function main(): Promise<void> {
       // Explicit gate on those routes, independent of the `requireAuth` that
       // sits in front of this mount.
       operatorAuth,
+      // #571 — resolve the two ids a binding points at, so a one-character typo
+      // is a 400 (agent) or a warning (key) rather than a
+      // fully-configured-looking row that reaches zero tools forever. Both
+      // sources are read LIVE and from the SAME places a real request resolves
+      // against: `configStore` for registered agent slugs, and the verify-only
+      // API-key store the public MCP endpoint itself authenticates through
+      // (`createVerifyOnlyApiKeyStore` over the shared vault namespace). A read
+      // that throws or finds no source returns `undefined` — "cannot tell",
+      // which the router never treats as "unknown".
+      publicMcpBindingExistence: {
+        async knownAgentIds() {
+          // Keyed on SLUG, not the agent uuid: `agent_id` stores the
+          // orchestrator slug (migration `0033`, and the UI's agent picker sends
+          // `option.value = slug`). A caller that sends a uuid is correctly
+          // rejected — it is not a valid `agent_id`.
+          const configStore =
+            serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+          if (!configStore) return undefined;
+          try {
+            return new Set((await configStore.listAgents()).map((a) => a.slug));
+          } catch (err) {
+            console.warn(
+              `[middleware] public-mcp binding agent lister unavailable: ${String(err)}`,
+            );
+            return undefined;
+          }
+        },
+        async knownKeyIds() {
+          try {
+            // O(keys) per call — enumerates the channel-api vault namespace and
+            // parses each record. Fine at operator scale (one read per list-page
+            // load, one per save); revisit with a cache if an install ever holds
+            // thousands of keys. The store is a thin read-only adapter, cheap to
+            // rebuild, but pinned here so the cost is one construction per call
+            // rather than hidden in a closure.
+            const keyStore = createVerifyOnlyApiKeyStore(secretVault);
+            const keys = await keyStore.list();
+            return new Set(keys.map((k) => k.id));
+          } catch (err) {
+            console.warn(
+              `[middleware] public-mcp binding key lister unavailable: ${String(err)}`,
+            );
+            return undefined;
+          }
+        },
+      },
     }),
   );
   console.log(

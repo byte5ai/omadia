@@ -2868,7 +2868,11 @@
       "restoreHint": "Saving this binding again edits its tools but leaves it revoked. Restoring is the only way to make the key work again.",
       "restoreTitle": "Restore this binding?",
       "restoreBody": "The key {keyId} immediately regains everything on this row: {tools}.",
-      "restoreConfirm": "Restore"
+      "restoreConfirm": "Restore",
+      "warnings": {
+        "keyUnknown": "No API key with this id exists yet. The binding was saved, but it reaches nothing until such a key is created — double-check the id for a typo.",
+        "agentUnknown": "This binding names an agent that is no longer registered, so it reaches nothing. Rebind it to an existing agent."
+      }
     },
     "plugins": {
       "intro": "Plugins that declare MCP access in their manifest. Grant each the specific servers it may reach — nothing is ambient. Per-tool safety still applies: an unscanned or high-risk tool is refused at call time.",

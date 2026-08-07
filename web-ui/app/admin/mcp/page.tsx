@@ -52,6 +52,7 @@ import {
   type McpServerNode,
   type McpTransport,
   type PublicMcpKeyBinding,
+  type PublicMcpKeyBindingWarning,
   type SkillVerdictSeverity,
 } from '../../_lib/agentBuilder';
 
@@ -1814,6 +1815,10 @@ function BindingsPane(): React.ReactElement {
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<PublicMcpKeyBinding | null>(null);
   const [confirmRestore, setConfirmRestore] = useState<PublicMcpKeyBinding | null>(null);
+  // #571 — warnings the server returned for the row we just saved. A save
+  // succeeds even when the key/agent does not resolve, so this is the operator's
+  // immediate signal that the row they just created reaches nothing.
+  const [savedWarnings, setSavedWarnings] = useState<PublicMcpKeyBindingWarning[]>([]);
 
   const [keyId, setKeyId] = useState('');
   const [agentId, setAgentId] = useState('');
@@ -1842,14 +1847,19 @@ function BindingsPane(): React.ReactElement {
   async function save(): Promise<void> {
     setBusy('save');
     setError(null);
+    setSavedWarnings([]);
     try {
-      await upsertPublicMcpKeyBinding({
+      const { binding } = await upsertPublicMcpKeyBinding({
         keyId: keyId.trim(),
         agentId: agentId.trim(),
         readTools: parseToolList(readTools),
         writeTools: parseToolList(writeTools),
         writeRateLimitPerMinute: Number(writeRate),
       });
+      // A typo'd key still saves (warning, not rejection) — surface it now so it
+      // is not mistaken for a working binding. A typo'd agent never reaches here:
+      // the server 400s and we land in `catch` above.
+      setSavedWarnings(binding.warnings ?? []);
       setKeyId('');
       setReadTools('');
       setWriteTools('');
@@ -1898,13 +1908,36 @@ function BindingsPane(): React.ReactElement {
 
   const inputCls =
     'rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]';
+  // Deliberately still just non-empty — existence is NOT re-checked here (#571).
+  // The agent field is a constrained dropdown whenever the orchestrator list
+  // loaded, so a typo is impossible on that path; when the list is unavailable
+  // the field falls back to free text and there is nothing to validate against.
+  // The key has no client-side lister at all. So the authoritative existence
+  // check lives on the server (agent → 400, key → warning); mirroring a weaker
+  // copy of it here would only drift.
   const canSave = keyId.trim().length > 0 && agentId.trim().length > 0;
+
+  // Rendered from the stable `code`, never the server's English `message`, so
+  // the note follows the operator's locale. See `PublicMcpKeyBindingWarning`.
+  const warningText = (code: PublicMcpKeyBindingWarning['code']): string =>
+    code === 'key_id_unknown'
+      ? t('bindings.warnings.keyUnknown')
+      : t('bindings.warnings.agentUnknown');
 
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-[color:var(--fg-muted)]">{t('bindings.intro')}</p>
       <p className="text-xs text-[color:var(--fg-muted)]">{t('bindings.keyIdHint')}</p>
       {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
+      {savedWarnings.length > 0 ? (
+        <div className="flex flex-col gap-0.5 rounded-md border border-[color:var(--warning)] bg-[color:var(--warning)]/[0.06] px-3 py-2">
+          {savedWarnings.map((w) => (
+            <span key={w.code} className="text-xs text-[color:var(--warning)]">
+              {warningText(w.code)}
+            </span>
+          ))}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-end gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
         <label className="flex flex-col gap-1 text-xs">
@@ -2011,6 +2044,15 @@ function BindingsPane(): React.ReactElement {
               {b.enabled ? t('bindings.enabled') : t('bindings.parked')}
             </span>
           </div>
+          {b.warnings && b.warnings.length > 0 ? (
+            <div className="flex flex-col gap-0.5 rounded-md border border-[color:var(--warning)] bg-[color:var(--warning)]/[0.06] px-2 py-1">
+              {b.warnings.map((w) => (
+                <span key={w.code} className="text-[11px] text-[color:var(--warning)]">
+                  {warningText(w.code)}
+                </span>
+              ))}
+            </div>
+          ) : null}
           <div className="text-xs text-[color:var(--fg-muted)]">
             {t('bindings.readToolsLabel')}:{' '}
             {b.readTools.length > 0 ? b.readTools.join(', ') : t('bindings.none')}

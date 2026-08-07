@@ -84,6 +84,7 @@ import {
 } from '../services/skillVerdictLlmVerifier.js';
 import {
   createPublicMcpBindingsRouter,
+  type BindingExistenceCheck,
   type OperatorSessionCheck,
 } from './publicMcpBindingsRouter.js';
 import type { PublicMcpKeyBindingAdminStore } from '../mcp/publicMcpKeyBindingsAdmin.js';
@@ -167,6 +168,12 @@ export interface AgentBuilderRouterOptions {
    *  to serve at all, rather than relying on the `requireAuth` that happens to
    *  sit in front of this router's mount. */
   readonly operatorAuth?: OperatorSessionCheck;
+  /** #571 — resolves whether a binding's `agent_id` / `key_id` actually exist,
+   *  so a typo is a 400 (agent) or a warning (key) instead of a
+   *  fully-configured-looking dead row. Forwarded verbatim to the binding
+   *  router; absent ⇒ existence is never checked. Built in `index.ts`, the one
+   *  place with both the registry and the API-key vault in scope. */
+  readonly publicMcpBindingExistence?: BindingExistenceCheck;
 }
 
 interface Live {
@@ -244,6 +251,9 @@ export function createAgentBuilderRouter(
     createPublicMcpBindingsRouter({
       getStore: () => options.getPublicMcpBindingStore?.(),
       ...(options.operatorAuth ? { operatorAuth: options.operatorAuth } : {}),
+      ...(options.publicMcpBindingExistence
+        ? { existence: options.publicMcpBindingExistence }
+        : {}),
     }),
   );
 

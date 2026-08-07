@@ -10,9 +10,13 @@ import {
   createInMemoryPublicMcpKeyBindingAdminStore,
   createPublicMcpKeyBindingAdminStore,
   validateBindingInput,
+  type PublicMcpKeyBindingAdminRow,
   type PublicMcpKeyBindingAdminStore,
 } from '../../src/mcp/publicMcpKeyBindingsAdmin.js';
-import { createPublicMcpBindingsRouter } from '../../src/routes/publicMcpBindingsRouter.js';
+import {
+  createPublicMcpBindingsRouter,
+  type BindingExistenceCheck,
+} from '../../src/routes/publicMcpBindingsRouter.js';
 import { createInMemoryPublicMcpKeyBindingStore } from '../../src/mcp/publicMcpKeyBindings.js';
 
 /**
@@ -54,6 +58,7 @@ function neverValidOperatorAuth(): { hasValidSession(): Promise<boolean> } {
 function mountRouter(opts: {
   store?: PublicMcpKeyBindingAdminStore | undefined;
   operatorAuth?: { hasValidSession(cookie: string | undefined): Promise<boolean> };
+  existence?: BindingExistenceCheck;
 }): { server: Server; baseUrl: string } {
   const app = express();
   app.use(express.json());
@@ -62,6 +67,7 @@ function mountRouter(opts: {
     createPublicMcpBindingsRouter({
       getStore: () => opts.store,
       ...(opts.operatorAuth ? { operatorAuth: opts.operatorAuth } : {}),
+      ...(opts.existence ? { existence: opts.existence } : {}),
     }),
   );
   const server = app.listen(0);
@@ -335,6 +341,145 @@ describe('publicMcpBindingsRouter — CRUD (auth stubbed valid)', () => {
         );
       },
     );
+  });
+});
+
+// ── #571: id existence — a typo must not look configured ─────────────────────
+
+/** A stub `BindingExistenceCheck`. `undefined` for either list models the
+ *  "source could not be read" case the router must treat as cannot-tell. */
+function existenceOf(
+  agents: readonly string[] | undefined,
+  keys: readonly string[] | undefined,
+): BindingExistenceCheck {
+  return {
+    async knownAgentIds() {
+      return agents ? new Set(agents) : undefined;
+    },
+    async knownKeyIds() {
+      return keys ? new Set(keys) : undefined;
+    },
+  };
+}
+
+function seededRow(keyId: string, agentId: string): PublicMcpKeyBindingAdminRow {
+  return {
+    keyId,
+    agentId,
+    readTools: [],
+    writeTools: [],
+    writeRateLimitPerMinute: 5,
+    enabled: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+}
+
+describe('publicMcpBindingsRouter — #571 id existence (agent hard-reject, key warning)', () => {
+  const auth = alwaysValidOperatorAuth();
+
+  it('POST with an agent the registry does not know → 400 agent_not_found, and NO row', async () => {
+    const store = createInMemoryPublicMcpKeyBindingAdminStore();
+    await withRouter(
+      { store, operatorAuth: auth, existence: existenceOf(['sales'], ['key-1']) },
+      async (url) => {
+        const res = await postBinding(url, { ...VALID_INPUT, agentId: 'saels' });
+        assert.equal(res.status, 400);
+        assert.equal(((await res.json()) as { code: string }).code, 'agent_not_found');
+        assert.deepEqual(await store.list(), [], "a typo'd agent must not leave a row");
+      },
+    );
+  });
+
+  it('POST with a key the vault does not hold → still created, carrying a key_id_unknown WARNING', async () => {
+    const store = createInMemoryPublicMcpKeyBindingAdminStore();
+    await withRouter(
+      { store, operatorAuth: auth, existence: existenceOf(['sales'], ['some-other-key']) },
+      async (url) => {
+        const res = await postBinding(url, VALID_INPUT); // key-1 is not in the vault set
+        assert.equal(res.status, 201, 'an unknown key is a warning, not a rejection');
+        const { binding } = (await res.json()) as {
+          binding: { keyId: string; warnings?: { code: string }[] };
+        };
+        assert.equal(binding.keyId, 'key-1');
+        assert.deepEqual((binding.warnings ?? []).map((w) => w.code), ['key_id_unknown']);
+        assert.equal((await store.list()).length, 1, 'the row is stored despite the warning');
+      },
+    );
+  });
+
+  it('POST with BOTH ids unknown → the agent reject wins; no row, no key warning reached', async () => {
+    const store = createInMemoryPublicMcpKeyBindingAdminStore();
+    await withRouter(
+      { store, operatorAuth: auth, existence: existenceOf(['sales'], ['key-1']) },
+      async (url) => {
+        const res = await postBinding(url, { keyId: 'ghost', agentId: 'ghost' });
+        assert.equal(res.status, 400);
+        assert.equal(((await res.json()) as { code: string }).code, 'agent_not_found');
+        assert.deepEqual(await store.list(), [], 'a rejected agent must never reach the upsert');
+      },
+    );
+  });
+
+  it('POST with both ids resolvable → 201 and NO warnings field (unchanged happy path)', async () => {
+    const store = createInMemoryPublicMcpKeyBindingAdminStore();
+    await withRouter(
+      { store, operatorAuth: auth, existence: existenceOf(['sales'], ['key-1']) },
+      async (url) => {
+        const res = await postBinding(url, VALID_INPUT);
+        assert.equal(res.status, 201);
+        const { binding } = (await res.json()) as { binding: Record<string, unknown> };
+        assert.equal('warnings' in binding, false, 'a clean row serializes exactly as pre-#571');
+      },
+    );
+  });
+
+  it('GET annotates a pre-existing row whose ids no longer resolve — the core "indistinguishable" fix', async () => {
+    // Seeded directly, as if the rows were created before this shipped (or by
+    // hand in psql): the write path would now reject the agent, but the list
+    // must still flag what is already stored.
+    const store = createInMemoryPublicMcpKeyBindingAdminStore([
+      seededRow('ghost-key', 'ghost-agent'),
+      seededRow('key-1', 'sales'),
+    ]);
+    await withRouter(
+      { store, operatorAuth: auth, existence: existenceOf(['sales'], ['key-1']) },
+      async (url) => {
+        const { bindings } = (await (await fetch(url)).json()) as {
+          bindings: { keyId: string; warnings?: { code: string }[] }[];
+        };
+        const ghost = bindings.find((b) => b.keyId === 'ghost-key');
+        assert.ok(ghost, 'the dead row must still be listed');
+        assert.deepEqual(
+          (ghost.warnings ?? []).map((w) => w.code).sort(),
+          ['agent_id_unknown', 'key_id_unknown'],
+        );
+        const healthy = bindings.find((b) => b.keyId === 'key-1');
+        assert.ok(healthy);
+        assert.equal('warnings' in healthy, false, 'the healthy row is not annotated');
+      },
+    );
+  });
+
+  it('an unreadable source (undefined sets) neither rejects the agent nor invents warnings', async () => {
+    const store = createInMemoryPublicMcpKeyBindingAdminStore();
+    await withRouter(
+      { store, operatorAuth: auth, existence: existenceOf(undefined, undefined) },
+      async (url) => {
+        const res = await postBinding(url, { ...VALID_INPUT, agentId: 'anything' });
+        assert.equal(res.status, 201, 'cannot-tell must never become a rejection');
+        const { binding } = (await res.json()) as { binding: Record<string, unknown> };
+        assert.equal('warnings' in binding, false, 'cannot-tell must not paint a row red');
+      },
+    );
+  });
+
+  it('with no existence wired at all, every id is accepted (pre-#571 behaviour preserved)', async () => {
+    const store = createInMemoryPublicMcpKeyBindingAdminStore();
+    await withRouter({ store, operatorAuth: auth }, async (url) => {
+      const res = await postBinding(url, { ...VALID_INPUT, agentId: 'whatever' });
+      assert.equal(res.status, 201);
+    });
   });
 });
 

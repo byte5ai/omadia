@@ -25,6 +25,7 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 
 import type {
+  PublicMcpKeyBindingAdminRow,
   PublicMcpKeyBindingAdminStore,
   PublicMcpKeyBindingInput,
 } from '../mcp/publicMcpKeyBindingsAdmin.js';
@@ -37,6 +38,53 @@ export interface OperatorSessionCheck {
   hasValidSession(cookieHeader: string | undefined): Promise<boolean>;
 }
 
+/**
+ * Non-fatal note attached to a binding — "this row is configured, but the
+ * `key_id`/`agent_id` it points at does not resolve, so it reaches nothing".
+ *
+ * The whole reason this surface exists (issue #571): a one-character typo in
+ * either id produced a `201 Created`, a row in the list, and a
+ * fully-configured-LOOKING binding that reaches zero tools forever, visually
+ * indistinguishable from a working one. A warning is that missing distinction —
+ * carried on the write response AND on every list row, so a typo made before
+ * this shipped is still flagged the next time an operator opens the pane.
+ */
+export interface BindingWarning {
+  readonly code: 'key_id_unknown' | 'agent_id_unknown';
+  readonly message: string;
+}
+
+/** A list/write result with its non-fatal warnings, if any. `warnings` is
+ *  omitted rather than empty when the row resolves cleanly, so a green binding
+ *  serializes to exactly the pre-#571 shape. */
+export type AnnotatedBinding = PublicMcpKeyBindingAdminRow & {
+  readonly warnings?: readonly BindingWarning[];
+};
+
+/**
+ * Answers "does this id actually resolve" for the two ids a binding points at,
+ * neither of which the database can enforce: `agent_id` names an in-process
+ * registry slug, and `key_id` names a record in the secret vault (see
+ * `migrations/0033_public_mcp_keys.sql` — deliberately NOT foreign keys).
+ *
+ * Both methods return the full known-id SET rather than a per-id predicate so
+ * the list route pays ONE registry read and ONE vault enumeration for the whole
+ * page instead of one per row. A `undefined` return means "the source could not
+ * be read" — an older host with no registry wired, a vault that failed to load —
+ * and is treated as "cannot tell", never as "unknown". The asymmetry between the
+ * two ids is the issue's: an unknown agent is a HARD reject (the registry is
+ * cheap and authoritative in-process), an unknown key is only a WARNING (the key
+ * lister is the interim half — see the router's POST handler).
+ */
+export interface BindingExistenceCheck {
+  /** Slugs of every agent the registry currently knows, or `undefined` when the
+   *  registry cannot be read. */
+  knownAgentIds(): Promise<ReadonlySet<string> | undefined>;
+  /** Ids of every API-key record in the vault, or `undefined` when the vault
+   *  cannot be read. */
+  knownKeyIds(): Promise<ReadonlySet<string> | undefined>;
+}
+
 export interface PublicMcpBindingsRouterOptions {
   /** Absent ⇒ every route 503s. The store needs the graph pool; without it
    *  there is nothing to read or write. */
@@ -44,6 +92,11 @@ export interface PublicMcpBindingsRouterOptions {
   /** Absent ⇒ every route 503s, BEFORE any handler runs. Never a fallback to
    *  "unauthenticated but mounted". */
   readonly operatorAuth?: OperatorSessionCheck;
+  /** Absent ⇒ existence is never checked (an older host, or a test that does not
+   *  exercise it): every id is accepted and no row is annotated, exactly the
+   *  pre-#571 behaviour. Wired, it turns a typo'd `agent_id` into a 400 and a
+   *  typo'd `key_id` into a warning. */
+  readonly existence?: BindingExistenceCheck;
 }
 
 export function createPublicMcpBindingsRouter(
@@ -112,12 +165,58 @@ export function createPublicMcpBindingsRouter(
     return store;
   }
 
+  /** A binding whose `agent_id` names no registered agent — the write path
+   *  rejects this, so it can only reach the list from a row created before
+   *  #571 shipped (or on a host with no registry wired). */
+  function agentUnknownWarning(agentId: string): BindingWarning {
+    return {
+      code: 'agent_id_unknown',
+      message: `no agent "${agentId}" is registered — this binding reaches nothing`,
+    };
+  }
+
+  /** A binding whose `key_id` matches no vault record. Only ever a warning: the
+   *  key lister is the interim half (issue #571), and a key created out of band
+   *  a moment ago must not be rejected by a stale read. */
+  function keyUnknownWarning(): BindingWarning {
+    return {
+      code: 'key_id_unknown',
+      message:
+        'no API key with this id exists — this binding reaches nothing until such a key is created',
+    };
+  }
+
+  /**
+   * Reads both known-id sets ONCE and returns a per-row annotator.
+   *
+   * A row is flagged only when the relevant set is READABLE and does not hold
+   * the id; an unreadable set (`undefined`) flags nothing, so "the vault failed
+   * to load" never masquerades as "every key is dead" and paints a working
+   * install red. With no `existence` wired at all, every row passes through
+   * untouched — the pre-#571 serialization.
+   */
+  async function loadAnnotator(): Promise<
+    (row: PublicMcpKeyBindingAdminRow) => AnnotatedBinding
+  > {
+    const { existence } = options;
+    const [agents, keys] = existence
+      ? await Promise.all([existence.knownAgentIds(), existence.knownKeyIds()])
+      : [undefined, undefined];
+    return (row) => {
+      const warnings: BindingWarning[] = [];
+      if (agents && !agents.has(row.agentId)) warnings.push(agentUnknownWarning(row.agentId));
+      if (keys && !keys.has(row.keyId)) warnings.push(keyUnknownWarning());
+      return warnings.length > 0 ? { ...row, warnings } : row;
+    };
+  }
+
   // ── List ────────────────────────────────────────────────────────────────
   router.get('/', async (_req: Request, res: Response) => {
     const store = storeOr503(res);
     if (!store) return;
     try {
-      res.json({ bindings: await store.list() });
+      const annotate = await loadAnnotator();
+      res.json({ bindings: (await store.list()).map(annotate) });
     } catch (err) {
       fail(res, 'public_mcp_bindings.list_failed', err);
     }
@@ -175,19 +274,58 @@ export function createPublicMcpBindingsRouter(
       ...(rawEnabled === undefined ? {} : { enabled: rawEnabled }),
     };
 
-    // The reader's own rules decide. See `validateBindingInput`.
+    // The reader's own rules decide the SHAPE. See `validateBindingInput`.
     const validated = validateBindingInput(input);
     if (!validated.ok) {
       res.status(400).json({ error: 'invalid_request', ...validated.error });
       return;
     }
 
+    // EXISTENCE, the #571 half the shape check cannot cover. A well-formed id is
+    // not a resolvable one: `agent_id` names an in-process registry slug and
+    // `key_id` a vault record, neither a foreign key the DB could enforce.
+    //
+    // The two halves diverge on purpose. The agent registry is authoritative
+    // in-process, so a typo'd agent is a HARD reject — better a 400 the operator
+    // sees now than a row that looks configured and silently reaches nothing. A
+    // `undefined` set means the registry could not be read; that is "cannot
+    // tell", never "unknown", so it does NOT reject.
+    //
+    // Both existence reads run INSIDE the same try as the upsert. The interface
+    // documents `knownAgentIds`/`knownKeyIds` as returning `undefined` rather
+    // than throwing, but a broken impl that threw here — outside the try — would
+    // escape `fail()` and answer with an unsanitized 500 (or hang), leaking the
+    // very pg/vault internals `fail()` exists to hide.
+    const { existence } = options;
     try {
+      if (existence) {
+        const agents = await existence.knownAgentIds();
+        if (agents && !agents.has(validated.value.agentId)) {
+          res.status(400).json({
+            error: 'invalid_request',
+            code: 'agent_not_found',
+            message: `no agent "${validated.value.agentId}" is registered; bind to an existing agent`,
+          });
+          return;
+        }
+      }
+
       const { binding, created } = await store.upsert(validated.value);
+
+      // The key is only ever a WARNING (see `keyUnknownWarning`): the write
+      // still succeeds and the row is stored, but the operator is told the key
+      // does not resolve rather than being left to discover it when the
+      // integration reaches zero tools. Checked AFTER the upsert so a vault read
+      // failure cannot cost a legitimate save.
+      const keys = existence ? await existence.knownKeyIds() : undefined;
+      const warnings = keys && !keys.has(binding.keyId) ? [keyUnknownWarning()] : [];
+
       // 201 only for a row that did not exist. "Created" over an existing
       // binding is the operator's only per-request hint that they landed on
       // somebody else's row — spending it on every save makes it worthless.
-      res.status(created ? 201 : 200).json({ binding });
+      res.status(created ? 201 : 200).json({
+        binding: warnings.length > 0 ? { ...binding, warnings } : binding,
+      });
     } catch (err) {
       fail(res, 'public_mcp_bindings.upsert_failed', err);
     }
