@@ -37,6 +37,7 @@ import {
   createPrivacyTurnHandle,
   NativeToolRegistry,
   ToolDispatchService,
+  ToolIdempotencyStore,
 } from '@omadia/orchestrator';
 import type {
   DispatchableToolSpec,
@@ -188,6 +189,13 @@ export function realDispatcher(
      * a guarantee proven on one proves nothing about the other.
      */
     readonly via?: 'native' | 'domain';
+    /**
+     * Wire a real `ToolIdempotencyStore`, so `_meta.idempotencyKey` actually
+     * takes the replay branch. Off by default: without it `dispatchIdempotent`
+     * skips the cache entirely, and any test that thinks it is exercising a
+     * replay is exercising two ordinary dispatches instead.
+     */
+    readonly idempotency?: boolean;
   },
 ): PublicMcpDispatcher {
   const registry = new NativeToolRegistry();
@@ -231,6 +239,7 @@ export function realDispatcher(
     // Explicit, exactly as production does it: this path runs outside any turn,
     // so the ambient `turnContext` fallback is `undefined` here.
     privacy: () => slot,
+    ...(opts?.idempotency === true ? { idempotency: new ToolIdempotencyStore() } : {}),
   });
 
   return {

@@ -743,13 +743,31 @@ export class PublicMcpServer {
       // `internToolResultV4` actually returned a digest for this dispatch, which
       // is the one thing that cannot be true by accident.
       //
-      // ONE exception: `origin === 'dispatcher'` marks content the dispatch
-      // layer authored itself — "unknown tool", "plugin not ready" — which
-      // names only the tool the caller asked for and the owning plugin id, and
-      // carries no tool data for masking to have crossed. Anything else,
-      // INCLUDING an `origin`-less result from a dispatcher that predates the
-      // field, must have been masked.
-      if (gate !== undefined && result.origin !== 'dispatcher' && !gate.masked()) {
+      // TWO exceptions, both narrow.
+      //
+      // 1. `origin === 'dispatcher'` marks content the dispatch layer authored
+      //    itself — "unknown tool", "plugin not ready" — which names only the
+      //    tool the caller asked for and the owning plugin id, and carries no
+      //    tool data for masking to have crossed. Anything else, INCLUDING an
+      //    `origin`-less result from a dispatcher that predates the field, must
+      //    have been masked.
+      //
+      // 2. `replayed` marks an idempotency cache hit: no handler ran for THIS
+      //    request, so the per-request gate cannot have observed a masking call
+      //    however well the cached body was masked when it was produced. Without
+      //    this the endpoint refuses a legitimate retry with "privacy masking did
+      //    not run" — the worst possible answer to a retried write, because the
+      //    caller learns nothing about whether the mutation committed. The body
+      //    is safe: it crossed this same boundary on the way in, and since
+      //    idempotency is namespaced by principal a replay can only ever be
+      //    returned to the principal that produced it. What does NOT carry over
+      //    is digest resolution — those bindings belong to the earlier turn.
+      if (
+        gate !== undefined &&
+        result.origin !== 'dispatcher' &&
+        result.replayed !== true &&
+        !gate.masked()
+      ) {
         this.record(
           principal,
           binding.agentId,

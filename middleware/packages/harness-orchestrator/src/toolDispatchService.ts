@@ -48,6 +48,19 @@ export interface ToolDispatchResult {
   readonly isError?: boolean;
   /** See `ToolDispatchContentOrigin`. Absent ⇒ treat as `'tool'`. */
   readonly origin?: ToolDispatchContentOrigin;
+  /**
+   * This body came from the idempotency cache; no handler ran for THIS request.
+   *
+   * Load-bearing for the public endpoint's fail-closed privacy assertion, which
+   * demands that masking actually ran for the current dispatch. A replay
+   * satisfies that by construction and cannot satisfy it by observation — the
+   * gate is built per request, so `masked()` is false however well the cached
+   * body was masked when it was produced. Without this flag the endpoint
+   * discards a legitimate cached success and answers "privacy masking did not
+   * run", which is precisely the wrong answer to a retried write: the caller
+   * cannot tell whether the mutation committed.
+   */
+  readonly replayed?: boolean;
 }
 
 export interface DispatchableToolSpec {
@@ -238,7 +251,10 @@ export class ToolDispatchService {
         // shares a namespace exactly as before.
         options?.caller?.principal ?? '',
       );
-      return outcome.result;
+      // Mark a cache hit so a downstream fail-closed privacy check can tell
+      // "no handler ran for this request" from "a handler ran and skipped
+      // masking". See `ToolDispatchResult.replayed`.
+      return outcome.replayed ? { ...outcome.result, replayed: true } : outcome.result;
     }
     return this.dispatchInner(name, input, options);
   }

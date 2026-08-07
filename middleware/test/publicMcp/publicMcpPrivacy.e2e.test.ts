@@ -139,6 +139,73 @@ describe('public MCP endpoint — privacy', () => {
     assert.match(text, /\[email\]/);
   });
 
+  // The fail-closed assertion demands that masking RAN for this dispatch. An
+  // idempotency replay cannot satisfy that by observation: no handler runs, and
+  // the gate is built per request, so `masked()` is false however well the
+  // cached body was masked when produced. Unhandled, the endpoint answers
+  // "privacy masking did not run" to a retried write — the worst possible reply,
+  // because the caller learns nothing about whether the mutation committed.
+  it('returns the cached result on an idempotent retry instead of a masking error', async (t) => {
+    let executions = 0;
+    const h = await start(
+      options({
+        dispatchers: {
+          // `idempotency: true` is load-bearing — without a store wired,
+          // `dispatchIdempotent` skips the cache and this test silently becomes
+          // two ordinary dispatches that both mask fine, proving nothing.
+          sales: realDispatcher(
+            [
+              {
+                name: WRITE_TOOL,
+                writeCapabilities: DECLARED_WRITE,
+                handle: async () => {
+                  executions += 1;
+                  return { content: RAW_RESULT };
+                },
+              },
+            ],
+            undefined,
+            { idempotency: true },
+          ),
+        },
+      }),
+      t,
+    );
+    if (!h) return;
+
+    const withKey = (id: number): unknown => ({
+      jsonrpc: '2.0',
+      id,
+      method: 'tools/call',
+      params: {
+        name: WRITE_TOOL,
+        arguments: {},
+        _meta: { idempotencyKey: 'retry-me-once' },
+      },
+    });
+
+    const first = await h.rpc(withKey(1), { token: KEY_TOKEN });
+    const firstText = callResultText(first.payload) ?? '';
+    assert.match(firstText, /\[email\]/, 'the first call should have been masked normally');
+
+    // Same key, same payload — the write must NOT run again, and the caller must
+    // get the original answer rather than an internal error.
+    const retry = await h.rpc(withKey(2), { token: KEY_TOKEN });
+    const retryText = callResultText(retry.payload) ?? '';
+    assert.doesNotMatch(
+      rpcErrorMessage(retry.payload) ?? '',
+      /privacy masking did not run/,
+      'a legitimate replay was discarded by the masking assertion',
+    );
+    assert.equal(retryText, firstText, 'the replay should return the original masked body');
+    assert.doesNotMatch(retryText, /sensitive\.person@customer\.example/, 'replay leaked raw PII');
+    // The oracle: the handler must have run ONCE. Without this the test cannot
+    // tell a genuine replay from two ordinary dispatches that both happened to
+    // mask correctly — which is exactly what it was doing before the harness
+    // gained a real idempotency store.
+    assert.equal(executions, 1, 'the write executed twice — no replay actually happened');
+  });
+
   /** Belt-and-braces: the raw string must not appear ANYWHERE in the response
    *  body, not merely outside the content block. */
   it('leaks no PII anywhere in the raw HTTP body', async (t) => {
