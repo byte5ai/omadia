@@ -106,6 +106,10 @@ export interface McpDiscoveredTool {
   readonly name: string;
   readonly description?: string;
   readonly inputSchema?: Record<string, unknown>;
+  /** Issue #547 (W1-3) — the tool's declared `outputSchema`, captured at
+   *  discovery. Persisted alongside the rest of the descriptor so it survives
+   *  a restart without re-discovery. Never shown to the model. */
+  readonly outputSchema?: Record<string, unknown>;
 }
 
 export interface McpServerNode {

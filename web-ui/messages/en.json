@@ -906,6 +906,13 @@
         "error": "Could not resolve the gate."
       }
     },
+    "task": {
+      "started": "Started: {label}",
+      "running": "running in the background",
+      "deferredHint": "This runs on its own — the answer arrives in a follow-up message, not in this one.",
+      "taskId": "task {id}",
+      "phase": "phase {phase}"
+    },
     "inputLabel": "input",
     "outputLabel": "output",
     "persona": {
@@ -922,6 +929,13 @@
       "modalTitle": "Connect {server}",
       "modalBody": "Authorize {server} so this and future requests can use it.",
       "close": "Close"
+    },
+    "mcpInput": {
+      "kicker": "External input request",
+      "heading": "“{server}” needs additional details for “{tool}”.",
+      "secretHint": "Hidden while typing — the value is still sent to the server as entered.",
+      "warning": "Whatever you enter is sent to the external server “{server}”. Only provide details you want that server to have.",
+      "submit": "Send to server"
     },
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — click for full size",
@@ -1187,6 +1201,8 @@
       "filterAll": "All verdicts",
       "acknowledge": "Acknowledge",
       "acked": "Acknowledged by {by}",
+      "structuredOutput": "returns structured output",
+      "structuredOutputHint": "This tool declares an output schema and returns a structured payload alongside its text result.",
       "runDeepScan": "Run deep scan",
       "why": "Heuristic scan flagged: {codes}. This is a signal, not proof the content is safe.",
       "llmRationale": "Deep scan note: {rationale}",
@@ -2819,7 +2835,44 @@
       "marketplace": "Marketplace",
       "grants": "Grants",
       "plugins": "Plugin access",
+      "bindings": "Public API keys",
       "audit": "Audit log"
+    },
+    "bindings": {
+      "intro": "The public MCP endpoint lets an external integration call tools with an API key. Each key reaches exactly one agent and exactly the tools you name here — a key with no binding reaches nothing at all.",
+      "keyIdHint": "Paste the key id you got back when the API key was created. There is no picker yet: keys are managed by the channel API, on a separate endpoint.",
+      "keyId": "Key ID",
+      "keyIdPlaceholder": "e.g. 8f3c1a90-…",
+      "agentId": "Agent",
+      "agentIdPlaceholder": "Pick an agent",
+      "readTools": "Read tools",
+      "writeTools": "Write tools",
+      "toolsPlaceholder": "Tool names, comma-separated",
+      "writeRate": "Writes/min",
+      "writeToolsHint": "A write tool additionally requires the key to hold the matching mcp:write scope and spends the tighter write budget. A tool named in both lists counts as a write.",
+      "save": "Save binding",
+      "saving": "Saving",
+      "empty": "No key bindings yet. Until you create one, no API key reaches any tool through the public endpoint.",
+      "boundTo": "bound to {agent}",
+      "enabled": "Active",
+      "parked": "Revoked",
+      "readToolsLabel": "Read",
+      "writeToolsLabel": "Write",
+      "none": "none",
+      "meta": "{rate} writes/min · last changed {updated}",
+      "revoke": "Revoke",
+      "revokeTitle": "Revoke this binding?",
+      "revokeBody": "The key {keyId} stops reaching any tool immediately. The binding is kept, not deleted, so you can still see what it granted.",
+      "revokeConfirm": "Revoke",
+      "restore": "Restore access",
+      "restoreHint": "Saving this binding again edits its tools but leaves it revoked. Restoring is the only way to make the key work again.",
+      "restoreTitle": "Restore this binding?",
+      "restoreBody": "The key {keyId} immediately regains everything on this row: {tools}.",
+      "restoreConfirm": "Restore",
+      "warnings": {
+        "keyUnknown": "No API key with this id exists yet. The binding was saved, but it reaches nothing until such a key is created — double-check the id for a typo.",
+        "agentUnknown": "This binding names an agent that is no longer registered, so it reaches nothing. Rebind it to an existing agent."
+      }
     },
     "plugins": {
       "intro": "Plugins that declare MCP access in their manifest. Grant each the specific servers it may reach — nothing is ambient. Per-tool safety still applies: an unscanned or high-risk tool is refused at call time.",
@@ -2830,6 +2883,10 @@
     "servers": {
       "name": "Name",
       "transport": "Transport",
+      "transportDeprecated": "Deprecated",
+      "transportDeprecatedHint": "The legacy HTTP+SSE transport is deprecated as of MCP 2026-07-28 and will be removed after a transition window of at least 12 months. Existing SSE servers keep working — but new servers should use Streamable HTTP (http), and existing ones should be migrated to it.",
+      "showDeprecatedTransports": "Show deprecated transports",
+      "deprecatedOption": "{transport} (deprecated)",
       "endpoint": "Endpoint",
       "status": "Status",
       "tools": "Tools",
@@ -2906,7 +2963,26 @@
       "readyToLogin": "Client saved. Now sign in at {host} to authorize access.",
       "continueLogin": "Continue to {host} login ↗",
       "afterLoginHint": "Opens in a new tab. After you approve, come back here — the status refreshes automatically.",
-      "checkStatus": "Check status"
+      "checkStatus": "Check status",
+      "delegationLabel": "Acting identity",
+      "delegationPerUser": "Each user acts as themselves",
+      "delegationService": "One shared service identity",
+      "delegationPerUserWhy": "Every caller uses their own authorization at this server. A conversation with no mapped user identity is refused rather than falling back to yours.",
+      "delegationServiceWhy": "All callers share one authorization — yours. Anyone who can reach an orchestrator with this server granted acts with that authority. Only keep this for servers where a shared identity is intended.",
+      "delegationSwitchToPerUser": "Require per-user identity",
+      "delegationSwitchToService": "Use a shared service identity",
+      "delegationIdentityMissing": "This session has no mapped user identity, so per-user calls to this server fail closed. Nothing is sent to the server.",
+      "modeCimd": "Metadata document",
+      "modeDcr": "Auto-registered",
+      "modeManual": "Registered app",
+      "cimdBadgeWhy": "This server accepts a client ID metadata document, so omadia identifies itself by a URL this deployment publishes. No app registration was needed.",
+      "modeDcrWhy": "This server registered omadia automatically (dynamic client registration). The MCP spec is phasing this out in favour of metadata documents, but it keeps working — there is nothing to do.",
+      "modeManualWhy": "omadia uses an OAuth app you registered once at this issuer. This is the standard path for Microsoft Entra ID and Okta and stays fully supported.",
+      "hintCimd": "This server identifies omadia by a metadata document published on this deployment — nothing to register, just connect and log in.",
+      "cimdUnreachable": "This server would accept a client ID metadata document, but this deployment cannot publish one it can fetch. That usually means omadia is not reachable from the internet — normal for an on-premises install, since the identity provider has to fetch the document itself.",
+      "cimdUnreachableReason": "Reason",
+      "manualStillSupported": "Nothing is broken: register a one-time OAuth app for this issuer below and connect as usual.",
+      "manualIsEnterprisePath": "This is the standard enterprise path, not a workaround. Microsoft Entra ID and Okta use pre-registered app registrations by design and will keep using this form."
     },
     "marketplace": {
       "registry": "Registry",
@@ -2966,18 +3042,21 @@
       "server": "Server",
       "tool": "Tool",
       "caller": "Caller",
+      "identity": "Acting identity",
       "outcome": "Outcome",
       "duration": "Duration",
       "empty": "No MCP calls recorded yet.",
       "ok": "ok",
       "failed": "failed",
       "loadMore": "Load more",
+      "unresolved": "unresolved",
       "kind": {
         "agent": "Orchestrator",
         "subagent": "Sub-agent",
         "skill": "Skill",
         "plugin": "Plugin",
-        "unattributed": "Unattributed"
+        "unattributed": "Unattributed",
+        "api_key": "API key (public MCP)"
       }
     }
   },

@@ -9,6 +9,7 @@ import {
   disconnectMcpServer,
   getMcpAuthStatus,
   setMcpOAuthClient,
+  setMcpServerDelegation,
   type McpAuthStatus,
 } from '@/app/_lib/agentBuilder';
 
@@ -87,6 +88,26 @@ export function McpAuthSection({
     }
   }
 
+  /** Flip the delegation mode (W0-1). Surfaced here because it decides WHOSE
+   *  authorization every call to this server uses — the same question the rest
+   *  of this panel is about. */
+  async function toggleDelegation(): Promise<void> {
+    if (!status?.delegation) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setMcpServerDelegation(
+        serverId,
+        status.delegation === 'per_user' ? 'service' : 'per_user',
+      );
+      await refresh();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveClient(): Promise<void> {
     if (!status?.issuer || clientId.trim() === '') return;
     setBusy(true);
@@ -115,6 +136,33 @@ export function McpAuthSection({
             <span className="text-[color:var(--warning)]">{t('auth.notConnected')}</span>
           )}
         </span>
+        {/* W2-4 — which acquisition mode this issuer is on. A badge rather than
+            a sentence because it is a persistent property of the server, and
+            because `manual` must read as a normal state, not a warning. */}
+        {status.acquisitionMode === 'cimd' ? (
+          <span
+            title={t('auth.cimdBadgeWhy')}
+            className="rounded-full border border-[color:var(--success)]/50 px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--success)]"
+          >
+            {t('auth.modeCimd')}
+          </span>
+        ) : null}
+        {status.acquisitionMode === 'manual' ? (
+          <span
+            title={t('auth.modeManualWhy')}
+            className="rounded-full border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--fg-muted)]"
+          >
+            {t('auth.modeManual')}
+          </span>
+        ) : null}
+        {status.acquisitionMode === 'dcr' ? (
+          <span
+            title={t('auth.modeDcrWhy')}
+            className="rounded-full border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--fg-muted)]"
+          >
+            {t('auth.modeDcr')}
+          </span>
+        ) : null}
         {status.connected ? (
           <Button
             size="sm"
@@ -138,15 +186,69 @@ export function McpAuthSection({
       </div>
       {!status.connected && !showClientForm ? (
         <div className="text-[11px] text-[color:var(--fg-muted)]">
-          {status.brokered
-            ? t('auth.hintBrokered')
-            : t('auth.hintDelegated', { host: status.issuerHost ?? status.issuer ?? '?' })}
+          {status.acquisitionMode === 'cimd'
+            ? t('auth.hintCimd')
+            : status.brokered
+              ? t('auth.hintBrokered')
+              : t('auth.hintDelegated', { host: status.issuerHost ?? status.issuer ?? '?' })}
+        </div>
+      ) : null}
+      {/* W2-4 diagnostic: the authorization server WOULD accept a metadata
+          document, but this deployment cannot serve one it can reach. That is
+          the on-prem norm, not a fault — so the copy says what to do (use the
+          manual client) and what would change it (inbound https), and never
+          implies the manual path is inferior. */}
+      {status.cimdSupported && status.acquisitionMode !== 'cimd' ? (
+        <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--card)]/40 p-2 text-[11px] text-[color:var(--fg-muted)]">
+          <div>{t('auth.cimdUnreachable')}</div>
+          {status.cimdBlockedReason ? (
+            <div className="mt-1">
+              {t('auth.cimdUnreachableReason')}:{' '}
+              <code className="rounded bg-[color:var(--card)] px-1 py-0.5">
+                {status.cimdBlockedReason}
+              </code>
+            </div>
+          ) : null}
+          <div className="mt-1">{t('auth.manualStillSupported')}</div>
+        </div>
+      ) : null}
+      {status.delegation ? (
+        <div className="flex flex-col gap-1 border-t border-[color:var(--border)] pt-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-medium">{t('auth.delegationLabel')}:</span>
+            <span className="text-[11px]">
+              {status.delegation === 'per_user'
+                ? t('auth.delegationPerUser')
+                : t('auth.delegationService')}
+            </span>
+            <Button size="sm" variant="ghost" busy={busy} onClick={() => void toggleDelegation()}>
+              {status.delegation === 'per_user'
+                ? t('auth.delegationSwitchToService')
+                : t('auth.delegationSwitchToPerUser')}
+            </Button>
+          </div>
+          <div className="text-[11px] text-[color:var(--fg-muted)]">
+            {status.delegation === 'per_user'
+              ? t('auth.delegationPerUserWhy')
+              : t('auth.delegationServiceWhy')}
+          </div>
+          {status.delegation === 'per_user' && status.identityResolved === false ? (
+            <div className="text-[11px] text-[color:var(--warning)]">
+              {t('auth.delegationIdentityMissing')}
+            </div>
+          ) : null}
         </div>
       ) : null}
       {showClientForm ? (
         <div className="flex flex-col gap-1.5 rounded-md border border-[color:var(--border)] bg-[color:var(--card)]/40 p-2.5">
           <div className="text-xs text-[color:var(--fg-muted)]">
             {t('auth.needsClientWhy', { host: status.issuerHost ?? status.issuer ?? '?' })}
+          </div>
+          {/* W2-4 — say plainly that this form IS the enterprise path, so nobody
+              reads it as a stopgap until CIMD arrives. It never will for Entra
+              ID or Okta: they use pre-registered app registrations by design. */}
+          <div className="text-[11px] text-[color:var(--fg-muted)]">
+            {t('auth.manualIsEnterprisePath')}
           </div>
           {status.redirectUri ? (
             <div className="text-[11px] text-[color:var(--fg-muted)]">
