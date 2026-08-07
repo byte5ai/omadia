@@ -1,4 +1,8 @@
-import type { ChatTurnResult, RunTracePayload } from './chatAgent.js';
+import type {
+  ChatTurnResult,
+  PendingMcpInputCard,
+  RunTracePayload,
+} from './chatAgent.js';
 import type {
   AgentConsultation,
   OutgoingAttachment,
@@ -86,6 +90,30 @@ export function deriveAgentsConsulted(
  * and the orchestrator-plugin can both import from the same package without
  * pulling in kernel-internal symbols.
  */
+/**
+ * #544 W2-1 — plain-text rendering of a pending MCP input request, appended to
+ * the answer so a connector with no form support still tells the user what is
+ * being asked and, crucially, BY WHOM.
+ *
+ * Field names and labels only, never values (there are none yet) — and the
+ * server's own `prompt` is included but clearly attributed, so untrusted prose
+ * cannot read as omadia speaking.
+ */
+export function withMcpInputPrompt(
+  answer: string,
+  card: PendingMcpInputCard | undefined,
+): string {
+  if (!card) return answer;
+  const fields = card.fields
+    .map((f) => `- ${f.label ?? f.name}${f.required === true ? ' (erforderlich)' : ''}`)
+    .join('\n');
+  const block =
+    `**Der MCP-Server "${card.serverName}" fragt für "${card.toolName}" nach zusätzlichen Angaben.**` +
+    (card.prompt !== undefined ? `\n\n> ${card.prompt}` : '') +
+    `\n\n${fields}`;
+  return answer.trim().length > 0 ? `${answer}\n\n${block}` : block;
+}
+
 export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
   // Inline images (diagrams) and downloadable files (office docs) flow into
   // one channel-agnostic attachment array. Diagrams keep their `image` kind;
@@ -126,6 +154,22 @@ export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
         value: o.value,
       })),
     };
+  } else if (r.pendingMcpInput) {
+    interactive = {
+      kind: 'mcp_input',
+      correlationId: r.pendingMcpInput.correlationId,
+      serverName: r.pendingMcpInput.serverName,
+      serverId: r.pendingMcpInput.serverId,
+      toolName: r.pendingMcpInput.toolName,
+      ...(r.pendingMcpInput.prompt ? { prompt: r.pendingMcpInput.prompt } : {}),
+      fields: r.pendingMcpInput.fields.map((f) => ({
+        name: f.name,
+        ...(f.label !== undefined ? { label: f.label } : {}),
+        ...(f.description !== undefined ? { description: f.description } : {}),
+        ...(f.secret === true ? { secret: true } : {}),
+        ...(f.required === true ? { required: true } : {}),
+      })),
+    };
   } else if (r.pendingSlotCard) {
     interactive = {
       kind: 'slots',
@@ -163,7 +207,14 @@ export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
   const agentsConsulted = deriveAgentsConsulted(r.runTrace);
 
   return {
-    text: r.answer,
+    // #544 W2-1 — honest degradation. `interactive` above is the rich form, but
+    // a connector that cannot render one would otherwise show the model's
+    // (usually empty) pre-question prose and give the user NO indication that a
+    // named server is blocked waiting for input. So the prompt is also folded
+    // into `text`, which every connector MUST render. The rich-card channels
+    // are expected to prefer `interactive`; the duplication is the price of not
+    // silently swallowing the request.
+    text: withMcpInputPrompt(r.answer, r.pendingMcpInput),
     ...(verifier ? { verifier } : {}),
     ...(agentsConsulted && agentsConsulted.length > 0
       ? { agentsConsulted }
