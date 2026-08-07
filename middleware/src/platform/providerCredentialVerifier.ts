@@ -89,6 +89,15 @@ export interface ProviderVerification {
   readonly error?: string;
   /** Why an `unverified` verdict came out inconclusive. Never rendered as-is. */
   readonly reason?: ProviderVerificationReason;
+  /**
+   * OM-09 — machine-readable counterpart to {@link error}. A CODE, never a
+   * sentence, for the same reason {@link ProviderVerificationReason} is one:
+   * web-ui owns all user-facing copy, and this process has no request locale,
+   * so anything written here would be English in a German UI. Only the
+   * `invalid` verdict sets it; `error` stays untouched as the fallback for a
+   * client that predates the catalogue.
+   */
+  readonly code?: string;
 }
 
 /** Structural view of the provider catalog — avoids a hard dependency on the
@@ -396,12 +405,15 @@ function buildProbe(
   return undefined;
 }
 
-/** The one verdict that accuses the operator's key. `error` is rendered
- *  verbatim by the providers panel, so nothing but a real rejection may set it. */
+/** The one verdict that accuses the operator's key. `error` is the English
+ *  fallback for a pre-OM-09 client; `code` is what a current web-ui resolves
+ *  against its own localized catalogue. Nothing but a real rejection may set
+ *  either. */
 function rejected(status: number, checkedAt: string): ProviderVerification {
   return {
     status: 'invalid',
     checkedAt,
+    code: 'providers.key_rejected',
     error: `The provider rejected this API key (HTTP ${String(status)}). Check the value in the provider's console and paste it again.`,
   };
 }

@@ -136,6 +136,7 @@ interface ProvidersResponse {
     status: 'no_key' | 'unverified' | 'verified' | 'invalid';
     verifiedAt?: string;
     verifyError?: string;
+    verifyErrorCode?: string;
     requiresAvvDisclosure?: boolean;
     euHosted?: boolean;
     models: Array<{ id: string; modelId: string; class: string }>;
@@ -371,8 +372,34 @@ describe('admin providers route — POST /:id/verify', () => {
     const anthropic = body.providers.find((p) => p.id === 'anthropic');
     assert.equal(anthropic?.status, 'invalid');
     assert.ok(anthropic?.verifyError);
+    // OM-09: the DTO also carries the machine code, so web-ui can render its
+    // own localized copy instead of the English sentence in `verifyError`.
+    assert.equal(anthropic?.verifyErrorCode, 'providers.key_rejected');
     // Still "connected" in the legacy sense — a key IS on file, it just fails.
     assert.equal(anthropic?.connected, true);
+  });
+
+  // The field is conditional: a verdict with no code must leave it OFF the
+  // payload entirely, so `verifyErrorCode === undefined` keeps meaning
+  // "nothing to resolve" for both older and newer clients.
+  it('omits verifyErrorCode entirely on every non-rejected provider', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], {
+      probeStatus: 200,
+    });
+    await h.vault.setMany(ORCH, {
+      [providerApiKeyVaultKey('anthropic')]: 'sk-ant-good',
+    });
+    await verify(h, 'anthropic');
+
+    const body = await getProviders(h);
+    for (const p of body.providers) {
+      assert.notEqual(p.status, 'invalid', p.id);
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(p, 'verifyErrorCode'),
+        false,
+        `${p.id} must not carry verifyErrorCode`,
+      );
+    }
   });
 
   it('a 500 probe stays unverified — an outage must not accuse the key', async () => {

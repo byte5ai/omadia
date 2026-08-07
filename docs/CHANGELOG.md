@@ -18,6 +18,55 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — errors on the LLM-access and credential screens now explain themselves (#604)
+
+- The providers panel used to render the middleware's English rejection
+  sentence verbatim in every locale, and the plugin credential editor rendered
+  `runtime.vault_unavailable: vault not wired into runtime route` — an internal
+  identifier next to an English sentence. Neither told the operator what to do
+  next, which is what the customer report was about.
+- `ApiError` now parses the machine code out of the JSON error body once
+  (`ApiError.code`), and a localized catalogue (`errorHelp.<code>.{what,next}`
+  in `messages/en.json` + `de.json`) turns it into two sentences: what
+  happened, and the one action that fixes it. The server's own text survives
+  only inside a collapsed "details for support" disclosure, redacted through
+  `supportDetail()`.
+- A rejected provider key now carries a machine-readable code end to end:
+  `ProviderVerification.code` and a new optional `verifyErrorCode` on the
+  admin-providers DTO. Both are additive — `verifyError` keeps its value and
+  meaning, so an older web-ui against a new middleware, and a new web-ui
+  against an older middleware, both keep working.
+- Scope is bounded and guarded. The catalogue covers the 56 codes emitted by
+  `middleware/src/routes/{install,runtime,adminProviders,store,adminSettings}.ts`
+  plus `providers.key_rejected`. That count includes the ten `install.*` codes
+  that never appear as a literal in a route file at all: `install.ts`'s
+  `handleError` re-emits them from an `InstallError` thrown in
+  `plugins/installService.ts`, and `errorHelpCoverage.test.ts` follows that
+  forwarder rather than assume the file only writes literals. The guard fails
+  when a covered file emits a code with no copy in any locale, when copy exists
+  with no emitter, and when a covered file writes a `code:` the extractor
+  cannot read — an unregistered forwarding shape is a failure, not a silent
+  gap. NOT covered: the other middleware route families, shipped
+  troubleshooting pages, and any LLM-backed help assistant — the issue's own
+  corrected scope rules the last one out.
+- `web-ui/messages/README.md` documents the `errorHelp.<code>.{what,next}` key
+  convention, the optional `action` label, how to add a code, and why adding a
+  `code:` literal to one of the five covered route files turns the web-ui suite
+  red until the copy exists in both locales.
+- The providers panel's very first request is on that path too. A failed
+  `GET /v1/admin/providers` used to render the client-assembled
+  `GET /v1/admin/providers failed: 500` as the entire message, in every locale;
+  it now resolves `providers.read_failed` through the catalogue, keeps the
+  request line for the support disclosure, and falls back to a localized "the
+  provider list could not be loaded" when the server sends no code.
+- `PATCH /v1/admin/settings` now answers a fully-rejected batch with two codes
+  instead of one, because the operator's next step differs:
+  `settings.invalid_values` when the server refused the values (correct the
+  value the details flag) and `settings.no_valid_changes` when no submitted key
+  is a setting it currently offers (reload — the page's field list is stale).
+  With one code, saving a malformed `ANTHROPIC_API_KEY` was reported as an
+  unknown setting and the operator was told to reload, which cannot fix it.
+
 ### Added — AI-assistant install path via a public skill file (#338)
 
 - New `docs/onboarding/SKILL.md`: a public, copy-paste onboarding path for
