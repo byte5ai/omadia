@@ -11,10 +11,26 @@
  *   - `LocalSubAgentTool`               — for tools granted to a sub-agent
  *     (passed into its `LocalSubAgent` tool list).
  *
- * Connections are pooled per server id and lazily (re)established. A failed
- * connection is dropped so the next call retries — callers layer their own
- * backoff. The manager never throws on `callTool`; it returns an `Error: …`
+ * Connection lifetime (issue #563) — one entry map, one set of rules:
+ *
+ *   - **Key.** A pooled entry is keyed by exactly the inputs its transport
+ *     actually consumes: `stdio` by server id alone (the bearer token never
+ *     reaches the spawned child process), `http`/`sse` by server id PLUS a hash
+ *     of the bearer token, so two callers' authenticated sessions stay apart.
+ *   - **Dropped** on a failed connect, on a failed tool call, when a stale
+ *     token is rejected, on explicit invalidation via `close(serverId)` (which
+ *     drops every token-scoped entry of that server and nothing else), when an
+ *     entry has been idle longer than `idleTtlMs`, and on `closeAll()`.
+ *   - **Idle eviction is lazy.** It runs inside `getOrConnect`, so an idle
+ *     entry can outlive its TTL until the next connect attempt for *some*
+ *     server. That is deliberate: a background reaper would leak an unref'd
+ *     timer into the server process and into `node --test`.
+ *
+ * A dropped connection simply reconnects on the next call — callers layer their
+ * own backoff. The manager never throws on `callTool`; it returns an `Error: …`
  * string so a tool failure degrades the turn instead of killing it.
+ *
+ * See `docs/adr/0008-mcp-connection-lifetime.md` for the rejected alternatives.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -364,6 +380,28 @@ export interface McpManagerOptions {
    * (`mcpInputUnsupportedError`) rather than vanishing.
    */
   readonly pendingInput?: PendingMcpInputStore;
+  /** Issue #563 — drop a pooled connection that has not been used for this
+   *  many milliseconds. Bounds the pool: a rotated OAuth token yields a new
+   *  key, and without a TTL the entry under the old hash (and, for stdio, its
+   *  child process) would live as long as the process. `0` or negative
+   *  disables eviction. Defaults to `MCP_POOL_IDLE_TTL_MS`. */
+  readonly idleTtlMs?: number;
+}
+
+/** Default idle lifetime of a pooled MCP connection (5 minutes). */
+export const MCP_POOL_IDLE_TTL_MS = 300_000;
+
+/**
+ * True when `key` is a pool key belonging to server `id`.
+ *
+ * This is the whole no-collateral-invalidation rule, exported so it can be unit
+ * tested and reused: a key is either the bare server id or `<id>#<tokenHash>`.
+ * The `#` separator is what keeps server `abc` from matching `abcd` — a plain
+ * `startsWith(id)` would drop an unrelated server whose id merely starts with
+ * the same characters.
+ */
+export function mcpPoolScopeMatches(key: string, id: string): boolean {
+  return key === id || key.startsWith(`${id}#`);
 }
 
 /** True when an error/result string looks like an authorization failure. */
@@ -399,8 +437,14 @@ function looksTransient(text: string): boolean {
 
 interface Pooled {
   readonly client: Client;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  readonly transport: any;
+}
+
+/** One pooled connection. `promise` is the single source of truth for the
+ *  entry's state — pending while the connect is in flight, settled afterwards —
+ *  so there is no second "connecting" map that can disagree with it. */
+interface PoolEntry {
+  readonly promise: Promise<Pooled>;
+  lastUsedAt: number;
 }
 
 const CLIENT_INFO = { name: 'omadia-agent-builder', version: '0.1.0' } as const;
@@ -495,8 +539,7 @@ export function resolveMcpCallTimeouts(): {
 }
 
 export class McpManager {
-  private readonly pool = new Map<string, Pooled>();
-  private readonly connecting = new Map<string, Promise<Pooled>>();
+  private readonly entries = new Map<string, PoolEntry>();
   /** Issue #547 (W1-3) — declared `outputSchema` per `${serverId} ${tool}`.
    *  `callTool` only receives a name, so the schema learned at discovery (or
    *  rehydrated from the persisted descriptor by the adapters below) is cached
@@ -949,7 +992,22 @@ export class McpManager {
     return rawFailure;
   }
 
+  /** Number of pooled entries. Exposed for tests and for ops observability
+   *  (there is otherwise no way to see whether the pool is growing). */
+  get poolSize(): number {
+    return this.entries.size;
+  }
+
   private poolKey(cfg: McpServerConfig, token: string | null): string {
+    // INVARIANT: the key must contain exactly the inputs the transport actually
+    // consumes. `makeTransport` puts the bearer token in an HTTP request header
+    // and nowhere else — a stdio child is spawned with `command`/`args`/`env`
+    // only (and that env is per-server, never per-caller). Hashing the token
+    // into a stdio key therefore bought nothing and cost one child process per
+    // distinct token for a server that behaves identically for all of them
+    // (issue #563). If stdio ever gains token-derived env, this must change
+    // back in lockstep.
+    if (cfg.transport === 'stdio') return cfg.id;
     // A per-token pool key keeps different callers' authenticated connections
     // separate and lets a refreshed token transparently open a new connection.
     if (!token) return cfg.id;
@@ -957,51 +1015,82 @@ export class McpManager {
     return `${cfg.id}#${h}`;
   }
 
+  /**
+   * Drop pooled connections for `id` and close them.
+   *
+   * `id` is either a full pool key (the internal drop points pass one, and it
+   * matches only itself) or a bare server id — which drops every token-scoped
+   * entry of that server, so a deleted/reconfigured/re-authorized server is
+   * fully invalidated. It never crosses server ids; see `mcpPoolScopeMatches`.
+   */
   async close(id: string): Promise<void> {
-    const pooled = this.pool.get(id);
-    this.pool.delete(id);
-    this.connecting.delete(id);
-    if (!pooled) return;
-    try {
-      await pooled.client.close();
-    } catch {
-      /* best-effort */
-    }
+    const keys = [...this.entries.keys()].filter((key) => mcpPoolScopeMatches(key, id));
+    await Promise.all(keys.map((key) => this.dropEntry(key)));
   }
 
   async closeAll(): Promise<void> {
-    await Promise.all([...this.pool.keys()].map((id) => this.close(id)));
+    await Promise.all([...this.entries.keys()].map((key) => this.dropEntry(key)));
+  }
+
+  /** Remove one entry and tear its connection down. The removal is synchronous
+   *  (so the next `getOrConnect` reconnects immediately), the teardown waits
+   *  for the entry's promise: a connect that is still in flight is closed when
+   *  it lands instead of resolving into a `Client` nobody owns. */
+  private dropEntry(key: string): Promise<void> {
+    const entry = this.entries.get(key);
+    this.entries.delete(key);
+    if (!entry) return Promise.resolve();
+    return entry.promise.then(
+      async (pooled) => {
+        try {
+          await pooled.client.close();
+        } catch {
+          /* best-effort */
+        }
+      },
+      () => {
+        /* the connect failed — there is nothing to close */
+      },
+    );
+  }
+
+  /** Close every entry idle for longer than the configured TTL. Lazy by
+   *  design (see the class doc): called from `getOrConnect`, never from a
+   *  timer. Deleting the current key while iterating a Map is safe. */
+  private evictIdle(): void {
+    const ttl = this.options?.idleTtlMs ?? MCP_POOL_IDLE_TTL_MS;
+    if (!(ttl > 0)) return;
+    const cutoff = Date.now() - ttl;
+    for (const [key, entry] of this.entries) {
+      if (entry.lastUsedAt <= cutoff) void this.dropEntry(key);
+    }
   }
 
   private getOrConnect(cfg: McpServerConfig, token: string | null = null): Promise<Pooled> {
+    this.evictIdle();
     const key = this.poolKey(cfg, token);
-    const existing = this.pool.get(key);
-    if (existing) return Promise.resolve(existing);
-    const inflight = this.connecting.get(key);
-    if (inflight) return inflight;
-
-    const p = this.connect(cfg, token)
-      .then((pooled) => {
-        this.pool.set(key, pooled);
-        this.connecting.delete(key);
-        return pooled;
-      })
-      .catch((err) => {
-        this.connecting.delete(key);
-        throw err;
-      });
-    this.connecting.set(key, p);
-    return p;
+    const existing = this.entries.get(key);
+    if (existing) {
+      existing.lastUsedAt = Date.now();
+      return existing.promise;
+    }
+    // A rejected connect is never cached: the entry removes itself so the next
+    // call retries with a fresh transport.
+    const promise: Promise<Pooled> = this.connect(cfg, token).catch((err: unknown) => {
+      if (this.entries.get(key)?.promise === promise) this.entries.delete(key);
+      throw err;
+    });
+    this.entries.set(key, { promise, lastUsedAt: Date.now() });
+    return promise;
   }
 
   private async connect(cfg: McpServerConfig, token: string | null): Promise<Pooled> {
     const transport = this.makeTransport(cfg, token);
     const client = new Client(CLIENT_INFO);
     await client.connect(transport);
-    return { client, transport };
+    return { client };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   /** Resolve Vault-backed config into a cfg (epic #459): secret headers for
    *  http/sse, environment variables for stdio. Returns cfg unchanged when the
    *  provider has none. */

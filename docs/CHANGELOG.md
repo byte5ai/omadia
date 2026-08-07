@@ -18,6 +18,91 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — errors on the LLM-access and credential screens now explain themselves (#604)
+
+- The providers panel used to render the middleware's English rejection
+  sentence verbatim in every locale, and the plugin credential editor rendered
+  `runtime.vault_unavailable: vault not wired into runtime route` — an internal
+  identifier next to an English sentence. Neither told the operator what to do
+  next, which is what the customer report was about.
+- `ApiError` now parses the machine code out of the JSON error body once
+  (`ApiError.code`), and a localized catalogue (`errorHelp.<code>.{what,next}`
+  in `messages/en.json` + `de.json`) turns it into two sentences: what
+  happened, and the one action that fixes it. The server's own text survives
+  only inside a collapsed "details for support" disclosure, redacted through
+  `supportDetail()`.
+- A rejected provider key now carries a machine-readable code end to end:
+  `ProviderVerification.code` and a new optional `verifyErrorCode` on the
+  admin-providers DTO. Both are additive — `verifyError` keeps its value and
+  meaning, so an older web-ui against a new middleware, and a new web-ui
+  against an older middleware, both keep working.
+- Scope is bounded and guarded. The catalogue covers the 56 codes emitted by
+  `middleware/src/routes/{install,runtime,adminProviders,store,adminSettings}.ts`
+  plus `providers.key_rejected`. That count includes the ten `install.*` codes
+  that never appear as a literal in a route file at all: `install.ts`'s
+  `handleError` re-emits them from an `InstallError` thrown in
+  `plugins/installService.ts`, and `errorHelpCoverage.test.ts` follows that
+  forwarder rather than assume the file only writes literals. The guard fails
+  when a covered file emits a code with no copy in any locale, when copy exists
+  with no emitter, and when a covered file writes a `code:` the extractor
+  cannot read — an unregistered forwarding shape is a failure, not a silent
+  gap. NOT covered: the other middleware route families, shipped
+  troubleshooting pages, and any LLM-backed help assistant — the issue's own
+  corrected scope rules the last one out.
+- `web-ui/messages/README.md` documents the `errorHelp.<code>.{what,next}` key
+  convention, the optional `action` label, how to add a code, and why adding a
+  `code:` literal to one of the five covered route files turns the web-ui suite
+  red until the copy exists in both locales.
+- The providers panel's very first request is on that path too. A failed
+  `GET /v1/admin/providers` used to render the client-assembled
+  `GET /v1/admin/providers failed: 500` as the entire message, in every locale;
+  it now resolves `providers.read_failed` through the catalogue, keeps the
+  request line for the support disclosure, and falls back to a localized "the
+  provider list could not be loaded" when the server sends no code.
+- `PATCH /v1/admin/settings` now answers a fully-rejected batch with two codes
+  instead of one, because the operator's next step differs:
+  `settings.invalid_values` when the server refused the values (correct the
+  value the details flag) and `settings.no_valid_changes` when no submitted key
+  is a setting it currently offers (reload — the page's field list is stale).
+  With one code, saving a malformed `ANTHROPIC_API_KEY` was reported as an
+  unknown setting and the operator was told to reload, which cannot fix it.
+
+### Added — AI-assistant install path via a public skill file (#338)
+
+- New `docs/onboarding/SKILL.md`: a public, copy-paste onboarding path for
+  non-technical evaluators. Pasting a short prompt into the Claude or Codex
+  desktop app points the assistant at the skill file, which installs the native
+  omadia desktop app and opens the onboarding wizard — no Docker, no build tools.
+  The skill is idempotent (re-running only relaunches an existing install) and
+  resolves each release asset by its API `browser_download_url`, so it survives
+  the independently-pinned desktop version. It scans recent releases for the
+  newest one that actually carries a build for the user's OS, rather than assuming
+  `releases/latest` is complete — a release whose macOS/Windows build failed can
+  ship Linux-only.
+- `README.md` gains a copy-paste setup prompt next to the Quickstart, including
+  the key-free note for Claude Pro/Max subscriptions (#309).
+
+### Changed — MCP connection lifetime is now explicit (#563)
+
+- The MCP pool kept its state in two parallel maps keyed by server id **plus** a
+  hash of the caller's bearer token. Since a stdio child process never sees that
+  token, N callers with N tokens spawned N identical child processes for the
+  same server. Pool keys now carry exactly what the transport consumes: stdio is
+  keyed by server id alone, http/sse by server id + token.
+- Pooled connections are dropped when a server is deleted
+  (`DELETE /mcp-servers/:id`), when its config is saved
+  (`PUT /mcp-servers/:id/config`) and when its token is revoked
+  (`DELETE /mcp-servers/:id/token`) — previously the live connection kept
+  running with the old command, env, headers and token — and on SIGTERM/SIGINT,
+  which no longer leaves MCP stdio children behind.
+- Connections idle longer than `McpManagerOptions.idleTtlMs` (default 5 minutes)
+  are evicted on the next connect attempt, which bounds a pool that previously
+  grew by one entry — and, for stdio, one process — per OAuth token rotation.
+- **Behaviour change for out-of-repo callers:** `McpManager.close(serverId)` now
+  closes every token-scoped connection of that server instead of a single exact
+  pool key. Passing a full pool key still matches only itself, and a server id
+  never matches a different server whose id shares its prefix.
+- Rationale and rejected alternatives: `docs/adr/0008-mcp-connection-lifetime.md`.
 ### Added — MCP structured output is accounted in the privacy receipt (#547 / #569)
 
 - External MCP tools that return `structuredContent` now surface in the turn's
