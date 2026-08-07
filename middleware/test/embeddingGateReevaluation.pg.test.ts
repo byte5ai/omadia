@@ -4,6 +4,8 @@ import { after, before, describe, it } from 'node:test';
 import type { EmbeddingClient } from '@omadia/plugin-api';
 import { Pool } from 'pg';
 
+import { probePgTest } from './_helpers/pgTestDb.js';
+
 import { startGateRunner } from '@omadia/knowledge-graph-neon/dist/gateReevaluation.js';
 
 /**
@@ -35,25 +37,15 @@ import { startGateRunner } from '@omadia/knowledge-graph-neon/dist/gateReevaluat
  * suite deadlocks under the parallel runner.
  */
 
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'embeddingGateReevaluation',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'DATABASE_URL'],
+  requireVector: true,
+  timeoutMs: 1_500,
+});
 
 const SCHEMA = 'embgate_reeval_test';
 const TENANT = 'reeval-440';
-
-let pgAvailable = true;
-const probe = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 1_500 });
-try {
-  await probe.query('SELECT 1');
-  await probe.query('CREATE EXTENSION IF NOT EXISTS vector');
-} catch {
-  pgAvailable = false;
-} finally {
-  await probe.end().catch(() => undefined);
-}
 
 const silent = (): void => undefined;
 const VEC768 = `[${new Array(768).fill(0.01).join(',')}]`;

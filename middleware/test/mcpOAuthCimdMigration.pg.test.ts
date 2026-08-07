@@ -4,6 +4,8 @@ import { after, before, describe, it } from 'node:test';
 
 import { Pool } from 'pg';
 
+import { probePgTest } from './_helpers/pgTestDb.js';
+
 /**
  * Migration 0032 (W2-4, issue #546) against a REAL Postgres.
  *
@@ -26,20 +28,11 @@ import { Pool } from 'pg';
  * reject junk, and does `client_metadata_url` exist and accept NULL.
  */
 
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
-
-let pgAvailable = true;
-try {
-  const probe = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 1_500 });
-  await probe.query('SELECT 1');
-  await probe.end();
-} catch {
-  pgAvailable = false;
-}
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'mcpOAuthCimdMigration',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'DATABASE_URL'],
+  timeoutMs: 1_500,
+});
 
 /** Dedicated tenant id → dedicated schema. See rule 2 above. */
 const TENANT = `w24_cimd_${process.pid}_${Date.now().toString(36)}`;

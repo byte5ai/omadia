@@ -11,6 +11,8 @@ import { after, before, describe, it } from 'node:test';
 import express, { type RequestHandler } from 'express';
 import { Pool } from 'pg';
 
+import { probePgTest } from '../_helpers/pgTestDb.js';
+
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
 import { runShim } from '../../packages/dev-runner-shim/src/index.js';
@@ -57,22 +59,13 @@ import type { DevJobProvisionInput, RunnerBackend, RunnerHandle } from '../../sr
  * pg-gated, like the rest of the dev-platform e2e. Requires `git` on PATH.
  */
 
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'goldenFixture',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'DATABASE_URL'],
+  timeoutMs: 1_500,
+});
 
 const MARK = 'golden-fixture-e2e';
-
-let pgAvailable = true;
-try {
-  const probe = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 1_500 });
-  await probe.query('SELECT 1');
-  await probe.end();
-} catch {
-  pgAvailable = false;
-}
 
 let gitAvailable = true;
 try {
