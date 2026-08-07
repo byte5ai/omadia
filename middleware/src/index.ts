@@ -163,6 +163,7 @@ import {
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
 import { recordRawBodyBytes } from './http/rawBodySize.js';
+import { redactSecrets } from './services/secretRedaction.js';
 import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp.js';
 // W5-1 — the WRITE half of `public_mcp_key_bindings`. Imported for the
 // OPERATOR router only. `mountPublicMcp` above must never be handed this: the
@@ -1893,7 +1894,30 @@ async function main(): Promise<void> {
         ...(mcpAuditStore
           ? {
               onToolCall: (entry: McpCallLogEntry) => {
-                void mcpAuditStore.insertMcpCallLog(entry).catch((err: unknown) => {
+                // `entry.error` is upstream text — a remote MCP server's own
+                // protocol/transport message. The orchestrator bounds it to 300
+                // characters, but truncation is not redaction: a server that
+                // echoes `refresh_token=…`, an `Authorization: Bearer …`, or a
+                // secret-shaped JSON field puts that credential into an
+                // append-only table, and the operator audit API returns the
+                // stored string verbatim.
+                //
+                // Redacted HERE rather than in the orchestrator because
+                // `secretRedaction` lives in this package and `onToolCall` is
+                // the injected seam — the alternative was a second copy of the
+                // patterns inside `@omadia/orchestrator`, and two copies of a
+                // redaction rule is one that drifts loose.
+                //
+                // LIMIT, deliberately not papered over: this removes
+                // CREDENTIALS, not PII. An upstream error quoting a customer
+                // name or address still lands in `mcp_call_log`. Masking that
+                // would mean running the privacy pipeline inside the audit
+                // writer, which is a design decision rather than a patch.
+                const redacted: McpCallLogEntry =
+                  entry.error === null
+                    ? entry
+                    : { ...entry, error: redactSecrets(entry.error) };
+                void mcpAuditStore.insertMcpCallLog(redacted).catch((err: unknown) => {
                   console.warn(`[middleware] mcp call audit write failed: ${String(err)}`);
                 });
               },
