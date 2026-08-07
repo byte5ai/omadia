@@ -76,6 +76,49 @@ describe('public MCP body cap', () => {
     assert.equal(out.nextCalled, true);
   });
 
+  // A batch is one HTTP request carrying many JSON-RPC messages, and every
+  // per-request control here is charged once per HTTP request: the API-key rate
+  // limiter takes a single token, and `tools/list` never touches the
+  // concurrency counter. Without this guard, one small array of tens of
+  // thousands of `tools/list` calls costs one token and that many Postgres
+  // `bindings.get` round-trips. The SDK transport really does accept arrays, so
+  // it is reachable rather than theoretical.
+  it('refuses a JSON-RPC batch', () => {
+    const out = run({ body: [{ jsonrpc: '2.0', method: 'tools/list', id: 1 }] });
+    assert.equal(out.nextCalled, false, 'a batch must not reach the handler');
+    assert.equal(out.status, 400);
+    assert.equal(
+      (out.body as { error?: { code?: number } }).error?.code,
+      -32600,
+      'a refused batch must be an Invalid Request, not a generic failure',
+    );
+  });
+
+  it('refuses a large batch without paying to execute it', () => {
+    // The amplification shape specifically: well under the byte cap, thousands
+    // of messages. It must be refused on shape, not squeeze under the size gate.
+    const batch = Array.from({ length: 5000 }, (_, i) => ({
+      jsonrpc: '2.0',
+      method: 'tools/list',
+      id: i,
+    }));
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(batch), 'utf8') < MAX_REQUEST_BYTES,
+      'fixture must sit UNDER the byte cap, or it proves the wrong gate',
+    );
+    const out = run({ body: batch });
+    assert.equal(out.nextCalled, false);
+    assert.equal(out.status, 400);
+  });
+
+  it('still passes a single non-batch request', () => {
+    // Guard rail: the batch refusal must not be rejecting ordinary traffic,
+    // which would make the two cases above vacuous.
+    const out = run({ body: { jsonrpc: '2.0', method: 'tools/list', id: 1 } });
+    assert.equal(out.nextCalled, true);
+    assert.equal(out.status, undefined);
+  });
+
   it('413s on a declared Content-Length over the cap', () => {
     const out = run({
       headers: { 'content-length': String(MAX_REQUEST_BYTES + 1) },

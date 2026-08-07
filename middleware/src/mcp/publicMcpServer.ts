@@ -295,6 +295,36 @@ export class PublicMcpServer {
         });
         return;
       }
+      // A JSON-RPC BATCH is one HTTP request carrying many messages, and every
+      // per-request control on this endpoint is charged once per HTTP request:
+      // `requireApiKey`'s rate limiter takes a single token, and `tools/list`
+      // never touches the concurrency counter at all. So one sub-8-MB array of
+      // tens of thousands of `tools/list` calls costs the caller one token and
+      // costs the server that many `bindings.get` round-trips to Postgres. The
+      // write limiter still covers writes; reads and listing were free.
+      //
+      // The SDK's transport does accept arrays (`webStandardStreamableHttp`
+      // maps over `rawMessage` when `Array.isArray`), so this is reachable, not
+      // theoretical. Refusing them outright is both the smaller fix and the
+      // spec-correct one: MCP removed JSON-RPC batching in the 2025-06-18
+      // revision and this endpoint implements 2026-07-28. Rate-limiting
+      // per-message instead would mean charging a limiter that lives one
+      // middleware upstream, for a shape the protocol no longer defines.
+      //
+      // Deliberately BEFORE `requireApiKey`: an unauthenticated batch should
+      // also cost nothing, and this is the cheapest place to say no.
+      if (Array.isArray(req.body)) {
+        res.status(400).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32600,
+            message:
+              'JSON-RPC batching is not supported: send one request per HTTP call. Batching was removed from MCP in the 2025-06-18 revision.',
+          },
+          id: null,
+        });
+        return;
+      }
       next();
     };
   }
