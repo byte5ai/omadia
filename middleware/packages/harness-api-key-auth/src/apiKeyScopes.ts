@@ -25,6 +25,48 @@ export const WILDCARD_SCOPE = '*';
 /** The capability the public chat ingress requires (`@omadia/channel-api`). */
 export const CHAT_WRITE_SCOPE = 'chat:write';
 
+/** W2-3 (issue #542) — enumerate the tools the public MCP endpoint exposes to
+ *  this key. Seeing a tool name is itself a disclosure, so listing is its own
+ *  capability rather than a free side effect of authenticating. */
+export const MCP_LIST_SCOPE = 'mcp:list';
+
+/** W2-3 — call a READ tool over the public MCP endpoint. Deliberately NOT
+ *  sufficient for a write: see `MCP_WRITE_SCOPE_PREFIX`. */
+export const MCP_INVOKE_SCOPE = 'mcp:invoke';
+
+/**
+ * W2-3 — prefix of the per-tool write capability, `mcp:write:<tool>`.
+ *
+ * Marcel's decision to expose write tools (not just reads) over a PUBLIC
+ * endpoint is what makes this granularity a requirement rather than a nicety.
+ * Three properties hold, and each exists because the coarser alternative is a
+ * real escalation:
+ *
+ *  - It is PER TOOL. `mcp:invoke` authorizes reads as a class; there is no
+ *    equivalent class-wide write scope, because "this integration may write"
+ *    is never the sentence an operator means — they mean "this integration may
+ *    call `create_lead`", and nothing else.
+ *  - It is NOT reachable via `WILDCARD_SCOPE`. `*` is a convenience for an
+ *    operator's own tooling; silently including "delete every Odoo invoice via
+ *    an internet-facing endpoint" in that convenience is not a trade anyone
+ *    consciously makes. `hasScope` enforces this for every caller — see there.
+ *  - It is THREE segments, so it cannot collide with, or be satisfied by, any
+ *    two-segment scope an operator or plugin already minted.
+ */
+export const MCP_WRITE_SCOPE_PREFIX = 'mcp:write:';
+
+/** Builds the write capability for one tool. Use this rather than
+ *  concatenating, so the prefix has exactly one definition. */
+export function mcpWriteScope(toolName: string): ApiKeyScope {
+  return `${MCP_WRITE_SCOPE_PREFIX}${toolName}`;
+}
+
+/** True for a `mcp:write:<tool>` scope. Drives the wildcard exclusion in
+ *  `hasScope`, so it must stay a pure shape test with no allow-list. */
+export function isMcpWriteScope(scope: ApiKeyScope): boolean {
+  return scope.startsWith(MCP_WRITE_SCOPE_PREFIX);
+}
+
 /**
  * What a key with no persisted `scopes` field is treated as.
  *
@@ -41,9 +83,41 @@ export const LEGACY_DEFAULT_SCOPES: readonly ApiKeyScope[] = [CHAT_WRITE_SCOPE];
 /** `<resource>:<action>`, lowercase, or the bare global wildcard. */
 const SCOPE_PATTERN = /^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/;
 
+/**
+ * W2-3 — the ONLY three-segment shape admitted: `mcp:write:<tool>`.
+ *
+ * Written as a literal `mcp:write:` prefix rather than a generic
+ * `<a>:<b>:<c>` rule on purpose. A generic three-segment rule would quietly
+ * legalize every `foo:bar:baz` string an operator mistypes, and each such
+ * string would then be a scope that validates, persists, and grants nothing —
+ * indistinguishable from a revoked key at debug time. `<tool>` reuses the same
+ * character class the other segments use, so a tool name that cannot appear
+ * here cannot be granted at all (fail closed, not fail open).
+ */
+const MCP_WRITE_SCOPE_PATTERN = /^mcp:write:[a-z][a-z0-9_-]*$/;
+
+/**
+ * The bare two-segment `mcp:write`, rejected outright.
+ *
+ * It is a perfectly well-formed two-segment scope, so `SCOPE_PATTERN` accepts
+ * it — and it is the single most likely thing an operator types when they mean
+ * "let this key write". It would validate, persist, and grant NOTHING (no write
+ * check ever asks for it), which is indistinguishable from a revoked key at
+ * debug time. Rejecting it turns a silent misconfiguration into an error at the
+ * moment of the mistake. There is deliberately no class-wide write scope to
+ * point them at instead: writes are per tool, by design.
+ */
+const REJECTED_SCOPES: readonly string[] = ['mcp:write'];
+
 export function isValidScope(value: unknown): value is ApiKeyScope {
   if (typeof value !== 'string') return false;
-  return value === WILDCARD_SCOPE || SCOPE_PATTERN.test(value);
+  if (value === WILDCARD_SCOPE) return true;
+  if (REJECTED_SCOPES.includes(value)) return false;
+  if (MCP_WRITE_SCOPE_PATTERN.test(value)) return true;
+  // Checked LAST and unchanged: a `mcp:write:x` string has two colons and
+  // never matched `SCOPE_PATTERN` anyway, so nothing that used to validate
+  // stops validating and nothing new slips through the two-segment rule.
+  return SCOPE_PATTERN.test(value);
 }
 
 /** Grants nothing. Every `hasScope` check against it is false. */
@@ -143,11 +217,36 @@ export function assertValidScopes(scopes: readonly unknown[]): readonly ApiKeySc
   return Array.from(new Set(scopes as readonly ApiKeyScope[]));
 }
 
-/** True when `granted` covers `required` — exact match, or the global `*`. */
+/**
+ * True when `granted` covers `required` — exact match, or the global `*`.
+ *
+ * W2-3 carves ONE exception out of the wildcard: a `mcp:write:<tool>` scope is
+ * satisfied by an exact match and by nothing else. The exception lives HERE,
+ * inside the single scope-matching primitive, rather than in a second
+ * `hasWriteScope` function the public-MCP route is expected to remember to
+ * call. A parallel matcher is a matcher someone eventually forgets: the wrong
+ * call would still compile, still typecheck, and still return `true` for `*` —
+ * quietly granting an internet-facing write. There is one matcher, and it is
+ * correct for every caller including `requireApiKey`'s own `opts.scope` gate.
+ *
+ * `hasWriteScope` below exists only as an intention-revealing alias; it adds no
+ * behavior, so using the wrong one of the two is not a security event.
+ */
 export function hasScope(
   granted: readonly ApiKeyScope[] | undefined,
   required: ApiKeyScope,
 ): boolean {
   if (!granted) return false;
+  if (isMcpWriteScope(required)) return granted.includes(required);
   return granted.includes(WILDCARD_SCOPE) || granted.includes(required);
+}
+
+/** True when `granted` explicitly names the write capability for `toolName`.
+ *  Intention-revealing alias for `hasScope(granted, mcpWriteScope(tool))` —
+ *  see the wildcard note on `hasScope`. */
+export function hasWriteScope(
+  granted: readonly ApiKeyScope[] | undefined,
+  toolName: string,
+): boolean {
+  return hasScope(granted, mcpWriteScope(toolName));
 }

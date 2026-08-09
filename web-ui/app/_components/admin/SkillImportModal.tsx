@@ -9,6 +9,7 @@ import {
   type SkillImportResult,
 } from '../../_lib/agentBuilder';
 import { supportDetail } from '../../_lib/scanFailure';
+import { Button } from '../ui/Button';
 
 /**
  * Import a SKILL.md (paste or file) into the skills registry. Shows a dry-run
@@ -77,6 +78,7 @@ export function SkillImportModal({
         <h2 className="text-lg font-semibold text-[color:var(--fg-strong)]">{t('title')}</h2>
         <p className="text-xs text-[color:var(--fg-muted)]">{t('hint')}</p>
 
+        {/* eslint-disable-next-line no-restricted-syntax -- bespoke dashed file-dropzone affordance, not a §4.2 Button variant */}
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
@@ -146,31 +148,20 @@ export function SkillImportModal({
         )}
 
         <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border border-[color:var(--border)] px-3 py-1.5 text-sm text-[color:var(--fg-muted)]"
-          >
+          <Button variant="secondary" onClick={onClose}>
             {t('cancel')}
-          </button>
+          </Button>
           {!preview ? (
-            <button
-              type="button"
+            <Button
               disabled={busy || !raw.trim()}
               onClick={() => void runPreview()}
-              className="rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-50"
             >
               {t('preview')}
-            </button>
+            </Button>
           ) : (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void confirm()}
-              className="rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-50"
-            >
+            <Button disabled={busy} onClick={() => void confirm()}>
               {t('confirm')}
-            </button>
+            </Button>
           )}
         </div>
       </div>

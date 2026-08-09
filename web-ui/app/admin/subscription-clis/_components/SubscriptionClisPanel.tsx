@@ -131,6 +131,7 @@ export function SubscriptionClisPanel({
           {t('explainer.singleOperator')}
         </p>
         <p className="mt-3 text-sm">
+          {/* eslint-disable-next-line no-restricted-syntax -- inline text link (underline, no border/bg) */}
           <button
             type="button"
             onClick={onSwitchToProviders}

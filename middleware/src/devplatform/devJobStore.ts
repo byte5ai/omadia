@@ -165,6 +165,25 @@ export interface DevJobStoreOptions {
   artifactCeiling?: ArtifactCeilingOptions;
 }
 
+/**
+ * Narrows a reaper sweep (W3-A). `dev_jobs` has no tenant column — `repo_id` IS
+ * the tenancy axis here, and every suite/deployment owns its own `dev_repos`
+ * rows — so a repo-id set is the scope key.
+ *
+ * OMITTING this (the production call) keeps the sweep DATABASE-GLOBAL, which is
+ * correct for the single-tenant deployment: the reaper must reach every
+ * abandoned job whoever launched it. It exists because a global sweep is
+ * untestable in a shared cluster — a forward-dated cutoff in one suite finalized
+ * a sibling suite's in-flight jobs as `stalled`.
+ *
+ * An EXPLICITLY EMPTY `repoIds` means "nothing is in scope" and returns no rows.
+ * It must never widen back to global: that would turn a caller who computed an
+ * empty entitlement set into a caller who sweeps everything.
+ */
+export interface DevJobSweepScope {
+  readonly repoIds?: readonly string[];
+}
+
 export interface ListJobsFilter {
   repoId?: string;
   /** Scope to a SET of repos IN SQL (before LIMIT). Use this — not a post-query
@@ -876,13 +895,18 @@ export class DevJobStore {
 
   // --- reaper / enforcement reads (worker calls finalizeDevJob on these) ----
   /** Active jobs whose last sign of life is older than `cutoff` — stalled
-   *  candidates for the worker/reaper. */
-  async findStalled(cutoff: Date): Promise<DevJob[]> {
+   *  candidates for the worker/reaper. Unscoped ⇒ database-global (production);
+   *  pass `scope` to constrain it. See {@link DevJobSweepScope}. */
+  async findStalled(cutoff: Date, scope?: DevJobSweepScope): Promise<DevJob[]> {
+    // An explicitly empty scope means "nothing", never "everything".
+    if (scope?.repoIds !== undefined && scope.repoIds.length === 0) return [];
+    const scoped = scope?.repoIds !== undefined;
     const r = await this.pool.query<Row>(
       `SELECT ${JOB_COLS} FROM dev_jobs
         WHERE status IN (${ACTIVE_SET_SQL})
-          AND COALESCE(last_heartbeat_at, started_at, claimed_at) < $1`,
-      [cutoff],
+          AND COALESCE(last_heartbeat_at, started_at, claimed_at) < $1
+          ${scoped ? 'AND repo_id = ANY($2::uuid[])' : ''}`,
+      scoped ? [cutoff, scope.repoIds] : [cutoff],
     );
     return r.rows.map(toJob);
   }

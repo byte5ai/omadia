@@ -242,3 +242,67 @@ example path.
 4. Bulk moves: zones 8, 9, 11, 14, 15a-c, 16.
 5. Zone 10 migrations — last, own PR, snapshot-restored test.
 6. Zone 17 CI + the new repo's publishing pipeline.
+
+---
+
+## Baseline raises
+
+`scripts/check-core-decoupling.mjs` only ever lowers its baseline automatically.
+A raise is hand-edited, and each one is argued for here. A raise is legitimate
+only when the added references **leave core with the extraction**; a raise that
+absorbs new *core* coupling is the ratchet failing at its job.
+
+### 3306 -> 3441 - W2-2 long-running task seam
+
+> Re-based after `main` advanced (#552, #553): main lowered its own baseline to 3306 by dropping
+> dev-platform cross-references from API-key comments, so this raise is +135, not the +138 first
+> recorded. `middleware/packages` is deliberately set to 97, BELOW main's 99 - the generic task
+> seam was scrubbed of implementor names and that gain is locked in rather than left as headroom.
+
+
+The W2-2 unit generalised the existing `dev_job` machinery into a reusable
+`TaskStore` seam plus `defineLongRunningTool()`, with `dev_job` as its first
+implementor. Net +138 after decoupling work.
+
+**Not counted, because it was removed rather than absorbed (−40).** The generic
+seam — `packages/harness-orchestrator/src/tasks/` — initially named `dev_job` 25
+times in its own doc comments, and the generic web-ui task card another 5. A
+generic abstraction documented in terms of one implementor leaks the coupling it
+exists to remove, and every one of those references would dangle the moment the
+Dev Platform leaves. They were rewritten to state the contract instead. **The
+generic seam is now CLEAN — `middleware/packages` sits at its baseline of 97 and
+must stay there.** Also removed: two inaccurate comments (a pg test claiming to
+seed "dev-platform surfaces" when it seeds only `mcp_*` and `agents`; a `ci.yml`
+comment enumerating the features whose schema lives in `middleware/migrations`,
+which was the only dev-platform reference in any workflow and was descriptive,
+not functional).
+
+**Absorbed into the raise (+138).** Broken down honestly:
+
+| Count | Where | Leaves with extraction? |
+|---|---|---|
+| 62 | `src/devplatform/devJobTaskStore.ts` (new) | yes — inside the extracted folder |
+| 4 | `src/devplatform/devJobStore.ts` (W3-A sweep scope) | yes — inside the extracted folder |
+| 47 | `test/devplatform/devJobTaskStore.pg.test.ts` (new) | yes |
+| 24 | `test/devplatform/devJobTaskStoreReap.test.ts` (new) | yes |
+| 1 | `web-ui/.../tasks/__tests__/taskChatCardState.test.ts` | **no** |
+
+The 137 are an **adapter and its tests**. `devJobTaskStore.ts` exists precisely
+to adapt `dev_job` to the generic seam; naming `dev_job` is its entire job.
+Contorting it to reduce a number would make the adapter worse and would not move
+a single line out of core any earlier — it already lives in the folder the
+extraction deletes. It is deliberately not reduced.
+
+The 1 genuine core reference is
+`expect(isTaskStartToolName('dev_job_start')).toBe(true)`. It is kept because it
+is *true and load-bearing*: the generic `_start` suffix predicate does match
+`dev_job_start`, which is exactly why `chat/page.tsx` must test the bespoke
+dev-job card **before** the generic one. Deleting the assertion to save a count
+would be dodging the regex, not decoupling. It disappears on extraction along
+with the card it guards.
+
+One structural fix rode along: `devJobTaskStoreReap.test.ts` was written into
+`test/tasks/` (the *generic* seam's test directory) despite importing only from
+`src/devplatform/`. Moved to `test/devplatform/` so the extraction picks it up
+with its siblings. Ratchet-neutral — same zone — but it is 24 references that
+would otherwise have been stranded in a directory nobody would think to move.

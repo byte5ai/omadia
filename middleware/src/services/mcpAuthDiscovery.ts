@@ -14,6 +14,7 @@
  * falls back to the raw error.
  */
 
+import { guardedOutboundFetch, readTextCapped } from './guardedOutboundFetch.js';
 import { assertPublicHttpsUrl } from './ssrfGuard.js';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -34,6 +35,17 @@ export interface AuthServerMetadata {
   readonly codeChallengeMethods: readonly string[];
   readonly grantTypes: readonly string[];
   readonly scopesSupported: readonly string[];
+  /** RFC 9207 `authorization_response_iss_parameter_supported` (W0-1, D1). When
+   *  the AS advertises this, an authorization response WITHOUT `iss` is a
+   *  protocol violation and must be rejected — that is what makes mix-up
+   *  detection enforceable rather than best-effort. */
+  readonly issParameterSupported: boolean;
+  /** `client_id_metadata_document_supported` (W2-4). True when this AS accepts a
+   *  Client ID Metadata Document — an https `client_id` it DEREFERENCES — in
+   *  place of a pre-registered or dynamically-registered client. Only advertised
+   *  by MCP-native brokers; Entra ID and Okta never set it, which is precisely
+   *  why the manual client path stays permanent. */
+  readonly clientIdMetadataDocumentSupported: boolean;
 }
 
 export interface DiscoveredAuth {
@@ -59,6 +71,22 @@ function str(v: unknown): string | null {
   return typeof v === 'string' && v.trim() !== '' ? v : null;
 }
 
+/** RFC 9207 §2.4 / RFC 8414 §3.3: compare issuer identifiers exactly, modulo one
+ *  trailing slash (`https://as.example` and `https://as.example/` are the same
+ *  AS). Deliberately NOT a loose/normalizing comparison — that would reintroduce
+ *  the mix-up the check exists to prevent.
+ *
+ *  Lives here, next to the metadata fetch that must apply it, and is imported by
+ *  `mcpOAuthService` rather than duplicated: two copies of an identity
+ *  comparison is two places for one of them to drift loose. */
+export function canonicalIssuer(s: string): string {
+  return s.trim().replace(/\/+$/, '');
+}
+
+export function sameIssuer(a: string, b: string): boolean {
+  return canonicalIssuer(a) !== '' && canonicalIssuer(a) === canonicalIssuer(b);
+}
+
 /** The origin an MCP server's well-known documents live under (scheme+host). */
 export function serverOrigin(endpoint: string): string {
   return new URL(endpoint).origin;
@@ -77,7 +105,10 @@ export class McpAuthDiscovery {
   private readonly cache = new Map<string, { at: number; value: DiscoveredAuth | null }>();
 
   constructor(deps?: McpAuthDiscoveryDeps) {
-    this.fetchImpl = deps?.fetchImpl ?? globalThis.fetch;
+    // Guarded by default (see `guardedOutboundFetch`): discovery follows a URL
+    // the REMOTE MCP server chose, so the connect-time address check is the
+    // boundary. Tests still inject their own.
+    this.fetchImpl = deps?.fetchImpl ?? guardedOutboundFetch;
     this.timeoutMs = deps?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
@@ -204,19 +235,56 @@ export class McpAuthDiscovery {
         `issuer ${issuer} metadata is missing authorization or token endpoint`,
       );
     }
+    // RFC 8414 §3.3 — the document MUST claim the issuer it was fetched under.
+    //
+    // Without this check the metadata is self-certifying, and the claimed value
+    // is not inert: `McpOAuthService.ensureClient` calls `loadClient(issuer)`
+    // with it, and `tokenRequest` then POSTs that client's `client_secret` to
+    // the `token_endpoint` from THIS SAME untrusted document. So a hostile MCP
+    // server advertises its own authorization server; that AS answers with
+    // `issuer: https://login.company.example` — an issuer this install already
+    // holds a pre-registered enterprise client secret for — plus its own
+    // `token_endpoint`. omadia loads the enterprise secret and hands it to the
+    // attacker. Binding the claim to the URL we actually fetched closes it.
+    //
+    // ABSENT is tolerated: some deployed ASes omit the field, and a claim that
+    // was never made is not a claim an attacker can forge — the fallback below
+    // keeps the issuer we asked for. A claim that is PRESENT and different is
+    // refused outright; there is no legitimate reason for it.
+    const claimedIssuer = str(doc['issuer']);
+    if (claimedIssuer !== null && !sameIssuer(claimedIssuer, issuer)) {
+      throw new McpAuthDiscoveryError(
+        'issuer_mismatch',
+        `authorization-server metadata fetched for ${issuer} claims a different issuer (${claimedIssuer}) — refusing it, because the claimed issuer selects which stored client secret is sent to this document's token endpoint`,
+      );
+    }
     // A registration_endpoint that merely points at the authorize URL is not a
     // real RFC 7591 DCR endpoint — treat it as absent so we don't POST junk.
     const registration = str(doc['registration_endpoint']);
     const registrationEndpoint =
       registration && registration !== authorizationEndpoint ? registration : null;
     return {
-      issuer: str(doc['issuer']) ?? issuer,
+      // The issuer we FETCHED, not the string the document echoed back. The
+      // guard above has already proven they are the same identifier, so the
+      // only thing the claimed spelling can still differ in is trailing
+      // slashes — and that spelling is what keys `loadClient()` and the stored
+      // token rows. Taking the canonical one means a document answering
+      // `https://as.example/` cannot miss a client stored under
+      // `https://as.example`, and removes the question of how many trailing
+      // slashes `sameIssuer` should tolerate from everything downstream.
+      issuer,
       authorizationEndpoint,
       tokenEndpoint,
       registrationEndpoint,
       codeChallengeMethods: strArr(doc['code_challenge_methods_supported']),
       grantTypes: strArr(doc['grant_types_supported']),
       scopesSupported: strArr(doc['scopes_supported']),
+      issParameterSupported: doc['authorization_response_iss_parameter_supported'] === true,
+      // Strict `=== true`: an AS that omits the flag, or sends a truthy-ish
+      // string, has NOT promised to dereference a metadata document. Guessing
+      // here would send a client_id the AS cannot resolve and fail the whole
+      // authorize round-trip instead of falling through to manual.
+      clientIdMetadataDocumentSupported: doc['client_id_metadata_document_supported'] === true,
     };
   }
 
@@ -277,8 +345,10 @@ export class McpAuthDiscovery {
       });
       if (res.status === 404) return null;
       if (!res.ok) return null;
-      const text = await res.text();
-      if (Buffer.byteLength(text, 'utf8') > MAX_METADATA_BYTES) return null;
+      // Metered while reading, not measured after: `res.text()` would have the
+      // whole body resident before the cap could reject it.
+      const text = await readTextCapped(res, MAX_METADATA_BYTES);
+      if (text === null) return null;
       const parsed = JSON.parse(text) as unknown;
       return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
     } catch {

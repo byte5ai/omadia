@@ -190,6 +190,7 @@ export function PaneCard({
               <div className="ml-auto flex shrink-0 items-center gap-2 text-[11px] text-[color:var(--fg-muted)]">
                 {meta}
                 {onMaximize ? (
+                  // eslint-disable-next-line no-restricted-syntax -- icon-only maximize/restore chrome toggle, no §4.2 variant
                   <button
                     type="button"
                     onClick={onMaximize}
@@ -212,6 +213,7 @@ export function PaneCard({
                     )}
                   </button>
                 ) : null}
+                {/* eslint-disable-next-line no-restricted-syntax -- icon-only collapse chrome button, no §4.2 variant */}
                 <button
                   type="button"
                   onClick={onToggleCollapsed}
