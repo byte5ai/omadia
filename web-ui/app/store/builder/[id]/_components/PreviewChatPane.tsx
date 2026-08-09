@@ -418,6 +418,7 @@ export function PreviewChatPane({
           aria-hidden
         />
         <span>{t('agentLabel')}</span>
+        {/* eslint-disable-next-line no-restricted-syntax -- bespoke uppercase mini pill with conditional warning-state fill, no §4.2 variant */}
         <button
           type="button"
           onClick={() => setSecretsOpen(true)}
@@ -435,6 +436,7 @@ export function PreviewChatPane({
             ? `(${String(bufferedSecretKeys.length)}/${String(setupFields.length)})`
             : ''}
         </button>
+        {/* eslint-disable-next-line no-restricted-syntax -- bespoke uppercase mini pill toolbar button (px-2/py-0.5/text-[10px]), no §4.2 variant */}
         <button
           type="button"
           onClick={() => void onRefresh()}
@@ -492,6 +494,7 @@ export function PreviewChatPane({
             </div>
           </div>
           {onClearAgentStuck ? (
+            // eslint-disable-next-line no-restricted-syntax -- bespoke uppercase mini dismiss chip inside warning banner, no §4.2 variant
             <button
               type="button"
               onClick={onClearAgentStuck}
@@ -824,6 +827,7 @@ function ToolCard({
   const pending = item.output === null;
   return (
     <div className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)]/60 text-[12px]">
+      {/* eslint-disable-next-line no-restricted-syntax -- full-width tool-card disclosure toggle row (aria-expanded + chevron), not a §4.2 CTA */}
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}

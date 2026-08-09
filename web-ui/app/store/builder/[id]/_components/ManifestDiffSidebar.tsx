@@ -66,6 +66,7 @@ export function ManifestDiffSidebar({
 
   if (collapsed) {
     return (
+      // eslint-disable-next-line no-restricted-syntax -- vertical collapsed-rail toggle (rotated label + chevron), bespoke chrome
       <button
         type="button"
         onClick={() => onToggle(false)}
@@ -92,6 +93,7 @@ export function ManifestDiffSidebar({
           ) : null}
         </div>
         <div className="flex items-center gap-1">
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only refresh control (RefreshCcw), no text */}
           <button
             type="button"
             onClick={() => void refresh()}
@@ -100,6 +102,7 @@ export function ManifestDiffSidebar({
           >
             <RefreshCcw className="size-3" aria-hidden />
           </button>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only collapse chevron control, no text */}
           <button
             type="button"
             onClick={() => onToggle(true)}

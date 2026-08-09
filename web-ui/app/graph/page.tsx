@@ -516,6 +516,7 @@ export default function GraphPage(): React.ReactElement {
               </div>
             </div>
           )}
+          {/* eslint-disable-next-line no-restricted-syntax -- inline low-emphasis text link (no fill/border/padding), not a CTA */}
           <button
             type="button"
             onClick={() => void refresh()}
@@ -525,6 +526,7 @@ export default function GraphPage(): React.ReactElement {
           </button>
         </div>
 
+        {/* eslint-disable-next-line no-restricted-syntax -- selection tile with active-state border/fill + multi-line content, not a text CTA */}
         <button
           type="button"
           onClick={() => {
@@ -548,6 +550,7 @@ export default function GraphPage(): React.ReactElement {
           </span>
         </button>
 
+        {/* eslint-disable-next-line no-restricted-syntax -- selection tile with active-state border/fill + multi-line content, not a text CTA */}
         <button
           type="button"
           onClick={() => {
@@ -871,6 +874,7 @@ function SessionCard({
     : new Set<string>();
 
   return (
+    // eslint-disable-next-line no-restricted-syntax -- session-card selection tile with active-state border + multi-line content, not a text CTA
     <button
       type="button"
       onClick={onClick}
@@ -951,6 +955,7 @@ function ModeBtn({
   disabled?: boolean;
 }): React.ReactElement {
   return (
+    // eslint-disable-next-line no-restricted-syntax -- segmented mode selector with active-state styling
     <button
       type="button"
       onClick={onClick}
@@ -997,6 +1002,7 @@ function FilterChip({
       'border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 text-[color:var(--danger)]',
   };
   return (
+    // eslint-disable-next-line no-restricted-syntax -- toggleable filter chip with active-state styling (●/○), not a text CTA
     <button
       type="button"
       onClick={onClick}

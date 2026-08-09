@@ -127,6 +127,7 @@ export function NudgeCard({
       </p>
       <div className="mt-2 flex items-center gap-2">
         {nudge.cta ? (
+          // eslint-disable-next-line no-restricted-syntax -- warning-filled CTA; §4.2 has no warning variant
           <button
             type="button"
             disabled={acknowledged}
@@ -144,6 +145,7 @@ export function NudgeCard({
             {acknowledged ? t('ackTriggered') : nudge.cta.label}
           </button>
         ) : null}
+        {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text-color, hover underline, no border/bg) */}
         <button
           type="button"
           onClick={() => onSuppressClick?.(nudge.id)}

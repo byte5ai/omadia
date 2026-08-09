@@ -123,6 +123,7 @@ export function PersonaTemplateGallery({
           {PERSONA_TEMPLATES.map((tpl) => {
             const active = selectedId === tpl.id;
             return (
+              // eslint-disable-next-line no-restricted-syntax -- selection tile (aria-pressed multi-line template card), not a §4.2 CTA
               <button
                 key={tpl.id}
                 type="button"
@@ -155,6 +156,7 @@ export function PersonaTemplateGallery({
               </button>
             );
           })}
+          {/* eslint-disable-next-line no-restricted-syntax -- selection tile (aria-pressed "custom" template card), not a §4.2 CTA */}
           <button
             type="button"
             data-testid="gallery-card-custom"

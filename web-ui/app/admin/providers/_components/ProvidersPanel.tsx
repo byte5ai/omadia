@@ -331,6 +331,7 @@ function ProviderRow({
           {/* Explicit re-probe. Only offered where there is a credential to
               probe — the CLI provider authenticates on the Subscriptions tab. */}
           {!p.toolLess && p.status !== 'no_key' && (
+            // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
             <button
               type="button"
               onClick={() => void runVerify()}
@@ -354,6 +355,7 @@ function ProviderRow({
             // installed, preserving the old behaviour on older servers.
             cliMissing ? (
               <span className="flex items-center gap-2">
+                {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare muted text, no border/bg) */}
                 <button
                   type="button"
                   disabled
@@ -367,6 +369,7 @@ function ProviderRow({
                 </span>
               </span>
             ) : (
+              // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
               <button
                 type="button"
                 onClick={onSwitchToSubscriptions}
@@ -379,6 +382,7 @@ function ProviderRow({
             !editing &&
             (p.connected ? (
               <span className="flex items-center gap-3">
+                {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg) */}
                 <button
                   type="button"
                   onClick={() => setEditing(true)}
@@ -387,6 +391,7 @@ function ProviderRow({
                 >
                   {t('providers.changeKey')} →
                 </button>
+                {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare danger text, no border/bg) */}
                 <button
                   type="button"
                   onClick={() => void removeKey()}
@@ -398,6 +403,7 @@ function ProviderRow({
                 {saveStatus === 'saving' && <StatusChip status={saveStatus} t={t} />}
               </span>
             ) : (
+              // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
               <button
                 type="button"
                 onClick={() => setEditing(true)}

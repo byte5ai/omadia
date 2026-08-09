@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { useTranslations } from 'next-intl';
 import type { ChatSession } from '../_lib/chatSessions';
+import { Button } from './ui/Button';
 import {
   isStreamActive,
   useStreamRecord,
@@ -67,14 +68,15 @@ export function ChatTabs({
           disabled={disabled === true && session.id === activeId}
         />
       ))}
-      <button
-        type="button"
+      <Button
+        variant="secondary"
+        size="sm"
         onClick={onCreate}
-        className="ml-1 shrink-0 rounded border border-[color:var(--border)] px-2 py-1 font-medium text-[color:var(--fg)] transition hover:border-[color:var(--border-strong)] hover:bg-[color:var(--bg-elevated)]"
+        className="ml-1 shrink-0"
         title={t('newChatTitle')}
       >
         + {t('newChat')}
-      </button>
+      </Button>
       </div>
       <StreamAnnouncer sessions={sessions} activeId={activeId} />
     </>
@@ -349,6 +351,7 @@ function Tab({
         </>
       )}
       {canClose && !editing && (
+        // eslint-disable-next-line no-restricted-syntax -- icon-only chrome (× close glyph)
         <button
           type="button"
           onClick={onClickClose}

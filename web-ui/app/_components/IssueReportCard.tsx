@@ -227,6 +227,7 @@ function PrimaryButton({
   onClick: () => void;
 }): React.ReactElement {
   return (
+    // eslint-disable-next-line no-restricted-syntax -- warning-filled action; §4.2 has no warning variant
     <button
       type="button"
       onClick={onClick}

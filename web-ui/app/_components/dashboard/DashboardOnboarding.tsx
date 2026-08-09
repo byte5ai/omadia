@@ -249,6 +249,7 @@ export function DashboardOnboarding({
   if (hidden) {
     return (
       <div className="flex justify-end">
+        {/* eslint-disable-next-line no-restricted-syntax -- inline text link (re-enable), not a §4.2 Button candidate */}
         <button
           type="button"
           onClick={() => setHiddenPersisted(false)}
@@ -308,6 +309,7 @@ export function DashboardOnboarding({
             })}
           </p>
         </div>
+        {/* eslint-disable-next-line no-restricted-syntax -- icon-only dismiss chrome, not a §4.2 Button candidate */}
         <button
           type="button"
           onClick={() => setHiddenPersisted(true)}
@@ -369,6 +371,7 @@ export function DashboardOnboarding({
             <span>
               {t('caseChosen', { name: t(`cases.${selectedCase.id}.name`) })}
             </span>
+            {/* eslint-disable-next-line no-restricted-syntax -- inline text link (change selection), not a §4.2 Button candidate */}
             <button
               type="button"
               onClick={() => setSelectedCaseId(null)}
@@ -488,6 +491,7 @@ function ChooseCase({
         {BUSINESS_CASES.map((c) => {
           const Icon = CASE_ICON[c.id] ?? Briefcase;
           return (
+            // eslint-disable-next-line no-restricted-syntax -- full-card selection tile, not a §4.2 Button candidate
             <button
               key={c.id}
               type="button"
@@ -591,6 +595,7 @@ function BringYourSkills(): React.ReactElement {
             <Hammer className="size-3.5" aria-hidden />
             {t('toBuilder')}
           </Link>
+          {/* eslint-disable-next-line no-restricted-syntax -- inline text link (import another), not a §4.2 Button candidate */}
           <button
             type="button"
             onClick={() => setImporting(true)}
@@ -600,6 +605,7 @@ function BringYourSkills(): React.ReactElement {
           </button>
         </div>
       ) : (
+        // eslint-disable-next-line no-restricted-syntax -- bespoke accent-outline pill CTA; no clean §4.2 variant (ghost has no border, primary is filled), kept per the issue's per-component-pass guidance
         <button
           type="button"
           onClick={() => setImporting(true)}
