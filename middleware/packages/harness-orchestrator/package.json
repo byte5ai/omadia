@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "csv-parse": "^7.0.1",
+    "csv-parse": "^7.0.2",
     "mammoth": "^1.8.0",
     "pdf-parse": "^2.4.5"
   },
