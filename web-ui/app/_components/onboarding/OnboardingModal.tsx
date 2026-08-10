@@ -89,6 +89,7 @@ export function OnboardingModal({
       aria-modal="true"
       aria-label={t('ariaLabel')}
     >
+      {/* eslint-disable-next-line no-restricted-syntax -- full-screen dismiss backdrop (inset-0 overlay), not a CTA */}
       <button
         type="button"
         onClick={busy ? undefined : () => setDismissed(true)}
@@ -118,6 +119,7 @@ export function OnboardingModal({
               {t('intro', { count: installedCount })}
             </p>
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (× close glyph) */}
           <button
             type="button"
             onClick={() => setDismissed(true)}
@@ -162,6 +164,7 @@ export function OnboardingModal({
             {t('exportSuffix')}
           </div>
           {phase.kind === 'done' ? (
+            // eslint-disable-next-line no-restricted-syntax -- bespoke ink-palette CTA (paper/ink + uppercase tracking), not §4.2 variant
             <button
               type="button"
               onClick={() => setDismissed(true)}
@@ -217,6 +220,7 @@ function ProfileGrid({
                 {t('pluginCount', { count: profile.plugin_count })}
               </span>
             </div>
+            {/* eslint-disable-next-line no-restricted-syntax -- bespoke ink-fill CTA (paper/ink + uppercase tracking + manual busy dots), not §4.2 variant */}
             <button
               type="button"
               onClick={() => onApply(profile.id)}
@@ -360,6 +364,7 @@ function ErrorBody({
           <div className="mt-1 break-all text-[11px] font-mono">{message}</div>
         </div>
       </div>
+      {/* eslint-disable-next-line no-restricted-syntax -- bespoke ink-palette CTA (paper/ink + uppercase tracking), not §4.2 variant */}
       <button
         type="button"
         onClick={onRetry}

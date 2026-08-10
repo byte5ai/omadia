@@ -88,6 +88,8 @@ function makeDeps(
         });
         return 'ok';
       },
+      // Issue #547 (W1-3): adapters seed the output-schema cache; no-op here.
+      rememberToolSchema: () => {},
     } as unknown as McpManager,
     mcpServers: [server()],
     defaultModel: 'claude-sonnet-4-6',

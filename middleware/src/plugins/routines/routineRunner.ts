@@ -654,11 +654,23 @@ export class RoutineRunner {
     readonly cardBody?: readonly unknown[];
   }> {
     if (routine.outputTemplate === null) {
-      const result = await orchestrator.runTurn({
-        userMessage: routine.prompt,
-        userId: routine.userId,
-        sessionScope: `routine:${routine.id}`,
-      });
+      // The scope is deliberate, and it must match the templated branch below.
+      // `orchestrator.runTurn` reads `turnContext.current()` as its parent and
+      // inherits `mcpUserKey` from it. Without a fresh scope here, a routine
+      // fired while an ambient turn is open would run under the INVOKING user's
+      // MCP identity rather than its own owner's (`routine.userId`) — and the
+      // templated branch, which does open one, would behave differently for the
+      // same routine. Same routine, same owner, two identities, decided by
+      // whether an output template happens to be configured.
+      const result = await turnContext.run(
+        { turnId: '', turnDate: today() },
+        () =>
+          orchestrator.runTurn({
+            userMessage: routine.prompt,
+            userId: routine.userId,
+            sessionScope: `routine:${routine.id}`,
+          }),
+      );
       return { result };
     }
 

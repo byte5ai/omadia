@@ -29,6 +29,29 @@ const eslintConfig = [
       'react-hooks/set-state-in-effect': 'warn',
     },
   },
+  {
+    // Lume Button gate (issue #290). Raw <button> drifts back in with every
+    // new feature; the material layer keeps the look but not the §6.4 press
+    // feel, and per-call className soup re-diverges from the §4.2 variants.
+    // Flag every raw <button> so a real button goes through the canonical
+    // <Button> (app/_components/ui/Button.tsx). Deliberate non-candidates —
+    // tabs/toggles, icon-only chrome, text-as-link, or a bespoke affordance
+    // with no §4.2 variant — carry an inline
+    // `eslint-disable-next-line no-restricted-syntax` with a one-line reason.
+    // Note: <motion.button> inside the component itself is a member
+    // expression, not `button`, so it is not matched here.
+    files: ['app/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "JSXOpeningElement[name.name='button']",
+          message:
+            'Use the canonical <Button> (app/_components/ui/Button.tsx) for real buttons — it encodes the visual-spec §4.2 variants, §6.4 press/hover feel, and §7.3 busy recipe. For a deliberate non-candidate (tab/toggle, icon-only chrome, text link, or a bespoke affordance with no §4.2 variant), add `eslint-disable-next-line no-restricted-syntax` with a short reason.',
+        },
+      ],
+    },
+  },
 ];
 
 export default eslintConfig;

@@ -252,6 +252,7 @@ function SetupFieldRow({
           </label>
         </div>
         <div className="flex items-end justify-end">
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only remove control (Trash2 glyph, no text label) */}
           <button
             type="button"
             onClick={onRemove}

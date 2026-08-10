@@ -53,6 +53,16 @@ const PROMPT_MASKED: PrivacyReceipt = {
   ],
 };
 
+/** #547 / #569 — two external MCP tools returned structuredContent this turn.
+ *  Accounting only: neutral, never changes the palette. */
+const STRUCTURED: PrivacyReceipt = {
+  ...RANKED,
+  structuredPayloads: [
+    { toolName: 'crm_lookup_customer', serverName: 'Kunden-CRM', bytes: 2048, hasOutputSchema: true },
+    { toolName: 'weather_now', serverName: 'Wetterdienst', bytes: 512, hasOutputSchema: false },
+  ],
+};
+
 describe('<PrivacyReceiptCard />', () => {
   it('renders the collapsed summary with dataset + masked-field counts', () => {
     renderWithIntl(<PrivacyReceiptCard receipt={RANKED} />, { locale: 'de' });
@@ -176,6 +186,51 @@ describe('<PrivacyReceiptCard />', () => {
     );
   });
 
+  it('lists structured-output tools with server + schema token (#547/#569)', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={STRUCTURED} />, { locale: 'de' });
+    expect(screen.getByText('Strukturierte Ausgabe empfangen')).toBeInTheDocument();
+    expect(screen.getByText('crm_lookup_customer')).toBeInTheDocument();
+    expect(screen.getByText('Kunden-CRM')).toBeInTheDocument();
+    // Lume §8 — the schema state is a text token, not colour alone.
+    expect(screen.getByText('Output-Schema')).toBeInTheDocument();
+    expect(screen.getByText('kein Schema')).toBeInTheDocument();
+    // 2048 B -> 2.0 KB.
+    expect(screen.getByText('2.0 KB')).toBeInTheDocument();
+  });
+
+  it('shows the structured summary chunk when payloads exist', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={STRUCTURED} />, { locale: 'de' });
+    expect(screen.getByText(/Privacy Shield/).textContent).toContain(
+      '2 strukturierte Ergebnisse',
+    );
+  });
+
+  it('stays emerald for structured output — accounting is neutral, not a warning', () => {
+    const { container } = renderWithIntl(
+      <PrivacyReceiptCard receipt={STRUCTURED} />,
+      { locale: 'de' },
+    );
+    const root = container.querySelector('details');
+    expect(root?.className).toMatch(/success/);
+    expect(root?.className).not.toMatch(/danger/);
+    expect(root?.className).not.toMatch(/warning/);
+  });
+
+  it('omits the structured section when no tool returned structured output', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={RANKED} />, { locale: 'de' });
+    expect(
+      screen.queryByText('Strukturierte Ausgabe empfangen'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('treats an empty structuredPayloads array as absent', () => {
+    const receipt: PrivacyReceipt = { ...RANKED, structuredPayloads: [] };
+    renderWithIntl(<PrivacyReceiptCard receipt={receipt} />, { locale: 'de' });
+    expect(
+      screen.queryByText('Strukturierte Ausgabe empfangen'),
+    ).not.toBeInTheDocument();
+  });
+
   it('never leaks a PII-shaped value — the receipt carries only counts', () => {
     // The v4 receipt is PII-free by construction: counts and verb names
     // only. This pins the contract — if the schema ever regains a value
@@ -233,6 +288,21 @@ describe('summarisePrivacyReceipt()', () => {
     expect(
       summarisePrivacyReceipt({ ...RANKED, maskedPromptSpans: [] }, t),
     ).not.toContain('summaryPromptMasked');
+  });
+
+  it('adds the structured clause when payloads exist (#547/#569)', () => {
+    expect(summarisePrivacyReceipt(STRUCTURED, t)).toContain(
+      'summaryStructured:2',
+    );
+  });
+
+  it('omits the structured clause when the field is absent or empty', () => {
+    expect(summarisePrivacyReceipt(RANKED, t)).not.toContain(
+      'summaryStructured',
+    );
+    expect(
+      summarisePrivacyReceipt({ ...RANKED, structuredPayloads: [] }, t),
+    ).not.toContain('summaryStructured');
   });
 });
 

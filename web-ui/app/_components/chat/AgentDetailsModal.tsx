@@ -91,6 +91,7 @@ export function AgentDetailsModal({
                   {agent.id} · {t('callCount', { count: calls.length })}
                 </p>
               </div>
+              {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (× close glyph) */}
               <button
                 type="button"
                 onClick={onClose}
@@ -123,6 +124,7 @@ export function AgentDetailsModal({
               <p className="text-[11px] leading-relaxed text-[color:var(--fg-muted)]">
                                 {t('footerNote')}
               </p>
+              {/* eslint-disable-next-line no-restricted-syntax -- bespoke ghost-pill close (bg-elevated hover, keeps fg-strong), not §4.2 ghost */}
               <button
                 type="button"
                 onClick={onClose}

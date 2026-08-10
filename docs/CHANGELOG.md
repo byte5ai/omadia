@@ -18,6 +18,700 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — errors on the LLM-access and credential screens now explain themselves (#604)
+
+- The providers panel used to render the middleware's English rejection
+  sentence verbatim in every locale, and the plugin credential editor rendered
+  `runtime.vault_unavailable: vault not wired into runtime route` — an internal
+  identifier next to an English sentence. Neither told the operator what to do
+  next, which is what the customer report was about.
+- `ApiError` now parses the machine code out of the JSON error body once
+  (`ApiError.code`), and a localized catalogue (`errorHelp.<code>.{what,next}`
+  in `messages/en.json` + `de.json`) turns it into two sentences: what
+  happened, and the one action that fixes it. The server's own text survives
+  only inside a collapsed "details for support" disclosure, redacted through
+  `supportDetail()`.
+- A rejected provider key now carries a machine-readable code end to end:
+  `ProviderVerification.code` and a new optional `verifyErrorCode` on the
+  admin-providers DTO. Both are additive — `verifyError` keeps its value and
+  meaning, so an older web-ui against a new middleware, and a new web-ui
+  against an older middleware, both keep working.
+- Scope is bounded and guarded. The catalogue covers the 56 codes emitted by
+  `middleware/src/routes/{install,runtime,adminProviders,store,adminSettings}.ts`
+  plus `providers.key_rejected`. That count includes the ten `install.*` codes
+  that never appear as a literal in a route file at all: `install.ts`'s
+  `handleError` re-emits them from an `InstallError` thrown in
+  `plugins/installService.ts`, and `errorHelpCoverage.test.ts` follows that
+  forwarder rather than assume the file only writes literals. The guard fails
+  when a covered file emits a code with no copy in any locale, when copy exists
+  with no emitter, and when a covered file writes a `code:` the extractor
+  cannot read — an unregistered forwarding shape is a failure, not a silent
+  gap. NOT covered: the other middleware route families, shipped
+  troubleshooting pages, and any LLM-backed help assistant — the issue's own
+  corrected scope rules the last one out.
+- `web-ui/messages/README.md` documents the `errorHelp.<code>.{what,next}` key
+  convention, the optional `action` label, how to add a code, and why adding a
+  `code:` literal to one of the five covered route files turns the web-ui suite
+  red until the copy exists in both locales.
+- The providers panel's very first request is on that path too. A failed
+  `GET /v1/admin/providers` used to render the client-assembled
+  `GET /v1/admin/providers failed: 500` as the entire message, in every locale;
+  it now resolves `providers.read_failed` through the catalogue, keeps the
+  request line for the support disclosure, and falls back to a localized "the
+  provider list could not be loaded" when the server sends no code.
+- `PATCH /v1/admin/settings` now answers a fully-rejected batch with two codes
+  instead of one, because the operator's next step differs:
+  `settings.invalid_values` when the server refused the values (correct the
+  value the details flag) and `settings.no_valid_changes` when no submitted key
+  is a setting it currently offers (reload — the page's field list is stale).
+  With one code, saving a malformed `ANTHROPIC_API_KEY` was reported as an
+  unknown setting and the operator was told to reload, which cannot fix it.
+
+### Added — AI-assistant install path via a public skill file (#338)
+
+- New `docs/onboarding/SKILL.md`: a public, copy-paste onboarding path for
+  non-technical evaluators. Pasting a short prompt into the Claude or Codex
+  desktop app points the assistant at the skill file, which installs the native
+  omadia desktop app and opens the onboarding wizard — no Docker, no build tools.
+  The skill is idempotent (re-running only relaunches an existing install) and
+  resolves each release asset by its API `browser_download_url`, so it survives
+  the independently-pinned desktop version. It scans recent releases for the
+  newest one that actually carries a build for the user's OS, rather than assuming
+  `releases/latest` is complete — a release whose macOS/Windows build failed can
+  ship Linux-only.
+- `README.md` gains a copy-paste setup prompt next to the Quickstart, including
+  the key-free note for Claude Pro/Max subscriptions (#309).
+
+### Changed — MCP connection lifetime is now explicit (#563)
+
+- The MCP pool kept its state in two parallel maps keyed by server id **plus** a
+  hash of the caller's bearer token. Since a stdio child process never sees that
+  token, N callers with N tokens spawned N identical child processes for the
+  same server. Pool keys now carry exactly what the transport consumes: stdio is
+  keyed by server id alone, http/sse by server id + token.
+- Pooled connections are dropped when a server is deleted
+  (`DELETE /mcp-servers/:id`), when its config is saved
+  (`PUT /mcp-servers/:id/config`) and when its token is revoked
+  (`DELETE /mcp-servers/:id/token`) — previously the live connection kept
+  running with the old command, env, headers and token — and on SIGTERM/SIGINT,
+  which no longer leaves MCP stdio children behind.
+- Connections idle longer than `McpManagerOptions.idleTtlMs` (default 5 minutes)
+  are evicted on the next connect attempt, which bounds a pool that previously
+  grew by one entry — and, for stdio, one process — per OAuth token rotation.
+- **Behaviour change for out-of-repo callers:** `McpManager.close(serverId)` now
+  closes every token-scoped connection of that server instead of a single exact
+  pool key. Passing a full pool key still matches only itself, and a server id
+  never matches a different server whose id shares its prefix.
+- Rationale and rejected alternatives: `docs/adr/0008-mcp-connection-lifetime.md`.
+### Added — MCP structured output is accounted in the privacy receipt (#547 / #569)
+
+- External MCP tools that return `structuredContent` now surface in the turn's
+  Privacy Shield receipt, as a neutral "structured output received" section
+  (tool name, server name, byte count, and whether the tool declared an
+  `outputSchema`). This closes the #569 gap: the structured-content sidecar
+  fires inside `McpManager.callTool`, beneath every dispatcher, so structured
+  content previously appeared in **no** receipt or dataset accounting at all —
+  an operator auditing what a turn touched could not see it. Scope note: like
+  every receipt line, this appears only when a `privacy.redact@1` provider is
+  active; with no Privacy Shield installed there is no receipt and the sink
+  no-ops (it produces no receipt entry and nothing observable — the one change
+  in that case is that the previously-inert structured sidecar now has a wired
+  consumer at all).
+- **Accounting, not masking.** Privacy Shield's data-plane boundary is server ↔
+  LLM provider, not server ↔ browser. The structured payload is emitted
+  out-of-band and never crosses the model wire (the model still sees only the
+  interned digest of the tool's text result), so nothing is masked — the browser
+  is the trusted side. The receipt entry is PII-free by construction: counts and
+  names only, never the structured value. A regression test pins that the
+  accounting metadata carries none of the raw values the sidecar legitimately
+  still holds, over a real MCP socket.
+- New optional `PrivacyGuardService.recordStructuredPayload` on the published
+  `@omadia/plugin-api` surface, mirroring `recordBypassedTool`; the boot-wired
+  `McpManager.structuredSink` is its first consumer. Fail-closed: an accounting
+  failure never breaks a tool call, and a payload with no turn identity is
+  skipped rather than mis-filed.
+- Deliberately **not** included: a renderer that draws a canvas card from the
+  structured payload. That is #547's remaining half, unblocked by this
+  accounting decision — the decision #569 asked for *before* anything renders
+  from the sidecar.
+
+### Fixed — a mistyped id no longer produces a dead-but-configured-looking public MCP binding
+
+- `public_mcp_key_bindings.key_id` and `agent_id` are not foreign keys — the key
+  records live in the secret vault and the agents in the in-process registry, not
+  in Postgres (`migrations/0033`) — and nothing in the application layer compensated.
+  A one-character typo in either id got `201 Created`, a row in the list, and a
+  fully-configured-**looking** binding that reached zero tools forever, visually
+  indistinguishable from a working one.
+- The operator write path now resolves both ids against the same sources a real
+  request does. A `agent_id` the registry does not know is a **hard `400`
+  (`agent_not_found`)** with no row written — the registry is cheap and
+  authoritative in-process. A `key_id` that matches no vault record is a
+  **warning, not a rejection** (the honest interim until the key-lister UI from
+  #438/#439 ships): the row still saves, but the write response and every list
+  row carry a `key_id_unknown` warning so the operator sees it reaches nothing.
+- The list endpoint annotates **pre-existing** rows too, so a binding that was
+  already dead — created before this shipped, or bound to an agent later deleted —
+  is flagged the next time the pane is opened, not only on save. The MCP Control
+  Center's Public API keys tab renders these warnings inline.
+- Fail-honest, never fail-red: when a source cannot be read (no registry wired, a
+  vault that failed to load) the check returns "cannot tell" and neither rejects
+  the agent nor invents a warning, so a transient read failure never paints a
+  working install as broken.
+
+### Fixed — `per_user` MCP delegation was unreachable from chat
+
+- Migration `0031` made delegation explicit per MCP server and gave new servers a
+  fail-closed `per_user` default. `resolveMcpUserKey` reads
+  `turnContext.current()?.mcpUserKey` — but **the only thing that ever set it was
+  the operator discover route.** `routes/chat.ts` did not so much as import
+  `turnContext`. Every newly created `per_user` server was therefore dead from
+  chat out of the box: no token sent, the audit row recording the literal
+  `unresolved`, and the turn failing closed. Existing installs were masked only
+  because `0031` backfills token-holding servers to `service`.
+- Both HTTP chat entries now open a turn scope carrying `mcpUserKey`. The
+  streaming entry uses `turnContext.runGenerator`, not `enter`: `enterWith` binds
+  to the async resource executing at that instant, and an async generator resumes
+  in the caller's context, so the identity would be gone by the orchestrator's
+  first yield — before any tool, and therefore before any MCP call, runs.
+- The value is `sessionIdentity(req)` (`session.sub || session.email`), extracted
+  from `routes/agentBuilder.ts` into `src/auth/sessionIdentity.ts`. Deliberately
+  **not** `resolveUserId(req)`, which falls through to the client-sent
+  `x-user-id` header — keying MCP tokens on a client-controlled header would let
+  any caller act as any user. When nothing resolves, `mcpUserKey` stays unset and
+  a `per_user` server fails closed exactly as intended; there is no fallback.
+- Channel turns set `mcpUserKey` inside the orchestrator from the already-resolved
+  `resolvedOmadiaUserId`, gated on `channelIdentity` — which only the dispatcher
+  mints, from the adapter's authenticated `userRef`, so it is server-attested end
+  to end. ⚠️ **Known limit:** channel turns key on the canonical omadia uuid while
+  `/authorize` stores tokens under the session-shaped key, so an affected user
+  still fails closed rather than reaching their server. Closing that needs a new
+  method on the `KnowledgeGraph` contract. Narrower than it sounds: a `per_user`
+  token can only exist for someone who completed `/authorize`, which requires a
+  session, so a channel-only user has no token and failing closed is correct.
+
+### Fixed — migration `0031` built neither of its guards reliably
+
+- The CHECK guard looked up `pg_constraint` by `conname` alone. `conname` is
+  unique per `(connamespace, conrelid)`, not cluster-wide, so a same-named
+  constraint in **any** other schema made the guard true and the `ALTER TABLE` was
+  silently skipped — the migration did not build the constraint it claims to. Now
+  anchored on `conrelid = 'mcp_servers'::regclass`.
+- The backfill guard hardcoded `to_regclass('public.mcp_oauth_tokens')` in a file
+  that is otherwise entirely unqualified, so wherever the domain is applied outside
+  `public` it answered about a table the statement never touches. Demonstrated on a
+  database with an empty `public`: the old guard left an operator-token server on
+  `per_user`, losing its grandfathering and breaking it fail-closed.
+- The backfill test previously **rewrote** the migration to make it apply; it now
+  applies verbatim, with a guard that fails if a schema-qualified reference is ever
+  reintroduced, plus the assertion the suite had dropped as a known flake.
+
+### Fixed — the middleware suite had no per-test timeout
+
+- `--test-timeout=120000`. Previously unset, so Node's default of `Infinity`
+  applied and a hung test burned the CI job's 15-minute wall with no attribution.
+  Note the ceiling is **per file**, not per leaf — a file whose total exceeds it is
+  killed as a unit — so the value is sized on the slowest file (18.4 s), not the
+  slowest test (7.8 s). `web-ui` needs no change; vitest already bounds at 5 s.
+
+### Added — operator surface for public MCP key bindings
+
+- The public MCP endpoint's authorization is driven entirely by rows in
+  `public_mcp_key_bindings`, and there was **no way to create one** except
+  hand-written SQL — the endpoint was inert as shipped. A Public API keys tab in
+  the MCP Control Center now lists, creates and revokes bindings.
+- The public endpoint's dependency bag is unchanged and still receives the
+  read-only store: it gains no write path to its own authorization table. The
+  admin path validates through the same `normalizeBindingRow` the enforcement path
+  uses, so the two cannot drift. Revoke parks the row rather than deleting it.
+- **Revoke is sticky.** A cross-vendor review found that saving a binding
+  re-enabled it: an omitted `enabled` was defaulted to `true` and written over the
+  stored value, so any later save — a stale browser tab, a second operator, a
+  config replay, or this pane's own form, which does not round-trip the field —
+  silently handed a revoked key its whole allowlist back. An absent `enabled` now
+  preserves the stored flag (a genuinely new row still starts enabled), and
+  un-parking is an explicit act: `POST /:keyId/restore`, or an explicit
+  `enabled: true` on the upsert. The pane grew a confirmed **Restore access**
+  button so the stricter server does not strand an operator in psql.
+- `POST /` answers **200** for a row it replaced and keeps 201 for one it created
+  — "Created" is the operator's only per-request signal that they landed on a
+  binding somebody else had already configured, or parked.
+- `writeRateLimitPerMinute` and `enabled` are type-checked rather than coerced. A
+  JSON `null` reached `Number(null)` → `0`, a valid write budget, so a client
+  sending `null` to mean "use the default" got an integration that authenticates,
+  resolves its binding, and is throttled to nothing on every write while the UI
+  showed write tools listed. `[]`, `false` and `""` coerced identically; `true`
+  became 1. Bad values are now a 400.
+- 500 bodies no longer carry `String(err)`. pg errors name tables, columns and
+  constraints and sometimes the connection host, and those bodies land in browser
+  devtools and UI logs; the detail is logged server-side instead.
+
+### Fixed — raw NUL bytes made ripgrep silently truncate eight source files
+
+- Fifteen literal `0x00` bytes, used as composite map-key separators, are now
+  written as `\0`. Provably a no-op — none is followed by an ASCII digit, the only
+  case where the escape would change meaning. Behaviour is bit-identical; what
+  changes is that `rg` no longer classifies these files as binary and stops
+  searching partway through, silently truncating every audit that crosses them.
+
+### Fixed — the MCP input-replay path put raw tool output on the LLM wire
+
+- Privacy Shield v4's boundary is **server ↔ LLM provider**, not server ↔ browser:
+  `internToolResultV4` returns an identity-free digest for the `tool_result` block
+  while the real rows stay server-side behind a `datasetId`, and the browser
+  legitimately receives real values (`PrivacyRenderedAnswer.text`, highlighted via
+  `maskedValues` so the user can see what the server resolved).
+- The replay that runs after a user answers an MCP input card called
+  `mcpManager.callTool` **directly** rather than going through `dispatchTool`, so
+  the result was never interned — and was then interpolated verbatim into the note
+  folded into the turn's ingested text. A replayed HR or accounting tool returning a
+  personnel row sent that row to the model in cleartext, where the identical tool on
+  an ordinary turn would have yielded only a digest.
+- The comment above the interpolation shows this was a near-miss rather than a
+  decision: it reasons explicitly about the LLM wire, but only about the user's
+  typed values, and overlooks the tool result two lines below. Found by
+  cross-vendor review, live in any deployment with a graph pool.
+
+### Known limitation — #547 structured content still has no renderer
+
+- `emitStructured` fires inside `McpManager.callTool`, beneath every dispatcher, so
+  the sidecar is not interned. `middleware/test/mcpStructuredOutputPrivacy.test.ts`
+  pins that mechanism over a real MCP socket, and confirms `outputSchema` and
+  `turnId` already reach the sidecar.
+- **This is not a leak to the browser** — an earlier reading of it as one was
+  corrected by cross-vendor review; the browser is the trusted side. The renderer is
+  deferred for two ordinary reasons instead: it is a full-stack change across eight
+  web-ui files on an already-large PR, and the sidecar bypasses Privacy Shield's
+  receipt and dataset *accounting* even where masking is not owed, which wants a
+  decision before anything renders from it.
+
+### Added — public, stateless MCP endpoint (`POST /api/v1/mcp`)
+
+- omadia can now expose **its own tools** over a stateless Streamable-HTTP MCP
+  server so an external MCP client (Claude Desktop, an agent framework, your own
+  service) can call them with an API key instead of driving the operator UI.
+  External-consumer documentation: `middleware/src/mcp/README.md`.
+- **Stateless by construction.** `sessionIdGenerator: undefined`, no
+  `initialize` handshake required, no `Mcp-Session-Id` ever issued, and a fresh
+  `Server` + transport pair per request torn down in a `finally`. That is what
+  makes the endpoint horizontally scalable — any instance can answer any
+  request. `POST` only; a non-POST gets `405` (a per-request transport leaks on
+  `GET`, because an SSE stream never ends and the teardown never runs).
+- ⚠️ **DARK BY DEFAULT.** `PUBLIC_MCP_ENABLED=false` mounts **no router at
+  all**. This is the highest-blast-radius surface in the MCP cluster — an
+  internet-facing route that reaches the tool layer, including WRITE tools — so
+  not mounting is a stronger guarantee than mounting something that answers 403.
+
+#### Authorization — default-deny at four independent layers
+
+- New scopes on `@omadia/api-key-auth`: `mcp:list`, `mcp:invoke`, and per-tool
+  `mcp:write:<tool>`.
+- **`mcp:invoke` is not sufficient for a write**, and **`*` (`WILDCARD_SCOPE`)
+  does not grant any write.** The wildcard exclusion lives inside `hasScope`
+  itself, so no caller can reach a permissive matcher by accident. The bare
+  two-segment `mcp:write` is rejected at key creation: it would validate,
+  persist, and grant nothing — indistinguishable from a revoked key.
+- **Allowlist per KEY, not per server** (`public_mcp_key_bindings`, migration
+  `0033`). A key reaches exactly one **agent** and exactly the tool names listed
+  on it. A key with no binding authenticates and reaches **zero** tools, which
+  is how integration-backed and write-capable tools (Odoo, Microsoft 365,
+  Confluence) stay out of reach by default — nothing is included until an
+  operator names it.
+- `tools/list` is filtered per caller to exactly the set the key could
+  successfully **call**. A tool name the caller cannot invoke is itself a
+  disclosure, and a non-allowlisted tool is indistinguishable from a
+  nonexistent one.
+- **Write capability is the union** of the tool's own `writeCapabilities`
+  declaration (`isWriteCapableTool`) and the operator's `write_tools` list, so a
+  mistake in either direction fails toward "treat it as a write".
+
+#### Privacy — fails CLOSED for public callers
+
+- The shared dispatch path masks PII at chat-path **parity**, which includes two
+  behaviours that are wrong for an untrusted caller. This endpoint overrides
+  both, without changing the chat path:
+  - **Masking failure refuses the call** instead of returning the raw result.
+  - **An operator's per-plugin privacy bypass does not extend** to a public
+    caller.
+  - **Intern-exempt tools** (`memory`, `read_attachment`, …) — whose results the
+    Privacy Shield deliberately hands over in clear — are **never servable**
+    here, whatever an operator configures.
+- With **no privacy provider installed**, tool calls are refused and say why
+  (`tools/list` still works). `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING=true` is
+  the documented escape hatch for an install whose allowlisted tools provably
+  carry no personal data.
+
+#### Limits, audit, and what idempotency does NOT promise
+
+- 8 MB request body, 30 s per-tool timeout, endpoint-wide concurrency ceiling,
+  and a **separate, tighter rate-limit budget for writes** — heavy reading
+  cannot fund a write burst.
+- One `mcp_call_log` row per call **including every refusal**, with
+  `caller_kind = 'api_key'` (new in migration `0033`) and the acting identity
+  `apikey:<id>`. The acting identity is now **visible in the admin MCP call-log
+  UI** for every row, not just for public calls — it had been recorded but never
+  surfaced.
+- `_meta.idempotencyKey` is honoured for write-capable tools but is
+  **advisory**: process-local, ~15 minute window, so two instances behind a load
+  balancer can both execute. It is retry safety, **not distributed
+  exactly-once** — see the README before relying on it.
+
+### Added — MCP Client ID Metadata Documents, as a third client-acquisition mode
+
+- omadia can now identify itself to an MCP authorization server by a **Client ID
+  Metadata Document** — an https `client_id` the server dereferences — served at
+  `GET /.well-known/omadia-mcp-client`. This removes the app-registration step at
+  MCP-native brokers that support it.
+- Client acquisition is now an explicit ordered chain:
+  `stored → cimd → dcr (deprecated, warns) → manual`. CIMD is attempted only when
+  the authorization server advertises `client_id_metadata_document_supported`
+  **and** the document is verifiably reachable.
+- **Nothing is deprecated on omadia's side.** Dynamic Client Registration keeps
+  working and merely logs a deprecation notice (the MCP spec's sunset is a
+  12-month clock). The manual OAuth client stays **permanently first-class**: it
+  is the protocol-correct path for Microsoft Entra ID and Okta, neither of which
+  supports CIMD.
+- ⚠️ **Deployment requirement — CIMD needs INBOUND HTTPS reachability.** The
+  identity provider must fetch the document from omadia, which is strictly
+  stronger than the outbound-redirect-only requirement every other mode has. Set
+  `FLOW_PUBLIC_BASE_URL` to an https origin reachable from the internet.
+  Deliberately *not* derived from `PUBLIC_BASE_URL`, whose `localhost` default is
+  exactly the shape that cannot work.
+- **A firewalled or air-gapped install degrades cleanly, it does not break.** The
+  metadata endpoint answers **501 with an actionable message** rather than 500,
+  the acquisition chain falls through to the manual client, and the MCP Control
+  Center explains which mode a server is on plus why CIMD is unavailable when it
+  is. A byte5-hosted metadata relay is **not** offered by default — it would make
+  every customer's `client_id` identify byte5 to that customer's IdP.
+- Migration `0032_mcp_oauth_cimd.sql` adds `'cimd'` to the
+  `mcp_oauth_clients.registered_via` CHECK set and a `client_metadata_url`
+  column. The CHECK is widened, not dropped — an unknown mode is still rejected.
+- Security: the metadata-URL probe reuses the existing `assertPublicHttpsUrl`
+  SSRF guard (no second validator), a CIMD client is public by construction so no
+  secret is stored, the document carries no secret, and the W0-1 RFC 9207 `iss`
+  validation plus flow-bound endpoint pinning are untouched. `mcp_oauth_flows`
+  TTL pruning was verified to actually exist in both places it is claimed.
+- Rationale, rejected options, and the full deployment note:
+  [ADR-0007](adr/0007-mcp-client-id-metadata-documents.md).
+- Note on issue #546: its premise that the registry "supports only static headers
+  with `secretRef`" was incorrect — the provider-agnostic OAuth 2.1 + PKCE stack
+  shipped in epic #459 W9. This release is a delta on that stack.
+### Added — MCP tools can ask the user for input mid-call (MRTR `input_required`, #544)
+
+- An MCP server that answers `tools/call` with
+  `resultType: "input_required"` plus `inputRequests` now gets a real input
+  form instead of a failed tool call. The turn ends, the channel renders the
+  fields, and the user's answer replays the parked call automatically.
+  `resultType` and `inputRequests` are read off the **shipped SDK 1.29.0** —
+  no version bump and no dependency on the `@modelcontextprotocol/*@2.0.0`
+  family (#540).
+- **Two turns, not a suspended one.** MRTR imagines the client retrying the
+  *original* request with the call still in flight. omadia has no per-turn
+  suspend/resume store — `turnContext` is an `AsyncLocalStorage` whose
+  lifetime is the turn — and parking a turn mid-tool-loop would hold the HTTP
+  or Teams connection open past every proxy idle timeout. So the feature rides
+  the existing `ask_user_choice` short-circuit: the turn ends, and the answer
+  arrives as a fresh turn that re-calls the tool with
+  `{...originalArgs, inputResponses}`.
+  **Accepted limitation:** the replay is a NEW `tools/call` in a LATER turn
+  against a possibly reconnected transport. For a stateless HTTP server that
+  is indistinguishable from the retry MRTR describes; for a **stdio server
+  holding process state tied to the original in-flight call** it is not — that
+  state may be gone and the server sees a fresh call rather than a
+  continuation. Servers needing true continuation semantics are out of scope
+  until omadia has a real turn suspend/resume store.
+- **The card always names the asking server.** An MCP server can now make
+  omadia display arbitrary prose and collect arbitrary free text
+  mid-conversation, so a card that hid the asker would let a hostile server
+  phish credentials behind omadia's own chrome. Every surface attributes the
+  request: the web-ui form, the plain-text fallback for channels without form
+  support, and the session-log line. Server-supplied prose is rendered quoted
+  and attributed, never as omadia's own copy, and `secret` fields say plainly
+  that the value still reaches the server as entered.
+- A parked record is bound to `{userId, sessionId, correlationId}` and is
+  replayable by that triple only. `sessionScope` alone is deliberately not a
+  key: `resolveScope` returns the literal `'http-default'` for unscoped HTTP
+  turns, which was the live cross-user hole in #445. Records are single-use,
+  TTL-bounded (15 min), and a second `input_required` raised *by* a replay is
+  capped rather than bouncing the user indefinitely.
+- The MCP call audit gains a three-valued `outcome`
+  (`ok` | `fail` | `input_required`). A parked call previously had nowhere
+  honest to go: `ok: false` would put a phantom failure in front of operators
+  debugging a healthy server, and a bare `ok: true` would claim a result that
+  was never delivered. `ok` keeps its narrower meaning ("did not fail") and
+  the finer truth gets its own field.
+- When both an `ask_user_choice` card and an MCP input request are pending in
+  the same tool batch, **the choice card wins** — deterministically, not by
+  dispatch order. A model that asked its own clarifying question has decided
+  it does not yet understand the request, so collecting server-specific field
+  values first would answer the wrong question. The MCP record is not
+  discarded; it stays replayable until its TTL.
+- Not included: omadia acting as an MCP *server* and signalling
+  `input_required` to its own clients. That needs a `ToolDispatchService`
+  result-type widening touching every plugin dispatch handler, and is a
+  separate issue.
+
+### Fixed — `turnContext` is empty inside tool handlers on the streaming path
+
+- Found while building #544. `Orchestrator.chatStream` establishes the turn
+  context with `turnContext.enter()` (`AsyncLocalStorage.enterWith`) inside an
+  async generator, which does **not** propagate into the generator's own
+  continuations — so `turnContext.current()` is `undefined` in every tool
+  handler on every streaming turn, including the web-ui path. Verified with a
+  probe against both entry points.
+- #544 does not depend on it (the parked-record owner is bound from the turn
+  input the orchestrator holds directly), and `userId` + `sessionScope` are now
+  populated on both entry points. The broader consequences for
+  `mcpCallerKind` / `mcpUserKey` audit attribution on streaming turns are
+  **not** addressed here and want their own issue.
+
+### Fixed — the CI schema job never applied `middleware/migrations`
+
+- `MIGRATION_DOMAINS` in `.github/workflows/ci.yml` listed five domains and
+  omitted `middleware/migrations` — the core runtime domain holding `0001`
+  through `0030`. Every migration there had therefore shipped without ever
+  being applied, or re-applied for the idempotency check, against a real
+  Postgres in CI: the whole MCP schema (`0003` agent-builder graph, `0008`
+  tool verdicts, `0009` call log, `0010`/`0013` registries, `0012`/`0014`
+  grants, `0015`/`0016` OAuth 2.1 + PKCE, `0017`–`0020`) and every
+  dev-platform migration (`0022`–`0030`). The gap was suspected during #330
+  and is now closed; the domain is applied first, ahead of the knowledge-graph
+  domain.
+- **No latent schema defect was exposed.** All 30 files apply and re-apply
+  cleanly against `pgvector/pgvector:pg16`, in both possible domain
+  orderings, and additionally with rows present. The domain is fully
+  self-contained: no cross-domain foreign keys, no shared object names with
+  the other five domains, and no extension dependency at all
+  (`gen_random_uuid()` is core since pg13). Verified locally with a
+  reproduction of the CI job before the workflow change was pushed.
+- The workflow comment now records the three domains that remain uncovered
+  (`middleware/src/conductor/migrations`,
+  `middleware/src/services/graph/migrations`,
+  `middleware/packages/harness-memory-postgres/src/migrations`), each of which
+  needs its own audit before being enabled.
+
+### Added — first pg coverage for the MCP schema
+
+- `middleware/test/mcpRegistrySchema.pg.test.ts` — no pg test touched MCP
+  before this (only `memoryStoreConformance`, `pluginVerdictStore` and
+  `skillLifecycleStore` existed). Asserts the registry seed and catalog-kind
+  backfill (`0010` + `0013`, including that `0013`'s `UPDATE` actually lifts
+  the official registry off the `generic` column default), the `kind` /
+  `auth_kind` / `source` / `registered_via` CHECK sets, marketplace
+  provenance defaults with `ON DELETE SET NULL` detaching an imported server
+  from a deleted catalog, the `0014` partial unique index on top-level MCP
+  grants (and that it leaves native grants alone), and the `0015`/`0016`
+  OAuth surface — authorize-time endpoint pinning plus token/flow cascade on
+  server delete.
+- A second suite covers what the CI gate structurally cannot: the CI
+  idempotency check re-applies against an **empty** database, so it can never
+  catch a migration that only breaks once rows exist. That suite re-applies
+  all 30 files with MCP rows in place. It runs against a dedicated schema on
+  a pinned connection with `public` off the `search_path`, so the migrations
+  build a private copy of the domain: re-running `0001`/`0003` drops and
+  recreates the NOTIFY triggers and takes ACCESS EXCLUSIVE on shared tables,
+  which must not happen underneath a concurrently running suite. A scratch
+  *database* isolates just as well but `CREATE`/`DROP DATABASE` is a
+  cluster-wide operation — it stalled the dev-platform pg suites long enough
+  to cancel 29 of their tests, so the schema is the cheaper boundary. The
+  test asserts the isolation itself, since a leaked `search_path` would make
+  every later assertion pass vacuously.
+- Both suites skip when no test Postgres is reachable, and scope every row
+  they write to a `w04-mcp-` tenant prefix, matching the existing pg-suite
+  convention. They share one capped pool: the runner executes test files
+  concurrently and ~16 other pg suites each hold a default-sized (max 10)
+  pool, so an uncapped extra pool in one file exhausts `max_connections` and
+  cancels an unrelated suite mid-run.
+### Security — MCP OAuth: issuer binding, explicit delegation, refresh race (W0-1)
+
+Three live defects in the MCP OAuth path, one migration
+(`middleware/migrations/0031_mcp_oauth_iss_delegation.sql`).
+
+- **RFC 9207 `iss` validation at the OAuth callback.** The callback trusted the
+  `state` parameter alone. `state` proves a response belongs to a flow we
+  started; it does **not** prove which authorization server issued the code, so
+  a malicious or compromised MCP server could steer the callback and have a code
+  minted by one AS redeemed at another. `iss` is now validated against the
+  issuer bound to the flow **before** the code is exchanged — a mismatch, or an
+  absent `iss` from an AS that advertised
+  `authorization_response_iss_parameter_supported`, is rejected and persists
+  nothing. Whether the AS advertised `iss` is captured at authorize time
+  (`mcp_oauth_flows.iss_required`), never re-discovered at the callback, for the
+  same reason migration 0016 pinned the token endpoint.
+- **Confused deputy removed.** Both the operator router and the runtime
+  `McpManager` resolved the OAuth user key as `… ?? 'operator'`. A Teams or
+  Telegram turn whose user had no mapped identity therefore reached the
+  customer's MCP server holding the **operator's** token. Resolution is now
+  explicit per server via the new `mcp_servers.delegation` column: `per_user`
+  fails closed through the existing `onAuthFailure` path when no identity
+  resolves, and `service` is the explicit opt-in to one shared identity. The
+  fallback literal is gone from every call site.
+- **Refresh race.** `getValidAccessToken` allowed N concurrent refreshes per
+  (server, user). Against an AS with rotating refresh tokens the losers get
+  `invalid_grant` and the last writer can persist an already-retired token,
+  silently disconnecting the user. Concurrent callers now share one in-flight
+  refresh, verified by a test that asserts exactly one token-endpoint **HTTP
+  request** under 8 concurrent callers.
+- `mcp_oauth_tokens.issuer` records which AS minted a token, so a rotated issuer
+  invalidates it instead of replaying it against a different server.
+- `mcp_call_log.acting_identity` records **whose** authority each call used
+  (`caller_agent` is the orchestrator slug, not the identity); an unattributable
+  call is recorded as `unresolved` rather than left blank.
+- OAuth failure logging now goes through a redactor
+  (`middleware/src/services/secretRedaction.ts`) — tokens, `code`, and
+  `code_verifier` can no longer reach a log line, including values echoed back
+  by a provider that we never minted.
+
+> ⚠️ **Operator-visible behaviour change.** A fail-closed `per_user` default for
+> every row would break installed deployments whose channel users reach MCP
+> servers today *because of* the `'operator'` fallback. The migration is
+> therefore deliberately asymmetric: every **existing** `mcp_servers` row that
+> already holds a stored operator token is set to `delegation = 'service'`,
+> preserving today's behaviour, and only **newly created** servers get the safe
+> `per_user` default. Review each grandfathered server in the MCP Control Center
+> and switch the ones that should be per-user — while a server stays on
+> `service`, anyone who can reach an orchestrator it is granted to acts with the
+> operator's authority at that server.
+### Deprecated — legacy HTTP+SSE MCP transport (#541)
+
+- MCP 2026-07-28 reclassifies the legacy HTTP+SSE transport as **Deprecated**,
+  with a removal window of at least 12 months. omadia now discourages `sse` for
+  **new** registrations while keeping every existing SSE server fully working —
+  this is a discouragement, not a removal. No protocol work: `SSEClientTransport`
+  stays wired, the `agent_mcp_servers.transport` CHECK constraint still accepts
+  `'sse'`, and no migration ships with this change. Streamable HTTP (`http`) is
+  the migration target.
+- `@omadia/orchestrator` exports `DEPRECATED_MCP_TRANSPORTS` and
+  `isDeprecatedMcpTransport()` as the single source of truth. The operator API's
+  MCP server node gained an additive `transportDeprecated: boolean` derived from
+  it; `McpTransport`/`McpTransportKind` keep `'sse'` in every union, so the
+  published plugin contract is unchanged.
+- **MCP Control Center:** `sse` is no longer offered in the transport picker
+  unless "Show deprecated transports" is ticked (`http` remains the default),
+  and existing `sse` servers carry a *Deprecated* badge pointing at Streamable
+  HTTP. Nothing is hard-blocked — an operator can still deliberately register a
+  legacy SSE server while the removal window is open.
+- **Marketplace imports** are covered too, not just the UI: when a catalog entry
+  advertises both a Streamable-HTTP and an HTTP+SSE remote, the importer now
+  picks the `http` one. An `sse`-only entry still imports, flagged via
+  `McpCatalogEntry.transportDeprecated`. The untrusted-remote guard (https only,
+  no internal/metadata hosts) applies to every candidate as before.
+### Added — MCP structured-content sidecar and `outputSchema` capture (#547, W1-3)
+
+- Discovery now keeps a tool's declared `outputSchema`. `McpToolDescriptor`
+  and `McpDiscoveredTool` gained an optional `outputSchema` field, and
+  `McpManager.listTools()` copies it from `tools/list` (object-valued only;
+  anything else is dropped rather than propagated). It is persisted with the
+  rest of the descriptor in the existing `mcp_servers.discovered_tools`
+  `jsonb` column, so it survives a restart without re-discovery — **no
+  migration required**. `subAgentToolHydration` rehydrates it on the way back
+  out.
+- `structuredContent` returned by an MCP tool is no longer discarded. A new
+  `extractStructured(res)` reads it, and `McpManager` hands it to an optional
+  `McpManagerOptions.structuredSink` as `{ kind: 'structured_output',
+  serverId, toolName, turnId, structured, outputSchema? }`, keyed so a
+  consumer can correlate it with the turn that produced it. Error results and
+  absent/null payloads emit nothing.
+- This is deliberately an **out-of-band** channel, not a widened return type.
+  `McpManager.callTool()` still returns `Promise<string>` and
+  `NativeToolHandler` is untouched, which keeps the published plugin contract
+  stable and — more importantly — keeps every MCP result on the
+  `typeof result === 'string'` path that gates Privacy Shield masking in the
+  orchestrator. A non-string result would silently bypass the shield.
+- Operator surface: the MCP Control Center's tool list shows a read-only
+  "returns structured output" badge for any tool that declares an output
+  schema.
+- No canvas/synthesis behaviour is attached yet — this change is plumbing
+  only. The sink's payload union is a discriminated `kind` so the MRTR work
+  (#544) can add `input_required` without another refactor.
+### Changed — long-running tools stop blocking chat turns (#543)
+
+- New generic **long-running task seam** in `@omadia/orchestrator`
+  (`TaskDescriptor` / `TaskStore`, `defineLongRunningTool`). Mark a tool
+  `longRunning` and it gets a non-blocking `<tool>_start` / `<tool>_status` /
+  `<tool>_list` triple plus a streaming status card: `_start` returns a handle in
+  milliseconds, the work runs detached, and the model collects the result on a
+  later poll. Generalized from the `dev_job_*` tools, which hand-rolled exactly
+  this shape.
+- **A chat turn is never parked.** There is no park/resume for a chat turn —
+  `chat.ts` streams SSE with a heartbeat and ends when the model loop ends — so
+  holding the stream open for minutes only buys proxy idle timeouts, Teams
+  activity expiry, and reaped connections. The model says "started, I'll report
+  back" instead; that is the intended UX.
+- **`dev_job` is the seam's first implementor, with no behaviour change.** A new
+  adapter projects `DevJobStore` onto the seam (ten-value `DevJobStatus` down to
+  `working | input_required | completed | failed`, `dev_job_events` onto the event
+  tail, `claimNextQueued` onto the claim, `finalizeDevJob` onto the terminal
+  write so the brand-gated choke point is preserved). `dev_job_start` still
+  returns `{"status":"job_started",…}`; nothing in `devJobStore.ts` or
+  `devJobOrchestratorTool.ts` changed and no migration was added.
+- **Deferred sub-agent dispatch** is the second consumer. A slow sub-agent
+  delegated from a chat turn blocks that turn for as long as its `LocalSubAgent`
+  loop runs; opt one in via `LONG_RUNNING_SUBAGENT_TOOLS` (comma-separated
+  `ask_<slug>` names) and it also gets the non-blocking triple. The blocking
+  `ask_<slug>` tool stays registered either way, so a sub-agent that answers in
+  seconds keeps answering inline. Empty by default — no existing behaviour moves.
+- **Orphan handling**: a periodic reaper fails live tasks whose worker went
+  silent (including tasks no worker ever claimed) and purges terminal tasks past
+  a retain window, so an unpolled task cannot leak a `working` row forever.
+  Windows: `LONG_RUNNING_TASK_STALE_MS` (default 15 min),
+  `LONG_RUNNING_TASK_RETAIN_MS` (default 1 h).
+- **Deferred-result privacy**: a task's result reaches the model only as the
+  return value of `<tool>_status` — an ordinary tool call inside a live turn — so
+  the Privacy Shield interning that `dispatchTool` performs still applies, at poll
+  time instead of completion time. Status cards deliberately carry no result and
+  no input (they bypass `dispatchTool`), which is enforced by test. Known v1
+  limitation: privacy **bypass attribution** for work done inside the detached
+  runner cannot be recorded against the originating turn, since that turn has
+  already ended. No data leaks; the audit line is what is missing.
+- Not the MCP Tasks extension: internal `LocalSubAgent` dispatches never cross an
+  MCP boundary, and the redesigned extension (SEP-2663) is unshipped even in SDK
+  v2 (`tasks/update` does not exist). The status vocabulary above was chosen to
+  match MCP Tasks so a later protocol projection is mechanical.
+
+### Fixed — background chat turns write into their own session (#617)
+
+- A turn that was still streaming when the user switched to another chat tab
+  lost its content: every transcript write went through the active-session
+  helpers, so the fold landed in whichever session happened to be in the
+  foreground — nowhere at all, in practice. The tab marker reported a finished
+  answer that the transcript never received, and the pending bubble stayed
+  stuck in its `streaming` state.
+- The chat-sessions store now exposes `mutateById(sessionId, mutator)` and
+  `persistById(sessionId)`; `applyStreamEvent`, `finalizePending` and the
+  stream runner's terminal persist all address the session the turn belongs to.
+  `mutateActive` / `persistActive` are gone — the active-scoped call sites on
+  the chat page pass their id explicitly.
+- `persistById` also fixes a second half of the bug: it enqueues rather than
+  reading an effect-synced ref, so the PUT carries state from *after* the
+  `done` fold committed. Without that, a background answer survived in memory
+  but not across a reload — a background turn gets no corrective follow-up turn
+  to repair the snapshot. A session deleted mid-stream is never resurrected:
+  the queued write is dropped when the id is gone.
+
+### Changed — background chat streams surface in-context, not as toasts (#286)
+
+- **Removed `StreamToasts`** (the bottom-right floating cards for background
+  chat turns). Per the Lume visual spec §7.6, toasts / floating notifications
+  are a ship-blocking anti-pattern; §7.4 makes the chat the surface of record.
+- **Background-stream state now lives on the chat tab**: a running turn shows a
+  hollow accent ring (pulsing), a finished one a solid accent disc, an errored
+  one a hollow danger ring carrying a `!` glyph. The states differ by *shape*,
+  so colour is never the sole signal (§8) and the distinction survives
+  `prefers-reduced-motion` disabling the pulse — running vs done separates on
+  fill, error vs running on the glyph. The state also reaches the tab's
+  accessible name via an `sr-only` label (the glyph itself is `aria-hidden`, so
+  screen readers don't speak it twice). Switching tabs clears the unread marker
+  on the tab being left as well as the one entered; active-session errors
+  continue to render inline on the turn.
+- **A polite live region** (`ChatTabs`) announces background turns that finish
+  or fail, replacing the `aria-live` container the removed toast overlay
+  carried. Announcements fire only for non-active tabs.
+- **Known consequence**: background-stream state is now visible only on
+  `/chat`. `StreamToasts` was mounted in the root layout and rendered on every
+  route; the tab strip renders only from the chat page. Accepted in
+  [ADR-0006](adr/0006-in-context-background-stream-surfacing.md).
+
 ### Added — API keys as a first-class authentication method, with per-key scopes (#439)
 
 - New workspace package `@omadia/api-key-auth`
@@ -399,6 +1093,7 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
     the hand-written `0005_turn_embeddings_768.sql`-style migration as the only
     route. `'true'` (default) permits it *when an operator confirms it*; it can
     no longer let a restart wipe a corpus.
+
 ### Added — plugin-contributed navigation (#470, phase 1 of the Dev Platform extraction)
 
 - New plugin capability `ctx.uiRoutes.registerNav({ navId, href, cluster?,

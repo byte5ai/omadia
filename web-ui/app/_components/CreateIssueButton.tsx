@@ -23,6 +23,7 @@ import {
   initDiagnosticsCapture,
 } from '../_lib/diagnosticsBuffer';
 import { Markdown } from './Markdown';
+import { Button } from './ui/Button';
 
 const CATEGORIES: readonly IssueCategory[] = ['bug', 'feature', 'improvement'];
 const MAX_TEXT = 5000;
@@ -324,6 +325,7 @@ export function CreateIssueButton(): React.ReactElement {
                 ? t('previewTitle')
                 : t('dialogTitle')}
           </h2>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only modal close chrome, not a §4.2 Button candidate */}
           <button
             type="button"
             onClick={close}
@@ -350,6 +352,7 @@ export function CreateIssueButton(): React.ReactElement {
                     ? t('connectedAs', { login: status.login })
                     : t('repoNote')}
                   {' · '}
+                  {/* eslint-disable-next-line no-restricted-syntax -- inline text link (disconnect), not a §4.2 Button candidate */}
                   <button
                     type="button"
                     onClick={() => void onDisconnect()}
@@ -387,14 +390,16 @@ export function CreateIssueButton(): React.ReactElement {
                   <span className="text-[color:var(--fg)]">
                     {t('connectIntro')}
                   </span>
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="shrink-0"
                     onClick={() => void onConnect()}
-                    disabled={connecting}
-                    className="shrink-0 rounded border border-[color:var(--border-strong)] px-3 py-1 text-[color:var(--fg-strong)] hover:bg-[color:var(--bg-inverse)] hover:text-[color:var(--fg-on-dark)] disabled:opacity-50"
+                    busy={connecting}
+                    busyLabel={t('connecting')}
                   >
-                    {connecting ? t('connecting') : t('connectGithub')}
-                  </button>
+                    {t('connectGithub')}
+                  </Button>
                 </div>
               )}
             </div>
@@ -505,6 +510,7 @@ export function CreateIssueButton(): React.ReactElement {
                   </span>
                   <div className="flex gap-1">
                     {(['edit', 'preview'] as const).map((tab) => (
+                      // eslint-disable-next-line no-restricted-syntax -- segmented tab selector (edit/preview), not a §4.2 Button candidate
                       <button
                         key={tab}
                         type="button"
@@ -597,68 +603,61 @@ export function CreateIssueButton(): React.ReactElement {
         <div className="flex justify-end gap-2 border-t border-[color:var(--border)] px-4 py-3">
           {step === 'compose' && (
             <>
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={close}
                 disabled={busy}
-                className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
               >
                 {t('cancel')}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                size="sm"
                 onClick={() => void onContinue()}
-                disabled={busy || text.trim().length === 0}
-                className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
+                disabled={text.trim().length === 0}
+                busy={busy}
+                busyLabel={t('reformulating')}
               >
-                {busy ? t('reformulating') : t('reformulate')}
-              </button>
+                {t('reformulate')}
+              </Button>
             </>
           )}
           {step === 'preview' && (
             <>
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => {
                   setStep('compose');
                   setError(null);
                 }}
                 disabled={busy}
-                className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
               >
                 {t('back')}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                size="sm"
                 onClick={() => void onCreate()}
                 disabled={
-                  busy ||
                   !connected ||
                   title.trim().length === 0 ||
                   body.trim().length === 0
                 }
-                className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
+                busy={busy}
+                busyLabel={t('creating')}
               >
-                {busy ? t('creating') : t('create')}
-              </button>
+                {t('create')}
+              </Button>
             </>
           )}
           {step === 'done' && (
             <>
-              <button
-                type="button"
-                onClick={reset}
-                className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)]"
-              >
+              <Button variant="secondary" size="sm" onClick={reset}>
                 {t('createAnother')}
-              </button>
-              <button
-                type="button"
-                onClick={close}
-                className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)]"
-              >
+              </Button>
+              <Button size="sm" onClick={close}>
                 {t('dismiss')}
-              </button>
+              </Button>
             </>
           )}
         </div>
@@ -668,6 +667,7 @@ export function CreateIssueButton(): React.ReactElement {
 
   return (
     <>
+      {/* eslint-disable-next-line no-restricted-syntax -- icon-only header trigger (GitHub glyph), not a §4.2 Button candidate */}
       <button
         type="button"
         onClick={() => {

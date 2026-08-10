@@ -38,7 +38,7 @@
     "smoke:package-roundtrip": "tsx scripts/smoke-package-roundtrip.ts",
     "setup:tigris-lifecycle": "tsx scripts/setup-tigris-lifecycle.ts",
     "pretest": "node scripts/check-node-version.mjs",
-    "test": "node --import tsx --test --test-reporter=spec 'test/**/*.test.ts'"
+    "test": "node --import tsx --test --test-timeout=120000 --test-reporter=spec 'test/**/*.test.ts'"
   },
   "engines": {
     "node": ">=22.13.0 <23"
@@ -48,8 +48,9 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "@aws-sdk/client-s3": "^3.1075.0",
-    "@azure/msal-node": "^5.3.1",
+    "@azure/msal-node": "^5.5.0",
     "@microsoft/microsoft-graph-client": "^3.0.7",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/cookie": "^0.6.0",
     "@types/cookie-parser": "^1.4.10",
@@ -72,9 +73,9 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "sharp": "^0.35.3",
-    "typescript-eslint": "^8.60.1",
+    "typescript-eslint": "^8.66.0",
     "undici": "^8.5.0",
-    "ws": "^8.21.1",
+    "ws": "^8.21.3",
     "yaml": "^2.6.1",
     "yauzl": "^3.3.2",
     "yazl": "^3.3.1",
@@ -84,13 +85,13 @@
     "@eslint/js": "^10.0.1",
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.1",
-    "@types/pg": "^8.11.10",
+    "@types/pg": "^8.21.0",
     "@types/ws": "^8.5.13",
     "@types/yazl": "^3.3.1",
     "nodemon": "^3.1.14",
     "prettier": "^3.9.5",
     "ts-node": "^10.9.2",
-    "tsx": "^4.23.1",
+    "tsx": "^4.23.12",
     "typescript": "^6.0.2"
   },
   "overrides": {

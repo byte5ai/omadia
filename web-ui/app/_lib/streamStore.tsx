@@ -21,7 +21,7 @@ import {
  * The store never holds the full message buffer — that lives in
  * ChatSessions (localStorage + backend). What we keep here is the
  * lightweight "is something happening, and what does the preview look
- * like?" state needed for tabs, toasts, and stop buttons.
+ * like?" state needed for tab markers and stop buttons.
  */
 
 export type StreamPhase =
@@ -37,11 +37,23 @@ export type StreamPhase =
  *  can shallow-compare. The AbortController is intentionally hidden — only
  *  the store mutates it (via abort()) and only the runner reads it (via
  *  claimRequest()). */
+/**
+ * NOTE — `previewTail`, `toolName`, `tokensIn`, `tokensOut` and `cacheTokens`
+ * currently have a writer (`StreamRunner`) and no reader. `StreamToasts` was
+ * the reader; removing it for the in-context tab marker (#286, ADR-0006) left
+ * them write-only. They are kept deliberately, not by oversight: each is a
+ * terminal-state snapshot the runner already has in hand, they cost one
+ * assignment on an event that fires at most once per turn, and the usage
+ * chips are expected back on a per-session surface. `previewTail` is no longer
+ * recomputed per `text_delta` — see `derivePhasePatch`. Drop them if that
+ * surface hasn't materialised by the time this comment feels stale.
+ */
 export interface StreamRecord {
   sessionId: string;
   phase: StreamPhase;
   startedAt: number;
   lastEventAt: number;
+  /** Terminal snapshot only — populated on `done`, not on every delta. */
   previewTail: string;
   toolName?: string;
   error?: string;
@@ -81,7 +93,7 @@ interface InternalRecord extends StreamRecord {
   controller: AbortController;
 }
 
-interface StreamStoreContextValue {
+export interface StreamStoreContextValue {
   records: ReadonlyMap<string, StreamRecord>;
   /** Bump on every queue change so the runner's effect re-fires. */
   queueVersion: number;
@@ -102,7 +114,7 @@ interface StreamStoreContextValue {
   /** User-initiated abort. Synchronous — flips phase immediately. */
   abort(sessionId: string): void;
   /** Visual-only dismiss — drops the record from the store (hiding its
-   *  toast / tab badge) WITHOUT aborting the underlying stream. The runner
+   *  tab marker) WITHOUT aborting the underlying stream. The runner
    *  keeps writing tokens to ChatSessions; patch()/finish() simply no-op
    *  once the record is gone. */
   dismiss(sessionId: string): void;
@@ -269,7 +281,7 @@ export function StreamStoreProvider({
 
   const dismiss = useCallback(
     (sessionId: string): void => {
-      // Visual-only: forget the record so its toast/badge disappears. We do
+      // Visual-only: forget the record so its tab marker disappears. We do
       // NOT touch the AbortController — the runner owns its own signal
       // reference, so the network stream keeps going and the assistant
       // message still lands in ChatSessions. Any later patch()/finish()
@@ -360,4 +372,30 @@ export function useStreamRecord(sessionId: string | undefined): StreamRecord | u
 export function isStreamActive(record: StreamRecord | undefined): boolean {
   if (!record) return false;
   return !isTerminal(record.phase);
+}
+
+/**
+ * Mark background answers as read when the user switches chat tabs (#286).
+ *
+ * Pass the tab being LEFT and the tab being ENTERED. The tab being left is the
+ * one that matters: the tab marker renders for non-active tabs only, so a turn
+ * the user watched finish in the foreground would flag itself the instant they
+ * switch away unless it is forgotten here.
+ *
+ * Only `done` is forgotten. `error` / `aborted` records are deliberately kept
+ * — the agent_unavailable recovery banner and the inline error read them off
+ * the store. A running record is kept so `isActive` (stop button / composer
+ * lock) stays correct.
+ *
+ * Lives here rather than inline in ChatPage so the rule is testable without
+ * mounting the whole chat surface.
+ */
+export function dismissSeenTurns(
+  store: Pick<StreamStoreContextValue, 'get' | 'dismiss'>,
+  ...sessionIds: (string | undefined)[]
+): void {
+  for (const sessionId of new Set(sessionIds)) {
+    if (sessionId === undefined) continue;
+    if (store.get(sessionId)?.phase === 'done') store.dismiss(sessionId);
+  }
 }

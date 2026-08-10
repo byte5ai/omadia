@@ -241,6 +241,7 @@ function SortableRow({
       className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg)]"
     >
       <div className="flex w-full items-center gap-2 px-3 py-2 text-[12px]">
+        {/* eslint-disable-next-line no-restricted-syntax -- icon-only drag handle (GripVertical) with dnd-kit listeners */}
         <button
           type="button"
           {...attributes}
@@ -250,6 +251,7 @@ function SortableRow({
         >
           <GripVertical className="size-3" />
         </button>
+        {/* eslint-disable-next-line no-restricted-syntax -- full-row disclosure toggle (chevron + page label), not a CTA */}
         <button
           type="button"
           onClick={onToggle}
@@ -266,6 +268,7 @@ function SortableRow({
           <span className="text-[color:var(--fg-muted)]">{route.path}</span>
         </button>
         <ModeBadge mode={route.render_mode} />
+        {/* eslint-disable-next-line no-restricted-syntax -- icon-only delete control (Trash2), no text */}
         <button
           type="button"
           onClick={onRemove}

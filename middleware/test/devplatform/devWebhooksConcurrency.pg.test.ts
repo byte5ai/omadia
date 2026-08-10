@@ -8,6 +8,8 @@ import { after, before, describe, it } from 'node:test';
 import express from 'express';
 import { Pool } from 'pg';
 
+import { probePgTest } from '../_helpers/pgTestDb.js';
+
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
 import { DevJobStore } from '../../src/devplatform/devJobStore.js';
@@ -28,25 +30,14 @@ import type { DevRepo } from '../../src/devplatform/types.js';
  * what the 24 sequential unit tests in `devWebhooks.test.ts` cannot exercise.
  * Skips when no test Postgres is reachable, like the other `*.pg.test.ts`.
  */
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['WS5_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'webhooksConcurrency',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL', 'DATABASE_URL'],
+});
 
 const MARK = 'pg-webhook-concurrency';
 const SECRET = 'whsec_concurrency_test_secret';
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
-
-const probePool = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 2000 });
-let pgAvailable = true;
-try {
-  await probePool.query('SELECT 1');
-} catch {
-  pgAvailable = false;
-}
-await probePool.end().catch(() => undefined);
 
 function sign(body: string): string {
   return 'sha256=' + crypto.createHmac('sha256', SECRET).update(body).digest('hex');
