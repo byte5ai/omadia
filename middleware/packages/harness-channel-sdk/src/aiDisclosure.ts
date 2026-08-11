@@ -53,6 +53,18 @@ export interface AiDisclosure {
    *  operator's instance config. Makes a deviation from the delivered state
    *  visible instead of silent (epic #642). */
   readonly source: 'default' | 'operator';
+  /**
+   * #644 — verbatim operator-authored addendum, folded into `text` on its own
+   * paragraph AFTER the marking line (never before, never in its place). Rides
+   * the structured carrier so every path that forwards this disclosure —
+   * including the ctx-less `toSemanticAnswer(result)` the proactive routine
+   * runner calls — appends it too. Follows the `RoutineStaticMarkdownSection`
+   * contract: renderer-verbatim, no LLM or data involvement. Absent when the
+   * operator set none. It can only ADD to the marking, never replace it: an
+   * `'off'` disclosure produces no {@link AiDisclosure} at all, so there is no
+   * carrier for a note to ride (AC5).
+   */
+  readonly operatorNote?: string;
 }
 
 /**
@@ -178,6 +190,13 @@ export interface ApplyAiDisclosureContext {
   readonly seen?: DisclosureSeenStore;
   /** Assistant display name to weave into the line. */
   readonly assistantName?: string;
+  /**
+   * #644 — verbatim operator-authored addendum appended after the marking line
+   * when the line is folded. Ignored when a pre-resolved {@link disclosure} is
+   * supplied (that carrier already fixes its own note). Blank / whitespace-only
+   * is treated as absent.
+   */
+  readonly operatorNote?: string;
 }
 
 /** Result of {@link applyAiDisclosure}: the (possibly folded) text plus the
@@ -200,6 +219,7 @@ function resolveFromPolicy(ctx: ApplyAiDisclosureContext): AiDisclosure | undefi
     policy.level === 'off' && policy.source !== 'operator' ? DEFAULT_AI_DISCLOSURE_POLICY : policy;
   if (effective.level === 'off') return undefined;
   const locale = normalizeLocale(ctx.locale ?? effective.locale);
+  const operatorNote = ctx.operatorNote?.trim();
   return Object.freeze({
     text: composeDisclosureText(locale, effective.level, {
       ...(ctx.assistantName !== undefined ? { assistantName: ctx.assistantName } : {}),
@@ -207,7 +227,23 @@ function resolveFromPolicy(ctx: ApplyAiDisclosureContext): AiDisclosure | undefi
     level: effective.level,
     locale,
     source: effective.source,
+    ...(operatorNote ? { operatorNote } : {}),
   });
+}
+
+/**
+ * #644 — resolve the structured {@link AiDisclosure} for a turn WITHOUT folding
+ * anything into `text` and WITHOUT touching the seen-store. This is the
+ * "resolve once per turn" half of the split: the orchestrator calls it to place
+ * the marker on `ChatTurnResult.aiDisclosure`, and each output path then folds
+ * that same marker via {@link applyAiDisclosure} (`disclosure: …`). Returns
+ * `undefined` only for a legitimate operator `'off'` (AC2). One derivation,
+ * both paths — the same reason `deriveAgentsConsulted` was extracted.
+ */
+export function resolveAiDisclosure(
+  ctx: ApplyAiDisclosureContext = {},
+): AiDisclosure | undefined {
+  return ctx.disclosure ?? resolveFromPolicy(ctx);
 }
 
 /**
@@ -227,11 +263,14 @@ function shouldFold(scope: string | undefined, seen: DisclosureSeenStore | undef
   }
 }
 
-/** Fold the disclosure line into the answer as its own paragraph — the same
+/** Fold the disclosure block into the answer as its own paragraph(s) — the same
  *  honest-degradation fold `withMcpInputPrompt` uses so the line never runs
- *  into the model's prose. */
-function foldDisclosure(answer: string, line: string): string {
-  return answer.trim().length > 0 ? `${answer}\n\n${line}` : line;
+ *  into the model's prose. The operator note (#644), when present, is appended
+ *  AFTER the marking line on its own paragraph: it can only add to the marking,
+ *  never stand in its place (AC5). */
+function foldDisclosure(answer: string, line: string, operatorNote?: string): string {
+  const block = operatorNote ? `${line}\n\n${operatorNote}` : line;
+  return answer.trim().length > 0 ? `${answer}\n\n${block}` : block;
 }
 
 /**
@@ -250,6 +289,11 @@ export function applyAiDisclosure(
 ): ApplyAiDisclosureResult {
   const aiDisclosure = ctx.disclosure ?? resolveFromPolicy(ctx);
   if (aiDisclosure === undefined) return { text: answer };
-  const text = shouldFold(ctx.scope, ctx.seen) ? foldDisclosure(answer, aiDisclosure.text) : answer;
+  // The note rides the carrier (`aiDisclosure.operatorNote`), so a pre-resolved
+  // marker folds its own note and a policy-resolved one folds the note the
+  // policy carried — both without re-reading `ctx.operatorNote` here.
+  const text = shouldFold(ctx.scope, ctx.seen)
+    ? foldDisclosure(answer, aiDisclosure.text, aiDisclosure.operatorNote)
+    : answer;
   return { text, aiDisclosure };
 }

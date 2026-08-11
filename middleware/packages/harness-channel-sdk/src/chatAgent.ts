@@ -802,6 +802,16 @@ export type ChatStreamEvent =
        * field gives every channel the SAME harness-built array.
        */
       agentsConsulted?: AgentConsultation[];
+      /**
+       * AI-Act Art. 50 (#644, epic #642) — the disclosure the orchestrator
+       * resolved for this turn, folded into `answer` above AND carried
+       * structured here (same shape/derivation as `SemanticAnswer.aiDisclosure`
+       * via `resolveAiDisclosure`/`applyAiDisclosure`). Streaming clients get
+       * the SAME marking the non-streaming `toSemanticAnswer` path produces —
+       * that parity is the whole point of resolving once and forwarding on both
+       * paths. Omitted only when an operator turned the disclosure `'off'`.
+       */
+      aiDisclosure?: AiDisclosure;
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The

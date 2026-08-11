@@ -7,6 +7,10 @@ import {
 import {
   deriveAgentsConsulted,
   toSemanticAnswer,
+  applyAiDisclosure,
+  resolveAiDisclosure,
+  DEFAULT_AI_DISCLOSURE_POLICY,
+  InMemoryDisclosureSeenStore,
   type ChatStreamEvent,
   type ChatTurnInput,
   type ChatTurnResult,
@@ -17,6 +21,10 @@ import {
   type PendingMcpInputCard,
   type PendingRoutineList,
   type SemanticAnswer,
+  type AiDisclosure,
+  type AiDisclosureLevel,
+  type AiDisclosurePolicy,
+  type DisclosureSeenStore,
 } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { LlmProvider } from '@omadia/llm-provider';
@@ -219,6 +227,44 @@ const KERNEL_NATIVE_TOOL_NAMES: readonly string[] = [
 // the import block at the top. Re-exported below from this module's barrel
 // for back-compat with kernel-side callers that still import it from
 // `services/orchestrator.js`.
+
+/**
+ * AI-Act Art. 50 (#644, epic #642) — the operator's resolved disclosure config
+ * for this Agent, read once from the setup fields (manifest.yaml) by the plugin
+ * and handed to the Orchestrator pre-resolved (same arrival pattern as
+ * `assistantIdentity` / `maxTokens`: the harness-orchestrator package never
+ * reads the installed-plugin config itself).
+ *
+ * Absent entirely → the shipping default ({@link DEFAULT_AI_DISCLOSURE_POLICY}:
+ * `standard`, active, `source: 'default'`) on every channel (AC1). Present →
+ * the operator set at least one field, so `source` is `'operator'` and an
+ * `'off'` level is honoured (a turn cannot silence itself; only an
+ * operator-sourced policy can — see `applyAiDisclosure`).
+ */
+export interface AiDisclosureSetup {
+  /** Global default level for channels without a per-channel override. */
+  readonly level: AiDisclosureLevel;
+  /**
+   * Per-channel level overrides, keyed by `ChannelKind` (`teams` | `telegram` |
+   * `slack` | `email` | `web`). A turn whose channel does not resolve to a
+   * `ChannelKind` falls back to {@link level} — the safe direction (the marking
+   * stays active). NOTE: today only `teams`/`slack`/`telegram` are ever
+   * populated as a per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`
+   * is the sole setter of `channelIdentity`); `email` and `web` turns carry none
+   * yet (as do discord / whatsapp / canvas-custom / HTTP-dev) and therefore use
+   * the global {@link level}. Empty / absent → no per-channel differentiation.
+   */
+  readonly overrides?: Readonly<Record<string, AiDisclosureLevel>>;
+  /** Wording language for the marking; normalized to `'de'` / `'en'` by the
+   *  text composer. Absent → `'de'` (the shipping-default language). */
+  readonly locale?: string;
+  /** Assistant display name woven into the standard line ("… von <name>, einem
+   *  KI-System, erzeugt."). Absent → the name-less generic line. */
+  readonly assistantName?: string;
+  /** Verbatim operator addendum appended after the marking line; never replaces
+   *  it (AC5). Follows the `RoutineStaticMarkdownSection` verbatim contract. */
+  readonly operatorNote?: string;
+}
 
 export interface OrchestratorOptions {
   /**
@@ -566,6 +612,21 @@ export interface OrchestratorOptions {
    * empty → behaviour is identical to pre-Wave-8 (no classifier call).
    */
   personaSkills?: readonly OrchestratorPersonaSkill[];
+  /**
+   * AI-Act Art. 50 (#644) — the operator's resolved disclosure config. Absent →
+   * the shipping default (standard, active) on every channel. See
+   * {@link AiDisclosureSetup}.
+   */
+  aiDisclosure?: AiDisclosureSetup;
+  /**
+   * #644 — first-turn-per-scope fold-dedup backing store. One instance per
+   * process, shared across the Agents the registry builds (same lifetime
+   * rationale as `directLineStickyStore`), so re-building an Agent never
+   * re-folds the marking into an ongoing conversation. Absent → a private
+   * {@link InMemoryDisclosureSeenStore} (a restart re-folds, the fail-safe
+   * direction).
+   */
+  aiDisclosureSeenStore?: DisclosureSeenStore;
 }
 
 /** A persona candidate resolved with its full body (Orchestrator-internal —
@@ -1613,6 +1674,11 @@ export class Orchestrator {
   /** Operator persona — first line(s) of the system prompt. See
    *  `OrchestratorOptions.assistantIdentity` / `DEFAULT_ASSISTANT_IDENTITY`. */
   private readonly assistantIdentity: string;
+  /** #644 — resolved operator disclosure config (undefined → shipping default
+   *  on every channel). See {@link AiDisclosureSetup}. */
+  private readonly aiDisclosure: AiDisclosureSetup | undefined;
+  /** #644 — first-turn-per-scope fold-dedup store (see OrchestratorOptions). */
+  private readonly disclosureSeen: DisclosureSeenStore;
   private readonly nativeTools: NativeToolRegistry;
   /**
    * Per-turn scratchpad for the routine list smart-card emitted in-band by
@@ -1704,6 +1770,9 @@ export class Orchestrator {
     this.graphTenantId = options.graphTenantId;
     this.assistantIdentity =
       options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
+    this.aiDisclosure = options.aiDisclosure;
+    this.disclosureSeen =
+      options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
     this.sessionLogger = options.sessionLogger;
     this.entityRefBus = options.entityRefBus;
     this.contextRetriever = options.contextRetriever;
@@ -2667,10 +2736,109 @@ export class Orchestrator {
    */
   async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
     const result = await this.runTurn(input);
-    return toSemanticAnswer(result);
+    // #644 — the disclosure resolution rides `result.aiDisclosure` (set by
+    // `runTurn`). Thread the scope + shared seen-store ONLY when there is a
+    // marker to fold, so `toSemanticAnswer` folds it on the FIRST turn of the
+    // conversation and suppresses the repeat thereafter (the structured field
+    // still rides every turn). When the operator turned the disclosure `'off'`
+    // there is no marker: pass NO ctx so the converter does not resolve and
+    // fold the shipping default in its place (a ctx alone re-engages the fold).
+    return toSemanticAnswer(
+      result,
+      result.aiDisclosure
+        ? {
+            ...(input.sessionScope ? { scope: input.sessionScope } : {}),
+            seen: this.disclosureSeen,
+          }
+        : undefined,
+    );
   }
 
+  /**
+   * AI-Act Art. 50 (#644, epic #642) — resolve THIS turn's disclosure once,
+   * from the operator setup fields + the turn's channel, WITHOUT folding or
+   * touching the seen-store. Placed on `ChatTurnResult.aiDisclosure` (below) and
+   * on the streaming `done` event ({@link discloseDoneEvent}); each output path
+   * then folds this same marker. One derivation, both paths — the reason
+   * `deriveAgentsConsulted` was extracted.
+   *
+   * The channel picks the level: a per-channel override (keyed on the turn's
+   * `channelIdentity.channelKind`) wins over the operator's global default,
+   * which wins over the shipping default. A turn whose channel does not resolve
+   * to a `ChannelKind` uses the global level — the safe direction (marking
+   * stays active). Returns `undefined` only for an operator `'off'` (AC2).
+   *
+   * Deliberately reads NOTHING from `assistantIdentity` / the persona override /
+   * the system prompt: the marking lives behind the model precisely so a
+   * branded or human-sounding persona cannot suppress it (AC2 regression).
+   */
+  private resolveTurnDisclosure(input: ChatTurnInput): AiDisclosure | undefined {
+    const setup = this.aiDisclosure;
+    const channelKind = input.channelIdentity?.channelKind;
+    const override =
+      channelKind !== undefined ? setup?.overrides?.[channelKind] : undefined;
+    const level: AiDisclosureLevel =
+      override ?? setup?.level ?? DEFAULT_AI_DISCLOSURE_POLICY.level;
+    // `source` gates the `'off'` opt-out: only an operator-sourced policy may
+    // silence a turn. A resolved `setup` object exists ONLY when the operator
+    // configured at least one disclosure field (the plugin passes `undefined`
+    // otherwise), so its mere presence makes the policy operator-sourced; with
+    // no config at all it is the shipping default.
+    const source: 'default' | 'operator' =
+      setup !== undefined ? 'operator' : DEFAULT_AI_DISCLOSURE_POLICY.source;
+    const policy: AiDisclosurePolicy = {
+      level,
+      source,
+      ...(setup?.locale ? { locale: setup.locale } : {}),
+    };
+    return resolveAiDisclosure({
+      policy,
+      ...(setup?.locale ? { locale: setup.locale } : {}),
+      ...(setup?.assistantName ? { assistantName: setup.assistantName } : {}),
+      ...(setup?.operatorNote ? { operatorNote: setup.operatorNote } : {}),
+    });
+  }
+
+  /**
+   * #644 — fold this turn's disclosure into a streaming `done` event: append the
+   * marking (+ operator note) to the authoritative `answer` AND attach the
+   * structured carrier. Mirrors the non-streaming `toSemanticAnswer` fold — same
+   * `resolveAiDisclosure` marker, same `applyAiDisclosure` fold, same shared
+   * seen-store — so the streaming and non-streaming paths deliver byte-identical
+   * marking (AC: streaming == non-streaming). A turn takes exactly ONE path, so
+   * the seen-store is marked once per turn. Returns the event untouched for an
+   * operator `'off'` (no carrier, no fold).
+   */
+  private discloseDoneEvent(
+    done: Extract<ChatStreamEvent, { type: 'done' }>,
+    input: ChatTurnInput,
+  ): Extract<ChatStreamEvent, { type: 'done' }> {
+    const aiDisclosure = this.resolveTurnDisclosure(input);
+    if (!aiDisclosure) return done;
+    const { text } = applyAiDisclosure(done.answer, {
+      disclosure: aiDisclosure,
+      ...(input.sessionScope ? { scope: input.sessionScope } : {}),
+      seen: this.disclosureSeen,
+    });
+    return { ...done, answer: text, aiDisclosure };
+  }
+
+  /**
+   * Public ChatAgent.runTurn — thin wrapper resolving this turn's AI disclosure
+   * (#644) and placing it on the result, so EVERY consumer of the internal
+   * shape gets it: `chat()` above, the verifier's retry loop, and the proactive
+   * routine runner (which calls `toSemanticAnswer(result)` directly). The
+   * resolution is fold-free and seen-store-free — the fold happens once, at the
+   * output boundary — so resolving on each internal `runTurn` (e.g. a verifier
+   * retry) never double-counts a scope.
+   */
   async runTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
+    const result = await this.runTurnCore(input);
+    const aiDisclosure = this.resolveTurnDisclosure(input);
+    return aiDisclosure ? { ...result, aiDisclosure } : result;
+  }
+
+  private async runTurnCore(input: ChatTurnInput): Promise<ChatTurnResult> {
     const turnId = randomUUID();
     // W2-1 (#544) — an MCP input card's answer arrives as a machine envelope in
     // `userMessage`. Normalise it HERE, before anything downstream reads the
@@ -4402,7 +4570,7 @@ export class Orchestrator {
             2000,
           ),
         );
-        yield doneEvent;
+        yield this.discloseDoneEvent(doneEvent, input);
         return;
       }
       // #361 — failure-closed prompt masking (streaming path): the inner
@@ -4501,7 +4669,7 @@ export class Orchestrator {
               2000,
             ),
           );
-          yield doneEvent;
+          yield this.discloseDoneEvent(doneEvent, input);
           continue;
         }
         if (event.type === 'done') {
@@ -4517,6 +4685,11 @@ export class Orchestrator {
               2000,
             ),
           );
+          // #644 — fold the disclosure at the boundary, AFTER the hook (which
+          // records the raw answer, matching the non-streaming path where
+          // `toSemanticAnswer` folds only after `runTurn` persisted the turn).
+          yield this.discloseDoneEvent(event, input);
+          continue;
         }
         yield event;
       }

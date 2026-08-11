@@ -134,6 +134,7 @@ export {
   InMemoryDisclosureSeenStore,
   composeDisclosureText,
   applyAiDisclosure,
+  resolveAiDisclosure,
 } from './aiDisclosure.js';
 export type {
   AiDisclosure,

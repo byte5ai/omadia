@@ -242,7 +242,7 @@ export {
   // knobs invert the hierarchy must not start quietly.
   assertTimeoutHierarchy,
 } from './orchestrator.js';
-export type { OrchestratorOptions } from './orchestrator.js';
+export type { OrchestratorOptions, AiDisclosureSetup } from './orchestrator.js';
 
 // #332 Layer 2 — Direct Line directive parsing & target resolution (exported
 // for unit coverage and reuse by deterministic routers / the Conductor).

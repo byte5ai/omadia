@@ -14,7 +14,7 @@
  * than once in one process.
  */
 
-import type { ChatAgent } from '@omadia/channel-sdk';
+import type { ChatAgent, DisclosureSeenStore } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { LlmProvider } from '@omadia/llm-provider';
 import type {
@@ -43,7 +43,11 @@ import { ChatSessionStore } from './chatSessionStore.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
-import { Orchestrator, type OrchestratorPersonaSkill } from './orchestrator.js';
+import {
+  Orchestrator,
+  type OrchestratorPersonaSkill,
+  type AiDisclosureSetup,
+} from './orchestrator.js';
 import type { DirectLineStickyStore } from './directLineSticky.js';
 import type {
   McpInputReplayer,
@@ -168,6 +172,20 @@ export interface OrchestratorDeps {
   readonly graphTenantId?: string;
   /** Operator-set assistant identity (overrides the built-in default). */
   readonly assistantIdentity?: string;
+  /**
+   * AI-Act Art. 50 (#644) — resolved operator disclosure config. Absent → the
+   * shipping default (standard, active) on every channel. See
+   * `OrchestratorOptions.aiDisclosure`.
+   */
+  readonly aiDisclosure?: AiDisclosureSetup;
+  /**
+   * #644 — process-shared first-turn-per-scope fold-dedup store. Deps, not
+   * per-Agent config, for the SAME reason as `directLineStickyStore`: the
+   * registry replaces an Orchestrator instance on any config diff, and a
+   * per-instance store would re-fold the marking into every live conversation
+   * whenever an operator changed something unrelated.
+   */
+  readonly aiDisclosureSeenStore?: DisclosureSeenStore;
   /** #133 E0 — side-channel turn-hook runner, fired during each turn. */
   readonly turnHookRegistry?: TurnHookRunner;
   /**
@@ -351,6 +369,10 @@ export function buildOrchestratorForAgent(
     ...(deps.graphTenantId ? { graphTenantId: deps.graphTenantId } : {}),
     ...(deps.assistantIdentity
       ? { assistantIdentity: deps.assistantIdentity }
+      : {}),
+    ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
+    ...(deps.aiDisclosureSeenStore
+      ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }
       : {}),
     ...(deps.turnHookRegistry
       ? { turnHookRegistry: deps.turnHookRegistry }
