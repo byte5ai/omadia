@@ -34,7 +34,7 @@
  * full current snapshot.)
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -45,7 +45,12 @@ const TSC = path.join(MIDDLEWARE_ROOT, 'node_modules', '.bin', 'tsc');
 
 // The orphaned projects. Both extend the root tsconfig and add `../src/**/*.ts`,
 // so src is (re)checked here too — it is clean, so it contributes nothing.
-const PROJECTS = ['test/tsconfig.json', 'scripts/tsconfig.json'];
+// Each entry pairs the project file with the tree it is responsible for; the
+// coverage guard below asserts the project actually loads that whole tree.
+const PROJECTS = [
+  { project: 'test/tsconfig.json', tree: 'test' },
+  { project: 'scripts/tsconfig.json', tree: 'scripts' },
+];
 
 const args = new Set(process.argv.slice(2));
 const doUpdate = args.has('--update');
@@ -67,6 +72,66 @@ function runTsc(project) {
   }
 }
 
+/** Every `.ts` file under `dir`, absolute, skipping node_modules/dist. */
+function walkTsFiles(dir, out = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+      walkTsFiles(full, out);
+    } else if (entry.name.endsWith('.ts')) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+/**
+ * Guard against silent coverage loss.
+ *
+ * A ratchet that measures errors is worthless if the project stops matching
+ * files: `tsc` then exits 0 with no diagnostics, every baseline entry reads as
+ * "improved", and the check prints ✓ while typechecking nothing. Verified: with
+ * `test/tsconfig.json`'s include narrowed to one subdirectory, this script
+ * reported "10 known error(s), no regressions" and exit 0 — 381 real errors
+ * silently unchecked. Same failure class as the Postgres self-skip (#565/#612).
+ *
+ * So assert coverage directly, from the filesystem: every `.ts` file under the
+ * tree a project owns must actually be loaded by that project. This derives the
+ * expectation from what is on disk rather than pinning a count, so it cannot go
+ * stale as the repo grows.
+ */
+function assertProjectCoverage() {
+  const gaps = [];
+  for (const { project, tree } of PROJECTS) {
+    const listed = new Set(
+      execFileSync(TSC, ['-p', project, '--listFilesOnly'], {
+        cwd: MIDDLEWARE_ROOT,
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+      })
+        .split('\n')
+        .filter(Boolean)
+        .map((f) => path.resolve(MIDDLEWARE_ROOT, f.trim())),
+    );
+    for (const file of walkTsFiles(path.join(MIDDLEWARE_ROOT, tree))) {
+      if (!listed.has(path.resolve(file))) {
+        gaps.push({ project, file: path.relative(MIDDLEWARE_ROOT, file) });
+      }
+    }
+  }
+  if (!gaps.length) return;
+
+  console.error(
+    `\n✗ Test/scripts typecheck ratchet: ${gaps.length} file(s) on disk are NOT covered ` +
+      `by their project — the ratchet would pass without checking them.\n`,
+  );
+  for (const { project, file } of gaps.slice(0, 20)) console.error(`  ${file}  (${project})`);
+  if (gaps.length > 20) console.error(`  … and ${gaps.length - 20} more`);
+  console.error(`\nFix the project's \`include\` so it covers the whole tree.\n`);
+  process.exit(1);
+}
+
 // A primary diagnostic line: `relative/path.ts(line,col): error TS1234: message`.
 // Continuation lines (indented type text) do not match and are ignored.
 const ERR_RE = /^(.+?)\((\d+),(\d+)\): error TS\d+/;
@@ -76,7 +141,7 @@ const ERR_RE = /^(.+?)\((\d+),(\d+)\): error TS\d+/;
 function collectCounts() {
   const perProject = [];
   let sawCrash = false;
-  for (const project of PROJECTS) {
+  for (const { project } of PROJECTS) {
     const out = runTsc(project);
     const counts = new Map();
     let matched = 0;
@@ -122,6 +187,8 @@ function total(map) {
 }
 
 // ---------------------------------------------------------------------------
+
+assertProjectCoverage();
 
 const current = collectCounts();
 const baselineObj = loadBaseline();
