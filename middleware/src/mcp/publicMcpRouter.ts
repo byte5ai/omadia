@@ -21,9 +21,11 @@
  */
 
 import { Router } from 'express';
+import type { RequestHandler } from 'express';
 
 import type { ApiKeyStore, AuditLog, RateLimiter } from '@omadia/api-key-auth';
 import { requireApiKey } from '@omadia/api-key-auth';
+import { AI_PROVENANCE_HEADER, AI_PROVENANCE_HEADER_VALUE } from '@omadia/channel-sdk';
 
 import { PUBLIC_MCP_PATH } from './publicMcpPath.js';
 import { PublicMcpServer, type PublicMcpServerDeps } from './publicMcpServer.js';
@@ -38,6 +40,25 @@ import { PublicMcpServer, type PublicMcpServerDeps } from './publicMcpServer.js'
  * `requireAuth`, which the caller pairs it with) to EVERY request on the app.
  */
 const ROUTER_ROOT = '/';
+
+/**
+ * #647 — AI-Act Art. 50 provenance, envelope level, for the public MCP path.
+ *
+ * The analogue of the chat API's stream-open header: it marks that responses
+ * from this endpoint are served by an omadia AI system (Art. 50 §1 — the caller
+ * is interfacing an AI system), independent of what any individual tool result's
+ * data is. Set unconditionally on the way IN so it rides every reply the handler
+ * writes — a tool result, a JSON-RPC error, a 405/500 — because the transport's
+ * `res.writeHead` merges, rather than replaces, headers already set here.
+ *
+ * Mounted AFTER `requireApiKey`, so an unauthenticated 401 (which is not an AI
+ * response) does not carry it. The per-call twin rides the `tools/call` result's
+ * `_meta`; see `PublicMcpServer`.
+ */
+const setProvenanceHeader: RequestHandler = (_req, res, next) => {
+  res.setHeader(AI_PROVENANCE_HEADER, AI_PROVENANCE_HEADER_VALUE);
+  next();
+};
 
 export interface PublicMcpRouterDeps extends PublicMcpServerDeps {
   /** The SAME store the operator mints keys with. Reused rather than
@@ -65,6 +86,7 @@ export function createPublicMcpRouter(deps: PublicMcpRouterDeps): Router {
       ...(deps.keyAuditLog ? { auditLog: deps.keyAuditLog } : {}),
       routeLabel: PUBLIC_MCP_PATH,
     }),
+    setProvenanceHeader,
     server.handler(),
   );
 
