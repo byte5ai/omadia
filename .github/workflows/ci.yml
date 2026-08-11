@@ -67,7 +67,7 @@ jobs:
         working-directory: middleware
     # Postgres for the *.pg.test.ts suites. Without this the whole
     # Postgres-backed layer (migration backfills, embedding-gate suites,
-    # job/webhook/memory stores, ~21 files) self-skips on an unreachable
+    # job/webhook/memory stores, ~25 files) self-skips on an unreachable
     # DB and the job still reports green — the silent-coverage hole from
     # issue #565. pgvector image because several suites create a vector(n)
     # column as the thing under test.
@@ -132,10 +132,15 @@ jobs:
             -c "SELECT 1;"
 
       # Postgres-backed suites (#565). Test-scoped DSNs only, set on this
-      # step alone. Every *.pg.test.ts resolves its pool as
-      # GRAPH_PG_TEST_URL ?? MEMORY_PG_TEST_URL ?? DATABASE_URL, and each
-      # runs its own migrations against a fresh pool, so these two vars
-      # activate all 21 suites. Deliberately NOT DATABASE_URL: two live-Neon
+      # step alone. Since #626 every *.pg.test.ts resolves its DSN through
+      # test/_helpers/pgTestDb.ts (probePgTest), first-non-empty-wins over a
+      # suite-specific chain. The chains differ (some carry WS5_PG_TEST_URL,
+      # memoryStoreConformance reads MEMORY_PG_TEST_URL alone) but every one
+      # of them contains GRAPH_PG_TEST_URL and/or MEMORY_PG_TEST_URL ahead of
+      # any other name, and each suite runs its own migrations against a fresh
+      # pool — so these two vars activate all 25 suites. If you add a suite
+      # whose chain starts with neither, it will silently skip: the count
+      # ratchet below is what catches that. Deliberately NOT DATABASE_URL: two live-Neon
       # tests (palaiaHybridRetrievalNeon, neonDatasetFilterEscaping) gate
       # solely on DATABASE_URL and need external fixtures / pre-applied
       # migrations — pointing it at this blank throwaway DB would activate
@@ -153,7 +158,7 @@ jobs:
       # skip does NOT increment "skipped": its tests simply never register
       # and vanish from the total. So "skipped == 0" is blind to exactly the
       # silent-skip this issue is about; only a floor on the test COUNT
-      # catches it. The 21 *.pg.test.ts files register 202 tests today. If
+      # catches it. The 25 *.pg.test.ts files register 238 tests today. If
       # the count drops (broken DSN, a future suite reading an env var we
       # don't set here, a cold-connection flake), a suite silently vanished —
       # go red. Raise PG_TEST_FLOOR when you add Postgres tests, same
@@ -162,12 +167,20 @@ jobs:
         env:
           GRAPH_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
           MEMORY_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
-          PG_TEST_FLOOR: '202'
+          PG_TEST_FLOOR: '238'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
-          ran=$(grep -m1 -oE '^ℹ tests [0-9]+' pg-test.out | grep -oE '[0-9]+' || echo 0)
-          skipped=$(grep -m1 -oE '^ℹ skipped [0-9]+' pg-test.out | grep -oE '[0-9]+' || echo 0)
+          # node's spec reporter wraps the summary as "\e[34mℹ tests 238\e[39m"
+          # whenever it decides to colorize, which turns the ^-anchored greps
+          # below into zero matches (ran=0 => a spurious red). Actions is
+          # currently uncoloured, but that is the runner's choice, not ours,
+          # and it is what a developer re-running this locally hits. Strip SGR
+          # sequences first; printf '\033' keeps this working on BSD sed too.
+          esc=$(printf '\033')
+          sed "s/${esc}\[[0-9;]*m//g" pg-test.out > pg-test.plain
+          ran=$(grep -m1 -oE '^ℹ tests [0-9]+' pg-test.plain | grep -oE '[0-9]+' || echo 0)
+          skipped=$(grep -m1 -oE '^ℹ skipped [0-9]+' pg-test.plain | grep -oE '[0-9]+' || echo 0)
           echo "Postgres suites: ran=${ran} skipped=${skipped} (floor=${PG_TEST_FLOOR})"
           if [ "${ran:-0}" -lt "${PG_TEST_FLOOR}" ] || [ "${skipped:-0}" -ne 0 ]; then
             echo "::error::Postgres coverage regressed (#565): expected >=${PG_TEST_FLOOR} tests and 0 skipped, got ran=${ran} skipped=${skipped}. A suite silently self-skipped — check the DSN and *.pg.test.ts env-var resolution."
