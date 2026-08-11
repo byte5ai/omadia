@@ -12,6 +12,13 @@ import {
   internalConversationId,
 } from '../../packages/harness-channel-api/src/chatRouter.js';
 import { createInProcessClient, type InProcessClient } from '../support/inProcessHttp.js';
+// Imported from source (not the `@omadia/channel-sdk` dist barrel): these were
+// added in #647, after the last dist build — same rationale as `graphScopeFor`
+// below.
+import {
+  AI_PROVENANCE_HEADER,
+  ENVELOPE_PROVENANCE,
+} from '../../packages/harness-channel-sdk/src/provenance.js';
 import { createFakeSecrets } from './testSecrets.js';
 // Import from source: `graphScopeFor` was added after the last dist build,
 // so the built `@omadia/orchestrator` barrel doesn't re-export it yet (same
@@ -91,11 +98,23 @@ describe('channelApi/chatRouter — wiring (auth, rate limit, audit, NDJSON fram
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type') ?? '', /application\/x-ndjson/);
 
+    // #647 — AI-Act Art. 50 provenance at the connection level: header set at
+    // stream-open. Read back off the actual response, not the router input.
+    assert.equal(res.headers.get(AI_PROVENANCE_HEADER), 'true');
+
     const events = parseNdjson(await res.text());
     assert.deepEqual(
       events.map((e) => (e as { type: string }).type),
       ['agent_bound', 'text_delta', 'done'],
     );
+
+    // #647 — and per turn: the marker rides the `done` event. Asserted out of
+    // the parsed NDJSON (the produced artifact), so a client can evaluate
+    // provenance per turn and not only per connection.
+    const done = events.find((e) => (e as { type: string }).type === 'done') as {
+      provenance?: unknown;
+    };
+    assert.deepEqual(done.provenance, ENVELOPE_PROVENANCE);
 
     assert.equal(capturedTurns.length, 1);
     assert.equal(capturedTurns[0]?.channelId, '@omadia/channel-api');
@@ -387,8 +406,18 @@ describe('channelApi/chatRouter — audit-log accuracy for every authenticated o
     // Headers are already flushed (200) before dispatch starts — the error
     // surfaces as an NDJSON event on the wire, not an HTTP error status.
     assert.equal(res.status, 200);
+    // #647 acceptance criterion — "auch bei einem mid-turn throw": the header is
+    // set at stream-open, before dispatch, so it is on the wire regardless of a
+    // throw inside `handleTurnStream`. No `done` is emitted on this path, so the
+    // header is the sole carrier. Read back off the actual response.
+    assert.equal(res.headers.get(AI_PROVENANCE_HEADER), 'true');
     const body = await res.text();
     assert.ok(body.includes('orchestrator exploded'));
+    assert.equal(
+      parseNdjson(body).some((e) => (e as { type: string }).type === 'done'),
+      false,
+      'no done event on the mid-turn-throw path — the header is the only carrier',
+    );
 
     const entries = await harness.auditLog.list();
     assert.equal(entries.length, 1, 'exactly one audit row for this authenticated call');
@@ -419,10 +448,20 @@ describe('channelApi/chatRouter — audit-log accuracy for every authenticated o
       body: JSON.stringify({ message: 'hi' }),
     });
     assert.equal(res.status, 200);
+    // #647 acceptance criterion: the provenance marking is present even when the
+    // turn ends in-band with `{type:'error'}`. No `done` event is emitted on
+    // that path, so the carrier is the response header — set at stream-open,
+    // before dispatch, which is why it survives an error-ending turn.
+    assert.equal(res.headers.get(AI_PROVENANCE_HEADER), 'true');
     const events = parseNdjson(await res.text());
     assert.deepEqual(
       events.map((e) => (e as { type: string }).type),
       ['text_delta', 'error'],
+    );
+    assert.equal(
+      events.some((e) => (e as { type: string }).type === 'done'),
+      false,
+      'no done event on the in-band-error path — the header is the only carrier',
     );
 
     const entries = await harness.auditLog.list();
