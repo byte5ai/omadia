@@ -2,6 +2,13 @@ import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 
 import { MCP_INVOKE_SCOPE, MCP_LIST_SCOPE, mcpWriteScope, WILDCARD_SCOPE } from '@omadia/api-key-auth';
+// From source (not the `@omadia/channel-sdk` dist barrel): added in #647, after
+// the last dist build.
+import {
+  AI_PROVENANCE_HEADER,
+  AI_PROVENANCE_META_KEY,
+  ENVELOPE_PROVENANCE,
+} from '../../packages/harness-channel-sdk/src/provenance.js';
 
 import { MAX_REQUEST_BYTES } from '../../src/mcp/publicMcpServer.js';
 import { PUBLIC_MCP_PATH } from '../../src/mcp/publicMcpPath.js';
@@ -310,6 +317,35 @@ describe('public MCP endpoint', () => {
     const { payload } = await h.rpc(callToolRequest(READ_TOOL, { q: 'x' }), { token: KEY_TOKEN });
     assert.equal(callResultText(payload), `dispatched:${READ_TOOL}`);
     assert.deepEqual(seen, [{ name: READ_TOOL, input: { q: 'x' } }]);
+  });
+
+  // ── #647: AI-Act Art. 50 provenance on the envelope ──────────────────────
+  // The analogue of the chat API's header + done-event marking. Read back off
+  // the produced response, not the handler input.
+
+  it('sets the AI-Act provenance header on every response, including tools/list', async (t) => {
+    const h = await start(baseOptions(), t);
+    if (!h) return;
+    // Connection level: present on a listing too, since the header marks the
+    // endpoint as an AI system rather than a single tool result's data.
+    const list = await h.post(listToolsRequest(), { token: KEY_TOKEN });
+    assert.equal(list.headers.get(AI_PROVENANCE_HEADER), 'true');
+    await list.text();
+
+    const call = await h.post(callToolRequest(READ_TOOL, { q: 'x' }), { token: KEY_TOKEN });
+    assert.equal(call.headers.get(AI_PROVENANCE_HEADER), 'true');
+    await call.text();
+  });
+
+  it('carries the provenance marker in the tools/call result _meta', async (t) => {
+    const h = await start(baseOptions(), t);
+    if (!h) return;
+    const { payload } = await h.rpc(callToolRequest(READ_TOOL, { q: 'x' }), { token: KEY_TOKEN });
+    // Read the marker out of the actual JSON-RPC result envelope.
+    const result = payload['result'] as { _meta?: Record<string, unknown> } | undefined;
+    assert.deepEqual(result?._meta?.[AI_PROVENANCE_META_KEY], ENVELOPE_PROVENANCE);
+    // And the additive field left the rest of the result intact.
+    assert.equal(callResultText(payload), `dispatched:${READ_TOOL}`);
   });
 
   it('calls a write tool when the per-tool write scope is present', async (t) => {
