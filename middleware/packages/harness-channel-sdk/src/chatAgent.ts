@@ -1,6 +1,7 @@
 import type { ChannelKind, PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
 import type {
   AgentConsultation,
+  AiDisclosure,
   DelegatedAnswer,
   DirectLineSessionState,
   FollowUpOption,
@@ -546,6 +547,16 @@ export interface ChatTurnResult {
    * feature is enabled (including `{ active: false }`), omitted when off.
    */
   directLineSession?: DirectLineSessionState;
+  /**
+   * AI-Act Art. 50 — the AI disclosure the orchestrator resolved for this turn
+   * (#643, epic #642). `toSemanticAnswer` forwards it to
+   * `SemanticAnswer.aiDisclosure` and folds its line into `text`. The per-turn
+   * RESOLUTION that populates this (channel policy, locale, operator setup
+   * fields) lands in the orchestrator in #644; until then `toSemanticAnswer`
+   * derives the shipping default when a caller opts in. Omitted only when an
+   * operator turned the disclosure `'off'`.
+   */
+  aiDisclosure?: AiDisclosure;
 }
 
 /**

@@ -16,8 +16,10 @@ import type {
   RecalledContext,
 } from '@omadia/plugin-api';
 import type { OutgoingSurface } from './surface.js';
+import type { AiDisclosure } from './aiDisclosure.js';
 
 export type { CaptureDisclosure, PrivacyReceipt, RecalledContext };
+export type { AiDisclosure } from './aiDisclosure.js';
 
 /**
  * The top-level shape the orchestrator hands to a connector for rendering.
@@ -143,6 +145,22 @@ export interface SemanticAnswer {
    * Omitted entirely when the feature is off. Sidecar.
    */
   directLineSession?: DirectLineSessionState;
+
+  /**
+   * AI-Act Art. 50 — harness-owned AI disclosure for this turn (#643, epic
+   * #642). The structured carrier for channels with a rich UI (badge, footer);
+   * the SAME line is folded into `text` by `toSemanticAnswer` so the marking
+   * also reaches the wire-only channels that have no provenance slot. Built
+   * OUTSIDE the LLM's output stream — a model cannot suppress or reword it.
+   *
+   * Present on every turn the disclosure is active, EVEN when the line was not
+   * folded into `text` this turn (folding is first-turn-per-scope; the
+   * structured field is every-turn). Same rationale as `directLineSession`: a
+   * field that appears only when folded cannot tell a client the marking is
+   * still in force. Omitted only when an operator turned it `'off'`. Sidecar —
+   * does NOT short-circuit the answer.
+   */
+  aiDisclosure?: AiDisclosure;
 }
 
 /**

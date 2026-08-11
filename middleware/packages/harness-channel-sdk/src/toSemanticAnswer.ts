@@ -10,6 +10,10 @@ import type {
   SemanticAnswer,
   VerifierBadge,
 } from './outgoing.js';
+import {
+  applyAiDisclosure,
+  type ApplyAiDisclosureContext,
+} from './aiDisclosure.js';
 
 /**
  * #332 Layer 1 — plain-text fallback footer for connectors without rich-card
@@ -114,7 +118,10 @@ export function withMcpInputPrompt(
   return answer.trim().length > 0 ? `${answer}\n\n${block}` : block;
 }
 
-export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
+export function toSemanticAnswer(
+  r: ChatTurnResult,
+  disclosure?: ApplyAiDisclosureContext,
+): SemanticAnswer {
   // Inline images (diagrams) and downloadable files (office docs) flow into
   // one channel-agnostic attachment array. Diagrams keep their `image` kind;
   // file attachments carry `kind: 'file'` so connectors render a download.
@@ -206,15 +213,42 @@ export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
   // invocation yields an empty array here.
   const agentsConsulted = deriveAgentsConsulted(r.runTrace);
 
+  // #544 W2-1 — honest degradation. `interactive` below is the rich form, but a
+  // connector that cannot render one would otherwise show the model's (usually
+  // empty) pre-question prose and give the user NO indication that a named
+  // server is blocked waiting for input. So the prompt is also folded into
+  // `text`, which every connector MUST render.
+  const baseText = withMcpInputPrompt(r.answer, r.pendingMcpInput);
+
+  // #643 (epic #642) — AI-Act Art. 50 disclosure. Fold the harness-owned
+  // marking into `text` (the one field every connector renders) and forward the
+  // structured field. Engaged only when a caller threads the per-turn resolution
+  // context (the orchestrator does so in #644) or the result already carries a
+  // resolved marker — a bare legacy call is byte-for-byte unchanged, honouring
+  // the additive-only stability contract (outgoing.ts). The fold + resolution is
+  // the single shared derivation `applyAiDisclosure`, so the streaming `done`
+  // path (#644) and this non-streaming path produce the identical marking (cf.
+  // `deriveAgentsConsulted`).
+  const preresolved = disclosure?.disclosure ?? r.aiDisclosure;
+  const disclosed =
+    disclosure !== undefined || preresolved !== undefined
+      ? applyAiDisclosure(baseText, {
+          ...(disclosure?.policy !== undefined ? { policy: disclosure.policy } : {}),
+          ...(preresolved !== undefined ? { disclosure: preresolved } : {}),
+          ...(disclosure?.locale !== undefined ? { locale: disclosure.locale } : {}),
+          ...(disclosure?.scope ?? r.runTrace?.scope
+            ? { scope: disclosure?.scope ?? r.runTrace?.scope }
+            : {}),
+          ...(disclosure?.seen !== undefined ? { seen: disclosure.seen } : {}),
+          ...(disclosure?.assistantName !== undefined
+            ? { assistantName: disclosure.assistantName }
+            : {}),
+        })
+      : { text: baseText };
+
   return {
-    // #544 W2-1 — honest degradation. `interactive` above is the rich form, but
-    // a connector that cannot render one would otherwise show the model's
-    // (usually empty) pre-question prose and give the user NO indication that a
-    // named server is blocked waiting for input. So the prompt is also folded
-    // into `text`, which every connector MUST render. The rich-card channels
-    // are expected to prefer `interactive`; the duplication is the price of not
-    // silently swallowing the request.
-    text: withMcpInputPrompt(r.answer, r.pendingMcpInput),
+    text: disclosed.text,
+    ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
     ...(verifier ? { verifier } : {}),
     ...(agentsConsulted && agentsConsulted.length > 0
       ? { agentsConsulted }
