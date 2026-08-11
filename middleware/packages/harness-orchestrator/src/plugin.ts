@@ -243,10 +243,14 @@ function parseAiDisclosureOverrides(
   if (typeof raw !== 'string' || raw.trim().length === 0) return undefined;
   const out: Record<string, AiDisclosureLevel> = {};
   for (const pair of raw.split(',')) {
+    // Empty segments (trailing or doubled commas) are formatting, not a typo —
+    // skip them silently. Anything else missing its `=` falls through to the
+    // warn branch below: dropping `"telegram"` without a word would read as
+    // "override configured" when none was, the exact failure this warns about.
+    if (pair.trim().length === 0) continue;
     const eq = pair.indexOf('=');
-    if (eq < 0) continue;
-    const chan = pair.slice(0, eq).trim().toLowerCase();
-    const level = parseAiDisclosureLevel(pair.slice(eq + 1));
+    const chan = eq < 0 ? '' : pair.slice(0, eq).trim().toLowerCase();
+    const level = eq < 0 ? undefined : parseAiDisclosureLevel(pair.slice(eq + 1));
     if (!AI_DISCLOSURE_CHANNEL_KINDS.has(chan) || level === undefined) {
       console.warn(
         `[orchestrator] ai_disclosure_level_overrides: ignoring invalid entry "${pair.trim()}" ` +
