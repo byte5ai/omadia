@@ -1,0 +1,166 @@
+/**
+ * OM-09 — the localized error-help catalogue.
+ *
+ * WHY THIS EXISTS. The middleware has no request locale: nothing there reads
+ * `Accept-Language`, and `NEXT_LOCALE` never leaves the Next.js layer. Every
+ * `message` it puts on an error envelope is therefore English by construction,
+ * and every screen that rendered one was showing a German operator an English
+ * sentence — or, in the worst case, the raw identifier next to it
+ * (`runtime.vault_unavailable: vault not wired into runtime route`).
+ *
+ * What the middleware *does* ship is a stable machine code. `ApiError.code`
+ * (see api.ts) parses it once; this module maps it to two localized sentences:
+ * `what` (what happened) and `next` (the one action that resolves it). Same
+ * shape as {@link resolveSetupFieldHint} in setupFieldPattern.ts and the same
+ * code-to-copy indirection as `SCAN_FAILURE_CODES` in scanFailure.ts — no
+ * third pattern is invented here.
+ *
+ * SCOPE. The catalogue covers the codes emitted by five route files:
+ * `install.ts`, `runtime.ts`, `adminProviders.ts`, `store.ts` and
+ * `adminSettings.ts`, plus `providers.key_rejected`, which the credential
+ * verifier sets rather than a route. The rest of the middleware's codes are
+ * deliberately not covered yet.
+ *
+ * `__tests__/errorHelpCoverage.test.ts` holds the scope to that promise. It
+ * reads `code: '…'` literals out of the five files, FOLLOWS `install.ts`'s
+ * `handleError` into `plugins/installService.ts` for the codes it re-emits
+ * from a thrown `InstallError`, and fails on any `code:` in a covered file
+ * that is neither a literal nor a registered, explained non-literal. Within
+ * those five files it fails the moment one grows a code with no copy behind
+ * it; outside them it claims nothing.
+ */
+
+/**
+ * Every code with copy in `messages/*.json` under `errorHelp.<code>`.
+ *
+ * Keep alphabetical inside each family. `errorHelpCoverage.test.ts` asserts
+ * this list matches what the covered route files actually emit, in BOTH
+ * directions: a new code without copy fails, and copy without an emitter
+ * fails as an orphan.
+ */
+export const ERROR_HELP_CODES = [
+  // install.ts — the four it emits as literals, plus the ten its handleError
+  // re-emits from an InstallError thrown in plugins/installService.ts.
+  'install.already_installed',
+  'install.blocked',
+  'install.capability_already_provided',
+  'install.has_dependents',
+  'install.invalid_body',
+  'install.invalid_job_id',
+  'install.invalid_plugin_id',
+  'install.job_not_found',
+  'install.missing_capability',
+  'install.missing_dependencies',
+  'install.no_schema',
+  'install.not_installed',
+  'install.unexpected',
+  'install.wrong_state',
+  // adminProviders.ts (+ providerCredentialVerifier.ts for key_rejected)
+  'providers.apply_failed',
+  'providers.invalid_request',
+  'providers.key_rejected',
+  'providers.model_provider_mismatch',
+  'providers.not_installed',
+  'providers.read_failed',
+  'providers.tool_incompatible',
+  'providers.unknown_plugin',
+  'providers.unknown_provider',
+  'providers.verify_failed',
+  // runtime.ts
+  'runtime.agent_inactive',
+  'runtime.empty_secrets_patch',
+  'runtime.invalid_audit_mode',
+  'runtime.invalid_config',
+  'runtime.invalid_id',
+  'runtime.invalid_multiselect',
+  'runtime.invalid_secrets_body',
+  'runtime.no_options_provider',
+  'runtime.not_installed',
+  'runtime.not_web_scanner',
+  'runtime.options_provider_bad_shape',
+  'runtime.options_provider_failed',
+  'runtime.options_provider_timeout',
+  'runtime.options_unavailable',
+  'runtime.setup_field_invalid',
+  'runtime.update_failed',
+  'runtime.value_not_offered',
+  'runtime.vault_read_failed',
+  'runtime.vault_unavailable',
+  'runtime.vault_write_failed',
+  // adminSettings.ts
+  'settings.invalid_request',
+  'settings.invalid_values',
+  'settings.no_valid_changes',
+  'settings.read_failed',
+  'settings.vault_unavailable',
+  'settings.write_failed',
+  // store.ts
+  'store.ack_failed',
+  'store.get_failed',
+  'store.invalid_id',
+  'store.list_failed',
+  'store.plugin_not_found',
+  'store.verdict_not_found',
+  'store.verdicts_unavailable',
+] as const;
+
+export type ErrorHelpCode = (typeof ERROR_HELP_CODES)[number];
+
+export interface ErrorHelp {
+  /** One sentence: what happened, in the operator's language. */
+  readonly what: string;
+  /** One imperative sentence: the action that resolves it. */
+  readonly next: string;
+  /** In-app route that carries out `next`, when one exists. */
+  readonly actionHref?: string;
+}
+
+/**
+ * Codes whose fix lives on a DIFFERENT page than the one showing the error.
+ *
+ * Routes only — a user-facing label would be a hardcoded string in a `.ts`
+ * file, which `web-ui/CLAUDE.md` forbids; the label is `errorHelp.<code>.action`
+ * in the message catalogue. Deliberately sparse: a link back to the page the
+ * operator is already on is noise, not help.
+ */
+export const ERROR_HELP_ACTIONS: Readonly<Record<string, string>> = {
+  'install.not_installed': '/store',
+  'providers.not_installed': '/store',
+  'runtime.not_installed': '/store',
+  'store.plugin_not_found': '/store',
+};
+
+const CATALOGUED = new Set<string>(ERROR_HELP_CODES);
+
+/** Is this code one the catalogue has copy for? */
+export function isErrorHelpCode(
+  code: string | null | undefined,
+): code is ErrorHelpCode {
+  return typeof code === 'string' && CATALOGUED.has(code);
+}
+
+/**
+ * Resolve a middleware error code to localized help, or `null` when the code
+ * is absent or not catalogued.
+ *
+ * Returning `null` rather than a generic sentence is deliberate: the caller
+ * owns the fallback, and only the caller knows what it has left to show (a
+ * `verifyError` from an older server, an HTTP status, nothing at all).
+ *
+ * @param code the machine code, typically `ApiError.code`
+ * @param t    a translator scoped at the message ROOT — the catalogue keys are
+ *   `errorHelp.<code>.what` / `.next`, and `<code>` itself contains a dot, so
+ *   a namespaced translator would have to re-assemble the path anyway
+ */
+export function resolveErrorHelp(
+  code: string | null | undefined,
+  t: (key: string) => string,
+): ErrorHelp | null {
+  if (!isErrorHelpCode(code)) return null;
+  const actionHref = ERROR_HELP_ACTIONS[code];
+  return {
+    what: t(`errorHelp.${code}.what`),
+    next: t(`errorHelp.${code}.next`),
+    ...(actionHref !== undefined ? { actionHref } : {}),
+  };
+}

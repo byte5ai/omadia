@@ -796,7 +796,12 @@
     "tabTitleSuffix": "ID: {id}\nDouble-click to rename",
     "closeAriaLabel": "Close tab: {title}",
     "closeWhileBusyTitle": "Wait until the turn is done",
-    "closeTitle": "Close tab"
+    "closeTitle": "Close tab",
+    "streamRunningAria": "Response in progress",
+    "streamDoneAria": "Response ready",
+    "streamErrorAria": "Response failed",
+    "streamDoneAnnounce": "{title}: response ready",
+    "streamErrorAnnounce": "{title}: response failed"
   },
   "authBadge": {
     "loginLink": "Login",
@@ -812,6 +817,255 @@
     "resetDataHint": "Clears chats stored locally in this browser, then reloads. Your server-side data is untouched — use this if reloading alone doesn't help.",
     "digestLabel": "Error reference",
     "digestHint": "Quote this reference when reporting the problem — the full message is in the server log."
+  },
+  "errorHelp": {
+    "install": {
+      "already_installed": {
+        "what": "This plugin is already installed on this server.",
+        "next": "Uninstall the installed copy first if you want to install it again."
+      },
+      "blocked": {
+        "what": "The store marks this plugin as incompatible with this server, so the install was refused.",
+        "next": "Read the incompatibility reasons in the details below before you try again."
+      },
+      "capability_already_provided": {
+        "what": "Another installed plugin already provides the capability this one wants to provide.",
+        "next": "Uninstall the plugin that holds the capability, then install this one."
+      },
+      "has_dependents": {
+        "what": "Other installed plugins still depend on this one, so it cannot be uninstalled.",
+        "next": "Uninstall the plugins named in the details below first."
+      },
+      "invalid_body": {
+        "what": "The setup step sent its answers in a shape the server rejected.",
+        "next": "Reload the page and fill the step in again."
+      },
+      "invalid_job_id": {
+        "what": "The request did not say which install run it belongs to.",
+        "next": "Go back to the plugin and start the installation again."
+      },
+      "invalid_plugin_id": {
+        "what": "The install request arrived without a plugin id.",
+        "next": "Open the plugin from the store list and install it from there."
+      },
+      "job_not_found": {
+        "what": "The install run this step belongs to is no longer on the server.",
+        "next": "Start the installation again from the plugin in the store."
+      },
+      "missing_capability": {
+        "what": "The plugin needs capabilities that nothing installed provides yet.",
+        "next": "Install the plugins that provide them first — the install wizard can chain them for you."
+      },
+      "missing_dependencies": {
+        "what": "The plugin depends on other plugins that are not installed here.",
+        "next": "Install the plugins named in the details below, then install this one."
+      },
+      "no_schema": {
+        "what": "This install run has no setup form, so there is nothing to configure.",
+        "next": "Finish the installation without the configuration step."
+      },
+      "not_installed": {
+        "what": "That plugin is not installed on this server.",
+        "next": "Install it from the store first.",
+        "action": "Open the store"
+      },
+      "unexpected": {
+        "what": "The installation stopped on an error the server did not expect.",
+        "next": "Try again, and send the details below to support if it repeats."
+      },
+      "wrong_state": {
+        "what": "This install run has already moved past the configuration step.",
+        "next": "Reload the page to see where the installation actually stands."
+      }
+    },
+    "providers": {
+      "apply_failed": {
+        "what": "The assignment was accepted but could not be written to the plugin.",
+        "next": "Save again. If it keeps failing, the middleware cannot write to its config store."
+      },
+      "invalid_request": {
+        "what": "The assignment was missing the plugin, the provider or the model.",
+        "next": "Pick a provider and a model, then save again."
+      },
+      "key_rejected": {
+        "what": "The provider refused this API key.",
+        "next": "Copy the key from the provider console once more and paste it here."
+      },
+      "model_provider_mismatch": {
+        "what": "The chosen model belongs to a different provider than the one selected.",
+        "next": "Pick a model this provider serves, or switch to the provider the model belongs to."
+      },
+      "not_installed": {
+        "what": "The plugin you are assigning a provider to is not installed here.",
+        "next": "Install the plugin first, then set its provider.",
+        "action": "Open the store"
+      },
+      "read_failed": {
+        "what": "The provider list could not be read.",
+        "next": "Reload the page. If it stays empty, the middleware cannot reach its config store."
+      },
+      "tool_incompatible": {
+        "what": "This plugin drives a tool loop and the selected provider cannot do that.",
+        "next": "Give this plugin a key-based provider and keep the subscription CLI for tool-less roles."
+      },
+      "unknown_plugin": {
+        "what": "That plugin is not one this page can assign a provider to.",
+        "next": "Reload the page and pick a plugin from the list."
+      },
+      "unknown_provider": {
+        "what": "The server does not know a provider with that id.",
+        "next": "Reload the page and pick a provider from the list."
+      },
+      "verify_failed": {
+        "what": "The key check did not run to the end, so the verdict is unchanged.",
+        "next": "Start the check once more. Repeated failures mean the provider is unreachable from this server."
+      }
+    },
+    "runtime": {
+      "agent_inactive": {
+        "what": "The plugin is installed but not running, so it cannot answer right now.",
+        "next": "Activate the plugin, then reload this page."
+      },
+      "empty_secrets_patch": {
+        "what": "The save carried no changed value.",
+        "next": "Change or clear at least one field before saving."
+      },
+      "invalid_audit_mode": {
+        "what": "That audit mode is not one the server accepts.",
+        "next": "Pick one of the offered modes and save again."
+      },
+      "invalid_config": {
+        "what": "The configuration was sent in a shape the server rejected.",
+        "next": "Reload the page and enter the values again."
+      },
+      "invalid_id": {
+        "what": "The request did not name which plugin it is about.",
+        "next": "Reload the page and repeat the action from the plugin screen."
+      },
+      "invalid_multiselect": {
+        "what": "One of the selected values is not in a shape the server accepts.",
+        "next": "Clear the selection and pick the entries again from the list."
+      },
+      "invalid_secrets_body": {
+        "what": "The credential change was sent in a shape the server rejected.",
+        "next": "Reload the page and enter the credentials again."
+      },
+      "no_options_provider": {
+        "what": "This field has no live option source, so nothing can be fetched for it.",
+        "next": "Type the value in by hand."
+      },
+      "not_installed": {
+        "what": "This plugin is not installed on this server.",
+        "next": "Install it first, then come back to this screen.",
+        "action": "Open the store"
+      },
+      "not_web_scanner": {
+        "what": "Audit mode applies only to plugins that scan the web, and this one does not.",
+        "next": "Leave the audit mode unset for this plugin."
+      },
+      "options_provider_bad_shape": {
+        "what": "The plugin answered the option request with something that is not a list.",
+        "next": "Update the plugin. Its option provider returns the wrong shape."
+      },
+      "options_provider_failed": {
+        "what": "The plugin could not deliver the options for this field.",
+        "next": "Check the credentials this plugin needs, then load the list again."
+      },
+      "options_provider_timeout": {
+        "what": "The plugin took too long to deliver the options.",
+        "next": "Load the list again. If it keeps timing out, the system behind the plugin is slow or unreachable."
+      },
+      "options_unavailable": {
+        "what": "This core cannot fetch setup options from a running plugin.",
+        "next": "Enter the value by hand."
+      },
+      "setup_field_invalid": {
+        "what": "One of the values does not match the format this field expects.",
+        "next": "Correct the flagged field and save again."
+      },
+      "update_failed": {
+        "what": "The change could not be written.",
+        "next": "Save again. If it repeats, the middleware cannot write to its config store."
+      },
+      "value_not_offered": {
+        "what": "One of the selected values is not on the list the plugin offers.",
+        "next": "Reload the list and pick from the current entries."
+      },
+      "vault_read_failed": {
+        "what": "The stored credentials could not be read from the vault.",
+        "next": "Reload once the vault is reachable again."
+      },
+      "vault_unavailable": {
+        "what": "No secret vault is wired into this deployment, so credentials cannot be stored.",
+        "next": "Configure a vault in the deployment before entering credentials here."
+      },
+      "vault_write_failed": {
+        "what": "The credentials could not be written to the vault.",
+        "next": "Save again once the vault is reachable."
+      }
+    },
+    "settings": {
+      "invalid_request": {
+        "what": "The settings change was sent in a shape the server rejected.",
+        "next": "Reload the page and make the change again."
+      },
+      "invalid_values": {
+        "what": "The server refused the value of every change in that save, so nothing was written.",
+        "next": "Correct the value the details below flag — they name each rejected field and why — then save again."
+      },
+      "no_valid_changes": {
+        "what": "None of the submitted changes matches a setting this server currently offers.",
+        "next": "Reload the page so the field list matches the server, then make the change again."
+      },
+      "read_failed": {
+        "what": "The settings could not be read.",
+        "next": "Reload the page. If it stays empty, the middleware cannot reach its config store."
+      },
+      "vault_unavailable": {
+        "what": "No secret vault is wired into this deployment, so secrets cannot be edited.",
+        "next": "Configure a vault in the deployment. Non-secret settings keep working without one."
+      },
+      "write_failed": {
+        "what": "The settings could not be written.",
+        "next": "Save again. If it repeats, the middleware cannot write to its config store."
+      }
+    },
+    "store": {
+      "ack_failed": {
+        "what": "The acknowledgement could not be recorded.",
+        "next": "Acknowledge again. The verdict stays open until it goes through."
+      },
+      "get_failed": {
+        "what": "The plugin details could not be loaded.",
+        "next": "Reload the page. If it repeats, the store index on this server is unreadable."
+      },
+      "invalid_id": {
+        "what": "The request did not name which plugin it is about.",
+        "next": "Go back to the store list and open the plugin from there."
+      },
+      "list_failed": {
+        "what": "The plugin list could not be loaded.",
+        "next": "Reload the page. If it stays empty, the middleware cannot reach its registry."
+      },
+      "plugin_not_found": {
+        "what": "No plugin with that id exists on this server.",
+        "next": "Pick a plugin from the store list.",
+        "action": "Open the store"
+      },
+      "verdict_not_found": {
+        "what": "No code-scan verdict has been recorded for this plugin.",
+        "next": "Run the code scan first, then acknowledge it."
+      },
+      "verdicts_unavailable": {
+        "what": "Code-scan verdicts are switched off on this deployment.",
+        "next": "Enable the scanner in the deployment configuration if you need verdicts."
+      }
+    }
+  },
+  "errorHelpUi": {
+    "supportDetails": "Details for support",
+    "unknownFailure": "That request failed, and the server sent no code this page can explain.",
+    "httpStatus": "That request failed (HTTP {status})."
   },
   "session": {
     "expiresAtLabel": "Session valid until",
@@ -901,6 +1155,13 @@
         "error": "Could not resolve the gate."
       }
     },
+    "task": {
+      "started": "Started: {label}",
+      "running": "running in the background",
+      "deferredHint": "This runs on its own — the answer arrives in a follow-up message, not in this one.",
+      "taskId": "task {id}",
+      "phase": "phase {phase}"
+    },
     "inputLabel": "input",
     "outputLabel": "output",
     "persona": {
@@ -917,6 +1178,13 @@
       "modalTitle": "Connect {server}",
       "modalBody": "Authorize {server} so this and future requests can use it.",
       "close": "Close"
+    },
+    "mcpInput": {
+      "kicker": "External input request",
+      "heading": "“{server}” needs additional details for “{tool}”.",
+      "secretHint": "Hidden while typing — the value is still sent to the server as entered.",
+      "warning": "Whatever you enter is sent to the external server “{server}”. Only provide details you want that server to have.",
+      "submit": "Send to server"
     },
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — click for full size",
@@ -1062,7 +1330,13 @@
     "explainerBypassed": "The operator set Privacy Mode to »Bypass« for at least one plugin — its tool results reached the model unmasked. Used for trusted internal sources whose content the Privacy Shield cannot usefully digest structurally.",
     "summaryPromptMasked": "prompt: {count} masked",
     "factPromptMasked": "PII masked in your prompt",
-    "explainerPromptMasked": "Identifiers detected in your own message were replaced with pseudonyms before the model call and restored in the answer."
+    "explainerPromptMasked": "Identifiers detected in your own message were replaced with pseudonyms before the model call and restored in the answer.",
+    "summaryStructured": "{count, plural, one {# structured result} other {# structured results}}",
+    "factStructured": "Structured output received",
+    "structuredBytes": "{kb} KB",
+    "structuredSchemaYes": "output schema",
+    "structuredSchemaNo": "no schema",
+    "explainerStructured": "A connected tool returned structured data. It reached the browser — the trusted side — but never the model, which saw only the interned digest. Listed here for transparency; nothing was masked because none was owed on this path."
   },
   "directLine": {
     "consultedLabel": "🔎 Consulted",
@@ -1182,6 +1456,8 @@
       "filterAll": "All verdicts",
       "acknowledge": "Acknowledge",
       "acked": "Acknowledged by {by}",
+      "structuredOutput": "returns structured output",
+      "structuredOutputHint": "This tool declares an output schema and returns a structured payload alongside its text result.",
       "runDeepScan": "Run deep scan",
       "why": "Heuristic scan flagged: {codes}. This is a signal, not proof the content is safe.",
       "llmRationale": "Deep scan note: {rationale}",
@@ -1291,25 +1567,6 @@
     "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
     "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
     "orphanKeep": "Keep"
-  },
-  "streamToasts": {
-    "phaseThinking": "Agent is thinking",
-    "phaseStreaming": "Answer streaming",
-    "phaseToolRunning": "Tool running",
-    "phaseDone": "Answer ready",
-    "phaseError": "Error",
-    "phaseAborted": "Aborted",
-    "elapsedSec": "{sec}s",
-    "tokensInTitle": "{n} input tokens (cumulative across iterations)",
-    "tokensOutTitle": "{n} output tokens (cumulative across iterations)",
-    "cacheHitTitle": "{n} cache-read tokens",
-    "dismissAriaLabel": "Dismiss notification (stream keeps running)",
-    "dismissTitle": "Dismiss",
-    "abortButton": "Stop stream",
-    "abortConfirmTitle": "Stop this stream?",
-    "abortConfirmBody": "The running response will be aborted immediately and can't be resumed.",
-    "abortConfirmKeep": "Keep running",
-    "abortConfirmStop": "Yes, stop"
   },
   "builder": {
     "issueReport": {
@@ -2383,7 +2640,7 @@
     "title": "LLM providers",
     "intro": "Connect LLM providers and choose which one each agent runs on. Keys are stored encrypted in the vault and never leave your server. Anthropic is the default; switching an agent to another provider takes effect live.",
     "loading": "Loading …",
-    "loadError": "Failed to load: {message}",
+    "loadError": "The provider list could not be loaded.",
     "vaultUnavailable": "Vault unavailable — provider keys cannot be read.",
     "providers": {
       "heading": "Providers",
@@ -2833,7 +3090,44 @@
       "marketplace": "Marketplace",
       "grants": "Grants",
       "plugins": "Plugin access",
+      "bindings": "Public API keys",
       "audit": "Audit log"
+    },
+    "bindings": {
+      "intro": "The public MCP endpoint lets an external integration call tools with an API key. Each key reaches exactly one agent and exactly the tools you name here — a key with no binding reaches nothing at all.",
+      "keyIdHint": "Paste the key id you got back when the API key was created. There is no picker yet: keys are managed by the channel API, on a separate endpoint.",
+      "keyId": "Key ID",
+      "keyIdPlaceholder": "e.g. 8f3c1a90-…",
+      "agentId": "Agent",
+      "agentIdPlaceholder": "Pick an agent",
+      "readTools": "Read tools",
+      "writeTools": "Write tools",
+      "toolsPlaceholder": "Tool names, comma-separated",
+      "writeRate": "Writes/min",
+      "writeToolsHint": "A write tool additionally requires the key to hold the matching mcp:write scope and spends the tighter write budget. A tool named in both lists counts as a write.",
+      "save": "Save binding",
+      "saving": "Saving",
+      "empty": "No key bindings yet. Until you create one, no API key reaches any tool through the public endpoint.",
+      "boundTo": "bound to {agent}",
+      "enabled": "Active",
+      "parked": "Revoked",
+      "readToolsLabel": "Read",
+      "writeToolsLabel": "Write",
+      "none": "none",
+      "meta": "{rate} writes/min · last changed {updated}",
+      "revoke": "Revoke",
+      "revokeTitle": "Revoke this binding?",
+      "revokeBody": "The key {keyId} stops reaching any tool immediately. The binding is kept, not deleted, so you can still see what it granted.",
+      "revokeConfirm": "Revoke",
+      "restore": "Restore access",
+      "restoreHint": "Saving this binding again edits its tools but leaves it revoked. Restoring is the only way to make the key work again.",
+      "restoreTitle": "Restore this binding?",
+      "restoreBody": "The key {keyId} immediately regains everything on this row: {tools}.",
+      "restoreConfirm": "Restore",
+      "warnings": {
+        "keyUnknown": "No API key with this id exists yet. The binding was saved, but it reaches nothing until such a key is created — double-check the id for a typo.",
+        "agentUnknown": "This binding names an agent that is no longer registered, so it reaches nothing. Rebind it to an existing agent."
+      }
     },
     "plugins": {
       "intro": "Plugins that declare MCP access in their manifest. Grant each the specific servers it may reach — nothing is ambient. Per-tool safety still applies: an unscanned or high-risk tool is refused at call time.",
@@ -2844,6 +3138,10 @@
     "servers": {
       "name": "Name",
       "transport": "Transport",
+      "transportDeprecated": "Deprecated",
+      "transportDeprecatedHint": "The legacy HTTP+SSE transport is deprecated as of MCP 2026-07-28 and will be removed after a transition window of at least 12 months. Existing SSE servers keep working — but new servers should use Streamable HTTP (http), and existing ones should be migrated to it.",
+      "showDeprecatedTransports": "Show deprecated transports",
+      "deprecatedOption": "{transport} (deprecated)",
       "endpoint": "Endpoint",
       "status": "Status",
       "tools": "Tools",
@@ -2920,7 +3218,26 @@
       "readyToLogin": "Client saved. Now sign in at {host} to authorize access.",
       "continueLogin": "Continue to {host} login ↗",
       "afterLoginHint": "Opens in a new tab. After you approve, come back here — the status refreshes automatically.",
-      "checkStatus": "Check status"
+      "checkStatus": "Check status",
+      "delegationLabel": "Acting identity",
+      "delegationPerUser": "Each user acts as themselves",
+      "delegationService": "One shared service identity",
+      "delegationPerUserWhy": "Every caller uses their own authorization at this server. A conversation with no mapped user identity is refused rather than falling back to yours.",
+      "delegationServiceWhy": "All callers share one authorization — yours. Anyone who can reach an orchestrator with this server granted acts with that authority. Only keep this for servers where a shared identity is intended.",
+      "delegationSwitchToPerUser": "Require per-user identity",
+      "delegationSwitchToService": "Use a shared service identity",
+      "delegationIdentityMissing": "This session has no mapped user identity, so per-user calls to this server fail closed. Nothing is sent to the server.",
+      "modeCimd": "Metadata document",
+      "modeDcr": "Auto-registered",
+      "modeManual": "Registered app",
+      "cimdBadgeWhy": "This server accepts a client ID metadata document, so omadia identifies itself by a URL this deployment publishes. No app registration was needed.",
+      "modeDcrWhy": "This server registered omadia automatically (dynamic client registration). The MCP spec is phasing this out in favour of metadata documents, but it keeps working — there is nothing to do.",
+      "modeManualWhy": "omadia uses an OAuth app you registered once at this issuer. This is the standard path for Microsoft Entra ID and Okta and stays fully supported.",
+      "hintCimd": "This server identifies omadia by a metadata document published on this deployment — nothing to register, just connect and log in.",
+      "cimdUnreachable": "This server would accept a client ID metadata document, but this deployment cannot publish one it can fetch. That usually means omadia is not reachable from the internet — normal for an on-premises install, since the identity provider has to fetch the document itself.",
+      "cimdUnreachableReason": "Reason",
+      "manualStillSupported": "Nothing is broken: register a one-time OAuth app for this issuer below and connect as usual.",
+      "manualIsEnterprisePath": "This is the standard enterprise path, not a workaround. Microsoft Entra ID and Okta use pre-registered app registrations by design and will keep using this form."
     },
     "marketplace": {
       "registry": "Registry",
@@ -2980,18 +3297,21 @@
       "server": "Server",
       "tool": "Tool",
       "caller": "Caller",
+      "identity": "Acting identity",
       "outcome": "Outcome",
       "duration": "Duration",
       "empty": "No MCP calls recorded yet.",
       "ok": "ok",
       "failed": "failed",
       "loadMore": "Load more",
+      "unresolved": "unresolved",
       "kind": {
         "agent": "Orchestrator",
         "subagent": "Sub-agent",
         "skill": "Skill",
         "plugin": "Plugin",
-        "unattributed": "Unattributed"
+        "unattributed": "Unattributed",
+        "api_key": "API key (public MCP)"
       }
     }
   },

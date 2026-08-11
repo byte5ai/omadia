@@ -145,6 +145,7 @@ export function InstallDiffModal({
       aria-modal="true"
       aria-label={t('publishTitle')}
     >
+      {/* eslint-disable-next-line no-restricted-syntax -- full-screen modal overlay/backdrop dismiss button, no text */}
       <button
         type="button"
         onClick={handleClose}
@@ -176,6 +177,7 @@ export function InstallDiffModal({
               {draft.spec.version} {t('publishLeadSuffix')}
             </p>
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only header close button (X), no text */}
           <button
             type="button"
             onClick={handleClose}
@@ -249,19 +251,14 @@ export function InstallDiffModal({
         </div>
 
         <footer className="flex items-center justify-end gap-3 border-t border-[color:var(--rule)] px-6 py-4">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={handleClose}
             disabled={busy}
-            className={cn(
-              'rounded-md px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.18em]',
-              'text-[color:var(--fg-muted)] transition-colors',
-              'hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]',
-              'disabled:opacity-40 disabled:cursor-not-allowed',
-            )}
+            className="text-[12px] font-semibold uppercase tracking-[0.18em]"
           >
             {t('back')}
-          </button>
+          </Button>
           <Button
             variant="primary"
             onClick={() => void handleInstall()}

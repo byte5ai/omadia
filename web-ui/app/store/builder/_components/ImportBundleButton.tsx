@@ -132,6 +132,7 @@ function ImportBundleModal({
           <h2 className="text-base font-semibold text-[color:var(--fg-strong)]">
             {t('modal.title')}
           </h2>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (close ×, no text label) */}
           <button
             type="button"
             onClick={onClose}
@@ -147,6 +148,7 @@ function ImportBundleModal({
           })}
         </p>
 
+        {/* eslint-disable-next-line no-restricted-syntax -- bespoke dashed file-dropzone affordance (click + drag-drop picker) */}
         <button
           type="button"
           onClick={() => inputRef.current?.click()}

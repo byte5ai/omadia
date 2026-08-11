@@ -806,6 +806,7 @@ function ToolCard({
   const pending = item.output === null;
   return (
     <div className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)]/60 text-[12px]">
+      {/* eslint-disable-next-line no-restricted-syntax -- full-width disclosure toggle row (chevron + tool name), not a CTA */}
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}

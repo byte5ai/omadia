@@ -68,6 +68,7 @@ export function ExportDraftButton({
 
   return (
     <div className="relative">
+      {/* eslint-disable-next-line no-restricted-syntax -- chevron/expander (aria-haspopup + aria-expanded menu trigger) */}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -132,6 +133,7 @@ function ExportMenuItem({
   onClick: () => void;
 }): React.ReactElement {
   return (
+    // eslint-disable-next-line no-restricted-syntax -- selection tile/row (role=menuitem, full-width flex-col label+hint)
     <button
       type="button"
       role="menuitem"

@@ -13,6 +13,7 @@ import {
   type SkillResource,
   type SkillVerdictSeverity,
 } from '../../_lib/agentBuilder';
+import { Button } from '../ui/Button';
 import { SkillEditor } from './SkillEditor';
 import { SkillImportModal } from './SkillImportModal';
 import { SKILL_VERDICT_LABEL_KEY, SkillVerdictBadge } from './SkillVerdictBadge';
@@ -142,13 +143,9 @@ export function SkillsRegistry({
               </option>
             ))}
           </select>
-          <button
-            type="button"
-            onClick={() => setImporting(true)}
-            className="shrink-0 rounded-md bg-[color:var(--accent)] px-3 py-2 text-sm text-white"
-          >
+          <Button className="shrink-0" onClick={() => setImporting(true)}>
             {t('import')}
-          </button>
+          </Button>
         </div>
         {filtered.length === 0 ? (
           <p className="text-sm text-[color:var(--fg-muted)]">{t('empty')}</p>
@@ -156,6 +153,7 @@ export function SkillsRegistry({
           <ul className="flex flex-col gap-1">
             {filtered.map((s) => (
               <li key={s.id}>
+                {/* eslint-disable-next-line no-restricted-syntax -- selectable list row (active/selected state), not a §4.2 Button candidate */}
                 <button
                   type="button"
                   onClick={() => void select(s)}
@@ -205,18 +203,18 @@ export function SkillsRegistry({
                   </div>
                 )}
               </div>
-              <button
-                type="button"
+              <Button
+                variant="danger"
+                className="shrink-0"
                 onClick={() => {
                   const totalUsedBy =
                     (detail?.usedByCount ?? 0) + (detail?.usedByAgentsCount ?? 0);
                   if (totalUsedBy > 0) setConfirmingDelete(true);
                   else void onDelete(selected.id);
                 }}
-                className="shrink-0 rounded-md border border-[color:var(--danger-edge)] px-3 py-1.5 text-sm text-[color:var(--danger)]"
               >
                 {t('delete')}
-              </button>
+              </Button>
             </div>
             {confirmingDelete && (
               <div className="flex items-center justify-between gap-2 rounded-md border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-3 py-2 text-xs text-[color:var(--danger)]">
@@ -226,20 +224,20 @@ export function SkillsRegistry({
                   })}
                 </span>
                 <span className="flex shrink-0 gap-2">
-                  <button
-                    type="button"
+                  <Button
+                    variant="danger"
+                    size="sm"
                     onClick={() => void onDelete(selected.id)}
-                    className="rounded-md border border-[color:var(--danger-edge)] px-2 py-1"
                   >
                     {t('confirmDeleteAction')}
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={() => setConfirmingDelete(false)}
-                    className="rounded-md border border-[color:var(--border)] px-2 py-1 text-[color:var(--fg-muted)]"
                   >
                     {t('cancel')}
-                  </button>
+                  </Button>
                 </span>
               </div>
             )}

@@ -77,7 +77,7 @@ export interface Askable {
  * orchestrator threads it onto every emitted `ReadonlyToolTraceEntry` so
  * the Nudge-Pipeline's multi-domain trigger can count distinct domains.
  */
-import type { ToolPIIField } from '@omadia/plugin-api';
+import type { ToolPIIField, WriteCapability } from '@omadia/plugin-api';
 
 export interface DomainTool {
   name: string;
@@ -119,6 +119,17 @@ export interface DomainTool {
    * See `@omadia/plugin-api`'s `piiAnnotation.ts` for the full schema.
    */
   piiFields?: readonly ToolPIIField[];
+  /**
+   * #542 prerequisite — declared write capabilities, i.e. "dispatching me may
+   * MUTATE data". Same contract and same rationale as
+   * `NativeToolRegistration.writeCapabilities`: it lives on the wrapper rather
+   * than on `spec` because Anthropic rejects unknown fields on a tool spec, so
+   * mutability is a harness-side concern exactly like `piiFields` above.
+   *
+   * Read by `ToolDispatchService` to decide whether a dispatch needs
+   * at-most-once protection. Absent or empty ⇒ treated as read-only.
+   */
+  writeCapabilities?: readonly WriteCapability[];
 }
 
 export interface DomainToolSpec {

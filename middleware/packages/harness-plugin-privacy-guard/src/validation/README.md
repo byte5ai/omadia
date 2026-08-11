@@ -122,27 +122,37 @@ ceiling), and locale ID numbers typed `idnum`.
   carries restricted commercial terms, and committed derivatives would
   contaminate the repo. ai4privacy may be used as a **local, uncommitted**
   supplementary check only.
-- `fr` / `es` / `it` / `nl` fixtures are LLM-generated with a
-  **native-speaker spot-check pending** — a standing caveat on those
-  locales' go/no-go verdicts until cleared.
+- `fr` / `es` / `it` / `nl` fixtures are LLM-generated. The
+  **native-speaker spot-check** is **cleared for the #482 miss classes** —
+  the amount/date/phone formats those patterns target (`899 €`, `2 400 €`,
+  `17 septembre 1984`, `30-06-2027`, `€ 899`, `612 334 455`) are
+  locale-authentic. A full-prose native review of the synthetic backbone
+  remains advisory.
 - Side effect of the originality rule: the committed set is
   out-of-distribution for the candidate model by construction, which is the
   honest go/no-go signal the RFC's in-distribution caveat asks for.
 
-## Known C0 locale gaps (recorded run, see RESULTS.md)
+## C0 locale coverage (see RESULTS.md)
 
-The C0 regexes are de/en-centric by design. The recorded 6-locale run
-([`RESULTS.md`](./RESULTS.md)) reports these honestly rather than the
-fixtures being softened around them:
+The C0 regexes started de/en-centric; #482 (Run 2, 2026-08-05) added the
+recorded es/fr/nl amount/date/phone miss classes. Current C0 structured
+recall, with the derived `c0+c1` (Run-2 C0 ∪ the trusted Run-1 C1 — see the
+derived-`c0+c1` note in RESULTS.md):
 
-| Locale | Structured recall (c0 / c0+c1) | Main gaps |
+| Locale | Structured recall (c0 / c0+c1) | Remaining C0 gaps |
 |---|---|---|
 | de | 100% / 100% — PASS | — |
 | en | 100% / 100% — PASS | — |
-| it | 99.1% / 100% — PASS | street-only addresses without a postal code (closed by C1; dot-grouped amounts and 5-digit postal codes coincide with the de patterns) |
-| es | 94.4% / 95.4% — FAIL | amounts without thousands separator ("899 €"), local phone formats without leading 0/+ ("612 334 455"), street-only addresses |
-| nl | 85.3% / 96.3% — FAIL | dashed dates ("24-12-1987"); Dutch addresses (`straat`/`gracht`/`plein` suffixes, 4-digit `1016 AZ` postcodes) match no C0 pattern but are fully carried by C1 |
-| fr | 75.0% / 75.9% — FAIL | space-grouped amounts ("2 400 €"), written-out dates ("17 septembre 1984"), street-only addresses |
+| it | 99.1% / 100% — PASS | street-only addresses without a postal code (carried by C1) |
+| es | 99.1% / 100% — PASS | street-only addresses without a postal code (carried by C1) |
+| fr | 99.1% / 100% — PASS | street-only addresses without a postal code (carried by C1) |
+| nl | 89.0% / 100% — PASS (c0+c1) | Dutch addresses (`straat`/`gracht`/`plein` suffixes, 4-digit `1016 AZ` postcodes) match no C0 pattern but are fully carried by C1 |
+
+The #482 patterns closed: separator-less amounts (`899 €`), space-grouped
+amounts (`2 400 €`), the Spanish 3-3-3 local phone (`612 334 455`), dashed
+dates (`30-06-2027`), and written-out dates (`17 septembre 1984`). nl's
+`c0`-only number stays below the structured gate because Dutch street
+addresses are C1 territory by design — every nl amount/date/phone is now C0.
 
 Where fr/es/it/nl address rows *do* count as masked under c0, it is mostly
 the partial-masking effect described above (the 5-digit postal-code

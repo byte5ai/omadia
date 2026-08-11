@@ -37,6 +37,29 @@ interface C0Pattern {
   readonly re: RegExp;
 }
 
+// Written-out month names across the six shipped locales (de/en/es/fr/it/nl),
+// deduplicated. Feeds the written-date branch below; matched case-insensitively
+// so a sentence-initial capitalised month ("Le 17 Septembre 1984") is caught.
+const MONTH_NAMES = [
+  // January … December, unioned across locales.
+  'januar', 'january', 'janvier', 'enero', 'gennaio', 'januari',
+  'februar', 'february', 'février', 'febrero', 'febbraio', 'februari',
+  'märz', 'march', 'mars', 'marzo', 'maart',
+  'april', 'avril', 'abril', 'aprile',
+  'mai', 'may', 'mayo', 'maggio', 'mei',
+  'juni', 'june', 'juin', 'junio', 'giugno',
+  'juli', 'july', 'juillet', 'julio', 'luglio',
+  'august', 'août', 'agosto', 'augustus',
+  'september', 'septembre', 'septiembre', 'settembre',
+  'oktober', 'october', 'octobre', 'octubre', 'ottobre',
+  'november', 'novembre', 'noviembre',
+  'dezember', 'december', 'décembre', 'diciembre', 'dicembre',
+]
+  // Longest-first so a shorter month that prefixes a longer one (e.g. "mar"
+  // is not present, but "juni"/"junio") never wins the alternation early.
+  .sort((a, b) => b.length - a.length)
+  .join('|');
+
 // Order matters only for readability; overlaps are resolved by dedup below.
 const C0_PATTERNS: readonly C0Pattern[] = [
   {
@@ -56,6 +79,24 @@ const C0_PATTERNS: readonly C0Pattern[] = [
     re: /(?:\+\d{1,3}[\s-]?|\b0)\d{1,4}(?:[\s\-/]?\d{2,6}){1,4}\b/g,
   },
   {
+    // Spanish local mobile/landline: nine digits grouped 3-3-3 with no
+    // leading 0 or +country prefix ("612 334 455"). The prefix digit is
+    // constrained to 6-9 (the Spanish national number range) to shrink — NOT
+    // eliminate — the false-positive surface.
+    //
+    // HONEST CAVEAT: C0 is locale-blind, so this pattern is global. It DOES
+    // fire on any 3-3-3-grouped nine-digit run starting 6-9 in other locales
+    // — e.g. a de/en quantity or serial like "700 300 200" masks as a phone.
+    // Kept deliberately: masking is fail-closed, so an over-masked quantity
+    // (degraded prompt) is a lesser harm than a leaked phone number (PII on
+    // the wire). The committed negatives carry no such string, so the ≥ 85%
+    // precision gate stays green; the production over-masking surface is
+    // recorded in validation/RESULTS.md. Additive — the general phone
+    // pattern above is left untouched.
+    type: 'phone',
+    re: /\b[6-9]\d{2}\s\d{3}\s\d{3}\b/g,
+  },
+  {
     // German street + number (+ optional postal code + city):
     // "Bahnhofstr. 5", "Bahnhofstraße 5, 60311 Frankfurt".
     type: 'address',
@@ -68,14 +109,28 @@ const C0_PATTERNS: readonly C0Pattern[] = [
   },
   {
     // Currency / salary amounts: "€72,000", "72.000 €", "EUR 72000",
-    // "72,000.50 USD".
+    // "72,000.50 USD". The thousands separator class carries space and the
+    // two Unicode spaces (NBSP U+00A0, narrow NBSP U+202F) alongside "." /
+    // "," so French space-grouped amounts ("2 400 €", "72 000 €") are
+    // caught. The trailing-currency branch uses `*` (was `+`) so a bare
+    // amount with no grouping and a trailing symbol ("899 €", "150 €") also
+    // matches — the currency symbol is the anchor, so this does not fire on
+    // bare numbers.
     type: 'amount',
-    re: /(?:[€$£]|\b(?:EUR|USD|GBP|CHF)\b)\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?|\b\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?\s?(?:[€$£]|(?:EUR|USD|GBP|CHF)\b)/g,
+    re: /(?:[€$£]|\b(?:EUR|USD|GBP|CHF)\b)\s?\d{1,3}(?:[ \u00a0\u202f.,]\d{3})*(?:[.,]\d{1,2})?|\b\d{1,3}(?:[ \u00a0\u202f.,]\d{3})*(?:[.,]\d{1,2})?\s?(?:[€$£]|(?:EUR|USD|GBP|CHF)\b)/g,
   },
   {
-    // DOB-style dates: 24.12.1987, 1987-12-24, 24/12/1987.
+    // DOB-style dates: numeric "24.12.1987" / "24/12/1987" / "24-12-1987"
+    // (dot, slash, or Dutch dash separator), ISO "1987-12-24", and
+    // written-out "17 septembre 1984" (month names across the six shipped
+    // locales — case-insensitive so a sentence-initial month is caught).
     type: 'date',
-    re: /\b(?:\d{1,2}[./]\d{1,2}[./](?:19|20)\d{2}|(?:19|20)\d{2}-\d{2}-\d{2})\b/g,
+    re: new RegExp(
+      String.raw`\b(?:\d{1,2}[./-]\d{1,2}[./-](?:19|20)\d{2}` +
+        String.raw`|(?:19|20)\d{2}-\d{2}-\d{2}` +
+        String.raw`|\d{1,2}\s+(?:${MONTH_NAMES})\s+(?:19|20)\d{2})\b`,
+      'gi',
+    ),
   },
 ];
 

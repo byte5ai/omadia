@@ -18,6 +18,8 @@
 import type {
   BypassedToolEntry,
   PrivacyBypassedToolRequest,
+  PrivacyStructuredPayloadRequest,
+  StructuredPayloadEntry,
   PrivacyGuardService,
   PrivacyPromptMaskRequest,
   PrivacyPromptMaskResult,
@@ -192,6 +194,13 @@ export function createPrivacyGuardService(deps?: {
   // plugin). Drained into the receipt by `finalizeTurn`. Entries carry
   // only tool/plugin names + a byte count (no values).
   const bypassedTools = new Map<string, BypassedToolEntry[]>();
+  // #547 / #569 — per-turn list of external MCP tools that returned
+  // `structuredContent`. Recorded by the boot-wired `structuredSink` so the
+  // receipt accounts for the sidecar that otherwise fires beneath every
+  // dispatcher. Drained into the receipt by `finalizeTurn`. Accounting only —
+  // the payload never crossed the model boundary, so nothing here is masked;
+  // entries carry tool/server names + a byte count + a schema flag, no value.
+  const structuredPayloads = new Map<string, StructuredPayloadEntry[]>();
   // #361 — per-turn prompt-surrogate map (real↔surrogate), server-side
   // only. Extended across repeated mask calls within one turn (message +
   // ingested attachment tail) so surrogates stay stable; inverted over the
@@ -326,6 +335,28 @@ export function createPrivacyGuardService(deps?: {
         `[privacy-guard v4] bypass turn=${request.turnId} ` +
           `tool=${request.toolName} plugin=${request.pluginId} ` +
           `bytes=${String(request.bytes)} reason=${request.reason}`,
+      );
+    },
+
+    async recordStructuredPayload(
+      request: PrivacyStructuredPayloadRequest,
+    ): Promise<void> {
+      let list = structuredPayloads.get(request.turnId);
+      if (list === undefined) {
+        list = [];
+        structuredPayloads.set(request.turnId, list);
+      }
+      list.push({
+        toolName: request.toolName,
+        serverName: request.serverName,
+        bytes: request.bytes,
+        hasOutputSchema: request.hasOutputSchema,
+      });
+      console.log(
+        `[privacy-guard v4] structured turn=${request.turnId} ` +
+          `tool=${request.toolName} server=${request.serverName} ` +
+          `bytes=${String(request.bytes)} ` +
+          `outputSchema=${String(request.hasOutputSchema)}`,
       );
     },
 
@@ -575,14 +606,18 @@ export function createPrivacyGuardService(deps?: {
       turnPiiValues.delete(turnId);
       const bypassed = bypassedTools.get(turnId);
       bypassedTools.delete(turnId);
+      const structured = structuredPayloads.get(turnId);
+      structuredPayloads.delete(turnId);
       // No receipt for a turn that touched neither the boundary, a bypass,
-      // nor prompt masking — there is nothing to report and a zero receipt
-      // is just noise in the channel UI.
+      // structured output, nor prompt masking — there is nothing to report and
+      // a zero receipt is just noise in the channel UI.
       const hasInterned = accum !== undefined && accum.datasetsInterned > 0;
       const hasBypassed = bypassed !== undefined && bypassed.length > 0;
+      const hasStructured = structured !== undefined && structured.length > 0;
       const hasMaskedPrompt =
         accum !== undefined && accum.maskedPromptSpans.length > 0;
-      if (!hasInterned && !hasBypassed && !hasMaskedPrompt) return undefined;
+      if (!hasInterned && !hasBypassed && !hasStructured && !hasMaskedPrompt)
+        return undefined;
       // identityValuesOnWire — personal-identity values the requester named
       // in their own message text. A transparency notice (the user put a
       // real identity on the wire), NOT a leak of tool data.
@@ -599,6 +634,7 @@ export function createPrivacyGuardService(deps?: {
           `cleartext=${String(accum?.fieldsCleartext ?? 0)} ` +
           `verbs=[${(accum?.verbsExecuted ?? []).join(',')}] ` +
           `bypassed=${String(bypassed?.length ?? 0)} ` +
+          `structured=${String(structured?.length ?? 0)} ` +
           `identityOnWire=${String(identityValuesOnWire)}`,
       );
       return {
@@ -609,6 +645,7 @@ export function createPrivacyGuardService(deps?: {
         pseudonymProjectionUsed: accum?.pseudonymProjectionUsed ?? false,
         identityValuesOnWire,
         ...(hasBypassed ? { bypassedTools: [...bypassed] } : {}),
+        ...(hasStructured ? { structuredPayloads: [...structured] } : {}),
         ...(hasMaskedPrompt
           ? { maskedPromptSpans: [...accum.maskedPromptSpans] }
           : {}),

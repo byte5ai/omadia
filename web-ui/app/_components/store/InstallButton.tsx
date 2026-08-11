@@ -526,6 +526,7 @@ function InstalledPanel({
       <PrivacyModePicker pluginId={pluginId} />
 
       {state.kind === 'idle' && (
+        // eslint-disable-next-line no-restricted-syntax -- inline text link (bare text + icon, no border/bg)
         <button
           type="button"
           onClick={() => setState({ kind: 'confirming' })}
@@ -601,6 +602,7 @@ function InstalledPanel({
           <p className="text-[12px] text-[color:var(--danger,#b03030)]">
             {t('uninstallFailed', { message: state.message })}
           </p>
+          {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text, no border/bg) */}
           <button
             type="button"
             onClick={() => setState({ kind: 'idle' })}
@@ -666,6 +668,7 @@ function InstallDrawer({
       aria-modal="true"
       aria-label={t('drawerAria', { name: pluginName })}
     >
+      {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (full-bleed modal backdrop/scrim, no text) */}
       <button
         type="button"
         onClick={onClose}
@@ -697,6 +700,7 @@ function InstallDrawer({
               </p>
             ) : null}
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare uppercase text, no border/bg) */}
           <button
             type="button"
             onClick={onClose}

@@ -364,6 +364,7 @@ function ClusterDropdown({
       onMouseEnter={hoverOpen}
       onMouseLeave={hoverClose}
     >
+      {/* eslint-disable-next-line no-restricted-syntax -- menu trigger (aria-haspopup/aria-expanded), text-link styling */}
       <button
         type="button"
         aria-haspopup="menu"

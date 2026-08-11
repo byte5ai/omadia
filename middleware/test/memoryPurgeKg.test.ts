@@ -8,16 +8,15 @@ import {
 import { runGraphMigrations } from '@omadia/knowledge-graph-neon/dist/migrator.js';
 import type { Pool } from 'pg';
 
+import { probePgTest } from './_helpers/pgTestDb.js';
+
 // ---------------------------------------------------------------------------
 // WS3 — Knowledge-Graph purge primitive against a throwaway Postgres.
-// Requires a reachable PG (pgvector). The overnight harness brings up
-// `mwtest-pg-ws3` on 55433; set WS3_PG_URL to point elsewhere. If neither is
-// set AND the default is unreachable, the suite skips rather than fails.
+// Requires a reachable pgvector PG — set WS3_PG_URL (or MEMORY_PG_TEST_URL) to
+// point at one. No default port: a stray container must not be picked up
+// (issue #572). When no URL is set, the DB is unreachable, or it lacks
+// pgvector, the suite skips (with a logged reason) rather than fails.
 // ---------------------------------------------------------------------------
-
-const PG_URL =
-  process.env['WS3_PG_URL'] ??
-  'postgresql://postgres:postgres@127.0.0.1:55433/postgres';
 
 const TENANT = 'ws3-tenant';
 
@@ -34,9 +33,14 @@ async function nodeUuid(p: Pool, externalId: string): Promise<string> {
 
 describe('purgeMemorableKnowledge (KG primitive)', () => {
   before(async () => {
-    pool = createNeonPool(PG_URL, 2);
+    const probe = await probePgTest({
+      label: 'memoryPurgeKg',
+      vars: ['WS3_PG_URL', 'MEMORY_PG_TEST_URL'],
+      requireVector: true,
+    });
+    if (!probe.reachable) return;
+    pool = createNeonPool(probe.url!, 2);
     try {
-      await pool.query('SELECT 1');
       await runGraphMigrations(pool);
       reachable = true;
     } catch {
@@ -57,7 +61,7 @@ describe('purgeMemorableKnowledge (KG primitive)', () => {
 
   it('purges only the matching origin_agent and its incident edges', async (t) => {
     if (!reachable || !pool) {
-      t.skip('Postgres not reachable (set WS3_PG_URL or start mwtest-pg-ws3)');
+      t.skip('pgvector Postgres not configured (set WS3_PG_URL or MEMORY_PG_TEST_URL)');
       return;
     }
     const p = pool;

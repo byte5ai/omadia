@@ -195,6 +195,7 @@ export default function MemoryAclSection({
   return (
     <div className="mt-3 border-t border-[color:var(--border)] pt-3">
       <div className="mb-2 flex gap-1 text-[10px] font-semibold uppercase tracking-wide">
+        {/* eslint-disable-next-line no-restricted-syntax -- segmented tab selector with active-state styling */}
         <button
           type="button"
           onClick={() => setTab('owners')}
@@ -206,6 +207,7 @@ export default function MemoryAclSection({
         >
           Owners ({owners.length})
         </button>
+        {/* eslint-disable-next-line no-restricted-syntax -- segmented tab selector with active-state styling */}
         <button
           type="button"
           onClick={() => setTab('audit')}
@@ -235,6 +237,7 @@ export default function MemoryAclSection({
                   <span className="grow truncate font-mono text-[10px]">
                     {id}
                   </span>
+                  {/* eslint-disable-next-line no-restricted-syntax -- icon-only remove (×) chrome, not a text CTA */}
                   <button
                     type="button"
                     disabled={busy}

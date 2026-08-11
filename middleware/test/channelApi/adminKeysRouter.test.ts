@@ -1,7 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { after, before, describe, it } from 'node:test';
-import type { AddressInfo } from 'node:net';
-import type { Server } from 'node:http';
+import { before, describe, it } from 'node:test';
 
 import express from 'express';
 
@@ -11,6 +9,7 @@ import type { OperatorAuthAccessor } from '../../packages/plugin-api/src/index.j
 import { createOperatorAuthAccessor } from '../../src/auth/operatorAuthAccessor.js';
 import { signSession } from '../../src/auth/sessionJwt.js';
 import { EmailWhitelist } from '../../src/auth/whitelist.js';
+import { createInProcessClient, type InProcessClient } from '../support/inProcessHttp.js';
 import { createFakeSecrets } from './testSecrets.js';
 
 /** Always-valid stub — used by the CRUD tests below, which exercise the
@@ -28,8 +27,8 @@ function alwaysValidOperatorAuth(): OperatorAuthAccessor {
  * `publicPathsExemption.test.ts` for the `publicPaths.ts` side of the story.
  */
 describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
-  let server: Server;
-  let baseUrl: string;
+  let client: InProcessClient;
+  const baseUrl = '/admin/keys';
 
   before(() => {
     const app = express();
@@ -38,17 +37,11 @@ describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
       '/admin/keys',
       createAdminKeysRouter(createApiKeyStore(createFakeSecrets()), alwaysValidOperatorAuth()),
     );
-    server = app.listen(0);
-    const addr = server.address() as AddressInfo;
-    baseUrl = `http://127.0.0.1:${String(addr.port)}/admin/keys`;
-  });
-
-  after(async () => {
-    await new Promise<void>((r) => server.close(() => r()));
+    client = createInProcessClient(app);
   });
 
   it('POST / creates a key, returning the plaintext token once + a hash-free record', async () => {
-    const res = await fetch(baseUrl, {
+    const res = await client.fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ label: 'ci' }),
@@ -61,7 +54,7 @@ describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
   });
 
   it('POST / rejects an invalid body', async () => {
-    const res = await fetch(baseUrl, {
+    const res = await client.fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ rateLimitPerMinute: -1 }),
@@ -70,12 +63,12 @@ describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
   });
 
   it('GET / lists created keys without their hash', async () => {
-    await fetch(baseUrl, {
+    await client.fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ label: 'listed' }),
     });
-    const res = await fetch(baseUrl);
+    const res = await client.fetch(baseUrl);
     assert.equal(res.status, 200);
     const body = (await res.json()) as { keys: Array<Record<string, unknown>> };
     assert.ok(body.keys.some((k) => k['label'] === 'listed'));
@@ -83,7 +76,7 @@ describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
   });
 
   it('POST / accepts a scope set, and GET / shows it (issue #439)', async () => {
-    const created = await fetch(baseUrl, {
+    const created = await client.fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ label: 'scoped', scopes: ['chat:write', 'memory:read'] }),
@@ -92,7 +85,7 @@ describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
     const body = (await created.json()) as { key: { id: string; scopes: string[] } };
     assert.deepEqual(body.key.scopes, ['chat:write', 'memory:read']);
 
-    const listed = (await (await fetch(baseUrl)).json()) as {
+    const listed = (await (await client.fetch(baseUrl)).json()) as {
       keys: Array<{ id: string; scopes: string[] }>;
     };
     assert.deepEqual(
@@ -106,7 +99,7 @@ describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
     // a persisted `[]`, so creation must not quietly turn it into the legacy
     // `chat:write` default. An operator asking for zero capabilities must get
     // an error, not a chat-capable key — and not a permanently-403 one either.
-    const res = await fetch(baseUrl, {
+    const res = await client.fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ label: 'readonly', scopes: [] }),
@@ -116,14 +109,14 @@ describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
     assert.equal(body.error, 'invalid_request');
 
     // ...and nothing was minted under that label.
-    const listed = (await (await fetch(baseUrl)).json()) as {
+    const listed = (await (await client.fetch(baseUrl)).json()) as {
       keys: Array<{ label?: string }>;
     };
     assert.ok(!listed.keys.some((k) => k.label === 'readonly'));
   });
 
   it('POST / without scopes still mints a working, chat-capable key (backward compatible)', async () => {
-    const res = await fetch(baseUrl, {
+    const res = await client.fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ label: 'unscoped' }),
@@ -134,7 +127,7 @@ describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
   });
 
   it('POST / 400s on a malformed scope instead of 500-ing out of the store', async () => {
-    const res = await fetch(baseUrl, {
+    const res = await client.fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ scopes: ['nope'] }),
@@ -143,19 +136,19 @@ describe('channelApi/adminKeysRouter — CRUD (auth stubbed valid)', () => {
   });
 
   it('POST /:id/revoke revokes an existing key and 404s for an unknown one', async () => {
-    const created = await fetch(baseUrl, {
+    const created = await client.fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
     });
     const { key } = (await created.json()) as { key: { id: string } };
 
-    const revoked = await fetch(`${baseUrl}/${key.id}/revoke`, { method: 'POST' });
+    const revoked = await client.fetch(`${baseUrl}/${key.id}/revoke`, { method: 'POST' });
     assert.equal(revoked.status, 200);
     const revokedBody = (await revoked.json()) as { key: { revokedAt?: number } };
     assert.equal(typeof revokedBody.key.revokedAt, 'number');
 
-    const missing = await fetch(`${baseUrl}/does-not-exist/revoke`, { method: 'POST' });
+    const missing = await client.fetch(`${baseUrl}/does-not-exist/revoke`, { method: 'POST' });
     assert.equal(missing.status, 404);
   });
 });
@@ -172,8 +165,8 @@ describe('channelApi/adminKeysRouter — operator-session auth (real verificatio
   const whitelist = new EmailWhitelist('operator@example.com');
   const operatorAuth = createOperatorAuthAccessor({ signingKey, whitelist });
 
-  let server: Server;
-  let baseUrl: string;
+  let client: InProcessClient;
+  const baseUrl = '/admin/keys';
 
   before(() => {
     const app = express();
@@ -182,24 +175,18 @@ describe('channelApi/adminKeysRouter — operator-session auth (real verificatio
       '/admin/keys',
       createAdminKeysRouter(createApiKeyStore(createFakeSecrets()), operatorAuth),
     );
-    server = app.listen(0);
-    const addr = server.address() as AddressInfo;
-    baseUrl = `http://127.0.0.1:${String(addr.port)}/admin/keys`;
-  });
-
-  after(async () => {
-    await new Promise<void>((r) => server.close(() => r()));
+    client = createInProcessClient(app);
   });
 
   it('no Cookie header → 401 auth.missing', async () => {
-    const res = await fetch(baseUrl);
+    const res = await client.fetch(baseUrl);
     assert.equal(res.status, 401);
     const body = (await res.json()) as { code: string };
     assert.equal(body.code, 'auth.missing');
   });
 
   it('garbage/invalid cookie value → 401 auth.invalid', async () => {
-    const res = await fetch(baseUrl, {
+    const res = await client.fetch(baseUrl, {
       headers: { cookie: 'omadia_session=not-a-real-jwt' },
     });
     assert.equal(res.status, 401);
@@ -218,7 +205,7 @@ describe('channelApi/adminKeysRouter — operator-session auth (real verificatio
       },
       signingKey,
     );
-    const res = await fetch(baseUrl, {
+    const res = await client.fetch(baseUrl, {
       headers: { cookie: `omadia_session=${token}` },
     });
     assert.equal(res.status, 200);
@@ -237,7 +224,7 @@ describe('channelApi/adminKeysRouter — operator-session auth (real verificatio
       },
       signingKey,
     );
-    const res = await fetch(baseUrl, {
+    const res = await client.fetch(baseUrl, {
       headers: { cookie: `omadia_session=${token}` },
     });
     assert.equal(res.status, 401);
@@ -248,7 +235,7 @@ describe('channelApi/adminKeysRouter — operator-session auth (real verificatio
     // must sit on top of the operator-session check, never beside it. A
     // caller that can mint `scopes: ['*']` without a session would be the
     // worst possible version of this router.
-    const anonymous = await fetch(baseUrl, {
+    const anonymous = await client.fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ label: 'anonymous-wildcard', scopes: ['*'] }),
@@ -267,7 +254,7 @@ describe('channelApi/adminKeysRouter — operator-session auth (real verificatio
       signingKey,
     );
     const listed = (await (
-      await fetch(baseUrl, { headers: { cookie: `omadia_session=${token}` } })
+      await client.fetch(baseUrl, { headers: { cookie: `omadia_session=${token}` } })
     ).json()) as { keys: Array<{ label?: string }> };
     assert.equal(
       listed.keys.some((k) => k.label === 'anonymous-wildcard'),
@@ -283,8 +270,8 @@ describe('channelApi/adminKeysRouter — operator-session auth (real verificatio
  * check — every route must refuse to serve.
  */
 describe('channelApi/adminKeysRouter — fails closed without operatorAuth', () => {
-  let server: Server;
-  let baseUrl: string;
+  let client: InProcessClient;
+  const baseUrl = '/admin/keys';
 
   before(() => {
     const app = express();
@@ -293,24 +280,18 @@ describe('channelApi/adminKeysRouter — fails closed without operatorAuth', () 
       '/admin/keys',
       createAdminKeysRouter(createApiKeyStore(createFakeSecrets()), undefined),
     );
-    server = app.listen(0);
-    const addr = server.address() as AddressInfo;
-    baseUrl = `http://127.0.0.1:${String(addr.port)}/admin/keys`;
-  });
-
-  after(async () => {
-    await new Promise<void>((r) => server.close(() => r()));
+    client = createInProcessClient(app);
   });
 
   it('GET / → 503 operator_auth.unavailable, even with no cookie at all', async () => {
-    const res = await fetch(baseUrl);
+    const res = await client.fetch(baseUrl);
     assert.equal(res.status, 503);
     const body = (await res.json()) as { code: string };
     assert.equal(body.code, 'operator_auth.unavailable');
   });
 
   it('POST / → 503 operator_auth.unavailable — never falls through to create a key', async () => {
-    const res = await fetch(baseUrl, {
+    const res = await client.fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ label: 'should-never-be-created' }),
