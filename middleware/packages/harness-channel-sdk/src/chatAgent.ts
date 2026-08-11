@@ -782,6 +782,23 @@ export type ChatStreamEvent =
        */
       provenance?: EnvelopeProvenance;
       /**
+       * #643 (epic #642) — AI-Act Art. 50 AI disclosure for this turn, the
+       * streaming sibling of `ChatTurnResult.aiDisclosure`. The non-streaming
+       * path carries the marking through `toSemanticAnswer`; the streaming
+       * clients (web-ui reads only this event, never `toSemanticAnswer`) would
+       * otherwise have no slot for it at all. Rides the existing `done` event
+       * exactly like `delegatedAnswer` rather than adding a stream event type.
+       *
+       * Additive and optional — a client that renders this event without
+       * knowing the field ignores it, so the NDJSON framing stays
+       * backward-compatible. Distinct from `provenance` above: that is the
+       * machine-readable envelope marker for the paths omadia frames end to end
+       * (#647), this is the human-readable line for the recipient. The per-turn
+       * RESOLUTION that populates it (channel policy, locale, operator setup
+       * fields) lands in the orchestrator in #644.
+       */
+      aiDisclosure?: AiDisclosure;
+      /**
        * #332 Layer 2 — Direct Line. Harness-owned verbatim sub-agent segment
        * for a user-directed specialist turn; see ChatTurnResult.delegatedAnswer.
        * The orchestrator cannot suppress or reword it.
