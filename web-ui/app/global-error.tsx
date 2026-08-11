@@ -45,6 +45,7 @@ export default function GlobalError({
             The app failed to load. Try reloading. · Die App konnte nicht geladen
             werden. Bitte neu laden.
           </p>
+          {/* eslint-disable-next-line no-restricted-syntax -- global-error must not import app code (documented exception) */}
           <button
             type="button"
             onClick={() => {

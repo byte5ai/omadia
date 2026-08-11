@@ -129,6 +129,7 @@ export default function UsageDashboardPage(): React.ReactElement {
         </div>
         <div className="flex gap-1 rounded-lg border border-[color:var(--border)] p-1">
           {RANGES.map((r) => (
+            // eslint-disable-next-line no-restricted-syntax -- stateful toggle/segmented selector
             <button
               key={r.key}
               type="button"

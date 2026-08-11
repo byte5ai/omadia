@@ -52,6 +52,7 @@ export function McpConnectModal({
           <h2 className="text-base font-semibold text-[color:var(--fg-strong)]">
             {t('mcpAuth.modalTitle', { server: serverName })}
           </h2>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (✕ close glyph) */}
           <button
             type="button"
             onClick={onClose}

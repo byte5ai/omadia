@@ -1,0 +1,10 @@
+# Expected verdict class: approved. In v1 this class is reachable ONLY via the
+# trigger-skip path: shouldTriggerVerifier fires only on hard signals (currency /
+# date / accounting-ref / percent / duration), so an answer without one skips
+# extraction and approves BEFORE the judge runs. A judge-*verified* approve is
+# not reachable in v1 — any triggering answer also carries a hard claim that
+# resolves `unverified` with no Odoo/graph reader, which lands it in disclaimer,
+# not clean approved. See README ("Scope (v1) and what is v2").
+{"id":"approve_smalltalk_hallo","note":"Pure smalltalk; no trigger signal, so shouldTriggerVerifier skips extraction entirely.","userMessage":"Hallo!","answer":"Hallo! Wie kann ich dir heute helfen?","expected":{"status":"approved"}}
+{"id":"approve_smalltalk_danke","note":"Acknowledgement only; no factual claims and no trigger signal.","userMessage":"Danke, das war alles.","answer":"Gern geschehen! Melde dich jederzeit, wenn du noch etwas brauchst.","expected":{"status":"approved"}}
+{"id":"approve_qualitative_no_trigger","note":"A qualitative claim but NO hard trigger signal in the answer -> extraction skipped -> approved. The judge never runs (evidence would be irrelevant, so none is given). Guards that plain qualitative statements are not over-verified into a disclaimer.","userMessage":"Wer leitet die Buchhaltung?","answer":"Anna Müller ist die Teamleiterin der Buchhaltung.","expected":{"status":"approved"}}

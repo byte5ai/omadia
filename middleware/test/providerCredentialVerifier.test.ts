@@ -101,6 +101,42 @@ describe('verifyProviderCredential — status mapping', () => {
     assert.equal(v.verifiedAt, undefined);
   });
 
+  // OM-09 — the English `error` sentence was the ONLY thing the providers
+  // panel had, so it rendered verbatim in every locale. The code is what a
+  // localized catalogue can key on; `error` stays as the fallback.
+  it('carries the machine code providers.key_rejected on a 401', async () => {
+    const { impl } = stubFetch(() => new Response('', { status: 401 }));
+    const v = await verifyProviderCredential({ ...ANTHROPIC, fetchImpl: impl });
+    assert.equal(v.status, 'invalid');
+    assert.equal(v.code, 'providers.key_rejected');
+  });
+
+  it('sets no code on a verdict that does not accuse the key', async () => {
+    for (const [label, responder] of [
+      ['verified', () => modelListResponse()],
+      ['unverified (500)', () => new Response('', { status: 500 })],
+      ['unverified (bare 403)', () => new Response('', { status: 403 })],
+    ] as const) {
+      // One key, several verdicts in one test: the probe caches per key, so
+      // without this the second iteration would assert against the first.
+      __clearVerificationCache();
+      const { impl } = stubFetch(responder);
+      const v = await verifyProviderCredential({ ...ANTHROPIC, fetchImpl: impl });
+      assert.notEqual(v.status, 'invalid', label);
+      assert.equal(v.code, undefined, `${label} must carry no code`);
+    }
+
+    __clearVerificationCache();
+    const { impl } = stubFetch(() => modelListResponse());
+    const noKey = await verifyProviderCredential({
+      ...ANTHROPIC,
+      apiKey: '  ',
+      fetchImpl: impl,
+    });
+    assert.equal(noKey.status, 'no_key');
+    assert.equal(noKey.code, undefined);
+  });
+
   // F6 — a bare 403 is NOT a credential verdict. OpenAI answers 403 for
   // "Country, region, or territory not supported"; Anthropic for org-permission
   // and region blocks. Calling any of those "your key is wrong" sends the

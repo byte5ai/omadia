@@ -45,6 +45,10 @@ import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
 import { Orchestrator, type OrchestratorPersonaSkill } from './orchestrator.js';
 import type { DirectLineStickyStore } from './directLineSticky.js';
+import type {
+  McpInputReplayer,
+  PendingMcpInputStore,
+} from './mcp/pendingMcpInput.js';
 import { CliChatAgent } from './cliChatAgent.js';
 import { ToolDispatchService } from './toolDispatchService.js';
 import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
@@ -109,6 +113,18 @@ export interface OrchestratorDeps {
    * conversation whenever an operator tweaked something unrelated.
    */
   readonly directLineStickyStore?: DirectLineStickyStore;
+  /**
+   * W2-1 (#544) — process-shared MCP pending-input store + replayer.
+   *
+   * Deps, not per-Agent config, for the SAME reason as
+   * `directLineStickyStore`: the registry replaces an Orchestrator instance on
+   * any config diff, and a per-instance store would drop every parked call
+   * whenever an operator changed something unrelated — after the user had
+   * already seen the card. Must be the same store instance the kernel's
+   * `McpManager` writes to.
+   */
+  readonly pendingMcpInput?: PendingMcpInputStore;
+  readonly mcpInputReplay?: McpInputReplayer;
   /** Late-bound `responseGuard@1` lookup (see `OrchestratorOptions`). */
   readonly responseGuard: () => ResponseGuardService | undefined;
   /** Late-bound `privacy.redact@1` lookup (see `OrchestratorOptions`). */
@@ -295,6 +311,14 @@ export function buildOrchestratorForAgent(
     ...(deps.excerptExtractor ? { excerptExtractor: deps.excerptExtractor } : {}),
     chatParticipantsTool,
     askUserChoiceTool,
+    // W2-1 (#544) — both or neither: a store with no replayer would park calls
+    // the user can answer but nothing can deliver.
+    ...(deps.pendingMcpInput && deps.mcpInputReplay
+      ? {
+          pendingMcpInput: deps.pendingMcpInput,
+          mcpInputReplay: deps.mcpInputReplay,
+        }
+      : {}),
     suggestFollowUpsTool,
     ...(findFreeSlotsTool ? { findFreeSlotsTool } : {}),
     ...(bookMeetingTool ? { bookMeetingTool } : {}),

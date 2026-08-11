@@ -123,6 +123,7 @@ export function ToolTestModal({
               {t('subtitle')}
             </p>
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only modal close control (X glyph, no text) */}
           <button
             type="button"
             onClick={onClose}

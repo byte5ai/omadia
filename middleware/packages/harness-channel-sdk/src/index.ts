@@ -52,6 +52,16 @@ export type {
 // Orchestrator → channel stream envelope (back-compat re-export)
 export type { ChatStreamEvent } from './streamEvent.js';
 
+// AI-Act Art. 50 machine-readable provenance marker for the envelope-controlled
+// egress paths (public chat API + public MCP server). Issue #647.
+export {
+  AI_PROVENANCE_HEADER,
+  AI_PROVENANCE_HEADER_VALUE,
+  AI_PROVENANCE_META_KEY,
+  ENVELOPE_PROVENANCE,
+  type EnvelopeProvenance,
+} from './provenance.js';
+
 // Omadia UI canvas surface contracts (omadia-canvas-protocol/1.0). Additive —
 // the `surface_*` family is folded into `ChatStreamEvent`; classic channels
 // default-ignore it.
@@ -89,6 +99,9 @@ export type {
   OutgoingFileAttachment,
   PendingUserChoice,
   PendingSlotCard,
+  // #544 W2-1 — MCP mid-call input request.
+  McpInputCardField,
+  PendingMcpInputCard,
   PendingRoutineList,
   AgentMeta,
 } from './chatAgent.js';
@@ -101,11 +114,36 @@ export { toSemanticAnswer } from './toSemanticAnswer.js';
 // #332 Layer 1 — plain-text fallback so even a minimal connector (no rich-card
 // UI) can append a readable, harness-sourced consulted-agents footer line.
 export { agentsConsultedFooterText } from './toSemanticAnswer.js';
+// #544 W2-1 — plain-text fallback for channels without form support.
+export { withMcpInputPrompt } from './toSemanticAnswer.js';
 
 // #332 Layer 1 (gap-closure) — shared derivation so streaming clients
 // (web-ui) and non-streaming `toSemanticAnswer` callers (Teams et al.) build
 // the IDENTICAL curated agentsConsulted array from the same run-trace.
 export { deriveAgentsConsulted } from './toSemanticAnswer.js';
+
+// AI-Act Art. 50 channel-agnostic AI disclosure carrier (#643, epic #642). The
+// structured field rides `SemanticAnswer.aiDisclosure`; the same line is folded
+// into `text` (the one field connectors MUST render) by `toSemanticAnswer`. This
+// module ships the carrier, the shipping-default policy, the DE/EN text composer
+// and the first-turn-per-scope fold decision; per-turn resolution + operator
+// setup fields land in the orchestrator in #644. Distinct from the envelope
+// marker for the API/MCP paths (#647, exported above).
+export {
+  DEFAULT_AI_DISCLOSURE_POLICY,
+  InMemoryDisclosureSeenStore,
+  composeDisclosureText,
+  applyAiDisclosure,
+} from './aiDisclosure.js';
+export type {
+  AiDisclosure,
+  AiDisclosureLevel,
+  AiDisclosurePolicy,
+  DisclosureSeenStore,
+  ComposeDisclosureOptions,
+  ApplyAiDisclosureContext,
+  ApplyAiDisclosureResult,
+} from './aiDisclosure.js';
 
 // Semantic outgoing-message contracts (connectors render native)
 export type {
@@ -117,6 +155,8 @@ export type {
   OutgoingChoiceCard,
   OutgoingSlotPicker,
   OutgoingTopicAsk,
+  // #544 W2-1 — MCP mid-call input form.
+  OutgoingMcpInputForm,
   CaptureDisclosure,
   AgentConsultation,
   DelegatedAnswer,

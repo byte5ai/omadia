@@ -13,9 +13,7 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { after, before, describe, it } from 'node:test';
-import type { AddressInfo } from 'node:net';
-import type { Server } from 'node:http';
+import { before, describe, it } from 'node:test';
 
 import express from 'express';
 import type { IncomingTurn } from '@omadia/channel-sdk';
@@ -32,6 +30,7 @@ import { createApiKeyStore } from '../../packages/harness-api-key-auth/src/apiKe
 import { createAuditLog } from '../../packages/harness-api-key-auth/src/auditLog.js';
 import { createRateLimiter } from '../../packages/harness-api-key-auth/src/rateLimiter.js';
 import { createApiChatRouter } from '../../packages/harness-channel-api/src/chatRouter.js';
+import { createInProcessClient, type InProcessClient } from '../support/inProcessHttp.js';
 import { createFakeSecrets } from './testSecrets.js';
 
 const providerCapabilities = {
@@ -92,8 +91,8 @@ function parseNdjson(body: string): Array<Record<string, unknown>> {
 }
 
 describe('channelApi/chatRouter — real orchestrator + real privacy-guard', () => {
-  let server: Server;
-  let baseUrl: string;
+  let client: InProcessClient;
+  const baseUrl = '/chat';
   let apiKeys: ReturnType<typeof createApiKeyStore>;
   const mainRequests: string[] = [];
 
@@ -131,19 +130,13 @@ describe('channelApi/chatRouter — real orchestrator + real privacy-guard', () 
         },
       }),
     );
-    server = app.listen(0);
-    const addr = server.address() as AddressInfo;
-    baseUrl = `http://127.0.0.1:${String(addr.port)}/chat`;
-  });
-
-  after(async () => {
-    await new Promise<void>((r) => server.close(() => r()));
+    client = createInProcessClient(app);
   });
 
   it('masks PII on the wire to the LLM, and the streamed done event carries a privacy receipt', async () => {
     const created = await apiKeys.create({ label: 'privacy-check' });
 
-    const res = await fetch(baseUrl, {
+    const res = await client.fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${created.token}` },
       body: JSON.stringify({

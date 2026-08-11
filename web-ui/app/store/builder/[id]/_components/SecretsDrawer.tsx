@@ -157,6 +157,7 @@ export function SecretsDrawer({
               <h2 className="font-display text-[18px] leading-none text-[color:var(--fg-strong)]">
                 {t('title')}
               </h2>
+              {/* eslint-disable-next-line no-restricted-syntax -- icon-only close-drawer chrome button, no §4.2 variant */}
               <button
                 type="button"
                 onClick={onClose}

@@ -16,6 +16,13 @@ import {
   type RenderResult,
 } from './types.js';
 import { sanitizeFilename } from './filename.js';
+import { normalizeOoxml } from './ooxmlNormalize.js';
+import {
+  PROVENANCE_CUSTOM_PROPERTIES,
+  PROVENANCE_DESCRIPTION,
+  PROVENANCE_GENERATOR,
+  PROVENANCE_KEYWORDS,
+} from './provenance.js';
 
 const HEADING_BY_LEVEL: Record<number, (typeof HeadingLevel)[keyof typeof HeadingLevel]> = {
   1: HeadingLevel.HEADING_1,
@@ -95,15 +102,26 @@ export async function renderDocx(descriptor: DocxDescriptor): Promise<RenderResu
   }
 
   const doc = new Document({
-    creator: 'Omadia',
+    creator: PROVENANCE_GENERATOR,
+    // Static AI-Act Art. 50 provenance marking (#645). Core properties carry a
+    // human+machine readable note; customProperties add a structured
+    // `AIGenerated` flag a parser can branch on. All values are constant, so
+    // they add no new source of nondeterminism to the content-addressed buffer.
+    description: PROVENANCE_DESCRIPTION,
+    keywords: PROVENANCE_KEYWORDS,
+    customProperties: [...PROVENANCE_CUSTOM_PROPERTIES],
     ...(descriptor.title ? { title: descriptor.title } : {}),
     sections: [{ children }],
   });
 
-  const buffer = await Packer.toBuffer(doc);
+  const raw = Buffer.from((await Packer.toBuffer(doc)) as unknown as Uint8Array);
+  // docx v9 stamps wall-clock zip mtimes and dcterms:created/modified with no
+  // API to pin them; normalize both so re-renders are byte-identical and the
+  // content-addressed cache in officeService actually hits (#645).
+  const buffer = await normalizeOoxml(raw, { rewriteCoreDates: true });
 
   return {
-    buffer: Buffer.from(buffer as unknown as Uint8Array),
+    buffer,
     mediaType: MEDIA_TYPE.docx,
     ext: 'docx',
     filename: sanitizeFilename(descriptor.filename, 'docx', 'document'),

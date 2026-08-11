@@ -260,10 +260,17 @@ describe('admin settings route — PATCH /', () => {
       { key: 'ANTHROPIC_API_KEY', value: 'nope' },
     ]);
     assert.equal(status, 400);
+    // #604: a refused VALUE is not a stale field list. The UI resolves this
+    // code to "correct the value"; `settings.no_valid_changes` resolves to
+    // "reload the page", which cannot fix a malformed key.
+    assert.equal(body.code, 'settings.invalid_values');
     assert.ok(body.errors?.some((e) => e.key === 'ANTHROPIC_API_KEY'));
     assert.deepEqual(h.reactivated, []);
   });
 
+  // The other half of the #604 split: nothing about the VALUE was wrong here,
+  // the key is simply not a setting this server offers — so the page's field
+  // list is stale and reloading is the action that helps.
   it('errors on an unknown setting key', async () => {
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
     const { status, body } = await patch(h, [

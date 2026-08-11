@@ -12,7 +12,7 @@
  * official API.
  */
 
-import type { McpConfigField } from '@omadia/orchestrator';
+import { isDeprecatedMcpTransport, type McpConfigField } from '@omadia/orchestrator';
 
 export interface McpRegistryConfig {
   readonly id: string;
@@ -33,6 +33,10 @@ export interface McpCatalogEntry {
   /** Derived connection candidate; null when the entry only ships packages
    *  we cannot translate into a transport (then it is browse-only). */
   readonly transport: 'http' | 'sse' | 'stdio' | null;
+  /** Issue #541 — the derived transport is deprecated by MCP 2026-07-28. Only
+   *  true when the entry offers no non-deprecated alternative; the import is
+   *  still allowed (removal window open), the operator just gets warned. */
+  readonly transportDeprecated: boolean;
   readonly endpoint: string | null;
   readonly license: string | null;
   readonly author: string | null;
@@ -100,6 +104,56 @@ function deriveAuthor(name: string, repoUrl: string | null): string | null {
   return ghRepo?.[1] ?? null;
 }
 
+type RemoteCandidate = {
+  readonly transport: 'http' | 'sse';
+  readonly endpoint: string;
+};
+
+/**
+ * Pick the connection candidate from a catalog entry's `remotes[]`.
+ *
+ * Second registration path for issue #541: a marketplace/catalog import is the
+ * other way an `sse` row can be minted, so the deprecation has to be enforced
+ * here too — a UI-only change would keep importing legacy SSE servers.
+ *
+ * When an entry advertises BOTH a Streamable-HTTP and a legacy HTTP+SSE remote
+ * we now take the `http` one (MCP 2026-07-28 deprecated HTTP+SSE, Streamable
+ * HTTP is the migration target). `sse` is still returned when it is the only
+ * remote offered — nothing is hard-blocked while the removal window is open;
+ * the row is flagged `transportDeprecated` instead.
+ *
+ * Every candidate must clear the same UNTRUSTED-remote validation as before
+ * (https only, host not internal/metadata); unlike the previous version this
+ * scans all remotes rather than only the first, which is what makes the
+ * preference possible and also rescues entries whose first remote is malformed.
+ */
+function pickRemoteCandidate(remotes: readonly unknown[]): RemoteCandidate | null {
+  const candidates: RemoteCandidate[] = [];
+  for (const r of remotes) {
+    if (!r || typeof r !== 'object') continue;
+    const remote = r as Record<string, unknown>;
+    const kind = str(remote['type'] ?? remote['transport_type'] ?? remote['transport']);
+    const url = str(remote['url']);
+    // Catalog entries are UNTRUSTED (codex fold): only well-formed https
+    // remotes become endpoints — a catalog must not be able to point the
+    // middleware at plain-http, custom schemes, or metadata addresses.
+    if (!url || !kind) continue;
+    try {
+      const parsed = new URL(url);
+      // https only, and the host must clear the untrusted-remote block —
+      // an untrusted catalog must not yield an internal/metadata endpoint.
+      if (parsed.protocol !== 'https:' || !isUntrustedRemoteHostSafe(parsed.hostname)) continue;
+      candidates.push({ transport: kind.includes('sse') ? 'sse' : 'http', endpoint: url });
+    } catch {
+      /* malformed remote URL → not a candidate */
+    }
+  }
+  // Prefer the first non-deprecated candidate; fall back to the first overall.
+  return (
+    candidates.find((c) => !isDeprecatedMcpTransport(c.transport)) ?? candidates[0] ?? null
+  );
+}
+
 function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
   // Official API wraps the server.json under `server`; accept both.
   const server = (raw['server'] ?? raw) as Record<string, unknown>;
@@ -111,28 +165,10 @@ function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
   let transport: McpCatalogEntry['transport'] = null;
   let endpoint: string | null = null;
   const remotes = Array.isArray(server['remotes']) ? server['remotes'] : [];
-  const remote = remotes.find(
-    (r): r is Record<string, unknown> => !!r && typeof r === 'object',
-  );
-  if (remote) {
-    const kind = str(remote['type'] ?? remote['transport_type'] ?? remote['transport']);
-    const url = str(remote['url']);
-    // Catalog entries are UNTRUSTED (codex fold): only well-formed https
-    // remotes become endpoints — a catalog must not be able to point the
-    // middleware at plain-http, custom schemes, or metadata addresses.
-    if (url && kind) {
-      try {
-        const parsed = new URL(url);
-        // https only, and the host must clear the untrusted-remote block —
-        // an untrusted catalog must not yield an internal/metadata endpoint.
-        if (parsed.protocol === 'https:' && isUntrustedRemoteHostSafe(parsed.hostname)) {
-          transport = kind.includes('sse') ? 'sse' : 'http';
-          endpoint = url;
-        }
-      } catch {
-        /* malformed remote URL → browse-only entry */
-      }
-    }
+  const picked = pickRemoteCandidate(remotes);
+  if (picked) {
+    transport = picked.transport;
+    endpoint = picked.endpoint;
   }
   if (!endpoint) {
     const packages = Array.isArray(server['packages']) ? server['packages'] : [];
@@ -174,6 +210,7 @@ function normalizeEntry(raw: Record<string, unknown>): McpCatalogEntry | null {
       str(server['version']) ??
       str((server['version_detail'] as Record<string, unknown> | undefined)?.['version']),
     transport,
+    transportDeprecated: transport !== null && isDeprecatedMcpTransport(transport),
     endpoint,
     license: str(server['license']) ?? str(raw['license']),
     author: deriveAuthor(name, repoUrl),
@@ -221,6 +258,7 @@ function normalizeSmitheryEntry(raw: Record<string, unknown>): McpCatalogEntry |
     version: null,
     // Remote Smithery servers are streamable-http; endpoint deferred to connect.
     transport: remote ? 'http' : null,
+    transportDeprecated: false,
     endpoint: null,
     license: null,
     author: str(raw['owner']) ?? str(raw['namespace']),
@@ -516,7 +554,7 @@ export class McpRegistryClient {
     if (registry.kind === 'smithery') {
       // A minimal entry; resolveSmitheryEndpoint fills the endpoint + enriches
       // name/description from the detail doc.
-      return { id: entryId, name: entryId, description: null, version: null, transport: 'http', endpoint: null, license: null, author: null, sourceUrl: null };
+      return { id: entryId, name: entryId, description: null, version: null, transport: 'http', transportDeprecated: false, endpoint: null, license: null, author: null, sourceUrl: null };
     }
     const results = await this.fetchCatalog(registry, entryId);
     const exact = results.find((e) => e.id === entryId);

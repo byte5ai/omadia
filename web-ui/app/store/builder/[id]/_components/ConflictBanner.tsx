@@ -65,6 +65,7 @@ export function ConflictBanner({
               {w.axes.join(' × ')}
             </p>
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only dismiss button (X), no text */}
           <button
             type="button"
             onClick={() =>

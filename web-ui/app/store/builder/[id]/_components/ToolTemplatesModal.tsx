@@ -79,6 +79,7 @@ export function ToolTemplatesModal({
               {t('title')}
             </h2>
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only modal close control (X glyph, no text) */}
           <button
             type="button"
             onClick={onClose}
@@ -100,6 +101,7 @@ export function ToolTemplatesModal({
               key={tpl.id}
               className="flex items-center justify-between gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 hover:border-[color:var(--accent)]"
             >
+              {/* eslint-disable-next-line no-restricted-syntax -- multi-line template selection tile (label/blurb/id), not a text CTA */}
               <button
                 type="button"
                 onClick={() => {
@@ -126,6 +128,7 @@ export function ToolTemplatesModal({
                 </span>
               </button>
               {tpl.source === 'personal' ? (
+                // eslint-disable-next-line no-restricted-syntax -- icon-only delete control (Trash2 glyph, no text)
                 <button
                   type="button"
                   onClick={() => {
