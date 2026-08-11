@@ -122,6 +122,29 @@ export { withMcpInputPrompt } from './toSemanticAnswer.js';
 // the IDENTICAL curated agentsConsulted array from the same run-trace.
 export { deriveAgentsConsulted } from './toSemanticAnswer.js';
 
+// AI-Act Art. 50 channel-agnostic AI disclosure carrier (#643, epic #642). The
+// structured field rides `SemanticAnswer.aiDisclosure`; the same line is folded
+// into `text` (the one field connectors MUST render) by `toSemanticAnswer`. This
+// module ships the carrier, the shipping-default policy, the DE/EN text composer
+// and the first-turn-per-scope fold decision; per-turn resolution + operator
+// setup fields land in the orchestrator in #644. Distinct from the envelope
+// marker for the API/MCP paths (#647, exported above).
+export {
+  DEFAULT_AI_DISCLOSURE_POLICY,
+  InMemoryDisclosureSeenStore,
+  composeDisclosureText,
+  applyAiDisclosure,
+} from './aiDisclosure.js';
+export type {
+  AiDisclosure,
+  AiDisclosureLevel,
+  AiDisclosurePolicy,
+  DisclosureSeenStore,
+  ComposeDisclosureOptions,
+  ApplyAiDisclosureContext,
+  ApplyAiDisclosureResult,
+} from './aiDisclosure.js';
+
 // Semantic outgoing-message contracts (connectors render native)
 export type {
   SemanticAnswer,
