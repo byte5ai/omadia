@@ -7,6 +7,7 @@ import type {
   SemanticAnswer,
 } from './outgoing.js';
 import type { SurfaceStreamEvent, PendingCanvasSurface } from './surface.js';
+import type { EnvelopeProvenance } from './provenance.js';
 
 /**
  * Orchestrator surface contract — the duck-typed interface every chat-handling
@@ -759,6 +760,16 @@ export type ChatStreamEvent =
        * answered, alongside the live token counts.
        */
       model?: string;
+      /**
+       * #647 — AI-Act Art. 50 machine-readable provenance marker for the paths
+       * whose envelope omadia controls (the public chat API's NDJSON stream).
+       * Additive and optional: connectors that render this event without knowing
+       * the field ignore it, so the NDJSON framing stays backward-compatible.
+       * The channel that owns the envelope stamps it on forward — the base
+       * orchestrator does not set it (the in-text disclosure that reaches the
+       * wire-format channels is the separate #643/#644 carrier).
+       */
+      provenance?: EnvelopeProvenance;
       /**
        * #332 Layer 2 — Direct Line. Harness-owned verbatim sub-agent segment
        * for a user-directed specialist turn; see ChatTurnResult.delegatedAnswer.

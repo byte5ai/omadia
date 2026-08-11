@@ -28,8 +28,16 @@ COPY middleware/scripts/check-node-version.mjs ./scripts/check-node-version.mjs
 # we re-install with the explicit --os/--cpu flags so the correct binary
 # lands. arm64 / x64 covers every realistic container host today. Docker's
 # TARGETARCH uses `amd64`; npm's `--cpu` uses `x64` — translate once here.
+# `--ignore-scripts` is load-bearing, not hardening theatre: better-sqlite3 v13
+# ships N-API prebuilds and declares `gypfile: false`, but `npm ci` ignores that
+# field (unlike `npm install`) and runs `node-gyp rebuild` anyway, which fails on
+# slim because there is no Python. Reproduced on npm 10, 11 and 12.
+# Skipping scripts lets the bundled prebuild be used. The two packages that
+# genuinely need their install script are rebuilt explicitly afterwards; both
+# fetch prebuilt binaries, so no compiler is required either.
 RUN NPM_CPU=$(case "${TARGETARCH:-amd64}" in arm64) echo arm64;; *) echo x64;; esac) \
- && npm ci --no-audit --no-fund \
+ && npm ci --ignore-scripts --no-audit --no-fund \
+ && npm rebuild argon2 esbuild \
  && npm install --no-save --include=optional --os=linux --cpu="${NPM_CPU}" sharp
 
 COPY middleware/tsconfig.json ./
@@ -86,8 +94,12 @@ COPY middleware/package.json middleware/package-lock.json ./
 COPY --from=builder /app/packages ./packages
 # preinstall hook from package.json requires this file (Node-version guard).
 COPY middleware/scripts/check-node-version.mjs ./scripts/check-node-version.mjs
+# See the builder stage for why `--ignore-scripts` + an explicit rebuild is
+# required here (better-sqlite3 v13 + `npm ci` ignoring `gypfile: false`).
+# esbuild is dev-only, so this stage rebuilds argon2 alone.
 RUN NPM_CPU=$(case "${TARGETARCH:-amd64}" in arm64) echo arm64;; *) echo x64;; esac) \
- && npm ci --omit=dev --no-audit --no-fund \
+ && npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+ && npm rebuild argon2 \
  && npm install --no-save --include=optional --os=linux --cpu="${NPM_CPU}" sharp \
  && npm cache clean --force
 

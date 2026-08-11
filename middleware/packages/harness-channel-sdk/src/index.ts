@@ -52,6 +52,16 @@ export type {
 // Orchestrator → channel stream envelope (back-compat re-export)
 export type { ChatStreamEvent } from './streamEvent.js';
 
+// AI-Act Art. 50 machine-readable provenance marker for the envelope-controlled
+// egress paths (public chat API + public MCP server). Issue #647.
+export {
+  AI_PROVENANCE_HEADER,
+  AI_PROVENANCE_HEADER_VALUE,
+  AI_PROVENANCE_META_KEY,
+  ENVELOPE_PROVENANCE,
+  type EnvelopeProvenance,
+} from './provenance.js';
+
 // Omadia UI canvas surface contracts (omadia-canvas-protocol/1.0). Additive —
 // the `surface_*` family is folded into `ChatStreamEvent`; classic channels
 // default-ignore it.

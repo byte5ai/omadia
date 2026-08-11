@@ -1,4 +1,4 @@
-import { parse as parseCookieHeader } from 'cookie';
+import { parseCookie as parseCookieHeader } from 'cookie';
 import type { OperatorAuthAccessor } from '@omadia/plugin-api';
 
 import { evaluateSessionToken, SESSION_COOKIE } from './requireAuth.js';

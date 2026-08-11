@@ -59,6 +59,7 @@ import {
 
 import type { ApiKeyPrincipal, RateLimiter } from '@omadia/api-key-auth';
 import { hasScope, hasWriteScope, MCP_INVOKE_SCOPE, MCP_LIST_SCOPE } from '@omadia/api-key-auth';
+import { AI_PROVENANCE_META_KEY, ENVELOPE_PROVENANCE } from '@omadia/channel-sdk';
 import type {
   DispatchableToolSpec,
   PrivacyTurnHandle,
@@ -459,6 +460,10 @@ export class PublicMcpServer {
     );
 
     mcp.setRequestHandler(ListToolsRequestSchema, async () =>
+      // #647 — no `_meta` provenance here on purpose: a listing is not an AI
+      // answer, and the envelope-level marking (the endpoint is an AI system) is
+      // carried by the response header, which is set for every reply. The
+      // per-call `_meta` twin rides only the `tools/call` result below.
       this.sanitized('tools/list', async () => ({
         tools: await this.listToolsFor(principal),
       })),
@@ -480,6 +485,11 @@ export class PublicMcpServer {
         return {
           content: [{ type: 'text' as const, text: result.content }],
           ...(result.isError ? { isError: true } : {}),
+          // #647 — AI-Act Art. 50 provenance, per call. The envelope-level twin
+          // of the router's response header, carried in the spec's designated
+          // passthrough (`_meta`) so an existing client that does not read the
+          // key ignores it and the JSON-RPC result stays backward-compatible.
+          _meta: { [AI_PROVENANCE_META_KEY]: ENVELOPE_PROVENANCE },
         };
       }),
     );
