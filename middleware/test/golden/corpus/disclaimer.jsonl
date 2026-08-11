@@ -1,0 +1,13 @@
+# Expected verdict class: approved_with_disclaimer (the borderline path, #132
+# isBorderlineVerdict). A soft claim the fixture leaves WITHOUT confirming
+# evidence -> judge returns `unverified` -> disclaimer.
+#
+# CRITICAL: each answer carries a hard trigger signal (a date or a currency
+# amount) so shouldTriggerVerifier actually fires and the extractor + judge run.
+# Without a signal the pipeline skips extraction and returns `approved` before
+# the judge is ever consulted — the disclaimer class would then be untestable.
+# The co-extracted hard claim (date/amount) also resolves `unverified` (no Odoo
+# reader), which is consistent with the disclaimer outcome and does not mask it.
+{"id":"disclaimer_soft_no_evidence","note":"Date signal makes the pipeline trigger; qualitative claim with empty evidence -> judge 'no evidence available' -> unverified -> disclaimer.","userMessage":"Was macht Anna Müller beruflich?","answer":"Anna Müller arbeitet seit dem 01.06.2022 als Senior-Beraterin im Vertriebsteam.","evidence":[],"expected":{"status":"approved_with_disclaimer"}}
+{"id":"disclaimer_soft_silent_evidence","note":"Currency signal triggers; evidence is on-topic but silent about the Region-Süd responsibility -> ambiguous -> unverified -> disclaimer.","userMessage":"Ist Tomas Weber für die Region Süd zuständig?","answer":"Tomas Weber betreut die Region Süd mit einem Jahresumsatz von 1.250.000 €.","evidence":[{"nodeId":"n_emp_tomas","source":"graph","title":"Tomas Weber","content":"Tomas Weber ist Mitarbeiter im Vertrieb."}],"expected":{"status":"approved_with_disclaimer"}}
+{"id":"disclaimer_soft_partial_evidence","note":"Date signal triggers; evidence covers the person but not the claimed certification -> unverified -> disclaimer.","userMessage":"Hat Lena Fischer eine SAP-Zertifizierung?","answer":"Lena Fischer besitzt seit dem 15.09.2023 eine SAP-Zertifizierung.","evidence":[{"nodeId":"n_emp_lena","source":"graph","title":"Lena Fischer","content":"Lena Fischer ist Projektmanagerin im Bereich ERP-Einführung."}],"expected":{"status":"approved_with_disclaimer"}}
