@@ -1,14 +1,25 @@
 import { describe, it, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { Readable } from 'node:stream';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   DiagramService,
   DiagramRenderError,
   DiagramRenderTooLargeError,
   DiagramSourceTooLargeError,
   UnsupportedDiagramKindError,
+  hasItxtKeyword,
+  PROVENANCE_KEYWORD,
   type DiagramKind,
 } from '@omadia/diagrams';
+
+// Real Kroki PNG — used to prove the service stamps provenance into the bytes
+// it actually stores, not a synthetic stand-in.
+const KROKI_PNG = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'diagram-kroki.png'),
+);
 
 // --- Test doubles ----------------------------------------------------------
 
@@ -150,6 +161,46 @@ describe('DiagramService', () => {
       (err: unknown) =>
         err instanceof DiagramRenderError && err.status === 502,
     );
+  });
+
+  it('stamps a provenance iTXt chunk into the stored PNG', async () => {
+    const realKroki = new StubKroki(() => Buffer.from(KROKI_PNG));
+    const svc = makeService({ kroki: realKroki, store });
+    const out = await svc.render({ kind: 'mermaid', source: 'graph TD; A-->B' });
+    const stored = store.objects.get(out.key);
+    assert.ok(stored, 'render must store an object');
+    assert.equal(hasItxtKeyword(KROKI_PNG, PROVENANCE_KEYWORD), false, 'fixture starts clean');
+    assert.equal(hasItxtKeyword(stored, PROVENANCE_KEYWORD), true, 'stored PNG is marked');
+  });
+
+  it('produces byte-identical marked bytes across two fresh renders', async () => {
+    const input = { kind: 'mermaid' as const, source: 'graph TD; A-->B' };
+    const storeA = new StubStore();
+    const storeB = new StubStore();
+    const outA = await makeService({
+      kroki: new StubKroki(() => Buffer.from(KROKI_PNG)),
+      store: storeA,
+    }).render(input);
+    const outB = await makeService({
+      kroki: new StubKroki(() => Buffer.from(KROKI_PNG)),
+      store: storeB,
+    }).render(input);
+    assert.deepEqual(storeA.objects.get(outA.key), storeB.objects.get(outB.key));
+  });
+
+  it('serves a marked PNG on the cache-hit path', async () => {
+    const realKroki = new StubKroki(() => Buffer.from(KROKI_PNG));
+    const svc = makeService({ kroki: realKroki, store });
+    const input = { kind: 'mermaid' as const, source: 'graph TD; A-->B' };
+    await svc.render(input);
+    const second = await svc.render(input);
+    assert.equal(second.cacheHit, true);
+    assert.equal(realKroki.calls.length, 1, 'no re-render on cache hit');
+    // The object placed on the first render already carries the chunk, so the
+    // cache-hit path returns marked bytes without touching Kroki.
+    const cached = store.objects.get(second.key);
+    assert.ok(cached);
+    assert.equal(hasItxtKeyword(cached, PROVENANCE_KEYWORD), true);
   });
 
   it('scopes cache keys by tenantId', async () => {

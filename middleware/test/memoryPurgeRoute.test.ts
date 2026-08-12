@@ -6,6 +6,7 @@ import { after, before, describe, it } from 'node:test';
 import express from 'express';
 import { Pool } from 'pg';
 
+import { resolvePgTestUrl } from './_helpers/pgTestDb.js';
 import { InMemoryMemoryStore } from '@omadia/memory';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import type {
@@ -100,7 +101,9 @@ function withPurgePrimitives(
  * not inside the router, so the test calls the router directly.
  */
 
-const PG_URL = 'postgres://postgres:test@127.0.0.1:55434/memtest';
+// No hardcoded default port (issue #572): the PG audit case runs only when an
+// explicit test-Postgres URL is set, else it skips.
+const PG_URL = resolvePgTestUrl('MEMORY_PG_TEST_URL', 'GRAPH_PG_TEST_URL');
 
 type PurgeKg = ReturnType<typeof withPurgePrimitives>;
 
@@ -202,6 +205,13 @@ async function postJson(
  *  pgcrypto ensured (router needs gen_random_uuid). Else undefined → audit
  *  case skipped. */
 async function maybePgPool(): Promise<Pool | undefined> {
+  if (!PG_URL) {
+    console.error(
+      '[memoryPurgeRoute] no MEMORY_PG_TEST_URL / GRAPH_PG_TEST_URL set — ' +
+        'skipping the PG audit case (issue #572).',
+    );
+    return undefined;
+  }
   const pool = new Pool({ connectionString: PG_URL, max: 2 });
   try {
     await pool.query('SELECT 1');

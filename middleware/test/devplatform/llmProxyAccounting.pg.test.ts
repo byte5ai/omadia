@@ -11,6 +11,7 @@ import { Pool } from 'pg';
 
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
+import { probePgTest } from '../_helpers/pgTestDb.js';
 import { DevJobStore } from '../../src/devplatform/devJobStore.js';
 import { DevRepoStore } from '../../src/devplatform/devRepoStore.js';
 import { finalizeDevJob } from '../../src/devplatform/finalizeDevJob.js';
@@ -37,26 +38,16 @@ import { createDevRunnerRouter, type DevRunnerRouterDeps } from '../../src/route
  * `input_tokens = 200_000` ⇒ exactly $1.00 per call.
  */
 
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['WS5_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
-
 const MARK = 'pg-llm-accounting';
 const MODEL = 'claude-opus-4-8';
 const OK_BODY = { model: MODEL, messages: [{ role: 'user', content: 'hi' }], stream: false };
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
 
-const probePool = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 2000 });
-let pgAvailable = true;
-try {
-  await probePool.query('SELECT 1');
-} catch {
-  pgAvailable = false;
-  await probePool.end().catch(() => undefined);
-}
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'llmProxyAccounting',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL', 'DATABASE_URL'],
+});
+const probePool = new Pool({ connectionString: PG_URL });
 
 /** An upstream Anthropic-shaped non-stream JSON success carrying provider usage. */
 function usageResponse(inputTokens: number, outputTokens: number): Response {

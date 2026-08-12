@@ -82,6 +82,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
   // Launcher chip when the pane is closed.
   if (!open) {
     return (
+      // eslint-disable-next-line no-restricted-syntax -- bespoke accent pill, no §4.2 variant
       <button
         type="button"
         onClick={openWindow}
@@ -130,6 +131,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
               {t('badgeProgress', { done: doneCount, total: totalSteps })}
             </span>
           </span>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (maximize/restore glyph) */}
           <button
             type="button"
             onClick={toggleMaximized}
@@ -143,6 +145,7 @@ export function PlanDagPane({ plan }: Props): React.ReactElement | null {
               <Maximize2 size={14} aria-hidden />
             )}
           </button>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (× close glyph) */}
           <button
             type="button"
             onClick={close}

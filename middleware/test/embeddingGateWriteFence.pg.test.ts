@@ -4,6 +4,8 @@ import { after, before, describe, it } from 'node:test';
 import type { EmbeddingClient } from '@omadia/plugin-api';
 import { Pool } from 'pg';
 
+import { probePgTest } from './_helpers/pgTestDb.js';
+
 import {
   startEmbeddingBackfill,
   type EmbeddingBackfillHandle,
@@ -41,25 +43,15 @@ import { NeonProcessMemoryStore } from '@omadia/knowledge-graph-neon/dist/proces
  * suite deadlocks under the parallel runner.
  */
 
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'embeddingGateWriteFence',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'DATABASE_URL'],
+  requireVector: true,
+  timeoutMs: 1_500,
+});
 
 const SCHEMA = 'embgate_fence_test';
 const TENANT = 'fence-440';
-
-let pgAvailable = true;
-const probe = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 1_500 });
-try {
-  await probe.query('SELECT 1');
-  await probe.query('CREATE EXTENSION IF NOT EXISTS vector');
-} catch {
-  pgAvailable = false;
-} finally {
-  await probe.end().catch(() => undefined);
-}
 
 const silent = (): void => undefined;
 
@@ -160,11 +152,25 @@ describe('#440 gate-epoch write fence (real Postgres, real backfill handle)', { 
     pendingTurns?: number;
     pendingProcesses?: number;
   }): Promise<void> {
-    await real.query(
-      'DROP TABLE IF EXISTS graph_nodes, processes, process_history, graph_embedding_model',
-    );
+    // Recreate the SCHEMA, and qualify every name below — never `DROP TABLE IF
+    // EXISTS graph_nodes` unqualified.
+    //
+    // A DROP resolves an unqualified name THROUGH the search_path. On the first
+    // test this suite's own schema is still empty, so `graph_nodes` fell through
+    // to `public.graph_nodes` — a table the real KG suites create and which
+    // survives in the container between runs. That is why this suite passed on a
+    // pristine database and then failed on EVERY subsequent with-pg run: the
+    // second run's DROP hit `public.graph_nodes` and errored 2BP01 on
+    // `public.graph_edges`' foreign keys, so the CREATE never ran, so the next
+    // test's DROP fell through again — self-perpetuating, all six tests.
+    //
+    // The FK is the only reason this surfaced as a loud error. `public.processes`
+    // and `public.graph_embedding_model` have no dependents, so the same
+    // fall-through was SILENTLY DROPPING a sibling suite's tables.
+    await real.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+    await real.query(`CREATE SCHEMA ${SCHEMA}`);
     await real.query(`
-      CREATE TABLE graph_nodes (
+      CREATE TABLE ${SCHEMA}.graph_nodes (
         id                      TEXT PRIMARY KEY,
         tenant_id               TEXT NOT NULL,
         type                    TEXT NOT NULL,
@@ -177,7 +183,7 @@ describe('#440 gate-epoch write fence (real Postgres, real backfill handle)', { 
         created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
       )`);
     await real.query(`
-      CREATE TABLE processes (
+      CREATE TABLE ${SCHEMA}.processes (
         id         TEXT NOT NULL,
         tenant_id  TEXT NOT NULL,
         scope      TEXT NOT NULL DEFAULT 'team',
@@ -191,7 +197,7 @@ describe('#440 gate-epoch write fence (real Postgres, real backfill handle)', { 
         PRIMARY KEY (tenant_id, id)
       )`);
     await real.query(`
-      CREATE TABLE process_history (
+      CREATE TABLE ${SCHEMA}.process_history (
         id            TEXT NOT NULL,
         tenant_id     TEXT NOT NULL,
         version       INTEGER NOT NULL,
@@ -201,7 +207,7 @@ describe('#440 gate-epoch write fence (real Postgres, real backfill handle)', { 
         superseded_at TIMESTAMPTZ NOT NULL
       )`);
     await real.query(`
-      CREATE TABLE graph_embedding_model (
+      CREATE TABLE ${SCHEMA}.graph_embedding_model (
         tenant_id     TEXT PRIMARY KEY,
         model_id      TEXT        NOT NULL,
         dimensions    INTEGER     NOT NULL,
@@ -211,7 +217,7 @@ describe('#440 gate-epoch write fence (real Postgres, real backfill handle)', { 
       )`);
     for (let i = 0; i < (opts.pendingTurns ?? 0); i++) {
       await real.query(
-        `INSERT INTO graph_nodes (id, tenant_id, type, external_id, properties)
+        `INSERT INTO ${SCHEMA}.graph_nodes (id, tenant_id, type, external_id, properties)
          VALUES ($1, $2, 'Turn', $3, $4::jsonb)`,
         [
           `00000000-0000-4000-8000-00000000000${String(i)}`,
@@ -223,33 +229,54 @@ describe('#440 gate-epoch write fence (real Postgres, real backfill handle)', { 
     }
     for (let i = 0; i < (opts.pendingProcesses ?? 0); i++) {
       await real.query(
-        `INSERT INTO processes (id, tenant_id, title, steps)
+        `INSERT INTO ${SCHEMA}.processes (id, tenant_id, title, steps)
          VALUES ($1, $2, $3, $4::jsonb)`,
         [`proc:${String(i)}`, TENANT, `Backend: step ${String(i)}`, JSON.stringify(['do it'])],
       );
     }
     // Three days old: the switch cooldown guards a rolling deploy, not a test.
     await real.query(
-      `INSERT INTO graph_embedding_model (tenant_id, model_id, dimensions, updated_at)
+      `INSERT INTO ${SCHEMA}.graph_embedding_model (tenant_id, model_id, dimensions, updated_at)
        VALUES ($1, 'ollama:nomic-embed-text', 768, now() - interval '3 days')`,
       [TENANT],
     );
+    await assertFixtureIsIsolated();
   }
 
+  // Assertions read SCHEMA-QUALIFIED names for the same reason the DDL writes
+  // them: an unqualified read that fell through to `public` would not error, it
+  // would quietly assert against a sibling suite's rows.
   const storedVectors = async (table: string): Promise<string[]> => {
     const r = await real.query<{ v: string }>(
-      `SELECT embedding::text AS v FROM ${table} WHERE embedding IS NOT NULL`,
+      `SELECT embedding::text AS v FROM ${SCHEMA}.${table} WHERE embedding IS NOT NULL`,
     );
     return r.rows.map((row) => row.v);
   };
 
   const attemptCounters = async (): Promise<number[]> => {
     const r = await real.query<{ n: number }>(
-      'SELECT embedding_attempts AS n FROM graph_nodes WHERE tenant_id = $1',
+      `SELECT embedding_attempts AS n FROM ${SCHEMA}.graph_nodes WHERE tenant_id = $1`,
       [TENANT],
     );
     return r.rows.map((row) => Number(row.n));
   };
+
+  /**
+   * Guard for the fixture itself: every table this suite drives must live in
+   * THIS suite's schema. Cheap, and it turns a silent cross-suite collision
+   * (the fall-through above) into an immediate, named failure.
+   */
+  async function assertFixtureIsIsolated(): Promise<void> {
+    const r = await real.query<{ tablename: string }>(
+      `SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename`,
+      [SCHEMA],
+    );
+    assert.deepEqual(
+      r.rows.map((row) => row.tablename),
+      ['graph_embedding_model', 'graph_nodes', 'process_history', 'processes'],
+      `the fixture did not land in ${SCHEMA} — it resolved through the search_path`,
+    );
+  }
 
   /**
    * The plugin's own wiring, verbatim in shape: ONE `syncBackfill` that stops
@@ -452,7 +479,7 @@ describe('#440 gate-epoch write fence (real Postgres, real backfill handle)', { 
     // embedder for MemorableKnowledge / PalaiaExcerpt. Same shape, same window.
     await freshSchema({});
     await real.query(
-      `INSERT INTO graph_nodes (id, tenant_id, type, external_id)
+      `INSERT INTO ${SCHEMA}.graph_nodes (id, tenant_id, type, external_id)
        VALUES ('11111111-0000-4000-8000-000000000000', $1, 'MemorableKnowledge', 'mk:1')`,
       [TENANT],
     );
@@ -598,7 +625,7 @@ describe('#440 gate-epoch write fence (real Postgres, real backfill handle)', { 
     // it; the ROLLBACK makes the fenced write a clean no-op on both counts.
     await freshSchema({});
     await real.query(
-      `INSERT INTO processes (id, tenant_id, title, steps, embedding)
+      `INSERT INTO ${SCHEMA}.processes (id, tenant_id, title, steps, embedding)
        VALUES ('proc:edit', $1, 'Backend: deploy to staging', $2::jsonb, NULL)`,
       [TENANT, JSON.stringify(['build'])],
     );

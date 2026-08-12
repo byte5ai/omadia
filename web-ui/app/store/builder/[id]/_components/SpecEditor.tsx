@@ -514,6 +514,7 @@ function ArrayField({
                 title={malformed ? t('array.malformedTooltip') : undefined}
               >
                 <span className="break-all">{labelText}</span>
+                {/* eslint-disable-next-line no-restricted-syntax -- icon-only chip-remove control (X glyph, no text label) */}
                 <button
                   type="button"
                   onClick={() => onRemove(i)}

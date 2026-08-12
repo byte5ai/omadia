@@ -1,8 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import {
+  mcpDomainForServer,
+  resolveMcpCallTimeouts,
+} from './mcp/mcpClient.js';
+import {
   deriveAgentsConsulted,
   toSemanticAnswer,
+  applyAiDisclosure,
+  resolveAiDisclosure,
+  DEFAULT_AI_DISCLOSURE_POLICY,
+  InMemoryDisclosureSeenStore,
   type ChatStreamEvent,
   type ChatTurnInput,
   type ChatTurnResult,
@@ -10,8 +18,13 @@ import {
   type DirectLineSessionState,
   type DiagramAttachment,
   type OutgoingFileAttachment,
+  type PendingMcpInputCard,
   type PendingRoutineList,
   type SemanticAnswer,
+  type AiDisclosure,
+  type AiDisclosureLevel,
+  type AiDisclosurePolicy,
+  type DisclosureSeenStore,
 } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { LlmProvider } from '@omadia/llm-provider';
@@ -47,6 +60,17 @@ import type {
   AskUserChoiceTool,
   PendingUserChoice,
 } from './tools/askUserChoiceTool.js';
+import type {
+  McpInputReplayer,
+  McpInputReply,
+  PendingMcpInput,
+  PendingMcpInputStore,
+} from './mcp/pendingMcpInput.js';
+import {
+  claimMcpInputFromResults,
+  mcpInputReplyLabel,
+  parseMcpInputReply,
+} from './mcp/pendingMcpInput.js';
 import {
   ASK_USER_CHOICE_TOOL_NAME,
   askUserChoiceToolSpec,
@@ -80,6 +104,7 @@ import {
   QueryDatasetTool,
   queryDatasetToolSpec,
 } from './tools/queryDatasetTool.js';
+import { sortByToolName } from './toolOrdering.js';
 import { parseAttachmentsInfo } from './attachmentsInfo.js';
 import {
   checkVisionEmbeddable,
@@ -155,7 +180,12 @@ import type {
 } from './llmProviderSeam.js';
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
-import { buildDateHeader, today, turnContext } from './turnContext.js';
+import {
+  buildDateHeader,
+  today,
+  turnContext,
+  type TurnContextValue,
+} from './turnContext.js';
 import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
@@ -197,6 +227,44 @@ const KERNEL_NATIVE_TOOL_NAMES: readonly string[] = [
 // the import block at the top. Re-exported below from this module's barrel
 // for back-compat with kernel-side callers that still import it from
 // `services/orchestrator.js`.
+
+/**
+ * AI-Act Art. 50 (#644, epic #642) — the operator's resolved disclosure config
+ * for this Agent, read once from the setup fields (manifest.yaml) by the plugin
+ * and handed to the Orchestrator pre-resolved (same arrival pattern as
+ * `assistantIdentity` / `maxTokens`: the harness-orchestrator package never
+ * reads the installed-plugin config itself).
+ *
+ * Absent entirely → the shipping default ({@link DEFAULT_AI_DISCLOSURE_POLICY}:
+ * `standard`, active, `source: 'default'`) on every channel (AC1). Present →
+ * the operator set at least one field, so `source` is `'operator'` and an
+ * `'off'` level is honoured (a turn cannot silence itself; only an
+ * operator-sourced policy can — see `applyAiDisclosure`).
+ */
+export interface AiDisclosureSetup {
+  /** Global default level for channels without a per-channel override. */
+  readonly level: AiDisclosureLevel;
+  /**
+   * Per-channel level overrides, keyed by `ChannelKind` (`teams` | `telegram` |
+   * `slack` | `email` | `web`). A turn whose channel does not resolve to a
+   * `ChannelKind` falls back to {@link level} — the safe direction (the marking
+   * stays active). NOTE: today only `teams`/`slack`/`telegram` are ever
+   * populated as a per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`
+   * is the sole setter of `channelIdentity`); `email` and `web` turns carry none
+   * yet (as do discord / whatsapp / canvas-custom / HTTP-dev) and therefore use
+   * the global {@link level}. Empty / absent → no per-channel differentiation.
+   */
+  readonly overrides?: Readonly<Record<string, AiDisclosureLevel>>;
+  /** Wording language for the marking; normalized to `'de'` / `'en'` by the
+   *  text composer. Absent → `'de'` (the shipping-default language). */
+  readonly locale?: string;
+  /** Assistant display name woven into the standard line ("… von <name>, einem
+   *  KI-System, erzeugt."). Absent → the name-less generic line. */
+  readonly assistantName?: string;
+  /** Verbatim operator addendum appended after the marking line; never replaces
+   *  it (AC5). Follows the `RoutineStaticMarkdownSection` verbatim contract. */
+  readonly operatorNote?: string;
+}
 
 export interface OrchestratorOptions {
   /**
@@ -370,6 +438,24 @@ export interface OrchestratorOptions {
    */
   askUserChoiceTool?: AskUserChoiceTool;
   /**
+   * W2-1 (#544) — the store an MCP tool's `resultType: "input_required"` result
+   * is parked in. Wired to the SAME instance the `McpManager` writes to, so the
+   * orchestrator can drain the turn slot the manager just filled.
+   *
+   * Injected rather than owned because the manager lives kernel-side; same
+   * shape as the sticky Direct Line store (#445). Absent → the whole MRTR path
+   * is inert and `callTool` degrades an `input_required` result to a plain tool
+   * error, which is deliberate: half-wired is worse than off.
+   */
+  pendingMcpInput?: PendingMcpInputStore;
+  /**
+   * W2-1 (#544) — performs the replay. The orchestrator holds no `McpManager`
+   * (and must not: it would drag the MCP registry into the kernel), so the
+   * forced re-call is injected. Absent → a card answer is treated as an
+   * ordinary user message.
+   */
+  mcpInputReplay?: McpInputReplayer;
+  /**
    * Optional. When set, exposes the `suggest_follow_ups` tool — non-blocking
    * 1-click refinement buttons attached below the answer. Used for Top-N,
    * aggregates, and trend questions where the user typically wants to
@@ -526,6 +612,21 @@ export interface OrchestratorOptions {
    * empty → behaviour is identical to pre-Wave-8 (no classifier call).
    */
   personaSkills?: readonly OrchestratorPersonaSkill[];
+  /**
+   * AI-Act Art. 50 (#644) — the operator's resolved disclosure config. Absent →
+   * the shipping default (standard, active) on every channel. See
+   * {@link AiDisclosureSetup}.
+   */
+  aiDisclosure?: AiDisclosureSetup;
+  /**
+   * #644 — first-turn-per-scope fold-dedup backing store. One instance per
+   * process, shared across the Agents the registry builds (same lifetime
+   * rationale as `directLineStickyStore`), so re-building an Agent never
+   * re-folds the marking into an ongoing conversation. Absent → a private
+   * {@link InMemoryDisclosureSeenStore} (a restart re-folds, the fail-safe
+   * direction).
+   */
+  aiDisclosureSeenStore?: DisclosureSeenStore;
 }
 
 /** A persona candidate resolved with its full body (Orchestrator-internal —
@@ -603,6 +704,58 @@ interface IngestedImageBlock {
  * supported, since `ingestAttachments` skips fetching entirely otherwise),
  * so they are simply concatenated when both are non-empty.
  */
+/**
+ * W2-1 (#544) — kernel record → channel card payload.
+ *
+ * `originalArgs` and `replayDepth` are deliberately NOT copied: the arguments
+ * may contain data the user never needs to re-see (and a channel has no use for
+ * them), and the depth is a server-facing guard. Only what a card must render
+ * crosses the boundary — including `serverName`, which is mandatory.
+ */
+function toPendingMcpInputCard(record: PendingMcpInput): PendingMcpInputCard {
+  return {
+    correlationId: record.correlationId,
+    serverId: record.serverId,
+    serverName: record.serverName,
+    toolName: record.toolName,
+    ...(record.prompt !== undefined ? { prompt: record.prompt } : {}),
+    fields: record.inputRequests.map((f) => ({
+      name: f.name,
+      ...(f.label !== undefined ? { label: f.label } : {}),
+      ...(f.description !== undefined ? { description: f.description } : {}),
+      ...(f.secret === true ? { secret: true } : {}),
+      ...(f.required === true ? { required: true } : {}),
+    })),
+  };
+}
+
+/**
+ * W2-1 (#544) — what the session log records for a turn that ended on an input
+ * card. Mirrors the `[Rückfrage] …` convention the choice card uses, so a reader
+ * of the transcript can see WHY the turn produced no answer — and names the
+ * server, because an audit trail that hides who asked for credentials is worse
+ * than useless. Field names only; never the values.
+ */
+function mcpInputCardLogLine(answer: string, card: PendingMcpInputCard): string {
+  const line =
+    `[MCP-Eingabe angefordert] "${card.serverName}" → ${card.toolName}: ` +
+    card.fields.map((f) => f.name).join(', ');
+  return answer.length > 0 ? `${answer}\n\n${line}` : line;
+}
+
+/**
+ * W2-1 (#544) — fold the MCP input-replay outcome into the turn's auto-ingested
+ * trailing text, so the model sees the replayed tool result in the SAME turn the
+ * user answered the card. Returns `ingestedText` untouched on an ordinary turn.
+ */
+function withMcpInputNote(ingestedText: string | undefined): string | undefined {
+  const note = turnContext.current()?.mcpInputReplayNote;
+  if (note === undefined || note.length === 0) return ingestedText;
+  return ingestedText !== undefined && ingestedText.trim().length > 0
+    ? `${ingestedText}\n\n${note}`
+    : `\n\n${note}`;
+}
+
 function buildUserContent(
   input: ChatTurnInput,
   extraText?: string,
@@ -1292,6 +1445,148 @@ function mcpObservationDigest(raw: string): string {
   return `(${String(Buffer.byteLength(raw, 'utf8'))} bytes, values masked)`;
 }
 
+/**
+ * Per-tool dispatch deadline (W0-2). Every tool of an iteration is dispatched
+ * into one `Promise.allSettled` (non-streaming) / race loop (streaming), so a
+ * single sub-agent that never returns used to pin the WHOLE parallel batch for
+ * the rest of the turn — there was no per-tool timeout anywhere.
+ *
+ * 240s is deliberately generous: a domain sub-agent runs its own multi-iteration
+ * LLM loop with its own tool calls, so p99 legitimately reaches tens of seconds.
+ * Operators whose Odoo/Confluence sub-agents run longer raise it via
+ * `OMADIA_TOOL_DISPATCH_TIMEOUT_MS`; `0` disables the deadline entirely.
+ *
+ * ── ORDERING INVARIANT (W3-A) ───────────────────────────────────────────────
+ * This is the OUTER bound. It must stay strictly LOOSER than the innermost MCP
+ * bound — `OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` (default 180 s, see
+ * `DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` in `mcp/mcpClient.ts`), which itself
+ * sits above the 60 s per-request idle budget.
+ *
+ * The default was 120 s, i.e. INSIDE the 180 s MCP ceiling. An MCP-backed
+ * sub-agent legitimately streaming progress notifications for its full
+ * allowance was therefore killed by the OUTER bound first: the tighter schranke
+ * was the outer one, which is backwards, and the model got a generic
+ * dispatch-deadline error instead of the MCP layer's own diagnosis (which the
+ * audit trail records as an `fail`/`timeout` row against the server).
+ *
+ * The invariant is enforced in PRODUCTION, not only in a test.
+ * {@link assertTimeoutHierarchy} used to exist ONLY as a local helper inside
+ * `test/orchestrator/timeoutHierarchy.test.ts` that nothing shipped ever
+ * called — so `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=90000` re-created the exact
+ * inversion W3-A removed, with fully green CI, and the symptom surfaced much
+ * later as MCP calls dying on a generic dispatch-deadline error. It now lives
+ * here and runs at boot, so an incoherent deployment refuses to start.
+ *
+ * The invariant is stated against the MCP layer's `worstCaseTotalMs` — retries
+ * INCLUDED — because the per-attempt ceiling was never the number that mattered.
+ *
+ * `resolveToolDispatchTimeoutMs` is deliberately left as a pure resolver rather
+ * than clamping to a coherent value: silently substituting a number the operator
+ * did not choose hides the misconfiguration instead of reporting it, and a short
+ * deadline is legitimate for a deployment that also lowers the MCP ceiling. The
+ * boot check is where an incoherent pair is refused.
+ */
+const DEFAULT_TOOL_DISPATCH_TIMEOUT_MS = 240_000;
+const TOOL_DISPATCH_TIMEOUT_ENV = 'OMADIA_TOOL_DISPATCH_TIMEOUT_MS';
+
+/** Resolved per dispatch (not cached at module load) so an operator env change
+ *  applies to the next turn without a restart. Exported so the timeout-hierarchy
+ *  invariant check reads the REAL resolved value, env overrides included. */
+export function resolveToolDispatchTimeoutMs(): number {
+  const raw = process.env[TOOL_DISPATCH_TIMEOUT_ENV];
+  if (raw === undefined || raw.trim() === '') {
+    return DEFAULT_TOOL_DISPATCH_TIMEOUT_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    console.warn(
+      `[orchestrator] ${TOOL_DISPATCH_TIMEOUT_ENV}="${raw}" is not a non-negative number — using the ${String(DEFAULT_TOOL_DISPATCH_TIMEOUT_MS)}ms default.`,
+    );
+    return DEFAULT_TOOL_DISPATCH_TIMEOUT_MS;
+  }
+  return parsed;
+}
+
+/**
+ * Fail-fast configuration check for the tool-timeout hierarchy — the PRODUCTION
+ * home of the invariant. Called at boot from `src/index.ts`.
+ *
+ * Throws, rather than warning, because every alternative is worse: a warning is
+ * invisible in a container log, and clamping runs the deployment on a number
+ * nobody chose. Both knobs are operator-set, so the operator is exactly who can
+ * fix it, and startup is exactly when they are looking.
+ */
+export function assertTimeoutHierarchy(): void {
+  const { timeoutMs, maxTotalTimeoutMs, worstCaseTotalMs } = resolveMcpCallTimeouts();
+  if (maxTotalTimeoutMs <= timeoutMs) {
+    throw new Error(
+      `[orchestrator] timeout hierarchy is incoherent: the absolute MCP ceiling ` +
+        `(OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS=${String(maxTotalTimeoutMs)}ms) must be looser than the ` +
+        `per-request idle budget (OMADIA_MCP_CALL_TIMEOUT_MS=${String(timeoutMs)}ms).`,
+    );
+  }
+  // `0` means "no dispatch deadline", which is looser than any finite ceiling.
+  const configured = resolveToolDispatchTimeoutMs();
+  if (configured !== 0 && configured <= worstCaseTotalMs) {
+    throw new Error(
+      `[orchestrator] timeout hierarchy is incoherent: the OUTER tool-dispatch deadline ` +
+        `(${TOOL_DISPATCH_TIMEOUT_ENV}=${String(configured)}ms) must be strictly looser than the MCP layer's ` +
+        `worst-case call budget (${String(worstCaseTotalMs)}ms, retries included) — otherwise an MCP call that ` +
+        `legitimately uses its full allowance is killed by the outer bound first and the model gets a generic ` +
+        `dispatch-deadline error instead of the MCP layer's own diagnosis. Raise ${TOOL_DISPATCH_TIMEOUT_ENV} ` +
+        `above ${String(worstCaseTotalMs)}ms, or lower OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS.`,
+    );
+  }
+}
+
+/** Model-facing result for a tool that blew its deadline. `Error:`-prefixed so
+ *  both dispatch loops key `is_error` off it exactly like any other failure. */
+function toolDeadlineError(name: string, timeoutMs: number): string {
+  const seconds = (timeoutMs / 1000).toFixed(timeoutMs % 1000 === 0 ? 0 : 1);
+  return `Error: tool \`${name}\` was aborted after exceeding its ${seconds}s dispatch deadline. Its result (if it ever arrives) is discarded. Continue without it or retry with a narrower request.`;
+}
+
+/** Returned by the abandoned dispatch when it finally settles. Never reaches
+ *  the model — the turn already took {@link toolDeadlineError} for this slot. */
+const TOOL_DISPATCH_DISCARDED = '__omadia_tool_dispatch_discarded__';
+
+/**
+ * Wrap a slot observer so sub-agent events emitted AFTER the deadline are
+ * dropped. A sub-agent that keeps running past its abort would otherwise keep
+ * pushing `sub_tool_use`/`sub_tool_result` events into a turn that already
+ * moved on — the same late-write class the discarded result guards against.
+ */
+function abortGuardedObserver(
+  observer: AskObserver | undefined,
+  signal: AbortSignal,
+): AskObserver | undefined {
+  if (observer === undefined) return undefined;
+  const gate =
+    <E>(fn: ((ev: E) => void) | undefined): ((ev: E) => void) | undefined =>
+    fn === undefined
+      ? undefined
+      : (ev: E): void => {
+          if (signal.aborted) return;
+          fn.call(observer, ev);
+        };
+  const onIteration = gate(observer.onIteration);
+  const onSubToolUse = gate(observer.onSubToolUse);
+  const onSubToolResult = gate(observer.onSubToolResult);
+  const onIterationPhase = gate(observer.onIterationPhase);
+  const onTokenChunk = gate(observer.onTokenChunk);
+  const onIterationUsage = gate(observer.onIterationUsage);
+  const onIterationEnd = gate(observer.onIterationEnd);
+  return {
+    ...(onIteration ? { onIteration } : {}),
+    ...(onSubToolUse ? { onSubToolUse } : {}),
+    ...(onSubToolResult ? { onSubToolResult } : {}),
+    ...(onIterationPhase ? { onIterationPhase } : {}),
+    ...(onTokenChunk ? { onTokenChunk } : {}),
+    ...(onIterationUsage ? { onIterationUsage } : {}),
+    ...(onIterationEnd ? { onIterationEnd } : {}),
+  };
+}
+
 export class Orchestrator {
   /** The Agent (orchestrator instance) this object serves. */
   readonly agentId: string;
@@ -1338,6 +1633,9 @@ export class Orchestrator {
   /** #133 E0 — optional side-channel turn-hook runner (see OrchestratorOptions). */
   private readonly turnHookRegistry: TurnHookRunner | undefined;
   private readonly askUserChoiceTool: AskUserChoiceTool | undefined;
+  /** W2-1 (#544) — see OrchestratorOptions.pendingMcpInput / mcpInputReplay. */
+  private readonly pendingMcpInput: PendingMcpInputStore | undefined;
+  private readonly mcpInputReplay: McpInputReplayer | undefined;
   private readonly suggestFollowUpsTool: SuggestFollowUpsTool | undefined;
   /** #268 — byte source for attachments; drives auto-ingest + read_attachment. */
   private readonly attachmentReader: AttachmentReader | undefined;
@@ -1376,6 +1674,11 @@ export class Orchestrator {
   /** Operator persona — first line(s) of the system prompt. See
    *  `OrchestratorOptions.assistantIdentity` / `DEFAULT_ASSISTANT_IDENTITY`. */
   private readonly assistantIdentity: string;
+  /** #644 — resolved operator disclosure config (undefined → shipping default
+   *  on every channel). See {@link AiDisclosureSetup}. */
+  private readonly aiDisclosure: AiDisclosureSetup | undefined;
+  /** #644 — first-turn-per-scope fold-dedup store (see OrchestratorOptions). */
+  private readonly disclosureSeen: DisclosureSeenStore;
   private readonly nativeTools: NativeToolRegistry;
   /**
    * Per-turn scratchpad for the routine list smart-card emitted in-band by
@@ -1441,6 +1744,8 @@ export class Orchestrator {
     this.factExtractor = options.factExtractor;
     this.chatParticipantsTool = options.chatParticipantsTool;
     this.askUserChoiceTool = options.askUserChoiceTool;
+    this.pendingMcpInput = options.pendingMcpInput;
+    this.mcpInputReplay = options.mcpInputReplay;
     this.suggestFollowUpsTool = options.suggestFollowUpsTool;
     this.attachmentReader = options.attachmentReader;
     this.readAttachmentTool = options.attachmentReader
@@ -1465,6 +1770,9 @@ export class Orchestrator {
     this.graphTenantId = options.graphTenantId;
     this.assistantIdentity =
       options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
+    this.aiDisclosure = options.aiDisclosure;
+    this.disclosureSeen =
+      options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
     this.sessionLogger = options.sessionLogger;
     this.entityRefBus = options.entityRefBus;
     this.contextRetriever = options.contextRetriever;
@@ -1810,6 +2118,205 @@ export class Orchestrator {
    */
   private drainPendingChoice(): PendingUserChoice | undefined {
     return this.askUserChoiceTool?.takePending();
+  }
+
+  /**
+   * W2-1 (#544) — collect an MCP tool call that parked on
+   * `resultType: "input_required"` during this tool batch.
+   *
+   * Sibling of `drainPendingChoice` and drained through the SAME short-circuit
+   * code path: a non-undefined return terminates the turn so the channel can
+   * render an input card, and the answer arrives as a fresh turn.
+   *
+   * Unlike `askUserChoiceTool`, the pending state cannot live on an instance
+   * field. The store is shared with the kernel's single `McpManager` across
+   * every concurrent turn, so the drain is keyed on the turn id — see
+   * `takePending(turnId)`.
+   */
+  private drainPendingMcpInput(
+    toolResults: ContentBlock[],
+    input: ChatTurnInput,
+    turnId: string,
+  ): PendingMcpInput | undefined {
+    if (!this.pendingMcpInput) return undefined;
+    const strings: string[] = [];
+    for (const block of toolResults) {
+      if (block.type !== 'tool_result') continue;
+      const shape = block as { content?: unknown; is_error?: boolean };
+      // A failed tool call never parked anything; skip it for the same reason
+      // `extractToolEmittedChoice` does.
+      if (shape.is_error === true) continue;
+      if (typeof shape.content === 'string') strings.push(shape.content);
+    }
+    if (strings.length === 0) return undefined;
+    // The owner is bound HERE, from the turn input the orchestrator holds
+    // reliably on both paths — never from ambient context, which the streaming
+    // path cannot provide. `sessionScope ?? turnId` mirrors the sessionId every
+    // other turn-scoped consumer uses, and is only ONE component of the key.
+    return claimMcpInputFromResults(this.pendingMcpInput, strings, {
+      userId: input.userId ?? null,
+      sessionId: input.sessionScope ?? turnId,
+    });
+  }
+
+  /**
+   * W2-1 (#544) — resolve a card answer and REPLAY the parked MCP tool call.
+   *
+   * Called once at turn start, before the model runs. Deliberately an
+   * orchestrator-driven forced call rather than a prompt that hopes the model
+   * re-calls the tool with the right arguments: the arguments are already known
+   * exactly (`originalArgs` + the collected `inputResponses`), so leaving the
+   * choice to the model could only make it wrong.
+   *
+   * Returns a note to append to the user's wire message so the model can narrate
+   * the outcome in this same turn, or `undefined` for an ordinary message.
+   *
+   * ## The stdio caveat, stated where it bites
+   *
+   * This is a NEW `tools/call` in a LATER turn against a possibly reconnected
+   * transport — not the in-flight retry MRTR describes. Fine for a stateless
+   * HTTP server; wrong for a stdio server holding process state tied to the
+   * original call. See `pendingMcpInput.ts` for why turn suspension is not on
+   * the table.
+   */
+  private async applyMcpInputReplay(
+    reply: McpInputReply,
+    input: ChatTurnInput,
+    turnId: string,
+  ): Promise<void> {
+    const note = await this.runMcpInputReplay(reply, input, turnId);
+    if (note === undefined) return;
+    // Written onto the LIVE context store so the wire-message assembly below
+    // (both the buffered and the streaming path) picks it up without another
+    // parameter on three nested signatures.
+    const ctx = turnContext.current();
+    if (ctx) ctx.mcpInputReplayNote = note;
+  }
+
+  private async runMcpInputReplay(
+    reply: McpInputReply,
+    input: ChatTurnInput,
+    turnId: string,
+  ): Promise<string | undefined> {
+    const store = this.pendingMcpInput;
+    const replayer = this.mcpInputReplay;
+    if (!store || !replayer) {
+      // The user answered a card this deployment can no longer honour (feature
+      // turned off between the two turns, or a restart cleared the store).
+      return (
+        '[MCP-Eingabe] Die Eingabe konnte nicht übermittelt werden — die ' +
+        'Anfrage existiert nicht mehr. Sag dem User, dass er die Aktion neu ' +
+        'starten muss, und ruf kein Tool auf.'
+      );
+    }
+    // The full triple. A card answer arriving with a correlation id that was
+    // parked under a DIFFERENT user or session simply misses — that miss is the
+    // #445 defence, so it must never be widened to "look it up by id".
+    const record = store.take({
+      userId: input.userId ?? null,
+      sessionId: input.sessionScope ?? turnId,
+      correlationId: reply.correlationId,
+    });
+    if (!record) {
+      // Expired, already used, or not ours. Say so plainly rather than
+      // pretending the input was delivered.
+      return (
+        '[MCP-Eingabe] Die Eingabeanfrage ist nicht mehr gültig (abgelaufen oder ' +
+        'schon beantwortet). Sag dem User, dass er die Aktion neu starten muss, ' +
+        'und ruf kein Tool auf.'
+      );
+    }
+    let result: string | undefined;
+    try {
+      result = await replayer.replay(record, reply.inputResponses);
+    } catch (err) {
+      console.error(
+        '[orchestrator] MCP input replay failed:',
+        err instanceof Error ? err.message : err,
+      );
+      result = undefined;
+    }
+    if (result === undefined) {
+      return (
+        `[MCP-Eingabe] Der Server "${record.serverName}" ist nicht mehr erreichbar, ` +
+        `die Eingaben für "${record.toolName}" konnten nicht übermittelt werden. ` +
+        'Sag das dem User und ruf kein Tool auf.'
+      );
+    }
+    const guardedResult = await this.guardReplayResult(record, result);
+    // The collected VALUES are deliberately absent from this note: they may be
+    // secrets the user typed for the server, and this text goes on the LLM wire
+    // and into the session log. Only the outcome travels.
+    return (
+      `[MCP-Eingabe] Die Angaben des Users wurden an "${record.serverName}" ` +
+      `übermittelt und "${record.toolName}" erneut ausgeführt. Ergebnis:\n${guardedResult}\n` +
+      'Formuliere daraus die Antwort für den User. Ruf das Tool nicht noch einmal auf.'
+    );
+  }
+
+  /**
+   * Privacy Shield v4 boundary for MCP input replay: this note crosses only the
+   * server ↔ LLM-provider seam. The browser stays on the trusted side and is
+   * unaffected — it may still render the real values server-side.
+   *
+   * Shape (b) ("route replay through dispatchTool") was rejected and must stay
+   * rejected here: the parked record keeps the RAW MCP tool name while
+   * `dispatchTool` keys on the hydrated native/namespaced one; replay must use
+   * the server's LIVE config rather than a hydration-time closure; it must stay
+   * reachable even when the tool is no longer granted/hydrated; and it must not
+   * re-enter dispatch-only deadline/audit/park semantics. So replay resolves the
+   * live call where it already does today and applies the SAME privacy boundary
+   * here, immediately before the note is put on the LLM wire.
+   *
+   * Fail-open is deliberate parity with ordinary dispatch: if receipt recording
+   * or interning throws, we warn and continue with the raw result rather than
+   * breaking the turn after the user already supplied the requested input.
+   */
+  private async guardReplayResult(
+    record: PendingMcpInput,
+    rawResult: string,
+  ): Promise<string> {
+    const privacy = turnContext.current()?.privacyHandle;
+    if (privacy === undefined) return rawResult;
+
+    if (isMcpServerPrivacyBypassed(record.serverId)) {
+      const effective = resolveEffectivePrivacyMode({
+        storedMode: 'bypass',
+        storedScopes: undefined,
+        toolName: record.toolName,
+        env: process.env,
+      });
+      if (effective === 'bypass') {
+        try {
+          await privacy.recordBypassedTool({
+            toolName: record.toolName,
+            pluginId: mcpDomainForServer(record.serverName),
+            reason: 'operator_setting',
+            bytes: Buffer.byteLength(rawResult, 'utf8'),
+          });
+        } catch (err) {
+          console.warn(
+            `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.recordBypassedTool threw — bypass still applied:`,
+            err,
+          );
+        }
+        return rawResult;
+      }
+    }
+
+    try {
+      const v4 = await privacy.internToolResultV4({
+        toolName: record.toolName,
+        rawResult,
+      });
+      return v4.digestText;
+    } catch (err) {
+      console.warn(
+        `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.internToolResultV4 threw — sending raw replay result:`,
+        err,
+      );
+      return rawResult;
+    }
   }
 
   /**
@@ -2229,11 +2736,119 @@ export class Orchestrator {
    */
   async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
     const result = await this.runTurn(input);
-    return toSemanticAnswer(result);
+    // #644 — the disclosure resolution rides `result.aiDisclosure` (set by
+    // `runTurn`). Thread the scope + shared seen-store ONLY when there is a
+    // marker to fold, so `toSemanticAnswer` folds it on the FIRST turn of the
+    // conversation and suppresses the repeat thereafter (the structured field
+    // still rides every turn). When the operator turned the disclosure `'off'`
+    // there is no marker: pass NO ctx so the converter does not resolve and
+    // fold the shipping default in its place (a ctx alone re-engages the fold).
+    return toSemanticAnswer(
+      result,
+      result.aiDisclosure
+        ? {
+            ...(input.sessionScope ? { scope: input.sessionScope } : {}),
+            seen: this.disclosureSeen,
+          }
+        : undefined,
+    );
   }
 
+  /**
+   * AI-Act Art. 50 (#644, epic #642) — resolve THIS turn's disclosure once,
+   * from the operator setup fields + the turn's channel, WITHOUT folding or
+   * touching the seen-store. Placed on `ChatTurnResult.aiDisclosure` (below) and
+   * on the streaming `done` event ({@link discloseDoneEvent}); each output path
+   * then folds this same marker. One derivation, both paths — the reason
+   * `deriveAgentsConsulted` was extracted.
+   *
+   * The channel picks the level: a per-channel override (keyed on the turn's
+   * `channelIdentity.channelKind`) wins over the operator's global default,
+   * which wins over the shipping default. A turn whose channel does not resolve
+   * to a `ChannelKind` uses the global level — the safe direction (marking
+   * stays active). Returns `undefined` only for an operator `'off'` (AC2).
+   *
+   * Deliberately reads NOTHING from `assistantIdentity` / the persona override /
+   * the system prompt: the marking lives behind the model precisely so a
+   * branded or human-sounding persona cannot suppress it (AC2 regression).
+   */
+  private resolveTurnDisclosure(input: ChatTurnInput): AiDisclosure | undefined {
+    const setup = this.aiDisclosure;
+    const channelKind = input.channelIdentity?.channelKind;
+    const override =
+      channelKind !== undefined ? setup?.overrides?.[channelKind] : undefined;
+    const level: AiDisclosureLevel =
+      override ?? setup?.level ?? DEFAULT_AI_DISCLOSURE_POLICY.level;
+    // `source` gates the `'off'` opt-out: only an operator-sourced policy may
+    // silence a turn. A resolved `setup` object exists ONLY when the operator
+    // configured at least one disclosure field (the plugin passes `undefined`
+    // otherwise), so its mere presence makes the policy operator-sourced; with
+    // no config at all it is the shipping default.
+    const source: 'default' | 'operator' =
+      setup !== undefined ? 'operator' : DEFAULT_AI_DISCLOSURE_POLICY.source;
+    const policy: AiDisclosurePolicy = {
+      level,
+      source,
+      ...(setup?.locale ? { locale: setup.locale } : {}),
+    };
+    return resolveAiDisclosure({
+      policy,
+      ...(setup?.locale ? { locale: setup.locale } : {}),
+      ...(setup?.assistantName ? { assistantName: setup.assistantName } : {}),
+      ...(setup?.operatorNote ? { operatorNote: setup.operatorNote } : {}),
+    });
+  }
+
+  /**
+   * #644 — fold this turn's disclosure into a streaming `done` event: append the
+   * marking (+ operator note) to the authoritative `answer` AND attach the
+   * structured carrier. Mirrors the non-streaming `toSemanticAnswer` fold — same
+   * `resolveAiDisclosure` marker, same `applyAiDisclosure` fold, same shared
+   * seen-store — so the streaming and non-streaming paths deliver byte-identical
+   * marking (AC: streaming == non-streaming). A turn takes exactly ONE path, so
+   * the seen-store is marked once per turn. Returns the event untouched for an
+   * operator `'off'` (no carrier, no fold).
+   */
+  private discloseDoneEvent(
+    done: Extract<ChatStreamEvent, { type: 'done' }>,
+    input: ChatTurnInput,
+  ): Extract<ChatStreamEvent, { type: 'done' }> {
+    const aiDisclosure = this.resolveTurnDisclosure(input);
+    if (!aiDisclosure) return done;
+    const { text } = applyAiDisclosure(done.answer, {
+      disclosure: aiDisclosure,
+      ...(input.sessionScope ? { scope: input.sessionScope } : {}),
+      seen: this.disclosureSeen,
+    });
+    return { ...done, answer: text, aiDisclosure };
+  }
+
+  /**
+   * Public ChatAgent.runTurn — thin wrapper resolving this turn's AI disclosure
+   * (#644) and placing it on the result, so EVERY consumer of the internal
+   * shape gets it: `chat()` above, the verifier's retry loop, and the proactive
+   * routine runner (which calls `toSemanticAnswer(result)` directly). The
+   * resolution is fold-free and seen-store-free — the fold happens once, at the
+   * output boundary — so resolving on each internal `runTurn` (e.g. a verifier
+   * retry) never double-counts a scope.
+   */
   async runTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
+    const result = await this.runTurnCore(input);
+    const aiDisclosure = this.resolveTurnDisclosure(input);
+    return aiDisclosure ? { ...result, aiDisclosure } : result;
+  }
+
+  private async runTurnCore(input: ChatTurnInput): Promise<ChatTurnResult> {
     const turnId = randomUUID();
+    // W2-1 (#544) — an MCP input card's answer arrives as a machine envelope in
+    // `userMessage`. Normalise it HERE, before anything downstream reads the
+    // field, so the envelope never reaches the session log, memory, the KG, the
+    // privacy receipt or the chat transcript. The replay itself runs inside the
+    // turn scope below (it needs the turn context for audit attribution).
+    const mcpInputReply = parseMcpInputReply(input.userMessage);
+    if (mcpInputReply) {
+      input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
+    }
     // Inherit optional fields the channel adapter (e.g. Teams bot) set in an
     // outer ALS scope. The new child scope replaces turnId/turnDate for this
     // turn; carry-through fields like `chatParticipants` must be threaded
@@ -2261,6 +2876,45 @@ export class Orchestrator {
       input,
     );
 
+    // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
+    // HTTP routes establish the identity in an outer scope (see
+    // `middleware/src/routes/chat.ts`) and that ALWAYS wins. A channel turn
+    // (Teams/Telegram/Slack) has no session to read, so the canonical omadia
+    // user id resolved just above IS the caller identity — without this, every
+    // `per_user` MCP server audits the call as `unresolved` and fails closed on
+    // every channel turn.
+    //
+    // Chosen over resolving at the adapter (`createOrchestratorDispatcher`)
+    // because the adapter holds no `KnowledgeGraph`: doing it there means a new
+    // dependency, new boot wiring, and a SECOND identity round-trip per turn
+    // for a value this scope has already computed.
+    //
+    // Gated on `input.channelIdentity` — NOT applied to every resolved id.
+    // With no `channelIdentity`, `resolveTurnOwnerIdentity` returns
+    // `input.userId` verbatim, and on the HTTP path that can originate in the
+    // client-controlled `x-user-id` header (`chat.ts`'s `resolveUserId`).
+    // Keying MCP tokens on it would let any caller act as any user — W0-1's
+    // confused deputy, re-opened one door along. A `channelIdentity` is minted
+    // only by `createOrchestratorDispatcher` from the adapter's authenticated
+    // `userRef` and is resolved through the KG.
+    //
+    // Precisely how far that attestation reaches: the dispatcher copies
+    // `userRef.id` verbatim and verifies nothing itself, so the guarantee is
+    // exactly as strong as the inbound-webhook authentication in the Teams /
+    // Telegram / Slack adapters — which live outside this repo. It is
+    // adapter-attested, not attested here. Bounded, though:
+    // `resolveOrCreateChannelIdentity` creates on miss, so a forged id matching
+    // no known identity mints a fresh uuid holding no token and fails closed.
+    // Impersonation needs an already-known channel user id.
+    // `||`, not `??`: every other link in this chain guards on truthiness (the
+    // spread below, `chat.ts`'s producer, `turnContext`'s carry-over). With
+    // `??`, a parent carrying an empty string would short-circuit, suppress the
+    // valid key this branch would have produced, and then be dropped by the
+    // truthy spread — silently downgrading a resolvable turn to `unresolved`.
+    const mcpUserKey =
+      parent?.mcpUserKey ||
+      (input.channelIdentity ? resolvedOmadiaUserId : undefined);
+
     return turnContext.run(
       {
         turnId,
@@ -2272,9 +2926,17 @@ export class Orchestrator {
         // per-user data with it.
         ...(input.userId ? { userId: input.userId } : {}),
         ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+        // W2-1 (#544) — one component of the MCP pending-input store key. Never
+        // the whole key; see TurnContextValue.sessionScope.
+        sessionScope: sessionId,
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
+        // W3-A — MCP OAuth caller identity. Read by the auth provider's
+        // `getToken` + `resolveIdentity`. Without it a `per_user` server audits
+        // every call as `unresolved` and then fails closed. See the W4-1 block
+        // above for where the value comes from.
+        ...(mcpUserKey ? { mcpUserKey } : {}),
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
@@ -2287,6 +2949,11 @@ export class Orchestrator {
           : {}),
       },
       async () => {
+        // W2-1 (#544) — forced replay of the parked MCP tool call, before the
+        // model runs. Writes its outcome onto the live turn context.
+        if (mcpInputReply) {
+          await this.applyMcpInputReplay(mcpInputReply, input, turnId);
+        }
         // #332 Layer 2 — Direct Line short-circuit (non-streaming / Teams
         // path). A user-directed specialist turn is dispatched deterministically
         // by the harness; the orchestrator LLM never runs. Still flows through
@@ -3121,7 +3788,12 @@ export class Orchestrator {
         role: 'user',
         content: buildUserContent(
           input,
-          ingestedText,
+          // W2-1 (#544) — appends the MCP replay outcome, when this turn was an
+          // input-card answer. Applied AFTER masking on purpose: the note is
+          // orchestrator-authored prose with no user PII in it (values are
+          // deliberately excluded), and re-masking it would only garble the
+          // server name the model needs in order to attribute the result.
+          withMcpInputNote(ingestedText),
           wireUserMessage,
           ingestedImages,
           visionSupported,
@@ -3534,6 +4206,25 @@ export class Orchestrator {
           this.drainPendingChoice() ??
             this.extractToolEmittedChoice(toolResults),
         );
+        // W2-1 (#544) — the MCP input card rides the SAME short-circuit.
+        //
+        // DETERMINISTIC WINNER: `pendingUserChoice` wins whenever both are
+        // pending in one batch. Two reasons, in order:
+        //   1. Precedence must not depend on tool-dispatch order, and it must
+        //      not change existing behaviour — `ask_user_choice` shipped first
+        //      and its short-circuit is what every channel already renders.
+        //   2. A model that asked its own clarifying question has decided it
+        //      does not yet understand the request; collecting server-specific
+        //      field values first would be answering the wrong question.
+        // The MCP record is NOT discarded when it loses: the turn slot is
+        // drained (so it cannot leak into a later turn's card) but the keyed
+        // record stays replayable until its TTL, so the model can resume after
+        // the clarification instead of the parked call vanishing.
+        const pendingMcpInputCard = this.drainPendingMcpInput(
+          toolResults,
+          input,
+          turnId,
+        );
         if (pendingUserChoice) {
           this.drainAttachments();
           // Follow-up suggestions are incompatible with a blocking choice
@@ -3593,6 +4284,57 @@ export class Orchestrator {
             ...(recalled ? { recalled } : {}),
           };
         }
+        // W2-1 (#544) — MCP input card. Same drain-and-terminate shape as the
+        // choice card above; only reached when no choice card won.
+        if (pendingMcpInputCard) {
+          this.drainAttachments();
+          this.drainFollowUps();
+          this.drainPendingSlotCard();
+          this.drainPendingRoutineList();
+          const card = toPendingMcpInputCard(pendingMcpInputCard);
+          const answer = textParts.join('\n\n').trim();
+          const restoredAnswer = await restorePromptForPersistence(
+            privacyForPrompt,
+            answer,
+          );
+          const iterations = iteration + 1;
+          const runTrace = traceCollector?.finish({
+            iterations,
+            status: 'success',
+          });
+          let persistedTurnId: string | undefined;
+          if (this.sessionLogger && input.sessionScope) {
+            const entityRefs = entityCollection?.drain() ?? [];
+            const loggedAnswer = mcpInputCardLogLine(restoredAnswer, card);
+            try {
+              const logged = await this.sessionLogger.log({
+                scope: input.sessionScope,
+                userMessage: input.userMessage,
+                assistantAnswer: loggedAnswer,
+                toolCalls,
+                iterations,
+                entityRefs,
+                ...(input.userId ? { userId: input.userId } : {}),
+                ...(runTrace ? { runTrace } : {}),
+              });
+              persistedTurnId = logged.turnExternalId;
+            } catch (err) {
+              console.error(
+                '[orchestrator] session log failed (continuing with MCP input card):',
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }
+          return {
+            answer: restoredAnswer,
+            toolCalls,
+            iterations,
+            pendingMcpInput: card,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+            ...(runTrace ? { runTrace } : {}),
+            ...(recalled ? { recalled } : {}),
+          };
+        }
       }
 
       throw new Error(
@@ -3618,10 +4360,22 @@ export class Orchestrator {
     observer?: AskObserver,
   ): AsyncGenerator<ChatStreamEvent> {
     const turnId = randomUUID();
-    // `enter` (not `run`) because AsyncLocalStorage.run doesn't compose with
-    // async generators. `enter` binds turnId to the current async resource,
-    // which the generator's awaits inherit; scope ends when the HTTP request
-    // resource is cleaned up.
+    // W2-1 (#544) — mirror of `runTurn`: normalise the input-card envelope
+    // before any downstream reader sees it. See the comment there.
+    const mcpInputReply = parseMcpInputReply(input.userMessage);
+    if (mcpInputReply) {
+      input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
+    }
+    // W3-A — this used to be `turnContext.enter` (AsyncLocalStorage.enterWith).
+    // That does NOT survive a generator's first `yield`: the generator is
+    // resumed in the async context of whoever called `.next()`, so by the time
+    // the tool loop ran, `turnContext.current()` was empty (or, worse, bound to
+    // the consumer's ambient scope). Everything that reads the turn context at
+    // dispatch time was therefore broken on every streaming turn — MCP audit
+    // attribution (`callerKind`/`turnId`/`callerAgent`/`mcpUserKey`), the
+    // skill-binding persona gate, the privacy handle, the KG-ingest owner.
+    // The body now runs through `turnContext.runGenerator`, which wraps every
+    // advance of the inner generator in `storage.run`.
     const parent = turnContext.current();
 
     // Privacy-Proxy Slice 2.1: same handle pattern as `runTurn`. The handle
@@ -3644,15 +4398,62 @@ export class Orchestrator {
       input,
     );
 
-    turnContext.enter({
+    // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
+    // HTTP routes establish the identity in an outer scope (see
+    // `middleware/src/routes/chat.ts`) and that ALWAYS wins. A channel turn
+    // (Teams/Telegram/Slack) has no session to read, so the canonical omadia
+    // user id resolved just above IS the caller identity — without this, every
+    // `per_user` MCP server audits the call as `unresolved` and fails closed on
+    // every channel turn.
+    //
+    // Chosen over resolving at the adapter (`createOrchestratorDispatcher`)
+    // because the adapter holds no `KnowledgeGraph`: doing it there means a new
+    // dependency, new boot wiring, and a SECOND identity round-trip per turn
+    // for a value this scope has already computed.
+    //
+    // Gated on `input.channelIdentity` — NOT applied to every resolved id.
+    // With no `channelIdentity`, `resolveTurnOwnerIdentity` returns
+    // `input.userId` verbatim, and on the HTTP path that can originate in the
+    // client-controlled `x-user-id` header (`chat.ts`'s `resolveUserId`).
+    // Keying MCP tokens on it would let any caller act as any user — W0-1's
+    // confused deputy, re-opened one door along. A `channelIdentity` is minted
+    // only by `createOrchestratorDispatcher` from the adapter's authenticated
+    // `userRef` and is resolved through the KG.
+    //
+    // Precisely how far that attestation reaches: the dispatcher copies
+    // `userRef.id` verbatim and verifies nothing itself, so the guarantee is
+    // exactly as strong as the inbound-webhook authentication in the Teams /
+    // Telegram / Slack adapters — which live outside this repo. It is
+    // adapter-attested, not attested here. Bounded, though:
+    // `resolveOrCreateChannelIdentity` creates on miss, so a forged id matching
+    // no known identity mints a fresh uuid holding no token and fails closed.
+    // Impersonation needs an already-known channel user id.
+    // `||`, not `??`: every other link in this chain guards on truthiness (the
+    // spread below, `chat.ts`'s producer, `turnContext`'s carry-over). With
+    // `??`, a parent carrying an empty string would short-circuit, suppress the
+    // valid key this branch would have produced, and then be dropped by the
+    // truthy spread — silently downgrading a resolvable turn to `unresolved`.
+    const mcpUserKey =
+      parent?.mcpUserKey ||
+      (input.channelIdentity ? resolvedOmadiaUserId : undefined);
+
+    const context: TurnContextValue = {
       turnId,
       turnDate: today(),
       // Per-orchestrator isolation: see the matching `turnContext.run` above.
       agentSlug: this.agentId,
+      // The streaming path never set `userId` — W2-1 needs it, because the MCP
+      // pending-input key must bind a parked record to the human who will
+      // answer the card, and channel turns (Teams/Telegram) come through here.
+      ...(input.userId ? { userId: input.userId } : {}),
       ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+      // W2-1 (#544) — see the matching `turnContext.run` above.
+      sessionScope: sessionId,
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
+      // W3-A / W4-1 — see the matching `turnContext.run` above.
+      ...(mcpUserKey ? { mcpUserKey } : {}),
       ...(privacyHandle ? { privacyHandle } : {}),
       ...(parent?.captureRawToolResult
         ? { captureRawToolResult: parent.captureRawToolResult }
@@ -3662,9 +4463,43 @@ export class Orchestrator {
       ...(parent?.canvasSentinelSink
         ? { canvasSentinelSink: parent.canvasSentinelSink }
         : {}),
-    });
+    };
+    // `input` is re-bound above (envelope normalisation); capture the final
+    // value so the body cannot observe the pre-normalisation message.
+    const turnInput = input;
+    yield* turnContext.runGenerator(context, () =>
+      this.chatStreamInContext({
+        input: turnInput,
+        turnId,
+        sessionId,
+        mcpInputReply,
+        ...(privacyHandle ? { privacyHandle } : {}),
+        ...(observer ? { observer } : {}),
+      }),
+    );
+  }
+
+  /**
+   * The body of {@link chatStream}, run inside the turn's AsyncLocalStorage
+   * scope by `turnContext.runGenerator`. Split out purely so the context can be
+   * established with `run()` semantics instead of `enterWith` — see the comment
+   * at the top of `chatStream`.
+   */
+  private async *chatStreamInContext(args: {
+    readonly input: ChatTurnInput;
+    readonly turnId: string;
+    readonly sessionId: string;
+    readonly mcpInputReply: McpInputReply | undefined;
+    readonly privacyHandle?: PrivacyTurnHandle;
+    readonly observer?: AskObserver;
+  }): AsyncGenerator<ChatStreamEvent> {
+    const { input, turnId, sessionId, mcpInputReply, privacyHandle, observer } = args;
 
     this.applyTurnAuthContext(input);
+    // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.
+    if (mcpInputReply) {
+      await this.applyMcpInputReplay(mcpInputReply, input, turnId);
+    }
     // #133 E0 — streaming-path turn hooks. tool_result events carry only the
     // tool-use id, so track id→name from tool_use events to label
     // onAfterToolCall.
@@ -3735,7 +4570,7 @@ export class Orchestrator {
             2000,
           ),
         );
-        yield doneEvent;
+        yield this.discloseDoneEvent(doneEvent, input);
         return;
       }
       // #361 — failure-closed prompt masking (streaming path): the inner
@@ -3834,7 +4669,7 @@ export class Orchestrator {
               2000,
             ),
           );
-          yield doneEvent;
+          yield this.discloseDoneEvent(doneEvent, input);
           continue;
         }
         if (event.type === 'done') {
@@ -3850,6 +4685,11 @@ export class Orchestrator {
               2000,
             ),
           );
+          // #644 — fold the disclosure at the boundary, AFTER the hook (which
+          // records the raw answer, matching the non-streaming path where
+          // `toSemanticAnswer` folds only after `runTurn` persisted the turn).
+          yield this.discloseDoneEvent(event, input);
+          continue;
         }
         yield event;
       }
@@ -3928,7 +4768,12 @@ export class Orchestrator {
         role: 'user',
         content: buildUserContent(
           input,
-          ingestedText,
+          // W2-1 (#544) — appends the MCP replay outcome, when this turn was an
+          // input-card answer. Applied AFTER masking on purpose: the note is
+          // orchestrator-authored prose with no user PII in it (values are
+          // deliberately excluded), and re-masking it would only garble the
+          // server name the model needs in order to attribute the result.
+          withMcpInputNote(ingestedText),
           wireUserMessage,
           ingestedImages,
           visionSupported,
@@ -4494,6 +5339,13 @@ export class Orchestrator {
           this.drainPendingChoice() ??
             this.extractToolEmittedChoice(toolResults),
         );
+        // W2-1 (#544) — mirror of chatInContextInner, including the
+        // deterministic winner rule. See the comment there.
+        const pendingMcpInputCard = this.drainPendingMcpInput(
+          toolResults,
+          input,
+          turnId,
+        );
         if (pendingUserChoice) {
           this.drainAttachments();
           // Follow-up suggestions are incompatible with a blocking choice
@@ -4549,6 +5401,64 @@ export class Orchestrator {
             ...(runTrace ? { runTrace } : {}),
             ...(choiceAgentsConsulted && choiceAgentsConsulted.length > 0
               ? { agentsConsulted: choiceAgentsConsulted }
+              : {}),
+            ...(this.directLineSticky
+              ? { directLineSession: { active: false } as const }
+              : {}),
+          };
+          return;
+        }
+        // W2-1 (#544) — MCP input card, streaming mirror.
+        if (pendingMcpInputCard) {
+          this.drainAttachments();
+          this.drainFollowUps();
+          this.drainPendingSlotCard();
+          const card = toPendingMcpInputCard(pendingMcpInputCard);
+          const answer = textParts.join('\n\n').trim();
+          const restoredAnswer = await restorePromptForPersistence(
+            privacyForPrompt,
+            answer,
+          );
+          const iterations = iteration + 1;
+          const runTrace = traceCollector?.finish({
+            iterations,
+            status: 'success',
+          });
+          let persistedTurnId: string | undefined;
+          if (this.sessionLogger && input.sessionScope) {
+            const entityRefs = entityCollection?.drain() ?? [];
+            const loggedAnswer = mcpInputCardLogLine(restoredAnswer, card);
+            try {
+              const logged = await this.sessionLogger.log({
+                scope: input.sessionScope,
+                userMessage: input.userMessage,
+                assistantAnswer: loggedAnswer,
+                toolCalls,
+                iterations,
+                entityRefs,
+                ...(input.userId ? { userId: input.userId } : {}),
+                ...(runTrace ? { runTrace } : {}),
+              });
+              persistedTurnId = logged.turnExternalId;
+            } catch (err) {
+              console.error(
+                '[orchestrator] session log failed (continuing with MCP input card):',
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }
+          const mcpAgentsConsulted = deriveAgentsConsulted(runTrace);
+          yield {
+            type: 'done',
+            answer: restoredAnswer,
+            toolCalls,
+            iterations,
+            model: turnModel,
+            pendingMcpInput: card,
+            ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+            ...(runTrace ? { runTrace } : {}),
+            ...(mcpAgentsConsulted && mcpAgentsConsulted.length > 0
+              ? { agentsConsulted: mcpAgentsConsulted }
               : {}),
             ...(this.directLineSticky
               ? { directLineSession: { active: false } as const }
@@ -4772,10 +5682,63 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * W0-2 — every tool dispatch runs under a per-tool deadline. Without it a
+   * single hung sub-agent (`domainQueryTool` awaits `agent.ask()` with no
+   * abort) blocks the entire `Promise.allSettled` batch for the whole turn.
+   *
+   * On timeout the slot resolves with a structured `Error:` string and the
+   * abandoned dispatch is marked aborted, so when it eventually settles its
+   * result is DISCARDED instead of being written into a turn that moved on
+   * (raw-result capture, privacy interning, KG ingestion, sub-events).
+   *
+   * The deadline is per tool, not per batch: sibling tools in the same
+   * `allSettled` keep running and resolve normally.
+   */
   private async dispatchTool(
     name: string,
     input: unknown,
     observer?: AskObserver,
+  ): Promise<string> {
+    const timeoutMs = resolveToolDispatchTimeoutMs();
+    if (timeoutMs === 0) {
+      // Deadline explicitly disabled by the operator — legacy behaviour.
+      return this.dispatchToolDeadlined(name, input, observer);
+    }
+    const controller = new AbortController();
+    const work = this.dispatchToolDeadlined(
+      name,
+      input,
+      abortGuardedObserver(observer, controller.signal),
+      controller.signal,
+    );
+    // A dispatch that rejects AFTER the deadline already resolved the race
+    // would otherwise surface as an unhandled rejection and kill the process.
+    work.catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<string>((resolve) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        console.warn(
+          `[orchestrator.dispatchTool:${name}] exceeded the ${String(timeoutMs)}ms dispatch deadline — aborting this slot; siblings are unaffected.`,
+        );
+        resolve(toolDeadlineError(name, timeoutMs));
+      }, timeoutMs);
+      // Never hold the event loop open just to police a deadline.
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([work, deadline]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  private async dispatchToolDeadlined(
+    name: string,
+    input: unknown,
+    observer?: AskObserver,
+    deadlineSignal?: AbortSignal,
   ): Promise<string> {
     // Privacy Shield v4 — Data-Plane Boundary. The privacy handle is
     // threaded through `turnContext.privacyHandle`; absent ⇒ no privacy
@@ -4827,6 +5790,35 @@ export class Orchestrator {
       );
     } else {
       result = await this.dispatchToolInner(name, input, observer);
+    }
+    // W0-2 — late-result firewall. The deadline already fired for this slot:
+    // the turn took `toolDeadlineError` and moved on. Everything below this
+    // line WRITES this result into turn state (raw-result capture, canvas
+    // sentinel tap, KG ingestion, privacy interning/bypass receipts), so a
+    // late arrival is dropped HERE, before the first of THOSE side effects.
+    //
+    // WHAT THIS DOES NOT DO — the guard sits AFTER `dispatchToolInner` returns,
+    // so everything the tool did on its way to producing this result has already
+    // happened and is not undone:
+    //   - MCP mutations on the remote server, and their `mcp_call_log` rows;
+    //   - knowledge-graph and memory writes performed by the tool itself;
+    //   - datasets a sub-agent interned via `privacy.internToolResultV4`, which
+    //     register on the TURN's `privacyHandle` and therefore outlive this
+    //     abort (the local `subAgentSink` array is discarded with the slot, but
+    //     the registration is not — the privacy contract exposes no per-dataset
+    //     drop, only `finalizeTurn`, so unwinding it needs a new API on the
+    //     published `@omadia/plugin-api` surface, not a change here).
+    // So a `knowledge_graph` write that took 241 s IS in the graph, while the
+    // model was told the call was aborted and its result discarded. What is
+    // guaranteed is narrower and worth stating exactly: the late result never
+    // enters TURN state, and the model never sees it. Side effects the tool
+    // already committed are outside this boundary by construction — cancelling
+    // them would need cooperative aborts all the way down.
+    if (deadlineSignal?.aborted === true) {
+      console.warn(
+        `[orchestrator.dispatchTool:${name}] result arrived after the dispatch deadline — discarded.`,
+      );
+      return TOOL_DISPATCH_DISCARDED;
     }
     // Phase C.2 — Raw tool-result capture. Outer scope (routine runner)
     // may install a callback that stashes the raw result keyed by tool
@@ -5652,10 +6644,23 @@ export class Orchestrator {
     // Issue #474 — a plugin that hasn't finished its own connection/auth
     // setup is excluded here so the orchestrator never offers a tool it
     // knows will fail, instead of discovering that via a wasted round-trip.
+    //
+    // W0-3 — sorted by name. `listWithHandler()` iterates a Map, so raw order
+    // is plugin LOAD order, which differs between Fly machines and between
+    // deploys. That silently invalidated the `cache_control` block stamped at
+    // the end of this method. Sorting makes the block a function of the tool
+    // set, not of registration timing. Advertisement order only — dispatch
+    // still resolves by name, so precedence is unaffected.
+    const nativeSpecs: unknown[] = [];
     for (const entry of this.nativeTools.listWithHandler()) {
       if (entry.spec && this.isToolAvailable(entry.agentId)) {
-        tools.push(entry.spec);
+        nativeSpecs.push(entry.spec);
       }
+    }
+    for (const spec of sortByToolName(
+      nativeSpecs as ReadonlyArray<{ readonly name: string }>,
+    )) {
+      tools.push(spec);
     }
     // DomainTools dynamically from the map — so hot-registered uploaded
     // agents become visible from the next iteration without reboot.
@@ -5663,10 +6668,20 @@ export class Orchestrator {
     // whose owning plugin hasn't completed its connection/auth setup must
     // not be offered either, otherwise the model discovers the missing
     // access via a failing dispatch instead of the tool being absent.
+    //
+    // W0-3 — sorted for the same reason as the native segment above; this map
+    // is populated in `created_at` row order, which is not stable across
+    // machines that hydrated their registry at different times.
+    const domainSpecs: unknown[] = [];
     for (const tool of this.domainToolsByName.values()) {
       if (this.isToolAvailable(tool.agentId)) {
-        tools.push(tool.spec);
+        domainSpecs.push(tool.spec);
       }
+    }
+    for (const spec of sortByToolName(
+      domainSpecs as ReadonlyArray<{ readonly name: string }>,
+    )) {
+      tools.push(spec);
     }
     // Privacy-Shield v4 — verb + render tools, offered only when the v4
     // data-plane boundary is active for this turn.
@@ -5679,6 +6694,11 @@ export class Orchestrator {
     // marking the final tool makes the whole list a single cacheable chunk.
     // 5-minute TTL comfortably covers a multi-iteration orchestrator turn,
     // so iter 2..N skip re-reading the tool definitions on the server side.
+    //
+    // W0-3 — the cache keys on a byte-exact prefix, so this only pays off
+    // because the dynamic segments above are name-sorted. Do not reorder or
+    // append unsorted segments before this point without re-reading
+    // `toolOrdering.ts`; a reordered block is a silent, signal-free cache miss.
     const last = tools[tools.length - 1];
     if (last) {
       tools[tools.length - 1] = {

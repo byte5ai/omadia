@@ -168,6 +168,25 @@ async function postJson<T>(
 }
 
 /**
+ * The middleware's machine-readable error code, pulled out of a JSON error
+ * body (`{ code, message }`). Returns `null` when the body is not JSON, has
+ * no `code`, or carries one that is not a non-empty string.
+ *
+ * Pure by construction: no module state is read or written, which is what
+ * keeps the constructor invariant documented below intact.
+ */
+function parseErrorCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown };
+    return typeof parsed.code === 'string' && parsed.code.trim().length > 0
+      ? parsed.code
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Deliberately does NOT feed the Create Issue diagnostics buffer (issue
  * #433 review). An earlier version called `recordApiErrorDiagnostic` from
  * this constructor, which made `ApiError` — used by every failed call
@@ -178,8 +197,18 @@ async function postJson<T>(
  * `unhandledrejection` events (see diagnosticsBuffer.ts) — page-level
  * crashes, not the outcome of a specific admin action. See
  * api.test.ts for the regression test enforcing this invariant.
+ *
+ * OM-09: the machine code is parsed here, once, so consumers can reach the
+ * localized catalogue in `errorHelp.ts` instead of each re-deriving it from
+ * `body` with their own `JSON.parse` — or, as several did, rendering the
+ * server's untranslated `message` as the headline. The parse is a pure
+ * string read into a readonly field and touches nothing outside the
+ * instance, so the no-side-effects invariant above still holds.
  */
 export class ApiError extends Error {
+  /** Machine-readable code from the JSON error body; `null` when absent. */
+  public readonly code: string | null;
+
   constructor(
     public readonly status: number,
     message: string,
@@ -187,7 +216,30 @@ export class ApiError extends Error {
   ) {
     super(message);
     this.name = 'ApiError';
+    this.code = parseErrorCode(body);
   }
+}
+
+/**
+ * Asserts that a list endpoint really returned an array under `key`.
+ *
+ * A 200 response whose body is the wrong shape used to sail straight through
+ * into the page, where the first `.filter()` / `.map()` threw *outside* the
+ * try/catch that was supposed to protect the load — turning a bad payload into
+ * an unrecoverable render crash instead of the page's own error card.
+ * Throwing an ApiError here keeps the failure inside the caller's catch.
+ *
+ * Deliberately hand-rolled: web-ui has no schema-validation dependency and
+ * this file already hand-rolls ApiError / maybeNavigateToLogin / cookie
+ * forwarding. Applied only to the list endpoints whose pages dereference the
+ * array immediately — not retrofitted across every call site.
+ */
+function expectArray<T>(value: unknown, path: string, key: string): T[] {
+  if (Array.isArray(value)) return value as T[];
+  throw new ApiError(
+    200,
+    `GET ${path}: malformed body — "${key}" is not an array`,
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -284,10 +336,39 @@ export interface AdminProviderModel {
   vision: boolean;
 }
 
+/**
+ * Four-state credential verdict from the middleware (OM-02/03/04):
+ *  - `no_key`     nothing stored
+ *  - `unverified` a key is stored, but no probe has ever proved it works
+ *  - `verified`   a probe against the provider's API succeeded
+ *  - `invalid`    the provider rejected the key (401/403)
+ *
+ * Only `verified` may ever be presented as a working provider. `unverified` is
+ * the state that used to be rendered as a green "connected" badge while every
+ * request failed.
+ */
+export type ProviderCredentialStatus =
+  | 'no_key'
+  | 'unverified'
+  | 'verified'
+  | 'invalid';
+
 export interface AdminProvider {
   id: string;
   label: string;
-  /** True when an API key for this provider is present in the vault. */
+  /** Credential verdict. Prefer this over `connected` everywhere. */
+  status: ProviderCredentialStatus;
+  /** ISO timestamp of the last successful probe (`verified` only). */
+  verifiedAt?: string;
+  /** User-facing rejection reason (`invalid` only). */
+  verifyError?: string;
+  /** OM-09 — machine-readable counterpart to `verifyError`, resolved against
+   *  the localized `errorHelp` catalogue. Present only for `status: 'invalid'`;
+   *  absent on payloads from a pre-#604 middleware, where `verifyError` (an
+   *  English sentence) stays the only thing there is to show. */
+  verifyErrorCode?: string;
+  /** Legacy: "a key is on file" — i.e. `status !== 'no_key'`. Retained for
+   *  backwards compatibility; it does NOT mean the key works. */
   connected: boolean;
   /** Data-protection hints for the UI (data-driven; defaulted server-side).
    *  `requiresAvvDisclosure`: show the Art. 28 DSGVO third-party disclosure.
@@ -297,6 +378,12 @@ export interface AdminProvider {
   /** Tool-less Shape-2 CLI provider — cannot drive a tool loop, so the UI
    *  disables it for tool-dependent plugins. */
   toolLess?: boolean;
+  /** OM-11 — is the host capability this provider needs actually present?
+   *  For a CLI-backed provider this is "the binary exists on this server";
+   *  key-based providers need no binary and report `true`. The UI must not
+   *  offer "Anmelden" for a CLI that isn't there. Absent on payloads from a
+   *  pre-OM-11 middleware — treat `undefined` as installed. */
+  installed?: boolean;
   models: AdminProviderModel[];
 }
 
@@ -340,6 +427,24 @@ export async function assignProvider(
   body: AssignProviderRequest,
 ): Promise<AssignProviderResponse> {
   return postJson<AssignProviderResponse>('/v1/admin/providers/assignment', body);
+}
+
+export interface ProviderVerification {
+  status: ProviderCredentialStatus;
+  verifiedAt?: string;
+  checkedAt?: string;
+  error?: string;
+}
+
+/** Force a live probe of a provider's stored key. This is the only providers
+ *  call that hits the vendor's API — the listing endpoint never does. */
+export async function verifyProvider(
+  providerId: string,
+): Promise<ProviderVerification> {
+  return postJson<ProviderVerification>(
+    `/v1/admin/providers/${encodeURIComponent(providerId)}/verify`,
+    {},
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -485,7 +590,16 @@ export async function listStorePlugins(
   if (query.search) params.set('search', query.search);
   if (query.category) params.set('category', query.category);
   const suffix = params.toString() ? `?${params.toString()}` : '';
-  return getJson<StoreListResponse>(`/v1/store/plugins${suffix}`);
+  const path = `/v1/store/plugins${suffix}`;
+  const resp = await getJson<StoreListResponse>(path);
+  return {
+    ...resp,
+    items: expectArray<StoreListResponse['items'][number]>(
+      resp?.items,
+      path,
+      'items',
+    ),
+  };
 }
 
 export async function getStorePlugin(id: string): Promise<StoreGetResponse> {
@@ -2306,7 +2420,16 @@ export interface RoutineResponse {
 }
 
 export async function listRoutines(): Promise<ListRoutinesResponse> {
-  return getJson<ListRoutinesResponse>('/v1/routines');
+  const resp = await getJson<ListRoutinesResponse>('/v1/routines');
+  const routines = expectArray<RoutineDto>(
+    resp?.routines,
+    '/v1/routines',
+    'routines',
+  );
+  return {
+    routines,
+    count: typeof resp?.count === 'number' ? resp.count : routines.length,
+  };
 }
 
 export async function setRoutineStatus(
@@ -4636,4 +4759,59 @@ export async function uploadDataset(
 
 export async function deleteDataset(id: string): Promise<void> {
   return deleteRequest(`${DATASETS_BASE}/${encodeURIComponent(id)}`);
+}
+
+// -----------------------------------------------------------------------------
+// Public API keys (issues #438/#439; admin UI follow-through #567) —
+// /api/public/v1/admin/keys.
+//
+// This router lives in @omadia/channel-api, not under /v1/operator/* like the
+// rest of this file's admin surfaces — it is mounted at API_PREFIX
+// `/api/public/v1`, gated by the same operator-session cookie via its own
+// `operatorAuth` middleware (see adminKeysRouter.ts). getJson/postJson still
+// apply here unchanged: same cookie, same 401-bounces-to-/login behavior.
+// -----------------------------------------------------------------------------
+
+const API_KEYS_BASE = '/public/v1/admin/keys';
+
+export interface ApiKeyPublicView {
+  id: string;
+  label?: string;
+  rateLimitPerMinute: number;
+  scopes: string[];
+  /** Epoch ms. */
+  createdAt: number;
+  /** Epoch ms. Present iff the key has been revoked. */
+  revokedAt?: number;
+}
+
+export interface CreateApiKeyInput {
+  label?: string;
+  rateLimitPerMinute?: number;
+  /**
+   * Omit this field entirely to accept the backend's legacy default
+   * (`['chat:write']`). An explicitly empty array is REJECTED by the
+   * backend with 400 — it reads `[]` as a deliberate "grant nothing"
+   * request, never as "use the default". Callers must never pass `[]`.
+   */
+  scopes?: string[];
+}
+
+export interface CreateApiKeyResult {
+  key: ApiKeyPublicView;
+  /** Plaintext — present only in this one response. Never returned again by
+   *  any other endpoint; do not persist it beyond the reveal-once UI. */
+  token: string;
+}
+
+export async function listApiKeys(): Promise<{ keys: ApiKeyPublicView[] }> {
+  return getJson(API_KEYS_BASE);
+}
+
+export async function createApiKey(input: CreateApiKeyInput): Promise<CreateApiKeyResult> {
+  return postJson(API_KEYS_BASE, input);
+}
+
+export async function revokeApiKey(id: string): Promise<{ key: ApiKeyPublicView }> {
+  return postJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/revoke`, {});
 }

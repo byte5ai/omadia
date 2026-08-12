@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import { useTranslations } from 'next-intl';
+import { usePathname } from 'next/navigation';
 
 import { Button } from '@/app/_components/ui/Button';
 
@@ -33,6 +34,12 @@ export default function Error({
   reset: () => void;
 }): React.ReactElement {
   const t = useTranslations('error');
+  const pathname = usePathname();
+
+  // "Reset local chat data" only ever helps on the chat surface — it clears
+  // this browser's chat storage. On /routines, /admin, /store it is noise at
+  // best and alarming at worst, so it is scoped to the routes it can fix.
+  const isChatRoute = (pathname ?? '').startsWith('/chat');
 
   useEffect(() => {
     console.error('[web-ui] route error boundary caught:', error);
@@ -55,22 +62,46 @@ export default function Error({
         </h1>
         <p className="text-sm text-[color:var(--fg-muted)]">{t('description')}</p>
         <div className="mt-2 flex flex-wrap items-center justify-center gap-3">
-          <button
-            type="button"
+          <Button
             onClick={() => {
               reset();
             }}
-            className="rounded bg-[color:var(--bg-inverse)] px-4 py-2 text-sm font-medium text-[color:var(--fg-on-dark)] transition hover:bg-[color:var(--fg-muted)]"
           >
             {t('reload')}
-          </button>
-          <Button variant="secondary" onClick={resetLocalData}>
-            {t('resetData')}
           </Button>
         </div>
-        <p className="mt-1 text-xs text-[color:var(--fg-muted)]">
-          {t('resetDataHint')}
-        </p>
+
+        {/*
+          The digest is the ONLY handle an operator has on a Server Components
+          render error: React replaces the real message with an opaque digest
+          in production and logs the full stack server-side. Previously it was
+          console.error'd and never shown, so a user reporting "Something went
+          wrong" gave support nothing to grep for.
+        */}
+        {error.digest ? (
+          <div className="mt-2 flex flex-col items-center gap-1">
+            <p className="text-xs text-[color:var(--fg-muted)]">
+              {t('digestLabel')}:{' '}
+              <span className="font-mono text-xs text-[color:var(--fg-strong)]">
+                {error.digest}
+              </span>
+            </p>
+            <p className="text-xs text-[color:var(--fg-muted)]">
+              {t('digestHint')}
+            </p>
+          </div>
+        ) : null}
+
+        {isChatRoute ? (
+          <div className="mt-2 flex flex-col items-center gap-2">
+            <Button variant="secondary" onClick={resetLocalData}>
+              {t('resetData')}
+            </Button>
+            <p className="text-xs text-[color:var(--fg-muted)]">
+              {t('resetDataHint')}
+            </p>
+          </div>
+        ) : null}
       </div>
     </main>
   );

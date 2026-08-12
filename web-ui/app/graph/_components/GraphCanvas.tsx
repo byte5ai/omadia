@@ -943,6 +943,7 @@ function IconBtn({
   children: React.ReactNode;
 }): React.ReactElement {
   return (
+    // eslint-disable-next-line no-restricted-syntax -- icon-only canvas control (fit/zoom/re-layout) chrome, not a text CTA
     <button
       type="button"
       title={title}

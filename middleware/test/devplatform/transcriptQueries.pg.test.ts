@@ -8,6 +8,7 @@ import { Pool } from 'pg';
 
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
+import { probePgTest } from '../_helpers/pgTestDb.js';
 import { DevJobStore } from '../../src/devplatform/devJobStore.js';
 import { DevRepoStore } from '../../src/devplatform/devRepoStore.js';
 import { mintRunnerToken } from '../../src/devplatform/jobToken.js';
@@ -25,24 +26,14 @@ import type { DevJob, DevRepo } from '../../src/devplatform/types.js';
  * through their extracted query helpers. Skips when no test Postgres is reachable,
  * mirroring the other `*.pg.test.ts`.
  */
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['WS5_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
-
 const MARK = 'pg-devplatform-transcript-test';
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
 
-const probePool = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 2000 });
-let pgAvailable = true;
-try {
-  await probePool.query('SELECT 1');
-} catch {
-  pgAvailable = false;
-  await probePool.end().catch(() => undefined);
-}
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'transcriptQueries',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL', 'DATABASE_URL'],
+});
+const probePool = new Pool({ connectionString: PG_URL });
 
 describe('devplatform/transcriptQueries (pg)', { skip: !pgAvailable }, () => {
   const pool = probePool;

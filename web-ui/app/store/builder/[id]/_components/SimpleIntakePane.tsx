@@ -24,6 +24,7 @@ import { humanizeProviderError } from '../../../../_lib/providerErrorMessage';
 import { ChoiceCard } from '../../../../_components/ChoiceCard';
 
 import { BuilderMarkdown } from './BuilderMarkdown';
+import { isSendKey } from '../../../../_lib/composerKeys';
 
 interface SimpleMessage {
   key: string;
@@ -202,7 +203,7 @@ export function SimpleIntakePane({
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (isSendKey(e)) {
         e.preventDefault();
         void onSend();
       }

@@ -12,6 +12,7 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { PluginVerdictLookup } from '../services/pluginVerdict.js';
+import { withReadiness, type ReadinessVault } from '../plugins/readiness.js';
 import type {
   RegistryClient,
   ResolvedRegistryPlugin,
@@ -32,6 +33,11 @@ interface StoreDeps {
    *  present, the detail response carries a read-only `verdict` and the
    *  operator ack endpoint is mounted. Lookup only — GET never scans. */
   verdicts?: PluginVerdictLookup;
+  /** OM-16 — read-only access to the secret vault's KEY NAMES (never values)
+   *  so `readiness` can tell "installed" from "actually configured". Optional:
+   *  without it, secret-typed fields are assumed satisfied and readiness still
+   *  reports config/errored state from the registry alone. */
+  vault?: ReadinessVault;
 }
 
 /** Overlay the live `ctx.status` value (if any) onto a plugin record. Returns
@@ -123,10 +129,22 @@ export function createStoreRouter(deps: StoreDeps): Router {
         }
       }
 
+      // OM-16 — decorate with the kernel-derived readiness alongside the
+      // push-based action_status. Same insertion point, same "never breaks the
+      // response" contract: `withReadiness` swallows its own failures.
+      const decorated = await Promise.all(
+        items.map((p) =>
+          withReadiness(
+            withActionStatus(p, deps.pluginStatusRegistry),
+            deps.registry,
+            deps.vault,
+          ),
+        ),
+      );
       const body: StoreListResponse = {
-        items: items.map((p) => withActionStatus(p, deps.pluginStatusRegistry)),
+        items: decorated,
         next_cursor: null,
-        total: items.length,
+        total: decorated.length,
       };
       res.json(body);
     } catch (err) {
@@ -199,6 +217,8 @@ export function createStoreRouter(deps: StoreDeps): Router {
       }
       const installAvailable = plugin.install_state === 'available';
       plugin = withActionStatus(plugin, deps.pluginStatusRegistry);
+      // OM-16 — see the list handler. Orthogonal to install_state.
+      plugin = await withReadiness(plugin, deps.registry, deps.vault);
       // Issue #453 — decorate with the advisory code-scan verdict. Pure
       // lookup (never triggers a scan); a store hiccup degrades to "no
       // verdict shown", never a 500.

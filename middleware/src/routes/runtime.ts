@@ -15,6 +15,8 @@ import {
 import { extractSetupSchema } from '../plugins/installService.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import { checkSetupFieldPattern } from '../plugins/setupFieldPattern.js';
+import type { PatternViolation } from '../plugins/setupFieldPattern.js';
 import type { SecretVault } from '../secrets/vault.js';
 
 /** Per-call budget for invoking a plugin's dynamic options provider. */
@@ -484,6 +486,33 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         return;
       }
 
+      // OM-17 — validate VALUES before anything is written. Until this landed,
+      // the only checks here were shape checks (`Record<string,string>`), so a
+      // masked field happily accepted a Google account password and reported
+      // "gespeichert". The vault write is the server's responsibility, so the
+      // gate has to be here — a client-side check alone is theatre.
+      //
+      // Fail-closed on the FIRST violation and write NOTHING: a partial write
+      // would leave the plugin in a half-configured state that the readiness
+      // computation would report as configured.
+      const violation = await findPatternViolation(deps.catalog, id, setEntries);
+      if (violation) {
+        res.status(400).json({
+          code: 'runtime.setup_field_invalid',
+          message: `value for '${violation.field}' does not match the expected format`,
+          field: violation.field,
+          // Only ever the manifest's own hint, resolved to ENGLISH — this
+          // process has no request locale, and guessing one would smuggle an
+          // untranslatable string through the API. It is the fallback for
+          // clients without a manifest; the web-ui resolves `pattern_hint`
+          // itself from `field`. When the manifest declared no hint, this is
+          // absent and the UI renders its own localized copy.
+          // See `setupFieldPattern.ts` → `PatternViolation.hint`.
+          ...(violation.hint !== undefined ? { hint: violation.hint } : {}),
+        });
+        return;
+      }
+
       const secretFieldKeys = resolveSecretFieldKeys(deps.catalog, id);
       const isSecret = (key: string): boolean =>
         secretFieldKeys === null ? true : secretFieldKeys.has(key);
@@ -631,6 +660,43 @@ function resolveSecretFieldKeys(
     if (f.type === 'secret' || f.type === 'oauth') out.add(f.key);
   }
   return out;
+}
+
+/**
+ * OM-17 — run every incoming value through its field's declared `pattern`.
+ *
+ * Returns the first violation, or null when everything is acceptable. "Acceptable"
+ * deliberately includes:
+ *   - no catalog entry / no setup schema (legacy plugins without a manifest),
+ *   - a key that no declared field matches (free-form vault keys stay allowed),
+ *   - a field that declares no `pattern` (backward compatibility — the whole
+ *     ecosystem predates this feature),
+ *   - a `pattern` the load-time safety screen dropped.
+ * The check only ever tightens behaviour for a field that explicitly asked for it.
+ */
+async function findPatternViolation(
+  catalog: PluginCatalog | undefined,
+  pluginId: string,
+  values: Record<string, string>,
+): Promise<PatternViolation | null> {
+  if (!catalog) return null;
+  const entry = catalog.get(pluginId);
+  if (!entry) return null;
+  const schema = extractSetupSchema(entry);
+  if (!schema) return null;
+
+  const byKey = new Map(schema.fields.map((f) => [f.key, f]));
+  for (const [key, value] of Object.entries(values)) {
+    const field = byKey.get(key);
+    if (!field) continue;
+    const violation = await checkSetupFieldPattern(
+      field,
+      value,
+      `${pluginId}/${key}`,
+    );
+    if (violation) return violation;
+  }
+  return null;
 }
 
 interface OptionsProviderField {

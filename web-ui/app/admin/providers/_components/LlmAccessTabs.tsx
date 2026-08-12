@@ -52,6 +52,7 @@ export function LlmAccessTabs({
         {tabs.map((tabDef) => {
           const active = tabDef.key === tab;
           return (
+            // eslint-disable-next-line no-restricted-syntax -- role=tab / aria-selected stateful tab
             <button
               key={tabDef.key}
               type="button"
@@ -74,7 +75,7 @@ export function LlmAccessTabs({
       {tab === 'providers' ? (
         <ProvidersPanel onSwitchToSubscriptions={() => setTab('subscriptions')} />
       ) : (
-        <SubscriptionClisPanel />
+        <SubscriptionClisPanel onSwitchToProviders={() => setTab('providers')} />
       )}
     </main>
   );
