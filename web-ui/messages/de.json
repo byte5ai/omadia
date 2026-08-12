@@ -2668,7 +2668,15 @@
       "saveKey": "Schlüssel speichern",
       "cancel": "Abbrechen",
       "cliNotInstalledReason": "Die Claude-CLI ist auf diesem Server nicht installiert.",
-      "helpLink": "Was bedeutet das?"
+      "helpLink": "Was bedeutet das?",
+      "unverifiedReason": {
+        "forbidden": "Der Provider hat die Anfrage abgelehnt (HTTP 403). Das ist meist eine Regions- oder Organisationsbeschränkung, kein falscher Schlüssel.",
+        "nonJsonResponse": "Der Provider hat kein JSON geliefert — oft eine Proxy- oder Portalseite statt der API.",
+        "unexpectedBody": "Der Provider hat geantwortet, aber nicht mit einer Modell-Liste, die wir erkennen.",
+        "httpError": "Der Provider hat einen Fehler zurückgegeben (serverseitig oder Rate-Limit). Nicht dein Schlüssel.",
+        "networkError": "Der Provider war nicht erreichbar — Timeout, DNS oder keine Verbindung.",
+        "noProbe": "Dieser Provider-Typ lässt sich nicht günstig prüfen, der Schlüssel bleibt daher unbestätigt."
+      }
     },
     "assignments": {
       "heading": "Zuordnung pro Agent",
@@ -2850,6 +2858,8 @@
       "signed": "signiert",
       "unsigned": "unsigniert",
       "connectedOk": "Verbindung hergestellt.",
+      "alreadyProvided": "Diese Capability wird bereits von {owner} bereitgestellt. Ein zweiter Provider lässt sich nicht installieren — konfiguriere stattdessen den vorhandenen.",
+      "alreadyProvidedCta": "Provider konfigurieren",
       "connectedError": "Verbindung fehlgeschlagen. Bitte erneut versuchen.",
       "connectedErrorWithReason": "Verbindung fehlgeschlagen ({reason}). Bitte erneut versuchen.",
       "sectionDescription": "Beschreibung",

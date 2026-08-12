@@ -13,6 +13,7 @@ import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { PluginVerdictLookup } from '../services/pluginVerdict.js';
 import { withReadiness, type ReadinessVault } from '../plugins/readiness.js';
+import { findProvidesCollision } from '../plugins/capabilityResolver.js';
 import type {
   RegistryClient,
   ResolvedRegistryPlugin,
@@ -168,10 +169,37 @@ export function createStoreRouter(deps: StoreDeps): Router {
         // page resolves (otherwise the store list would link to a 404).
         const remote = await resolveRemotePlugin(deps.client, id);
         if (remote) {
+          // OM-06 / #671 — a hub-only entry is exactly where this used to go
+          // wrong: no local manifest, so nothing checked whether an active
+          // plugin already provides the same capability, and the store
+          // advertised an install that `InstallService.create` then refused
+          // with 409. The registry summary carries `provides`, so the same
+          // rule applies here.
+          // `?? []` is load-bearing: a registry summary may omit `provides`
+          // entirely (older hub payloads, and every fixture that predates
+          // this), and iterating undefined would 500 the detail page — a
+          // strictly worse outcome than the button this is trying to fix.
+          const remoteCollision = findProvidesCollision(
+            id,
+            remote.provides ?? [],
+            deps.catalog,
+            deps.registry,
+          );
           const body: StoreGetResponse = {
             plugin: remote,
             manifest: remote.source ? { source: remote.source } : {},
-            install_available: true,
+            install_available: !remoteCollision,
+            ...(remoteCollision
+              ? {
+                  blocking_reasons: [
+                    alreadyProvidedReason(remoteCollision),
+                  ],
+                  blocked_by_active_provider: {
+                    capability: remoteCollision.capability,
+                    owner_id: remoteCollision.ownerId,
+                  },
+                }
+              : {}),
           };
           res.json(body);
           return;
@@ -215,7 +243,20 @@ export function createStoreRouter(deps: StoreDeps): Router {
           // registry hiccup → keep the local 'installed' view, never 500
         }
       }
-      const installAvailable = plugin.install_state === 'available';
+      // OM-06 / #671 — `install_state === 'available'` only says the plugin is
+      // not already installed. It does not ask whether the CAPABILITY is
+      // already covered, so the store offered "Install" for a provider whose
+      // slot was taken, and `InstallService.create` then refused the click
+      // with 409 `install.capability_already_provided`. Same check, same
+      // helper, one turn earlier — the button now matches what the server
+      // will actually do.
+      const collision = findProvidesCollision(
+        id,
+        plugin.provides ?? [],
+        deps.catalog,
+        deps.registry,
+      );
+      const installAvailable = plugin.install_state === 'available' && !collision;
       plugin = withActionStatus(plugin, deps.pluginStatusRegistry);
       // OM-16 — see the list handler. Orthogonal to install_state.
       plugin = await withReadiness(plugin, deps.registry, deps.vault);
@@ -234,10 +275,23 @@ export function createStoreRouter(deps: StoreDeps): Router {
         plugin,
         manifest: entry.manifest,
         install_available: installAvailable,
-        ...(plugin.incompatibility_reasons
-          ? { blocking_reasons: plugin.incompatibility_reasons }
+        ...(plugin.incompatibility_reasons || collision
+          ? {
+              blocking_reasons: [
+                ...(plugin.incompatibility_reasons ?? []),
+                ...(collision ? [alreadyProvidedReason(collision)] : []),
+              ],
+            }
           : {}),
         ...(verdict ? { verdict } : {}),
+        ...(collision
+          ? {
+              blocked_by_active_provider: {
+                capability: collision.capability,
+                owner_id: collision.ownerId,
+              },
+            }
+          : {}),
       };
       res.json(body);
     } catch (err) {
@@ -320,6 +374,21 @@ function matchesCategory(plugin: Plugin, category: string | undefined): boolean 
 
 /** Resolve a single plugin id against the remote registries (for the detail
  *  endpoint). Returns null if absent or any registry is unreachable. */
+/** The English fallback line for `blocking_reasons` (OM-06 / #671).
+ *
+ *  `blocking_reasons` is a list of server-authored strings the client can only
+ *  print, so this stays deliberately plain and mirrors the 409 the install
+ *  would return. The ACTIONABLE version — "configure the provider you already
+ *  have", with a link — is built client-side from
+ *  `blocked_by_active_provider`, which is why that field exists rather than
+ *  this string carrying the whole story. */
+function alreadyProvidedReason(collision: {
+  capability: string;
+  ownerId: string;
+}): string {
+  return `capability '${collision.capability}' is already provided by '${collision.ownerId}' — configure that plugin instead of installing a second provider`;
+}
+
 async function resolveRemotePlugin(
   client: RegistryClient | undefined,
   id: string,
