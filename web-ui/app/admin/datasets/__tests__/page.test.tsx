@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -297,5 +297,73 @@ describe('AdminDatasetsPage', () => {
     await waitFor(() =>
       expect(screen.queryByText('person-0')).not.toBeInTheDocument(),
     );
+  });
+
+  it('a row page from a closed dataset cannot land in the next dataset panel', async () => {
+    // What the generation guard (detailSeq) actually prevents: Close stays
+    // clickable while a row page is in flight (the pager is disabled, the close
+    // link is not). Close, open a *different* dataset, and the first dataset's
+    // late page would otherwise call setRows() on the new panel — showing
+    // People's rows under Orders' schema. `selected` alone does not stop this:
+    // it is non-null again by the time the stale response resolves.
+    const user = userEvent.setup();
+    const orders = {
+      ...peopleDataset(),
+      id: 'ds-2',
+      name: 'Orders',
+      columns: [{ name: 'sku', type: 'string' as const, sample: 'A-1' }],
+    };
+    mockListDatasets.mockResolvedValue({
+      items: [peopleDataset(), orders],
+      total: 2,
+      limit: 50,
+      offset: 0,
+    });
+    // Rows are dataset-specific, so a mix-up is visible in the DOM.
+    mockGetDatasetRows.mockImplementation((id: string, opts?: { offset?: number }) =>
+      Promise.resolve(
+        id === 'ds-2'
+          ? { rows: [{ sku: 'order-row' }], totalMatched: 1 }
+          : rowsPage(opts?.offset ?? 0),
+      ),
+    );
+    mockGetDataset.mockImplementation((id: string) =>
+      Promise.resolve(id === 'ds-2' ? orders : peopleDataset()),
+    );
+
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('Orders');
+    await user.click(screen.getByRole('button', { name: 'People' }));
+    await screen.findByText('person-0');
+
+    // Hold People's second row page in flight.
+    let releaseStalePage: (() => void) | undefined;
+    mockGetDatasetRows.mockImplementationOnce(
+      (_id: string, opts?: { offset?: number }) =>
+        new Promise((resolve) => {
+          releaseStalePage = () => resolve(rowsPage(opts?.offset ?? 0));
+        }),
+    );
+    const rowsNext = screen
+      .getAllByRole('button', { name: /next/i })
+      .find((b) => !(b as HTMLButtonElement).disabled);
+    await user.click(rowsNext as HTMLElement);
+    await waitFor(() => expect(releaseStalePage).toBeDefined());
+
+    await user.click(screen.getByRole('button', { name: /close/i }));
+    await user.click(screen.getByRole('button', { name: 'Orders' }));
+    expect(await screen.findByText('order-row')).toBeInTheDocument();
+    expect(screen.getByText(/showing 1–1 of 1/i)).toBeInTheDocument();
+
+    // People's late page resolves now — Orders' panel must be untouched. The
+    // mismatch is otherwise SILENT in the cells: rows render as
+    // `selected.columns × row[col.name]`, so People rows under Orders' schema
+    // are 25 blank cells, not visibly wrong text. The footer is the tell.
+    await act(async () => {
+      releaseStalePage?.();
+    });
+    expect(screen.getByText('order-row')).toBeInTheDocument();
+    expect(screen.getByText(/showing 1–1 of 1/i)).toBeInTheDocument();
+    expect(screen.queryByText(/showing 26–50 of 60/i)).not.toBeInTheDocument();
   });
 });

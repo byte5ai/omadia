@@ -439,6 +439,7 @@ export default function AdminDatasetsPage(): React.ReactElement {
                   {items.map((ds) => (
                     <tr key={ds.id} className={ROW_CLS}>
                       <td className={TD_CLS}>
+                        {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare cell text, no border/bg) */}
                         <button
                           type="button"
                           onClick={() => void openDetail(ds)}
@@ -513,6 +514,7 @@ export default function AdminDatasetsPage(): React.ReactElement {
                 })}
               </span>
               <span className="inline-flex gap-2">
+                {/* eslint-disable-next-line no-restricted-syntax -- pager chrome (bare text, no border/bg) */}
                 <button
                   type="button"
                   disabled={listOffset === 0 || loading}
@@ -523,6 +525,7 @@ export default function AdminDatasetsPage(): React.ReactElement {
                 >
                   {t('list.prev')}
                 </button>
+                {/* eslint-disable-next-line no-restricted-syntax -- pager chrome (bare text, no border/bg) */}
                 <button
                   type="button"
                   disabled={listTo >= total || loading}
@@ -559,6 +562,7 @@ export default function AdminDatasetsPage(): React.ReactElement {
                 <h2 className="text-sm font-semibold text-[color:var(--fg-strong)]">
                   {t('detail.heading', { name: selected.name })}
                 </h2>
+                {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare muted text, no border/bg) */}
                 <button
                   type="button"
                   onClick={closeDetail}
@@ -639,6 +643,7 @@ export default function AdminDatasetsPage(): React.ReactElement {
                       })}
                     </span>
                     <span className="inline-flex gap-2">
+                      {/* eslint-disable-next-line no-restricted-syntax -- pager chrome (bare text, no border/bg) */}
                       <button
                         type="button"
                         disabled={rowsOffset === 0 || rowsLoading}
@@ -651,6 +656,7 @@ export default function AdminDatasetsPage(): React.ReactElement {
                       >
                         {t('detail.prev')}
                       </button>
+                      {/* eslint-disable-next-line no-restricted-syntax -- pager chrome (bare text, no border/bg) */}
                       <button
                         type="button"
                         disabled={
