@@ -2,9 +2,8 @@
  * Epic #470 W3 §3 — built-in orchestrator tools for dev jobs.
  *
  * The chat-agent surface that lets a conversational orchestrator START and
- * OBSERVE dev jobs. This is the parallel of the plugin `ctx.devJobs` accessor
- * (§2) — same underlying stores, different caller identity: a chat turn is
- * driven by a HUMAN operator session, not a plugin.
+ * OBSERVE dev jobs. A chat turn is driven by a HUMAN operator session, so the
+ * authorization gate is the W0 launch check keyed on that session.
  *
  * Three tools ship here:
  *   - `dev_job_start`  — create a job on an authorized repo (source `'chat'`).
@@ -14,8 +13,7 @@
  * There is deliberately NO `dev_job_resolve_gate` tool. Per spec §4, gate
  * resolution must be attributable to a HUMAN session, never a model turn — the
  * live job card calls the W2 gate API (`POST …/gates/:gateId/resolve`)
- * directly. Withholding it here is the same reason it is withheld from
- * `ctx.devJobs`.
+ * directly.
  *
  * Registration mirrors `requestSelfExtensionTool.ts` EXACTLY: this module is a
  * factory returning `KernelToolRegistration[]` (`{ name, spec, promptDoc,
@@ -35,16 +33,11 @@
 
 import { z } from 'zod';
 
-import type {
-  DevJobDescriptor,
-  DevJobEventRecord,
-  DevJobKind,
-  DevJobStatus,
-  NativeToolHandler,
-  NativeToolSpec,
-} from '@omadia/plugin-api';
+import type { NativeToolHandler, NativeToolSpec } from '@omadia/plugin-api';
 
+import type { DevJobDescriptor, DevJobEventRecord } from './devJobTypes.js';
 import { DEV_JOB_STATUSES, isDevJobStatus } from './types.js';
+import type { DevJobKind, DevJobStatus } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Tool names + schemas (spec §3). `dev_job_start` / `dev_job_status` names and

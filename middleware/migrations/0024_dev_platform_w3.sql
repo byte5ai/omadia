@@ -28,8 +28,14 @@ ALTER TABLE dev_jobs
   ADD COLUMN IF NOT EXISTS conductor_await_id text;
 
 -- --- operator grant: which plugin may drive dev jobs on which repo (W3 §2) --
--- The ctx.devJobs accessor resolves ONLY operator-granted repos; everything
--- else fails closed. Mirrors the MCP-server grant pattern.
+--
+-- ORPHANED — KNOWINGLY RETAINED. This table backed the plugin-facing accessor
+-- for this subsystem. That accessor never had a provider and never had a
+-- consumer (no manifest anywhere declared the permission), so it was deleted,
+-- and its store class went with it. NO CODE reads or writes this table any
+-- more, and it never held a row in production. It survives only because the
+-- migrations here are forward-only — do NOT read its existence as evidence of
+-- a live feature. Rationale: dormant-capabilities.md §2 (epic #470).
 CREATE TABLE IF NOT EXISTS dev_repo_plugin_grants (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   repo_id     UUID NOT NULL REFERENCES dev_repos(id) ON DELETE CASCADE,

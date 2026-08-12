@@ -11,30 +11,25 @@
  *   - `isPermittedLauncher` — injected so this module does not import the routes
  *     layer (avoids a `routes → devplatform` import cycle). Boot passes the
  *     canonical `devPlatformShared.isPermittedLauncher`.
- *   - `resolveJobPlacement` — the SAME placement seam boot feeds
- *     `createDevJobsHostService`, so W0/W2 launcher-admissibility stays a single
- *     source of truth.
+ *   - `resolveJobPlacement` — the W0/W2 launcher-admissibility seam, so backend
+ *     and authMode selection stays a single source of truth.
  *
  * Authorization model (documented for the report): a chat session is driven by
  * a HUMAN operator, so the correct gate is the **W0 launch-authorization**
  * (`isPermittedLauncher`: repo creator OR holder of an `allowed_launchers`
- * role) keyed on the session identity — NOT the `ctx.devJobs` per-plugin grant
- * model, which keys on a plugin id a chat turn does not have. That launch check
- * is further narrowed by the agent-config `allowedRepoIds` envelope. Fail-closed
- * throughout: empty grant ⇒ nothing resolves; every read intersects
- * `allowedRepoIds ∩ isPermittedLauncher` before returning anything.
+ * role) keyed on the session identity. That launch check is further narrowed by
+ * the agent-config `allowedRepoIds` envelope. Fail-closed throughout: empty
+ * grant ⇒ nothing resolves; every read intersects `allowedRepoIds ∩
+ * isPermittedLauncher` before returning anything.
  *
- * Reuse: the READ paths (getJob / listJobs / listJobEvents) delegate to the
- * ctx.devJobs host service (`createDevJobsHostService`) — same descriptor
- * mapping + in-memory repo scoping. Only `startJob` is bespoke: the host
- * service hardcodes `source:'plugin'` + a plugin `createdBy`, so a chat job
- * (`source:'chat'`, `createdBy = caller.sub`) is created against the store
- * directly, mirroring the admin `POST /jobs` launch path.
+ * Reuse: the READ paths (getJob / listJobs / listJobEvents) delegate to
+ * `createDevJobsHostService` — descriptor mapping + repo scoping. Only
+ * `startJob` is bespoke: it creates a `source:'chat'`, `createdBy = caller.sub`
+ * job against the store directly, mirroring the admin `POST /jobs` launch path.
  */
 
-import type { DevJobDescriptor, DevJobStatus } from '@omadia/plugin-api';
-
-import type { DevJobsHostService } from '../platform/pluginContext.js';
+import type { DevJobDescriptor } from './devJobTypes.js';
+import type { DevJobsHostService } from './devJobsHostService.js';
 
 import { createDevJobsHostService } from './devJobsHostService.js';
 import type {
@@ -46,6 +41,7 @@ import type {
   DevJob,
   DevJobAuthMode,
   DevJobEvent,
+  DevJobStatus,
   DevRepo,
   NewDevJob,
   RunnerBackendKind,
@@ -113,17 +109,9 @@ export function createChatDevJobService(
     deps.mintRunnerToken ?? (() => ({ hash: defaultMintRunnerToken().hash }));
   const allowed = new Set(deps.allowedRepoIds);
 
-  // Reuse the ctx.devJobs host service for the READ paths. Its plugin-shaped
-  // create/cancel are never called here, so `grants`/`finalize` are inert stubs.
+  // Descriptor/event projection for the READ paths.
   const host: DevJobsHostService = createDevJobsHostService({
     jobStore: deps.jobStore,
-    repoStore: deps.repoStore,
-    grants: { listRepoIdsForPlugin: async (): Promise<string[]> => [] },
-    finalize: async (): Promise<void> => {
-      throw new Error('chatDevJobService: finalize is not used by the chat surface');
-    },
-    resolveJobPlacement: deps.resolveJobPlacement,
-    ...(deps.mintRunnerToken ? { mintRunnerToken: deps.mintRunnerToken } : {}),
   });
 
   /** Ids of repos the caller is authorized to launch on: granted ∩ launchable. */

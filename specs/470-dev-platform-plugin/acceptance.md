@@ -16,7 +16,7 @@ every row passes *and* the decoupling ratchet reads zero.
 
 | Guard | What it proves | Status |
 |---|---|---|
-| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight | **In place.** Baseline **3,167** across **14** zones, per-zone regression check |
+| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight | **In place.** Baseline **3,226** across **14** zones, per-zone regression check |
 | `middleware/test/devplatform/**` (54 files) | The behaviour itself, at unit/integration level. These **move with the plugin** and must stay green in the new repo | In place, moves in P4 |
 | §2 capability matrix below | Nothing is silently dropped in the move | **Written here; not yet automated** |
 | §3 install/uninstall | The result is genuinely installable | **Not yet built** — needs P3/P4 |
@@ -155,7 +155,7 @@ depend on a plugin being able to declare a public path *and* own its prefix excl
 | `dev_job_start` / `dev_job_status` / `dev_job_list` | orchestrator native tools | tool call creates/reads a job |
 | **`ctx.devJobs`** (create/get/list/listEvents) → | plugin service | **needs the G8 contract decision** — a third-party plugin still reaches dev jobs, scoped to granted repos |
 | **Chat job card** → | `chat/page.tsx` | **needs H3** — either the rich card still renders, or the accepted `ToolRow` degradation is what ships |
-| ~~Conductor `dev.job` step~~ | — | **DELETED in C5.** Never wired, no demand, no template. Not a capability the extraction carries. See `dormant-capabilities.md` §1 |
+| **Conductor `dev.job` step** → | workflow step kind | **needs H2** — a workflow parks on a dev job and resumes on its terminal outcome |
 
 ### 2.7 Operator UI
 

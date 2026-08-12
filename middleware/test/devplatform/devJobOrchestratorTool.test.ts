@@ -5,7 +5,7 @@ import type {
   DevJobDescriptor,
   DevJobEventRecord,
   DevJobStatus,
-} from '@omadia/plugin-api';
+} from '../../src/devplatform/devJobTypes.js';
 
 import {
   createChatDevJobService,
