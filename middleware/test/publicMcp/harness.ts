@@ -361,7 +361,7 @@ export async function startHarness(opts: HarnessOptions): Promise<Harness> {
 
   const allowlist = opts.withoutPublicPathEntry
     ? STATIC_PUBLIC_PATHS.filter((re) => !re.test(PUBLIC_MCP_PATH))
-    : publicPaths({ devEndpointsEnabled: false });
+    : publicPaths();
 
   const requireAuth = createRequireAuth({
     signingKey: SESSION_KEY,

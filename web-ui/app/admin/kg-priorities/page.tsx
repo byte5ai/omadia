@@ -18,9 +18,11 @@ import { Button } from '@/app/_components/ui/Button';
  *   - reason (optional)
  *   - updated_at
  *
- * Backed by `/bot-api/dev/graph/priorities/{agentId}` (GET → list,
- * POST → upsert, DELETE → remove). Mounted only when DEV_ENDPOINTS_ENABLED
- * + agentPriorities@1 is published; otherwise the page shows an empty state.
+ * Backed by `/bot-api/v1/admin/kg-priorities/{agentId}` (GET → list,
+ * POST → upsert, DELETE → remove). Issue #669 moved these off the
+ * unauthenticated `/api/dev` surface: they are authenticated operator admin
+ * routes now, mounted whenever `agentPriorities@1` is published — no
+ * `DEV_ENDPOINTS_ENABLED` involved. Otherwise the page shows an empty state.
  */
 
 type AgentPriorityRecord = {
@@ -32,7 +34,7 @@ type AgentPriorityRecord = {
   updatedAt: string;
 };
 
-const STAT_BASE = '/bot-api/dev/graph/priorities';
+const STAT_BASE = '/bot-api/v1/admin/kg-priorities';
 const DEFAULT_AGENT = 'orchestrator-default';
 
 export default function KgPrioritiesPage(): React.ReactElement {

@@ -4205,7 +4205,9 @@
     "quotaTooltip": "{percent}% of the quota",
     "quotaOverTooltip": "{percent}% — will be evicted on the next GC sweep",
     "unavailableTitle": "Knowledge-graph lifecycle is not available",
-    "unavailableBody": "This page needs the Postgres/knowledge-graph backend. The lifecycle endpoints are only mounted when the KG plugin is installed and a database is configured — until then there is nothing to show here."
+    "unavailableBody": "The middleware did not publish the lifecycle service, so there is nothing to show here. The sweeps are Postgres-specific: they exist only while the knowledge-graph plugin is active against a Postgres/Neon database. An in-memory knowledge graph has no lifecycle to run. This page no longer depends on any feature flag — if the plugin is active on Postgres and you still see this, check the plugin status.",
+    "signedOutTitle": "Your session has expired",
+    "signedOutBody": "These endpoints require an operator session. Sign in again, then reload this page."
   },
   "adminKgPriorities": {
     "intro": "Per-agent block/boost list for the token-budget assembler. Block drops a turn from the recall pool; boost multiplies the score by `weight` (default 1.3). `manuallyAuthored=true` additionally applies an independent ×1.3 boost — both combine.",
