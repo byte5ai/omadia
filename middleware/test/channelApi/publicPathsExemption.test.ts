@@ -23,7 +23,7 @@ import { publicPaths } from '../../src/auth/publicPaths.js';
  * half of the story.
  */
 describe('publicPaths — @omadia/channel-api exemption', () => {
-  const paths = publicPaths({ devEndpointsEnabled: false });
+  const paths = publicPaths();
   const isPublic = (path: string): boolean => paths.some((re) => re.test(path));
 
   it('exempts the public chat route', () => {

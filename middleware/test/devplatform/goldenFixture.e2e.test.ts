@@ -343,7 +343,7 @@ describe('dev-platform golden fixture (pg + git)', { skip: !pgAvailable || !gitA
     const app = express();
     app.use(express.json({ limit: '10mb' }));
     app.use(express.text({ type: 'text/plain', limit: '10mb' }));
-    const allowlist = publicPaths({ devEndpointsEnabled: false });
+    const allowlist = publicPaths();
     const requireAuth: RequestHandler = (req, res, next) => {
       const url = req.originalUrl || req.url;
       if (allowlist.some((rx) => rx.test(url))) {

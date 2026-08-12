@@ -15,7 +15,7 @@ import { PUBLIC_MCP_PATH } from '../src/mcp/publicMcpPath.js';
  * must assert against the SAME array production runs.
  */
 describe('publicPaths — MCP OAuth callback allowlist', () => {
-  const allowlist = publicPaths({ devEndpointsEnabled: false });
+  const allowlist = publicPaths();
 
   it('allows the generic MCP-server OAuth callback', () => {
     assert.equal(
@@ -50,7 +50,7 @@ describe('publicPaths — MCP OAuth callback allowlist', () => {
     );
   });
 
-  it('is present in STATIC_PUBLIC_PATHS regardless of devEndpointsEnabled', () => {
+  it('is present in STATIC_PUBLIC_PATHS, which is configuration-independent', () => {
     assert.equal(
       STATIC_PUBLIC_PATHS.some((p) => p.test('/api/v1/operator/mcp-oauth/callback')),
       true,
@@ -67,7 +67,7 @@ describe('publicPaths — MCP OAuth callback allowlist', () => {
  * about, so the test derives its expectation from `CIMD_METADATA_PATH` itself.
  */
 describe('publicPaths — MCP client-ID metadata document allowlist', () => {
-  const allowlist = publicPaths({ devEndpointsEnabled: false });
+  const allowlist = publicPaths();
 
   it('allows the metadata document path built from the shared constant', () => {
     assert.equal(
@@ -84,7 +84,7 @@ describe('publicPaths — MCP client-ID metadata document allowlist', () => {
     );
   });
 
-  it('is present in STATIC_PUBLIC_PATHS regardless of devEndpointsEnabled', () => {
+  it('is present in STATIC_PUBLIC_PATHS, which is configuration-independent', () => {
     assert.equal(
       STATIC_PUBLIC_PATHS.some((p) => p.test(CIMD_METADATA_PATH)),
       true,
@@ -119,7 +119,7 @@ describe('publicPaths — MCP client-ID metadata document allowlist', () => {
  * ("goes DARK (session 401), not open"); this block covers the allowlist half.
  */
 describe('publicPaths — public MCP endpoint allowlist', () => {
-  const allowlist = publicPaths({ devEndpointsEnabled: false });
+  const allowlist = publicPaths();
   const isPublic = (path: string): boolean => allowlist.some((p) => p.test(path));
 
   it('exempts the public MCP endpoint from the session gate', () => {
@@ -134,7 +134,7 @@ describe('publicPaths — public MCP endpoint allowlist', () => {
     assert.equal(isPublic(`${PUBLIC_MCP_PATH}?v=1`), true);
   });
 
-  it('is present in STATIC_PUBLIC_PATHS regardless of devEndpointsEnabled', () => {
+  it('is present in STATIC_PUBLIC_PATHS, which is configuration-independent', () => {
     assert.equal(
       STATIC_PUBLIC_PATHS.some((p) => p.test(PUBLIC_MCP_PATH)),
       true,
@@ -160,5 +160,52 @@ describe('publicPaths — public MCP endpoint allowlist', () => {
   it('does NOT exempt the operator MCP admin surfaces', () => {
     assert.equal(isPublic('/api/v1/operator/mcp-servers'), false);
     assert.equal(isPublic('/api/v1/operator/mcp-call-log'), false);
+  });
+});
+
+/**
+ * Issue #669 — `/api/dev/*` was exempt from the session gate whenever
+ * `DEV_ENDPOINTS_ENABLED=true`. That single boolean published knowledge-graph
+ * state and three destructive maintenance sweeps to anonymous callers on any
+ * internet-reachable deployment (verified: uncredentialed `200`s with real
+ * payloads). The entry is gone, and `publicPaths` no longer takes any
+ * configuration at all — there is nothing left to flip.
+ *
+ * The end-to-end half of this ("401, and the sweep never ran") lives in
+ * `test/devEndpoints/devEndpointsAuth.e2e.test.ts`, which also asserts the
+ * failure direction: restore the entry and the surface goes open again.
+ */
+describe('publicPaths — /api/dev is not exempt (#669)', () => {
+  const allowlist = publicPaths();
+  const isPublic = (path: string): boolean => allowlist.some((p) => p.test(path));
+
+  const DEV_PATHS: readonly string[] = [
+    '/api/dev',
+    '/api/dev/',
+    '/api/dev/graph/stats',
+    '/api/dev/graph/lifecycle/stats',
+    '/api/dev/graph/lifecycle/run-decay',
+    '/api/dev/graph/lifecycle/run-gc',
+    '/api/dev/graph/lifecycle/run-access-flush',
+    '/api/dev/graph/priorities/list',
+    '/api/dev/memory/entries',
+    '/api/dev/graph/stats?scope=demo',
+  ];
+
+  for (const path of DEV_PATHS) {
+    it(`does not exempt ${path}`, () => {
+      assert.equal(
+        isPublic(path),
+        false,
+        `${path} must sit behind the session gate — #669`,
+      );
+    });
+  }
+
+  it('exposes no configuration switch that could re-open it', () => {
+    // A zero-argument accessor is the assertion: there is no
+    // `{ devEndpointsEnabled: true }` to pass any more.
+    assert.equal(publicPaths.length, 0);
+    assert.deepEqual([...publicPaths()], [...STATIC_PUBLIC_PATHS]);
   });
 });
