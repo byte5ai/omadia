@@ -123,6 +123,17 @@ jobs:
       # this step, so the *.pg.test.ts files probe the unreachable default
       # and self-skip — same as today. They get real coverage in the
       # dedicated serial step below.
+      #
+      # `test` pins --test-concurrency=4 (issue #605). Node's default is
+      # derived from the core count, so a 16-core dev machine ran far more
+      # files at once than CI ever does — and the suite spins up many
+      # short-lived Express servers on localhost. Three consecutive full runs
+      # each failed a DIFFERENT test (runtimeSecretsRoute,
+      # conductorTemplateRoutes, inboundWebhookRoutes), two with a
+      # connection-level `fetch failed`; every one passed in isolation. That
+      # is contention, not logic. Pinning makes the number the same
+      # everywhere, so a red run means a real failure instead of training
+      # everyone to re-run — the habit that let #549 break main.
       - name: Test (node --test via tsx)
         run: npm run test
 

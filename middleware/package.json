@@ -41,7 +41,7 @@
     "eval:golden": "node --import tsx test/golden/goldenSet.eval.ts",
     "setup:tigris-lifecycle": "tsx scripts/setup-tigris-lifecycle.ts",
     "pretest": "node scripts/check-node-version.mjs",
-    "test": "node --import tsx --test --test-timeout=120000 --test-reporter=spec 'test/**/*.test.ts'",
+    "test": "node --import tsx --test --test-timeout=120000 --test-concurrency=4 --test-reporter=spec 'test/**/*.test.ts'",
     "test:pg": "node --import tsx --test --test-timeout=120000 --test-concurrency=1 --test-reporter=spec 'test/**/*.pg.test.ts'"
   },
   "engines": {
