@@ -126,6 +126,20 @@ jobs:
       - name: Test (node --test via tsx)
         run: npm run test
 
+      # `--test-timeout` is applied to the FILE, not to each leaf (#566): a
+      # file whose leaves are all fast but whose total crosses the ceiling is
+      # killed as a unit, and the failure is reported against whichever leaf
+      # happened to be running. #550 sized the ceiling on the slowest file of
+      # the day and nothing has watched the margin since — the spec and tap
+      # reporters flatten a glob to suite names, so the per-file total was not
+      # observable at all. The step above now also writes it; this turns it
+      # into a gate. Deliberately a fraction of the ceiling rather than a
+      # committed ms baseline: the same suite measures ~36s locally on 16
+      # cores and ~172s here, so an absolute number would be either
+      # permanently red or permanently asleep.
+      - name: Test file durations (per-file timeout headroom, #566)
+        run: npm run test:filetimes
+
       # Anti-silent-skip guard (#565). The pg suites self-skip when the DB
       # is unreachable, so a broken/renamed service would once again pass
       # green with zero Postgres coverage. Fail loudly here instead if the
