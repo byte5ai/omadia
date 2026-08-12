@@ -18,9 +18,11 @@ const UpsertBodySchema = z.object({
 
 /**
  * Operator-facing per-Agent priorities admin endpoints (palaia Phase 5 /
- * OB-74 Slice 5). Mounted under `/api/dev/graph/priorities` only when
- * `DEV_ENDPOINTS_ENABLED` is set, mirroring the kg-lifecycle pattern. The
- * web-ui page at `/admin/kg-priorities` is the consumer.
+ * OB-74 Slice 5). Mounted at `/api/v1/admin/kg-priorities` behind the
+ * operator session gate whenever `agentPriorities@1` is published, mirroring
+ * the kg-lifecycle pattern — see `routes/graphRouterMounts.ts` and issue #669,
+ * which moved both off the unauthenticated `/api/dev` prefix. The web-ui page
+ * at `/admin/kg-priorities` is the consumer.
  *
  *   GET    /:agentId                 — list (block | boost) entries
  *   POST   /:agentId/:entryId        — upsert (action, weight, reason)

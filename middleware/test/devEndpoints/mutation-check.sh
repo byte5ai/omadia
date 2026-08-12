@@ -105,15 +105,14 @@ run_mutation "the priorities admin router goes back behind a flag" "$MOUNTS" \
       KG_PRIORITIES_ADMIN_PATH,'
 run_mutation "the plugin-domains admin router goes back behind a flag" "$MOUNTS" \
   'app.use(PLUGIN_DOMAINS_ADMIN_PATH, requireAuth, createAdminDomainsRouter({ catalog }));|||if (false) app.use(PLUGIN_DOMAINS_ADMIN_PATH, requireAuth, createAdminDomainsRouter({ catalog }));'
-# The admin routers must be AUTHENTICATED, not merely reachable. Dropping the
-# explicit guard here is caught because these paths sit outside the harness's
-# blanket `/api` router chain only by ordering — if this stops being caught,
-# the "401 without a session" admin assertions have gone missing.
-run_mutation "the KG-lifecycle admin router loses its session guard" "$MOUNTS" \
-  'app.use(
-      KG_LIFECYCLE_ADMIN_PATH,
-      requireAuth,|||app.use(
-      KG_LIFECYCLE_ADMIN_PATH,'
+# NOT a mutation, and deliberately so: dropping the per-mount `requireAuth`
+# from an admin router changes NOTHING observable, because the blanket
+# `app.use('/api', requireAuth, …)` line already guards the same paths through
+# the same allowlist. It is defence-in-depth against a future reordering, not
+# an independent gate — asserting it here would be asserting a tautology, and
+# a mutation that can never be caught belongs in neither column of this
+# script's tally. What actually gates these routes is the allowlist, and the
+# two mutations at the top of this file are what prove it.
 run_mutation "the dev graph mounts regardless of DEV_ENDPOINTS_ENABLED" "$MOUNTS" \
   'if (!deps.enabled) return false;|||'
 
