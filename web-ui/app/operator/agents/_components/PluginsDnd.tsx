@@ -385,6 +385,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                   <p className="text-[10px] uppercase tracking-wide text-[color:var(--warning)]">
                     {t('orphanPluginsHeading')} ({orphans.length})
                   </p>
+                  {/* eslint-disable-next-line no-restricted-syntax -- warning-outline orphan detach-all action (§10 no warning variant) */}
                   <button
                     type="button"
                     className="rounded border border-[color:var(--warning)] bg-[color:var(--bg-elevated)] px-2 py-0 text-[10px] text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
@@ -416,6 +417,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                     <span className="text-[10px] uppercase text-[color:var(--warning)]">
                       {t('orphanPluginBadge')}
                     </span>
+                    {/* eslint-disable-next-line no-restricted-syntax -- warning-outline per-orphan detach action (§10 no warning variant) */}
                     <button
                       type="button"
                       className="ml-auto rounded border border-[color:var(--warning)] bg-[color:var(--bg-elevated)] px-2 py-0 text-[10px] hover:bg-[color:var(--warning)]/10"
@@ -595,6 +597,7 @@ function DraggablePluginTile(props: {
     <div ref={setNodeRef} style={style} className="select-none">
       <div className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
         <div className="flex items-start gap-2 px-2 py-2">
+          {/* eslint-disable-next-line no-restricted-syntax -- dnd drag handle (icon-only GripVertical + drag listeners), not a §4.2 CTA */}
           <button
             type="button"
             {...attributes}

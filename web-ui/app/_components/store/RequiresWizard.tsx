@@ -119,6 +119,7 @@ export function RequiresWizard({
       aria-modal="true"
       aria-label={t('dialogAria', { name: targetPluginName })}
     >
+      {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (full-bleed modal backdrop/scrim, no text) */}
       <button
         type="button"
         onClick={installing ? undefined : onClose}
@@ -147,6 +148,7 @@ export function RequiresWizard({
               {t('intro')}
             </p>
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (close ×, X icon only) */}
           <button
             type="button"
             onClick={onClose}

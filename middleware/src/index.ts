@@ -162,6 +162,18 @@ import {
   type MdnsAdvertisement,
 } from './pairing/mdns.js';
 import { publicPaths } from './auth/publicPaths.js';
+import { recordRawBodyBytes } from './http/rawBodySize.js';
+import { redactAuditError } from './services/secretRedaction.js';
+import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp.js';
+// W5-1 — the WRITE half of `public_mcp_key_bindings`. Imported for the
+// OPERATOR router only. `mountPublicMcp` above must never be handed this: the
+// internet-facing endpoint gets `createPublicMcpKeyBindingStore` (read-only)
+// and nothing else.
+import { createPublicMcpKeyBindingAdminStore } from './mcp/publicMcpKeyBindingsAdmin.js';
+import {
+  PRIVACY_REDACT_SERVICE_NAME,
+  type PrivacyGuardService,
+} from '@omadia/plugin-api';
 import { createRequireAuth } from './auth/requireAuth.js';
 import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
 import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
@@ -250,6 +262,7 @@ import {
   retryErroredPlugins,
   runLegacyBootstrap,
 } from './plugins/bootstrap.js';
+import { warmPatternWorker } from './plugins/setupFieldPattern.js';
 import { BuiltInPackageStore } from './plugins/builtInPackageStore.js';
 import { LocalDevPackageStore } from './plugins/localDevPackageStore.js';
 import { FileSecretVault, resolveMasterKey } from './secrets/fileVault.js';
@@ -276,8 +289,33 @@ import { DeterministicActionRegistry } from './platform/deterministicActionRegis
 import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
-import { McpManager, type McpCallLogEntry, type McpServerConfig } from '@omadia/orchestrator';
+// W3-A / W4 — boot-time enforcement of the tool-timeout ordering invariant.
+import { assertTimeoutHierarchy } from '@omadia/orchestrator';
+// W2-2 (issue #543) — generic long-running task seam.
+import { InMemoryTaskStore, startTaskReaper } from '@omadia/orchestrator';
+import {
+  McpManager,
+  type McpCallLogEntry,
+  type McpServerConfig,
+  type McpSidecarPayload,
+  type McpStructuredSink,
+} from '@omadia/orchestrator';
+// W2-1 (#544) — MRTR mid-call user input: the process-shared park store and the
+// replayer registration. See `mcp/pendingMcpInput.ts` for why these are shared.
+import {
+  REPLAY_ARG_KEY,
+  setSharedMcpInputReplayer,
+  sharedPendingMcpInputStore,
+} from '@omadia/orchestrator';
+import {
+  SERVICE_USER_KEY,
+  auditIdentity,
+  delegationBlockedMessage,
+  resolveMcpUserKey,
+} from './services/mcpDelegation.js';
 import { McpOAuthService } from './services/mcpOAuthService.js';
+import { CIMD_METADATA_PATH, cimdMetadataUrl } from './services/mcpCimd.js';
+import { createMcpClientMetadataRouter } from './routes/mcpClientMetadata.js';
 import { McpConfigService } from './services/mcpConfigService.js';
 import {
   McpRegistrySecretService,
@@ -369,6 +407,14 @@ async function main(): Promise<void> {
   // fire-and-forget I/O) throws.
   installProcessGuards();
 
+  // W3-A / W4 — refuse to boot on an incoherent tool-timeout hierarchy. The
+  // ordering (dispatch deadline > MCP worst case > per-request idle budget) used
+  // to be asserted only inside a test helper that nothing shipped ever called,
+  // so `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=90000` inverted it with green CI and the
+  // symptom surfaced much later as MCP calls dying on a generic
+  // dispatch-deadline error. Config errors belong at startup.
+  assertTimeoutHierarchy();
+
   // Plugin-api registries. Created empty at boot; populated as plugins
   // register into them during the activation sequence further down. Today
   // only the ServiceRegistry participates in the happy path (plumbed into
@@ -393,6 +439,26 @@ async function main(): Promise<void> {
   // plugin would miss those registrations.
   const nativeToolRegistry = new NativeToolRegistry();
   serviceRegistry.provide('nativeToolRegistry', nativeToolRegistry);
+  // W2-2 (issue #543) — the store + orphan reaper backing deferred sub-agent
+  // dispatch. Process-local by design: this unit ships no migration (0031/0032
+  // are taken by parallel units), so a restart drops in-flight deferred tasks
+  // and a poll answers "not found" rather than something wrong. The reaper is
+  // what stops an unpolled task leaking a `working` row forever.
+  const longRunningSubAgentTools = config.LONG_RUNNING_SUBAGENT_TOOLS.split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const subAgentTaskStore = new InMemoryTaskStore();
+  if (longRunningSubAgentTools.length > 0) {
+    startTaskReaper(subAgentTaskStore, {
+      staleAfterMs: config.LONG_RUNNING_TASK_STALE_MS,
+      purgeTerminalAfterMs: config.LONG_RUNNING_TASK_RETAIN_MS,
+      onError: (err: unknown) =>
+        console.warn('[middleware] long-running task reaper sweep failed:', err),
+    });
+    console.log(
+      `[middleware] deferred sub-agent dispatch enabled for: ${longRunningSubAgentTools.join(', ')}`,
+    );
+  }
   // LLM provider catalog: kernel-owned registry of plugin-contributed providers
   // (e.g. @omadia/plugin-llm-minimax). Published pre-activate and populated from
   // installed plugins' `llm_provider` manifest blocks below, so the orchestrator
@@ -1524,19 +1590,36 @@ async function main(): Promise<void> {
 
   // Generic MCP OAuth service (epic #459 W9) — outer scope so both the
   // McpManager (auth provider) and the operator router (begin/callback routes)
-  // reference the same instance. userKey='operator' for the operator chat.
-  const mcpOAuthUserKey = 'operator';
+  // reference the same instance.
+  //
+  // W0-1: this is now ONLY the shared key for servers whose `delegation` is
+  // `service`. It is no longer a fallback for unresolved identities — see
+  // services/mcpDelegation.ts.
+  const mcpOAuthUserKey = SERVICE_USER_KEY;
   // Redirect URI the OAuth callback lands on: explicit override, else derived
   // from the public base. The service activates when either is configured.
   const mcpOAuthRedirectUri =
     config.MCP_OAUTH_REDIRECT_URI ??
     (flowPublicBaseUrl ? `${flowPublicBaseUrl}/api/v1/operator/mcp-oauth/callback` : undefined);
+  // W2-4 (issue #546) — the CIMD metadata-document URL, i.e. the `client_id` a
+  // CIMD-capable authorization server dereferences.
+  //
+  // Derived from `FLOW_PUBLIC_BASE_URL` ALONE — deliberately NOT the
+  // `?? PUBLIC_BASE_URL` fallback the redirect URI uses. CIMD needs the IdP to
+  // reach IN to this deployment, and `PUBLIC_BASE_URL` defaults to
+  // `http://localhost:3979`, which is exactly the shape that is not inbound
+  // reachable. Requiring the operator to declare the public origin explicitly
+  // means an unconfigured install lands in the clean degraded state (CIMD off,
+  // manual client path fully working) instead of publishing a `client_id` no
+  // provider can fetch.
+  const mcpCimdMetadataUrl = cimdMetadataUrl(config.FLOW_PUBLIC_BASE_URL);
   const mcpOAuthService =
     graphPool && mcpOAuthRedirectUri
       ? new McpOAuthService({
           graph: new AgentGraphStore(graphPool),
           vault: secretVault,
           redirectUri: mcpOAuthRedirectUri,
+          cimdMetadataUrl: mcpCimdMetadataUrl,
           log: (m) => console.log(`[middleware] ${m}`),
         })
       : undefined;
@@ -1544,6 +1627,11 @@ async function main(): Promise<void> {
   const mcpConfigService = graphPool
     ? new McpConfigService({ graph: new AgentGraphStore(graphPool), vault: secretVault })
     : undefined;
+  // Issue #563 — the runtime MCP connection pool, hoisted out of the
+  // `if (orchestrator)` block below so the operator router (which invalidates a
+  // changed server) and `shutdownBuilder` (which must terminate the pooled
+  // stdio children) can both reach it. Stays `undefined` when chat is disabled.
+  let runtimeMcpManager: McpManager | undefined;
 
   // Plugin code scanning (issue #453) — SkillSpector sidecar behind the
   // PluginScanner seam. Requires the Postgres graph backend for the verdict
@@ -1807,13 +1895,96 @@ async function main(): Promise<void> {
       // mcp_call_log, fire-and-forget so the tool-call path never blocks on
       // the database. Identity comes from turnContext inside the manager.
       const mcpAuditStore = graphPool ? new AgentGraphStore(graphPool) : undefined;
+      // #547 / #569 — the structured-output sidecar's first consumer: privacy
+      // ACCOUNTING, not rendering. The payload is emitted out-of-band from
+      // `McpManager.callTool` and never reaches the model wire (the model sees
+      // only the interned digest of the TEXT result), so nothing here is
+      // masked — but the sidecar fired beneath every dispatcher, so structured
+      // content appeared in no turn receipt at all. This records a PII-free
+      // entry (tool + server + byte count + schema flag) into the turn's
+      // privacy receipt so an operator audit accounts for it. Deliberately does
+      // NOT forward the payload anywhere a renderer could consume it — that is
+      // #547's remaining half, unblocked by this accounting decision but out of
+      // scope here. Fail-closed: an accounting failure must never break a tool
+      // call, and a payload with no turn identity is skipped (there is no
+      // receipt to attribute it to) rather than mis-filed.
+      const mcpStructuredSink: McpStructuredSink = (payload: McpSidecarPayload) => {
+        if (payload.kind !== 'structured_output') return;
+        if (payload.turnId === null) {
+          console.warn(
+            `[middleware] structured sidecar for '${payload.toolName}' has no turnId — not accounted`,
+          );
+          return;
+        }
+        const privacy = serviceRegistry.get<PrivacyGuardService>(
+          PRIVACY_REDACT_SERVICE_NAME,
+        );
+        // Feature-detected: a privacy provider that predates #569 (or none
+        // installed at all) makes the sink a no-op — no receipt entry, no side
+        // effect. (Not byte-identical at the manager: wiring this sink means
+        // `emitStructured` now runs its body per structured result where before
+        // it early-returned on the absent sink. The work is a turnContext read
+        // and a Map lookup, and produces nothing observable without a provider.)
+        if (privacy?.recordStructuredPayload === undefined) return;
+        // Fail closed on our OWN terms, not on the manager's `emitStructured`
+        // try/catch: `structuredContent` is a post-`JSON.parse` value so
+        // re-serialising it cannot realistically throw, but a byte count that
+        // could take down accounting is not worth trusting a caller's guard
+        // for. An unmeasurable payload is still worth accounting — record it
+        // with `bytes: 0` rather than dropping the entry.
+        let bytes = 0;
+        try {
+          bytes = Buffer.byteLength(JSON.stringify(payload.structured), 'utf8');
+        } catch {
+          /* leave bytes at 0 — the entry still records that structured output
+             was received, which is the load-bearing accounting fact */
+        }
+        void privacy
+          .recordStructuredPayload({
+            turnId: payload.turnId,
+            toolName: payload.toolName,
+            serverName: payload.serverName,
+            bytes,
+            hasOutputSchema: payload.outputSchema !== undefined,
+          })
+          .catch((err: unknown) => {
+            console.warn(
+              `[middleware] structured sidecar accounting failed for '${payload.toolName}': ${String(err)}`,
+            );
+          });
+      };
       // Generic MCP OAuth (epic #459 W9) wired as the manager's auth provider;
       // the service instance is created at outer scope (shared with the router).
-      const mcpManager = new McpManager({
+      const mcpManager: McpManager = new McpManager({
+        // #547 / #569 — see `mcpStructuredSink` above (accounting only).
+        structuredSink: mcpStructuredSink,
+        // W2-1 (#544) — where a `resultType: "input_required"` call is parked.
+        // The process-shared instance, so the Orchestrator's turn drain reads
+        // exactly what this manager wrote.
+        pendingInput: sharedPendingMcpInputStore(),
         ...(mcpAuditStore
           ? {
               onToolCall: (entry: McpCallLogEntry) => {
-                void mcpAuditStore.insertMcpCallLog(entry).catch((err: unknown) => {
+                // `entry.error` is upstream text — a remote MCP server's own
+                // protocol/transport message. The orchestrator bounds it to 300
+                // characters, but truncation is not redaction: a server that
+                // echoes `refresh_token=…`, an `Authorization: Bearer …`, or a
+                // secret-shaped JSON field puts that credential into an
+                // append-only table, and the operator audit API returns the
+                // stored string verbatim.
+                //
+                // Redacted HERE rather than in the orchestrator because
+                // `secretRedaction` lives in this package and `onToolCall` is
+                // the injected seam — the alternative was a second copy of the
+                // patterns inside `@omadia/orchestrator`, and two copies of a
+                // redaction rule is one that drifts loose.
+                //
+                // LIMIT, deliberately not papered over: this removes
+                // CREDENTIALS, not PII. An upstream error quoting a customer
+                // name or address still lands in `mcp_call_log`. Masking that
+                // would mean running the privacy pipeline inside the audit
+                // writer, which is a design decision rather than a patch.
+                void mcpAuditStore.insertMcpCallLog(redactAuditError(entry)).catch((err: unknown) => {
                   console.warn(`[middleware] mcp call audit write failed: ${String(err)}`);
                 });
               },
@@ -1829,18 +2000,49 @@ async function main(): Promise<void> {
                   const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                   if (!server) return null;
                   // Per-user token (codex W9 fold): the turn's authenticated
-                  // user when the entry point set it, else the operator scope.
-                  const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
+                  // user when the entry point set it.
+                  //
+                  // W0-1 (D2) — THE confused-deputy fix. This used to end in
+                  // `?? mcpOAuthUserKey`, i.e. `'operator'`. A Teams/Telegram
+                  // turn whose user has no mapped identity therefore reached
+                  // the customer's MCP server holding the OPERATOR's token.
+                  // Now a `per_user` server with no identity gets no token and
+                  // the call fails closed through onAuthFailure below;
+                  // `service` delegation is the explicit shared-identity
+                  // opt-in.
+                  const userKey = resolveMcpUserKey(
+                    server,
+                    turnContext.current()?.mcpUserKey,
+                    mcpOAuthUserKey,
+                  );
+                  if (userKey === null) return null;
                   return mcpOAuthService.getValidAccessToken(server, userKey);
+                },
+                resolveIdentity: async (cfg: McpServerConfig) => {
+                  const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                  if (!server) return null;
+                  // W0-1: every audit row names the identity it acted as —
+                  // `unresolved` when there was none.
+                  return auditIdentity(server, turnContext.current()?.mcpUserKey, mcpOAuthUserKey);
                 },
                 onAuthFailure: async (cfg: McpServerConfig) => {
                   const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                   if (!server) return null;
+                  // W0-1 (D2): fail closed FIRST. A `per_user` server with no
+                  // caller identity must never be "fixed" by starting an OAuth
+                  // flow — that flow would bind a token to whoever happens to
+                  // click through, which is the same confused deputy one step
+                  // removed. Explain instead, and send nothing upstream.
+                  const userKey = resolveMcpUserKey(
+                    server,
+                    turnContext.current()?.mcpUserKey,
+                    mcpOAuthUserKey,
+                  );
+                  if (userKey === null) return delegationBlockedMessage(server.name);
                   // Only OAuth-protected servers get an auth prompt (cached
                   // discovery keeps this cheap per call).
                   const desc = await mcpOAuthService.describeAuth(server);
                   if (!desc.protected) return null;
-                  const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
                   // Machine block the chat parses into an in-line "Connect" card
                   // + modal (web-ui McpAuthRequiredCard). Mirrors the <nudge>
                   // block contract: human text stays readable for the model and
@@ -1869,6 +2071,42 @@ async function main(): Promise<void> {
             }
           : {}),
       });
+      // Publish the handle so the operator router can invalidate a changed
+      // server and `shutdownBuilder` can close the pooled stdio children.
+      runtimeMcpManager = mcpManager;
+      // W2-1 (#544) — the replayer. Registered here because this is the only
+      // place that holds BOTH the manager and the server registry: a replay is
+      // a fresh `tools/call`, so it needs the server's live config (endpoint,
+      // headers, Vault-resolved env) re-resolved rather than a snapshot taken
+      // when the call was parked.
+      //
+      // A server the operator deleted (or renamed away) between the two turns
+      // returns `undefined`, which the orchestrator surfaces to the user as
+      // "no longer reachable" instead of silently dropping their input.
+      if (mcpAuditStore) {
+        setSharedMcpInputReplayer({
+          replay: async (record, inputResponses) => {
+            const server = (await mcpAuditStore.listMcpServers()).find(
+              (s) => s.id === record.serverId,
+            );
+            if (!server) return undefined;
+            const cfg: McpServerConfig = {
+              id: server.id,
+              name: server.name,
+              transport: server.transport,
+              endpoint: server.endpoint,
+              ...(server.privacyBypass ? { privacyBypass: true } : {}),
+            };
+            // `originalArgs` first: a server that (incorrectly) declared an
+            // `inputResponses` input field must not be able to shadow the
+            // collected answers with a stale value from the original call.
+            return mcpManager.callTool(cfg, record.toolName, {
+              ...record.originalArgs,
+              [REPLAY_ARG_KEY]: inputResponses,
+            });
+          },
+        });
+      }
       // Host MCP service for plugin ctx.mcp (epic #459 W5, issue #458):
       // resolved lazily by createPluginContext, exactly like the 'llm'
       // provider. Grants are read live per call (deny-by-default).
@@ -1940,6 +2178,10 @@ async function main(): Promise<void> {
             cliModelAlias: (model: string): string =>
               model.replace(/-cli$/, '') || 'sonnet',
             blockedMcpGrant: isMcpGrantBlocked,
+            // W2-2 (issue #543) — deferred sub-agent dispatch. Empty allowlist
+            // (the default) leaves every sub-agent on today's inline path.
+            longRunningSubAgentTools: longRunningSubAgentTools,
+            taskStore: subAgentTaskStore,
             log: (m: string) => console.log(`[middleware] ${m}`),
           },
         );
@@ -2168,7 +2410,7 @@ async function main(): Promise<void> {
       next();
       return;
     }
-    express.json({ limit: '10mb' })(req, res, next);
+    express.json({ limit: '10mb', verify: recordRawBodyBytes })(req, res, next);
   });
   // Issue #437 — Conductor's generic inbound webhook route. Mounted unconditionally
   // (mirrors the forward-reference pattern, not the `if (graphPool)` gate above): on
@@ -2179,7 +2421,11 @@ async function main(): Promise<void> {
   app.use(createConductorWebhooksInboundRouter(() => conductorWebhookInboundDepsRef));
   console.log('[middleware] conductor webhook inbound router mounted at /api/hooks/:endpointId (raw-body, before express.json)');
 
-  app.use(express.json({ limit: '10mb' }));
+  // `verify` records the RAW byte count (see `http/rawBodySize.ts`). Route-level
+  // size gates downstream can only measure `JSON.stringify(req.body)`, which is
+  // a different number: 9 MB of insignificant whitespace re-serialises to a
+  // handful of bytes and walks through a cap written against it.
+  app.use(express.json({ limit: '10mb', verify: recordRawBodyBytes }));
   app.use(cookieParser());
 
   app.get('/health', (_req, res) => {
@@ -2227,6 +2473,24 @@ async function main(): Promise<void> {
     );
   });
   console.log(`[middleware] pairing discovery at GET ${WELL_KNOWN_PATH}`);
+
+  // W2-4 (issue #546) — MCP Client ID Metadata Document. Public by necessity:
+  // an authorization server fetches it uncredentialed to resolve the CIMD
+  // `client_id`. Mounted here, outside the `/api` requireAuth mount, AND listed
+  // in auth/publicPaths.ts via the shared `CIMD_METADATA_PATH` constant so the
+  // two can never drift. `redirectUri` is the SAME variable McpOAuthService
+  // holds — if these diverge, every code exchange fails at the provider.
+  app.use(
+    createMcpClientMetadataRouter({
+      metadataUrl: mcpCimdMetadataUrl,
+      redirectUri: mcpOAuthRedirectUri ?? null,
+    }),
+  );
+  console.log(
+    mcpCimdMetadataUrl && mcpOAuthRedirectUri
+      ? `[middleware] MCP client-ID metadata document at GET ${CIMD_METADATA_PATH} (client_id ${mcpCimdMetadataUrl})`
+      : `[middleware] MCP client-ID metadata document at GET ${CIMD_METADATA_PATH} answers 501 — FLOW_PUBLIC_BASE_URL unset, so CIMD is off and issuers use the manual client path`,
+  );
 
   // Harness shared assets — currently the admin-UI baseline stylesheet
   // that plugin-bundled admin UIs `<link>` into their HTML. No auth: the
@@ -2277,6 +2541,29 @@ async function main(): Promise<void> {
       snapshotForAgent: (slug) => getRegistry()?.snapshotForAgent(slug),
     }),
   );
+
+  // W2-3 (issue #542) — the public, stateless MCP endpoint.
+  //
+  // Mounted AFTER the `/api` requireAuth line above ON PURPOSE. That mount runs
+  // for every `/api/*` request whichever router answers it, so being listed in
+  // `auth/publicPaths.ts` is what makes this route reachable at all — and
+  // losing that entry makes it go DARK (401) rather than open. `requireApiKey`
+  // inside the router is the actual authentication; the per-key tool allowlist
+  // and the per-tool write scopes are the actual authorization.
+  mountPublicMcp(app, requireAuth, {
+    enabled: config.PUBLIC_MCP_ENABLED,
+    allowWithoutPrivacyMasking: config.PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING,
+    vault: secretVault,
+    graphPool,
+    getRegistry,
+    nativeToolRegistry,
+    // Resolved LIVE from the service registry, the same late-bound pattern the
+    // orchestrator plugin uses: installing the privacy-guard plugin takes effect
+    // without a restart, and — the direction that matters here — uninstalling it
+    // closes the endpoint's tool calls immediately rather than on next boot.
+    getPrivacyService: () =>
+      serviceRegistry.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME),
+  });
 
   // Chat-sessions CRUD behind `requireAuth` — sessions may contain
   // PII / tool outputs / code snippets and must not be readable anonymously.
@@ -2538,13 +2825,29 @@ async function main(): Promise<void> {
       ...(graphPool
         ? {
             mcpCallObserver: (entry: McpCallLogEntry) => {
-              void new AgentGraphStore(graphPool).insertMcpCallLog(entry).catch((err: unknown) => {
-                console.warn(`[middleware] mcp sandbox audit write failed: ${String(err)}`);
-              });
+              // Same redaction as the runtime observer — this sink writes to the
+              // same `mcp_call_log` table from sandbox test-calls, and was the
+              // half that had none. Shared helper, not a second copy of the
+              // expression: one redacting sink and one not is exactly what a
+              // copy-pasted transform produces.
+              void new AgentGraphStore(graphPool)
+                .insertMcpCallLog(redactAuditError(entry))
+                .catch((err: unknown) => {
+                  console.warn(`[middleware] mcp sandbox audit write failed: ${String(err)}`);
+                });
             },
           }
         : {}),
       mcpCallGuard: mcpDispatchDenial,
+      // Issue #563 — a server deleted / reconfigured / disconnected through the
+      // operator UI must also drop out of the RUNTIME pool, not just the
+      // router's own. Fire-and-forget: an invalidation failure must never
+      // reject inside a request handler.
+      onMcpServerChanged: (serverId: string) => {
+        void runtimeMcpManager?.close(serverId).catch((err: unknown) => {
+          console.warn(`[middleware] mcp pool invalidation failed: ${String(err)}`);
+        });
+      },
       // W7 UX (issue #458): MCP-capable plugins + their manifest servers_hint,
       // for the operator grant surface. Read live from the catalog so a
       // freshly-installed plugin shows up without a restart.
@@ -2559,6 +2862,77 @@ async function main(): Promise<void> {
       ...(mcpOAuthService ? { mcpOAuth: mcpOAuthService, mcpOAuthUserKey } : {}),
       ...(mcpConfigService ? { mcpConfig: mcpConfigService } : {}),
       ...(mcpRegistrySecrets ? { mcpRegistrySecrets } : {}),
+      // W5-1 — the operator surface for `public_mcp_key_bindings`, without
+      // which the public MCP endpoint cannot be configured except by hand in
+      // psql. A fresh store per call so a graphPool that arrives later is
+      // picked up without a restart, matching `getGraphStore` above.
+      getPublicMcpBindingStore: () =>
+        graphPool ? createPublicMcpKeyBindingAdminStore(graphPool) : undefined,
+      // Explicit gate on those routes, independent of the `requireAuth` that
+      // sits in front of this mount.
+      operatorAuth,
+      // #571 — resolve the two ids a binding points at, so a one-character typo
+      // is a 400 (agent) or a warning (key) rather than a
+      // fully-configured-looking row that reaches zero tools forever. Both
+      // sources are read LIVE and from the SAME places a real request resolves
+      // against: `configStore` for registered agent slugs, and the verify-only
+      // API-key store the public MCP endpoint itself authenticates through
+      // (`createVerifyOnlyApiKeyStore` over the shared vault namespace). A read
+      // that throws or finds no source returns `undefined` — "cannot tell",
+      // which the router never treats as "unknown".
+      publicMcpBindingExistence: {
+        async knownAgentIds() {
+          // Keyed on SLUG, not the agent uuid: `agent_id` stores the
+          // orchestrator slug (migration `0033`, and the UI's agent picker sends
+          // `option.value = slug`). A caller that sends a uuid is correctly
+          // rejected — it is not a valid `agent_id`.
+          const configStore =
+            serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+          if (!configStore) return undefined;
+          try {
+            // ENABLED only. "Known" here has to mean "a real request would
+            // resolve it", and dispatch resolves against the ACTIVE registry —
+            // a disabled agent is not in it. Counting every configured row let
+            // an operator bind to a disabled agent, see a clean green row, and
+            // discover at call time that it reaches nothing: the same
+            // dead-but-configured-looking state this check exists to prevent,
+            // one layer along.
+            return new Set(
+              (await configStore.listAgents())
+                .filter((a) => a.status !== 'disabled')
+                .map((a) => a.slug),
+            );
+          } catch (err) {
+            console.warn(
+              `[middleware] public-mcp binding agent lister unavailable: ${String(err)}`,
+            );
+            return undefined;
+          }
+        },
+        async knownKeyIds() {
+          try {
+            // O(keys) per call — enumerates the channel-api vault namespace and
+            // parses each record. Fine at operator scale (one read per list-page
+            // load, one per save); revisit with a cache if an install ever holds
+            // thousands of keys. The store is a thin read-only adapter, cheap to
+            // rebuild, but pinned here so the cost is one construction per call
+            // rather than hidden in a closure.
+            const keyStore = createVerifyOnlyApiKeyStore(secretVault);
+            const keys = await keyStore.list();
+            // NOT revoked. Authentication skips a revoked record, so counting
+            // one as "known" reports a binding as healthy that can only ever
+            // 401. Same reasoning as the enabled-agent filter above: this set
+            // answers "would a real request resolve this id", not "is there a
+            // row somewhere".
+            return new Set(keys.filter((k) => k.revokedAt === undefined).map((k) => k.id));
+          } catch (err) {
+            console.warn(
+              `[middleware] public-mcp binding key lister unavailable: ${String(err)}`,
+            );
+            return undefined;
+          }
+        },
+      },
     }),
   );
   console.log(
@@ -4084,6 +4458,9 @@ async function main(): Promise<void> {
         // best-effort
       });
       await previewCache.closeAll();
+      // Issue #563 — terminate pooled MCP connections; for stdio servers those
+      // are child processes that would otherwise outlive the middleware.
+      await runtimeMcpManager?.closeAll();
       previewSecretBuffer.clear();
       // Wake any pending ask_user_choice promises so the turns waiting
       // on them resolve before we close the DB.
@@ -4424,6 +4801,12 @@ async function main(): Promise<void> {
   // IPv4 (legacy + local dev) clients are served. Default `0.0.0.0` would
   // miss IPv6-only Fly-internal traffic — Stolperfalle #4 in
   // memory/feedback-fly-operational.
+  // Boot the setup-field pattern worker now, so the first operator to save a
+  // plugin credential does not pay thread creation inside their request's
+  // match budget (#607). Fire-and-forget: the worker is created on demand
+  // anyway, this only moves the cost off the critical path.
+  void warmPatternWorker();
+
   const server = app.listen(config.PORT, config.HOST, () => {
     console.log(`[middleware] listening on [${config.HOST}]:${config.PORT}`);
     console.log(`[middleware] skills dir: ${config.SKILLS_DIR}`);

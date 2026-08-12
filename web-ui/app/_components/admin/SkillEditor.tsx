@@ -20,6 +20,7 @@ import {
   supportDetail,
 } from '../../_lib/scanFailure';
 import { Field, inputCls, SaveButton } from '../../admin/builder/panels/InspectorControls';
+import { Button } from '../ui/Button';
 import { SkillCapabilityBindings } from './SkillCapabilityBindings';
 import { SkillVerdictBadge } from './SkillVerdictBadge';
 
@@ -146,24 +147,24 @@ export function SkillEditor({
       <div className="flex items-center gap-2">
         <SkillVerdictBadge severity={severity} />
         {canRunDeepScan && (
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => void runDeepScan()}
             disabled={scanPending}
-            className="rounded-md border border-[color:var(--border)] px-2 py-0.5 text-xs text-[color:var(--fg-muted)]"
           >
             {t('verdict.runDeepScan')}
-          </button>
+          </Button>
         )}
         {showWhy && !alreadyAcked && (
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => void acknowledge()}
             disabled={ackPending}
-            className="rounded-md border border-[color:var(--border)] px-2 py-0.5 text-xs text-[color:var(--fg-muted)]"
           >
             {t('verdict.acknowledge')}
-          </button>
+          </Button>
         )}
         {alreadyAcked && (
           <span className="text-xs text-[color:var(--fg-muted)]">
@@ -254,13 +255,9 @@ export function SkillEditor({
           pending={pending}
           label={willFork ? t('editor.forkAndSave') : t('editor.save')}
         />
-        <button
-          type="button"
-          onClick={download}
-          className="rounded-md border border-[color:var(--border)] px-3 py-1.5 text-sm text-[color:var(--fg-muted)]"
-        >
+        <Button variant="secondary" onClick={download}>
           {t('editor.export')}
-        </button>
+        </Button>
       </div>
     </div>
   );

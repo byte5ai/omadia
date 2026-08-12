@@ -163,6 +163,17 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
      *  "the key works" verdict must be dropped, or a replaced key would keep
      *  serving the previous key's `verified` until the TTL expires. */
     const touchedProviders = new Set<string>();
+    /** A change whose key IS a setting this server offers, rejected because the
+     *  VALUE did not pass validation. It decides which code a fully-rejected
+     *  batch answers with (see the `affected.size === 0` branch below): the
+     *  operator can only act on the right one, and "the field list is stale,
+     *  reload" is the wrong advice for a malformed API key. */
+    let rejectedValue = false;
+    /** Reject a change whose key is known but whose value is not. */
+    const rejectValue = (key: string, message: string): void => {
+      errors.push({ key, message });
+      rejectedValue = true;
+    };
 
     for (const raw of rawChanges) {
       if (typeof raw !== 'object' || raw === null) {
@@ -192,35 +203,32 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
       // Type validation.
       if (!cleared) {
         if (def.type === 'number' && !Number.isFinite(Number(value))) {
-          errors.push({ key, message: 'must be a number' });
+          rejectValue(key, 'must be a number');
           continue;
         }
         if (def.type === 'boolean' && value !== 'true' && value !== 'false') {
-          errors.push({ key, message: "must be 'true' or 'false'" });
+          rejectValue(key, "must be 'true' or 'false'");
           continue;
         }
         if (
           def.type === 'enum' &&
           !(def.options ?? []).some((o) => o.value === value)
         ) {
-          errors.push({ key, message: 'not an allowed option' });
+          rejectValue(key, 'not an allowed option');
           continue;
         }
         if (
           def.key === 'ANTHROPIC_API_KEY' &&
           !value.startsWith('sk-ant-')
         ) {
-          errors.push({ key, message: 'Anthropic-Keys beginnen mit "sk-ant-"' });
+          rejectValue(key, 'Anthropic-Keys beginnen mit "sk-ant-"');
           continue;
         }
         if (
           def.key === 'OPENAI_API_KEY' &&
           (!value.startsWith('sk-') || value.startsWith('sk-ant-'))
         ) {
-          errors.push({
-            key,
-            message: 'OpenAI-Keys beginnen mit "sk-" (nicht "sk-ant-")',
-          });
+          rejectValue(key, 'OpenAI-Keys beginnen mit "sk-" (nicht "sk-ant-")');
           continue;
         }
       }
@@ -261,6 +269,15 @@ export function createAdminSettingsRouter(deps: AdminSettingsDeps): Router {
     }
 
     if (affected.size === 0) {
+      // Nothing was written — but WHY decides what the operator should do, and
+      // one code for both was a false diagnosis (#604). A value this server
+      // refused has to be corrected; a key it does not offer at all (unknown,
+      // or belonging to a plugin that is no longer installed) means the page's
+      // field list is stale and reloading is the fix.
+      if (rejectedValue) {
+        res.status(400).json({ code: 'settings.invalid_values', errors });
+        return;
+      }
       res.status(400).json({ code: 'settings.no_valid_changes', errors });
       return;
     }

@@ -9,6 +9,7 @@ import {
   type MemorableKind,
 } from '../../_lib/api';
 import type { PalaiaExcerpt } from '../../_lib/chatSessions';
+import { Button } from '../ui/Button';
 
 const KINDS: readonly MemorableKind[] = [
   'decision',
@@ -168,6 +169,7 @@ export function SaveMemoryButton({
 
   return (
     <>
+      {/* eslint-disable-next-line no-restricted-syntax -- transparent bordered chip (--fg-muted text, no bg-elevated fill); diverges from §4.2 secondary */}
       <button
         type="button"
         onClick={() => {
@@ -213,6 +215,7 @@ export function SaveMemoryButton({
                   </span>
                 )}
               </div>
+              {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (✕ close glyph) */}
               <button
                 type="button"
                 onClick={close}
@@ -286,6 +289,7 @@ export function SaveMemoryButton({
                     <ul className="flex flex-col gap-1">
                       {palaiaExcerpt.excerpts.map((excerpt, idx) => (
                         <li key={`${idx}-${excerpt.slice(0, 24)}`}>
+                          {/* eslint-disable-next-line no-restricted-syntax -- full-width selection tile/row (text-left excerpt insert) */}
                           <button
                             type="button"
                             onClick={() => insertExcerpt(excerpt)}
@@ -330,22 +334,23 @@ export function SaveMemoryButton({
                 )}
 
                 <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={close}
                     disabled={busy}
-                    className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
                   >
                     {t('cancel')}
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    size="sm"
                     onClick={() => void submit()}
-                    disabled={busy || summary.trim().length === 0}
-                    className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
+                    disabled={summary.trim().length === 0}
+                    busy={busy}
+                    busyLabel={t('saving')}
                   >
-                    {busy ? t('saving') : t('save')}
-                  </button>
+                    {t('save')}
+                  </Button>
                 </div>
               </>
             ) : (
@@ -372,13 +377,9 @@ export function SaveMemoryButton({
                   >
                     {t('openDetail')}
                   </a>
-                  <button
-                    type="button"
-                    onClick={close}
-                    className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)]"
-                  >
+                  <Button size="sm" onClick={close}>
                     {t('close')}
-                  </button>
+                  </Button>
                 </div>
               </>
             )}

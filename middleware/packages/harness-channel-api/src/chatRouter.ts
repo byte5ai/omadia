@@ -26,7 +26,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import type { CoreApi, IncomingTurn } from '@omadia/channel-sdk';
+import type { ChatStreamEvent, CoreApi, IncomingTurn } from '@omadia/channel-sdk';
+import {
+  AI_PROVENANCE_HEADER,
+  AI_PROVENANCE_HEADER_VALUE,
+  ENVELOPE_PROVENANCE,
+} from '@omadia/channel-sdk';
 import type { ApiKeyStore, AuditLog, RateLimiter } from '@omadia/api-key-auth';
 import { CHAT_WRITE_SCOPE, requireApiKey } from '@omadia/api-key-auth';
 
@@ -57,6 +62,24 @@ function isErrorEvent(event: unknown): boolean {
     'type' in event &&
     (event as { type: unknown }).type === 'error'
   );
+}
+
+/**
+ * #647 — folds the AI-Act Art. 50 provenance marker into the `done` event as it
+ * is forwarded, so a client can read the marking per TURN and not only per
+ * connection (the header covers the connection).
+ *
+ * Only the `done` event is stamped; every other event passes through untouched,
+ * so the NDJSON framing is unchanged and one JSON object still occupies one
+ * line. Preserves a marker the base orchestrator might already carry (it does
+ * not today, but #644 may) rather than overwriting it — this channel only fills
+ * the gap. A turn that ends in-band with `{type:'error'}` never emits a `done`,
+ * so on that path the marking is carried by the response header alone, which is
+ * set at stream-open and is why that acceptance criterion holds.
+ */
+function withProvenance(event: ChatStreamEvent): ChatStreamEvent {
+  if (event.type !== 'done') return event;
+  return { ...event, provenance: event.provenance ?? ENVELOPE_PROVENANCE };
 }
 
 /**
@@ -130,6 +153,12 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
       res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
       res.setHeader('Cache-Control', 'no-cache, no-transform');
       res.setHeader('X-Accel-Buffering', 'no');
+      // #647 — AI-Act Art. 50 provenance, connection level. Set BEFORE the
+      // stream is flushed (and before any turn work runs), so it is present even
+      // when the turn later ends in-band with `{type:'error'}` or throws
+      // mid-turn: by then the 200 is already committed and the headers are gone.
+      // The per-turn twin rides the `done` event via `withProvenance` below.
+      res.setHeader(AI_PROVENANCE_HEADER, AI_PROVENANCE_HEADER_VALUE);
       res.flushHeaders();
 
       let clientGone = false;
@@ -203,7 +232,7 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
         let sawInBandError = false;
         for await (const event of deps.core.handleTurnStream(turn)) {
           if (isErrorEvent(event)) sawInBandError = true;
-          safeWrite(event);
+          safeWrite(withProvenance(event));
         }
         key.audit(sawInBandError ? 'error' : 'ok');
       } catch (err) {

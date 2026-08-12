@@ -450,6 +450,13 @@ export function createPluginContext(
         ...(options?.attachmentSink
           ? { attachmentSink: options.attachmentSink }
           : {}),
+        // #542 — carry the plugin's declared write capabilities into the registry
+        // so `ToolDispatchService` can give this tool duplicate-write protection.
+        // Without this forward, only kernel-internal registrations could declare
+        // themselves and no real plugin (Odoo, M365) would ever be protected.
+        ...(options?.writeCapabilities !== undefined
+          ? { writeCapabilities: options.writeCapabilities }
+          : {}),
       });
     },
     registerHandler(name, handler, options) {
@@ -469,6 +476,11 @@ export function createPluginContext(
           : {}),
         ...(options?.attachmentSink
           ? { attachmentSink: options.attachmentSink }
+          : {}),
+        // #542 — same forward as `register()` above; a handler-only tool is
+        // dispatchable by name, so it needs the same protection.
+        ...(options?.writeCapabilities !== undefined
+          ? { writeCapabilities: options.writeCapabilities }
           : {}),
       });
     },
@@ -903,6 +915,10 @@ export function createPluginMcpAccessor(
           turnDate: current?.turnDate ?? new Date().toISOString().slice(0, 10),
           ...(current?.agentSlug ? { agentSlug: current.agentSlug } : {}),
           ...(current?.privacyHandle ? { privacyHandle: current.privacyHandle } : {}),
+          // W3-A — the turn's MCP OAuth identity. Dropping it here made every
+          // plugin-attributed call resolve as an unknown caller: `unresolved` in
+          // the audit trail, no token, and a `per_user` server failing closed.
+          ...(current?.mcpUserKey ? { mcpUserKey: current.mcpUserKey } : {}),
           mcpCallerKind: 'plugin',
           mcpCallerId: pluginId,
         },

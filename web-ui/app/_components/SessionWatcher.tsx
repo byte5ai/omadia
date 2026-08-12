@@ -213,6 +213,7 @@ function SessionWarningCard({
         {t('warningBody', { time: formatClock(remaining) })}
       </p>
       <div className="mt-4 flex items-center gap-2">
+        {/* eslint-disable-next-line no-restricted-syntax -- bespoke ink-fill CTA (paper/ink palette + uppercase tracking), not §4.2 primary */}
         <button
           type="button"
           onClick={relogin}
@@ -220,6 +221,7 @@ function SessionWarningCard({
         >
           {t('warningCta')}
         </button>
+        {/* eslint-disable-next-line no-restricted-syntax -- bespoke bordered dismiss (paper/ink palette + uppercase tracking), not §4.2 secondary */}
         <button
           type="button"
           onClick={onDismiss}
@@ -269,6 +271,7 @@ function SessionExpiredOverlay(): React.ReactElement {
         <p className="mt-2 text-[13px] leading-relaxed text-[color:var(--muted-ink)]">
           {t('expiredBody')}
         </p>
+        {/* eslint-disable-next-line no-restricted-syntax -- bespoke ink-fill CTA (paper/ink palette + uppercase tracking), not §4.2 primary */}
         <button
           ref={ctaRef}
           type="button"

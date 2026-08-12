@@ -1,0 +1,16 @@
+{
+  // #129 — static type coverage for the golden-set harness. The middleware
+  // `lint`/`typecheck` scripts only cover `src/` and package `src/` dirs, so
+  // nothing under `test/` is checked by default. This project puts the golden
+  // runner + its two suites back under `tsc --noEmit`, wired into the top-level
+  // `typecheck` script so a drift in `@omadia/verifier`'s types (e.g. a new
+  // required `VerifierInput` field) fails on every PR rather than silently at
+  // the key-gated eval on `main`. Requires the workspace `dist/` to be built
+  // first (same as the suites themselves), which CI already does before typecheck.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../.."
+  },
+  "include": ["*.ts", "../goldenRunner.test.ts", "../goldenModel.test.ts"]
+}

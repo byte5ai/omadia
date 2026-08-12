@@ -406,6 +406,7 @@ function ActionCard({
       <p className="mb-4 flex-1 text-sm text-[color:var(--fg-muted)]">
         {description}
       </p>
+      {/* eslint-disable-next-line no-restricted-syntax -- bespoke highlight-token action (border/bg/text all --highlight); no §4.2 variant maps to --highlight */}
       <button
         type="button"
         disabled={busy}

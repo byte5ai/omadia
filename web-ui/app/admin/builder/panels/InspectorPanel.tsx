@@ -351,6 +351,7 @@ function PersonaSkillsSection({
                     {s.slug}
                   </span>
                 )}
+                {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (× remove glyph) */}
                 <button
                   type="button"
                   onClick={() => void handleRemove(id)}

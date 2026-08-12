@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
+import { ErrorHelp } from '@/app/_components/ErrorHelp';
 import {
   assignProvider,
   getProviders,
@@ -45,17 +46,17 @@ function compareProviders(a: AdminProvider, b: AdminProvider): number {
   return a.id < b.id ? -1 : 1;
 }
 
-/** Pull the backend's `message` out of an ApiError JSON body when present. */
-function friendlyError(err: unknown): string {
-  if (err instanceof ApiError && err.body) {
-    try {
-      const j = JSON.parse(err.body) as { message?: unknown };
-      if (typeof j.message === 'string' && j.message.trim()) return j.message;
-    } catch {
-      /* fall through to the generic message */
-    }
-  }
-  return err instanceof Error ? err.message : String(err);
+/**
+ * The machine code behind a failed call, or `null` when there is none.
+ *
+ * OM-09: this used to be `friendlyError`, which parsed the same body, threw
+ * the code away and returned the backend's English `message` for the panel to
+ * render as its headline. `ApiError` now parses the code once, and the
+ * headline comes from the localized catalogue instead; the server's own text
+ * survives only inside the support disclosure of `<ErrorHelp>`.
+ */
+function errorCode(err: unknown): string | null {
+  return err instanceof ApiError ? err.code : null;
 }
 
 /**
@@ -79,7 +80,9 @@ type Status = 'idle' | 'saving' | 'saved' | 'error';
 type State =
   | { kind: 'loading' }
   | { kind: 'ready'; data: ProvidersResponse }
-  | { kind: 'error'; message: string };
+  // The thrown error itself, for the same reason `errors` below keeps it: a
+  // pre-flattened string is already past the point where the code is readable.
+  | { kind: 'error'; error: unknown };
 
 export function ProvidersPanel({
   onSwitchToSubscriptions,
@@ -91,17 +94,16 @@ export function ProvidersPanel({
   const t = useTranslations('adminProviders');
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [status, setStatus] = useState<Record<string, Status>>({});
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  // The thrown error itself, not a pre-flattened string: the component decides
+  // what is headline and what is disclosed detail, not the state.
+  const [errors, setErrors] = useState<Record<string, unknown>>({});
 
   const load = useCallback(async (): Promise<void> => {
     try {
       const data = await getProviders();
       setState({ kind: 'ready', data });
     } catch (err) {
-      setState({
-        kind: 'error',
-        message: err instanceof Error ? err.message : String(err),
-      });
+      setState({ kind: 'error', error: err });
     }
   }, []);
 
@@ -137,10 +139,7 @@ export function ProvidersPanel({
         setStatus((s) => ({ ...s, [pluginId]: 'saved' }));
       } catch (err) {
         setStatus((s) => ({ ...s, [pluginId]: 'error' }));
-        setErrors((e) => ({
-          ...e,
-          [pluginId]: friendlyError(err),
-        }));
+        setErrors((e) => ({ ...e, [pluginId]: err }));
       }
     },
     [],
@@ -155,9 +154,16 @@ export function ProvidersPanel({
       {state.kind === 'loading' ? (
         <p className="text-sm opacity-70">{t('loading')}</p>
       ) : state.kind === 'error' ? (
-        <p className="text-sm text-[color:var(--danger)]">
-          {t('loadError', { message: state.message })}
-        </p>
+        // OM-09: this rendered `GET /v1/admin/providers failed: 500` — an
+        // English sentence the client itself assembled — as the whole message,
+        // in every locale. The catalogue answers `providers.read_failed` in the
+        // operator's language; `loadError` says which read failed when the
+        // server sent no code this page knows.
+        <ErrorHelp
+          code={errorCode(state.error)}
+          rawDetail={state.error}
+          fallback={t('loadError')}
+        />
       ) : (
         <div className="flex flex-col gap-10">
           {!state.data.vault_available && (
@@ -235,7 +241,9 @@ function ProviderRow({
   const [editing, setEditing] = useState(false);
   const [keyValue, setKeyValue] = useState('');
   const [saveStatus, setSaveStatus] = useState<Status>('idle');
-  const [saveError, setSaveError] = useState<string | undefined>(undefined);
+  // Either a per-field message from a 200 PATCH response (already a plain
+  // string the server produced per key) or the thrown ApiError itself.
+  const [saveError, setSaveError] = useState<unknown>(undefined);
   const [verifying, setVerifying] = useState(false);
   const envKey = providerKeyEnv(p.id);
   const inputId = `provider-key-${p.id}`;
@@ -281,7 +289,7 @@ function ProviderRow({
       await runVerify();
     } catch (err) {
       setSaveStatus('error');
-      setSaveError(friendlyError(err));
+      setSaveError(err);
     }
   };
 
@@ -302,7 +310,7 @@ function ProviderRow({
       await onReload();
     } catch (err) {
       setSaveStatus('error');
-      setSaveError(friendlyError(err));
+      setSaveError(err);
     }
   };
 
@@ -323,6 +331,7 @@ function ProviderRow({
           {/* Explicit re-probe. Only offered where there is a credential to
               probe — the CLI provider authenticates on the Subscriptions tab. */}
           {!p.toolLess && p.status !== 'no_key' && (
+            // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
             <button
               type="button"
               onClick={() => void runVerify()}
@@ -346,6 +355,7 @@ function ProviderRow({
             // installed, preserving the old behaviour on older servers.
             cliMissing ? (
               <span className="flex items-center gap-2">
+                {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare muted text, no border/bg) */}
                 <button
                   type="button"
                   disabled
@@ -359,6 +369,7 @@ function ProviderRow({
                 </span>
               </span>
             ) : (
+              // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
               <button
                 type="button"
                 onClick={onSwitchToSubscriptions}
@@ -371,6 +382,7 @@ function ProviderRow({
             !editing &&
             (p.connected ? (
               <span className="flex items-center gap-3">
+                {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg) */}
                 <button
                   type="button"
                   onClick={() => setEditing(true)}
@@ -379,6 +391,7 @@ function ProviderRow({
                 >
                   {t('providers.changeKey')} →
                 </button>
+                {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare danger text, no border/bg) */}
                 <button
                   type="button"
                   onClick={() => void removeKey()}
@@ -390,6 +403,7 @@ function ProviderRow({
                 {saveStatus === 'saving' && <StatusChip status={saveStatus} t={t} />}
               </span>
             ) : (
+              // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
               <button
                 type="button"
                 onClick={() => setEditing(true)}
@@ -445,36 +459,50 @@ function ProviderRow({
             </Button>
             <StatusChip status={saveStatus} t={t} />
           </div>
-          {saveError && (
-            <p className="text-[12px] text-[color:var(--danger)]">{saveError}</p>
-          )}
+          <SaveError error={saveError} />
         </div>
       )}
 
-      {/* The provider's own explanation for a rejected key — the single most
-          useful string on this page when chat is failing.
-          OM-09: contextual help, wired here first because a rejected key is the
-          state that generates most support requests and the product had NO help
-          affordance anywhere. */}
-      {p.status === 'invalid' && p.verifyError && (
-        <p className="text-[12px] text-[color:var(--danger)]">
-          {p.verifyError}{' '}
+      {/* The explanation for a rejected key — the single most useful text on
+          this page when chat is failing.
+          OM-09: it used to be `verifyError`, an English sentence built in the
+          middleware, rendered verbatim in every locale. `verifyErrorCode`
+          resolves against the localized catalogue instead; `verifyError` stays
+          as the fallback for a payload from a pre-#604 middleware, which is
+          the only thing such a server sends. */}
+      {p.status === 'invalid' && (p.verifyErrorCode ?? p.verifyError) && (
+        <div className="flex flex-col gap-1">
+          <ErrorHelp
+            code={p.verifyErrorCode ?? null}
+            fallback={p.verifyError}
+          />
           <a
             href="/help"
-            className="underline underline-offset-2 text-[color:var(--accent)]"
+            className="text-[12px] underline underline-offset-2 text-[color:var(--accent)]"
           >
             {t('providers.helpLink')}
           </a>
-        </p>
+        </div>
       )}
 
       {/* removeKey runs while `editing` is false, so surface its failures here —
           otherwise a destructive remove that errors gives the operator no feedback. */}
-      {!p.toolLess && !editing && saveError && (
-        <p className="text-[12px] text-[color:var(--danger)]">{saveError}</p>
-      )}
+      {!p.toolLess && !editing && <SaveError error={saveError} />}
     </li>
   );
+}
+
+/**
+ * One failed key save. A per-field message from a 200 PATCH response is
+ * already a plain per-key string and stays as-is; a thrown `ApiError` goes
+ * through the catalogue, so its code never reaches the screen as text.
+ */
+function SaveError({ error }: { error: unknown }): React.ReactElement | null {
+  if (error === undefined || error === null) return null;
+  if (typeof error === 'string') {
+    return <p className="text-[12px] text-[color:var(--danger)]">{error}</p>;
+  }
+  return <ErrorHelp code={errorCode(error)} rawDetail={error} />;
 }
 
 /** Chip colours per Lume: text + edge only, never a filled state block. */
@@ -540,7 +568,8 @@ function AssignmentRow({
   assignment: ProviderAssignment;
   providers: AdminProvider[];
   status: Status;
-  error?: string;
+  /** The thrown value from the last failed apply, resolved by <ErrorHelp>. */
+  error?: unknown;
   onApply: (pluginId: string, provider: string, model: string) => void;
   t: T;
 }): React.ReactElement {
@@ -645,7 +674,9 @@ function AssignmentRow({
           })}
         </p>
       )}
-      {error && <p className="text-[12px] text-[color:var(--danger)]">{error}</p>}
+      {error !== undefined && (
+        <ErrorHelp code={errorCode(error)} rawDetail={error} />
+      )}
     </div>
   );
 }

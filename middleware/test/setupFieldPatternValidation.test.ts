@@ -23,6 +23,7 @@ import {
   resetSetupPatternCache,
   screenPatternSource,
   shutdownPatternWorker,
+  warmPatternWorker,
   MAX_PATTERN_INPUT_LENGTH,
 } from '../src/plugins/setupFieldPattern.js';
 
@@ -794,5 +795,170 @@ describe('OM-17 / F4 — server anchoring matches HTML `pattern=` semantics', ()
       ),
       null,
     );
+  });
+});
+
+/**
+ * #607 — the budget has to bound the MATCH, not the worker's birth.
+ *
+ * The shipped first revision started its clock at dispatch and waited only for
+ * the worker's `'online'` event. `'online'` fires when the THREAD starts, which
+ * is well before the worker module has been evaluated — so module evaluation
+ * was charged to the match budget. Measured on a cold process: 838 ms for a
+ * trivial email pattern. Under `node --import tsx` — which is exactly how this
+ * suite runs — every call overran, because the worker re-runs tsx's loader.
+ *
+ * That is the point of running these assertions here rather than in a
+ * hand-driven script: if the handshake regresses, the tsx path breaks first and
+ * these tests are the ones that notice.
+ */
+describe('#607 — the match budget must not include worker startup', () => {
+  beforeEach(() => {
+    resetSetupPatternCache();
+  });
+
+  after(async () => {
+    await shutdownPatternWorker();
+  });
+
+  it('a trivial match on a COLD worker stays well inside the budget', async () => {
+    // Force a genuinely cold worker: this is the 838 ms case.
+    await shutdownPatternWorker();
+    const field = {
+      key: 'gw_subject_default',
+      pattern: '^[^@\\s]+@[^@\\s]+\\.[A-Za-z]{2,63}$',
+    };
+    const started = Date.now();
+    const violation = await checkSetupFieldPattern(
+      field,
+      'assistant@te-printline.de',
+    );
+    const elapsed = Date.now() - started;
+
+    assert.equal(violation, null, 'a valid address was rejected on a cold worker');
+    // The whole call may legitimately take longer than the budget — it includes
+    // thread creation. What must NOT happen is the value being rejected, or the
+    // pattern being blamed, because of that startup cost.
+    assert.deepEqual(
+      getPatternProblems(),
+      [],
+      `a healthy pattern was marked unusable after a ${String(elapsed)}ms cold start`,
+    );
+  });
+
+  it('warmPatternWorker is idempotent and leaves the worker usable', async () => {
+    await shutdownPatternWorker();
+    await warmPatternWorker();
+    await warmPatternWorker();
+    assert.equal(await matchWithBudget(/^a+$/, 'aaa'), 'match');
+  });
+
+  it('repeated cold starts never reject a valid value', async () => {
+    const field = { key: 'k', pattern: '^[a-z]+@[a-z]+\\.[a-z]{2,63}$' };
+    for (let i = 0; i < 3; i += 1) {
+      await shutdownPatternWorker();
+      assert.equal(
+        await checkSetupFieldPattern(field, 'ops@example.de'),
+        null,
+        `cold start #${String(i + 1)} rejected a valid value`,
+      );
+    }
+    assert.deepEqual(getPatternProblems(), []);
+  });
+});
+
+/**
+ * #607 — an overrun is evidence about ONE execution, not about the pattern.
+ *
+ * `getPatternProblems()` is what surfaces "this field declares a format check
+ * that could not be applied" to the operator, for the life of the process. The
+ * first revision wrote into it on the very first overrun, so a single unlucky
+ * match permanently mislabelled a healthy pattern. The write still fails closed
+ * immediately; only the durable verdict now waits for corroboration.
+ */
+describe('#607 — one overrun must not permanently blame the pattern', () => {
+  beforeEach(() => {
+    resetSetupPatternCache();
+  });
+
+  after(async () => {
+    await shutdownPatternWorker();
+  });
+
+  /**
+   * Passes the allowlist — deliberately. Every quantifier sits on a bare
+   * character class, so no "quantified group containing a quantifier" rule
+   * fires; the cost comes from four adjacent unbounded runs splitting a
+   * non-matching subject every possible way. This is precisely the shape the
+   * allowlist cannot catch and the execution bound must.
+   *
+   * Calibrated by measurement on node 22, first call in a fresh process:
+   *
+   *   'a'*100 + '!' →   10 ms      'abcd' → 0 ms
+   *   'a'*200 + '!' →  125 ms
+   *   'a'*400 + '!' → 1604 ms
+   *
+   * SLOW_SUBJECT sits an order of magnitude past the 250 ms budget so the
+   * overrun is not a race, and FAST_SUBJECT completes immediately — the SAME
+   * pattern, which is what makes the reset test meaningful (strikes are keyed
+   * by context AND pattern).
+   *
+   * A NOTE ON MEASURING THIS, because it cost a round: V8 caches compiled
+   * regexes by source, so timing a subject AFTER another subject has already
+   * run the same source reports the warm number. An earlier revision of this
+   * test picked a subject that measured 0.011 ms that way and was 2152 ms on a
+   * cold first call. Always measure the first call in a fresh process.
+   */
+  const SLOW_PATTERN = '^[a-z]+[a-z]+[a-z]+[a-z]+$';
+  const SLOW_SUBJECT = `${'a'.repeat(500)}!`;
+  const FAST_SUBJECT = 'abcd';
+
+  it('the allowlist really does accept this pattern (so the bound is what stops it)', () => {
+    assert.equal(screenPatternSource(SLOW_PATTERN), null);
+  });
+
+  it('the first overrun rejects the write but does NOT record a problem', async () => {
+    const field = { key: 'slow', pattern: SLOW_PATTERN };
+    const violation = await checkSetupFieldPattern(field, SLOW_SUBJECT);
+    assert.equal(violation?.field, 'slow', 'the write must still fail closed');
+    assert.deepEqual(
+      getPatternProblems(),
+      [],
+      'a single overrun must not mark the pattern unusable',
+    );
+  });
+
+  it('three consecutive overruns do record a problem', async () => {
+    const field = { key: 'slow', pattern: SLOW_PATTERN };
+    for (let i = 0; i < 3; i += 1) {
+      await checkSetupFieldPattern(field, SLOW_SUBJECT);
+    }
+    const problems = getPatternProblems();
+    assert.equal(problems.length, 1, 'the pattern should now be reported');
+    assert.equal(problems[0]?.context, 'slow');
+    assert.match(String(problems[0]?.reason), /times in a row/);
+  });
+
+  it('a completed match resets the strike count', async () => {
+    const slow = { key: 'slow', pattern: SLOW_PATTERN };
+    // Two strikes...
+    await checkSetupFieldPattern(slow, SLOW_SUBJECT);
+    await checkSetupFieldPattern(slow, SLOW_SUBJECT);
+    // ...then a value the SAME pattern disposes of immediately, proving the
+    // pattern was never the problem.
+    assert.equal(
+      await checkSetupFieldPattern(slow, FAST_SUBJECT),
+      null,
+      'expected a clean match, not an overrun',
+    );
+    assert.deepEqual(
+      getPatternProblems(),
+      [],
+      'the run was broken by a completed match',
+    );
+    // A third slow value is therefore only strike one again — without the
+    // reset this call would be the third and would record a problem.
+    await checkSetupFieldPattern(slow, SLOW_SUBJECT);
+    assert.deepEqual(getPatternProblems(), []);
   });
 });

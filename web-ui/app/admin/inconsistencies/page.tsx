@@ -300,6 +300,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
 
       <div className="mb-4 flex flex-wrap gap-2">
         {(['open', 'resolved', 'dismissed', 'all'] as const).map((s) => (
+          // eslint-disable-next-line no-restricted-syntax -- stateful toggle/segmented selector
           <button
             key={s}
             type="button"

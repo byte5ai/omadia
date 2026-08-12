@@ -48,6 +48,7 @@ export function PalettePanel({
           {t(`nodes.${kind}`)}
         </div>
       ))}
+      {/* eslint-disable-next-line no-restricted-syntax -- bespoke dashed add affordance, no §4.2 variant */}
       <button
         type="button"
         onClick={() => setImporting(true)}

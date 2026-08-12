@@ -168,6 +168,25 @@ async function postJson<T>(
 }
 
 /**
+ * The middleware's machine-readable error code, pulled out of a JSON error
+ * body (`{ code, message }`). Returns `null` when the body is not JSON, has
+ * no `code`, or carries one that is not a non-empty string.
+ *
+ * Pure by construction: no module state is read or written, which is what
+ * keeps the constructor invariant documented below intact.
+ */
+function parseErrorCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown };
+    return typeof parsed.code === 'string' && parsed.code.trim().length > 0
+      ? parsed.code
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Deliberately does NOT feed the Create Issue diagnostics buffer (issue
  * #433 review). An earlier version called `recordApiErrorDiagnostic` from
  * this constructor, which made `ApiError` — used by every failed call
@@ -178,8 +197,18 @@ async function postJson<T>(
  * `unhandledrejection` events (see diagnosticsBuffer.ts) — page-level
  * crashes, not the outcome of a specific admin action. See
  * api.test.ts for the regression test enforcing this invariant.
+ *
+ * OM-09: the machine code is parsed here, once, so consumers can reach the
+ * localized catalogue in `errorHelp.ts` instead of each re-deriving it from
+ * `body` with their own `JSON.parse` — or, as several did, rendering the
+ * server's untranslated `message` as the headline. The parse is a pure
+ * string read into a readonly field and touches nothing outside the
+ * instance, so the no-side-effects invariant above still holds.
  */
 export class ApiError extends Error {
+  /** Machine-readable code from the JSON error body; `null` when absent. */
+  public readonly code: string | null;
+
   constructor(
     public readonly status: number,
     message: string,
@@ -187,6 +216,7 @@ export class ApiError extends Error {
   ) {
     super(message);
     this.name = 'ApiError';
+    this.code = parseErrorCode(body);
   }
 }
 
@@ -332,6 +362,11 @@ export interface AdminProvider {
   verifiedAt?: string;
   /** User-facing rejection reason (`invalid` only). */
   verifyError?: string;
+  /** OM-09 — machine-readable counterpart to `verifyError`, resolved against
+   *  the localized `errorHelp` catalogue. Present only for `status: 'invalid'`;
+   *  absent on payloads from a pre-#604 middleware, where `verifyError` (an
+   *  English sentence) stays the only thing there is to show. */
+  verifyErrorCode?: string;
   /** Legacy: "a key is on file" — i.e. `status !== 'no_key'`. Retained for
    *  backwards compatibility; it does NOT mean the key works. */
   connected: boolean;

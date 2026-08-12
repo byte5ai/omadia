@@ -1,99 +1,41 @@
 #!/usr/bin/env node
-// ensure-native-abi — guard against the better-sqlite3 ABI-mismatch saga.
+// ensure-native-abi — fail fast if better-sqlite3's native addon can't load.
 //
-// Symptom: middleware crashes on boot with
+// History (better-sqlite3 <= 12): the addon was a Node-ABI-specific binary at
+// `build/Release/better_sqlite3.node`, compiled at install time. Any `npm
+// install` that ran under a different Node major recompiled it against the
+// wrong ABI and the middleware then crashed on boot with
 //   `NODE_MODULE_VERSION 137. This version of Node.js requires NODE_MODULE_VERSION 127`
-// Cause: any earlier `npm install` that ran under a different Node version
-// (typically v24, default on this machine) recompiled the native binary
-// against the wrong ABI. The next `npm rebuild` from the wrapper picks up
-// the wrong target unless `--target=<active-version>` is passed explicitly.
+// This script used to detect that and repair it with
+// `npm rebuild better-sqlite3 --build-from-source --target=<active-version>`.
 //
-// This script is idempotent and dirt-cheap when nothing is wrong:
-//   1. Probe `process.dlopen(...)` against the bundled binary.
-//   2. If it loads under the active Node, exit 0 without touching anything.
-//   3. If it fails with ERR_DLOPEN_FAILED, run
-//      `npm rebuild better-sqlite3 --build-from-source --target=<v> --runtime=node`.
-//   4. Re-probe; exit 0 on success, 1 on failure.
+// Since better-sqlite3 v13 the addon is built on N-API (node-addon-api) and
+// ships prebuilt binaries under `prebuilds/<platform>-<arch>.node` that are
+// ABI-stable across Node majors. The mismatch this script was written for can
+// no longer happen, so the rebuild path is gone — forcing a source build would
+// now only demand a C++ toolchain nobody needs. The old probe also hardcoded
+// the `build/Release/...` path, which v13 no longer produces at all.
 //
-// Saga reference: memory/feedback-node-version-pinning + repeated wrapper
-// resets across May 4–8.
+// What remains is a cheap end-to-end probe: load the module and run one query.
+// That catches a corrupt install, a platform with no prebuild, or a partially
+// extracted node_modules at `npm run dev` time instead of at first DB access.
 
-import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 import process from 'node:process';
-import Module from 'node:module';
+import { createRequire } from 'node:module';
 
-const __filename = fileURLToPath(import.meta.url);
-const ROOT = path.resolve(path.dirname(__filename), '..');
-const BINARY = path.join(
-  ROOT,
-  'node_modules',
-  'better-sqlite3',
-  'build',
-  'Release',
-  'better_sqlite3.node',
-);
+const requireCjs = createRequire(import.meta.url);
 
-function probe() {
-  try {
-    process.dlopen({ exports: {} }, BINARY);
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, err };
-  }
-}
-
-function rebuild() {
-  console.log(
-    `[ensure-native-abi] better-sqlite3 ABI mismatch — rebuilding against Node ${process.version} (modules=${process.versions.modules})`,
-  );
-  // Resolve the active Node + npm CLIs to avoid PATH races (e.g. nvm shim
-  // resolving to a different version than process.execPath).
-  const nodeBin = process.execPath;
-  const npmCli = path.join(path.dirname(nodeBin), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
-  const nodeVersion = process.version.replace(/^v/, '');
-  const args = [
-    npmCli,
-    'rebuild',
-    'better-sqlite3',
-    '--build-from-source',
-    `--target=${nodeVersion}`,
-    '--runtime=node',
-  ];
-  const result = spawnSync(nodeBin, args, {
-    cwd: ROOT,
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
-  return result.status === 0;
-}
-
-const first = probe();
-if (first.ok) {
-  // Silent fast-path: don't spam log on every dev restart.
+try {
+  const Database = requireCjs('better-sqlite3');
+  const db = new Database(':memory:');
+  db.prepare('select 1 as ok').get();
+  db.close();
   process.exit(0);
-}
-
-const code = first.err && first.err.code;
-if (code !== 'ERR_DLOPEN_FAILED') {
-  console.error(`[ensure-native-abi] unexpected probe failure (code=${code}):`, first.err);
-  process.exit(1);
-}
-
-const rebuilt = rebuild();
-if (!rebuilt) {
-  console.error('[ensure-native-abi] npm rebuild failed — see output above');
-  process.exit(1);
-}
-
-const second = probe();
-if (!second.ok) {
+} catch (err) {
   console.error(
-    '[ensure-native-abi] still failing after rebuild — manual intervention needed:',
-    second.err && second.err.message,
+    `[ensure-native-abi] better-sqlite3 native addon failed to load under Node ${process.version} (${process.platform}-${process.arch}).`,
   );
+  console.error(`[ensure-native-abi] ${err && err.message}`);
+  console.error('[ensure-native-abi] Try a clean reinstall:  rm -rf node_modules && npm ci');
   process.exit(1);
 }
-
-console.log('[ensure-native-abi] better-sqlite3 ABI matched after rebuild.');
-process.exit(0);

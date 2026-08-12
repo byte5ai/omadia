@@ -16,8 +16,10 @@ import type {
   RecalledContext,
 } from '@omadia/plugin-api';
 import type { OutgoingSurface } from './surface.js';
+import type { AiDisclosure } from './aiDisclosure.js';
 
 export type { CaptureDisclosure, PrivacyReceipt, RecalledContext };
+export type { AiDisclosure } from './aiDisclosure.js';
 
 /**
  * The top-level shape the orchestrator hands to a connector for rendering.
@@ -143,6 +145,22 @@ export interface SemanticAnswer {
    * Omitted entirely when the feature is off. Sidecar.
    */
   directLineSession?: DirectLineSessionState;
+
+  /**
+   * AI-Act Art. 50 — harness-owned AI disclosure for this turn (#643, epic
+   * #642). The structured carrier for channels with a rich UI (badge, footer);
+   * the SAME line is folded into `text` by `toSemanticAnswer` so the marking
+   * also reaches the wire-only channels that have no provenance slot. Built
+   * OUTSIDE the LLM's output stream — a model cannot suppress or reword it.
+   *
+   * Present on every turn the disclosure is active, EVEN when the line was not
+   * folded into `text` this turn (folding is first-turn-per-scope; the
+   * structured field is every-turn). Same rationale as `directLineSession`: a
+   * field that appears only when folded cannot tell a client the marking is
+   * still in force. Omitted only when an operator turned it `'off'`. Sidecar —
+   * does NOT short-circuit the answer.
+   */
+  aiDisclosure?: AiDisclosure;
 }
 
 /**
@@ -246,7 +264,43 @@ export type OutgoingInteractive =
   | OutgoingChoiceCard
   | OutgoingSlotPicker
   | OutgoingTopicAsk
-  | OutgoingRoutineList;
+  | OutgoingRoutineList
+  | OutgoingMcpInputForm;
+
+/**
+ * Mid-call input request from an MCP tool (#544 W2-1). Connector renders a form
+ * of free-text fields; the submitted values ride back as the next user message
+ * in the `MCP_INPUT_REPLY_PREFIX` envelope, which the orchestrator resolves.
+ *
+ * Distinct from {@link OutgoingChoiceCard} because the shapes genuinely differ:
+ * N free-text fields demanded by a third party, versus 2-4 mutually exclusive
+ * options the model chose.
+ *
+ * `serverName` MUST be rendered. A server can put arbitrary prose in `prompt`
+ * and collect arbitrary text; a card that does not name the asker lets a hostile
+ * server phish credentials behind omadia's own chrome. Connectors that cannot
+ * render a form MUST still show the plain-text prompt `toSemanticAnswer` folds
+ * into `text` — never silently drop the request.
+ */
+export interface OutgoingMcpInputForm {
+  kind: 'mcp_input';
+  /** Opaque single-use id the answer must carry back. */
+  correlationId: string;
+  /** Display name of the MCP server making the request. Mandatory on screen. */
+  serverName: string;
+  serverId: string;
+  toolName: string;
+  /** Server-supplied prose, when it sent any. Untrusted text — render as text. */
+  prompt?: string;
+  fields: Array<{
+    name: string;
+    label?: string;
+    description?: string;
+    /** Advisory masking hint; the value still reaches the server verbatim. */
+    secret?: boolean;
+    required?: boolean;
+  }>;
+}
 
 /**
  * Multi-option question card. Connector renders as buttons / select / radio.

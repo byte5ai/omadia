@@ -17,13 +17,13 @@ const {
   mockStartTurn,
   mockAbort,
   mockIsActive,
-  mockMutateActive,
+  mockMutateById,
   mockSteerActiveTurn,
 } = vi.hoisted(() => ({
   mockStartTurn: vi.fn(),
   mockAbort: vi.fn(),
   mockIsActive: vi.fn(() => false),
-  mockMutateActive: vi.fn(),
+  mockMutateById: vi.fn(),
   mockSteerActiveTurn: vi.fn(),
 }));
 
@@ -33,14 +33,23 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn(), replace: vi.fn() }),
 }));
 
-vi.mock('../../_lib/streamStore', () => ({
+// Spread the real module and override only the two hooks that need a
+// provider. A bare object literal here silently omits every other export, so
+// any component ChatPage renders that reaches for one (ChatTabs calls
+// `useStreamRecord`) dies with "No export is defined on the mock" — a failure
+// mode with nothing to do with the keyboard contract under test.
+vi.mock('../../_lib/streamStore', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../_lib/streamStore')>()),
   useStreamStore: () => ({
     startTurn: mockStartTurn,
     abort: mockAbort,
     isActive: mockIsActive,
     get: () => undefined,
     patch: vi.fn(),
+    dismiss: vi.fn(),
+    records: new Map(),
   }),
+  useStreamRecord: () => undefined,
 }));
 
 vi.mock('../../_lib/chatSessionsContext', () => ({
@@ -62,7 +71,7 @@ vi.mock('../../_lib/chatSessionsContext', () => ({
     renameSession: vi.fn(),
     setActive: vi.fn(),
     clearMessages: vi.fn(),
-    mutateActive: mockMutateActive,
+    mutateById: mockMutateById,
   }),
 }));
 

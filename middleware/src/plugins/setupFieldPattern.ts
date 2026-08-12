@@ -83,11 +83,38 @@ export const MAX_PATTERN_SOURCE_LENGTH = 512;
 export const MAX_PATTERN_INPUT_LENGTH = 8192;
 
 /**
- * Wall-clock budget for one match, enforced by terminating the worker. Setup
- * writes are rare and admin-only, so a generous bound costs nothing; a sane
- * credential pattern completes in microseconds.
+ * Wall-clock budget for one match, enforced by terminating the worker. The
+ * clock starts when the worker has ACKNOWLEDGED it is ready to take work (see
+ * {@link ensureWorker}), so this bounds regex execution plus one IPC round
+ * trip — not thread creation and not module evaluation.
+ *
+ * WHY 250 AND NOT 50. The budget is not what protects the event loop; the
+ * worker boundary is. A runaway regex burns a thread that nothing else is
+ * waiting on, so the only thing this number really bounds is how long ONE
+ * admin-only setup write waits before giving up. Making it tight buys no
+ * safety and costs correctness: the first revision used 50 ms while the
+ * measured IPC floor alone was 4-36 ms on an idle machine, so a loaded host
+ * rejected valid values with no regex work to speak of (#607). 250 ms leaves
+ * an order of magnitude of headroom over the floor and is still imperceptible
+ * on a form submit.
  */
-export const PATTERN_MATCH_BUDGET_MS = 50;
+export const PATTERN_MATCH_BUDGET_MS = 250;
+
+/**
+ * How many times in a row a pattern must overrun before it is reported to the
+ * operator as unusable.
+ *
+ * An overrun is evidence about ONE execution — the host may simply have been
+ * busy — whereas {@link getPatternProblems} is a durable statement about the
+ * PATTERN. Conflating the two let a single unlucky match permanently label a
+ * healthy pattern "format check could not be applied" for the life of the
+ * process (#607). A genuinely hostile pattern overruns every time and trips
+ * this within three writes; a valid one recovers and resets the count.
+ *
+ * The individual write still fails CLOSED on the very first overrun. Only the
+ * durable verdict waits for corroboration.
+ */
+export const PATTERN_OVERRUN_STRIKES = 3;
 
 /** Deepest group nesting the allowlist accepts (root counts as depth 0). */
 const MAX_GROUP_DEPTH = 2;
@@ -102,7 +129,8 @@ const MAX_GROUP_DEPTH = 2;
  * the `+` form the allowlist has always accepted, not a new one. (V8 compiles
  * counted repetition with a counter rather than unrolling it, so a huge bound
  * is not a compile-time blowup either: `^a{100000,}$` compiles AND matches a
- * 100k subject in 0.43 ms.) The load-bearing bound is the 50 ms worker budget.
+ * 100k subject in 0.43 ms.) The load-bearing bound is the worker budget, see
+ * {@link PATTERN_MATCH_BUDGET_MS}.
  *
  * The cap is kept because it is free and it keeps an untrusted manifest from
  * naming an arbitrary number, and it is kept at 100 rather than raised because
@@ -477,10 +505,34 @@ function compileUncached(source: string, context: string): CacheEntry {
   }
 }
 
-/** Test-only: clears the compile cache and problem registry. */
+/**
+ * Consecutive budget overruns per `context|pattern`, reset by any completed
+ * match. See {@link PATTERN_OVERRUN_STRIKES}.
+ */
+const overrunStrikes = new Map<string, number>();
+
+/**
+ * Record one overrun. Returns true once the pattern has overrun
+ * {@link PATTERN_OVERRUN_STRIKES} times in a row — i.e. once it is fair to
+ * call the PATTERN broken rather than blaming a busy host.
+ */
+function noteOverrun(context: string, pattern: string): boolean {
+  const key = `${context}|${pattern}`;
+  const strikes = (overrunStrikes.get(key) ?? 0) + 1;
+  overrunStrikes.set(key, strikes);
+  return strikes >= PATTERN_OVERRUN_STRIKES;
+}
+
+/** Any completed match clears the pattern's strike count. */
+function clearOverrunStrikes(context: string, pattern: string): void {
+  overrunStrikes.delete(`${context}|${pattern}`);
+}
+
+/** Test-only: clears the compile cache, problem registry and strike counts. */
 export function resetSetupPatternCache(): void {
   compiled.clear();
   problems.length = 0;
+  overrunStrikes.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -505,12 +557,33 @@ parentPort.on('message', (msg) => {
   }
   parentPort.postMessage({ id: msg.id, matched, error });
 });
+// Readiness HANDSHAKE — the whole point of #607. The 'online' event fires when
+// the THREAD starts, which is well before this module has been evaluated and
+// the listener above exists. Under tsx the gap is the loader re-running, which
+// measured 84-212 ms; on a cold start it measured ~838 ms. Anything that waits
+// on 'online' therefore charges module evaluation to the match budget and
+// rejects valid values. This message is the only trustworthy "I can take work
+// now" signal, so it is what the parent waits for.
+parentPort.postMessage({ ready: true });
 `;
 
 interface WorkerReply {
   readonly id: number;
   readonly matched: boolean;
   readonly error: string | null;
+}
+
+/** Sent once by the worker when its message handler is installed. */
+interface WorkerHandshake {
+  readonly ready: true;
+}
+
+function isHandshake(raw: unknown): raw is WorkerHandshake {
+  return (
+    typeof raw === 'object' &&
+    raw !== null &&
+    (raw as { ready?: unknown }).ready === true
+  );
 }
 
 let worker: Worker | null = null;
@@ -525,17 +598,35 @@ function ensureWorker(): { w: Worker; ready: Promise<void> } {
     return { w: worker, ready: workerReady };
   }
   const w = new Worker(WORKER_SOURCE, { eval: true });
-  // Starts REF'd so thread boot cannot be starved by an otherwise-idle event
-  // loop, then unrefs itself: an idle pattern worker must never be the reason
-  // the process (or a test run) refuses to exit.
+  // Readiness waits for the worker's own handshake, NOT for 'online' — see
+  // WORKER_SOURCE. The boot timeout resolves anyway rather than rejecting: a
+  // worker that never handshakes still degrades to an overrun on the first
+  // match, which is the same fail-closed path a wedged regex takes, instead of
+  // turning a broken thread pool into a 500.
   const ready = new Promise<void>((resolve) => {
-    const boot = setTimeout(resolve, WORKER_BOOT_TIMEOUT_MS);
-    boot.unref();
-    w.once('online', () => {
+    // The worker stays REF'd until it has handshaked. Unref'ing earlier (on
+    // 'online', as an intermediate revision did) is a deadlock: nothing else
+    // holds the event loop open while we await the handshake, so on an
+    // otherwise-idle loop node settles and the promise never resolves. That
+    // surfaced as "Promise resolution is still pending but the event loop has
+    // already resolved" across the whole suite on node 22.
+    const settle = (): void => {
       clearTimeout(boot);
+      w.off('message', onHandshake);
+      // Past this point an IDLE pattern worker must never be the reason the
+      // process (or a test run) refuses to exit. An in-flight match is held
+      // open by its own budget timer, not by the worker handle.
       w.unref();
       resolve();
-    });
+    };
+    const boot = setTimeout(settle, WORKER_BOOT_TIMEOUT_MS);
+    boot.unref();
+    const onHandshake = (raw: unknown): void => {
+      if (!isHandshake(raw)) return;
+      settle();
+    };
+    w.on('message', onHandshake);
+    w.once('error', settle);
   });
   const drop = (): void => {
     if (worker === w) {
@@ -553,56 +644,88 @@ function ensureWorker(): { w: Worker; ready: Promise<void> } {
 export type MatchOutcome = 'match' | 'no-match' | 'overrun';
 
 /**
+ * Internal outcome. `'timeout'` is evidence about the PATTERN (it burned the
+ * budget); `'worker-failed'` is evidence about the WORKER (it died, or never
+ * came up) and says nothing about the regex at all. Both surface publicly as
+ * `'overrun'`, but only the first is worth a retry decision — see
+ * {@link matchWithBudget}.
+ */
+type RunOutcome = MatchOutcome | 'timeout' | 'worker-failed';
+
+/** One attempt, on whatever worker is current. Never throws. */
+async function runOnce(regex: RegExp, value: string): Promise<RunOutcome> {
+  const { w, ready } = ensureWorker();
+  await ready;
+  const id = (requestId += 1);
+  return await new Promise<RunOutcome>((resolve) => {
+    let settled = false;
+    const finish = (outcome: RunOutcome): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      w.off('message', onMessage);
+      w.off('error', onFailure);
+      w.off('exit', onFailure);
+      resolve(outcome);
+    };
+    // The clock starts HERE, after `await ready` — i.e. after the worker's
+    // handshake — so it measures the match, not the thread's birth.
+    const timer = setTimeout(() => {
+      finish('timeout');
+      if (worker === w) {
+        worker = null;
+        workerReady = null;
+      }
+      void w.terminate();
+    }, PATTERN_MATCH_BUDGET_MS);
+    const onMessage = (raw: unknown): void => {
+      if (isHandshake(raw)) return; // late handshake from a warm-up race
+      const reply = raw as WorkerReply | null;
+      if (!reply || reply.id !== id) return;
+      if (reply.error !== null) {
+        // The pattern did not compile inside the worker. That is a property of
+        // the pattern, so it counts as a pattern-side failure.
+        finish('timeout');
+        return;
+      }
+      finish(reply.matched ? 'match' : 'no-match');
+    };
+    const onFailure = (): void => {
+      finish('worker-failed');
+    };
+    w.on('message', onMessage);
+    w.on('error', onFailure);
+    w.on('exit', onFailure);
+    w.postMessage({ id, source: regex.source, flags: regex.flags, value });
+  });
+}
+
+/**
  * Run `regex` against `value` in a worker under {@link PATTERN_MATCH_BUDGET_MS}.
  *
  * Returns `'overrun'` when the budget expired (the worker is terminated and
  * discarded — a wedged regex cannot be interrupted any other way), when the
- * worker died, or when the pattern failed to compile inside the worker.
+ * worker could not be kept alive, or when the pattern failed to compile inside
+ * the worker.
+ *
+ * A dead worker is retried ONCE on a fresh thread. That is not leniency toward
+ * runaway patterns — a budget expiry is never retried, so a hostile pattern
+ * still costs exactly one budget — it only stops an unrelated thread death
+ * (the previous caller's terminate landing on this caller's worker) from being
+ * reported as "your value is invalid".
  */
 export async function matchWithBudget(
   regex: RegExp,
   value: string,
 ): Promise<MatchOutcome> {
   const run = async (): Promise<MatchOutcome> => {
-    const { w, ready } = ensureWorker();
-    await ready;
-    const id = (requestId += 1);
-    return await new Promise<MatchOutcome>((resolve) => {
-      let settled = false;
-      const finish = (outcome: MatchOutcome): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        w.off('message', onMessage);
-        w.off('error', onFailure);
-        w.off('exit', onFailure);
-        resolve(outcome);
-      };
-      const timer = setTimeout(() => {
-        finish('overrun');
-        if (worker === w) {
-          worker = null;
-          workerReady = null;
-        }
-        void w.terminate();
-      }, PATTERN_MATCH_BUDGET_MS);
-      const onMessage = (raw: unknown): void => {
-        const reply = raw as WorkerReply | null;
-        if (!reply || reply.id !== id) return;
-        if (reply.error !== null) {
-          finish('overrun');
-          return;
-        }
-        finish(reply.matched ? 'match' : 'no-match');
-      };
-      const onFailure = (): void => {
-        finish('overrun');
-      };
-      w.on('message', onMessage);
-      w.on('error', onFailure);
-      w.on('exit', onFailure);
-      w.postMessage({ id, source: regex.source, flags: regex.flags, value });
-    });
+    let outcome = await runOnce(regex, value);
+    if (outcome === 'worker-failed') {
+      outcome = await runOnce(regex, value);
+    }
+    return outcome === 'timeout' || outcome === 'worker-failed'
+      ? 'overrun'
+      : outcome;
   };
 
   const result = queue.then(run, run);
@@ -611,6 +734,22 @@ export async function matchWithBudget(
     () => undefined,
   );
   return await result;
+}
+
+/**
+ * Boot the pattern worker ahead of any request. Optional but wired into
+ * middleware startup: without it the FIRST operator to save a credential pays
+ * thread creation, which measured ~838 ms (#607). Idempotent, never throws,
+ * and cheap to skip — the worker is created on demand regardless.
+ */
+export async function warmPatternWorker(): Promise<void> {
+  try {
+    const { ready } = ensureWorker();
+    await ready;
+  } catch {
+    // A pattern worker that refuses to boot must not take startup with it; the
+    // on-demand path will retry and fail closed per write if it stays broken.
+  }
 }
 
 /** Test/shutdown seam: terminate the pooled worker. */
@@ -725,19 +864,32 @@ export async function checkSetupFieldPattern(
 
   const outcome = await matchWithBudget(regex, value);
   if (outcome === 'overrun') {
-    // The pattern (not the value) is the problem, but we cannot prove the value
-    // is acceptable, so fail CLOSED for this write and make the pattern
-    // diagnosable. The operator sees the field's generic "wrong format" copy.
+    // We cannot prove the value is acceptable, so this WRITE fails closed and
+    // the operator sees the field's generic "wrong format" copy — unchanged.
+    //
+    // The durable verdict is a separate question. One overrun does not prove
+    // the pattern is broken; it may just be a busy host losing a race with the
+    // budget. Only a run of them earns an entry in the problems registry,
+    // because that entry is what tells the operator the field is permanently
+    // unchecked (#607).
+    const proven = noteOverrun(context, field.pattern);
     console.error(
       `[setup] pattern match exceeded ${PATTERN_MATCH_BUDGET_MS}ms for ${context}; ` +
-        `treating the value as a violation. pattern=${JSON.stringify(field.pattern)}`,
+        `treating the value as a violation. pattern=${JSON.stringify(field.pattern)}` +
+        (proven
+          ? ` — ${String(PATTERN_OVERRUN_STRIKES)} consecutive overruns, marking the pattern unusable.`
+          : ''),
     );
-    recordProblem(
-      context,
-      field.pattern,
-      `match exceeded the ${PATTERN_MATCH_BUDGET_MS}ms execution budget`,
-    );
+    if (proven) {
+      recordProblem(
+        context,
+        field.pattern,
+        `match exceeded the ${String(PATTERN_MATCH_BUDGET_MS)}ms execution budget ` +
+          `${String(PATTERN_OVERRUN_STRIKES)} times in a row`,
+      );
+    }
     return violation;
   }
+  clearOverrunStrikes(context, field.pattern);
   return outcome === 'match' ? null : violation;
 }
