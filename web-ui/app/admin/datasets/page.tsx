@@ -626,7 +626,17 @@ export default function AdminDatasetsPage(): React.ReactElement {
                                 key={col.name}
                                 className={`${TD_CLS} font-mono text-[color:var(--fg-muted)]`}
                               >
-                                {String(row[col.name] ?? '')}
+                                {/* The ingest cap is MAX_CELL_CHARS = 4000, so a
+                                    single unbreakable value would otherwise
+                                    stretch the row past every other column and
+                                    the preview stops being a preview. Same
+                                    idiom as dev-platform/JobTable. */}
+                                <div
+                                  className="max-w-[40ch] truncate"
+                                  title={String(row[col.name] ?? '')}
+                                >
+                                  {String(row[col.name] ?? '')}
+                                </div>
                               </td>
                             ))}
                           </tr>

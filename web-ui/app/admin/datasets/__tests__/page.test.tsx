@@ -299,6 +299,25 @@ describe('AdminDatasetsPage', () => {
     );
   });
 
+  it('keeps a 4000-char cell from stretching the preview, but reachable via title', async () => {
+    // MAX_CELL_CHARS in the ingest path is 4000, so this is a supported value,
+    // not a pathological one. The cell must be clamped for layout while the
+    // full value stays available on hover.
+    const user = userEvent.setup();
+    const blob = 'x'.repeat(4000);
+    mockGetDatasetRows.mockResolvedValue({
+      rows: [{ name: blob, age: 1 }],
+      totalMatched: 1,
+    });
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('People');
+    await user.click(screen.getByRole('button', { name: 'People' }));
+
+    const cell = await screen.findByTitle(blob);
+    expect(cell).toHaveClass('truncate');
+    expect(cell.className).toMatch(/max-w-/);
+  });
+
   it('a row page from a closed dataset cannot land in the next dataset panel', async () => {
     // What the generation guard (detailSeq) actually prevents: Close stays
     // clickable while a row page is in flight (the pager is disabled, the close
