@@ -795,7 +795,12 @@ export type ChatStreamEvent =
        * machine-readable envelope marker for the paths omadia frames end to end
        * (#647), this is the human-readable line for the recipient. The per-turn
        * RESOLUTION that populates it (channel policy, locale, operator setup
-       * fields) lands in the orchestrator in #644.
+       * fields) landed in the orchestrator in #644: `resolveTurnDisclosure`
+       * derives the marker once and `discloseDoneEvent` both folds it into
+       * `answer` above and attaches it here, so a streaming client gets the
+       * SAME marking the non-streaming `toSemanticAnswer` path produces — that
+       * parity is the whole point of resolving once and forwarding on both
+       * paths. Omitted only when an operator turned the disclosure `'off'`.
        */
       aiDisclosure?: AiDisclosure;
       /**

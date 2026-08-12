@@ -1,4 +1,8 @@
-import type { ChatAgent } from '@omadia/channel-sdk';
+import {
+  InMemoryDisclosureSeenStore,
+  type ChatAgent,
+  type AiDisclosureLevel,
+} from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import {
   resolveLlmProvider,
@@ -53,7 +57,7 @@ import {
 import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
-import type { Orchestrator } from './orchestrator.js';
+import type { Orchestrator, AiDisclosureSetup } from './orchestrator.js';
 import { InMemoryDirectLineStickyStore } from './directLineSticky.js';
 import {
   sharedMcpInputReplayer,
@@ -195,6 +199,121 @@ function parseNumberOrDefault(raw: unknown, fallback: number): number {
     if (Number.isFinite(parsed)) return parsed;
   }
   return fallback;
+}
+
+/** AI-Act Art. 50 (#644) — the tokens the per-channel override map may key on:
+ *  the full `ChannelKind` set from `@omadia/plugin-api`. An override for any
+ *  other token is dropped with a warning so a typo never silently disables the
+ *  marking. NOTE: today only `teams`/`slack`/`telegram` are ever produced as a
+ *  per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`); `email` and
+ *  `web` are accepted here but currently resolve to the global level, same as
+ *  the kind-less channels — see the `ai_disclosure_level_overrides` help text. */
+const AI_DISCLOSURE_CHANNEL_KINDS = new Set([
+  'teams',
+  'telegram',
+  'slack',
+  'email',
+  'web',
+]);
+
+const AI_DISCLOSURE_LEVELS = new Set<AiDisclosureLevel>([
+  'standard',
+  'concise',
+  'off',
+]);
+
+function parseAiDisclosureLevel(raw: unknown): AiDisclosureLevel | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const v = raw.trim().toLowerCase();
+  return AI_DISCLOSURE_LEVELS.has(v as AiDisclosureLevel)
+    ? (v as AiDisclosureLevel)
+    : undefined;
+}
+
+/**
+ * Parse the compact per-channel override field `"telegram=concise,web=off"`
+ * into a `{ channelKind: level }` map. Whitespace-tolerant; unknown channel
+ * tokens and unknown levels are dropped with a warning (a silent drop would
+ * read as "marking configured" when it is not). Returns `undefined` when
+ * nothing valid parsed, so the caller can treat it as "no overrides".
+ */
+function parseAiDisclosureOverrides(
+  raw: unknown,
+): Record<string, AiDisclosureLevel> | undefined {
+  if (typeof raw !== 'string' || raw.trim().length === 0) return undefined;
+  const out: Record<string, AiDisclosureLevel> = {};
+  for (const pair of raw.split(',')) {
+    // Empty segments (trailing or doubled commas) are formatting, not a typo —
+    // skip them silently. Anything else missing its `=` falls through to the
+    // warn branch below: dropping `"telegram"` without a word would read as
+    // "override configured" when none was, the exact failure this warns about.
+    if (pair.trim().length === 0) continue;
+    const eq = pair.indexOf('=');
+    const chan = eq < 0 ? '' : pair.slice(0, eq).trim().toLowerCase();
+    const level = eq < 0 ? undefined : parseAiDisclosureLevel(pair.slice(eq + 1));
+    if (!AI_DISCLOSURE_CHANNEL_KINDS.has(chan) || level === undefined) {
+      console.warn(
+        `[orchestrator] ai_disclosure_level_overrides: ignoring invalid entry "${pair.trim()}" ` +
+          `(channel must be one of ${[...AI_DISCLOSURE_CHANNEL_KINDS].join('/')}, ` +
+          `level one of standard/concise/off)`,
+      );
+      continue;
+    }
+    out[chan] = level;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Resolve the operator's AI-disclosure setup (#644) from the plugin config.
+ * Returns `undefined` when the operator set NO disclosure field at all — the
+ * signal the orchestrator reads as "shipping default (standard, active) on
+ * every channel, `source: 'default'`" (AC1). As soon as ANY field is set the
+ * whole config is operator-sourced, so an `'off'` level is honoured (a turn
+ * cannot silence itself; only the operator can).
+ */
+function resolveAiDisclosureSetup(
+  read: (key: string) => unknown,
+): AiDisclosureSetup | undefined {
+  const level = parseAiDisclosureLevel(read('ai_disclosure_level'));
+  const overrides = parseAiDisclosureOverrides(
+    read('ai_disclosure_level_overrides'),
+  );
+  const localeRaw = read('ai_disclosure_locale');
+  const locale =
+    typeof localeRaw === 'string' && localeRaw.trim().length > 0
+      ? localeRaw.trim()
+      : undefined;
+  const nameRaw = read('ai_disclosure_assistant_name');
+  const assistantName =
+    typeof nameRaw === 'string' && nameRaw.trim().length > 0
+      ? nameRaw.trim()
+      : undefined;
+  const noteRaw = read('ai_disclosure_operator_note');
+  const operatorNote =
+    typeof noteRaw === 'string' && noteRaw.trim().length > 0
+      ? noteRaw.trim()
+      : undefined;
+
+  if (
+    level === undefined &&
+    overrides === undefined &&
+    locale === undefined &&
+    assistantName === undefined &&
+    operatorNote === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    // Level unset but other fields present → keep the shipping-default level;
+    // `source: 'operator'` (implied by a non-undefined setup) still lets an
+    // explicit `'off'` through when the operator DID set it.
+    level: level ?? 'standard',
+    ...(overrides ? { overrides } : {}),
+    ...(locale ? { locale } : {}),
+    ...(assistantName ? { assistantName } : {}),
+    ...(operatorNote ? { operatorNote } : {}),
+  };
 }
 
 /** Truthy values: '1', 'true', 'yes', 'on' (case-insensitive). Everything
@@ -386,6 +505,13 @@ export async function activate(
   const assistantIdentity = (
     ctx.config.get<string>('assistant_identity') ?? ''
   ).trim();
+  // AI-Act Art. 50 (#644) — resolve the operator's disclosure setup once at
+  // build time (same arrival pattern as `assistantIdentity`). Undefined → the
+  // orchestrator applies the shipping default (standard, active) on every
+  // channel; a set value flips the whole policy to operator-sourced.
+  const aiDisclosure = resolveAiDisclosureSetup((key) =>
+    ctx.config.get<unknown>(key),
+  );
   // Floor at DEFAULT_MAX_TOKENS: a stale installed config (older deployments
   // persisted 4096) would otherwise truncate large file-building tool calls.
   const maxTokens = Math.max(
@@ -580,6 +706,12 @@ export async function activate(
     ...(graphPool ? { graphPool } : {}),
     graphTenantId,
     ...(assistantIdentity ? { assistantIdentity } : {}),
+    ...(aiDisclosure ? { aiDisclosure } : {}),
+    // #644 — one fold-dedup store for the whole process, shared by every Agent
+    // the registry builds (same lifetime rationale as `directLineStickyStore`
+    // below): a per-instance store would re-fold the marking into a live
+    // conversation whenever an unrelated config tweak rebuilt the Agent.
+    aiDisclosureSeenStore: new InMemoryDisclosureSeenStore(),
     ...(turnHookRegistry ? { turnHookRegistry } : {}),
     // #445 — one binding store for the whole process, shared by every Agent
     // the registry builds and rebuilt by none of them. Constructed

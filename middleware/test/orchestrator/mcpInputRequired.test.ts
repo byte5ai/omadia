@@ -55,6 +55,17 @@ import {
   type McpServerConfig,
 } from '@omadia/orchestrator';
 
+// #644 — the streaming `done.answer` now carries the AI-Act Art. 50 marking,
+// folded at the delivery boundary. These MCP-flow tests assert the model's own
+// answer, so strip the trailing disclosure paragraph first (only the first turn
+// of a scope folds it). The marking itself is covered by
+// test/aiDisclosure644.test.ts.
+const AI_DISCLOSURE_LINE = 'Diese Antwort wurde von einem KI-System erzeugt.';
+function withoutDisclosure(text: string): string {
+  const suffix = `\n\n${AI_DISCLOSURE_LINE}`;
+  return text.endsWith(suffix) ? text.slice(0, -suffix.length) : text;
+}
+
 // ── fake MCP server ─────────────────────────────────────────────────────────
 
 /** Arguments the server saw, so replay assertions read the SERVER's view. */
@@ -725,7 +736,7 @@ describe('regression — the shared short-circuit path (#544 W2-1)', () => {
   it('an ordinary turn is unaffected', async () => {
     const h = harness([textStream('Hallo!')]);
     const done = doneEvent(await runStream(h.orchestrator, 'Hi', 'sess-1', 'u1'));
-    assert.equal(done.answer, 'Hallo!');
+    assert.equal(withoutDisclosure(done.answer), 'Hallo!');
     assert.equal(done.pendingMcpInput, undefined);
     assert.equal(h.store.size(), 0);
   });
@@ -764,7 +775,7 @@ describe('regression — the shared short-circuit path (#544 W2-1)', () => {
       textStream('erledigt'),
     ]);
     const done = doneEvent(await runStream(h.orchestrator, 'Ticket', 'sess-1', 'u1'));
-    assert.equal(done.answer, 'erledigt');
+    assert.equal(withoutDisclosure(done.answer), 'erledigt');
     assert.equal(done.pendingMcpInput, undefined);
     assert.equal(h.store.size(), 0);
     assert.equal(h.seenRequests.length, 2, 'the turn should have continued normally');
