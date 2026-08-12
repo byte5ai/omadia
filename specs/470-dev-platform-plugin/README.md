@@ -97,7 +97,7 @@ node scripts/check-core-decoupling.mjs --update   # lower the baseline
 ```
 
 The ratchet counts Dev Platform references across 14 disjoint zones and **fails if the count
-rises, per zone**. Baseline **3,365**. It only ever falls; raising it needs a hand-edited baseline, so
+rises, per zone**. Baseline **3,510**. It only ever falls; raising it needs a hand-edited baseline, so
 a new coupling shows up in review instead of slipping in.
 
 That is what makes the checklist's staleness survivable — a file inventory goes stale on
@@ -110,7 +110,12 @@ sufficient one. Sections 2 and 3 of `acceptance.md` cover the rest, and neither 
 code. (2) A refactor concentrates coupling into a namespace whose own name matches the
 pattern — C3 is the one instance: collapsing 41 flat config keys into `config.devPlatform`
 added a mapping layer that names each key a second time (+48 in config.ts, +36 in the new
-type file, against −33 in index.ts). All of it deletes at extraction. Everything else is a
+type file, against −33 in index.ts). Measured against main at merge time the net is **+62**:
+`middleware/src` +29 and `middleware/test` +33. The test half is the same effect — a shared
+`devPlatformConfig.harness.ts` plus the moved routers' new `src/devplatform/routes/…` import
+paths. **Every one of the 212 added matching lines in the test zone sits inside
+`middleware/test/devplatform/`; none is outside it**, so no core test acquired a
+dev-platform dependency. All of it deletes at extraction. Everything else is a
 regression. That has happened three
 times (PR #529, then #537's embedding work): the guard fires, the raise is hand-edited, and the
 reason is recorded in the commit. A rise is only wrong when *core* re-acquires a dependency.
