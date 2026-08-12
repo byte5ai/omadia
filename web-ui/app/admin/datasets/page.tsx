@@ -630,7 +630,7 @@ export default function AdminDatasetsPage(): React.ReactElement {
                                     single unbreakable value would otherwise
                                     stretch the row past every other column and
                                     the preview stops being a preview. Same
-                                    idiom as dev-platform/JobTable. */}
+                                    clamp idiom as the admin JobTable. */}
                                 <div
                                   className="max-w-[40ch] truncate"
                                   title={String(row[col.name] ?? '')}
