@@ -282,7 +282,7 @@ describe('OM-17 — compileSetupPattern safety screen', () => {
   it('omits `hint` when the manifest declared no pattern_hint', async () => {
     // The API must never invent user-facing prose; the web-ui owns that copy.
     const violation = await checkSetupFieldPattern(
-      { key: 'k', label: 'Key', pattern: '^abc$' },
+      { key: 'k', pattern: '^abc$' },
       'nope',
     );
     assert.equal(violation?.field, 'k');

@@ -44,6 +44,10 @@ export function FieldRow({
   const locale = useLocale();
   const id = `${idPrefix}-${field.key}`;
   const patternHint = pickLocalized(field.pattern_hint, locale);
+  // #602 (OM-17) — label/help are localized maps; resolve them at the active
+  // locale. A missing label falls back to the field key (never blank).
+  const fieldLabel = pickLocalized(field.label, locale) ?? field.key;
+  const fieldHelp = pickLocalized(field.help, locale);
   // OM-17 — a German operator must not read an English rejection. Only the
   // pattern code is overridden: every other install error is either already a
   // catalog string or a value-shape message the manifest cannot explain.
@@ -73,7 +77,7 @@ export function FieldRow({
         className="flex items-baseline justify-between gap-3 text-[11px] uppercase tracking-[0.16em] text-[color:var(--muted-ink)]"
       >
         <span>
-          {field.label}
+          {fieldLabel}
           {field.required ? (
             <span className="ml-1 text-[color:var(--oxblood)]">*</span>
           ) : null}
@@ -97,7 +101,7 @@ export function FieldRow({
               className="size-4 accent-[color:var(--oxblood)]"
             />
             <span className="text-[color:var(--muted-ink)]">
-              {field.help ?? t('enable')}
+              {fieldHelp ?? t('enable')}
             </span>
           </label>
         ) : field.type === 'enum' ? (
@@ -215,9 +219,9 @@ export function FieldRow({
         </p>
       ) : null}
 
-      {field.help && field.type !== 'boolean' ? (
+      {fieldHelp && field.type !== 'boolean' ? (
         <p className="mt-1 text-[11px] leading-relaxed text-[color:var(--faint-ink)]">
-          {field.help}
+          {fieldHelp}
         </p>
       ) : null}
       {errorText ? (

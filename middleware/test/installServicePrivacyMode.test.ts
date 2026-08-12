@@ -76,11 +76,13 @@ describe('extractSetupSchema — synthetic _privacy_mode field', () => {
       }),
     );
     const f = schema?.fields.find((x) => x.key === PRIVACY_MODE_CONFIG_KEY);
-    assert.ok(f?.help);
-    assert.ok(f.help.includes('📌'), 'help text marks the author recommendation');
-    assert.ok(f.help.includes('Bypass'), 'help text names the recommended mode');
+    // #602 (OM-17) — help is a localized map now; this kernel copy is German.
+    const help = f?.help?.de ?? '';
+    assert.ok(help);
+    assert.ok(help.includes('📌'), 'help text marks the author recommendation');
+    assert.ok(help.includes('Bypass'), 'help text names the recommended mode');
     assert.ok(
-      f.help.includes('Document-shaped bodies'),
+      help.includes('Document-shaped bodies'),
       'help text includes the author reason',
     );
   });
@@ -109,7 +111,7 @@ describe('extractSetupSchema — synthetic _privacy_mode field', () => {
         ['guarded', 'bypass', 'per_tool'].includes(rec.mode);
       if (!validMode) {
         assert.ok(
-          !(f.help ?? '').includes('📌'),
+          !(f.help?.de ?? '').includes('📌'),
           'invalid recommendation must not surface as a hint',
         );
       }

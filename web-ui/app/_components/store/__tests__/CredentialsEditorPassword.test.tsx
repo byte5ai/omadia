@@ -46,7 +46,7 @@ const SA_EMAIL_PATTERN = '^[^@\\s]+@[^@\\s]+\\.iam\\.gserviceaccount\\.com$';
 function field(over: Partial<PluginSetupField> = {}): PluginSetupField {
   return {
     key: 'gw_sa_private_key',
-    label: 'Service account private key',
+    label: { en: 'Service account private key' },
     type: 'secret',
     ...over,
   };

@@ -227,7 +227,7 @@ export default async function PluginDetailPage({
             >
               <div className="divide-y divide-[color:var(--rule)] border-y border-[color:var(--rule)]">
                 {plugin.setup_fields.map((field) => (
-                  <SecretRow key={field.key} field={field} />
+                  <SecretRow key={field.key} field={field} locale={locale} />
                 ))}
               </div>
             </Section>
@@ -491,8 +491,10 @@ function Section({
 
 function SecretRow({
   field,
+  locale,
 }: {
   field: PluginSetupField;
+  locale: string;
 }): React.ReactElement {
   return (
     <div className="flex items-baseline gap-4 py-3">
@@ -500,7 +502,9 @@ function SecretRow({
         {field.key}
       </span>
       <span className="min-w-0 flex-1 text-sm text-[color:var(--muted-ink)]">
-        {field.label}
+        {/* #602 (OM-17) — label is a localized map; resolve at the active
+            locale, fall back to the field key. */}
+        {pickLocalized(field.label, locale) ?? field.key}
       </span>
       <Chip tone={field.type === 'secret' ? 'accent' : 'muted'}>
         {field.type}
