@@ -24,6 +24,7 @@ import type {
   PluginCatalogEntry,
 } from '../src/plugins/manifestLoader.js';
 import { createPluginContext } from '../src/platform/pluginContext.js';
+import type { CreatePluginContextOptions } from '../src/platform/pluginContext.js';
 import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
 
 const LEGACY_ID = 'de.byte5.integration.legacy-devjobs';
@@ -60,13 +61,13 @@ describe('legacy permissions.devJobs manifests stay loadable', () => {
   it('emits no dev_jobs field on permissions_summary — the key is ignored, not mapped', () => {
     const plugin = adaptManifestV1(manifest({ devJobs: true }));
     assert.ok(plugin);
-    const summary = plugin.permissions_summary as Record<string, unknown>;
+    const summary = plugin.permissions_summary;
     assert.equal(
-      'dev_jobs' in summary,
+      Object.hasOwn(summary, 'dev_jobs'),
       false,
       'permissions_summary must not carry dev_jobs any more',
     );
-    assert.equal('dev_jobs_repos_hint' in summary, false);
+    assert.equal(Object.hasOwn(summary, 'dev_jobs_repos_hint'), false);
   });
 
   it('does not disturb the permission keys that ARE still parsed', () => {
@@ -75,10 +76,7 @@ describe('legacy permissions.devJobs manifests stay loadable', () => {
     );
     assert.ok(plugin);
     assert.equal(plugin.permissions_summary.flows, true);
-    assert.equal(
-      (plugin.permissions_summary as Record<string, unknown>)['mcp'],
-      true,
-    );
+    assert.equal(plugin.permissions_summary.mcp, true);
   });
 
   it('builds an activation context with no devJobs accessor', () => {
@@ -89,34 +87,40 @@ describe('legacy permissions.devJobs manifests stay loadable', () => {
       vault: {
         get: async () => undefined,
         listKeys: async () => [],
-      } as unknown as Parameters<typeof createPluginContext>[0]['vault'],
+      } as unknown as CreatePluginContextOptions['vault'],
       registry: {
         has: () => true,
         list: () => [],
         get: () => undefined,
-      } as unknown as Parameters<typeof createPluginContext>[0]['registry'],
+      } as unknown as CreatePluginContextOptions['registry'],
       catalog: catalogOf(plugin),
       serviceRegistry: new ServiceRegistry(),
       nativeToolRegistry: {
         register: () => () => {},
         registerHandler: () => () => {},
-      } as unknown as Parameters<
-        typeof createPluginContext
-      >[0]['nativeToolRegistry'],
+      } as unknown as CreatePluginContextOptions['nativeToolRegistry'],
       routeRegistry: {
         register: () => () => {},
         list: () => [],
         disposeBySource: () => 0,
-      } as unknown as Parameters<typeof createPluginContext>[0]['routeRegistry'],
+      } as unknown as CreatePluginContextOptions['routeRegistry'],
       jobScheduler: {
         register: () => () => {},
         stopForPlugin: () => {},
-      } as unknown as Parameters<typeof createPluginContext>[0]['jobScheduler'],
+      } as unknown as CreatePluginContextOptions['jobScheduler'],
+      notificationRouter: {
+        dispatch: () => {},
+        registerChannel: () => () => {},
+      } as unknown as CreatePluginContextOptions['notificationRouter'],
+      uiRouteCatalog: {
+        register: () => () => {},
+        registerNav: () => () => {},
+      } as unknown as CreatePluginContextOptions['uiRouteCatalog'],
       logger: () => {},
-    });
+    } satisfies CreatePluginContextOptions);
     assert.equal(
-      (ctx as Record<string, unknown>)['devJobs'],
-      undefined,
+      Object.hasOwn(ctx, 'devJobs'),
+      false,
       'ctx.devJobs must be absent for a stale manifest — no throw, no accessor',
     );
     // And the rest of the context is intact: the plugin activates normally.
