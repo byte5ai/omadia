@@ -7,6 +7,8 @@ import { Pool } from 'pg';
 
 import { AgentGraphStore, runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
+import { probePgTest } from './_helpers/pgTestDb.js';
+
 /**
  * PG-gated coverage for the plugin_verdicts store surface (issue #453,
  * second-review fix): the SQL upsert must clear an operator ack whenever a
@@ -15,24 +17,15 @@ import { AgentGraphStore, runMultiOrchestratorMigrations } from '@omadia/orchest
  * better — including across the scheduler's interim `pending` write.
  * Skips when no test Postgres is reachable, mirroring the other pg tests.
  */
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['WS5_PG_TEST_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
-
 const HASH_PREFIX = 'plugin-verdict-test-';
 const VERIFIER = 'skillspector-test';
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 
-const probePool = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 2000 });
-let pgAvailable = true;
-try {
-  await probePool.query('SELECT 1');
-} catch {
-  pgAvailable = false;
-  await probePool.end().catch(() => undefined);
-}
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'pluginVerdictStore',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL'],
+});
+const probePool = new Pool({ connectionString: PG_URL });
 
 type Severity =
   | 'no_signals'

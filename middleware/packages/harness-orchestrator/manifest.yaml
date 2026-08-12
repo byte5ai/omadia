@@ -137,6 +137,50 @@ setup:
       type: "string"
       required: false
       help: "Eröffnungszeile(n) des System-Prompts — wer der Assistent ist und in welchem Kontext er arbeitet. Leer lassen für eine generische, integrationsneutrale Persona. Beispiel: 'Du bist der byte5-Assistent für die Odoo-17-Produktion. Du delegierst an spezialisierte Fach-Agenten und merkst dir Lernpunkte.' Die konkrete Fach-Agenten-Liste wird automatisch angehängt — hier nur Identität/Kontext beschreiben, keine Tool-Namen."
+    # AI-Act Art. 50 (#644, epic #642) — KI-Kennzeichnung pro Turn. Die
+    # Kennzeichnung läuft NICHT über den System-Prompt (ein Modell kann eine
+    # Prompt-Anweisung ignorieren, und `assistant_identity` / Persona-Skills
+    # überschreiben ihn ohnehin), sondern wird hinter dem Modell im
+    # Ausgangs-Contract aufgelöst. Ohne jede Konfiguration greift `standard`
+    # aktiv auf allen Kanälen — diese Felder sind nur für Abweichungen.
+    - key: "ai_disclosure_level"
+      label: "KI-Kennzeichnung: Stufe (global)"
+      type: "enum"
+      required: false
+      default: "standard"
+      enum:
+        - value: "standard"
+          label: "Standard — ganzer Satz (Auslieferungszustand)"
+        - value: "concise"
+          label: "Kurz — knappe Marke ('KI-generiert.')"
+        - value: "off"
+          label: "Aus — keine Kennzeichnung (Betreiber-Entscheidung, self-hosted)"
+      help: "Voreingestellte Stufe der KI-Kennzeichnung für alle Kanäle ohne eigenen Override. Leer lassen = Auslieferungszustand (standard, aktiv). 'off' greift NUR, weil der Betreiber es hier ausdrücklich setzt — ein Turn kann sich nicht selbst stummschalten."
+    - key: "ai_disclosure_level_overrides"
+      label: "KI-Kennzeichnung: Stufe je Kanal"
+      type: "string"
+      required: false
+      help: "Optionale Overrides pro Kanal, kompakt als 'kanal=stufe' kommagetrennt. Stufen: standard, concise, off. Beispiel: 'telegram=concise,slack=off'. WIRKSAM sind Overrides heute nur für Kanäle, die pro Turn eine Kanal-Art auflösen: teams, telegram, slack. Die Werte email und web werden zwar akzeptiert, greifen aktuell aber NICHT — solche Turns tragen (noch) keine auflösbare Kanal-Art und nutzen wie discord/whatsapp/canvas/HTTP die globale Stufe (sichere Richtung: Kennzeichnung bleibt aktiv). Ungültige Einträge werden mit Warnung ignoriert."
+    - key: "ai_disclosure_locale"
+      label: "KI-Kennzeichnung: Sprache"
+      type: "enum"
+      required: false
+      enum:
+        - value: "de"
+          label: "Deutsch (Default)"
+        - value: "en"
+          label: "Englisch"
+      help: "Sprache des Kennzeichnungs-Textes. Leer = Deutsch (Auslieferungssprache). Passt den Wortlaut an das Deployment an."
+    - key: "ai_disclosure_assistant_name"
+      label: "KI-Kennzeichnung: Name des Assistenten"
+      type: "string"
+      required: false
+      help: "Optionaler Anzeigename, der in die Standard-Zeile eingewoben wird ('Diese Antwort wurde von <Name>, einem KI-System, erzeugt.'). Leer = generische, namenlose Zeile. Betrifft nur den Wortlaut der Kennzeichnung, nicht die Persona (assistant_identity)."
+    - key: "ai_disclosure_operator_note"
+      label: "KI-Kennzeichnung: Zusatztext des Betreibers"
+      type: "string"
+      required: false
+      help: "Optionaler, wortgetreu angehängter Betreiber-Text (z. B. Kontakt- oder Compliance-Hinweis). Wird IMMER NACH der Kennzeichnung als eigener Absatz ausgegeben und kann sie nur ergänzen, nie ersetzen: bei Stufe 'off' entfällt auch der Zusatztext. Folgt dem Muster einer statischen Markdown-Sektion — kein LLM, keine Daten."
 
 playbook:
   when_to_use: |

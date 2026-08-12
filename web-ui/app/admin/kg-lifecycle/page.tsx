@@ -75,7 +75,9 @@ export default function KgLifecyclePage(): JSX.Element {
   const [stats, setStats] = useState<LifecycleStats | null>(null);
   const [lastRuns, setLastRuns] = useState<LastRuns | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const tPage = useTranslations('adminKgLifecycle');
 
   const reload = useCallback(async () => {
     try {
@@ -84,6 +86,15 @@ export default function KgLifecyclePage(): JSX.Element {
         fetch(`${STAT_BASE}/stats`, { cache: 'no-store' }),
         fetch(`${STAT_BASE}/last-runs`, { cache: 'no-store' }),
       ]);
+      // The lifecycle router is mounted only when the KG/Postgres plugin has
+      // published the `graphLifecycle` service. Without it Express falls
+      // through to its default 404 — the feature is absent, not broken. Show
+      // that plainly instead of a raw "stats: 404 Not Found".
+      if (statsRes.status === 404 || runsRes.status === 404) {
+        setUnavailable(true);
+        return;
+      }
+      setUnavailable(false);
       if (!statsRes.ok) {
         throw new Error(
           `stats: ${String(statsRes.status)} ${statsRes.statusText}`,
@@ -150,213 +161,228 @@ export default function KgLifecyclePage(): JSX.Element {
         </Button>
       </header>
 
-      {error ? (
+      {unavailable ? (
+        <div className="mb-6 rounded-md border border-[color:var(--border)] bg-[color:var(--surface-muted)] px-4 py-3">
+          <div className="text-sm font-semibold text-[color:var(--fg-strong)]">
+            {tPage('unavailableTitle')}
+          </div>
+          <p className="mt-1 text-sm text-[color:var(--fg-muted)]">
+            {tPage('unavailableBody')}
+          </p>
+        </div>
+      ) : null}
+
+      {error && !unavailable ? (
         <div className="mb-6 rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 px-4 py-3 text-sm text-[color:var(--danger)]">
           {error}
         </div>
       ) : null}
 
-      <section className="mb-8 grid gap-4 md:grid-cols-3">
-        <ActionCard
-          title="Run decay + rotation"
-          description="Flush access tracker → recompute decay_score → rotate HOT→WARM→COLD → hard-delete done tasks past TTL."
-          busy={busy === 'decay'}
-          onClick={() => void trigger('decay')}
-        />
-        <ActionCard
-          title="Run GC quotas"
-          description="Per-scope eviction by type-weight × decay-score. Enforces hot_max_entries + max_total_chars."
-          busy={busy === 'gc'}
-          onClick={() => void trigger('gc')}
-        />
-        <ActionCard
-          title="Run access flush only"
-          description="Drain the access tracker into access_count + accessed_at without rotating. Debug-only."
-          busy={busy === 'access-flush'}
-          onClick={() => void trigger('access-flush')}
-        />
-      </section>
+      {unavailable ? null : (
+      <>
+        <section className="mb-8 grid gap-4 md:grid-cols-3">
+          <ActionCard
+            title="Run decay + rotation"
+            description="Flush access tracker → recompute decay_score → rotate HOT→WARM→COLD → hard-delete done tasks past TTL."
+            busy={busy === 'decay'}
+            onClick={() => void trigger('decay')}
+          />
+          <ActionCard
+            title="Run GC quotas"
+            description="Per-scope eviction by type-weight × decay-score. Enforces hot_max_entries + max_total_chars."
+            busy={busy === 'gc'}
+            onClick={() => void trigger('gc')}
+          />
+          <ActionCard
+            title="Run access flush only"
+            description="Drain the access tracker into access_count + accessed_at without rotating. Debug-only."
+            busy={busy === 'access-flush'}
+            onClick={() => void trigger('access-flush')}
+          />
+        </section>
 
-      <section className="mb-8 grid gap-6 md:grid-cols-3">
-        <Card title="Tier breakdown">
-          {stats ? (
-            <ul className="space-y-2 text-sm">
-              <li>
-                <span className="text-[color:var(--fg-muted)]">HOT</span>:{' '}
-                <strong>{stats.byTier.HOT}</strong>
-              </li>
-              <li>
-                <span className="text-[color:var(--fg-muted)]">WARM</span>:{' '}
-                <strong>{stats.byTier.WARM}</strong>
-              </li>
-              <li>
-                <span className="text-[color:var(--fg-muted)]">COLD</span>:{' '}
-                <strong>{stats.byTier.COLD}</strong>
-              </li>
-              <li className="border-t border-[color:var(--border)] pt-2">
-                <span className="text-[color:var(--fg-muted)]">Total Turns</span>:{' '}
-                <strong>{stats.totalTurns}</strong>
-              </li>
-            </ul>
-          ) : (
-            <SkeletonRows />
-          )}
-        </Card>
-
-        <Card title="Entry-type breakdown">
-          {stats ? (
-            <ul className="space-y-2 text-sm">
-              <li>
-                <span className="text-[color:var(--fg-muted)]">memory</span>:{' '}
-                <strong>{stats.byEntryType.memory}</strong>
-              </li>
-              <li>
-                <span className="text-[color:var(--fg-muted)]">process</span>:{' '}
-                <strong>{stats.byEntryType.process}</strong>
-              </li>
-              <li>
-                <span className="text-[color:var(--fg-muted)]">task</span>:{' '}
-                <strong>{stats.byEntryType.task}</strong>
-              </li>
-            </ul>
-          ) : (
-            <SkeletonRows />
-          )}
-        </Card>
-
-        <Card title="Decay-score distribution">
-          {stats ? (
-            <ul className="space-y-2 text-sm">
-              <li>
-                <span className="text-[color:var(--fg-muted)]">≥ 0.8</span>:{' '}
-                <strong>{stats.decayDistribution.high}</strong>
-              </li>
-              <li>
-                <span className="text-[color:var(--fg-muted)]">0.5 – 0.8</span>:{' '}
-                <strong>{stats.decayDistribution.upperMid}</strong>
-              </li>
-              <li>
-                <span className="text-[color:var(--fg-muted)]">0.2 – 0.5</span>:{' '}
-                <strong>{stats.decayDistribution.lowerMid}</strong>
-              </li>
-              <li>
-                <span className="text-[color:var(--fg-muted)]">&lt; 0.2</span>:{' '}
-                <strong>{stats.decayDistribution.cold}</strong>
-              </li>
-            </ul>
-          ) : (
-            <SkeletonRows />
-          )}
-        </Card>
-      </section>
-
-      <section className="mb-8">
-        <h2 className="mb-3 font-display text-lg text-[color:var(--fg-strong)]">
-          Top scopes (by Turn count)
-        </h2>
-        <Card title="">
-          {stats ? (
-            stats.topScopesByCount.length === 0 ? (
-              <p className="text-sm text-[color:var(--fg-muted)]">
-                No scopes recorded yet.
-              </p>
+        <section className="mb-8 grid gap-6 md:grid-cols-3">
+          <Card title="Tier breakdown">
+            {stats ? (
+              <ul className="space-y-2 text-sm">
+                <li>
+                  <span className="text-[color:var(--fg-muted)]">HOT</span>:{' '}
+                  <strong>{stats.byTier.HOT}</strong>
+                </li>
+                <li>
+                  <span className="text-[color:var(--fg-muted)]">WARM</span>:{' '}
+                  <strong>{stats.byTier.WARM}</strong>
+                </li>
+                <li>
+                  <span className="text-[color:var(--fg-muted)]">COLD</span>:{' '}
+                  <strong>{stats.byTier.COLD}</strong>
+                </li>
+                <li className="border-t border-[color:var(--border)] pt-2">
+                  <span className="text-[color:var(--fg-muted)]">Total Turns</span>:{' '}
+                  <strong>{stats.totalTurns}</strong>
+                </li>
+              </ul>
             ) : (
-              <table className="w-full text-sm">
-                <thead className="text-left text-xs uppercase tracking-wider text-[color:var(--fg-muted)]">
-                  <tr>
-                    <th className="pb-2">Scope</th>
-                    <th className="pb-2 text-right">Turns</th>
-                    <th className="pb-2 text-right">Quota</th>
-                    <th className="pb-2 text-right">Chars</th>
-                    <th className="pb-2 text-right">Char-Quota</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stats.topScopesByCount.map((row) => (
-                    <tr
-                      key={row.scope}
-                      className="border-t border-[color:var(--border)]/50"
-                    >
-                      <td className="py-2 font-mono text-xs">{row.scope}</td>
-                      <td className="py-2 text-right">{row.count}</td>
-                      <td className="py-2 text-right">
-                        <QuotaPill
-                          value={row.count}
-                          limit={stats.quotas?.hotMaxEntries}
-                        />
-                      </td>
-                      <td className="py-2 text-right">
-                        {row.chars.toLocaleString()}
-                      </td>
-                      <td className="py-2 text-right">
-                        <QuotaPill
-                          value={row.chars}
-                          limit={stats.quotas?.maxTotalChars}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )
-          ) : (
-            <SkeletonRows />
-          )}
-        </Card>
-      </section>
+              <SkeletonRows />
+            )}
+          </Card>
 
-      <section>
-        <h2 className="mb-3 font-display text-lg text-[color:var(--fg-strong)]">
-          Last sweep runs
-        </h2>
-        <div className="grid gap-4 md:grid-cols-3">
-          <LastRunCard
-            title="Decay"
-            at={lastRuns?.decay?.at}
-            rows={
-              lastRuns?.decay
-                ? [
-                    ['Updated', lastRuns.decay.stats.decayUpdated],
-                    ['HOT → WARM', lastRuns.decay.stats.hotToWarm],
-                    ['WARM → COLD', lastRuns.decay.stats.warmToCold],
-                    ['Done tasks deleted', lastRuns.decay.stats.doneTasksDeleted],
-                    ['Duration (ms)', lastRuns.decay.stats.durationMs],
-                  ]
-                : null
-            }
-          />
-          <LastRunCard
-            title="GC"
-            at={lastRuns?.gc?.at}
-            rows={
-              lastRuns?.gc
-                ? [
-                    ['Scopes affected', lastRuns.gc.stats.scopesAffected],
-                    ['Evicted by count', lastRuns.gc.stats.evictedByCount],
-                    ['Evicted by chars', lastRuns.gc.stats.evictedByChars],
-                    ['Duration (ms)', lastRuns.gc.stats.durationMs],
-                  ]
-                : null
-            }
-          />
-          <LastRunCard
-            title="Access flush"
-            at={lastRuns?.accessFlush?.at}
-            rows={
-              lastRuns?.accessFlush
-                ? [
-                    ['Flushed', lastRuns.accessFlush.stats.flushed],
-                    [
-                      'Promoted COLD → WARM',
-                      lastRuns.accessFlush.stats.promotedColdToWarm,
-                    ],
-                    ['Duration (ms)', lastRuns.accessFlush.stats.durationMs],
-                  ]
-                : null
-            }
-          />
-        </div>
-      </section>
+          <Card title="Entry-type breakdown">
+            {stats ? (
+              <ul className="space-y-2 text-sm">
+                <li>
+                  <span className="text-[color:var(--fg-muted)]">memory</span>:{' '}
+                  <strong>{stats.byEntryType.memory}</strong>
+                </li>
+                <li>
+                  <span className="text-[color:var(--fg-muted)]">process</span>:{' '}
+                  <strong>{stats.byEntryType.process}</strong>
+                </li>
+                <li>
+                  <span className="text-[color:var(--fg-muted)]">task</span>:{' '}
+                  <strong>{stats.byEntryType.task}</strong>
+                </li>
+              </ul>
+            ) : (
+              <SkeletonRows />
+            )}
+          </Card>
+
+          <Card title="Decay-score distribution">
+            {stats ? (
+              <ul className="space-y-2 text-sm">
+                <li>
+                  <span className="text-[color:var(--fg-muted)]">≥ 0.8</span>:{' '}
+                  <strong>{stats.decayDistribution.high}</strong>
+                </li>
+                <li>
+                  <span className="text-[color:var(--fg-muted)]">0.5 – 0.8</span>:{' '}
+                  <strong>{stats.decayDistribution.upperMid}</strong>
+                </li>
+                <li>
+                  <span className="text-[color:var(--fg-muted)]">0.2 – 0.5</span>:{' '}
+                  <strong>{stats.decayDistribution.lowerMid}</strong>
+                </li>
+                <li>
+                  <span className="text-[color:var(--fg-muted)]">&lt; 0.2</span>:{' '}
+                  <strong>{stats.decayDistribution.cold}</strong>
+                </li>
+              </ul>
+            ) : (
+              <SkeletonRows />
+            )}
+          </Card>
+        </section>
+
+        <section className="mb-8">
+          <h2 className="mb-3 font-display text-lg text-[color:var(--fg-strong)]">
+            Top scopes (by Turn count)
+          </h2>
+          <Card title="">
+            {stats ? (
+              stats.topScopesByCount.length === 0 ? (
+                <p className="text-sm text-[color:var(--fg-muted)]">
+                  No scopes recorded yet.
+                </p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="text-left text-xs uppercase tracking-wider text-[color:var(--fg-muted)]">
+                    <tr>
+                      <th className="pb-2">Scope</th>
+                      <th className="pb-2 text-right">Turns</th>
+                      <th className="pb-2 text-right">Quota</th>
+                      <th className="pb-2 text-right">Chars</th>
+                      <th className="pb-2 text-right">Char-Quota</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.topScopesByCount.map((row) => (
+                      <tr
+                        key={row.scope}
+                        className="border-t border-[color:var(--border)]/50"
+                      >
+                        <td className="py-2 font-mono text-xs">{row.scope}</td>
+                        <td className="py-2 text-right">{row.count}</td>
+                        <td className="py-2 text-right">
+                          <QuotaPill
+                            value={row.count}
+                            limit={stats.quotas?.hotMaxEntries}
+                          />
+                        </td>
+                        <td className="py-2 text-right">
+                          {row.chars.toLocaleString()}
+                        </td>
+                        <td className="py-2 text-right">
+                          <QuotaPill
+                            value={row.chars}
+                            limit={stats.quotas?.maxTotalChars}
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )
+            ) : (
+              <SkeletonRows />
+            )}
+          </Card>
+        </section>
+
+        <section>
+          <h2 className="mb-3 font-display text-lg text-[color:var(--fg-strong)]">
+            Last sweep runs
+          </h2>
+          <div className="grid gap-4 md:grid-cols-3">
+            <LastRunCard
+              title="Decay"
+              at={lastRuns?.decay?.at}
+              rows={
+                lastRuns?.decay
+                  ? [
+                      ['Updated', lastRuns.decay.stats.decayUpdated],
+                      ['HOT → WARM', lastRuns.decay.stats.hotToWarm],
+                      ['WARM → COLD', lastRuns.decay.stats.warmToCold],
+                      ['Done tasks deleted', lastRuns.decay.stats.doneTasksDeleted],
+                      ['Duration (ms)', lastRuns.decay.stats.durationMs],
+                    ]
+                  : null
+              }
+            />
+            <LastRunCard
+              title="GC"
+              at={lastRuns?.gc?.at}
+              rows={
+                lastRuns?.gc
+                  ? [
+                      ['Scopes affected', lastRuns.gc.stats.scopesAffected],
+                      ['Evicted by count', lastRuns.gc.stats.evictedByCount],
+                      ['Evicted by chars', lastRuns.gc.stats.evictedByChars],
+                      ['Duration (ms)', lastRuns.gc.stats.durationMs],
+                    ]
+                  : null
+              }
+            />
+            <LastRunCard
+              title="Access flush"
+              at={lastRuns?.accessFlush?.at}
+              rows={
+                lastRuns?.accessFlush
+                  ? [
+                      ['Flushed', lastRuns.accessFlush.stats.flushed],
+                      [
+                        'Promoted COLD → WARM',
+                        lastRuns.accessFlush.stats.promotedColdToWarm,
+                      ],
+                      ['Duration (ms)', lastRuns.accessFlush.stats.durationMs],
+                    ]
+                  : null
+              }
+            />
+          </div>
+        </section>
+        </>
+      )}
     </main>
   );
 }
@@ -380,6 +406,7 @@ function ActionCard({
       <p className="mb-4 flex-1 text-sm text-[color:var(--fg-muted)]">
         {description}
       </p>
+      {/* eslint-disable-next-line no-restricted-syntax -- bespoke highlight-token action (border/bg/text all --highlight); no §4.2 variant maps to --highlight */}
       <button
         type="button"
         disabled={busy}

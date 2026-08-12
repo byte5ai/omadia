@@ -82,6 +82,7 @@ export function ConductorRolesSection({
                 {t('assignButton')}
               </Button>
               {role.holders.map((h) => (
+                // eslint-disable-next-line no-restricted-syntax -- removable holder-token chip (✕ + id), not a §4.2 CTA
                 <button
                   key={h}
                   className="rounded-md border border-[color:var(--border)] px-2 py-1 font-mono text-[11px] text-[color:var(--fg-muted)]"

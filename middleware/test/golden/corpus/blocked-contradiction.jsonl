@@ -1,0 +1,13 @@
+# Expected verdict class: blocked via a judge contradiction. A soft claim whose
+# fixture evidence explicitly states something incompatible -> judge returns
+# `contradicted` -> blocked. This is the ONLY corpus path that exercises the
+# stochastic judge on its strongest signal (per the judge prompt, 'contradicted
+# ONLY when the evidence explicitly states something incompatible').
+#
+# CRITICAL: each answer carries a hard trigger signal (a date or currency
+# amount) so shouldTriggerVerifier fires and the extractor + judge actually run;
+# without a signal the pipeline skips straight to `approved`. The co-extracted
+# hard claim resolves `unverified`, but a contradiction dominates unverified in
+# the aggregation, so the verdict is `blocked`.
+{"id":"blocked_contradiction_role","note":"Date signal triggers; qualitative claim (IT-Abteilung) explicitly contradicted by evidence ('war nie in der IT-Abteilung') -> contradicted -> blocked.","userMessage":"In welcher Abteilung arbeitet Anna Müller?","answer":"Anna Müller wechselte am 01.03.2023 in die IT-Abteilung [ref:n_emp_anna].","evidence":[{"nodeId":"n_emp_anna","source":"graph","title":"Anna Müller","content":"Anna Müller ist Teamleiterin der Abteilung Buchhaltung. Sie war nie in der IT-Abteilung tätig."}],"expected":{"status":"blocked"}}
+{"id":"blocked_contradiction_status","note":"Currency signal triggers; claim of an active contract explicitly contradicted by evidence (contract terminated) -> contradicted -> blocked.","userMessage":"Ist der Vertrag mit Kunde ACME noch aktiv?","answer":"Der Vertrag mit ACME ist mit einem Volumen von 250.000 € weiterhin aktiv [ref:n_contract_acme].","evidence":[{"nodeId":"n_contract_acme","source":"graph","title":"Vertrag ACME","content":"Der Vertrag mit ACME wurde zum 31.12.2025 gekündigt und ist seitdem beendet."}],"expected":{"status":"blocked"}}

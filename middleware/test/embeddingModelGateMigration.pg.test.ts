@@ -3,6 +3,8 @@ import { after, before, describe, it } from 'node:test';
 
 import { Pool } from 'pg';
 
+import { probePgTest } from './_helpers/pgTestDb.js';
+
 import {
   allowsVectorWrites,
   evaluateEmbeddingModelGate,
@@ -29,28 +31,14 @@ import {
  * Self-skips when no Postgres is reachable, same convention as its sibling.
  */
 
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'embeddingModelGateMigration',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'DATABASE_URL'],
+  requireVector: true,
+  timeoutMs: 1_500,
+});
 
 const SCHEMA = 'embgate_migrate_test';
-
-let pgAvailable = true;
-// The probe runs at module scope, so it executes even when the suite ends up
-// skipping. `end()` must therefore live in a `finally`: on the unreachable-PG
-// path the old code left the pool (and its pending connect timer) behind for
-// the lifetime of this file's test process.
-const probe = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 1_500 });
-try {
-  await probe.query('SELECT 1');
-  await probe.query('CREATE EXTENSION IF NOT EXISTS vector');
-} catch {
-  pgAvailable = false;
-} finally {
-  await probe.end().catch(() => undefined);
-}
 
 const OLLAMA_768 = { modelId: 'ollama:nomic-embed-text', dimensions: 768 };
 const OPENAI_1536 = { modelId: 'openai:text-embedding-3-small', dimensions: 1536 };

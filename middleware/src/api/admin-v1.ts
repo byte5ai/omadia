@@ -79,6 +79,46 @@ export interface PluginSetupField {
   /** When true, this field holds MULTIPLE selected values (stored as a
    *  JSON-encoded `string[]`). Only meaningful alongside `options_provider`. */
   multi?: boolean;
+  /**
+   * OM-16 — whether the operator MUST supply a value for this field before the
+   * plugin can serve a request. Required-by-default: a manifest field that
+   * omits `required` is required. Parsed with exactly the same rule the
+   * install-job schema uses (`installService.ts` → `f['required'] !== false`),
+   * so the store view and the install wizard can never disagree.
+   *
+   * Consumed by `computeReadiness` (plugins/readiness.ts) to decide whether an
+   * installed plugin is actually configured, or merely present.
+   */
+  required?: boolean;
+  /**
+   * Optional validation regex (source form, no delimiters). Mirrors
+   * `InstallSetupField.pattern` so the post-install credentials editor can
+   * apply the same constraint the install wizard does.
+   */
+  pattern?: string;
+  /**
+   * OM-17 — operator-facing explanation of what `pattern` expects, e.g.
+   * "erwartet …@….iam.gserviceaccount.com" or "erwartet einen PEM-Block, der
+   * mit -----BEGIN PRIVATE KEY----- beginnt". Same `{ locale: text }` shape as
+   * `setup_guide`; the renderer picks the active locale (`pickLocalized`).
+   *
+   * Exists because a bare "entspricht nicht dem Muster" tells an operator who
+   * pasted the wrong KIND of credential nothing about what the right kind is —
+   * which is exactly how a tester ended up typing a Google account password
+   * into a service-account private-key field.
+   */
+  pattern_hint?: LocalizedMarkdown;
+  /**
+   * OM-17 — the manifest declared a `pattern`, but the server REFUSED it (it
+   * did not compile, or the catastrophic-backtracking allowlist rejected it),
+   * so this field is NOT format-checked. `pattern` is absent in that case.
+   *
+   * Fail-open is the right call for the write — refusing every value because a
+   * plugin author wrote an over-clever regex would brick the plugin — but it
+   * must not be SILENT. Without this flag the operator sees a field that looks
+   * validated and is not, which is precisely the defect OM-17 exists to fix.
+   */
+  pattern_unavailable?: boolean;
 }
 
 /** A single selectable choice returned by a field's `options_provider` tool. */
@@ -300,6 +340,40 @@ export interface PluginActionStatus {
   detail?: string;
 }
 
+/**
+ * OM-16 — kernel-derived plugin readiness.
+ *
+ * `install_state` and `InstalledAgent.status` are two independent state axes
+ * and neither answers the operator's actual question ("will this plugin serve
+ * a request?"). `install_state` stops at "is it in the registry", and
+ * `InstalledAgent.status` never leaves the server. Readiness is the derived
+ * third view: it inspects the plugin's *declared required setup fields*
+ * against the vault + the stored config and reports whether the plugin is
+ * genuinely usable.
+ *
+ * Unlike `PluginActionStatus` (push-only, plugins that call `ctx.status`),
+ * readiness is computed by the kernel and therefore also covers the majority
+ * of plugins that never report status at all.
+ */
+export type PluginReadinessState =
+  | 'not_installed'
+  | 'config_required'
+  | 'ready'
+  | 'errored';
+
+export interface PluginReadiness {
+  state: PluginReadinessState;
+  /** Keys of required setup fields with no stored value. Empty unless
+   *  `state === 'config_required'`. */
+  missing_fields: string[];
+  /** ISO8601 of the moment readiness was last observed as `ready`, i.e. the
+   *  plugin's last successful activation (falls back to `installed_at`).
+   *  `null` for every non-ready state. */
+  verified_at: string | null;
+  /** Tail of the last activation error. Only for `state === 'errored'`. */
+  error_detail?: string;
+}
+
 export interface Plugin {
   id: AgentId;
   kind: PluginKind;
@@ -401,6 +475,18 @@ export interface Plugin {
    * plugin reports `ok`.
    */
   action_status?: PluginActionStatus;
+  /**
+   * OM-16 — kernel-derived readiness. Orthogonal to `install_state`: a plugin
+   * can be `install_state: 'installed'` while every required credential is
+   * empty, in which case it cannot serve a single request. `install_state`
+   * answers "is it present?", `readiness` answers "can it actually work?".
+   *
+   * Optional on purpose — an older middleware omits it and an older web-ui
+   * ignores it, so both directions of the version skew keep working. Never
+   * widen `PluginInstallState` for this: 20+ call sites branch on
+   * `=== 'installed'`.
+   */
+  readiness?: PluginReadiness;
   /**
    * OB-29-0 marker. When `true`, this plugin is a Builder-Reference
    * (Pattern-Quelle für den BuilderAgent) and MUST NOT appear in the
@@ -531,6 +617,18 @@ export interface InstallSetupField {
   provider?: string;
   scopes?: string[];
   pattern?: string;
+  /** OM-17 — localized explanation of what `pattern` expects. See
+   *  `PluginSetupField.pattern_hint`; parsed by the same manifest read so the
+   *  install wizard and the post-install editor say the same thing. */
+  pattern_hint?: LocalizedMarkdown;
+  /** OM-17 — the manifest declared a `pattern` the server refused (uncompilable
+   *  or rejected by the ReDoS allowlist), so this field goes UNCHECKED. See
+   *  `PluginSetupField.pattern_unavailable`. */
+  pattern_unavailable?: boolean;
+  /** OM-17 — manifest-declared input placeholder, forwarded to the install
+   *  wizard. It used to be parsed for the catalog view only, while the wizard
+   *  hardcoded `••••••••` over every secret field. */
+  placeholder?: string;
   /** Render as multi-row textarea (string/secret only) — for values that
    *  contain newlines, e.g. PEM private keys. Older UIs ignore the flag
    *  and fall back to a single-line input. */

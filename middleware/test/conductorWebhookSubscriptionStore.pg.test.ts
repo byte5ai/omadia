@@ -4,6 +4,8 @@ import { after, before, describe, it } from 'node:test';
 
 import { Pool } from 'pg';
 
+import { probePgTest } from './_helpers/pgTestDb.js';
+
 import { runConductorMigrations } from '../src/conductor/migrator.js';
 import { ConductorWebhookSubscriptionStore } from '../src/conductor/webhookSubscriptionStore.js';
 import { ConductorWorkflowStore } from '../src/conductor/workflowStore.js';
@@ -16,20 +18,11 @@ import { InMemorySecretVault } from '../src/secrets/vault.js';
 // ever exercised through a hand-rolled in-memory fake (conductorWebhookDispatcher.test.ts).
 // This runs the SAME class against a real Postgres.
 
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
-
-let pgAvailable = true;
-try {
-  const probe = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 1_500 });
-  await probe.query('SELECT 1');
-  await probe.end();
-} catch {
-  pgAvailable = false;
-}
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'conductorWebhookSubscriptionStore',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'DATABASE_URL'],
+  timeoutMs: 1_500,
+});
 
 const MARK = 'webhooksubscriptionstore-pg-test';
 

@@ -17,6 +17,8 @@
 
 import type { Socket } from 'node:net';
 
+import type { WriteCapability } from './writeCapabilities.js';
+
 import type {
   EntityCapturedTurnsHit,
   EntityCapturedTurnsOptions,
@@ -575,6 +577,23 @@ export interface ToolRegistrationOptions {
   readonly promptDoc?: string;
   /** Per-turn attachment collector. See NativeToolAttachmentSink docs. */
   readonly attachmentSink?: NativeToolAttachmentSink;
+  /**
+   * #542 prerequisite — declare that dispatching this tool may MUTATE data.
+   *
+   * This is the plugin-facing end of the `WriteCapability` contract in
+   * `./writeCapabilities.ts` (see the NOTE under `NativeToolSpec` for why it
+   * rides the options bag rather than the spec: the spec is forwarded verbatim
+   * to Anthropic, which rejects unknown fields). The kernel stores it on the
+   * registry entry, where `ToolDispatchService` reads it.
+   *
+   * Declaring it opts the tool into duplicate-write protection: a dispatch that
+   * carries an idempotency key is deduplicated, and the MCP transport's
+   * transient retry is suppressed for it (a retry cannot tell "failed before
+   * writing" from "wrote, then lost the response"). A tool that mutates data and
+   * omits this gets no such protection — for an Odoo or M365 write reachable from
+   * a public endpoint, that means a duplicate is possible.
+   */
+  readonly writeCapabilities?: readonly WriteCapability[];
 }
 
 /**

@@ -19,7 +19,11 @@ import type {
   UnresolvedCapabilityEntry,
 } from '../../_lib/storeTypes';
 import { Chip } from './Chip';
-import { FieldRow, extractValues } from './setupForm';
+import {
+  FieldRow,
+  extractValues,
+  type SetupFieldError,
+} from './setupForm';
 import { Button } from '@/app/_components/ui/Button';
 
 /**
@@ -95,7 +99,9 @@ export function RequiresWizard({
     initialSelections,
   );
   const [phase, setPhase] = useState<Phase>({ kind: 'review' });
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [fieldErrors, setFieldErrors] = useState<
+    Record<string, SetupFieldError>
+  >({});
   const formRef = useRef<HTMLFormElement | null>(null);
   // Promise-resolver for the inline pause: when a provider needs setup
   // input, the install-loop awaits this before continuing.
@@ -113,6 +119,7 @@ export function RequiresWizard({
       aria-modal="true"
       aria-label={t('dialogAria', { name: targetPluginName })}
     >
+      {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (full-bleed modal backdrop/scrim, no text) */}
       <button
         type="button"
         onClick={installing ? undefined : onClose}
@@ -141,6 +148,7 @@ export function RequiresWizard({
               {t('intro')}
             </p>
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (close ×, X icon only) */}
           <button
             type="button"
             onClick={onClose}
@@ -479,7 +487,7 @@ function InstallingBody({
   onFormSubmit,
 }: {
   phase: Extract<Phase, { kind: 'installing' }>;
-  fieldErrors: Record<string, string>;
+  fieldErrors: Record<string, SetupFieldError>;
   formRef: React.MutableRefObject<HTMLFormElement | null>;
   onFormSubmit: (values: Record<string, unknown>) => void;
 }): React.ReactElement {

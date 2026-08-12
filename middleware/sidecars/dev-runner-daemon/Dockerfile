@@ -10,7 +10,7 @@
 # node >= 22.18 strips the TS types at load time, so no separate build step is
 # needed for this scaffold. `tini` reaps the child processes the daemon spawns;
 # the container runs as a non-root user.
-FROM node:22.23.1-alpine
+FROM node:22.23.2-alpine
 
 RUN apk add --no-cache tini
 
