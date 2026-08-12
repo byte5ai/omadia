@@ -238,7 +238,7 @@
         },
         "apiKeys": {
           "title": "Public API Keys",
-          "description": "Create, list, and revoke bearer credentials for the public chat API (issues #438/#439)."
+          "description": "Create, list, and revoke bearer credentials for the public chat API."
         },
         "dangerZone": {
           "title": "Memory Purge",

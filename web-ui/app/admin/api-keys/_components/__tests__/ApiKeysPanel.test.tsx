@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../../../_lib/test-utils';
@@ -291,5 +291,47 @@ describe('<ApiKeysPanel />', () => {
     // Now let row 1 resolve too.
     resolveFirst?.({ key: key({ id: 'key-1', revokedAt: Date.parse('2026-07-04T00:00:00Z') }) });
     await waitFor(() => expect(screen.getAllByText('Revoked').length).toBe(2));
+  });
+
+  // Regression guard for the `reloadSeqRef` sequence check: only the most
+  // recently ISSUED list request may write state. A slow mount fetch that
+  // resolves AFTER a post-create reload describes a world without the key the
+  // operator just minted — applying it makes that key vanish from the table
+  // seconds after it appeared, with no error and no way to get it back except
+  // a manual refresh.
+  it('discards a stale list response that resolves after a newer reload', async () => {
+    let resolveStaleMount: ((v: { keys: ApiKeyPublicView[] }) => void) | undefined;
+    mockListApiKeys
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveStaleMount = resolve;
+          }),
+      )
+      .mockResolvedValue({ keys: [key({ id: 'key-new', label: 'Freshly minted' })] });
+    mockCreateApiKey.mockResolvedValue({
+      key: key({ id: 'key-new', label: 'Freshly minted' }),
+      token: 'sk-live-plaintext-token-value',
+    });
+    renderWithIntl(<ApiKeysPanel />);
+
+    // Reload #1 (mount) is issued and left hanging.
+    await waitFor(() => expect(mockListApiKeys).toHaveBeenCalledTimes(1));
+
+    // Creating issues reload #2, which wins the race and paints the new key.
+    fireEvent.click(screen.getByText('Create key'));
+    expect(await screen.findByText('Freshly minted')).toBeTruthy();
+    await waitFor(() => expect(mockListApiKeys).toHaveBeenCalledTimes(2));
+
+    // Reload #1 finally answers — with a list that predates the new key. It is
+    // stale by construction and must be dropped on the floor.
+    resolveStaleMount?.({ keys: [key({ id: 'key-stale', label: 'Stale ghost' })] });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText('Stale ghost')).toBeNull();
+    expect(screen.getByText('Freshly minted')).toBeTruthy();
   });
 });

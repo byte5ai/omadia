@@ -238,7 +238,7 @@
         },
         "apiKeys": {
           "title": "Öffentliche API-Schlüssel",
-          "description": "Bearer-Zugangsdaten für die öffentliche Chat-API erstellen, auflisten und widerrufen (Issues #438/#439)."
+          "description": "Bearer-Zugangsdaten für die öffentliche Chat-API erstellen, auflisten und widerrufen."
         },
         "dangerZone": {
           "title": "Memory-Purge",

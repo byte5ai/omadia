@@ -105,6 +105,7 @@ export function CopyIdButton({ id }: { id: string }): React.ReactElement {
   }, [id]);
 
   return (
+    // eslint-disable-next-line no-restricted-syntax -- bespoke inline data chip: the control's own label IS the key id in the mono-data register plus a micro caption, no §4.2 variant
     <button
       type="button"
       onClick={() => void onCopy()}

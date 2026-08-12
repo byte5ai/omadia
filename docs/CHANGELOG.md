@@ -18,6 +18,26 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — admin UI for the public API keys (#567)
+
+- **Admin UI** (`web-ui/app/admin/api-keys/`): create/list/revoke against
+  `/api/public/v1/admin/keys`, which shipped in #438/#439 with no page at all —
+  keys could only be minted with `curl`. Each row shows the key's
+  `ApiKeyRecord.id` verbatim with a one-click copy, which is the point of the
+  issue: a public MCP key-binding (#550) is keyed on that id, so an operator
+  previously had to read it out of the API by hand.
+- A created key's plaintext token is shown exactly once, right after creation,
+  and creation is blocked while that one-time reveal is still on screen — the
+  create button and every form field stay disabled until the operator
+  explicitly dismisses it, so a second key can never silently overwrite the
+  first one's only-ever-shown token before it is copied. Revoking is a
+  two-step confirm-then-revoke per row with independent busy/confirm state per
+  key, and the list reload is guarded against out-of-order responses so a
+  slower in-flight fetch cannot stomp a newer one's result. Known backend
+  codes (`not_found`, `operator_auth.unavailable`,
+  `auth.missing`/`auth.invalid`, `invalid_request`) map to translated messages
+  rather than surfacing the raw response body.
+
 ### Added — errors on the LLM-access and credential screens now explain themselves (#604)
 
 - The providers panel used to render the middleware's English rejection
