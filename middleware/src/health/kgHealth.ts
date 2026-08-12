@@ -87,8 +87,79 @@ export interface KgHealth {
   durableTier: boolean;
   /** Stored-process reuse — requires neon (only it provides processMemory) + embeddings. */
   processReuse: boolean;
+  /** Liveness of the shared pg pool behind the neon backend (#665).
+   *  `skipped` when there is no neon backend to probe — that is not a fault. */
+  pool: 'live' | 'dead' | 'skipped';
   /** Human-readable degradation notes, empty when fully healthy. */
   warnings: string[];
+}
+
+/** Outcome of {@link probeGraphPool}. Kept separate from KgHealth so the
+ *  snapshot builder stays synchronous and pure — the I/O happens in the route,
+ *  the projection is still a function of its inputs. */
+export interface PoolProbe {
+  state: 'live' | 'dead' | 'skipped';
+  /** Failure text, for the warning line. Never surfaced when `live`. */
+  error?: string;
+}
+
+/** Minimal structural view of a pg Pool — avoids a `pg` type import here. */
+interface QueryablePool {
+  query(sql: string): Promise<unknown>;
+}
+
+/**
+ * Ask the shared pg pool whether it is still usable (#665).
+ *
+ * WHY THIS EXISTS: every other field in this file is a projection of the
+ * REGISTRY — what the operator installed and what the gate decided. None of it
+ * touches the database, so the outage in #665 was structurally invisible: the
+ * knowledge-graph plugin ended the process-wide pool, every query in the
+ * process began failing with `Cannot use a pool after calling end on the pool`,
+ * and `/health` kept answering `ok` because a registry entry still said
+ * `active`. That is precisely the lie the header of this file claims to
+ * prevent, in a dimension the file did not yet cover.
+ *
+ * `SELECT 1` is the cheapest question that distinguishes "the object still
+ * works" from "someone called end() on it" — an ended pool rejects it
+ * immediately, without I/O, so the common failure costs nothing. The timeout
+ * bounds the other case (a genuinely unreachable database) so a health probe
+ * can never hang the endpoint that is supposed to report the hang.
+ *
+ * Never throws: a health endpoint that 500s tells a load balancer far less
+ * than one that answers `degraded`.
+ */
+export async function probeGraphPool(
+  pool: unknown,
+  timeoutMs = 1000,
+): Promise<PoolProbe> {
+  if (!pool || typeof (pool as QueryablePool).query !== 'function') {
+    return { state: 'skipped' };
+  }
+  // The timer is cleared in `finally` rather than unref'd. Unref'ing looks
+  // tidier but takes the timer out of the event loop, so if the query never
+  // settles there is nothing left holding the process and the race is decided
+  // by whatever else happens to be running — which is exactly the case this
+  // timeout exists for.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      (pool as QueryablePool).query('SELECT 1'),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`pool probe timed out after ${String(timeoutMs)}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+    return { state: 'live' };
+  } catch (err) {
+    return {
+      state: 'dead',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /**
@@ -102,6 +173,7 @@ export interface KgHealth {
 export function buildKgHealth(
   registry: InstalledRegistry,
   gate?: EmbeddingGateStatus,
+  poolProbe?: PoolProbe,
 ): KgHealth {
   const isActive = (id: string): boolean => registry.get(id)?.status === 'active';
 
@@ -169,6 +241,20 @@ export function buildKgHealth(
     warnings.push(describeColumnMigration(gate));
   }
 
+  // #665. Only meaningful for neon — the inmemory backend has no pool, and
+  // `none` has nothing to probe. Reported before the other warnings because a
+  // dead pool makes every capability above it academic: they describe what the
+  // deployment is CONFIGURED to do, this says whether it can do anything.
+  const pool: KgHealth['pool'] =
+    backend === 'neon' ? (poolProbe?.state ?? 'skipped') : 'skipped';
+  if (pool === 'dead') {
+    warnings.unshift(
+      `knowledge-graph pg pool is not usable${
+        poolProbe?.error ? ` (${poolProbe.error})` : ''
+      } — the process shares one pool across ~40 subsystems, so this is an outage, not a degradation; restart the instance`,
+    );
+  }
+
   return {
     backend,
     durable,
@@ -176,6 +262,7 @@ export function buildKgHealth(
     semanticRecall,
     durableTier,
     processReuse,
+    pool,
     warnings,
   };
 }

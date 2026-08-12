@@ -190,7 +190,8 @@ jobs:
       # skip does NOT increment "skipped": its tests simply never register
       # and vanish from the total. So "skipped == 0" is blind to exactly the
       # silent-skip this issue is about; only a floor on the test COUNT
-      # catches it. The 25 *.pg.test.ts files register 238 tests today. If
+      # catches it. The *.pg.test.ts files register 240 tests today (+2 from
+      # kgPluginPoolLifetime.pg.test.ts, issue #665). If
       # the count drops (broken DSN, a future suite reading an env var we
       # don't set here, a cold-connection flake), a suite silently vanished —
       # go red. Raise PG_TEST_FLOOR when you add Postgres tests, same
@@ -199,7 +200,7 @@ jobs:
         env:
           GRAPH_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
           MEMORY_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
-          PG_TEST_FLOOR: '238'
+          PG_TEST_FLOOR: '240'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
