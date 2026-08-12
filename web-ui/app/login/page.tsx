@@ -173,7 +173,7 @@ function LoginPageInner(): React.ReactElement {
       <PageShell>
         <p className="text-sm text-[color:var(--warning)]">
           {t.rich('noProviders', {
-            envVar: () => <code>AUTH_PROVIDERS</code>,
+            envVar: (chunks) => <code>{chunks}</code>,
           })}
         </p>
       </PageShell>

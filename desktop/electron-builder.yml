@@ -53,22 +53,35 @@ mac:
   gatekeeperAssess: false
   entitlements: buildResources/entitlements.mac.plist
   entitlementsInherit: buildResources/entitlements.mac.plist
-  # Apple Silicon only for v1. The native modules ship as extraResources (copied
-  # verbatim, not arch-split), and GitHub's Intel (macos-13) runners queue for
-  # hours — impractical for a release. An x64 DMG built on an arm64 runner would
-  # contain arm64 native modules and crash on Intel. Intel support is a follow-up
-  # (cross-compile x64 prebuilds on the arm64 runner into a second staged tree).
+  # Architecture is NOT pinned here — CI passes `--arm64` or `--x64` explicitly
+  # and each arch is built on a runner of that architecture.
+  #
+  # It has to work that way: the omadia runtime ships as unpacked extraResources
+  # (middleware node_modules with better-sqlite3/argon2/sharp, plus the embedded
+  # Postgres engine), and extraResources are copied verbatim — they cannot be
+  # arch-split within one bundle. Building x64 on an arm64 host would therefore
+  # produce a DMG containing arm64 binaries that crashes on Intel.
+  #
+  # The old "Intel runners queue for hours" rationale is obsolete: macos-13 was
+  # retired in December 2025 and `macos-26-intel` is a standard runner.
+  # Note x86_64 support on GitHub Actions ends August 2027.
   target:
     - target: dmg
-      arch: [arm64]
     - target: zip          # required by electron-updater on macOS
-      arch: [arm64]
+  # Always carry the arch in the filename — electron-builder omits it for x64 by
+  # default, which would drop a nondescript `omadia-<version>.zip` next to the
+  # arm64 one. This is the ZIP name (electron-updater's payload); the DMG name is
+  # set under `dmg:` below. Both keep the existing arm64 filenames unchanged.
+  artifactName: ${productName}-${version}-${arch}-mac.${ext}
   # Notarization is left unset here so it's driven entirely by CI: the workflow
   # adds `--config.mac.notarize=true` only when the Apple secrets are present
   # (and electron-builder skips it without notary credentials). A hard-coded
   # `notarize: false` here would fight that CLI override.
 
 dmg:
+  # Target-level name wins over mac.artifactName, keeping the DMG exactly as it
+  # was for arm64 (`omadia-<version>-arm64.dmg`) while x64 gets `-x64`.
+  artifactName: ${productName}-${version}-${arch}.${ext}
   title: ${productName} ${version}
   contents:
     - x: 130

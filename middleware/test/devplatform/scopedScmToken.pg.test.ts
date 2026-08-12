@@ -6,6 +6,8 @@ import { after, before, describe, it } from 'node:test';
 import express, { type RequestHandler } from 'express';
 import { Pool } from 'pg';
 
+import { probePgTest } from '../_helpers/pgTestDb.js';
+
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
 import { assembleDevPlatform, mountDevPlatform } from '../../src/devplatform/wireDevPlatform.js';
@@ -17,20 +19,11 @@ import { mintRunnerToken } from '../../src/devplatform/jobToken.js';
 import type { TokenFetch } from '../../src/devplatform/githubApp/installationTokens.js';
 import type { DevJobProvisionInput, RunnerBackend, RunnerHandle } from '../../src/devplatform/types.js';
 
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
-
-let pgAvailable = true;
-try {
-  const probe = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 1_500 });
-  await probe.query('SELECT 1');
-  await probe.end();
-} catch {
-  pgAvailable = false;
-}
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'scopedScmToken',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'DATABASE_URL'],
+  timeoutMs: 1_500,
+});
 
 const MARK = 'scoped-scm-token';
 

@@ -180,6 +180,7 @@ export function AuthBadge(): React.ReactElement | null {
               </div>
             </div>
             <div className="border-t border-[color:var(--border)] pt-2">
+              {/* eslint-disable-next-line no-restricted-syntax -- justify-between menu row with bespoke spinner, not a §4.2 CTA */}
               <button
                 type="button"
                 onClick={handleLogout}

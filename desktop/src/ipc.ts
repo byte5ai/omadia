@@ -106,34 +106,131 @@ function validateConfig(config: WizardConfig): void {
   }
 }
 
+/** A model list is a few KB at most; anything past this is not one. */
+const MAX_PROBE_BODY_BYTES = 64 * 1024;
+
 /**
  * Validates an API key by hitting the provider's lightweight `models` endpoint.
- * 2xx → valid, 401/403 → invalid, anything else → surfaced as a soft error so the
- * user can still proceed offline if they insist.
+ * A 2xx only counts when it carries a JSON model list; 401 (and a 403 that
+ * self-identifies as an authentication error) means the key was rejected; every
+ * other outcome is surfaced as a soft error so the user can still proceed
+ * offline if they insist.
+ *
+ * PRE-BOOT TWIN of `middleware/src/platform/providerCredentialVerifier.ts`. This
+ * runs in the Electron main process before the middleware exists, so it cannot
+ * import that module (separate builds — sharing it would need a new package).
+ * The two are therefore deliberately kept identical in behaviour: same
+ * endpoints, same headers, same 10 s timeout, the same refusal to follow a
+ * redirect (`x-api-key` is a custom header, so the Fetch spec would forward it
+ * across origins), the same "a 2xx must look like a model list" gate, and the
+ * same non-negotiable mapping where a bare 403 is a permission/region block
+ * rather than a bad key and everything else (5xx, network, timeout) is
+ * inconclusive rather than a rejection. Change one, change the other.
  */
 async function testLlmKey(req: TestLlmKeyRequest): Promise<TestLlmKeyResult> {
   const key = req.apiKey.trim();
   if (key.length < 8) return { ok: false, error: 'Key looks too short.' };
   try {
-    if (req.provider === 'anthropic') {
-      const res = await fetch('https://api.anthropic.com/v1/models?limit=1', {
-        headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-        signal: AbortSignal.timeout(10_000),
-      });
-      return interpret(res.status);
-    }
-    const res = await fetch('https://api.openai.com/v1/models', {
-      headers: { Authorization: `Bearer ${key}` },
-      signal: AbortSignal.timeout(10_000),
-    });
-    return interpret(res.status);
+    // One signal for the request AND the bounded body read below.
+    const signal = AbortSignal.timeout(10_000);
+    const res =
+      req.provider === 'anthropic'
+        ? await fetch('https://api.anthropic.com/v1/models?limit=1', {
+            headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+            redirect: 'error',
+            signal,
+          })
+        : await fetch('https://api.openai.com/v1/models', {
+            headers: { Authorization: `Bearer ${key}` },
+            redirect: 'error',
+            signal,
+          });
+    return await interpret(res, signal);
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
   }
 }
 
-function interpret(status: number): TestLlmKeyResult {
-  if (status >= 200 && status < 300) return { ok: true };
-  if (status === 401 || status === 403) return { ok: false, error: 'Key was rejected (unauthorized).' };
-  return { ok: false, error: `Unexpected response (HTTP ${status}).` };
+async function interpret(res: Response, signal: AbortSignal): Promise<TestLlmKeyResult> {
+  if (res.status >= 200 && res.status < 300) {
+    // A captive portal or corporate proxy answers 200 text/html for a blocked
+    // host — treating that as a valid key is how a bogus credential got through.
+    if (!isJsonContentType(res.headers.get('content-type'))) {
+      return { ok: false, error: 'The response did not come from the provider (not JSON). Check any proxy or firewall.' };
+    }
+    const body = await readBoundedBody(res, signal);
+    if (body === undefined || !looksLikeModelList(body)) {
+      return { ok: false, error: 'Unexpected response body from the provider.' };
+    }
+    return { ok: true };
+  }
+  if (res.status === 401) return { ok: false, error: 'Key was rejected (unauthorized).' };
+  if (res.status === 403) {
+    const body = await readBoundedBody(res, signal);
+    if (body !== undefined && /"type"\s*:\s*"(authentication_error|invalid_api_key)"/.test(body)) {
+      return { ok: false, error: 'Key was rejected (unauthorized).' };
+    }
+    // OpenAI answers 403 for "Country, region, or territory not supported" and
+    // Anthropic for org-permission blocks — neither means a wrong key.
+    return { ok: false, error: 'The provider refused the request (HTTP 403). This usually means a permission or region restriction, not a wrong key.' };
+  }
+  return { ok: false, error: `Unexpected response (HTTP ${res.status}).` };
+}
+
+function isJsonContentType(contentType: string | null): boolean {
+  if (contentType === null) return false;
+  const mime = (contentType.split(';')[0] ?? '').trim().toLowerCase();
+  return mime === 'application/json' || mime === 'text/json' || mime.endsWith('+json');
+}
+
+/** Read at most MAX_PROBE_BODY_BYTES, on the SAME abort signal as the request. */
+async function readBoundedBody(res: Response, signal: AbortSignal): Promise<string | undefined> {
+  const body = res.body;
+  if (body === null) return undefined;
+  const reader = body.getReader();
+  const onAbort = (): void => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    if (signal.aborted) return undefined;
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      total += value.byteLength;
+      if (total > MAX_PROBE_BODY_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        return undefined;
+      }
+      chunks.push(value);
+    }
+    const joined = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      joined.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder().decode(joined);
+  } catch {
+    return undefined;
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
+/** OpenAI and Anthropic answer `{ data: [...] }`; some gateways `{ models: [...] }`. */
+function looksLikeModelList(text: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (Array.isArray(parsed)) return true;
+  if (typeof parsed !== 'object' || parsed === null) return false;
+  const rec = parsed as Record<string, unknown>;
+  return Array.isArray(rec['data']) || Array.isArray(rec['models']);
 }

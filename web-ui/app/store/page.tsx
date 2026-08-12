@@ -4,6 +4,8 @@ import { HardDrive, PackageCheck, Store } from 'lucide-react';
 import { getTranslations } from 'next-intl/server';
 
 import { listProfiles, listStorePlugins } from '../_lib/api';
+import { countReadiness, isInstalled } from '../_lib/pluginCounts';
+import { deriveInitialsForSet } from '../_lib/pluginInitials';
 import { redirectIfUnauthorized } from '../_lib/authRedirect';
 import type { Plugin, PluginKind } from '../_lib/storeTypes';
 import type { ProfileSummary } from '../_lib/profileTypes';
@@ -42,7 +44,7 @@ export default async function StorePage({
 
   try {
     const resp = await listStorePlugins();
-    plugins = resp.items;
+    plugins = Array.isArray(resp?.items) ? resp.items : [];
   } catch (err) {
     await redirectIfUnauthorized(err);
     loadError =
@@ -54,7 +56,7 @@ export default async function StorePage({
   // renders nothing when profiles is empty.
   try {
     const resp = await listProfiles();
-    profiles = resp.items;
+    profiles = Array.isArray(resp?.items) ? resp.items : [];
   } catch {
     profiles = [];
   }
@@ -67,16 +69,23 @@ export default async function StorePage({
   //   • Lokal       — local catalog packages (examples / uploaded ZIPs) that
   //                   are not yet installed.
   //   • Installiert — anything already in the runtime registry.
+  //
+  // OM-27: the "Installiert" bucket used to test `install_state === 'installed'`
+  // ONLY, so a locally-catalogued plugin with a pending update
+  // (`update-available`) fell out of "Installiert" and inflated "Lokal" — it was
+  // counted as not-yet-installed while being installed. Both buckets now go
+  // through the one shared `isInstalled` predicate (app/_lib/pluginCounts.ts),
+  // which is also what the dashboard tile uses, so they can no longer drift.
   const hubPlugins = plugins.filter((p) => p.source != null);
-  const installedPlugins = plugins.filter(
-    (p) => p.install_state === 'installed',
-  );
+  const installedPlugins = plugins.filter(isInstalled);
   const localPlugins = plugins.filter(
-    (p) => p.source == null && p.install_state !== 'installed',
+    (p) => p.source == null && !isInstalled(p),
   );
   const hubCount = hubPlugins.length;
   const localCount = localPlugins.length;
   const installedCount = installedPlugins.length;
+  // OM-16/OM-27 — "installed" and "usable" are different numbers; say both.
+  const readinessCounts = countReadiness(installedPlugins);
 
   const scoped =
     source === 'installed'
@@ -85,6 +94,10 @@ export default async function StorePage({
         ? localPlugins
         : hubPlugins;
   const countsByKind = countByKind(scoped);
+  // OM-31 — "MiniMax LLM Provider" and "Mistral LLM Provider" both used to
+  // render "ML". Resolve collisions once across the WHOLE catalog (not just the
+  // visible slice) so a tile's initials do not change when a filter is applied.
+  const initialsByName = deriveInitialsForSet(plugins.map((p) => p.name));
   const visible =
     filter === 'all' ? scoped : scoped.filter((p) => p.kind === filter);
 
@@ -118,6 +131,20 @@ export default async function StorePage({
         localCount={localCount}
         installedCount={installedCount}
       />
+
+      {/* OM-27 — the three tab numbers count three genuinely different things.
+          The installed view adds the readiness split so "installed" is never
+          mistaken for "working". */}
+      {source === 'installed' && installedCount > 0 ? (
+        <p className="mt-3 text-[12px] text-[color:var(--fg-muted)]">
+          {tPage('counts.installed', { n: readinessCounts.installed })}
+          {' · '}
+          {tPage('counts.ready', {
+            n: readinessCounts.ready,
+            total: readinessCounts.installed,
+          })}
+        </p>
+      ) : null}
 
       {/* Upload dropzone — only in the Lokal view: an uploaded ZIP becomes a
           local catalog package, which is exactly what this view lists. */}
@@ -177,7 +204,13 @@ export default async function StorePage({
         ) : (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {visible.map((plugin) => (
-              <PluginCard key={plugin.id} plugin={plugin} />
+              <PluginCard
+                key={plugin.id}
+                plugin={plugin}
+                {...(initialsByName.get(plugin.name)
+                  ? { initials: initialsByName.get(plugin.name)! }
+                  : {})}
+              />
             ))}
           </div>
         )}

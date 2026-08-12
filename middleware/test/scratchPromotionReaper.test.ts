@@ -15,13 +15,12 @@ import type {
   MemorableKnowledgeIngestResult,
 } from '@omadia/plugin-api';
 
-// Throwaway PG configured by the WS5 driver (docker container
-// `mwtest-pg-ws5` on :55437). Fall back to MEMORY_PG_TEST_URL / the
-// conventional throwaway URL so the file runs standalone too.
-const PG_URL =
-  process.env['WS5_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
+import { probePgTest } from './_helpers/pgTestDb.js';
+
+// Throwaway pgvector PG — point WS5_PG_TEST_URL (or MEMORY_PG_TEST_URL) at it.
+// No default port: a stray container must not be picked up (issue #572), and
+// this suite runs graph migrations that need pgvector, so it also skips when
+// the DB lacks the extension. The fake-pool flow always runs.
 
 // --- migration DDL (copy of 0001_memory_files.sql) ------------------------
 const MEMORY_FILES_DDL = `
@@ -96,19 +95,14 @@ describe('WS5 · deriveAgentSlug', () => {
 });
 
 // --- Real-PG suite (preferred) -------------------------------------------
-let pgUp = false;
-const probePool = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 2000 });
-try {
-  await probePool.query('SELECT 1');
-  pgUp = true;
-} catch {
-  console.error(
-    `[scratchPromotionReaper] PG at ${PG_URL} unreachable — running fake-pool flow only`,
-  );
-}
+const { url: PG_URL, reachable: pgUp } = await probePgTest({
+  label: 'scratchPromotionReaper',
+  vars: ['WS5_PG_TEST_URL', 'MEMORY_PG_TEST_URL'],
+  requireVector: true,
+});
 
 if (pgUp) {
-  const pool = probePool;
+  const pool = new Pool({ connectionString: PG_URL });
 
   after(async () => {
     await pool.end();

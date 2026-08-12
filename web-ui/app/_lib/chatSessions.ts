@@ -96,6 +96,66 @@ export interface PendingUserChoice {
 }
 
 /**
+ * Strip every one-shot interactive affordance from older assistant messages.
+ *
+ * Called when a new user message is sent, so button rows and input forms
+ * disappear from the history instead of inviting a second click. Extracted from
+ * `chat/page.tsx` to be testable: a mutation run showed the inline version was
+ * completely uncovered, and a stale MCP input form is worse than a stale button
+ * row — its `correlationId` is single-use server-side, so re-submitting it can
+ * only fail.
+ *
+ * Pure and non-mutating: messages with nothing to strip are returned by
+ * identity, so React's reference equality still short-circuits their re-render.
+ */
+export function stripStaleInteractives(messages: readonly Message[]): Message[] {
+  return messages.map((m) => {
+    if (!m.pendingUserChoice && !m.followUpOptions && !m.pendingMcpInput) return m;
+    const {
+      pendingUserChoice: _dropChoice,
+      pendingMcpInput: _dropMcpInput,
+      followUpOptions: _dropFollowUps,
+      ...rest
+    } = m;
+    return rest;
+  });
+}
+
+/** One free-text field an MCP server asked for (#544 W2-1). */
+export interface McpInputCardField {
+  name: string;
+  label?: string;
+  description?: string;
+  /**
+   * Render the input masked. ADVISORY: the value still travels to the
+   * third-party MCP server verbatim, so the UI must not imply it is protected.
+   */
+  secret?: boolean;
+  required?: boolean;
+}
+
+/**
+ * Mid-call input request from an MCP tool (#544 W2-1, MRTR
+ * `resultType: "input_required"`). The turn ended so the user can fill the
+ * fields in; submitting sends a fresh turn carrying the reply envelope, and the
+ * orchestrator replays the parked tool call.
+ *
+ * Mirrors the backend's `PendingMcpInputCard`. A SIBLING of
+ * {@link PendingUserChoice}, not a variant of it: free-text fields, not buttons.
+ *
+ * `serverName` MUST be rendered — see `McpInputCard.tsx`.
+ */
+export interface PendingMcpInput {
+  correlationId: string;
+  serverName: string;
+  serverId: string;
+  toolName: string;
+  /** Server-supplied prose. UNTRUSTED text — render as text, never as markup. */
+  prompt?: string;
+  fields: McpInputCardField[];
+}
+
+/**
  * Non-blocking 1-click refinement options attached below an answer. Each
  * click submits `prompt` as a fresh user message. Mirrors the backend's
  * `FollowUpOption[]`.
@@ -170,6 +230,24 @@ export interface PrivacyReceipt {
    * carry the span TYPE + detector id only, never the value.
    */
   maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
+  /**
+   * #547 / #569 — external MCP tools that returned `structuredContent` this
+   * turn. NOT a masking record: the payload is emitted out-of-band and never
+   * crossed the model boundary (the browser is the trusted side), so nothing
+   * was masked. This is the accounting entry — surfaced as a neutral "received
+   * structured output" section so an operator audit sees it. Absent / empty
+   * when no connected tool emitted structured output. PII-free.
+   */
+  structuredPayloads?: readonly StructuredPayloadEntry[];
+}
+
+/** #547 / #569 — one entry in `PrivacyReceipt.structuredPayloads`. Mirrors
+ *  `StructuredPayloadEntry` from `@omadia/plugin-api`. PII-free. */
+export interface StructuredPayloadEntry {
+  toolName: string;
+  serverName: string;
+  bytes: number;
+  hasOutputSchema: boolean;
 }
 
 /** #361 — PII-free record of one prompt span masked before the LLM wire.
@@ -408,6 +486,13 @@ export interface Message {
    * the buttons disappear on re-renders of the conversation history.
    */
   pendingUserChoice?: PendingUserChoice;
+  /**
+   * #544 W2-1 — set when the turn ended because an MCP tool needs mid-call user
+   * input. Cleared once the user submits (or types a fresh message) so the form
+   * disappears on re-renders of the conversation history, exactly like
+   * `pendingUserChoice`.
+   */
+  pendingMcpInput?: PendingMcpInput;
   /**
    * Refinement buttons attached below the answer (from `suggest_follow_ups`).
    * Cleared once the user commits to a follow-up or types a fresh message,
@@ -751,8 +836,11 @@ export interface UseChatSessionsResult {
   renameSession(id: string, title: string): Promise<void>;
   setActive(id: string): void;
   clearMessages(id: string): Promise<void>;
-  mutateActive(mutator: (session: ChatSession) => ChatSession): void;
-  persistActive(): Promise<void>;
+  mutateById(
+    sessionId: string,
+    mutator: (session: ChatSession) => ChatSession,
+  ): void;
+  persistById(sessionId: string): void;
 }
 
 /**
@@ -1009,42 +1097,58 @@ export function useChatSessions(): UseChatSessionsResult {
     [],
   );
 
-  const mutateActive = useCallback(
-    (mutator: (session: ChatSession) => ChatSession): void => {
+  // #617 — mutation is addressed by session id, never by "whatever is active".
+  // A background turn (the user switched chat tabs while it was streaming)
+  // must fold its events into its OWN session. Note the empty dep array: the
+  // callback closes over nothing, so its identity is stable for the lifetime
+  // of the hook and a long-running stream closure can never go stale.
+  const mutateById = useCallback(
+    (
+      sessionId: string,
+      mutator: (session: ChatSession) => ChatSession,
+    ): void => {
       setSessions((prev) =>
-        prev.map((s) => (s.id === activeId ? mutator(s) : s)),
+        prev.map((s) => (s.id === sessionId ? mutator(s) : s)),
       );
     },
-    [activeId],
+    [],
   );
 
-  // Refs kept in sync with state so persistActive reads the latest snapshot
-  // without forcing callers to resubscribe on every message delta. Declared —
-  // and synced — *before* persistActive so the React-Compiler `immutability`
-  // rule sees the `.current` writes happen before the useCallback closes over
-  // the refs. Initialised with throwaway literals (identical to the `useState`
-  // initial values); the effects below own the actual sync.
-  const sessionsRef = useRef<ChatSession[]>([]);
-  const activeIdRef = useRef<string>('');
-  useEffect(() => {
-    sessionsRef.current = sessions;
-  }, [sessions]);
-  useEffect(() => {
-    activeIdRef.current = activeId;
-  }, [activeId]);
+  // #617 — commit-ordered persistence. A background turn is followed by no
+  // corrective user turn in its session, so the PUT it fires from the stream
+  // runner's `finally` is the FINAL persisted state; reading the snapshot from
+  // an effect-synced ref would write state that predates the `done` fold.
+  // Instead `persistById` only enqueues, and the effect below drains the queue
+  // against the `sessions` value from render scope — i.e. state that has
+  // already committed. Deliberately NOT resolved inside a `setSessions`
+  // updater: that is a side effect in a function React may double-invoke, and
+  // it conflicts with the React-Compiler `immutability` rule.
+  const persistQueueRef = useRef<Set<string>>(new Set());
+  const [persistTick, setPersistTick] = useState(0);
 
-  const persistActive = useCallback(async (): Promise<void> => {
-    const snapshot = sessionsRef.current.find((s) => s.id === activeIdRef.current);
-    if (!snapshot) return;
-    try {
-      await putRemoteSession(snapshot);
-    } catch (err) {
-      console.warn(
-        '[chat-sessions] persistActive failed:',
-        err instanceof Error ? err.message : err,
-      );
-    }
+  const persistById = useCallback((sessionId: string): void => {
+    persistQueueRef.current.add(sessionId);
+    setPersistTick((n) => n + 1);
   }, []);
+
+  useEffect(() => {
+    if (persistQueueRef.current.size === 0) return;
+    const queued = [...persistQueueRef.current];
+    persistQueueRef.current.clear();
+    for (const id of queued) {
+      const snapshot = sessions.find((s) => s.id === id);
+      // Deleted or cleared while the turn was still in flight. Dropping the
+      // PUT is what keeps a late background turn from resurrecting a session
+      // the user already threw away.
+      if (!snapshot) continue;
+      putRemoteSession(snapshot).catch((err: unknown) => {
+        console.warn(
+          '[chat-sessions] persistById failed:',
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }
+  }, [persistTick, sessions]);
 
   // Always return *some* active session so the caller doesn't have to guard.
   // Build an ephemeral empty one during the brief hydrating window.
@@ -1063,7 +1167,7 @@ export function useChatSessions(): UseChatSessionsResult {
     renameSession,
     setActive: setActiveId,
     clearMessages,
-    mutateActive,
-    persistActive,
+    mutateById,
+    persistById,
   };
 }

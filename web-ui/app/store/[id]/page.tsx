@@ -126,6 +126,7 @@ export default async function PluginDetailPage({
               iconUrl={plugin.icon_url}
               size="lg"
               tone={isLegacy ? 'legacy' : 'default'}
+              id={plugin.id}
             />
             <div className="min-w-0">
               <div className="flex items-baseline gap-3 text-[11px] font-semibold uppercase tracking-[0.24em] text-[color:var(--fg-subtle)]">
@@ -138,6 +139,7 @@ export default async function PluginDetailPage({
                 <StateBadge
                   state={plugin.install_state}
                   isLegacy={isLegacy}
+                  readiness={plugin.readiness}
                 />
                 <Chip tone="mono">v{plugin.version}</Chip>
                 {plugin.signed ? (
@@ -188,7 +190,7 @@ export default async function PluginDetailPage({
             iframeSrc={adminUiIframeSrc}
             pluginName={plugin.name}
           >
-          <Section label={t('sectionDescription')} numeral="I">
+          <Section label={t('sectionDescription')}>
             <p className="text-[18px] font-semibold leading-[1.6] text-[color:var(--fg)]">
               {plugin.description ? (
                 <>
@@ -209,7 +211,6 @@ export default async function PluginDetailPage({
           {setupGuideText ? (
             <Section
               label={t('sectionSetupGuide')}
-              numeral="I.b"
               icon={<BookOpen className="size-4" aria-hidden />}
             >
               <Markdown source={setupGuideText} />
@@ -219,7 +220,6 @@ export default async function PluginDetailPage({
           {plugin.setup_fields.length > 0 ? (
             <Section
               label={t('sectionSetupFields')}
-              numeral="II"
               meta={t('setupFieldsCount', {
                 count: plugin.setup_fields.length,
               })}
@@ -244,7 +244,7 @@ export default async function PluginDetailPage({
           plugin.setup_fields.length > 0 ? (
             <Section
               label={t('sectionEditSetupFields')}
-              numeral="II.b"
+              id="setup-fields"
               icon={<KeyRound className="size-4" aria-hidden />}
             >
               <CredentialsEditor
@@ -261,7 +261,6 @@ export default async function PluginDetailPage({
           plugin.permissions_summary.network_web_scanner === true ? (
             <Section
               label={t('sectionAuditMode')}
-              numeral="II.c"
               icon={<ShieldAlert className="size-4" aria-hidden />}
             >
               <AuditModeSwitch pluginId={plugin.id} />
@@ -275,7 +274,6 @@ export default async function PluginDetailPage({
           {plugin.install_state === 'installed' ? (
             <Section
               label={t('sectionSelfExtension')}
-              numeral="II.d"
               icon={<Sparkles className="size-4" aria-hidden />}
             >
               <SelfExtensionPanel agentId={plugin.id} />
@@ -284,7 +282,6 @@ export default async function PluginDetailPage({
 
           <Section
             label={t('sectionPermissions')}
-            numeral="III"
             icon={<ShieldCheck className="size-4" aria-hidden />}
           >
             <PermissionsBlock
@@ -296,7 +293,6 @@ export default async function PluginDetailPage({
           0 ? (
             <Section
               label={t('sectionCapabilities')}
-              numeral="IV"
               icon={<Plug className="size-4" aria-hidden />}
               meta={t('capabilitiesMeta', {
                 provides: plugin.provides?.length ?? 0,
@@ -313,7 +309,6 @@ export default async function PluginDetailPage({
           {plugin.integrations_summary.length > 0 ? (
             <Section
               label={t('sectionIntegrations')}
-              numeral="V"
               icon={<Network className="size-4" aria-hidden />}
             >
               <ul className="space-y-2">
@@ -350,6 +345,7 @@ export default async function PluginDetailPage({
             enabled={install_available}
             remote={Boolean(plugin.source)}
             installedVersion={plugin.version}
+            {...(plugin.readiness ? { readiness: plugin.readiness } : {})}
             {...(plugin.setup_guide ? { setupGuide: plugin.setup_guide } : {})}
             {...(plugin.available_version
               ? { availableVersion: plugin.available_version }
@@ -450,25 +446,33 @@ export default async function PluginDetailPage({
 // Small building blocks kept local to this page
 // ---------------------------------------------------------------------------
 
+/**
+ * OM-39 — the numerals are gone.
+ *
+ * The page hardcoded `I, I.b, II, II.b, II.c, II.d, III, IV, V`; `I.a`/`II.a`
+ * never existed and conditional rendering punched gaps in the rest, so the
+ * sequence jumped for every operator. Nothing referenced them (no ToC, no
+ * cross-references, no deep links), and seven of the nine sections already
+ * carry an icon as their visual anchor.
+ */
 function Section({
   label,
-  numeral,
+  id,
   meta,
   icon,
   children,
 }: {
   label: string;
-  numeral: string;
+  /** Optional anchor target, e.g. `setup-fields` for the post-install
+   *  "complete setup" link. */
+  id?: string;
   meta?: string;
   icon?: React.ReactNode;
   children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <section>
+    <section {...(id ? { id } : {})}>
       <header className="mb-4 flex items-center gap-3 border-b border-[color:var(--divider)] pb-2">
-        <span className="font-mono-num text-[12px] font-semibold text-[color:var(--accent)]">
-          {numeral}
-        </span>
         <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-muted)]">
           {icon}
           {label}

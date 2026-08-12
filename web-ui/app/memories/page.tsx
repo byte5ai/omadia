@@ -89,6 +89,7 @@ export default function MemoriesPage(): React.ReactElement {
             const active = filter === k;
             const label = k === 'all' ? t('list.filterAll') : t(`kinds.${k}`);
             return (
+              // eslint-disable-next-line no-restricted-syntax -- segmented kind-filter selector with active-state styling
               <button
                 key={k}
                 type="button"

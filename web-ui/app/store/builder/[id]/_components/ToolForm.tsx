@@ -304,6 +304,7 @@ function InputSchemaSection({
           aria-label={t('schemaModeLabel')}
           className="inline-flex overflow-hidden rounded border border-[color:var(--border)]"
         >
+          {/* eslint-disable-next-line no-restricted-syntax -- segmented tab selector (role=tab, aria-selected toggle) */}
           <button
             role="tab"
             aria-selected={tab === 'form'}
@@ -318,6 +319,7 @@ function InputSchemaSection({
           >
             {t('tabForm')}
           </button>
+          {/* eslint-disable-next-line no-restricted-syntax -- segmented tab selector (role=tab, aria-selected toggle) */}
           <button
             role="tab"
             aria-selected={tab === 'json'}

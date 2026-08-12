@@ -10,6 +10,7 @@ import { Pool } from 'pg';
 
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
+import { probePgTest } from '../_helpers/pgTestDb.js';
 import { devPlatformBootRefusals } from '../../src/config.js';
 import { DevJobStore } from '../../src/devplatform/devJobStore.js';
 import { NUMSTAT_MARKER } from '../../src/devplatform/devJobWorkerPolicy.js';
@@ -114,12 +115,10 @@ describe('devplatform boot refusals', () => {
 // Part 2 — the full loop (DB-gated).
 // ---------------------------------------------------------------------------
 
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['WS5_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'platform.e2e',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL', 'DATABASE_URL'],
+});
 
 const MARK = 'e2e-devplatform-test';
 const E2E_DAEMON_TOKEN = 'e2e-daemon-secret-token-0123456789abcdef';
@@ -131,14 +130,7 @@ const E2E_PROVIDER_KEY = 'sk-ant-e2e-REAL-PROVIDER-KEY';
 const E2E_MODEL = 'claude-opus-4-8';
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
 
-const probePool = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 2000 });
-let pgAvailable = true;
-try {
-  await probePool.query('SELECT 1');
-} catch {
-  pgAvailable = false;
-  await probePool.end().catch(() => undefined);
-}
+const probePool = new Pool({ connectionString: PG_URL });
 
 // A single-add unified diff + a matching numstat. The stub forge does not parse
 // hunks (that is githubForgeClient's job, unit-tested elsewhere); DiffApplyService

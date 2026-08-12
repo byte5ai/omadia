@@ -44,6 +44,7 @@ function useAdminUi(): AdminUiCtx {
 export function AdminUiToggle(): React.ReactElement {
   const { open, toggle, panelId } = useAdminUi();
   return (
+    // eslint-disable-next-line no-restricted-syntax -- stateful toggle/segmented selector (aria-expanded, open/closed variants)
     <button
       type="button"
       onClick={toggle}

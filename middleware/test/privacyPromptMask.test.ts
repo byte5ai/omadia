@@ -10,7 +10,10 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import type { PrivacyGuardService, PromptPiiDetector } from '@omadia/plugin-api';
 import { createPrivacyTurnHandle } from '@omadia/orchestrator/dist/privacyHandle.js';
@@ -217,6 +220,133 @@ describe('maskPrompt', () => {
     }
     assert.equal(resolvePseudonyms(result.maskedText, result.map), text);
   });
+});
+
+describe('C0 locale patterns (#482 — es/fr/nl miss classes)', () => {
+  const detect = (text: string) => createBaselineDetector().detect(text);
+  const typesIn = async (text: string) =>
+    new Set((await detect(text)).map((s) => s.type));
+  const masks = async (text: string, value: string) =>
+    findIdentityLeaks((await maskPrompt(text, [createBaselineDetector()])).maskedText, [
+      value,
+    ]).length === 0;
+
+  // es — separator-less amounts ("899 €", "150 €").
+  it('es: catches a separator-less amount with a trailing symbol', async () => {
+    const text = 'Reembolsa los gastos de viaje de 899 € al empleado.';
+    assert.ok((await typesIn(text)).has('amount'));
+    assert.ok(await masks(text, '899 €'));
+    assert.ok(await masks('Un vale de 150 € por persona.', '150 €'));
+  });
+
+  // es — local mobile/landline grouped 3-3-3 with no +country / leading 0.
+  it('es: catches a 3-3-3 local phone without a + or 0 prefix', async () => {
+    const text = 'Llama a Diego al 612 334 455 para confirmar la cita.';
+    assert.ok((await typesIn(text)).has('phone'));
+    assert.ok(await masks(text, '612 334 455'));
+  });
+
+  it('es: does not treat a 3-3-3 run outside the 6-9 range as a phone', async () => {
+    // A national number never starts 0-5; a bare "100 200 300" must not flag.
+    assert.equal((await detect('Series 100 200 300 shipped this quarter.')).length, 0);
+  });
+
+  // fr — space-grouped amounts ("2 400 €", "72 000 €").
+  it('fr: catches space-grouped thousands amounts', async () => {
+    const text = 'La prime, soit 2 400 €, sera versée avec la paie de mars.';
+    assert.ok((await typesIn(text)).has('amount'));
+    assert.ok(await masks(text, '2 400 €'));
+    assert.ok(await masks('Le budget est de 72 000 € par an.', '72 000 €'));
+  });
+
+  // fr — written-out month names.
+  it('fr: catches a written-out date', async () => {
+    const text = 'Élodie est née le 17 septembre 1984 à Bordeaux.';
+    assert.ok((await typesIn(text)).has('date'));
+    assert.ok(await masks(text, '17 septembre 1984'));
+  });
+
+  it('fr: a month word without a year is not a date (anchor guard)', async () => {
+    assert.equal((await detect('On se voit en septembre pour le bilan.')).length, 0);
+  });
+
+  // nl — dashed DD-MM-YYYY dates ("30-06-2027").
+  it('nl: catches a dashed date', async () => {
+    const text = 'Willem gaat op 30-06-2027 met pensioen.';
+    assert.ok((await typesIn(text)).has('date'));
+    assert.ok(await masks(text, '30-06-2027'));
+    assert.ok(await masks('Geboren op 28-02-1995.', '28-02-1995'));
+  });
+
+  // Regression: the de/en/it forms the shipped patterns already carried must
+  // keep working after the separator/branch widening.
+  it('keeps the de/en numeric forms it already carried', async () => {
+    assert.ok(await masks('Geboren am 24.12.1987 in Köln.', '24.12.1987'));
+    assert.ok(await masks('Born on 1990-06-15 in Leeds.', '1990-06-15'));
+    assert.ok(await masks('Gehalt von €72.000 im Jahr.', '€72.000'));
+    assert.ok(await masks('Salary of 72,000.50 USD gross.', '72,000.50 USD'));
+  });
+
+  // Precision: the widened patterns must stay quiet on bare numerics that are
+  // neither amounts (no currency anchor) nor full dates (no day-month-year).
+  it('does not over-flag bare numerics without a currency or date anchor', async () => {
+    for (const text of [
+      'We grew revenue 30 percent across 2 400 accounts last year.',
+      'Ship 150 units to the depot and 899 to the store.',
+      'Chapter 12 covers the 2024 roadmap in detail.',
+    ]) {
+      assert.equal((await detect(text)).length, 0, `over-flagged: ${text}`);
+    }
+  });
+});
+
+describe('C0 precision on the committed negatives (#482 no-regression guard)', () => {
+  // Locks the "the locale patterns flag zero committed negatives" claim into
+  // CI: any future widening that over-masks a PII-free fixture fails here,
+  // not only in the (non-CI) validation harness. Mirrors the harness's
+  // precision proxy, but as a hard invariant — a single flagged span fails.
+  interface Fixture {
+    readonly text: string;
+    readonly spans: readonly unknown[];
+  }
+  const fixturesDir = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'packages',
+    'harness-plugin-privacy-guard',
+    'src',
+    'validation',
+    'fixtures',
+  );
+  const locales = readdirSync(fixturesDir)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => f.replace(/\.json$/, ''))
+    .sort();
+
+  // Guard the guard: if the fixtures ever move, we would silently test nothing.
+  it('finds the six locale fixture files', () => {
+    assert.deepEqual(locales, ['de', 'en', 'es', 'fr', 'it', 'nl']);
+  });
+
+  for (const locale of locales) {
+    it(`${locale}: C0 flags zero PII-free negatives`, async () => {
+      const items = JSON.parse(
+        readFileSync(join(fixturesDir, `${locale}.json`), 'utf-8'),
+      ) as Fixture[];
+      const negatives = items.filter((it) => it.spans.length === 0);
+      assert.ok(negatives.length > 0, `${locale} has no negatives to check`);
+      const detector = createBaselineDetector();
+      for (const neg of negatives) {
+        const spans = await detector.detect(neg.text);
+        assert.equal(
+          spans.length,
+          0,
+          `C0 over-masked a negative in ${locale}: ` +
+            `${JSON.stringify(spans.map((s) => s.type))} in "${neg.text}"`,
+        );
+      }
+    });
+  }
 });
 
 describe('PrivacyGuardService.maskUserPrompt', () => {

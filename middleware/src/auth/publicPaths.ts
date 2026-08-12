@@ -12,6 +12,15 @@
  * blanket guard. A shared constant makes that class of drift impossible.
  */
 
+import { CIMD_METADATA_PATH } from '../services/mcpCimd.js';
+import { PUBLIC_MCP_PATH } from '../mcp/publicMcpPath.js';
+
+/** Escape a literal path for embedding in a RegExp, so the shared constant —
+ *  not a hand-retyped pattern — is what the allowlist actually matches. */
+function pathPrefixPattern(path: string): RegExp {
+  return new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:$|\\?)`);
+}
+
 /** Public paths that are constant regardless of configuration. */
 export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   /^\/api\/v1\/auth(?:\/|$|\?)/,
@@ -42,6 +51,15 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // never added to this list when the feature shipped, so it 401'd before
   // ever reaching the handler that validates that state token.
   /^\/api\/v1\/operator\/mcp-oauth\/callback(?:\/|$|\?)/,
+  // W2-4 (issue #546) — the MCP Client ID Metadata Document. An authorization
+  // server fetches this with no credential of ours (the whole point: the
+  // `client_id` we hand it IS this URL, which it dereferences), so it must never
+  // sit behind an operator session. It carries no secret — only the redirect URI
+  // and a display name, both of which the IdP already sees during the authorize
+  // round-trip. Built from the SHARED `CIMD_METADATA_PATH` constant rather than
+  // a hand-written regex, for the reason in this module's doc comment above:
+  // the express route and this allowlist must be incapable of drifting.
+  pathPrefixPattern(CIMD_METADATA_PATH),
   // Plugin-served UI surfaces (`/p/<pluginId>/...`), iframed by Teams where
   // only a Teams SSO token exists. Plugins exposing sensitive data validate
   // that token themselves.
@@ -62,6 +80,20 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // narrowest regex that covers the one route, never a prefix that also
   // catches its siblings.
   /^\/api\/public\/v1\/chat(?:\/|$|\?)/,
+  // W2-3 (issue #542) — the public, stateless MCP endpoint. Follows the NOTE
+  // directly above to the letter: built from the SHARED `PUBLIC_MCP_PATH`
+  // constant (so the express mount and this allowlist cannot drift), and via
+  // `pathPrefixPattern`, which anchors on `$` or `?` and therefore matches the
+  // ONE path — not `/api/v1/mcp/anything` and not a sibling like
+  // `/api/v1/mcp-servers`. No regex bypass, no prefix that catches neighbours.
+  //
+  // Its authentication is `requireApiKey` from `@omadia/api-key-auth`, mounted
+  // by `mcp/publicMcpRouter.ts`. That is necessary but NOT the whole gate: the
+  // key must additionally hold `mcp:list`/`mcp:invoke` (and the exact
+  // `mcp:write:<tool>` for a write), AND have an enabled
+  // `public_mcp_key_bindings` row naming the one agent and the exact tools it
+  // reaches. A key with no row authenticates and reaches nothing.
+  pathPrefixPattern(PUBLIC_MCP_PATH),
 ];
 
 /**

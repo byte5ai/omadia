@@ -108,6 +108,7 @@ export function KeyValueEditor(props: {
     <div className="grid gap-2">
       <div className="flex items-center justify-between">
         <span className="text-[12px] text-[color:var(--fg-muted)]">{props.label}</span>
+        {/* eslint-disable-next-line no-restricted-syntax -- inline accent text link toggling rows/advanced, not a §4.2 CTA */}
         <button
           type="button"
           className="text-[11px] text-[color:var(--accent)] hover:underline"
@@ -132,6 +133,7 @@ export function KeyValueEditor(props: {
             <div key={row.id} className="grid grid-cols-[1fr_1fr_auto] items-center gap-1">
               <input className={gcInput} value={row.key} placeholder={t('kvKey')} onChange={(e) => setRow(i, { key: e.target.value })} />
               <input className={gcInput} value={row.value} placeholder={t('kvValue')} onChange={(e) => setRow(i, { value: e.target.value })} />
+              {/* eslint-disable-next-line no-restricted-syntax -- icon-only (✕) remove-row control, no text label */}
               <button
                 type="button"
                 className="px-1 text-[13px] text-[color:var(--danger)] hover:opacity-80"

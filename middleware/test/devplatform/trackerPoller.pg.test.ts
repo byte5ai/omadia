@@ -6,6 +6,8 @@ import { after, before, beforeEach, describe, it } from 'node:test';
 
 import { Pool } from 'pg';
 
+import { probePgTest } from '../_helpers/pgTestDb.js';
+
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
 import { DevJobStore } from '../../src/devplatform/devJobStore.js';
@@ -30,24 +32,13 @@ import type { DevRepo, RunnerBackendKind } from '../../src/devplatform/types.js'
  * job dedupe, cursor advance, structural refusals, interval floor, and skipping a
  * repo without 'tracker' in allowed_triggers. Skips when no test Postgres reachable.
  */
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['WS5_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'trackerPoller',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL', 'DATABASE_URL'],
+});
 
 const MARK = 'pg-tracker-poller';
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
-
-const probePool = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 2000 });
-let pgAvailable = true;
-try {
-  await probePool.query('SELECT 1');
-} catch {
-  pgAvailable = false;
-}
-await probePool.end().catch(() => undefined);
 
 function mkTicket(number: number, updatedAt: string, extra: Partial<Ticket> = {}): Ticket {
   return {

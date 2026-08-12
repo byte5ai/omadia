@@ -10,6 +10,13 @@ import {
   type XlsxDescriptor,
 } from './types.js';
 import { sanitizeFilename } from './filename.js';
+import { normalizeOoxml } from './ooxmlNormalize.js';
+import {
+  PROVENANCE_CATEGORY,
+  PROVENANCE_DESCRIPTION,
+  PROVENANCE_GENERATOR,
+  PROVENANCE_KEYWORDS,
+} from './provenance.js';
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   EUR: '€',
@@ -77,9 +84,16 @@ function coerce(value: CellValue, type: ColumnType | undefined): CellValue | Dat
  */
 export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResult> {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Omadia';
+  workbook.creator = PROVENANCE_GENERATOR;
   workbook.created = DETERMINISTIC_EPOCH;
   workbook.modified = DETERMINISTIC_EPOCH;
+  // Static AI-Act Art. 50 provenance marking (#645). exceljs has no reliable
+  // custom-property API, so .xlsx gets a coarser core-property marker than the
+  // structured customProperties .docx carries — a documented limitation (see
+  // the package README). All values are constant: no new nondeterminism.
+  workbook.description = PROVENANCE_DESCRIPTION;
+  workbook.keywords = PROVENANCE_KEYWORDS;
+  workbook.category = PROVENANCE_CATEGORY;
   if (descriptor.title) workbook.title = descriptor.title;
 
   let rowsWritten = 0;
@@ -129,8 +143,12 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
     }
   });
 
-  const out = await workbook.xlsx.writeBuffer();
-  const buffer = Buffer.from(out as unknown as Uint8Array);
+  const raw = Buffer.from((await workbook.xlsx.writeBuffer()) as unknown as Uint8Array);
+  // exceljs pins the core-property timestamps to DETERMINISTIC_EPOCH but still
+  // stamps each zip entry's mtime from the wall clock; normalize so re-renders
+  // are byte-identical and the content-addressed cache hits (#645). Core dates
+  // are already the epoch, so no core.xml rewrite is needed here.
+  const buffer = await normalizeOoxml(raw);
 
   return {
     buffer,

@@ -49,6 +49,29 @@ export interface WriteCapability {
   };
 }
 
+/**
+ * True when a tool declares at least one write capability — i.e. dispatching it
+ * may MUTATE data in a downstream system.
+ *
+ * This is the single predicate the dispatch layer uses to decide whether a call
+ * needs at-most-once protection (idempotency dedupe + transport-retry
+ * suppression). It is deliberately declaration-driven rather than name-derived:
+ * guessing "write" from a free-form tool name is exactly the silent-rollback
+ * failure mode the `WriteCapability` contract exists to avoid.
+ *
+ * A tool that declares NOTHING is treated as read-only. That default is safe for
+ * the canvas/inline-edit consumer (no affordances offered) but note the opposite
+ * asymmetry here: an UNANNOTATED write tool gets no idempotency protection. The
+ * annotation is the only signal available without an LLM call, so a plugin that
+ * mutates data and ships no `writeCapabilities` is a plugin bug — see the
+ * `writeCapabilities` field docs on `NativeToolRegistration`.
+ */
+export function isWriteCapableTool(
+  capabilities: readonly WriteCapability[] | undefined,
+): boolean {
+  return capabilities !== undefined && capabilities.length > 0;
+}
+
 /** Deterministic Tier-2 derivation of mutability from a tool's write capabilities. */
 export interface DerivedMutability {
   canAddItems: boolean;
