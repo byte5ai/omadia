@@ -94,9 +94,10 @@ export const DEV_JOB_SOURCES = [
   'webhook',
   'schedule',
   'tracker',
-  // Epic #470 W3 — job started by a plugin via `ctx.devJobs.create`. Paired
-  // with `created_by = 'plugin:<pluginId>'` so cancel can enforce "only jobs
-  // this plugin created". CHECK relaxed in migration 0025.
+  // ORPHANED. Written only by the `ctx.devJobs` accessor's host `createJob`,
+  // both of which were deleted (dormant-capabilities.md §2) — nothing can
+  // produce this value any more. Retained so a hypothetical pre-existing row
+  // still validates; migration 0025's CHECK is likewise forward-only.
   'plugin',
 ] as const;
 export type DevJobSource = (typeof DEV_JOB_SOURCES)[number];
