@@ -292,7 +292,15 @@ import { NativeToolRegistry } from '@omadia/orchestrator';
 // W3-A / W4 — boot-time enforcement of the tool-timeout ordering invariant.
 import { assertTimeoutHierarchy } from '@omadia/orchestrator';
 // W2-2 (issue #543) — generic long-running task seam.
-import { InMemoryTaskStore, startTaskReaper } from '@omadia/orchestrator';
+// Issue #560 — durable backing + boot resume driver for it.
+import {
+  InMemoryTaskStore,
+  startTaskReaper,
+  startTaskResumeDriver,
+  type ResumableTaskSource,
+  type TaskStore,
+} from '@omadia/orchestrator';
+import { DurableTaskStore } from './tasks/durableTaskStore.js';
 import {
   McpManager,
   type McpCallLogEntry,
@@ -447,18 +455,14 @@ async function main(): Promise<void> {
   const longRunningSubAgentTools = config.LONG_RUNNING_SUBAGENT_TOOLS.split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  const subAgentTaskStore = new InMemoryTaskStore();
-  if (longRunningSubAgentTools.length > 0) {
-    startTaskReaper(subAgentTaskStore, {
-      staleAfterMs: config.LONG_RUNNING_TASK_STALE_MS,
-      purgeTerminalAfterMs: config.LONG_RUNNING_TASK_RETAIN_MS,
-      onError: (err: unknown) =>
-        console.warn('[middleware] long-running task reaper sweep failed:', err),
-    });
-    console.log(
-      `[middleware] deferred sub-agent dispatch enabled for: ${longRunningSubAgentTools.join(', ')}`,
-    );
-  }
+  // Issue #560 — the store is chosen once `graphPool` resolves (far below): a
+  // DurableTaskStore over Postgres when available, so a long-running task
+  // survives a restart, else the process-local InMemoryTaskStore. The reaper is
+  // started there too. Deferred sub-agent tool handles are collected into this
+  // sink during hydration so the resume driver (started after the hydrate loop)
+  // can re-drive their tasks with no task-id hint (#560 criterion 3).
+  let subAgentTaskStore: TaskStore;
+  const deferredTaskToolHandles: ResumableTaskSource[] = [];
   // LLM provider catalog: kernel-owned registry of plugin-contributed providers
   // (e.g. @omadia/plugin-llm-minimax). Published pre-activate and populated from
   // installed plugins' `llm_provider` manifest blocks below, so the orchestrator
@@ -1588,6 +1592,29 @@ async function main(): Promise<void> {
   const graphPool = serviceRegistry.get<Pool>('graphPool');
   const graphTenantId = process.env['GRAPH_TENANT_ID'] ?? 'default';
 
+  // Issue #560 — now that graphPool is known, back the long-running task seam
+  // durably when Postgres is present (tasks survive a restart; the `tasks` table
+  // ships in migration 0034), else keep the process-local store. The reaper is
+  // started here rather than at declaration so it sweeps the store actually in
+  // use. The resume driver is started later, after the hydrate loop populates
+  // `deferredTaskToolHandles`.
+  subAgentTaskStore = graphPool
+    ? new DurableTaskStore(graphPool)
+    : new InMemoryTaskStore();
+  if (longRunningSubAgentTools.length > 0) {
+    startTaskReaper(subAgentTaskStore, {
+      staleAfterMs: config.LONG_RUNNING_TASK_STALE_MS,
+      purgeTerminalAfterMs: config.LONG_RUNNING_TASK_RETAIN_MS,
+      onError: (err: unknown) =>
+        console.warn('[middleware] long-running task reaper sweep failed:', err),
+    });
+    console.log(
+      `[middleware] deferred sub-agent dispatch enabled (${
+        graphPool ? 'durable' : 'in-memory'
+      } store) for: ${longRunningSubAgentTools.join(', ')}`,
+    );
+  }
+
   // Generic MCP OAuth service (epic #459 W9) — outer scope so both the
   // McpManager (auth provider) and the operator router (begin/callback routes)
   // reference the same instance.
@@ -2182,6 +2209,9 @@ async function main(): Promise<void> {
             // (the default) leaves every sub-agent on today's inline path.
             longRunningSubAgentTools: longRunningSubAgentTools,
             taskStore: subAgentTaskStore,
+            // Issue #560 — collect each deferred tool's handle so the resume
+            // driver can re-drive its tasks (`resumeOne`) with no id hint.
+            deferredTaskToolHandles,
             log: (m: string) => console.log(`[middleware] ${m}`),
           },
         );
@@ -2203,6 +2233,22 @@ async function main(): Promise<void> {
       console.log(
         `[middleware] registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(registryForHydrate.list().length)} agent(s) (per-Agent plugin-scoped)`,
       );
+      // Issue #560 — start the boot resume driver once the deferred tool handles
+      // exist. It claims and re-drives any `working` task with no lease (a
+      // durable row a restart orphaned before its runner claimed it, or a task a
+      // later turn un-parked via `provideInput`), calling `claimNextPending` with
+      // no task-id hint — the boot claim loop criterion 3 asks for. A no-op
+      // against the in-memory store (its rows die with the process) and against
+      // an empty handle set.
+      // Gated on the feature, not on handles being present yet: the sink is a
+      // shared array a later agent rebuild may append to, and each sweep re-reads
+      // it, so a handle registered after boot is still driven.
+      if (longRunningSubAgentTools.length > 0) {
+        startTaskResumeDriver(deferredTaskToolHandles, {
+          onError: (err: unknown) =>
+            console.warn('[middleware] long-running task resume sweep failed:', err),
+        });
+      }
       // Persist the wiring so a later `registry.reload()` that REBUILDS an
       // Agent (privacy_profile flip, etc.) re-hydrates the new orchestrator —
       // still scoped to the Agent's enabled plugins, and now from the LIVE tool

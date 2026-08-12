@@ -130,6 +130,18 @@ export interface TaskExecutionHandle {
   log(type: string, message: string): Promise<void>;
   /** Lease-fenced liveness touch, for long silent stretches. */
   heartbeat(): Promise<void>;
+  /**
+   * Park the task on a human gate (issue #560, criterion 4): flip it to
+   * `input_required` and RELEASE the lease. The executor calls this and then
+   * returns; the runner sees the task was parked and does NOT finalize it — the
+   * returned value is ignored on a parked task. The task stays parked until a
+   * later turn supplies the awaited input via `store.provideInput`, which flips
+   * it back to `working` for the resume driver to re-claim and re-drive.
+   *
+   * After this resolves the lease is gone, so any further `setPhase` / `log` /
+   * `heartbeat` on this handle will throw {@link TaskLeaseLostError}: park last.
+   */
+  requireInput(phase?: string): Promise<void>;
 }
 
 export interface LongRunningToolDefinition {
@@ -206,6 +218,24 @@ export interface LongRunningToolHandle {
    */
   takePendingCards(): readonly TaskCardPayload[];
   hasPendingCards(): boolean;
+  /**
+   * Claim and re-drive ONE claimable task of this tool's kind, WITHOUT a task-id
+   * hint (issue #560, criterion 3). Returns `true` if it claimed and ran one,
+   * `false` if nothing was claimable.
+   *
+   * This is the resume primitive the boot driver (`taskResumeDriver.ts`) loops
+   * on. With a durable store it re-drives two kinds of orphaned `working` rows a
+   * restart leaves behind: a task persisted by `_start` whose detached runner
+   * never got to claim it, and a task a later turn un-parked via
+   * `store.provideInput` (`input_required` → `working`). With
+   * {@link InMemoryTaskStore} there is nothing to resume across a restart, so it
+   * only ever drives an un-parked task within the same process — a no-op
+   * otherwise, which is the honest behaviour for a process-local store.
+   *
+   * Unlike a detached `_start` runner, this AWAITS the run, so the driver can
+   * bound how many it drives per sweep and never overlaps itself.
+   */
+  resumeOne(): Promise<boolean>;
   /**
    * Await the in-flight detached runners. TEST-ONLY: production never calls
    * this — the whole point is that the turn does not wait.
@@ -431,43 +461,71 @@ export function defineLongRunningTool(
    *     primitive — still gets its claim followed through to a terminal state,
    *     because a claim this runner cannot hand back is a claim it must finish.
    */
-  function startRunner(taskId: string): void {
+  /**
+   * Claim one task and drive it to a terminal state (or leave it PARKED), under
+   * a fresh lease. The shared core behind both `startRunner` (a specific task,
+   * fire-and-forget) and `resumeOne` (whatever is claimable, awaited).
+   *
+   * `taskId` is the advisory claim hint: passed when this runner was spawned FOR
+   * a specific task (the `_start` path), omitted when re-driving the pool (the
+   * boot resume driver). Returns whether it claimed and ran a task — the resume
+   * driver loops on that to drain everything claimable.
+   */
+  async function claimAndRun(taskId?: string): Promise<boolean> {
     const lease = randomUUID();
-    const run = (async (): Promise<void> => {
-      const claimed = await def.store.claimNextPending(lease, def.kind, taskId);
-      // Nothing claimable: someone else owns it (another process), or the
-      // reaper already failed it. No claim was taken, so there is nothing to
-      // release — the owner (or the reaper) finishes it.
-      if (!claimed) return;
-      // Authoritative id. Normally === taskId; differs only for a store that
-      // ignores the hint, and then THIS is the task we hold the lease on.
-      const claimedId = claimed.descriptor.id;
-      if (claimedId !== taskId) {
-        console.warn(
-          `[longRunningTool:${def.toolName}] runner for task ${taskId} was handed ` +
-            `task ${claimedId} by a store that cannot honour the claim hint — ` +
-            `executing the claimed task rather than stranding it.`,
-        );
-      }
-      const handle: TaskExecutionHandle = {
-        taskId: claimedId,
-        setPhase: (phase) => def.store.setPhase(claimedId, lease, phase),
-        log: (type, message) =>
-          def.store.appendEvents(claimedId, lease, [{ type, message }]),
-        heartbeat: () => def.store.heartbeat(claimedId, lease),
-      };
-      let result: string;
-      try {
-        result = await def.execute(claimed.input, handle);
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        await finishOrReportLoss(claimedId, lease, { status: 'failed', error: message });
-        return;
-      }
-      await finishOrReportLoss(claimedId, lease, { status: 'completed', result });
-    })().catch((err: unknown) => {
-      onRunnerError(err, taskId);
-    });
+    const claimed = await def.store.claimNextPending(lease, def.kind, taskId);
+    // Nothing claimable: someone else owns it (another process), or the reaper
+    // already failed it. No claim was taken, so there is nothing to release —
+    // the owner (or the reaper) finishes it.
+    if (!claimed) return false;
+    // Authoritative id. Normally === taskId (when a hint was given); differs only
+    // for a store that ignores the hint, and then THIS is the task we hold the
+    // lease on.
+    const claimedId = claimed.descriptor.id;
+    if (taskId !== undefined && claimedId !== taskId) {
+      console.warn(
+        `[longRunningTool:${def.toolName}] runner for task ${taskId} was handed ` +
+          `task ${claimedId} by a store that cannot honour the claim hint — ` +
+          `executing the claimed task rather than stranding it.`,
+      );
+    }
+    // Set when the executor parks via `handle.requireInput`. A parked task is NOT
+    // finalized: it is waiting on a human, `requireInput` already released the
+    // lease, and the executor's return value is meaningless. Finalizing it here
+    // would either overwrite the park or (the lease being gone) throw
+    // `TaskLeaseLostError` and misreport a parked task as a lost outcome.
+    let parked = false;
+    const handle: TaskExecutionHandle = {
+      taskId: claimedId,
+      setPhase: (phase) => def.store.setPhase(claimedId, lease, phase),
+      log: (type, message) =>
+        def.store.appendEvents(claimedId, lease, [{ type, message }]),
+      heartbeat: () => def.store.heartbeat(claimedId, lease),
+      requireInput: async (phase) => {
+        await def.store.requireInput(claimedId, lease, phase);
+        parked = true;
+      },
+    };
+    let result: string;
+    try {
+      result = await def.execute(claimed.input, handle);
+    } catch (err: unknown) {
+      if (parked) return true; // parked-then-threw: the park stands, do not finalize
+      const message = err instanceof Error ? err.message : String(err);
+      await finishOrReportLoss(claimedId, lease, { status: 'failed', error: message });
+      return true;
+    }
+    if (parked) return true; // parked cleanly: leave it `input_required` for resume
+    await finishOrReportLoss(claimedId, lease, { status: 'completed', result });
+    return true;
+  }
+
+  function startRunner(taskId: string): void {
+    const run = claimAndRun(taskId)
+      .then(() => undefined)
+      .catch((err: unknown) => {
+        onRunnerError(err, taskId);
+      });
     inFlight.add(run);
     void run.finally(() => inFlight.delete(run));
   }
@@ -642,6 +700,9 @@ export function defineLongRunningTool(
     },
     hasPendingCards(): boolean {
       return pendingCards.length > 0;
+    },
+    resumeOne(): Promise<boolean> {
+      return claimAndRun();
     },
     async drainForTest(): Promise<void> {
       while (inFlight.size > 0) {
