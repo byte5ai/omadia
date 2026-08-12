@@ -22,7 +22,7 @@ import {
   type ChatDevJobService,
   type DevJobStatusResult,
 } from '../../src/devplatform/devJobOrchestratorTool.js';
-import { isPermittedLauncher } from '../../src/routes/devPlatformShared.js';
+import { isPermittedLauncher } from '../../src/devplatform/routes/devPlatformShared.js';
 import type {
   DevJob,
   DevJobEvent,

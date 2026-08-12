@@ -19,7 +19,7 @@
  */
 
 import { GithubIssuesTracker, type IssuesFetch } from '../githubIssuesTracker.js';
-import type { DevPlatformTracker } from '../../routes/devPlatformShared.js';
+import type { DevPlatformTracker } from '../routes/devPlatformShared.js';
 import type { DevRepo } from '../types.js';
 
 /** A plugin's tracker factory: given a bound repo, hand back a `DevPlatformTracker`.

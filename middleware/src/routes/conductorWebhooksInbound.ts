@@ -1,7 +1,7 @@
 /**
  * Issue #437 — inbound Conductor webhooks (`POST /api/hooks/:endpointId`).
  *
- * MOUNTING CONTRACT (mirrors `routes/devWebhooks.ts`): this router MUST be mounted
+ * MOUNTING CONTRACT (mirrors `devplatform/routes/devWebhooks.ts`): this router MUST be mounted
  * BEFORE the global `app.use(express.json(...))`. HMAC verification needs the RAW
  * request bytes; once `express.json` has parsed and re-serialised the body, those
  * bytes are gone and every signature check fails. The router attaches its OWN

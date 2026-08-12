@@ -32,7 +32,7 @@
 
 import type { Pool } from 'pg';
 
-import type { DevPlatformTracker } from '../../routes/devPlatformShared.js';
+import type { DevPlatformTracker } from '../routes/devPlatformShared.js';
 import type { Ticket } from '../githubIssuesTracker.js';
 import type {
   CreateTriggerJobInput,

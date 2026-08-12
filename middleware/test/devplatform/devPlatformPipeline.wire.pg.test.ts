@@ -11,6 +11,7 @@ import { probePgTest } from '../_helpers/pgTestDb.js';
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
 import { assembleDevPlatform, mountDevPlatform } from '../../src/devplatform/wireDevPlatform.js';
+import { devPlatformTestConfig } from './devPlatformConfig.harness.js';
 import { DevGithubAppStore } from '../../src/devplatform/githubApp/appStore.js';
 import { DevJobGateStore } from '../../src/devplatform/pipeline/gateStore.js';
 import { DevRepoStore } from '../../src/devplatform/devRepoStore.js';
@@ -133,15 +134,10 @@ describe('dev-platform wiring — a real gated job, end to end through the assem
     wired = assembleDevPlatform({
       pool,
       vault,
-      baseUrl: 'http://127.0.0.1:3333',
-      cliBin: 'claude',
-      wallClockMs: 600_000,
-      heartbeatTimeoutMs: 600_000,
-      maxConcurrentJobs: 1,
-      commitAuthor: 'omadia-dev <dev-platform@omadia.ai>',
-      subscriptionModeEnabled: false,
-      workspaceDir: '/tmp/gate-wire',
-      unsafeLocal: false,
+      config: devPlatformTestConfig({
+        baseUrl: 'http://127.0.0.1:3333',
+        workspaceDir: '/tmp/gate-wire',
+      }),
       shimEntry: '/dev/null',
       // No backends started — this test drives the phone-home router by hand and
       // provisions jobs directly (never calls wired.start(), so the claim worker

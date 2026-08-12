@@ -178,8 +178,8 @@ import { createRequireAuth } from './auth/requireAuth.js';
 import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
 import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
 import { createChatDevJobOrchestratorTools } from './devplatform/chatDevJobToolWiring.js';
-import { isPermittedLauncher } from './routes/devPlatformShared.js';
-import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from './routes/devWebhooks.js';
+import { isPermittedLauncher } from './devplatform/routes/devPlatformShared.js';
+import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from './devplatform/routes/devWebhooks.js';
 import { WebhookDeliveryStore } from './devplatform/triggers/webhookDeliveryStore.js';
 import { DevGithubAppStore } from './devplatform/githubApp/appStore.js';
 import {
@@ -244,7 +244,7 @@ import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
 import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
 import type { PluginTemplateRegistrar } from './plugins/pluginTemplates.js';
-import { createDevPlatformGithubAppRouter } from './routes/devPlatformGithubApp.js';
+import { createDevPlatformGithubAppRouter } from './devplatform/routes/devPlatformGithubApp.js';
 import {
   OAuthBrokerService,
   PendingFlowStore,
@@ -2337,7 +2337,7 @@ async function main(): Promise<void> {
   // kill switch. The webhook stores are pool/vault-backed and stateless, so building
   // them here (before the full platform assembly) is safe and keeps the mount order
   // correct; the worker (assembled later) claims the created jobs from the DB.
-  if (config.DEV_PLATFORM_ENABLED && graphPool && config.DEV_WEBHOOKS_ENABLED) {
+  if (config.devPlatform.enabled && graphPool && config.devPlatform.webhooks.enabled) {
     const webhookAppStore = new DevGithubAppStore(graphPool, secretVault);
     const webhookRepoStore = new DevRepoStoreForWebhooks(graphPool);
     const webhookJobStore = new DevJobStoreForWebhooks(graphPool);
@@ -2370,7 +2370,7 @@ async function main(): Promise<void> {
     // Webhook jobs run on the non-local default backend: Fly when a runner app is
     // configured, else the docker shipping path. `local` is structurally refused by
     // the trigger job service, so it is never selected here.
-    const webhookBackend = config.DEV_FLY_RUNNER_APP ? ('fly' as const) : ('docker' as const);
+    const webhookBackend = config.devPlatform.fly?.runnerApp ? ('fly' as const) : ('docker' as const);
 
     const webhookDeps: DevWebhooksRouterDeps = {
       listWebhookSecrets,
@@ -2388,9 +2388,9 @@ async function main(): Promise<void> {
         ),
       mintRunnerToken: () => mintDevRunnerToken(),
       webhookBackend,
-      webhooksEnabled: config.DEV_WEBHOOKS_ENABLED,
-      maxJobsPerRepoHour: config.DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR,
-      maxJobsPerSenderHour: config.DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR,
+      webhooksEnabled: config.devPlatform.webhooks.enabled,
+      maxJobsPerRepoHour: config.devPlatform.webhooks.maxJobsPerRepoHour,
+      maxJobsPerSenderHour: config.devPlatform.webhooks.maxJobsPerSenderHour,
       log: (msg) => console.log(msg),
     };
     app.use(createDevWebhooksRouter(webhookDeps));
@@ -3017,116 +3017,26 @@ async function main(): Promise<void> {
   // spine + repo/artifact tables live there); in-memory mode has nowhere to
   // persist a durable queue. The two safety-critical modes (subscription auth,
   // unsafe-local backend) already refused boot in config.ts if misconfigured.
-  if (config.DEV_PLATFORM_ENABLED && graphPool) {
+  if (config.devPlatform.enabled && graphPool) {
     const devPlatformGithubDeviceProvider = createGitHubDeviceProvider(
-      config.DEV_PLATFORM_GITHUB_CLIENT_ID ?? config.GITHUB_OAUTH_CLIENT_ID,
+      config.devPlatform.githubClientId,
     );
     const shimEntry = fileURLToPath(
       new URL('../packages/dev-runner-shim/dist/src/index.js', import.meta.url),
     );
-    // Comma-separated env list → trimmed non-empty entries (egress allowlist,
-    // model allowlist). Entry-level validation happens in deriveJobPolicy.
-    const csvList = (raw: string): string[] =>
-      raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
     // W2: role-principal gates resolve their live holder set against the same
     // conductor role store the conductor await gate uses.
     const devPlatformRoleStore = new ConductorRoleStore(graphPool);
-    // The runner image, shared by every backend: FlyMachinesBackend (below) AND
-    // the DockerBackend job-policy config (assembleDevPlatform's `runnerImage`,
-    // further down) both derive from this one resolution. `DEV_RUNNER_IMAGE`
-    // wins when set (it's the name the daemon's own DEV_RUNNER_IMAGES/allowlist
-    // config uses too, so one operator-set var keeps every side in agreement);
-    // `DEV_RUNNER_DEFAULT_IMAGE` is the fallback. A digest-pinned image is
-    // required on Fly (enforced below); locally a floating tag is fine.
-    //
-    // Epic #470 W4 — the on-/off-Fly selection for the Machines backend lives
-    // HERE so the assembly layer stays env-free: on Fly (FLY_APP_NAME injected)
-    // use the internal Machines API + a `.internal` 6PN phone-home address; off
-    // Fly use the public endpoints. These operator URLs are DELIBERATELY not
-    // SSRF-guarded (`.internal` is valid here).
-    const resolvedRunnerImage = config.DEV_RUNNER_IMAGE ?? config.DEV_RUNNER_DEFAULT_IMAGE;
-    // The runner app MUST be dedicated — NEVER this middleware's own Fly app, or a
-    // job's ephemeral machine (running hostile repo code) would be provisioned into
-    // the app that holds the middleware's machines, volumes, and app-level secrets
-    // (Forge W4 wiring audit — the "dedicated app" invariant was comment-only).
-    const flyAppIsSelf = Boolean(
-      config.DEV_FLY_RUNNER_APP && config.FLY_APP_NAME && config.DEV_FLY_RUNNER_APP === config.FLY_APP_NAME,
-    );
-    if (flyAppIsSelf) {
-      console.warn(
-        `[middleware] DEV_FLY_RUNNER_APP (${config.DEV_FLY_RUNNER_APP}) equals this app's FLY_APP_NAME — refusing to provision runners into the middleware's own app; FlyMachinesBackend NOT registered`,
-      );
-    }
-    const flyConfig =
-      config.DEV_FLY_RUNNER_APP && resolvedRunnerImage && !flyAppIsSelf
-        ? {
-            runnerApp: config.DEV_FLY_RUNNER_APP,
-            apiBase: config.FLY_APP_NAME
-              ? 'http://_api.internal:4280/v1'
-              : 'https://api.machines.dev/v1',
-            image: resolvedRunnerImage,
-            phoneHomeUrl:
-              config.DEV_FLY_PHONE_HOME_URL ??
-              (config.FLY_APP_NAME
-                ? `http://${config.FLY_APP_NAME}.internal:8080`
-                : config.PUBLIC_BASE_URL),
-            guest: {
-              cpus: config.DEV_FLY_GUEST_CPUS,
-              memoryMb: config.DEV_FLY_GUEST_MEMORY_MB,
-              cpuKind: 'shared',
-            },
-            maxCpus: config.DEV_FLY_MAX_CPUS,
-            maxMemoryMb: config.DEV_FLY_MAX_MEMORY_MB,
-            ...(config.DEV_FLY_REGION ? { region: config.DEV_FLY_REGION } : {}),
-          }
-        : undefined;
-    if (config.DEV_FLY_RUNNER_APP && !resolvedRunnerImage) {
-      console.warn(
-        '[middleware] DEV_FLY_RUNNER_APP set but no runner image (DEV_RUNNER_IMAGE / DEV_RUNNER_DEFAULT_IMAGE) — FlyMachinesBackend NOT registered',
-      );
-    }
+    // Epic #470 C3: ONE namespaced config object, built in config.ts. Everything
+    // operator-settable — the runner image fallback, the on-/off-Fly selection,
+    // the comma-separated lists — is resolved behind that boundary or inside the
+    // assembly, so no `DEV_*` env name appears at this call site any more.
     const wiredDevPlatform = assembleDevPlatform({
       pool: graphPool,
       vault: secretVault,
+      config: config.devPlatform,
       resolveRoleHolders: (key) => devPlatformRoleStore.resolve(key),
-      baseUrl: config.DEV_PLATFORM_RUNNER_BASE_URL ?? `http://127.0.0.1:${String(config.PORT)}`,
-      cliBin: config.DEV_PLATFORM_CLI_BIN,
-      wallClockMs: config.DEV_PLATFORM_JOB_WALL_CLOCK_MS,
-      heartbeatTimeoutMs: config.DEV_PLATFORM_HEARTBEAT_TIMEOUT_MS,
-      maxConcurrentJobs: config.DEV_PLATFORM_MAX_CONCURRENT_JOBS,
-      commitAuthor: config.DEV_PLATFORM_COMMIT_AUTHOR,
-      subscriptionModeEnabled: config.DEV_PLATFORM_SUBSCRIPTION_MODE,
-      workspaceDir: config.DEV_PLATFORM_WORKSPACE_DIR,
-      unsafeLocal: config.DEV_PLATFORM_UNSAFE_LOCAL,
-      ...(config.DEV_PLATFORM_LOCAL_UID !== undefined ? { localUid: config.DEV_PLATFORM_LOCAL_UID } : {}),
       shimEntry,
-      // W1 keystones (spec §4/§6b): the daemon job-policy endpoint + the LLM
-      // proxy. Absent daemon token / runner image ⇒ the internal endpoint 503s;
-      // the LLM proxy is always mounted (its origin probe must answer 2xx).
-      ...(config.DEV_RUNNER_DAEMON_TOKEN ? { daemonToken: config.DEV_RUNNER_DAEMON_TOKEN } : {}),
-      ...(config.DEV_RUNNER_DAEMON_URL ? { daemonUrl: config.DEV_RUNNER_DAEMON_URL } : {}),
-      backend: config.DEV_PLATFORM_BACKEND,
-      leaseTtlSec: config.DEV_JOB_LEASE_TTL_SEC,
-      ...(resolvedRunnerImage ? { runnerImage: resolvedRunnerImage } : {}),
-      ...(config.DEV_EGRESS_BASE_ALLOWLIST
-        ? { egressBaseAllowlist: csvList(config.DEV_EGRESS_BASE_ALLOWLIST) }
-        : {}),
-      ...(config.DEV_PLATFORM_MIDDLEWARE_HOST
-        ? { middlewareHost: config.DEV_PLATFORM_MIDDLEWARE_HOST }
-        : {}),
-      llm: {
-        provider: config.DEV_PLATFORM_LLM_PROVIDER,
-        upstreamBaseUrl: config.DEV_PLATFORM_LLM_UPSTREAM_BASE_URL,
-        allowedModels: config.DEV_PLATFORM_LLM_ALLOWED_MODELS
-          ? csvList(config.DEV_PLATFORM_LLM_ALLOWED_MODELS)
-          : [],
-        // W4 (spec §5): the budget hook's config default + the max_tokens clamp ceiling.
-        defaultBudgetCostUsd: config.DEV_JOB_DEFAULT_BUDGET_USD,
-        maxOutputTokens: config.DEV_JOB_MAX_OUTPUT_TOKENS,
-      },
-      // W4 (spec §2): the Fly Machines backend, present only when a dedicated runner
-      // app is configured (absent ⇒ not registered).
-      ...(flyConfig ? { fly: flyConfig } : {}),
       ...(devPlatformGithubDeviceProvider
         ? {
             deviceFlow: {
@@ -3177,7 +3087,7 @@ async function main(): Promise<void> {
         repoStore: wiredDevPlatform.repoStore,
         jobStore: wiredDevPlatform.jobStore,
         isPermittedLauncher,
-        defaultBackend: config.DEV_PLATFORM_BACKEND,
+        defaultBackend: config.devPlatform.backend,
         getCallerUserId: () => turnContext.current()?.userId,
       });
       for (const reg of chatDevJobTools.registrations) {
@@ -3205,7 +3115,7 @@ async function main(): Promise<void> {
     process.once('SIGTERM', stopDevPlatformWorker);
     process.once('SIGINT', stopDevPlatformWorker);
     console.log(
-      `[middleware] dev platform ENABLED — worker running (max ${String(config.DEV_PLATFORM_MAX_CONCURRENT_JOBS)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
+      `[middleware] dev platform ENABLED — worker running (max ${String(config.devPlatform.maxConcurrentJobs)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
     );
 
     // Contribute the operator menu entry instead of hardcoding it in the
@@ -3233,8 +3143,8 @@ async function main(): Promise<void> {
     // cron only prunes aged rows. Terminal-job purge stays operator-driven via
     // `scripts/dev-transcript.ts purge`. `overlap:'skip'` so a slow run never stacks.
     const devRetention = new DevRetentionRunner(graphPool, {
-      eventRetentionDays: config.DEV_PLATFORM_EVENT_RETENTION_DAYS,
-      auditRetentionDays: config.DEV_PLATFORM_AUDIT_RETENTION_DAYS,
+      eventRetentionDays: config.devPlatform.retention.eventRetentionDays,
+      auditRetentionDays: config.devPlatform.retention.auditRetentionDays,
     });
     jobScheduler.register(
       'dev-platform',
@@ -3247,7 +3157,7 @@ async function main(): Promise<void> {
       },
     );
     console.log('[middleware] dev-retention cron registered (17 3 * * *)');
-  } else if (config.DEV_PLATFORM_ENABLED) {
+  } else if (config.devPlatform.enabled) {
     console.warn(
       '[middleware] DEV_PLATFORM_ENABLED=true but no graphPool (in-memory KG backend) — dev platform NOT started; set DATABASE_URL to enable',
     );

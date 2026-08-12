@@ -32,9 +32,10 @@ import { DevGithubAppStore } from './githubApp/appStore.js';
 import { JobTokenRegistry, mintScopedInstallationToken, revokeInstallationToken, type TokenFetch } from './githubApp/installationTokens.js';
 import { GithubForgeClient, type ForgeFetch } from './githubForgeClient.js';
 import { GithubIssuesTracker } from './githubIssuesTracker.js';
+import type { DevPlatformConfig } from './config.js';
 import { DevJobGateStore, type DevJobGate, type GateAnswer } from './pipeline/gateStore.js';
 import { PhaseEngine } from './pipeline/phaseEngine.js';
-import { createDevPlatformGatesRouter } from '../routes/devPlatformGates.js';
+import { createDevPlatformGatesRouter } from './routes/devPlatformGates.js';
 import { LocalProcessBackend } from './localProcessBackend.js';
 import { DockerBackend } from './dockerBackend.js';
 import { FlyMachinesBackend, type FlyGuest } from './flyMachinesBackend.js';
@@ -42,13 +43,13 @@ import type { ForgeClient } from './forgeClient.js';
 import type { DevJob, DevJobStatus, RunnerBackend } from './types.js';
 import { isTerminalDevJobStatus } from './types.js';
 import type { SecretVault } from '../secrets/vault.js';
-import { createDevPlatformRouter } from '../routes/devPlatform.js';
+import { createDevPlatformRouter } from './routes/devPlatform.js';
 import type {
   DevPlatformDeviceFlow,
   DevPlatformTracker,
   RepoAccessResult,
-} from '../routes/devPlatformShared.js';
-import { createDevRunnerRouter } from '../routes/devRunnerApi.js';
+} from './routes/devPlatformShared.js';
+import { createDevRunnerRouter } from './routes/devRunnerApi.js';
 import { createLlmProxyRouter, type LlmModelPolicy } from './llmProxy.js';
 import { createLlmProxyAccounting } from './llmProxyAccounting.js';
 import { priceForModel } from '@omadia/usage-telemetry';
@@ -74,91 +75,32 @@ const DEFAULT_JOB_BUDGET_USD = 5;
 export interface WireDevPlatformDeps {
   pool: Pool;
   vault: SecretVault;
-  /** Where the runner phones home (`DEV_PLATFORM_RUNNER_BASE_URL`). */
-  baseUrl: string;
-  cliBin: string;
-  wallClockMs: number;
-  heartbeatTimeoutMs: number;
-  maxConcurrentJobs: number;
-  /** `DEV_PLATFORM_COMMIT_AUTHOR` — `Name <email>`. */
-  commitAuthor: string;
-  subscriptionModeEnabled: boolean;
-  workspaceDir: string;
-  unsafeLocal: boolean;
-  localUid?: number | undefined;
+  /**
+   * The whole dev-platform configuration namespace, built once in core's
+   * `config.ts` (`config.devPlatform`). This is the ONLY channel for operator
+   * settings — no env-var name reaches this file, and the caller passes one
+   * argument instead of the ~20 loose values it used to thread through.
+   */
+  config: DevPlatformConfig;
   /** Absolute path to the built shim entry (`dev-runner-shim/dist/src/index.js`). */
   shimEntry: string;
 
-  // --- W1 keystones: daemon job-policy endpoint + LLM proxy (spec §4/§6b) ----
-  /** `DEV_RUNNER_DAEMON_TOKEN` — the daemon's shared bearer for the internal
-   *  job-policy endpoint AND the DockerBackend's control-plane calls. Absent ⇒
-   *  that endpoint 503s and the DockerBackend is not registered. */
-  daemonToken?: string;
-  /** `DEV_RUNNER_DAEMON_URL` — the daemon control-plane origin the DockerBackend
-   *  calls (spec §4/§5). Absent ⇒ no DockerBackend (nothing to talk to). */
-  daemonUrl?: string;
-  /** `DEV_PLATFORM_BACKEND` (spec §5). `docker` registers the container backend
-   *  when a daemon URL + token are present; `local` skips it. Default `docker`. */
-  backend?: 'docker' | 'local';
-  /** `DEV_JOB_LEASE_TTL_SEC` — lease TTL a docker job requests + renews at
-   *  ~TTL/3 (spec §7/§8). Default 180 in the backend. */
-  leaseTtlSec?: number;
-  /** Digest-pinned runner image (`DEV_RUNNER_DEFAULT_IMAGE`). Absent ⇒ the
-   *  job-policy endpoint 503s (nothing to derive an image from). */
-  runnerImage?: string;
-  /** Operator egress default (`DEV_EGRESS_BASE_ALLOWLIST`). */
-  egressBaseAllowlist?: readonly string[];
-  /** Hostname the job container reaches the middleware on. Defaults to the host
-   *  of `baseUrl`. */
-  middlewareHost?: string;
-  /** LLM-proxy config (spec §6b). The proxy router is ALWAYS mounted (its `GET /`
-   *  probe must answer 2xx); these tune the model gate + upstream. */
-  llm?: {
-    /** Vault provider segment. Default `anthropic`. */
-    provider?: string;
-    /** Upstream origin. Default `https://api.anthropic.com`. */
-    upstreamBaseUrl?: string;
-    /** Exact model ids a job may call. Empty/absent ⇒ the proxy 500s "no policy". */
-    allowedModels?: readonly string[];
+  // --- test seams for the LLM proxy (spec §6b) ------------------------------
+  /** Non-operator overrides for the always-mounted LLM proxy. Nothing here comes
+   *  from env; the real boot passes none of it. */
+  llmSeams?: {
     /** `ANTHROPIC_BASE_URL` handed to api_key jobs. Defaults to `<baseUrl>/api/v1/dev-runner/llm`. */
     proxyBaseUrl?: string;
-    /** W4 (spec §5): per-job cost budget default applied when neither the job nor
-     *  its repo sets one (`DEV_JOB_DEFAULT_BUDGET_USD`). */
-    defaultBudgetCostUsd?: number;
-    /** W4 (spec §5, Forge #2): the `max_tokens` clamp ceiling the proxy enforces so
-     *  the buffered budget path cannot overshoot on a single response. */
-    maxOutputTokens?: number;
-    /** Test seams. */
     fetchImpl?: typeof fetch;
     resolvePolicy?: (agentKind: string) => Promise<LlmModelPolicy | null>;
     resolveProviderKey?: (provider: string) => Promise<string | undefined>;
     onAccountingError?: (err: unknown, ctx: { jobId: string; tokensIn: number; tokensOut: number }) => void;
   };
 
-  // --- W4 keystone: the Fly Machines runner backend (spec §2) ---------------
-  /** `FlyMachinesBackend` config. Present ⇒ the backend is registered (one
-   *  ephemeral Fly Machine per job in a DEDICATED runner app); absent ⇒ not
-   *  registered (like the DockerBackend keys on the daemon url). The apiBase +
-   *  phoneHomeUrl are RESOLVED by the caller (on-/off-Fly selection) and are
-   *  DELIBERATELY not SSRF-guarded — they are operator URLs (`.internal` on Fly). */
-  fly?: {
-    /** `DEV_FLY_RUNNER_APP` — the dedicated runner app, NEVER odoo-bot-middleware. */
-    runnerApp: string;
-    /** Machines API root, resolved on-/off-Fly by the caller. */
-    apiBase: string;
-    /** Digest-pinned runner image (`DEV_RUNNER_IMAGE`, fallback DEV_RUNNER_DEFAULT_IMAGE). */
-    image: string;
-    /** Shim phone-home URL, resolved on-/off-Fly by the caller. */
-    phoneHomeUrl: string;
-    /** Default guest size a machine boots with (clamped to the ceilings below). */
-    guest: FlyGuest;
-    /** `DEV_FLY_MAX_CPUS` ceiling. */
-    maxCpus: number;
-    /** `DEV_FLY_MAX_MEMORY_MB` ceiling. */
-    maxMemoryMb: number;
-    /** Optional Fly region placement. */
-    region?: string;
-    /** Test seams. */
+  // --- test seams for the Fly Machines backend (spec §2) --------------------
+  /** Non-operator overrides for `FlyMachinesBackend`. Whether the backend is
+   *  registered at all is decided from `config.fly` + `config.runnerImage`. */
+  flySeams?: {
     fetchImpl?: typeof fetch;
     /** Deploy-token provider override (tests inject; default reads Vault). */
     resolveDeployToken?: () => Promise<string>;
@@ -191,6 +133,10 @@ export interface WireDevPlatformDeps {
   githubAppFetch?: TokenFetch;
   now?: () => Date;
   log?: (msg: string) => void;
+  /** Operator-facing WARNINGS (a misconfigured Fly runner app). Defaults to
+   *  `console.warn` on purpose: these are safety refusals, and a silently
+   *  swallowed one is worse than a noisy test. */
+  warn?: (msg: string) => void;
 }
 
 export interface WiredDevPlatform {
@@ -234,7 +180,13 @@ export interface WiredDevPlatform {
  *  no side effects, no listening; the caller mounts + starts the worker. */
 export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform {
   const log = deps.log ?? (() => {});
+  const warn = deps.warn ?? ((msg: string) => { console.warn(msg); });
+  const cfg = deps.config;
   const apiBaseUrl = deps.githubApiBaseUrl ?? DEFAULT_GITHUB_API_BASE;
+
+  // Resolved FIRST so its two refusal warnings are the earliest thing this
+  // assembly can emit — the position they held when the caller did this work.
+  const flyBackendConfig = resolveFlyBackendConfig(cfg, warn);
 
   const eventBus = new DevJobEventBus();
   const jobStore = new DevJobStore(deps.pool, { eventBus });
@@ -319,13 +271,13 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
         if (!token) throw new Error(`devplatform.repo_not_connected: ${repo.owner}/${repo.name}`);
         const service = new DiffApplyService({
           forge: forgeFactory(token),
-          author: parseGitIdentity(deps.commitAuthor),
+          author: parseGitIdentity(cfg.commitAuthor),
         });
         return service.apply(input);
       },
     };
 
-  const backends = deps.backends ?? buildBackends(deps, log, jobStore);
+  const backends = deps.backends ?? buildBackends(deps, flyBackendConfig, log, jobStore);
 
   // The durable human-gate table (spec §5). Created BEFORE the worker so the
   // diff-policy gate handler can close over it; the W2 phase engine below reuses
@@ -412,11 +364,11 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
       const baseSha = await forgeFactory(token).getRef(repo.owner, repo.name, repo.defaultBranch);
       return jobStore.prepareProvision(job, lease, baseSha);
     },
-    baseUrl: deps.baseUrl,
-    maxConcurrent: deps.maxConcurrentJobs,
-    wallClockMs: deps.wallClockMs,
-    heartbeatTimeoutMs: deps.heartbeatTimeoutMs,
-    subscriptionModeEnabled: deps.subscriptionModeEnabled,
+    baseUrl: cfg.baseUrl,
+    maxConcurrent: cfg.maxConcurrentJobs,
+    wallClockMs: cfg.wallClockMs,
+    heartbeatTimeoutMs: cfg.heartbeatTimeoutMs,
+    subscriptionModeEnabled: cfg.subscriptionModeEnabled,
     log,
   });
 
@@ -495,37 +447,37 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     makeIssuesTracker: makeIssuesTrackerFactory(apiBaseUrl),
     finalizeDevJob: boundFinalize,
     applyJob,
-    subscriptionModeEnabled: deps.subscriptionModeEnabled,
+    subscriptionModeEnabled: cfg.subscriptionModeEnabled,
     ...(deps.deviceFlow ? { deviceFlow: deps.deviceFlow } : {}),
     log,
   });
 
   // --- W1 keystones: job-policy config + the always-mounted LLM proxy --------
-  const middlewareHost = deps.middlewareHost ?? hostOf(deps.baseUrl);
+  const middlewareHost = cfg.middlewareHost ?? hostOf(cfg.baseUrl);
   const llmProxyBaseUrl =
-    deps.llm?.proxyBaseUrl ?? `${deps.baseUrl.replace(/\/+$/, '')}/api/v1/dev-runner/llm`;
+    deps.llmSeams?.proxyBaseUrl ?? `${cfg.baseUrl.replace(/\/+$/, '')}/api/v1/dev-runner/llm`;
   // Present ONLY when a runner image is configured; otherwise the internal
   // job-policy endpoint 503s (there is no image to derive), matching its contract.
-  const jobPolicyConfig: DeriveJobPolicyConfig | undefined = deps.runnerImage
+  const jobPolicyConfig: DeriveJobPolicyConfig | undefined = cfg.runnerImage
     ? {
         middlewareHost,
-        baseAllowlist: deps.egressBaseAllowlist ?? [],
-        image: deps.runnerImage,
+        baseAllowlist: cfg.egressBaseAllowlist ?? [],
+        image: cfg.runnerImage,
         llmProxyBaseUrl,
       }
     : undefined;
 
-  const llmProvider = deps.llm?.provider ?? DEFAULT_LLM_PROVIDER;
-  const llmUpstreamBaseUrl = deps.llm?.upstreamBaseUrl ?? DEFAULT_LLM_UPSTREAM_BASE_URL;
-  const llmAllowedModels = deps.llm?.allowedModels ?? [];
+  const llmProvider = cfg.llm?.provider ?? DEFAULT_LLM_PROVIDER;
+  const llmUpstreamBaseUrl = cfg.llm?.upstreamBaseUrl ?? DEFAULT_LLM_UPSTREAM_BASE_URL;
+  const llmAllowedModels = cfg.llm?.allowedModels ?? [];
   const resolvePolicy =
-    deps.llm?.resolvePolicy ??
+    deps.llmSeams?.resolvePolicy ??
     (async (): Promise<LlmModelPolicy | null> =>
       llmAllowedModels.length === 0
         ? null // unconfigured ⇒ proxy answers 500 "no LLM policy"
         : { provider: llmProvider, upstreamBaseUrl: llmUpstreamBaseUrl, allowedModels: llmAllowedModels });
   const resolveProviderKey =
-    deps.llm?.resolveProviderKey ??
+    deps.llmSeams?.resolveProviderKey ??
     ((provider: string) => deps.vault.get(DEV_PLATFORM_VAULT_AGENT, `llm/${provider}/api_key`));
 
   // W4 (spec §5, Forge #3): every allowed model MUST have a price-table entry, else
@@ -558,10 +510,10 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     // event log the runner streams (metadata only, never a token/prompt).
     emitBudgetWarning: (jobId, info) =>
       jobStore.appendHostEvent(jobId, 'budget_warning', { ...info }).then(() => undefined),
-    defaultBudgetCostUsd: deps.llm?.defaultBudgetCostUsd ?? DEFAULT_JOB_BUDGET_USD,
+    defaultBudgetCostUsd: cfg.llm?.defaultBudgetCostUsd ?? DEFAULT_JOB_BUDGET_USD,
     // REQUIRED (Forge #2): clamp `max_tokens` so the buffered enforcement path is
     // bounded; always supplied so the ceiling is never left open.
-    maxOutputTokens: deps.llm?.maxOutputTokens ?? DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+    maxOutputTokens: cfg.llm?.maxOutputTokens ?? DEFAULT_LLM_MAX_OUTPUT_TOKENS,
     log,
   });
 
@@ -571,8 +523,8 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     resolveProviderKey,
     addJobUsage: (jobId, tokensIn, tokensOut) => jobStore.addJobUsage(jobId, tokensIn, tokensOut),
     budget: budgetHook,
-    ...(deps.llm?.fetchImpl ? { fetchImpl: deps.llm.fetchImpl } : {}),
-    ...(deps.llm?.onAccountingError ? { onAccountingError: deps.llm.onAccountingError } : {}),
+    ...(deps.llmSeams?.fetchImpl ? { fetchImpl: deps.llmSeams.fetchImpl } : {}),
+    ...(deps.llmSeams?.onAccountingError ? { onAccountingError: deps.llmSeams.onAccountingError } : {}),
     log,
   });
 
@@ -581,8 +533,8 @@ export function assembleDevPlatform(deps: WireDevPlatformDeps): WiredDevPlatform
     repos: repoStore,
     scmTokens: scopedScmTokens,
     finalizeDevJob: boundFinalize,
-    wallClockMs: deps.wallClockMs,
-    ...(deps.daemonToken ? { daemonToken: deps.daemonToken } : {}),
+    wallClockMs: cfg.wallClockMs,
+    ...(cfg.daemonToken ? { daemonToken: cfg.daemonToken } : {}),
     ...(jobPolicyConfig ? { jobPolicyConfig } : {}),
     llmProxyRouter,
     // W2: the phase-result endpoint is mounted now that the engine exists.
@@ -834,18 +786,20 @@ export function mountDevPlatform(
 
 function buildBackends(
   deps: WireDevPlatformDeps,
+  fly: ResolvedFlyBackendConfig | undefined,
   log: (msg: string) => void,
   jobStore: DevJobStore,
 ): readonly RunnerBackend[] {
+  const cfg = deps.config;
   const backends: RunnerBackend[] = [];
 
   // W4 hosted path: the FlyMachinesBackend, registered ONLY when a dedicated runner
   // app is configured (DEV_FLY_RUNNER_APP) — without it there is no app to launch
   // machines in, so it stays unregistered rather than throwing at boot (same secure
   // default as the DockerBackend keying on the daemon url). The deploy token is read
-  // from Vault per call; apiBase/phoneHomeUrl are resolved on-/off-Fly by the caller.
-  if (deps.fly) {
-    const fly = deps.fly;
+  // from Vault per call; apiBase/phoneHomeUrl are resolved on-/off-Fly by
+  // `resolveFlyBackendConfig`, which also owns the two refusal warnings.
+  if (fly) {
     backends.push(
       new FlyMachinesBackend({
         apiBase: fly.apiBase,
@@ -853,7 +807,7 @@ function buildBackends(
         // Read the deploy token from Vault per API operation — never held on the
         // instance. A test may inject `resolveDeployToken` instead.
         token:
-          fly.resolveDeployToken ??
+          deps.flySeams?.resolveDeployToken ??
           (async () => {
             const tok = await deps.vault.get(DEV_PLATFORM_VAULT_AGENT, FLY_DEPLOY_TOKEN_VAULT_KEY);
             if (!tok) {
@@ -876,7 +830,7 @@ function buildBackends(
           return job !== null && !isTerminalDevJobStatus(job.status);
         },
         ...(fly.region ? { region: fly.region } : {}),
-        ...(fly.fetchImpl ? { fetchImpl: fly.fetchImpl } : {}),
+        ...(deps.flySeams?.fetchImpl ? { fetchImpl: deps.flySeams.fetchImpl } : {}),
         log,
       }),
     );
@@ -893,12 +847,12 @@ function buildBackends(
   // (the default) and registered ONLY when a daemon URL + token are configured —
   // without both there is nothing to talk to, so it stays unregistered rather
   // than throwing at boot (secure default: off until the operator sets the token).
-  if ((deps.backend ?? 'docker') === 'docker' && deps.daemonUrl && deps.daemonToken) {
+  if (cfg.backend === 'docker' && cfg.daemonUrl && cfg.daemonToken) {
     backends.push(
       new DockerBackend({
-        daemonUrl: deps.daemonUrl,
-        daemonToken: deps.daemonToken,
-        ...(deps.leaseTtlSec !== undefined ? { leaseTtlSec: deps.leaseTtlSec } : {}),
+        daemonUrl: cfg.daemonUrl,
+        daemonToken: cfg.daemonToken,
+        ...(cfg.leaseTtlSec !== undefined ? { leaseTtlSec: cfg.leaseTtlSec } : {}),
         log,
       }),
     );
@@ -909,20 +863,91 @@ function buildBackends(
   // acknowledged the jail (DEV_PLATFORM_UNSAFE_LOCAL). W1 demotes it to an escape
   // hatch so it never becomes the permanent crutch the epic names as a risk. The
   // backend constructor enforces the uid; config's boot refusal guarantees it.
-  if (deps.unsafeLocal) {
+  if (cfg.unsafeLocal) {
     backends.push(
       new LocalProcessBackend({
         unsafeLocalAck: true,
-        localUid: deps.localUid ?? 0,
-        workspaceDir: deps.workspaceDir,
+        localUid: cfg.localUid ?? 0,
+        workspaceDir: cfg.workspaceDir,
         shimEntry: deps.shimEntry,
-        cliBin: deps.cliBin,
+        cliBin: cfg.cliBin,
         log,
       }),
     );
   }
 
   return backends;
+}
+
+/**
+ * The `FlyMachinesBackend` inputs, resolved from the operator's config: the
+ * on-/off-Fly endpoint selection plus the two safety refusals. Present ⇒ the
+ * backend is registered; `undefined` ⇒ it is not (the secure default, exactly as
+ * the DockerBackend keys on its daemon url).
+ *
+ * `apiBase`/`phoneHomeUrl` are DELIBERATELY not SSRF-guarded — they are operator
+ * URLs, and `.internal` is the correct value on Fly.
+ */
+interface ResolvedFlyBackendConfig {
+  runnerApp: string;
+  apiBase: string;
+  image: string;
+  phoneHomeUrl: string;
+  guest: FlyGuest;
+  maxCpus: number;
+  maxMemoryMb: number;
+  region?: string | undefined;
+}
+
+/** Fly guest defaults, applied when the operator config omits them. */
+const DEFAULT_FLY_GUEST_CPUS = 1;
+const DEFAULT_FLY_GUEST_MEMORY_MB = 1024;
+const DEFAULT_FLY_MAX_CPUS = 4;
+const DEFAULT_FLY_MAX_MEMORY_MB = 8192;
+
+function resolveFlyBackendConfig(
+  cfg: DevPlatformConfig,
+  warn: (msg: string) => void,
+): ResolvedFlyBackendConfig | undefined {
+  const fly = cfg.fly;
+  const runnerApp = fly?.runnerApp;
+  if (!runnerApp) return undefined;
+
+  // The runner app MUST be dedicated — NEVER this middleware's own Fly app, or a
+  // job's ephemeral machine (running hostile repo code) would be provisioned into
+  // the app that holds the middleware's machines, volumes, and app-level secrets.
+  const hostAppName = fly?.hostAppName;
+  if (hostAppName && runnerApp === hostAppName) {
+    warn(
+      `[middleware] DEV_FLY_RUNNER_APP (${runnerApp}) equals this app's FLY_APP_NAME — refusing to provision runners into the middleware's own app; FlyMachinesBackend NOT registered`,
+    );
+  }
+  if (!cfg.runnerImage) {
+    warn(
+      '[middleware] DEV_FLY_RUNNER_APP set but no runner image (DEV_RUNNER_IMAGE / DEV_RUNNER_DEFAULT_IMAGE) — FlyMachinesBackend NOT registered',
+    );
+    return undefined;
+  }
+  if (hostAppName && runnerApp === hostAppName) return undefined;
+
+  // On Fly (FLY_APP_NAME injected) use the internal Machines API + a `.internal`
+  // 6PN phone-home address; off Fly use the public endpoints.
+  return {
+    runnerApp,
+    apiBase: hostAppName ? 'http://_api.internal:4280/v1' : 'https://api.machines.dev/v1',
+    image: cfg.runnerImage,
+    phoneHomeUrl:
+      fly?.phoneHomeUrl ??
+      (hostAppName ? `http://${hostAppName}.internal:8080` : (fly?.publicBaseUrl ?? '')),
+    guest: {
+      cpus: fly?.guestCpus ?? DEFAULT_FLY_GUEST_CPUS,
+      memoryMb: fly?.guestMemoryMb ?? DEFAULT_FLY_GUEST_MEMORY_MB,
+      cpuKind: 'shared',
+    },
+    maxCpus: fly?.maxCpus ?? DEFAULT_FLY_MAX_CPUS,
+    maxMemoryMb: fly?.maxMemoryMb ?? DEFAULT_FLY_MAX_MEMORY_MB,
+    ...(fly?.region ? { region: fly.region } : {}),
+  };
 }
 
 /** Adapt the repo-bound `GithubIssuesTracker` to the route's `DevPlatformTracker`
