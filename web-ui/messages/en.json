@@ -2668,7 +2668,15 @@
       "saveKey": "Save key",
       "cancel": "Cancel",
       "cliNotInstalledReason": "The Claude CLI is not installed on this server.",
-      "helpLink": "What does this mean?"
+      "helpLink": "What does this mean?",
+      "unverifiedReason": {
+        "forbidden": "The provider refused the request (HTTP 403). This is usually a region or organisation restriction, not a wrong key.",
+        "nonJsonResponse": "The provider answered with something other than JSON — often a proxy or captive-portal page rather than the API.",
+        "unexpectedBody": "The provider answered, but not with a model list we recognise.",
+        "httpError": "The provider returned an error (server-side or rate limit). Not your key.",
+        "networkError": "The provider could not be reached — timeout, DNS or no connection.",
+        "noProbe": "This provider type cannot be probed cheaply, so the key stays unverified."
+      }
     },
     "assignments": {
       "heading": "Per-agent assignment",
@@ -2850,6 +2858,8 @@
       "signed": "signed",
       "unsigned": "unsigned",
       "connectedOk": "Connection established.",
+      "alreadyProvided": "This capability is already provided by {owner}. Installing a second provider is not possible — configure the existing one instead.",
+      "alreadyProvidedCta": "Configure providers",
       "connectedError": "Connection failed. Please try again.",
       "connectedErrorWithReason": "Connection failed ({reason}). Please try again.",
       "sectionDescription": "Description",

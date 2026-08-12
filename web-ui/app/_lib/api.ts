@@ -367,6 +367,13 @@ export interface AdminProvider {
    *  absent on payloads from a pre-#604 middleware, where `verifyError` (an
    *  English sentence) stays the only thing there is to show. */
   verifyErrorCode?: string;
+  /** #671 — why the probe could NOT confirm the key (`unverified` only). A
+   *  code (`forbidden` | `non_json_response` | `unexpected_body` |
+   *  `http_error` | `network_error` | `no_probe`), resolved against
+   *  `providers.unverifiedReason.*`. Distinguishes a region/permission block
+   *  from a provider outage — both of which #599 correctly stopped reporting
+   *  as a bad key. Absent on pre-#671 middleware payloads. */
+  verifyReason?: string;
   /** Legacy: "a key is on file" — i.e. `status !== 'no_key'`. Retained for
    *  backwards compatibility; it does NOT mean the key works. */
   connected: boolean;

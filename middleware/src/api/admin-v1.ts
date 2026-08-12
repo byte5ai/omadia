@@ -592,6 +592,21 @@ export interface StoreGetResponse {
   blocking_reasons?: string[];
   /** Advisory-only — never blocks install (issue #453). */
   verdict?: PluginVerdict;
+  /** OM-06 / #671 — set when install is blocked because an ACTIVE plugin
+   *  already provides one of this plugin's capabilities. The install would be
+   *  refused with 409 `install.capability_already_provided`, so the store must
+   *  not advertise it.
+   *
+   *  Structured rather than folded into `blocking_reasons`, which is a list of
+   *  server-authored English strings the client can only print: the operator's
+   *  next step here is to CONFIGURE the provider that already exists, and a
+   *  client cannot build that link by parsing prose. */
+  blocked_by_active_provider?: {
+    /** The capability slot, e.g. `llmProvider@1`. */
+    capability: string;
+    /** Plugin id already providing it. */
+    owner_id: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
