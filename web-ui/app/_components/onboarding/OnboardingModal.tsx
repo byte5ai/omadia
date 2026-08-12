@@ -89,6 +89,7 @@ export function OnboardingModal({
       aria-modal="true"
       aria-label={t('ariaLabel')}
     >
+      {/* eslint-disable-next-line no-restricted-syntax -- full-screen dismiss backdrop (inset-0 overlay), not a CTA */}
       <button
         type="button"
         onClick={busy ? undefined : () => setDismissed(true)}
@@ -118,6 +119,7 @@ export function OnboardingModal({
               {t('intro', { count: installedCount })}
             </p>
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (× close glyph) */}
           <button
             type="button"
             onClick={() => setDismissed(true)}
@@ -162,6 +164,7 @@ export function OnboardingModal({
             {t('exportSuffix')}
           </div>
           {phase.kind === 'done' ? (
+            // eslint-disable-next-line no-restricted-syntax -- bespoke ink-palette CTA (paper/ink + uppercase tracking), not §4.2 variant
             <button
               type="button"
               onClick={() => setDismissed(true)}
@@ -217,6 +220,7 @@ function ProfileGrid({
                 {t('pluginCount', { count: profile.plugin_count })}
               </span>
             </div>
+            {/* eslint-disable-next-line no-restricted-syntax -- bespoke ink-fill CTA (paper/ink + uppercase tracking + manual busy dots), not §4.2 variant */}
             <button
               type="button"
               onClick={() => onApply(profile.id)}
@@ -268,9 +272,8 @@ function OutcomeBody({
         <div className="text-[12px]">
           <div className="font-medium">
             {t.rich('outcomeAppliedTitle', {
-              id: () => (
-                <span className="font-mono">{outcome.profile_id}</span>
-              ),
+              profileId: outcome.profile_id,
+              id: (chunks) => <span className="font-mono">{chunks}</span>,
             })}
           </div>
           <div className="mt-0.5 text-[11px]">
@@ -329,8 +332,7 @@ function OutcomeBody({
       ) : (
         <p className="text-[12px] leading-relaxed text-[color:var(--muted-ink)]">
           {t.rich('secretsHint', {
-            erroredTag: () => <code>errored</code>,
-            reactivateTag: () => <>&quot;Reactivate&quot;</>,
+            erroredTag: (chunks) => <code>{chunks}</code>,
           })}
         </p>
       )}
@@ -355,12 +357,14 @@ function ErrorBody({
         <div className="text-[12px]">
           <div className="font-medium">
             {t.rich('errorTitle', {
-              id: () => <span className="font-mono">{profileId}</span>,
+              profileId,
+              id: (chunks) => <span className="font-mono">{chunks}</span>,
             })}
           </div>
           <div className="mt-1 break-all text-[11px] font-mono">{message}</div>
         </div>
       </div>
+      {/* eslint-disable-next-line no-restricted-syntax -- bespoke ink-palette CTA (paper/ink + uppercase tracking), not §4.2 variant */}
       <button
         type="button"
         onClick={onRetry}

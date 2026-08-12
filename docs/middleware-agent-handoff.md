@@ -977,6 +977,96 @@ verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
 
 ---
 
+### Fehlercodes für die UI: `verifyErrorCode` + `ProviderVerification.code` (issue #604)
+
+Die Middleware hat keine Request-Locale — niemand liest `Accept-Language`, und
+`NEXT_LOCALE` verlässt die Next.js-Schicht nie. Jeder `message`-String auf
+einem Fehler-Envelope ist damit per Konstruktion Englisch, und jede Oberfläche,
+die ihn gerendert hat, hat einem deutschen Operator einen englischen Satz
+gezeigt. Konsequenz für alles, was hier neu gebaut wird: **Codes raus, Sätze
+behalten wir für Logs.**
+
+- **`ProviderVerification.code`** (`src/platform/providerCredentialVerifier.ts`):
+  optionales Feld, gesetzt ausschließlich von `rejected()` auf
+  `'providers.key_rejected'`. `error` bleibt unverändert der englische
+  Fallback-Satz für ältere Clients. Kein anderes Verdikt setzt `code` — ein
+  `unverified` trägt seinen Grund weiterhin in `reason` (nie gerendert).
+- **`verifyErrorCode`** auf der Provider-Zeile von `GET /v1/admin/providers`
+  (`src/routes/adminProviders.ts`): konditionaler Spread neben dem bestehenden
+  `verifyError`. Rein additiv — fehlt der Code, fehlt das Feld komplett, und
+  ein Client von vor #604 sieht exakt die alte Payload.
+- **Zwei Codes statt einem bei `PATCH /v1/admin/settings`**
+  (`src/routes/adminSettings.ts`): Wird der ganze Batch abgelehnt, antwortet
+  die Route mit `settings.invalid_values`, wenn der *Wert* mindestens einer
+  bekannten Einstellung durch die Validierung gefallen ist, sonst weiter mit
+  `settings.no_valid_changes` (kein gesendeter Key ist eine Einstellung, die
+  dieser Server aktuell anbietet). Ein Code für beides hieß Copy, die im einen
+  Fall lügt: ein `ANTHROPIC_API_KEY` im falschen Format wurde als unbekannte
+  Einstellung gemeldet, mit "Seite neu laden" als Aktion. **Wer eine neue
+  Wert-Validierung ergänzt, nutzt `rejectValue(key, message)` statt
+  `errors.push(...)`** — sonst landet der Fall wieder im falschen Code.
+- **Web-UI-Seite:** `ApiError.code` parst den Code einmal zentral,
+  `web-ui/app/_lib/errorHelp.ts` löst ihn gegen
+  `messages/{en,de}.json → errorHelp.<code>.{what,next}` auf, und
+  `web-ui/app/_components/ErrorHelp.tsx` rendert beides plus eine
+  eingeklappte Support-Disclosure (`supportDetail()` redigiert vorher).
+
+**Key-Konvention** (`web-ui/messages/{en,de}.json`) — die Verschachtelung
+spiegelt den Code: `store.list_failed` liegt unter
+`errorHelp.store.list_failed`. Zwei Pflicht-Keys, je ein Satz:
+
+```jsonc
+{
+  "errorHelp": {
+    "providers": {
+      "key_rejected": {
+        "what": "The provider refused this API key.",
+        "next": "Copy the key from the provider console once more and paste it here."
+      }
+    }
+  }
+}
+```
+
+- `what` — was passiert ist. Nie den Code-Identifier zurückspiegeln, nie den
+  Satz des Servers hineinkopieren.
+- `next` — die eine Aktion, die es löst, im Imperativ.
+- `action` — optionales Link-Label, nur für Codes in `ERROR_HELP_ACTIONS`
+  (ein Link auf die Seite, auf der man ohnehin steht, ist Rauschen).
+- Chrome, das zur Komponente und nicht zu einem Code gehört (Summary der
+  Disclosure, generische Fallback-Zeile), liegt im Nachbar-Namespace
+  `errorHelpUi` — `errorHelp` bleibt damit ein reiner Code-Index.
+
+**Einen Code ergänzen:** `code: '<family>.<name>'` in einer der fünf Dateien
+emittieren → `what` + `next` in `en.json` → beide nach `de.json` spiegeln →
+Code in `ERROR_HELP_CODES` (`web-ui/app/_lib/errorHelp.ts`) eintragen →
+`npm test` in `web-ui/` wird grün. Die vollständige Key-Doku für die Web-UI-
+Seite steht in `web-ui/messages/README.md`.
+- **Abgedeckt sind nur** die Codes aus `src/routes/{install,runtime,`
+  `adminProviders,store,adminSettings}.ts`. `web-ui/app/_lib/__tests__/`
+  `errorHelpCoverage.test.ts` liest diese Dateien direkt und wird rot, sobald
+  eine davon einen Code ohne Copy emittiert. Wer eine dieser fünf Dateien um
+  einen Fehlerfall erweitert, braucht im selben PR zwei Sätze in beiden
+  Locales.
+- **Ein `code:`, das kein Literal ist, ist der gefährliche Fall.**
+  `handleError` in `src/routes/install.ts` beantwortet einen geworfenen
+  `InstallError` mit `{ code: err.code }` — zehn `install.*`-Codes stehen
+  damit nirgends als Literal in der Route-Datei. Der Guard folgt diesem
+  Forwarder nach `src/plugins/installService.ts` und verlangt auch dafür
+  Copy. Jedes weitere nicht-literale `code:` in einer der fünf Dateien muss in
+  `ACKNOWLEDGED_NON_LITERAL_CODE` mit Begründung eingetragen werden (Typ-
+  Annotation, OAuth-Authorization-Code) — sonst wird der Test rot, statt den
+  Code stillschweigend durchzulassen. Dasselbe gilt für eine Umstellung auf
+  `sendError(...)` oder einen `error: '…'`-Envelope.
+
+Tests: `test/providerCredentialVerifier.test.ts` (401 → `code`, jedes andere
+Verdikt ohne `code`), `test/adminProvidersRoute.test.ts` (DTO trägt
+`verifyErrorCode` beim abgelehnten Key, lässt das Feld sonst weg),
+`test/adminSettingsRoute.test.ts` (abgelehnter Wert → `settings.invalid_values`,
+unbekannter Key bzw. nicht installiertes Ziel-Plugin → `settings.no_valid_changes`).
+
+---
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert

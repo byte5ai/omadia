@@ -24,6 +24,19 @@ import {
   type ChatTurnResult,
 } from '@omadia/channel-sdk';
 
+// #644 — the harness now folds the AI-Act Art. 50 marking into every delivered
+// answer's `text` by default. These pre-#644 tests assert the orchestrator's
+// OWN prose (direct-line passthrough, unknown-token fall-through), so strip the
+// trailing disclosure paragraph before the exact-equality check. Only the FIRST
+// turn of a scope folds it (later turns dedup), so this only bites the
+// first-turn assertions. The marking itself is covered end-to-end by
+// test/aiDisclosure644.test.ts.
+const AI_DISCLOSURE_LINE = 'Diese Antwort wurde von einem KI-System erzeugt.';
+function withoutDisclosure(text: string): string {
+  const suffix = `\n\n${AI_DISCLOSURE_LINE}`;
+  return text.endsWith(suffix) ? text.slice(0, -suffix.length) : text;
+}
+
 // ── #332 Layer 2 — pure parser / resolver ────────────────────────────────────
 
 describe('#332 parseDirectLineDirective', () => {
@@ -380,7 +393,7 @@ describe('#332 Layer 2 — Direct Line (strict passthrough, non-streaming/Teams)
     assert.equal(sa.delegatedAnswer?.label, 'Strategist');
     assert.equal(sa.delegatedAnswer?.status, 'success');
     assert.equal(sa.delegatedAnswer?.text, 'VERBATIM-STRATEGIST-ANSWER');
-    assert.equal(sa.text, 'VERBATIM-STRATEGIST-ANSWER'); // graceful degrade
+    assert.equal(withoutDisclosure(sa.text), 'VERBATIM-STRATEGIST-ANSWER'); // graceful degrade
     assert.equal(sa.agentsConsulted?.[0]?.label, 'Strategist'); // L1 footer
   });
 
@@ -406,7 +419,7 @@ describe('#332 Layer 2 — Direct Line (strict passthrough, non-streaming/Teams)
     const sa = await orch.chat({ userMessage: '#urgent server is down', sessionScope: 's2' });
     assert.equal(asked, false, 'no sub-agent may run for an unknown token');
     assert.equal(sa.delegatedAnswer, undefined);
-    assert.equal(sa.text, 'normal LLM answer'); // handled by the LLM, not hijacked
+    assert.equal(withoutDisclosure(sa.text), 'normal LLM answer'); // handled by the LLM, not hijacked
   });
 
   it('issue #474 round-4 fix — a NOT-READY plugin\'s token surfaces the "no longer available" notice, never a raw dispatch-error string', async () => {
@@ -567,7 +580,7 @@ describe('#332 Layer 2 — guarded-additive mode', () => {
     // masking cascade as every other domain-tool dispatch — the raw
     // 'VERBATIM-Y' must NOT reach the user when a privacy guard is active.
     assert.equal(sa.delegatedAnswer?.text, '[masked:ask_strategist:10]');
-    assert.equal(sa.text, '[masked:ask_strategist:10]'); // no note appended → no provider call
+    assert.equal(withoutDisclosure(sa.text), '[masked:ask_strategist:10]'); // no note appended → no provider call
   });
 });
 
@@ -660,7 +673,7 @@ describe('#332 Layer 3 — forced-delegation obligation (non-streaming)', () => 
     });
     const sa = await orch.chat({ userMessage: 'hello', sessionScope: 's5' });
     assert.equal(asked, false);
-    assert.equal(sa.text, 'plain answer');
+    assert.equal(withoutDisclosure(sa.text), 'plain answer');
   });
 });
 
@@ -710,7 +723,7 @@ describe('#332 gap-closure — standing requiredConsultToolName (L3 real produce
     });
     const sa = await orch.chat({ userMessage: 'hello', sessionScope: 's7' });
     assert.equal(asked, false);
-    assert.equal(sa.text, 'plain answer');
+    assert.equal(withoutDisclosure(sa.text), 'plain answer');
   });
 
   it('issue #474 round-3 fix — a standing obligation for a not-ready plugin domain tool is ignored (never forces tool_choice onto a tool excluded from tools[])', async () => {
@@ -732,7 +745,7 @@ describe('#332 gap-closure — standing requiredConsultToolName (L3 real produce
     });
     const sa = await orch.chat({ userMessage: 'hello', sessionScope: 's7-gated' });
     assert.equal(asked, false, 'the not-ready tool must never be forced/invoked');
-    assert.equal(sa.text, 'plain answer');
+    assert.equal(withoutDisclosure(sa.text), 'plain answer');
   });
 
   it('a per-turn expectedDomainTool overrides the standing requiredConsultToolName', async () => {
@@ -1005,7 +1018,7 @@ describe('#445 sticky Direct Line — the collision rules survive', () => {
       userMessage: '#urgent server is down',
       sessionScope: 'c1',
     });
-    assert.equal(sa.text, 'normal answer');
+    assert.equal(withoutDisclosure(sa.text), 'normal answer');
     assert.equal(sa.delegatedAnswer, undefined);
   });
 

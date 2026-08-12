@@ -14,6 +14,10 @@ export { createTigrisStore, isNotFound } from './tigrisStore.js';
 export type { TigrisStore } from './tigrisStore.js';
 export { signUrl, verifySig } from './signing.js';
 export { buildCacheKey } from './cacheKey.js';
+// Only the read-side helpers are public: consumers verify a stored diagram
+// carries provenance. The writer (`insertProvenanceChunk`) and the payload
+// string (`PROVENANCE_TEXT`) are internal to the render path — not re-exported.
+export { hasItxtKeyword, PROVENANCE_KEYWORD } from './pngTextChunk.js';
 export {
   ALLOWED_DIAGRAM_KINDS,
   DiagramRenderError,

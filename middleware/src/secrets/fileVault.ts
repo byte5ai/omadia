@@ -129,7 +129,31 @@ export class FileSecretVault implements SecretVault {
     }
   }
 
-  private async persist(): Promise<void> {
+  /**
+   * Serialises {@link persistNow}. Every write snapshots the in-memory map,
+   * then crosses three `await` points (encrypt → write tmp → rename) before it
+   * lands. Without this chain two interleaved writers can rename a STALE
+   * snapshot last, silently losing the other write on disk while memory still
+   * looks correct — the loss only becomes visible after a restart.
+   *
+   * Because each queued run re-snapshots the CURRENT map, a superseded write
+   * simply persists the newer state twice, which is harmless.
+   */
+  private persistQueue: Promise<void> = Promise.resolve();
+
+  private persist(): Promise<void> {
+    const run = (): Promise<void> => this.persistNow();
+    const result = this.persistQueue.then(run, run);
+    // The queue itself must never stay rejected, or one failed write would
+    // reject every future one. The caller still sees the real rejection.
+    this.persistQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async persistNow(): Promise<void> {
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     const agents: Record<string, Record<string, string>> = {};
     for (const [agentId, ns] of this.byAgent) {
@@ -138,7 +162,10 @@ export class FileSecretVault implements SecretVault {
     const plaintext = JSON.stringify({ agents });
     const envelope = this.encrypt(plaintext);
     const serialized = JSON.stringify(envelope, null, 2);
-    const tmp = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
+    // `pid-Date.now()` collided outright for two writes in the same
+    // millisecond in one process — both wrote the same tmp path and one
+    // rename raced the other's half-written file. A uuid cannot collide.
+    const tmp = `${this.filePath}.tmp-${process.pid}-${crypto.randomUUID()}`;
     await fs.writeFile(tmp, serialized, { mode: 0o600, encoding: 'utf8' });
     await fs.rename(tmp, this.filePath);
   }

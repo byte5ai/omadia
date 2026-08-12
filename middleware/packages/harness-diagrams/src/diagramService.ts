@@ -2,6 +2,7 @@ import type { Readable } from 'node:stream';
 import sharp from 'sharp';
 import { buildCacheKey } from './cacheKey.js';
 import type { KrokiClient } from './krokiClient.js';
+import { insertProvenanceChunk } from './pngTextChunk.js';
 import { signUrl } from './signing.js';
 import type { TigrisStore } from './tigrisStore.js';
 import {
@@ -78,7 +79,12 @@ export class DiagramService {
 
     const cacheHit = await this.options.store.exists(key);
     if (!cacheHit) {
-      const png = await this.options.kroki.renderPng(input.kind, processedSource);
+      const rendered = await this.options.kroki.renderPng(input.kind, processedSource);
+      // Stamp machine-readable provenance (AI Act Art. 50) into the PNG's iTXt
+      // chunk BEFORE the size cap and store.put. The chunk content is static,
+      // so this stays byte-deterministic; because the marked bytes are what we
+      // store, every later cache-hit serves a marked PNG too.
+      const png = insertProvenanceChunk(rendered, this.options.log);
       if (png.byteLength > this.options.maxPngBytes) {
         throw new DiagramRenderTooLargeError(png.byteLength, this.options.maxPngBytes);
       }

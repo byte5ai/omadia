@@ -78,6 +78,7 @@ export function AgentUnavailableBanner(
         <p className="mt-2 text-[color:var(--danger)]">{error}</p>
       )}
       <div className="mt-3 flex gap-2">
+        {/* eslint-disable-next-line no-restricted-syntax -- warning-outline action; §10 has no warning variant */}
         <button
           type="button"
           className="rounded border border-[color:var(--warning)] bg-[color:var(--bg-elevated)] px-3 py-1 text-xs font-medium text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10 disabled:opacity-50"
@@ -86,6 +87,7 @@ export function AgentUnavailableBanner(
         >
           {t('actionReSnapshot')}
         </button>
+        {/* eslint-disable-next-line no-restricted-syntax -- bespoke filled danger (bg-elevated); §4.2 danger variant is transparent */}
         <button
           type="button"
           className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--bg-elevated)] px-3 py-1 text-xs font-medium text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8 disabled:opacity-50"

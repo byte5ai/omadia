@@ -39,6 +39,7 @@ export function ToolCallCard({ entry }: { entry: ToolCallEntry }): React.ReactEl
 
   return (
     <div className="my-1 rounded-md border border-[color:var(--border)] px-2 py-1.5 font-mono text-xs">
+      {/* eslint-disable-next-line no-restricted-syntax -- chevron/expander (aria-expanded) */}
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}

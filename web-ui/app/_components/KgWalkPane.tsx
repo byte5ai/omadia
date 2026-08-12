@@ -269,6 +269,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
   // Launcher chip when the pane is closed.
   if (!win.open) {
     return (
+      // eslint-disable-next-line no-restricted-syntax -- bespoke accent pill, no §4.2 variant
       <button
         type="button"
         onClick={win.openWindow}
@@ -326,6 +327,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
               </span>
             )}
           </span>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (maximize/restore glyph) */}
           <button
             type="button"
             onClick={win.toggleMaximized}
@@ -339,6 +341,7 @@ export function KgWalkPane({ walk }: Props): React.ReactElement | null {
               <Maximize2 size={14} aria-hidden />
             )}
           </button>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (× close glyph) */}
           <button
             type="button"
             onClick={win.close}

@@ -165,6 +165,7 @@ export default function DuplicateDetailPage(): React.ReactElement {
               )}
               <div className="grid gap-2 sm:grid-cols-1">
                 {(['keep_a', 'keep_b', 'not_duplicate'] as const).map((r) => (
+                  // eslint-disable-next-line no-restricted-syntax -- selection tile/row (label + description)
                   <button
                     key={r}
                     type="button"

@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import type { MemorableKind } from '../../_lib/api';
+import { Button } from '../ui/Button';
 
 interface Props {
   /** External_id of the auto-promoted MK (e.g. `mk:<uuid>`). */
@@ -80,15 +81,16 @@ export function AutoPromotedBanner({
       >
         {t('view')}
       </a>
-      <button
-        type="button"
+      <Button
+        variant="danger"
         onClick={() => void discard()}
-        disabled={busy}
-        className="rounded border border-[color:var(--danger-edge)] px-1 py-0.5 text-[10px] text-[color:var(--danger)] hover:bg-[color:var(--danger)]/8 disabled:opacity-50"
+        busy={busy}
+        busyLabel={t('discarding')}
         title={t('discardTitle')}
+        className="px-1 py-0.5 text-[10px]"
       >
-        {busy ? t('discarding') : t('discard')}
-      </button>
+        {t('discard')}
+      </Button>
       {error !== null && (
         <span className="text-[color:var(--danger)]">⚠ {error}</span>
       )}

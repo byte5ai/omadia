@@ -181,13 +181,19 @@ describe('ToolDispatchService', () => {
     });
 
     const specs = service.listDispatchableToolSpecs();
+    // W0-3 — advertised name-sorted (this used to be registration order:
+    // natives in Map order, then domain tools). Order is the only thing the
+    // sort changed; the precedence assertion below is unchanged.
     assert.deepEqual(
       specs.map((spec) => spec.name),
-      ['echo_native', 'shared_name', 'domain_ping'],
+      ['domain_ping', 'echo_native', 'shared_name'],
     );
-    assert.equal(specs[0]?.input_schema.type, 'object');
-    assert.equal(specs[2]?.input_schema.type, 'object');
-    assert.equal(specs[1]?.description, 'native shared');
+    // Look specs up by name so this stays honest if the ordering ever moves.
+    const byName = new Map(specs.map((spec) => [spec.name, spec]));
+    assert.equal(byName.get('echo_native')?.input_schema.type, 'object');
+    assert.equal(byName.get('domain_ping')?.input_schema.type, 'object');
+    // Native still wins the `shared_name` collision.
+    assert.equal(byName.get('shared_name')?.description, 'native shared');
   });
 
   it('issue #474: refuses to dispatch a not-ready plugin tool and excludes it from the list', async () => {

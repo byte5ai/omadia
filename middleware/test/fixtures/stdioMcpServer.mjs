@@ -1,0 +1,95 @@
+#!/usr/bin/env node
+/**
+ * Minimal MCP stdio server, for the connection-lifetime tests (issue #563).
+ *
+ * Hand-rolled newline-delimited JSON-RPC instead of the MCP server SDK:
+ * `@modelcontextprotocol/sdk` is a dependency of `middleware/packages/*`, not
+ * of `middleware/` itself, and adding one is out of scope here.
+ *
+ * Contract with the tests:
+ *   - `MCP_FIXTURE_MARKER` — a file this process appends `start <pid>` to on
+ *     boot. One line per spawn, which is how the tests count child processes.
+ *   - `MCP_FIXTURE_MODE=ok`           — `tools/call` returns "pong".
+ *   - `MCP_FIXTURE_MODE=unauthorized` — `tools/call` returns a JSON-RPC error
+ *     whose message reads as a 401 (so the manager's `looksUnauthorized`
+ *     matches and `looksTransient` does not, i.e. no retry).
+ *
+ * Exits when stdin closes, which is what the SDK's stdio transport does on
+ * `client.close()`.
+ */
+import { appendFileSync } from 'node:fs';
+
+const marker = process.env['MCP_FIXTURE_MARKER'];
+if (marker) appendFileSync(marker, `start ${process.pid}\n`);
+const mode = process.env['MCP_FIXTURE_MODE'] ?? 'ok';
+
+function send(message) {
+  process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+
+function handle(request) {
+  const { id, method, params } = request;
+  // Notifications (no id) need no reply — `notifications/initialized` lands here.
+  if (id === undefined || id === null) return;
+  if (method === 'initialize') {
+    send({
+      jsonrpc: '2.0',
+      id,
+      result: {
+        // Echo the client's version so we never fail negotiation on an SDK bump.
+        protocolVersion: params?.protocolVersion ?? '2025-06-18',
+        capabilities: { tools: {} },
+        serverInfo: { name: 'stdio-fixture', version: '0.0.1' },
+      },
+    });
+    return;
+  }
+  if (method === 'tools/list') {
+    send({
+      jsonrpc: '2.0',
+      id,
+      result: {
+        tools: [
+          {
+            name: 'ping',
+            description: 'Replies with pong.',
+            inputSchema: { type: 'object', properties: {}, required: [] },
+          },
+        ],
+      },
+    });
+    return;
+  }
+  if (method === 'tools/call') {
+    if (mode === 'unauthorized') {
+      send({
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32603, message: '401 Unauthorized: the bearer token was rejected' },
+      });
+      return;
+    }
+    send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'pong' }] } });
+    return;
+  }
+  send({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } });
+}
+
+let buffer = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  buffer += chunk;
+  for (let nl = buffer.indexOf('\n'); nl >= 0; nl = buffer.indexOf('\n')) {
+    const line = buffer.slice(0, nl).trim();
+    buffer = buffer.slice(nl + 1);
+    if (line.length === 0) continue;
+    try {
+      handle(JSON.parse(line));
+    } catch {
+      /* ignore malformed frames — the tests never send any */
+    }
+  }
+});
+process.stdin.on('end', () => {
+  process.exit(0);
+});

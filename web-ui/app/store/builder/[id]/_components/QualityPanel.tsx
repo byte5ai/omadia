@@ -71,6 +71,7 @@ export function QualityPanel({ draftId, refetchKey }: QualityPanelProps): React.
       className="space-y-2 rounded border border-[color:var(--border)] p-3"
     >
       <header className="flex items-center justify-between">
+        {/* eslint-disable-next-line no-restricted-syntax -- stateful expand/collapse toggle (aria-expanded + ▾/▸ glyph), not a §4.2 CTA */}
         <button
           type="button"
           data-testid="quality-toggle"

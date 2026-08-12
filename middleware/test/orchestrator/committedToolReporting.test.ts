@@ -14,6 +14,18 @@ import {
   type SessionLogEntry,
 } from '@omadia/orchestrator';
 
+// #644 — the streaming `done` event's `answer` now carries the AI-Act Art. 50
+// marking, folded at the delivery boundary; the session log records the RAW
+// model answer (persist-raw, disclose-at-boundary, symmetric with the
+// non-streaming path). So `logged.assistantAnswer` equals `done.answer` only
+// after the marking is stripped. The marking itself is covered by
+// test/aiDisclosure644.test.ts.
+const AI_DISCLOSURE_LINE = 'Diese Antwort wurde von einem KI-System erzeugt.';
+function withoutDisclosure(text: string): string {
+  const suffix = `\n\n${AI_DISCLOSURE_LINE}`;
+  return text.endsWith(suffix) ? text.slice(0, -suffix.length) : text;
+}
+
 /**
  * Issue #506 — the one-click repro. `chatStreamInner` wraps its whole
  * per-turn iteration loop in a single try/catch: an exception thrown by a
@@ -231,7 +243,10 @@ describe('Issue #506 — report success when a tool already committed', () => {
     if (logged) {
       assert.equal(logged.scope, 'sess-506-committed');
       assert.equal(logged.userMessage, 'create a widget');
-      assert.equal(logged.assistantAnswer, done && done.type === 'done' ? done.answer : undefined);
+      assert.equal(
+        logged.assistantAnswer,
+        done && done.type === 'done' ? withoutDisclosure(done.answer) : undefined,
+      );
       assert.equal(logged.toolCalls, 1);
       assert.equal(logged.iterations, 2);
     }
