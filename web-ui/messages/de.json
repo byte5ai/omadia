@@ -287,7 +287,7 @@
         },
         "unparsedFrontmatter": {
           "title": "Teile des Frontmatters konnten nicht importiert werden",
-          "explain": "omadia liest ein „Schlüssel: Wert“ pro Zeile. Diese Zeilen enthalten Listen oder verschachtelte Werte und wurden ausgelassen — der Rest des Skills wurde normal importiert."
+          "explain": "omadia liest ein „Schlüssel: Wert“ pro Zeile. Diese Zeilen nutzen Listen oder verschachtelte Werte, daher wurden die hier gezeigten Schlüssel nicht importiert. Alles Übrige im Skill wurde normal importiert."
         },
         "risks": {
           "title": "Vor dem Import prüfen — dieser Inhalt könnte versuchen:",

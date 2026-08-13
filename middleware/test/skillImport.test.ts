@@ -302,7 +302,7 @@ describe('unparsed frontmatter is surfaced, not silently dropped', () => {
 
   it('reports the dropped lines on a dry-run preview', async () => {
     const res = await importSkillMarkdown(store, { raw: LIST_FRONTMATTER }, { dryRun: true });
-    assert.deepEqual(res.unparsedFrontmatter, ['  - read', '  - write']);
+    assert.deepEqual(res.unparsedFrontmatter, ['allowed-tools:', '  - read', '  - write']);
   });
 
   it('reports them on a committed import too', async () => {
@@ -311,7 +311,7 @@ describe('unparsed frontmatter is surfaced, not silently dropped', () => {
       sourcePath: 'a/SKILL.md',
     });
     assert.equal(res.outcome, 'created');
-    assert.deepEqual(res.unparsedFrontmatter, ['  - read', '  - write']);
+    assert.deepEqual(res.unparsedFrontmatter, ['allowed-tools:', '  - read', '  - write']);
   });
 
   it('still reports on the unchanged (re-import) path', async () => {
@@ -321,7 +321,30 @@ describe('unparsed frontmatter is surfaced, not silently dropped', () => {
       sourcePath: 'a/SKILL.md',
     });
     assert.equal(again.outcome, 'unchanged');
-    assert.deepEqual(again.unparsedFrontmatter, ['  - read', '  - write']);
+    assert.deepEqual(again.unparsedFrontmatter, ['allowed-tools:', '  - read', '  - write']);
+  });
+
+  it('still reports on the updated (newer version of the same file) path', async () => {
+    await importSkillMarkdown(store, { raw: LIST_FRONTMATTER, sourcePath: 'a/SKILL.md' });
+    const newer = await importSkillMarkdown(store, {
+      raw: LIST_FRONTMATTER.replace('# Body', '# Body v2'),
+      sourcePath: 'a/SKILL.md',
+    });
+    assert.equal(newer.outcome, 'updated');
+    assert.deepEqual(newer.unparsedFrontmatter, ['allowed-tools:', '  - read', '  - write']);
+  });
+
+  it('does not persist an invented empty value for the dropped key', async () => {
+    const res = await importSkillMarkdown(store, {
+      raw: LIST_FRONTMATTER,
+      sourcePath: 'a/SKILL.md',
+    });
+    const row = store.bySlug.get(res.skill.slug);
+    assert.ok(row, 'skill row must exist');
+    assert.ok(
+      !('allowed-tools' in (row.frontmatter as Record<string, unknown>)),
+      'a key whose block could not be parsed must not be stored as an empty string',
+    );
   });
 
   it('is empty for frontmatter omadia represents fully', async () => {

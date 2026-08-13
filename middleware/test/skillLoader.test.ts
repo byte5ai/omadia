@@ -83,22 +83,52 @@ describe('parseSkillMarkdown', () => {
 });
 
 describe('parseSkillMarkdown unparsed-frontmatter reporting', () => {
-  it('reports list entries the flat parser cannot represent', () => {
+  it('reports list entries together with the key that owns them', () => {
     // A skill authored for an ecosystem that uses list-valued frontmatter
-    // (agentskills.io, Hermes). The flat parser keeps `tools` as an empty
-    // string and drops the entries — that loss must be visible, not silent.
-    const parsed = parseSkillMarkdown(
-      '---\nname: n\ntools:\n  - read\n  - write\n---\n\nBody.\n',
-    );
-    assert.equal(parsed.frontmatter['tools'], '');
-    assert.deepEqual(parsed.unparsedLines, ['  - read', '  - write']);
+    // (agentskills.io, Hermes). The block opener must be reported with its
+    // entries — otherwise the reader sees orphan fragments — and it must NOT
+    // be stored as an empty string, which would be a value the source never
+    // had, travelling on into the content hash and the risk scan.
+    const parsed = parseSkillMarkdown('---\nname: n\ntools:\n  - read\n  - write\n---\n\nBody.\n');
+    assert.ok(!('tools' in parsed.frontmatter), 'must not invent an empty `tools` value');
+    assert.deepEqual(parsed.unparsedLines, ['tools:', '  - read', '  - write']);
+    assert.equal(parsed.frontmatter['name'], 'n');
   });
 
-  it('reports indented nested mappings', () => {
+  it('keeps two dropped blocks distinguishable by their owning key', () => {
+    // Byte-identical entries under different keys must not collapse into an
+    // ambiguous report.
     const parsed = parseSkillMarkdown(
-      '---\nname: n\nmetadata:\n  author: someone\n---\n\nBody.\n',
+      '---\nallowed-tools:\n  - Read\ndenied-tools:\n  - Read\n---\n\nBody.\n',
     );
-    assert.deepEqual(parsed.unparsedLines, ['  author: someone']);
+    assert.deepEqual(parsed.unparsedLines, [
+      'allowed-tools:',
+      '  - Read',
+      'denied-tools:',
+      '  - Read',
+    ]);
+    assert.deepEqual(parsed.frontmatter, {});
+  });
+
+  it('reports indented nested mappings with their parent key', () => {
+    const parsed = parseSkillMarkdown('---\nname: n\nmetadata:\n  author: someone\n---\n\nBody.\n');
+    assert.deepEqual(parsed.unparsedLines, ['metadata:', '  author: someone']);
+    assert.ok(!('metadata' in parsed.frontmatter));
+  });
+
+  it('still treats a genuinely empty trailing scalar as an empty string', () => {
+    // `key:` with nothing following it is not a block opener — preserving the
+    // pre-existing empty-scalar behaviour.
+    const parsed = parseSkillMarkdown('---\nname: n\nnote:\n---\n\nBody.\n');
+    assert.equal(parsed.frontmatter['note'], '');
+    assert.deepEqual(parsed.unparsedLines, []);
+  });
+
+  it('treats an empty scalar followed by another scalar as an empty string', () => {
+    const parsed = parseSkillMarkdown('---\nnote:\ndescription: d\n---\n\nBody.\n');
+    assert.equal(parsed.frontmatter['note'], '');
+    assert.equal(parsed.description, 'd');
+    assert.deepEqual(parsed.unparsedLines, []);
   });
 
   it('is empty for frontmatter the parser fully represents', () => {
@@ -121,7 +151,7 @@ describe('parseSkillMarkdown unparsed-frontmatter reporting', () => {
 
   it('reports unparsed lines from CRLF sources too', () => {
     const parsed = parseSkillMarkdown('---\r\nname: n\r\ntools:\r\n  - read\r\n---\r\n\r\nBody.\r\n');
-    assert.deepEqual(parsed.unparsedLines, ['  - read']);
+    assert.deepEqual(parsed.unparsedLines, ['tools:', '  - read']);
   });
 
   it('round-trips serializeSkillMarkdown output with nothing dropped', () => {

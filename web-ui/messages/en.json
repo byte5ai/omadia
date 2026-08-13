@@ -287,7 +287,7 @@
         },
         "unparsedFrontmatter": {
           "title": "Some frontmatter could not be imported",
-          "explain": "omadia reads one “key: value” per line. These lines carry lists or nested values and were left out — the rest of the skill imported normally."
+          "explain": "omadia reads one “key: value” per line. These lines use lists or nested values, so the keys shown here were not imported. Everything else in the skill imported normally."
         },
         "risks": {
           "title": "Review before importing — this content looks like it may try to:",

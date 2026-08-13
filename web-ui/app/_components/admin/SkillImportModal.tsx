@@ -121,8 +121,10 @@ export function SkillImportModal({
                   {t('unparsedFrontmatter.explain')}
                 </p>
                 <ul className="mt-1 flex flex-col gap-1 font-mono">
-                  {preview.unparsedFrontmatter?.map((line) => (
-                    <li key={line} className="break-all text-[color:var(--fg-muted)]">
+                  {/* Index keys: the same line can legitimately repeat (two
+                      keys with identical entries), and this list is static. */}
+                  {preview.unparsedFrontmatter?.map((line, i) => (
+                    <li key={`${i}-${line}`} className="break-all text-[color:var(--fg-muted)]">
                       {line}
                     </li>
                   ))}
