@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { randomUUID } from 'node:crypto';
 import { describe, it } from 'node:test';
 
 import {
@@ -480,6 +481,81 @@ describe('tasks/defineLongRunningTool — crossed claims (W4)', () => {
     );
     assert.equal(decoyRow.result, 'answer for decoy');
     assert.equal(decoyRow.claimedBy, null, 'the lease was never released');
+  });
+});
+
+describe('tasks/defineLongRunningTool — park + resume (#560 criteria 4 & 5)', () => {
+  /** An executor that parks on its first run (no answer yet) and, once resumed
+   *  with an answer, completes. The two-run shape is the whole point of the
+   *  park/resume pair. */
+  function gatingExecute(): Parameters<typeof defineLongRunningTool>[0]['execute'] {
+    return async (input, handle) => {
+      const answer = (input as { answer?: string }).answer;
+      if (answer === undefined) {
+        await handle.requireInput('awaiting_human');
+        // Return value is ignored on a parked task — the runner must not finalize.
+        return 'PARK RETURN — MUST BE IGNORED';
+      }
+      return `resolved: ${answer}`;
+    };
+  }
+
+  it('a parked task is left input_required, NOT finalized, and is not claimable', async () => {
+    const { handle, store } = buildTool(gatingExecute());
+    const started = JSON.parse(
+      await reg(handle, 'start').handler({ question: 'q' }),
+    ) as { taskId: string };
+    await handle.drainForTest();
+
+    const row = await store.get(started.taskId);
+    assert.equal(row?.status, 'input_required', 'the task parked, it did not complete');
+    assert.equal(row?.result, null, 'the ignored park return must not become a result');
+    assert.equal(row?.claimedBy, null, 'requireInput released the lease');
+    // Parked ⇒ not re-claimable until resumed (the line-167 invariant).
+    assert.equal(await store.claimNextPending(randomUUID()), null);
+  });
+
+  it('provideInput + resumeOne re-drives the parked task to completion with the answer', async () => {
+    const { handle, store } = buildTool(gatingExecute());
+    const started = JSON.parse(
+      await reg(handle, 'start').handler({ question: 'q' }),
+    ) as { taskId: string };
+    await handle.drainForTest();
+
+    // A later turn supplies the awaited input, un-parking the task.
+    await store.provideInput(started.taskId, { answer: 'yes' });
+
+    // The boot/interval resume driver's primitive: claim + re-drive, no id hint.
+    const ran = await handle.resumeOne();
+    assert.equal(ran, true, 'resumeOne claimed and drove the un-parked task');
+
+    const status = JSON.parse(
+      await reg(handle, 'status').handler({ taskId: started.taskId }),
+    ) as Record<string, unknown>;
+    assert.equal(status['status'], 'completed');
+    assert.equal(status['result'], 'resolved: yes');
+
+    // Nothing left to resume.
+    assert.equal(await handle.resumeOne(), false);
+  });
+
+  it('resumeOne recovers a persisted task whose runner never claimed it (crash gap)', async () => {
+    // The other thing the resume driver recovers: a row `create`d but never
+    // claimed (the process died between create and the detached runner's claim).
+    // Here the task is created directly in the store — no `_start` runner — and
+    // resumeOne drives it, which is exactly the boot claim-loop path.
+    const { handle, store } = buildTool(async (input) => {
+      const q = (input as { question: string }).question;
+      return `answer for ${q}`;
+    });
+    const orphan = await store.create({ kind: 'slow', input: { question: 'orphaned' } });
+
+    const ran = await handle.resumeOne();
+    assert.equal(ran, true);
+    const row = await store.get(orphan.id);
+    assert.equal(row?.status, 'completed');
+    assert.equal(row?.result, 'answer for orphaned');
+    assert.equal(await handle.resumeOne(), false);
   });
 });
 

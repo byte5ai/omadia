@@ -586,6 +586,16 @@ export {
 } from './tasks/taskReaper.js';
 export type { TaskReaperOptions } from './tasks/taskReaper.js';
 export {
+  DEFAULT_TASK_RESUME_INTERVAL_MS,
+  DEFAULT_TASK_RESUME_MAX_PER_SWEEP,
+  runTaskResumeOnce,
+  startTaskResumeDriver,
+} from './tasks/taskResumeDriver.js';
+export type {
+  ResumableTaskSource,
+  TaskResumeDriverOptions,
+} from './tasks/taskResumeDriver.js';
+export {
   SUB_AGENT_TASK_KIND_PREFIX,
   createLongRunningSubAgentTool,
 } from './tasks/subAgentTaskTool.js';
