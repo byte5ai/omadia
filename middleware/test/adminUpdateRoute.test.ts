@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterEach, describe, it } from 'node:test';
+import { after, before, beforeEach, describe, it } from 'node:test';
 
 import express from 'express';
 
@@ -94,12 +94,25 @@ const RUNNING: AppVersion = { version: 'v0.74.0', source: 'release' };
 
 interface Harness {
   baseUrl: string;
-  close(): Promise<void>;
 }
 
-let open: Harness | null = null;
+/**
+ * ONE HTTP server for the whole file, not one per test.
+ *
+ * The suite already spins up a lot of short-lived Express servers on
+ * localhost, and `.github/workflows/ci.yml` records that this is the exact
+ * source of its non-deterministic failures (three consecutive full runs, three
+ * DIFFERENT tests, every one passing in isolation) — which is why
+ * `--test-concurrency` is pinned. Eighteen more listen/close cycles from this
+ * file would push on precisely that. The router reads `updater`, `audit` and
+ * `releaseLookup` off its deps object at REQUEST time, so per-test wiring is a
+ * mutation of that object rather than a new server.
+ */
+let currentDeps: Partial<AdminUpdateDeps> = {};
+let server: Server;
+let baseUrl: string;
 
-async function harness(deps: Partial<AdminUpdateDeps> = {}): Promise<Harness> {
+before(async () => {
   const app = express();
   app.use(express.json());
   // Stand in for requireAuth, which the real mount puts in front of this router.
@@ -117,25 +130,37 @@ async function harness(deps: Partial<AdminUpdateDeps> = {}): Promise<Harness> {
     '/api/v1/admin/update',
     createAdminUpdateRouter({
       currentVersion: RUNNING,
-      releaseLookup: fakeLookup(),
-      ...deps,
+      // Delegate every per-request read to whatever the running test wired up.
+      get releaseLookup() {
+        return currentDeps.releaseLookup ?? fakeLookup();
+      },
+      get updater() {
+        return currentDeps.updater;
+      },
+      get audit() {
+        return currentDeps.audit;
+      },
     }),
   );
-  const server: Server = await new Promise((resolve) => {
+  server = await new Promise((resolve) => {
     const s = app.listen(0, () => resolve(s));
   });
   const { port } = server.address() as AddressInfo;
-  open = {
-    baseUrl: `http://127.0.0.1:${port}/api/v1/admin/update`,
-    close: () => new Promise((r) => server.close(() => r())),
-  };
-  return open;
-}
-
-afterEach(async () => {
-  await open?.close();
-  open = null;
+  baseUrl = `http://127.0.0.1:${port}/api/v1/admin/update`;
 });
+
+after(async () => {
+  await new Promise<void>((r) => server.close(() => r()));
+});
+
+beforeEach(() => {
+  currentDeps = {};
+});
+
+function harness(deps: Partial<AdminUpdateDeps> = {}): Harness {
+  currentDeps = deps;
+  return { baseUrl };
+}
 
 async function post(baseUrl: string, body: unknown): Promise<Response> {
   return fetch(baseUrl, {
@@ -184,7 +209,7 @@ interface HistoryBody {
 
 describe('GET /api/v1/admin/update/status', () => {
   it('reports the running version, the latest release, and that one is newer', async () => {
-    const { baseUrl } = await harness();
+    const { baseUrl } = harness();
     const body = await readJson<StatusBody>(await fetch(`${baseUrl}/status`));
 
     assert.deepEqual(body.current, { version: 'v0.74.0', source: 'release' });
@@ -193,14 +218,14 @@ describe('GET /api/v1/admin/update/status', () => {
   });
 
   it('answers with the executor marked absent in notify-only mode', async () => {
-    const { baseUrl } = await harness();
+    const { baseUrl } = harness();
     const body = await readJson<StatusBody>(await fetch(`${baseUrl}/status`));
     assert.deepEqual(body.executor, { configured: false, reachable: false });
     assert.equal(body.auditAvailable, false);
   });
 
   it('distinguishes a configured-but-unreachable executor from an absent one', async () => {
-    const { baseUrl } = await harness({
+    const { baseUrl } = harness({
       updater: {
         getStatus: async () => ({ ok: false, error: 'ECONNREFUSED' }),
         requestUpdate: async () => ({ ok: true }),
@@ -213,7 +238,7 @@ describe('GET /api/v1/admin/update/status', () => {
   });
 
   it('still answers when the release check is offline', async () => {
-    const { baseUrl } = await harness({
+    const { baseUrl } = harness({
       releaseLookup: {
         get: async () => ({
           release: null,
@@ -237,7 +262,7 @@ describe('GET /api/v1/admin/update/status', () => {
     audit.store.reconcileOpenEntries = async (version: string) => {
       seen.push(version);
     };
-    const { baseUrl } = await harness({ audit: audit.store });
+    const { baseUrl } = harness({ audit: audit.store });
     await fetch(`${baseUrl}/status`);
     assert.deepEqual(seen, ['v0.74.0']);
   });
@@ -247,7 +272,7 @@ describe('POST /api/v1/admin/update', () => {
   it('accepts a correctly confirmed release tag and returns 202', async () => {
     const updater = fakeUpdater();
     const audit = fakeAudit();
-    const { baseUrl } = await harness({ updater: updater.client, audit: audit.store });
+    const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
 
     const res = await post(baseUrl, {
       targetVersion: 'v0.75.0',
@@ -271,7 +296,7 @@ describe('POST /api/v1/admin/update', () => {
         return audit.store.recordRequest(input);
       },
     };
-    const { baseUrl } = await harness({
+    const { baseUrl } = harness({
       audit: wrapped,
       updater: {
         getStatus: async () => ({
@@ -308,7 +333,7 @@ describe('POST /api/v1/admin/update', () => {
   it('rejects a mistyped confirmation without contacting the executor', async () => {
     const updater = fakeUpdater();
     const audit = fakeAudit();
-    const { baseUrl } = await harness({ updater: updater.client, audit: audit.store });
+    const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
 
     const res = await post(baseUrl, {
       targetVersion: 'v0.75.0',
@@ -324,7 +349,7 @@ describe('POST /api/v1/admin/update', () => {
   it('accepts a confirmation that differs only by the v prefix', async () => {
     const updater = fakeUpdater();
     const audit = fakeAudit();
-    const { baseUrl } = await harness({ updater: updater.client, audit: audit.store });
+    const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
 
     const res = await post(baseUrl, { targetVersion: 'v0.75.0', confirm: '0.75.0' });
 
@@ -335,7 +360,7 @@ describe('POST /api/v1/admin/update', () => {
   it('rejects a floating tag — rollback and the health gate need a fixed target', async () => {
     const updater = fakeUpdater();
     const audit = fakeAudit();
-    const { baseUrl } = await harness({ updater: updater.client, audit: audit.store });
+    const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
 
     for (const target of ['latest', 'edge', 'sha-1a2b3c4', 'v0.75']) {
       const res = await post(baseUrl, { targetVersion: target, confirm: target });
@@ -347,7 +372,7 @@ describe('POST /api/v1/admin/update', () => {
 
   it('refuses to execute in notify-only mode', async () => {
     const audit = fakeAudit();
-    const { baseUrl } = await harness({ audit: audit.store });
+    const { baseUrl } = harness({ audit: audit.store });
 
     const res = await post(baseUrl, { targetVersion: 'v0.75.0', confirm: 'v0.75.0' });
 
@@ -358,7 +383,7 @@ describe('POST /api/v1/admin/update', () => {
 
   it('refuses to execute when the change could not be audited', async () => {
     const updater = fakeUpdater();
-    const { baseUrl } = await harness({ updater: updater.client });
+    const { baseUrl } = harness({ updater: updater.client });
 
     const res = await post(baseUrl, { targetVersion: 'v0.75.0', confirm: 'v0.75.0' });
 
@@ -374,7 +399,7 @@ describe('POST /api/v1/admin/update', () => {
   it('refuses a second update while one is in flight', async () => {
     const updater = fakeUpdater({ state: 'updating', targetVersion: 'v0.75.0' });
     const audit = fakeAudit();
-    const { baseUrl } = await harness({ updater: updater.client, audit: audit.store });
+    const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
 
     const res = await post(baseUrl, { targetVersion: 'v0.76.0', confirm: 'v0.76.0' });
 
@@ -386,7 +411,7 @@ describe('POST /api/v1/admin/update', () => {
   it('refuses to "update" to the version already running', async () => {
     const updater = fakeUpdater();
     const audit = fakeAudit();
-    const { baseUrl } = await harness({ updater: updater.client, audit: audit.store });
+    const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
 
     const res = await post(baseUrl, { targetVersion: 'v0.74.0', confirm: 'v0.74.0' });
 
@@ -396,7 +421,7 @@ describe('POST /api/v1/admin/update', () => {
 
   it('surfaces an executor that rejects the job, with the audit id', async () => {
     const audit = fakeAudit();
-    const { baseUrl } = await harness({
+    const { baseUrl } = harness({
       audit: audit.store,
       updater: {
         getStatus: async () => ({
@@ -424,7 +449,7 @@ describe('POST /api/v1/admin/update', () => {
   });
 
   it('rejects a malformed body', async () => {
-    const { baseUrl } = await harness();
+    const { baseUrl } = harness();
     const res = await post(baseUrl, { confirm: 'v0.75.0' });
     assert.equal(res.status, 400);
     assert.equal((await readJson<ErrorBody>(res)).error, 'invalid_request');
@@ -433,14 +458,14 @@ describe('POST /api/v1/admin/update', () => {
 
 describe('GET /api/v1/admin/update/history', () => {
   it('reports unavailable rather than empty when there is no store', async () => {
-    const { baseUrl } = await harness();
+    const { baseUrl } = harness();
     const body = await readJson<HistoryBody>(await fetch(`${baseUrl}/history`));
     assert.deepEqual(body, { entries: [], available: false });
   });
 
   it('returns the trail newest first', async () => {
     const audit = fakeAudit();
-    const { baseUrl } = await harness({
+    const { baseUrl } = harness({
       audit: audit.store,
       updater: fakeUpdater().client,
     });
