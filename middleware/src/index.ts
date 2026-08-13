@@ -245,6 +245,11 @@ import {
   probeGraphPool,
   type EmbeddingGateStatus,
 } from './health/kgHealth.js';
+import {
+  AI_DISCLOSURE_POSTURE_SERVICE,
+  buildDisclosureHealth,
+  type AiDisclosurePostureStatus,
+} from './health/disclosureHealth.js';
 import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
 import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
@@ -2498,10 +2503,24 @@ async function main(): Promise<void> {
       );
       const probe = await probeGraphPool(serviceRegistry.get('graphPool'));
       const kg = buildKgHealth(installedRegistry, gate, probe);
+      // #648 (epic #642) — the resolved AI-Act marking posture per channel.
+      // Read per request for the same reason the embedding gate is: a config
+      // change re-activates the orchestrator and re-publishes, and a boot-time
+      // capture would keep reporting the old posture until a restart.
+      // Non-sensitive by construction: levels, sources and booleans only, no
+      // assistant name, operator note or composed line — see disclosureHealth.ts.
+      const disclosure = buildDisclosureHealth(
+        serviceRegistry.get<AiDisclosurePostureStatus>(
+          AI_DISCLOSURE_POSTURE_SERVICE,
+        ),
+      );
       // A dead pool is not a degradation to report at 200 — nothing in the
       // process can serve a request. 503 is what a load balancer needs to see.
+      // A deviating marking posture deliberately does NOT change the status:
+      // it is a legitimate operator decision, and #648 is explicit that the
+      // hint informs rather than blocks.
       const status = kg.pool === 'dead' ? 'error' : 'ok';
-      res.status(kg.pool === 'dead' ? 503 : 200).json({ status, kg });
+      res.status(kg.pool === 'dead' ? 503 : 200).json({ status, kg, disclosure });
     })();
   });
 
