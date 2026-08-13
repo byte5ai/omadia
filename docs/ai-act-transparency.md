@@ -244,10 +244,9 @@ More about omadia: omadia.ai
 | Office-Provenienz (#645) | `middleware/packages/harness-plugin-office/src/provenance.ts` | auf `main` |
 | PNG-Provenienz (#646) | `middleware/packages/harness-diagrams/src/pngTextChunk.ts` | auf `main` |
 | Envelope-Provenienz (#647) | `middleware/packages/harness-channel-sdk/src/provenance.ts` | auf `main` |
+| Run-Trace als Telemetrie (#684) | `middleware/packages/harness-orchestrator/src/runTraceObservability.ts` | auf `main` (PR #685, `e859da9d`) |
 | Haltung pro Kanal, `/health` + Dashboard (#648) | `middleware/packages/harness-orchestrator/src/aiDisclosurePosture.ts`, `middleware/src/health/disclosureHealth.ts` | **landet mit PR #686** |
-| Run-Trace als Telemetrie (#684) | `middleware/packages/harness-orchestrator/src/runTraceObservability.ts` | **landet mit PR #685** |
 
-Die beiden letzten Zeilen sind Vorwärtsverweise: die Pfade existieren erst, wenn die
-genannten PRs gemergt sind. Alle übrigen Aussagen dieses Dokuments sind gegen den
-aktuellen `main` verifiziert. Dieses Dokument sollte deshalb **nach** #685 und #686
-gemergt werden.
+Die letzte Zeile ist ein Vorwärtsverweis: diese beiden Pfade existieren erst, wenn
+PR #686 gemergt ist. Alle übrigen Aussagen dieses Dokuments sind gegen den aktuellen
+`main` verifiziert. Dieses Dokument sollte deshalb **nach** #686 gemergt werden.
