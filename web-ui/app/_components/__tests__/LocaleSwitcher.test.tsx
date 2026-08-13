@@ -11,8 +11,10 @@ vi.mock('next/navigation', () => ({
 /**
  * Regression guard for issue #360 — same rationale as ThemeControls.test.tsx:
  * the Windows native combobox widget silently ignores per-`<option>` styling
- * driven by CSS custom properties, so any `bg-[color:var(...)]` /
- * `text-[color:var(...)]` className on `<option>` is a no-op there. Option
+ * driven by CSS custom properties, so any bg-/text- arbitrary-value color
+ * className on `<option>` is a no-op there. (Spelled out prosaically on
+ * purpose: Tailwind v4 scans comments too, and a literal bracket-class with
+ * `var(...)` inside compiles into invalid CSS that breaks `next dev`.) Option
  * colors are owned by `[data-theme]`-scoped rules in globals.css with
  * concrete hex values; the per-option className must not come back, or
  * contributors would assume it does something.
