@@ -533,4 +533,83 @@ describe('<ProvidersPanel />', () => {
     })) as HTMLButtonElement;
     expect(button.disabled).toBe(false);
   });
+
+  /**
+   * #671 — `UNVERIFIED` on its own is not actionable. It covers "your key is
+   * fine, your region is blocked" and "the provider was down" with one chip.
+   * PR #599 was right to stop calling a bare 403 a bad key; this says which of
+   * those it actually was.
+   */
+  describe('unverified reason (#671)', () => {
+    it('explains a 403 as a region/permission block rather than a bad key', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [
+            provider({ status: 'unverified', connected: true, verifyReason: 'forbidden' }),
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      expect(
+        await screen.findByText(en.adminProviders.providers.unverifiedReason.forbidden),
+      ).toBeInTheDocument();
+    });
+
+    it('distinguishes an unreachable provider from a blocked one', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [
+            provider({ status: 'unverified', connected: true, verifyReason: 'network_error' }),
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      expect(
+        await screen.findByText(en.adminProviders.providers.unverifiedReason.networkError),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(en.adminProviders.providers.unverifiedReason.forbidden),
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders nothing for an unknown code instead of leaking it into the UI', async () => {
+      // A newer middleware may add a reason this build has no copy for. The
+      // map is closed on purpose: printing the raw code at the operator would
+      // be worse than saying nothing.
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [
+            provider({
+              status: 'unverified',
+              connected: true,
+              verifyReason: 'some_future_reason',
+            }),
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      expect(await screen.findByText(/Anthropic/)).toBeInTheDocument();
+      expect(screen.queryByText(/some_future_reason/)).not.toBeInTheDocument();
+    });
+
+    it('says nothing about reasons once the key verifies', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [
+            // A stale `verifyReason` must not survive a successful verify.
+            provider({ status: 'verified', connected: true, verifyReason: 'forbidden' }),
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      expect(await screen.findByText(/Anthropic/)).toBeInTheDocument();
+      expect(
+        screen.queryByText(en.adminProviders.providers.unverifiedReason.forbidden),
+      ).not.toBeInTheDocument();
+    });
+  });
 });

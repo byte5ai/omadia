@@ -193,11 +193,25 @@ const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(true),
 
-  // Local-dev endpoints (unauthenticated memory browser, …). Keep this OFF in
-  // any deployed environment — the router mounts under /api/dev and exposes
-  // raw memory contents without auth. Only enable when iterating on the
+  // Local-dev endpoints (raw graph browser, memory browser, …) under /api/dev.
+  //
+  // Issue #669: these used to mount WITHOUT authentication, so this flag alone
+  // published knowledge-graph state — and three destructive maintenance sweeps —
+  // to anyone who knew the path. They now sit behind the same operator session
+  // gate as every other /api route, and the KG-Lifecycle / priorities operator
+  // pages moved to /api/v1/admin/kg-* so they no longer need this flag at all.
+  // Still dev scaffolding: leave it off unless you are iterating on the
   // Next.js dev UI against a local middleware.
   DEV_ENDPOINTS_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(false),
+
+  // Issue #669 — belt-and-braces for /api/dev: refuse any request that did not
+  // arrive over a loopback socket (403), on top of the session gate. Off by
+  // default because a containerised dev setup proxies through the Next.js
+  // server from a non-loopback address. See auth/loopbackOnly.ts.
+  DEV_ENDPOINTS_LOOPBACK_ONLY: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
     .default(false),
@@ -643,6 +657,7 @@ const ConfigSchema = z.object({
  * only through `config.devPlatform` (epic #470 C3).
  *
  *   - `DEV_ENDPOINTS_ENABLED` — the core dev-graph endpoints (`/api/dev/*`).
+ *   - `DEV_ENDPOINTS_LOOPBACK_ONLY` — the #669 address gate over the same surface.
  *   - `FLY_APP_NAME`          — Fly-injected identity of THIS app. The dev platform
  *                               reads its value (copied into `devPlatform.fly`),
  *                               but the key describes the host, not the feature, so
@@ -656,7 +671,11 @@ const ConfigSchema = z.object({
  * with no second list to forget. A new *core* key with those prefixes must be
  * added here — and that is the change that deserves the review attention.
  */
-const CORE_DEV_PREFIXED_KEYS = ['DEV_ENDPOINTS_ENABLED', 'FLY_APP_NAME'] as const;
+const CORE_DEV_PREFIXED_KEYS = [
+  'DEV_ENDPOINTS_ENABLED',
+  'DEV_ENDPOINTS_LOOPBACK_ONLY',
+  'FLY_APP_NAME',
+] as const;
 type CoreDevPrefixedKey = (typeof CORE_DEV_PREFIXED_KEYS)[number];
 
 type ParsedConfig = z.infer<typeof ConfigSchema>;

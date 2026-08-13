@@ -262,7 +262,7 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
   // does, so a path dropped from that list fails this test instead of only
   // failing in production. Mounted both at `/api` (like index.ts) and around
   // the admin router (like mountDevPlatform).
-  const allowlist = publicPaths({ devEndpointsEnabled: false });
+  const allowlist = publicPaths();
   const requireAuth: RequestHandler = (req, res, next) => {
     const url = req.originalUrl || req.url;
     if (allowlist.some((rx) => rx.test(url))) {

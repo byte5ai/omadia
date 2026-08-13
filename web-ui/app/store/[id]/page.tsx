@@ -84,7 +84,8 @@ export default async function PluginDetailPage({
     throw err;
   }
 
-  const { plugin, install_available, blocking_reasons } = detail;
+  const { plugin, install_available, blocking_reasons, blocked_by_active_provider } =
+    detail;
   const isLegacy = plugin.categories.includes('legacy');
   const visibleCategories = plugin.categories.filter((c) => c !== 'legacy');
 
@@ -352,6 +353,30 @@ export default async function PluginDetailPage({
               : {})}
             {...(blocking_reasons ? { blockingReasons: blocking_reasons } : {})}
           />
+
+          {/* OM-06 / #671 — the capability this plugin provides is already
+              covered by an active plugin, so the install would be refused.
+              `blocking_reasons` above already says so, but only in English and
+              only as a statement of fact. The operator's actual next step is
+              to configure the provider they ALREADY have, which the original
+              report called out as missing: the store offered "install" while
+              the admin area listed the same provider as connected, with no
+              link between the two. */}
+          {blocked_by_active_provider ? (
+            <div className="space-y-2 rounded-lg border border-[color:var(--edge)] p-4">
+              <p className="text-[12px] leading-relaxed text-[color:var(--fg-muted)]">
+                {t('alreadyProvided', {
+                  owner: blocked_by_active_provider.owner_id,
+                })}
+              </p>
+              <Link
+                href="/admin/providers"
+                className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent)] transition hover:opacity-80"
+              >
+                {t('alreadyProvidedCta')}
+              </Link>
+            </div>
+          ) : null}
 
           {/* Admin-UI Toggle — sidebar control for the plugin-bundled
               operator UI. Visible whenever the plugin declares an

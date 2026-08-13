@@ -1262,8 +1262,11 @@ startet. Logged `scopes=N files=N turns=N skipped=N`.
 - `GET /api/dev/graph/session/:scope`
 - `GET /api/dev/graph/neighbors?nodeId=...`
 
-Alle hinter `DEV_ENDPOINTS_ENABLED=true`. Admin-geschützte Variante für
-Prod wäre machbar, aktuell nicht nötig.
+Alle hinter `DEV_ENDPOINTS_ENABLED=true` **und** der Operator-Session
+(Issue #669 — vorher waren sie unauthentifiziert). Die Operator-Flächen
+(KG-Lifecycle, KG-Priorities, Plugin-Domains) hängen nicht mehr an diesem
+Flag, sondern liegen unter `/api/v1/admin/kg-*` bzw. `/api/admin/domains`.
+Siehe `docs/security-architecture.md` §10.
 
 ### Agent-Query-Tool
 
@@ -1423,7 +1426,9 @@ CONFLUENCE_SPACE_KEY=HOME
 CONFLUENCE_PROXY_MAX_BYTES=200000
 # Optional endpoints
 ADMIN_TOKEN                         # mount /api/admin (mutating memory)
-DEV_ENDPOINTS_ENABLED=false         # mount /api/dev/* (unauth!)# Teams
+DEV_ENDPOINTS_ENABLED=false         # mount /api/dev/* (Session-gated seit #669; Dev-Scaffolding)
+DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#669)
+# Teams
 MICROSOFT_APP_ID, MICROSOFT_APP_PASSWORD, MICROSOFT_APP_TYPE=MultiTenant,
 MICROSOFT_APP_TENANT_ID
 # Diagram rendering (alle 7 müssen gesetzt sein, sonst wird Feature deaktiviert)
