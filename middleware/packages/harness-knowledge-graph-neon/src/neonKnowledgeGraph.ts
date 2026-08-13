@@ -1262,6 +1262,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         status: trace.status,
         iterations: trace.iterations,
         toolCalls: totalToolCalls,
+        // #650 (epic #642) — model + provider on the persisted Run node.
+        // `graph_nodes.properties` is generic JSONB, so this needs no SQL
+        // migration; the twin write in the in-memory implementation keeps the
+        // two backends answering "which model wrote this?" the same way.
+        ...(trace.model ? { model: trace.model } : {}),
+        ...(trace.provider ? { provider: trace.provider } : {}),
         ...(trace.error ? { error: trace.error } : {}),
       });
       const runUuid = await this.upsertNode(client, {

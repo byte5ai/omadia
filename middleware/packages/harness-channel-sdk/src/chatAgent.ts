@@ -244,6 +244,16 @@ export interface RunTracePayload {
   orchestratorToolCalls: RunToolCall[];
   /** One entry per sub-agent invocation in invocation-order. */
   agentInvocations: RunAgentInvocation[];
+  /**
+   * #650 (epic #642) — the model that produced the answer, and the provider
+   * that served it. Mirrors `RunTrace` in `@omadia/plugin-api`; this payload is
+   * a structural copy of it (see the note on `RunTracePayload` in
+   * `runTraceCollector.ts` for why the shape is duplicated rather than imported).
+   *
+   * Optional so every trace written before this existed stays readable.
+   */
+  model?: string;
+  provider?: string;
 }
 
 /** Compact verifier summary attached to `ChatTurnResult` and the streaming

@@ -3860,6 +3860,9 @@ export class Orchestrator {
     ]);
     const turnModel = turnModelResolved.model;
     const turnPersonaBody = turnPersonaResolved.skillBody;
+    // #650 — stamp the resolved model on the trace here, once, rather than at
+    // each of `finish()`'s call sites. Buffered path.
+    traceCollector?.recordModel(turnModel, this.provider.id);
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -4852,6 +4855,10 @@ export class Orchestrator {
     ]);
     const turnModel = resolved.model;
     const turnPersonaBody = resolvedPersona.skillBody;
+    // #650 — streaming mirror of the buffered stamp above. Both paths, or the
+    // field is present on some traces and absent on others for no visible
+    // reason, which is worse for a provenance record than not having it.
+    traceCollector?.recordModel(turnModel, this.provider.id);
     // Surface the Haiku-triage decision inline, before the first model call —
     // the UI renders it at the top of the turn card so the operator sees the
     // classifier's verdict (simple/complex → model) as soon as it lands.

@@ -210,6 +210,19 @@ const RunPropsSchema = z
     iterations: z.number().int().nonnegative(),
     toolCalls: z.number().int().nonnegative(),
     error: z.string().optional(),
+    // #650 (epic #642) — which model produced the answer, and who served it.
+    //
+    // Declared explicitly even though the schema is `.passthrough()` and would
+    // carry them regardless: passthrough means "tolerated", and a provenance
+    // field that is merely tolerated is one nothing validates and nothing
+    // documents. Optional, so every Run node written before this stays valid.
+    //
+    // NO SQL MIGRATION. `graph_nodes.properties` is a generic JSONB column
+    // (`0001_graph_init.sql`), so adding a property is a schema-level change
+    // only — the issue's assumption that a migration was required does not hold
+    // for this table.
+    model: z.string().optional(),
+    provider: z.string().optional(),
   })
   .passthrough();
 
