@@ -345,12 +345,12 @@ export function createDevJobTaskStore(deps: DevJobTaskStoreDeps): TaskStore {
     },
 
     async provideInput(id: string): Promise<TaskDescriptor> {
-      // Symmetric to `requireInput`: dev_job un-parks a `waiting` job through its
-      // OWN gate resolution (`requeueAtPhase` re-queues the job at the implement
-      // phase once the human approves), fenced on `await_human` and attributable
-      // to the approving human. The seam is not given a way to drive that — the
-      // resume transition here is an OBSERVER, returning the current projection.
-      // Resuming a dev_job through this generic path (and replacing its input)
+      // Symmetric to `requireInput`: the backing pipeline un-parks a `waiting` job
+      // through its OWN gate resolution (`requeueAtPhase` re-queues the job at the
+      // implement phase once the human approves), fenced on `await_human` and
+      // attributable to the approving human. The seam is not given a way to drive
+      // that — the resume transition here is an OBSERVER, returning the current
+      // projection. Resuming through this generic path (and replacing its input)
       // would bypass the gate's authorization, so it deliberately does nothing.
       const job = await jobStore.getJob(id);
       if (!job) throw new TaskLeaseLostError(id);

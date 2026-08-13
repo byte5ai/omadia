@@ -60,7 +60,7 @@ const TASK_COLS =
 const TERMINAL_SET_SQL = `'completed','failed'`;
 
 /** Upper bound on `eventTail` — a status poll wants "what is it doing", not the
- *  whole log. Mirrors the dev_job adapter's cap. */
+ *  whole log. Mirrors the developer-job adapter's cap. */
 const MAX_EVENT_TAIL = 2000;
 
 type Row = Record<string, unknown>;
@@ -168,7 +168,7 @@ export class DurableTaskStore implements TaskStore {
     if (!TASK_LEASE_UUID_RE.test(lease)) {
       throw new TypeError(`claimNextPending: lease must be a UUID (got '${lease}')`);
     }
-    // Unlike the dev_job adapter, this store CAN honour the task-id hint: its
+    // Unlike the developer-job adapter, this store CAN honour the task-id hint: its
     // claim is its own `SELECT ... FOR UPDATE SKIP LOCKED`, so narrowing it to one
     // id is exact. `kind` and `id` are optional predicates; the row is stamped
     // with the lease in the same statement, so two workers never cross claims.

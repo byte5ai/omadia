@@ -303,7 +303,6 @@ import {
   startTaskReaper,
   startTaskResumeDriver,
   type ResumableTaskSource,
-  type TaskStore,
 } from '@omadia/orchestrator';
 import { DurableTaskStore } from './tasks/durableTaskStore.js';
 import {
@@ -460,13 +459,10 @@ async function main(): Promise<void> {
   const longRunningSubAgentTools = config.LONG_RUNNING_SUBAGENT_TOOLS.split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  // Issue #560 — the store is chosen once `graphPool` resolves (far below): a
-  // DurableTaskStore over Postgres when available, so a long-running task
-  // survives a restart, else the process-local InMemoryTaskStore. The reaper is
-  // started there too. Deferred sub-agent tool handles are collected into this
-  // sink during hydration so the resume driver (started after the hydrate loop)
-  // can re-drive their tasks with no task-id hint (#560 criterion 3).
-  let subAgentTaskStore: TaskStore;
+  // Issue #560 — deferred sub-agent tool handles are collected into this sink
+  // during hydration so the resume driver (started after the hydrate loop) can
+  // re-drive their tasks with no task-id hint (#560 criterion 3). The task store
+  // itself is constructed once `graphPool` resolves, far below.
   const deferredTaskToolHandles: ResumableTaskSource[] = [];
   // LLM provider catalog: kernel-owned registry of plugin-contributed providers
   // (e.g. @omadia/plugin-llm-minimax). Published pre-activate and populated from
@@ -1603,7 +1599,7 @@ async function main(): Promise<void> {
   // started here rather than at declaration so it sweeps the store actually in
   // use. The resume driver is started later, after the hydrate loop populates
   // `deferredTaskToolHandles`.
-  subAgentTaskStore = graphPool
+  const subAgentTaskStore = graphPool
     ? new DurableTaskStore(graphPool)
     : new InMemoryTaskStore();
   if (longRunningSubAgentTools.length > 0) {

@@ -2,11 +2,11 @@
 -- (`@omadia/orchestrator`'s `TaskStore`). InMemoryTaskStore is process-local, so
 -- every long-running task is lost on restart and `<tool>_status` then answers
 -- "not found"; this table is the durable second implementor (see
--- src/tasks/durableTaskStore.ts). Claim/lease columns mirror dev_jobs and
--- conductor_runs (migrations 0022 / src/conductor/migrations/0004). Forward-only,
--- idempotent.
+-- src/tasks/durableTaskStore.ts). Claim/lease columns mirror the developer-job
+-- table and conductor_runs (migrations 0022 / src/conductor/migrations/0004).
+-- Forward-only, idempotent.
 --
--- A CHECK on `status` IS appropriate here, unlike dev_jobs (whose comment warns a
+-- A CHECK on `status` IS appropriate here, unlike that table (whose comment warns a
 -- CHECK on a growing enum is a liability): the seam's lifecycle vocabulary is a
 -- deliberately CLOSED four-value set chosen to project onto MCP Tasks
 -- (TASK_LIFECYCLE_STATUSES in taskTypes.ts), not a growing pipeline enum. A new
