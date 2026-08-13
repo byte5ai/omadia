@@ -19,9 +19,10 @@ import { DisclosureNotice } from './_components/DisclosureNotice';
  * `ChannelKeyDirectory` contribution.
  */
 
-export const metadata: Metadata = {
-  title: 'Channels · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('operatorChannels');
+  return { title: t('metaTitle') };
+}
 
 export const dynamic = 'force-dynamic';
 

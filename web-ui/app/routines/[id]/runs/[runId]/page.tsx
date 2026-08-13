@@ -18,9 +18,10 @@ interface RouteParams {
 
 export const dynamic = 'force-dynamic';
 
-export const metadata: Metadata = {
-  title: 'Routine Run · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('routines.runDetail');
+  return { title: t('metaTitle') };
+}
 
 export default async function RoutineRunDetailPage({
   params,

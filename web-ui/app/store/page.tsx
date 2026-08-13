@@ -14,9 +14,10 @@ import { PluginCard } from '../_components/store/PluginCard';
 import { UploadDropzone } from '../_components/store/UploadDropzone';
 import { cn } from '../_lib/cn';
 
-export const metadata: Metadata = {
-  title: 'Hub · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('store.page');
+  return { title: t('metaTitle') };
+}
 
 export const dynamic = 'force-dynamic';
 

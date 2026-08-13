@@ -8,9 +8,10 @@ import { redirectIfUnauthorized } from '../../../_lib/authRedirect';
 
 import { Workspace } from './_components/Workspace';
 
-export const metadata: Metadata = {
-  title: 'Workspace · Agent-Builder · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('builder.drafts.detail');
+  return { title: t('metaTitle') };
+}
 
 export const dynamic = 'force-dynamic';
 

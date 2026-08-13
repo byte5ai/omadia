@@ -5,9 +5,10 @@ import { listRoutines, type RoutineDto } from '../_lib/api';
 import { redirectIfUnauthorized } from '../_lib/authRedirect';
 import { RoutineRow } from './_components/RoutineRow';
 
-export const metadata: Metadata = {
-  title: 'Routines · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('routines.page');
+  return { title: t('metaTitle') };
+}
 
 export const dynamic = 'force-dynamic';
 

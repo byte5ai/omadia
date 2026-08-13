@@ -5,9 +5,10 @@ import { getVaultStatus } from '../_lib/api';
 import { redirectIfUnauthorized } from '../_lib/authRedirect';
 import { VaultStatusCard } from './_components/VaultStatusCard';
 
-export const metadata: Metadata = {
-  title: 'System · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('system.page');
+  return { title: t('metaTitle') };
+}
 
 export const dynamic = 'force-dynamic';
 
