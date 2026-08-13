@@ -6,3 +6,18 @@ export { evaluatePredicate, resolvePath } from './predicate.js';
 export { conductorGraphSchema, validateGraphShape, type ShapeResult } from './schema.js';
 export { validate } from './validate.js';
 export { nextStep } from './engine.js';
+export {
+  extractSlotRefs,
+  missingSlotMappings,
+  applyTemplateSlots,
+  checkTemplateManifest,
+  resolveLocalizedText,
+  templateManifestVersion,
+  inferTemplateManifest,
+  type InferTemplateOptions,
+} from './template.js';
+export {
+  extractTextSlotRefs,
+  TEXT_SLOT_PREFIX,
+  type TemplateTextSlotRef,
+} from './textSlots.js';

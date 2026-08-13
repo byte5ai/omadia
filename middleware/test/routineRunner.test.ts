@@ -26,6 +26,7 @@ import {
   type JobSchedulerLike,
   type OrchestratorLike,
 } from '../src/plugins/routines/routineRunner.js';
+import { RoutineNameConflictError } from '../src/plugins/routines/routineStore.js';
 import { routineTurnContext } from '../src/plugins/routines/routineTurnContext.js';
 import { turnContext } from '@omadia/orchestrator';
 import type { RoutineOutputTemplate } from '../src/plugins/routines/routineOutputTemplate.js';
@@ -96,6 +97,18 @@ class InMemoryRoutineStore implements RoutineStore {
   // pg pool field is required by TS — this stub just satisfies the
   // structural shape the runner relies on (duck-typed via the import).
   async create(input: CreateRoutineInput): Promise<Routine> {
+    // Mirror the real store's `routines_user_name_unique` constraint so
+    // tests can exercise the runner's conflict-reconciliation path
+    // (issue #506) without a real Postgres pool.
+    const collision = [...this.rows.values()].find(
+      (r) =>
+        r.tenant === input.tenant &&
+        r.userId === input.userId &&
+        r.name === input.name,
+    );
+    if (collision) {
+      throw new RoutineNameConflictError(input.name);
+    }
     const id = `routine-${this.nextId++}`;
     const now = new Date();
     const routine: Routine = {
@@ -106,7 +119,7 @@ class InMemoryRoutineStore implements RoutineStore {
       cron: input.cron,
       prompt: input.prompt,
       channel: input.channel,
-      conversationRef: input.conversationRef,
+      conversationRef: input.conversationRef ?? {},
       status: 'active',
       timeoutMs: input.timeoutMs ?? 600_000,
       createdAt: now,
@@ -122,6 +135,18 @@ class InMemoryRoutineStore implements RoutineStore {
 
   async get(id: string): Promise<Routine | null> {
     return this.rows.get(id) ?? null;
+  }
+
+  async getByName(
+    tenant: string,
+    userId: string,
+    name: string,
+  ): Promise<Routine | null> {
+    return (
+      [...this.rows.values()].find(
+        (r) => r.tenant === tenant && r.userId === userId && r.name === name,
+      ) ?? null
+    );
   }
 
   async listForUser(tenant: string, userId: string): Promise<Routine[]> {
@@ -276,6 +301,9 @@ interface Harness {
 
 interface MakeHarnessOptions {
   orchestrator?: OrchestratorLike;
+  /** Live resolver seam (issue #473). Takes precedence over `orchestrator`;
+   *  lets tests flip the chat agent between fires (hot-enable / rotation). */
+  getOrchestrator?: () => OrchestratorLike | undefined;
   agentCallsRef?: Array<{
     userMessage: string;
     userId?: string;
@@ -311,7 +339,7 @@ function makeHarness(options: MakeHarnessOptions = {}): Harness {
     store: store as unknown as RoutineStore,
     runsStore: runsStore as unknown as RoutineRunsStore,
     scheduler,
-    orchestrator: stubOrch.orchestrator,
+    getOrchestrator: options.getOrchestrator ?? (() => stubOrch.orchestrator),
     senderRegistry,
     log: () => {},
     maxActivePerUser: options.maxActivePerUser,
@@ -369,6 +397,34 @@ describe('RoutineRunner — createRoutine', () => {
     );
   });
 
+  // Issue #506 (reviewer-confirmed gap) — the quota check must not run
+  // before the reconciliation check for a user already at capacity. A user
+  // at `maxActivePerUser` who retries the identical `createRoutine` call
+  // that already brought them there (e.g. their turn's own confirmation
+  // was dropped) must reconcile to the existing row, not be told they're
+  // out of quota — that's the exact false-negative issue #506 was filed
+  // over, just re-surfaced as a different exception type.
+  it('reconciles a same-request retry even when the user is already at quota', async () => {
+    const h = makeHarness({ maxActivePerUser: 1 });
+    const first = await h.runner.createRoutine(baseInput);
+    const retry = await h.runner.createRoutine(baseInput);
+    assert.equal(retry.id, first.id, 'retry must resolve to the original row');
+    assert.equal(h.store.rows.size, 1, 'no duplicate row was created');
+  });
+
+  // The quota gate must still apply to a genuinely new routine request —
+  // reconciliation is only for retries of an already-existing, already-
+  // active routine. A different `name` is a real new-routine request and
+  // must not silently bypass the quota check.
+  it('still enforces the per-user quota for a genuinely new routine name', async () => {
+    const h = makeHarness({ maxActivePerUser: 1 });
+    await h.runner.createRoutine(baseInput);
+    await assert.rejects(
+      () => h.runner.createRoutine({ ...baseInput, name: 'a-different-name' }),
+      RoutineQuotaExceededError,
+    );
+  });
+
   it('rolls the row back when scheduler.register throws', async () => {
     // Production: JobScheduler validates cron via croner and throws
     // JobValidationError on malformed input. We simulate that here so the
@@ -385,6 +441,202 @@ describe('RoutineRunner — createRoutine', () => {
       h.store.deleteCalls,
       1,
       'delete() should be invoked exactly once on rollback',
+    );
+  });
+
+  // Issue #506 — a retry that lands on the same (tenant, user, name) unique
+  // key must reconcile against the row that already exists rather than
+  // reporting a failure (the row from the FIRST call already committed;
+  // only the confirmation leg back to the caller was ever in doubt).
+  it('reconciles a same-request retry instead of reporting a conflict', async () => {
+    const h = makeHarness();
+    const first = await h.runner.createRoutine(baseInput);
+    const retry = await h.runner.createRoutine(baseInput);
+    assert.equal(retry.id, first.id, 'retry must resolve to the original row');
+    assert.equal(h.store.rows.size, 1, 'no duplicate row was created');
+    // Only one scheduler registration — the reconciled retry does not
+    // re-register (would throw JobAlreadyRegisteredError against the real
+    // scheduler if it tried).
+    assert.equal(h.scheduler.list().length, 1);
+  });
+
+  it('still reports a conflict when the retry disagrees with the existing routine', async () => {
+    const h = makeHarness();
+    await h.runner.createRoutine(baseInput);
+    await assert.rejects(
+      () =>
+        h.runner.createRoutine({ ...baseInput, prompt: 'Sag etwas anderes' }),
+      RoutineNameConflictError,
+    );
+    assert.equal(h.store.rows.size, 1, 'the conflicting attempt created nothing');
+  });
+
+  // Reviewer-confirmed bug fix: `outputTemplate` is an independently-settable
+  // object field on both `Routine` and `CreateRoutineInput` (Phase C output
+  // templates) and must be compared, not ignored. A create that agrees on
+  // cron/prompt/channel/timeoutMs but asks for a different `outputTemplate`
+  // is the caller changing the structured-output template on an existing
+  // schedule, not a retry — silently reconciling to the old row would
+  // discard the caller's new template while reporting success.
+  it('still reports a conflict when the retry differs only in outputTemplate', async () => {
+    const h = makeHarness();
+    const template: RoutineOutputTemplate = {
+      format: 'markdown',
+      sections: [
+        {
+          kind: 'static-markdown',
+          text: 'Original',
+        },
+      ],
+    };
+    const otherTemplate: RoutineOutputTemplate = {
+      format: 'markdown',
+      sections: [
+        {
+          kind: 'static-markdown',
+          text: 'Different',
+        },
+      ],
+    };
+    await h.runner.createRoutine({ ...baseInput, outputTemplate: template });
+    await assert.rejects(
+      () =>
+        h.runner.createRoutine({
+          ...baseInput,
+          outputTemplate: otherTemplate,
+        }),
+      RoutineNameConflictError,
+    );
+    assert.equal(h.store.rows.size, 1, 'the conflicting attempt created nothing');
+  });
+
+  it('reconciles a retry whose outputTemplate is structurally identical', async () => {
+    const h = makeHarness();
+    const template: RoutineOutputTemplate = {
+      format: 'markdown',
+      sections: [
+        {
+          kind: 'static-markdown',
+          text: 'Same',
+        },
+      ],
+    };
+    const first = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: template,
+    });
+    // A structurally-equal but distinct object — not the same reference —
+    // must still reconcile; the comparison is deep, not reference equality.
+    const retry = await h.runner.createRoutine({
+      ...baseInput,
+      outputTemplate: {
+        format: 'markdown',
+        sections: [
+          {
+            kind: 'static-markdown',
+            text: 'Same',
+          },
+        ],
+      },
+    });
+    assert.equal(retry.id, first.id, 'retry must resolve to the original row');
+    assert.equal(h.store.rows.size, 1, 'no duplicate row was created');
+  });
+
+  // Reviewer-confirmed bug fix: `conversationRef` is caller-specified on the
+  // cold-start outreach path (`ManageRoutineTool.handleCreate` resolves it
+  // from `targetEmail` via `buildEmailColdStartTarget` before calling
+  // `createRoutine`), so it must be compared like `outputTemplate`, not
+  // ignored. A create that agrees on cron/prompt/channel/timeoutMs/
+  // outputTemplate but resolves a DIFFERENT `conversationRef` (e.g. a
+  // different `targetEmail`) is a genuine new request aimed at a different
+  // recipient — silently reconciling to the existing row would report
+  // "created" while the new recipient never gets set up and the routine
+  // keeps messaging the original one.
+  it('still reports a conflict when the retry resolves a different conversationRef', async () => {
+    const h = makeHarness();
+    await h.runner.createRoutine({
+      ...baseInput,
+      conversationRef: { conversation: { id: 'conv-alice' } },
+    });
+    await assert.rejects(
+      () =>
+        h.runner.createRoutine({
+          ...baseInput,
+          conversationRef: { conversation: { id: 'conv-bob' } },
+        }),
+      RoutineNameConflictError,
+    );
+    assert.equal(h.store.rows.size, 1, 'the conflicting attempt created nothing');
+  });
+
+  it('reconciles a retry whose conversationRef is structurally identical', async () => {
+    const h = makeHarness();
+    const first = await h.runner.createRoutine({
+      ...baseInput,
+      conversationRef: { conversation: { id: 'conv-alice' } },
+    });
+    // A structurally-equal but distinct object — not the same reference —
+    // must still reconcile; the comparison is deep, not reference equality.
+    const retry = await h.runner.createRoutine({
+      ...baseInput,
+      conversationRef: { conversation: { id: 'conv-alice' } },
+    });
+    assert.equal(retry.id, first.id, 'retry must resolve to the original row');
+    assert.equal(h.store.rows.size, 1, 'no duplicate row was created');
+  });
+
+  // Reviewer-confirmed bug fix: `store.create()` normalizes an omitted
+  // `conversationRef` to `{}` before persisting (routineStore.ts stores
+  // `JSON.stringify(input.conversationRef ?? {})`, and reads it back the
+  // same way), but `isSameRoutineRequest` used to compare the stored `{}`
+  // against the RAW retry input with no equivalent `?? {}` normalization —
+  // unlike `timeoutMs` and `outputTemplate`, which already apply the same
+  // default the store itself uses. A genuine retry of the ordinary
+  // (non-cold-start) create path — where `conversationRef` is legitimately
+  // `undefined` both times — must still reconcile to the existing row
+  // rather than falling through to `RoutineNameConflictError`.
+  it('reconciles a retry whose conversationRef is omitted both times', async () => {
+    const h = makeHarness();
+    const first = await h.runner.createRoutine({
+      ...baseInput,
+      conversationRef: undefined,
+    });
+    const retry = await h.runner.createRoutine({
+      ...baseInput,
+      conversationRef: undefined,
+    });
+    assert.equal(retry.id, first.id, 'retry must resolve to the original row');
+    assert.equal(h.store.rows.size, 1, 'no duplicate row was created');
+  });
+
+  // Reviewer-confirmed bug fix: reconciliation must not fire against a
+  // paused (or otherwise non-active) existing row, even when every other
+  // field matches byte-for-byte. A paused routine is not "my own in-flight
+  // retry" — it's a separate, deliberate create call that happens to share
+  // a name with something the user already paused. Silently returning the
+  // paused row would report `status: 'paused'` as a successful create with
+  // no active schedule, which is a worse instance of the exact
+  // false-negative/false-positive problem issue #506 was filed to fix.
+  it('still reports a conflict when the existing same-name routine is paused', async () => {
+    const h = makeHarness();
+    const first = await h.runner.createRoutine(baseInput);
+    await h.runner.pauseRoutine(first.id);
+
+    await assert.rejects(
+      () => h.runner.createRoutine(baseInput),
+      RoutineNameConflictError,
+    );
+    assert.equal(h.store.rows.size, 1, 'no new row was created');
+    assert.equal(
+      h.store.rows.get(first.id)?.status,
+      'paused',
+      'the existing paused row must be left untouched',
+    );
+    assert.equal(
+      h.scheduler.list().length,
+      0,
+      'no scheduler registration should have happened',
     );
   });
 });
@@ -847,7 +1099,7 @@ describe('RoutineRunner — Phase C.5 templated end-to-end pipeline', () => {
       store: store as unknown as RoutineStore,
       runsStore: runsStore as unknown as RoutineRunsStore,
       scheduler,
-      orchestrator,
+      getOrchestrator: () => orchestrator,
       senderRegistry,
       log: (msg) => {
         logLines.push(msg);
@@ -1073,5 +1325,97 @@ describe('RoutineRunner — Phase C.6 adaptive-card path', () => {
     assert.equal(h.sender.calls.length, 1);
     assert.equal(h.sender.calls[0]!.cardBody, undefined);
     assert.equal(h.sender.calls[0]!.message.text, 'Hi.');
+  });
+});
+
+/**
+ * Issue #473 — the runner resolves the chat agent LIVE per fire (never
+ * captured at construction), so routines hot-enable the moment the Setup
+ * Wizard key save publishes chatAgent@1, and a key rotation swaps
+ * orchestrator instances without a restart. Keyless fires record an
+ * `error` run naming the missing key.
+ */
+describe('live chat-agent resolution (issue #473)', () => {
+  it('records a chat-unavailable error run when no orchestrator resolves — before the sender lookup', async () => {
+    // Pre-key BOTH the chat agent and the channel senders are dark
+    // (channel plugins require chatAgent@^1). The recorded error must
+    // name the missing key, not the missing sender — so the routine is
+    // registered without a sender and the chat-agent check has to win.
+    const h = makeHarness({
+      getOrchestrator: () => undefined,
+      registerSender: false,
+    });
+    // createRoutine guards on a registered sender; seed the row directly
+    // and let resumeRoutine do the scheduler registration (it only warns
+    // on a missing sender).
+    const row = await h.store.create(baseInput);
+    await h.runner.resumeRoutine(row.id);
+
+    await h.scheduler.fire(row.id);
+
+    assert.equal(h.runsStore.inserts.length, 1);
+    assert.equal(h.runsStore.inserts[0]!.status, 'error');
+    assert.match(
+      h.runsStore.inserts[0]!.errorMessage ?? '',
+      /chat agent unavailable.*LLM API key/i,
+    );
+    assert.doesNotMatch(
+      h.runsStore.inserts[0]!.errorMessage ?? '',
+      /no proactive sender/,
+    );
+    assert.equal(h.store.recordRunCalls.length, 1);
+    assert.equal(h.store.recordRunCalls[0]!.status, 'error');
+  });
+
+  it('hot-enables: a fire after the resolver starts returning an orchestrator succeeds without re-registration', async () => {
+    const stub = makeStubOrchestrator({ answerText: 'routines are live' });
+    let current: OrchestratorLike | undefined;
+    const h = makeHarness({ getOrchestrator: () => current });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    // Keyless fire → error run, orchestrator never invoked.
+    await h.scheduler.fire(routine.id);
+    assert.equal(h.runsStore.inserts[0]!.status, 'error');
+    assert.equal(h.sender.calls.length, 0);
+
+    // Key saved → chatAgent@1 published. Same scheduler entry, next fire
+    // just works — no restart, no re-init.
+    current = stub.orchestrator;
+    await h.scheduler.fire(routine.id);
+
+    assert.equal(h.runsStore.inserts.length, 2);
+    assert.equal(h.runsStore.inserts[1]!.status, 'ok');
+    assert.equal(stub.calls.length, 1);
+    assert.equal(h.sender.calls.length, 1);
+    assert.equal(h.sender.calls[0]!.message.text, 'routines are live');
+  });
+
+  it('key rotation: each fire uses the orchestrator instance current at fire time', async () => {
+    const a = makeStubOrchestrator({ answerText: 'from A' });
+    const b = makeStubOrchestrator({ answerText: 'from B' });
+    let current: OrchestratorLike | undefined = a.orchestrator;
+    const h = makeHarness({ getOrchestrator: () => current });
+    const routine = await h.runner.createRoutine(baseInput);
+
+    await h.scheduler.fire(routine.id);
+    current = b.orchestrator; // reactivate published a NEW bundle
+    await h.scheduler.fire(routine.id);
+
+    assert.equal(a.calls.length, 1);
+    assert.equal(b.calls.length, 1);
+    assert.equal(h.sender.calls[0]!.message.text, 'from A');
+    assert.equal(h.sender.calls[1]!.message.text, 'from B');
+    assert.deepEqual(
+      h.runsStore.inserts.map((r) => r.status),
+      ['ok', 'ok'],
+    );
+  });
+
+  it('chatAgentAvailable() mirrors the resolver', async () => {
+    let current: OrchestratorLike | undefined;
+    const h = makeHarness({ getOrchestrator: () => current });
+    assert.equal(h.runner.chatAgentAvailable(), false);
+    current = makeStubOrchestrator().orchestrator;
+    assert.equal(h.runner.chatAgentAvailable(), true);
   });
 });

@@ -41,8 +41,16 @@ channel  ->  orchestrator  ->  plugin (agent / tool)  ->  knowledge graph / vaul
 3. The **agent** runs, calling **tools** and **capability providers** as
    needed. Reads and writes go through the **knowledge graph**; secrets come
    from the **vault**, never from prompts or config.
-4. The result streams back to the channel, and the full **trace** (every step,
-   tool call, and decision) is stored as the run's audit receipt.
+4. The result streams back to the channel. The **trace** (every step, tool call,
+   and decision) is written to the knowledge graph as **best-effort telemetry** —
+   not an audit receipt. It is not guaranteed per turn: the graph sink is
+   optional, `SessionLogger` skips graph ingest when the Markdown transcript
+   write fails, and `ingestRun` refuses to write when no User-Cluster node
+   exists, which is the ordinary state for every channel except the
+   browser-login flow. A missing trace means "not recorded", never "no such
+   turn". Decided in #684; every drop is counted and logged. The guaranteed
+   surface is the Markdown transcript. See
+   [`ai-act-transparency.md`](ai-act-transparency.md) § Grenzen.
 
 ## Key design decisions
 

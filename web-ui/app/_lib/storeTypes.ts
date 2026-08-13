@@ -13,18 +13,29 @@ export type SetupFieldType =
   | 'boolean'
   | 'integer'
   /** #91 — operator-curated list of bare hostnames. */
-  | 'host_list';
+  | 'host_list'
+  /**
+   * #603 (OM-17) — upload a JSON credential file instead of transcribing it.
+   * Sixth place this union is mirrored (three in the middleware's own sources,
+   * `SUPPORTED_TYPES` in installService, and `agents.ts` next door). The field
+   * stores nothing itself: the server explodes the upload into the keys named
+   * in `extracts`.
+   */
+  | 'json_file';
 
 /** #91 — operator-selected egress mode for an audit/scanner plugin. */
 export type AuditMode = 'single-host' | 'allowlist' | 'public-web';
 
 export interface PluginSetupField {
   key: string;
-  label: string;
+  /** #602 (OM-17) — localized label map (`{ en, de, … }`); a manifest may also
+   *  ship a bare string that the loader reads as English. Resolve with
+   *  `pickLocalized`; falls back to `key`. Mirrors middleware admin-v1. */
+  label: LocalizedMarkdown;
   type: SetupFieldType;
-  /** Optional help text from the manifest. Surfaced inline in the
-   *  post-install credentials editor. */
-  help?: string;
+  /** #602 (OM-17) — localized help map from the manifest. Surfaced in the
+   *  install wizard and the post-install editor; render with `pickLocalized`. */
+  help?: LocalizedMarkdown;
   /** Manifest default. The post-install editor pre-selects this value in
    *  an `enum` dropdown when nothing is stored yet. */
   default?: string;
@@ -43,6 +54,34 @@ export interface PluginSetupField {
   /** Holds multiple selected values (stored as a JSON-encoded `string[]`).
    *  Only meaningful with `options_provider`. */
   multi?: boolean;
+  /** OM-16 — required-by-default: a manifest field that omits `required` IS
+   *  required. Absent on payloads from a pre-OM-16 middleware. */
+  required?: boolean;
+  /** Optional validation regex (source form, no delimiters). */
+  pattern?: string;
+  /** OM-17 — localized explanation of what `pattern` expects, e.g.
+   *  "erwartet …@….iam.gserviceaccount.com". Same `{ locale: text }` shape as
+   *  `setup_guide`; render with `pickLocalized`. Absent on payloads from a
+   *  pre-OM-17 middleware. */
+  pattern_hint?: LocalizedMarkdown;
+  /** OM-17 — the manifest declared a `pattern` the server REFUSED (uncompilable,
+   *  or rejected by the catastrophic-backtracking allowlist), so this field is
+   *  NOT format-checked and `pattern` is absent. The UI must say so: a field
+   *  that looks validated and is not is the exact defect OM-17 exists to fix. */
+  pattern_unavailable?: boolean;
+  /** Manifest-declared input placeholder. Was parsed server-side but ignored
+   *  by both renderers before OM-17 — the whole point of a placeholder is to
+   *  show the SHAPE of the expected value, which is exactly the information a
+   *  tester lacked when they typed a password into a private-key field. */
+  placeholder?: string;
+  /**
+   * #603 (OM-17) — `json_file` only. `accept` is the file picker's hint; the
+   * server, not the picker, decides what an upload actually is. `extracts` names
+   * the setup keys the upload explodes into — carried here so the renderer can
+   * tell the operator which fields the file will fill in.
+   */
+  accept?: string;
+  extracts?: Record<string, string>;
 }
 
 /** Spec 005 — how a declarative OAuth descriptor authenticates to the token
@@ -147,6 +186,26 @@ export interface PluginActionStatus {
   detail?: string;
 }
 
+/** OM-16 — kernel-derived plugin readiness (mirror of middleware admin-v1).
+ *  `install_state` answers "is it present?", readiness answers "can it
+ *  actually work?". Unlike `PluginActionStatus` (push-only, from plugins that
+ *  call `ctx.status`), this is computed for every plugin. */
+export type PluginReadinessState =
+  | 'not_installed'
+  | 'config_required'
+  | 'ready'
+  | 'errored';
+
+export interface PluginReadiness {
+  state: PluginReadinessState;
+  /** Keys of required setup fields with no stored value. */
+  missing_fields: string[];
+  /** ISO8601 of the last successful activation; `null` unless `ready`. */
+  verified_at: string | null;
+  /** Tail of the last activation error; only for `errored`. */
+  error_detail?: string;
+}
+
 export interface Plugin {
   id: string;
   kind: PluginKind;
@@ -195,6 +254,12 @@ export interface Plugin {
    *  `ctx.status`. Present only while `needs_action` / `error`; absent for
    *  `ok` or inactive. Drives the card badge + detail-page banner. */
   action_status?: PluginActionStatus;
+  /** OM-16 — kernel-derived readiness, orthogonal to `install_state`. A plugin
+   *  can be `install_state: 'installed'` while every required credential is
+   *  empty; readiness is what tells the two apart. Optional: absent on payloads
+   *  from a pre-OM-16 middleware, in which case the UI falls back to the old
+   *  install-state-only rendering. */
+  readiness?: PluginReadiness;
   /** Present only for entries sourced from a remote registry that are not yet
    *  ingested locally. Drives the remote-install flow (fetch-then-ingest
    *  before the normal install job). Mirrors middleware admin-v1. */
@@ -212,11 +277,28 @@ export interface Plugin {
    *  page and in the install drawer ("how to create a Discord bot", "how to get
    *  M365 credentials"). Mirrors middleware admin-v1. */
   setup_guide?: LocalizedMarkdown;
+  /** OM-15 (#602) — installation-effort profile shown on the store card BEFORE
+   *  install (audience · time · a key prerequisite). From the manifest's
+   *  `listing.setup_profile`. Mirrors middleware admin-v1. Optional. */
+  setup_profile?: SetupProfile;
 }
 
 /** UI text available in several languages, keyed by locale (`en`, `de`, …).
  *  Mirrors `LocalizedMarkdown` in middleware admin-v1. */
 export type LocalizedMarkdown = Record<string, string>;
+
+/** OM-15 (#602) — who performs the plugin's setup. The card resolves this to a
+ *  localized label via next-intl. Mirrors middleware admin-v1 `SetupAudience`. */
+export type SetupAudience = 'it_admin' | 'operator' | 'end_user';
+
+/** OM-15 (#602) — structured install-effort metadata for the store card. The
+ *  card COMPOSES a localized line from these parts (next-intl), so no wording is
+ *  baked into the manifest. Mirrors middleware admin-v1 `SetupProfile`. */
+export interface SetupProfile {
+  audience?: SetupAudience;
+  estimated_minutes?: number;
+  requirement?: LocalizedMarkdown;
+}
 
 export interface StoreListResponse {
   items: Plugin[];
@@ -224,11 +306,46 @@ export interface StoreListResponse {
   total?: number;
 }
 
+/** Advisory code-scan verdict for an ingested plugin package (issue #453).
+ *  Mirrors `PluginVerdict` in middleware admin-v1. Absent when the plugin
+ *  was never scanned (built-ins, no scanner configured). */
+export interface PluginVerdict {
+  severity:
+    | 'no_signals'
+    | 'flagged'
+    | 'high_risk'
+    | 'scan_failed'
+    | 'pending'
+    | 'too_large_to_scan';
+  findings: readonly {
+    readonly code: string;
+    readonly severity: string;
+    readonly message: string;
+    readonly file: string | null;
+  }[];
+  scanner_version: string;
+  rationale: string | null;
+  computed_at: string;
+  ack: { by: string; at: string } | null;
+}
+
 export interface StoreGetResponse {
   plugin: Plugin;
   manifest: unknown;
   install_available: boolean;
   blocking_reasons?: string[];
+  /** Advisory-only — never blocks install (issue #453). */
+  verdict?: PluginVerdict;
+  /** OM-06 / #671 — an ACTIVE plugin already provides one of this plugin's
+   *  capabilities, so the install would be refused with 409. Structured, not
+   *  folded into `blocking_reasons` (server-authored English the client can
+   *  only print), because the operator's next step is to CONFIGURE the
+   *  provider that already exists — and that link cannot be built by parsing
+   *  prose. Absent on pre-#671 middleware payloads. */
+  blocked_by_active_provider?: {
+    capability: string;
+    owner_id: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -246,14 +363,34 @@ export type InstallJobState =
 export interface InstallSetupField {
   key: string;
   type: SetupFieldType;
-  label: string;
-  help?: string;
+  /** #602 (OM-17) — localized label map; see `PluginSetupField.label`. */
+  label: LocalizedMarkdown;
+  /** #602 (OM-17) — localized help map; see `PluginSetupField.help`. */
+  help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
   enum?: Array<{ value: string; label: string }>;
   provider?: string;
   scopes?: string[];
   pattern?: string;
+  /** OM-17 — localized explanation of what `pattern` expects. Rendered under
+   *  the input so a rejected value says WHY. See `PluginSetupField`. */
+  pattern_hint?: LocalizedMarkdown;
+  /** OM-17 — the manifest declared a `pattern` the server refused, so this
+   *  field goes UNCHECKED. See `PluginSetupField.pattern_unavailable`. */
+  pattern_unavailable?: boolean;
+  /** OM-17 — manifest-declared input placeholder. Previously hardcoded to
+   *  `'••••••••'` for every secret field, hiding the one piece of information
+   *  that distinguishes a service-account key from an account password. */
+  placeholder?: string;
+  /**
+   * #603 (OM-17) — `json_file` only. `accept` is the file picker's hint; the
+   * server, not the picker, decides what an upload actually is. `extracts` names
+   * the setup keys the upload explodes into — carried here so the renderer can
+   * tell the operator which fields the file will fill in.
+   */
+  accept?: string;
+  extracts?: Record<string, string>;
   multiline?: boolean;
   /** Omitted from the install flyout (flow-managed / editable later). */
   install_hidden?: boolean;

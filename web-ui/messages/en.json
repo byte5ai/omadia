@@ -19,7 +19,9 @@
         "title": "LLM provider",
         "connected": "{count, plural, one {# provider connected} other {# providers connected}}",
         "none": "No provider connected",
-        "active": "Active: {name}"
+        "active": "Active: {name}",
+        "unverified": "{count, plural, one {# provider unverified} other {# providers unverified}}",
+        "invalid": "Provider key rejected"
       },
       "orchestrators": {
         "title": "Orchestrators",
@@ -29,6 +31,7 @@
       "plugins": {
         "title": "Plugins",
         "installed": "{count, plural, one {# plugin installed} other {# plugins installed}}",
+        "ready": "{n} of {total} ready",
         "none": "No plugins installed yet"
       },
       "mcp": {
@@ -102,27 +105,18 @@
         "open": "Open",
         "build": "Build in Builder",
         "request": "Request",
-        "missingHint": "Not in the Hub yet",
-        "sectionEmpty": "No recommendation in this category."
+        "missingHint": "Not in the Hub yet"
       },
-      "step": "Step {n}",
-      "rolesHeading": "Choose a role",
       "llmStep": {
         "connect": "Open LLM access",
         "title": "Connect an LLM",
         "description": "Without a connected LLM no orchestrator can run. Connect an API provider or a subscription CLI first.",
-        "connectProvider": "Connect provider",
-        "connectCli": "Connect subscription CLI"
+        "doneViaProvider": "An LLM provider is connected and its key has been verified.",
+        "doneViaCli": "You are logged into a subscription CLI — that is enough to run orchestrators."
       },
       "heading": "Get started",
-      "subtitle": "Pick a role to install a recommended set of plugins. You can fine-tune everything later.",
       "kicker": "Setup",
-      "pluginCount": "{count, plural, one {# plugin} other {# plugins}}",
-      "apply": "Install set",
-      "applying": "Installing",
       "applied": "Installed",
-      "failed": "Could not install",
-      "retry": "Try again",
       "browseAll": "Browse all plugins",
       "bringSkills": {
         "kicker": "Optional",
@@ -136,8 +130,13 @@
       },
       "dismiss": "Hide onboarding",
       "reenable": "Show onboarding",
-      "empty": "No role profiles available. Connect a registry to see recommendations.",
-      "outcome": "{installed} installed, {skipped} skipped, {errored} failed"
+      "stepOfTotal": "Step {n} of {total}",
+      "progress": "{done} of {total} done",
+      "caseChosen": "Business case: {name}",
+      "installStep": {
+        "title": "Install plugins",
+        "pickCaseFirst": "Pick a business case above to see matching recommendations."
+      }
     }
   },
   "adminLlm": {
@@ -205,6 +204,10 @@
           "title": "Storage Backend",
           "description": "Switch memory storage between filesystem and Postgres; Postgres needs DATABASE_URL and takes effect after a restart."
         },
+        "embeddingProvider": {
+          "title": "Embedding Provider",
+          "description": "Switch the active embedding adapter live — no restart. Shows the dimension gate, the stored corpus, and what a switch would discard."
+        },
         "domains": {
           "title": "Domains",
           "description": "Browse registered plugins grouped by domain (read-only)."
@@ -217,6 +220,14 @@
           "title": "MCP Control Center",
           "description": "MCP servers, discovered tools with scan verdicts, grants, and the call audit log in one place."
         },
+        "devPlatform": {
+          "title": "Dev Platform",
+          "description": "Register repositories and launch isolated code-runner jobs that open a pull request from a reviewed diff."
+        },
+        "webhooks": {
+          "title": "Conductor Webhooks",
+          "description": "Inbound endpoints and outbound subscriptions, with secret rotation and delivery history."
+        },
         "auth": {
           "title": "Authentication Providers",
           "description": "Enable or disable local login and Entra ID sign-in; changes apply without a restart."
@@ -224,6 +235,10 @@
         "users": {
           "title": "Users",
           "description": "Create, disable, reset passwords for, or delete local accounts."
+        },
+        "apiKeys": {
+          "title": "Public API Keys",
+          "description": "Create, list, and revoke bearer credentials for the public chat API."
         },
         "dangerZone": {
           "title": "Memory Purge",
@@ -281,7 +296,9 @@
             "credential_harvest": "Collect API keys, passwords, or secrets",
             "silent_permission_escalation": "Request broader access without telling the user"
           }
-        }
+        },
+        "importFailed": "The import did not work.",
+        "supportDetails": "Details for support"
       },
       "toolbox": {
         "native": "Native tools",
@@ -407,7 +424,8 @@
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
-    "adminCluster": "Admin"
+    "adminCluster": "Admin",
+    "help": "Help"
   },
   "conductor": {
     "title": "Conductor",
@@ -460,6 +478,8 @@
     "chatNeedSlug": "Set a slug and a name to publish.",
     "chatApplyIssues": "Some edits couldn't be applied:",
     "chatDraftInvalid": "Draft has validation issues.",
+    "chatProposalsHeading": "Template suggestions",
+    "chatProposalCoverage": "{filled} of {total} slots prefilled",
     "triggerLabel": "Trigger",
     "eventIdLabel": "Event id",
     "eventCatalogHint": "{count} declared event(s) available — pick one or type a custom id.",
@@ -570,9 +590,114 @@
     "kvKey": "key",
     "kvValue": "value",
     "kvAddRow": "+ Add field",
-    "kvHint": "Tip: wrap text in quotes to keep it a string, e.g. \"123\"."
+    "kvHint": "Tip: wrap text in quotes to keep it a string, e.g. \"123\".",
+    "templatesHeading": "Workflow templates",
+    "templatesHint": "Start from a curated template: pick a use case, map its slots to your agents, roles and channels, then publish it as an ordinary, fully editable workflow.",
+    "templateUseButton": "Use template",
+    "templateScheduleBadge": "Runs on a schedule",
+    "templateMappingSummary": "You will map: {summary}",
+    "templateSlotRoles": "{count, plural, one {# role} other {# roles}}",
+    "templateSlotAgents": "{count, plural, one {# agent} other {# agents}}",
+    "templateSlotActions": "{count, plural, one {# action} other {# actions}}",
+    "templateSlotEvents": "{count, plural, one {# event} other {# events}}",
+    "templateSlotChannels": "{count, plural, one {# channel} other {# channels}}",
+    "templateFormHeading": "Use template: {name}",
+    "templateSlugLabel": "Workflow slug",
+    "templateNameLabel": "Name",
+    "templateEnableLabel": "Enable the workflow right away",
+    "templateScheduleNotice": "This template runs on a schedule. Enabling it starts the schedule as soon as the workflow is created.",
+    "templateCreateButton": "Create workflow",
+    "templateCreating": "Creating",
+    "templateOpenDesignerButton": "Open in designer",
+    "templatePreparing": "Preparing",
+    "templateCancelButton": "Cancel",
+    "templateSlotMissing": "Select a value for this slot.",
+    "templateSlugExistsError": "A workflow with this slug already exists — choose a different slug.",
+    "templateInvalidGraphHeading": "The resolved workflow failed validation:",
+    "templateRequestFailed": "Request failed: {message}",
+    "templateSlotGroupRoles": "Roles",
+    "templateSlotGroupAgents": "Agents",
+    "templateSlotGroupActions": "Actions",
+    "templateSlotGroupEvents": "Events",
+    "templateSlotGroupChannels": "Channels",
+    "templateSlotGroupText": "Text slots",
+    "templateTextSlotMissing": "Enter a value for this text slot.",
+    "templatePreviewShow": "Preview graph",
+    "templatePreviewHide": "Hide preview",
+    "templateUpdateHint": "Template updated (v{version} → v{latestVersion})",
+    "templateReinstantiateButton": "Re-instantiate from v{version}",
+    "templateRolesEmptyHint": "No roles yet — create one in the roles section below.",
+    "saveAsTemplateButton": "Save as template",
+    "saveTemplateHeading": "Save as template: {slug}",
+    "saveTemplateHint": "Concrete references were replaced with slots. Review the metadata and slot labels, optionally add text slots, then publish to the template catalog.",
+    "saveTemplateIdLabel": "Template id",
+    "saveTemplateIdInvalid": "Use lowercase letters, digits and hyphens.",
+    "saveTemplateIdTaken": "This template id is taken.",
+    "saveTemplateOwnershipPending": "Checking ownership",
+    "saveTemplateNameEnLabel": "Name (English)",
+    "saveTemplateNameDeLabel": "Name (German)",
+    "saveTemplateDescriptionEnLabel": "Description (English)",
+    "saveTemplateDescriptionDeLabel": "Description (German)",
+    "saveTemplateUseCaseEnLabel": "Use case (English)",
+    "saveTemplateUseCaseDeLabel": "Use case (German)",
+    "saveTemplateEnRequired": "English is required for the name, description, use case and every slot label.",
+    "saveTemplateRefSlotsHeading": "Inferred slots",
+    "saveTemplateRefSlotsHint": "One slot per distinct reference. Operators map these to their own agents, roles and channels when they instantiate the template.",
+    "saveTemplateNoRefSlots": "No references to parameterize — every instantiation is an identical copy.",
+    "saveTemplateOriginalRef": "was: {ref}",
+    "saveTemplateSlotLabelEnLabel": "Label (English)",
+    "saveTemplateSlotLabelDeLabel": "Label (German)",
+    "saveTemplateTextSlotsHeading": "Text slots",
+    "saveTemplateTextSlotsHint": "Optional free-text placeholders. Place each token in a step text below to mark where the operator's value goes.",
+    "saveTemplateStepTextsHeading": "Place text-slot tokens",
+    "saveTemplateStepTextsHint": "Each declared text slot must appear as its token in at least one step text. Insert the token where the operator's text belongs, then adjust the wording as needed.",
+    "saveTemplateStepTextPromptLabel": "Prompt — step {stepId}",
+    "saveTemplateStepTextMessageLabel": "Message — step {stepId}",
+    "saveTemplateInsertTokenButton": "Insert {token}",
+    "saveTemplateNoStepTexts": "This workflow has no step prompt or message texts to place tokens in — remove the text slots or add prose to a step first.",
+    "saveTemplateTextSlotUnplaced": "Insert each text slot's token into at least one step text below.",
+    "saveTemplateTextSlotKeyLabel": "Key",
+    "saveTemplateTextSlotKeyInvalid": "Keys may contain letters, digits, underscores and hyphens, and must be unique.",
+    "saveTemplateTextSlotDefaultLabel": "Default value (optional)",
+    "saveTemplateTextSlotToken": "Token: {token}",
+    "saveTemplateAddTextSlot": "+ Add text slot",
+    "saveTemplateRemoveTextSlot": "Remove",
+    "saveTemplatePublishButton": "Publish template",
+    "saveTemplatePublishVersionButton": "Publish as v{version}",
+    "saveTemplatePublishing": "Publishing",
+    "saveTemplateVersionNote": "Publishing a new version leaves existing workflows created from this template unchanged — they keep their copy and will show an update hint.",
+    "saveTemplateInvalidHeading": "The template manifest failed validation:",
+    "saveTemplatePublished": "Template {id} published as v{version}.",
+    "templateFacetAria": "Filter templates by source",
+    "templateFacetAll": "All",
+    "templateFacetBundled": "Bundled",
+    "templateFacetMine": "My templates",
+    "templateFacetShared": "Shared",
+    "templateFacetPlugins": "Plugins",
+    "templateFacetPending": "Pending review",
+    "templateSearchPlaceholder": "Search templates",
+    "templateUseCaseAria": "Filter templates by use case",
+    "templateBadgeBundled": "Bundled",
+    "templateBadgeMine": "Mine",
+    "templateBadgeShared": "Shared",
+    "templateBadgePlugin": "Plugin",
+    "templateBadgePending": "Pending review",
+    "templateVersionTag": "v{version}",
+    "templateUsageCount": "Used {count}×",
+    "templateSubmittedBy": "Submitted by {author}",
+    "templateSubmitButton": "Submit for review",
+    "templateSubmitting": "Submitting",
+    "templateDeleteButton": "Delete",
+    "templateDeleting": "Deleting",
+    "templateDeleteConfirm": "Delete this template? Workflows created from it keep their copy.",
+    "templateDeleteConfirmButton": "Delete template",
+    "templateApproving": "Approving",
+    "templateRejecting": "Rejecting",
+    "templatePendingEmpty": "No templates waiting for review",
+    "templateNoMatches": "No templates match your filters."
   },
   "operatorChannels": {
+    "metaTitle": "Channels · omadia",
     "title": "Channels",
     "subtitle": "Route inbound webhooks per channel-key to an Orchestrator. Each channel plugin reports its own keys — you only pick which Orchestrator answers them.",
     "loadError": "Failed to load channels",
@@ -585,7 +710,18 @@
     "staleBadge": "stale",
     "routesTo": "→ Orchestrator:",
     "routesToFallback": "(standard · {fallback})",
-    "clearStale": "Clear binding"
+    "clearStale": "Clear binding",
+    "disclosure": {
+      "heading": "AI marking differs from the delivered state",
+      "body": "Answers on these channels are marked differently than on delivery: {channels}.",
+      "inert": "Configured but not yet in effect: {channels}. Turns on these channels do not report their channel type, so they use the global setting.",
+      "note": "This is your decision as the operator — nothing is blocked. Shown so a setting from a test setup does not go unnoticed.",
+      "level": {
+        "standard": "full marking",
+        "concise": "short marking",
+        "off": "no marking"
+      }
+    }
   },
   "layout": {
     "logoAriaLabel": "omadia · Home",
@@ -599,12 +735,12 @@
     "paletteAriaLabel": "Accent palette",
     "appearanceAriaLabel": "Appearance",
     "palette": {
-      "lagoon": "Lagoon",
-      "petrol": "Petrol",
-      "atelier": "Atelier"
+      "lagoon": "Lagoon (teal)",
+      "petrol": "Petrol (blue)",
+      "atelier": "Atelier (warm)"
     },
     "appearance": {
-      "system": "System",
+      "system": "Automatic",
       "light": "Light",
       "dark": "Dark"
     }
@@ -614,7 +750,7 @@
     "shellLoading": "Loading login…",
     "loadingProviders": "Loading login…",
     "errorPrefix": "Failed to load login providers:",
-    "noProviders": "No auth providers are configured. Set <envVar></envVar> in the middleware environment and restart.",
+    "noProviders": "No auth providers are configured. Set <envVar>AUTH_PROVIDERS</envVar> in the middleware environment and restart.",
     "emailLabel": "Email",
     "passwordLabel": "Password",
     "submit": "Sign in",
@@ -661,13 +797,13 @@
     "apply": "Apply",
     "applying": "Installing…",
     "pluginCount": "{count, plural, one {# plugin} other {# plugins}}",
-    "outcomeAppliedTitle": "Profile <id></id> applied",
+    "outcomeAppliedTitle": "Profile <id>{profileId}</id> applied",
     "outcomeStats": "{installed} installed, {skipped} skipped, {errored} failed",
     "sectionInstalled": "Newly installed",
     "sectionSkipped": "Already installed (skipped)",
     "sectionErrored": "Errors — please check manually",
-    "secretsHint": "Plugins that need operator secrets (e.g. anthropic_api_key, telegram_bot_token) start in status <erroredTag></erroredTag> until you set the secrets via the wizard on the respective detail page. Then activate via <reactivateTag></reactivateTag>.",
-    "errorTitle": "Profile <id></id> could not be applied",
+    "secretsHint": "Plugins that need operator secrets (e.g. anthropic_api_key, telegram_bot_token) start in status <erroredTag>errored</erroredTag> until you set the secrets via the wizard on the respective detail page. Then activate via \"Reactivate\".",
+    "errorTitle": "Profile <id>{profileId}</id> could not be applied",
     "tryAnother": "Pick another profile"
   },
   "chatTabs": {
@@ -676,7 +812,12 @@
     "tabTitleSuffix": "ID: {id}\nDouble-click to rename",
     "closeAriaLabel": "Close tab: {title}",
     "closeWhileBusyTitle": "Wait until the turn is done",
-    "closeTitle": "Close tab"
+    "closeTitle": "Close tab",
+    "streamRunningAria": "Response in progress",
+    "streamDoneAria": "Response ready",
+    "streamErrorAria": "Response failed",
+    "streamDoneAnnounce": "{title}: response ready",
+    "streamErrorAnnounce": "{title}: response failed"
   },
   "authBadge": {
     "loginLink": "Login",
@@ -689,7 +830,294 @@
     "description": "This page hit an unexpected error and couldn't finish loading.",
     "reload": "Reload",
     "resetData": "Reset local chat data",
-    "resetDataHint": "Clears chats stored locally in this browser, then reloads. Your server-side data is untouched — use this if reloading alone doesn't help."
+    "resetDataHint": "Clears chats stored locally in this browser, then reloads. Your server-side data is untouched — use this if reloading alone doesn't help.",
+    "digestLabel": "Error reference",
+    "digestHint": "Quote this reference when reporting the problem — the full message is in the server log."
+  },
+  "errorHelp": {
+    "install": {
+      "already_installed": {
+        "what": "This plugin is already installed on this server.",
+        "next": "Uninstall the installed copy first if you want to install it again."
+      },
+      "blocked": {
+        "what": "The store marks this plugin as incompatible with this server, so the install was refused.",
+        "next": "Read the incompatibility reasons in the details below before you try again."
+      },
+      "capability_already_provided": {
+        "what": "Another installed plugin already provides the capability this one wants to provide.",
+        "next": "Uninstall the plugin that holds the capability, then install this one."
+      },
+      "has_dependents": {
+        "what": "Other installed plugins still depend on this one, so it cannot be uninstalled.",
+        "next": "Uninstall the plugins named in the details below first."
+      },
+      "invalid_body": {
+        "what": "The setup step sent its answers in a shape the server rejected.",
+        "next": "Reload the page and fill the step in again."
+      },
+      "invalid_job_id": {
+        "what": "The request did not say which install run it belongs to.",
+        "next": "Go back to the plugin and start the installation again."
+      },
+      "invalid_plugin_id": {
+        "what": "The install request arrived without a plugin id.",
+        "next": "Open the plugin from the store list and install it from there."
+      },
+      "job_not_found": {
+        "what": "The install run this step belongs to is no longer on the server.",
+        "next": "Start the installation again from the plugin in the store."
+      },
+      "missing_capability": {
+        "what": "The plugin needs capabilities that nothing installed provides yet.",
+        "next": "Install the plugins that provide them first — the install wizard can chain them for you."
+      },
+      "missing_dependencies": {
+        "what": "The plugin depends on other plugins that are not installed here.",
+        "next": "Install the plugins named in the details below, then install this one."
+      },
+      "no_schema": {
+        "what": "This install run has no setup form, so there is nothing to configure.",
+        "next": "Finish the installation without the configuration step."
+      },
+      "not_installed": {
+        "what": "That plugin is not installed on this server.",
+        "next": "Install it from the store first.",
+        "action": "Open the store"
+      },
+      "unexpected": {
+        "what": "The installation stopped on an error the server did not expect.",
+        "next": "Try again, and send the details below to support if it repeats."
+      },
+      "wrong_state": {
+        "what": "This install run has already moved past the configuration step.",
+        "next": "Reload the page to see where the installation actually stands."
+      }
+    },
+    "providers": {
+      "apply_failed": {
+        "what": "The assignment was accepted but could not be written to the plugin.",
+        "next": "Save again. If it keeps failing, the middleware cannot write to its config store."
+      },
+      "invalid_request": {
+        "what": "The assignment was missing the plugin, the provider or the model.",
+        "next": "Pick a provider and a model, then save again."
+      },
+      "key_rejected": {
+        "what": "The provider refused this API key.",
+        "next": "Copy the key from the provider console once more and paste it here."
+      },
+      "model_provider_mismatch": {
+        "what": "The chosen model belongs to a different provider than the one selected.",
+        "next": "Pick a model this provider serves, or switch to the provider the model belongs to."
+      },
+      "not_installed": {
+        "what": "The plugin you are assigning a provider to is not installed here.",
+        "next": "Install the plugin first, then set its provider.",
+        "action": "Open the store"
+      },
+      "read_failed": {
+        "what": "The provider list could not be read.",
+        "next": "Reload the page. If it stays empty, the middleware cannot reach its config store."
+      },
+      "tool_incompatible": {
+        "what": "This plugin drives a tool loop and the selected provider cannot do that.",
+        "next": "Give this plugin a key-based provider and keep the subscription CLI for tool-less roles."
+      },
+      "unknown_plugin": {
+        "what": "That plugin is not one this page can assign a provider to.",
+        "next": "Reload the page and pick a plugin from the list."
+      },
+      "unknown_provider": {
+        "what": "The server does not know a provider with that id.",
+        "next": "Reload the page and pick a provider from the list."
+      },
+      "verify_failed": {
+        "what": "The key check did not run to the end, so the verdict is unchanged.",
+        "next": "Start the check once more. Repeated failures mean the provider is unreachable from this server."
+      }
+    },
+    "runtime": {
+      "agent_inactive": {
+        "what": "The plugin is installed but not running, so it cannot answer right now.",
+        "next": "Activate the plugin, then reload this page."
+      },
+      "empty_secrets_patch": {
+        "what": "The save carried no changed value.",
+        "next": "Change or clear at least one field before saving."
+      },
+      "invalid_audit_mode": {
+        "what": "That audit mode is not one the server accepts.",
+        "next": "Pick one of the offered modes and save again."
+      },
+      "invalid_config": {
+        "what": "The configuration was sent in a shape the server rejected.",
+        "next": "Reload the page and enter the values again."
+      },
+      "invalid_id": {
+        "what": "The request did not name which plugin it is about.",
+        "next": "Reload the page and repeat the action from the plugin screen."
+      },
+      "invalid_json_file_body": {
+        "what": "The upload request did not name both a setup field and a file, so the server could not tell what to parse.",
+        "next": "Reload the page and pick the file again."
+      },
+      "invalid_multiselect": {
+        "what": "One of the selected values is not in a shape the server accepts.",
+        "next": "Clear the selection and pick the entries again from the list."
+      },
+      "invalid_secrets_body": {
+        "what": "The credential change was sent in a shape the server rejected.",
+        "next": "Reload the page and enter the credentials again."
+      },
+      "json_file_bad_extract_path": {
+        "what": "The plugin declares an upload path the server does not support, so the file could not be read.",
+        "next": "This is a fault in the plugin, not in your file — report it to the plugin author."
+      },
+      "json_file_invalid_spec": {
+        "what": "The plugin declares this file upload incorrectly, so it cannot produce any value.",
+        "next": "This is a fault in the plugin, not in your file — report it to the plugin author."
+      },
+      "json_file_missing_value": {
+        "what": "The uploaded file does not contain one of the values this field needs.",
+        "next": "Check that you selected the right file; the message below names the missing value."
+      },
+      "json_file_not_an_object": {
+        "what": "The uploaded file is valid JSON but not a JSON object, so it holds no named values.",
+        "next": "Upload the credential file the provider issued, not a list or a fragment of one."
+      },
+      "json_file_not_json": {
+        "what": "The uploaded file is not valid JSON, so nothing could be read out of it.",
+        "next": "Download the key file again from the provider and upload it unchanged."
+      },
+      "json_file_too_large": {
+        "what": "The uploaded file is larger than the server accepts for a credential file.",
+        "next": "Check that you picked the key file itself and not an archive or export."
+      },
+      "json_file_unexpected_document": {
+        "what": "The uploaded file is the wrong kind of credential — its contents do not match what this field expects.",
+        "next": "Check the message below for which value disagreed, then upload the right file."
+      },
+      "no_options_provider": {
+        "what": "This field has no live option source, so nothing can be fetched for it.",
+        "next": "Type the value in by hand."
+      },
+      "not_installed": {
+        "what": "This plugin is not installed on this server.",
+        "next": "Install it first, then come back to this screen.",
+        "action": "Open the store"
+      },
+      "not_web_scanner": {
+        "what": "Audit mode applies only to plugins that scan the web, and this one does not.",
+        "next": "Leave the audit mode unset for this plugin."
+      },
+      "options_provider_bad_shape": {
+        "what": "The plugin answered the option request with something that is not a list.",
+        "next": "Update the plugin. Its option provider returns the wrong shape."
+      },
+      "options_provider_failed": {
+        "what": "The plugin could not deliver the options for this field.",
+        "next": "Check the credentials this plugin needs, then load the list again."
+      },
+      "options_provider_timeout": {
+        "what": "The plugin took too long to deliver the options.",
+        "next": "Load the list again. If it keeps timing out, the system behind the plugin is slow or unreachable."
+      },
+      "options_unavailable": {
+        "what": "This core cannot fetch setup options from a running plugin.",
+        "next": "Enter the value by hand."
+      },
+      "setup_field_invalid": {
+        "what": "One of the values does not match the format this field expects.",
+        "next": "Correct the flagged field and save again."
+      },
+      "unknown_json_file_field": {
+        "what": "The upload names a setup field this plugin does not offer as a file upload.",
+        "next": "Reload the page so the form matches the plugin, then upload the file again."
+      },
+      "update_failed": {
+        "what": "The change could not be written.",
+        "next": "Save again. If it repeats, the middleware cannot write to its config store."
+      },
+      "value_not_offered": {
+        "what": "One of the selected values is not on the list the plugin offers.",
+        "next": "Reload the list and pick from the current entries."
+      },
+      "vault_read_failed": {
+        "what": "The stored credentials could not be read from the vault.",
+        "next": "Reload once the vault is reachable again."
+      },
+      "vault_unavailable": {
+        "what": "No secret vault is wired into this deployment, so credentials cannot be stored.",
+        "next": "Configure a vault in the deployment before entering credentials here."
+      },
+      "vault_write_failed": {
+        "what": "The credentials could not be written to the vault.",
+        "next": "Save again once the vault is reachable."
+      }
+    },
+    "settings": {
+      "invalid_request": {
+        "what": "The settings change was sent in a shape the server rejected.",
+        "next": "Reload the page and make the change again."
+      },
+      "invalid_values": {
+        "what": "The server refused the value of every change in that save, so nothing was written.",
+        "next": "Correct the value the details below flag — they name each rejected field and why — then save again."
+      },
+      "no_valid_changes": {
+        "what": "None of the submitted changes matches a setting this server currently offers.",
+        "next": "Reload the page so the field list matches the server, then make the change again."
+      },
+      "read_failed": {
+        "what": "The settings could not be read.",
+        "next": "Reload the page. If it stays empty, the middleware cannot reach its config store."
+      },
+      "vault_unavailable": {
+        "what": "No secret vault is wired into this deployment, so secrets cannot be edited.",
+        "next": "Configure a vault in the deployment. Non-secret settings keep working without one."
+      },
+      "write_failed": {
+        "what": "The settings could not be written.",
+        "next": "Save again. If it repeats, the middleware cannot write to its config store."
+      }
+    },
+    "store": {
+      "ack_failed": {
+        "what": "The acknowledgement could not be recorded.",
+        "next": "Acknowledge again. The verdict stays open until it goes through."
+      },
+      "get_failed": {
+        "what": "The plugin details could not be loaded.",
+        "next": "Reload the page. If it repeats, the store index on this server is unreadable."
+      },
+      "invalid_id": {
+        "what": "The request did not name which plugin it is about.",
+        "next": "Go back to the store list and open the plugin from there."
+      },
+      "list_failed": {
+        "what": "The plugin list could not be loaded.",
+        "next": "Reload the page. If it stays empty, the middleware cannot reach its registry."
+      },
+      "plugin_not_found": {
+        "what": "No plugin with that id exists on this server.",
+        "next": "Pick a plugin from the store list.",
+        "action": "Open the store"
+      },
+      "verdict_not_found": {
+        "what": "No code-scan verdict has been recorded for this plugin.",
+        "next": "Run the code scan first, then acknowledge it."
+      },
+      "verdicts_unavailable": {
+        "what": "Code-scan verdicts are switched off on this deployment.",
+        "next": "Enable the scanner in the deployment configuration if you need verdicts."
+      }
+    }
+  },
+  "errorHelpUi": {
+    "supportDetails": "Details for support",
+    "unknownFailure": "That request failed, and the server sent no code this page can explain.",
+    "httpStatus": "That request failed (HTTP {status})."
   },
   "session": {
     "expiresAtLabel": "Session valid until",
@@ -737,7 +1165,6 @@
     "pillTitle": "{id} — show details"
   },
   "chat": {
-    "errorMiddlewareUnreachable": "Middleware unreachable on localhost:3979. Is `npm run dev` running in the middleware folder?",
     "errorProxyFailure": "Proxy error (HTTP {status}). Check the middleware logs.",
     "errorAborted": "Aborted.",
     "errorProviderGeneric": "Something went wrong while talking to the AI provider. Please try again.",
@@ -767,10 +1194,31 @@
     "steerTraceLabel": "Steered mid-turn:",
     "sessionsLoading": "Loading sessions…",
     "emptyStatePrompt": "Ask the orchestrator — the answer streams live including tool calls.",
-    "emptyStateShortcut": "Shortcut: ⌘↵ / Ctrl↵ · new tab via „+ New chat\"",
+    "emptyStateShortcut": "Shortcut: ↵ to send · ⇧↵ for a new line · new tab via „+ New chat\"",
+    "composerSendHint": "↵ to send · ⇧↵ for a new line",
     "streamingSuffix": "· streaming…",
     "toolTraceHeading": "Tool trace ({count})",
     "subCallCount": "{count, plural, one {# sub-call} other {# sub-calls}}",
+    "devJob": {
+      "heading": "Dev job",
+      "viewJob": "Open job",
+      "viewPr": "View PR",
+      "connectionLost": "connection lost",
+      "gate": {
+        "title": "Approval needed",
+        "approve": "Approve",
+        "reject": "Reject",
+        "resolving": "Submitting…",
+        "error": "Could not resolve the gate."
+      }
+    },
+    "task": {
+      "started": "Started: {label}",
+      "running": "running in the background",
+      "deferredHint": "This runs on its own — the answer arrives in a follow-up message, not in this one.",
+      "taskId": "task {id}",
+      "phase": "phase {phase}"
+    },
     "inputLabel": "input",
     "outputLabel": "output",
     "persona": {
@@ -787,6 +1235,13 @@
       "modalTitle": "Connect {server}",
       "modalBody": "Authorize {server} so this and future requests can use it.",
       "close": "Close"
+    },
+    "mcpInput": {
+      "kicker": "External input request",
+      "heading": "“{server}” needs additional details for “{tool}”.",
+      "secretHint": "Hidden while typing — the value is still sent to the server as entered.",
+      "warning": "Whatever you enter is sent to the external server “{server}”. Only provide details you want that server to have.",
+      "submit": "Send to server"
     },
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — click for full size",
@@ -905,7 +1360,9 @@
       "factNotEmbedded": "— no vector",
       "factPrivateBlocks": "'<private>' blocks",
       "factHintTags": "'<palaia-hint>' tags"
-    }
+    },
+    "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
+    "errorCorrelationRef": "Reference for support: {id}"
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -929,7 +1386,16 @@
     "factBypassed": "Not masked (operator decision)",
     "bypassedReasonOperatorSetting": "Operator setting: bypass",
     "bypassedBytes": "{kb} KB raw",
-    "explainerBypassed": "The operator set Privacy Mode to »Bypass« for at least one plugin — its tool results reached the model unmasked. Used for trusted internal sources whose content the Privacy Shield cannot usefully digest structurally."
+    "explainerBypassed": "The operator set Privacy Mode to »Bypass« for at least one plugin — its tool results reached the model unmasked. Used for trusted internal sources whose content the Privacy Shield cannot usefully digest structurally.",
+    "summaryPromptMasked": "prompt: {count} masked",
+    "factPromptMasked": "PII masked in your prompt",
+    "explainerPromptMasked": "Identifiers detected in your own message were replaced with pseudonyms before the model call and restored in the answer.",
+    "summaryStructured": "{count, plural, one {# structured result} other {# structured results}}",
+    "factStructured": "Structured output received",
+    "structuredBytes": "{kb} KB",
+    "structuredSchemaYes": "output schema",
+    "structuredSchemaNo": "no schema",
+    "explainerStructured": "A connected tool returned structured data. It reached the browser — the trusted side — but never the model, which saw only the interned digest. Listed here for transparency; nothing was masked because none was owed on this path."
   },
   "directLine": {
     "consultedLabel": "🔎 Consulted",
@@ -937,7 +1403,10 @@
     "viewTrace": "trace ▾",
     "stepsCount": "{count, plural, one {# step} other {# steps}}",
     "delegatedAnswerFrom": "Direct answer from {label}",
-    "delegatedAnswerCaption": "Delivered verbatim — the orchestrator cannot edit or remove this answer."
+    "delegatedAnswerCaption": "Delivered verbatim — the orchestrator cannot edit or remove this answer.",
+    "stickyActive": "Talking directly to {label} — every message goes straight there.",
+    "stickyExit": "Back to orchestrator",
+    "stickyPlaceholder": "Message to {label}…"
   },
   "privacyOperator": {
     "eyebrow": "Privacy Operator",
@@ -994,6 +1463,7 @@
     "actionDelete": "Delete session"
   },
   "skills": {
+    "metaTitle": "Skills · omadia",
     "title": "Skills",
     "subtitle": "Your skill library — import, view, edit and export skills used across agents.",
     "loadError": "Could not load skills.",
@@ -1020,7 +1490,9 @@
       "save": "Save",
       "forkAndSave": "Save as editable copy",
       "forkNotice": "This is an imported skill. Saving creates an editable copy and keeps the original as its source.",
-      "export": "Export"
+      "export": "Export",
+      "actionFailed": "That did not work. The skill was not changed.",
+      "supportDetails": "Details for support"
     },
     "capabilities": {
       "heading": "Required tools",
@@ -1044,6 +1516,8 @@
       "filterAll": "All verdicts",
       "acknowledge": "Acknowledge",
       "acked": "Acknowledged by {by}",
+      "structuredOutput": "returns structured output",
+      "structuredOutputHint": "This tool declares an output schema and returns a structured payload alongside its text result.",
       "runDeepScan": "Run deep scan",
       "why": "Heuristic scan flagged: {codes}. This is a signal, not proof the content is safe.",
       "llmRationale": "Deep scan note: {rationale}",
@@ -1055,10 +1529,23 @@
         "hidden_content": "Contain hidden or obfuscated content",
         "credential_harvest": "Collect API keys, passwords, or secrets",
         "silent_permission_escalation": "Request broader access without telling the user"
+      },
+      "scanFailure": {
+        "auth": "The deep scan could not run: the stored API key was rejected by the provider.",
+        "rate_limit": "The deep scan could not run: the provider's rate limit was reached. Try again shortly.",
+        "overloaded": "The deep scan could not run: the provider is currently overloaded. Try again shortly.",
+        "provider_error": "The deep scan could not run: the LLM provider returned an error.",
+        "timeout": "The deep scan could not run: the provider did not answer in time.",
+        "malformed_json": "The deep scan could not be evaluated: the model returned an unreadable result.",
+        "unsupported_severity": "The deep scan could not be evaluated: the model returned an unknown rating.",
+        "missing_rationale": "The deep scan could not be evaluated: the model returned no reasoning.",
+        "unexpected": "The deep scan failed unexpectedly.",
+        "fixProviderLink": "Check LLM access"
       }
     }
   },
   "operatorAgents": {
+    "metaTitle": "Orchestrators · omadia",
     "title": "Orchestrators",
     "subtitle": "Multi-orchestrator runtime — create, edit, disable, drain, or kill Orchestrators and watch the registry react in real time via the LISTEN/NOTIFY hot-reload bus.",
     "loadError": "Failed to load orchestrators",
@@ -1121,9 +1608,11 @@
     "routingTesterRunning": "Testing…",
     "routingTesterMatched": "→ Orchestrator \"{slug}\" (via {via})",
     "routingTesterNoMatch": "No match — and no standard orchestrator configured.",
-    "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · plugins: {plugins} · bindings: {bindings}",
+    "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · {plugins} plugins attached · {bindings} bindings",
     "sessionsLabel": "Sessions:",
     "pluginsAvailable": "Available",
+    "pluginsAvailableToAttach": "Available to attach",
+    "pluginsAttachedHere": "Attached to this orchestrator",
     "pluginsAvailableEmpty": "All installed plugins are already attached.",
     "pluginsEnabled": "Attached",
     "pluginsEnabledEmpty": "Drag-and-drop or click \"Attach\" to add plugins.",
@@ -1138,26 +1627,8 @@
     "orphanDetachAll": "Remove all",
     "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
     "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
-    "orphanKeep": "Keep"
-  },
-  "streamToasts": {
-    "phaseThinking": "Agent is thinking",
-    "phaseStreaming": "Answer streaming",
-    "phaseToolRunning": "Tool running",
-    "phaseDone": "Answer ready",
-    "phaseError": "Error",
-    "phaseAborted": "Aborted",
-    "elapsedSec": "{sec}s",
-    "tokensInTitle": "{n} input tokens (cumulative across iterations)",
-    "tokensOutTitle": "{n} output tokens (cumulative across iterations)",
-    "cacheHitTitle": "{n} cache-read tokens",
-    "dismissAriaLabel": "Dismiss notification (stream keeps running)",
-    "dismissTitle": "Dismiss",
-    "abortButton": "Stop stream",
-    "abortConfirmTitle": "Stop this stream?",
-    "abortConfirmBody": "The running response will be aborted immediately and can't be resumed.",
-    "abortConfirmKeep": "Keep running",
-    "abortConfirmStop": "Yes, stop"
+    "orphanKeep": "Keep",
+    "seededDescription": "Auto-created on first boot. Receives channel traffic that has no explicit binding, until you configure one."
   },
   "builder": {
     "issueReport": {
@@ -1478,7 +1949,7 @@
         },
         "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the agent correctly detects the missing service and throws. Publish the agent to the platform store to test the real data path.",
         "agentStuck": {
-          "title": "Builder agent is stuck on slot <slot></slot> ({attempts, plural, one {# attempt} other {# attempts}})",
+          "title": "Builder agent is stuck on slot <slot>{slotKey}</slot> ({attempts, plural, one {# attempt} other {# attempts}})",
           "body": "{summary}. Open the slot editor, review the errors manually and fix the code — the agent won't retry on its own.",
           "dismiss": "Dismiss",
           "dismissTooltip": "Dismiss banner"
@@ -2082,6 +2553,7 @@
     },
     "drafts": {
       "list": {
+        "metaTitle": "Plugin-Builder · omadia",
         "eyebrow": "Plugin Builder",
         "headline": "Build new plugins.",
         "lede": "A plugin can package deterministic code (the tools and integrations the platform runs on), the agents that put them to work, or both together. Draft here, iterate on several in parallel, and install with one click. Every draft stays in your personal workspace, visible only to you.",
@@ -2120,6 +2592,7 @@
         }
       },
       "detail": {
+        "metaTitle": "Workspace · Agent-Builder · omadia",
         "error": {
           "label": "Error",
           "loadFailed": "Workspace could not be loaded.",
@@ -2205,7 +2678,7 @@
       }
     },
     "title": "Configuration",
-    "intro": "All <envFile></envFile> values that are written to the config store or the secret vault at startup. Changes are saved automatically and the affected plugin is re-activated — they take effect immediately, without a restart. Secrets only show whether a value is set; the value itself is never displayed.",
+    "intro": "All <envFile>.env</envFile> values that are written to the config store or the secret vault at startup. Changes are saved automatically and the affected plugin is re-activated — they take effect immediately, without a restart. Secrets only show whether a value is set; the value itself is never displayed.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "vaultUnavailable": "Vault unavailable — secrets cannot be edited.",
@@ -2231,13 +2704,19 @@
     "title": "LLM providers",
     "intro": "Connect LLM providers and choose which one each agent runs on. Keys are stored encrypted in the vault and never leave your server. Anthropic is the default; switching an agent to another provider takes effect live.",
     "loading": "Loading …",
-    "loadError": "Failed to load: {message}",
+    "loadError": "The provider list could not be loaded.",
     "vaultUnavailable": "Vault unavailable — provider keys cannot be read.",
     "providers": {
       "heading": "Providers",
       "modelCount": "{count, plural, one {# model} other {# models}}",
       "connected": "connected",
       "notConnected": "no key",
+      "unverified": "key stored, not verified",
+      "verified": "verified",
+      "invalid": "key rejected",
+      "verifiedAt": "verified {time}",
+      "testKey": "Test key",
+      "testing": "Testing …",
       "addKey": "Add key",
       "changeKey": "Change key",
       "removeKey": "Remove key",
@@ -2247,7 +2726,17 @@
       "keyInputLabel": "{provider} API key",
       "keyPlaceholder": "Paste API key …",
       "saveKey": "Save key",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "cliNotInstalledReason": "The Claude CLI is not installed on this server.",
+      "helpLink": "What does this mean?",
+      "unverifiedReason": {
+        "forbidden": "The provider refused the request (HTTP 403). This is usually a region or organisation restriction, not a wrong key.",
+        "nonJsonResponse": "The provider answered with something other than JSON — often a proxy or captive-portal page rather than the API.",
+        "unexpectedBody": "The provider answered, but not with a model list we recognise.",
+        "httpError": "The provider returned an error (server-side or rate limit). Not your key.",
+        "networkError": "The provider could not be reached — timeout, DNS or no connection.",
+        "noProbe": "This provider type cannot be probed cheaply, so the key stays unverified."
+      }
     },
     "assignments": {
       "heading": "Per-agent assignment",
@@ -2257,8 +2746,8 @@
       "providerLabel": "Provider",
       "modelLabel": "Model",
       "pickModel": "Select a model …",
-      "avvDisclosure": "Routing this agent to {provider} sends its prompt data to a third-party processor. Ensure a data-processing agreement (DSGVO Art. 28) is in place before using it for personal data.",
-      "euHostedNote": "{provider} is hosted in the EU. An Art. 28 DSGVO processing agreement is still required, but there is no third-country transfer — unlike US-based providers."
+      "avvDisclosure": "This agent runs on {provider}. Its prompt data is sent to a third-party processor. Ensure a data-processing agreement (GDPR Art. 28) is in place before using it for personal data.",
+      "euHostedNote": "{provider} is hosted in the EU. An Art. 28 GDPR processing agreement is still required, but there is no third-country transfer — unlike US-based providers."
     },
     "status": {
       "saving": "saving …",
@@ -2322,6 +2811,12 @@
       "loggedIn": "logged in",
       "subscription": "subscription",
       "needsVerification": "needs verification"
+    },
+    "lastChecked": "Last checked at {time}",
+    "refreshed": "Updated just now",
+    "install": {
+      "heading": "Install the CLI",
+      "intro": "This CLI is not present on this server. Install it there, then log in — afterwards the in-app login becomes available here."
     }
   },
   "createIssue": {
@@ -2337,6 +2832,10 @@
     },
     "descriptionLabel": "Describe it in your own words",
     "descriptionPlaceholder": "What happened, or what would you like to see? Any language is fine — we'll phrase it in English.",
+    "diagnosticsCheckboxLabel": "Attach recent errors from this session",
+    "diagnosticsCheckboxHint": "Includes recent unhandled client-side errors from this session. Known secrets are redacted before filing — review the excerpt below and again on the next screen.",
+    "diagnosticsPreviewLabel": "Preview what will be attached",
+    "diagnosticsSectionLabel": "Diagnostics (attached)",
     "reformulate": "Continue",
     "reformulating": "Phrasing …",
     "previewTitle": "Review the issue",
@@ -2370,6 +2869,7 @@
     "errorNotConnected": "Connect your GitHub account first.",
     "errorLlm": "No AI provider is connected to phrase the issue.",
     "errorRateLimited": "Your AI provider hit a rate or quota limit. Try again later, or switch the provider in Settings.",
+    "errorDiagnostics": "The attached diagnostics excerpt was rejected. Try again, or continue without attaching it.",
     "errorGeneric": "Something went wrong. Please try again."
   },
   "store": {
@@ -2379,6 +2879,7 @@
       "lead": "The Hub is our catalog of ready-made plugins. It bundles integrations (credential containers), agents (domain capabilities) and channels (user channels like Teams and Telegram). Click a tile to see permissions, secrets and dependencies before you install."
     },
     "page": {
+      "metaTitle": "Hub · omadia",
       "filters": {
         "all": "All",
         "integration": "Integrations",
@@ -2393,6 +2894,12 @@
       "sourceHub": "Registry",
       "sourceLocal": "Local",
       "sourceInstalled": "Installed",
+      "counts": {
+        "installed": "{n} installed",
+        "ready": "{n} of {total} ready",
+        "attached": "{n} attached to {agent}",
+        "available": "{n} available to attach"
+      },
       "emptyFilteredTitle": "No {category} in this view.",
       "emptyFilteredHint": "Switch the category or the source above.",
       "emptyInstalledTitle": "No plugins installed yet.",
@@ -2403,7 +2910,7 @@
       "emptyHubBody": "Connect a registry under <adminLink>Admin · Registries</adminLink> — or upload your own package in the <localLink>Local</localLink> tab.",
       "errorKicker": "Error",
       "errorTitle": "The catalog could not be loaded.",
-      "errorHint": "Check that the middleware is reachable at <host>http://localhost:3979</host> and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
+      "errorHint": "Check that the middleware is reachable and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
       "footerSource": "Source:"
     },
     "detail": {
@@ -2412,6 +2919,8 @@
       "signed": "signed",
       "unsigned": "unsigned",
       "connectedOk": "Connection established.",
+      "alreadyProvided": "This capability is already provided by {owner}. Installing a second provider is not possible — configure the existing one instead.",
+      "alreadyProvidedCta": "Configure providers",
       "connectedError": "Connection failed. Please try again.",
       "connectedErrorWithReason": "Connection failed ({reason}). Please try again.",
       "sectionDescription": "Description",
@@ -2456,14 +2965,27 @@
       "updateTitleWithVersion": "Update available: {from} → {to}",
       "updateSticker": "Update",
       "noDescription": "No description provided.",
-      "actionRequired": "Action required"
+      "actionRequired": "Action required",
+      "setupProfileLabel": "Setup",
+      "setupProfile": {
+        "audience": {
+          "it_admin": "Setup by IT administrator",
+          "operator": "Setup by operator",
+          "end_user": "Setup by end user"
+        },
+        "minutes": "~{minutes} min"
+      }
     },
     "stateBadge": {
       "available": "Available",
       "installed": "Installed",
       "updateAvailable": "Update available",
       "incompatible": "Incompatible",
-      "migrationNeeded": "Migration needed"
+      "migrationNeeded": "Migration needed",
+      "configRequired": "Configuration required",
+      "errored": "Activation failed",
+      "readyVerified": "Active · verified {time}",
+      "missingFields": "Missing: {fields}"
     },
     "workaroundBadge": {
       "active": "Workaround active",
@@ -2487,6 +3009,10 @@
       "update": "Update",
       "installed": "Installed",
       "active": "active",
+      "installedNext": "\"{name}\" installed — attach it to an orchestrator to start using it.",
+      "toOrchestrators": "Attach to an orchestrator",
+      "toSetup": "Complete setup ({count} missing)",
+      "toChat": "Try it in chat",
       "uninstallAria": "Uninstall {name}",
       "uninstall": "Uninstall",
       "confirmRemove": "Remove <strong>{name}</strong>? The tool is immediately removed from the orchestrator, the vault namespace is cleared, and the registry entry is deleted.",
@@ -2560,7 +3086,10 @@
       "saving": "Saving",
       "saveSelection": "Save selection",
       "saveSelectionWithCount": "Save selection ({count})",
-      "refreshList": "Refresh list"
+      "refreshList": "Refresh list",
+      "noPasswordWarning": "No account password belongs here. This expects a technical key from the provider's console.",
+      "patternMismatch": "This value does not have the expected format.",
+      "patternUnavailable": "This field declares a format check that could not be applied — its value is not validated."
     },
     "editFromStore": {
       "cloning": "Cloning draft …",
@@ -2613,12 +3142,14 @@
     },
     "setupForm": {
       "enable": "Enable",
-      "dontSet": "(leave unset)"
+      "dontSet": "(leave unset)",
+      "noPasswordWarning": "No account password belongs here. This expects a technical key from the provider's console.",
+      "patternUnavailable": "This field declares a format check that could not be applied — its value is not validated."
     }
   },
   "adminAuth": {
     "title": "Authentication Providers",
-    "intro": "Enable or disable the sign-in methods. The <envVar></envVar> env variable defines the permitted providers; here you choose which of them are currently active.",
+    "intro": "Enable or disable the sign-in methods. The <envVar>AUTH_PROVIDERS</envVar> env variable defines the permitted providers; here you choose which of them are currently active.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "statusActive": "active",
@@ -2643,7 +3174,44 @@
       "marketplace": "Marketplace",
       "grants": "Grants",
       "plugins": "Plugin access",
+      "bindings": "Public API keys",
       "audit": "Audit log"
+    },
+    "bindings": {
+      "intro": "The public MCP endpoint lets an external integration call tools with an API key. Each key reaches exactly one agent and exactly the tools you name here — a key with no binding reaches nothing at all.",
+      "keyIdHint": "Paste the key id you got back when the API key was created. There is no picker yet: keys are managed by the channel API, on a separate endpoint.",
+      "keyId": "Key ID",
+      "keyIdPlaceholder": "e.g. 8f3c1a90-…",
+      "agentId": "Agent",
+      "agentIdPlaceholder": "Pick an agent",
+      "readTools": "Read tools",
+      "writeTools": "Write tools",
+      "toolsPlaceholder": "Tool names, comma-separated",
+      "writeRate": "Writes/min",
+      "writeToolsHint": "A write tool additionally requires the key to hold the matching mcp:write scope and spends the tighter write budget. A tool named in both lists counts as a write.",
+      "save": "Save binding",
+      "saving": "Saving",
+      "empty": "No key bindings yet. Until you create one, no API key reaches any tool through the public endpoint.",
+      "boundTo": "bound to {agent}",
+      "enabled": "Active",
+      "parked": "Revoked",
+      "readToolsLabel": "Read",
+      "writeToolsLabel": "Write",
+      "none": "none",
+      "meta": "{rate} writes/min · last changed {updated}",
+      "revoke": "Revoke",
+      "revokeTitle": "Revoke this binding?",
+      "revokeBody": "The key {keyId} stops reaching any tool immediately. The binding is kept, not deleted, so you can still see what it granted.",
+      "revokeConfirm": "Revoke",
+      "restore": "Restore access",
+      "restoreHint": "Saving this binding again edits its tools but leaves it revoked. Restoring is the only way to make the key work again.",
+      "restoreTitle": "Restore this binding?",
+      "restoreBody": "The key {keyId} immediately regains everything on this row: {tools}.",
+      "restoreConfirm": "Restore",
+      "warnings": {
+        "keyUnknown": "No API key with this id exists yet. The binding was saved, but it reaches nothing until such a key is created — double-check the id for a typo.",
+        "agentUnknown": "This binding names an agent that is no longer registered, so it reaches nothing. Rebind it to an existing agent."
+      }
     },
     "plugins": {
       "intro": "Plugins that declare MCP access in their manifest. Grant each the specific servers it may reach — nothing is ambient. Per-tool safety still applies: an unscanned or high-risk tool is refused at call time.",
@@ -2654,6 +3222,10 @@
     "servers": {
       "name": "Name",
       "transport": "Transport",
+      "transportDeprecated": "Deprecated",
+      "transportDeprecatedHint": "The legacy HTTP+SSE transport is deprecated as of MCP 2026-07-28 and will be removed after a transition window of at least 12 months. Existing SSE servers keep working — but new servers should use Streamable HTTP (http), and existing ones should be migrated to it.",
+      "showDeprecatedTransports": "Show deprecated transports",
+      "deprecatedOption": "{transport} (deprecated)",
       "endpoint": "Endpoint",
       "status": "Status",
       "tools": "Tools",
@@ -2730,7 +3302,26 @@
       "readyToLogin": "Client saved. Now sign in at {host} to authorize access.",
       "continueLogin": "Continue to {host} login ↗",
       "afterLoginHint": "Opens in a new tab. After you approve, come back here — the status refreshes automatically.",
-      "checkStatus": "Check status"
+      "checkStatus": "Check status",
+      "delegationLabel": "Acting identity",
+      "delegationPerUser": "Each user acts as themselves",
+      "delegationService": "One shared service identity",
+      "delegationPerUserWhy": "Every caller uses their own authorization at this server. A conversation with no mapped user identity is refused rather than falling back to yours.",
+      "delegationServiceWhy": "All callers share one authorization — yours. Anyone who can reach an orchestrator with this server granted acts with that authority. Only keep this for servers where a shared identity is intended.",
+      "delegationSwitchToPerUser": "Require per-user identity",
+      "delegationSwitchToService": "Use a shared service identity",
+      "delegationIdentityMissing": "This session has no mapped user identity, so per-user calls to this server fail closed. Nothing is sent to the server.",
+      "modeCimd": "Metadata document",
+      "modeDcr": "Auto-registered",
+      "modeManual": "Registered app",
+      "cimdBadgeWhy": "This server accepts a client ID metadata document, so omadia identifies itself by a URL this deployment publishes. No app registration was needed.",
+      "modeDcrWhy": "This server registered omadia automatically (dynamic client registration). The MCP spec is phasing this out in favour of metadata documents, but it keeps working — there is nothing to do.",
+      "modeManualWhy": "omadia uses an OAuth app you registered once at this issuer. This is the standard path for Microsoft Entra ID and Okta and stays fully supported.",
+      "hintCimd": "This server identifies omadia by a metadata document published on this deployment — nothing to register, just connect and log in.",
+      "cimdUnreachable": "This server would accept a client ID metadata document, but this deployment cannot publish one it can fetch. That usually means omadia is not reachable from the internet — normal for an on-premises install, since the identity provider has to fetch the document itself.",
+      "cimdUnreachableReason": "Reason",
+      "manualStillSupported": "Nothing is broken: register a one-time OAuth app for this issuer below and connect as usual.",
+      "manualIsEnterprisePath": "This is the standard enterprise path, not a workaround. Microsoft Entra ID and Okta use pre-registered app registrations by design and will keep using this form."
     },
     "marketplace": {
       "registry": "Registry",
@@ -2790,24 +3381,399 @@
       "server": "Server",
       "tool": "Tool",
       "caller": "Caller",
+      "identity": "Acting identity",
       "outcome": "Outcome",
       "duration": "Duration",
       "empty": "No MCP calls recorded yet.",
       "ok": "ok",
       "failed": "failed",
       "loadMore": "Load more",
+      "unresolved": "unresolved",
       "kind": {
         "agent": "Orchestrator",
         "subagent": "Sub-agent",
         "skill": "Skill",
         "plugin": "Plugin",
-        "unattributed": "Unattributed"
+        "unattributed": "Unattributed",
+        "api_key": "API key (public MCP)"
+      }
+    }
+  },
+  "adminDevPlatform": {
+    "title": "Dev Platform",
+    "intro": "Repositories, dev jobs, and pull-request pipelines run by omadia agents. Jobs run isolated and always end in a pull request for human review — omadia never merges.",
+    "tabs": {
+      "repos": "Repositories",
+      "jobs": "Jobs",
+      "apps": "GitHub Apps",
+      "gates": "Approvals"
+    },
+    "apps": {
+      "createHeading": "Create a GitHub App",
+      "createBody": "A GitHub App gives the dev platform short-lived, per-repository tokens that cannot merge — the strongest credential mode. Creating one sends you to GitHub to approve the manifest, then brings you back.",
+      "orgLabel": "Organization (optional)",
+      "orgPlaceholder": "acme",
+      "orgHelp": "Leave empty to create the App under your personal account. Set an organization to create it there instead.",
+      "create": "Create GitHub App",
+      "creating": "Opening GitHub",
+      "createError": "The App setup could not be started. Try again.",
+      "listHeading": "Registered Apps",
+      "loading": "Loading",
+      "unauthorized": "you need operator access for the dev platform.",
+      "loadError": "Something went wrong while loading.",
+      "retry": "Retry",
+      "empty": "No GitHub Apps yet. Create one to bind repositories with scoped tokens.",
+      "colOwner": "Owner",
+      "colSlug": "App",
+      "colInstalls": "Installations",
+      "installs": "{count, plural, one {# installation} other {# installations}}",
+      "openOnGithub": "Open on GitHub"
+    },
+    "gates": {
+      "advisoryHeading": "Plan approval is advisory",
+      "advisoryBody": "Approving a plan only lets the job start implementing. The authoritative safety check is the diff gate, which reviews the actual patch before any pull request. omadia never merges.",
+      "loading": "Loading",
+      "unauthorized": "you need operator access for the dev platform.",
+      "loadError": "Something went wrong while loading.",
+      "retry": "Retry",
+      "empty": "No plans are waiting for approval.",
+      "job": "Job",
+      "deadline": "Deadline {at}",
+      "noDeadline": "No deadline",
+      "plan": "Plan",
+      "viewPlan": "View plan",
+      "noPlan": "No plan artifact",
+      "planLoading": "Loading plan…",
+      "planLoadError": "The plan could not be loaded.",
+      "holders": "Holders",
+      "noHolders": "none",
+      "questions": "Questions",
+      "answerPlaceholder": "Your answer",
+      "noQuestions": "The agent asked no questions.",
+      "noteLabel": "Note (optional)",
+      "notePlaceholder": "Context for the decision",
+      "approve": "Approve plan",
+      "approving": "Approving",
+      "reject": "Reject",
+      "rejecting": "Rejecting",
+      "notHolder": "You are not authorized to resolve this gate. Its holder role has moved to someone else.",
+      "alreadyResolved": "This gate is no longer pending — it was resolved or expired. The list has been refreshed.",
+      "resolveError": "The gate could not be resolved. Try again."
+    },
+    "bindApp": {
+      "intro": "Bind this repository to a GitHub App installation. The App issues scoped, short-lived tokens that cannot merge. omadia verifies the installation covers this repository before saving.",
+      "loadingApps": "Loading Apps",
+      "noApps": "No GitHub Apps yet. Create one from the GitHub Apps tab first.",
+      "installLink": "Install / manage",
+      "installationLabel": "Installation ID",
+      "installationPlaceholder": "12345678",
+      "installationHelp": "Install the App on this repository, then paste the installation ID GitHub shows after install.",
+      "bind": "Bind GitHub App",
+      "binding": "Binding",
+      "bound": "GitHub App bound. Scoped tokens are now used for this repository.",
+      "boundWithWarnings": "Bound with warnings",
+      "errors": {
+        "notCovering": "That installation does not cover this repository. Install the App on this repository, then use its installation ID.",
+        "unknownInstallation": "That installation is not registered. Complete the App install so omadia records it, then try again.",
+        "invalidInstallation": "Enter the installation ID GitHub showed after installing the App.",
+        "appUnusable": "The App backing this installation is unusable — its credentials are missing. Re-create the App.",
+        "generic": "The GitHub App could not be bound. Try again."
+      }
+    },
+    "loading": "Loading",
+    "loadError": "Something went wrong while loading.",
+    "unauthorized": "you need operator access for the dev platform.",
+    "retry": "Retry",
+    "repos": {
+      "count": "{count, plural, one {# repository} other {# repositories}}",
+      "name": "Repository",
+      "forge": "Forge",
+      "credential": "Credential mode",
+      "branch": "Default branch",
+      "protectionCol": "Protection",
+      "credentialExpired": "credential expired",
+      "credentialModes": {
+        "githubApp": "GitHub App",
+        "deviceFlow": "Device flow — user token",
+        "pat": "Personal access token"
+      },
+      "newJob": "New job",
+      "settings": "Settings",
+      "add": "Add repository",
+      "empty": {
+        "heading": "No repositories yet",
+        "body": "the dev platform runs isolated jobs against your repositories: analyze an issue, plan, implement, and open a pull request for human review. omadia never merges — that stays with you.",
+        "cta": "Add repository"
+      },
+      "remove": {
+        "action": "Remove",
+        "title": "Remove repository?",
+        "body": "Running jobs are cancelled first. The stored credential for this repository is deleted from the vault.",
+        "confirm": "Remove repository",
+        "cancel": "Keep repository"
+      },
+      "protection": {
+        "protected": "protected",
+        "unprotected": "unprotected",
+        "unchecked": "unchecked",
+        "recheck": "Re-check",
+        "rechecking": "Checking",
+        "warning": "Without branch protection your token could push to the default branch directly. The no-merge guarantee depends on it."
+      }
+    },
+    "jobs": {
+      "job": "Job",
+      "repo": "Repo",
+      "kind": "Kind",
+      "phase": "Phase",
+      "status": "Status",
+      "cost": "Cost",
+      "costEstimatedTitle": "Estimated cost (subscription CLI — not metered)",
+      "costEstimatedTag": "est.",
+      "costNearTitle": "Near budget (≥80%)",
+      "costOverTitle": "Over budget (≥100%)",
+      "age": "Age",
+      "view": "View",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "empty": "No jobs yet. Start one from a repository row.",
+      "live": "live",
+      "liveLost": "connection lost — retrying",
+      "filters": {
+        "allRepos": "All repositories",
+        "allStatuses": "All statuses"
+      },
+      "statuses": {
+        "queued": "queued",
+        "provisioning": "provisioning",
+        "running": "running",
+        "waiting": "waiting",
+        "applying": "applying",
+        "done": "done",
+        "failed": "failed",
+        "cancelled": "cancelled",
+        "stalled": "stalled",
+        "budgetExceeded": "budget exceeded"
+      },
+      "kinds": {
+        "analyze": "Analyze",
+        "fixIssue": "Fix issue",
+        "implement": "Implement"
+      },
+      "cancelConfirm": {
+        "title": "Cancel job?",
+        "body": "The runner is terminated. The branch, the log, and any uploaded diff are kept.",
+        "confirm": "Cancel job",
+        "cancel": "Keep running"
+      },
+      "deleteConfirm": {
+        "title": "Delete job?",
+        "body": "The job, its log, and its artifacts are removed permanently. Any branch or PR it created is kept.",
+        "confirm": "Delete job",
+        "cancel": "Keep it"
+      }
+    },
+    "newJob": {
+      "title": "New job for {repo}",
+      "kind": "Kind",
+      "kinds": {
+        "fixIssue": "Fix an issue",
+        "analyze": "Analyze",
+        "implement": "Implement"
+      },
+      "fromIssue": "From issue",
+      "fromBrief": "Free-text brief",
+      "loadingIssues": "Loading open issues",
+      "noIssues": "No open issues found for this repository.",
+      "issue": "Issue",
+      "selectIssue": "Select an issue",
+      "brief": "Brief",
+      "briefPlaceholder": "What should the agent do?",
+      "error": "The job could not be created.",
+      "cancel": "Cancel",
+      "starting": "Starting",
+      "start": "Start job"
+    },
+    "wizard": {
+      "title": "Add repository",
+      "intro": "Connect a repository so the dev platform can run isolated jobs against it and open pull requests for your review.",
+      "backToRepos": "Back to repositories",
+      "steps": {
+        "repo": "Repository",
+        "credentials": "Credentials",
+        "confirm": "Confirm"
+      },
+      "fields": {
+        "forge": "Forge",
+        "owner": "Owner",
+        "name": "Repository name",
+        "branch": "Default branch"
+      },
+      "next": "Next",
+      "back": "Back",
+      "finish": "Add repository",
+      "adding": "Adding",
+      "edit": "Edit",
+      "summary": {
+        "github_app": "GitHub App",
+        "device_flow": "Device flow",
+        "pat": "Personal access token"
+      },
+      "error": {
+        "submit": "The repository could not be added. Check the owner, name, and credential, then try again."
+      },
+      "done": {
+        "heading": "Repository added",
+        "body": "{repo} is connected. You can start a job from the repository list.",
+        "toList": "Go to repositories"
+      },
+      "credentials": {
+        "groupLabel": "Credential mode",
+        "githubApp": {
+          "title": "GitHub App — recommended",
+          "soon": "available soon",
+          "body": "Per-repository installation, short-lived scoped tokens, commits as omadia-dev[bot]. The token cannot merge — structurally."
+        },
+        "deviceFlow": {
+          "title": "Device flow — quick start",
+          "body": "Sign in with your GitHub account through a one-time device code. The fastest way to try the dev platform."
+        },
+        "deviceTradeoffs": {
+          "heading": "What this mode means",
+          "asUser": "commits appear as your GitHub user, not a bot",
+          "repoWide": "the token grants access to all your repositories, not just this one",
+          "canMerge": "the token can merge — the no-merge rule is enforced by omadia policy only, not by token scope",
+          "noWebhooks": "webhook triggers stay disabled for this repository"
+        },
+        "device": {
+          "codeAria": "Device code {code}",
+          "copyCode": "Copy code",
+          "copied": "Copied",
+          "waiting": "Waiting for authorization",
+          "authorizedAs": "Authorized as {login}",
+          "expired": "Code expired",
+          "error": "Authorization failed",
+          "restart": "Start again"
+        },
+        "pat": {
+          "title": "Fine-grained PAT / deploy key",
+          "body": "Paste a fine-grained personal access token scoped to this repository. Also the path for GitLab and Gitea.",
+          "label": "Token",
+          "placeholder": "github_pat_…"
+        }
+      },
+      "checks": {
+        "label": "branch protection on {branch}",
+        "enabled": "enabled",
+        "missing": "missing",
+        "unknown": "could not verify",
+        "warning": "without branch protection a device-flow or PAT token could push to {branch} directly. Enable it in the repository settings — the dev platform will only ever push to omadia/job-* branches, but protection makes that structural.",
+        "unknownHint": "The stored token cannot read the protection settings — classic device-flow tokens usually lack admin read. You can re-check any time."
+      }
+    },
+    "detail": {
+      "jobLabel": "job {hash}",
+      "loading": "Loading",
+      "notFound": "No such job.",
+      "railLabel": "Pipeline phases",
+      "phases": {
+        "analyze": "analyze",
+        "bootstrap": "bootstrap",
+        "plan": "plan",
+        "clarify": "clarify",
+        "gate": "gate",
+        "implement": "implement",
+        "review": "review",
+        "pr": "pr"
+      },
+      "phaseSkipped": "skipped — no questions",
+      "toolCall": {
+        "pending": "running",
+        "failed": "failed",
+        "noOutput": "(no output)",
+        "prompt": "Prompt",
+        "result": "Result",
+        "output": "Output",
+        "moreDiffLines": "… {count, plural, one {# more line} other {# more lines}}"
+      },
+      "openPr": "Open pull request",
+      "artifactError": "This phase's recorded output could not be loaded.",
+      "logEmpty": "No log output yet.",
+      "scrollToBottom": "Scroll to bottom",
+      "connection": {
+        "live": "live · last event {seconds}s ago",
+        "reconnecting": "reconnecting",
+        "closed": "stream closed — job finished"
+      },
+      "cancel": {
+        "action": "Cancel",
+        "title": "Cancel job?",
+        "body": "The runner is terminated and the branch is kept.",
+        "confirm": "Cancel job",
+        "cancelLabel": "Keep running"
+      },
+      "delete": {
+        "action": "Delete",
+        "title": "Delete job?",
+        "body": "The job, its log, and its artifacts are removed permanently. Any branch or PR it created is kept.",
+        "confirm": "Delete job",
+        "cancelLabel": "Keep it"
+      },
+      "sidebar": {
+        "backend": "Backend",
+        "agent": "Agent",
+        "branch": "Branch",
+        "source": "Source",
+        "createdBy": "Created by",
+        "tokens": "Tokens in / out",
+        "cost": "Cost"
+      }
+    },
+    "repoDetail": {
+      "back": "Back to repositories",
+      "loading": "Loading",
+      "loadError": "This repository could not be loaded.",
+      "forge": "Forge",
+      "branch": "Default branch",
+      "credential": "Credential",
+      "credentialHeading": "Credential",
+      "credentialCurrent": "Current mode: {kind}",
+      "runsTests": "Runs tests",
+      "yes": "yes",
+      "no": "no",
+      "protectionHeading": "Branch protection",
+      "recheck": "Re-check",
+      "rechecking": "Checking",
+      "budget": {
+        "heading": "Budget",
+        "help": "Cap the spend per job for this repository. Leave empty to use the platform default.",
+        "costLabel": "Cost budget (USD per job)",
+        "costPlaceholder": "e.g. 5.00",
+        "costError": "Enter a positive amount, or leave empty for the default.",
+        "save": "Save budget",
+        "saving": "Saving",
+        "saved": "Saved",
+        "saveError": "The budget could not be saved."
+      },
+      "webhook": {
+        "heading": "Webhook triggers",
+        "help": "When enabled, applying the trigger label to an issue starts a job — but only for an allow-listed sender. An empty sender list keeps the webhook off.",
+        "enable": "Enable",
+        "disable": "Disable",
+        "saving": "Saving",
+        "statusLabel": "Status",
+        "enabledStatus": "Enabled",
+        "disabledStatus": "Disabled",
+        "triggerLabelLabel": "Trigger label",
+        "sendersLabel": "Allowed senders",
+        "sendersEmpty": "None — webhook triggers are off until a sender is added.",
+        "saveError": "The webhook setting could not be saved."
       }
     }
   },
   "adminRegistries": {
     "title": "Plugin Registries",
-    "intro": "Sources from which plugins are pulled into the store. New instances start with <hub></hub>. The token is stored encrypted and never shown again — only whether one is set. Changes take effect without a restart.",
+    "intro": "Sources from which plugins are pulled into the store. New instances start with <hub>hub.omadia.ai</hub>. The token is stored encrypted and never shown again — only whether one is set. Changes take effect without a restart.",
     "addHeading": "Add registry",
     "fields": {
       "name": "Name",
@@ -2843,9 +3809,130 @@
       "generic": "Error {status}."
     }
   },
+  "adminApiKeys": {
+    "title": "Public API Keys",
+    "intro": "Server-to-server bearer credentials for the public chat API. A key’s plaintext token is shown exactly once, right after creation — copy it immediately, it cannot be retrieved again, even by an operator.",
+    "create": {
+      "heading": "Create a new key",
+      "fields": {
+        "label": "Label (optional)",
+        "rateLimit": "Rate limit (requests/minute, optional)"
+      },
+      "rateLimitInvalid": "Rate limit must be between {min} and {max} requests/minute.",
+      "scopesRequired": "Select at least one scope — a key with none cannot do anything.",
+      "blockedByReveal": "Dismiss the token above before creating another key.",
+      "submit": "Create key",
+      "creating": "Creating"
+    },
+    "reveal": {
+      "heading": "New API key created",
+      "warning": "This is the only time this token is shown. Copy it now — it cannot be retrieved again, even by an operator.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "copyFailed": "Couldn't copy automatically — select the token above and copy it manually.",
+      "dismiss": "I've copied it, dismiss"
+    },
+    "list": {
+      "heading": "Existing keys",
+      "loading": "Loading …",
+      "empty": "No API keys yet. Create one above to get started.",
+      "unlabeled": "Unlabeled",
+      "idLabel": "Key ID",
+      "copyId": "Copy ID",
+      "copyIdCopied": "Copied",
+      "copyIdTitle": "Copy this key’s id — paste it into a public MCP key-binding",
+      "createdAt": "Created {date}",
+      "rateLimitValue": "{value}/min",
+      "status": {
+        "active": "Active",
+        "revoked": "Revoked"
+      },
+      "revoke": "Revoke",
+      "revoking": "Revoking",
+      "confirmRevoke": {
+        "message": "Revoke this key? Anything using it stops working immediately — this can't be undone.",
+        "confirm": "Confirm revoke",
+        "cancel": "Cancel"
+      }
+    },
+    "errors": {
+      "notFound": "That key no longer exists — the list has been refreshed.",
+      "authUnavailable": "Operator authentication is unavailable right now. Try again shortly.",
+      "sessionExpired": "Your session has expired. Redirecting to sign in…",
+      "invalidRequest": "That request was invalid — check the values above and try again.",
+      "generic": "Something went wrong (error {status})."
+    }
+  },
+  "adminWebhooks": {
+    "title": "Conductor Webhooks",
+    "intro": "Inbound endpoints start subscribed workflow runs; outbound subscriptions receive an HMAC-signed delivery on run completion or failure. A created or rotated secret is shown once — it is never returned again.",
+    "badge": {
+      "enabled": "enabled",
+      "disabled": "disabled"
+    },
+    "endpoints": {
+      "heading": "Inbound endpoints",
+      "hint": "POST to the endpoint's URL with a valid HMAC signature to start every workflow subscribed to its event.",
+      "fields": {
+        "eventId": "Event id",
+        "description": "Description (optional)"
+      },
+      "create": "Create endpoint",
+      "loading": "Loading …",
+      "empty": "No inbound endpoints configured.",
+      "viewHistory": "View history",
+      "hideHistory": "Hide history",
+      "enable": "Enable",
+      "disable": "Disable",
+      "rotateSecret": "Rotate secret",
+      "rotating": "Rotating",
+      "delete": "Delete",
+      "deleting": "Deleting",
+      "secretRevealed": "New secret — copy it now, it will not be shown again:",
+      "dismiss": "Dismiss",
+      "noDeliveries": "No deliveries recorded yet.",
+      "confirmDelete": "Really delete this endpoint? Any sender using it will start getting 401s.",
+      "table": {
+        "deliveryId": "Delivery id",
+        "outcome": "Outcome",
+        "receivedAt": "Received"
+      }
+    },
+    "subscriptions": {
+      "heading": "Outbound subscriptions",
+      "hint": "Receives an HMAC-signed POST whenever the subscribed event fires. Failed deliveries retry with backoff until the attempt cap is reached.",
+      "fields": {
+        "url": "URL",
+        "event": "Event",
+        "description": "Description (optional)"
+      },
+      "create": "Create subscription",
+      "loading": "Loading …",
+      "empty": "No outbound subscriptions configured.",
+      "viewHistory": "View history",
+      "hideHistory": "Hide history",
+      "enable": "Enable",
+      "disable": "Disable",
+      "rotateSecret": "Rotate secret",
+      "rotating": "Rotating",
+      "delete": "Delete",
+      "deleting": "Deleting",
+      "secretRevealed": "New secret — copy it now, it will not be shown again:",
+      "dismiss": "Dismiss",
+      "noDeliveries": "No deliveries recorded yet.",
+      "confirmDelete": "Really delete this subscription?",
+      "table": {
+        "status": "Status",
+        "attempts": "Attempts",
+        "lastError": "Last error",
+        "nextAttemptAt": "Next attempt",
+        "createdAt": "Created"
+      }
+    }
+  },
   "adminDomains": {
     "title": "Plugin Domains",
-    "intro": "Overview of all registered plugins, grouped by the <domain></domain> declared in their <manifest></manifest>. Domains are read by the Phase 8 nudge-pipeline multi-domain trigger and used by the operator UI for cross-agent grouping. Curation (renaming / merging / hierarchies) follows with OB-78 (Phase 9 agent profiles).",
+    "intro": "Overview of all registered plugins, grouped by the <domain>domain</domain> declared in their <manifest>manifest.yaml</manifest>. Domains are read by the Phase 8 nudge-pipeline multi-domain trigger and used by the operator UI for cross-agent grouping. Curation (renaming / merging / hierarchies) follows with OB-78 (Phase 9 agent profiles).",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "noData": "No data.",
@@ -2856,10 +3943,10 @@
       "fallbacks": "Fallbacks"
     },
     "pluginCount": "{count, plural, one {# plugin} other {# plugins}}",
-    "fallbackWarning": "{count, plural, one {# plugin} other {# plugins}} without a declared domain — auto-fallback to <fallbackDomain></fallbackDomain>. Add an <manifestKey></manifestKey> line to the manifest (e.g. <exampleOne></exampleOne>, <exampleTwo></exampleTwo>) or re-upload the agent via the Builder."
+    "fallbackWarning": "{count, plural, one {# plugin} other {# plugins}} without a declared domain — auto-fallback to <fallbackDomain>{fallbackDomainName}</fallbackDomain>. Add an <manifestKey>identity.domain</manifestKey> line to the manifest (e.g. <exampleOne>\"confluence\"</exampleOne>, <exampleTwo>\"odoo.hr\"</exampleTwo>) or re-upload the agent via the Builder."
   },
   "adminUsage": {
-    "title": "Costs",
+    "title": "Usage & Cost",
     "intro": "Token consumption and LLM costs per model, source and time. Captures every Anthropic call — orchestrator, sub-agents and the Haiku background tasks.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
@@ -3186,7 +4273,54 @@
   },
   "adminKgLifecycle": {
     "quotaTooltip": "{percent}% of the quota",
-    "quotaOverTooltip": "{percent}% — will be evicted on the next GC sweep"
+    "quotaOverTooltip": "{percent}% — will be evicted on the next GC sweep",
+    "unavailableTitle": "Knowledge-graph lifecycle is not available",
+    "unavailableBody": "The middleware did not publish the lifecycle service, so there is nothing to show here. The sweeps are Postgres-specific: they exist only while the knowledge-graph plugin is active against a Postgres/Neon database. An in-memory knowledge graph has no lifecycle to run. This page no longer depends on any feature flag — if the plugin is active on Postgres and you still see this, check the plugin status.",
+    "signedOutTitle": "Your session has expired",
+    "signedOutBody": "These endpoints require an operator session. Sign in again, then reload this page.",
+    "actions": {
+      "decayTitle": "Run decay + rotation",
+      "decayDescription": "Flush access tracker → recompute decay_score → rotate HOT→WARM→COLD → hard-delete done tasks past TTL.",
+      "gcTitle": "Run GC quotas",
+      "gcDescription": "Per-scope eviction by type-weight × decay-score. Enforces hot_max_entries + max_total_chars.",
+      "accessFlushTitle": "Run access flush only",
+      "accessFlushDescription": "Drain the access tracker into access_count + accessed_at without rotating. Debug-only."
+    },
+    "cards": {
+      "tierBreakdown": "Tier breakdown",
+      "entryTypeBreakdown": "Entry-type breakdown",
+      "decayDistribution": "Decay-score distribution",
+      "totalTurns": "Total Turns"
+    },
+    "topScopes": {
+      "heading": "Top scopes (by Turn count)",
+      "empty": "No scopes recorded yet.",
+      "colScope": "Scope",
+      "colTurns": "Turns",
+      "colQuota": "Quota",
+      "colChars": "Chars",
+      "colCharQuota": "Char-Quota"
+    },
+    "lastRuns": {
+      "heading": "Last sweep runs",
+      "decay": "Decay",
+      "gc": "GC",
+      "accessFlush": "Access flush",
+      "neverRun": "never run in this process",
+      "updated": "Updated",
+      "hotToWarm": "HOT → WARM",
+      "warmToCold": "WARM → COLD",
+      "doneTasksDeleted": "Done tasks deleted",
+      "durationMs": "Duration (ms)",
+      "scopesAffected": "Scopes affected",
+      "evictedByCount": "Evicted by count",
+      "evictedByChars": "Evicted by chars",
+      "flushed": "Flushed",
+      "promotedColdToWarm": "Promoted COLD → WARM"
+    },
+    "title": "Knowledge-Graph Lifecycle",
+    "intro": "Palaia Phase 4 — tier rotation, decay, GC. Sweeps run on the cron schedule; the buttons below trigger them on demand.",
+    "refresh": "Refresh"
   },
   "adminKgPriorities": {
     "intro": "Per-agent block/boost list for the token-budget assembler. Block drops a turn from the recall pool; boost multiplies the score by `weight` (default 1.3). `manuallyAuthored=true` additionally applies an independent ×1.3 boost — both combine.",
@@ -3223,6 +4357,67 @@
     "dbUrlRequiredError": "Postgres requires DATABASE_URL (Neon KG/graphPool). Set DATABASE_URL and restart before switching to Postgres.",
     "forbiddenError": "Not authorized (403) — switching the backend requires admin rights.",
     "noProviderError": "No memory provider registered (409) — the choice cannot be saved."
+  },
+  "adminEmbeddingProvider": {
+    "title": "Embeddings · Provider",
+    "intro": "Switches the active <code>embeddingClient@1</code> provider <strong>live — without a restart</strong>. The middleware deactivates the current adapter, activates the target and re-runs the knowledge-graph dimension gate, which rewrites the <code>vector(n)</code> columns when the width changes. Every stored embedding is discarded and re-earned by the backfill sweep, one provider call per row.",
+    "loading": "loading…",
+    "loadFailed": "Loading failed: {message}",
+    "pollingNote": "Live state, re-read every {seconds} seconds.",
+    "none": "—",
+    "unknown": "unknown",
+    "dimensionsValue": "{dimensions}d",
+    "currentStateTitle": "Current state",
+    "activeProvider": "Active provider",
+    "activeModel": "Model",
+    "activeDimensions": "Vector width",
+    "providerDriftTitle": "Provider drift",
+    "providerDriftBody": "The registry hands out {activeModelId}, but the verdict governing the knowledge graph was computed against {gateModelId}. Nothing is broken — swapping an adapter through the plugin pages does not re-run the dimension gate. Switch the provider here to re-gate, so the corpus and the verdict describe the same model again.",
+    "capabilityMissing": "The active adapter publishes no client — it is running but not configured (missing API key or base URL).",
+    "corpusTitle": "Stored corpus",
+    "corpusModel": "Recorded model",
+    "corpusDimensions": "Recorded width",
+    "corpusNone": "No model is recorded yet — the corpus is empty, or it predates the model registry.",
+    "corpusClearPending": "A stale-vector clear is still draining. Vector writes resume on their own when the backfill sweep finishes it.",
+    "storedVectors": "Stored vectors",
+    "columnsTitle": "Governed vector columns",
+    "graphUnavailable": "No Postgres knowledge-graph is active, so there are no governed vector columns to report.",
+    "corpusReadFailed": "The corpus could not be read: {message}",
+    "gateTitle": "Dimension gate",
+    "gateWrites": "Vector writes",
+    "gateWritesAllowed": "allowed",
+    "gateWritesBlocked": "blocked",
+    "gateStatus": "Outcome",
+    "gateReason": "Reason",
+    "gateDetail": "Detail",
+    "gateUnavailable": "The knowledge-graph has published no gate verdict — either no Postgres backend is active, or it never got as far as evaluating.",
+    "gateMigrating": "The vector columns were rewritten at the new width. This is not an error: the old corpus was deliberately discarded and the backfill sweep is re-embedding it, so recall stays degraded until it catches up.",
+    "gateClearComplete": "The stale-vector clear finished and vector writes were re-enabled in this process, without a restart. The backfill sweep is re-embedding the corpus.",
+    "gateClearPending": "A stale-vector clear is still owed. Vector writes stay off until the backfill sweep drains it — no restart needed, this page will show the change.",
+    "autoMigrateTitle": "Rewrite vector columns on a width change",
+    "autoMigrateOn": "allowed — a confirmed switch below may rewrite the columns at the new width",
+    "autoMigrateOff": "forbidden — a width change blocks vector writes until you migrate the columns by hand, even from this page",
+    "autoMigrateHint": "This never happens on a restart: only a switch you confirm below can rewrite the columns. Change the master switch in the knowledge-graph plugin settings (auto_migrate_vector_columns).",
+    "switchTitle": "Switch provider",
+    "noAlternatives": "No second embeddingClient@1 provider is installed. Install one from the plugin store first — exactly one may ever be active.",
+    "targetLegend": "Target provider",
+    "widthChangeYes": "changes the column width ({from}d → {to}d)",
+    "widthChangeNo": "keeps the current column width",
+    "widthChangeUnknown": "width impact unknown until the provider activates",
+    "discardTitle": "This discards the stored corpus",
+    "discardCount": "{count, plural, =0 {Nothing is stored right now, so no vectors are lost.} one {# stored vector will be discarded and re-embedded.} other {# stored vectors will be discarded and re-embedded.}}",
+    "discardUnknown": "The number of stored vectors could not be read. Assume the whole corpus is discarded and re-embedded.",
+    "costWarning": "Re-embedding calls the provider once per row. Against a paid API that costs real money.",
+    "confirmLabel": "I understand that the stored vectors are discarded and re-embedded.",
+    "switchButton": "Switch provider",
+    "switching": "switching…",
+    "switchedTitle": "Switched to {provider}.",
+    "switchedHint": "The gate outcome below is what actually happened. It updates on its own while the backfill runs.",
+    "confirmationRequiredError": "Confirmation required — the switch discards the stored vectors.",
+    "unknownTargetError": "That plugin is not an installed embeddingClient@1 provider.",
+    "alreadyActiveError": "That provider is already the active one.",
+    "targetUnavailableError": "The target could not take over, so the previous provider was restored. Configure it first (API key, base URL), then try again.",
+    "forbiddenError": "Not authorized (403) — switching the embedding provider requires admin rights."
   },
   "graph": {
     "page": {
@@ -3308,10 +4503,15 @@
       "auditLoading": "Loading audit trail…",
       "auditEmpty": "No audit entries.",
       "reasonQuoted": "“{reason}”"
+    },
+    "listView": {
+      "runTrace": "Run trace",
+      "noEntities": "No entities in this turn",
+      "loadingRun": "loading run…",
+      "noRunTrace": "No run trace recorded"
     }
   },
   "memory": {
-    "errorMiddlewareUnreachable": "Middleware unreachable (localhost:3979). Is `npm run dev` running in the middleware folder?",
     "errorDevEndpointUnavailable": "Dev memory endpoint unavailable. Set DEV_ENDPOINTS_ENABLED=true in middleware/.env and restart the middleware.",
     "errorListFailed": "Listing failed (HTTP {status})",
     "errorFileFailed": "File load failed (HTTP {status})",
@@ -3323,7 +4523,8 @@
     "reload": "↻ Reload",
     "loading": "Loading…",
     "empty": "empty",
-    "selectEntry": "Select an entry on the left…"
+    "selectEntry": "Select an entry on the left…",
+    "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator."
   },
   "memories": {
     "kinds": {
@@ -3390,6 +4591,7 @@
   },
   "routines": {
     "page": {
+      "metaTitle": "Routines · omadia",
       "kicker": "Routines",
       "title": "Cron jobs & routines.",
       "intro": "User-owned recurring agent invocations. They are created in the chat (manage_routine tool); here you can see everything at a glance and pause or delete.",
@@ -3401,7 +4603,7 @@
       "columnLastRun": "Last run",
       "columnActions": "Actions",
       "emptyTitle": "No routines yet.",
-      "emptyBody": "Routines are created when a user says something like “remind me about X every Monday at 9 am” in the chat — the agent calls the <toolName></toolName> tool and creates it."
+      "emptyBody": "Routines are created when a user says something like “remind me about X every Monday at 9 am” in the chat — the agent calls the <toolName>manage_routine</toolName> tool and creates it."
     },
     "row": {
       "neverRan": "never",
@@ -3412,7 +4614,20 @@
       "historyErrorTitle": "Run history unreachable",
       "historyEmpty": "No run history for this routine yet — as soon as it fires for the first time, a row will appear here.",
       "columnDuration": "Duration",
-      "columnError": "Error"
+      "columnError": "Error",
+      "promptLabel": "Prompt",
+      "fieldRoutineId": "Routine ID",
+      "fieldUserId": "User ID",
+      "fieldTenant": "Tenant",
+      "fieldChannel": "Channel",
+      "fieldCron": "Cron",
+      "fieldTimeout": "Timeout",
+      "fieldStatus": "Status",
+      "columnStarted": "Started",
+      "columnTrigger": "Trigger",
+      "columnStatus": "Status",
+      "columnIterTools": "Iter · Tools",
+      "columnDetail": "Detail"
     },
     "trigger": {
       "cron": "Cron",
@@ -3423,11 +4638,12 @@
       "triggerButton": "Now",
       "triggerTitle": "Trigger the routine manually now — fires an agent run and delivers the result to the channel.",
       "triggerNotice": "Started — the result will appear in the channel in ~30 seconds.",
+      "triggerChatUnavailable": "No LLM API key configured — add it in Admin → Settings, then trigger again.",
       "deleteConfirm": "Delete routine ''{name}''? This cannot be undone."
     },
     "templateEditor": {
       "badgeActive": "active · {format}",
-      "description": "JSON schema: <schema></schema>. On trigger the server renders all data + static sections itself; the LLM only fills the narrative-slot strings. Empty editor = remove the template, the routine runs on the legacy path again.",
+      "description": "JSON schema: <schema>{schemaShape}</schema>. On trigger the server renders all data + static sections itself; the LLM only fills the narrative-slot strings. Empty editor = remove the template, the routine runs on the legacy path again.",
       "templatePlaceholder": "'{ \"format\": \"markdown\", \"sections\": [ { \"kind\": \"narrative-slot\", \"id\": \"intro\", \"hint\": \"One sentence of introduction.\" } ] }'",
       "saveFailedLabel": "Save failed:",
       "saved": "Saved.",
@@ -3457,6 +4673,7 @@
       "showLess": "less"
     },
     "runDetail": {
+      "metaTitle": "Routine Run · omadia",
       "errorUnreachableFallback": "Run detail unreachable.",
       "breadcrumbRoutines": "Routines",
       "loadErrorTitle": "Run unreachable",
@@ -3470,6 +4687,7 @@
   },
   "system": {
     "page": {
+      "metaTitle": "System · omadia",
       "title": "Platform health.",
       "intro": "Runtime, persistence, backup. Metadata only — no secrets.",
       "errorUnknownLoad": "Unknown error while loading the vault status.",
@@ -3500,6 +4718,50 @@
       "dotInactive": "Inactive",
       "keySourceDevFile": "dev file (not for production)",
       "keySourceDevFileCreated": "dev file (newly generated — DEV ONLY)"
+    }
+  },
+  "help": {
+    "metaTitle": "Help · omadia",
+    "kicker": "Help",
+    "title": "Help & support",
+    "intro": "Answers to the states you are most likely to get stuck in, plus where to reach us when they do not help.",
+    "faq": {
+      "heading": "Frequently asked",
+      "invalidKey": {
+        "question": "My API key is reported as invalid",
+        "answer": "A stored key is not a working key. Open LLM access, use “Test key”, and check the key in the provider's console — an expired or revoked key looks identical until it is probed.",
+        "action": "Open LLM access"
+      },
+      "pluginNeedsConfig": {
+        "question": "A plugin says it needs configuration",
+        "answer": "The plugin is installed but at least one required field has no value. Open the plugin in the store and fill in the setup fields. Secret fields never want an account password — they want a technical key from the provider's console.",
+        "action": "Open the store"
+      },
+      "cliNotInstalled": {
+        "question": "A subscription CLI shows as not installed",
+        "answer": "The CLI has to be installed on the server that runs omadia, not on your laptop. The Subscriptions tab shows the exact install command; after installing, use “Re-check”.",
+        "action": "Open LLM access"
+      },
+      "noModels": {
+        "question": "No models show up for a provider",
+        "answer": "Models are contributed by the provider plugin. If the list is empty, the plugin is not active — check LLM access and the plugin's status in the store.",
+        "action": "Open LLM access"
+      }
+    },
+    "docs": {
+      "heading": "Documentation",
+      "documentation": "Documentation",
+      "repository": "Source code on GitHub",
+      "discussions": "Ask in Discussions"
+    },
+    "support": {
+      "heading": "Contact",
+      "body": "Found a bug or something that does not make sense? Open an issue — include the version below and what you were doing.",
+      "openIssue": "Open an issue"
+    },
+    "build": {
+      "heading": "Build",
+      "version": "Web UI version {version}"
     }
   }
 }

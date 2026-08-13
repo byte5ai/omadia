@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { PrivacyReceipt } from '../../../_lib/chatSessions';
 import { renderWithIntl } from '../../../_lib/test-utils';
 import {
+  formatMaskedPromptSpans,
   PrivacyReceiptCard,
   summarisePrivacyReceipt,
 } from '../PrivacyReceiptCard';
@@ -40,6 +41,26 @@ const NAMED: PrivacyReceipt = {
   verbsExecuted: ['filter'],
   pseudonymProjectionUsed: false,
   identityValuesOnWire: 1,
+};
+
+/** #361 — three prompt spans were pseudonymised before the LLM wire. */
+const PROMPT_MASKED: PrivacyReceipt = {
+  ...RANKED,
+  maskedPromptSpans: [
+    { type: 'person', detector: 'c1-gliner' },
+    { type: 'person', detector: 'c1-gliner' },
+    { type: 'email', detector: 'c0-regex' },
+  ],
+};
+
+/** #547 / #569 — two external MCP tools returned structuredContent this turn.
+ *  Accounting only: neutral, never changes the palette. */
+const STRUCTURED: PrivacyReceipt = {
+  ...RANKED,
+  structuredPayloads: [
+    { toolName: 'crm_lookup_customer', serverName: 'Kunden-CRM', bytes: 2048, hasOutputSchema: true },
+    { toolName: 'weather_now', serverName: 'Wetterdienst', bytes: 512, hasOutputSchema: false },
+  ],
 };
 
 describe('<PrivacyReceiptCard />', () => {
@@ -113,6 +134,103 @@ describe('<PrivacyReceiptCard />', () => {
     expect(root?.className).not.toMatch(/danger/);
   });
 
+  it('shows the masked-prompt summary chunk and fact row when spans exist', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={PROMPT_MASKED} />, {
+      locale: 'de',
+    });
+    expect(screen.getByText(/Privacy Shield/).textContent).toContain(
+      'Prompt: 3 maskiert',
+    );
+    expect(
+      screen.getByText('Maskierte PII in deiner Nachricht'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('3 (2 × person, 1 × email)')).toBeInTheDocument();
+  });
+
+  it('shows the masked-prompt explainer only when the row is present', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={PROMPT_MASKED} />, {
+      locale: 'de',
+    });
+    expect(screen.getByText(/durch Pseudonyme ersetzt/)).toBeInTheDocument();
+  });
+
+  it('renders an unknown open-set span type as plain text', () => {
+    const receipt: PrivacyReceipt = {
+      ...RANKED,
+      maskedPromptSpans: [{ type: 'idnum', detector: 'c1-gliner' }],
+    };
+    renderWithIntl(<PrivacyReceiptCard receipt={receipt} />, { locale: 'de' });
+    expect(screen.getByText('1 (1 × idnum)')).toBeInTheDocument();
+  });
+
+  it('renders byte-identically to today when maskedPromptSpans is absent', () => {
+    const { container } = renderWithIntl(
+      <PrivacyReceiptCard receipt={RANKED} />,
+      { locale: 'de' },
+    );
+    expect(
+      screen.queryByText('Maskierte PII in deiner Nachricht'),
+    ).not.toBeInTheDocument();
+    expect(container.textContent).not.toContain('Prompt:');
+    expect(container.textContent).not.toContain('Pseudonyme ersetzt');
+  });
+
+  it('treats an empty maskedPromptSpans array as absent', () => {
+    const receipt: PrivacyReceipt = { ...RANKED, maskedPromptSpans: [] };
+    renderWithIntl(<PrivacyReceiptCard receipt={receipt} />, { locale: 'de' });
+    expect(
+      screen.queryByText('Maskierte PII in deiner Nachricht'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/Privacy Shield/).textContent).not.toContain(
+      'Prompt:',
+    );
+  });
+
+  it('lists structured-output tools with server + schema token (#547/#569)', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={STRUCTURED} />, { locale: 'de' });
+    expect(screen.getByText('Strukturierte Ausgabe empfangen')).toBeInTheDocument();
+    expect(screen.getByText('crm_lookup_customer')).toBeInTheDocument();
+    expect(screen.getByText('Kunden-CRM')).toBeInTheDocument();
+    // Lume §8 — the schema state is a text token, not colour alone.
+    expect(screen.getByText('Output-Schema')).toBeInTheDocument();
+    expect(screen.getByText('kein Schema')).toBeInTheDocument();
+    // 2048 B -> 2.0 KB.
+    expect(screen.getByText('2.0 KB')).toBeInTheDocument();
+  });
+
+  it('shows the structured summary chunk when payloads exist', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={STRUCTURED} />, { locale: 'de' });
+    expect(screen.getByText(/Privacy Shield/).textContent).toContain(
+      '2 strukturierte Ergebnisse',
+    );
+  });
+
+  it('stays emerald for structured output — accounting is neutral, not a warning', () => {
+    const { container } = renderWithIntl(
+      <PrivacyReceiptCard receipt={STRUCTURED} />,
+      { locale: 'de' },
+    );
+    const root = container.querySelector('details');
+    expect(root?.className).toMatch(/success/);
+    expect(root?.className).not.toMatch(/danger/);
+    expect(root?.className).not.toMatch(/warning/);
+  });
+
+  it('omits the structured section when no tool returned structured output', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={RANKED} />, { locale: 'de' });
+    expect(
+      screen.queryByText('Strukturierte Ausgabe empfangen'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('treats an empty structuredPayloads array as absent', () => {
+    const receipt: PrivacyReceipt = { ...RANKED, structuredPayloads: [] };
+    renderWithIntl(<PrivacyReceiptCard receipt={receipt} />, { locale: 'de' });
+    expect(
+      screen.queryByText('Strukturierte Ausgabe empfangen'),
+    ).not.toBeInTheDocument();
+  });
+
   it('never leaks a PII-shaped value — the receipt carries only counts', () => {
     // The v4 receipt is PII-free by construction: counts and verb names
     // only. This pins the contract — if the schema ever regains a value
@@ -155,5 +273,57 @@ describe('summarisePrivacyReceipt()', () => {
     expect(summarisePrivacyReceipt(RANKED, t)).not.toContain(
       'summaryIdentityOnWire',
     );
+  });
+
+  it('adds the masked-prompt clause when prompt spans exist', () => {
+    expect(summarisePrivacyReceipt(PROMPT_MASKED, t)).toContain(
+      'summaryPromptMasked:3',
+    );
+  });
+
+  it('omits the masked-prompt clause when the field is absent or empty', () => {
+    expect(summarisePrivacyReceipt(RANKED, t)).not.toContain(
+      'summaryPromptMasked',
+    );
+    expect(
+      summarisePrivacyReceipt({ ...RANKED, maskedPromptSpans: [] }, t),
+    ).not.toContain('summaryPromptMasked');
+  });
+
+  it('adds the structured clause when payloads exist (#547/#569)', () => {
+    expect(summarisePrivacyReceipt(STRUCTURED, t)).toContain(
+      'summaryStructured:2',
+    );
+  });
+
+  it('omits the structured clause when the field is absent or empty', () => {
+    expect(summarisePrivacyReceipt(RANKED, t)).not.toContain(
+      'summaryStructured',
+    );
+    expect(
+      summarisePrivacyReceipt({ ...RANKED, structuredPayloads: [] }, t),
+    ).not.toContain('summaryStructured');
+  });
+});
+
+describe('formatMaskedPromptSpans()', () => {
+  it('groups spans by type in first-seen order', () => {
+    expect(formatMaskedPromptSpans(PROMPT_MASKED.maskedPromptSpans ?? [])).toBe(
+      '3 (2 × person, 1 × email)',
+    );
+  });
+
+  it('renders unknown open-set types verbatim', () => {
+    expect(
+      formatMaskedPromptSpans([{ type: 'idnum', detector: 'c1-gliner' }]),
+    ).toBe('1 (1 × idnum)');
+  });
+
+  it('never includes detector ids in the rendered value', () => {
+    const value = formatMaskedPromptSpans(
+      PROMPT_MASKED.maskedPromptSpans ?? [],
+    );
+    expect(value).not.toContain('c1-gliner');
+    expect(value).not.toContain('c0-regex');
   });
 });

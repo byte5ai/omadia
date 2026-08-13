@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useTranslations } from 'next-intl';
 
 import {
@@ -13,8 +14,13 @@ import {
   type SkillNode,
   type SkillVerdict,
 } from '../../_lib/agentBuilder';
-import { ApiError } from '../../_lib/api';
+import {
+  parseScanFailureCode,
+  redactProviderInternals,
+  supportDetail,
+} from '../../_lib/scanFailure';
 import { Field, inputCls, SaveButton } from '../../admin/builder/panels/InspectorControls';
+import { Button } from '../ui/Button';
 import { SkillCapabilityBindings } from './SkillCapabilityBindings';
 import { SkillVerdictBadge } from './SkillVerdictBadge';
 
@@ -59,6 +65,10 @@ export function SkillEditor({
   // only appeared once *something* had scanned it. Only exclude 'pending'
   // (a scan is already in flight for this exact model+prompt identity).
   const canRunDeepScan = severity !== 'pending';
+  // OM-26 — non-null when the deep scan FAILED and the middleware stored a
+  // machine code instead of an LLM judgment. A normal rationale is free text
+  // and parses to null, so the successful path is untouched.
+  const scanFailureCode = parseScanFailureCode(verdict?.llm?.rationale);
 
   async function acknowledge(): Promise<void> {
     setAckPending(true);
@@ -66,7 +76,7 @@ export function SkillEditor({
       const updated = await acknowledgeSkillVerdict(forkId ?? skill.id);
       setVerdict(updated);
     } catch (err) {
-      setError(err instanceof ApiError ? err.body : String(err));
+      setError(supportDetail(err));
     } finally {
       setAckPending(false);
     }
@@ -90,7 +100,7 @@ export function SkillEditor({
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     } catch (err) {
-      setError(err instanceof ApiError ? err.body : String(err));
+      setError(supportDetail(err));
     } finally {
       setScanPending(false);
     }
@@ -113,7 +123,7 @@ export function SkillEditor({
       });
       onSaved(updated);
     } catch (err) {
-      setError(err instanceof ApiError ? err.body : String(err));
+      setError(supportDetail(err));
     } finally {
       setPending(false);
     }
@@ -129,7 +139,7 @@ export function SkillEditor({
         a.click();
         URL.revokeObjectURL(url);
       })
-      .catch((err: unknown) => setError(err instanceof ApiError ? err.body : String(err)));
+      .catch((err: unknown) => setError(supportDetail(err)));
   }
 
   return (
@@ -137,24 +147,24 @@ export function SkillEditor({
       <div className="flex items-center gap-2">
         <SkillVerdictBadge severity={severity} />
         {canRunDeepScan && (
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => void runDeepScan()}
             disabled={scanPending}
-            className="rounded-md border border-[color:var(--border)] px-2 py-0.5 text-xs text-[color:var(--fg-muted)]"
           >
             {t('verdict.runDeepScan')}
-          </button>
+          </Button>
         )}
         {showWhy && !alreadyAcked && (
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => void acknowledge()}
             disabled={ackPending}
-            className="rounded-md border border-[color:var(--border)] px-2 py-0.5 text-xs text-[color:var(--fg-muted)]"
           >
             {t('verdict.acknowledge')}
-          </button>
+          </Button>
         )}
         {alreadyAcked && (
           <span className="text-xs text-[color:var(--fg-muted)]">
@@ -167,11 +177,37 @@ export function SkillEditor({
           {t('verdict.why', { codes: verdict.riskCodes.map(riskCodeLabel).join(', ') })}
         </p>
       )}
-      {verdict?.llm?.rationale && (
-        <p className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1.5 text-xs text-[color:var(--fg-muted)]">
-          {t('verdict.llmRationale', { rationale: verdict.llm.rationale })}
-        </p>
-      )}
+      {verdict?.llm?.rationale &&
+        (scanFailureCode ? (
+          /* OM-26 — a FAILED deep scan. The rationale is a machine code, never
+             a provider payload: the raw 401 body (with its `request_id`) used
+             to be interpolated straight into this paragraph. `auth` gets a
+             direct link to the page that fixes it, because "your key is
+             invalid" without a way to change the key is another dead end. */
+          <p className="rounded-md border border-[color:var(--warning)]/50 bg-[color:var(--warning)]/10 px-2 py-1.5 text-xs text-[color:var(--warning)]">
+            {t(`verdict.scanFailure.${scanFailureCode}`)}
+            {scanFailureCode === 'auth' ? (
+              <>
+                {' '}
+                <Link
+                  href="/admin/providers"
+                  className="underline underline-offset-2"
+                >
+                  {t('verdict.scanFailure.fixProviderLink')}
+                </Link>
+              </>
+            ) : null}
+          </p>
+        ) : (
+          <p className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1.5 text-xs text-[color:var(--fg-muted)]">
+            {/* Rows persisted BEFORE the server-side fix still hold the raw
+                provider payload, and nothing can un-persist them. Redact on
+                read so an old row cannot show a request id either. */}
+            {t('verdict.llmRationale', {
+              rationale: redactProviderInternals(verdict.llm.rationale),
+            })}
+          </p>
+        ))}
       {willFork && (
         <p className="rounded-md bg-[color:var(--accent)]/10 px-2 py-1 text-xs text-[color:var(--accent)]">
           {t('editor.forkNotice')}
@@ -196,20 +232,32 @@ export function SkillEditor({
           className={`${inputCls} font-mono text-xs`}
         />
       </Field>
-      {error && <p className="text-xs text-[color:var(--danger)]">{error}</p>}
+      {/* OM-26 — the raw server body is no longer the headline. The operator
+          gets an actionable sentence; the technical detail (already redacted of
+          request ids and key-shaped tokens by `supportDetail`) lives behind a
+          disclosure meant for a support thread. */}
+      {error && (
+        <div className="text-xs text-[color:var(--danger)]">
+          <p>{t('editor.actionFailed')}</p>
+          <details className="mt-1">
+            <summary className="cursor-pointer text-[color:var(--fg-muted)]">
+              {t('editor.supportDetails')}
+            </summary>
+            <pre className="mt-1 whitespace-pre-wrap break-all text-[color:var(--fg-muted)]">
+              {error}
+            </pre>
+          </details>
+        </div>
+      )}
       <div className="flex gap-2">
         <SaveButton
           onClick={() => void save()}
           pending={pending}
           label={willFork ? t('editor.forkAndSave') : t('editor.save')}
         />
-        <button
-          type="button"
-          onClick={download}
-          className="rounded-md border border-[color:var(--border)] px-3 py-1.5 text-sm text-[color:var(--fg-muted)]"
-        >
+        <Button variant="secondary" onClick={download}>
           {t('editor.export')}
-        </button>
+        </Button>
       </div>
     </div>
   );

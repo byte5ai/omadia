@@ -1,18 +1,66 @@
 /**
- * M1 library code for #309 Shape-3 OpenClaw.
+ * Standalone tool dispatcher — the entry point that is NOT the Orchestrator turn
+ * loop. Serves the loopback MCP server (subscription-CLI provider), the CLI
+ * bridge, and CLI sub-agents; it is also the path any future public MCP endpoint
+ * (#542) would dispatch through.
  *
- * This standalone dispatcher executes tools outside the Orchestrator turn loop.
- * It intentionally replicates only the native-handler and DomainTool branches
- * of `Orchestrator.dispatchToolInner`; kernel-tool branches plus privacy/trace
- * seams are deferred to M2.
+ * It replicates the native-handler and DomainTool branches of
+ * `Orchestrator.dispatchToolInner`, and — since #542's prerequisite work — the
+ * privacy data-plane boundary and raw-result capture that `dispatchToolDeadlined`
+ * applies around them. See the SEAM note at the bottom of this file for what is
+ * closed and what is still deliberately orchestrator-only.
  */
 
+import { isInternExemptTool } from './privacyInternPolicy.js';
+import { isWriteCapableTool } from '@omadia/plugin-api';
+import type { WriteCapability } from '@omadia/plugin-api';
+import type { PrivacyTurnHandle } from './privacyHandle.js';
 import type { DomainTool } from './tools/domainQueryTool.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
+import { sortByToolName } from './toolOrdering.js';
+import { turnContext } from './turnContext.js';
+import { runWithDispatchCaller } from './toolCallerContext.js';
+import { runWithIdempotencyScope } from './toolIdempotency.js';
+import type { ToolIdempotencyStore } from './toolIdempotency.js';
+
+/**
+ * Who authored a `ToolDispatchResult.content`, and therefore whether it had to
+ * cross the privacy boundary.
+ *
+ *  - `'tool'`       — produced by a tool handler: its return value, or the
+ *                     message of the exception it threw. UNTRUSTED. It carries
+ *                     whatever the handler (and the ORM/driver beneath it) chose
+ *                     to put in it, so it must be masked before it reaches an
+ *                     untrusted caller.
+ *  - `'dispatcher'` — produced by this service's own guards (unknown tool,
+ *                     plugin not ready). Contains only the tool name the caller
+ *                     itself supplied and the owning plugin id; never tool data,
+ *                     so there is nothing for masking to have crossed.
+ *
+ * A consumer that gates on this MUST treat an ABSENT value as `'tool'`: a
+ * dispatcher that predates this field, or a future one that forgets it, has to
+ * fail toward "must be masked".
+ */
+export type ToolDispatchContentOrigin = 'tool' | 'dispatcher';
 
 export interface ToolDispatchResult {
   readonly content: string;
   readonly isError?: boolean;
+  /** See `ToolDispatchContentOrigin`. Absent ⇒ treat as `'tool'`. */
+  readonly origin?: ToolDispatchContentOrigin;
+  /**
+   * This body came from the idempotency cache; no handler ran for THIS request.
+   *
+   * Load-bearing for the public endpoint's fail-closed privacy assertion, which
+   * demands that masking actually ran for the current dispatch. A replay
+   * satisfies that by construction and cannot satisfy it by observation — the
+   * gate is built per request, so `masked()` is false however well the cached
+   * body was masked when it was produced. Without this flag the endpoint
+   * discards a legitimate cached success and answers "privacy masking did not
+   * run", which is precisely the wrong answer to a retried write: the caller
+   * cannot tell whether the mutation committed.
+   */
+  readonly replayed?: boolean;
 }
 
 export interface DispatchableToolSpec {
@@ -23,6 +71,77 @@ export interface DispatchableToolSpec {
     readonly properties: Record<string, unknown>;
     readonly required?: readonly string[];
   };
+}
+
+/**
+ * Identity of whoever asked for this dispatch.
+ *
+ * The dispatch path historically carried NO caller identity at all — no tenant,
+ * no user, no principal — which is fine for the loopback bridge (the caller is
+ * the local CLI, acting as the session's own user) but is the missing seam for a
+ * public endpoint, where every call arrives with an API key or token that has to
+ * be attributable and scope-checked.
+ *
+ * Optional by construction: the loopback and CLI-sub-agent paths pass nothing and
+ * behave exactly as before. When #438/#439's `harness-api-key-auth` lands, the
+ * public endpoint fills this in from the verified credential; nothing downstream
+ * has to change shape again.
+ *
+ * NOTE: this is a CARRIER, not an enforcement point. `ToolDispatchService` does
+ * not currently authorize against `scopes` — a per-principal tool allowlist is
+ * the public endpoint's own job (#542) and belongs where the allowlist policy
+ * lives, not here. Do not read the presence of this field as "the dispatch path
+ * is now access-controlled".
+ */
+export interface ToolDispatchCallerContext {
+  /** Stable id of the acting principal (API-key id, service account, user id). */
+  readonly principal?: string;
+  /** Scopes/permissions the credential carries, for the caller's own policy check. */
+  readonly scopes?: readonly string[];
+  /** Tenant the call is acting within. */
+  readonly tenantId?: string;
+  /** End user on whose behalf the call runs, when distinct from `principal`. */
+  readonly userId?: string;
+  /** Correlation id for logs/traces. */
+  readonly requestId?: string;
+}
+
+/** Per-dispatch options. All optional — omitting the whole argument is legacy behaviour. */
+export interface ToolDispatchOptions {
+  readonly caller?: ToolDispatchCallerContext;
+  /**
+   * Caller-supplied idempotency key. Applied ONLY to write-capable tools (see
+   * `isWriteCapableTool`): two dispatches sharing a key execute the tool at most
+   * once while the record is live, and the MCP transport layer suppresses its
+   * transient retry for the call.
+   *
+   * Read tools ignore this: deduping reads would serve stale data, and the
+   * flaky-proxy retry mitigation must stay in force for them.
+   */
+  readonly idempotencyKey?: string;
+  /**
+   * Caller's own admissibility check, run on a freshly-produced result BEFORE
+   * the idempotency store retains it. Throw to reject.
+   *
+   * Exists because "may this body be returned" and "may this body be CACHED"
+   * are the same question, and asking it only at the caller answers it too
+   * late. The public MCP endpoint asserts that privacy masking actually ran; it
+   * does so after `dispatch()` returns, by which point the store has already
+   * retained the result. An unmasked body was therefore cached, the first
+   * request correctly refused — and the retry replayed the cached RAW body,
+   * flagged `replayed` and so exempt from the very assertion that had just
+   * rejected it.
+   *
+   * Running it inside the store's `exec` makes a rejected result throw before
+   * retention, and the store does not keep a rejected outcome. That also covers
+   * the concurrent duplicate, which collapses onto the same execution and would
+   * otherwise be handed the poisoned body before any after-the-fact
+   * invalidation could run.
+   *
+   * Applied on the non-idempotent path too, so the check does not depend on
+   * whether a caller happened to send a key.
+   */
+  readonly validateResult?: (result: ToolDispatchResult) => void;
 }
 
 export class ToolDispatchService {
@@ -36,6 +155,51 @@ export class ToolDispatchService {
        *  flow via `registerDomainTool`) are reachable. Takes precedence over the
        *  static list when present. */
       readonly domainToolsProvider?: () => readonly DomainTool[];
+      /**
+       * Issue #474 — per-plugin tool-readiness gate, mirroring
+       * `OrchestratorOptions.isPluginToolsReady`. This dispatcher is a
+       * SEPARATE entry point from `Orchestrator.dispatchTool` (used by the
+       * subscription-CLI provider), so the gate must be repeated here too —
+       * relying on `Orchestrator`'s own check alone would leave this path
+       * ungated. Absent ⇒ every plugin's tools are always available.
+       */
+      readonly isPluginToolsReady?: (agentId: string) => boolean;
+      /**
+       * #542 prerequisite — the privacy data-plane boundary for this path.
+       *
+       * The chat path reads its handle from `turnContext`, which this dispatcher
+       * runs entirely outside of: the loopback MCP server and any public endpoint
+       * are not inside `turnContext.run(...)`, so `turnContext.current()` is
+       * `undefined` and a tool result would reach the caller with PII intact.
+       * That was the open half of the privacy seam.
+       *
+       * Resolution order is explicit-dep first, ambient turn context second, so
+       * a host that DOES dispatch from inside a turn still inherits that turn's
+       * handle. Absent from both ⇒ no privacy provider installed and results flow
+       * through unchanged, matching the orchestrator.
+       */
+      readonly privacy?: () => PrivacyTurnHandle | undefined;
+      /**
+       * #542 prerequisite — raw-result capture (the orchestrator's Phase C.2
+       * `captureRawToolResult`). Receives the tool result BEFORE masking, so a
+       * trace/audit consumer sees ground truth while the caller gets the digest.
+       * Must not throw; a throw is caught and logged rather than failing the call.
+       *
+       * Receives the dispatch's caller context so an audit consumer can attribute
+       * the result to the principal that caused it.
+       */
+      readonly captureRawToolResult?: (
+        name: string,
+        result: string,
+        caller?: ToolDispatchCallerContext,
+      ) => void;
+      /**
+       * #542 prerequisite — dedupe store for write-capable dispatches. Absent ⇒
+       * `idempotencyKey` is inert and every dispatch executes (legacy behaviour).
+       * Process-local: see `toolIdempotency.ts` for the exact limits of the
+       * guarantee — it is NOT distributed idempotency.
+       */
+      readonly idempotency?: ToolIdempotencyStore;
     },
   ) {}
 
@@ -43,27 +207,287 @@ export class ToolDispatchService {
     return this.deps.domainToolsProvider?.() ?? this.deps.domainTools ?? [];
   }
 
-  async dispatch(name: string, input: unknown): Promise<ToolDispatchResult> {
+  /** Issue #474 — see `Orchestrator.isToolAvailable`; kept in sync with it. */
+  private isToolAvailable(agentId: string | undefined): boolean {
+    if (agentId === undefined) return true;
+    if (!this.deps.isPluginToolsReady) return true;
+    return this.deps.isPluginToolsReady(agentId);
+  }
+
+  /** Explicit dep wins; ambient turn handle is the fallback. */
+  private privacyHandle(): PrivacyTurnHandle | undefined {
+    return this.deps.privacy?.() ?? turnContext.current()?.privacyHandle;
+  }
+
+  /** Declared write capabilities for `name`, from whichever carrier owns it. */
+  private writeCapabilities(name: string): readonly WriteCapability[] | undefined {
+    const native = this.deps.nativeTools.get(name);
+    if (native?.writeCapabilities !== undefined) return native.writeCapabilities;
+    return this.domainTools().find((t) => t.name === name)?.writeCapabilities;
+  }
+
+  /** True when dispatching `name` may mutate data. */
+  isWriteCapable(name: string): boolean {
+    return isWriteCapableTool(this.writeCapabilities(name));
+  }
+
+  async dispatch(
+    name: string,
+    input: unknown,
+    options?: ToolDispatchOptions,
+  ): Promise<ToolDispatchResult> {
+    const caller = options?.caller;
+    // Publish caller identity for every layer beneath this dispatch. Omitted
+    // entirely when the entry point supplied none, so the loopback path runs with
+    // an empty store exactly as before.
+    return caller === undefined
+      ? this.dispatchIdempotent(name, input, options)
+      : runWithDispatchCaller(caller, () =>
+          this.dispatchIdempotent(name, input, options),
+        );
+  }
+
+  private async dispatchIdempotent(
+    name: string,
+    input: unknown,
+    options?: ToolDispatchOptions,
+  ): Promise<ToolDispatchResult> {
+    const key = options?.idempotencyKey;
+    const store = this.deps.idempotency;
+    // Idempotency applies to write-capable tools only. A read tool keeps the
+    // transport-retry mitigation and never replays a cached body.
+    if (key !== undefined && store !== undefined && this.isWriteCapable(name)) {
+      const outcome = await store.run(
+        key,
+        name,
+        input,
+        async () => {
+          // The scope must wrap the EXECUTION, not the cache lookup, so the MCP
+          // transport layer beneath the handler can read it and suppress its retry.
+          const produced = await runWithIdempotencyScope(
+            { key, toolName: name, exactlyOnce: true },
+            () => this.dispatchInner(name, input, options),
+          );
+          // INSIDE the exec on purpose — see `validateResult`. A throw here
+          // happens before the store retains anything, so a body the caller
+          // would refuse can never be replayed back to it later, and a
+          // concurrent duplicate collapsing onto this execution inherits the
+          // rejection rather than the body.
+          options?.validateResult?.(produced);
+          return produced;
+        },
+        // The trust boundary. `caller.principal` is the API-key id on the public
+        // MCP path, so two keys cannot collide on a guessable key like
+        // `invoice-42` and replay each other's writes. Absent caller ⇒ the
+        // in-process chat/loopback path, which is one trusted principal and
+        // shares a namespace exactly as before.
+        options?.caller?.principal ?? '',
+      );
+      // Mark a cache hit so a downstream fail-closed privacy check can tell
+      // "no handler ran for this request" from "a handler ran and skipped
+      // masking". See `ToolDispatchResult.replayed`.
+      return outcome.replayed ? { ...outcome.result, replayed: true } : outcome.result;
+    }
+    const produced = await this.dispatchInner(name, input, options);
+    // Same check on the path with no idempotency key, so a caller's
+    // admissibility rule does not silently depend on whether the request
+    // happened to carry one.
+    options?.validateResult?.(produced);
+    return produced;
+  }
+
+  private async dispatchInner(
+    name: string,
+    input: unknown,
+    options?: ToolDispatchOptions,
+  ): Promise<ToolDispatchResult> {
     const nativeRegistration = this.deps.nativeTools.get(name);
     // Mirrors Orchestrator ordering: plugin/native handlers win first.
     if (nativeRegistration?.handler) {
+      if (!this.isToolAvailable(nativeRegistration.agentId)) {
+        return {
+          content: `Error: tool \`${name}\` is unavailable — plugin \`${nativeRegistration.agentId}\` has not completed its connection/auth setup.`,
+          isError: true,
+          origin: 'dispatcher',
+        };
+      }
       try {
-        return { content: await nativeRegistration.handler(input) };
+        const raw = await nativeRegistration.handler(input);
+        return { content: await this.afterDispatch(name, raw, options), origin: 'tool' };
       } catch (error) {
-        return { content: this.errMsg(error), isError: true };
+        return {
+          content: await this.maskErrorText(name, this.errMsg(error)),
+          isError: true,
+          origin: 'tool',
+        };
       }
     }
 
     const domainTool = this.domainTools().find((t) => t.name === name);
     if (domainTool) {
+      // Issue #474 follow-up — same gate as the native-handler branch above;
+      // DomainTools carry an `agentId` too and were previously dispatchable
+      // through this bridge regardless of the owning plugin's readiness.
+      if (!this.isToolAvailable(domainTool.agentId)) {
+        return {
+          content: `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`,
+          isError: true,
+          origin: 'dispatcher',
+        };
+      }
       try {
-        return { content: await domainTool.handle(input) };
+        const raw = await domainTool.handle(input);
+        return { content: await this.afterDispatch(name, raw, options), origin: 'tool' };
       } catch (error) {
-        return { content: this.errMsg(error), isError: true };
+        return {
+          content: await this.maskErrorText(name, this.errMsg(error)),
+          isError: true,
+          origin: 'tool',
+        };
       }
     }
 
-    return { content: `Error: unknown tool \`${name}\`.`, isError: true };
+    return { content: `Error: unknown tool \`${name}\`.`, isError: true, origin: 'dispatcher' };
+  }
+
+  /**
+   * Post-dispatch pipeline: raw capture, then the privacy data-plane boundary.
+   *
+   * Ordering mirrors `Orchestrator.dispatchToolDeadlined` deliberately, because a
+   * divergence here is a privacy divergence:
+   *   1. raw capture — trace/audit consumers must see ground truth
+   *   2. intern-exemption — the agent's own infra tools are never masked
+   *   3. operator bypass (+ receipt entry) — explicit opt-out stays auditable
+   *   4. intern — the caller receives the identity-free digest
+   */
+  private async afterDispatch(
+    name: string,
+    result: string,
+    options?: ToolDispatchOptions,
+  ): Promise<string> {
+    const capture = this.deps.captureRawToolResult;
+    if (capture !== undefined && typeof result === 'string') {
+      try {
+        capture(name, result, options?.caller);
+      } catch (err) {
+        console.warn(
+          `[toolDispatchService:${name}] captureRawToolResult threw — continuing without capture:`,
+          err,
+        );
+      }
+    }
+
+    const privacy = this.privacyHandle();
+    if (privacy === undefined || typeof result !== 'string') return result;
+
+    // Interning-exemption: the agent's own infrastructure/self tools (memory,
+    // stored-process CRUD, self-produced meta output) are never interned —
+    // masking them blinds the agent to its own operational state. Same
+    // auditable allowlist the orchestrator uses.
+    if (isInternExemptTool(name)) return result;
+
+    // Operator-owned per-plugin bypass (Slice 2.5). Raw passthrough, but the
+    // receipt entry keeps it transparent.
+    const bypass = privacy.checkBypass(name);
+    if (bypass !== undefined) {
+      try {
+        await privacy.recordBypassedTool({
+          toolName: name,
+          pluginId: bypass.pluginId,
+          reason: 'operator_setting',
+          bytes: Buffer.byteLength(result, 'utf8'),
+        });
+      } catch (err) {
+        console.warn(
+          `[toolDispatchService:${name}] privacy.recordBypassedTool threw — bypass still applied:`,
+          err,
+        );
+      }
+      return result;
+    }
+
+    try {
+      const v4 = await privacy.internToolResultV4({
+        toolName: name,
+        rawResult: result,
+      });
+      return v4.digestText;
+    } catch (err) {
+      // Fail-OPEN, matching `Orchestrator.dispatchToolDeadlined` exactly. This is
+      // parity, not an endorsement: for a PUBLIC endpoint a masking failure that
+      // emits raw rows is a leak, and a fail-CLOSED policy for untrusted callers
+      // is worth its own decision (#542) — but making this path stricter than the
+      // chat path would be a silent behaviour change beyond closing the seam.
+      console.warn(
+        `[toolDispatchService:${name}] privacy.internToolResultV4 threw — sending raw result:`,
+        err,
+      );
+      return result;
+    }
+  }
+
+  /**
+   * The masking half of `afterDispatch`, applied to the message of an exception
+   * a tool handler THREW.
+   *
+   * ─── Why the error path needed this at all ──────────────────────────────────
+   *
+   * `afterDispatch` ran only on the success path, so a throwing handler took a
+   * branch that skipped the entire privacy boundary and returned the raw
+   * exception text. Handler exceptions are not sanitized strings: an ORM echoes
+   * the failing row, a driver echoes the bound query parameters. `Fault: Invalid
+   * field 'x' on record {'id':42,'name':'Jane Doe','email':'jane@acme.de'}` is a
+   * perfectly ordinary Odoo error, and it went to the caller verbatim.
+   *
+   * ─── Why NOT just call `afterDispatch` ──────────────────────────────────────
+   *
+   * Two of its four steps are wrong for an exception, and reusing the whole
+   * chain would have imported both:
+   *
+   *  - **Raw capture.** `captureRawToolResult` is documented as receiving "the
+   *    tool result", and its consumers (trace/audit, and on the chat path the
+   *    Knowledge-Graph ingest) treat it as business data. A driver stack trace
+   *    is not a tool result; feeding one in would write connection strings and
+   *    query fragments into consumers built for row data.
+   *  - **Operator bypass.** `_privacy_mode: bypass` is consent about a specific
+   *    plugin's DECLARED output shape — an operator who decided masking mangles
+   *    a tool's report did not thereby consent to arbitrary exception text,
+   *    which can carry any row the driver happened to be holding. Emitting a
+   *    `recordBypassedTool` receipt (with a byte count, as if a result had been
+   *    disclosed) would also mis-describe what actually happened.
+   *
+   * What DOES transfer is the intern exemption — a self/infra tool's failure is
+   * the agent's own operational state, exactly the case the allowlist exists for
+   * — and `internToolResultV4` itself. Those two run here, in that order.
+   *
+   * Fail-OPEN on a masking throw, matching `afterDispatch` and the chat path.
+   * That is safe for the public endpoint and only for a structural reason: the
+   * fail-closed gate in `publicMcpPrivacy.ts` never lets `internToolResultV4`
+   * throw (it records the failure and returns a placeholder), and
+   * `PublicMcpServer` refuses any result the gate did not mask. Do not read this
+   * branch as "raw error text may reach an untrusted caller".
+   */
+  private async maskErrorText(name: string, message: string): Promise<string> {
+    const privacy = this.privacyHandle();
+    // No privacy provider installed ⇒ results flow through unchanged here too,
+    // matching `afterDispatch`. The public endpoint refuses to call at all in
+    // this configuration (`requirePrivacyMasking`).
+    if (privacy === undefined) return message;
+    if (isInternExemptTool(name)) return message;
+
+    try {
+      const v4 = await privacy.internToolResultV4({
+        toolName: name,
+        rawResult: message,
+      });
+      return v4.digestText;
+    } catch (err) {
+      console.warn(
+        `[toolDispatchService:${name}] privacy.internToolResultV4 threw while masking an ERROR message — sending it raw:`,
+        err,
+      );
+      return message;
+    }
   }
 
   listDispatchableToolSpecs(): readonly DispatchableToolSpec[] {
@@ -73,6 +497,11 @@ export class ToolDispatchService {
       if (!registration.spec) {
         // Handler-only registrations remain dispatchable by name, but cannot be
         // advertised without a stable tool spec.
+        continue;
+      }
+      // Issue #474 — same gate as `dispatch()`; a not-yet-ready plugin's
+      // tools are excluded from the advertised list too.
+      if (!this.isToolAvailable(registration.agentId)) {
         continue;
       }
 
@@ -88,6 +517,10 @@ export class ToolDispatchService {
       if (advertised.has(tool.name)) {
         continue;
       }
+      // Issue #474 follow-up — same gate as the native-tool loop above.
+      if (!this.isToolAvailable(tool.agentId)) {
+        continue;
+      }
       advertised.set(tool.name, {
         name: tool.spec.name,
         description: tool.spec.description,
@@ -95,7 +528,15 @@ export class ToolDispatchService {
       });
     }
 
-    return Array.from(advertised.values());
+    // W0-3 — sort by name so every consumer of this list (the loopback MCP
+    // server, the CLI bridge) advertises a byte-stable order. Both source
+    // iterations above are Map-ordered — plugin load order and `created_at`
+    // row order — which differ across machines and deploys.
+    //
+    // Collision resolution is NOT affected: which spec wins a duplicate name
+    // was already decided by the `advertised.has(...)` guard above (native
+    // tools first), and sorting only reorders the surviving entries.
+    return sortByToolName(Array.from(advertised.values()));
   }
 
   private errMsg(error: unknown): string {
@@ -103,8 +544,35 @@ export class ToolDispatchService {
   }
 }
 
-// SEAM (M2): kernel-tool branches (knowledge_graph, chat_participants,
-// ask_user_choice, suggest_follow_ups, find_free_slots, book_meeting,
-// read_attachment) and scoped-memory shadowing, plus privacy interning /
-// trace capture, are intentionally NOT replicated here — see
-// Orchestrator.dispatchToolInner.
+// SEAM — divergence from `Orchestrator.dispatchToolInner` /
+// `dispatchToolDeadlined`, kept current deliberately.
+//
+// CLOSED (#542 prerequisite): the privacy data-plane boundary — intern-exemption,
+// operator bypass with its receipt entry, and `internToolResultV4` masking — plus
+// raw-result capture, now run on this path in the same order as the chat path. A
+// caller reaching tools here no longer bypasses the PII masking chat enforces.
+// Caller identity is carried by `ToolDispatchCallerContext` (a carrier, not an
+// enforcement point — see its docs).
+//
+// CLOSED (W4): the ERROR path. A thrown handler's message used to skip the whole
+// boundary above; it now goes through `maskErrorText` (intern-exemption +
+// `internToolResultV4`, deliberately WITHOUT raw capture or the operator bypass —
+// see that method for why). This is a DIVERGENCE from the chat path, which still
+// lets a handler's exception propagate to the turn loop unmasked, and it is
+// intentional: the chat path's reader is the operator, this path's reader may be
+// a third party over HTTP. Every result now also carries `origin`, so a consumer
+// can tell handler-authored content (must have been masked) from this service's
+// own refusal strings (nothing to mask).
+//
+// STILL ORCHESTRATOR-ONLY, because each needs turn-scoped state this path has no
+// access to (an unconditional copy would throw or silently no-op):
+//   - kernel-tool branches: scoped-memory shadowing, knowledge_graph,
+//     query_dataset, chat_participants, ask_user_choice, suggest_follow_ups,
+//     read_attachment, find_free_slots, book_meeting
+//   - `v4_*` verb/render tool routing via `privacy.runV4Tool` (needs the turn's
+//     data-plane engine; here such a name resolves to "unknown tool")
+//   - sub-agent dataset bridging (`subAgentDatasetSink` / `subAgentResultV4`)
+//     and the Slice-2.5 sub-agent bypass flag
+//   - MCP → Knowledge-Graph ingestion (needs `knowledgeGraph` + turn user id)
+//   - canvas sentinel tap (`canvasSentinelSink`)
+//   - the W0-2 per-tool dispatch deadline and its late-result firewall

@@ -23,6 +23,7 @@ import { AutoPromotedBanner } from '../_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from '../_components/chat/CaptureDisclosure';
 import { ConfirmDialog } from '../_components/ConfirmDialog';
 import { DelegatedAnswerCard } from '../_components/chat/DelegatedAnswerCard';
+import { DirectLineStickyBanner } from '../_components/chat/DirectLineStickyBanner';
 import { NudgeCard, parseNudgeBlock } from '../_components/chat/NudgeCard';
 import {
   McpAuthRequiredCard,
@@ -35,9 +36,11 @@ import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
 import { Markdown } from '../_components/Markdown';
 import { resetChatSession, steerActiveTurn } from '../_lib/api';
+import { isSendKey } from '../_lib/composerKeys';
 import {
   deriveTitle,
   newSessionId,
+  stripStaleInteractives,
   type ChatSession,
   type DiagramAttachment,
   type OutgoingFileAttachment,
@@ -48,11 +51,23 @@ import {
   type ToolEvent,
 } from '../_lib/chatSessions';
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
-import { useStreamStore } from '../_lib/streamStore';
+import { dismissSeenTurns, useStreamStore } from '../_lib/streamStore';
 import { ChoiceCard } from '../_components/ChoiceCard';
+import { McpInputCard } from '../_components/chat/McpInputCard';
+import { DevJobChatCard } from '../_components/devjobs/DevJobChatCard';
+import { parseDevJobStartResult } from '../_components/devjobs/devJobChatCardState';
+import { TaskChatCard } from '../_components/tasks/TaskChatCard';
+import {
+  isTaskStartToolName,
+  parseTaskStartResult,
+} from '../_components/tasks/taskChatCardState';
 import { KgWalkPane } from '../_components/KgWalkPane';
 import { PlanDagPane } from '../_components/PlanDagPane';
-import type { KgWalkPayload, PlanSnapshot } from '../_lib/chatSessions';
+import type {
+  DirectLineSessionState,
+  KgWalkPayload,
+  PlanSnapshot,
+} from '../_lib/chatSessions';
 
 /**
  * Dev-only KG-walk fixture. Rendered in the floating pane when the URL carries
@@ -177,7 +192,7 @@ export default function ChatPage(): React.ReactElement {
     renameSession,
     setActive,
     clearMessages,
-    mutateActive,
+    mutateById,
   } = useChatSessionsCtx();
   const streamStore = useStreamStore();
   const sending = streamStore.isActive(activeId);
@@ -195,6 +210,18 @@ export default function ChatPage(): React.ReactElement {
     }
     return kgMockEnabled ? MOCK_KG_WALK : null;
   }, [activeSession.messages, kgMockEnabled]);
+
+  // #445 — the sticky Direct-Line binding = whatever the most recent carrier
+  // says. The server stamps EVERY turn while the feature is on (including
+  // `{active:false}`), so scanning back to the newest carrier and trusting it
+  // is what keeps the banner from outliving the binding it describes.
+  const activeDirectLine = useMemo<DirectLineSessionState | null>(() => {
+    for (let i = activeSession.messages.length - 1; i >= 0; i -= 1) {
+      const m = activeSession.messages[i];
+      if (m?.directLineSession) return m.directLineSession;
+    }
+    return null;
+  }, [activeSession.messages]);
 
   // The live plan surfaced in the left pane = the most recent assistant message
   // carrying a plan snapshot (re-emitted on every step change / replan).
@@ -233,7 +260,7 @@ export default function ChatPage(): React.ReactElement {
   // the user can re-save with their own classification.
   const clearAutoPromoted = useCallback(
     (messageId: string): void => {
-      mutateActive((session) => {
+      mutateById(activeId, (session) => {
         const nextMessages = session.messages.map((m) => {
           if (m.id !== messageId) return m;
           const { autoPromotedMkId: _drop, ...rest } = m;
@@ -242,7 +269,7 @@ export default function ChatPage(): React.ReactElement {
         return { ...session, messages: nextMessages, updatedAt: Date.now() };
       });
     },
-    [mutateActive],
+    [mutateById, activeId],
   );
 
   const send = useCallback(
@@ -270,21 +297,14 @@ export default function ChatPage(): React.ReactElement {
         streaming: true,
       };
 
-      mutateActive((session) => {
-        if (session.id !== targetSessionId) return session;
+      mutateById(targetSessionId, (session) => {
         const isFirst = session.messages.length === 0;
-        // Strip pendingUserChoice AND followUpOptions from older assistant
-        // messages so the button rows disappear as soon as the user commits
-        // to a choice or types a fresh message.
-        const cleanedMessages = session.messages.map((m) => {
-          if (!m.pendingUserChoice && !m.followUpOptions) return m;
-          const {
-            pendingUserChoice: _dropChoice,
-            followUpOptions: _dropFollowUps,
-            ...rest
-          } = m;
-          return rest;
-        });
+        // Strip pendingUserChoice, pendingMcpInput AND followUpOptions from
+        // older assistant messages so the button rows / input forms disappear as
+        // soon as the user commits to a choice or types a fresh message. Lives
+        // in `chatSessions.ts` so it is actually covered by tests — see
+        // `stripStaleInteractives`.
+        const cleanedMessages = stripStaleInteractives(session.messages);
         return {
           ...session,
           title: isFirst ? deriveTitle(trimmed) : session.title,
@@ -319,7 +339,7 @@ export default function ChatPage(): React.ReactElement {
       sending,
       hydrating,
       activeId,
-      mutateActive,
+      mutateById,
       streamStore,
       activeSession.messages.length,
       selectedAgentSlug,
@@ -373,14 +393,17 @@ export default function ChatPage(): React.ReactElement {
     };
   }, [steerNotice]);
 
+  // OM-21/37: plain Enter sends, matching every other composer in the app.
+  // ⌘/Ctrl+Enter stays an accepted alias (it was the only documented shortcut
+  // here), Shift+Enter falls through to the browser's own newline, and an
+  // in-flight IME composition never sends — see `isSendKey`.
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-      event.preventDefault();
-      if (sending) {
-        void steer();
-      } else {
-        send();
-      }
+    if (!isSendKey(event)) return;
+    event.preventDefault();
+    if (sending) {
+      void steer();
+    } else {
+      send();
     }
   };
 
@@ -437,8 +460,30 @@ export default function ChatPage(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSession.messages.length, resetPending]);
 
+  // Every transition that changes which session is active has to run the
+  // dismissal rule, not just tab clicks — otherwise the tab being left keeps a
+  // `done` record and immediately flags itself as unread (issue #286).
   const handleClose = (id: string): void => {
+    // The tab is going away, so no UI can ever surface this record again.
+    // Drop it outright rather than leaving it to occupy one of the store's 12
+    // slots until GC — a run of closes could otherwise evict a still-visible
+    // unread record early. This is display-only; it does not abort the stream.
+    streamStore.dismiss(id);
     void deleteSession(id);
+  };
+
+  const handleCreate = (): void => {
+    // Creating a chat switches away from the active tab exactly like selecting
+    // another one does, so the same read semantics apply.
+    dismissSeenTurns(streamStore, activeId);
+    createSession();
+  };
+
+  // Switching tabs marks a seen background answer as read (issue #286). The
+  // tab being LEFT is the one that matters — see `dismissSeenTurns`.
+  const handleSelect = (id: string): void => {
+    dismissSeenTurns(streamStore, activeId, id);
+    setActive(id);
   };
 
   const canReset =
@@ -449,8 +494,8 @@ export default function ChatPage(): React.ReactElement {
       <ChatTabs
         sessions={sessions}
         activeId={activeId}
-        onSelect={setActive}
-        onCreate={createSession}
+        onSelect={handleSelect}
+        onCreate={handleCreate}
         onClose={handleClose}
         onRename={(id, title) => {
           void renameSession(id, title);
@@ -481,6 +526,7 @@ export default function ChatPage(): React.ReactElement {
               KG-walk (indigo) auto-opens the right pane on KG access; Plan (sky)
               auto-opens the left pane on plan fetch/extend. Both default ON. */}
           <div className="flex flex-wrap items-center gap-2">
+            {/* eslint-disable-next-line no-restricted-syntax -- role="switch" toggle pill (stateful), not a §4.2 Button candidate */}
             <button
               type="button"
               role="switch"
@@ -506,6 +552,7 @@ export default function ChatPage(): React.ReactElement {
                 ].join(' ')}
               />
             </button>
+            {/* eslint-disable-next-line no-restricted-syntax -- role="switch" toggle pill (stateful), not a §4.2 Button candidate */}
             <button
               type="button"
               role="switch"
@@ -552,8 +599,7 @@ export default function ChatPage(): React.ReactElement {
               streamStore.patch(activeId, { agentUnavailableSlug: undefined });
               // Drop the pinned snapshot in the local session so the
               // header picker becomes available again for the next turn.
-              mutateActive((s) => {
-                if (s.id !== activeId) return s;
+              mutateById(activeId, (s) => {
                 const { snapshot: _drop, ...rest } = s;
                 return rest;
               });
@@ -607,6 +653,17 @@ export default function ChatPage(): React.ReactElement {
 
       <footer className="border-t border-[color:var(--border)] bg-[color:var(--bg-elevated)]/85 px-6 py-4 backdrop-blur">
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
+          {/* #445 — persistent "you are talking to X" indicator, directly above
+              the composer. Exits via the normal turn path (no new endpoint). */}
+          {activeDirectLine && (
+            <DirectLineStickyBanner
+              session={activeDirectLine}
+              onExit={() => {
+                send('#end');
+              }}
+              disabled={sending || hydrating}
+            />
+          )}
           {/* Mid-turn steering hint / feedback — only while a turn streams. */}
           {sending && (
             <div className="flex items-center gap-2 text-[11px]">
@@ -629,6 +686,7 @@ export default function ChatPage(): React.ReactElement {
           {/* §5.3 Spotlight: the composer is the stage — radial accent glow
               behind it, three-stop showcase glow on the focused input. */}
           <div className="lume-spotlight-stage flex items-end gap-2">
+            {/* eslint-disable-next-line no-restricted-syntax -- icon-only composer reset chrome, not a §4.2 Button candidate */}
             <button
               type="button"
               onClick={requestReset}
@@ -653,6 +711,7 @@ export default function ChatPage(): React.ReactElement {
             />
             {sending ? (
               <>
+                {/* eslint-disable-next-line no-restricted-syntax -- warning-outline steer action; §10 forbids a warning Button variant and mapping to danger/secondary would mis-signal caution (documented §2.6 exception) */}
                 <button
                   type="button"
                   onClick={() => {
@@ -680,6 +739,12 @@ export default function ChatPage(): React.ReactElement {
               </Button>
             )}
           </div>
+          {/* OM-21/37: the send shortcut was documented only in the empty
+              state, so anyone past their first message had no way to learn it.
+              Keep it visible under the field. */}
+          <p className="mt-1 pl-11 text-[11px] text-[color:var(--fg-subtle)]">
+            {t('composerSendHint')}
+          </p>
         </div>
       </footer>
 
@@ -762,6 +827,7 @@ function ChatIntro(): React.ReactElement {
   return (
     <div className="b5-hero-bg border-b border-[color:var(--border)] px-6 py-4">
       <div className="mx-auto max-w-4xl">
+        {/* eslint-disable-next-line no-restricted-syntax -- chevron disclosure header (aria-expanded), not a §4.2 Button candidate */}
         <button
           type="button"
           onClick={() => setChatIntroCollapsedPersisted(!collapsed)}
@@ -941,6 +1007,17 @@ function MessageRow({
                 onChoose={onChoose}
               />
             )}
+            {/* #544 W2-1 — MCP mid-call input form. Mutually exclusive with the
+                choice card server-side (the choice card wins), so the two can
+                never render together. `onChoose` submits the returned envelope
+                as a fresh user turn, exactly like a choice-card click. */}
+            {message.pendingMcpInput && (
+              <McpInputCard
+                request={message.pendingMcpInput}
+                disabled={disabled}
+                onSubmit={onChoose}
+              />
+            )}
             {message.attachments && message.attachments.length > 0 && (
               <AttachmentGrid attachments={message.attachments} />
             )}
@@ -1016,9 +1093,21 @@ function ToolTrace({ tools }: { tools: ToolEvent[] }): React.ReactElement {
         {t('toolTraceHeading', { count: tools.length })}
       </summary>
       <div className="flex flex-col gap-1 px-2 pb-2">
-        {tools.map((t) => (
-          <ToolRow key={t.id} tool={t} />
-        ))}
+        {tools.map((tool) => {
+          // Epic #470 W3 — a `dev_job_start` call renders a live dev-job card
+          // (seeded from its tool result) instead of the generic tool row.
+          const seed =
+            tool.name === 'dev_job_start' ? parseDevJobStartResult(tool.output) : null;
+          if (seed) return <DevJobChatCard key={tool.id} seed={seed} />;
+          // W2-2 (issue #543) — any OTHER `<tool>_start` from the generic
+          // long-running task seam renders the tool-agnostic task card. Checked
+          // second so a tool with its own richer, gate-capable card keeps it.
+          const taskSeed = isTaskStartToolName(tool.name)
+            ? parseTaskStartResult(tool.output)
+            : null;
+          if (taskSeed) return <TaskChatCard key={tool.id} seed={taskSeed} />;
+          return <ToolRow key={tool.id} tool={tool} />;
+        })}
       </div>
     </details>
   );

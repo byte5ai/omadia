@@ -1,0 +1,31 @@
+# Optional overlay — SkillSpector plugin code scanning (issue #453).
+#
+# Adds the SkillSpector sidecar (built from middleware/sidecars/skillspector)
+# and points the middleware at it. Advisory-only: without this overlay the
+# default stack runs unchanged, installs never block, no scan is scheduled,
+# and no plugin verdict rows are written (`scan_failed` is reserved for real
+# sidecar failures).
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.skillspector.yaml up -d
+
+services:
+  middleware:
+    environment:
+      SKILLSPECTOR_URL: http://skillspector:8811
+
+  skillspector:
+    build: middleware/sidecars/skillspector
+    restart: unless-stopped
+    # No ports: the scanner is only reachable from inside the compose
+    # network — it accepts arbitrary file trees and must never be public.
+    networks: [omadia]
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'python'
+        - '-c'
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8811/health').status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s

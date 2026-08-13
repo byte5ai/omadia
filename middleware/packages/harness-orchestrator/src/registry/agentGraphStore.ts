@@ -2,6 +2,8 @@ import type { Pool } from 'pg';
 
 import { ConfigValidationError, validateModelRef } from './configStore.js';
 import { computeSkillHash } from './skillHash.js';
+import type { McpCallerKind } from '../mcp/mcpClient.js';
+import { normalizeDiscoveredToolOrder } from '../toolOrdering.js';
 
 /**
  * Agent Builder graph store (P0).
@@ -114,6 +116,34 @@ export interface SkillVerdictRow {
   readonly computedAt: Date;
 }
 
+/**
+ * Mirrored from `middleware/src/services/pluginScanner.ts`; keep in sync.
+ * The route layer wires these together via structural typing.
+ */
+export interface PluginScanFinding {
+  readonly code: string;
+  readonly severity: string;
+  readonly message: string;
+  readonly file: string | null;
+}
+
+/**
+ * Mirrored from `middleware/src/services/pluginVerdict.ts`; keep in sync.
+ * The route layer wires these together via structural typing.
+ */
+export interface PluginVerdictRow {
+  readonly contentHash: string;
+  readonly verifierVersion: string;
+  readonly pluginId: string;
+  readonly severity: Severity;
+  readonly findings: readonly PluginScanFinding[];
+  readonly scannerVersion: string;
+  readonly rationale: string | null;
+  readonly computedAt: Date;
+  readonly ackBy: string | null;
+  readonly ackAt: Date | null;
+}
+
 export interface SkillResourceRow {
   readonly id: string;
   readonly skillId: string;
@@ -184,7 +214,31 @@ export interface McpServerRow {
   /** Epic #459 — NON-SECRET config values `{ key: value }`. Secrets are in the
    *  Vault, not here. */
   readonly config: Record<string, unknown>;
+  /** W0-1 — whose authority MCP calls to this server act under.
+   *  `per_user`: the acting identity must resolve or the call fails closed —
+   *  no silent inheritance of the operator's authority (confused deputy).
+   *  `service`: one shared identity, the explicit opt-in. Migration 0031 sets
+   *  `service` on pre-existing servers that already hold a token so installed
+   *  deployments keep working; only new rows default to `per_user`. */
+  readonly delegation: McpDelegation;
 }
+
+/** How an MCP server resolves the identity a call acts as (W0-1, D2). */
+export type McpDelegation = 'per_user' | 'service';
+
+/**
+ * How omadia acquired the OAuth client it uses at an authorization server
+ * (migration 0032, W2-4). All three modes are first-class and PERMANENT:
+ *
+ *  - `cimd`   Client ID Metadata Document — the client_id is an https URL the
+ *             AS dereferences. Replaces DCR at MCP-native brokers only, and
+ *             requires the AS to reach omadia INBOUND.
+ *  - `dcr`    RFC 7591 Dynamic Client Registration. Deprecated by the MCP spec
+ *             on a 12-month clock; still fully supported here.
+ *  - `manual` An operator-registered app. This is the Entra ID / Okta path —
+ *             neither supports CIMD — and it has NO sunset.
+ */
+export type McpOAuthClientAcquisition = 'dcr' | 'manual' | 'cimd';
 
 export interface ToolGrantRow {
   readonly id: string;
@@ -355,6 +409,21 @@ interface SkillVerdictDbRow {
   computed_at: Date;
 }
 
+interface PluginVerdictDbRow {
+  content_hash: string;
+  verifier_version: string;
+  plugin_id: string;
+  severity: string;
+  findings: unknown;
+  scanner_version: string;
+  rationale: string | null;
+  computed_at: Date;
+  ack_by: string | null;
+  ack_at: Date | null;
+  /** Severity at ack time — drives ack invalidation on a WORSE re-scan. */
+  ack_severity: string | null;
+}
+
 interface SkillResourceDbRow {
   id: string;
   skill_id: string;
@@ -392,6 +461,8 @@ interface McpServerDbRow {
   kg_ingest?: boolean;
   config_schema?: McpConfigField[];
   config?: Record<string, unknown>;
+  // W0-1 delegation mode; absent on pre-0031 rows in tests.
+  delegation?: McpDelegation;
 }
 
 interface McpRegistryDbRow {
@@ -464,13 +535,19 @@ export interface McpCallLogRow {
   readonly serverId: string | null;
   readonly serverName: string;
   readonly toolName: string;
-  readonly callerKind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+  /** W2-3 (#542) — reuses the shared `McpCallerKind` union rather than a
+   *  retyped copy, which is how the previous copy fell one member behind. */
+  readonly callerKind: McpCallerKind;
   readonly callerAgent: string | null;
   readonly turnId: string | null;
   readonly ok: boolean;
   readonly error: string | null;
   readonly durationMs: number;
   readonly calledAt: Date;
+  /** W0-1 — WHOSE authority the call acted under (the resolved MCP user key,
+   *  or `unresolved` when a `per_user` server had no identity to act as).
+   *  `callerAgent` is the orchestrator slug; this is the identity. */
+  readonly actingIdentity: string | null;
 }
 
 interface McpCallLogDbRow {
@@ -485,6 +562,7 @@ interface McpCallLogDbRow {
   error: string | null;
   duration_ms: number;
   called_at: Date;
+  acting_identity?: string | null;
 }
 
 interface ToolGrantDbRow {
@@ -612,6 +690,42 @@ function mapSkillVerdict(r: SkillVerdictDbRow): SkillVerdictRow {
   };
 }
 
+function parsePluginScanFindings(value: unknown): readonly PluginScanFinding[] {
+  const raw = typeof value === 'string' ? JSON.parse(value) : value;
+  if (!Array.isArray(raw)) return [];
+  const parsed: PluginScanFinding[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const f = entry as Record<string, unknown>;
+    if (typeof f['code'] !== 'string' || typeof f['severity'] !== 'string') continue;
+    parsed.push({
+      code: f['code'],
+      severity: f['severity'],
+      message: typeof f['message'] === 'string' ? f['message'] : '',
+      file: typeof f['file'] === 'string' ? f['file'] : null,
+    });
+  }
+  return parsed;
+}
+
+function mapPluginVerdict(r: PluginVerdictDbRow): PluginVerdictRow {
+  if (!isSeverity(r.severity)) {
+    throw new Error(`unexpected plugin verdict severity in DB: ${String(r.severity)}`);
+  }
+  return {
+    contentHash: r.content_hash,
+    verifierVersion: r.verifier_version,
+    pluginId: r.plugin_id,
+    severity: r.severity,
+    findings: parsePluginScanFindings(r.findings),
+    scannerVersion: r.scanner_version,
+    rationale: r.rationale,
+    computedAt: r.computed_at,
+    ackBy: r.ack_by,
+    ackAt: r.ack_at,
+  };
+}
+
 function mapMcpToolVerdict(r: McpToolVerdictDbRow): McpToolVerdictRow {
   if (!isSeverity(r.severity)) {
     throw new Error(`unexpected mcp tool verdict severity in DB: ${String(r.severity)}`);
@@ -679,6 +793,9 @@ function mapMcpServer(r: McpServerDbRow): McpServerRow {
     kgIngest: r.kg_ingest ?? false,
     configSchema: Array.isArray(r.config_schema) ? r.config_schema : [],
     config: r.config ?? {},
+    // Pre-0031 rows (and hand-built test fixtures) read as the safe mode; the
+    // migration is what grandfathers real installed servers into 'service'.
+    delegation: r.delegation === 'service' ? 'service' : 'per_user',
   };
 }
 
@@ -988,6 +1105,123 @@ export class AgentGraphStore {
     return { ackedBy: row.acked_by, ackedAt: row.acked_at };
   }
 
+  // ── plugin code-scan verdicts (issue #453) ─────────────────────────────────
+
+  async getPluginVerdict(
+    contentHash: string,
+    verifierVersion: string,
+  ): Promise<PluginVerdictRow | undefined> {
+    const { rows } = await this.pool.query<PluginVerdictDbRow>(
+      `SELECT * FROM plugin_verdicts
+       WHERE content_hash = $1 AND verifier_version = $2`,
+      [contentHash, verifierVersion],
+    );
+    const row = rows[0];
+    return row ? mapPluginVerdict(row) : undefined;
+  }
+
+  /** Latest verdict for a plugin id — fallback lookup when the uploaded-
+   *  package record (and with it the sha256) is no longer around. */
+  async getLatestPluginVerdict(
+    pluginId: string,
+    verifierVersion: string,
+  ): Promise<PluginVerdictRow | undefined> {
+    const { rows } = await this.pool.query<PluginVerdictDbRow>(
+      `SELECT * FROM plugin_verdicts
+       WHERE plugin_id = $1 AND verifier_version = $2
+       ORDER BY computed_at DESC LIMIT 1`,
+      [pluginId, verifierVersion],
+    );
+    const row = rows[0];
+    return row ? mapPluginVerdict(row) : undefined;
+  }
+
+  /**
+   * Upsert keeps an operator ack only while the new severity is equal or
+   * BETTER than the severity the operator actually acknowledged
+   * (`ack_severity`, recorded at ack time): a re-scan that upgrades the row
+   * to something WORSE (e.g. acked `scan_failed` → `high_risk`) clears
+   * `ack_by`/`ack_at`/`ack_severity`, because the operator never saw those
+   * findings. Comparing against `ack_severity` (not the live severity)
+   * keeps the scheduler's interim `pending` write from destroying the
+   * comparison baseline. A verifier upgrade produces a fresh row (new PK)
+   * with no ack — see migration 0021_plugin_verdict.sql. Severity ranks
+   * mirror SEVERITY_RANK in middleware/src/services/skillVerdict.ts.
+   */
+  async upsertPluginVerdict(row: PluginVerdictRow): Promise<void> {
+    const rank = (expr: string): string =>
+      `CASE ${expr}
+         WHEN 'no_signals' THEN 0
+         WHEN 'pending' THEN 1
+         WHEN 'scan_failed' THEN 2
+         WHEN 'too_large_to_scan' THEN 3
+         WHEN 'flagged' THEN 4
+         WHEN 'high_risk' THEN 5
+         ELSE 6 END`;
+    const ackSurvives =
+      `plugin_verdicts.ack_by IS NOT NULL AND ` +
+      `${rank('EXCLUDED.severity')} <= ` +
+      `${rank('COALESCE(plugin_verdicts.ack_severity, plugin_verdicts.severity)')}`;
+    await this.pool.query(
+      `INSERT INTO plugin_verdicts
+         (content_hash, verifier_version, plugin_id, severity, findings, scanner_version, rationale, computed_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8)
+       ON CONFLICT (content_hash, verifier_version) DO UPDATE SET
+         plugin_id       = EXCLUDED.plugin_id,
+         severity        = EXCLUDED.severity,
+         findings        = EXCLUDED.findings,
+         scanner_version = EXCLUDED.scanner_version,
+         rationale       = EXCLUDED.rationale,
+         computed_at     = EXCLUDED.computed_at,
+         ack_by          = CASE WHEN ${ackSurvives} THEN plugin_verdicts.ack_by ELSE NULL END,
+         ack_at          = CASE WHEN ${ackSurvives} THEN plugin_verdicts.ack_at ELSE NULL END,
+         ack_severity    = CASE WHEN ${ackSurvives} THEN plugin_verdicts.ack_severity ELSE NULL END`,
+      [
+        row.contentHash,
+        row.verifierVersion,
+        row.pluginId,
+        row.severity,
+        JSON.stringify(row.findings),
+        row.scannerVersion,
+        row.rationale,
+        row.computedAt,
+      ],
+    );
+  }
+
+  async getPluginVerdictsByShas(
+    contentHashes: readonly string[],
+    verifierVersion: string,
+  ): Promise<Map<string, PluginVerdictRow>> {
+    if (contentHashes.length === 0) return new Map<string, PluginVerdictRow>();
+    const { rows } = await this.pool.query<PluginVerdictDbRow>(
+      `SELECT * FROM plugin_verdicts
+       WHERE content_hash = ANY($1) AND verifier_version = $2`,
+      [contentHashes, verifierVersion],
+    );
+    return new Map(rows.map((row) => [row.content_hash, mapPluginVerdict(row)]));
+  }
+
+  /** Ack the existing verdict row. Records the acked severity alongside so
+   *  a later re-scan that WORSENS the verdict can invalidate the ack (see
+   *  upsertPluginVerdict). Returns undefined when nothing has been scanned
+   *  yet — there is no verdict to acknowledge. */
+  async upsertPluginVerdictAck(
+    contentHash: string,
+    verifierVersion: string,
+    ackedBy: string,
+  ): Promise<{ ackBy: string; ackAt: Date } | undefined> {
+    const { rows } = await this.pool.query<{ ack_by: string; ack_at: Date }>(
+      `UPDATE plugin_verdicts
+       SET ack_by = $3, ack_at = now(), ack_severity = severity
+       WHERE content_hash = $1 AND verifier_version = $2
+       RETURNING ack_by, ack_at`,
+      [contentHash, verifierVersion, ackedBy],
+    );
+    const row = rows[0];
+    return row ? { ackBy: row.ack_by, ackAt: row.ack_at } : undefined;
+  }
+
   // ── MCP tool verdicts (epic #459 W1, issue #454) ───────────────────────────
 
   /** All verdicts for the given verifier version, across all servers — one
@@ -1164,18 +1398,34 @@ export class AgentGraphStore {
 
   // ── MCP OAuth (epic #459 W9) — provider-agnostic authorization state ────────
 
-  async getMcpOAuthClient(
-    issuer: string,
-  ): Promise<{ issuer: string; clientId: string; clientSecretRef: string | null; registeredVia: 'dcr' | 'manual' } | undefined> {
+  async getMcpOAuthClient(issuer: string): Promise<
+    | {
+        issuer: string;
+        clientId: string;
+        clientSecretRef: string | null;
+        registeredVia: McpOAuthClientAcquisition;
+        /** W2-4: the CIMD document this client_id resolves to. Null for
+         *  'dcr'/'manual' rows and on pre-0032 databases. */
+        clientMetadataUrl: string | null;
+      }
+    | undefined
+  > {
     const { rows } = await this.pool.query<{
       issuer: string;
       client_id: string;
       client_secret_ref: string | null;
-      registered_via: 'dcr' | 'manual';
+      registered_via: McpOAuthClientAcquisition;
+      client_metadata_url?: string | null;
     }>('SELECT * FROM mcp_oauth_clients WHERE issuer = $1', [issuer]);
     const r = rows[0];
     return r
-      ? { issuer: r.issuer, clientId: r.client_id, clientSecretRef: r.client_secret_ref, registeredVia: r.registered_via }
+      ? {
+          issuer: r.issuer,
+          clientId: r.client_id,
+          clientSecretRef: r.client_secret_ref,
+          registeredVia: r.registered_via,
+          clientMetadataUrl: r.client_metadata_url ?? null,
+        }
       : undefined;
   }
 
@@ -1183,16 +1433,26 @@ export class AgentGraphStore {
     issuer: string;
     clientId: string;
     clientSecretRef: string | null;
-    registeredVia: 'dcr' | 'manual';
+    registeredVia: McpOAuthClientAcquisition;
+    /** W2-4: only set for `registeredVia: 'cimd'` — the self-referential
+     *  metadata-document URL the authorization server dereferenced. */
+    clientMetadataUrl?: string | null;
   }): Promise<void> {
     await this.pool.query(
-      `INSERT INTO mcp_oauth_clients (issuer, client_id, client_secret_ref, registered_via)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO mcp_oauth_clients (issuer, client_id, client_secret_ref, registered_via, client_metadata_url)
+       VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (issuer) DO UPDATE SET
          client_id = EXCLUDED.client_id,
          client_secret_ref = EXCLUDED.client_secret_ref,
-         registered_via = EXCLUDED.registered_via`,
-      [input.issuer, input.clientId, input.clientSecretRef, input.registeredVia],
+         registered_via = EXCLUDED.registered_via,
+         client_metadata_url = EXCLUDED.client_metadata_url`,
+      [
+        input.issuer,
+        input.clientId,
+        input.clientSecretRef,
+        input.registeredVia,
+        input.clientMetadataUrl ?? null,
+      ],
     );
   }
 
@@ -1207,6 +1467,8 @@ export class AgentGraphStore {
         refreshTokenRef: string | null;
         expiresAt: Date | null;
         scopes: string | null;
+        /** Issuer that minted this token (W0-1) — null on pre-0031 rows. */
+        issuer: string | null;
       }
     | undefined
   > {
@@ -1217,6 +1479,7 @@ export class AgentGraphStore {
       refresh_token_ref: string | null;
       expires_at: Date | null;
       scopes: string | null;
+      issuer?: string | null;
     }>('SELECT * FROM mcp_oauth_tokens WHERE server_id = $1 AND user_key = $2', [serverId, userKey]);
     const r = rows[0];
     return r
@@ -1227,6 +1490,7 @@ export class AgentGraphStore {
           refreshTokenRef: r.refresh_token_ref,
           expiresAt: r.expires_at,
           scopes: r.scopes,
+          issuer: r.issuer ?? null,
         }
       : undefined;
   }
@@ -1238,19 +1502,45 @@ export class AgentGraphStore {
     refreshTokenRef: string | null;
     expiresAt: Date | null;
     scopes: string | null;
+    /** Issuer that minted the token (W0-1) — lets a rotated issuer invalidate
+     *  the stored token instead of replaying it against a different AS. */
+    issuer?: string | null;
   }): Promise<void> {
     await this.pool.query(
       `INSERT INTO mcp_oauth_tokens
-         (server_id, user_key, access_token_ref, refresh_token_ref, expires_at, scopes, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6, now())
+         (server_id, user_key, access_token_ref, refresh_token_ref, expires_at, scopes, issuer, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7, now())
        ON CONFLICT (server_id, user_key) DO UPDATE SET
          access_token_ref = EXCLUDED.access_token_ref,
          refresh_token_ref = EXCLUDED.refresh_token_ref,
          expires_at = EXCLUDED.expires_at,
          scopes = EXCLUDED.scopes,
+         issuer = EXCLUDED.issuer,
          updated_at = now()`,
-      [input.serverId, input.userKey, input.accessTokenRef, input.refreshTokenRef, input.expiresAt, input.scopes],
+      [
+        input.serverId,
+        input.userKey,
+        input.accessTokenRef,
+        input.refreshTokenRef,
+        input.expiresAt,
+        input.scopes,
+        input.issuer ?? null,
+      ],
     );
+  }
+
+  /** Set the delegation mode for a server (W0-1, D2). Returns the updated row,
+   *  or undefined when the server does not exist. */
+  async setMcpServerDelegation(
+    serverId: string,
+    delegation: McpDelegation,
+  ): Promise<McpServerRow | undefined> {
+    const { rows } = await this.pool.query<McpServerDbRow>(
+      'UPDATE mcp_servers SET delegation = $2, updated_at = now() WHERE id = $1 RETURNING *',
+      [serverId, delegation],
+    );
+    const r = rows[0];
+    return r ? mapMcpServer(r) : undefined;
   }
 
   async deleteMcpOAuthToken(serverId: string, userKey: string): Promise<void> {
@@ -1279,13 +1569,17 @@ export class AgentGraphStore {
     scopes: string | null;
     tokenEndpoint: string;
     authorizationEndpoint: string;
+    /** Whether the AS advertised RFC 9207 `authorization_response_iss_parameter_supported`
+     *  at authorize time (W0-1, D1). Captured HERE, never re-discovered at the
+     *  callback — same reasoning as the endpoint binding in migration 0016. */
+    issRequired?: boolean;
   }): Promise<void> {
     // Opportunistic prune of stale flows (older than 15 min) on each create.
     await this.pool.query("DELETE FROM mcp_oauth_flows WHERE created_at < now() - interval '15 minutes'");
     await this.pool.query(
       `INSERT INTO mcp_oauth_flows
-         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint, iss_required)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [
         input.state,
         input.serverId,
@@ -1296,6 +1590,7 @@ export class AgentGraphStore {
         input.scopes,
         input.tokenEndpoint,
         input.authorizationEndpoint,
+        input.issRequired ?? false,
       ],
     );
   }
@@ -1314,6 +1609,9 @@ export class AgentGraphStore {
         scopes: string | null;
         tokenEndpoint: string | null;
         authorizationEndpoint: string | null;
+        /** The AS advertised RFC 9207 when this flow started (W0-1, D1), so an
+         *  authorization response WITHOUT `iss` must be rejected. */
+        issRequired: boolean;
       }
     | undefined
   > {
@@ -1327,6 +1625,7 @@ export class AgentGraphStore {
       scopes: string | null;
       token_endpoint: string | null;
       authorization_endpoint: string | null;
+      iss_required?: boolean | null;
     }>(
       "DELETE FROM mcp_oauth_flows WHERE state = $1 AND created_at > now() - interval '15 minutes' RETURNING *",
       [state],
@@ -1343,6 +1642,9 @@ export class AgentGraphStore {
           scopes: r.scopes,
           tokenEndpoint: r.token_endpoint,
           authorizationEndpoint: r.authorization_endpoint,
+          // Pre-0031 in-flight flows read false — they are not retroactively
+          // rejected for a missing `iss` (a MISMATCHED one still is).
+          issRequired: r.iss_required === true,
         }
       : undefined;
   }
@@ -1518,11 +1820,15 @@ export class AgentGraphStore {
     readonly error: string | null;
     readonly durationMs: number;
     readonly calledAt: Date;
+    /** W0-1 — the resolved acting identity. Always written (never omitted):
+     *  an audit row with no identity cannot answer "whose credentials was
+     *  this?", which is the whole point of the confused-deputy fix. */
+    readonly actingIdentity: string | null;
   }): Promise<void> {
     await this.pool.query(
       `INSERT INTO mcp_call_log
-         (server_id, server_name, tool_name, caller_kind, caller_agent, turn_id, ok, error, duration_ms, called_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+         (server_id, server_name, tool_name, caller_kind, caller_agent, turn_id, ok, error, duration_ms, called_at, acting_identity)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
       [
         entry.serverId,
         entry.serverName,
@@ -1534,6 +1840,7 @@ export class AgentGraphStore {
         entry.error,
         entry.durationMs,
         entry.calledAt,
+        entry.actingIdentity,
       ],
     );
   }
@@ -1574,6 +1881,7 @@ export class AgentGraphStore {
       error: r.error,
       durationMs: r.duration_ms,
       calledAt: r.called_at,
+      actingIdentity: r.acting_identity ?? null,
     }));
   }
 
@@ -1952,15 +2260,28 @@ export class AgentGraphStore {
     }
   }
 
+  /**
+   * Persist the discovered-tool descriptors verbatim. `discovered_tools` is a
+   * `jsonb` column and the descriptor is stored whole, so every field a
+   * `McpToolDescriptor` carries round-trips — including the `outputSchema`
+   * added in issue #547 (W1-3). No migration is needed to add descriptor
+   * fields; only the TypeScript shape changes.
+   */
   async setMcpDiscoveredTools(
     id: string,
     tools: readonly unknown[],
   ): Promise<void> {
+    // W0-3 — normalize by name before persisting. An MCP server may return
+    // `tools/list` in a different order on every call; storing that raw makes
+    // each rediscovery rewrite the JSONB with semantically identical content,
+    // churning the row and any grant-epoch diff computed from it. It also
+    // leaks the server's arbitrary ordering into the tool block that
+    // `subAgentToolHydration` later builds from this column.
     await this.pool.query(
       `UPDATE mcp_servers
          SET discovered_tools = $2::jsonb, last_discovered_at = now(), updated_at = now()
        WHERE id = $1`,
-      [id, JSON.stringify(tools)],
+      [id, JSON.stringify(normalizeDiscoveredToolOrder(tools))],
     );
   }
 

@@ -123,6 +123,31 @@ Accepted v1 limitations (tracked for a follow-up):
 - No app/tray icons shipped yet (Electron defaults used).
 - No Linux target in v1 (mac + win only), though the code paths are cross-platform.
 
+## macOS: two architectures
+
+macOS ships **arm64 and x64 separately**, each built on a runner of its own
+architecture. That is forced by the design, not a preference: the omadia runtime
+rides along as unpacked `extraResources` (native node modules plus the embedded
+Postgres engine), which electron-builder copies verbatim and cannot arch-split.
+An x64 bundle produced on an arm64 host would contain arm64 binaries and crash on
+Intel — so a universal binary is not an option while the runtime ships this way.
+
+Consequences worth knowing before touching this:
+
+- Each run emits its own `latest-mac.yml` listing only its own artifacts, and
+  both target the same release. electron-updater's `MacUpdater` picks a download
+  by testing the file URL for `arm64`, so a single-architecture feed leaves Intel
+  users with no matching file, or pushes every Apple Silicon user onto Rosetta.
+  The mac jobs therefore **hold back** that file and the `mac-update-feed` job
+  merges both (`scripts/merge-mac-update-feed.mjs`, covered by `npm test`).
+- `stage-runtime.mjs` follows `process.arch`, so it needs no changes — but
+  anything that hardcodes `darwin-arm64` does. The pgvector CI step now derives
+  the architecture and asserts the resulting `vector.dylib` really is that
+  architecture, because a mismatch would only surface at `CREATE EXTENSION`
+  inside the shipped app on a user's machine.
+- GitHub retires x86_64 runners in **August 2027**. At that point the Intel
+  matrix entry has to go, or move to a self-hosted Intel runner.
+
 ## Data + uninstall
 
 Everything mutable lives under the per-user app-data directory (or a folder you

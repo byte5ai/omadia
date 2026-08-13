@@ -8,6 +8,7 @@ import type {
   LlmStreamEvent,
 } from '@omadia/llm-provider';
 import {
+  InMemoryDirectLineStickyStore,
   NativeToolRegistry,
   Orchestrator,
   createDomainTool,
@@ -22,6 +23,19 @@ import {
   agentsConsultedFooterText,
   type ChatTurnResult,
 } from '@omadia/channel-sdk';
+
+// #644 — the harness now folds the AI-Act Art. 50 marking into every delivered
+// answer's `text` by default. These pre-#644 tests assert the orchestrator's
+// OWN prose (direct-line passthrough, unknown-token fall-through), so strip the
+// trailing disclosure paragraph before the exact-equality check. Only the FIRST
+// turn of a scope folds it (later turns dedup), so this only bites the
+// first-turn assertions. The marking itself is covered end-to-end by
+// test/aiDisclosure644.test.ts.
+const AI_DISCLOSURE_LINE = 'Diese Antwort wurde von einem KI-System erzeugt.';
+function withoutDisclosure(text: string): string {
+  const suffix = `\n\n${AI_DISCLOSURE_LINE}`;
+  return text.endsWith(suffix) ? text.slice(0, -suffix.length) : text;
+}
 
 // ── #332 Layer 2 — pure parser / resolver ────────────────────────────────────
 
@@ -379,7 +393,7 @@ describe('#332 Layer 2 — Direct Line (strict passthrough, non-streaming/Teams)
     assert.equal(sa.delegatedAnswer?.label, 'Strategist');
     assert.equal(sa.delegatedAnswer?.status, 'success');
     assert.equal(sa.delegatedAnswer?.text, 'VERBATIM-STRATEGIST-ANSWER');
-    assert.equal(sa.text, 'VERBATIM-STRATEGIST-ANSWER'); // graceful degrade
+    assert.equal(withoutDisclosure(sa.text), 'VERBATIM-STRATEGIST-ANSWER'); // graceful degrade
     assert.equal(sa.agentsConsulted?.[0]?.label, 'Strategist'); // L1 footer
   });
 
@@ -405,7 +419,32 @@ describe('#332 Layer 2 — Direct Line (strict passthrough, non-streaming/Teams)
     const sa = await orch.chat({ userMessage: '#urgent server is down', sessionScope: 's2' });
     assert.equal(asked, false, 'no sub-agent may run for an unknown token');
     assert.equal(sa.delegatedAnswer, undefined);
-    assert.equal(sa.text, 'normal LLM answer'); // handled by the LLM, not hijacked
+    assert.equal(withoutDisclosure(sa.text), 'normal LLM answer'); // handled by the LLM, not hijacked
+  });
+
+  it('issue #474 round-4 fix — a NOT-READY plugin\'s token surfaces the "no longer available" notice, never a raw dispatch-error string', async () => {
+    let asked = false;
+    const tool = strategistTool(async () => {
+      asked = true;
+      return 'should not run';
+    });
+    const orch = new Orchestrator({
+      provider: neverCalledProvider(),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      isPluginToolsReady: (agentId) => agentId !== 'de.byte5.agent.strategist',
+    });
+    const sa = await orch.chat({
+      userMessage: '#strategist What are three risks in plan A?',
+      sessionScope: 's2c',
+    });
+    assert.equal(asked, false, 'the not-ready tool must never be invoked');
+    assert.equal(sa.delegatedAnswer, undefined);
+    assert.doesNotMatch(sa.text, /^Error:/);
+    assert.match(sa.text, /no longer available/i);
   });
 
   it('an AMBIGUOUS token disambiguates, never a silent wrong route', async () => {
@@ -541,7 +580,7 @@ describe('#332 Layer 2 — guarded-additive mode', () => {
     // masking cascade as every other domain-tool dispatch — the raw
     // 'VERBATIM-Y' must NOT reach the user when a privacy guard is active.
     assert.equal(sa.delegatedAnswer?.text, '[masked:ask_strategist:10]');
-    assert.equal(sa.text, '[masked:ask_strategist:10]'); // no note appended → no provider call
+    assert.equal(withoutDisclosure(sa.text), '[masked:ask_strategist:10]'); // no note appended → no provider call
   });
 });
 
@@ -634,7 +673,7 @@ describe('#332 Layer 3 — forced-delegation obligation (non-streaming)', () => 
     });
     const sa = await orch.chat({ userMessage: 'hello', sessionScope: 's5' });
     assert.equal(asked, false);
-    assert.equal(sa.text, 'plain answer');
+    assert.equal(withoutDisclosure(sa.text), 'plain answer');
   });
 });
 
@@ -684,7 +723,29 @@ describe('#332 gap-closure — standing requiredConsultToolName (L3 real produce
     });
     const sa = await orch.chat({ userMessage: 'hello', sessionScope: 's7' });
     assert.equal(asked, false);
-    assert.equal(sa.text, 'plain answer');
+    assert.equal(withoutDisclosure(sa.text), 'plain answer');
+  });
+
+  it('issue #474 round-3 fix — a standing obligation for a not-ready plugin domain tool is ignored (never forces tool_choice onto a tool excluded from tools[])', async () => {
+    let asked = false;
+    const tool = strategistTool(async () => {
+      asked = true;
+      return 'x';
+    });
+    const { provider } = scriptedCompleteProvider([textResponse('plain answer')]);
+    const orch = new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 6,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+      requiredConsultToolName: 'ask_strategist',
+      isPluginToolsReady: (agentId) => agentId !== 'de.byte5.agent.strategist',
+    });
+    const sa = await orch.chat({ userMessage: 'hello', sessionScope: 's7-gated' });
+    assert.equal(asked, false, 'the not-ready tool must never be forced/invoked');
+    assert.equal(withoutDisclosure(sa.text), 'plain answer');
   });
 
   it('a per-turn expectedDomainTool overrides the standing requiredConsultToolName', async () => {
@@ -828,5 +889,312 @@ describe('#332 gap-closure — agentsConsulted on the STREAMING done event (web-
       }
     }
     assert.ok(sawAgentsConsulted, 'the done event must carry agentsConsulted');
+  });
+});
+
+// ── #445 — sticky Direct Line (orchestrator behaviour) ───────────────────────
+
+function analystTool(
+  impl: (question: string) => Promise<string>,
+  captured?: { q?: string },
+) {
+  return createDomainTool({
+    name: 'ask_analyst',
+    description: 'Numbers analyst',
+    domain: 'analysis',
+    agentId: 'de.byte5.agent.analyst',
+    agent: {
+      ask: async (question: string): Promise<string> => {
+        if (captured) captured.q = question;
+        return impl(question);
+      },
+    },
+  });
+}
+
+/** A sticky-enabled orchestrator with a fresh, isolated binding store. */
+function stickyOrch(over: {
+  domainTools: ReturnType<typeof strategistTool>[];
+  provider?: LlmProvider;
+  isPluginToolsReady?: (agentId: string | undefined) => boolean;
+  privacyGuard?: unknown;
+}) {
+  return new Orchestrator({
+    provider: over.provider ?? neverCalledProvider(),
+    model: 'test',
+    maxTokens: 1024,
+    maxToolIterations: 5,
+    domainTools: over.domainTools,
+    nativeToolRegistry: new NativeToolRegistry(),
+    directLineSticky: true,
+    // A fresh store per orchestrator keeps every test independent.
+    directLineStickyStore: new InMemoryDirectLineStickyStore(),
+    ...(over.isPluginToolsReady
+      ? { isPluginToolsReady: over.isPluginToolsReady }
+      : {}),
+    ...(over.privacyGuard ? { privacyGuard: over.privacyGuard } : {}),
+  } as ConstructorParameters<typeof Orchestrator>[0]);
+}
+
+describe('#445 sticky Direct Line — the flag is OFF by default', () => {
+  it('a bare #agent is still the no-question notice, and never binds', async () => {
+    const tool = strategistTool(async () => 'should not run');
+    const orch = new Orchestrator({
+      provider: neverCalledProvider(),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [tool],
+      nativeToolRegistry: new NativeToolRegistry(),
+    });
+    const first = await orch.chat({ userMessage: '#strategist', sessionScope: 'off1' });
+    assert.match(first.text, /didn't include a question/);
+    assert.equal(
+      first.directLineSession,
+      undefined,
+      'the field must not appear at all while the feature is off',
+    );
+  });
+});
+
+describe('#445 sticky Direct Line — entry, continuation, exit', () => {
+  it('binds on a bare #agent, then routes plain messages verbatim to the specialist', async () => {
+    const captured: { q?: string } = {};
+    const tool = strategistTool(async () => 'STICKY-ANSWER', captured);
+    const orch = stickyOrch({ domainTools: [tool] });
+
+    const entry = await orch.chat({ userMessage: '#strategist', sessionScope: 'st1' });
+    assert.equal(entry.directLineSession?.active, true);
+    assert.equal(entry.directLineSession?.label, 'Strategist');
+    assert.equal(entry.directLineSession?.transition, 'entered');
+    assert.equal(entry.delegatedAnswer, undefined, 'entry dispatches nothing');
+
+    // Turn 2 carries NO directive at all — the binding supplies the target.
+    const second = await orch.chat({
+      userMessage: 'and the second risk?',
+      sessionScope: 'st1',
+    });
+    assert.equal(captured.q, 'and the second risk?', 'input bound verbatim');
+    assert.equal(second.delegatedAnswer?.label, 'Strategist');
+    assert.equal(second.delegatedAnswer?.text, 'STICKY-ANSWER');
+    assert.equal(second.directLineSession?.active, true);
+    assert.equal(second.directLineSession?.transition, 'continued');
+  });
+
+  it('#end unbinds, and the next ordinary turn goes back to the LLM', async () => {
+    const tool = strategistTool(async () => 'STICKY-ANSWER');
+    const { provider, calls } = scriptedCompleteProvider([
+      textResponse('orchestrator is back'),
+    ]);
+    const orch = stickyOrch({ domainTools: [tool], provider });
+
+    await orch.chat({ userMessage: '#strategist', sessionScope: 'st2' });
+    const left = await orch.chat({ userMessage: '#end', sessionScope: 'st2' });
+    assert.equal(left.directLineSession?.active, false);
+    assert.equal(left.directLineSession?.transition, 'left');
+    assert.equal(calls(), 0, 'the exit itself must not call the LLM');
+
+    const after = await orch.chat({ userMessage: 'now what?', sessionScope: 'st2' });
+    assert.equal(after.text, 'orchestrator is back');
+    assert.equal(after.delegatedAnswer, undefined);
+    assert.equal(after.directLineSession?.active, false);
+  });
+
+  it('an ordinary unbound turn still reports {active:false} so a stale banner clears', async () => {
+    const tool = strategistTool(async () => 'unused');
+    const { provider } = scriptedCompleteProvider([textResponse('plain answer')]);
+    const orch = stickyOrch({ domainTools: [tool], provider });
+    const sa = await orch.chat({ userMessage: 'hello', sessionScope: 'st3' });
+    assert.equal(sa.directLineSession?.active, false);
+  });
+});
+
+describe('#445 sticky Direct Line — the collision rules survive', () => {
+  it('#urgent still falls through to the LLM when nothing is bound', async () => {
+    const tool = strategistTool(async () => 'must not run');
+    const { provider } = scriptedCompleteProvider([textResponse('normal answer')]);
+    const orch = stickyOrch({ domainTools: [tool], provider });
+    const sa = await orch.chat({
+      userMessage: '#urgent server is down',
+      sessionScope: 'c1',
+    });
+    assert.equal(withoutDisclosure(sa.text), 'normal answer');
+    assert.equal(sa.delegatedAnswer, undefined);
+  });
+
+  it('"#end of quarter" is a QUESTION to the specialist, never an exit', async () => {
+    const captured: { q?: string } = {};
+    const tool = strategistTool(async () => 'ANSWERED', captured);
+    const orch = stickyOrch({ domainTools: [tool] });
+    await orch.chat({ userMessage: '#strategist', sessionScope: 'c2' });
+
+    const sa = await orch.chat({
+      userMessage: '#end of quarter — what now?',
+      sessionScope: 'c2',
+    });
+    assert.equal(captured.q, '#end of quarter — what now?', 'verbatim, nothing eaten');
+    assert.equal(sa.directLineSession?.active, true, 'still bound');
+    assert.equal(sa.delegatedAnswer?.text, 'ANSWERED');
+  });
+
+  it('an unknown #token while bound goes to the specialist whole', async () => {
+    const captured: { q?: string } = {};
+    const tool = strategistTool(async () => 'ANSWERED', captured);
+    const orch = stickyOrch({ domainTools: [tool] });
+    await orch.chat({ userMessage: '#strategist', sessionScope: 'c3' });
+    await orch.chat({ userMessage: '#urgent server is down', sessionScope: 'c3' });
+    assert.equal(captured.q, '#urgent server is down');
+  });
+
+  it('a one-shot #other directive answers but does NOT rebind', async () => {
+    const sCap: { q?: string } = {};
+    const aCap: { q?: string } = {};
+    const s = strategistTool(async () => 'FROM-STRATEGIST', sCap);
+    const a = analystTool(async () => 'FROM-ANALYST', aCap);
+    const orch = stickyOrch({ domainTools: [s, a as unknown as typeof s] });
+
+    await orch.chat({ userMessage: '#strategist', sessionScope: 'c4' });
+    const oneShot = await orch.chat({
+      userMessage: '#analyst crunch these numbers',
+      sessionScope: 'c4',
+    });
+    assert.equal(oneShot.delegatedAnswer?.text, 'FROM-ANALYST');
+    assert.equal(aCap.q, 'crunch these numbers');
+
+    // Still bound to the Strategist.
+    const back = await orch.chat({ userMessage: 'continue', sessionScope: 'c4' });
+    assert.equal(back.delegatedAnswer?.text, 'FROM-STRATEGIST');
+    assert.equal(sCap.q, 'continue');
+  });
+});
+
+describe('#445 sticky Direct Line — multi-user and scope safety', () => {
+  it('two users on ONE sessionScope never share a binding', async () => {
+    const sCap: { q?: string } = {};
+    const aCap: { q?: string } = {};
+    const s = strategistTool(async () => 'FROM-STRATEGIST', sCap);
+    const a = analystTool(async () => 'FROM-ANALYST', aCap);
+    const { provider } = scriptedCompleteProvider([
+      textResponse('bob gets the orchestrator'),
+    ]);
+    const orch = stickyOrch({ domainTools: [s, a as unknown as typeof s], provider });
+
+    const scope = 'teams-conversation-42';
+    await orch.chat({ userMessage: '#strategist', sessionScope: scope, userId: 'alice' });
+
+    // Bob shares the conversation id but must NOT inherit Alice's binding.
+    const bob = await orch.chat({
+      userMessage: 'what is going on?',
+      sessionScope: scope,
+      userId: 'bob',
+    });
+    assert.equal(bob.delegatedAnswer, undefined, "bob must not hit alice's specialist");
+    assert.equal(bob.directLineSession?.active, false);
+
+    const alice = await orch.chat({
+      userMessage: 'continue',
+      sessionScope: scope,
+      userId: 'alice',
+    });
+    assert.equal(alice.delegatedAnswer?.text, 'FROM-STRATEGIST');
+  });
+
+  it("refuses to bind on the shared 'http-default' scope with no userId", async () => {
+    const tool = strategistTool(async () => 'must not run');
+    const orch = stickyOrch({ domainTools: [tool] });
+    const sa = await orch.chat({
+      userMessage: '#strategist',
+      sessionScope: 'http-default',
+    });
+    assert.equal(sa.directLineSession?.active, false);
+    assert.equal(sa.directLineSession?.transition, 'refused');
+    assert.equal(sa.directLineSession?.refusedReason, 'shared-scope');
+  });
+
+  it("binds on 'http-default' once a userId makes the key per-person", async () => {
+    const tool = strategistTool(async () => 'ok');
+    const orch = stickyOrch({ domainTools: [tool] });
+    const sa = await orch.chat({
+      userMessage: '#strategist',
+      sessionScope: 'http-default',
+      userId: 'u1',
+    });
+    assert.equal(sa.directLineSession?.active, true);
+  });
+
+  it('refuses a synthetic routine scope even with a userId', async () => {
+    const tool = strategistTool(async () => 'must not run');
+    const orch = stickyOrch({ domainTools: [tool] });
+    const sa = await orch.chat({
+      userMessage: '#strategist',
+      sessionScope: 'routine:daily-digest',
+      userId: 'u1',
+    });
+    assert.equal(sa.directLineSession?.refusedReason, 'synthetic-scope');
+  });
+});
+
+describe('#445 sticky Direct Line — failure modes fail toward the orchestrator', () => {
+  it('unbinds when the specialist goes unavailable mid-session (#474 carried to turn N)', async () => {
+    const tool = strategistTool(async () => 'STICKY-ANSWER');
+    let ready = true;
+    const orch = stickyOrch({
+      domainTools: [tool],
+      isPluginToolsReady: (agentId) =>
+        agentId === 'de.byte5.agent.strategist' ? ready : true,
+    });
+
+    await orch.chat({ userMessage: '#strategist', sessionScope: 'f1' });
+    ready = false; // the plugin is uninstalled / goes not-ready mid-conversation
+
+    const sa = await orch.chat({ userMessage: 'still there?', sessionScope: 'f1' });
+    assert.match(sa.text, /no longer available/);
+    assert.doesNotMatch(sa.text, /is unavailable/, 'never the raw dispatch-error string');
+    assert.equal(sa.delegatedAnswer, undefined);
+    assert.equal(sa.directLineSession?.active, false);
+    assert.equal(sa.directLineSession?.transition, 'unavailable');
+  });
+
+  it('PII masking still applies on the THIRD consecutive sticky turn', async () => {
+    const tool = strategistTool(async () => 'contact jane.doe@example.com for details');
+    const orch = stickyOrch({
+      domainTools: [tool],
+      privacyGuard: fakePrivacyGuard(),
+    });
+    await orch.chat({ userMessage: '#strategist', sessionScope: 'f2' });
+    await orch.chat({ userMessage: 'turn two', sessionScope: 'f2' });
+    const third = await orch.chat({ userMessage: 'turn three', sessionScope: 'f2' });
+
+    assert.ok(third.delegatedAnswer, 'the third sticky turn still dispatches');
+    assert.doesNotMatch(third.delegatedAnswer?.text ?? '', /jane\.doe@example\.com/);
+    assert.match(third.delegatedAnswer?.text ?? '', /^\[masked:ask_strategist:/);
+    assert.doesNotMatch(third.text, /jane\.doe@example\.com/);
+  });
+
+  it('re-entering the SAME specialist is a no-op notice, not a silent re-bind', async () => {
+    const tool = strategistTool(async () => 'unused');
+    const orch = stickyOrch({ domainTools: [tool] });
+    await orch.chat({ userMessage: '#strategist', sessionScope: 'f3' });
+    const again = await orch.chat({ userMessage: '#strategist', sessionScope: 'f3' });
+    assert.match(again.text, /already talking to Strategist/);
+    assert.equal(again.directLineSession?.active, true);
+  });
+});
+
+describe('#445 sticky Direct Line — streaming path parity', () => {
+  it('a sticky streamed turn carries directLineSession on its done event', async () => {
+    const tool = strategistTool(async () => 'STREAMED-STICKY');
+    const orch = stickyOrch({ domainTools: [tool] });
+    await orch.chat({ userMessage: '#strategist', sessionScope: 'sx1' });
+
+    let seen: { active: boolean; label?: string } | undefined;
+    for await (const event of orch.chatStream({
+      userMessage: 'streamed follow-up',
+      sessionScope: 'sx1',
+    })) {
+      if (event.type === 'done') seen = event.directLineSession;
+    }
+    assert.equal(seen?.active, true);
+    assert.equal(seen?.label, 'Strategist');
   });
 });

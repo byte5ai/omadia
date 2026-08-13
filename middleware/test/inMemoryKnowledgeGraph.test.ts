@@ -140,3 +140,263 @@ describe('InMemoryKnowledgeGraph.ingestTurn', () => {
     assert.equal(await g.getSession('nonexistent'), null);
   });
 });
+
+// #430 — structured dataset ingestion.
+describe('InMemoryKnowledgeGraph — datasets (#430)', () => {
+  it('ingests a dataset, creates exactly one Dataset graph node, and is listable/gettable by owner', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const result = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'People',
+      sourceFileName: 'people.csv',
+      columns: [
+        { name: 'name', type: 'string' },
+        { name: 'age', type: 'number' },
+      ],
+      rows: [
+        { name: 'Ada', age: 36 },
+        { name: 'Grace', age: 85 },
+      ],
+    });
+    assert.equal(result.rowCount, 2);
+
+    const stats = await g.stats();
+    assert.equal(stats.byNodeType.PluginEntity, 1);
+
+    const listed = await g.listDatasets({ ownerOmadiaUserId: 'user-1' });
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0]?.id, result.datasetId);
+
+    const fetched = await g.getDataset(result.datasetId, 'user-1');
+    assert.ok(fetched);
+    assert.equal(fetched?.rowCount, 2);
+  });
+
+  it('hides a dataset from a non-owner (getDataset/listDatasets/queryDatasetRows all return null/empty)', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const result = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'Secret',
+      sourceFileName: 's.csv',
+      columns: [{ name: 'v', type: 'number' }],
+      rows: [{ v: 1 }],
+    });
+    assert.equal(await g.getDataset(result.datasetId, 'user-2'), null);
+    assert.deepEqual(await g.listDatasets({ ownerOmadiaUserId: 'user-2' }), []);
+    assert.equal(await g.queryDatasetRows(result.datasetId, 'user-2'), null);
+  });
+
+  it('filters rows via the constrained DSL (eq / contains / numeric comparisons)', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'Sales',
+      sourceFileName: 'sales.csv',
+      columns: [
+        { name: 'region', type: 'string' },
+        { name: 'amount', type: 'number' },
+      ],
+      rows: [
+        { region: 'North', amount: 100 },
+        { region: 'South', amount: 250 },
+        { region: 'North', amount: 400 },
+      ],
+    });
+
+    const north = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'region', op: 'eq', value: 'North' }],
+    });
+    assert.equal(north?.totalMatched, 2);
+    assert.equal(north?.rows?.length, 2);
+
+    const big = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'amount', op: 'gt', value: 200 }],
+    });
+    assert.equal(big?.totalMatched, 2);
+
+    const contains = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'region', op: 'contains', value: 'orth' }],
+    });
+    assert.equal(contains?.totalMatched, 2);
+  });
+
+  // #430 review fixup — `matchesDatasetFilter`'s `eq`/`neq`/`contains` cases
+  // must coerce `filter.value` to the column's declared type BEFORE
+  // comparing, exactly like `buildDatasetFilterClause` does for the Neon
+  // backend (`(data->>col)::numeric = $1::numeric` for a `number` column).
+  // Without that coercion, a `number` column storing a JS `number` row value
+  // silently failed to match a filter value that arrived as a JSON string
+  // (the tool's Zod schema allows `string | number | boolean` regardless of
+  // the target column's type or op) — the exact same logical query matched
+  // on the Neon backend but returned `totalMatched: 0` here.
+  it('coerces a string filter value against a number column for eq (backend parity, #430 fixup)', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'Sales',
+      sourceFileName: 'sales.csv',
+      columns: [
+        { name: 'region', type: 'string' },
+        { name: 'amount', type: 'number' },
+        { name: 'label', type: 'string' },
+      ],
+      rows: [
+        { region: 'North', amount: 100, label: 'Order-100' },
+        { region: 'South', amount: 250, label: 'Order-250' },
+        { region: 'North', amount: 400, label: 'Order-400' },
+      ],
+    });
+
+    // `amount` is a `number` column storing `250` as a JS number; the filter
+    // value arrives as the string `'250'` — must still match.
+    const eqCoerced = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'amount', op: 'eq', value: '250' }],
+    });
+    assert.equal(eqCoerced?.totalMatched, 1);
+    assert.equal(eqCoerced?.rows?.[0]?.['region'], 'South');
+
+    // Mirror case for `neq`: everything except the coerced match.
+    const neqCoerced = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'amount', op: 'neq', value: '250' }],
+    });
+    assert.equal(neqCoerced?.totalMatched, 2);
+
+    // Mirror case for `contains`: `filter.value` arrives as a number even
+    // though the target column (`label`) is `string` — must be coerced to
+    // a string before the substring check instead of being rejected
+    // outright (the old code required `typeof filter.value === 'string'`).
+    const containsCoerced = await g.queryDatasetRows(datasetId, 'user-1', {
+      filters: [{ column: 'label', op: 'contains', value: 400 as unknown as string }],
+    });
+    assert.equal(containsCoerced?.totalMatched, 1);
+    assert.equal(containsCoerced?.rows?.[0]?.['label'], 'Order-400');
+  });
+
+  it('clamps an explicit limit:0 to 1 row instead of silently falling back to the default (#430 fixup)', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'Sales',
+      sourceFileName: 'sales.csv',
+      columns: [{ name: 'region', type: 'string' }],
+      rows: [{ region: 'North' }, { region: 'South' }],
+    });
+
+    const zeroLimit = await g.queryDatasetRows(datasetId, 'user-1', { limit: 0 });
+    assert.equal(zeroLimit?.rows?.length, 1, 'limit:0 must clamp to 1, not fall back to the default');
+    assert.equal(zeroLimit?.totalMatched, 2);
+  });
+
+  it('aggregates with and without groupBy', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'Sales',
+      sourceFileName: 'sales.csv',
+      columns: [
+        { name: 'region', type: 'string' },
+        { name: 'amount', type: 'number' },
+      ],
+      rows: [
+        { region: 'North', amount: 100 },
+        { region: 'South', amount: 250 },
+        { region: 'North', amount: 400 },
+      ],
+    });
+
+    const total = await g.queryDatasetRows(datasetId, 'user-1', {
+      aggregate: { fn: 'sum', column: 'amount' },
+    });
+    assert.equal(total?.aggregateValue, 750);
+
+    const byRegion = await g.queryDatasetRows(datasetId, 'user-1', {
+      groupBy: 'region',
+      aggregate: { fn: 'sum', column: 'amount' },
+    });
+    const asMap = new Map(byRegion?.groups?.map((gr) => [gr.key, gr.value]));
+    assert.equal(asMap.get('North'), 500);
+    assert.equal(asMap.get('South'), 250);
+
+    const count = await g.queryDatasetRows(datasetId, 'user-1', {
+      aggregate: { fn: 'count' },
+    });
+    assert.equal(count?.aggregateValue, 3);
+  });
+
+  it('#430 fixup — caps grouped results at 200, matching the Neon backend LIMIT, sorted by value descending', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const rows = Array.from({ length: 250 }, (_, i) => ({
+      key: `k${String(i)}`,
+      amount: i, // distinct value per group so the sort order is unambiguous
+    }));
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'ManyGroups',
+      sourceFileName: 'many.csv',
+      columns: [
+        { name: 'key', type: 'string' },
+        { name: 'amount', type: 'number' },
+      ],
+      rows,
+    });
+
+    const result = await g.queryDatasetRows(datasetId, 'user-1', {
+      groupBy: 'key',
+      aggregate: { fn: 'sum', column: 'amount' },
+    });
+    assert.equal(result?.groups?.length, 200, 'must cap at 200 groups even though 250 unique keys exist');
+    // `totalMatched` still reflects every row, not just the returned groups.
+    assert.equal(result?.totalMatched, 250);
+    // Deterministic: sorted by value descending, so the 200 HIGHEST-amount
+    // groups survive (k249..k50), not the first 200 inserted (k0..k199).
+    const values = (result?.groups ?? []).map((gr) => gr.value);
+    assert.deepEqual(values, [...values].sort((a, b) => (b ?? 0) - (a ?? 0)));
+    assert.equal(result?.groups?.[0]?.key, 'k249');
+    assert.equal(
+      result?.groups?.some((gr) => gr.key === 'k0'),
+      false,
+      'the lowest-value group must be truncated away, not the last-inserted one',
+    );
+  });
+
+  it('rejects an unknown filter column and an aggregate on a non-number column', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'D',
+      sourceFileName: 'd.csv',
+      columns: [{ name: 'name', type: 'string' }],
+      rows: [{ name: 'Ada' }],
+    });
+    await assert.rejects(
+      g.queryDatasetRows(datasetId, 'user-1', {
+        filters: [{ column: 'nope', op: 'eq', value: 1 }],
+      }),
+    );
+    await assert.rejects(
+      g.queryDatasetRows(datasetId, 'user-1', {
+        aggregate: { fn: 'sum', column: 'name' },
+      }),
+    );
+  });
+
+  it('deletes a dataset (owner-only) and drops its graph node', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    const { datasetId } = await g.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'D',
+      sourceFileName: 'd.csv',
+      columns: [{ name: 'v', type: 'number' }],
+      rows: [{ v: 1 }],
+    });
+    assert.equal(
+      await g.deleteDataset(datasetId, { actorOmadiaUserId: 'user-2' }),
+      false,
+      'non-owner delete is a no-op',
+    );
+    assert.equal(await g.deleteDataset(datasetId, { actorOmadiaUserId: 'user-1' }), true);
+    assert.equal(await g.getDataset(datasetId, 'user-1'), null);
+    const stats = await g.stats();
+    assert.equal(stats.byNodeType.PluginEntity ?? 0, 0);
+  });
+});

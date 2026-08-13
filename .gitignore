@@ -23,6 +23,9 @@ build/
 out/
 .next/
 *.tsbuildinfo
+# Python bytecode from the sidecar unit tests (middleware/sidecars/*)
+__pycache__/
+*.pyc
 
 # ─── Local-only dev state ─────────────────────────────────────────────────
 # Data pulled from production Fly volumes (never commit — user-specific + sensitive)
@@ -32,6 +35,9 @@ middleware/.memory/
 # Teams app package artifacts (manifest + icons ARE tracked; the zipped bundle isn't)
 middleware/appPackage/*.zip
 middleware/*.zip
+# Per-file test durations, written by `npm test` and read by `test:filetimes`
+# (issue #566). A measurement of the machine that ran it, not a repo fact.
+middleware/test-file-durations.json
 
 # ─── Editor / OS ──────────────────────────────────────────────────────────
 .DS_Store

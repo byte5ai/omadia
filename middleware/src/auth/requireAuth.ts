@@ -12,6 +12,50 @@ declare module 'express-serve-static-core' {
   }
 }
 
+/** Outcome of {@link evaluateSessionToken} — mirrors the response shape
+ *  `requireAuth` sends on failure (`{code, message}`) so every caller of the
+ *  shared evaluation (the Express middleware below AND the plugin-facing
+ *  `ctx.operatorAuth` accessor) reports failures identically. */
+export type SessionEvaluation =
+  | { readonly ok: true; readonly claims: SessionClaims }
+  | {
+      readonly ok: false;
+      readonly code: 'auth.missing' | 'auth.invalid' | 'auth.not_whitelisted';
+      readonly message: string;
+    };
+
+/**
+ * The single code path that decides whether a session token is currently
+ * valid — extracted so `requireAuth` (below) and the kernel's
+ * `ctx.operatorAuth` accessor (`operatorAuthAccessor.ts`) can never drift
+ * apart on what "a valid operator session" means. Same rule either caller
+ * uses: verify the JWT against `signingKey`, then apply the Entra-whitelist
+ * gate (local-provider sessions skip it — see the doc comment below).
+ */
+export async function evaluateSessionToken(
+  token: string | undefined,
+  deps: { signingKey: Uint8Array; whitelist: EmailWhitelist },
+): Promise<SessionEvaluation> {
+  if (!token) {
+    return { ok: false, code: 'auth.missing', message: 'no session' };
+  }
+  try {
+    const claims = await verifySession(token, deps.signingKey);
+    // Whitelist gate applies only to OIDC-managed identities. Local
+    // users rely on the users-table status (already checked at login).
+    if (claims.provider === 'entra' && !deps.whitelist.isAllowed(claims.email)) {
+      return {
+        ok: false,
+        code: 'auth.not_whitelisted',
+        message: 'email no longer authorised',
+      };
+    }
+    return { ok: true, claims };
+  } catch {
+    return { ok: false, code: 'auth.invalid', message: 'session invalid or expired' };
+  }
+}
+
 /**
  * Gate for /api/v1/* routes (except /api/v1/auth/*).
  *
@@ -60,24 +104,13 @@ export function createRequireAuth(deps: {
     }
     const cookies = (req as Request & { cookies?: Record<string, string> }).cookies;
     const token = cookies ? cookies[SESSION_COOKIE] : undefined;
-    if (!token) {
-      res.status(401).json({ code: 'auth.missing', message: 'no session' });
+    const result = await evaluateSessionToken(token, deps);
+    if (!result.ok) {
+      const status = result.code === 'auth.not_whitelisted' ? 403 : 401;
+      res.status(status).json({ code: result.code, message: result.message });
       return;
     }
-    try {
-      const claims = await verifySession(token, deps.signingKey);
-      // Whitelist gate applies only to OIDC-managed identities. Local
-      // users rely on the users-table status (already checked at login).
-      if (claims.provider === 'entra' && !deps.whitelist.isAllowed(claims.email)) {
-        res
-          .status(403)
-          .json({ code: 'auth.not_whitelisted', message: 'email no longer authorised' });
-        return;
-      }
-      req.session = claims;
-      next();
-    } catch {
-      res.status(401).json({ code: 'auth.invalid', message: 'session invalid or expired' });
-    }
+    req.session = result.claims;
+    next();
   };
 }

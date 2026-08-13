@@ -17,13 +17,31 @@ import {
   type GithubIssueStatus,
   type IssueCategory,
 } from '../_lib/api';
+import {
+  formatDiagnosticsExcerpt,
+  hasDiagnostics,
+  initDiagnosticsCapture,
+} from '../_lib/diagnosticsBuffer';
 import { Markdown } from './Markdown';
+import { Button } from './ui/Button';
 
 const CATEGORIES: readonly IssueCategory[] = ['bug', 'feature', 'improvement'];
 const MAX_TEXT = 5000;
 
 type Step = 'compose' | 'preview' | 'done';
 type BodyTab = 'edit' | 'preview';
+
+/** Extracts the server's `{ code }` from an ApiError body, or null if the
+ *  error isn't an ApiError or its body isn't the expected JSON shape. */
+function apiErrorCode(err: unknown): string | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed = JSON.parse(err.body) as { code?: unknown };
+    return typeof parsed.code === 'string' ? parsed.code : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Global header action: file a GitHub issue without leaving omadia.
@@ -53,8 +71,27 @@ export function CreateIssueButton(): React.ReactElement {
   const [connecting, setConnecting] = useState(false);
   const [device, setDevice] = useState<GithubDeviceStart | null>(null);
   const [created, setCreated] = useState<CreatedIssue | null>(null);
+  // Opt-in diagnostics attachment (issue #433) — default off. `diagnostics`
+  // holds the sanitized `<details>` block echoed back by /preview, so the
+  // operator reviews the exact text /create will append. `diagnosticsRaw`
+  // freezes the raw excerpt sent WITH that preview request: window
+  // error/unhandledrejection/API-error capture keeps running while the
+  // dialog sits on the preview screen, so re-reading the live buffer at
+  // create-time could attach text the operator never reviewed. onCreate
+  // resends this exact captured value, never a fresh read of the buffer.
+  const [diagnosticsAvailable, setDiagnosticsAvailable] = useState(false);
+  const [attachDiagnostics, setAttachDiagnostics] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<string | null>(null);
+  const [diagnosticsRaw, setDiagnosticsRaw] = useState<string | null>(null);
   const textRef = useRef<HTMLTextAreaElement | null>(null);
   const cancelRef = useRef(false);
+
+  // Register the window error/rejection listeners once, regardless of
+  // whether the dialog is ever opened — this component is always mounted
+  // in the header, so it is the natural place to start capturing.
+  useEffect(() => {
+    initDiagnosticsCapture();
+  }, []);
 
   const refreshStatus = useCallback(async (): Promise<GithubIssueStatus | null> => {
     try {
@@ -84,14 +121,19 @@ export function CreateIssueButton(): React.ReactElement {
     setConnecting(false);
     setDevice(null);
     setCreated(null);
+    setAttachDiagnostics(false);
+    setDiagnostics(null);
+    setDiagnosticsRaw(null);
   }, [stopPolling]);
 
-  // Fetch connection status when the dialog opens; focus the textarea.
+  // Fetch connection status when the dialog opens; focus the textarea;
+  // snapshot whether there is anything to offer as diagnostics.
   // Defer out of the effect body so the async setState in refreshStatus
   // can't be mistaken for a synchronous cascading render.
   useEffect(() => {
     if (!open) return;
     queueMicrotask(() => {
+      setDiagnosticsAvailable(hasDiagnostics());
       void refreshStatus();
       textRef.current?.focus();
     });
@@ -118,6 +160,7 @@ export function CreateIssueButton(): React.ReactElement {
 
   const mapPreviewError = useCallback(
     (err: unknown): string => {
+      if (apiErrorCode(err) === 'invalid_diagnostics') return t('errorDiagnostics');
       if (err instanceof ApiError) {
         if (err.status === 429) return t('errorRateLimited');
         if (err.status === 503) return t('errorLlm');
@@ -133,17 +176,27 @@ export function CreateIssueButton(): React.ReactElement {
     if (!trimmed) return;
     setBusy(true);
     setError(null);
+    // Freeze the diagnostics excerpt now — this exact value is what /preview
+    // sanitizes/echoes back, and it is what onCreate resends, so the operator
+    // reviews and files byte-identical diagnostics (see state doc comment).
+    const diagnosticsSnapshot = attachDiagnostics ? formatDiagnosticsExcerpt() : null;
     try {
-      const preview = await previewGithubIssue({ text: trimmed, category });
+      const preview = await previewGithubIssue({
+        text: trimmed,
+        category,
+        diagnostics: diagnosticsSnapshot ?? undefined,
+      });
       setTitle(preview.title);
       setBody(preview.body);
+      setDiagnostics(preview.diagnostics ?? null);
+      setDiagnosticsRaw(diagnosticsSnapshot);
       setStep('preview');
     } catch (err) {
       setError(mapPreviewError(err));
     } finally {
       setBusy(false);
     }
-  }, [text, category, mapPreviewError]);
+  }, [text, category, attachDiagnostics, mapPreviewError]);
 
   const onCreate = useCallback(async (): Promise<void> => {
     if (!title.trim() || !body.trim()) return;
@@ -154,6 +207,9 @@ export function CreateIssueButton(): React.ReactElement {
         title: title.trim(),
         body: body.trim(),
         category,
+        // Resend the SAME diagnostics text the operator reviewed at preview
+        // time — never a fresh read of the live buffer (issue #433 review).
+        diagnostics: attachDiagnostics ? (diagnosticsRaw ?? undefined) : undefined,
       });
       setCreated(issue);
       setStep('done');
@@ -161,13 +217,15 @@ export function CreateIssueButton(): React.ReactElement {
       if (err instanceof ApiError && err.status === 409) {
         setError(t('errorNotConnected'));
         void refreshStatus();
+      } else if (apiErrorCode(err) === 'invalid_diagnostics') {
+        setError(t('errorDiagnostics'));
       } else {
         setError(t('errorGeneric'));
       }
     } finally {
       setBusy(false);
     }
-  }, [title, body, category, t, refreshStatus]);
+  }, [title, body, category, attachDiagnostics, diagnosticsRaw, t, refreshStatus]);
 
   const onConnect = useCallback(async (): Promise<void> => {
     setError(null);
@@ -267,6 +325,7 @@ export function CreateIssueButton(): React.ReactElement {
                 ? t('previewTitle')
                 : t('dialogTitle')}
           </h2>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only modal close chrome, not a §4.2 Button candidate */}
           <button
             type="button"
             onClick={close}
@@ -293,6 +352,7 @@ export function CreateIssueButton(): React.ReactElement {
                     ? t('connectedAs', { login: status.login })
                     : t('repoNote')}
                   {' · '}
+                  {/* eslint-disable-next-line no-restricted-syntax -- inline text link (disconnect), not a §4.2 Button candidate */}
                   <button
                     type="button"
                     onClick={() => void onDisconnect()}
@@ -330,14 +390,16 @@ export function CreateIssueButton(): React.ReactElement {
                   <span className="text-[color:var(--fg)]">
                     {t('connectIntro')}
                   </span>
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="shrink-0"
                     onClick={() => void onConnect()}
-                    disabled={connecting}
-                    className="shrink-0 rounded border border-[color:var(--border-strong)] px-3 py-1 text-[color:var(--fg-strong)] hover:bg-[color:var(--bg-inverse)] hover:text-[color:var(--fg-on-dark)] disabled:opacity-50"
+                    busy={connecting}
+                    busyLabel={t('connecting')}
                   >
-                    {connecting ? t('connecting') : t('connectGithub')}
-                  </button>
+                    {t('connectGithub')}
+                  </Button>
                 </div>
               )}
             </div>
@@ -393,6 +455,33 @@ export function CreateIssueButton(): React.ReactElement {
                   {text.length} / {MAX_TEXT}
                 </span>
               </label>
+
+              {diagnosticsAvailable && (
+                <div className="mt-3">
+                  <label className="flex items-center gap-2 text-xs text-[color:var(--fg)]">
+                    <input
+                      type="checkbox"
+                      checked={attachDiagnostics}
+                      onChange={(e) => setAttachDiagnostics(e.target.checked)}
+                      disabled={busy}
+                    />
+                    {t('diagnosticsCheckboxLabel')}
+                  </label>
+                  <p className="mt-0.5 text-[11px] text-[color:var(--fg-muted)]">
+                    {t('diagnosticsCheckboxHint')}
+                  </p>
+                  {attachDiagnostics && (
+                    <details className="mt-2 rounded border border-[color:var(--border)] px-2 py-1">
+                      <summary className="cursor-pointer text-[11px] text-[color:var(--fg-muted)]">
+                        {t('diagnosticsPreviewLabel')}
+                      </summary>
+                      <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap text-[11px] text-[color:var(--fg-muted)]">
+                        {formatDiagnosticsExcerpt()}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              )}
             </>
           )}
 
@@ -421,6 +510,7 @@ export function CreateIssueButton(): React.ReactElement {
                   </span>
                   <div className="flex gap-1">
                     {(['edit', 'preview'] as const).map((tab) => (
+                      // eslint-disable-next-line no-restricted-syntax -- segmented tab selector (edit/preview), not a §4.2 Button candidate
                       <button
                         key={tab}
                         type="button"
@@ -458,6 +548,17 @@ export function CreateIssueButton(): React.ReactElement {
                   </div>
                 )}
               </div>
+
+              {diagnostics && (
+                <div className="mb-3">
+                  <span className="mb-1 block text-[11px] uppercase tracking-wider text-[color:var(--fg-muted)]">
+                    {t('diagnosticsSectionLabel')}
+                  </span>
+                  <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded border border-[color:var(--border)] px-3 py-2 text-[11px] text-[color:var(--fg-muted)]">
+                    {diagnostics}
+                  </pre>
+                </div>
+              )}
             </>
           )}
 
@@ -502,68 +603,61 @@ export function CreateIssueButton(): React.ReactElement {
         <div className="flex justify-end gap-2 border-t border-[color:var(--border)] px-4 py-3">
           {step === 'compose' && (
             <>
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={close}
                 disabled={busy}
-                className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
               >
                 {t('cancel')}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                size="sm"
                 onClick={() => void onContinue()}
-                disabled={busy || text.trim().length === 0}
-                className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
+                disabled={text.trim().length === 0}
+                busy={busy}
+                busyLabel={t('reformulating')}
               >
-                {busy ? t('reformulating') : t('reformulate')}
-              </button>
+                {t('reformulate')}
+              </Button>
             </>
           )}
           {step === 'preview' && (
             <>
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => {
                   setStep('compose');
                   setError(null);
                 }}
                 disabled={busy}
-                className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)] disabled:opacity-50"
               >
                 {t('back')}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                size="sm"
                 onClick={() => void onCreate()}
                 disabled={
-                  busy ||
                   !connected ||
                   title.trim().length === 0 ||
                   body.trim().length === 0
                 }
-                className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)] disabled:opacity-50"
+                busy={busy}
+                busyLabel={t('creating')}
               >
-                {busy ? t('creating') : t('create')}
-              </button>
+                {t('create')}
+              </Button>
             </>
           )}
           {step === 'done' && (
             <>
-              <button
-                type="button"
-                onClick={reset}
-                className="rounded border border-[color:var(--border)] px-3 py-1 text-xs hover:border-[color:var(--border-strong)]"
-              >
+              <Button variant="secondary" size="sm" onClick={reset}>
                 {t('createAnother')}
-              </button>
-              <button
-                type="button"
-                onClick={close}
-                className="rounded bg-[color:var(--bg-inverse)] px-3 py-1 text-xs text-[color:var(--fg-on-dark)] hover:bg-[color:var(--fg-muted)]"
-              >
+              </Button>
+              <Button size="sm" onClick={close}>
                 {t('dismiss')}
-              </button>
+              </Button>
             </>
           )}
         </div>
@@ -573,6 +667,7 @@ export function CreateIssueButton(): React.ReactElement {
 
   return (
     <>
+      {/* eslint-disable-next-line no-restricted-syntax -- icon-only header trigger (GitHub glyph), not a §4.2 Button candidate */}
       <button
         type="button"
         onClick={() => {

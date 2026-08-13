@@ -79,6 +79,17 @@
   --state-success-fg:  light-dark(#3F7A55, #88C499);
   --state-warning-fg:  light-dark(#8C6A1F, #D6B468);
 
+  /* ---- Conductor step-kind palette ----
+     Identity colors for workflow step nodes in the designer canvas and the
+     read-only template preview. Kind identity, not state — same hue in both
+     modes (the nodes sit on the card surface). Consumed via
+     conductor/_components/stepKindColors.ts; never hardcode these hexes in
+     component code. */
+  --step-kind-agent:    #6AB7FF;
+  --step-kind-action:   #8B9CFF;
+  --step-kind-human:    #F2B95E;
+  --step-kind-badge-fg: #0B0B0B;
+
   /* ============================================================
      Accent — active palette. Default = Lagoon (spec §2.5.3).
      Overridden by [data-palette="petrol"|"atelier"|"lagoon"] below.

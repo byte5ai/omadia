@@ -217,10 +217,11 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
 
       <p className="text-[12px] leading-relaxed text-[color:var(--fg-muted)]">
         {t.rich('description', {
-          schema: () => (
-            <code className="font-mono text-[11px]">
-              {`{ format, sections: [...] }`}
-            </code>
+          // Passed as a plain ICU value, not baked into the message: the
+          // literal contains braces, which ICU would parse as placeholders.
+          schemaShape: '{ format, sections: [...] }',
+          schema: (chunks) => (
+            <code className="font-mono text-[11px]">{chunks}</code>
           ),
         })}
       </p>
@@ -282,6 +283,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
         >
           {t('discard')}
         </Button>
+        {/* eslint-disable-next-line no-restricted-syntax -- warning-outline clear-editor action (§10 no warning variant) */}
         <button
           type="button"
           onClick={handleClear}
@@ -293,6 +295,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
 
         <span className="ml-auto" />
 
+        {/* eslint-disable-next-line no-restricted-syntax -- preview open/close toggle (aria-expanded), not a §4.2 CTA */}
         <button
           type="button"
           onClick={(): void => setPreviewOpen((v) => !v)}

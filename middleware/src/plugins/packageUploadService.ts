@@ -8,6 +8,7 @@ import {
   MigrationTimeoutError,
 } from '@omadia/plugin-api';
 
+import { findUnscannableSegment } from '../services/pluginScanner.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import { loadManifestFromPath } from './manifestLoader.js';
@@ -87,6 +88,19 @@ export interface PackageUploadServiceDeps {
    * without an `onMigrate` export would get).
    */
   migrationRunner?: MigrationRunner;
+  /**
+   * Optional code-scan scheduler (issue #453). Invoked fire-and-forget on
+   * the ingest success path — a missing scheduler, a scheduler throw, or a
+   * scanner outage must never fail or delay an ingest (advisory-only v1).
+   * Structural slice of `PluginScanScheduler` in services/pluginVerdict.ts.
+   */
+  scanScheduler?: {
+    scheduleScan(input: {
+      sha256: string;
+      pluginId: string;
+      installedDir: string;
+    }): Promise<void>;
+  };
   log?: (msg: string) => void;
 }
 
@@ -209,6 +223,19 @@ export class PackageUploadService {
           `lifecycle.entry '${entryRel}' ist im Zip nicht vorhanden.`,
         );
       }
+      // #453 (codex review fix) — the code scan skips node_modules/.git, so
+      // an entry point below such a path would EXECUTE code the scanner
+      // never saw while the store shows a clean badge. No legitimate omadia
+      // plugin does this (the boilerplate uses dist/plugin.js) → reject.
+      const unscannable = findUnscannableSegment(
+        path.relative(packageRoot, absEntry),
+      );
+      if (unscannable !== null) {
+        return fail(
+          'package.entry_unscannable',
+          `lifecycle.entry '${entryRel}' liegt unter '${unscannable}' — Entry Points unter node_modules oder versteckten Verzeichnissen sind nicht erlaubt (der Code-Scan würde sie nicht erfassen).`,
+        );
+      }
 
       // --- 9. ID-Konflikt-Check --------------------------------------------
       const existingUploaded = this.deps.store.get(plugin.id);
@@ -267,11 +294,20 @@ export class PackageUploadService {
       }
 
       // --- 10. Atomic rename into the final directory ----------------------
-      const finalDir = path.join(
+      // Containment is re-asserted here, independently of the charset gate in
+      // the manifest loader: the next two statements are an `fs.rm -rf` and a
+      // rename, so this is the last place where a traversing id/version can
+      // still be stopped, and it must not depend on a single upstream check
+      // staying correct.
+      const contained = resolveContainedPackageDir(
         this.deps.packagesDir,
         plugin.id,
         plugin.version,
       );
+      if (!contained.ok) {
+        return fail('package.path_traversal', contained.message);
+      }
+      const finalDir = contained.dir;
       await fs.mkdir(path.dirname(finalDir), { recursive: true });
       // If leftovers from an aborted installation are lying around → remove.
       await fs.rm(finalDir, { recursive: true, force: true });
@@ -327,6 +363,29 @@ export class PackageUploadService {
         `[upload] ingest OK id=${plugin.id} version=${plugin.version} sha256=${sha256.slice(0, 12)} peers_missing=${peersMissing.length}${migratedConfig !== null ? ' [migrated]' : ''}`,
       );
 
+      // Advisory code scan (issue #453) — fire-and-forget AFTER the package
+      // is fully ingested. Not awaited: ingest latency stays unaffected, and
+      // any scheduler error is contained here.
+      if (this.deps.scanScheduler) {
+        try {
+          void this.deps.scanScheduler
+            .scheduleScan({
+              sha256,
+              pluginId: plugin.id,
+              installedDir: finalDir,
+            })
+            .catch((err: unknown) => {
+              log(
+                `[upload] plugin scan for ${plugin.id} failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            });
+        } catch (err) {
+          log(
+            `[upload] plugin scan scheduling for ${plugin.id} failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
       // Re-upload onto an already installed agent (typical: package file
       // was deleted, registry entry still `active`). Without the hook the
       // agent stays "installed but inactive" — the tool would be visible
@@ -371,6 +430,51 @@ export class PackageUploadService {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Entries that live DIRECTLY under the packages root and are not plugin
+ * directories: the host-node_modules symlink written by
+ * {@link ensureHostNodeModulesLink} and the store index. A plugin id equal to
+ * one of them stays inside the root as a string but would either follow the
+ * symlink out of the packages tree (into the host's real `node_modules`) or
+ * collide with the index file. `.staging` needs no entry — a leading dot is
+ * already outside the id charset.
+ */
+const RESERVED_ROOT_ENTRIES: ReadonlySet<string> = new Set([
+  'node_modules',
+  'index.json',
+]);
+
+/**
+ * Resolves `<packagesDir>/<id>/<version>` and proves it stays under the
+ * packages root. Defence in depth for the manifest loader's charset gate: the
+ * caller is about to `fs.rm -rf` this path, so containment is verified here
+ * from the raw values rather than assumed. Exported so the escape branch can
+ * be exercised directly — through `ingest` the loader's charset gate rejects
+ * a traversing id first, which is the point of having two layers.
+ */
+export function resolveContainedPackageDir(
+  packagesDir: string,
+  pluginId: string,
+  version: string,
+): { ok: true; dir: string } | { ok: false; message: string } {
+  const root = path.resolve(packagesDir);
+  const dir = path.resolve(path.join(root, pluginId, version));
+  if (!dir.startsWith(root + path.sep)) {
+    return {
+      ok: false,
+      message: `manifest.identity id/version resolve outside the packages directory (id=${JSON.stringify(pluginId)}, version=${JSON.stringify(version)}).`,
+    };
+  }
+  const firstSegment = path.relative(root, dir).split(path.sep)[0];
+  if (firstSegment !== undefined && RESERVED_ROOT_ENTRIES.has(firstSegment)) {
+    return {
+      ok: false,
+      message: `manifest.identity.id ${JSON.stringify(pluginId)} collides with the reserved packages-root entry '${firstSegment}'.`,
+    };
+  }
+  return { ok: true, dir };
+}
 
 async function resolvePackageRoot(stagingRoot: string): Promise<string | null> {
   if (await fileExists(path.join(stagingRoot, 'manifest.yaml'))) {

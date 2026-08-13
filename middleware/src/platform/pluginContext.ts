@@ -36,6 +36,7 @@ import {
   type NotificationsAccessor,
   type OAuthTokensAccessor,
   OAuthTokenError,
+  type OperatorAuthAccessor,
   type PluginContext,
   type RoutesAccessor,
   type PluginActionStatus,
@@ -74,6 +75,7 @@ import {
   resolveOAuthProvider,
 } from '../plugins/oauth/providerResolve.js';
 import {
+  isTokenStillFresh,
   readStoredTokens,
   writeStoredTokens,
 } from '../plugins/oauth/tokenStore.js';
@@ -162,6 +164,11 @@ export interface CreatePluginContextOptions {
   /** Spec 004 — kernel store backing `ctx.status`. Optional: when absent the
    *  accessor is a no-op (test/migration contexts don't surface status). */
   pluginStatusRegistry?: PluginStatusRegistry;
+  /** Issue #438 follow-up — kernel-published `ctx.operatorAuth`. Optional:
+   *  absent in narrow test/migration contexts, in which case `ctx.operatorAuth`
+   *  is `undefined` and any plugin admin-router relying on it MUST fail closed
+   *  (see the `PluginContext.operatorAuth` doc comment). */
+  operatorAuth?: OperatorAuthAccessor;
   logger?: (...args: unknown[]) => void;
 }
 
@@ -228,11 +235,14 @@ export function createPluginContext(
     has(name: string): boolean {
       return serviceRegistry.has(name);
     },
+    // Owner attribution comes from the kernel-known `agentId`, never from
+    // the caller — it is what lets `disposeBySource(agentId)` unregister a
+    // plugin's services on deactivate.
     provide<T>(name: string, impl: T): () => void {
-      return serviceRegistry.provide(name, impl);
+      return serviceRegistry.provide(name, impl, agentId);
     },
     replace<T>(name: string, impl: T): () => void {
-      return serviceRegistry.replace(name, impl);
+      return serviceRegistry.replace(name, impl, agentId);
     },
   };
 
@@ -435,16 +445,37 @@ export function createPluginContext(
         ...(options?.attachmentSink
           ? { attachmentSink: options.attachmentSink }
           : {}),
+        // #542 — carry the plugin's declared write capabilities into the registry
+        // so `ToolDispatchService` can give this tool duplicate-write protection.
+        // Without this forward, only kernel-internal registrations could declare
+        // themselves and no real plugin (Odoo, M365) would ever be protected.
+        ...(options?.writeCapabilities !== undefined
+          ? { writeCapabilities: options.writeCapabilities }
+          : {}),
       });
     },
     registerHandler(name, handler, options) {
+      // Issue #474 (round 8) — thread the calling plugin's agentId through
+      // this path exactly like `register()` above does, so a plugin that
+      // ships a handler-only tool (e.g. harness-memory's `memory` tool)
+      // flows through the same `isToolAvailable(agentId)` gate as every
+      // other plugin-contributed tool instead of defaulting to always
+      // -available. Kernel-internal callers never reach this shim (they
+      // call `nativeToolRegistry.registerHandler()` directly without an
+      // agentId), so this only ever attaches a real plugin's own id.
       return opts.nativeToolRegistry.registerHandler(name, {
         handler,
+        agentId,
         ...(options?.promptDoc !== undefined
           ? { promptDoc: options.promptDoc }
           : {}),
         ...(options?.attachmentSink
           ? { attachmentSink: options.attachmentSink }
+          : {}),
+        // #542 — same forward as `register()` above; a handler-only tool is
+        // dispatchable by name, so it needs the same protection.
+        ...(options?.writeCapabilities !== undefined
+          ? { writeCapabilities: options.writeCapabilities }
           : {}),
       });
     },
@@ -538,7 +569,10 @@ export function createPluginContext(
   // rotating the stored refresh token. The refresh token NEVER leaves this
   // closure — only the access token is returned. Resolution shares
   // `resolveOAuthProvider` with the broker so the two can't drift.
-  const REFRESH_MARGIN_MS = 5 * 60 * 1000;
+  //
+  // Issue #474 (round 10) — the "still fresh" check is factored out to
+  // `tokenStore.ts`'s `isTokenStillFresh` so `OAuthReadinessTracker` can
+  // mirror this exact expiry rule instead of inventing its own.
   const hasOAuthField =
     catalog
       .get(agentId)
@@ -553,11 +587,7 @@ export function createPluginContext(
               `oauth field '${fieldKey}' is not connected — complete the Connect flow first`,
             );
           }
-          const expiresMs = Date.parse(stored.expiresAt);
-          const stillFresh =
-            Number.isFinite(expiresMs) &&
-            expiresMs - Date.now() > REFRESH_MARGIN_MS;
-          if (stillFresh) return stored.accessToken;
+          if (isTokenStillFresh(stored)) return stored.accessToken;
 
           if (!stored.refreshToken) {
             throw new OAuthTokenError(
@@ -677,6 +707,9 @@ export function createPluginContext(
     register(input) {
       return opts.uiRouteCatalog.register(agentId, input);
     },
+    registerNav(input) {
+      return opts.uiRouteCatalog.registerNav(agentId, input);
+    },
   };
 
   // OB-29-1 — SubAgentAccessor: present iff the manifest declares
@@ -765,6 +798,7 @@ export function createPluginContext(
     ...(flows ? { flows } : {}),
     ...(oauthTokens ? { oauthTokens } : {}),
     ...(events ? { events } : {}),
+    ...(opts.operatorAuth ? { operatorAuth: opts.operatorAuth } : {}),
     status,
     log,
   };
@@ -864,6 +898,10 @@ export function createPluginMcpAccessor(
           turnDate: current?.turnDate ?? new Date().toISOString().slice(0, 10),
           ...(current?.agentSlug ? { agentSlug: current.agentSlug } : {}),
           ...(current?.privacyHandle ? { privacyHandle: current.privacyHandle } : {}),
+          // W3-A — the turn's MCP OAuth identity. Dropping it here made every
+          // plugin-attributed call resolve as an unknown caller: `unresolved` in
+          // the audit trail, no token, and a `per_user` server failing closed.
+          ...(current?.mcpUserKey ? { mcpUserKey: current.mcpUserKey } : {}),
           mcpCallerKind: 'plugin',
           mcpCallerId: pluginId,
         },
@@ -872,6 +910,7 @@ export function createPluginMcpAccessor(
     },
   };
 }
+
 
 interface SubAgentPermissions {
   /** Whitelisted target agentIds. Wildcards (`'de.byte5.agent.*'`) match

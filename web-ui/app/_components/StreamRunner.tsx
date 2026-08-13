@@ -87,14 +87,14 @@ export async function runOneTurn(
   // Per-turn accumulators. Kept local to the runner so the store stays
   // thin — it just receives the resulting patches. The content buffer
   // powers a rolling preview tail that survives multiple `text_delta`
-  // chunks (otherwise the toast would only ever show the last delta).
+  // chunks (otherwise the preview would only ever show the last delta).
   let contentBuffer = '';
   let tokensIn = 0;
   let tokensOut = 0;
   let cacheTokens = 0;
   // #403 — an in-band `error` event on a 200 stream still means the turn
   // failed. Capture its humanized message here so the terminal record (and
-  // the background stream toast) can report the failure instead of a false
+  // the background stream tab marker) can report the failure instead of a false
   // 'done'. Stays null on a clean turn.
   let inbandErrorMessage: string | null = null;
 
@@ -106,10 +106,23 @@ export async function runOneTurn(
     let outgoing = event;
     if (event.type === 'error') {
       const clean = humanizeProviderError(event.message, t('errorProviderGeneric'));
-      inbandErrorMessage = clean;
-      if (clean !== event.message) {
-        console.warn('[chat] provider error', event.message);
-        outgoing = { ...event, message: clean };
+      // #641 — a failed turn used to reach the user with nothing they could act
+      // on: no code, no id, nothing to hand to support. The detail was logged
+      // server-side, so the information existed and simply never arrived. The
+      // orchestrator now sends the turn's correlation id (the same one in its
+      // `console.error` line); append it so the message is a handle rather than
+      // just an apology. Absent on older middleware — then this is a no-op and
+      // the bubble reads exactly as before.
+      const withRef =
+        event.correlationId !== undefined && event.correlationId !== ''
+          ? `${clean}\n\n${t('errorCorrelationRef', { id: event.correlationId })}`
+          : clean;
+      inbandErrorMessage = withRef;
+      if (withRef !== event.message) {
+        if (clean !== event.message) {
+          console.warn('[chat] provider error', event.message);
+        }
+        outgoing = { ...event, message: withRef };
       }
     }
     applyStreamEvent(liveSessions, sessionId, pendingMessageId, outgoing);
@@ -126,7 +139,7 @@ export async function runOneTurn(
       // The `done` event carries the authoritative answer; the live
       // text_delta buffer can legitimately be shorter than this (e.g.
       // Privacy Shield v4 server-side materialization). Mirror it so
-      // toasts that linger after `done` show the real final text.
+      // a preview that lingers after `done` shows the real final text.
       contentBuffer = event.answer;
     }
 
@@ -160,9 +173,16 @@ export async function runOneTurn(
       const { t } = depsRef.current;
       let msg: string;
       if (looksHtml || contentType.includes('text/html')) {
+        // #667 — this used to claim the middleware was UNREACHABLE and name
+        // `localhost:3979`. Both are things the client has not checked: a 500
+        // means something answered, and the dev host is meaningless on a hosted
+        // instance. In #665 the middleware was up and serving — its pg pool was
+        // dead — and this string sent the investigation at `MIDDLEWARE_URL`
+        // while the real fault was a plugin's pool lifetime. Say only what is
+        // known: an upstream 500 with a non-JSON body.
         msg =
           res.status === 500
-            ? t('errorMiddlewareUnreachable')
+            ? t('errorUpstreamErrorPage')
             : t('errorProxyFailure', { status: String(res.status) });
       } else if (contentType.includes('application/json')) {
         try {
@@ -238,7 +258,7 @@ export async function runOneTurn(
     }
   } finally {
     finalizePending(depsRef.current.sessions, sessionId, pendingMessageId);
-    void depsRef.current.sessions.persistActive();
+    depsRef.current.sessions.persistById(sessionId);
   }
 }
 
@@ -247,18 +267,15 @@ function finalizePending(
   sessionId: string,
   pendingMessageId: string,
 ): void {
-  sessions.mutateActive((session) => {
-    if (session.id !== sessionId) return session;
-    return {
-      ...session,
-      messages: session.messages.map((m) =>
-        m.id === pendingMessageId && m.streaming
-          ? { ...m, streaming: false, finishedAt: Date.now() }
-          : m,
-      ),
-      updatedAt: Date.now(),
-    };
-  });
+  sessions.mutateById(sessionId, (session) => ({
+    ...session,
+    messages: session.messages.map((m) =>
+      m.id === pendingMessageId && m.streaming
+        ? { ...m, streaming: false, finishedAt: Date.now() }
+        : m,
+    ),
+    updatedAt: Date.now(),
+  }));
 }
 
 interface AccumulatorState {
@@ -281,10 +298,12 @@ function derivePhasePatch(
 } | null {
   switch (event.type) {
     case 'text_delta':
-      return {
-        phase: 'streaming',
-        previewTail: tailOf(acc.contentBuffer),
-      };
+      // `previewTail` is deliberately NOT recomputed per delta. `tailOf` runs
+      // a regex over the whole accumulated answer, so doing it once per token
+      // is O(n²) across a turn — worth it while the toast overlay rendered the
+      // preview live, pure waste now that the tab marker doesn't (#286). The
+      // terminal snapshot below still populates it.
+      return { phase: 'streaming' };
     case 'tool_use':
       return { phase: 'tool_running', toolName: event.name };
     case 'tool_result':
@@ -328,7 +347,7 @@ function mapHeartbeatPhase(
 }
 
 /** Last ~160 chars of normalized text, sliced at a word boundary so the
- *  toast never opens mid-word (otherwise we'd routinely see "ach den…"
+ *  preview never opens mid-word (otherwise we'd routinely see "ach den…"
  *  when the buffer was cut from "nach den…"). Prefixes an ellipsis when
  *  the original was actually trimmed. */
 function tailOf(text: string): string {

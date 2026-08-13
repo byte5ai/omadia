@@ -77,6 +77,10 @@ export class ConductorRunExecutor {
   /** Late-bound role→holders resolver — the required responders for a quorum='all' role await.
    *  Required (not optional) so a role-based 'all' can never silently degrade to 'any' when unwired. */
   private readonly resolveRoleHolders: (roleKey: string) => Promise<string[]>;
+  /** Issue #437 — fired once a REAL (non-dry-run) run reaches a terminal status
+   *  ('completed'/'failed'). Feeds the outbound webhook dispatcher; best-effort and
+   *  never awaited inline — a slow/broken subscriber must not stall run driving. */
+  private readonly notifyRunEnded?: (run: ConductorRun) => void;
   private readonly log: (msg: string) => void;
 
   constructor(deps: {
@@ -85,6 +89,7 @@ export class ConductorRunExecutor {
     awaitStore: ConductorAwaitStore;
     effects: StepEffects;
     resolveRoleHolders: (roleKey: string) => Promise<string[]>;
+    notifyRunEnded?: (run: ConductorRun) => void;
     log?: (msg: string) => void;
   }) {
     this.workflowStore = deps.workflowStore;
@@ -92,6 +97,7 @@ export class ConductorRunExecutor {
     this.awaitStore = deps.awaitStore;
     this.effects = deps.effects;
     this.resolveRoleHolders = deps.resolveRoleHolders;
+    this.notifyRunEnded = deps.notifyRunEnded;
     this.log = deps.log ?? (() => undefined);
   }
 
@@ -207,7 +213,33 @@ export class ConductorRunExecutor {
       throw err;
     }
 
-    return (await this.runStore.get(runId)) ?? (await this.requireRun(runId));
+    // The while loop's natural exit represents "this drive is genuinely done" — a parked
+    // human await and RunLeaseLostError both return earlier, above.
+    return this.finalizeIfEnded((await this.runStore.get(runId)) ?? (await this.requireRun(runId)));
+  }
+
+  /**
+   * Fires `notifyRunEnded` exactly once a run is observed in a genuinely terminal,
+   * non-dry-run status (issue #437 — feeds the outbound webhook dispatcher).
+   * Best-effort and fire-and-forget: a broken/slow subscriber must never affect run
+   * driving, and a dry-run has no external effects to report.
+   *
+   * Centralizes the check used at every place a drive can stop without recursing back
+   * into `driveFrom` — `driveFrom`'s own loop-exit (above) covers everything that
+   * happens INSIDE a drive (including a direct in-loop terminal record, which never
+   * goes through `applyDecision`); `resolveAwait` (a 'complete'
+   * or 'stuck' decision that does not resume driving) and `expireAwait`'s no-fallback
+   * branch each call this directly for the same reason.
+   */
+  private finalizeIfEnded(run: ConductorRun): ConductorRun {
+    if (!run.isDryRun && (run.status === 'completed' || run.status === 'failed')) {
+      try {
+        this.notifyRunEnded?.(run);
+      } catch (err) {
+        this.log(`[conductor] run ${run.id} notifyRunEnded threw: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return run;
   }
 
   /**
@@ -297,7 +329,7 @@ export class ConductorRunExecutor {
     const seq = (await this.runStore.stepsForRun(aw.runId)).length;
     const next = await this.applyDecision(aw.runId, seq, aw.stepId, { kind: 'human', quorum: aw.quorum, resolvedUserId: responder }, decision, context, lease);
     if (next) return this.driveFrom(aw.runId, graph, next, context, lease);
-    return (await this.runStore.get(aw.runId)) ?? run;
+    return this.finalizeIfEnded((await this.runStore.get(aw.runId)) ?? run);
   }
 
   /** A deadline passed with no response — close the await and fire the in-graph fallback (FR-017). */
@@ -317,6 +349,8 @@ export class ConductorRunExecutor {
         runId: aw.runId, seq, stepId: aw.stepId, actor: { kind: 'human', timedOut: true },
         postconditionOutcome: 'unmet', transitionTaken: null, nextStepId: null, context: run.context, status: 'failed', claimedBy: lease,
       });
+      const ended = await this.runStore.get(aw.runId);
+      if (ended) this.finalizeIfEnded(ended);
       return;
     }
     await this.runStore.recordStepAndAdvance({

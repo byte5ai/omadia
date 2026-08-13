@@ -1,16 +1,58 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { Readable } from 'node:stream';
 import ExcelJS from 'exceljs';
+import type { TigrisStore } from '@omadia/diagrams';
 import {
   renderXlsx,
   renderDocx,
   sanitizeFilename,
   signDocumentUrl,
   verifyDocumentSig,
+  OfficeService,
   MEDIA_TYPE,
+  PROVENANCE_CATEGORY,
+  PROVENANCE_DESCRIPTION,
+  PROVENANCE_KEYWORDS,
+  PROVENANCE_PROP_AI_GENERATED,
+  PROVENANCE_PROP_GENERATOR,
+  PROVENANCE_PROP_STANDARD,
   type XlsxDescriptor,
   type DocxDescriptor,
 } from '@omadia/plugin-office';
+
+/** Extract every file entry of an OOXML (zip) buffer as UTF-8 text. Mirrors the
+ *  `unzipToMap` helper in profileBundle.test.ts — `.docx` exposes no reader, so
+ *  the provenance assertions read the raw `docProps/*.xml` back out of the
+ *  produced file rather than trusting the renderer input. */
+async function unzipToText(buf: Buffer): Promise<Map<string, string>> {
+  const yauzl = await import('yauzl');
+  return new Promise((resolve, reject) => {
+    yauzl.fromBuffer(buf, { lazyEntries: true }, (err, zf) => {
+      if (err || !zf) return reject(err ?? new Error('cannot open buffer'));
+      const out = new Map<string, string>();
+      zf.readEntry();
+      zf.on('entry', (entry) => {
+        if (/\/$/.test(entry.fileName)) {
+          zf.readEntry();
+          return;
+        }
+        zf.openReadStream(entry, (e2, stream) => {
+          if (e2 || !stream) return reject(e2 ?? new Error('no stream'));
+          const chunks: Buffer[] = [];
+          stream.on('data', (c: Buffer) => chunks.push(c));
+          stream.on('end', () => {
+            out.set(entry.fileName, Buffer.concat(chunks).toString('utf8'));
+            zf.readEntry();
+          });
+          stream.on('error', reject);
+        });
+      });
+      zf.on('end', () => resolve(out));
+      zf.on('error', reject);
+    });
+  });
+}
 
 const SECRET = 'z'.repeat(32);
 
@@ -59,23 +101,35 @@ describe('office xlsx renderer', () => {
     assert.match(ws.getCell('C2').numFmt ?? '', /€/);
   });
 
-  it('is deterministic — same descriptor yields identical bytes', async (t) => {
-    // exceljs stamps the ZIP entry mtimes with the wall clock (DOS 2-second
-    // granularity) and exposes no API to pin them, so two renders that straddle
-    // a 2s boundary differ even though the logical workbook + pinned
-    // created/modified are identical — a timing flake in slow CI (passes
-    // locally where both renders land in the same window). Freeze the clock
-    // across both renders so the byte-equality verifies renderer determinism
-    // rather than wall-clock timing. (Freezing Date globally inside the
-    // renderer itself would be unsafe under concurrent async on the server.)
-    t.mock.timers.enable({ apis: ['Date'], now: 1_700_000_000_000 });
+  it('is deterministic — output is independent of the wall clock (#645)', async (t) => {
+    // exceljs stamps each zip entry mtime from `new Date()` (no pin API), so
+    // without the ooxmlNormalize pass two renders taken at different times
+    // differ and the content-addressed cache key (sha256 of the bytes) is
+    // unstable. Advance a mocked clock *between* the two renders — the opposite
+    // of freezing it — so byte-equality proves the output no longer depends on
+    // when it was produced, which is exactly what the officeService cache needs.
+    t.mock.timers.enable({ apis: ['Date'] });
     try {
+      t.mock.timers.setTime(1_700_000_000_000);
       const a = await renderXlsx(descriptor);
+      t.mock.timers.setTime(1_811_000_000_000); // ~3.5 years later
       const b = await renderXlsx(descriptor);
-      assert.ok(a.buffer.equals(b.buffer), 'pinned metadata → byte-identical');
+      assert.ok(a.buffer.equals(b.buffer), 'wall-clock change must not change bytes');
     } finally {
       t.mock.timers.reset();
     }
+  });
+
+  it('carries AI-Act provenance in the core properties (read back from the file)', async () => {
+    const result = await renderXlsx(descriptor);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(result.buffer);
+    // Read the properties back out of the produced workbook, not the input.
+    assert.equal(wb.description, PROVENANCE_DESCRIPTION);
+    assert.equal(wb.keywords, PROVENANCE_KEYWORDS);
+    assert.equal(wb.category, PROVENANCE_CATEGORY);
+    // Provenance must not clobber the caller's own title.
+    assert.equal(wb.title, 'Offene Posten');
   });
 
   it('counts rowsWritten across sheets', async () => {
@@ -180,6 +234,130 @@ describe('office docx renderer', () => {
     assert.equal(result.buffer[0], 0x50);
     assert.equal(result.buffer[1], 0x4b);
     assert.ok(result.buffer.length > 1000, 'non-trivial document');
+  });
+
+  const provenanceDescriptor: DocxDescriptor = {
+    filename: 'bericht',
+    title: 'Quartalsbericht',
+    blocks: [{ type: 'paragraph', text: 'Inhalt.' }],
+  };
+
+  it('carries AI-Act provenance in core + custom OOXML properties (read back from the file)', async () => {
+    const result = await renderDocx(provenanceDescriptor);
+    const entries = await unzipToText(result.buffer);
+
+    // Core properties: human+machine readable description and keywords.
+    const core = entries.get('docProps/core.xml') ?? '';
+    assert.ok(core.includes(PROVENANCE_DESCRIPTION), 'dc:description carries provenance');
+    assert.ok(core.includes(PROVENANCE_KEYWORDS), 'cp:keywords carries provenance');
+
+    // Custom properties: the structured, machine-branchable flag.
+    const custom = entries.get('docProps/custom.xml') ?? '';
+    assert.ok(custom.includes(PROVENANCE_PROP_AI_GENERATED), 'AIGenerated property present');
+    assert.ok(custom.includes(PROVENANCE_PROP_GENERATOR), 'Generator property present');
+    assert.ok(custom.includes(PROVENANCE_PROP_STANDARD), 'ProvenanceStandard property present');
+    // The flag's value is the literal "true" a parser branches on.
+    assert.match(custom, /name="AIGenerated"[^>]*>\s*<vt:lpwstr>true<\/vt:lpwstr>/);
+  });
+
+  it('is deterministic — output is independent of the wall clock (#645)', async (t) => {
+    // docx v9 stamps dcterms:created/modified in core.xml *and* the zip entry
+    // mtimes from `new Date()`, with no API to pin either — the ooxmlNormalize
+    // pass rewrites both to a fixed epoch. Advancing a mocked clock between the
+    // two renders proves the bytes no longer depend on wall-clock time, so the
+    // sha256 cache key in officeService is stable across re-renders.
+    t.mock.timers.enable({ apis: ['Date'] });
+    try {
+      t.mock.timers.setTime(1_700_000_000_000);
+      const a = await renderDocx(provenanceDescriptor);
+      t.mock.timers.setTime(1_811_000_000_000); // ~3.5 years later
+      const b = await renderDocx(provenanceDescriptor);
+      assert.ok(a.buffer.equals(b.buffer), 'wall-clock change must not change bytes');
+
+      // The dcterms timestamps are pinned to the epoch, not to either mocked
+      // wall-clock value — this is what makes the two renders identical.
+      const core = (await unzipToText(a.buffer)).get('docProps/core.xml') ?? '';
+      assert.match(core, /<dcterms:created[^>]*>1970-01-01T00:00:00\.000Z<\/dcterms:created>/);
+      assert.match(core, /<dcterms:modified[^>]*>1970-01-01T00:00:00\.000Z<\/dcterms:modified>/);
+    } finally {
+      t.mock.timers.reset();
+    }
+  });
+});
+
+describe('office content-addressed cache (#645 AC#2)', () => {
+  // Counts writes so we can assert the second render of the same descriptor is
+  // served from the cache instead of re-stored under a fresh key.
+  class CountingStore implements TigrisStore {
+    puts = 0;
+    private objects = new Set<string>();
+    exists(key: string): Promise<boolean> {
+      return Promise.resolve(this.objects.has(key));
+    }
+    put(key: string): Promise<void> {
+      this.puts += 1;
+      this.objects.add(key);
+      return Promise.resolve();
+    }
+    getStream(): Promise<{ stream: Readable; contentType: undefined; contentLength: undefined }> {
+      return Promise.resolve({ stream: Readable.from(''), contentType: undefined, contentLength: undefined });
+    }
+  }
+
+  function serviceWith(store: TigrisStore): OfficeService {
+    return new OfficeService({
+      store,
+      secret: SECRET,
+      publicBaseUrl: 'https://bot.example.com',
+      tenantId: 'dev',
+      signedUrlTtlSec: 60,
+    });
+  }
+
+  it('re-rendering the same xlsx descriptor hits the cache across a wall-clock gap', async (t) => {
+    // The whole point of ooxmlNormalize: without it the two renders below get
+    // different bytes → different sha → a second write, defeating dedup. Move
+    // the clock forward between them to prove the cache key is time-stable.
+    const store = new CountingStore();
+    const svc = serviceWith(store);
+    const descriptor = { sheets: [{ name: 'S', columns: [{ key: 'a', header: 'A' }], rows: [{ a: 1 }] }] };
+
+    t.mock.timers.enable({ apis: ['Date'] });
+    try {
+      t.mock.timers.setTime(1_700_000_000_000);
+      const first = await svc.createXlsx(descriptor);
+      t.mock.timers.setTime(1_811_000_000_000);
+      const second = await svc.createXlsx(descriptor);
+
+      assert.equal(first.cacheHit, false, 'first render stores');
+      assert.equal(second.cacheHit, true, 'second render is a cache hit');
+      assert.equal(store.puts, 1, 'byte-identical re-render is stored exactly once');
+    } finally {
+      t.mock.timers.reset();
+    }
+  });
+
+  it('re-rendering the same docx descriptor hits the cache across a wall-clock gap', async (t) => {
+    const store = new CountingStore();
+    const svc = serviceWith(store);
+    const descriptor: DocxDescriptor = {
+      filename: 'bericht',
+      blocks: [{ type: 'paragraph', text: 'Inhalt.' }],
+    };
+
+    t.mock.timers.enable({ apis: ['Date'] });
+    try {
+      t.mock.timers.setTime(1_700_000_000_000);
+      const first = await svc.createDocx(descriptor);
+      t.mock.timers.setTime(1_811_000_000_000);
+      const second = await svc.createDocx(descriptor);
+
+      assert.equal(first.cacheHit, false, 'first render stores');
+      assert.equal(second.cacheHit, true, 'second render is a cache hit');
+      assert.equal(store.puts, 1, 'byte-identical re-render is stored exactly once');
+    } finally {
+      t.mock.timers.reset();
+    }
   });
 });
 

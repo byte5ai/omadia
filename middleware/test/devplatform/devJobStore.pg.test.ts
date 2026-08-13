@@ -1,0 +1,473 @@
+import { strict as assert } from 'node:assert';
+import { randomUUID } from 'node:crypto';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { after, before, describe, it } from 'node:test';
+
+import { Pool } from 'pg';
+
+import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
+
+import { probePgTest } from '../_helpers/pgTestDb.js';
+import { DevJobEventBus } from '../../src/devplatform/devJobEventBus.js';
+import {
+  DevJobLeaseLostError,
+  DevJobStore,
+  TERMINAL_FINISH_BRAND,
+} from '../../src/devplatform/devJobStore.js';
+import { DevRepoStore } from '../../src/devplatform/devRepoStore.js';
+import { hashRunnerToken, mintRunnerToken } from '../../src/devplatform/jobToken.js';
+import { isTerminalDevJobStatus } from '../../src/devplatform/types.js';
+import type { DevRepo } from '../../src/devplatform/types.js';
+
+/**
+ * Epic #470 W0 — DB-gated integration for DevJobStore (spec §11). Skips when no
+ * test Postgres is reachable, mirroring the other `*.pg.test.ts`. Applies the
+ * real top-level migrations (0022_dev_platform included) via the same runner the app uses.
+ */
+const MARK = 'pg-devplatform-test';
+const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
+
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'jobStore',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'WS5_PG_TEST_URL', 'DATABASE_URL'],
+});
+const probePool = new Pool({ connectionString: PG_URL });
+
+describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
+  const pool = probePool;
+  const bus = new DevJobEventBus();
+  const store = new DevJobStore(pool, { eventBus: bus });
+  const repoStore = new DevRepoStore(pool);
+  let repo: DevRepo;
+
+  async function cleanup(): Promise<void> {
+    // Cascades to dev_jobs → dev_job_events → dev_job_artifacts.
+    await pool.query('DELETE FROM dev_repos WHERE created_by = $1', [MARK]);
+  }
+
+  async function newRepo(): Promise<DevRepo> {
+    return repoStore.createRepo({
+      owner: MARK,
+      name: `r-${randomUUID().slice(0, 8)}`,
+      cloneUrl: 'https://example.com/x/y.git',
+      credentialKind: 'pat',
+      credentialRef: 'repo/x',
+      createdBy: MARK,
+    });
+  }
+
+  async function newQueuedJob(repoId: string) {
+    const { hash } = mintRunnerToken();
+    return store.createJob({
+      repoId,
+      kind: 'implement',
+      brief: 'b',
+      source: 'admin',
+      backend: 'local',
+      createdBy: MARK,
+      runnerTokenHash: hash,
+    });
+  }
+
+  before(async () => {
+    // Idempotent: applies pending migrations, a no-op on an already-migrated DB.
+    await runMultiOrchestratorMigrations(pool, undefined, migrationsDir);
+    await runMultiOrchestratorMigrations(pool, undefined, migrationsDir); // re-apply is a no-op
+    await cleanup();
+    repo = await newRepo();
+  });
+
+  after(async () => {
+    await cleanup();
+    await pool.end();
+  });
+
+  it('createJob defaults: queued, provision 1, phase analyze, api_key', async () => {
+    const job = await newQueuedJob(repo.id);
+    assert.equal(job.status, 'queued');
+    assert.equal(job.provision, 1);
+    // Every pipeline_mode starts at 'analyze' (transitions.ts's own test suite:
+    // even collapsed mode begins `analyze → implement`); an explicit `phase`
+    // override (e.g. the gated-webhook trigger parking at `await_human`) wins.
+    assert.equal(job.phase, 'analyze');
+    assert.equal(job.authMode, 'api_key');
+    // Only the sha256 hash is stored — never the plaintext token.
+    assert.match(job.runnerTokenHash ?? '', /^[0-9a-f]{64}$/);
+  });
+
+  it('two concurrent claimNextQueued return disjoint jobs (FOR UPDATE SKIP LOCKED)', async () => {
+    const localRepo = await newRepo();
+    await newQueuedJob(localRepo.id);
+    await newQueuedJob(localRepo.id);
+
+    const [a, b] = await Promise.all([
+      store.claimNextQueued(randomUUID()),
+      store.claimNextQueued(randomUUID()),
+    ]);
+    assert.ok(a && b, 'both workers claimed a job');
+    assert.notEqual(a!.id, b!.id, 'the two claims are disjoint');
+    assert.equal(a!.status, 'provisioning');
+    assert.equal(b!.status, 'provisioning');
+  });
+
+  it('claimNextQueued rejects a non-UUID lease loudly', async () => {
+    await assert.rejects(() => store.claimNextQueued('not-a-uuid'), /must be a UUID/);
+  });
+
+  it('a lease-fenced write with a stale claimed_by affects 0 rows and raises the typed error', async () => {
+    const job = await newQueuedJob(repo.id);
+    const claimed = await store.claimNextQueued(randomUUID());
+    // Claim whichever queued job we got; then re-find OUR job's lease by claiming
+    // until we hold it. Simpler: claim directly and use its lease.
+    assert.ok(claimed);
+    const lease = claimed!.claimedBy!;
+    const handle = { backend: 'local' as const, id: '/tmp/x', pid: 1, startedAt: new Date().toISOString() };
+
+    // Correct lease succeeds.
+    await store.setRunnerHandle(claimed!.id, lease, handle);
+
+    // Stale lease → 0 rows → typed error.
+    await assert.rejects(
+      () => store.setRunnerHandle(claimed!.id, randomUUID(), handle),
+      DevJobLeaseLostError,
+    );
+    void job;
+  });
+
+  it('appendEvents conflict-ignores within a provision and accepts the same seq under another provision', async () => {
+    const job = await newQueuedJob(repo.id);
+
+    const first = await store.appendEvents(job.id, 1, [{ seq: 0, type: 'log', payload: { text: 'a' } }]);
+    assert.equal(first, 1, 'first insert accepted');
+
+    const retry = await store.appendEvents(job.id, 1, [{ seq: 0, type: 'log', payload: { text: 'a' } }]);
+    assert.equal(retry, 0, 'same (provision, seq) is an idempotent no-op');
+
+    const otherProvision = await store.appendEvents(job.id, 2, [{ seq: 0, type: 'log', payload: { text: 'b' } }]);
+    assert.equal(otherProvision, 1, 'the SAME seq under a DIFFERENT provision is accepted');
+
+    const events = await store.listEvents(job.id);
+    assert.equal(events.length, 2);
+    assert.deepEqual(
+      events.map((e) => e.provision),
+      [1, 2],
+      'ordered by id (insertion), not by seq',
+    );
+    assert.ok(events[0]!.id < events[1]!.id, 'id is strictly increasing');
+  });
+
+  it('listEvents orders by the IDENTITY id across provisions, never by seq', async () => {
+    const job = await newQueuedJob(repo.id);
+    // Insert a high seq under provision 2 FIRST, then a low seq under provision 1.
+    await store.appendEvents(job.id, 2, [{ seq: 99, type: 'status', payload: {} }]);
+    await store.appendEvents(job.id, 1, [{ seq: 3, type: 'log', payload: {} }]);
+
+    const events = await store.listEvents(job.id);
+    assert.equal(events.length, 2);
+    assert.ok(events[0]!.id < events[1]!.id, 'id ascending regardless of seq');
+    assert.deepEqual(
+      events.map((e) => e.seq),
+      [99, 3],
+      'insertion order wins — the low seq comes second',
+    );
+  });
+
+  it('listJobs scopes repoIds IN SQL before LIMIT — a caller\'s own job is never dropped behind other repos', async () => {
+    // Fresh repos so the shared `repo` fixture's jobs don't perturb the assertion.
+    const mineRepo = await newRepo();
+    const other = await newRepo();
+    // My job is created FIRST (oldest → last under created_at DESC).
+    const mine = await newQueuedJob(mineRepo.id);
+    // Then several NEWER jobs in another repo that a post-query narrow surfaces first.
+    for (let i = 0; i < 4; i++) await newQueuedJob(other.id);
+    // Scope to my repo with a limit SMALLER than the other-repo job count.
+    const rows = await store.listJobs({ repoIds: [mineRepo.id], limit: 2 });
+    // COUNTER-PROOF: with list-all-LIMIT-then-narrow, the newest 2 rows are both
+    // other-repo → narrowed to [] → my job missing. `WHERE repo_id = ANY(...)`
+    // before LIMIT returns it. Revert the repoIds branch to see this fail.
+    assert.deepEqual(rows.map((j) => j.id), [mine.id]);
+  });
+
+  it('listJobs with an empty repoIds set returns [] (no `= ANY(\'{}\')` scan)', async () => {
+    await newQueuedJob(repo.id);
+    assert.deepEqual(await store.listJobs({ repoIds: [] }), []);
+  });
+
+  it('appendEvents publishes newly stored events to the live bus', async () => {
+    const job = await newQueuedJob(repo.id);
+    const seen: number[] = [];
+    const unsub = bus.subscribe(job.id, (e) => seen.push(e.seq));
+    await store.appendEvents(job.id, 1, [
+      { seq: 0, type: 'log', payload: {} },
+      { seq: 1, type: 'tool', payload: {} },
+    ]);
+    unsub();
+    assert.deepEqual(seen, [0, 1]);
+  });
+
+  it('verifyRunnerToken is sha256-based and rejects the wrong token / unknown job', async () => {
+    const { token } = mintRunnerToken();
+    const hash = hashRunnerToken(token);
+    const job = await store.createJob({
+      repoId: repo.id,
+      kind: 'implement',
+      brief: 'b',
+      source: 'admin',
+      backend: 'local',
+      createdBy: MARK,
+      runnerTokenHash: hash,
+    });
+
+    assert.equal(await store.verifyRunnerToken(job.id, token), true);
+    assert.equal(await store.verifyRunnerToken(job.id, mintRunnerToken().token), false);
+    assert.equal(await store.verifyRunnerToken(randomUUID(), token), false, 'unknown job → false');
+  });
+
+  it('reissueRunnerToken mints a fresh token and invalidates the one it replaces', async () => {
+    const job = await newQueuedJob(repo.id);
+    const original = mintRunnerToken().token; // the token createJob's hash matched, never a docker container's
+    // newQueuedJob mints its own; overwrite the row to a known original for this test.
+    await pool.query('UPDATE dev_jobs SET runner_token_hash = $2 WHERE id = $1', [job.id, hashRunnerToken(original)]);
+    assert.equal(await store.verifyRunnerToken(job.id, original), true, 'precondition: original verifies');
+
+    const reissued = await store.reissueRunnerToken(job.id);
+    assert.notEqual(reissued, original, 'a genuinely new token, not the input echoed back');
+    assert.equal(await store.verifyRunnerToken(job.id, reissued), true, 'the reissued token verifies');
+    assert.equal(await store.verifyRunnerToken(job.id, original), false, 'the replaced token no longer verifies');
+  });
+
+  it('resolveJobByToken verifies constant-time and excludes terminal jobs (no state oracle)', async () => {
+    const { token } = mintRunnerToken();
+    const hash = hashRunnerToken(token);
+    const localRepo = await newRepo();
+    const job = await store.createJob({
+      repoId: localRepo.id,
+      kind: 'implement',
+      brief: 'b',
+      source: 'admin',
+      backend: 'local',
+      createdBy: MARK,
+      runnerTokenHash: hash,
+    });
+
+    // A live (non-terminal) job resolves; the wrong token never does.
+    const resolved = await store.resolveJobByToken(token);
+    assert.ok(resolved, 'a valid token resolves its job');
+    assert.equal(resolved?.id, job.id);
+    assert.ok(!isTerminalDevJobStatus(resolved!.status), 'resolved job is non-terminal');
+    assert.equal(await store.resolveJobByToken(mintRunnerToken().token), null, 'wrong token → null');
+    assert.equal(await store.resolveJobByToken(''), null, 'empty token → null');
+
+    // Once terminal, the SAME valid token resolves to null — so the proxy answers
+    // 401 (not 410), denying a stale-token holder a valid/terminal oracle.
+    await store.finishTerminal(TERMINAL_FINISH_BRAND, job.id, 'done', { branch: 'omadia/job-y' });
+    assert.equal(await store.resolveJobByToken(token), null, 'terminal job → null (no oracle)');
+  });
+
+  it('recordResult moves diff_ready → applying and persists usage', async () => {
+    const job = await newQueuedJob(repo.id);
+    await store.recordResult(job.id, {
+      outcome: 'diff_ready',
+      summary: 'ok',
+      usage: { tokensIn: 10, tokensOut: 20, costUsd: 0.5 },
+    });
+    const after = await store.getJob(job.id);
+    assert.equal(after?.status, 'applying');
+    assert.equal(after?.tokensIn, 10);
+    assert.equal(after?.tokensOut, 20);
+    assert.equal(after?.costUsd, 0.5);
+  });
+
+  it('parkForApplyGate admits a FAILED-after-diff job (retry that gates), not just applying (Forge #6)', async () => {
+    // A failed job (a POST /jobs/:id/apply retry that then gated) must be parkable,
+    // else the gate dangles and the operator's later approval silently no-ops.
+    const failed = await newQueuedJob(repo.id);
+    await store.finishTerminal(TERMINAL_FINISH_BRAND, failed.id, 'failed', { error: 'apply blip' });
+    // COUNTER-PROOF: with the old `status = 'applying'` fence this returns false and
+    // the job stays `failed` (dangling gate). The widened `IN ('applying','failed')`
+    // fence parks it.
+    assert.equal(await store.parkForApplyGate(failed.id), true, 'a failed-after-diff job parks');
+    assert.equal((await store.getJob(failed.id))?.status, 'waiting');
+
+    // A queued job is NOT parkable — the fence is exactly {applying, failed}.
+    const queued = await newQueuedJob(repo.id);
+    assert.equal(await store.parkForApplyGate(queued.id), false, 'a queued job is not an apply-gate candidate');
+  });
+
+  it('resumeApplyAfterGate refuses a review-parked job (waiting AT await_human) — no cross-kind resume', async () => {
+    // A diff-policy park leaves the phase at review/pr; a REVIEW gate parks at
+    // await_human with no diff. resumeApplyAfterGate must only resume the former.
+    const job = await newQueuedJob(repo.id);
+    // A review gate parks only at phase await_human — put the job there first.
+    await pool.query(`UPDATE dev_jobs SET phase = 'await_human' WHERE id = $1`, [job.id]);
+    assert.equal(await store.parkForGate(job.id), true, 'review park lands'); // → waiting @ await_human
+    // COUNTER-PROOF: without the `phase <> 'await_human'` guard this resumes a
+    // diff-less job into `applying`, which then fails `no_diff`.
+    assert.equal(await store.resumeApplyAfterGate(job.id), false, 'a review-parked job is not resumed into applying');
+    assert.equal((await store.getJob(job.id))?.status, 'waiting', 'still parked');
+  });
+
+  it('finishTerminal is the only terminal write, is brand-gated, and is idempotent', async () => {
+    const job = await newQueuedJob(repo.id);
+
+    await assert.rejects(
+      // @ts-expect-error — a caller without the brand cannot finalize.
+      () => store.finishTerminal(Symbol('spoof'), job.id, 'done'),
+      /reserved for finalizeDevJob/,
+    );
+
+    const done = await store.finishTerminal(TERMINAL_FINISH_BRAND, job.id, 'done', {
+      prUrl: 'https://example.com/pr/1',
+      branch: 'omadia/job-x',
+    });
+    assert.equal(done.transitioned, true, 'the first call performed the flip');
+    assert.equal(done.job?.status, 'done');
+    assert.equal(done.job?.prUrl, 'https://example.com/pr/1');
+    assert.ok(done.job?.endedAt, 'ended_at stamped');
+
+    // Second call on an already-terminal job is a no-op returning existing state,
+    // and reports transitioned:false so a caller counting reaps does not count it.
+    const again = await store.finishTerminal(TERMINAL_FINISH_BRAND, job.id, 'failed', { error: 'x' });
+    assert.equal(again.transitioned, false, 'the no-op did not flip anything');
+    assert.equal(again.job?.status, 'done', 'idempotent — status unchanged, not flipped to failed');
+    assert.equal(again.job?.error, null, 'the no-op did not write the failure error');
+  });
+
+  it('deleteJob refuses an active job, deletes a terminal one, and reports a missing id', async () => {
+    // Active (queued) — never deleted, it still has (or will have) a live backend
+    // handle; deleting the row out from under it would orphan a container/Machine.
+    const active = await newQueuedJob(repo.id);
+    assert.equal(await store.deleteJob(active.id), 'not_terminal');
+    assert.ok(await store.getJob(active.id), 'the active job row is untouched');
+
+    // Terminal — deleted, and CASCADE (0022) takes its events with it.
+    const terminal = await newQueuedJob(repo.id);
+    await store.appendEvents(terminal.id, 1, [{ seq: 0, type: 'log', payload: { line: 'hi' } }]);
+    await store.finishTerminal(TERMINAL_FINISH_BRAND, terminal.id, 'failed', { error: 'x' });
+    assert.equal(await store.deleteJob(terminal.id), 'deleted');
+    assert.equal(await store.getJob(terminal.id), null, 'the row is gone');
+    const events = await pool.query('SELECT 1 FROM dev_job_events WHERE job_id = $1', [terminal.id]);
+    assert.equal(events.rowCount, 0, 'its events cascaded away with it');
+
+    // Unknown id — distinct outcome from "exists but active", so the route can
+    // answer 404 instead of a misleading 409.
+    assert.equal(await store.deleteJob(randomUUID()), 'not_found');
+  });
+
+  it('findStalled surfaces active jobs past the heartbeat cutoff', async () => {
+    const localRepo = await newRepo();
+    const job = await newQueuedJob(localRepo.id);
+    const claimed = await store.claimNextQueued(randomUUID());
+    assert.ok(claimed);
+    // Cutoff in the future ⇒ every active job counts as stale.
+    const stalled = await store.findStalled(new Date(Date.now() + 60_000));
+    assert.ok(stalled.some((j) => j.id === claimed!.id), 'the active job is a stall candidate');
+    void job;
+  });
+
+  it('a real addArtifact id is a uuid and passes the ownership pre-filter', async () => {
+    const localRepo = await newRepo();
+    const job = await newQueuedJob(localRepo.id);
+    const artifactId = await store.addArtifact(job.id, 'diff', 'diff --git a/x b/x\n', { bytes: 20 });
+    // The ownership guard rejects a non-uuid before it queries; a legitimate id
+    // must clear it, or the job's own diff would 400. gen_random_uuid() (0021)
+    // guarantees the shape, and this covers the pre-filter no unit test reaches.
+    assert.match(artifactId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    assert.equal(await store.artifactBelongsToJob(job.id, artifactId), true);
+    assert.equal(await store.artifactBelongsToJob('00000000-0000-0000-0000-000000000000', artifactId), false);
+    assert.equal(await store.artifactBelongsToJob(job.id, 'not-a-uuid'), false);
+  });
+
+  /**
+   * Epic #470 W1 — "the daemon is at capacity" is not "the job failed".
+   * `releaseClaim` is the rewind, and it must be as tightly fenced as every other
+   * worker write: only the lease holder, only before anything was spawned.
+   */
+  it('releaseClaim rewinds a provisioning claim back to queued — fenced on the lease', async () => {
+    const { hash } = mintRunnerToken();
+    const job = await store.createJob({
+      repoId: repo.id,
+      kind: 'implement',
+      brief: 'at-capacity',
+      source: 'admin',
+      backend: 'docker',
+      createdBy: MARK,
+      runnerTokenHash: hash,
+    });
+    const lease = randomUUID();
+    // claimNextQueued takes the OLDEST queued row — earlier tests leave some behind,
+    // so drain until we hold the one we just created.
+    let claimed = await store.claimNextQueued(lease);
+    while (claimed && claimed.id !== job.id) claimed = await store.claimNextQueued(lease);
+    assert.equal(claimed?.id, job.id);
+
+    // A stranger's lease cannot rewind our claim.
+    assert.equal(await store.releaseClaim(job.id, randomUUID()), false);
+    assert.equal((await store.getJob(job.id))?.status, 'provisioning');
+
+    assert.equal(await store.releaseClaim(job.id, lease), true);
+    const requeued = await store.getJob(job.id);
+    assert.equal(requeued?.status, 'queued');
+    assert.equal(requeued?.claimedBy, null);
+    assert.equal(requeued?.startedAt, null);
+
+    // Idempotent-safe: a second rewind of an already-queued row is a no-op.
+    assert.equal(await store.releaseClaim(job.id, lease), false);
+  });
+
+  it('releaseClaim refuses once a runner handle exists — a spawned container is never abandoned', async () => {
+    const { hash } = mintRunnerToken();
+    const job = await store.createJob({
+      repoId: repo.id,
+      kind: 'implement',
+      brief: 'already spawned',
+      source: 'admin',
+      backend: 'docker',
+      createdBy: MARK,
+      runnerTokenHash: hash,
+    });
+    const lease = randomUUID();
+    let claimed = await store.claimNextQueued(lease);
+    while (claimed && claimed.id !== job.id) claimed = await store.claimNextQueued(lease);
+    assert.equal(claimed?.id, job.id);
+    await store.setRunnerHandle(job.id, lease, {
+      backend: 'local',
+      id: '/tmp/ws',
+      pid: 42,
+      startedAt: new Date().toISOString(),
+    });
+
+    assert.equal(await store.releaseClaim(job.id, lease), false);
+    assert.equal((await store.getJob(job.id))?.status, 'provisioning');
+  });
+
+  it('releaseClaim rejects a non-UUID lease loudly', async () => {
+    await assert.rejects(() => store.releaseClaim(randomUUID(), 'not-a-uuid'), TypeError);
+  });
+
+  it('requeueAtPhase is FENCED on await_human — a job elsewhere is not re-queued (Forge #4)', async () => {
+    const { hash } = mintRunnerToken();
+    const job = await store.createJob({
+      repoId: repo.id, kind: 'fix_issue', brief: 'fence', source: 'admin',
+      backend: 'docker', createdBy: MARK, runnerTokenHash: hash,
+    });
+    // Job is at its default starting phase ('analyze'), NOT await_human.
+    assert.equal(await store.requeueAtPhase(job.id, 'implement'), false, 'a non-parked job is not re-queued');
+    const still = await store.getJob(job.id);
+    assert.equal(still?.status, 'queued', 'and its status is untouched by the no-op');
+
+    // Park it at the gate, THEN requeue works exactly once.
+    const lease = randomUUID();
+    let claimed = await store.claimNextQueued(lease);
+    while (claimed && claimed.id !== job.id) claimed = await store.claimNextQueued(lease);
+    await store.advancePhase(job.id, job.phase, 'await_human');
+    await store.parkForGate(job.id);
+    assert.equal(await store.requeueAtPhase(job.id, 'implement'), true, 'a parked job re-queues');
+    const requeued = await store.getJob(job.id);
+    assert.equal(requeued?.status, 'queued');
+    assert.equal(requeued?.phase, 'implement');
+    // Idempotent: a second re-drive (self-heal) is a no-op — the job already moved.
+    assert.equal(await store.requeueAtPhase(job.id, 'implement'), false, 'the re-drive is idempotent');
+  });
+});

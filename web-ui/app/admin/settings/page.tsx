@@ -172,8 +172,8 @@ export default function AdminSettingsPage(): React.ReactElement {
         </h1>
         <p className="mt-3 max-w-2xl text-[15px] leading-[1.55] text-[color:var(--fg-muted)]">
           {t.rich('intro', {
-            envFile: () => (
-              <code className="rounded bg-[color:var(--card)] px-1 py-0.5 text-[12px]">.env</code>
+            envFile: (chunks) => (
+              <code className="rounded bg-[color:var(--card)] px-1 py-0.5 text-[12px]">{chunks}</code>
             ),
           })}
         </p>

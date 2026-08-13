@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ChatParticipantsProvider } from './chatParticipants.js';
+import type { McpInputSentinelMint } from './mcp/pendingMcpInput.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 
 /**
@@ -52,6 +53,35 @@ export interface TurnContextValue {
    * owner. Undefined for system/ad-hoc turns.
    */
   userId?: string;
+  /**
+   * #430 fixup (reviewer round 5) — the turn caller's CANONICAL `omadiaUserId`
+   * uuid, resolved ONCE by `resolveTurnOwnerIdentity` at turn start (see
+   * `orchestrator.ts`'s `runTurn`/`chatStream`) and reused by every
+   * turn-scoped consumer that needs it for a KnowledgeGraph dataset ACL
+   * check — currently `QueryDatasetTool` (viewer/owner filtering) and
+   * `ingestAttachments` (dataset ownership on CSV import).
+   *
+   * Unlike `userId` above (which is the RAW turn input — a Teams AAD oid for
+   * a channel turn, already-canonical for HTTP/CLI turns), this field is
+   * ALWAYS the canonical uuid when set. Undefined when resolution wasn't
+   * possible (no `KnowledgeGraph` wired up for a channel turn, or resolution
+   * failed) — callers must treat that as "no identity available", never fall
+   * back to the raw `userId` for an ACL decision.
+   */
+  resolvedOmadiaUserId?: string;
+  /**
+   * W2-1 (#544) — the turn's session scope (`input.sessionScope`, falling back
+   * to the turn id when the caller supplied none), as computed once by the
+   * orchestrator entry point.
+   *
+   * Exists so the MCP manager can key a parked `input_required` record on
+   * `{userId, sessionId, correlationId}` without a call-site parameter sweep.
+   * NOT safe as a key on its own: `resolveScope` returns the literal
+   * `'http-default'` for unscoped HTTP turns, so every such caller shares this
+   * value — that was the live cross-user hole in #445. It is one component of
+   * the triple, never the whole key.
+   */
+  sessionScope?: string;
   chatParticipants?: ChatParticipantsProvider;
   /**
    * Privacy-Proxy Slice 2.1: per-turn privacy handle threaded through the
@@ -158,6 +188,38 @@ export interface TurnContextValue {
    * after persona routing, mutated on the live store so nested scopes see it.
    */
   activePersonaSkillId?: string;
+  /**
+   * W2-1 (#544) — outcome of an MCP `input_required` REPLAY performed at turn
+   * start, as a note to append to the user's wire message so the model can
+   * narrate the result in this same turn.
+   *
+   * Rides the turn context rather than a parameter for the same reason
+   * `privacyHandle` does: it would otherwise need threading through
+   * `runTurn → chatInContext → chatInContextInner` and the streaming mirror of
+   * all three, on both of which every call site already passes `input`. Written
+   * onto the LIVE store inside the turn scope (same technique as
+   * `activePersonaSkillId`), read once when the wire messages are assembled.
+   *
+   * Carries no collected values — those may be secrets the user typed for the
+   * server, and this string reaches the LLM and the session log.
+   */
+  mcpInputReplayNote?: string;
+  /**
+   * #570 — per-dispatch provenance receipt for the MRTR sentinel.
+   *
+   * Installed by `dispatchTool` in a nested scope around a SINGLE tool dispatch
+   * (one box per call, so concurrent calls in one `allSettled` batch cannot see
+   * each other's), and written only by `McpManager.parkInputRequired` when it
+   * mints a `[mcp_input_required:<id>]` sentinel. The Privacy Shield reads it
+   * back to decide whether a result may skip interning: without this the
+   * sentinel is interned like any other tool result and the whole #544 card
+   * flow is dead whenever a privacy guard is installed — which is the default.
+   *
+   * Undefined when no privacy handle is active (nothing interns, so nothing
+   * needs exempting) — dispatch then behaves byte-identically to before.
+   * See {@link McpInputSentinelMint} for why this is not a string-shape check.
+   */
+  mcpInputSentinelMint?: McpInputSentinelMint;
 }
 
 const storage = new AsyncLocalStorage<TurnContextValue>();
@@ -169,12 +231,38 @@ export const turnContext = {
   },
   /**
    * Sets the turn context for the current async resource and its descendants.
-   * Used from async generators (`chatStream`) because AsyncLocalStorage.run()
-   * doesn't compose with `yield`. Scope is bounded by the enclosing HTTP
-   * request — a new request creates a fresh async resource chain.
+   *
+   * ⚠️ NOT usable from an async generator. `enterWith` binds the store to the
+   * async resource that is executing at that instant, but a generator is
+   * resumed in the async context of whoever called `.next()` — so the store is
+   * gone the moment the generator yields, and every continuation after that
+   * point sees either nothing or the CONSUMER's ambient scope. The streaming
+   * orchestrator entry point used to do exactly this, which silently broke MCP
+   * audit attribution (`callerKind`/`turnId`/`mcpUserKey`) on every streaming
+   * turn. Use {@link runGenerator} from generators.
+   *
+   * Correct uses are plain async functions whose own async chain bounds the
+   * scope — e.g. an Express route handler establishing a per-request identity.
    */
   enter(value: TurnContextValue): void {
     storage.enterWith(value);
+  },
+  /**
+   * Establishes `value` for the entire lifetime of an async generator — the
+   * `run()` equivalent that composes with `yield`.
+   *
+   * Every advance of the inner generator is performed inside `storage.run`, so
+   * the context is active for exactly the spans that execute generator body
+   * code, and is NOT active while the consumer processes a yielded value.
+   * `value` is passed by reference on every step, so writes onto the live store
+   * (`activePersonaSkillId`, `mcpInputReplayNote`) stay visible to later steps
+   * — same semantics `run()` gives a plain async function.
+   */
+  runGenerator<T>(
+    value: TurnContextValue,
+    makeGenerator: () => AsyncGenerator<T>,
+  ): AsyncGenerator<T> {
+    return runGeneratorInContext(value, makeGenerator);
   },
   /**
    * Runs `fn` in an outer scope that only installs a `chatParticipants`
@@ -194,6 +282,10 @@ export const turnContext = {
         turnDate: prev?.turnDate ?? today(),
         ...(prev?.agentSlug ? { agentSlug: prev.agentSlug } : {}),
         chatParticipants,
+        // W3-A: the caller identity MCP OAuth tokens are keyed to must survive
+        // an adapter-established outer scope, or every audited MCP call on a
+        // channel turn records `unresolved` and a `per_user` server fails closed.
+        ...(prev?.mcpUserKey ? { mcpUserKey: prev.mcpUserKey } : {}),
         ...(prev?.privacyHandle ? { privacyHandle: prev.privacyHandle } : {}),
         ...(prev?.captureRawToolResult
           ? { captureRawToolResult: prev.captureRawToolResult }
@@ -229,6 +321,95 @@ export const turnContext = {
     return storage.getStore()?.turnDate ?? today();
   },
 };
+
+/**
+ * Implementation of {@link turnContext.runGenerator}. Kept as a module-level
+ * generator function (rather than inline) so it can `yield` while still owning
+ * the `storage.run` wrapping of every `next()`.
+ */
+async function* runGeneratorInContext<T>(
+  value: TurnContextValue,
+  makeGenerator: () => AsyncGenerator<T>,
+): AsyncGenerator<T> {
+  // Create inside the scope too: a factory that reads the context eagerly
+  // (before its first yield) then behaves the same as one that reads it later.
+  const inner = storage.run(value, makeGenerator);
+  let exhausted = false;
+  try {
+    for (;;) {
+      const step = await storage.run(value, () => inner.next());
+      if (step.done) {
+        exhausted = true;
+        return;
+      }
+      yield step.value;
+    }
+  } finally {
+    // The consumer broke out of its loop or threw. Drive the inner generator's
+    // own `finally` blocks (steering-bus teardown, privacy finalisation) INSIDE
+    // the turn scope — outside it they would run context-less, which is the
+    // very bug this helper exists to prevent.
+    //
+    // Teardown NEVER replaces the exit reason. `inner.return(undefined)` was
+    // awaited bare, and a throwing finaliser (privacy finalisation is the
+    // realistic one) inside a `finally` block REPLACES the completion of the
+    // whole generator: the client abort or upstream error that actually ended
+    // the turn was overwritten by a secondary teardown failure, and the real
+    // reason — the one worth debugging — was gone. So the teardown failure is
+    // caught and reported here instead of being allowed to propagate. It is not
+    // swallowed: {@link onTurnTeardownError} always sees it, and the caller
+    // still gets the original reason.
+    if (!exhausted) {
+      try {
+        await storage.run(value, async () => {
+          await inner.return(undefined);
+        });
+      } catch (err: unknown) {
+        reportTurnTeardownError(value.turnId, err);
+      }
+    }
+  }
+}
+
+/** Handler for a teardown failure. Overridable so a test can assert the error
+ *  is surfaced rather than inferring it from console output. */
+let turnTeardownErrorHandler: (turnId: string, err: unknown) => void = (
+  turnId,
+  err,
+) => {
+  console.error(
+    `[turnContext] teardown of turn '${turnId}' threw while finalising ` +
+      `(steering-bus teardown / privacy finalisation). The turn's original exit ` +
+      `reason was preserved and is what the caller sees; this is the secondary ` +
+      `failure:`,
+    err,
+  );
+};
+
+/**
+ * Install a teardown-error handler. Returns a restore function.
+ *
+ * Exists because a teardown failure is deliberately not thrown (see
+ * `runGeneratorInContext`), so without a hook the only evidence would be a log
+ * line — which is neither assertable nor routable to real error reporting.
+ */
+export function onTurnTeardownError(
+  handler: (turnId: string, err: unknown) => void,
+): () => void {
+  const previous = turnTeardownErrorHandler;
+  turnTeardownErrorHandler = handler;
+  return (): void => {
+    turnTeardownErrorHandler = previous;
+  };
+}
+
+function reportTurnTeardownError(turnId: string, err: unknown): void {
+  try {
+    turnTeardownErrorHandler(turnId, err);
+  } catch {
+    /* a reporter that throws must not become the exit reason either */
+  }
+}
 
 /** `YYYY-MM-DD` in Europe/Berlin. Single place this computation lives. */
 export function today(): string {

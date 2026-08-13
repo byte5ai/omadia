@@ -5,13 +5,13 @@
 # Final image ~150 MB (node 22 slim + standalone server + static assets).
 
 # --- deps -------------------------------------------------------------------
-FROM node:22.23.1-slim AS deps
+FROM node:22.23.2-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 # --- builder ----------------------------------------------------------------
-FROM node:22.23.1-slim AS builder
+FROM node:22.23.2-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -25,7 +25,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # --- runtime ----------------------------------------------------------------
-FROM node:22.23.1-slim AS runtime
+FROM node:22.23.2-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

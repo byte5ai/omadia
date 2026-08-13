@@ -1,0 +1,1020 @@
+/**
+ * Epic #470 W0 — DevJobStore: the durable job spine (spec §4).
+ *
+ * Queue state lives in Postgres from day one — deliberately NOT the builder's
+ * in-memory `BuildQueue` — so a restart never orphans a job. Claim/lease mirrors
+ * `conductor/runStore.ts`: `claimNextQueued` grabs one queued row with `FOR
+ * UPDATE SKIP LOCKED`, stamping a `randomUUID()` lease into `claimed_by`; every
+ * subsequent WORKER write is fenced `WHERE claimed_by = <lease>` (0 rows ⇒
+ * `DevJobLeaseLostError`, cf. `RunLeaseLostError`). Terminal transitions are NOT
+ * here: `finishTerminal` is brand-gated so `finalizeDevJob.ts` is the one choke
+ * point. Repo CRUD lives in `devRepoStore.ts` (file-size split).
+ */
+
+import type { Pool } from 'pg';
+
+import * as artifacts from './devJobArtifactStore.js';
+import type { DevJobEventBus } from './devJobEventBus.js';
+import * as seams from './devJobWorkerSeams.js';
+import { hashRunnerToken, mintRunnerToken, verifyRunnerToken as verifyToken } from './jobToken.js';
+import { asObj, iso, isoN, num, str, strN, type Row } from './pgMappers.js';
+import { isLowValueEventType, type ArtifactCeilingOptions } from './retention.js';
+import {
+  isDevJobEventType,
+  isTerminalDevJobStatus,
+  TERMINAL_DEV_JOB_STATUSES,
+  type DevJob,
+  type DevJobArtifact,
+  type DevJobEvent,
+  type DevJobEventType,
+  type DevJobResult,
+  type DevJobPhase,
+  type DevJobStatus,
+  type NewDevJob,
+  type RunnerHandle,
+} from './types.js';
+
+/**
+ * Thrown when a lease-fenced worker write updates 0 rows — the job's
+ * `claimed_by` no longer matches this worker's lease (another worker claimed
+ * it, or it was finalized). The worker catches this and stops. Mirrors
+ * conductor's `RunLeaseLostError`.
+ */
+export class DevJobLeaseLostError extends Error {
+  constructor(jobId: string) {
+    super(`dev job '${jobId}' lease lost (claimed by another worker or already terminal)`);
+    this.name = 'DevJobLeaseLostError';
+  }
+}
+
+/**
+ * Capability brand for the terminal write. `finishTerminal` refuses to run
+ * without it, and only `finalizeDevJob.ts` imports it — so nothing else in the
+ * codebase can mark a job terminal, enforcing the single choke point at runtime
+ * (stronger than a compile-time `private`, which a sibling module could not
+ * call at all).
+ */
+export const TERMINAL_FINISH_BRAND: unique symbol = Symbol('devplatform.terminalFinish');
+
+/** Host/control-plane event provision namespace (spec §9). Runner sessions use
+ *  provision ≥ 1 (migration default); host-emitted events (finalize's status
+ *  event) use 0 so they never collide with a runner's `seq` space. */
+export const HOST_EVENT_PROVISION = 0;
+
+/** One event as posted by the runner (spec §4 POST /events). `type` is
+ *  validated here — the DB no longer constrains it (0022). */
+export interface RunnerEventInput {
+  seq: number;
+  type: DevJobEventType;
+  ts?: string | null;
+  payload?: Record<string, unknown>;
+}
+
+/** Fields a terminal transition may set alongside the status flip. */
+export interface TerminalPatch {
+  error?: string | null;
+  result?: DevJobResult | null;
+  branch?: string | null;
+  prUrl?: string | null;
+}
+
+/**
+ * The outcome of a `finishTerminal` call.
+ *
+ * `job` is the post-write state (the freshly-flipped row, the pre-existing
+ * terminal row on a no-op, or `null` when the id is absent) — unchanged from the
+ * old nullable-job return, so callers that only need the state read `.job`.
+ *
+ * `transitioned` is the load-bearing addition: `true` ONLY when THIS call
+ * performed the status flip (the guarded UPDATE matched a row). It is `false`
+ * for an idempotent no-op — an already-terminal row, including one a CONCURRENT
+ * writer (another replica's reaper, a cancel route) flipped a moment earlier.
+ * The guarded UPDATE is the only place in the system that knows this; collapsing
+ * it into a plain truthy job is what let the orphan sweep double-count a row a
+ * second replica had already reaped (#561). See the terminal-transition choke
+ * point that wraps this call.
+ */
+export interface TerminalWriteResult {
+  readonly job: DevJob | null;
+  readonly transitioned: boolean;
+}
+
+/** Shared with `devJobWorkerSeams.ts` (worker-seam bodies live there for the
+ *  500-line rule); not part of the public store API. */
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const TERMINAL_SET_SQL = `'done','failed','cancelled','stalled','budget_exceeded'`;
+export const ACTIVE_SET_SQL = `'provisioning','running','applying'`;
+
+export const JOB_COLS =
+  `id, repo_id, kind, brief, source, source_ref, base_sha, backend, agent_kind, auth_mode, ` +
+  `provision, phase, pipeline_mode, review_attempt, review_fingerprint, retry_of, ` +
+  `status, claimed_by, claimed_at, last_heartbeat_at, runner_handle, ` +
+  `runner_token_hash, branch, pr_url, result, error, tokens_in, tokens_out, cost_usd, ` +
+  `budget_cost_usd, budget_tokens, usage_estimated, ` +
+  `created_by, created_at, started_at, ended_at, updated_at`;
+const EVENT_COLS = `id, job_id, provision, seq, type, ts, payload`;
+
+export function toJob(r: Row): DevJob {
+  return {
+    id: str(r['id']),
+    repoId: str(r['repo_id']),
+    kind: str(r['kind']) as DevJob['kind'],
+    brief: str(r['brief']),
+    source: str(r['source']) as DevJob['source'],
+    sourceRef: strN(r['source_ref']),
+    baseSha: strN(r['base_sha']),
+    backend: str(r['backend']) as DevJob['backend'],
+    agentKind: str(r['agent_kind']),
+    authMode: str(r['auth_mode']) as DevJob['authMode'],
+    provision: num(r['provision']),
+    phase: str(r['phase']) as DevJob['phase'],
+    pipelineMode: (str(r['pipeline_mode']) as DevJob['pipelineMode']) || 'gated',
+    reviewAttempt: num(r['review_attempt']),
+    reviewFingerprint: strN(r['review_fingerprint']),
+    retryOf: strN(r['retry_of']),
+    status: str(r['status']) as DevJobStatus,
+    claimedBy: strN(r['claimed_by']),
+    claimedAt: isoN(r['claimed_at']),
+    lastHeartbeatAt: isoN(r['last_heartbeat_at']),
+    runnerHandle: asObj<RunnerHandle | null>(r['runner_handle'], null),
+    runnerTokenHash: strN(r['runner_token_hash']),
+    branch: strN(r['branch']),
+    prUrl: strN(r['pr_url']),
+    result: asObj<DevJobResult | null>(r['result'], null),
+    error: strN(r['error']),
+    tokensIn: num(r['tokens_in']),
+    tokensOut: num(r['tokens_out']),
+    costUsd: num(r['cost_usd']),
+    budgetCostUsd: r['budget_cost_usd'] == null ? null : Number(r['budget_cost_usd']),
+    budgetTokens: r['budget_tokens'] == null ? null : Number(r['budget_tokens']),
+    usageEstimated: r['usage_estimated'] === true,
+    createdBy: str(r['created_by']),
+    createdAt: iso(r['created_at']),
+    startedAt: isoN(r['started_at']),
+    endedAt: isoN(r['ended_at']),
+    updatedAt: iso(r['updated_at']),
+  };
+}
+
+function toEvent(r: Row): DevJobEvent {
+  return {
+    id: num(r['id']),
+    jobId: str(r['job_id']),
+    provision: num(r['provision']),
+    seq: num(r['seq']),
+    type: str(r['type']) as DevJobEventType,
+    ts: iso(r['ts']),
+    payload: asObj(r['payload'], {}),
+  };
+}
+
+export interface DevJobStoreOptions {
+  /** Live tail for SSE. When present, appended events are published to it. */
+  eventBus?: DevJobEventBus;
+  /**
+   * W5 (spec §7): per-job event cap (`DEV_JOB_MAX_EVENTS`). Once a job holds this
+   * many events, `appendEvents` drops further LOW-VALUE telemetry (`log`/
+   * `heartbeat`) but keeps audit-grade events, recording the truncation as exactly
+   * one `events_truncated` status event. `<= 0` (default) disables the cap.
+   */
+  maxEvents?: number;
+  /**
+   * W5 (spec §7): artifact ceiling (`DEV_ARTIFACT_MAX_BYTES`). Threaded into
+   * `addArtifact`; absent ⇒ no ceiling (W0 behaviour). An `objectStore` here is
+   * the offload seam — absent, oversized content is marked and refused inline.
+   */
+  artifactCeiling?: ArtifactCeilingOptions;
+}
+
+/**
+ * Narrows a reaper sweep (W3-A). `dev_jobs` has no tenant column — `repo_id` IS
+ * the tenancy axis here, and every suite/deployment owns its own `dev_repos`
+ * rows — so a repo-id set is the scope key.
+ *
+ * OMITTING this (the production call) keeps the sweep DATABASE-GLOBAL, which is
+ * correct for the single-tenant deployment: the reaper must reach every
+ * abandoned job whoever launched it. It exists because a global sweep is
+ * untestable in a shared cluster — a forward-dated cutoff in one suite finalized
+ * a sibling suite's in-flight jobs as `stalled`.
+ *
+ * An EXPLICITLY EMPTY `repoIds` means "nothing is in scope" and returns no rows.
+ * It must never widen back to global: that would turn a caller who computed an
+ * empty entitlement set into a caller who sweeps everything.
+ */
+export interface DevJobSweepScope {
+  readonly repoIds?: readonly string[];
+}
+
+export interface ListJobsFilter {
+  repoId?: string;
+  /** Scope to a SET of repos IN SQL (before LIMIT). Use this — not a post-query
+   *  filter — when the caller is only entitled to certain repos, so a LIMIT can
+   *  never silently drop the caller's own jobs behind other repos' rows. */
+  repoIds?: readonly string[];
+  status?: DevJobStatus;
+  limit?: number;
+}
+
+/**
+ * The new position returned by {@link DevJobStore.accumulateJobUsage}: the job's
+ * counters AFTER this call's atomic increment, plus the EFFECTIVE budgets (the
+ * job override coalesced with the repo default) so the caller resolves job→repo
+ * budgets without a second query. The config default is applied by the caller
+ * only when `effectiveBudgetCostUsd` is null. `budget_tokens` has no default.
+ */
+export interface DevJobBudgetPosition {
+  costUsd: number;
+  tokensTotal: number;
+  effectiveBudgetCostUsd: number | null;
+  effectiveBudgetTokens: number | null;
+}
+
+export class DevJobStore {
+  private readonly pool: Pool;
+  private readonly bus?: DevJobEventBus;
+  private readonly maxEvents: number;
+  private readonly artifactCeiling?: ArtifactCeilingOptions;
+
+  constructor(pool: Pool, opts: DevJobStoreOptions = {}) {
+    this.pool = pool;
+    this.bus = opts.eventBus;
+    this.maxEvents = opts.maxEvents ?? 0;
+    this.artifactCeiling = opts.artifactCeiling;
+  }
+
+  async createJob(input: NewDevJob & { runnerTokenHash: string }): Promise<DevJob> {
+    // `status` is threaded so a gated trigger job can be born `'waiting'` in this
+    // single INSERT (never transiently `'queued'` and therefore never claimable);
+    // omitted ⇒ `'queued'` (the DB default, kept explicit here for the same value).
+    //
+    // `phase` defaults to `'analyze'`, not `'implement'`: every pipeline_mode
+    // (gated AND collapsed) is designed to start there per transitions.ts's own
+    // test suite ("collapsed mode skips THE GATE" still begins `analyze →
+    // implement`) and the dev-runner-shim's own default
+    // (`phaseLoop.ts`: `ctx?.phase ?? 'analyze'`). Only `kind === 'analyze'`
+    // jobs terminate immediately after that phase; `fix_issue` and `implement`
+    // jobs continue through bootstrap/plan/clarify/gate exactly like any other
+    // gated job — an explicit `phase` override (e.g. the gated-webhook trigger
+    // parking straight at `'await_human'`) still wins.
+    const r = await this.pool.query<Row>(
+      `INSERT INTO dev_jobs
+         (repo_id, kind, brief, source, source_ref, base_sha, backend, agent_kind, auth_mode,
+          provision, phase, status, branch, runner_token_hash, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       RETURNING ${JOB_COLS}`,
+      [
+        input.repoId,
+        input.kind,
+        input.brief,
+        input.source,
+        input.sourceRef ?? null,
+        input.baseSha ?? null,
+        input.backend,
+        input.agentKind ?? 'claude-cli',
+        input.authMode ?? 'api_key',
+        input.provision ?? 1,
+        input.phase ?? 'analyze',
+        input.status ?? 'queued',
+        input.branch ?? null,
+        input.runnerTokenHash,
+        input.createdBy,
+      ],
+    );
+    return toJob(r.rows[0]!);
+  }
+
+  async getJob(id: string): Promise<DevJob | null> {
+    const r = await this.pool.query<Row>(`SELECT ${JOB_COLS} FROM dev_jobs WHERE id = $1`, [id]);
+    return r.rows[0] ? toJob(r.rows[0]) : null;
+  }
+
+  /**
+   * Delete one job's row — `ON DELETE CASCADE` (0022) removes its events and
+   * artifacts in the same statement, same as `retention.purgeTerminalJobs`
+   * (spec §7), just for a single operator-named job instead of an age sweep.
+   * Scoped to terminal statuses only: an active job still has a live backend
+   * handle (container, Fly Machine) that deleting the row would orphan —
+   * terminate it first (which finalizes the job), then delete.
+   */
+  async deleteJob(id: string): Promise<'deleted' | 'not_terminal' | 'not_found'> {
+    const r = await this.pool.query(
+      `DELETE FROM dev_jobs WHERE id = $1 AND status = ANY($2::text[])`,
+      [id, [...TERMINAL_DEV_JOB_STATUSES]],
+    );
+    if ((r.rowCount ?? 0) > 0) return 'deleted';
+    return (await this.getJob(id)) ? 'not_terminal' : 'not_found';
+  }
+
+  async listJobs(filter: ListJobsFilter = {}): Promise<DevJob[]> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (filter.repoId) {
+      params.push(filter.repoId);
+      where.push(`repo_id = $${params.length}`);
+    }
+    if (filter.repoIds) {
+      // Empty set ⇒ no repo can match; short-circuit rather than emit `= ANY('{}')`.
+      if (filter.repoIds.length === 0) return [];
+      params.push([...filter.repoIds]);
+      where.push(`repo_id = ANY($${params.length}::uuid[])`);
+    }
+    if (filter.status) {
+      params.push(filter.status);
+      where.push(`status = $${params.length}`);
+    }
+    const limit = Math.min(Math.max(1, Math.trunc(filter.limit ?? 100)), 500);
+    params.push(limit);
+    const r = await this.pool.query<Row>(
+      `SELECT ${JOB_COLS} FROM dev_jobs
+        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        ORDER BY created_at DESC LIMIT $${params.length}`,
+      params,
+    );
+    return r.rows.map(toJob);
+  }
+
+  /**
+   * Atomically claim the oldest queued job with `FOR UPDATE SKIP LOCKED`, so two
+   * concurrent workers never grab the same row (spec §4). `claimedBy` is the
+   * worker's `randomUUID()` lease — a non-UUID is rejected loudly, not surfaced
+   * as an opaque Postgres `22P02` from the `uuid` column cast.
+   */
+  async claimNextQueued(claimedBy: string): Promise<DevJob | null> {
+    if (!UUID_RE.test(claimedBy)) {
+      throw new TypeError(`claimNextQueued: claimedBy must be a UUID (got '${claimedBy}')`);
+    }
+    const r = await this.pool.query<Row>(
+      `UPDATE dev_jobs
+          SET status = 'provisioning', claimed_by = $1, claimed_at = now(), started_at = now(),
+              updated_at = now()
+        WHERE id = (
+          SELECT id FROM dev_jobs WHERE status = 'queued'
+           ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED
+        )
+        RETURNING ${JOB_COLS}`,
+      [claimedBy],
+    );
+    return r.rows[0] ? toJob(r.rows[0]) : null;
+  }
+
+  /**
+   * Hand a claimed job back to the queue, un-started.
+   *
+   * A backend that answers "at capacity" has not failed the job — it has
+   * declined to start it *now*. Finalizing such a job as `failed` would turn a
+   * transient scheduling condition into a permanent, user-visible error, so the
+   * worker calls this instead and the next poll re-claims the row.
+   *
+   * Lease-fenced and status-guarded: only the worker that still owns the claim,
+   * and only while the job is still `provisioning` (nothing was spawned, no
+   * runner handle was ever attached), can rewind it. 0 rows ⇒ the lease moved
+   * on and the caller must not touch the row.
+   */
+  async releaseClaim(jobId: string, claimedBy: string): Promise<boolean> {
+    if (!UUID_RE.test(claimedBy)) {
+      throw new TypeError(`releaseClaim: claimedBy must be a UUID (got '${claimedBy}')`);
+    }
+    const r = await this.pool.query(
+      `UPDATE dev_jobs
+          SET status = 'queued', claimed_by = NULL, claimed_at = NULL, started_at = NULL,
+              updated_at = now()
+        WHERE id = $1 AND claimed_by = $2 AND status = 'provisioning'
+          AND runner_handle IS NULL`,
+      [jobId, claimedBy],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Bump liveness without writing an event.
+   *
+   * `appendEvents` bumps `last_heartbeat_at` too, but it returns early on an
+   * empty batch — and an agent that thinks for two minutes without emitting a
+   * tool call produces exactly that. Without a standalone touch, `findStalled`
+   * would reap a perfectly healthy job. Status-guarded: a terminal job stays
+   * terminal, so a half-dead runner cannot resurrect itself by heartbeating.
+   */
+  async touchHeartbeat(jobId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs SET last_heartbeat_at = now(), updated_at = now()
+        WHERE id = $1 AND status IN ('provisioning', 'running', 'applying')`,
+      [jobId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /** Flip provisioning → running when the runner fetches its spec (spec §4). Runner-
+   *  driven (job-token auth), so status-guarded rather than lease-fenced. */
+  async markRunning(jobId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs SET status = 'running', updated_at = now()
+        WHERE id = $1 AND status = 'provisioning'`,
+      [jobId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * W2: advance a job's phase, fenced on the phase it is LEAVING. A stale runner
+   * (one that ran a phase the job already moved past) presents the old `from`,
+   * matches 0 rows, and the caller returns 409 — its result is discarded. The
+   * status-guard keeps a terminal job terminal.
+   */
+  async advancePhase(jobId: string, from: DevJobPhase, to: DevJobPhase): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs SET phase = $3, updated_at = now()
+        WHERE id = $1 AND phase = $2 AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [jobId, from, to],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * W2: re-queue a gate-parked job for its next provision (the implement phase).
+   * The runner has exited (park); the claim loop re-provisions at the pinned
+   * base_sha once the gate resolves. Sets phase, clears the lease, status→queued.
+   *
+   * FENCED on `phase = 'await_human'` (Forge #4): only a job that is genuinely
+   * parked at the gate may be re-queued. Without the fence this would re-queue ANY
+   * non-terminal job, and — since a self-heal re-drive can call it more than once
+   * — the fence is also what makes the re-drive idempotent: the second call, on a
+   * job already moved to `implement`/`queued`, matches 0 rows and is a no-op.
+   */
+  async requeueAtPhase(jobId: string, phase: DevJobPhase): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs
+          SET phase = $2, status = 'queued', claimed_by = NULL, claimed_at = NULL,
+              runner_handle = NULL, provision = provision + 1, updated_at = now()
+        WHERE id = $1 AND phase = 'await_human' AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [jobId, phase],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * W2: park a job at the human gate. The runner has exited; the job holds at
+   * `await_human` with status `waiting` and no lease, so the claim loop leaves it
+   * alone until the gate resolves and `requeueAtPhase` re-queues it. Phase-fenced
+   * on `await_human` so only a job the engine just advanced there parks.
+   */
+  async parkForGate(jobId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs
+          SET status = 'waiting', claimed_by = NULL, claimed_at = NULL,
+              runner_handle = NULL, updated_at = now()
+        WHERE id = $1 AND phase = 'await_human' AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [jobId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * W3: park a job at the AUTHORITATIVE diff-policy apply gate. Unlike the W2
+   * clarify gate, the apply gate fires host-side while the job is `applying` (the
+   * runner already uploaded its diff and exited) — the phase is `review`/`pr`, not
+   * `await_human` — so this is fenced on the STATUS, NOT the phase. The apply also
+   * runs on a `failed`-after-diff retry (`POST /jobs/:id/apply`); if THAT re-apply
+   * gates, the job is `failed`, so the fence admits `applying` OR `failed` —
+   * otherwise the gate would dangle on a job that never parks and the operator's
+   * later approval silently no-ops (Forge W3 gate-resume audit #6). The phase is
+   * left untouched: the resume re-applies the diff, it does not re-run a phase.
+   * `waiting` is outside the active set, so a parked job holds no runner slot and
+   * is never swept by the stall/wall-clock sweeps. Returns true iff a row was
+   * parked (a re-drive after the park already happened matches 0 rows).
+   */
+  async parkForApplyGate(jobId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs
+          SET status = 'waiting', claimed_by = NULL, claimed_at = NULL,
+              runner_handle = NULL, updated_at = now()
+        WHERE id = $1 AND status IN ('applying', 'failed')`,
+      [jobId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * W3: resume a diff-policy-gate-parked job for the host-side re-apply. Moves it
+   * `waiting → applying` so `DevJobWorker.applyJob` (which requires `applying`)
+   * and the claim loop's `applyReady` sweep both pick it up. CAS-fenced on
+   * `status = 'waiting'`: a self-heal re-drive of a gate whose job already
+   * re-applied (now `done`/`failed`/`applying`) matches 0 rows and returns false,
+   * so the caller skips the re-apply and no second PR is opened. The `phase <>
+   * 'await_human'` guard makes this robust to a future caller: a REVIEW gate parks
+   * its job `waiting` AT `await_human` (no diff to apply), and resuming that into
+   * `applying` would fail with `no_diff` — only a diff-policy-parked job (phase
+   * `review`/`pr`) may be resumed here (Forge W3 gate-resume audit #6 defensive).
+   */
+  async resumeApplyAfterGate(jobId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs SET status = 'applying', updated_at = now()
+        WHERE id = $1 AND status = 'waiting' AND phase <> 'await_human'`,
+      [jobId],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * W2: append a delimited section to the job's brief, at most once (spec §5,
+   * "answers append to the brief"). The `marker` is a substring the caller
+   * guarantees is present in `section`; the append is skipped when the brief
+   * already contains it, so a gate self-heal re-drive (which calls the approve/
+   * reject side effect more than once) never double-appends. Terminal jobs are
+   * left untouched. Returns true iff this call actually wrote the section.
+   */
+  async appendToBrief(jobId: string, marker: string, section: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs SET brief = brief || $3, updated_at = now()
+        WHERE id = $1 AND position($2 in brief) = 0 AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [jobId, marker, section],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  /** W2: record the review loop's attempt counter + fingerprint (same provision). */
+  async setReviewState(jobId: string, attempt: number, fingerprint: string | null): Promise<void> {
+    await this.pool.query(
+      `UPDATE dev_jobs SET review_attempt = $2, review_fingerprint = $3, updated_at = now()
+        WHERE id = $1 AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [jobId, attempt, fingerprint],
+    );
+  }
+
+  /** Attach the backend handle. A WORKER write — lease-fenced; 0 rows ⇒ lease lost. */
+  async setRunnerHandle(jobId: string, claimedBy: string, handle: RunnerHandle): Promise<void> {
+    const r = await this.pool.query(
+      `UPDATE dev_jobs SET runner_handle = $3::jsonb, last_heartbeat_at = now(), updated_at = now()
+        WHERE id = $1 AND claimed_by = $2 AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [jobId, claimedBy, JSON.stringify(handle)],
+    );
+    if ((r.rowCount ?? 0) === 0) throw new DevJobLeaseLostError(jobId);
+  }
+
+  /**
+   * Record the runner's reported result + usage. `diff_ready` moves the job to
+   * `applying` (the WORKER then applies + opens the PR); other outcomes only
+   * persist the payload — the terminal flip goes through `finalizeDevJob`, never
+   * here. Status-guarded (skips an already-terminal job); runner-driven, so not
+   * lease-fenced.
+   */
+  async recordResult(jobId: string, result: DevJobResult): Promise<void> {
+    const u = result.usage ?? {};
+    const nextStatus = result.outcome === 'diff_ready' ? 'applying' : null;
+    await this.pool.query(
+      `UPDATE dev_jobs
+          SET result = $2::jsonb,
+              status = COALESCE($3, status),
+              tokens_in = $4, tokens_out = $5, cost_usd = $6,
+              error = COALESCE($7, error), updated_at = now()
+        WHERE id = $1 AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [
+        jobId,
+        JSON.stringify(result),
+        nextStatus,
+        u.tokensIn ?? 0,
+        u.tokensOut ?? 0,
+        u.costUsd ?? 0,
+        result.error ?? null,
+      ],
+    );
+  }
+
+  // --- events --------------------------------------------------------------
+  /**
+   * Append a batch of runner events. Idempotent per `(job_id, provision, seq)`
+   * via `ON CONFLICT DO NOTHING` (a retried batch is a safe no-op); the SAME
+   * `seq` under a DIFFERENT provision is accepted — that is what `provision` is
+   * for. Bumps `last_heartbeat_at`, publishes each newly stored event to the
+   * live bus, returns the count actually inserted.
+   */
+  async appendEvents(jobId: string, provision: number, events: RunnerEventInput[]): Promise<number> {
+    if (events.length === 0) return 0;
+    // Validate the WHOLE batch first (the throwing contract is unchanged: a bad
+    // seq/type rejects the batch even if that event would later be dropped).
+    for (const e of events) {
+      if (!Number.isInteger(e.seq) || e.seq < 0) {
+        throw new TypeError(`appendEvents: seq must be a non-negative integer (got ${String(e.seq)})`);
+      }
+      if (!isDevJobEventType(e.type)) {
+        throw new TypeError(`appendEvents: invalid event type '${String(e.type)}'`);
+      }
+    }
+
+    // W5 per-job event cap (spec §7): once a job is at/over the cap, drop further
+    // LOW-VALUE telemetry (`log`/`heartbeat`) but STILL accept audit-grade events
+    // (status/tool/gate/token/approval/egress/phase). Silent truncation would make
+    // the log a liar, so the drop is recorded as exactly ONE `events_truncated`
+    // status event (idempotent below — never re-inserted on every over-cap append).
+    let toInsert = events;
+    let droppedByCap = 0;
+    if (this.maxEvents > 0) {
+      const count = await this.countEvents(jobId);
+      if (count >= this.maxEvents) {
+        const kept: RunnerEventInput[] = [];
+        for (const e of events) {
+          if (isLowValueEventType(e.type)) droppedByCap++;
+          else kept.push(e);
+        }
+        toInsert = kept;
+      }
+    }
+
+    let inserted = 0;
+    if (toInsert.length > 0) {
+      const params: unknown[] = [jobId, provision];
+      const tuples: string[] = [];
+      for (const e of toInsert) {
+        const b = params.length + 1;
+        params.push(e.seq, e.type, e.ts ?? null, JSON.stringify(e.payload ?? {}));
+        tuples.push(`($1, $2, $${b}, $${b + 1}, COALESCE($${b + 2}::timestamptz, now()), $${b + 3}::jsonb)`);
+      }
+      const res = await this.pool.query<Row>(
+        `INSERT INTO dev_job_events (job_id, provision, seq, type, ts, payload)
+         VALUES ${tuples.join(', ')}
+         ON CONFLICT (job_id, provision, seq) DO NOTHING
+         RETURNING ${EVENT_COLS}`,
+        params,
+      );
+      for (const row of res.rows) this.bus?.publish(jobId, toEvent(row));
+      inserted = res.rows.length;
+    }
+
+    if (droppedByCap > 0) await this.recordTruncationOnce(jobId, droppedByCap);
+
+    // Heartbeat only while the job can still receive events (never resurrect a
+    // terminal job's timestamps). Bumped even when every event was capped — a
+    // batch arriving is itself a sign of life.
+    await this.pool.query(
+      `UPDATE dev_jobs SET last_heartbeat_at = now(), updated_at = now()
+        WHERE id = $1 AND status NOT IN (${TERMINAL_SET_SQL})`,
+      [jobId],
+    );
+    return inserted;
+  }
+
+  /** Count of a job's events — the per-job cap check. Served by the
+   *  `dev_job_events(job_id, id)` index (0022). */
+  private async countEvents(jobId: string): Promise<number> {
+    const r = await this.pool.query<Row>(
+      `SELECT count(*)::bigint AS n FROM dev_job_events WHERE job_id = $1`,
+      [jobId],
+    );
+    return Number(r.rows[0]!['n']);
+  }
+
+  /**
+   * Record the once-per-job `events_truncated` status marker in the HOST provision
+   * namespace, but ONLY if the job has no such marker yet — the `NOT EXISTS` guard
+   * makes a re-drive past the cap a no-op (spec §7: recorded "exactly once, not
+   * re-inserted every append"). `dropped` is the count at the FIRST truncation.
+   */
+  private async recordTruncationOnce(jobId: string, dropped: number): Promise<void> {
+    const payload = JSON.stringify({ state: 'events_truncated', dropped });
+    // Retry the seq allocation on a collision, exactly like `appendHostEvent`
+    // (Forge W5 A3b — this method previously did NOT retry, so it lost the
+    // provision-0 seq race against the finalize `status` event and the marker
+    // vanished). `ON CONFLICT DO NOTHING` (no target) catches BOTH a seq collision
+    // AND the marker's partial-unique index (0030); the exists-recheck then tells
+    // the two apart: marker present ⇒ recorded (done), else ⇒ seq collision ⇒ retry.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const res = await this.pool.query<Row>(
+        `INSERT INTO dev_job_events (job_id, provision, seq, type, payload)
+         SELECT $1, ${HOST_EVENT_PROVISION},
+                (SELECT COALESCE(MAX(seq), -1) + 1 FROM dev_job_events
+                  WHERE job_id = $1 AND provision = ${HOST_EVENT_PROVISION}),
+                'status', $2::jsonb
+          WHERE NOT EXISTS (
+            SELECT 1 FROM dev_job_events
+             WHERE job_id = $1 AND type = 'status'
+               AND payload->>'state' = 'events_truncated'
+          )
+         ON CONFLICT DO NOTHING
+         RETURNING ${EVENT_COLS}`,
+        [jobId, payload],
+      );
+      if (res.rows[0]) {
+        this.bus?.publish(jobId, toEvent(res.rows[0]));
+        return;
+      }
+      // 0 rows ⇒ marker already exists (done) OR a seq collision (retry).
+      const exists = await this.pool.query(
+        `SELECT 1 FROM dev_job_events
+          WHERE job_id = $1 AND type = 'status' AND payload->>'state' = 'events_truncated'
+          LIMIT 1`,
+        [jobId],
+      );
+      if ((exists.rowCount ?? 0) > 0) return; // recorded (by us earlier or a concurrent writer)
+    }
+  }
+
+  /**
+   * Append a host/control-plane event (provision {@link HOST_EVENT_PROVISION}),
+   * assigning the next `seq` in that namespace. Used by `finalizeDevJob` for the
+   * terminal `status` event, which has no runner `seq`. Retries on the rare
+   * concurrent-seq collision.
+   */
+  async appendHostEvent(
+    jobId: string,
+    type: DevJobEventType,
+    payload: Record<string, unknown> = {},
+  ): Promise<DevJobEvent | null> {
+    if (!isDevJobEventType(type)) {
+      throw new TypeError(`appendHostEvent: invalid event type '${String(type)}'`);
+    }
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const res = await this.pool.query<Row>(
+        `INSERT INTO dev_job_events (job_id, provision, seq, type, payload)
+         VALUES ($1, ${HOST_EVENT_PROVISION},
+                 (SELECT COALESCE(MAX(seq), -1) + 1 FROM dev_job_events
+                   WHERE job_id = $1 AND provision = ${HOST_EVENT_PROVISION}),
+                 $2, $3::jsonb)
+         ON CONFLICT (job_id, provision, seq) DO NOTHING
+         RETURNING ${EVENT_COLS}`,
+        [jobId, type, JSON.stringify(payload)],
+      );
+      if (res.rows[0]) {
+        const ev = toEvent(res.rows[0]);
+        this.bus?.publish(jobId, ev);
+        return ev;
+      }
+    }
+    return null;
+  }
+
+  /** Events ordered by the IDENTITY `id` — the sole ordering key, monotonic
+   *  across provisions (NEVER `seq`, which only orders within one provision). */
+  async listEvents(jobId: string, afterId?: number, limit = 500): Promise<DevJobEvent[]> {
+    const safe = Math.min(Math.max(1, Math.trunc(limit)), 2000);
+    const r = await this.pool.query<Row>(
+      `SELECT ${EVENT_COLS} FROM dev_job_events
+        WHERE job_id = $1 AND ($2::bigint IS NULL OR id > $2)
+        ORDER BY id ASC LIMIT $3`,
+      [jobId, afterId ?? null, safe],
+    );
+    return r.rows.map(toEvent);
+  }
+
+  // --- artifacts -----------------------------------------------------------
+  // --- artifacts (delegated to devJobArtifactStore.ts, 500-line rule) -------
+  async artifactBelongsToJob(jobId: string, artifactId: string): Promise<boolean> {
+    return artifacts.artifactBelongsToJob(this.pool, jobId, artifactId);
+  }
+
+  async addArtifact(
+    jobId: string,
+    kind: string,
+    content: string,
+    meta: Record<string, unknown> = {},
+  ): Promise<string> {
+    // W5: enforce the artifact ceiling (spec §7) when the store was constructed
+    // with one — oversized inline content is offloaded or marked, never stored
+    // unbounded. Absent ⇒ unchanged W0 behaviour.
+    return artifacts.addArtifact(this.pool, jobId, kind, content, meta, this.artifactCeiling);
+  }
+
+  async getArtifact(id: string): Promise<DevJobArtifact | null> {
+    return artifacts.getArtifact(this.pool, id);
+  }
+
+  async listArtifacts(jobId: string): Promise<DevJobArtifact[]> {
+    return artifacts.listArtifacts(this.pool, jobId);
+  }
+
+  /** W2: the latest artifact of a kind — used to pin the plan at gate open. */
+  async getLatestArtifact(jobId: string, kind: string): Promise<DevJobArtifact | null> {
+    return artifacts.getLatestArtifact(this.pool, jobId, kind);
+  }
+
+  // --- tokens --------------------------------------------------------------
+  /**
+   * Mint a fresh runner token for a job whose container the DockerBackend path
+   * has not yet spawned, and persist only its hash — same one-time-plaintext
+   * contract `mintRunnerToken` documents for every backend, just exercised at a
+   * different moment.
+   *
+   * Why this exists: `createJob` already stamps a `runner_token_hash` for every
+   * job, but for the docker backend that first token's plaintext is discarded
+   * unused — `DockerBackend.provision()` deliberately posts only
+   * `{ protocol, jobId, leaseTtlSec }` to the daemon (spec §4/§5, review finding
+   * S3: "a caller never dictates policy"), so the token can never ride that
+   * call. The daemon fetches the job's policy itself, later, on its own clock
+   * (`GET /internal/job-policy/:jobId`) — THAT is this backend's actual
+   * provision moment, so this reissues the token right there, replacing the
+   * unused original hash, and the plaintext rides the policy response's `env`
+   * (the daemon's own `ALLOWED_ENV_KEYS` already special-cases `OMADIA_JOB_TOKEN`
+   * as policy-supplied — see `policyClient.mjs`). One reissue per policy fetch,
+   * which is one per container spawn, so the token a runner receives always
+   * matches the runner_token_hash a `verifyRunnerToken` call against it will see.
+   */
+  async reissueRunnerToken(jobId: string): Promise<string> {
+    const { token, hash } = mintRunnerToken();
+    await this.pool.query(`UPDATE dev_jobs SET runner_token_hash = $2, updated_at = now() WHERE id = $1`, [
+      jobId,
+      hash,
+    ]);
+    return token;
+  }
+
+  /** sha256 + timing-safe check of a presented runner token against the stored
+   *  hash. Unknown job ⇒ false. */
+  async verifyRunnerToken(jobId: string, token: string): Promise<boolean> {
+    const r = await this.pool.query<Row>(
+      `SELECT runner_token_hash FROM dev_jobs WHERE id = $1`,
+      [jobId],
+    );
+    if (!r.rows[0]) return false;
+    return verifyToken(token, strN(r.rows[0]['runner_token_hash']));
+  }
+
+  /** Resolve a job from its runner bearer alone — the LLM proxy (spec §6b) sees
+   *  only `Authorization: Bearer <djr_…>` and no jobId.
+   *
+   *  The indexed sha256 equality is used only to FIND the candidate row; the
+   *  bearer is then VERIFIED against the stored hash with `crypto.timingSafeEqual`
+   *  (the same constant-time pattern as {@link verifyRunnerToken}), so the check
+   *  cannot be turned into a timing oracle.
+   *
+   *  Response-shape decision (documented): a TERMINAL job returns `null`, exactly
+   *  like an unknown token. The LLM proxy therefore answers 401 for both, so a
+   *  holder of a stale (now-terminal) token cannot use the 401-vs-410 distinction
+   *  as a valid-token / job-state oracle. The proxy's own terminal→410 branch
+   *  remains as defence-in-depth for any caller that surfaces a terminal job by
+   *  other means. */
+  async resolveJobByToken(token: string): Promise<Pick<DevJob, 'id' | 'status' | 'agentKind'> | null> {
+    if (typeof token !== 'string' || token.length === 0) return null;
+    const r = await this.pool.query<Row>(
+      `SELECT id, status, agent_kind, runner_token_hash FROM dev_jobs WHERE runner_token_hash = $1`,
+      [hashRunnerToken(token)],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    // Constant-time verify (defends against a timing oracle even though the
+    // indexed lookup already matched on the hash).
+    if (!verifyToken(token, strN(row['runner_token_hash']))) return null;
+    const status = str(row['status']) as DevJobStatus;
+    // W4: a `budget_exceeded` job (terminal) STILL resolves so the LLM proxy can
+    // answer the runner a fatal 402 and both sides converge (spec §5). Every
+    // OTHER terminal returns null so a stale-token holder gets no valid/terminal
+    // state oracle (the proxy answers 401 for both unknown and stale tokens).
+    if (isTerminalDevJobStatus(status) && status !== 'budget_exceeded') return null;
+    return { id: str(row['id']), status, agentKind: str(row['agent_kind']) };
+  }
+
+  /** Atomic per-job usage increment (spec §6b/§ W4). One statement so a
+   *  concurrent read never sees a half-applied bump; W4 will add the budget
+   *  enforcement onto this same UPDATE. */
+  async addJobUsage(jobId: string, tokensIn: number, tokensOut: number): Promise<void> {
+    await this.pool.query(
+      `UPDATE dev_jobs SET tokens_in = tokens_in + $2, tokens_out = tokens_out + $3, updated_at = now()
+        WHERE id = $1`,
+      [jobId, Math.max(0, Math.trunc(tokensIn)), Math.max(0, Math.trunc(tokensOut))],
+    );
+  }
+
+  /**
+   * W4 atomic accumulate-and-readback for budget enforcement (spec §5). ONE
+   * statement bumps the per-job counters and RETURNS the new position together
+   * with the effective budgets (job override coalesced with the repo default).
+   *
+   * Race-safe by construction: the increment is `SET x = x + $n` under the row
+   * lock the UPDATE takes, and the new value is read back via RETURNING — never
+   * read-modify-write — so two concurrent proxy calls cannot lose an update. The
+   * job→repo budget resolution is folded into the same statement so metering
+   * needs no second round trip. Returns null if the job row does not exist.
+   */
+  async accumulateJobUsage(
+    jobId: string,
+    tokensIn: number,
+    tokensOut: number,
+    costUsd: number,
+  ): Promise<DevJobBudgetPosition | null> {
+    const r = await this.pool.query<Row>(
+      `UPDATE dev_jobs AS j
+          SET tokens_in = tokens_in + $2,
+              tokens_out = tokens_out + $3,
+              cost_usd = cost_usd + $4,
+              updated_at = now()
+        WHERE j.id = $1
+        RETURNING
+          j.cost_usd AS cost_usd,
+          (j.tokens_in + j.tokens_out) AS tokens_total,
+          COALESCE(j.budget_cost_usd,
+                   (SELECT r.budget_cost_usd FROM dev_repos r WHERE r.id = j.repo_id)) AS eff_budget_cost_usd,
+          COALESCE(j.budget_tokens,
+                   (SELECT r.budget_tokens FROM dev_repos r WHERE r.id = j.repo_id)) AS eff_budget_tokens`,
+      [jobId, Math.max(0, Math.trunc(tokensIn)), Math.max(0, Math.trunc(tokensOut)), Math.max(0, costUsd)],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return {
+      costUsd: Number(row['cost_usd']),
+      tokensTotal: Number(row['tokens_total']),
+      effectiveBudgetCostUsd: row['eff_budget_cost_usd'] == null ? null : Number(row['eff_budget_cost_usd']),
+      effectiveBudgetTokens: row['eff_budget_tokens'] == null ? null : Number(row['eff_budget_tokens']),
+    };
+  }
+
+  // --- reaper / enforcement reads (worker calls finalizeDevJob on these) ----
+  /** Active jobs whose last sign of life is older than `cutoff` — stalled
+   *  candidates for the worker/reaper. Unscoped ⇒ database-global (production);
+   *  pass `scope` to constrain it. See {@link DevJobSweepScope}. */
+  async findStalled(cutoff: Date, scope?: DevJobSweepScope): Promise<DevJob[]> {
+    // An explicitly empty scope means "nothing", never "everything".
+    if (scope?.repoIds !== undefined && scope.repoIds.length === 0) return [];
+    const scoped = scope?.repoIds !== undefined;
+    const r = await this.pool.query<Row>(
+      `SELECT ${JOB_COLS} FROM dev_jobs
+        WHERE status IN (${ACTIVE_SET_SQL})
+          AND COALESCE(last_heartbeat_at, started_at, claimed_at) < $1
+          ${scoped ? 'AND repo_id = ANY($2::uuid[])' : ''}`,
+      scoped ? [cutoff, scope.repoIds] : [cutoff],
+    );
+    return r.rows.map(toJob);
+  }
+
+  /** Active jobs started before `startedBefore` — over their wall-clock budget. */
+  async findOverWallClock(startedBefore: Date): Promise<DevJob[]> {
+    const r = await this.pool.query<Row>(
+      `SELECT ${JOB_COLS} FROM dev_jobs
+        WHERE status IN (${ACTIVE_SET_SQL}) AND started_at IS NOT NULL AND started_at < $1`,
+      [startedBefore],
+    );
+    return r.rows.map(toJob);
+  }
+
+  // --- worker seams (spec §4) — bodies in devJobWorkerSeams.ts (500-line rule) -
+  /** Jobs occupying a runner slot; the worker's concurrency gate. */
+  countActiveJobs(): Promise<number> {
+    return seams.countActiveJobs(this.pool);
+  }
+
+  /** Still-active (provisioning/running) job for a handle id — excludes `applying`. */
+  findActiveByHandleId(handleId: string): Promise<DevJob | null> {
+    return seams.findActiveByHandleId(this.pool, handleId);
+  }
+
+  /** Mint the one-time runner token + pin branch/base_sha (lease-fenced). */
+  prepareProvision(job: DevJob, lease: string, baseSha?: string | null): Promise<{ token: string; job: DevJob }> {
+    return seams.prepareProvision(this.pool, job, lease, baseSha);
+  }
+
+  // --- terminal transition (finalizeDevJob only) ---------------------------
+  /**
+   * Flip a job to a terminal status. Brand-gated: the caller must present
+   * {@link TERMINAL_FINISH_BRAND}, which in practice only `finalizeDevJob.ts`
+   * imports. Be precise about what that buys — the brand is an exported symbol,
+   * so a determined module could import it and call this directly. It prevents
+   * an *accidental* terminal write, not a deliberate one. The invariant that
+   * `finalizeDevJob` is the only terminal path is upheld by review, and the
+   * brand makes a violation loud rather than silent. If a later wave needs the
+   * stronger guarantee, move this method into `finalizeDevJob.ts`.
+   * Idempotent: if the job is already terminal (or absent) the status-guarded
+   * UPDATE touches 0 rows and the existing row is returned unchanged, so a
+   * double-finalize is a no-op, not an error. NOT lease-fenced: cancel routes
+   * and the reaper legitimately finalize jobs they do not lease.
+   *
+   * Returns a {@link TerminalWriteResult}: `job` is the post-write state (as
+   * before), and `transitioned` reports whether THIS call did the flip — `true`
+   * only when the guarded UPDATE matched a row, `false` for any no-op including a
+   * row a concurrent replica flipped first. That flag is the fence the sweep
+   * metric needs; see the type doc and #561.
+   */
+  async finishTerminal(
+    brand: typeof TERMINAL_FINISH_BRAND,
+    jobId: string,
+    status: DevJobStatus,
+    patch: TerminalPatch = {},
+  ): Promise<TerminalWriteResult> {
+    if (brand !== TERMINAL_FINISH_BRAND) {
+      throw new Error('devplatform: finishTerminal() is reserved for finalizeDevJob()');
+    }
+    if (!isTerminalDevJobStatus(status)) {
+      throw new TypeError(`devplatform: '${status}' is not a terminal status`);
+    }
+    const r = await this.pool.query<Row>(
+      `UPDATE dev_jobs
+          SET status = $2,
+              error = COALESCE($3, error),
+              result = COALESCE($4::jsonb, result),
+              branch = COALESCE($5, branch),
+              pr_url = COALESCE($6, pr_url),
+              ended_at = now(), updated_at = now()
+        WHERE id = $1 AND status NOT IN (${TERMINAL_SET_SQL})
+        RETURNING ${JOB_COLS}`,
+      [
+        jobId,
+        status,
+        patch.error ?? null,
+        patch.result ? JSON.stringify(patch.result) : null,
+        patch.branch ?? null,
+        patch.prUrl ?? null,
+      ],
+    );
+    // A matched row ⇒ THIS call flipped it. `RETURNING` gives the new state.
+    if (r.rows[0]) return { job: toJob(r.rows[0]), transitioned: true };
+    // 0 rows ⇒ already terminal or absent — idempotent no-op. Return the
+    // existing state (unchanged from the old contract) and, crucially, report
+    // `transitioned: false` so the caller does not count a row it did not reap.
+    return { job: await this.getJob(jobId), transitioned: false };
+  }
+}

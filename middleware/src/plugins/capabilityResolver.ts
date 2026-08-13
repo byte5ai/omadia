@@ -436,6 +436,31 @@ export function findActiveProviderCollision(
   if (!candidate) {
     return null;
   }
+  return findProvidesCollision(
+    candidatePluginId,
+    candidate.plugin.provides,
+    catalog,
+    registry,
+  );
+}
+
+/**
+ * The same collision check, but driven by an explicit `provides` list rather
+ * than a catalog lookup.
+ *
+ * Needed because the store must answer this question for plugins that are NOT
+ * in the local catalog: a hub-only entry has no local manifest, yet it carries
+ * `provides` from the registry summary, and it is exactly the case where the
+ * store used to advertise an install that {@link findActiveProviderCollision}
+ * would then refuse with 409 `install.capability_already_provided` (OM-06 /
+ * issue #671). Asking with the list keeps both surfaces on one rule.
+ */
+export function findProvidesCollision(
+  candidatePluginId: string,
+  candidateProvides: readonly string[],
+  catalog: PluginCatalog,
+  registry: InstalledRegistry,
+): { capability: string; ownerId: string } | null {
   const ownerByCap = new Map<string, string>();
   for (const installed of registry.list()) {
     if (installed.status !== 'active') {
@@ -458,7 +483,7 @@ export function findActiveProviderCollision(
       }
     }
   }
-  for (const rawProv of candidate.plugin.provides) {
+  for (const rawProv of candidateProvides) {
     let ref: CapabilityRef;
     try {
       ref = parseCapabilityRef(rawProv);

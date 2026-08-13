@@ -167,7 +167,48 @@ async function postJson<T>(
   }
 }
 
+/**
+ * The middleware's machine-readable error code, pulled out of a JSON error
+ * body (`{ code, message }`). Returns `null` when the body is not JSON, has
+ * no `code`, or carries one that is not a non-empty string.
+ *
+ * Pure by construction: no module state is read or written, which is what
+ * keeps the constructor invariant documented below intact.
+ */
+function parseErrorCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown };
+    return typeof parsed.code === 'string' && parsed.code.trim().length > 0
+      ? parsed.code
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Deliberately does NOT feed the Create Issue diagnostics buffer (issue
+ * #433 review). An earlier version called `recordApiErrorDiagnostic` from
+ * this constructor, which made `ApiError` — used by every failed call
+ * anywhere in the admin UI, including secrets/vault-config PATCHes on
+ * /admin/settings — a silent, global source for a buffer an operator can
+ * later opt to attach to a PUBLIC GitHub issue on an unrelated bug report.
+ * The diagnostics feature only captures `window` `error` /
+ * `unhandledrejection` events (see diagnosticsBuffer.ts) — page-level
+ * crashes, not the outcome of a specific admin action. See
+ * api.test.ts for the regression test enforcing this invariant.
+ *
+ * OM-09: the machine code is parsed here, once, so consumers can reach the
+ * localized catalogue in `errorHelp.ts` instead of each re-deriving it from
+ * `body` with their own `JSON.parse` — or, as several did, rendering the
+ * server's untranslated `message` as the headline. The parse is a pure
+ * string read into a readonly field and touches nothing outside the
+ * instance, so the no-side-effects invariant above still holds.
+ */
 export class ApiError extends Error {
+  /** Machine-readable code from the JSON error body; `null` when absent. */
+  public readonly code: string | null;
+
   constructor(
     public readonly status: number,
     message: string,
@@ -175,7 +216,30 @@ export class ApiError extends Error {
   ) {
     super(message);
     this.name = 'ApiError';
+    this.code = parseErrorCode(body);
   }
+}
+
+/**
+ * Asserts that a list endpoint really returned an array under `key`.
+ *
+ * A 200 response whose body is the wrong shape used to sail straight through
+ * into the page, where the first `.filter()` / `.map()` threw *outside* the
+ * try/catch that was supposed to protect the load — turning a bad payload into
+ * an unrecoverable render crash instead of the page's own error card.
+ * Throwing an ApiError here keeps the failure inside the caller's catch.
+ *
+ * Deliberately hand-rolled: web-ui has no schema-validation dependency and
+ * this file already hand-rolls ApiError / maybeNavigateToLogin / cookie
+ * forwarding. Applied only to the list endpoints whose pages dereference the
+ * array immediately — not retrofitted across every call site.
+ */
+function expectArray<T>(value: unknown, path: string, key: string): T[] {
+  if (Array.isArray(value)) return value as T[];
+  throw new ApiError(
+    200,
+    `GET ${path}: malformed body — "${key}" is not an array`,
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -272,10 +336,46 @@ export interface AdminProviderModel {
   vision: boolean;
 }
 
+/**
+ * Four-state credential verdict from the middleware (OM-02/03/04):
+ *  - `no_key`     nothing stored
+ *  - `unverified` a key is stored, but no probe has ever proved it works
+ *  - `verified`   a probe against the provider's API succeeded
+ *  - `invalid`    the provider rejected the key (401/403)
+ *
+ * Only `verified` may ever be presented as a working provider. `unverified` is
+ * the state that used to be rendered as a green "connected" badge while every
+ * request failed.
+ */
+export type ProviderCredentialStatus =
+  | 'no_key'
+  | 'unverified'
+  | 'verified'
+  | 'invalid';
+
 export interface AdminProvider {
   id: string;
   label: string;
-  /** True when an API key for this provider is present in the vault. */
+  /** Credential verdict. Prefer this over `connected` everywhere. */
+  status: ProviderCredentialStatus;
+  /** ISO timestamp of the last successful probe (`verified` only). */
+  verifiedAt?: string;
+  /** User-facing rejection reason (`invalid` only). */
+  verifyError?: string;
+  /** OM-09 — machine-readable counterpart to `verifyError`, resolved against
+   *  the localized `errorHelp` catalogue. Present only for `status: 'invalid'`;
+   *  absent on payloads from a pre-#604 middleware, where `verifyError` (an
+   *  English sentence) stays the only thing there is to show. */
+  verifyErrorCode?: string;
+  /** #671 — why the probe could NOT confirm the key (`unverified` only). A
+   *  code (`forbidden` | `non_json_response` | `unexpected_body` |
+   *  `http_error` | `network_error` | `no_probe`), resolved against
+   *  `providers.unverifiedReason.*`. Distinguishes a region/permission block
+   *  from a provider outage — both of which #599 correctly stopped reporting
+   *  as a bad key. Absent on pre-#671 middleware payloads. */
+  verifyReason?: string;
+  /** Legacy: "a key is on file" — i.e. `status !== 'no_key'`. Retained for
+   *  backwards compatibility; it does NOT mean the key works. */
   connected: boolean;
   /** Data-protection hints for the UI (data-driven; defaulted server-side).
    *  `requiresAvvDisclosure`: show the Art. 28 DSGVO third-party disclosure.
@@ -285,6 +385,12 @@ export interface AdminProvider {
   /** Tool-less Shape-2 CLI provider — cannot drive a tool loop, so the UI
    *  disables it for tool-dependent plugins. */
   toolLess?: boolean;
+  /** OM-11 — is the host capability this provider needs actually present?
+   *  For a CLI-backed provider this is "the binary exists on this server";
+   *  key-based providers need no binary and report `true`. The UI must not
+   *  offer "Anmelden" for a CLI that isn't there. Absent on payloads from a
+   *  pre-OM-11 middleware — treat `undefined` as installed. */
+  installed?: boolean;
   models: AdminProviderModel[];
 }
 
@@ -328,6 +434,24 @@ export async function assignProvider(
   body: AssignProviderRequest,
 ): Promise<AssignProviderResponse> {
   return postJson<AssignProviderResponse>('/v1/admin/providers/assignment', body);
+}
+
+export interface ProviderVerification {
+  status: ProviderCredentialStatus;
+  verifiedAt?: string;
+  checkedAt?: string;
+  error?: string;
+}
+
+/** Force a live probe of a provider's stored key. This is the only providers
+ *  call that hits the vendor's API — the listing endpoint never does. */
+export async function verifyProvider(
+  providerId: string,
+): Promise<ProviderVerification> {
+  return postJson<ProviderVerification>(
+    `/v1/admin/providers/${encodeURIComponent(providerId)}/verify`,
+    {},
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -473,7 +597,16 @@ export async function listStorePlugins(
   if (query.search) params.set('search', query.search);
   if (query.category) params.set('category', query.category);
   const suffix = params.toString() ? `?${params.toString()}` : '';
-  return getJson<StoreListResponse>(`/v1/store/plugins${suffix}`);
+  const path = `/v1/store/plugins${suffix}`;
+  const resp = await getJson<StoreListResponse>(path);
+  return {
+    ...resp,
+    items: expectArray<StoreListResponse['items'][number]>(
+      resp?.items,
+      path,
+      'items',
+    ),
+  };
 }
 
 export async function getStorePlugin(id: string): Promise<StoreGetResponse> {
@@ -2294,7 +2427,16 @@ export interface RoutineResponse {
 }
 
 export async function listRoutines(): Promise<ListRoutinesResponse> {
-  return getJson<ListRoutinesResponse>('/v1/routines');
+  const resp = await getJson<ListRoutinesResponse>('/v1/routines');
+  const routines = expectArray<RoutineDto>(
+    resp?.routines,
+    '/v1/routines',
+    'routines',
+  );
+  return {
+    routines,
+    count: typeof resp?.count === 'number' ? resp.count : routines.length,
+  };
 }
 
 export async function setRoutineStatus(
@@ -3509,6 +3651,150 @@ export async function setMemoryBackend(
 }
 
 // -----------------------------------------------------------------------------
+// Embedding-provider switch (#440 follow-up). Backed by the admin router at
+// /api/v1/admin/embedding-provider, surfaced to the browser as
+// /bot-api/v1/admin/embedding-provider.
+//
+// Unlike `setMemoryBackend` above, the POST here does NOT just persist a
+// choice: the middleware deactivates the outgoing `embeddingClient@1` adapter,
+// activates the target and re-runs the knowledge-graph's model/dimension gate
+// in-process. No restart. The response therefore carries the resulting gate
+// outcome plus a fresh snapshot.
+//   - GET  /       → providers, active model, corpus, live gate, switch preview
+//   - POST /switch → perform the switch (destructive; needs confirmation)
+// -----------------------------------------------------------------------------
+
+/** What a switch to this provider would cost. `null` fields mean "cannot be
+ *  told before activation" — the gate decides for real. */
+export interface EmbeddingProviderPreview {
+  /** True when the target width differs from the stored column width. */
+  widthChange: boolean | null;
+  /** Stored vectors that would be discarded and re-embedded. */
+  vectorsToDiscard: number | null;
+}
+
+export interface EmbeddingProviderOption {
+  pluginId: string;
+  label: string;
+  active: boolean;
+  registryStatus: 'active' | 'inactive' | 'errored' | null;
+  modelId: string | null;
+  dimensions: number | null;
+  /** `null` for the provider that is already active. */
+  preview: EmbeddingProviderPreview | null;
+}
+
+/** A governed `vector(n)` column and how much corpus it holds. */
+export interface EmbeddingVectorColumn {
+  table: string;
+  column: string;
+  declaredDimensions: number | null;
+  storedVectors: number | null;
+}
+
+/** The #440 gate verdict, live (never a boot snapshot). */
+export interface EmbeddingGateState {
+  vectorWritesAllowed: boolean;
+  status: string;
+  reason?: string;
+  activeModelId?: string;
+  storedModelId?: string;
+  detail?: string;
+}
+
+/**
+ * The registry's live client and the last gate verdict name DIFFERENT models
+ * (#440 follow-up). Not a failure: swapping an `embeddingClient@1` adapter
+ * through the generic plugin-install UI deliberately does not re-gate, so the
+ * graph keeps running under a verdict about a model that is no longer active.
+ * `null` when the two agree, or when either side is unknown.
+ */
+export interface EmbeddingProviderDrift {
+  /** What the registry hands out right now. */
+  activeModelId: string;
+  /** What the governing verdict was computed against. */
+  gateModelId: string;
+}
+
+export interface EmbeddingProviderState {
+  providers: EmbeddingProviderOption[];
+  activeProviderId: string | null;
+  activeModel: { modelId: string; dimensions: number } | null;
+  /** Optional so older middleware builds still satisfy this type. */
+  providerDrift?: EmbeddingProviderDrift | null;
+  capabilityPublished: boolean;
+  /** `graph_embedding_model` — what the stored vectors were produced with. */
+  corpus: { modelId: string; dimensions: number; clearPending: boolean } | null;
+  columns: EmbeddingVectorColumn[];
+  columnDimensions: number | null;
+  storedVectorTotal: number | null;
+  gate: EmbeddingGateState | null;
+  autoMigrateVectorColumns: boolean;
+  knowledgeGraphInstalled: boolean;
+  graphAvailable: boolean;
+  /**
+   * The tenant every corpus number above was priced against — the
+   * knowledge-graph plugin's own `graph_tenant_id` when the operator set one,
+   * otherwise the deployment default. Optional so older middleware builds
+   * still satisfy this type; it exists so a `storedVectorTotal: 0` can be told
+   * apart from "the wrong tenant was counted".
+   */
+  graphTenantId?: string;
+  corpusError: string | null;
+}
+
+export interface SwitchEmbeddingProviderResult extends EmbeddingProviderState {
+  ok: true;
+  switchedTo: string;
+  /**
+   * Did the knowledge-graph's model/dimension gate actually re-run against the
+   * new provider? False on a deployment with no Postgres knowledge-graph
+   * active (nothing to gate) — a legitimate success, but a different one, so
+   * it is reported rather than implied. `gateWarning` says why.
+   * Optional so older middleware builds still satisfy this type.
+   */
+  gateReevaluated?: boolean;
+  gateWarning?: string;
+}
+
+/** Read the current embedding-provider picture. Safe to poll. */
+export async function getEmbeddingProvider(): Promise<EmbeddingProviderState> {
+  return getJson<EmbeddingProviderState>('/v1/admin/embedding-provider');
+}
+
+/**
+ * Switch the active embedding provider, live.
+ *
+ * DESTRUCTIVE: the stored vectors are discarded and re-embedded, one paid
+ * provider call per row. `confirmDiscardVectors` must be `true` or the
+ * middleware answers 400 `embeddingProvider.confirmation_required`. Other
+ * inline-surfaceable failures: 400 `embeddingProvider.unknown_target`, 409
+ * `embeddingProvider.already_active`, 409 `embeddingProvider.target_unavailable`
+ * (the target was not configured; `details.restoredProviderId` names the
+ * provider that is verified live again, or is `null` when NOTHING could be
+ * restored), 409 `embeddingProvider.switch_in_progress` (another switch is
+ * running — re-read the state before retrying) and 500
+ * `embeddingProvider.gate_reevaluation_failed` (the provider switch DID take
+ * effect and the knowledge graph is still up with its pool intact, but
+ * re-evaluating its model/dimension gate against the new provider threw, so
+ * the graph is still governed by the PREVIOUS verdict).
+ *
+ * The switch never re-activates the knowledge-graph plugin — that would end
+ * the pg pool the whole middleware shares — so a successful switch can no
+ * longer leave the graph deactivated. The former
+ * `embeddingProvider.knowledge_graph_down` code is gone with it.
+ */
+export async function switchEmbeddingProvider(
+  pluginId: string,
+  confirmDiscardVectors: boolean,
+): Promise<SwitchEmbeddingProviderResult> {
+  return postJson<SwitchEmbeddingProviderResult>(
+    '/v1/admin/embedding-provider/switch',
+    { pluginId, confirmDiscardVectors },
+  );
+}
+
+// -----------------------------------------------------------------------------
 // Mid-turn steering (2026-06-06).
 // -----------------------------------------------------------------------------
 
@@ -3699,6 +3985,17 @@ export async function installSelfExtensionProposal(
 // Backed by the middleware /api/v1/operator/conductors router (cookie auth).
 // ─────────────────────────────────────────────────────────────────────────
 
+/** Template-provenance hint on workflows instantiated from a template (#478,
+ *  additive — mirrors the middleware's WorkflowTemplateHint). `updateAvailable`
+ *  is true only while the template stays visible to the viewer AND carries a
+ *  newer manifest version than the one instantiated. */
+export interface ConductorWorkflowTemplateHint {
+  id: string;
+  version: number;
+  latestVersion: number;
+  updateAvailable: boolean;
+}
+
 export interface ConductorWorkflow {
   id: string;
   slug: string;
@@ -3706,6 +4003,7 @@ export interface ConductorWorkflow {
   description: string | null;
   status: 'enabled' | 'disabled';
   activeVersionId: string | null;
+  template?: ConductorWorkflowTemplateHint;
 }
 
 export interface ConductorRun {
@@ -3859,6 +4157,230 @@ export async function getConductorRun(slug: string, runId: string): Promise<Cond
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}`);
 }
 
+// Workflow templates (#429) — curated, slot-parameterized starting points bundled with
+// the middleware. Wire shapes mirror @omadia/conductor-core's TemplateManifest locally,
+// following this file's convention (web-ui does not depend on middleware workspace
+// packages).
+
+/** Manifest-borne localizable text (mirrors conductor-core's LocalizedText): a plain
+ *  string, or a per-locale record with `en` required as the universal fallback. */
+export type ConductorLocalizedText = string | { en: string; [locale: string]: string | undefined };
+
+/** Resolve template text for the active UI locale, falling back to `en`. Templates are
+ *  data (v2 ships them outside the repo), so localization travels in the manifest and is
+ *  resolved client-side — GET /templates keeps returning full manifests (#330). */
+export function resolveConductorText(value: ConductorLocalizedText, locale: string): string {
+  if (typeof value === 'string') return value;
+  const localized = value[locale];
+  return typeof localized === 'string' && localized.trim().length > 0 ? localized : value.en;
+}
+
+export interface ConductorTemplateSlot {
+  key: string;
+  /** human-readable, shown in the mapping form. */
+  label: ConductorLocalizedText;
+  /** authored help text for the mapping form. */
+  description?: ConductorLocalizedText;
+}
+
+/** A declared text slot (#478): referenced from prompt/message text as the token
+ *  `slot:text:<key>`; pure string substitution, no ref semantics. */
+export interface ConductorTemplateTextSlot {
+  key: string;
+  label: ConductorLocalizedText;
+  description?: ConductorLocalizedText;
+  /** substituted when the instantiating operator supplies no value. */
+  default?: string;
+}
+
+export interface ConductorTemplateSlots {
+  agents?: ConductorTemplateSlot[];
+  actions?: ConductorTemplateSlot[];
+  roles?: ConductorTemplateSlot[];
+  events?: ConductorTemplateSlot[];
+  channels?: ConductorTemplateSlot[];
+  text?: ConductorTemplateTextSlot[];
+}
+
+/** slot key → install-local entity id, per kind (mirrors TemplateSlotMapping).
+ *  `text` maps declared text-slot keys to the substituted strings (#478,
+ *  additive — absent for pure-ref v1 mappings). */
+export type ConductorTemplateSlotMapping = Partial<
+  Record<'agents' | 'actions' | 'roles' | 'events' | 'channels', Record<string, string>>
+> & {
+  text?: Record<string, string>;
+};
+
+/** Just enough of the template graph for catalog rendering (the schedule badge reads
+ *  `triggers`); steps and transitions stay opaque — downstream consumers (designer)
+ *  take them as `unknown`, parity with getConductorWorkflowGraph. */
+export interface ConductorTemplateGraph {
+  entryStepId: string;
+  steps: unknown[];
+  transitions: unknown[];
+  triggers?: Array<{ id: string; kind: string; eventId?: string; cron?: string }>;
+}
+
+export interface ConductorTemplate {
+  id: string;
+  name: ConductorLocalizedText;
+  description: ConductorLocalizedText;
+  useCase: ConductorLocalizedText;
+  defaultSlug: string;
+  graph: ConductorTemplateGraph;
+  slots: ConductorTemplateSlots;
+  /** manifest version, integer >= 1; absent = 1 (v1 manifests). */
+  version?: number;
+  // --- ADDITIVE catalog metadata (#478). Optional here because the same type also
+  // covers plain manifests (save-as-template drafts, POST/PUT request bodies).
+  source?: 'bundled' | 'user' | 'plugin';
+  /** user templates only: review-gate state. */
+  status?: 'private' | 'pending' | 'shared';
+  /** user templates only: backend viewer identity of the author (session sub —
+   *  compare against AuthUser.id, which /auth/me mints from the same claim). */
+  createdBy?: string;
+  latestVersion?: number;
+  instantiationCount?: number;
+  updatedAt?: string;
+}
+
+export async function fetchConductorTemplates(): Promise<{ templates: ConductorTemplate[] }> {
+  return getJson(`${CONDUCTOR_BASE}/templates`);
+}
+
+/** Single catalog entry, same visibility rule as the list (404 when invisible). */
+export async function fetchConductorTemplate(id: string): Promise<{ template: ConductorTemplate }> {
+  return getJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}`);
+}
+
+/** "Save as template" (#478): reverse slot inference over the workflow's active
+ *  published version. Returns a DRAFT manifest only — nothing is persisted; the
+ *  dialog edits it and publishes via createConductorTemplate (fresh id) or
+ *  updateConductorTemplate (new version of an owned id). NB: the conductor router
+ *  is mounted at /conductors, so the path carries no '/workflows' prefix. */
+export async function saveWorkflowAsTemplate(
+  slug: string,
+): Promise<{ draft: ConductorTemplate; sourceWorkflow: { slug: string; version: number } }> {
+  return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/save-as-template`, {});
+}
+
+/** Create a user template (status 'private', v1, owned by the viewer).
+ *  409 conductor.template_id_exists / 400 conductor.template_invalid. */
+export async function createConductorTemplate(
+  manifest: ConductorTemplate,
+): Promise<{ template: ConductorTemplate }> {
+  return postJson(`${CONDUCTOR_BASE}/templates`, { manifest });
+}
+
+/** Publish the next manifest version onto an OWNED template (author-only; the
+ *  server assigns latestVersion+1). postJson hard-codes POST after its init
+ *  spread, so this mirrors putUiPrefs' dedicated PUT fetch instead. */
+export async function updateConductorTemplate(
+  id: string,
+  manifest: ConductorTemplate,
+): Promise<{ template: ConductorTemplate }> {
+  const forwarded = await forwardCookieHeader();
+  const path = `${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}`;
+  const res = await fetch(botApi(path), {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify({ manifest }),
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  const text = await res.text().catch(() => '');
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `PUT ${path} failed: ${res.status}`, text);
+  }
+  return JSON.parse(text) as { template: ConductorTemplate };
+}
+
+/** Delete an OWNED user template (author-only; bundled/plugin entries are
+ *  read-only). 204 on success. postJson hard-codes POST, so this is a dedicated
+ *  DELETE fetch mirroring updateConductorTemplate's PUT. */
+export async function deleteConductorTemplate(id: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const path = `${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}`;
+  const res = await fetch(botApi(path), {
+    method: 'DELETE',
+    headers: {
+      accept: 'application/json',
+      ...forwarded,
+    },
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}`, text);
+  }
+}
+
+/** Review gate (#478): the author submits a private template for review
+ *  (private → pending). 409 conductor.template_status_conflict otherwise. */
+export async function submitConductorTemplate(id: string): Promise<{ template: ConductorTemplate }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/submit`, {});
+}
+
+/** Approve a pending template (pending → shared). Open to ANY operator — the
+ *  revised visibility rule makes pending templates install-wide, so a
+ *  non-author reviewer can act; `reviewed_by` is recorded server-side. */
+export async function approveConductorTemplate(id: string): Promise<{ template: ConductorTemplate | null }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/approve`, {});
+}
+
+/** Reject a pending template (pending → private). Open to any operator; the
+ *  template may drop out of a non-author reviewer's visibility afterwards, so
+ *  the returned `template` can be null. */
+export async function rejectConductorTemplate(id: string): Promise<{ template: ConductorTemplate | null }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/reject`, {});
+}
+
+/** Immutable manifest versions of a template, ascending. Bundled/plugin sources
+ *  report their single file-defined version (no createdAt). */
+export async function fetchConductorTemplateVersions(
+  id: string,
+): Promise<{ versions: Array<{ version: number; createdAt?: string }> }> {
+  return getJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/versions`);
+}
+
+/** Ephemeral instantiation: substituted + validated graph, nothing persisted
+ *  (feeds "open in designer"). `version` pins an explicit manifest version
+ *  (#478 update flow); omitted = latest. */
+export async function resolveConductorTemplate(
+  id: string,
+  mapping: ConductorTemplateSlotMapping,
+  version?: number,
+): Promise<{ graph: unknown }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/resolve`, {
+    mapping,
+    ...(version !== undefined ? { version } : {}),
+  });
+}
+
+/** Persistent instantiation: publishes an ordinary versioned workflow (copy, not
+ *  reference). 409 conductor.slug_exists on collision; enable defaults to false;
+ *  `version` pins an explicit manifest version (omitted = latest). */
+export async function instantiateConductorTemplate(
+  id: string,
+  body: {
+    slug: string;
+    name?: string;
+    description?: string;
+    mapping: ConductorTemplateSlotMapping;
+    enable?: boolean;
+    version?: number;
+  },
+): Promise<{ workflow: ConductorWorkflow; version: { id: string; version: number } }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/instantiate`, body);
+}
+
 // Conversational builder (US7) — co-design a draft graph by chat. A turn is stateless: the
 // client posts the current draft graph + the message, and gets back the patched draft, the
 // applied patches, the assistant's reply, and a validation verdict. The draft stays client-side
@@ -3885,12 +4407,28 @@ export interface ConductorBuilderMessage {
   text: string;
 }
 
+/** A catalog template the builder agent suggests for the current conversation
+ *  (#478 B4/F4). Chat only PROPOSES — instantiation stays on the deliberate
+ *  form flow. The server has already vetted the block: viewer-visible ids only,
+ *  version taken from the catalog (not the LLM), prefill entries validated
+ *  against declared slots and live refs. */
+export interface ConductorTemplateProposal {
+  templateId: string;
+  version: number;
+  /** one user-facing sentence. */
+  reason: string;
+  /** best-effort slot guesses; partial is fine — seeds the instantiate form. */
+  prefill: ConductorTemplateSlotMapping;
+}
+
 export interface ConductorBuilderTurnResult {
   graph: unknown;
   patches: ConductorGraphPatch[];
   reply: string;
   validation: ConductorValidationResult;
   applyErrors: string[];
+  /** ≤3 template suggestions for this turn (#478) — ADDITIVE: absent when none. */
+  templateProposals?: ConductorTemplateProposal[];
 }
 
 export async function conductorBuilderTurn(body: {
@@ -3922,6 +4460,10 @@ export interface IssuePreview {
   title: string;
   body: string;
   category: IssueCategory;
+  /** Sanitized/truncated `<details>` block, present only when a
+   *  `diagnostics` excerpt was submitted (issue #433) — the exact text
+   *  /create will append, for operator review before filing. */
+  diagnostics?: string;
 }
 
 export interface CreatedIssue {
@@ -3968,6 +4510,9 @@ export function disconnectGithub(): Promise<{ ok: boolean }> {
 export function previewGithubIssue(input: {
   text: string;
   category: IssueCategory;
+  /** Opt-in stack-trace/log excerpt (issue #433) — never sent to the LLM
+   *  reformulator, only echoed back sanitized as `IssuePreview.diagnostics`. */
+  diagnostics?: string;
 }): Promise<IssuePreview> {
   return postJson<IssuePreview>('/v1/issues/preview', input);
 }
@@ -3976,6 +4521,192 @@ export function createGithubIssue(input: {
   title: string;
   body: string;
   category: IssueCategory;
+  diagnostics?: string;
 }): Promise<CreatedIssue> {
   return postJson<CreatedIssue>('/v1/issues/create', input);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Conductor webhooks (issue #437) — inbound endpoints that start subscribed
+// workflow runs, and outbound subscriptions that receive run-lifecycle events.
+// Backed by /api/v1/operator/conductors/webhooks/* (cookie auth, same router
+// as the rest of Conductor's operator surface). A create/rotate-secret call
+// returns the plaintext secret exactly ONCE — never again, and never in a
+// list/get response.
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface ConductorWebhookEndpoint {
+  endpointId: string;
+  eventId: string;
+  description: string | null;
+  enabled: boolean;
+  createdBy: string;
+  createdAt: string;
+  /** Absolute inbound URL (`<middleware base>/api/hooks/:endpointId`), computed
+   *  server-side from the middleware's configured base URL — review finding: the
+   *  admin UI must never build this from `window.location.origin`, which in the
+   *  standard local dev setup is the Next.js dev server (does not proxy
+   *  `/api/hooks/*`). Absent only if the middleware has no base URL configured. */
+  inboundUrl?: string;
+}
+
+export interface ConductorWebhookInboundDelivery {
+  deliveryId: string;
+  endpointId: string;
+  outcome: string;
+  receivedAt: string;
+}
+
+export interface ConductorWebhookSubscription {
+  id: string;
+  url: string;
+  event: string;
+  description: string | null;
+  enabled: boolean;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ConductorWebhookOutboundDelivery {
+  id: string;
+  subscriptionId: string;
+  event: string;
+  payload: unknown;
+  status: 'pending' | 'delivered' | 'failed' | 'exhausted';
+  attempts: number;
+  lastError: string | null;
+  nextAttemptAt: string;
+  deliveredAt: string | null;
+  createdAt: string;
+}
+
+const WEBHOOKS_BASE = `${CONDUCTOR_BASE}/webhooks`;
+
+async function deleteRequest(path: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi(path), {
+    method: 'DELETE',
+    headers: { accept: 'application/json', ...forwarded },
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}`, text);
+  }
+}
+
+export async function listWebhookEndpoints(): Promise<{ endpoints: ConductorWebhookEndpoint[] }> {
+  return getJson(`${WEBHOOKS_BASE}/endpoints`);
+}
+
+export async function createWebhookEndpoint(input: {
+  eventId: string;
+  description?: string;
+}): Promise<{ endpoint: ConductorWebhookEndpoint; secret: string }> {
+  return postJson(`${WEBHOOKS_BASE}/endpoints`, input);
+}
+
+export async function rotateWebhookEndpointSecret(endpointId: string): Promise<{ secret: string }> {
+  return postJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/rotate-secret`, {});
+}
+
+export async function setWebhookEndpointEnabled(endpointId: string, enabled: boolean): Promise<void> {
+  return postJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/status`, { enabled });
+}
+
+export async function deleteWebhookEndpoint(endpointId: string): Promise<void> {
+  return deleteRequest(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}`);
+}
+
+export async function listWebhookEndpointDeliveries(
+  endpointId: string,
+): Promise<{ deliveries: ConductorWebhookInboundDelivery[] }> {
+  return getJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/deliveries`);
+}
+
+export async function listWebhookSubscriptions(): Promise<{ subscriptions: ConductorWebhookSubscription[] }> {
+  return getJson(`${WEBHOOKS_BASE}/subscriptions`);
+}
+
+export async function createWebhookSubscription(input: {
+  url: string;
+  event: string;
+  description?: string;
+}): Promise<{ subscription: ConductorWebhookSubscription; secret: string }> {
+  return postJson(`${WEBHOOKS_BASE}/subscriptions`, input);
+}
+
+export async function rotateWebhookSubscriptionSecret(id: string): Promise<{ secret: string }> {
+  return postJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/rotate-secret`, {});
+}
+
+export async function setWebhookSubscriptionEnabled(id: string, enabled: boolean): Promise<void> {
+  return postJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/status`, { enabled });
+}
+
+export async function deleteWebhookSubscription(id: string): Promise<void> {
+  return deleteRequest(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}`);
+}
+
+export async function listWebhookSubscriptionDeliveries(
+  id: string,
+): Promise<{ deliveries: ConductorWebhookOutboundDelivery[] }> {
+  return getJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/deliveries`);
+}
+
+// -----------------------------------------------------------------------------
+// Public API keys (issues #438/#439; admin UI follow-through #567) —
+// /api/public/v1/admin/keys.
+//
+// This router lives in @omadia/channel-api, not under /v1/operator/* like the
+// rest of this file's admin surfaces — it is mounted at API_PREFIX
+// `/api/public/v1`, gated by the same operator-session cookie via its own
+// `operatorAuth` middleware (see adminKeysRouter.ts). getJson/postJson still
+// apply here unchanged: same cookie, same 401-bounces-to-/login behavior.
+// -----------------------------------------------------------------------------
+
+const API_KEYS_BASE = '/public/v1/admin/keys';
+
+export interface ApiKeyPublicView {
+  id: string;
+  label?: string;
+  rateLimitPerMinute: number;
+  scopes: string[];
+  /** Epoch ms. */
+  createdAt: number;
+  /** Epoch ms. Present iff the key has been revoked. */
+  revokedAt?: number;
+}
+
+export interface CreateApiKeyInput {
+  label?: string;
+  rateLimitPerMinute?: number;
+  /**
+   * Omit this field entirely to accept the backend's legacy default
+   * (`['chat:write']`). An explicitly empty array is REJECTED by the
+   * backend with 400 — it reads `[]` as a deliberate "grant nothing"
+   * request, never as "use the default". Callers must never pass `[]`.
+   */
+  scopes?: string[];
+}
+
+export interface CreateApiKeyResult {
+  key: ApiKeyPublicView;
+  /** Plaintext — present only in this one response. Never returned again by
+   *  any other endpoint; do not persist it beyond the reveal-once UI. */
+  token: string;
+}
+
+export async function listApiKeys(): Promise<{ keys: ApiKeyPublicView[] }> {
+  return getJson(API_KEYS_BASE);
+}
+
+export async function createApiKey(input: CreateApiKeyInput): Promise<CreateApiKeyResult> {
+  return postJson(API_KEYS_BASE, input);
+}
+
+export async function revokeApiKey(id: string): Promise<{ key: ApiKeyPublicView }> {
+  return postJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/revoke`, {});
 }

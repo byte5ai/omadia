@@ -5,9 +5,10 @@ import { listRoutines, type RoutineDto } from '../_lib/api';
 import { redirectIfUnauthorized } from '../_lib/authRedirect';
 import { RoutineRow } from './_components/RoutineRow';
 
-export const metadata: Metadata = {
-  title: 'Routines · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('routines.page');
+  return { title: t('metaTitle') };
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -18,8 +19,8 @@ export default async function RoutinesPage(): Promise<React.ReactElement> {
   let loadError: string | null = null;
   try {
     const resp = await listRoutines();
-    routines = resp.routines;
-    count = resp.count;
+    routines = Array.isArray(resp?.routines) ? resp.routines : [];
+    count = typeof resp?.count === 'number' ? resp.count : routines.length;
   } catch (err) {
     await redirectIfUnauthorized(err);
     loadError = err instanceof Error ? err.message : t('errorUnknownLoad');
@@ -148,9 +149,9 @@ async function EmptyState(): Promise<React.ReactElement> {
       </div>
       <p className="mx-auto mt-2 max-w-md text-sm text-[color:var(--fg-muted)]">
         {t.rich('emptyBody', {
-          toolName: () => (
+          toolName: (chunks) => (
             <code className="rounded bg-[color:var(--surface-muted)] px-2 py-0.5 font-mono text-xs">
-              manage_routine
+              {chunks}
             </code>
           ),
         })}

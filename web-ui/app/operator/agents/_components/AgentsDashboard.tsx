@@ -15,6 +15,7 @@ import {
   killAgentSessions,
   listAgentPluginCatalog,
   patchOperatorAgent,
+  isSeededAgentDescription,
   rehydrateFallback,
   replaceAgentBindings,
   replaceAgentPlugins,
@@ -517,6 +518,7 @@ function AgentCard(props: {
   return (
     <article className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
       <header className="flex items-start justify-between gap-4 px-4 py-3">
+        {/* eslint-disable-next-line no-restricted-syntax -- chevron expand/collapse card-header toggle (aria-expanded), not a §4.2 CTA */}
         <button
           type="button"
           className="flex flex-1 items-start gap-2 text-left"
@@ -602,12 +604,23 @@ function AgentCard(props: {
 
       {expanded && (
         <div className="border-t border-[color:var(--border)] px-4 py-4">
-          {agent.description && (
-            <p className="mb-4 text-sm text-[color:var(--fg)]">{agent.description}</p>
+          {/* #679 / I5 — the boot-seeded description is server-written prose
+              with no locale behind it, so the catalogue supplies the sentence.
+              An operator-edited description is their content and is rendered
+              verbatim, in whatever language they wrote it. */}
+          {isSeededAgentDescription(agent.description) ? (
+            <p className="mb-4 text-sm text-[color:var(--fg)]">
+              {t('seededDescription')}
+            </p>
+          ) : (
+            agent.description && (
+              <p className="mb-4 text-sm text-[color:var(--fg)]">{agent.description}</p>
+            )
           )}
 
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <span className="text-xs text-[color:var(--fg-muted)]">{t('sessionsLabel')}</span>
+            {/* eslint-disable-next-line no-restricted-syntax -- warning-outline drain action (§10 no warning variant) */}
             <button
               type="button"
               className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"

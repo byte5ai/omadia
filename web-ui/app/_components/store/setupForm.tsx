@@ -1,8 +1,11 @@
 'use client';
 
-import { useTranslations } from 'next-intl';
+import { ShieldAlert } from 'lucide-react';
+import { useLocale, useTranslations } from 'next-intl';
 
 import { cn } from '../../_lib/cn';
+import { pickLocalized } from '../../_lib/localized';
+import { nativePatternAttribute } from '../../_lib/setupFieldPattern';
 import type { InstallSetupField } from '../../_lib/storeTypes';
 
 /**
@@ -12,17 +15,53 @@ import type { InstallSetupField } from '../../_lib/storeTypes';
  * coercion rules, same secret/url/integer/enum/boolean handling.
  */
 
+/**
+ * One server-side validation failure for one field, as the install API reports
+ * it (`details: [{ key, code, message }]`).
+ *
+ * The `code` is carried through — rather than flattening to the message string
+ * on arrival — so this component can tell a `pattern_mismatch` apart from the
+ * other codes. It has to: for a pattern mismatch the server's `message` IS the
+ * manifest's `pattern_hint`, resolved to English because the middleware has no
+ * request locale. We hold the whole localized map and render it under this very
+ * input, so we can do better. See `resolveSetupFieldHint`.
+ */
+export interface SetupFieldError {
+  code?: string;
+  message: string;
+}
+
 export function FieldRow({
   field,
   error,
   idPrefix = 'install-field',
 }: {
   field: InstallSetupField;
-  error?: string;
+  error?: SetupFieldError;
   idPrefix?: string;
 }): React.ReactElement {
   const t = useTranslations('store.setupForm');
+  const locale = useLocale();
   const id = `${idPrefix}-${field.key}`;
+  const patternHint = pickLocalized(field.pattern_hint, locale);
+  // #602 (OM-17) — label/help are localized maps; resolve them at the active
+  // locale. A missing label falls back to the field key (never blank).
+  const fieldLabel = pickLocalized(field.label, locale) ?? field.key;
+  const fieldHelp = pickLocalized(field.help, locale);
+  // OM-17 — a German operator must not read an English rejection. Only the
+  // pattern code is overridden: every other install error is either already a
+  // catalog string or a value-shape message the manifest cannot explain.
+  const errorText =
+    error === undefined
+      ? undefined
+      : error.code === 'pattern_mismatch' && patternHint
+        ? patternHint
+        : error.message;
+  // OM-17 — honour the manifest placeholder. The hardcoded `••••••••` told the
+  // operator only "this is masked", which is exactly the signal that reads as
+  // "type your password here". A manifest that says what shape it wants gets to
+  // say it; only the fallback stays masked.
+  const secretPlaceholder = field.placeholder ?? '••••••••';
   const common = cn(
     'w-full border bg-[color:var(--paper)] px-3 py-2 text-sm',
     'focus:outline-none focus:ring-1',
@@ -38,7 +77,7 @@ export function FieldRow({
         className="flex items-baseline justify-between gap-3 text-[11px] uppercase tracking-[0.16em] text-[color:var(--muted-ink)]"
       >
         <span>
-          {field.label}
+          {fieldLabel}
           {field.required ? (
             <span className="ml-1 text-[color:var(--oxblood)]">*</span>
           ) : null}
@@ -49,7 +88,24 @@ export function FieldRow({
       </label>
 
       <div className="mt-2">
-        {field.type === 'boolean' ? (
+        {/*
+          #603 (OM-17) — a `json_file` field is a FILE PICKER, never a text box.
+          Falling through to the text input below would be worse than not having
+          the type at all: it would ask the operator to paste a raw
+          service-account key into a field, which is the transcription step this
+          feature exists to remove. The upload is posted to
+          `…/secrets/from-json`, parsed server-side, and only the derived keys
+          are stored — so this input has no `name` and submits nothing itself.
+        */}
+        {field.type === 'json_file' ? (
+          <input
+            id={id}
+            type="file"
+            accept={field.accept ?? 'application/json'}
+            data-json-file-field={field.key}
+            className="block w-full border border-[color:var(--rule-strong)] bg-[color:var(--paper)] px-3 py-2 text-sm file:mr-3 file:border-0 file:bg-[color:var(--rule)] file:px-3 file:py-1 file:text-sm"
+          />
+        ) : field.type === 'boolean' ? (
           <label
             htmlFor={id}
             className="flex items-center gap-3 border border-[color:var(--rule-strong)] bg-[color:var(--paper)] px-3 py-2 text-sm"
@@ -62,7 +118,7 @@ export function FieldRow({
               className="size-4 accent-[color:var(--oxblood)]"
             />
             <span className="text-[color:var(--muted-ink)]">
-              {field.help ?? t('enable')}
+              {fieldHelp ?? t('enable')}
             </span>
           </label>
         ) : field.type === 'enum' ? (
@@ -101,7 +157,9 @@ export function FieldRow({
             name={field.key}
             rows={6}
             required={field.required}
-            placeholder={field.type === 'secret' ? '••••••••' : undefined}
+            placeholder={
+              field.type === 'secret' ? secretPlaceholder : field.placeholder
+            }
             defaultValue={
               typeof field.default === 'string' ? field.default : ''
             }
@@ -121,12 +179,26 @@ export function FieldRow({
                   : 'text'
             }
             required={field.required}
+            // OM-17 — client-side mirror of the server's `pattern` check. The
+            // server is the load-bearing half (it owns the vault write); this
+            // makes the browser refuse the submit before the round trip.
+            //
+            // `nativePatternAttribute` (NOT `field.pattern`) because the browser
+            // implicitly anchors the attribute as `^(?:…)$`. For a HALF-anchored
+            // pattern that is stricter than what the server enforces, and it
+            // would block the submit of a perfectly valid value — e.g. the
+            // prefix check `^-----BEGIN [A-Z ]*PRIVATE KEY-----` against a real
+            // multi-line PEM block. In that case we emit no attribute and let
+            // the authority decide.
+            pattern={nativePatternAttribute(field.pattern)}
+            title={patternHint}
             placeholder={
-              field.type === 'url'
+              field.placeholder ??
+              (field.type === 'url'
                 ? 'https://…'
                 : field.type === 'secret'
-                  ? '••••••••'
-                  : undefined
+                  ? secretPlaceholder
+                  : undefined)
             }
             defaultValue={
               typeof field.default === 'string' ? field.default : ''
@@ -138,14 +210,43 @@ export function FieldRow({
         )}
       </div>
 
-      {field.help && field.type !== 'boolean' ? (
-        <p className="mt-1 text-[11px] leading-relaxed text-[color:var(--faint-ink)]">
-          {field.help}
+      {/* OM-17 — unconditional caution under EVERY secret input, in both
+          renderers. A customer typed their real Google account password into a
+          masked field that wanted a service-account private key, and the system
+          accepted it silently. omadia never asks for an account password. */}
+      {field.type === 'secret' ? (
+        <p className="mt-1.5 flex items-start gap-1.5 text-[11px] font-medium leading-relaxed text-[color:var(--warning)]">
+          <ShieldAlert className="mt-px size-3.5 shrink-0" aria-hidden />
+          <span>{t('noPasswordWarning')}</span>
         </p>
       ) : null}
-      {error ? (
-        <p className="font-mono-num mt-1 text-[11px] text-[color:var(--oxblood)]">
-          {error}
+      {patternHint ? (
+        <p className="mt-1 text-[11px] leading-relaxed text-[color:var(--muted-ink)]">
+          {patternHint}
+        </p>
+      ) : null}
+      {/* OM-17 — the manifest asked for a format check and the server refused
+          the regex, so this field is going UNCHECKED. Fail-open is right for
+          the write; failing SILENT is what let a Google account password into a
+          private-key field in the first place. */}
+      {field.pattern_unavailable ? (
+        <p className="mt-1 flex items-start gap-1.5 text-[11px] leading-relaxed text-[color:var(--warning)]">
+          <ShieldAlert className="mt-px size-3.5 shrink-0" aria-hidden />
+          <span>{t('patternUnavailable')}</span>
+        </p>
+      ) : null}
+
+      {fieldHelp && field.type !== 'boolean' ? (
+        <p className="mt-1 text-[11px] leading-relaxed text-[color:var(--faint-ink)]">
+          {fieldHelp}
+        </p>
+      ) : null}
+      {errorText ? (
+        <p
+          role="alert"
+          className="font-mono-num mt-1 text-[11px] text-[color:var(--oxblood)]"
+        >
+          {errorText}
         </p>
       ) : null}
     </div>
@@ -164,6 +265,13 @@ export function extractValues(
 ): Record<string, unknown> {
   const values: Record<string, unknown> = {};
   for (const field of fields) {
+    // #603 (OM-17) — a `json_file` field submits NOTHING under its own key. The
+    // file goes to `…/secrets/from-json`, where the server parses it and stores
+    // only the derived keys; the middleware's `coerce()` refuses a value here
+    // for the same reason. Skipping it in one place and not the other would send
+    // the raw document to an endpoint that rejects it, and the operator would
+    // see a validation error for a field they never typed in.
+    if (field.type === 'json_file') continue;
     if (field.type === 'boolean') {
       values[field.key] = formData.get(field.key) === 'on';
       continue;

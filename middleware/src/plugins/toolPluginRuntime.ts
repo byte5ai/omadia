@@ -10,8 +10,13 @@ import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
+import type { OAuthReadinessTracker } from './oauth/oauthReadinessTracker.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
-import type { ApprovedExtension, ExtensionTemplate } from '@omadia/plugin-api';
+import type {
+  ApprovedExtension,
+  ExtensionTemplate,
+  OperatorAuthAccessor,
+} from '@omadia/plugin-api';
 import type { BuiltInPackageStore } from './builtInPackageStore.js';
 import type { SelfExtendRegistry } from './selfExtension/selfExtendRegistry.js';
 import type { ExtensionStore } from './selfExtension/extensionStore.js';
@@ -87,6 +92,15 @@ export interface ToolPluginRuntimeDeps {
   flowPublicBaseUrl?: string;
   /** Spec 004 — backing store for `ctx.status`; cleared on deactivate. */
   pluginStatusRegistry?: PluginStatusRegistry;
+  /** Issue #438 follow-up — kernel-published `ctx.operatorAuth`, threaded
+   *  straight into every `createPluginContext`. Optional so narrow test
+   *  contexts can omit it (an admin router relying on it then fails closed). */
+  operatorAuth?: OperatorAuthAccessor;
+  /** Issue #474 (round 5) — automatic OAuth-connection readiness signal,
+   *  refreshed from the vault on every activate() and cleared on
+   *  deactivate(). Separate from `pluginStatusRegistry` — see
+   *  `OAuthReadinessTracker`'s doc comment for why. */
+  oauthConnectionTracker?: OAuthReadinessTracker;
   /** Event-catalog autodiscovery (US4 Conductor Surface): capability entries declaring
    *  `event_emit: true` are resolved into this registry on (de)activation. This runtime is the
    *  ONLY resolve site for built-in/static tool plugins (landmine K — the dynamic runtime has its
@@ -227,6 +241,20 @@ export class ToolPluginRuntime {
       throw new Error(`tool-runtime: ${agentId} not in plugin catalog`);
     }
 
+    // Issue #474 (round 5) — refresh the automatic OAuth-connection signal
+    // BEFORE the plugin's own activate() runs, so a plugin that separately
+    // calls `ctx.status.report(...)` inside activate() lays its own signal
+    // on top rather than this one overwriting it (the two are ANDed at the
+    // gate, not merged into one entry). No-op when the plugin declares no
+    // `type:'oauth'` field.
+    if (this.deps.oauthConnectionTracker) {
+      await this.deps.oauthConnectionTracker.refresh(
+        agentId,
+        catalogEntry,
+        this.deps.vault,
+      );
+    }
+
     const entryRel = extractEntryPath(catalogEntry) ?? 'dist/plugin.js';
     const entryAbs = path.resolve(packagePath, entryRel);
     if (!entryAbs.startsWith(packagePath + path.sep)) {
@@ -260,14 +288,34 @@ export class ToolPluginRuntime {
       flowSigningKey: this.deps.flowSigningKey,
       flowPublicBaseUrl: this.deps.flowPublicBaseUrl,
       pluginStatusRegistry: this.deps.pluginStatusRegistry,
+      operatorAuth: this.deps.operatorAuth,
       logger: (...args) => console.log(`[${agentId}]`, ...args),
     });
 
-    const handle = await withTimeout(
-      activateFn(ctx),
-      10_000,
-      `activate(${agentId}) timed out after 10s`,
-    );
+    let handle: ToolPluginHandle;
+    try {
+      handle = await withTimeout(
+        activateFn(ctx),
+        10_000,
+        `activate(${agentId}) timed out after 10s`,
+      );
+    } catch (err) {
+      // A plugin that registered a router or a nav entry and THEN threw (or
+      // timed out) never reaches `active.set`, so deactivate() would later
+      // return false and never clean up — the orphaned route would keep
+      // serving and the orphaned menu entry would keep rendering for the
+      // life of the process. Roll back what the context handed out before
+      // letting the failure propagate to the circuit-breaker. Services are
+      // part of that: a plugin that called ctx.services.provide() and then
+      // threw would otherwise make every retry fail with 'duplicate
+      // provider' instead of the real activation error.
+      this.deps.pluginRouteRegistry.disposeBySource(agentId);
+      this.deps.uiRouteCatalog.disposeBySource(agentId);
+      this.deps.serviceRegistry.disposeBySource(agentId);
+      this.deps.jobScheduler.stopForPlugin(agentId);
+      this.deps.pluginStatusRegistry?.clear(agentId);
+      throw err;
+    }
 
     // Plugin self-extension (Theme B): if the module opted into the selfExtend
     // SDK, register its declarative templates and re-materialise every
@@ -348,6 +396,27 @@ export class ToolPluginRuntime {
     }
     this.deps.selfExtendRegistry?.unregister(agentId);
     this.deps.eventCatalogRegistry?.unregister(agentId);
+    // Take the externally-reachable surfaces down BEFORE awaiting close().
+    // close() is plugin-controlled and gets a 5s budget, so disposing after
+    // it would leave routers answering and the menu entry visible for up to
+    // five seconds into a deactivation the operator already triggered —
+    // and for the full budget when a plugin's close() hangs.
+    //
+    // Express cannot unmount, so the route registry flips its entries to
+    // disposed and the mounted closure falls through to next(). Without
+    // this call a deactivated plugin's routers stay live and — because
+    // Express matches first-mount-wins — keep serving after uninstall or
+    // across a hot-upgrade. DynamicAgentRuntime already did this; the tool
+    // runtime held the dependency and threaded it into the plugin context
+    // but never disposed by source.
+    //
+    // Same reasoning one layer down for the service registry: a provider
+    // whose close() forgets its handle leaves the service registered
+    // against a torn-down module, so consumers keep resolving a dead
+    // implementation and the reinstall throws 'duplicate provider'.
+    this.deps.pluginRouteRegistry.disposeBySource(agentId);
+    this.deps.uiRouteCatalog.disposeBySource(agentId);
+    this.deps.serviceRegistry.disposeBySource(agentId);
     try {
       await withTimeout(
         entry.handle.close(),
@@ -364,8 +433,8 @@ export class ToolPluginRuntime {
     // close() should already invoke — a leaked dispose still won't outlive
     // its plugin's lifecycle.
     this.deps.jobScheduler.stopForPlugin(agentId);
-    this.deps.uiRouteCatalog.disposeBySource(agentId);
     this.deps.pluginStatusRegistry?.clear(agentId);
+    this.deps.oauthConnectionTracker?.clear(agentId);
     this.active.delete(agentId);
 
     if (this.deps.onDeactivated) {

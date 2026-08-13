@@ -13,19 +13,18 @@ import type {
   RecalledContext,
 } from '@omadia/plugin-api';
 
+import { probePgTest } from './_helpers/pgTestDb.js';
+
 /**
  * KG-walk chat visualization — `getMemorableKnowledgeSubgraph` BFS over the
  * recalled neighbourhood, plus the `buildKgWalkPayload` emit-path helper.
  *
- * The Neon leg runs against a throwaway PG (mwtest-pg-kg :55439); it skips
- * cleanly when the DB is unreachable so `npm test` stays hermetic. The
+ * The Neon leg runs against a throwaway pgvector PG — point KG_PG_TEST_URL (or
+ * MEMORY_PG_TEST_URL) at it. It skips cleanly, with a logged reason, when no
+ * URL is set, the DB is unreachable, or the DB lacks pgvector, so `npm test`
+ * stays hermetic and no stray container can hijack it (issue #572). The
  * in-memory leg always runs.
  */
-
-const PG_URL =
-  process.env['KG_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  'postgres://test:test@127.0.0.1:55439/test';
 
 const TENANT = 'kgwalk-tenant';
 const OTHER_TENANT = 'other-tenant';
@@ -162,20 +161,14 @@ describe('KG-walk · InMemory getMemorableKnowledgeSubgraph', () => {
 // ---------------------------------------------------------------------------
 // Neon leg — throwaway PG, skips when unreachable.
 // ---------------------------------------------------------------------------
-let pgUp = false;
-const probePool = new Pool({
-  connectionString: PG_URL,
-  connectionTimeoutMillis: 2000,
+const { url: PG_URL, reachable: pgUp } = await probePgTest({
+  label: 'kgWalkSubgraph',
+  vars: ['KG_PG_TEST_URL', 'MEMORY_PG_TEST_URL'],
+  requireVector: true,
 });
-try {
-  await probePool.query('SELECT 1');
-  pgUp = true;
-} catch {
-  console.error(`[kgWalkSubgraph] PG at ${PG_URL} unreachable — skipping Neon leg`);
-}
 
 if (pgUp) {
-  const pool = probePool;
+  const pool = new Pool({ connectionString: PG_URL });
 
   after(async () => {
     await pool.end();

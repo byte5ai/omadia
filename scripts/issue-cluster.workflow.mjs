@@ -14,11 +14,11 @@
  * (cohesion: independent). That flag decides the implementation strategy in
  * stage 2, so it is load-bearing, not decorative.
  *
- * Intra-cluster prioritisation is deterministic JS (impact / effort), not an
- * agent call -- the ranking must not drift between runs.
+ * Intra-cluster prioritisation is deterministic JS (impact / effort), not an agent
+ * call -- the ranking must not drift between runs.
  *
- * This is NOT a standalone Node script -- it runs inside the Claude Code Workflow
- * tool (agent()/parallel()/pipeline()/log() are provided by that runtime).
+ * This is NOT a standalone Node script -- it runs inside the Claude Code Workflow tool
+ * (agent()/parallel()/pipeline()/log() are provided by that runtime).
  *
  *   Workflow({ scriptPath: "scripts/issue-cluster.workflow.mjs", args: {
  *     repo:     "<owner>/<name>",
@@ -27,8 +27,7 @@
  *     issues:   [ { number, title, body, labels: [], comments: <int>, updated: "YYYY-MM-DD" }, ... ]
  *   }})
  *
- * Returns { baseSha, clusters: [...], unclustered: [...] }. Writes nothing --
- * not to GitHub, not to the working tree.
+ * Returns { baseSha, clusters, unclustered }. Writes nothing: not to GitHub, not to disk.
  *
  * ---------------------------------------------------------------------------
  * CHOREOGRAPHY -- the main loop owns every question and every GitHub write.
@@ -83,16 +82,15 @@
  *                   skip  -> this run only; the issue reappears next session.
  *                   defer -> sticky across sessions.
  *
- *                 Stickiness needs care: the file is keyed on baseSha, and baseSha
- *                 changes as soon as main moves -- which is exactly the timescale
- *                 "defer" exists for. So at step 1 the main loop reads the MOST
- *                 RECENT .claude/issue-loop/run-*.json (whatever its sha), carries
- *                 forward every entry whose decision is "defer", and seeds the new
- *                 run-<baseSha>.json with them. A deferred issue is still shown in
- *                 its cluster, annotated with its note, defaulting to "skip".
+ *                 Stickiness needs care: the file is keyed on baseSha, which changes
+ *                 as soon as main moves -- exactly the timescale "defer" exists for.
+ *                 So at step 1 the main loop reads the MOST RECENT run-*.json
+ *                 (whatever its sha), carries forward every "defer" entry, and seeds
+ *                 the new run-<baseSha>.json with them. A deferred issue is still
+ *                 shown, annotated with its note, defaulting to "skip".
  *
- *                 Both decisions are local state. Neither touches GitHub, so a
- *                 mis-click costs nothing and is undone by editing one JSON field.
+ *                 Both decisions are local. Neither touches GitHub, so a mis-click
+ *                 costs nothing and is undone by editing one JSON field.
  *   6. WORKFLOW   issue-implement.workflow.mjs on the approved set
  *                 -> branches + verified diffs, still local
  *   7. MAIN LOOP  for each result with prReady === true, push and open the PR:
@@ -103,8 +101,25 @@
  *                 their branch name and the reviewer's blockingFindings; they
  *                 never become a pull request. PRs are ready-for-review (repo
  *                 rule; automerge is not the default here, so a draft PR would
- *                 buy nothing but friction). Record the PR urls in the run-state
- *                 file, then loop back to step 3 for the next cluster.
+ *                 buy nothing but friction).
+ *
+ *   8. MAIN LOOP  comment on each implemented issue. This is not optional and
+ *                 GitHub does not do it for you: `Closes #<n>` in the PR body
+ *                 only creates a timeline cross-reference, so someone reading
+ *                 the issue sees that a PR exists but not what was found. Post:
+ *
+ *                   gh api repos/<repo>/issues/<n>/comments -F body=@<file>
+ *
+ *                 The comment states the PR number, what was actually wrong,
+ *                 what changed, how it was verified, and — separately — any
+ *                 maintainer calls the reviewers surfaced but could not decide.
+ *                 English, technical, no marketing tone.
+ *
+ *                 For an issue the human chose to `defer`, say nothing on
+ *                 GitHub: that decision is local and reversible (see step 5).
+ *
+ *   9. MAIN LOOP  record the PR urls in the run-state file, then loop back to
+ *                 step 3 for the next cluster.
  *
  * GitHub API: REST only, via `gh api repos/...`. Never `gh issue`, `gh pr`,
  * `gh search`, or GraphQL -- the GraphQL quota may be exhausted and those
@@ -231,8 +246,8 @@ const normPath = (f) => String(f).replace(/^NEW:\s*/i, '').trim()
  * Hub files are touched by many unrelated issues: the plugin registration point, the
  * i18n catalogs, the README, the config module. Two issues sharing `messages/en.json`
  * are not coupled -- that file merges cleanly and every feature appends to it. Left in
- * the signal they make every cluster look `dependent`, which collapses the whole
- * sequential-vs-parallel decision to "always sequential" and silently kills the fan-out.
+ * the signal they make every cluster look `dependent`, collapsing the whole
+ * sequential-vs-parallel decision to "always sequential" and killing the fan-out.
  * Observed on the first live run: 7 of 7 clusters came back dependent, justified by
  * en.json / de.json / index.ts overlap.
  */

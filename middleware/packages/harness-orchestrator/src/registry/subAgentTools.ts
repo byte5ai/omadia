@@ -4,6 +4,7 @@ import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import { createCliSubAgent } from '../cliSubAgent.js';
 import { LocalSubAgent } from '../localSubAgent.js';
 import { resolveModelIdForProvider } from './agentRuntime.js';
+import { sortBySpecName } from '../toolOrdering.js';
 import type {
   McpManager} from '../mcp/mcpClient.js';
 import {
@@ -176,7 +177,11 @@ export function resolveCliSubAgentModel(
   );
 }
 
-function resolveSubAgentTools(
+/**
+ * Exported for the W0-3 determinism test; production callers should go
+ * through `buildSubAgentDomainTools`.
+ */
+export function resolveSubAgentTools(
   grants: readonly ToolGrantRow[],
   deps: SubAgentToolDeps,
 ): LocalSubAgentTool[] {
@@ -209,7 +214,11 @@ function resolveSubAgentTools(
       mcpToolToLocalSubAgentTool(deps.mcpManager, cfg, { name: toolName }),
     );
   }
-  return out;
+  // W0-3 — sort by name. Grants arrive in `created_at` row order, so two
+  // machines that were seeded at different times would hand the sub-agent an
+  // identical tool SET in a different sequence, defeating prompt caching on
+  // the sub-agent's own tool block for no behavioural gain.
+  return sortBySpecName(out);
 }
 
 /** `toolRef` for an mcp grant is "<serverName>:<toolName>"; fall back to the

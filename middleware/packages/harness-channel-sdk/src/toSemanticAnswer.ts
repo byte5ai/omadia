@@ -1,4 +1,8 @@
-import type { ChatTurnResult, RunTracePayload } from './chatAgent.js';
+import type {
+  ChatTurnResult,
+  PendingMcpInputCard,
+  RunTracePayload,
+} from './chatAgent.js';
 import type {
   AgentConsultation,
   OutgoingAttachment,
@@ -6,6 +10,10 @@ import type {
   SemanticAnswer,
   VerifierBadge,
 } from './outgoing.js';
+import {
+  applyAiDisclosure,
+  type ApplyAiDisclosureContext,
+} from './aiDisclosure.js';
 
 /**
  * #332 Layer 1 — plain-text fallback footer for connectors without rich-card
@@ -86,7 +94,34 @@ export function deriveAgentsConsulted(
  * and the orchestrator-plugin can both import from the same package without
  * pulling in kernel-internal symbols.
  */
-export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
+/**
+ * #544 W2-1 — plain-text rendering of a pending MCP input request, appended to
+ * the answer so a connector with no form support still tells the user what is
+ * being asked and, crucially, BY WHOM.
+ *
+ * Field names and labels only, never values (there are none yet) — and the
+ * server's own `prompt` is included but clearly attributed, so untrusted prose
+ * cannot read as omadia speaking.
+ */
+export function withMcpInputPrompt(
+  answer: string,
+  card: PendingMcpInputCard | undefined,
+): string {
+  if (!card) return answer;
+  const fields = card.fields
+    .map((f) => `- ${f.label ?? f.name}${f.required === true ? ' (erforderlich)' : ''}`)
+    .join('\n');
+  const block =
+    `**Der MCP-Server "${card.serverName}" fragt für "${card.toolName}" nach zusätzlichen Angaben.**` +
+    (card.prompt !== undefined ? `\n\n> ${card.prompt}` : '') +
+    `\n\n${fields}`;
+  return answer.trim().length > 0 ? `${answer}\n\n${block}` : block;
+}
+
+export function toSemanticAnswer(
+  r: ChatTurnResult,
+  disclosure?: ApplyAiDisclosureContext,
+): SemanticAnswer {
   // Inline images (diagrams) and downloadable files (office docs) flow into
   // one channel-agnostic attachment array. Diagrams keep their `image` kind;
   // file attachments carry `kind: 'file'` so connectors render a download.
@@ -126,6 +161,22 @@ export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
         value: o.value,
       })),
     };
+  } else if (r.pendingMcpInput) {
+    interactive = {
+      kind: 'mcp_input',
+      correlationId: r.pendingMcpInput.correlationId,
+      serverName: r.pendingMcpInput.serverName,
+      serverId: r.pendingMcpInput.serverId,
+      toolName: r.pendingMcpInput.toolName,
+      ...(r.pendingMcpInput.prompt ? { prompt: r.pendingMcpInput.prompt } : {}),
+      fields: r.pendingMcpInput.fields.map((f) => ({
+        name: f.name,
+        ...(f.label !== undefined ? { label: f.label } : {}),
+        ...(f.description !== undefined ? { description: f.description } : {}),
+        ...(f.secret === true ? { secret: true } : {}),
+        ...(f.required === true ? { required: true } : {}),
+      })),
+    };
   } else if (r.pendingSlotCard) {
     interactive = {
       kind: 'slots',
@@ -162,13 +213,51 @@ export function toSemanticAnswer(r: ChatTurnResult): SemanticAnswer {
   // invocation yields an empty array here.
   const agentsConsulted = deriveAgentsConsulted(r.runTrace);
 
+  // #544 W2-1 — honest degradation. `interactive` below is the rich form, but a
+  // connector that cannot render one would otherwise show the model's (usually
+  // empty) pre-question prose and give the user NO indication that a named
+  // server is blocked waiting for input. So the prompt is also folded into
+  // `text`, which every connector MUST render.
+  const baseText = withMcpInputPrompt(r.answer, r.pendingMcpInput);
+
+  // #643 (epic #642) — AI-Act Art. 50 disclosure. Fold the harness-owned
+  // marking into `text` (the one field every connector renders) and forward the
+  // structured field. Engaged only when a caller threads the per-turn resolution
+  // context (the orchestrator does so in #644) or the result already carries a
+  // resolved marker — a bare legacy call is byte-for-byte unchanged, honouring
+  // the additive-only stability contract (outgoing.ts). The fold + resolution is
+  // the single shared derivation `applyAiDisclosure`, so the streaming `done`
+  // path (#644) and this non-streaming path produce the identical marking (cf.
+  // `deriveAgentsConsulted`).
+  const preresolved = disclosure?.disclosure ?? r.aiDisclosure;
+  const disclosed =
+    disclosure !== undefined || preresolved !== undefined
+      ? applyAiDisclosure(baseText, {
+          ...(disclosure?.policy !== undefined ? { policy: disclosure.policy } : {}),
+          ...(preresolved !== undefined ? { disclosure: preresolved } : {}),
+          ...(disclosure?.locale !== undefined ? { locale: disclosure.locale } : {}),
+          ...(disclosure?.scope ?? r.runTrace?.scope
+            ? { scope: disclosure?.scope ?? r.runTrace?.scope }
+            : {}),
+          ...(disclosure?.seen !== undefined ? { seen: disclosure.seen } : {}),
+          ...(disclosure?.assistantName !== undefined
+            ? { assistantName: disclosure.assistantName }
+            : {}),
+        })
+      : { text: baseText };
+
   return {
-    text: r.answer,
+    text: disclosed.text,
+    ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
     ...(verifier ? { verifier } : {}),
     ...(agentsConsulted && agentsConsulted.length > 0
       ? { agentsConsulted }
       : {}),
     ...(r.delegatedAnswer ? { delegatedAnswer: r.delegatedAnswer } : {}),
+    // #445 — forward the sticky indicator verbatim. Guarded on PRESENCE, not
+    // on `.active`: `{ active: false }` is the signal that clears a stale
+    // banner, so dropping it would be the one bug this field exists to prevent.
+    ...(r.directLineSession ? { directLineSession: r.directLineSession } : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(r.followUpOptions && r.followUpOptions.length > 0
       ? { followUps: r.followUpOptions }

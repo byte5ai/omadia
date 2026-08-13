@@ -1,0 +1,1500 @@
+[
+  {
+    "text": "Was sollten wir Anna Schmidt (32, wohnhaft Bahnhofstr. 5, 60311 Frankfurt) zahlen, ausgehend von ihrem aktuellen Gehalt von €72.000?",
+    "spans": [
+      {
+        "value": "Anna Schmidt",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Bahnhofstr. 5, 60311 Frankfurt",
+        "type": "address",
+        "tier": "high"
+      },
+      {
+        "value": "€72.000",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Bitte überweise das Gehalt auf DE89 3704 0044 0532 0130 00 und bestätige an m.vomberg@firma-beispiel.de.",
+    "spans": [
+      {
+        "value": "DE89 3704 0044 0532 0130 00",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "m.vomberg@firma-beispiel.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Ruf Marvin Vomberg unter +49 171 5551234 an, er ist am 24.12.1987 geboren.",
+    "spans": [
+      {
+        "value": "Marvin Vomberg",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+49 171 5551234",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "24.12.1987",
+        "type": "date",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Die Rechnung über 1.250,50 € ging an die Musterallee 12, 10115 Berlin.",
+    "spans": [
+      {
+        "value": "1.250,50 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Musterallee 12, 10115 Berlin",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Anna Schmidt und Maria Weber teilen sich ab April die Teamleitung — bitte beide Verträge anpassen.",
+    "spans": [
+      {
+        "value": "Anna Schmidt",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Maria Weber",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Frau Schmidt hat die unterschriebenen Unterlagen noch nicht eingereicht — bitte freundlich erinnern.",
+    "spans": [
+      {
+        "value": "Frau Schmidt",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Herr M. Vomberg wartet seit zwei Wochen auf die Rückmeldung zur Gehaltsanpassung.",
+    "spans": [
+      {
+        "value": "M. Vomberg",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Das Paket bitte an das gelbe Hinterhaus im zweiten Hof der Lindenallee 5, dritter Aufgang links, 60311 Frankfurt am Main liefern.",
+    "spans": [
+      {
+        "value": "das gelbe Hinterhaus im zweiten Hof der Lindenallee 5, dritter Aufgang links, 60311 Frankfurt am Main",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Die Steuer-ID von Jonas Weber lautet 86195742719 — bitte in der Personalakte hinterlegen.",
+    "spans": [
+      {
+        "value": "Jonas Weber",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "86195742719",
+        "type": "idnum",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Anna Schmidt fällt wegen Krankheit bis 24.10.2026 aus — bitte eine Vertretung organisieren.",
+    "spans": [
+      {
+        "value": "Anna Schmidt",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "24.10.2026",
+        "type": "date",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Katharina von Aue übernimmt ab sofort das Mandat der Kanzlei.",
+    "spans": [
+      {
+        "value": "Katharina von Aue",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Zum Offsite kommen Erik Wagner, Petra Sonntag und Felix Brandt.",
+    "spans": [
+      {
+        "value": "Erik Wagner",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Petra Sonntag",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Felix Brandt",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Unsere Ansprechpartnerin heißt Gül Yilmaz, erreichbar unter +49 159 04412875.",
+    "spans": [
+      {
+        "value": "Gül Yilmaz",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+49 159 04412875",
+        "type": "phone",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Die Betriebsfeier findet im Vereinsheim hinter dem alten Wasserturm an der Feldgasse 2, Eingang über den Parkplatz an der Rückseite, 24103 Kiel statt.",
+    "spans": [
+      {
+        "value": "im Vereinsheim hinter dem alten Wasserturm an der Feldgasse 2, Eingang über den Parkplatz an der Rückseite, 24103 Kiel",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Bitte überweise die offene Provision an Miriam Schulz, IBAN DE21 3012 0400 0000 0152 28.",
+    "spans": [
+      {
+        "value": "Miriam Schulz",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "DE21 3012 0400 0000 0152 28",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Der Mietvertrag der Werkswohnung von Herrn Kaminski läuft zum 31.03.2027 aus.",
+    "spans": [
+      {
+        "value": "Herrn Kaminski",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "31.03.2027",
+        "type": "date",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Bitte lade aylin.demir@beispiel-gmbh.de zum Kickoff ein — sie vertritt Herrn Öztürk.",
+    "spans": [
+      {
+        "value": "aylin.demir@beispiel-gmbh.de",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "Herrn Öztürk",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Was sollten wir Miriam Schulz zahlen, wenn sie aktuell 12.750,00 € verdient?",
+    "spans": [
+      {
+        "value": "Miriam Schulz",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12.750,00 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Was sollten wir Daniel Roth zahlen, wenn sie aktuell €58.500 verdient?",
+    "spans": [
+      {
+        "value": "Daniel Roth",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "€58.500",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Was sollten wir Carola Wendt zahlen, wenn sie aktuell €899 verdient?",
+    "spans": [
+      {
+        "value": "Carola Wendt",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "€899",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Was sollten wir Daniel Roth zahlen, wenn sie aktuell 15.000 € verdient?",
+    "spans": [
+      {
+        "value": "Daniel Roth",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "15.000 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Bitte überweise die Abschlagszahlung auf DE89 3704 0044 0532 0130 00 und bestätige an personal@krause-logistik.de.",
+    "spans": [
+      {
+        "value": "DE89 3704 0044 0532 0130 00",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "personal@krause-logistik.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bitte überweise die Abschlagszahlung auf DE75 5121 0800 1245 1261 99 und bestätige an m.schulz@web-beispiel.de.",
+    "spans": [
+      {
+        "value": "DE75 5121 0800 1245 1261 99",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "m.schulz@web-beispiel.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bitte überweise die Abschlagszahlung auf DE27 1007 7777 0209 2997 00 und bestätige an k.hoffmann@beispiel-gmbh.de.",
+    "spans": [
+      {
+        "value": "DE27 1007 7777 0209 2997 00",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "k.hoffmann@beispiel-gmbh.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bitte überweise die Abschlagszahlung auf DE44 5001 0517 5407 3249 31 und bestätige an j.steinbach@rheintal-it.de.",
+    "spans": [
+      {
+        "value": "DE44 5001 0517 5407 3249 31",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "j.steinbach@rheintal-it.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Ruf Andreas Kellner unter 089 5540 2218 an — Geburtsdatum 05.03.2001.",
+    "spans": [
+      {
+        "value": "Andreas Kellner",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "089 5540 2218",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "05.03.2001",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Ruf Vanessa Kluge unter 0221 9987 4451 an — Geburtsdatum 05.03.2001.",
+    "spans": [
+      {
+        "value": "Vanessa Kluge",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "0221 9987 4451",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "05.03.2001",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Ruf Carola Wendt unter +49 30 4478120 an — Geburtsdatum 28.02.1995.",
+    "spans": [
+      {
+        "value": "Carola Wendt",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+49 30 4478120",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "28.02.1995",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Ruf Miriam Schulz unter +49 152 28871190 an — Geburtsdatum 05.03.2001.",
+    "spans": [
+      {
+        "value": "Miriam Schulz",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+49 152 28871190",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "05.03.2001",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Die Rechnung über €67.200 geht an die Adresse Mühlenring 4, 24103 Kiel.",
+    "spans": [
+      {
+        "value": "€67.200",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Mühlenring 4, 24103 Kiel",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Die Rechnung über 3.499,99 € geht an die Adresse Mühlenring 4, 24103 Kiel.",
+    "spans": [
+      {
+        "value": "3.499,99 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Mühlenring 4, 24103 Kiel",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Die Rechnung über 62.400 € geht an die Adresse Marktplatz 3, 80331 München.",
+    "spans": [
+      {
+        "value": "62.400 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Marktplatz 3, 80331 München",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Die Rechnung über 15.000 € geht an die Adresse Hauptstraße 118, 69117 Heidelberg.",
+    "spans": [
+      {
+        "value": "15.000 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Hauptstraße 118, 69117 Heidelberg",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Lege Vanessa Kluge als neuen Mitarbeiter an, Dienst-E-Mail c.neumann@hansa-consult.de.",
+    "spans": [
+      {
+        "value": "Vanessa Kluge",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "c.neumann@hansa-consult.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Lege Julia Steinbach als neuen Mitarbeiter an, Dienst-E-Mail rechnung@sonntag-bau.de.",
+    "spans": [
+      {
+        "value": "Julia Steinbach",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "rechnung@sonntag-bau.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Lege Miriam Schulz als neuen Mitarbeiter an, Dienst-E-Mail f.brandt@beispielwerk.de.",
+    "spans": [
+      {
+        "value": "Miriam Schulz",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "f.brandt@beispielwerk.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Lege Katrin Hoffmann als neuen Mitarbeiter an, Dienst-E-Mail k.hoffmann@beispiel-gmbh.de.",
+    "spans": [
+      {
+        "value": "Katrin Hoffmann",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "k.hoffmann@beispiel-gmbh.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Petra Sonntag ist zum 05.03.2001 aus dem Unternehmen ausgeschieden — bitte den Austrittsprozess starten.",
+    "spans": [
+      {
+        "value": "Petra Sonntag",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "05.03.2001",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Franziska Moll ist zum 12.11.1979 aus dem Unternehmen ausgeschieden — bitte den Austrittsprozess starten.",
+    "spans": [
+      {
+        "value": "Franziska Moll",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12.11.1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Petra Sonntag ist zum 17.09.1984 aus dem Unternehmen ausgeschieden — bitte den Austrittsprozess starten.",
+    "spans": [
+      {
+        "value": "Petra Sonntag",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "17.09.1984",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Martin Vogel ist zum 05.03.2001 aus dem Unternehmen ausgeschieden — bitte den Austrittsprozess starten.",
+    "spans": [
+      {
+        "value": "Martin Vogel",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "05.03.2001",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Aktualisiere die Stammdaten: Claudia Neumann wohnt jetzt in der Schillerstr. 22, 60313 Frankfurt.",
+    "spans": [
+      {
+        "value": "Claudia Neumann",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Schillerstr. 22, 60313 Frankfurt",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Aktualisiere die Stammdaten: Vanessa Kluge wohnt jetzt in der Lindenallee 12, 04109 Leipzig.",
+    "spans": [
+      {
+        "value": "Vanessa Kluge",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Lindenallee 12, 04109 Leipzig",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Aktualisiere die Stammdaten: Erik Wagner wohnt jetzt in der Schillerstr. 22, 60313 Frankfurt.",
+    "spans": [
+      {
+        "value": "Erik Wagner",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Schillerstr. 22, 60313 Frankfurt",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Aktualisiere die Stammdaten: Franziska Moll wohnt jetzt in der Lindenallee 12, 04109 Leipzig.",
+    "spans": [
+      {
+        "value": "Franziska Moll",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Lindenallee 12, 04109 Leipzig",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Erstattung der Reisekosten von €899 bitte auf DE27 1007 7777 0209 2997 00.",
+    "spans": [
+      {
+        "value": "€899",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "DE27 1007 7777 0209 2997 00",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Erstattung der Reisekosten von 15.000 € bitte auf DE44 5001 0517 5407 3249 31.",
+    "spans": [
+      {
+        "value": "15.000 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "DE44 5001 0517 5407 3249 31",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Erstattung der Reisekosten von 1.250,50 € bitte auf DE89 3704 0044 0532 0130 00.",
+    "spans": [
+      {
+        "value": "1.250,50 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "DE89 3704 0044 0532 0130 00",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Erstattung der Reisekosten von 62.400 € bitte auf DE12 5001 0517 0648 4898 90.",
+    "spans": [
+      {
+        "value": "62.400 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "DE12 5001 0517 0648 4898 90",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Schick die Gehaltsabrechnung an j.steinbach@rheintal-it.de, das Bruttogehalt beträgt €58.500.",
+    "spans": [
+      {
+        "value": "j.steinbach@rheintal-it.de",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "€58.500",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Schick die Gehaltsabrechnung an j.steinbach@rheintal-it.de, das Bruttogehalt beträgt €72.000.",
+    "spans": [
+      {
+        "value": "j.steinbach@rheintal-it.de",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "€72.000",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Schick die Gehaltsabrechnung an rechnung@sonntag-bau.de, das Bruttogehalt beträgt 15.000 €.",
+    "spans": [
+      {
+        "value": "rechnung@sonntag-bau.de",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "15.000 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Schick die Gehaltsabrechnung an t.krueger@nordwind-ag.de, das Bruttogehalt beträgt €58.500.",
+    "spans": [
+      {
+        "value": "t.krueger@nordwind-ag.de",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "€58.500",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Für die Referenzprüfung erreichst du Matthias Grunow unter +49 30 4478120.",
+    "spans": [
+      {
+        "value": "Matthias Grunow",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+49 30 4478120",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Für die Referenzprüfung erreichst du Felix Brandt unter +49 30 4478120.",
+    "spans": [
+      {
+        "value": "Felix Brandt",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+49 30 4478120",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Für die Referenzprüfung erreichst du Tobias Krüger unter +49 152 28871190.",
+    "spans": [
+      {
+        "value": "Tobias Krüger",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+49 152 28871190",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Für die Referenzprüfung erreichst du Matthias Grunow unter +49 171 5559214.",
+    "spans": [
+      {
+        "value": "Matthias Grunow",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+49 171 5559214",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bitte bereite das Mitarbeitergespräch mit Franziska Moll vor.",
+    "spans": [
+      {
+        "value": "Franziska Moll",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bitte bereite das Mitarbeitergespräch mit Petra Sonntag vor.",
+    "spans": [
+      {
+        "value": "Petra Sonntag",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bitte bereite das Mitarbeitergespräch mit Tobias Krüger vor.",
+    "spans": [
+      {
+        "value": "Tobias Krüger",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bitte bereite das Mitarbeitergespräch mit Heike Sommerfeld vor.",
+    "spans": [
+      {
+        "value": "Heike Sommerfeld",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Petra Sonntag hat sich zum 03.05.1991 krankgemeldet — bitte im HR-Modul erfassen.",
+    "spans": [
+      {
+        "value": "Petra Sonntag",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "03.05.1991",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Matthias Grunow hat sich zum 01.02.2023 krankgemeldet — bitte im HR-Modul erfassen.",
+    "spans": [
+      {
+        "value": "Matthias Grunow",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "01.02.2023",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Sebastian Ehlers hat sich zum 05.03.2001 krankgemeldet — bitte im HR-Modul erfassen.",
+    "spans": [
+      {
+        "value": "Sebastian Ehlers",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "05.03.2001",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Franziska Moll hat sich zum 30.06.2026 krankgemeldet — bitte im HR-Modul erfassen.",
+    "spans": [
+      {
+        "value": "Franziska Moll",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "30.06.2026",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Der Lieferant möchte die Zahlung von €899 auf DE12 5001 0517 0648 4898 90 erhalten.",
+    "spans": [
+      {
+        "value": "€899",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "DE12 5001 0517 0648 4898 90",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Der Lieferant möchte die Zahlung von €67.200 auf DE89 3704 0044 0532 0130 00 erhalten.",
+    "spans": [
+      {
+        "value": "€67.200",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "DE89 3704 0044 0532 0130 00",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Der Lieferant möchte die Zahlung von €72.000 auf DE27 1007 7777 0209 2997 00 erhalten.",
+    "spans": [
+      {
+        "value": "€72.000",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "DE27 1007 7777 0209 2997 00",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Der Lieferant möchte die Zahlung von 15.000 € auf DE89 3704 0044 0532 0130 00 erhalten.",
+    "spans": [
+      {
+        "value": "15.000 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "DE89 3704 0044 0532 0130 00",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Neue Bewerbung: Jonas Weber, erreichbar unter 0341 22874415 oder t.krueger@nordwind-ag.de.",
+    "spans": [
+      {
+        "value": "Jonas Weber",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "0341 22874415",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "t.krueger@nordwind-ag.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Neue Bewerbung: Daniel Roth, erreichbar unter 0341 22874415 oder t.krueger@nordwind-ag.de.",
+    "spans": [
+      {
+        "value": "Daniel Roth",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "0341 22874415",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "t.krueger@nordwind-ag.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Neue Bewerbung: Katrin Hoffmann, erreichbar unter +49 40 3319 8752 oder m.schulz@web-beispiel.de.",
+    "spans": [
+      {
+        "value": "Katrin Hoffmann",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+49 40 3319 8752",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "m.schulz@web-beispiel.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Neue Bewerbung: Sabine Lorenz, erreichbar unter 0341 22874415 oder c.neumann@hansa-consult.de.",
+    "spans": [
+      {
+        "value": "Sabine Lorenz",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "0341 22874415",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "c.neumann@hansa-consult.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bitte versende das Angebot an Daniel Roth, Birkenweg 15, 33602 Bielefeld.",
+    "spans": [
+      {
+        "value": "Daniel Roth",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Birkenweg 15, 33602 Bielefeld",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bitte versende das Angebot an Vanessa Kluge, Rosengasse 9, 93047 Regensburg.",
+    "spans": [
+      {
+        "value": "Vanessa Kluge",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Rosengasse 9, 93047 Regensburg",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bitte versende das Angebot an Daniel Roth, Lindenallee 12, 04109 Leipzig.",
+    "spans": [
+      {
+        "value": "Daniel Roth",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Lindenallee 12, 04109 Leipzig",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Bitte versende das Angebot an Miriam Schulz, Rosengasse 9, 93047 Regensburg.",
+    "spans": [
+      {
+        "value": "Miriam Schulz",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Rosengasse 9, 93047 Regensburg",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Der Arbeitsvertrag von Heike Sommerfeld beginnt am 12.11.1979 mit einem Jahresgehalt von €67.200.",
+    "spans": [
+      {
+        "value": "Heike Sommerfeld",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12.11.1979",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "€67.200",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Der Arbeitsvertrag von Daniel Roth beginnt am 30.06.2026 mit einem Jahresgehalt von €58.500.",
+    "spans": [
+      {
+        "value": "Daniel Roth",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "30.06.2026",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "€58.500",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Der Arbeitsvertrag von Oliver Petersen beginnt am 03.05.1991 mit einem Jahresgehalt von 62.400 €.",
+    "spans": [
+      {
+        "value": "Oliver Petersen",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "03.05.1991",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "62.400 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Der Arbeitsvertrag von Daniel Roth beginnt am 28.02.1995 mit einem Jahresgehalt von 12.750,00 €.",
+    "spans": [
+      {
+        "value": "Daniel Roth",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "28.02.1995",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "12.750,00 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Trage Jonas Weber für die Schulung nächste Woche ein und informiere buchhaltung@vogel-partner.de.",
+    "spans": [
+      {
+        "value": "Jonas Weber",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "buchhaltung@vogel-partner.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Trage Heike Sommerfeld für die Schulung nächste Woche ein und informiere f.brandt@beispielwerk.de.",
+    "spans": [
+      {
+        "value": "Heike Sommerfeld",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "f.brandt@beispielwerk.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Trage Martin Vogel für die Schulung nächste Woche ein und informiere k.hoffmann@beispiel-gmbh.de.",
+    "spans": [
+      {
+        "value": "Martin Vogel",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "k.hoffmann@beispiel-gmbh.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Trage Sabine Lorenz für die Schulung nächste Woche ein und informiere jonas.weber@firma-muster.de.",
+    "spans": [
+      {
+        "value": "Sabine Lorenz",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "jonas.weber@firma-muster.de",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "An welche Adresse ging die letzte Mahnung — Gartenweg 7, 55116 Mainz, korrekt?",
+    "spans": [
+      {
+        "value": "Gartenweg 7, 55116 Mainz",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "An welche Adresse ging die letzte Mahnung — Hauptstraße 118, 69117 Heidelberg, korrekt?",
+    "spans": [
+      {
+        "value": "Hauptstraße 118, 69117 Heidelberg",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "An welche Adresse ging die letzte Mahnung — Marktplatz 3, 80331 München, korrekt?",
+    "spans": [
+      {
+        "value": "Marktplatz 3, 80331 München",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "An welche Adresse ging die letzte Mahnung — Birkenweg 15, 33602 Bielefeld, korrekt?",
+    "spans": [
+      {
+        "value": "Birkenweg 15, 33602 Bielefeld",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Der Abwesenheitstyp Krankheit wird im HR-Modul separat ausgewiesen — bitte fasse die Regelung zusammen.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Krankheit und Urlaub werden in der Monatsauswertung getrennt gezählt.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Die Verantwortung für die Einhaltung liegt bei der Geschäftsführung und dem Betriebsrat.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Erkläre den Unterschied zwischen Bruttogehalt und Nettogehalt.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Straße, Weg und Platz sind im Adressmodul getrennte Feldtypen.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Der Alexanderplatz dient in der Anleitung nur als Beispielwert.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Goethe und Schiller sind die Namen der beiden Besprechungsräume.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Die Begriffe Werkvertrag und Dienstvertrag werden im Handbuch oft verwechselt.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Wie viele Urlaubstage stehen einem Mitarbeiter nach drei Jahren Betriebszugehörigkeit zu?",
+    "spans": []
+  },
+  {
+    "text": "Erstelle einen Statusbericht für das Q3-Projekt, Budgetrahmen unverändert.",
+    "spans": []
+  },
+  {
+    "text": "Fasse die Reisekostenrichtlinie in fünf Stichpunkten zusammen.",
+    "spans": []
+  },
+  {
+    "text": "Welche Schritte umfasst der Onboarding-Prozess im ersten Monat?",
+    "spans": []
+  },
+  {
+    "text": "Formuliere eine freundliche Erinnerung an die wöchentliche Zeiterfassung.",
+    "spans": []
+  },
+  {
+    "text": "Wie beantrage ich einen neuen Laptop über das Ticketsystem?",
+    "spans": []
+  },
+  {
+    "text": "Erstelle eine Agenda für das nächste Teammeeting mit drei Schwerpunkten.",
+    "spans": []
+  },
+  {
+    "text": "Welche Fristen gelten für die Abgabe der Reisekostenabrechnung?",
+    "spans": []
+  },
+  {
+    "text": "Fasse die Änderungen der Homeoffice-Regelung zusammen.",
+    "spans": []
+  },
+  {
+    "text": "Wie funktioniert die Freigabe von Bestellungen im Einkaufsmodul?",
+    "spans": []
+  },
+  {
+    "text": "Erkläre den Genehmigungsworkflow für externe Fortbildungen.",
+    "spans": []
+  },
+  {
+    "text": "Welche Berichte kann das Buchhaltungsmodul monatlich erzeugen?",
+    "spans": []
+  },
+  {
+    "text": "Schreibe eine kurze Ankündigung für die Systemwartung am Wochenende.",
+    "spans": []
+  },
+  {
+    "text": "Wie lege ich eine neue Kostenstelle im System an?",
+    "spans": []
+  },
+  {
+    "text": "Was ist der Unterschied zwischen Angebot und Auftragsbestätigung?",
+    "spans": []
+  },
+  {
+    "text": "Erstelle eine Checkliste für den Monatsabschluss in der Buchhaltung.",
+    "spans": []
+  },
+  {
+    "text": "Wie exportiere ich die Urlaubsübersicht als Tabelle?",
+    "spans": []
+  },
+  {
+    "text": "Welche Rollen gibt es im Freigabeprozess für Eingangsrechnungen?",
+    "spans": []
+  },
+  {
+    "text": "Formuliere eine höfliche Absage für einen verschobenen Liefertermin.",
+    "spans": []
+  },
+  {
+    "text": "Fasse die wichtigsten Punkte der Gleitzeitvereinbarung zusammen.",
+    "spans": []
+  },
+  {
+    "text": "Wie richte ich eine Abwesenheitsnotiz für die Feiertage ein?",
+    "spans": []
+  },
+  {
+    "text": "Welche Felder sind beim Anlegen eines neuen Lieferanten Pflicht?",
+    "spans": []
+  },
+  {
+    "text": "Beschreibe den Ablauf der jährlichen Inventur im Lager.",
+    "spans": []
+  },
+  {
+    "text": "Wie kann ich wiederkehrende Rechnungen automatisch erstellen lassen?",
+    "spans": []
+  }
+]

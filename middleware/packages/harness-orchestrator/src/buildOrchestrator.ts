@@ -14,7 +14,7 @@
  * than once in one process.
  */
 
-import type { ChatAgent } from '@omadia/channel-sdk';
+import type { ChatAgent, DisclosureSeenStore } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { LlmProvider } from '@omadia/llm-provider';
 import type {
@@ -43,7 +43,16 @@ import { ChatSessionStore } from './chatSessionStore.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
-import { Orchestrator, type OrchestratorPersonaSkill } from './orchestrator.js';
+import {
+  Orchestrator,
+  type OrchestratorPersonaSkill,
+  type AiDisclosureSetup,
+} from './orchestrator.js';
+import type { DirectLineStickyStore } from './directLineSticky.js';
+import type {
+  McpInputReplayer,
+  PendingMcpInputStore,
+} from './mcp/pendingMcpInput.js';
 import { CliChatAgent } from './cliChatAgent.js';
 import { ToolDispatchService } from './toolDispatchService.js';
 import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
@@ -80,6 +89,8 @@ export interface AgentRuntimeConfig {
   readonly loopRepeatHard?: number;
   /** Optional per-turn wall-clock budget in seconds (0 / omitted = off). */
   readonly maxTurnSeconds?: number;
+  /** #445 — sticky Direct Line for this Agent (see {@link OrchestratorOptions}). */
+  readonly directLineSticky?: boolean;
   /** Wave 8 — this Agent's direct-answer persona-skill candidates, resolved
    *  by the caller from `agent_persona_skills` (see {@link OrchestratorOptions}).
    *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
@@ -99,6 +110,25 @@ export interface OrchestratorDeps {
   readonly entityRefBus: EntityRefBus;
   readonly nativeToolRegistry: NativeToolRegistry;
   readonly nudgeRegistry: NudgeRegistry;
+  /**
+   * #445 — process-shared sticky Direct Line binding store. Deps, not
+   * per-Agent config, because the registry REPLACES an Orchestrator instance
+   * on any config diff: a per-instance store would silently unbind every live
+   * conversation whenever an operator tweaked something unrelated.
+   */
+  readonly directLineStickyStore?: DirectLineStickyStore;
+  /**
+   * W2-1 (#544) — process-shared MCP pending-input store + replayer.
+   *
+   * Deps, not per-Agent config, for the SAME reason as
+   * `directLineStickyStore`: the registry replaces an Orchestrator instance on
+   * any config diff, and a per-instance store would drop every parked call
+   * whenever an operator changed something unrelated — after the user had
+   * already seen the card. Must be the same store instance the kernel's
+   * `McpManager` writes to.
+   */
+  readonly pendingMcpInput?: PendingMcpInputStore;
+  readonly mcpInputReplay?: McpInputReplayer;
   /** Late-bound `responseGuard@1` lookup (see `OrchestratorOptions`). */
   readonly responseGuard: () => ResponseGuardService | undefined;
   /** Late-bound `privacy.redact@1` lookup (see `OrchestratorOptions`). */
@@ -113,6 +143,13 @@ export interface OrchestratorDeps {
     agentId: string,
     configKey: string,
   ) => unknown | undefined;
+  /**
+   * Issue #474 — per-plugin tool-readiness gate (see
+   * `OrchestratorOptions.isPluginToolsReady`). Wired from the harness
+   * runtime's `PluginStatusRegistry`. Optional — when absent every
+   * plugin's tools are always available (pre-#474 behaviour).
+   */
+  readonly isPluginToolsReady?: (agentId: string) => boolean;
   readonly contextRetriever?: ContextRetriever;
   readonly sessionBriefing?: SessionBriefingService;
   readonly factExtractor?: FactExtractor;
@@ -135,6 +172,20 @@ export interface OrchestratorDeps {
   readonly graphTenantId?: string;
   /** Operator-set assistant identity (overrides the built-in default). */
   readonly assistantIdentity?: string;
+  /**
+   * AI-Act Art. 50 (#644) — resolved operator disclosure config. Absent → the
+   * shipping default (standard, active) on every channel. See
+   * `OrchestratorOptions.aiDisclosure`.
+   */
+  readonly aiDisclosure?: AiDisclosureSetup;
+  /**
+   * #644 — process-shared first-turn-per-scope fold-dedup store. Deps, not
+   * per-Agent config, for the SAME reason as `directLineStickyStore`: the
+   * registry replaces an Orchestrator instance on any config diff, and a
+   * per-instance store would re-fold the marking into every live conversation
+   * whenever an operator changed something unrelated.
+   */
+  readonly aiDisclosureSeenStore?: DisclosureSeenStore;
   /** #133 E0 — side-channel turn-hook runner, fired during each turn. */
   readonly turnHookRegistry?: TurnHookRunner;
   /**
@@ -246,6 +297,10 @@ export function buildOrchestratorForAgent(
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
+    ...(config.directLineSticky ? { directLineSticky: true } : {}),
+    ...(deps.directLineStickyStore
+      ? { directLineStickyStore: deps.directLineStickyStore }
+      : {}),
     ...(config.personaSkills?.length
       ? { personaSkills: config.personaSkills }
       : {}),
@@ -274,6 +329,14 @@ export function buildOrchestratorForAgent(
     ...(deps.excerptExtractor ? { excerptExtractor: deps.excerptExtractor } : {}),
     chatParticipantsTool,
     askUserChoiceTool,
+    // W2-1 (#544) — both or neither: a store with no replayer would park calls
+    // the user can answer but nothing can deliver.
+    ...(deps.pendingMcpInput && deps.mcpInputReplay
+      ? {
+          pendingMcpInput: deps.pendingMcpInput,
+          mcpInputReplay: deps.mcpInputReplay,
+        }
+      : {}),
     suggestFollowUpsTool,
     ...(findFreeSlotsTool ? { findFreeSlotsTool } : {}),
     ...(bookMeetingTool ? { bookMeetingTool } : {}),
@@ -282,6 +345,9 @@ export function buildOrchestratorForAgent(
     privacyGuard: deps.privacyGuard,
     ...(deps.pluginConfigGet
       ? { pluginConfigGet: deps.pluginConfigGet }
+      : {}),
+    ...(deps.isPluginToolsReady
+      ? { isPluginToolsReady: deps.isPluginToolsReady }
       : {}),
     nudgeRegistry: deps.nudgeRegistry,
     ...(deps.nudgeStateStore ? { nudgeStateStore: deps.nudgeStateStore } : {}),
@@ -303,6 +369,10 @@ export function buildOrchestratorForAgent(
     ...(deps.graphTenantId ? { graphTenantId: deps.graphTenantId } : {}),
     ...(deps.assistantIdentity
       ? { assistantIdentity: deps.assistantIdentity }
+      : {}),
+    ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
+    ...(deps.aiDisclosureSeenStore
+      ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }
       : {}),
     ...(deps.turnHookRegistry
       ? { turnHookRegistry: deps.turnHookRegistry }
@@ -333,6 +403,12 @@ export function buildOrchestratorForAgent(
       // sub-agents fail GRACEFULLY (dispatch returns an error result) until they
       // also run on the CLI (recursive Shape 3 — follow-up); tool-less ones work.
       domainToolsProvider: () => orchestrator.listDomainTools(),
+      // Issue #474 — this dispatcher bypasses `Orchestrator.dispatchTool`
+      // entirely (the CLI reaches tools over the loopback MCP server), so
+      // the readiness gate must be repeated here too.
+      ...(deps.isPluginToolsReady
+        ? { isPluginToolsReady: deps.isPluginToolsReady }
+        : {}),
     });
     return {
       orchestrator,

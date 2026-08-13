@@ -5,6 +5,7 @@ import type {
   ChatSession,
   DelegatedAnswer,
   DiagramAttachment,
+  DirectLineSessionState,
   FollowUpOption,
   KgWalkEdge,
   KgWalkNode,
@@ -13,6 +14,7 @@ import type {
   NudgeEvent,
   OutgoingFileAttachment,
   PalaiaExcerpt,
+  PendingMcpInput,
   PendingUserChoice,
   PlanSnapshot,
   PrivacyReceipt,
@@ -128,6 +130,8 @@ export type ChatStreamEvent =
       attachments?: DiagramAttachment[];
       fileAttachments?: OutgoingFileAttachment[];
       pendingUserChoice?: PendingUserChoice;
+      /** #544 W2-1 — see `Message.pendingMcpInput`. Sibling of the above. */
+      pendingMcpInput?: PendingMcpInput;
       followUpOptions?: FollowUpOption[];
       privacyReceipt?: PrivacyReceipt;
       maskedValues?: readonly string[];
@@ -135,6 +139,8 @@ export type ChatStreamEvent =
       agentsConsulted?: AgentConsultation[];
       /** #332 Layer 2 (gap-closure) — see `Message.delegatedAnswer`. */
       delegatedAnswer?: DelegatedAnswer;
+      /** #445 — see `Message.directLineSession`. */
+      directLineSession?: DirectLineSessionState;
     }
   /** #133 (E9) — opaque turn annotation the orchestrator forwarded from a
    *  turn-hook. `channel: 'plan'` carries a live PlanSnapshot. */
@@ -142,19 +148,24 @@ export type ChatStreamEvent =
   /** Mid-turn steering — a user message injected via `/chat/steer` was folded
    *  into the running turn at iteration `iteration`. */
   | { type: 'steer_applied'; iteration: number; message: string }
-  | { type: 'error'; message: string };
+  /**
+   * #641 — `correlationId` is the orchestrator's per-turn id, the same value it
+   * writes into its own `console.error` line, so a support query by the token
+   * the user was shown finds the log entry exactly. Mirrors the `error` variant
+   * in `@omadia/channel-sdk`'s `ChatStreamEvent`.
+   *
+   * Optional because middleware older than this change does not send it; the
+   * renderer then behaves exactly as before.
+   */
+  | { type: 'error'; message: string; correlationId?: string };
 
 /**
  * Fold one stream event into the session that owns the pending assistant
- * message. Pure-ish: writes go through `sessions.mutateActive`. The session
- * is matched by id; events for non-active sessions are no-ops here — the
- * caller (StreamRunner) is responsible for routing to the right pending id.
- *
- * Note: mutateActive only writes to the *currently active* session. The
- * stream-runner uses it because in practice a stream's session and the
- * active session coincide while a turn is firing. If we ever want to run
- * background turns for a non-active session we'll need a per-session
- * `mutateById` helper.
+ * message. Pure-ish: writes go through `sessions.mutateById`, so the fold
+ * lands in the session the turn belongs to and not in whichever session
+ * happens to be active. That is what lets a background turn keep filling its
+ * own transcript after the user switched chat tabs mid-stream (#617); the
+ * caller (StreamRunner) stays responsible for routing to the right pending id.
  */
 export function applyStreamEvent(
   sessions: UseChatSessionsResult,
@@ -162,10 +173,9 @@ export function applyStreamEvent(
   pendingMessageId: string,
   event: ChatStreamEvent,
 ): void {
-  sessions.mutateActive((session) => {
-    if (session.id !== sessionId) return session;
-    return foldEvent(session, pendingMessageId, event);
-  });
+  sessions.mutateById(sessionId, (session) =>
+    foldEvent(session, pendingMessageId, event),
+  );
 }
 
 function foldEvent(
@@ -355,6 +365,9 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         ...(event.pendingUserChoice
           ? { pendingUserChoice: event.pendingUserChoice }
           : {}),
+        ...(event.pendingMcpInput
+          ? { pendingMcpInput: event.pendingMcpInput }
+          : {}),
         ...(event.followUpOptions && event.followUpOptions.length > 0
           ? { followUpOptions: event.followUpOptions }
           : {}),
@@ -367,6 +380,13 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           : {}),
         ...(event.delegatedAnswer
           ? { delegatedAnswer: event.delegatedAnswer }
+          : {}),
+        // #445 — guard on PRESENCE, never on `.active`. `{active:false}` is
+        // precisely the payload that tells the banner a binding has ended;
+        // dropping it would leave a stale "you are talking to X" on screen
+        // after a restart, a registry rebuild or a TTL expiry.
+        ...(event.directLineSession
+          ? { directLineSession: event.directLineSession }
           : {}),
         finishedAt: Date.now(),
         streaming: false,
@@ -468,7 +488,7 @@ function mergeKgInsert(
     }
   }
 
-  const edgeKey = (e: KgWalkEdge): string => `${e.from} ${e.to} ${e.type}`;
+  const edgeKey = (e: KgWalkEdge): string => `${e.from}\0${e.to}\0${e.type}`;
   const insertedEdgeKeys = new Set(insert.edges.map(edgeKey));
   const edges: KgWalkEdge[] = prior.edges.map((e) =>
     insertedEdgeKeys.has(edgeKey(e)) ? { ...e, inserted: true } : e,

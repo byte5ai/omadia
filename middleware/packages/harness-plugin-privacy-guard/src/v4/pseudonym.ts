@@ -111,6 +111,166 @@ export function projectDataset(dataset: Dataset): {
   return { rows, map };
 }
 
+// ---------------------------------------------------------------------------
+// #361 — prompt-span pseudonyms (text-span variant of `createPseudonymMap`).
+//
+// Free-text prompt masking substitutes DETECTED spans, which are typed
+// (email, IBAN, phone, address, amount, date, person) — a "Lukas Becker"
+// name surrogate would be shape-wrong for an IBAN and would degrade the
+// LLM answer the masking is trying to preserve. Each type therefore draws
+// from its own realistic surrogate pool. Same invariants as
+// `createPseudonymMap`: deterministic per input set, bijective, and no
+// surrogate ever equals a real value or appears in the input text (C5).
+// ---------------------------------------------------------------------------
+
+/** A real value + its PII type, as detected in a prompt. */
+export interface PromptSpanValue {
+  readonly value: string;
+  readonly type: string;
+}
+
+/** Deterministic per-type surrogate candidate streams. Every generator is
+ *  unbounded via a numeric suffix/variation, so the pool cannot exhaust. */
+function* personCandidates(): Generator<string> {
+  yield* pseudonymCandidates();
+  // Overflow beyond the finite name pool: numbered variants.
+  for (let i = 2; ; i++) {
+    for (const last of LAST_NAMES) {
+      for (const first of FIRST_NAMES) yield `${first} ${last} ${String(i)}`;
+    }
+  }
+}
+
+function* emailCandidates(): Generator<string> {
+  for (let i = 0; ; i++) {
+    const first = FIRST_NAMES[i % FIRST_NAMES.length]!.toLowerCase();
+    const last =
+      LAST_NAMES[Math.floor(i / FIRST_NAMES.length) % LAST_NAMES.length]!.toLowerCase();
+    yield i < FIRST_NAMES.length * LAST_NAMES.length
+      ? `${first}.${last}@example.net`
+      : `${first}.${last}${String(i)}@example.net`;
+  }
+}
+
+/** Valid-looking DE IBAN shape with a varying account part. Deliberately
+ *  NOT checksum-valid — it must never collide with a real account, only
+ *  look shape-plausible to the model. */
+function* ibanCandidates(): Generator<string> {
+  for (let i = 0; ; i++) {
+    yield `DE00500105170${String(1000 + (i % 9000))}${String(2000 + i).padStart(4, '0')}`;
+  }
+}
+
+function* phoneCandidates(): Generator<string> {
+  for (let i = 0; ; i++) {
+    yield `+49 30 5559${String(i % 10000).padStart(4, '0')}`;
+  }
+}
+
+function* addressCandidates(): Generator<string> {
+  for (let i = 0; ; i++) {
+    yield `Musterstraße ${String(1 + (i % 199))}, ${String(10000 + ((i * 37) % 89999))} Musterstadt`;
+  }
+}
+
+function* amountCandidates(): Generator<string> {
+  for (let i = 0; ; i++) {
+    yield `€${String(10000 + ((i * 1111) % 90000))}`;
+  }
+}
+
+function* dateCandidates(): Generator<string> {
+  for (let i = 0; ; i++) {
+    yield `${String(1 + (i % 28)).padStart(2, '0')}.${String(1 + (i % 12)).padStart(2, '0')}.${String(1970 + (i % 40))}`;
+  }
+}
+
+/** Unknown category from a future detector — neutral placeholder, still
+ *  bijective and restorable. */
+function* genericCandidates(type: string): Generator<string> {
+  for (let i = 0; ; i++) {
+    yield `PLATZHALTER-${type.toUpperCase()}-${String(i + 1)}`;
+  }
+}
+
+function surrogateCandidates(type: string): Generator<string> {
+  switch (type) {
+    case 'person':
+      return personCandidates();
+    case 'email':
+      return emailCandidates();
+    case 'iban':
+      return ibanCandidates();
+    case 'phone':
+      return phoneCandidates();
+    case 'address':
+      return addressCandidates();
+    case 'amount':
+      return amountCandidates();
+    case 'date':
+      return dateCandidates();
+    default:
+      return genericCandidates(type);
+  }
+}
+
+/**
+ * Build (or extend) a pseudonym map for detected prompt spans. Guarantees:
+ *   - stable: a value already in `existing` keeps its surrogate;
+ *   - bijective: no two real values share a surrogate;
+ *   - collision-free: a surrogate never equals a real value in the set OR
+ *     any real value from an earlier call this turn (`existing`), never
+ *     appears as a substring of `avoidText` (the full prompt), and never
+ *     collides with an existing surrogate.
+ * Deterministic for the same inputs, so a person/value is stable within a
+ * turn across multiple mask calls (message + ingested attachment tail).
+ */
+export function createPromptPseudonymMap(
+  spanValues: Iterable<PromptSpanValue>,
+  avoidText: string,
+  existing?: PseudonymMap,
+): PseudonymMap {
+  const forward = new Map<string, string>(existing?.forward ?? []);
+  const reverse = new Map<string, string>(existing?.reverse ?? []);
+
+  // Deduplicate by value, deterministic order (sorted by value).
+  const pending = new Map<string, string>();
+  for (const { value, type } of spanValues) {
+    if (value.length === 0 || forward.has(value)) continue;
+    if (!pending.has(value)) pending.set(value, type);
+  }
+  // Collision domain = ALL real values seen so far this turn: the current
+  // call's pending values AND every real already in `existing` from earlier
+  // calls (message, ingested tail, recalled context). Without the latter, a
+  // later call could mint a surrogate equal to a real value masked earlier
+  // in the turn — answer-side restore would then corrupt that span.
+  const realSet = new Set(pending.keys());
+  for (const real of forward.keys()) realSet.add(real);
+
+  for (const [value, type] of [...pending.entries()].sort((a, b) =>
+    a[0].localeCompare(b[0]),
+  )) {
+    let surrogate: string | undefined;
+    for (const candidate of surrogateCandidates(type)) {
+      if (
+        !reverse.has(candidate) &&
+        !realSet.has(candidate) &&
+        !avoidText.includes(candidate)
+      ) {
+        surrogate = candidate;
+        break;
+      }
+    }
+    // Unreachable: every stream is unbounded — but keep the invariant loud.
+    if (surrogate === undefined) {
+      throw new Error('[privacy-shield-v4] prompt surrogate pool exhausted');
+    }
+    forward.set(value, surrogate);
+    reverse.set(surrogate, value);
+  }
+  return { forward, reverse };
+}
+
 /**
  * Resolve pseudonyms back to real values in a block of text — the inverse of
  * `projectDataset`, applied at materialization. Longest pseudonyms first so a

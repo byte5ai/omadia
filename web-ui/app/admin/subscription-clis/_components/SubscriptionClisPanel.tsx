@@ -9,9 +9,8 @@
  * instead of a metered API key. Aimed at a first-time self-hoster: clear status,
  * one-click connect, honest caveats.
  */
-import { useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
-import { useTranslations } from 'next-intl';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '../../../_components/ui/Button';
 import {
@@ -26,21 +25,68 @@ import {
 
 type T = ReturnType<typeof useTranslations>;
 
+/** How long the "aktualisiert" confirmation stays on screen after a re-check. */
+const REFRESH_CONFIRMATION_MS = 4000;
+
 type State =
   | { kind: 'loading' }
   | { kind: 'ready'; data: CliBackendsResponse }
   | { kind: 'error'; message: string };
 
-export function SubscriptionClisPanel(): React.ReactElement {
+export function SubscriptionClisPanel({
+  onSwitchToProviders,
+}: {
+  /**
+   * Switch the parent tab strip over to the API-keys panel.
+   *
+   * Required on purpose (OM-05/38): this panel used to link to
+   * `/admin/providers?tab=providers`, but it is *already* mounted on that
+   * route and the active tab lives in `LlmAccessTabs`' local state, seeded
+   * once on mount. Same route ⇒ no remount ⇒ the link just reloaded the page
+   * and left the operator staring at the same tab. Making the callback
+   * mandatory means the panel can never again be mounted without a way back —
+   * the compiler enforces the symmetry with `onSwitchToSubscriptions`.
+   */
+  readonly onSwitchToProviders: () => void;
+}): React.ReactElement {
   const t = useTranslations('adminSubscriptionClis');
+  const format = useFormatter();
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [rechecking, setRechecking] = useState(false);
+  /**
+   * OM-22 — "Erneut prüfen" appeared to do nothing.
+   *
+   * The report blamed a missing spinner, but a busy state already exists (see
+   * `<Button busy>` below); it is simply invisible because a local `--version`
+   * probe finishes in well under 100 ms. The real defect is that a re-check
+   * whose RESULT is unchanged produces no observable change at all. So: show
+   * when the snapshot was taken (`generatedAt` was already on the wire and had
+   * zero render sites), plus a short-lived confirmation so "nothing changed"
+   * still reads as "something happened".
+   */
+  const [justRefreshed, setJustRefreshed] = useState(false);
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    },
+    [],
+  );
 
   const load = useCallback(async (force: boolean) => {
     if (force) setRechecking(true);
     try {
       const data = await getCliBackends(force);
       setState({ kind: 'ready', data });
+      if (force) {
+        setJustRefreshed(true);
+        if (refreshTimer.current) clearTimeout(refreshTimer.current);
+        refreshTimer.current = setTimeout(
+          () => setJustRefreshed(false),
+          REFRESH_CONFIRMATION_MS,
+        );
+      }
     } catch (err) {
       // Keep a prior good snapshot visible; only show the full error on first load.
       setState((prev) =>
@@ -85,9 +131,14 @@ export function SubscriptionClisPanel(): React.ReactElement {
           {t('explainer.singleOperator')}
         </p>
         <p className="mt-3 text-sm">
-          <Link href="/admin/providers?tab=providers" className="font-medium text-[color:var(--accent)] underline">
+          {/* eslint-disable-next-line no-restricted-syntax -- inline text link (underline, no border/bg) */}
+          <button
+            type="button"
+            onClick={onSwitchToProviders}
+            className="font-medium text-[color:var(--accent)] underline"
+          >
             {t('selectModelLink')} →
-          </Link>
+          </button>
         </p>
       </div>
 
@@ -104,15 +155,32 @@ export function SubscriptionClisPanel(): React.ReactElement {
             <h2 className="text-[13px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
               {t('detected.heading')}
             </h2>
-            <Button
-              variant="secondary"
-              size="sm"
-              busy={rechecking}
-              busyLabel={t('rechecking')}
-              onClick={() => void load(true)}
-            >
-              {t('recheck')}
-            </Button>
+            <div className="flex items-center gap-3">
+              {/* OM-22 — the evidence that the re-check actually ran. */}
+              <span
+                className="text-[12px] text-[color:var(--fg-muted)]"
+                data-testid="cli-last-checked"
+              >
+                {justRefreshed
+                  ? t('refreshed')
+                  : t('lastChecked', {
+                      time: format.dateTime(new Date(state.data.generatedAt), {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                      }),
+                    })}
+              </span>
+              <Button
+                variant="secondary"
+                size="sm"
+                busy={rechecking}
+                busyLabel={t('rechecking')}
+                onClick={() => void load(true)}
+              >
+                {t('recheck')}
+              </Button>
+            </div>
           </div>
           <ul className="flex flex-col gap-3">
             {state.data.backends.map((b) => (
@@ -122,6 +190,40 @@ export function SubscriptionClisPanel(): React.ReactElement {
         </section>
       )}
     </div>
+  );
+}
+
+/**
+ * OM-11 — the "how do I get this CLI onto the server" steps.
+ *
+ * Extracted so the SAME instructions can render in both states that need them:
+ * collapsed inside the connect box (CLI present, operator prefers the terminal)
+ * and expanded on its own when the CLI is absent, where it is the only thing
+ * the operator can act on.
+ */
+function ManualInstallSteps({
+  b,
+  t,
+}: {
+  b: CliBackendStatus;
+  t: T;
+}): React.ReactElement {
+  return (
+    <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-[color:var(--fg-muted)]">
+      <li>
+        {t('connect.step1')}{' '}
+        <code className="select-all text-[color:var(--fg-strong)]">
+          {t('connect.installCmd')}
+        </code>
+      </li>
+      <li>
+        {t('connect.step2')}{' '}
+        <code className="select-all text-[color:var(--fg-strong)]">
+          {b.bin} auth login
+        </code>
+      </li>
+      <li>{t('connect.step3')}</li>
+    </ol>
   );
 }
 
@@ -233,6 +335,27 @@ function CliRow({
       </div>
       <p className="mt-2 text-sm text-[color:var(--fg-muted)]">{statusLine}</p>
 
+      {/* OM-11 — the dead end.
+          The install instructions used to live INSIDE the `canConnect` gate
+          (`b.installed && …`), i.e. they were hidden precisely when
+          `!b.installed` — exactly the state in which the user needs them. A
+          customer clicked "Anmelden →", landed on "NICHT GEFUNDEN – In dieser
+          Umgebung nicht installiert", and had no button, no instructions, and
+          no way to get the CLI onto the server.
+          Rendered open (not a `<details>`) here: when the CLI is missing this
+          IS the only available action, so it must not be one more click away. */}
+      {!b.installed && (
+        <div className="mt-3 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)]/40 p-3">
+          <div className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
+            {t('install.heading')}
+          </div>
+          <p className="mt-2 text-sm text-[color:var(--fg-muted)]">
+            {t('install.intro')}
+          </p>
+          <ManualInstallSteps b={b} t={t} />
+        </div>
+      )}
+
       {/* Logged in → offer logout. */}
       {b.loggedIn === 'yes' && (
         <div className="mt-3">
@@ -254,17 +377,7 @@ function CliRow({
                 <summary className="cursor-pointer text-[12px] text-[color:var(--fg-muted)]">
                   {t('connect.manualSummary')}
                 </summary>
-                <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-[color:var(--fg-muted)]">
-                  <li>
-                    {t('connect.step1')}{' '}
-                    <code className="select-all text-[color:var(--fg-strong)]">{t('connect.installCmd')}</code>
-                  </li>
-                  <li>
-                    {t('connect.step2')}{' '}
-                    <code className="select-all text-[color:var(--fg-strong)]">{b.bin} auth login</code>
-                  </li>
-                  <li>{t('connect.step3')}</li>
-                </ol>
+                <ManualInstallSteps b={b} t={t} />
               </details>
             </div>
           )}

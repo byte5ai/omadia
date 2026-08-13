@@ -22,7 +22,11 @@ import type {
   PluginPermissionsSummary,
   PluginSetupField,
   ServiceTypeDecl,
+  SetupAudience,
+  SetupProfile,
 } from '../api/admin-v1.js';
+import { compileSetupPattern } from './setupFieldPattern.js';
+import { normalizeLocalized } from './manifestLocalized.js';
 
 /**
  * Loads plugin manifests from a single source:
@@ -162,6 +166,21 @@ async function loadManifestV1Entries(
   return entries;
 }
 
+/**
+ * `identity.id` — an npm package name, optionally scoped. Deliberately
+ * narrower than npm's own rules (lowercase only, no URL-escapes, exactly one
+ * `/` and only after a `@scope`): every legitimate omadia plugin id is either
+ * scoped (`@omadia/plugin-office`) or a reverse-FQDN (`de.byte5.agent.foo`),
+ * and both fit. Matches the Builder's `AgentIdSchema` in builder/agentSpec.ts
+ * modulo the `_`/leading-digit tolerance npm allows.
+ */
+const PLUGIN_ID_PATTERN = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+/** npm's own package-name cap, including the scope. */
+const PLUGIN_ID_MAX_LENGTH = 214;
+/** `identity.version` — semver `x.y.z` with optional prerelease/build. */
+const PLUGIN_VERSION_PATTERN =
+  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
 export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   if (doc['schema_version'] !== '1') return null;
 
@@ -172,6 +191,27 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   const name = asString(identity['name']);
   const version = asString(identity['version']);
   if (!id || !name || !version) return null;
+
+  // `id` and `version` are path segments downstream (the install directory is
+  // `<packagesDir>/<id>/<version>`), so they are security fields, not cosmetic
+  // metadata: an id of `..` plus a version of `migrations` would resolve to a
+  // sibling of the packages root and get `fs.rm`'d before the rename. Both are
+  // therefore REJECTED rather than sanitised — a manifest that cannot state
+  // its own identity in the documented charset is not a manifest we install.
+  // This is a hard reject (`null`), not the graceful degradation the optional
+  // blocks below use; the upload path turns it into `package.manifest_invalid`.
+  if (id.length > PLUGIN_ID_MAX_LENGTH || !PLUGIN_ID_PATTERN.test(id)) {
+    console.warn(
+      `[catalog] manifest rejected: identity.id ${JSON.stringify(id)} is not a lowercase npm-style package name (optionally @scoped, max ${PLUGIN_ID_MAX_LENGTH} chars).`,
+    );
+    return null;
+  }
+  if (!PLUGIN_VERSION_PATTERN.test(version)) {
+    console.warn(
+      `[catalog] manifest rejected: plugin '${id}' has identity.version ${JSON.stringify(version)}, which is not semver (x.y.z[-prerelease][+build]).`,
+    );
+    return null;
+  }
 
   const compat = asRecord(doc['compat']);
   const setup = asRecord(doc['setup']);
@@ -186,10 +226,39 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     const key = asString(f['key']);
     const type = asString(f['type']);
     if (!key || !type) continue;
-    const label = asString(f['label']) ?? key;
+    // #602 (OM-17) — label is a localized map; a bare string is read as English,
+    // and a field with no usable label falls back to its own key. Kept
+    // byte-for-byte identical to installService's projection.
+    const label = normalizeLocalized(f['label']) ?? { en: key };
     if (!isSetupFieldType(type)) continue;
     const entry: PluginSetupField = { key, label, type };
-    const help = asString(f['help']);
+    // OM-16 — required-by-default. MUST stay byte-for-byte the same rule as
+    // installService.ts's install-schema projection (`f['required'] !== false`),
+    // otherwise the store's "configuration required" view and the install
+    // wizard's validation silently disagree. A shared-fixture test asserts the
+    // two paths agree (test/manifestLoaderSetupFields.test.ts).
+    entry.required = f['required'] !== false;
+    // OM-17 — compile the pattern at LOAD time, not at request time. A manifest
+    // is untrusted input: an uncompilable or catastrophically-backtracking
+    // pattern is dropped here with a warning (never a throw, never a 500), so a
+    // bad manifest degrades to "field has no pattern" instead of breaking the
+    // catalog or the vault write. `compileSetupPattern` caches, so the request
+    // path pays nothing.
+    const pattern = asString(f['pattern']);
+    if (pattern) {
+      if (compileSetupPattern(pattern, `${id}/${key}`)) {
+        entry.pattern = pattern;
+        const patternHint = normalizeLocalized(f['pattern_hint']);
+        if (patternHint) entry.pattern_hint = patternHint;
+      } else {
+        // OM-17 / F2 — fail-open for the WRITE (bricking a plugin because its
+        // author wrote an over-clever regex is worse), but never fail SILENT.
+        // This flag is what the setup form and the credentials editor render as
+        // "this field declares a format check that could not be applied".
+        entry.pattern_unavailable = true;
+      }
+    }
+    const help = normalizeLocalized(f['help']);
     if (help) entry.help = help;
     const placeholder = asString(f['placeholder']);
     if (placeholder) entry.placeholder = placeholder;
@@ -205,6 +274,34 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     } else {
       const defaultValue = asString(f['default']);
       if (defaultValue !== undefined) entry.default = defaultValue;
+    }
+    if (type === 'json_file') {
+      // #603 (OM-17) — the upload's extraction map. Validated HERE, at load
+      // time, for the same reason `pattern` is: a manifest is untrusted input,
+      // and a `json_file` field whose `extracts` is missing or unusable would
+      // otherwise reach the operator as a file picker that silently produces
+      // nothing. Dropping the field entirely is the honest degradation — the
+      // form then shows the underlying `secret` fields, i.e. exactly the
+      // pre-#603 behaviour, instead of an upload that cannot work.
+      const extractsRaw = asRecord(f['extracts']);
+      const extracts: Record<string, string> = {};
+      for (const [target, path] of Object.entries(extractsRaw ?? {})) {
+        const p = asString(path);
+        if (target.length > 0 && p !== undefined) extracts[target] = p;
+      }
+      if (Object.keys(extracts).length === 0) {
+        console.warn(
+          `[manifestLoader] ${id}: setup field '${key}' is type json_file but declares no usable 'extracts' — dropping the field.`,
+        );
+        continue;
+      }
+      entry.extracts = extracts;
+      const expectRaw = asRecord(f['expect']);
+      if (expectRaw && Object.keys(expectRaw).length > 0) {
+        entry.expect = expectRaw;
+      }
+      const accept = asString(f['accept']);
+      if (accept) entry.accept = accept;
     }
     if (type === 'enum') {
       const enumRaw = f['enum'];
@@ -324,7 +421,8 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   const privacyClass: 'strict' | 'default' =
     privacyClassRaw === 'strict' ? 'strict' : 'default';
 
-  const setupGuide = asLocalizedGuide(setup?.['guide']);
+  const setupGuide = normalizeLocalized(setup?.['guide']);
+  const setupProfile = extractSetupProfile(doc['listing']);
 
   // Spec 005 — declarative OAuth-provider descriptors. Inert data the kernel
   // broker reads at flow time; no plugin code runs during the OAuth dance.
@@ -368,6 +466,7 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     result = { ...result, service_types: serviceTypes };
   }
   if (setupGuide) result = { ...result, setup_guide: setupGuide };
+  if (setupProfile) result = { ...result, setup_profile: setupProfile };
   if (channel) result = { ...result, channel };
   if (adminUiPath) result = { ...result, admin_ui_path: adminUiPath };
   if (isReferenceOnly) result = { ...result, is_reference_only: true };
@@ -635,6 +734,12 @@ function extractPermissions(
   const mcpBlock = permissions?.['mcp'];
   const mcpDeclared =
     mcpBlock === true || (typeof mcpBlock === 'object' && mcpBlock !== null);
+  // NOTE: `permissions.devJobs` is no longer parsed — `ctx.devJobs` was deleted
+  // (see specs/470-dev-platform-plugin/dormant-capabilities.md §2). A stale
+  // manifest that still declares it stays installable and activatable: unknown
+  // permission keys are simply ignored here, so the plugin loads unchanged and
+  // just receives no accessor (it never had a working one). Regression-tested
+  // in `test/manifestDevJobsLegacyKey.test.ts`.
   return {
     memory_reads: extractStringArray(memory?.['reads']),
     memory_writes: extractStringArray(memory?.['writes']),
@@ -731,6 +836,45 @@ function extractOAuthProviders(
   return out;
 }
 
+/**
+ * #478 — plugin-borne workflow templates. Parse `permissions.templates`: an
+ * array of PACKAGE-RELATIVE paths to TemplateManifest JSON files shipped
+ * inside the plugin package. Shape-level only (non-string entries are
+ * errors, not silently dropped — this feeds a security gate that must fail
+ * loud); the fs-aware confinement + strict manifest validation live in
+ * `pluginTemplates.ts` and run at install time. Templates are data, never
+ * code — declaring them grants NO runtime capability (no `ctx.templates`).
+ */
+export function extractTemplateDeclarations(manifest: unknown): {
+  paths: string[];
+  errors: string[];
+} {
+  const doc = asRecord(manifest);
+  const permissions = asRecord(doc?.['permissions']);
+  const raw = permissions?.['templates'];
+  if (raw === undefined) return { paths: [], errors: [] };
+  if (!Array.isArray(raw)) {
+    return {
+      paths: [],
+      errors: [
+        'permissions.templates must be an array of package-relative .json paths',
+      ],
+    };
+  }
+  const paths: string[] = [];
+  const errors: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.trim().length === 0) {
+      errors.push(
+        `permissions.templates entry ${JSON.stringify(entry)} is not a non-empty string`,
+      );
+      continue;
+    }
+    paths.push(entry.trim());
+  }
+  return { paths, errors };
+}
+
 function extractIntegrationTargets(integrations: unknown[]): string[] {
   const out: string[] = [];
   for (const entry of integrations) {
@@ -774,24 +918,54 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+const SETUP_AUDIENCES: readonly SetupAudience[] = [
+  'it_admin',
+  'operator',
+  'end_user',
+];
+
 /**
- * Normalise a manifest `setup.guide` into a `{ <locale>: markdown }` map.
- * Accepts the canonical object form (`{ en: "…", de: "…" }`) and tolerates a
- * bare string (treated as English). Empty strings and non-string values are
- * dropped; returns undefined when nothing usable remains.
+ * OM-15 (#602) — parse a `setup_profile` object. Additive and lenient: an
+ * unknown `audience`, a non-positive / non-integer `estimated_minutes`, or an
+ * empty `requirement` is DROPPED (not rejected), and an object with nothing
+ * usable returns undefined so the card renders no prerequisites row. Never
+ * throws — malformed input (manifest OR untrusted registry teaser) must not
+ * break the catalog. Exported so the store's remote-registry projection
+ * validates the same way the local catalog does.
  */
-function asLocalizedGuide(value: unknown): Record<string, string> | undefined {
-  if (typeof value === 'string') {
-    const s = value.trim();
-    return s.length > 0 ? { en: value } : undefined;
-  }
-  const rec = asRecord(value);
+export function parseSetupProfile(raw: unknown): SetupProfile | undefined {
+  const rec = asRecord(raw);
   if (!rec) return undefined;
-  const out: Record<string, string> = {};
-  for (const [locale, text] of Object.entries(rec)) {
-    if (typeof text === 'string' && text.trim().length > 0) out[locale] = text;
+
+  const profile: SetupProfile = {};
+
+  const audience = asString(rec['audience']);
+  if (audience && (SETUP_AUDIENCES as readonly string[]).includes(audience)) {
+    profile.audience = audience as SetupAudience;
   }
-  return Object.keys(out).length > 0 ? out : undefined;
+
+  const minutes = rec['estimated_minutes'];
+  if (typeof minutes === 'number' && Number.isInteger(minutes) && minutes > 0) {
+    profile.estimated_minutes = minutes;
+  }
+
+  const requirement = normalizeLocalized(rec['requirement']);
+  if (requirement) profile.requirement = requirement;
+
+  return Object.keys(profile).length > 0 ? profile : undefined;
+}
+
+/**
+ * Read `listing.setup_profile` from a full manifest doc's `listing` block.
+ *
+ * Deliberately under `listing`, NOT `setup` (where `setup.guide` lives): the
+ * profile is store-CARD presentation shown BEFORE install (audience/effort,
+ * alongside the card's name/description), not setup-wizard content the operator
+ * reads DURING install. Keeping the pre-install teaser separate from the
+ * install-step copy is why it gets its own block.
+ */
+function extractSetupProfile(listing: unknown): SetupProfile | undefined {
+  return parseSetupProfile(asRecord(listing)?.['setup_profile']);
 }
 
 function extractStringArray(value: unknown): string[] {
@@ -828,6 +1002,8 @@ function isSetupFieldType(value: string): value is PluginSetupField['type'] {
     value === 'enum' ||
     value === 'boolean' ||
     value === 'integer' ||
-    value === 'host_list'
+    value === 'host_list' ||
+    // #603 (OM-17) — upload a JSON credential file instead of transcribing it.
+    value === 'json_file'
   );
 }

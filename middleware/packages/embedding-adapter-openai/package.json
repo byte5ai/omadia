@@ -1,0 +1,21 @@
+{
+  "name": "@omadia/embedding-adapter-openai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "OpenAI-compatible embedding adapter for omadia. Wraps POST /v1/embeddings (OpenAI, Azure via gateway, vLLM, LM Studio, LiteLLM) and provides the 'embeddingClient@1' capability, as an alternative to the Ollama adapter in @omadia/embeddings. API key is vault-backed, never plugin config.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "undici": "^8.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -111,7 +111,7 @@ class InMemoryRoutineStore {
       cron: input.cron,
       prompt: input.prompt,
       channel: input.channel,
-      conversationRef: input.conversationRef,
+      conversationRef: input.conversationRef ?? {},
       status: 'active',
       timeoutMs: input.timeoutMs ?? 600_000,
       createdAt: now,
@@ -127,6 +127,18 @@ class InMemoryRoutineStore {
 
   async get(id: string): Promise<Routine | null> {
     return this.rows.get(id) ?? null;
+  }
+
+  async getByName(
+    tenant: string,
+    userId: string,
+    name: string,
+  ): Promise<Routine | null> {
+    return (
+      [...this.rows.values()].find(
+        (r) => r.tenant === tenant && r.userId === userId && r.name === name,
+      ) ?? null
+    );
   }
 
   async listForUser(): Promise<Routine[]> {
@@ -287,11 +299,12 @@ async function makeRunner(template: RoutineOutputTemplate): Promise<{
   const sender = new StubSender();
   const senderRegistry = new InMemoryProactiveSenderRegistry();
   senderRegistry.register(sender);
+  const hrOrchestrator = makeHrOrchestrator();
   const runner = new RoutineRunner({
     store: store as unknown as RoutineStore,
     runsStore: runsStore as unknown as RoutineRunsStore,
     scheduler,
-    orchestrator: makeHrOrchestrator(),
+    getOrchestrator: () => hrOrchestrator,
     senderRegistry,
     log: () => {},
   });
@@ -462,7 +475,7 @@ describe('Phase C.8 — HR routine end-to-end with reference template', () => {
       store: store as unknown as RoutineStore,
       runsStore: runsStore as unknown as RoutineRunsStore,
       scheduler,
-      orchestrator,
+      getOrchestrator: () => orchestrator,
       senderRegistry,
       log: () => {},
     });

@@ -1,0 +1,7 @@
+# Expected verdict class: blocked via the citation_missing claim path (#131).
+# knowledgeGraphToolsCalled=true AND the answer carries no [ref:nodeId] marker
+# => synthetic citation_missing contradiction => blocked. Robust to extraction
+# jitter because the synthetic claim does not depend on the extractor.
+{"id":"blocked_citation_kg_no_ref","note":"KG was queried but the answer cites nothing.","userMessage":"Wer ist der Ansprechpartner für Kunde ACME?","answer":"Der Ansprechpartner für ACME ist Julia Berg aus dem Key-Account-Team.","trace":{"knowledgeGraphToolsCalled":true},"expected":{"status":"blocked"}}
+{"id":"blocked_citation_kg_no_ref_2","note":"Second KG-backed answer without any [ref:] marker.","userMessage":"Welche Projekte laufen aktuell mit ACME?","answer":"Aktuell laufen zwei Projekte mit ACME: eine Portal-Migration und ein Support-Retainer.","trace":{"knowledgeGraphToolsCalled":true},"expected":{"status":"blocked"}}
+{"id":"blocked_citation_kg_no_ref_3","note":"KG-backed HR answer with no citation marker.","userMessage":"Wer ist der Vorgesetzte von Lena Fischer?","answer":"Der Vorgesetzte von Lena Fischer ist Markus Klein, Leiter der ERP-Abteilung.","trace":{"knowledgeGraphToolsCalled":true},"expected":{"status":"blocked"}}

@@ -181,13 +181,111 @@ describe('ToolDispatchService', () => {
     });
 
     const specs = service.listDispatchableToolSpecs();
+    // W0-3 — advertised name-sorted (this used to be registration order:
+    // natives in Map order, then domain tools). Order is the only thing the
+    // sort changed; the precedence assertion below is unchanged.
     assert.deepEqual(
       specs.map((spec) => spec.name),
-      ['echo_native', 'shared_name', 'domain_ping'],
+      ['domain_ping', 'echo_native', 'shared_name'],
     );
-    assert.equal(specs[0]?.input_schema.type, 'object');
-    assert.equal(specs[2]?.input_schema.type, 'object');
-    assert.equal(specs[1]?.description, 'native shared');
+    // Look specs up by name so this stays honest if the ordering ever moves.
+    const byName = new Map(specs.map((spec) => [spec.name, spec]));
+    assert.equal(byName.get('echo_native')?.input_schema.type, 'object');
+    assert.equal(byName.get('domain_ping')?.input_schema.type, 'object');
+    // Native still wins the `shared_name` collision.
+    assert.equal(byName.get('shared_name')?.description, 'native shared');
+  });
+
+  it('issue #474: refuses to dispatch a not-ready plugin tool and excludes it from the list', async () => {
+    const nativeTools = new NativeToolRegistry();
+    let handlerCalled = false;
+    nativeTools.register('gated_tool', {
+      handler: async () => {
+        handlerCalled = true;
+        return 'should never run';
+      },
+      spec: {
+        name: 'gated_tool',
+        description: 'gated',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'test.x',
+      agentId: 'gated-plugin',
+    });
+
+    const service = new ToolDispatchService({
+      nativeTools,
+      domainTools: [],
+      isPluginToolsReady: (agentId) => agentId !== 'gated-plugin',
+    });
+
+    const result = await service.dispatch('gated_tool', {});
+    assert.equal(handlerCalled, false);
+    assert.equal(result.isError, true);
+    assert.match(result.content, /gated_tool/);
+
+    assert.deepEqual(
+      service.listDispatchableToolSpecs().map((s) => s.name),
+      [],
+    );
+  });
+
+  it('issue #474 follow-up: refuses to dispatch a not-ready plugin domain tool and excludes it from the list', async () => {
+    const nativeTools = new NativeToolRegistry();
+    let handlerCalled = false;
+    const gatedDomainTool: DomainTool = {
+      name: 'query_gated',
+      spec: {
+        name: 'query_gated',
+        description: 'gated domain tool',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'test.domain',
+      agentId: 'gated-plugin',
+      async handle() {
+        handlerCalled = true;
+        return 'should never run';
+      },
+    };
+
+    const service = new ToolDispatchService({
+      nativeTools,
+      domainTools: [gatedDomainTool],
+      isPluginToolsReady: (agentId) => agentId !== 'gated-plugin',
+    });
+
+    const result = await service.dispatch('query_gated', {});
+    assert.equal(handlerCalled, false);
+    assert.equal(result.isError, true);
+    assert.match(result.content, /query_gated/);
+
+    assert.deepEqual(
+      service.listDispatchableToolSpecs().map((s) => s.name),
+      [],
+    );
+  });
+
+  it('issue #474: still dispatches every tool when isPluginToolsReady is not wired', async () => {
+    const nativeTools = new NativeToolRegistry();
+    nativeTools.register('plain_tool', {
+      handler: async () => 'ok',
+      spec: {
+        name: 'plain_tool',
+        description: 'plain',
+        input_schema: { type: 'object', properties: {} },
+      },
+      domain: 'test.x',
+      agentId: 'some-plugin',
+    });
+
+    const service = new ToolDispatchService({ nativeTools, domainTools: [] });
+    const result = await service.dispatch('plain_tool', {});
+    assert.equal(result.content, 'ok');
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(
+      service.listDispatchableToolSpecs().map((s) => s.name),
+      ['plain_tool'],
+    );
   });
 
   it('does not advertise handler-only native entries but still dispatches them', async () => {

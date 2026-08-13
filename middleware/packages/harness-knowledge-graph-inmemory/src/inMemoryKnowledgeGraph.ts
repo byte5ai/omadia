@@ -19,6 +19,15 @@ import {
   userNodeId,
   type ChannelIdentityIngest,
   type CreateMergeCandidateInput,
+  type DatasetAggregate,
+  type DatasetColumnType,
+  type DatasetFilter,
+  type DatasetIngest,
+  type DatasetIngestResult,
+  type DatasetQueryOptions,
+  type DatasetQueryResult,
+  type DatasetSummary,
+  validateDatasetQueryOptions,
   type EntityRef,
   type EntityCapturedTurnsHit,
   type EntityCapturedTurnsOptions,
@@ -111,6 +120,97 @@ function matchesAgentScopePrefix(
   return false;
 }
 
+/** #430 — one `dataset_rows` row's evaluation of a single `DatasetFilter`.
+ *  Mirrors the SQL semantics `NeonKnowledgeGraph` builds over the JSONB
+ *  column: numeric comparisons coerce both sides to `Number`, `contains`
+ *  is a case-insensitive substring match on strings only. */
+function matchesDatasetFilter(
+  value: unknown,
+  filter: DatasetFilter,
+  columnType: DatasetColumnType,
+): boolean {
+  switch (filter.op) {
+    case 'eq':
+    case 'neq': {
+      // #430 fixup — coerce `filter.value` to the COLUMN's declared type
+      // before comparing, exactly mirroring `buildDatasetFilterClause` in
+      // `neonKnowledgeGraph.ts` (`(data->>col)::numeric = $1::numeric` for
+      // a `number` column, plain text equality otherwise). The
+      // `query_dataset` tool's Zod schema accepts a `string | number |
+      // boolean` filter value regardless of the target column's type or
+      // op, so `{ column: 'amount', op: 'eq', value: '250' }` against a
+      // `number` column storing `250` must still match — comparing
+      // `value === filter.value` with no coercion silently returned
+      // `totalMatched: 0` here while Neon matched correctly on the same
+      // input (#430 review finding).
+      const isNumeric = columnType === 'number';
+      const a = isNumeric ? Number(value) : String(value);
+      const b = isNumeric ? Number(filter.value) : String(filter.value);
+      return filter.op === 'eq' ? a === b : a !== b;
+    }
+    case 'contains':
+      // #430 fixup — same reasoning as eq/neq: `filter.value` can arrive
+      // as a non-string even though `contains` only targets `string`
+      // columns (validated by `validateDatasetQueryOptions`, but that
+      // validation doesn't touch `filter.value`'s own JS type). Coerce it
+      // to a string before the substring check instead of requiring
+      // `typeof filter.value === 'string'` and returning `false` otherwise.
+      return typeof value === 'string'
+        ? value.toLowerCase().includes(String(filter.value).toLowerCase())
+        : false;
+    case 'gt':
+    case 'gte':
+    case 'lt':
+    case 'lte': {
+      const a =
+        typeof value === 'number'
+          ? value
+          : typeof value === 'string'
+            ? Number(value)
+            : NaN;
+      const b =
+        typeof filter.value === 'number' ? filter.value : Number(filter.value);
+      if (Number.isNaN(a) || Number.isNaN(b)) return false;
+      if (filter.op === 'gt') return a > b;
+      if (filter.op === 'gte') return a >= b;
+      if (filter.op === 'lt') return a < b;
+      return a <= b;
+    }
+    default:
+      return false;
+  }
+}
+
+/** #430 — non-numeric / missing values are dropped from the aggregate
+ *  rather than throwing, matching how a SQL `::numeric` cast on a mixed
+ *  JSONB column would need `WHERE value ~ numeric-pattern` to avoid an
+ *  error; `null` (not `0`/`NaN`) signals "no numeric values in scope". */
+function computeDatasetAggregate(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  aggregate: DatasetAggregate,
+): number | null {
+  if (aggregate.fn === 'count') return rows.length;
+  const column = aggregate.column;
+  if (column === undefined) return null;
+  const values = rows
+    .map((r) => r[column])
+    .map((v) => (typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN))
+    .filter((v) => !Number.isNaN(v));
+  if (values.length === 0) return null;
+  switch (aggregate.fn) {
+    case 'sum':
+      return values.reduce((a, b) => a + b, 0);
+    case 'avg':
+      return values.reduce((a, b) => a + b, 0) / values.length;
+    case 'min':
+      return Math.min(...values);
+    case 'max':
+      return Math.max(...values);
+    default:
+      return null;
+  }
+}
+
 /**
  * In-memory knowledge graph. Lives in the middleware process, lost on
  * restart — the session transcripts on disk remain the source of truth, a
@@ -126,6 +226,24 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   private readonly sessionTurns = new Map<string, string[]>();
   /** Slice 3 — per-memory append-only ACL audit log. */
   private readonly aclAudit = new Map<string, AclAuditEntry[]>();
+
+  /** #430 — one entry per imported dataset (CSV import). Rows live inline;
+   *  the dataset itself is also mirrored as a single `PluginEntity` graph
+   *  node (see `ingestDataset`) whose id is `graphNodeId` below. */
+  private readonly datasets = new Map<
+    string,
+    {
+      id: string;
+      ownerOmadiaUserId: string;
+      name: string;
+      sourceFileName: string;
+      sourceStorageKey?: string;
+      columns: DatasetSummary['columns'];
+      rows: Array<Record<string, unknown>>;
+      graphNodeId: string;
+      createdAt: string;
+    }
+  >();
 
   /** Slice 7 — embedding cache keyed by node externalId. The InMemory
    *  backend has no `embedding` column on its node bag, so we keep a
@@ -476,6 +594,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
             (acc, inv) => acc + inv.toolCalls.length,
             0,
           ),
+        // #650 (epic #642) — the model that produced the answer and the
+        // provider that served it. Written here as well as in the Neon
+        // implementation: a provenance field present in one backend and absent
+        // in the other means the answer to "which model wrote this?" depends on
+        // which store the deployment happens to run.
+        ...(trace.model ? { model: trace.model } : {}),
+        ...(trace.provider ? { provider: trace.provider } : {}),
         ...(trace.error ? { error: trace.error } : {}),
       },
     });
@@ -2760,6 +2885,162 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       else inserted++;
     }
     return { entityIds: ids, inserted, updated };
+  }
+
+  // -------------------------------------------------------------------
+  // #430 — structured dataset ingestion. Parity implementation: rows are
+  // NEVER promoted to graph nodes (see interface doc), only the one
+  // Dataset PluginEntity node created via `ingestEntities` below.
+  // -------------------------------------------------------------------
+
+  async ingestDataset(input: DatasetIngest): Promise<DatasetIngestResult> {
+    const datasetId = randomUUID();
+    const { entityIds } = await this.ingestEntities([
+      {
+        system: 'dataset',
+        model: 'dataset',
+        id: datasetId,
+        displayName: input.name,
+        extras: {
+          rowCount: input.rows.length,
+          columnNames: input.columns.map((c) => c.name),
+        },
+      },
+    ]);
+    const graphNodeId = entityIds[0];
+    if (graphNodeId === undefined) {
+      throw new Error('dataset graph-node ingest returned no id');
+    }
+    this.datasets.set(datasetId, {
+      id: datasetId,
+      ownerOmadiaUserId: input.ownerOmadiaUserId,
+      name: input.name,
+      sourceFileName: input.sourceFileName,
+      ...(input.sourceStorageKey
+        ? { sourceStorageKey: input.sourceStorageKey }
+        : {}),
+      columns: input.columns,
+      rows: input.rows.map((r) => ({ ...r })),
+      graphNodeId,
+      createdAt: new Date().toISOString(),
+    });
+    return { datasetId, rowCount: input.rows.length, graphNodeId };
+  }
+
+  async listDatasets(opts: {
+    ownerOmadiaUserId: string;
+    limit?: number;
+  }): Promise<DatasetSummary[]> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    return [...this.datasets.values()]
+      .filter((d) => d.ownerOmadiaUserId === opts.ownerOmadiaUserId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit)
+      .map((d) => this.datasetToSummary(d));
+  }
+
+  async getDataset(
+    datasetId: string,
+    viewerOmadiaUserId: string,
+  ): Promise<DatasetSummary | null> {
+    const d = this.datasets.get(datasetId);
+    if (!d || d.ownerOmadiaUserId !== viewerOmadiaUserId) return null;
+    return this.datasetToSummary(d);
+  }
+
+  async queryDatasetRows(
+    datasetId: string,
+    viewerOmadiaUserId: string,
+    opts?: DatasetQueryOptions,
+  ): Promise<DatasetQueryResult | null> {
+    const d = this.datasets.get(datasetId);
+    if (!d || d.ownerOmadiaUserId !== viewerOmadiaUserId) return null;
+    const normalized = validateDatasetQueryOptions(d.columns, opts);
+    const columnTypeByName = new Map(d.columns.map((c) => [c.name, c.type]));
+    const matched = d.rows.filter((row) =>
+      normalized.filters.every((f) =>
+        matchesDatasetFilter(
+          row[f.column],
+          f,
+          columnTypeByName.get(f.column) ?? 'string',
+        ),
+      ),
+    );
+    if (!normalized.aggregate) {
+      const page = matched.slice(
+        normalized.offset,
+        normalized.offset + normalized.limit,
+      );
+      return {
+        rows: page.map((r) => ({ ...r })),
+        totalMatched: matched.length,
+      };
+    }
+    if (normalized.groupBy !== undefined) {
+      const groupKey = normalized.groupBy;
+      const buckets = new Map<unknown, Array<Record<string, unknown>>>();
+      for (const row of matched) {
+        const key = row[groupKey];
+        const bucket = buckets.get(key);
+        if (bucket) bucket.push(row);
+        else buckets.set(key, [row]);
+      }
+      // #430 fixup — cap at 200 groups, same as the Neon backend's
+      // `LIMIT 200` (neonKnowledgeGraph.ts). Uncapped, a dataset with many
+      // unique group keys could blow the turn token budget through this
+      // backend even though Neon is safe. Sorted by value (desc, nulls
+      // last) BEFORE truncating — same order as Neon's
+      // `ORDER BY value DESC NULLS LAST LIMIT 200` — so which 200 survive is
+      // deterministic, not insertion-order-dependent.
+      const MAX_GROUPS = 200;
+      const groups = [...buckets.entries()]
+        .map(([key, rowsInGroup]) => ({
+          key,
+          value: computeDatasetAggregate(rowsInGroup, normalized.aggregate!),
+        }))
+        .sort((a, b) => {
+          if (a.value === null) return b.value === null ? 0 : 1;
+          if (b.value === null) return -1;
+          return b.value - a.value;
+        })
+        .slice(0, MAX_GROUPS);
+      return { groups, totalMatched: matched.length };
+    }
+    return {
+      aggregateValue: computeDatasetAggregate(matched, normalized.aggregate),
+      totalMatched: matched.length,
+    };
+  }
+
+  async deleteDataset(
+    datasetId: string,
+    actor: AclMutationOptions,
+  ): Promise<boolean> {
+    const d = this.datasets.get(datasetId);
+    if (!d || d.ownerOmadiaUserId !== actor.actorOmadiaUserId) return false;
+    this.nodes.delete(d.graphNodeId);
+    this.datasets.delete(datasetId);
+    return true;
+  }
+
+  private datasetToSummary(d: {
+    id: string;
+    ownerOmadiaUserId: string;
+    name: string;
+    sourceFileName: string;
+    columns: DatasetSummary['columns'];
+    rows: Array<Record<string, unknown>>;
+    createdAt: string;
+  }): DatasetSummary {
+    return {
+      id: d.id,
+      name: d.name,
+      sourceFileName: d.sourceFileName,
+      ownerOmadiaUserId: d.ownerOmadiaUserId,
+      rowCount: d.rows.length,
+      columns: d.columns,
+      createdAt: d.createdAt,
+    };
   }
 
   async findEntityCapturedTurns(

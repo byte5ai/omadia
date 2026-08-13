@@ -10,7 +10,11 @@ import type {
 } from '../api/admin-v1.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import { parseSetupProfile } from '../plugins/manifestLoader.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
+import type { PluginVerdictLookup } from '../services/pluginVerdict.js';
+import { withReadiness, type ReadinessVault } from '../plugins/readiness.js';
+import { findProvidesCollision } from '../plugins/capabilityResolver.js';
 import type {
   RegistryClient,
   ResolvedRegistryPlugin,
@@ -27,6 +31,15 @@ interface StoreDeps {
   /** Spec 004 — read-only access to plugins' pushed `ctx.status` so the list
    *  and detail responses can carry `action_status` for the badge/banner. */
   pluginStatusRegistry?: PluginStatusRegistry;
+  /** Issue #453 — advisory code-scan verdicts for ingested packages. When
+   *  present, the detail response carries a read-only `verdict` and the
+   *  operator ack endpoint is mounted. Lookup only — GET never scans. */
+  verdicts?: PluginVerdictLookup;
+  /** OM-16 — read-only access to the secret vault's KEY NAMES (never values)
+   *  so `readiness` can tell "installed" from "actually configured". Optional:
+   *  without it, secret-typed fields are assumed satisfied and readiness still
+   *  reports config/errored state from the registry alone. */
+  vault?: ReadinessVault;
 }
 
 /** Overlay the live `ctx.status` value (if any) onto a plugin record. Returns
@@ -118,10 +131,22 @@ export function createStoreRouter(deps: StoreDeps): Router {
         }
       }
 
+      // OM-16 — decorate with the kernel-derived readiness alongside the
+      // push-based action_status. Same insertion point, same "never breaks the
+      // response" contract: `withReadiness` swallows its own failures.
+      const decorated = await Promise.all(
+        items.map((p) =>
+          withReadiness(
+            withActionStatus(p, deps.pluginStatusRegistry),
+            deps.registry,
+            deps.vault,
+          ),
+        ),
+      );
       const body: StoreListResponse = {
-        items: items.map((p) => withActionStatus(p, deps.pluginStatusRegistry)),
+        items: decorated,
         next_cursor: null,
-        total: items.length,
+        total: decorated.length,
       };
       res.json(body);
     } catch (err) {
@@ -145,10 +170,37 @@ export function createStoreRouter(deps: StoreDeps): Router {
         // page resolves (otherwise the store list would link to a 404).
         const remote = await resolveRemotePlugin(deps.client, id);
         if (remote) {
+          // OM-06 / #671 — a hub-only entry is exactly where this used to go
+          // wrong: no local manifest, so nothing checked whether an active
+          // plugin already provides the same capability, and the store
+          // advertised an install that `InstallService.create` then refused
+          // with 409. The registry summary carries `provides`, so the same
+          // rule applies here.
+          // `?? []` is load-bearing: a registry summary may omit `provides`
+          // entirely (older hub payloads, and every fixture that predates
+          // this), and iterating undefined would 500 the detail page — a
+          // strictly worse outcome than the button this is trying to fix.
+          const remoteCollision = findProvidesCollision(
+            id,
+            remote.provides ?? [],
+            deps.catalog,
+            deps.registry,
+          );
           const body: StoreGetResponse = {
             plugin: remote,
             manifest: remote.source ? { source: remote.source } : {},
-            install_available: true,
+            install_available: !remoteCollision,
+            ...(remoteCollision
+              ? {
+                  blocking_reasons: [
+                    alreadyProvidedReason(remoteCollision),
+                  ],
+                  blocked_by_active_provider: {
+                    capability: remoteCollision.capability,
+                    owner_id: remoteCollision.ownerId,
+                  },
+                }
+              : {}),
           };
           res.json(body);
           return;
@@ -192,20 +244,96 @@ export function createStoreRouter(deps: StoreDeps): Router {
           // registry hiccup → keep the local 'installed' view, never 500
         }
       }
-      const installAvailable = plugin.install_state === 'available';
+      // OM-06 / #671 — `install_state === 'available'` only says the plugin is
+      // not already installed. It does not ask whether the CAPABILITY is
+      // already covered, so the store offered "Install" for a provider whose
+      // slot was taken, and `InstallService.create` then refused the click
+      // with 409 `install.capability_already_provided`. Same check, same
+      // helper, one turn earlier — the button now matches what the server
+      // will actually do.
+      const collision = findProvidesCollision(
+        id,
+        plugin.provides ?? [],
+        deps.catalog,
+        deps.registry,
+      );
+      const installAvailable = plugin.install_state === 'available' && !collision;
       plugin = withActionStatus(plugin, deps.pluginStatusRegistry);
+      // OM-16 — see the list handler. Orthogonal to install_state.
+      plugin = await withReadiness(plugin, deps.registry, deps.vault);
+      // Issue #453 — decorate with the advisory code-scan verdict. Pure
+      // lookup (never triggers a scan); a store hiccup degrades to "no
+      // verdict shown", never a 500.
+      let verdict;
+      if (deps.verdicts) {
+        try {
+          verdict = await deps.verdicts.getForPlugin(id);
+        } catch {
+          verdict = undefined;
+        }
+      }
       const body: StoreGetResponse = {
         plugin,
         manifest: entry.manifest,
         install_available: installAvailable,
-        ...(plugin.incompatibility_reasons
-          ? { blocking_reasons: plugin.incompatibility_reasons }
+        ...(plugin.incompatibility_reasons || collision
+          ? {
+              blocking_reasons: [
+                ...(plugin.incompatibility_reasons ?? []),
+                ...(collision ? [alreadyProvidedReason(collision)] : []),
+              ],
+            }
+          : {}),
+        ...(verdict ? { verdict } : {}),
+        ...(collision
+          ? {
+              blocked_by_active_provider: {
+                capability: collision.capability,
+                owner_id: collision.ownerId,
+              },
+            }
           : {}),
       };
       res.json(body);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ code: 'store.get_failed', message });
+    }
+  });
+
+  // Issue #453 — operator acknowledgement of a code-scan verdict. Advisory
+  // model as in #452: any authenticated operator may ack (omadia has no role
+  // differentiation yet — see the acknowledged gap in agentBuilder.ts), but
+  // ack_by/ack_at are persisted for audit.
+  router.post('/:id/verdict/ack', async (req: Request, res: Response) => {
+    try {
+      const rawId = req.params['id'];
+      const id = typeof rawId === 'string' ? rawId : undefined;
+      if (!id) {
+        res.status(400).json({ code: 'store.invalid_id', message: 'missing id' });
+        return;
+      }
+      if (!deps.verdicts) {
+        res.status(404).json({
+          code: 'store.verdicts_unavailable',
+          message: 'code-scan verdicts are not enabled on this deployment',
+        });
+        return;
+      }
+      const session = (req as Request & { session?: { email: string } }).session;
+      const ackedBy = session?.email ?? 'unknown';
+      const ack = await deps.verdicts.ack(id, ackedBy);
+      if (!ack) {
+        res.status(404).json({
+          code: 'store.verdict_not_found',
+          message: `no code-scan verdict recorded for plugin '${id}'`,
+        });
+        return;
+      }
+      res.json({ ack });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ code: 'store.ack_failed', message });
     }
   });
 
@@ -247,6 +375,21 @@ function matchesCategory(plugin: Plugin, category: string | undefined): boolean 
 
 /** Resolve a single plugin id against the remote registries (for the detail
  *  endpoint). Returns null if absent or any registry is unreachable. */
+/** The English fallback line for `blocking_reasons` (OM-06 / #671).
+ *
+ *  `blocking_reasons` is a list of server-authored strings the client can only
+ *  print, so this stays deliberately plain and mirrors the 409 the install
+ *  would return. The ACTIONABLE version — "configure the provider you already
+ *  have", with a link — is built client-side from
+ *  `blocked_by_active_provider`, which is why that field exists rather than
+ *  this string carrying the whole story. */
+function alreadyProvidedReason(collision: {
+  capability: string;
+  ownerId: string;
+}): string {
+  return `capability '${collision.capability}' is already provided by '${collision.ownerId}' — configure that plugin instead of installing a second provider`;
+}
+
 async function resolveRemotePlugin(
   client: RegistryClient | undefined,
   id: string,
@@ -347,6 +490,10 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
     summary.setup_guide && Object.keys(summary.setup_guide).length > 0
       ? summary.setup_guide
       : undefined;
+  // OM-15 (#602) — re-validate the untrusted registry teaser through the same
+  // parser the local catalog uses, so a malformed remote profile degrades to
+  // "no prerequisites row" instead of a raw/partial object on the card.
+  const setupProfile = parseSetupProfile(summary.setup_profile);
 
   return {
     id: entry.id,
@@ -374,6 +521,7 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
     multi_instance: true,
     privacy_class: 'default',
     ...(setupGuide ? { setup_guide: setupGuide } : {}),
+    ...(setupProfile ? { setup_profile: setupProfile } : {}),
     source: registrySource(resolved),
   };
 }

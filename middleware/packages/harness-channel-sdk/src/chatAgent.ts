@@ -1,11 +1,14 @@
-import type { PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
+import type { ChannelKind, PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
 import type {
   AgentConsultation,
+  AiDisclosure,
   DelegatedAnswer,
+  DirectLineSessionState,
   FollowUpOption,
   SemanticAnswer,
 } from './outgoing.js';
 import type { SurfaceStreamEvent, PendingCanvasSurface } from './surface.js';
+import type { EnvelopeProvenance } from './provenance.js';
 
 /**
  * Orchestrator surface contract — the duck-typed interface every chat-handling
@@ -111,6 +114,56 @@ export interface PendingUserChoice {
   options: Array<{ label: string; value: string }>;
 }
 
+/**
+ * One free-text field an MCP server asked the human to fill in (#544 W2-1).
+ * Mirrors the kernel-side `McpInputField`.
+ */
+export interface McpInputCardField {
+  /** Machine name — the key the value travels back to the server under. */
+  name: string;
+  /** Display label; fall back to `name` when the server sent none. */
+  label?: string;
+  description?: string;
+  /**
+   * Render masked. ADVISORY ONLY: the value still crosses the wire to the
+   * third-party server verbatim. A channel that cannot mask input must not
+   * pretend it did.
+   */
+  secret?: boolean;
+  required?: boolean;
+}
+
+/**
+ * Pending mid-call input request from an MCP tool (#544 W2-1, MRTR
+ * `resultType: "input_required"`). Populated when the orchestrator
+ * short-circuited the turn so the channel can collect the fields; the answer
+ * arrives as a fresh turn carrying `MCP_INPUT_REPLY_PREFIX`.
+ *
+ * A SIBLING of {@link PendingUserChoice}, deliberately not a reuse: a choice
+ * card is 2-4 mutually exclusive buttons chosen by the model, this is N free-text
+ * fields demanded by a third-party server. Collapsing them would force one of
+ * the two into a shape it does not have.
+ *
+ * ## `serverName` is mandatory to render
+ *
+ * An MCP server can now make omadia display arbitrary prose and collect
+ * arbitrary free text mid-turn. Without naming the asker, a hostile server could
+ * phish credentials through a card the user reads as omadia's own UI. Every
+ * surface — rich card or plain-text fallback — MUST attribute the request.
+ */
+export interface PendingMcpInputCard {
+  /** Opaque id the answer must carry back. Single-use, TTL-bounded. */
+  correlationId: string;
+  /** Operator-configured display name of the asking MCP server. Render it. */
+  serverName: string;
+  serverId: string;
+  /** The MCP tool that asked. */
+  toolName: string;
+  /** Server-supplied prose shown above the fields, when it sent any. */
+  prompt?: string;
+  fields: McpInputCardField[];
+}
+
 /** Slot-picker card scheduled by `find_free_slots`. Mirrors the kernel-side
  *  `PendingSlotCard` from `middleware/src/tools/findFreeSlotsTool.ts`. */
 export interface PendingSlotCard {
@@ -191,6 +244,16 @@ export interface RunTracePayload {
   orchestratorToolCalls: RunToolCall[];
   /** One entry per sub-agent invocation in invocation-order. */
   agentInvocations: RunAgentInvocation[];
+  /**
+   * #650 (epic #642) — the model that produced the answer, and the provider
+   * that served it. Mirrors `RunTrace` in `@omadia/plugin-api`; this payload is
+   * a structural copy of it (see the note on `RunTracePayload` in
+   * `runTraceCollector.ts` for why the shape is duplicated rather than imported).
+   *
+   * Optional so every trace written before this existed stays readable.
+   */
+  model?: string;
+  provider?: string;
 }
 
 /** Compact verifier summary attached to `ChatTurnResult` and the streaming
@@ -223,6 +286,23 @@ export interface ChatTurnInput {
    * "only this user's history". Never reaches the model prompt.
    */
   userId?: string;
+  /**
+   * #430 fixup — the turn's channel-native identity, when the dispatcher can
+   * map one. Populated ONLY for channel turns whose `ChannelUserRef.kind`
+   * maps to a {@link ChannelKind} the `KnowledgeGraph` ACL model understands
+   * (`createOrchestratorDispatcher` in `middleware/src/channels/
+   * orchestratorDispatcher.ts` is the sole producer). When present, `userId`
+   * above is a RAW channel-native id (Teams AAD oid, …) — NOT the canonical
+   * `omadiaUserId` uuid the KG's ACL routes filter on — and any code that
+   * needs to write an `ownerOmadiaUserId` (dataset ingest, MK ACLs, …) must
+   * resolve it first via `KnowledgeGraph.resolveOrCreateChannelIdentity`.
+   * Absent for HTTP/CLI turns, where `userId` (resolved from
+   * `req.session.omadia_user_id` or a validated `x-user-id`) already IS the
+   * canonical uuid, and for channel kinds the KG model doesn't have a
+   * `ChannelKind` for yet (discord, whatsapp, canvas' `'custom'` userRef) —
+   * deliberately not guessed at.
+   */
+  channelIdentity?: { channelKind: ChannelKind; channelUserId: string };
   /**
    * Chronologically ordered previous turns of this chat (oldest first), as
    * maintained by an in-memory store outside the orchestrator. When present,
@@ -379,6 +459,18 @@ export interface ChatTurnResult {
    */
   pendingUserChoice?: PendingUserChoice;
   /**
+   * Set when the orchestrator short-circuits because an MCP tool answered
+   * `resultType: "input_required"` (#544 W2-1). Channels with rich UI render an
+   * input form; channels without one degrade to a plain-text prompt, exactly as
+   * the `pendingUserChoice` path already does. A submitted answer fires a fresh
+   * turn carrying the reply envelope, which the orchestrator resolves and
+   * replays. Mutually exclusive with `pendingUserChoice` — when both were
+   * pending in one batch, the choice card wins.
+   *
+   * A SIBLING of `pendingUserChoice`, not a reuse: free-text fields, not buttons.
+   */
+  pendingMcpInput?: PendingMcpInputCard;
+  /**
    * 1-click refinement buttons rendered below the answer. Populated when the
    * LLM invoked `suggest_follow_ups` during the turn. Clicks fire a fresh
    * user turn with the option's `prompt` as the message. Empty/undefined
@@ -458,6 +550,23 @@ export interface ChatTurnResult {
    * reword it. Omitted on ordinary turns.
    */
   delegatedAnswer?: DelegatedAnswer;
+  /**
+   * #445 — sticky Direct Line indicator for this turn. Set by the harness in
+   * `executeDirectLine`; `toSemanticAnswer` forwards it to
+   * `SemanticAnswer.directLineSession`. Present on every turn while the
+   * feature is enabled (including `{ active: false }`), omitted when off.
+   */
+  directLineSession?: DirectLineSessionState;
+  /**
+   * AI-Act Art. 50 — the AI disclosure the orchestrator resolved for this turn
+   * (#643, epic #642). `toSemanticAnswer` forwards it to
+   * `SemanticAnswer.aiDisclosure` and folds its line into `text`. The per-turn
+   * RESOLUTION that populates this (channel policy, locale, operator setup
+   * fields) lands in the orchestrator in #644; until then `toSemanticAnswer`
+   * derives the shipping default when a caller opts in. Omitted only when an
+   * operator turned the disclosure `'off'`.
+   */
+  aiDisclosure?: AiDisclosure;
 }
 
 /**
@@ -644,6 +753,11 @@ export type ChatStreamEvent =
        * See ChatTurnResult.pendingUserChoice for semantics.
        */
       pendingUserChoice?: PendingUserChoice;
+      /**
+       * #544 W2-1 — MCP mid-call input request. Sibling of `pendingUserChoice`
+       * on the same `done` event; see ChatTurnResult.pendingMcpInput.
+       */
+      pendingMcpInput?: PendingMcpInputCard;
       /** 1-click refinement buttons attached to the answer; see
        *  ChatTurnResult.followUpOptions for semantics. */
       followUpOptions?: FollowUpOption[];
@@ -668,11 +782,49 @@ export type ChatStreamEvent =
        */
       model?: string;
       /**
+       * #647 — AI-Act Art. 50 machine-readable provenance marker for the paths
+       * whose envelope omadia controls (the public chat API's NDJSON stream).
+       * Additive and optional: connectors that render this event without knowing
+       * the field ignore it, so the NDJSON framing stays backward-compatible.
+       * The channel that owns the envelope stamps it on forward — the base
+       * orchestrator does not set it (the in-text disclosure that reaches the
+       * wire-format channels is the separate #643/#644 carrier).
+       */
+      provenance?: EnvelopeProvenance;
+      /**
+       * #643 (epic #642) — AI-Act Art. 50 AI disclosure for this turn, the
+       * streaming sibling of `ChatTurnResult.aiDisclosure`. The non-streaming
+       * path carries the marking through `toSemanticAnswer`; the streaming
+       * clients (web-ui reads only this event, never `toSemanticAnswer`) would
+       * otherwise have no slot for it at all. Rides the existing `done` event
+       * exactly like `delegatedAnswer` rather than adding a stream event type.
+       *
+       * Additive and optional — a client that renders this event without
+       * knowing the field ignores it, so the NDJSON framing stays
+       * backward-compatible. Distinct from `provenance` above: that is the
+       * machine-readable envelope marker for the paths omadia frames end to end
+       * (#647), this is the human-readable line for the recipient. The per-turn
+       * RESOLUTION that populates it (channel policy, locale, operator setup
+       * fields) landed in the orchestrator in #644: `resolveTurnDisclosure`
+       * derives the marker once and `discloseDoneEvent` both folds it into
+       * `answer` above and attaches it here, so a streaming client gets the
+       * SAME marking the non-streaming `toSemanticAnswer` path produces — that
+       * parity is the whole point of resolving once and forwarding on both
+       * paths. Omitted only when an operator turned the disclosure `'off'`.
+       */
+      aiDisclosure?: AiDisclosure;
+      /**
        * #332 Layer 2 — Direct Line. Harness-owned verbatim sub-agent segment
        * for a user-directed specialist turn; see ChatTurnResult.delegatedAnswer.
        * The orchestrator cannot suppress or reword it.
        */
       delegatedAnswer?: DelegatedAnswer;
+      /**
+       * #445 — sticky Direct Line indicator; see ChatTurnResult.directLineSession.
+       * Rides the existing `done` event exactly like `delegatedAnswer` rather
+       * than adding a stream event type, so the web-ui folds it in one hop.
+       */
+      directLineSession?: DirectLineSessionState;
       /**
        * #332 Layer 1 (gap-closure) — curated, tamper-evident projection of
        * `runTrace.agentInvocations`, identical in shape and derivation to
@@ -705,7 +857,25 @@ export type ChatStreamEvent =
    * Additive; clients that don't recognise it ignore it.
    */
   | { type: 'steer_applied'; iteration: number; message: string }
-  | { type: 'error'; message: string }
+  /**
+   * #641 — a failed turn, with a handle the user can act on.
+   *
+   * `message` alone leaves a genuine failure undiagnosable by anyone not
+   * reading server logs: no code, no id, nothing to hand to support. The
+   * information exists (the orchestrator `console.error`s the technical
+   * detail) — it just never reached the person who hit the problem, whose only
+   * anchor was a wall-clock timestamp.
+   *
+   * `correlationId` is the turn id the orchestrator already mints per turn —
+   * deliberately NOT a second identifier invented for errors. It is the same
+   * value MCP call auditing and the session logger key on, so a support query
+   * by this token joins against records that already exist. It also appears in
+   * the server-side `console.error` line, so grepping for it is exact.
+   *
+   * Optional so existing adapters keep compiling; an adapter that does not
+   * render it behaves exactly as before.
+   */
+  | { type: 'error'; message: string; correlationId?: string }
   /**
    * Omadia UI canvas surface events (omadia-canvas-protocol/1.0). Additive;
    * channels not declaring the `'canvas'` capability default-ignore these.

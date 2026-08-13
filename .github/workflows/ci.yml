@@ -31,6 +31,31 @@ permissions:
 
 jobs:
   # ------------------------------------------------------------------
+  # Core-decoupling ratchet (epic #470). The Dev Platform is being
+  # extracted into its own repository; this fails if core re-acquires
+  # references to it. The count may fall freely and never rise without
+  # a hand-edited baseline, so the extraction cannot silently regress
+  # while it is in flight — and "finished" is machine-checked (count 0)
+  # rather than asserted.
+  # ------------------------------------------------------------------
+  decoupling:
+    name: core decoupling ratchet (#470)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Ensure ripgrep
+        run: command -v rg >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep)
+
+      - name: Check core is not re-coupling to the Dev Platform
+        run: node scripts/check-core-decoupling.mjs
+
+  # ------------------------------------------------------------------
   # Middleware: lint + typecheck + node:test against tsx
   # ------------------------------------------------------------------
   middleware:
@@ -40,10 +65,29 @@ jobs:
     defaults:
       run:
         working-directory: middleware
+    # Postgres for the *.pg.test.ts suites. Without this the whole
+    # Postgres-backed layer (migration backfills, embedding-gate suites,
+    # job/webhook/memory stores, ~25 files) self-skips on an unreachable
+    # DB and the job still reports green — the silent-coverage hole from
+    # issue #565. pgvector image because several suites create a vector(n)
+    # column as the thing under test.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: omadia
+          POSTGRES_USER: omadia
+          POSTGRES_PASSWORD: omadia-ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U omadia -d omadia"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -68,8 +112,113 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # The root tsconfig only includes src/, so `typecheck` above never sees
+      # test/ or scripts/. This ratchet typechecks those trees against a
+      # committed baseline: it blocks NEW type errors while the pre-existing
+      # debt burns down (issue #573, same pattern as the decoupling ratchet).
+      - name: Typecheck (test + scripts trees, ratchet)
+        run: npm run typecheck:test
+
+      # Non-Postgres suites, run in parallel as before. No pg DSN is set for
+      # this step, so the *.pg.test.ts files probe the unreachable default
+      # and self-skip — same as today. They get real coverage in the
+      # dedicated serial step below.
+      #
+      # `test` pins --test-concurrency=4 (issue #605). Node's default is
+      # derived from the core count, so a 16-core dev machine ran far more
+      # files at once than CI ever does — and the suite spins up many
+      # short-lived Express servers on localhost. Three consecutive full runs
+      # each failed a DIFFERENT test (runtimeSecretsRoute,
+      # conductorTemplateRoutes, inboundWebhookRoutes), two with a
+      # connection-level `fetch failed`; every one passed in isolation. That
+      # is contention, not logic. Pinning makes the number the same
+      # everywhere, so a red run means a real failure instead of training
+      # everyone to re-run — the habit that let #549 break main.
       - name: Test (node --test via tsx)
         run: npm run test
+
+      # `--test-timeout` is applied to the FILE, not to each leaf (#566): a
+      # file whose leaves are all fast but whose total crosses the ceiling is
+      # killed as a unit, and the failure is reported against whichever leaf
+      # happened to be running. #550 sized the ceiling on the slowest file of
+      # the day and nothing has watched the margin since — the spec and tap
+      # reporters flatten a glob to suite names, so the per-file total was not
+      # observable at all. The step above now also writes it; this turns it
+      # into a gate. Deliberately a fraction of the ceiling rather than a
+      # committed ms baseline: the same suite measures ~36s locally on 16
+      # cores and ~172s here, so an absolute number would be either
+      # permanently red or permanently asleep.
+      - name: Test file durations (per-file timeout headroom, #566)
+        run: npm run test:filetimes
+
+      # Anti-silent-skip guard (#565). The pg suites self-skip when the DB
+      # is unreachable, so a broken/renamed service would once again pass
+      # green with zero Postgres coverage. Fail loudly here instead if the
+      # exact DSN the suites use can't be reached, and enable pgvector once
+      # up-front so every suite has it.
+      - name: Verify Postgres is reachable (fail loud, don't skip green)
+        run: |
+          PGPASSWORD=omadia-ci psql -h localhost -U omadia -d omadia \
+            -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS vector;" \
+            -c "SELECT 1;"
+
+      # Postgres-backed suites (#565). Test-scoped DSNs only, set on this
+      # step alone. Since #626 every *.pg.test.ts resolves its DSN through
+      # test/_helpers/pgTestDb.ts (probePgTest), first-non-empty-wins over a
+      # suite-specific chain. The chains differ (some carry WS5_PG_TEST_URL,
+      # memoryStoreConformance reads MEMORY_PG_TEST_URL alone) but every one
+      # of them contains GRAPH_PG_TEST_URL and/or MEMORY_PG_TEST_URL ahead of
+      # any other name, and each suite runs its own migrations against a fresh
+      # pool — so these two vars activate all 25 suites. If you add a suite
+      # whose chain starts with neither, it will silently skip: the count
+      # ratchet below is what catches that. Deliberately NOT DATABASE_URL: two live-Neon
+      # tests (palaiaHybridRetrievalNeon, neonDatasetFilterEscaping) gate
+      # solely on DATABASE_URL and need external fixtures / pre-applied
+      # migrations — pointing it at this blank throwaway DB would activate
+      # them and red-line on missing data. They stay correctly skipped
+      # (out of #565).
+      #
+      # test:pg pins --test-concurrency=1: these suites share one database
+      # and were written to each own a private DB (locally each defaults to
+      # its own port), so running the files in parallel lets one suite's job
+      # poller claim another's rows. Serial file execution isolates them;
+      # the whole set runs in ~20s.
+      #
+      # The test-count ratchet below is the real anti-#565 guard. node --test
+      # exits 0 when a suite self-skips, and — critically — a describe-level
+      # skip does NOT increment "skipped": its tests simply never register
+      # and vanish from the total. So "skipped == 0" is blind to exactly the
+      # silent-skip this issue is about; only a floor on the test COUNT
+      # catches it. The *.pg.test.ts files register 240 tests today (+2 from
+      # kgPluginPoolLifetime.pg.test.ts, issue #665). If
+      # the count drops (broken DSN, a future suite reading an env var we
+      # don't set here, a cold-connection flake), a suite silently vanished —
+      # go red. Raise PG_TEST_FLOOR when you add Postgres tests, same
+      # baseline-ratchet convention as the core-decoupling job above.
+      - name: Test — Postgres suites (serial, real pgvector)
+        env:
+          GRAPH_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
+          MEMORY_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
+          PG_TEST_FLOOR: '240'
+        run: |
+          set -eo pipefail
+          npm run test:pg 2>&1 | tee pg-test.out
+          # node's spec reporter wraps the summary as "\e[34mℹ tests 238\e[39m"
+          # whenever it decides to colorize, which turns the ^-anchored greps
+          # below into zero matches (ran=0 => a spurious red). Actions is
+          # currently uncoloured, but that is the runner's choice, not ours,
+          # and it is what a developer re-running this locally hits. Strip SGR
+          # sequences first; printf '\033' keeps this working on BSD sed too.
+          esc=$(printf '\033')
+          sed "s/${esc}\[[0-9;]*m//g" pg-test.out > pg-test.plain
+          ran=$(grep -m1 -oE '^ℹ tests [0-9]+' pg-test.plain | grep -oE '[0-9]+' || echo 0)
+          skipped=$(grep -m1 -oE '^ℹ skipped [0-9]+' pg-test.plain | grep -oE '[0-9]+' || echo 0)
+          echo "Postgres suites: ran=${ran} skipped=${skipped} (floor=${PG_TEST_FLOOR})"
+          if [ "${ran:-0}" -lt "${PG_TEST_FLOOR}" ] || [ "${skipped:-0}" -ne 0 ]; then
+            echo "::error::Postgres coverage regressed (#565): expected >=${PG_TEST_FLOOR} tests and 0 skipped, got ran=${ran} skipped=${skipped}. A suite silently self-skipped — check the DSN and *.pg.test.ts env-var resolution."
+            exit 1
+          fi
 
       # Smoke scripts (middleware/scripts/smoke-*.ts) live outside this
       # public repo by design — they hit byte5-internal endpoints. The
@@ -89,7 +238,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -136,7 +285,18 @@ jobs:
       # in lexical (file-name) order — which matches the numbered
       # migration convention. Newline-separated so the shell loop can
       # iterate cleanly.
+      #
+      # `middleware/migrations` is the core runtime domain — the shared
+      # schema for the main app's features. It is self-contained: no
+      # cross-domain FKs and no extension dependencies, so its position
+      # in this list is not load-bearing.
+      #
+      # Still uncovered (each needs its own audit before enabling):
+      # middleware/src/conductor/migrations,
+      # middleware/src/services/graph/migrations,
+      # middleware/packages/harness-memory-postgres/src/migrations.
       MIGRATION_DOMAINS: |
+        middleware/migrations
         middleware/packages/harness-knowledge-graph-neon/src/migrations
         middleware/src/auth/migrations
         middleware/src/plugins/routines/migrations
@@ -195,7 +355,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -205,4 +365,29 @@ jobs:
         run: npm ci --include=optional --no-audit --no-fund
 
       - name: npm audit (--audit-level=high)
-        run: npm audit --audit-level=high
+        # npm's registry audit backend is currently broken for every npm CLI
+        # version we could test (2026-07-26): npm 10.x's legacy "quick audit"
+        # endpoint 400s with "Invalid package tree" (reproduces even against a
+        # pristine, untouched lockfile), and npm 11.x/12.x's newer bulk-advisory
+        # endpoint fails to gzip-decode its own response. Both are upstream
+        # infra failures, not real audit results -- npm's error handler always
+        # prints "audit endpoint returned an error" for these, distinct from a
+        # genuine "vulnerabilities found" failure. Treat only the latter as
+        # blocking so this gate doesn't wedge every PR on an upstream outage.
+        run: |
+          npm install -g npm@latest
+          set +e
+          npm audit --audit-level=high --json >audit-report.json 2>audit-stderr.log
+          exit_code=$?
+          set -e
+          if [ $exit_code -eq 0 ]; then
+            exit 0
+          fi
+          if grep -q 'audit endpoint returned an error' audit-stderr.log; then
+            echo "::warning::npm audit endpoint is erroring upstream (registry-side) -- treating as non-blocking, not a real result"
+            cat audit-stderr.log
+            exit 0
+          fi
+          cat audit-stderr.log
+          cat audit-report.json
+          exit $exit_code

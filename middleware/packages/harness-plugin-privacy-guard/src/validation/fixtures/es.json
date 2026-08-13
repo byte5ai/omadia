@@ -1,0 +1,1480 @@
+[
+  {
+    "text": "María del Carmen García López se incorpora al equipo de nóminas en mayo.",
+    "spans": [
+      {
+        "value": "María del Carmen García López",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "José Manuel Ruiz de la Torre ha solicitado el traslado a la oficina de Valencia.",
+    "spans": [
+      {
+        "value": "José Manuel Ruiz de la Torre",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Ana Belén Torres y Lucía Fernández comparten la coordinación del turno de tarde.",
+    "spans": [
+      {
+        "value": "Ana Belén Torres",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Lucía Fernández",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "El señor García sigue esperando la respuesta sobre su excedencia.",
+    "spans": [
+      {
+        "value": "señor García",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "El NIE de Andrés Vidal es X-2482300-W.",
+    "spans": [
+      {
+        "value": "Andrés Vidal",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "X-2482300-W",
+        "type": "idnum",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "El DNI que figura en el contrato de Marta Sánchez es 45678123L.",
+    "spans": [
+      {
+        "value": "Marta Sánchez",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "45678123L",
+        "type": "idnum",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Entregad el pedido en el almacén detrás de la nave antigua en la Calle de los Olivos 14, segunda puerta junto al muelle de carga, 41020 Sevilla.",
+    "spans": [
+      {
+        "value": "el almacén detrás de la nave antigua en la Calle de los Olivos 14, segunda puerta junto al muelle de carga, 41020 Sevilla",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Manda al mensajero a la Avenida de la Constitución 3 antes del mediodía.",
+    "spans": [
+      {
+        "value": "Avenida de la Constitución 3",
+        "type": "address",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Francisco Javier López-Alcalá impartirá la formación de seguridad.",
+    "spans": [
+      {
+        "value": "Francisco Javier López-Alcalá",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Llama a Diego Navarro al 612 334 455 para confirmar la revisión médica.",
+    "spans": [
+      {
+        "value": "Diego Navarro",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "612 334 455",
+        "type": "phone",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Al taller asisten Teresa Pascual, Rubén Ortega y Silvia Robles.",
+    "spans": [
+      {
+        "value": "Teresa Pascual",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Rubén Ortega",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Silvia Robles",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "La nómina de Pablo Herrera incluye un plus de 1.250,50 € este mes.",
+    "spans": [
+      {
+        "value": "Pablo Herrera",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "1.250,50 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Transfiere el anticipo a la cuenta ES91 2100 0418 4502 0005 1332 de Irene Castillo.",
+    "spans": [
+      {
+        "value": "ES91 2100 0418 4502 0005 1332",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "Irene Castillo",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Elena Cordero nació el 03/05/1991 según el expediente.",
+    "spans": [
+      {
+        "value": "Elena Cordero",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "03/05/1991",
+        "type": "date",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "La candidata Nuria Delgado-Ibáñez pasó a la última fase.",
+    "spans": [
+      {
+        "value": "Nuria Delgado-Ibáñez",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "El proveedor pregunta por Óscar Peña, su contacto es o.pena@ejemplo-sl.es.",
+    "spans": [
+      {
+        "value": "Óscar Peña",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "o.pena@ejemplo-sl.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Reenvía el contrato firmado a m.sanchez@empresa-ejemplo.es y avisa a Marta Sánchez.",
+    "spans": [
+      {
+        "value": "m.sanchez@empresa-ejemplo.es",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "Marta Sánchez",
+        "type": "person",
+        "tier": "high"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "¿Qué deberíamos pagar a Silvia Robles si su salario actual es de 12.750,00 €?",
+    "spans": [
+      {
+        "value": "Silvia Robles",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12.750,00 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "¿Qué deberíamos pagar a Pablo Herrera si su salario actual es de 150 €?",
+    "spans": [
+      {
+        "value": "Pablo Herrera",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "150 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "¿Qué deberíamos pagar a Víctor Salinas si su salario actual es de 67.200 €?",
+    "spans": [
+      {
+        "value": "Víctor Salinas",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "67.200 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "¿Qué deberíamos pagar a Teresa Pascual si su salario actual es de 72.000 €?",
+    "spans": [
+      {
+        "value": "Teresa Pascual",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "72.000 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Transfiere el anticipo a ES66 2100 0418 4012 3456 7891 y pon en copia a m.sanchez@empresa-ejemplo.es.",
+    "spans": [
+      {
+        "value": "ES66 2100 0418 4012 3456 7891",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "m.sanchez@empresa-ejemplo.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Transfiere el anticipo a ES15 0049 1500 0512 3456 7892 y pon en copia a nominas@ejemplo-sl.es.",
+    "spans": [
+      {
+        "value": "ES15 0049 1500 0512 3456 7892",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "nominas@ejemplo-sl.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Transfiere el anticipo a ES66 2100 0418 4012 3456 7891 y pon en copia a p.herrera@correo-ejemplo.es.",
+    "spans": [
+      {
+        "value": "ES66 2100 0418 4012 3456 7891",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "p.herrera@correo-ejemplo.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Transfiere el anticipo a ES91 2100 0418 4502 0005 1332 y pon en copia a rrhh@ejemplo-consult.es.",
+    "spans": [
+      {
+        "value": "ES91 2100 0418 4502 0005 1332",
+        "type": "iban",
+        "tier": "critical"
+      },
+      {
+        "value": "rrhh@ejemplo-consult.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Llama a Marta Sánchez al +34 93 412 76 55; su fecha de nacimiento es 24/12/1987.",
+    "spans": [
+      {
+        "value": "Marta Sánchez",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+34 93 412 76 55",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/1987",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Llama a Silvia Robles al +34 93 412 76 55; su fecha de nacimiento es 01/02/2023.",
+    "spans": [
+      {
+        "value": "Silvia Robles",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+34 93 412 76 55",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "01/02/2023",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Llama a Irene Castillo al +34 96 351 28 47; su fecha de nacimiento es 05/03/2001.",
+    "spans": [
+      {
+        "value": "Irene Castillo",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+34 96 351 28 47",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "05/03/2001",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Llama a Ana Belén Torres al +34 685 21 47 90; su fecha de nacimiento es 28/02/1995.",
+    "spans": [
+      {
+        "value": "Ana Belén Torres",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+34 685 21 47 90",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "28/02/1995",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La factura de 1.250,50 € debe enviarse a Avenida de la Constitución 3, 41001 Sevilla.",
+    "spans": [
+      {
+        "value": "1.250,50 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Avenida de la Constitución 3, 41001 Sevilla",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La factura de 12.750,00 € debe enviarse a Carrer de Balmes 24, 08007 Barcelona.",
+    "spans": [
+      {
+        "value": "12.750,00 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Carrer de Balmes 24, 08007 Barcelona",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La factura de 4.980 € debe enviarse a Plaza del Sol 7, 28004 Madrid.",
+    "spans": [
+      {
+        "value": "4.980 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Plaza del Sol 7, 28004 Madrid",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "La factura de 72.000 € debe enviarse a Calle de Alcalá 89, 28009 Madrid.",
+    "spans": [
+      {
+        "value": "72.000 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "Calle de Alcalá 89, 28009 Madrid",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Da de alta a Andrés Vidal como nuevo empleado con el correo p.herrera@correo-ejemplo.es.",
+    "spans": [
+      {
+        "value": "Andrés Vidal",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "p.herrera@correo-ejemplo.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Da de alta a Ana Belén Torres como nuevo empleado con el correo a.martinez@empresa-ejemplo.es.",
+    "spans": [
+      {
+        "value": "Ana Belén Torres",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "a.martinez@empresa-ejemplo.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Da de alta a Pablo Herrera como nuevo empleado con el correo i.castillo@ejemplo-sl.es.",
+    "spans": [
+      {
+        "value": "Pablo Herrera",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "i.castillo@ejemplo-sl.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Da de alta a Lucía Fernández como nuevo empleado con el correo rrhh@ejemplo-consult.es.",
+    "spans": [
+      {
+        "value": "Lucía Fernández",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "rrhh@ejemplo-consult.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Marta Sánchez dejó la empresa el 24/12/1987 — inicia el proceso de baja.",
+    "spans": [
+      {
+        "value": "Marta Sánchez",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/1987",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Elena Cordero dejó la empresa el 28/02/1995 — inicia el proceso de baja.",
+    "spans": [
+      {
+        "value": "Elena Cordero",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "28/02/1995",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Diego Navarro dejó la empresa el 28/02/1995 — inicia el proceso de baja.",
+    "spans": [
+      {
+        "value": "Diego Navarro",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "28/02/1995",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Rubén Ortega dejó la empresa el 12/11/1979 — inicia el proceso de baja.",
+    "spans": [
+      {
+        "value": "Rubén Ortega",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12/11/1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Actualiza los datos maestros: Javier Fuentes vive ahora en Paseo de Gracia 12, 08008 Barcelona.",
+    "spans": [
+      {
+        "value": "Javier Fuentes",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Paseo de Gracia 12, 08008 Barcelona",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Actualiza los datos maestros: Sergio Molina vive ahora en Gran Vía 44, 48011 Bilbao.",
+    "spans": [
+      {
+        "value": "Sergio Molina",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Gran Vía 44, 48011 Bilbao",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Actualiza los datos maestros: Álvaro Martínez vive ahora en Carrer de Balmes 24, 08007 Barcelona.",
+    "spans": [
+      {
+        "value": "Álvaro Martínez",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Carrer de Balmes 24, 08007 Barcelona",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Actualiza los datos maestros: Rocío Márquez vive ahora en Avenida de la Constitución 3, 41001 Sevilla.",
+    "spans": [
+      {
+        "value": "Rocío Márquez",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Avenida de la Constitución 3, 41001 Sevilla",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Reembolsa los gastos de viaje de 72.000 € a ES66 2100 0418 4012 3456 7891.",
+    "spans": [
+      {
+        "value": "72.000 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "ES66 2100 0418 4012 3456 7891",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Reembolsa los gastos de viaje de 62.400 € a ES91 2100 0418 4502 0005 1332.",
+    "spans": [
+      {
+        "value": "62.400 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "ES91 2100 0418 4502 0005 1332",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Reembolsa los gastos de viaje de 899 € a ES28 0075 0315 4506 0012 3456.",
+    "spans": [
+      {
+        "value": "899 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "ES28 0075 0315 4506 0012 3456",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Reembolsa los gastos de viaje de 4.980 € a ES66 2100 0418 4012 3456 7891.",
+    "spans": [
+      {
+        "value": "4.980 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "ES66 2100 0418 4012 3456 7891",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Envía la nómina a c.jimenez@correo-ejemplo.es; el salario bruto es de 4.980 €.",
+    "spans": [
+      {
+        "value": "c.jimenez@correo-ejemplo.es",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "4.980 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Envía la nómina a i.castillo@ejemplo-sl.es; el salario bruto es de 67.200 €.",
+    "spans": [
+      {
+        "value": "i.castillo@ejemplo-sl.es",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "67.200 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Envía la nómina a i.castillo@ejemplo-sl.es; el salario bruto es de 72.000 €.",
+    "spans": [
+      {
+        "value": "i.castillo@ejemplo-sl.es",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "72.000 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Envía la nómina a c.jimenez@correo-ejemplo.es; el salario bruto es de 1.250,50 €.",
+    "spans": [
+      {
+        "value": "c.jimenez@correo-ejemplo.es",
+        "type": "email",
+        "tier": "high"
+      },
+      {
+        "value": "1.250,50 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Para las referencias puedes localizar a Marta Sánchez en el +34 671 45 82 03.",
+    "spans": [
+      {
+        "value": "Marta Sánchez",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+34 671 45 82 03",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Para las referencias puedes localizar a Javier Fuentes en el +34 91 522 18 30.",
+    "spans": [
+      {
+        "value": "Javier Fuentes",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+34 91 522 18 30",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Para las referencias puedes localizar a Marcos Ibáñez en el +34 93 412 76 55.",
+    "spans": [
+      {
+        "value": "Marcos Ibáñez",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+34 93 412 76 55",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Para las referencias puedes localizar a Rubén Ortega en el +34 671 45 82 03.",
+    "spans": [
+      {
+        "value": "Rubén Ortega",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+34 671 45 82 03",
+        "type": "phone",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Prepara la evaluación anual con Sergio Molina.",
+    "spans": [
+      {
+        "value": "Sergio Molina",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Prepara la evaluación anual con Javier Fuentes.",
+    "spans": [
+      {
+        "value": "Javier Fuentes",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Prepara la evaluación anual con Marcos Ibáñez.",
+    "spans": [
+      {
+        "value": "Marcos Ibáñez",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Prepara la evaluación anual con Diego Navarro.",
+    "spans": [
+      {
+        "value": "Diego Navarro",
+        "type": "person",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Elena Cordero se dio de baja por enfermedad el 12/11/1979 — regístralo en el módulo de RRHH.",
+    "spans": [
+      {
+        "value": "Elena Cordero",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12/11/1979",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Sergio Molina se dio de baja por enfermedad el 24/12/1987 — regístralo en el módulo de RRHH.",
+    "spans": [
+      {
+        "value": "Sergio Molina",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/1987",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Teresa Pascual se dio de baja por enfermedad el 05/03/2001 — regístralo en el módulo de RRHH.",
+    "spans": [
+      {
+        "value": "Teresa Pascual",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "05/03/2001",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Silvia Robles se dio de baja por enfermedad el 30/06/2026 — regístralo en el módulo de RRHH.",
+    "spans": [
+      {
+        "value": "Silvia Robles",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "30/06/2026",
+        "type": "date",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "El proveedor espera el pago de 62.400 € en ES91 2100 0418 4502 0005 1332.",
+    "spans": [
+      {
+        "value": "62.400 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "ES91 2100 0418 4502 0005 1332",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "El proveedor espera el pago de 62.400 € en ES28 0075 0315 4506 0012 3456.",
+    "spans": [
+      {
+        "value": "62.400 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "ES28 0075 0315 4506 0012 3456",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "El proveedor espera el pago de 67.200 € en ES28 0075 0315 4506 0012 3456.",
+    "spans": [
+      {
+        "value": "67.200 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "ES28 0075 0315 4506 0012 3456",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "El proveedor espera el pago de 150 € en ES44 2038 5778 9830 0076 0236.",
+    "spans": [
+      {
+        "value": "150 €",
+        "type": "amount",
+        "tier": "critical"
+      },
+      {
+        "value": "ES44 2038 5778 9830 0076 0236",
+        "type": "iban",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Nueva candidatura: Carmen Jiménez, localizable en el +34 622 90 11 34 o en rrhh@ejemplo-consult.es.",
+    "spans": [
+      {
+        "value": "Carmen Jiménez",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+34 622 90 11 34",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "rrhh@ejemplo-consult.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nueva candidatura: Diego Navarro, localizable en el +34 96 351 28 47 o en facturas@ejemplo-consult.es.",
+    "spans": [
+      {
+        "value": "Diego Navarro",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+34 96 351 28 47",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "facturas@ejemplo-consult.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nueva candidatura: Óscar Peña, localizable en el +34 910 23 45 67 o en contabilidad@ejemplo-sl.es.",
+    "spans": [
+      {
+        "value": "Óscar Peña",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+34 910 23 45 67",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "contabilidad@ejemplo-sl.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Nueva candidatura: Óscar Peña, localizable en el +34 685 21 47 90 o en nominas@ejemplo-sl.es.",
+    "spans": [
+      {
+        "value": "Óscar Peña",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "+34 685 21 47 90",
+        "type": "phone",
+        "tier": "high"
+      },
+      {
+        "value": "nominas@ejemplo-sl.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Envía la oferta a Javier Fuentes, Carrer de Balmes 24, 08007 Barcelona.",
+    "spans": [
+      {
+        "value": "Javier Fuentes",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Carrer de Balmes 24, 08007 Barcelona",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Envía la oferta a Lucía Fernández, Calle de Alcalá 89, 28009 Madrid.",
+    "spans": [
+      {
+        "value": "Lucía Fernández",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Calle de Alcalá 89, 28009 Madrid",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Envía la oferta a Pablo Herrera, Carrer de Balmes 24, 08007 Barcelona.",
+    "spans": [
+      {
+        "value": "Pablo Herrera",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Carrer de Balmes 24, 08007 Barcelona",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Envía la oferta a Marta Sánchez, Ronda de Toledo 5, 28005 Madrid.",
+    "spans": [
+      {
+        "value": "Marta Sánchez",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "Ronda de Toledo 5, 28005 Madrid",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "El contrato de Pablo Herrera empieza el 24/12/1987 con un salario anual de 150 €.",
+    "spans": [
+      {
+        "value": "Pablo Herrera",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "24/12/1987",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "150 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "El contrato de Irene Castillo empieza el 30/06/2026 con un salario anual de 72.000 €.",
+    "spans": [
+      {
+        "value": "Irene Castillo",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "30/06/2026",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "72.000 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "El contrato de Álvaro Martínez empieza el 12/11/1979 con un salario anual de 3.499,99 €.",
+    "spans": [
+      {
+        "value": "Álvaro Martínez",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "12/11/1979",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "3.499,99 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "El contrato de Irene Castillo empieza el 05/03/2001 con un salario anual de 1.250,50 €.",
+    "spans": [
+      {
+        "value": "Irene Castillo",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "05/03/2001",
+        "type": "date",
+        "tier": "high"
+      },
+      {
+        "value": "1.250,50 €",
+        "type": "amount",
+        "tier": "critical"
+      }
+    ]
+  },
+  {
+    "text": "Apunta a Óscar Peña a la formación de la próxima semana y avisa a a.martinez@empresa-ejemplo.es.",
+    "spans": [
+      {
+        "value": "Óscar Peña",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "a.martinez@empresa-ejemplo.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Apunta a Óscar Peña a la formación de la próxima semana y avisa a nominas@ejemplo-sl.es.",
+    "spans": [
+      {
+        "value": "Óscar Peña",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "nominas@ejemplo-sl.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Apunta a Beatriz Salas a la formación de la próxima semana y avisa a c.jimenez@correo-ejemplo.es.",
+    "spans": [
+      {
+        "value": "Beatriz Salas",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "c.jimenez@correo-ejemplo.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Apunta a Sergio Molina a la formación de la próxima semana y avisa a p.herrera@correo-ejemplo.es.",
+    "spans": [
+      {
+        "value": "Sergio Molina",
+        "type": "person",
+        "tier": "high"
+      },
+      {
+        "value": "p.herrera@correo-ejemplo.es",
+        "type": "email",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "¿A qué dirección se envió el último recordatorio — Gran Vía 44, 48011 Bilbao, correcto?",
+    "spans": [
+      {
+        "value": "Gran Vía 44, 48011 Bilbao",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "¿A qué dirección se envió el último recordatorio — Calle Mayor 15, 28013 Madrid, correcto?",
+    "spans": [
+      {
+        "value": "Calle Mayor 15, 28013 Madrid",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "¿A qué dirección se envió el último recordatorio — Avenida de la Constitución 3, 41001 Sevilla, correcto?",
+    "spans": [
+      {
+        "value": "Avenida de la Constitución 3, 41001 Sevilla",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "¿A qué dirección se envió el último recordatorio — Calle de Alcalá 89, 28009 Madrid, correcto?",
+    "spans": [
+      {
+        "value": "Calle de Alcalá 89, 28009 Madrid",
+        "type": "address",
+        "tier": "high"
+      }
+    ]
+  },
+  {
+    "text": "Enfermedad y vacaciones se contabilizan por separado en el informe.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "La Dirección General y el Comité de Empresa se reúnen el lunes.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Explica la diferencia entre salario bruto y salario neto.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Calle, avenida y paseo son tipos de vía distintos en el módulo de direcciones.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "El Camino de Santiago aparece como ejemplo en la guía de estilo.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Recursos Humanos publicará mañana la nueva tabla salarial.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "El Buen Retiro es el nombre en clave del proyecto de la nueva oficina.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "Mercadona, Zara y Repsol aparecen como ejemplos en el informe sectorial.",
+    "spans": [],
+    "origin": "hand"
+  },
+  {
+    "text": "¿Cuántos días de vacaciones acumula un empleado tras tres años de antigüedad?",
+    "spans": []
+  },
+  {
+    "text": "Prepara un informe de estado del proyecto del tercer trimestre; el presupuesto no cambia.",
+    "spans": []
+  },
+  {
+    "text": "Resume la política de gastos de viaje en cinco puntos.",
+    "spans": []
+  },
+  {
+    "text": "¿Qué pasos cubre el proceso de incorporación durante el primer mes?",
+    "spans": []
+  },
+  {
+    "text": "Redacta un recordatorio amable sobre el registro semanal de horas.",
+    "spans": []
+  },
+  {
+    "text": "¿Cómo solicito un portátil nuevo a través del sistema de tickets?",
+    "spans": []
+  },
+  {
+    "text": "Prepara un orden del día para la próxima reunión de equipo con tres prioridades.",
+    "spans": []
+  },
+  {
+    "text": "¿Qué plazos aplican a la entrega de los informes de gastos?",
+    "spans": []
+  },
+  {
+    "text": "Resume los cambios recientes de la política de teletrabajo.",
+    "spans": []
+  },
+  {
+    "text": "¿Cómo funciona la aprobación de pedidos en el módulo de compras?",
+    "spans": []
+  },
+  {
+    "text": "Explica el flujo de aprobación de las formaciones externas.",
+    "spans": []
+  },
+  {
+    "text": "¿Qué informes puede generar mensualmente el módulo de contabilidad?",
+    "spans": []
+  },
+  {
+    "text": "Escribe un breve anuncio sobre el mantenimiento del sistema este fin de semana.",
+    "spans": []
+  },
+  {
+    "text": "¿Cómo creo un nuevo centro de coste en el sistema?",
+    "spans": []
+  },
+  {
+    "text": "¿Cuál es la diferencia entre un presupuesto y una confirmación de pedido?",
+    "spans": []
+  },
+  {
+    "text": "Prepara una lista de comprobación para el cierre mensual en contabilidad.",
+    "spans": []
+  },
+  {
+    "text": "¿Cómo exporto el resumen de vacaciones como hoja de cálculo?",
+    "spans": []
+  },
+  {
+    "text": "¿Qué roles participan en la aprobación de facturas recibidas?",
+    "spans": []
+  },
+  {
+    "text": "Redacta una negativa cortés para un plazo de entrega aplazado.",
+    "spans": []
+  },
+  {
+    "text": "Resume los puntos clave del acuerdo de horario flexible.",
+    "spans": []
+  },
+  {
+    "text": "¿Cómo configuro una respuesta de ausencia para las fiestas?",
+    "spans": []
+  },
+  {
+    "text": "¿Qué campos son obligatorios al crear un proveedor nuevo?",
+    "spans": []
+  },
+  {
+    "text": "Describe el procedimiento del inventario anual del almacén.",
+    "spans": []
+  },
+  {
+    "text": "¿Cómo se pueden generar facturas recurrentes automáticamente?",
+    "spans": []
+  }
+]

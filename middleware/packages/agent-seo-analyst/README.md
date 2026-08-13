@@ -88,3 +88,18 @@ Das Build-Script nutzt die package-lokale `tsconfig.json` (keine Querverweise in
 middleware-Tree — das Zip ist standalone). `PluginContext` ist in `types.ts`
 strukturell dupliziert, damit der Agent ohne Import aus `middleware/src/platform`
 auskommt.
+
+## PluginContext surface — v1.0 readiness audit (#431)
+
+| Surface | Decision | Rationale |
+|---|---|---|
+| `ctx.jobs` | deferred adopt | Long `audit_site` crawls are the natural fit (background job + progress). Deliberately **not** adopted in the #431 polish pass — moving the crawl into a job changes the tool's response contract; tracked as a follow-up, not a readiness blocker. Crawl budget stays hard-capped (100 pages / depth 5) meanwhile. |
+| `ctx.status` | skip | No credentials or external connection to report; the activate-time self-test already gates activation. |
+| `ctx.llm` | skip | The host LLM drives agent turns; the analyzers are deliberately deterministic (same HTML → same score). |
+| `ctx.mcp` | skip for 1.0 | Outbound fetches route through `ctx.http` with zero configuration — the plugin's design goal. Reaching external SEO tooling via a granted MCP server is a possible extension, not a readiness item. |
+
+Versioning: stays independently versioned (currently `0.1.0`); does not bump
+in lockstep with core. Package layout stays the flat agent-package shape —
+canonical per `agent-reference-maximum` (the declared pattern source) and the
+`middleware/assets/boilerplate/agent-*` starter templates; tool plugins use
+`src/` → `dist/`. Both shapes are the documented per-kind conventions.

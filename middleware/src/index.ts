@@ -24,7 +24,7 @@ import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
-import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError } from './conductor/index.js';
+import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore } from './conductor/index.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
@@ -35,12 +35,19 @@ import {
 } from './services/mcpGrantPolicy.js';
 import { rescanAllMcpServers } from './services/mcpRescan.js';
 import { createLlmVerifier, type LlmVerifier } from './services/skillVerdictLlmVerifier.js';
+import { HttpSkillSpectorScanner } from './services/pluginScanner.js';
+import {
+  createPluginScanScheduler,
+  createPluginVerdictLookup,
+  type PluginVerdictLookup,
+} from './services/pluginVerdict.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
 } from '@omadia/orchestrator';
 import { createMemoryRouter } from './routes/memory.js';
+import { createDatasetsRouter } from './routes/datasets.js';
 import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
 import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createDuplicatesRouter } from './routes/duplicates.js';
@@ -56,10 +63,14 @@ import {
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
 import { createChatSessionsRouter } from './routes/chatSessions.js';
-import { createDevGraphRouter } from './routes/devGraph.js';
-import { createDevGraphLifecycleRouter } from './routes/devGraphLifecycle.js';
-import { createAgentPrioritiesRouter } from './routes/agentPriorities.js';
-import { createAdminDomainsRouter } from './routes/adminDomains.js';
+import {
+  DEV_GRAPH_PATH,
+  KG_LIFECYCLE_ADMIN_PATH,
+  KG_PRIORITIES_ADMIN_PATH,
+  PLUGIN_DOMAINS_ADMIN_PATH,
+  mountDevGraph,
+  mountKnowledgeGraphAdmin,
+} from './routes/graphRouterMounts.js';
 import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecycleService.js';
 import type {
   AgentPrioritiesStore,
@@ -88,6 +99,7 @@ import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createAdminProvidersRouter } from './routes/adminProviders.js';
+import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
@@ -114,6 +126,7 @@ import { BuilderTriageLog } from './plugins/builder/builderTriageLog.js';
 import { GithubIssueCache } from './plugins/builder/githubIssueCache.js';
 import { GithubIssueCreator } from './plugins/builder/githubIssueCreator.js';
 import { createGitHubDeviceProvider } from './issues/githubOAuthProvider.js';
+import { DeviceFlowStore } from './issues/deviceFlowStore.js';
 import { createIssuesRouter } from './issues/issuesRouter.js';
 import { GitHubAppTokenProvider } from './plugins/builder/githubAppAuth.js';
 import { UserChoiceCoordinator } from './plugins/builder/userChoiceCoordinator.js';
@@ -152,7 +165,42 @@ import {
   startMdnsAdvertiser,
   type MdnsAdvertisement,
 } from './pairing/mdns.js';
+import { publicPaths } from './auth/publicPaths.js';
+import { recordRawBodyBytes } from './http/rawBodySize.js';
+import { redactAuditError } from './services/secretRedaction.js';
+import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp.js';
+// W5-1 — the WRITE half of `public_mcp_key_bindings`. Imported for the
+// OPERATOR router only. `mountPublicMcp` above must never be handed this: the
+// internet-facing endpoint gets `createPublicMcpKeyBindingStore` (read-only)
+// and nothing else.
+import { createPublicMcpKeyBindingAdminStore } from './mcp/publicMcpKeyBindingsAdmin.js';
+import {
+  PRIVACY_REDACT_SERVICE_NAME,
+  type PrivacyGuardService,
+} from '@omadia/plugin-api';
 import { createRequireAuth } from './auth/requireAuth.js';
+import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
+import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
+import { createChatDevJobOrchestratorTools } from './devplatform/chatDevJobToolWiring.js';
+import { isPermittedLauncher } from './devplatform/routes/devPlatformShared.js';
+import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from './devplatform/routes/devWebhooks.js';
+import { WebhookDeliveryStore } from './devplatform/triggers/webhookDeliveryStore.js';
+import { DevGithubAppStore } from './devplatform/githubApp/appStore.js';
+import {
+  createConductorWebhooksInboundRouter,
+  type ConductorWebhookInboundDeps,
+} from './routes/conductorWebhooksInbound.js';
+import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
+import { DevJobStore as DevJobStoreForWebhooks } from './devplatform/devJobStore.js';
+import { DevRepoStore as DevRepoStoreForWebhooks } from './devplatform/devRepoStore.js';
+import { DevJobGateStore as DevJobGateStoreForWebhooks } from './devplatform/pipeline/gateStore.js';
+import {
+  createTriggerJob as createDevTriggerJob,
+  hasActiveTriggerJob as hasActiveDevTriggerJob,
+} from './devplatform/triggers/triggerJobService.js';
+import { mintRunnerToken as mintDevRunnerToken } from './devplatform/jobToken.js';
+import { DevRetentionRunner } from './devplatform/retention.js';
+import { ManifestFlowStore } from './devplatform/githubApp/manifestFlow.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -191,9 +239,22 @@ import {
 import { createAdminUsersRouter } from './routes/adminUsers.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
-import { buildKgHealth } from './health/kgHealth.js';
+import {
+  EMBEDDING_GATE_STATUS_SERVICE,
+  buildKgHealth,
+  probeGraphPool,
+  type EmbeddingGateStatus,
+} from './health/kgHealth.js';
+import {
+  AI_DISCLOSURE_POSTURE_SERVICE,
+  buildDisclosureHealth,
+  type AiDisclosurePostureStatus,
+} from './health/disclosureHealth.js';
 import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
+import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
+import type { PluginTemplateRegistrar } from './plugins/pluginTemplates.js';
+import { createDevPlatformGithubAppRouter } from './devplatform/routes/devPlatformGithubApp.js';
 import {
   OAuthBrokerService,
   PendingFlowStore,
@@ -211,6 +272,7 @@ import {
   retryErroredPlugins,
   runLegacyBootstrap,
 } from './plugins/bootstrap.js';
+import { warmPatternWorker } from './plugins/setupFieldPattern.js';
 import { BuiltInPackageStore } from './plugins/builtInPackageStore.js';
 import { LocalDevPackageStore } from './plugins/localDevPackageStore.js';
 import { FileSecretVault, resolveMasterKey } from './secrets/fileVault.js';
@@ -228,15 +290,49 @@ import { installProcessGuards } from './platform/processGuards.js';
 import { PluginRouteRegistry } from './platform/pluginRouteRegistry.js';
 import { NotificationRouter } from './platform/notificationRouter.js';
 import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
+import { OAuthReadinessTracker } from './plugins/oauth/oauthReadinessTracker.js';
 import { UiRouteCatalog } from './platform/uiRouteCatalog.js';
+import { createUiNavigationRouter } from './routes/uiNavigation.js';
 import { CanvasOutputRegistry } from './platform/canvasOutputRegistry.js';
 import { EventCatalogRegistry } from './platform/eventCatalogRegistry.js';
 import { DeterministicActionRegistry } from './platform/deterministicActionRegistry.js';
 import { ServiceRegistry } from './platform/serviceRegistry.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
-import { McpManager, type McpCallLogEntry, type McpServerConfig } from '@omadia/orchestrator';
+// W3-A / W4 — boot-time enforcement of the tool-timeout ordering invariant.
+import { assertTimeoutHierarchy } from '@omadia/orchestrator';
+// W2-2 (issue #543) — generic long-running task seam.
+// Issue #560 — durable backing + boot resume driver for it.
+import {
+  InMemoryTaskStore,
+  startTaskReaper,
+  startTaskResumeDriver,
+  type ResumableTaskSource,
+} from '@omadia/orchestrator';
+import { DurableTaskStore } from './tasks/durableTaskStore.js';
+import {
+  McpManager,
+  type McpCallLogEntry,
+  type McpServerConfig,
+  type McpSidecarPayload,
+  type McpStructuredSink,
+} from '@omadia/orchestrator';
+// W2-1 (#544) — MRTR mid-call user input: the process-shared park store and the
+// replayer registration. See `mcp/pendingMcpInput.ts` for why these are shared.
+import {
+  REPLAY_ARG_KEY,
+  setSharedMcpInputReplayer,
+  sharedPendingMcpInputStore,
+} from '@omadia/orchestrator';
+import {
+  SERVICE_USER_KEY,
+  auditIdentity,
+  delegationBlockedMessage,
+  resolveMcpUserKey,
+} from './services/mcpDelegation.js';
 import { McpOAuthService } from './services/mcpOAuthService.js';
+import { CIMD_METADATA_PATH, cimdMetadataUrl } from './services/mcpCimd.js';
+import { createMcpClientMetadataRouter } from './routes/mcpClientMetadata.js';
 import { McpConfigService } from './services/mcpConfigService.js';
 import {
   McpRegistrySecretService,
@@ -277,7 +373,11 @@ import { deriveChannelType } from './channels/channelType.js';
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import { backfillGraph } from '@omadia/orchestrator-extras';
 import { turnContext } from '@omadia/orchestrator';
-import type { EntityRefBus, KnowledgeGraph } from '@omadia/plugin-api';
+import type {
+  EmbeddingClient,
+  EntityRefBus,
+  KnowledgeGraph,
+} from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type {
   ChatAgent,
@@ -299,6 +399,17 @@ interface Microsoft365AccessorShim {
 
 /** Escape a value for safe inclusion inside a double-quoted XML/HTML attribute
  *  (used for the <mcp-auth-required> chat block, #459 W9). */
+/**
+ * Locales the operator web UI ships message catalogues for
+ * (`web-ui/messages/*.json`). Used to validate `?locale=` on the
+ * navigation endpoint before it reaches label resolution — an unknown
+ * locale renders English chrome rather than an error. Keep in sync with
+ * web-ui's catalogue; a missing entry here only costs a fallback to
+ * English, never a failure.
+ */
+const WEB_UI_LOCALES = ['en', 'de'] as const;
+const WEB_UI_DEFAULT_LOCALE = 'en';
+
 function xmlAttr(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -312,6 +423,14 @@ async function main(): Promise<void> {
   // the host alive when a plugin's detached async (timers, resolved promises,
   // fire-and-forget I/O) throws.
   installProcessGuards();
+
+  // W3-A / W4 — refuse to boot on an incoherent tool-timeout hierarchy. The
+  // ordering (dispatch deadline > MCP worst case > per-request idle budget) used
+  // to be asserted only inside a test helper that nothing shipped ever called,
+  // so `OMADIA_TOOL_DISPATCH_TIMEOUT_MS=90000` inverted it with green CI and the
+  // symptom surfaced much later as MCP calls dying on a generic
+  // dispatch-deadline error. Config errors belong at startup.
+  assertTimeoutHierarchy();
 
   // Plugin-api registries. Created empty at boot; populated as plugins
   // register into them during the activation sequence further down. Today
@@ -337,6 +456,19 @@ async function main(): Promise<void> {
   // plugin would miss those registrations.
   const nativeToolRegistry = new NativeToolRegistry();
   serviceRegistry.provide('nativeToolRegistry', nativeToolRegistry);
+  // W2-2 (issue #543) — the store + orphan reaper backing deferred sub-agent
+  // dispatch. Process-local by design: this unit ships no migration (0031/0032
+  // are taken by parallel units), so a restart drops in-flight deferred tasks
+  // and a poll answers "not found" rather than something wrong. The reaper is
+  // what stops an unpolled task leaking a `working` row forever.
+  const longRunningSubAgentTools = config.LONG_RUNNING_SUBAGENT_TOOLS.split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  // Issue #560 — deferred sub-agent tool handles are collected into this sink
+  // during hydration so the resume driver (started after the hydrate loop) can
+  // re-drive their tasks with no task-id hint (#560 criterion 3). The task store
+  // itself is constructed once `graphPool` resolves, far below.
+  const deferredTaskToolHandles: ResumableTaskSource[] = [];
   // LLM provider catalog: kernel-owned registry of plugin-contributed providers
   // (e.g. @omadia/plugin-llm-minimax). Published pre-activate and populated from
   // installed plugins' `llm_provider` manifest blocks below, so the orchestrator
@@ -414,6 +546,11 @@ async function main(): Promise<void> {
   // Spec 004 — kernel store of plugin action statuses (ctx.status). Read by the
   // admin API to surface "Aktion erforderlich" badges/banners in the store UI.
   const pluginStatusRegistry = new PluginStatusRegistry();
+
+  // Issue #474 (round 5) — automatic OAuth-connection readiness signal,
+  // separate from pluginStatusRegistry above. See OAuthReadinessTracker's
+  // doc comment for why the two stay separate caches ANDed at the gate.
+  const oauthConnectionTracker = new OAuthReadinessTracker();
 
   // Shared Anthropic client used by sub-agents (LocalSubAgent inner Claude
   // calls) and the Teams channel (anthropicClient dep). The orchestrator-
@@ -606,6 +743,24 @@ async function main(): Promise<void> {
   const flowPublicBaseUrl =
     config.FLOW_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL;
 
+  // Admin email whitelist — resolved here (ahead of its original A.1 spot
+  // below) because it's now ALSO a dependency of `operatorAuth`
+  // (`ctx.operatorAuth`, issue #438 follow-up), which the plugin runtimes
+  // constructed further down need at construction time. The `requireAuth`
+  // Express middleware built at the original A.1 site still uses this same
+  // instance — nothing there changes.
+  const emailWhitelist = new EmailWhitelist(config.ADMIN_ALLOWED_EMAILS);
+  // Issue #438 follow-up — kernel-published `ctx.operatorAuth`. Wraps the
+  // EXACT SAME session-verification logic `requireAuth` uses (see
+  // `operatorAuthAccessor.ts`), so a plugin's admin-only HTTP surface (e.g.
+  // `@omadia/channel-api`'s `/admin/keys`) can check the real operator
+  // session without re-implementing it. Threaded into every plugin runtime
+  // below so any plugin — not just channel plugins — can use it.
+  const operatorAuth = createOperatorAuthAccessor({
+    signingKey: sessionSigningKey,
+    whitelist: emailWhitelist,
+  });
+
   const installedRegistry = new FileInstalledRegistry(
     INSTALLED_REGISTRY_PATH,
   );
@@ -719,6 +874,30 @@ async function main(): Promise<void> {
     },
   );
 
+  // Issue #474 — per-plugin tool-readiness gate for the orchestrator. Two
+  // independent signals are ANDed, either can withhold readiness:
+  //   (a) PluginStatusRegistry (spec 004) — the plugin's own, explicit
+  //       `ctx.status.report(...)`: `needs_action` / `error` means a
+  //       required setup/connection step is pending per the plugin's OWN
+  //       code.
+  //   (b) OAuthReadinessTracker (round 5) — automatic: a `type:'oauth'`
+  //       setup field whose Connect flow has not completed yet, derived
+  //       from the same vault state `ctx.oauthTokens` reads, WITHOUT
+  //       requiring the plugin author to write an explicit status.report()
+  //       call for the common OAuth case (installService.ts installs and
+  //       activates a `type:'oauth'` plugin — registering its tools —
+  //       before the operator has clicked Connect).
+  // Either "not ready" keeps the plugin's `ctx.tools.register()`-contributed
+  // tools out of the orchestrator's tool list and refuses them at dispatch.
+  // Deliberately separate from the MCP-server-specific auth flow
+  // (mcpOAuthService) — this only gates native-plugin tool registrations.
+  serviceRegistry.provide(
+    'installedPluginToolsReadyReader',
+    (agentId: string): boolean =>
+      pluginStatusRegistry.isReady(agentId) &&
+      oauthConnectionTracker.isConnected(agentId),
+  );
+
   // Kernel-wide background-job scheduler. Plugin-contributed jobs (cron or
   // interval) register here via `ctx.jobs.register(...)`. Bulk teardown on
   // plugin deactivate is owned by each runtime, so a leaked dispose handle
@@ -761,6 +940,8 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    operatorAuth,
+    oauthConnectionTracker,
     canvasOutputRegistry,
     eventCatalogRegistry,
     deterministicActionRegistry,
@@ -833,6 +1014,8 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    operatorAuth,
+    oauthConnectionTracker,
     selfExtendRegistry,
     extensionStore,
     eventCatalogRegistry,
@@ -901,6 +1084,22 @@ async function main(): Promise<void> {
   // before the registry exists still hit the right runtime once it's wired.
   // eslint-disable-next-line prefer-const
   let channelRegistryRef: ChannelRegistry | undefined;
+
+  // Forward reference for the conductor's composite template catalog (#478) —
+  // wired inside the graphPool block far below, long after the install service
+  // is constructed. The install service resolves it lazily so plugin-borne
+  // workflow templates registered at runtime land in the catalog. Stays
+  // undefined on the in-memory backend (conductor inert); the install-time
+  // template VALIDATION gate runs regardless.
+  let conductorTemplateRegistrarRef: PluginTemplateRegistrar | undefined;
+
+  // Forward reference for the Conductor inbound-webhook router deps (issue #437) —
+  // same pattern as the template registrar above. The router itself is mounted
+  // further down, BEFORE express.json() (raw-body HMAC verification needs the
+  // untouched bytes); the real deps (endpoint store, event router, vault) are only
+  // built later inside the graphPool block's `wireConductor` call. By the time a real
+  // request arrives, the assignment there has already run.
+  let conductorWebhookInboundDepsRef: ConductorWebhookInboundDeps | undefined;
 
   // Forward refs — runtime propagation of a POST-BOOT agent-plugin
   // (de)activation into the per-Agent registry orchestrators + the fallback
@@ -1039,6 +1238,10 @@ async function main(): Promise<void> {
     catalog: pluginCatalog,
     registry: installedRegistry,
     vault: secretVault,
+    // #478 — lazily resolved: the conductor's composite template catalog is
+    // wired ~1400 LOC below (graphPool block). Undefined until then / on the
+    // in-memory backend; the install-time template gate validates regardless.
+    conductorTemplates: () => conductorTemplateRegistrarRef,
     onInstalled: async (agentId) => {
       // A plugin may contribute an `llm_provider` block regardless of its kind
       // (provider plugins ship as `extension`). Register it FIRST — mirroring
@@ -1242,9 +1445,10 @@ async function main(): Promise<void> {
   });
 
   // ── Admin auth (A.1) ──────────────────────────────────────────────────────
-  // `sessionSigningKey` is resolved earlier (right after the vault loads) so
-  // the plugin runtimes can also use it for `ctx.flows` state signing.
-  const emailWhitelist = new EmailWhitelist(config.ADMIN_ALLOWED_EMAILS);
+  // `sessionSigningKey` (and `emailWhitelist`) are resolved earlier (right
+  // after the vault loads) so the plugin runtimes can also use them —
+  // `sessionSigningKey` for `ctx.flows` state signing, both together for
+  // `ctx.operatorAuth` (issue #438 follow-up).
   if (emailWhitelist.isEmpty()) {
     console.warn(
       '[middleware] ⚠ ADMIN_ALLOWED_EMAILS is empty — every sign-in will 403 until the secret is set',
@@ -1289,46 +1493,7 @@ async function main(): Promise<void> {
     // those so the channel plugins can run their own auth downstream —
     // same protection as before for `/api/chat`, `/api/v1/operator/*`,
     // `/api/v1/admin/*`, etc. since none of them match these regexes.
-    publicPaths: [
-      /^\/api\/v1\/auth(?:\/|$|\?)/,
-      /^\/api\/v1\/setup(?:\/|$|\?)/,
-      /^\/api\/auth(?:\/|$|\?)/,
-      // Spec 005 — kernel OAuth broker callback. The IdP redirects the
-      // operator's browser back here after consent; the session cookie may
-      // have lapsed during the round-trip, so the route is public and
-      // self-secures via the signed, single-use `state` token. `/oauth/start`
-      // is NOT listed — it stays behind the cookie gate (operator-initiated).
-      /^\/api\/v1\/install\/oauth\/callback(?:\/|$|\?)/,
-      // Bot Framework webhook for channel-teams. The Teams adapter
-      // validates the Bot-issued JWT inside the handler; the session
-      // cookie check would silently drop every inbound activity because
-      // Teams never sends one.
-      /^\/api\/messages(?:\/|$|\?)/,
-      // Plugin-served UI surfaces (`/p/<pluginId>/...`). Teams iframes
-      // these from inside the bot-app shell where there is no
-      // middleware session cookie — only a Teams SSO token. Routing
-      // them through the cookie gate redirects to /login inside the
-      // iframe, which shows the operator login form instead of the
-      // Tab content. Plugins that expose sensitive data are
-      // responsible for validating the Teams SSO token themselves;
-      // pages like /p/channel-teams/{hub,tab-config} are public-by-
-      // design and the reference dashboard is read-only demo state.
-      /^\/p\/[^/]+(?:\/|$|\?)/,
-      // Local dev surfaces. The `/api/dev/*` mount itself is conditional
-      // on `DEV_ENDPOINTS_ENABLED=true` further down (see graph +
-      // memory dev routers around the "DEV endpoints enabled" log line)
-      // — when that flag is on the operator has already opted into an
-      // unauthenticated surface and the local Next-UI relies on the
-      // routes being callable without a session cookie. When the flag
-      // is off, no `/api/dev/*` routes are mounted at all, so this
-      // bypass cannot leak anything. When the flag is on AND the stack
-      // is exposed beyond localhost, that is a separate operator
-      // mistake the compose `127.0.0.1` port bindings are designed to
-      // prevent.
-      ...(config.DEV_ENDPOINTS_ENABLED
-        ? [/^\/api\/dev(?:\/|$|\?)/]
-        : []),
-    ],
+    publicPaths: publicPaths(),
   });
 
   // ContextRetriever + FactExtractor construction moved to AFTER
@@ -1409,8 +1574,15 @@ async function main(): Promise<void> {
   // Graph + Bus lifetime; close() drains everything.
   // - graphPool may be undefined when the in-memory backend is active
   //   (no DATABASE_URL — used by tests + zero-config dev).
-  // - graphTenantId is read at the same place the plugin reads it so
-  //   verifier-store + plugin-internal embedding-backfill use the same key.
+  // - graphTenantId here is the ENV-derived value only. The knowledge-graph
+  //   plugin resolves its own tenant as `ctx.config.get('graph_tenant_id') ??
+  //   GRAPH_TENANT_ID ?? 'default'`, and `graph_tenant_id` is an
+  //   operator-settable setup field — so the two are NOT "read at the same
+  //   place", which an earlier version of this comment claimed. Anything that
+  //   must price or address the plugin's own corpus has to consult the
+  //   registry config first (see `resolveGraphTenantId` in
+  //   routes/adminEmbeddingProvider.ts); the consumers below use this value as
+  //   the deployment-wide default, which is what they have always done.
   const knowledgeGraph = serviceRegistry.get<KnowledgeGraph>('knowledgeGraph');
   if (!knowledgeGraph) {
     throw new Error(
@@ -1426,21 +1598,61 @@ async function main(): Promise<void> {
   const graphPool = serviceRegistry.get<Pool>('graphPool');
   const graphTenantId = process.env['GRAPH_TENANT_ID'] ?? 'default';
 
+  // Issue #560 — now that graphPool is known, back the long-running task seam
+  // durably when Postgres is present (tasks survive a restart; the `tasks` table
+  // ships in migration 0034), else keep the process-local store. The reaper is
+  // started here rather than at declaration so it sweeps the store actually in
+  // use. The resume driver is started later, after the hydrate loop populates
+  // `deferredTaskToolHandles`.
+  const subAgentTaskStore = graphPool
+    ? new DurableTaskStore(graphPool)
+    : new InMemoryTaskStore();
+  if (longRunningSubAgentTools.length > 0) {
+    startTaskReaper(subAgentTaskStore, {
+      staleAfterMs: config.LONG_RUNNING_TASK_STALE_MS,
+      purgeTerminalAfterMs: config.LONG_RUNNING_TASK_RETAIN_MS,
+      onError: (err: unknown) =>
+        console.warn('[middleware] long-running task reaper sweep failed:', err),
+    });
+    console.log(
+      `[middleware] deferred sub-agent dispatch enabled (${
+        graphPool ? 'durable' : 'in-memory'
+      } store) for: ${longRunningSubAgentTools.join(', ')}`,
+    );
+  }
+
   // Generic MCP OAuth service (epic #459 W9) — outer scope so both the
   // McpManager (auth provider) and the operator router (begin/callback routes)
-  // reference the same instance. userKey='operator' for the operator chat.
-  const mcpOAuthUserKey = 'operator';
+  // reference the same instance.
+  //
+  // W0-1: this is now ONLY the shared key for servers whose `delegation` is
+  // `service`. It is no longer a fallback for unresolved identities — see
+  // services/mcpDelegation.ts.
+  const mcpOAuthUserKey = SERVICE_USER_KEY;
   // Redirect URI the OAuth callback lands on: explicit override, else derived
   // from the public base. The service activates when either is configured.
   const mcpOAuthRedirectUri =
     config.MCP_OAUTH_REDIRECT_URI ??
     (flowPublicBaseUrl ? `${flowPublicBaseUrl}/api/v1/operator/mcp-oauth/callback` : undefined);
+  // W2-4 (issue #546) — the CIMD metadata-document URL, i.e. the `client_id` a
+  // CIMD-capable authorization server dereferences.
+  //
+  // Derived from `FLOW_PUBLIC_BASE_URL` ALONE — deliberately NOT the
+  // `?? PUBLIC_BASE_URL` fallback the redirect URI uses. CIMD needs the IdP to
+  // reach IN to this deployment, and `PUBLIC_BASE_URL` defaults to
+  // `http://localhost:3979`, which is exactly the shape that is not inbound
+  // reachable. Requiring the operator to declare the public origin explicitly
+  // means an unconfigured install lands in the clean degraded state (CIMD off,
+  // manual client path fully working) instead of publishing a `client_id` no
+  // provider can fetch.
+  const mcpCimdMetadataUrl = cimdMetadataUrl(config.FLOW_PUBLIC_BASE_URL);
   const mcpOAuthService =
     graphPool && mcpOAuthRedirectUri
       ? new McpOAuthService({
           graph: new AgentGraphStore(graphPool),
           vault: secretVault,
           redirectUri: mcpOAuthRedirectUri,
+          cimdMetadataUrl: mcpCimdMetadataUrl,
           log: (m) => console.log(`[middleware] ${m}`),
         })
       : undefined;
@@ -1448,6 +1660,44 @@ async function main(): Promise<void> {
   const mcpConfigService = graphPool
     ? new McpConfigService({ graph: new AgentGraphStore(graphPool), vault: secretVault })
     : undefined;
+  // Issue #563 — the runtime MCP connection pool, hoisted out of the
+  // `if (orchestrator)` block below so the operator router (which invalidates a
+  // changed server) and `shutdownBuilder` (which must terminate the pooled
+  // stdio children) can both reach it. Stays `undefined` when chat is disabled.
+  let runtimeMcpManager: McpManager | undefined;
+
+  // Plugin code scanning (issue #453) — SkillSpector sidecar behind the
+  // PluginScanner seam. Requires the Postgres graph backend for the verdict
+  // table; without it (in-memory dev/tests) scanning is simply absent.
+  // Second-review fix: with SKILLSPECTOR_URL unset no scheduler is wired at
+  // all — no verdict row is written on ingest, so store pages show no badge
+  // on unconfigured deployments. `scan_failed` is reserved for REAL sidecar
+  // failures. Advisory-only v1: verdicts decorate the store/detail
+  // responses, nothing reads them to block an install.
+  const pluginVerdictStore = graphPool ? new AgentGraphStore(graphPool) : undefined;
+  const pluginScanScheduler =
+    pluginVerdictStore && config.SKILLSPECTOR_URL
+      ? createPluginScanScheduler({
+          store: pluginVerdictStore,
+          scanner: new HttpSkillSpectorScanner({
+            baseUrl: config.SKILLSPECTOR_URL,
+            timeoutMs: config.SKILLSPECTOR_TIMEOUT_MS,
+            log: (m) => console.log(m),
+          }),
+          log: (m) => console.log(m),
+        })
+      : undefined;
+  const pluginVerdictLookup: PluginVerdictLookup | undefined = pluginVerdictStore
+    ? createPluginVerdictLookup({
+        store: pluginVerdictStore,
+        packages: uploadedPackageStore,
+      })
+    : undefined;
+  if (config.SKILLSPECTOR_URL && !graphPool) {
+    console.warn(
+      '[middleware] SKILLSPECTOR_URL is set but the graph backend is in-memory — plugin code scanning disabled (verdicts need Postgres)',
+    );
+  }
 
   // MCP registry bearer tokens live in the vault, never on the DB row
   // (issue #463 item 5). Move any legacy plaintext token (pre-0020) into the
@@ -1606,9 +1856,11 @@ async function main(): Promise<void> {
   // so chat goes live the moment the key is saved — no restart needed.
   //
   // The boot-only wiring guarded on `orchestrator` below (domain-tool
-  // hydration of per-Agent orchestrators, the routines feature) re-applies on
-  // the next restart for advanced stacks (sub-agents / routines). The default
-  // out-of-the-box stack has no domain tools, so chat is fully functional hot.
+  // hydration of per-Agent orchestrators) re-applies on the next restart for
+  // advanced stacks (sub-agents). The default out-of-the-box stack has no
+  // domain tools, so chat is fully functional hot. Routines follows the same
+  // live-resolution pattern as chat (issue #473): its runner resolves
+  // chatAgent per run, so it hot-enables on key save too.
   const chatAgentBundle = serviceRegistry.get<ChatAgentBundle>('chatAgent');
   const orchestrator = chatAgentBundle?.raw;
   if (!chatAgentBundle) {
@@ -1676,13 +1928,96 @@ async function main(): Promise<void> {
       // mcp_call_log, fire-and-forget so the tool-call path never blocks on
       // the database. Identity comes from turnContext inside the manager.
       const mcpAuditStore = graphPool ? new AgentGraphStore(graphPool) : undefined;
+      // #547 / #569 — the structured-output sidecar's first consumer: privacy
+      // ACCOUNTING, not rendering. The payload is emitted out-of-band from
+      // `McpManager.callTool` and never reaches the model wire (the model sees
+      // only the interned digest of the TEXT result), so nothing here is
+      // masked — but the sidecar fired beneath every dispatcher, so structured
+      // content appeared in no turn receipt at all. This records a PII-free
+      // entry (tool + server + byte count + schema flag) into the turn's
+      // privacy receipt so an operator audit accounts for it. Deliberately does
+      // NOT forward the payload anywhere a renderer could consume it — that is
+      // #547's remaining half, unblocked by this accounting decision but out of
+      // scope here. Fail-closed: an accounting failure must never break a tool
+      // call, and a payload with no turn identity is skipped (there is no
+      // receipt to attribute it to) rather than mis-filed.
+      const mcpStructuredSink: McpStructuredSink = (payload: McpSidecarPayload) => {
+        if (payload.kind !== 'structured_output') return;
+        if (payload.turnId === null) {
+          console.warn(
+            `[middleware] structured sidecar for '${payload.toolName}' has no turnId — not accounted`,
+          );
+          return;
+        }
+        const privacy = serviceRegistry.get<PrivacyGuardService>(
+          PRIVACY_REDACT_SERVICE_NAME,
+        );
+        // Feature-detected: a privacy provider that predates #569 (or none
+        // installed at all) makes the sink a no-op — no receipt entry, no side
+        // effect. (Not byte-identical at the manager: wiring this sink means
+        // `emitStructured` now runs its body per structured result where before
+        // it early-returned on the absent sink. The work is a turnContext read
+        // and a Map lookup, and produces nothing observable without a provider.)
+        if (privacy?.recordStructuredPayload === undefined) return;
+        // Fail closed on our OWN terms, not on the manager's `emitStructured`
+        // try/catch: `structuredContent` is a post-`JSON.parse` value so
+        // re-serialising it cannot realistically throw, but a byte count that
+        // could take down accounting is not worth trusting a caller's guard
+        // for. An unmeasurable payload is still worth accounting — record it
+        // with `bytes: 0` rather than dropping the entry.
+        let bytes = 0;
+        try {
+          bytes = Buffer.byteLength(JSON.stringify(payload.structured), 'utf8');
+        } catch {
+          /* leave bytes at 0 — the entry still records that structured output
+             was received, which is the load-bearing accounting fact */
+        }
+        void privacy
+          .recordStructuredPayload({
+            turnId: payload.turnId,
+            toolName: payload.toolName,
+            serverName: payload.serverName,
+            bytes,
+            hasOutputSchema: payload.outputSchema !== undefined,
+          })
+          .catch((err: unknown) => {
+            console.warn(
+              `[middleware] structured sidecar accounting failed for '${payload.toolName}': ${String(err)}`,
+            );
+          });
+      };
       // Generic MCP OAuth (epic #459 W9) wired as the manager's auth provider;
       // the service instance is created at outer scope (shared with the router).
-      const mcpManager = new McpManager({
+      const mcpManager: McpManager = new McpManager({
+        // #547 / #569 — see `mcpStructuredSink` above (accounting only).
+        structuredSink: mcpStructuredSink,
+        // W2-1 (#544) — where a `resultType: "input_required"` call is parked.
+        // The process-shared instance, so the Orchestrator's turn drain reads
+        // exactly what this manager wrote.
+        pendingInput: sharedPendingMcpInputStore(),
         ...(mcpAuditStore
           ? {
               onToolCall: (entry: McpCallLogEntry) => {
-                void mcpAuditStore.insertMcpCallLog(entry).catch((err: unknown) => {
+                // `entry.error` is upstream text — a remote MCP server's own
+                // protocol/transport message. The orchestrator bounds it to 300
+                // characters, but truncation is not redaction: a server that
+                // echoes `refresh_token=…`, an `Authorization: Bearer …`, or a
+                // secret-shaped JSON field puts that credential into an
+                // append-only table, and the operator audit API returns the
+                // stored string verbatim.
+                //
+                // Redacted HERE rather than in the orchestrator because
+                // `secretRedaction` lives in this package and `onToolCall` is
+                // the injected seam — the alternative was a second copy of the
+                // patterns inside `@omadia/orchestrator`, and two copies of a
+                // redaction rule is one that drifts loose.
+                //
+                // LIMIT, deliberately not papered over: this removes
+                // CREDENTIALS, not PII. An upstream error quoting a customer
+                // name or address still lands in `mcp_call_log`. Masking that
+                // would mean running the privacy pipeline inside the audit
+                // writer, which is a design decision rather than a patch.
+                void mcpAuditStore.insertMcpCallLog(redactAuditError(entry)).catch((err: unknown) => {
                   console.warn(`[middleware] mcp call audit write failed: ${String(err)}`);
                 });
               },
@@ -1698,18 +2033,49 @@ async function main(): Promise<void> {
                   const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                   if (!server) return null;
                   // Per-user token (codex W9 fold): the turn's authenticated
-                  // user when the entry point set it, else the operator scope.
-                  const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
+                  // user when the entry point set it.
+                  //
+                  // W0-1 (D2) — THE confused-deputy fix. This used to end in
+                  // `?? mcpOAuthUserKey`, i.e. `'operator'`. A Teams/Telegram
+                  // turn whose user has no mapped identity therefore reached
+                  // the customer's MCP server holding the OPERATOR's token.
+                  // Now a `per_user` server with no identity gets no token and
+                  // the call fails closed through onAuthFailure below;
+                  // `service` delegation is the explicit shared-identity
+                  // opt-in.
+                  const userKey = resolveMcpUserKey(
+                    server,
+                    turnContext.current()?.mcpUserKey,
+                    mcpOAuthUserKey,
+                  );
+                  if (userKey === null) return null;
                   return mcpOAuthService.getValidAccessToken(server, userKey);
+                },
+                resolveIdentity: async (cfg: McpServerConfig) => {
+                  const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                  if (!server) return null;
+                  // W0-1: every audit row names the identity it acted as —
+                  // `unresolved` when there was none.
+                  return auditIdentity(server, turnContext.current()?.mcpUserKey, mcpOAuthUserKey);
                 },
                 onAuthFailure: async (cfg: McpServerConfig) => {
                   const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                   if (!server) return null;
+                  // W0-1 (D2): fail closed FIRST. A `per_user` server with no
+                  // caller identity must never be "fixed" by starting an OAuth
+                  // flow — that flow would bind a token to whoever happens to
+                  // click through, which is the same confused deputy one step
+                  // removed. Explain instead, and send nothing upstream.
+                  const userKey = resolveMcpUserKey(
+                    server,
+                    turnContext.current()?.mcpUserKey,
+                    mcpOAuthUserKey,
+                  );
+                  if (userKey === null) return delegationBlockedMessage(server.name);
                   // Only OAuth-protected servers get an auth prompt (cached
                   // discovery keeps this cheap per call).
                   const desc = await mcpOAuthService.describeAuth(server);
                   if (!desc.protected) return null;
-                  const userKey = turnContext.current()?.mcpUserKey ?? mcpOAuthUserKey;
                   // Machine block the chat parses into an in-line "Connect" card
                   // + modal (web-ui McpAuthRequiredCard). Mirrors the <nudge>
                   // block contract: human text stays readable for the model and
@@ -1738,6 +2104,42 @@ async function main(): Promise<void> {
             }
           : {}),
       });
+      // Publish the handle so the operator router can invalidate a changed
+      // server and `shutdownBuilder` can close the pooled stdio children.
+      runtimeMcpManager = mcpManager;
+      // W2-1 (#544) — the replayer. Registered here because this is the only
+      // place that holds BOTH the manager and the server registry: a replay is
+      // a fresh `tools/call`, so it needs the server's live config (endpoint,
+      // headers, Vault-resolved env) re-resolved rather than a snapshot taken
+      // when the call was parked.
+      //
+      // A server the operator deleted (or renamed away) between the two turns
+      // returns `undefined`, which the orchestrator surfaces to the user as
+      // "no longer reachable" instead of silently dropping their input.
+      if (mcpAuditStore) {
+        setSharedMcpInputReplayer({
+          replay: async (record, inputResponses) => {
+            const server = (await mcpAuditStore.listMcpServers()).find(
+              (s) => s.id === record.serverId,
+            );
+            if (!server) return undefined;
+            const cfg: McpServerConfig = {
+              id: server.id,
+              name: server.name,
+              transport: server.transport,
+              endpoint: server.endpoint,
+              ...(server.privacyBypass ? { privacyBypass: true } : {}),
+            };
+            // `originalArgs` first: a server that (incorrectly) declared an
+            // `inputResponses` input field must not be able to shadow the
+            // collected answers with a stale value from the original call.
+            return mcpManager.callTool(cfg, record.toolName, {
+              ...record.originalArgs,
+              [REPLAY_ARG_KEY]: inputResponses,
+            });
+          },
+        });
+      }
       // Host MCP service for plugin ctx.mcp (epic #459 W5, issue #458):
       // resolved lazily by createPluginContext, exactly like the 'llm'
       // provider. Grants are read live per call (deny-by-default).
@@ -1809,6 +2211,13 @@ async function main(): Promise<void> {
             cliModelAlias: (model: string): string =>
               model.replace(/-cli$/, '') || 'sonnet',
             blockedMcpGrant: isMcpGrantBlocked,
+            // W2-2 (issue #543) — deferred sub-agent dispatch. Empty allowlist
+            // (the default) leaves every sub-agent on today's inline path.
+            longRunningSubAgentTools: longRunningSubAgentTools,
+            taskStore: subAgentTaskStore,
+            // Issue #560 — collect each deferred tool's handle so the resume
+            // driver can re-drive its tasks (`resumeOne`) with no id hint.
+            deferredTaskToolHandles,
             log: (m: string) => console.log(`[middleware] ${m}`),
           },
         );
@@ -1830,6 +2239,22 @@ async function main(): Promise<void> {
       console.log(
         `[middleware] registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(registryForHydrate.list().length)} agent(s) (per-Agent plugin-scoped)`,
       );
+      // Issue #560 — start the boot resume driver once the deferred tool handles
+      // exist. It claims and re-drives any `working` task with no lease (a
+      // durable row a restart orphaned before its runner claimed it, or a task a
+      // later turn un-parked via `provideInput`), calling `claimNextPending` with
+      // no task-id hint — the boot claim loop criterion 3 asks for. A no-op
+      // against the in-memory store (its rows die with the process) and against
+      // an empty handle set.
+      // Gated on the feature, not on handles being present yet: the sink is a
+      // shared array a later agent rebuild may append to, and each sweep re-reads
+      // it, so a handle registered after boot is still driven.
+      if (longRunningSubAgentTools.length > 0) {
+        startTaskResumeDriver(deferredTaskToolHandles, {
+          onError: (err: unknown) =>
+            console.warn('[middleware] long-running task resume sweep failed:', err),
+        });
+      }
       // Persist the wiring so a later `registry.reload()` that REBUILDS an
       // Agent (privacy_profile flip, etc.) re-hydrates the new orchestrator —
       // still scoped to the Agent's enabled plugins, and now from the LIVE tool
@@ -1885,8 +2310,12 @@ async function main(): Promise<void> {
 
   // Routines feature (OB-NEW): persistent user-created scheduled agent
   // invocations. Requires Postgres for persistence; skipped in zero-config
-  // dev (in-memory KG backend, no DATABASE_URL). Channel adapters that want
-  // proactive delivery register their `ProactiveSender` into
+  // dev (in-memory KG backend, no DATABASE_URL). The chat agent is NOT
+  // required at wiring time — the runner resolves chatAgent@1 live per run
+  // (same pattern as the chat routes above), so routines hot-enable the
+  // moment the Setup Wizard key save publishes it; keyless fires record an
+  // `error` run naming the missing key (issue #473). Channel adapters that
+  // want proactive delivery register their `ProactiveSender` into
   // `routinesHandle.senderRegistry` after this call (Teams: wrap a
   // long-lived `CloudAdapter.continueConversationAsync` via
   // `createProactiveSender('teams', sendFn)`). Channel adapters MUST also
@@ -1895,11 +2324,11 @@ async function main(): Promise<void> {
   // `manage_routine` tool's `create`/`list` actions return a
   // model-friendly error string and the model degrades gracefully.
   let routinesHandle: RoutinesHandle | undefined;
-  if (graphPool && orchestrator) {
+  if (graphPool) {
     routinesHandle = await initRoutines({
       pool: graphPool,
       scheduler: jobScheduler,
-      orchestrator,
+      getOrchestrator: () => getChatAgentBundle()?.raw,
       registerNativeTool: (name, handler, options) =>
         nativeToolRegistry.register(name, {
           handler,
@@ -1934,15 +2363,11 @@ async function main(): Promise<void> {
       }),
     );
     console.log(
-      '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published)',
-    );
-  } else if (!graphPool) {
-    console.log(
-      '[middleware] routines feature SKIPPED — no graphPool (in-memory KG backend; set DATABASE_URL to enable)',
+      '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published, chat agent resolved live per run)',
     );
   } else {
     console.log(
-      '[middleware] routines feature SKIPPED — chatAgent not active (set ANTHROPIC_API_KEY via the Setup Wizard, then restart to enable routines)',
+      '[middleware] routines feature SKIPPED — no graphPool (in-memory KG backend; set DATABASE_URL to enable)',
     );
   }
 
@@ -1954,7 +2379,105 @@ async function main(): Promise<void> {
   // (PayloadTooLargeError in the log). 10mb is well below the
   // turn-loop's risk profile (the agent's own per-tool input is bounded
   // by Anthropic-SDK token limits) but gives slot-heavy clones room.
-  app.use(express.json({ limit: '10mb' }));
+  // Epic #470 W4 — inbound GitHub webhook trigger (POST /api/webhooks/github).
+  // MOUNTED BEFORE express.json ON PURPOSE: HMAC verification needs the RAW request
+  // bytes, and the global express.json below would parse + re-serialise the body,
+  // destroying the signature. The router attaches its OWN route-level express.raw
+  // parser, so it consumes ONLY its one path and calls next() for everything else
+  // (which then reaches express.json normally). Gated on the same DEV_PLATFORM /
+  // graphPool preconditions as the platform assembly, plus the DEV_WEBHOOKS_ENABLED
+  // kill switch. The webhook stores are pool/vault-backed and stateless, so building
+  // them here (before the full platform assembly) is safe and keeps the mount order
+  // correct; the worker (assembled later) claims the created jobs from the DB.
+  if (config.devPlatform.enabled && graphPool && config.devPlatform.webhooks.enabled) {
+    const webhookAppStore = new DevGithubAppStore(graphPool, secretVault);
+    const webhookRepoStore = new DevRepoStoreForWebhooks(graphPool);
+    const webhookJobStore = new DevJobStoreForWebhooks(graphPool);
+    const webhookGateStore = new DevJobGateStoreForWebhooks(graphPool);
+    const webhookDeliveries = new WebhookDeliveryStore(graphPool);
+
+    // SECURITY (Forge W4): cache the registered Apps' webhook secrets with a short
+    // TTL so an unauthenticated flood of deliveries cannot amplify into a Vault
+    // round-trip per request. 30s is short enough that a newly-registered App's
+    // secret starts verifying within one TTL.
+    const WEBHOOK_SECRETS_TTL_MS = 30_000;
+    let cachedWebhookSecrets: readonly string[] | null = null;
+    let cachedWebhookSecretsAt = 0;
+    const listWebhookSecrets = async (): Promise<readonly string[]> => {
+      const nowMs = Date.now();
+      if (cachedWebhookSecrets && nowMs - cachedWebhookSecretsAt < WEBHOOK_SECRETS_TTL_MS) {
+        return cachedWebhookSecrets;
+      }
+      const apps = await webhookAppStore.listApps();
+      const secrets: string[] = [];
+      for (const app of apps) {
+        const s = await webhookAppStore.getSecrets(app.appId);
+        if (s?.webhookSecret) secrets.push(s.webhookSecret);
+      }
+      cachedWebhookSecrets = secrets;
+      cachedWebhookSecretsAt = nowMs;
+      return secrets;
+    };
+
+    // Webhook jobs run on the non-local default backend: Fly when a runner app is
+    // configured, else the docker shipping path. `local` is structurally refused by
+    // the trigger job service, so it is never selected here.
+    const webhookBackend = config.devPlatform.fly?.runnerApp ? ('fly' as const) : ('docker' as const);
+
+    const webhookDeps: DevWebhooksRouterDeps = {
+      listWebhookSecrets,
+      repos: {
+        getByFullName: async (fullName) =>
+          (await webhookRepoStore.listRepos()).find((r) => `${r.owner}/${r.name}` === fullName) ?? null,
+      },
+      deliveries: webhookDeliveries,
+      hasActiveWebhookJob: (repoId, sourceRef) =>
+        hasActiveDevTriggerJob(graphPool, repoId, sourceRef, 'webhook'),
+      createTriggerJob: (input) =>
+        createDevTriggerJob(
+          { jobStore: webhookJobStore, gateStore: webhookGateStore, log: (msg) => console.log(msg) },
+          input,
+        ),
+      mintRunnerToken: () => mintDevRunnerToken(),
+      webhookBackend,
+      webhooksEnabled: config.devPlatform.webhooks.enabled,
+      maxJobsPerRepoHour: config.devPlatform.webhooks.maxJobsPerRepoHour,
+      maxJobsPerSenderHour: config.devPlatform.webhooks.maxJobsPerSenderHour,
+      log: (msg) => console.log(msg),
+    };
+    app.use(createDevWebhooksRouter(webhookDeps));
+    console.log('[middleware] dev-platform GitHub webhook router mounted at /api/webhooks/github (raw-body, before express.json)');
+  }
+
+  // The LLM proxy (`/api/v1/dev-runner/llm/*`, mounted later at `mountDevPlatform`)
+  // owns its own route-level `express.raw()` so it can canonicalise the exact bytes
+  // it validates before forwarding (see llmProxy.ts). A global body parser that runs
+  // BEFORE that route is reached would drain the request stream first: body-parser's
+  // `read()` bails out via `onFinished.isFinished(req)` on an already-consumed stream
+  // and never touches `req.body` again, so the route's own raw() would then see a
+  // pre-parsed object instead of a Buffer. Skip this one path here, mirroring the
+  // GitHub-webhook router's raw-body-before-json pattern above.
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/v1/dev-runner/llm/')) {
+      next();
+      return;
+    }
+    express.json({ limit: '10mb', verify: recordRawBodyBytes })(req, res, next);
+  });
+  // Issue #437 — Conductor's generic inbound webhook route. Mounted unconditionally
+  // (mirrors the forward-reference pattern, not the `if (graphPool)` gate above): on
+  // the in-memory backend `conductorWebhookInboundDepsRef` never gets assigned, so the
+  // handler's `getDeps()` resolves undefined and every call answers 503 — the router
+  // itself must still be registered here, before express.json(), for the raw-body HMAC
+  // verification to ever see real request bytes once Conductor IS wired.
+  app.use(createConductorWebhooksInboundRouter(() => conductorWebhookInboundDepsRef));
+  console.log('[middleware] conductor webhook inbound router mounted at /api/hooks/:endpointId (raw-body, before express.json)');
+
+  // `verify` records the RAW byte count (see `http/rawBodySize.ts`). Route-level
+  // size gates downstream can only measure `JSON.stringify(req.body)`, which is
+  // a different number: 9 MB of insignificant whitespace re-serialises to a
+  // handful of bytes and walks through a cap written against it.
+  app.use(express.json({ limit: '10mb', verify: recordRawBodyBytes }));
   app.use(cookieParser());
 
   app.get('/health', (_req, res) => {
@@ -1962,7 +2485,43 @@ async function main(): Promise<void> {
     // embeddings/semantic-recall/durable-tier/process-reuse availability) so a
     // silently-degraded deployment is observable here instead of only in boot
     // logs. Non-sensitive: capability states only, no secrets/URLs.
-    res.json({ status: 'ok', kg: buildKgHealth(installedRegistry) });
+    //
+    // #440 — the installed registry alone cannot see whether the embedding
+    // model/dimension gate actually let the knowledge-graph write vectors, so
+    // the gate outcome is read here too. Resolved per request rather than
+    // captured at boot: plugins can be toggled at runtime.
+    //
+    // #665 — everything above is a projection of the REGISTRY, so it could not
+    // see the instance being dead: the KG plugin ended the process-wide pg
+    // pool, every query started failing, and this endpoint still answered
+    // `ok` because the registry entry said `active`. The pool is now asked
+    // directly. Async because that is a query; it is bounded by its own
+    // timeout and never throws, so /health cannot hang or 500 on it.
+    void (async (): Promise<void> => {
+      const gate = serviceRegistry.get<EmbeddingGateStatus>(
+        EMBEDDING_GATE_STATUS_SERVICE,
+      );
+      const probe = await probeGraphPool(serviceRegistry.get('graphPool'));
+      const kg = buildKgHealth(installedRegistry, gate, probe);
+      // #648 (epic #642) — the resolved AI-Act marking posture per channel.
+      // Read per request for the same reason the embedding gate is: a config
+      // change re-activates the orchestrator and re-publishes, and a boot-time
+      // capture would keep reporting the old posture until a restart.
+      // Non-sensitive by construction: levels, sources and booleans only, no
+      // assistant name, operator note or composed line — see disclosureHealth.ts.
+      const disclosure = buildDisclosureHealth(
+        serviceRegistry.get<AiDisclosurePostureStatus>(
+          AI_DISCLOSURE_POSTURE_SERVICE,
+        ),
+      );
+      // A dead pool is not a degradation to report at 200 — nothing in the
+      // process can serve a request. 503 is what a load balancer needs to see.
+      // A deviating marking posture deliberately does NOT change the status:
+      // it is a legitimate operator decision, and #648 is explicit that the
+      // hint informs rather than blocks.
+      const status = kg.pool === 'dead' ? 'error' : 'ok';
+      res.status(kg.pool === 'dead' ? 503 : 200).json({ status, kg, disclosure });
+    })();
   });
 
   // Friction-free pairing discovery (#293). Public-by-design (lives outside
@@ -1994,6 +2553,24 @@ async function main(): Promise<void> {
     );
   });
   console.log(`[middleware] pairing discovery at GET ${WELL_KNOWN_PATH}`);
+
+  // W2-4 (issue #546) — MCP Client ID Metadata Document. Public by necessity:
+  // an authorization server fetches it uncredentialed to resolve the CIMD
+  // `client_id`. Mounted here, outside the `/api` requireAuth mount, AND listed
+  // in auth/publicPaths.ts via the shared `CIMD_METADATA_PATH` constant so the
+  // two can never drift. `redirectUri` is the SAME variable McpOAuthService
+  // holds — if these diverge, every code exchange fails at the provider.
+  app.use(
+    createMcpClientMetadataRouter({
+      metadataUrl: mcpCimdMetadataUrl,
+      redirectUri: mcpOAuthRedirectUri ?? null,
+    }),
+  );
+  console.log(
+    mcpCimdMetadataUrl && mcpOAuthRedirectUri
+      ? `[middleware] MCP client-ID metadata document at GET ${CIMD_METADATA_PATH} (client_id ${mcpCimdMetadataUrl})`
+      : `[middleware] MCP client-ID metadata document at GET ${CIMD_METADATA_PATH} answers 501 — FLOW_PUBLIC_BASE_URL unset, so CIMD is off and issuers use the manual client path`,
+  );
 
   // Harness shared assets — currently the admin-UI baseline stylesheet
   // that plugin-bundled admin UIs `<link>` into their HTML. No auth: the
@@ -2045,6 +2622,29 @@ async function main(): Promise<void> {
     }),
   );
 
+  // W2-3 (issue #542) — the public, stateless MCP endpoint.
+  //
+  // Mounted AFTER the `/api` requireAuth line above ON PURPOSE. That mount runs
+  // for every `/api/*` request whichever router answers it, so being listed in
+  // `auth/publicPaths.ts` is what makes this route reachable at all — and
+  // losing that entry makes it go DARK (401) rather than open. `requireApiKey`
+  // inside the router is the actual authentication; the per-key tool allowlist
+  // and the per-tool write scopes are the actual authorization.
+  mountPublicMcp(app, requireAuth, {
+    enabled: config.PUBLIC_MCP_ENABLED,
+    allowWithoutPrivacyMasking: config.PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING,
+    vault: secretVault,
+    graphPool,
+    getRegistry,
+    nativeToolRegistry,
+    // Resolved LIVE from the service registry, the same late-bound pattern the
+    // orchestrator plugin uses: installing the privacy-guard plugin takes effect
+    // without a restart, and — the direction that matters here — uninstalling it
+    // closes the endpoint's tool calls immediately rather than on next boot.
+    getPrivacyService: () =>
+      serviceRegistry.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME),
+  });
+
   // Chat-sessions CRUD behind `requireAuth` — sessions may contain
   // PII / tool outputs / code snippets and must not be readable anonymously.
   // The `/api` mount above already gates this, but the explicit middleware
@@ -2052,6 +2652,23 @@ async function main(): Promise<void> {
   // the sessions router to a different base path, the auth guarantee
   // travels with it.
   app.use('/api/chat', requireAuth, createChatSessionsRouter({ getStore: getChatSessionStore }));
+
+  // Plugin-contributed navigation. The web-ui shell renders a static nav for
+  // its own compiled surfaces and merges this for everything a plugin adds,
+  // which is what makes a feature genuinely installable: deactivate its
+  // plugin and the menu entry is gone without a frontend rebuild.
+  // `requireAuth` is defence-in-depth over the `/api` mount — the entry list
+  // discloses which features an operator has installed.
+  app.use(
+    '/api',
+    requireAuth,
+    createUiNavigationRouter({
+      catalog: uiRouteCatalog,
+      supportedLocales: WEB_UI_LOCALES,
+      defaultLocale: WEB_UI_DEFAULT_LOCALE,
+    }),
+  );
+  console.log('[middleware] ui navigation endpoint ready at /api/v1/ui/navigation');
 
   // In-app "Create Issue" button: operator connects their own GitHub
   // account via the device flow (only a public client id, no secret — so
@@ -2083,6 +2700,15 @@ async function main(): Promise<void> {
     createMemoryRouter({ graph: knowledgeGraph }),
   );
   console.log('[middleware] memory endpoint ready at /api/v1/memory (auth-gated)');
+
+  // #430 — structured dataset ingestion (CSV import) REST surface. Same
+  // requireAuth + per-route session-user ACL pattern as /api/v1/memory.
+  app.use(
+    '/api/v1/datasets',
+    requireAuth,
+    createDatasetsRouter({ graph: knowledgeGraph }),
+  );
+  console.log('[middleware] datasets endpoint ready at /api/v1/datasets (auth-gated)');
 
   // Slice 8 — bulk score + promote admin endpoint. Mounted only when
   // the orchestrator-extras plugin published the bulkPromotion service
@@ -2279,13 +2905,29 @@ async function main(): Promise<void> {
       ...(graphPool
         ? {
             mcpCallObserver: (entry: McpCallLogEntry) => {
-              void new AgentGraphStore(graphPool).insertMcpCallLog(entry).catch((err: unknown) => {
-                console.warn(`[middleware] mcp sandbox audit write failed: ${String(err)}`);
-              });
+              // Same redaction as the runtime observer — this sink writes to the
+              // same `mcp_call_log` table from sandbox test-calls, and was the
+              // half that had none. Shared helper, not a second copy of the
+              // expression: one redacting sink and one not is exactly what a
+              // copy-pasted transform produces.
+              void new AgentGraphStore(graphPool)
+                .insertMcpCallLog(redactAuditError(entry))
+                .catch((err: unknown) => {
+                  console.warn(`[middleware] mcp sandbox audit write failed: ${String(err)}`);
+                });
             },
           }
         : {}),
       mcpCallGuard: mcpDispatchDenial,
+      // Issue #563 — a server deleted / reconfigured / disconnected through the
+      // operator UI must also drop out of the RUNTIME pool, not just the
+      // router's own. Fire-and-forget: an invalidation failure must never
+      // reject inside a request handler.
+      onMcpServerChanged: (serverId: string) => {
+        void runtimeMcpManager?.close(serverId).catch((err: unknown) => {
+          console.warn(`[middleware] mcp pool invalidation failed: ${String(err)}`);
+        });
+      },
       // W7 UX (issue #458): MCP-capable plugins + their manifest servers_hint,
       // for the operator grant surface. Read live from the catalog so a
       // freshly-installed plugin shows up without a restart.
@@ -2300,6 +2942,77 @@ async function main(): Promise<void> {
       ...(mcpOAuthService ? { mcpOAuth: mcpOAuthService, mcpOAuthUserKey } : {}),
       ...(mcpConfigService ? { mcpConfig: mcpConfigService } : {}),
       ...(mcpRegistrySecrets ? { mcpRegistrySecrets } : {}),
+      // W5-1 — the operator surface for `public_mcp_key_bindings`, without
+      // which the public MCP endpoint cannot be configured except by hand in
+      // psql. A fresh store per call so a graphPool that arrives later is
+      // picked up without a restart, matching `getGraphStore` above.
+      getPublicMcpBindingStore: () =>
+        graphPool ? createPublicMcpKeyBindingAdminStore(graphPool) : undefined,
+      // Explicit gate on those routes, independent of the `requireAuth` that
+      // sits in front of this mount.
+      operatorAuth,
+      // #571 — resolve the two ids a binding points at, so a one-character typo
+      // is a 400 (agent) or a warning (key) rather than a
+      // fully-configured-looking row that reaches zero tools forever. Both
+      // sources are read LIVE and from the SAME places a real request resolves
+      // against: `configStore` for registered agent slugs, and the verify-only
+      // API-key store the public MCP endpoint itself authenticates through
+      // (`createVerifyOnlyApiKeyStore` over the shared vault namespace). A read
+      // that throws or finds no source returns `undefined` — "cannot tell",
+      // which the router never treats as "unknown".
+      publicMcpBindingExistence: {
+        async knownAgentIds() {
+          // Keyed on SLUG, not the agent uuid: `agent_id` stores the
+          // orchestrator slug (migration `0033`, and the UI's agent picker sends
+          // `option.value = slug`). A caller that sends a uuid is correctly
+          // rejected — it is not a valid `agent_id`.
+          const configStore =
+            serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+          if (!configStore) return undefined;
+          try {
+            // ENABLED only. "Known" here has to mean "a real request would
+            // resolve it", and dispatch resolves against the ACTIVE registry —
+            // a disabled agent is not in it. Counting every configured row let
+            // an operator bind to a disabled agent, see a clean green row, and
+            // discover at call time that it reaches nothing: the same
+            // dead-but-configured-looking state this check exists to prevent,
+            // one layer along.
+            return new Set(
+              (await configStore.listAgents())
+                .filter((a) => a.status !== 'disabled')
+                .map((a) => a.slug),
+            );
+          } catch (err) {
+            console.warn(
+              `[middleware] public-mcp binding agent lister unavailable: ${String(err)}`,
+            );
+            return undefined;
+          }
+        },
+        async knownKeyIds() {
+          try {
+            // O(keys) per call — enumerates the channel-api vault namespace and
+            // parses each record. Fine at operator scale (one read per list-page
+            // load, one per save); revisit with a cache if an install ever holds
+            // thousands of keys. The store is a thin read-only adapter, cheap to
+            // rebuild, but pinned here so the cost is one construction per call
+            // rather than hidden in a closure.
+            const keyStore = createVerifyOnlyApiKeyStore(secretVault);
+            const keys = await keyStore.list();
+            // NOT revoked. Authentication skips a revoked record, so counting
+            // one as "known" reports a binding as healthy that can only ever
+            // 401. Same reasoning as the enabled-agent filter above: this set
+            // answers "would a real request resolve this id", not "is there a
+            // row somewhere".
+            return new Set(keys.filter((k) => k.revokedAt === undefined).map((k) => k.id));
+          } catch (err) {
+            console.warn(
+              `[middleware] public-mcp binding key lister unavailable: ${String(err)}`,
+            );
+            return undefined;
+          }
+        },
+      },
     }),
   );
   console.log(
@@ -2378,6 +3091,158 @@ async function main(): Promise<void> {
     );
   }
 
+  // Dev platform (epic #470 W0) — isolated per-job code runners. DARK BY
+  // DEFAULT: with DEV_PLATFORM_ENABLED unset, nothing below runs — no router
+  // mounts and no worker starts. It also needs the Postgres graphPool (the job
+  // spine + repo/artifact tables live there); in-memory mode has nowhere to
+  // persist a durable queue. The two safety-critical modes (subscription auth,
+  // unsafe-local backend) already refused boot in config.ts if misconfigured.
+  if (config.devPlatform.enabled && graphPool) {
+    const devPlatformGithubDeviceProvider = createGitHubDeviceProvider(
+      config.devPlatform.githubClientId,
+    );
+    const shimEntry = fileURLToPath(
+      new URL('../packages/dev-runner-shim/dist/src/index.js', import.meta.url),
+    );
+    // W2: role-principal gates resolve their live holder set against the same
+    // conductor role store the conductor await gate uses.
+    const devPlatformRoleStore = new ConductorRoleStore(graphPool);
+    // Epic #470 C3: ONE namespaced config object, built in config.ts. Everything
+    // operator-settable — the runner image fallback, the on-/off-Fly selection,
+    // the comma-separated lists — is resolved behind that boundary or inside the
+    // assembly, so no `DEV_*` env name appears at this call site any more.
+    const wiredDevPlatform = assembleDevPlatform({
+      pool: graphPool,
+      vault: secretVault,
+      config: config.devPlatform,
+      resolveRoleHolders: (key) => devPlatformRoleStore.resolve(key),
+      shimEntry,
+      ...(devPlatformGithubDeviceProvider
+        ? {
+            deviceFlow: {
+              provider: devPlatformGithubDeviceProvider,
+              store: new DeviceFlowStore(),
+            },
+          }
+        : {}),
+      log: (msg) => console.log(msg),
+    });
+    mountDevPlatform(app, requireAuth, wiredDevPlatform, (msg) => console.log(msg));
+
+    const devPlatformGithubAppStore = new DevGithubAppStore(graphPool, secretVault);
+    const devPlatformGithubAppRouter = createDevPlatformGithubAppRouter({
+      flowStore: new ManifestFlowStore(),
+      appStore: devPlatformGithubAppStore,
+      bindRepoCredential: async (repoId, binding): Promise<void> => {
+        const boundRepo = await wiredDevPlatform.repoStore.updateRepo(repoId, {
+          credentialKind: 'github_app',
+          credentialRef: `github_app:${binding.appRowId}:${binding.installationId}`,
+        });
+        if (!boundRepo) {
+          throw new Error(`dev-platform repo not found while binding GitHub App credential: ${repoId}`);
+        }
+      },
+      getRepo: async (repoId): Promise<{ owner: string; name: string } | null> => {
+        const repo = await wiredDevPlatform.repoStore.getRepo(repoId);
+        return repo ? { owner: repo.owner, name: repo.name } : null;
+      },
+      publicBaseUrl: config.PUBLIC_BASE_URL,
+      log: (msg) => console.log(msg),
+    });
+    app.use('/api/v1/admin/dev-platform', requireAuth, devPlatformGithubAppRouter.admin);
+    console.log('[dev-platform] github-app admin router mounted at /api/v1/admin/dev-platform (requireAuth)');
+    app.use('/api/v1/dev-platform', devPlatformGithubAppRouter.public);
+    console.log('[dev-platform] github-app public router mounted at /api/v1/dev-platform (state-token auth only, no session guard)');
+
+    // Epic #470 W3 — register the chat orchestrator dev-job tools globally on
+    // the native-tool registry (mirrors `requestSelfExtensionTool`). ONE global
+    // registration; the caller is resolved PER CALL from `turnContext.userId`
+    // (the human driving the turn) — no `userId` ⇒ fail closed. The launch
+    // envelope is the operator's own launchable repos (the `isPermittedLauncher`
+    // gate), matching the admin `POST /jobs` contract. Gate resolution is
+    // deliberately NOT a tool (spec §4 — human-session-attributable only); the
+    // chat job card calls the W2 gate API directly.
+    {
+      const chatDevJobTools = createChatDevJobOrchestratorTools({
+        repoStore: wiredDevPlatform.repoStore,
+        jobStore: wiredDevPlatform.jobStore,
+        isPermittedLauncher,
+        defaultBackend: config.devPlatform.backend,
+        getCallerUserId: () => turnContext.current()?.userId,
+      });
+      for (const reg of chatDevJobTools.registrations) {
+        nativeToolRegistry.register(reg.name, {
+          handler: reg.handler,
+          spec: reg.spec,
+          promptDoc: reg.promptDoc,
+        });
+      }
+      console.log(
+        '[middleware] dev-platform chat orchestrator tools registered (dev_job_start / dev_job_status / dev_job_list)',
+      );
+    }
+
+    // Start the claim/enforce/reap/apply loop; stop it cleanly on shutdown.
+    // Re-adopt the docker jobs this process was running before it restarted, so
+    // reap() can still see a job whose container the daemon has since lost. The
+    // daemon rebuilds its own view from docker labels; ours lives only in memory.
+    await wiredDevPlatform.start();
+    // `stop()` halts BOTH the claim worker and the W2 gate-deadline worker (and
+    // awaits an in-flight deadline tick — a fire-and-forget on the signal handler).
+    const stopDevPlatformWorker = (): void => {
+      void wiredDevPlatform.stop();
+    };
+    process.once('SIGTERM', stopDevPlatformWorker);
+    process.once('SIGINT', stopDevPlatformWorker);
+    console.log(
+      `[middleware] dev platform ENABLED — worker running (max ${String(config.devPlatform.maxConcurrentJobs)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
+    );
+
+    // Contribute the operator menu entry instead of hardcoding it in the
+    // web-ui shell. This is the first consumer of the nav catalogue and the
+    // reason it exists: dev-platform is being extracted into a plugin
+    // (specs/470-dev-platform-plugin/plan.md), and its menu entry has to
+    // travel with it. Registering from here — still core, still inside the
+    // DEV_PLATFORM_ENABLED gate — proves the whole loop before any code
+    // moves. When the plugin package lands, this call becomes
+    // `ctx.uiRoutes.registerNav(...)` inside its activate() and nothing
+    // else about the shell changes.
+    //
+    // The `core:` prefix marks a kernel-registered source; a real plugin's
+    // entries are keyed by its plugin id, which the kernel injects.
+    uiRouteCatalog.registerNav('core:dev-platform', {
+      navId: 'devPlatform',
+      href: '/admin/dev-platform',
+      cluster: 'adminCluster',
+      order: 50,
+      label: { en: 'Dev Platform', de: 'Dev-Plattform' },
+    });
+
+    // W5 data lifecycle — the daily retention sweep (two-tier event prune). The
+    // per-job event cap + artifact ceiling are enforced inline at write time; this
+    // cron only prunes aged rows. Terminal-job purge stays operator-driven via
+    // `scripts/dev-transcript.ts purge`. `overlap:'skip'` so a slow run never stacks.
+    const devRetention = new DevRetentionRunner(graphPool, {
+      eventRetentionDays: config.devPlatform.retention.eventRetentionDays,
+      auditRetentionDays: config.devPlatform.retention.auditRetentionDays,
+    });
+    jobScheduler.register(
+      'dev-platform',
+      { name: 'dev-retention', schedule: { cron: '17 3 * * *' }, overlap: 'skip' },
+      async () => {
+        const r = await devRetention.run();
+        console.log(
+          `[middleware] dev-retention swept: ${String(r.lowValueEventsDeleted)} low-value + ${String(r.expiredEventsDeleted)} expired events pruned`,
+        );
+      },
+    );
+    console.log('[middleware] dev-retention cron registered (17 3 * * *)');
+  } else if (config.devPlatform.enabled) {
+    console.warn(
+      '[middleware] DEV_PLATFORM_ENABLED=true but no graphPool (in-memory KG backend) — dev platform NOT started; set DATABASE_URL to enable',
+    );
+  }
+
 
   // ── OB-49 — provider-aware auth bootstrap ────────────────────────────────
   // graphPool is resolved above (line ~595). Auth schema + UserStore +
@@ -2402,8 +3267,12 @@ async function main(): Promise<void> {
       app,
       requireAuth,
       getRegistry,
-      invokeAction: (toolId, input) => dynamicAgentRuntime.invokeAgentTool(toolId, input),
-      listActions: () => deterministicActionRegistry.list(),
+      // `webhook.post` (issue #437) is a built-in action, not a plugin tool — special-cased
+      // ahead of the dynamicAgentRuntime dispatch so a Designer action step can fire an
+      // ad-hoc outbound webhook without an installed connector.
+      invokeAction: (toolId, input) =>
+        toolId === WEBHOOK_POST_ACTION_ID ? invokeWebhookPostAction(input) : dynamicAgentRuntime.invokeAgentTool(toolId, input),
+      listActions: () => [WEBHOOK_POST_ACTION_ID, ...deterministicActionRegistry.list()],
       eventCatalog: eventCatalogRegistry,
       // US5 reminders: resolve a channel's proactive sender from the routines senderRegistry. Adapt
       // ProactiveSender → the worker's minimal shape ({ text } is a valid SemanticAnswer).
@@ -2411,8 +3280,22 @@ async function main(): Promise<void> {
         const sender = routinesHandle?.senderRegistry.get(channel);
         return sender ? { send: (opts) => sender.send(opts) } : undefined;
       },
+      // Issue #437 — inbound endpoint secrets + outbound subscription signing secrets
+      // live in the same per-agent-scoped vault as every other subsystem's credentials.
+      vault: secretVault,
+      webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
+      webhookInboundMaxPerMinute: config.CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE,
+      // Review finding — the operator UI must display an inbound endpoint URL it can
+      // actually reach; PUBLIC_BASE_URL alone isn't reliable here since it may
+      // deliberately point at the Next.js dev-server origin (browser-facing), which
+      // doesn't proxy /api/hooks/*. CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL overrides it
+      // when the two must differ.
+      webhookInboundBaseUrl: config.CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL,
       log: (m) => console.log(m),
     });
+    // Issue #437 — resolve the inbound-webhook forward reference mounted earlier
+    // (before express.json()); requests arriving from here on reach the real deps.
+    conductorWebhookInboundDepsRef = conductorWiring.webhookInboundDeps;
     // Expose the event router so plugin contexts (ctx.events.emit) resolve it lazily — US4.
     serviceRegistry.provide('conductorEventRouter', conductorWiring.eventRouter);
     // Expose the channel-binding store so the routines turn-capture hook can populate it — US5.
@@ -2436,6 +3319,18 @@ async function main(): Promise<void> {
           throw err;
         }
       },
+    });
+    // #478 — plugin-borne workflow templates: hand the composite catalog's
+    // registrar to the install service (runtime installs/uninstalls) and
+    // re-register templates of already-installed plugins (registrations are
+    // in-memory and do not survive a restart). Boot sweep is fail-open per
+    // template with a loud log — the fail-closed gate ran at install time.
+    conductorTemplateRegistrarRef = conductorWiring.templateCatalog;
+    await registerInstalledPluginTemplates({
+      catalog: pluginCatalog,
+      registry: installedRegistry,
+      registrar: conductorWiring.templateCatalog,
+      log: (m) => console.log(m),
     });
     console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
     const userStore = new UserStore(graphPool);
@@ -2646,6 +3541,12 @@ async function main(): Promise<void> {
       registry: installedRegistry,
       client: registryClient,
       pluginStatusRegistry,
+      // OM-16 — key-name-only vault access so the store can report whether an
+      // installed plugin is actually configured (never reads secret VALUES).
+      vault: secretVault,
+      // Issue #453 — read-only code-scan verdict on the detail response
+      // plus the operator ack endpoint. Lookup only, never scans on GET.
+      verdicts: pluginVerdictLookup,
     }),
   );
   console.log('[middleware] plugin store endpoints ready at /api/v1/store/plugins (auth: required)');
@@ -2788,6 +3689,9 @@ async function main(): Promise<void> {
       hostDependencies,
       registry: installedRegistry,
       migrationRunner,
+      // Issue #453 — advisory SkillSpector scan, fire-and-forget after a
+      // successful ingest. Absent without a Postgres graph backend.
+      scanScheduler: pluginScanScheduler,
       // After a re-upload onto an already installed agent (registry entry
       // still alive, package was deleted + re-uploaded) we activate the
       // runtime directly — otherwise the tool stays unknown until the user
@@ -2943,6 +3847,44 @@ async function main(): Promise<void> {
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
+
+  // Embedding-provider switch (#440 follow-up) — pick which `embeddingClient@1`
+  // adapter is active, LIVE. Unlike the memory-backend router next door this
+  // one does not persist-and-ask-for-a-restart: it deactivates the outgoing
+  // provider, activates the target, and asks the knowledge-graph's gate to
+  // re-evaluate ITSELF against the new provider (rewriting the vector columns
+  // when the width changed and the operator confirmed the discard), inside this
+  // process.
+  //
+  // It deliberately does NOT get `reactivate`. Re-activating the knowledge
+  // graph runs its `close()`, which ends `graphPool` — the pool captured once
+  // right here and shared with ~40 subsystems below. Handing the router that
+  // capability is what made every successful switch poison them all with
+  // "Cannot use a pool after calling end on the pool".
+  app.use(
+    '/api/v1/admin/embedding-provider',
+    requireAuth,
+    createAdminEmbeddingProviderRouter({
+      installedRegistry,
+      catalog: pluginCatalog,
+      getEmbeddingClient: () =>
+        serviceRegistry.get<EmbeddingClient>('embeddingClient'),
+      // Resolved per request, never captured: `vectorWritesAllowed` flips
+      // false→true in-process when a stale-vector clear drains, and the whole
+      // point of the page is that the operator sees that without a reload.
+      getGateStatus: () =>
+        serviceRegistry.get<EmbeddingGateStatus>(EMBEDDING_GATE_STATUS_SERVICE),
+      getGraphPool: () => graphPool,
+      // Env-derived fallback. The router prefers the KG plugin's own
+      // `graph_tenant_id` setup field when one is set.
+      tenantId: graphTenantId,
+      activate: (id) => toolPluginRuntime.activate(id),
+      deactivate: (id) => toolPluginRuntime.deactivate(id),
+    }),
+  );
+  console.log(
+    '[middleware] embedding-provider switch ready at /api/v1/admin/embedding-provider (auth: required)',
+  );
 
   // Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
   // (Claude/Codex/Gemini) so the operator can run agents on a subscription.
@@ -3506,6 +4448,9 @@ async function main(): Promise<void> {
         // best-effort
       });
       await previewCache.closeAll();
+      // Issue #563 — terminate pooled MCP connections; for stdio servers those
+      // are child processes that would otherwise outlive the middleware.
+      await runtimeMcpManager?.closeAll();
       previewSecretBuffer.clear();
       // Wake any pending ask_user_choice promises so the turns waiting
       // on them resolve before we close the DB.
@@ -3646,51 +4591,41 @@ async function main(): Promise<void> {
 
   // `/api/dev/memory` is now mounted by the @omadia/memory plugin via
   // ctx.routes.register when its `dev_memory_endpoints_enabled` config is true.
-  if (config.DEV_ENDPOINTS_ENABLED) {
-    app.use('/api/dev/graph', createDevGraphRouter({ graph: knowledgeGraph }));
-    // OB-73 — palaia Phase 4 lifecycle admin (Tier-Histogram + Run-Now).
-    // Mounted only when the KG-Neon plugin published `graphLifecycle@1`
-    // (in-memory backend stays unmounted because the lifecycle is
-    // Postgres-specific).
-    const lifecycleService =
-      serviceRegistry.get<LifecycleService>('graphLifecycle');
-    if (lifecycleService) {
-      app.use(
-        '/api/dev/graph/lifecycle',
-        createDevGraphLifecycleRouter({ lifecycle: lifecycleService }),
-      );
-      console.log(
-        '[middleware] kg-lifecycle admin endpoints ready at /api/dev/graph/lifecycle',
-      );
-    }
-    // OB-74 — palaia Phase 5 per-agent block/boost admin. Mounted only when
-    // the KG-Neon plugin published `agentPriorities@1` (in-memory backend
-    // can leave the page empty — the admin UI degrades to "no entries").
-    const agentPrioritiesStore =
-      serviceRegistry.get<AgentPrioritiesStore>('agentPriorities');
-    if (agentPrioritiesStore) {
-      app.use(
-        '/api/dev/graph/priorities',
-        createAgentPrioritiesRouter({ store: agentPrioritiesStore }),
-      );
-      console.log(
-        '[middleware] kg-priorities admin endpoints ready at /api/dev/graph/priorities',
-      );
-    }
+  // It is authenticated by the same OB-106 `/api` requireAuth line as everything
+  // else here — issue #669 removed the `/api/dev` entry from `publicPaths`.
 
-    // OB-77 — Palaia Phase 8 plugin-domain admin. Read-only listing of
-    // all loaded plugins grouped by their declared identity.domain.
-    // Mounted unconditionally (the catalog is always present); curation
-    // is deferred to OB-78 Phase 9 Agent-Profile work.
-    app.use(
-      '/api/admin/domains',
-      createAdminDomainsRouter({ catalog: pluginCatalog }),
-    );
+  // Issue #669 — the operator surfaces (KG lifecycle, per-agent priorities,
+  // plugin domains) no longer live behind DEV_ENDPOINTS_ENABLED. They are
+  // authenticated admin routers; publishing the dev scaffolding was never a
+  // supported price for reaching them. `graphLifecycle@1`/`agentPriorities@1`
+  // are published by the Neon KG plugin only — the in-memory backend leaves
+  // them unmounted because the lifecycle sweeps are Postgres-specific.
+  const kgAdminMounted = mountKnowledgeGraphAdmin(app, requireAuth, {
+    lifecycle: serviceRegistry.get<LifecycleService>('graphLifecycle'),
+    priorities: serviceRegistry.get<AgentPrioritiesStore>('agentPriorities'),
+    catalog: pluginCatalog,
+  });
+  console.log(
+    `[middleware] KG admin endpoints ready (auth: required) — lifecycle=${
+      kgAdminMounted.lifecycle ? KG_LIFECYCLE_ADMIN_PATH : 'unmounted (no graphLifecycle@1)'
+    }, priorities=${
+      kgAdminMounted.priorities ? KG_PRIORITIES_ADMIN_PATH : 'unmounted (no agentPriorities@1)'
+    }, domains=${PLUGIN_DOMAINS_ADMIN_PATH}`,
+  );
+
+  // The flag is read inside `mountDevGraph`, not in an `if` here — see its doc
+  // comment: one tested consumer, and an admin mount that cannot depend on it.
+  if (
+    mountDevGraph(app, requireAuth, {
+      graph: knowledgeGraph,
+      enabled: config.DEV_ENDPOINTS_ENABLED,
+      loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY,
+    })
+  ) {
     console.log(
-      '[middleware] domains admin endpoint ready at /api/admin/domains',
-    );
-    console.warn(
-      '[middleware] ⚠ DEV endpoints enabled at /api/dev — unauthenticated, LOCAL USE ONLY',
+      `[middleware] DEV endpoints enabled at ${DEV_GRAPH_PATH} (auth: required${
+        config.DEV_ENDPOINTS_LOOPBACK_ONLY ? ', loopback-only' : ''
+      })`,
     );
   }
 
@@ -3788,6 +4723,7 @@ async function main(): Promise<void> {
     flowSigningKey: sessionSigningKey,
     flowPublicBaseUrl,
     pluginStatusRegistry,
+    operatorAuth,
     eventCatalogRegistry,
     resolver: channelPluginResolver,
     coreApi: channelCoreApi,
@@ -3845,6 +4781,12 @@ async function main(): Promise<void> {
   // IPv4 (legacy + local dev) clients are served. Default `0.0.0.0` would
   // miss IPv6-only Fly-internal traffic — Stolperfalle #4 in
   // memory/feedback-fly-operational.
+  // Boot the setup-field pattern worker now, so the first operator to save a
+  // plugin credential does not pay thread creation inside their request's
+  // match budget (#607). Fire-and-forget: the worker is created on demand
+  // anyway, this only moves the cost off the critical path.
+  void warmPatternWorker();
+
   const server = app.listen(config.PORT, config.HOST, () => {
     console.log(`[middleware] listening on [${config.HOST}]:${config.PORT}`);
     console.log(`[middleware] skills dir: ${config.SKILLS_DIR}`);

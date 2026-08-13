@@ -82,8 +82,8 @@ function makeStubs() {
 }
 
 const SETUP_FIELDS: PluginSetupField[] = [
-  { key: 'app_id', label: 'App ID', type: 'string' },
-  { key: 'private_key', label: 'Key', type: 'secret' },
+  { key: 'app_id', label: { en: 'App ID' }, type: 'string' },
+  { key: 'private_key', label: { en: 'Key' }, type: 'secret' },
 ];
 
 function makeCatalog(runtimeWrite: boolean): PluginCatalog {

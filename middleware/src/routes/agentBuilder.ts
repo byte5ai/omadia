@@ -29,7 +29,14 @@ import {
   type SubAgentRow,
   type ToolGrantRow,
 } from '@omadia/orchestrator';
-import { McpManager, mcpToolNameFromRef, type McpCallLogEntry } from '@omadia/orchestrator';
+import {
+  isDeprecatedMcpTransport,
+  McpManager,
+  mcpToolNameFromRef,
+  turnContext,
+  today,
+  type McpCallLogEntry,
+} from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
 import {
@@ -38,7 +45,14 @@ import {
   substituteMcpConfig,
   deriveMcpConfigSchema,
 } from '../agents/subAgentToolHydration.js';
+import { sessionIdentity } from '../auth/sessionIdentity.js';
+import {
+  auditIdentity,
+  parseDelegation,
+  resolveMcpUserKey,
+} from '../services/mcpDelegation.js';
 import { rescanAllMcpServers } from '../services/mcpRescan.js';
+import { redactSecrets } from '../services/secretRedaction.js';
 import {
   MCP_SEVERITIES_NEEDING_ACK,
   refreshMcpGrantPolicy,
@@ -54,6 +68,7 @@ import { importSkillMarkdown } from '../services/skillImport.js';
 import { serializeSkillMarkdown } from '../services/skillLoader.js';
 import {
   combineWithLlmSeverity,
+  computeVerdict,
   CURRENT_VERIFIER_VERSION,
   getOrComputeVerdict,
   type Severity,
@@ -63,9 +78,16 @@ import {
 } from '../services/skillVerdict.js';
 import {
   getOrComputeLlmVerdict,
+  sanitizeVerdictRationale,
   type LlmVerdictStore,
   type LlmVerifier,
 } from '../services/skillVerdictLlmVerifier.js';
+import {
+  createPublicMcpBindingsRouter,
+  type BindingExistenceCheck,
+  type OperatorSessionCheck,
+} from './publicMcpBindingsRouter.js';
+import type { PublicMcpKeyBindingAdminStore } from '../mcp/publicMcpKeyBindingsAdmin.js';
 
 export interface AgentBuilderRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
@@ -86,6 +108,11 @@ export interface AgentBuilderRouterOptions {
    *  enforcement + audit trail as runtime dispatch. */
   readonly mcpCallObserver?: (entry: McpCallLogEntry) => void;
   readonly mcpCallGuard?: (serverId: string, toolName: string) => string | null;
+  /** Issue #563 — invoked after a request changed an MCP server's identity,
+   *  config or token. The router already drops its OWN pooled connection; this
+   *  is how the runtime `McpManager` in `index.ts` (a different instance, with
+   *  a different auth provider) gets told to drop this server's too. */
+  readonly onMcpServerChanged?: (serverId: string) => void;
   /** Epic #459 W7 (issue #458 UX): lists installed plugins so the operator
    *  grant surface can show which plugins declare `permissions.mcp` and their
    *  manifest `servers_hint`. Returns the plugin id, display name, the mcp
@@ -107,9 +134,15 @@ export interface AgentBuilderRouterOptions {
       issuer: string | null;
       issuerHost: string | null;
       brokered: boolean;
+      /** W2-4 — which link of the client-acquisition chain applies. */
+      acquisitionMode: 'stored' | 'cimd' | 'dcr' | 'manual';
+      cimdSupported: boolean;
+      cimdBlockedReason: string | null;
     }>;
     beginAuthorization(server: McpServerRow, userKey: string): Promise<{ authorizeUrl: string }>;
-    completeAuthorization(state: string, code: string): Promise<{ serverId: string }>;
+    /** `iss` is the RFC 9207 authorization-response parameter (W0-1, D1),
+     *  validated against the flow-bound issuer before any exchange. */
+    completeAuthorization(state: string, code: string, iss?: string | null): Promise<{ serverId: string }>;
     setManualClient(issuer: string, clientId: string, clientSecret: string | null): Promise<void>;
     getValidAccessToken(server: McpServerRow, userKey: string): Promise<string | null>;
   };
@@ -131,6 +164,21 @@ export interface AgentBuilderRouterOptions {
     setToken(registryId: string, value: string): Promise<void>;
     deleteToken(registryId: string): Promise<void>;
   };
+  /** W5-1 — the WRITE half of `public_mcp_key_bindings`, for the MCP Control
+   *  Center's Bindings tab. The public MCP endpoint gets the READ store and
+   *  only the read store (`wirePublicMcp.ts`); this one never reaches it.
+   *  Absent (no graph pool) ⇒ the sub-routes 503. */
+  readonly getPublicMcpBindingStore?: () => PublicMcpKeyBindingAdminStore | undefined;
+  /** W5-1 — operator-session check for the binding routes. Absent ⇒ they refuse
+   *  to serve at all, rather than relying on the `requireAuth` that happens to
+   *  sit in front of this router's mount. */
+  readonly operatorAuth?: OperatorSessionCheck;
+  /** #571 — resolves whether a binding's `agent_id` / `key_id` actually exist,
+   *  so a typo is a 400 (agent) or a warning (key) instead of a
+   *  fully-configured-looking dead row. Forwarded verbatim to the binding
+   *  router; absent ⇒ existence is never checked. Built in `index.ts`, the one
+   *  place with both the registry and the API-key vault in scope. */
+  readonly publicMcpBindingExistence?: BindingExistenceCheck;
 }
 
 interface Live {
@@ -198,6 +246,22 @@ export function createAgentBuilderRouter(
   options: AgentBuilderRouterOptions,
 ): Router {
   const router = Router();
+
+  // W5-1 — public MCP key bindings. Its own router because its auth gate must
+  // travel with it rather than depend on this mount sitting behind
+  // `requireAuth`; see `publicMcpBindingsRouter.ts`. Mounted first so the
+  // prefix cannot be shadowed by a later `/:slug`-shaped route.
+  router.use(
+    '/public-mcp-bindings',
+    createPublicMcpBindingsRouter({
+      getStore: () => options.getPublicMcpBindingStore?.(),
+      ...(options.operatorAuth ? { operatorAuth: options.operatorAuth } : {}),
+      ...(options.publicMcpBindingExistence
+        ? { existence: options.publicMcpBindingExistence }
+        : {}),
+    }),
+  );
+
   const mcp = new McpManager({
     ...(options.mcpCallObserver ? { onToolCall: options.mcpCallObserver } : {}),
     ...(options.mcpCallGuard ? { guard: options.mcpCallGuard } : {}),
@@ -214,7 +278,28 @@ export function createAgentBuilderRouter(
           ? (await graph.listMcpServers()).find((s) => s.id === cfg.id)
           : undefined;
         if (!server) return null;
-        return options.mcpOAuth.getValidAccessToken(server, options.mcpOAuthUserKey ?? 'operator');
+        // Per-user token (bugfix, mirrors the runtime McpManager in index.ts):
+        // tokens are STORED under the request's session-derived key at connect
+        // time, so lookup must use the same key.
+        //
+        // W0-1 (D2): the previous `?? 'operator'` tail is gone. A `per_user`
+        // server with no resolvable identity now yields no token and the call
+        // fails closed, instead of quietly using the operator's authority.
+        const userKey = resolveMcpUserKey(
+          server,
+          turnContext.current()?.mcpUserKey,
+          options.mcpOAuthUserKey,
+        );
+        if (userKey === null) return null;
+        return options.mcpOAuth.getValidAccessToken(server, userKey);
+      },
+      resolveIdentity: async (cfg: McpServerConfig): Promise<string | null> => {
+        const graph = options.getGraphStore();
+        const server = graph
+          ? (await graph.listMcpServers()).find((s) => s.id === cfg.id)
+          : undefined;
+        if (!server) return null;
+        return auditIdentity(server, turnContext.current()?.mcpUserKey, options.mcpOAuthUserKey);
       },
       // Discover/test-call surface needs-auth via the route's describeAuth path,
       // so the manager itself doesn't need to synthesize a prompt here.
@@ -229,6 +314,22 @@ export function createAgentBuilderRouter(
         : {}),
     },
   });
+  /** Issue #563 — a server's identity, config or token just changed on disk, so
+   *  every live connection built from the old values is stale. Drops this
+   *  router's own pooled connection and lets the runtime manager drop its one.
+   *  The notification is best-effort: an invalidation failure must never turn a
+   *  successful write into a failed request. */
+  const invalidateMcpServer = async (serverId: string): Promise<void> => {
+    await mcp.close(serverId).catch(() => {
+      /* best-effort — the entry is already removed from the pool */
+    });
+    try {
+      options.onMcpServerChanged?.(serverId);
+    } catch {
+      /* an observer must never break the route */
+    }
+  };
+
   // Marketplace catalog client (epic #459 W3, issue #455): server-side proxy
   // with a 5-minute cache, so registry tokens never reach the browser.
   const mcpRegistryClient = new McpRegistryClient();
@@ -630,8 +731,16 @@ export function createAgentBuilderRouter(
             llmRow && deterministicField.severity
               ? combineWithLlmSeverity(deterministicField.severity, llmRow.severity)
               : llmRow?.severity ?? deterministicField.severity,
+          // OM-26 read-path scrub: rows persisted BEFORE the verifier started
+          // storing `scan_failed:<code>` still hold the raw provider JSON
+          // (`request_id` and all). Redacting only in the web-ui renderer would
+          // still put it in this response body.
           llm: llmRow
-            ? { severity: llmRow.severity, rationale: llmRow.rationale, computedAt: llmRow.computedAt }
+            ? {
+                severity: llmRow.severity,
+                rationale: sanitizeVerdictRationale(llmRow.severity, llmRow.rationale),
+                computedAt: llmRow.computedAt,
+              }
             : null,
         },
         usedByCount: usedBy.length,
@@ -739,7 +848,15 @@ export function createAgentBuilderRouter(
         skill.frontmatter,
         skill.body,
       );
-      res.json({ llm: { severity: row.severity, rationale: row.rationale, computedAt: row.computedAt } });
+      // Same OM-26 read-path scrub as GET /skills/:id — this endpoint also
+      // serves whatever is already persisted when the verdict is cache-hit.
+      res.json({
+        llm: {
+          severity: row.severity,
+          rationale: sanitizeVerdictRationale(row.severity, row.rationale),
+          computedAt: row.computedAt,
+        },
+      });
     } catch (err) {
       fail(res, err);
     }
@@ -805,19 +922,40 @@ export function createAgentBuilderRouter(
       const result = await importSkillMarkdown(l.graph, { raw, sourcePath, resources }, { dryRun });
       if (!dryRun && result.outcome !== 'unchanged') {
         await reload(l);
-        // Post-review fix: the deterministic verdict was previously only ever
-        // computed by the offline backfill script — a skill imported through
-        // this route (the primary onboarding path) never got scanned until
-        // someone manually ran that script. Cheap (regex-only), so safe to
-        // await inline here, unlike the Phase 1b LLM path.
-        await getOrComputeVerdict(
-          deterministicVerdictStoreFor(l),
-          result.contentHash,
-          result.skill.frontmatter,
-          result.skill.body,
-        );
       }
-      res.json(result);
+      // Post-review fix: the deterministic verdict was previously only ever
+      // computed by the offline backfill script — a skill imported through
+      // this route (the primary onboarding path) never got scanned until
+      // someone manually ran that script. Cheap (regex-only), so safe to
+      // await inline here, unlike the Phase 1b LLM path.
+      //
+      // OM-25: the verdict used to be computed and then THROWN AWAY, so an
+      // import that landed as "⚠ MARKIERT — PRÜFUNG EMPFOHLEN" in the registry
+      // was confirmed to the user as a plain success. It now travels on the
+      // response. Deriving it client-side from `result.risks` was rejected on
+      // purpose: `risks` cannot express `too_large_to_scan` or `scan_failed`,
+      // and duplicating `computeVerdict`'s thresholds guarantees drift.
+      const verdict = dryRun
+        ? // Dry run persists nothing, so read no store — `computeVerdict` is the
+          // same pure thresholding the persisted path uses, so the preview and
+          // the committed verdict cannot disagree.
+          computeVerdict(result.contentHash, result.risks)
+        : await getOrComputeVerdict(
+            deterministicVerdictStoreFor(l),
+            result.contentHash,
+            result.skill.frontmatter,
+            result.skill.body,
+          );
+      res.json({
+        ...result,
+        // Flatten to the plain code list the web-ui's `SkillVerdict.riskCodes`
+        // expects — the nested per-verifier shape crashed the "why" panel once
+        // already (see `flattenRiskCodes`).
+        verdict: {
+          severity: verdict.severity,
+          riskCodes: flattenRiskCodes(verdict.riskCodes),
+        },
+      });
     } catch (err) {
       fail(res, err);
     }
@@ -1040,7 +1178,9 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      await l.graph.deleteMcpServer(str(req.params.id));
+      const id = str(req.params.id);
+      await l.graph.deleteMcpServer(id);
+      await invalidateMcpServer(id);
       await reload(l);
       res.status(204).end();
     } catch (err) {
@@ -1051,6 +1191,21 @@ export function createAgentBuilderRouter(
   router.post('/mcp-servers/:id/discover', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
+    // Establish the per-request MCP OAuth identity (bugfix): the shared
+    // McpManager's getToken reads turnContext.mcpUserKey to look up the token
+    // under the SAME key it was stored under (see auth-status/authorize
+    // below), instead of silently missing it. `enter` (not `run`) because this
+    // scope is naturally bounded by the request's own async chain.
+    //
+    // W0-1: this carries the session's CANDIDATE identity. Whether it may be
+    // replaced by a shared one is decided per server by `resolveMcpUserKey` in
+    // the auth provider — not by a default here.
+    const discoverIdentity = sessionIdentity(req);
+    turnContext.enter({
+      turnId: `mcp-discover-${str(req.params.id)}`,
+      turnDate: today(),
+      ...(discoverIdentity ? { mcpUserKey: discoverIdentity } : {}),
+    });
     try {
       const servers = await l.graph.listMcpServers();
       const row = servers.find((s) => s.id === str(req.params.id));
@@ -1204,6 +1359,8 @@ export function createAgentBuilderRouter(
       // Config feeds connect-time substitution — refresh + reload so it applies.
       await refreshMcpGrantPolicy(l.graph);
       await l.graph.bumpMcpGrantEpoch(id);
+      // …and drop the live connection, which still holds the OLD env/headers.
+      await invalidateMcpServer(id);
       await reload(l);
       const updated = (await l.graph.listMcpServers()).find((s) => s.id === id);
       const [decorated] = await withToolVerdicts(l, [updated ?? row]);
@@ -1384,10 +1541,19 @@ export function createAgentBuilderRouter(
 
   // ── generic MCP OAuth (epic #459 W9) ──────────────────────────────────────
   // Tokens are keyed to the authenticated operator's identity (codex W9 fold):
-  // one operator's token is never reused for another. Falls back to a shared
-  // key only when no session identity is available (single-admin/dev).
-  const oauthUserKey = (req: Request): string =>
-    req.session?.sub || req.session?.email || options.mcpOAuthUserKey || 'operator';
+  // one operator's token is never reused for another.
+  //
+  // W0-1 (D2): the identity the SESSION offers, with no fallback baked in. The
+  // old `|| 'operator'` tail is gone — whether an unresolved identity may
+  // borrow a shared one is now the server's `delegation` decision, applied by
+  // `resolveMcpUserKey`, never an implicit default here.
+  //
+  // W4-1: `sessionIdentity` now lives in `../auth/sessionIdentity.js` (behaviour
+  // unchanged) so the chat routes can produce the SAME key these routes consume.
+  /** The key to act as for THIS server, or null when a `per_user` server has
+   *  no resolvable identity (fail closed — never silently the operator). */
+  const oauthUserKeyFor = (req: Request, server: McpServerRow): string | null =>
+    resolveMcpUserKey(server, sessionIdentity(req));
   const escapeHtml = (s: string): string =>
     s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -1403,24 +1569,61 @@ export function createAgentBuilderRouter(
         return;
       }
       if (!options.mcpOAuth) {
-        res.json({ protected: false, connected: false, issuer: null, needsClient: false, brokered: false });
+        res.json({
+          protected: false,
+          connected: false,
+          issuer: null,
+          needsClient: false,
+          brokered: false,
+          acquisitionMode: 'manual',
+          cimdSupported: false,
+          cimdBlockedReason: null,
+          delegation: server.delegation,
+          identityResolved: sessionIdentity(req) !== null,
+        });
         return;
       }
       const desc = await options.mcpOAuth.describeAuth(server);
       if (!desc.protected) {
-        res.json({ protected: false, connected: false, issuer: null, needsClient: false, brokered: false });
+        res.json({
+          protected: false,
+          connected: false,
+          issuer: null,
+          needsClient: false,
+          brokered: false,
+          acquisitionMode: 'manual',
+          cimdSupported: false,
+          cimdBlockedReason: null,
+          delegation: server.delegation,
+          identityResolved: sessionIdentity(req) !== null,
+        });
         return;
       }
-      const token = await l.graph.getMcpOAuthToken(server.id, oauthUserKey(req));
+      // W0-1: null under `per_user` with no session identity — report it as
+      // not-connected rather than probing the shared operator token.
+      const userKey = oauthUserKeyFor(req, server);
+      const token =
+        userKey === null ? undefined : await l.graph.getMcpOAuthToken(server.id, userKey);
       const client = desc.issuer ? await l.graph.getMcpOAuthClient(desc.issuer) : undefined;
       res.json({
         protected: true,
         connected: token !== undefined,
         issuer: desc.issuer,
         issuerHost: desc.issuerHost,
-        // A brokered server (offers DCR) needs no manual client even without one
-        // stored — DCR self-registers at connect. Only a delegating server does.
+        // W0-1 (D2): whose authority calls to this server act under, and
+        // whether this session actually has an identity to act as.
+        delegation: server.delegation,
+        identityResolved: userKey !== null,
+        // A brokered server needs no manual client even without one stored —
+        // either a Client ID Metadata Document (W2-4) or DCR acquires one at
+        // connect. Only a server with neither does.
         brokered: desc.brokered,
+        // W2-4 — which acquisition mode this issuer is on, so the UI can badge
+        // CIMD, explain a CIMD-capable-but-unreachable install, and make clear
+        // the manual client remains the Entra ID / Okta path.
+        acquisitionMode: desc.acquisitionMode,
+        cimdSupported: desc.cimdSupported,
+        cimdBlockedReason: desc.cimdBlockedReason,
         needsClient: !desc.brokered && desc.issuer !== null && client === undefined,
         redirectUri: options.mcpOAuth.redirectUri,
       });
@@ -1443,8 +1646,16 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
       }
+      // W0-1 (D2): authorizing under a borrowed identity is exactly the
+      // confused deputy — a `per_user` server with no session identity has
+      // nobody to store the token for, so refuse before starting the flow.
+      const userKey = oauthUserKeyFor(req, server);
+      if (userKey === null) {
+        res.status(403).json({ error: 'delegation_identity_unresolved' });
+        return;
+      }
       try {
-        const { authorizeUrl } = await options.mcpOAuth.beginAuthorization(server, oauthUserKey(req));
+        const { authorizeUrl } = await options.mcpOAuth.beginAuthorization(server, userKey);
         res.json({ authorizeUrl });
       } catch (err) {
         // Issuer without DCR needs a one-time manual client first.
@@ -1491,8 +1702,48 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      await l.graph.deleteMcpOAuthToken(str(req.params.id), oauthUserKey(req));
+      const server = (await l.graph.listMcpServers()).find((s) => s.id === str(req.params.id));
+      if (!server) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      // W0-1: only ever delete the token this caller actually owns. With the
+      // old shared fallback an identity-less session could disconnect the
+      // operator's token.
+      const userKey = oauthUserKeyFor(req, server);
+      if (userKey === null) {
+        res.status(403).json({ error: 'delegation_identity_unresolved' });
+        return;
+      }
+      await l.graph.deleteMcpOAuthToken(server.id, userKey);
+      // The revoked token is still attached to a pooled connection; without
+      // this, "Disconnect" leaves an authorized session serving calls.
+      await invalidateMcpServer(server.id);
       res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  /** Set a server's delegation mode (W0-1, D2). `per_user` requires each
+   *  caller to have its own identity; `service` is the explicit opt-in to one
+   *  shared identity. Migration 0031 grandfathers already-connected servers
+   *  into `service`, so this is how an operator moves one to `per_user`. */
+  router.put('/mcp-servers/:id/delegation', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const delegation = parseDelegation(req.body?.delegation);
+      if (delegation === null) {
+        res.status(400).json({ error: 'invalid_delegation' });
+        return;
+      }
+      const updated = await l.graph.setMcpServerDelegation(str(req.params.id), delegation);
+      if (!updated) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      res.json({ id: updated.id, delegation: updated.delegation });
     } catch (err) {
       fail(res, err);
     }
@@ -1518,6 +1769,16 @@ export function createAgentBuilderRouter(
       const code = typeof req.query['code'] === 'string' ? req.query['code'] : '';
       const state = typeof req.query['state'] === 'string' ? req.query['state'] : '';
       const providerError = typeof req.query['error'] === 'string' ? req.query['error'] : '';
+      // RFC 9207 issuer identifier (W0-1, D1). `state` proves the response
+      // belongs to a flow we started; it does NOT prove which authorization
+      // server minted the code. A repeated `iss` (Express gives an array) is
+      // itself a tampering signal — treat it as a mismatch, not a "pick one".
+      const rawIss = req.query['iss'];
+      if (rawIss !== undefined && typeof rawIss !== 'string') {
+        res.status(400).send(donePage(false, 'The authorization response carried a malformed issuer.'));
+        return;
+      }
+      const iss = typeof rawIss === 'string' ? rawIss : null;
       if (providerError) {
         res.status(400).send(donePage(false, `The provider returned: ${providerError}`));
         return;
@@ -1526,10 +1787,25 @@ export function createAgentBuilderRouter(
         res.status(400).send(donePage(false, 'Missing code or state.'));
         return;
       }
-      await options.mcpOAuth.completeAuthorization(state, code);
+      // The service validates `iss` against the flow-bound issuer BEFORE
+      // exchanging the code, so a rejected callback stores nothing.
+      await options.mcpOAuth.completeAuthorization(state, code, iss);
       res.status(200).send(donePage(true, 'The server is now authorized for you.'));
     } catch (err) {
-      res.status(400).send(donePage(false, msg(err)));
+      // Never echo the raw error here: it can carry the code or the PKCE
+      // verifier (D5). The issuer-mismatch case gets an explicit message.
+      if (err instanceof Error && err.name === 'McpOAuthIssuerMismatchError') {
+        res
+          .status(400)
+          .send(
+            donePage(
+              false,
+              'The authorization response came from an unexpected issuer and was rejected. Nothing was stored. Please start the connection again.',
+            ),
+          );
+        return;
+      }
+      res.status(400).send(donePage(false, redactSecrets(msg(err))));
     }
   });
 
@@ -2430,15 +2706,15 @@ async function withToolVerdicts(
     l.graph.listMcpToolVerdicts(CURRENT_VERIFIER_VERSION),
     l.graph.listMcpToolVerdictAcks(CURRENT_VERIFIER_VERSION),
   ]);
-  const vmap = new Map(verdicts.map((v) => [`${v.serverId} ${v.toolName}`, v]));
-  const amap = new Map(acks.map((a) => [`${a.serverId} ${a.toolName}`, a]));
+  const vmap = new Map(verdicts.map((v) => [`${v.serverId}\0${v.toolName}`, v]));
+  const amap = new Map(acks.map((a) => [`${a.serverId}\0${a.toolName}`, a]));
   return servers.map((s) => ({
     ...s,
     discoveredTools: (s.discoveredTools as ReadonlyArray<Record<string, unknown>>).map(
       (tool) => {
         const name = typeof tool['name'] === 'string' ? (tool['name'] as string) : '';
-        const v = vmap.get(`${s.id} ${name}`);
-        const a = amap.get(`${s.id} ${name}`);
+        const v = vmap.get(`${s.id}\0${name}`);
+        const a = amap.get(`${s.id}\0${name}`);
         const ackValid = v !== undefined && a !== undefined && a.contentHash === v.contentHash;
         const verdict: McpToolVerdictField = v
           ? {
@@ -2455,11 +2731,21 @@ async function withToolVerdicts(
   }));
 }
 
-function mcpNode(s: McpServerRow) {
+/**
+ * Row → API node for an MCP server. Exported for unit tests (issue #541).
+ *
+ * `transportDeprecated` is derived from `DEPRECATED_MCP_TRANSPORTS`, never
+ * hard-coded: the web-ui uses it to badge legacy rows without duplicating the
+ * spec's deprecation list. Purely additive — the row's transport is returned
+ * unchanged and no DB constraint moved.
+ */
+export function mcpNode(s: McpServerRow) {
   return {
     id: s.id,
     name: s.name,
     transport: s.transport,
+    /** MCP 2026-07-28 deprecated this transport (see DEPRECATED_MCP_TRANSPORTS). */
+    transportDeprecated: isDeprecatedMcpTransport(s.transport),
     endpoint: s.endpoint,
     status: s.status,
     lastDiscoveredAt: s.lastDiscoveredAt ? s.lastDiscoveredAt.toISOString() : null,

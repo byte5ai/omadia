@@ -45,7 +45,10 @@ export default function MemoryPage(): React.ReactElement {
           contentType.includes('text/html') ||
           body.trimStart().toLowerCase().startsWith('<!doctype');
         if (res.status === 500 && looksHtml) {
-          setListError(t('errorMiddlewareUnreachable'));
+          // #667 — same misdiagnosis as the chat path: a 500 means something
+          // answered, so "middleware unreachable" (on a hardcoded dev host) is
+          // an assertion this code never checked.
+          setListError(t('errorUpstreamErrorPage'));
         } else if (res.status === 404) {
           setListError(t('errorDevEndpointUnavailable'));
         } else {
@@ -162,6 +165,7 @@ export default function MemoryPage(): React.ReactElement {
             {crumbs.map((c, i) => (
               <span key={c.path} className="flex items-center gap-1">
                 {i > 0 && <span className="text-[color:var(--fg-subtle)]">/</span>}
+                {/* eslint-disable-next-line no-restricted-syntax -- inline breadcrumb path link, not a text CTA */}
                 <button
                   type="button"
                   onClick={() => setCwd(c.path)}
@@ -172,6 +176,7 @@ export default function MemoryPage(): React.ReactElement {
               </span>
             ))}
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- inline low-emphasis text link (no fill/border/padding), not a CTA */}
           <button
             type="button"
             onClick={() => void loadDir(cwd)}
@@ -182,6 +187,7 @@ export default function MemoryPage(): React.ReactElement {
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {parent !== null && (
+            // eslint-disable-next-line no-restricted-syntax -- full-width file-browser navigation row, not a text CTA
             <button
               type="button"
               onClick={() => setCwd(parent)}
@@ -209,6 +215,7 @@ export default function MemoryPage(): React.ReactElement {
             const name = basename(e.virtualPath);
             const activeFile = selected === e.virtualPath;
             return (
+              // eslint-disable-next-line no-restricted-syntax -- file-browser selection row with active-state styling, not a text CTA
               <button
                 key={e.virtualPath}
                 type="button"

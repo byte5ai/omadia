@@ -11,6 +11,7 @@
 #   -f docker-compose.storage.yaml     object storage (MinIO) — chat attachments
 #   -f docker-compose.diagrams.yaml    Kroki diagram rendering (needs storage too)
 #   -f docker-compose.embeddings.yaml  in-tenant embeddings (Ollama)
+#   -f docker-compose.skillspector.yaml  advisory plugin code scanning (SkillSpector)
 #   -f docker-compose.build.yaml       build middleware + web-ui from source
 #
 # Example — full stack:

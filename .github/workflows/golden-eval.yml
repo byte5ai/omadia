@@ -1,0 +1,86 @@
+# Golden-set behaviour regression eval (#129).
+#
+# CI's `ci.yml` verifies plumbing (lint / typecheck / unit tests) but never
+# tests LLM behaviour against the pinned model — a model bump or prompt edit can
+# silently regress agent quality (LLM weakness #13, version drift). This job
+# runs a frozen corpus through a real VerifierPipeline and fails when a
+# known-good input regresses to a worse verifier verdict class.
+#
+# NOT run on pull_request: it spends real Anthropic tokens, so it runs on main
+# pushes + manual dispatch + a weekly cron (cost vs. signal). Because it never
+# triggers on PRs, forks never attempt it. It is gated on the ANTHROPIC_API_KEY
+# secret and skips cleanly with a notice when that secret is absent, so the job
+# stays green on a repo where the key is not yet configured.
+
+name: golden-eval
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Mondays 06:00 UTC — a weekly drift canary independent of merge cadence.
+    - cron: '0 6 * * 1'
+
+concurrency:
+  group: golden-eval-${{ github.ref }}
+  # Do NOT cancel a running eval when the next commit lands on main: this is a
+  # per-commit drift canary, and cancelling would leave the earlier commit range
+  # with no regression signal (the exact gap #129 exists to close). Back-to-back
+  # merges queue instead of racing; the cost is bounded by corpus size. Manual
+  # dispatch / cron on the same ref still serialise behind a running job.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  golden:
+    name: golden-set verdict regression (#129)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: middleware
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      # Guard first so a repo without the secret does zero expensive work.
+      - name: Check ANTHROPIC_API_KEY is configured
+        id: guard
+        working-directory: .
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::notice::ANTHROPIC_API_KEY secret not configured — skipping golden-set eval (#129)."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.guard.outputs.run == 'true'
+        uses: actions/checkout@v7
+
+      - if: steps.guard.outputs.run == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: middleware/package-lock.json
+
+      - name: npm ci (middleware + workspaces)
+        if: steps.guard.outputs.run == 'true'
+        run: npm ci --include=optional --no-audit --no-fund
+
+      # sharp's native binary is platform-specific and skipped by npm ci on the
+      # linux runner (lockfile generated on darwin-arm64). Mirror ci.yml.
+      - name: Install sharp linux-x64 native binary
+        if: steps.guard.outputs.run == 'true'
+        run: npm install --no-save --no-audit --no-fund --os=linux --cpu=x64 sharp
+
+      - name: Build workspace packages (@omadia/verifier + adapter dist/)
+        if: steps.guard.outputs.run == 'true'
+        run: npm run build
+
+      - name: Run golden-set eval
+        if: steps.guard.outputs.run == 'true'
+        run: npm run eval:golden

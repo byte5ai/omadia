@@ -80,6 +80,10 @@ interface PluginsDndProps {
  */
 export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
   const t = useTranslations('operatorAgents');
+  // OM-27 — the shared count vocabulary lives under `store.page.counts` so the
+  // store, the dashboard and this page phrase their three different numbers
+  // from one catalogue.
+  const tCounts = useTranslations('store.page.counts');
   const initialMap = useMemo(() => {
     const m = new Map<string, SelectedEntry>();
     for (const p of props.agent.plugins) {
@@ -298,6 +302,18 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
           {t('save')}
         </Button>
       </h4>
+      {/* OM-27 — these numbers count ATTACHMENT to this orchestrator, not
+          installation. The store tab and the dashboard tile count installed
+          plugins; spelling the difference out here stops the three from
+          reading as one inconsistent number. */}
+      <p className="mb-3 text-xs text-[color:var(--fg-muted)]">
+        {tCounts('attached', {
+          n: enabledOrdered.length + orphans.length,
+          agent: props.agent.name,
+        })}
+        {' · '}
+        {tCounts('available', { n: availableOrdered.length })}
+      </p>
       <DndContext
         sensors={sensors}
         collisionDetection={closestCorners}
@@ -307,7 +323,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
         <div className="grid gap-3 lg:grid-cols-2">
           <Column
             id={AVAILABLE_ID}
-            title={t('pluginsAvailable')}
+            title={t('pluginsAvailableToAttach')}
             count={availableOrdered.length}
             emptyLabel={t('pluginsAvailableEmpty')}
           >
@@ -335,7 +351,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
 
           <Column
             id={ENABLED_ID}
-            title={t('pluginsEnabled')}
+            title={t('pluginsAttachedHere')}
             count={enabledOrdered.length + orphans.length}
             emptyLabel={t('pluginsEnabledEmpty')}
           >
@@ -369,6 +385,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                   <p className="text-[10px] uppercase tracking-wide text-[color:var(--warning)]">
                     {t('orphanPluginsHeading')} ({orphans.length})
                   </p>
+                  {/* eslint-disable-next-line no-restricted-syntax -- warning-outline orphan detach-all action (§10 no warning variant) */}
                   <button
                     type="button"
                     className="rounded border border-[color:var(--warning)] bg-[color:var(--bg-elevated)] px-2 py-0 text-[10px] text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
@@ -400,6 +417,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                     <span className="text-[10px] uppercase text-[color:var(--warning)]">
                       {t('orphanPluginBadge')}
                     </span>
+                    {/* eslint-disable-next-line no-restricted-syntax -- warning-outline per-orphan detach action (§10 no warning variant) */}
                     <button
                       type="button"
                       className="ml-auto rounded border border-[color:var(--warning)] bg-[color:var(--bg-elevated)] px-2 py-0 text-[10px] hover:bg-[color:var(--warning)]/10"
@@ -579,6 +597,7 @@ function DraggablePluginTile(props: {
     <div ref={setNodeRef} style={style} className="select-none">
       <div className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
         <div className="flex items-start gap-2 px-2 py-2">
+          {/* eslint-disable-next-line no-restricted-syntax -- dnd drag handle (icon-only GripVertical + drag listeners), not a §4.2 CTA */}
           <button
             type="button"
             {...attributes}

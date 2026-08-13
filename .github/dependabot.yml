@@ -40,6 +40,13 @@ updates:
         update-types: ['version-update:semver-major']
       - dependency-name: 'react-dom'
         update-types: ['version-update:semver-major']
+      # typescript 7.x is the Go-native compiler rewrite (tsgo), a breaking
+      # architectural change, not a routine semver bump. This mirrors the
+      # identical ignore in the /web-ui block below — without it here the bot
+      # re-raises a TS7 bump against /middleware every Monday (PR #595, which
+      # died at `npm ci` because typescript-eslint's peer caps at <6.1.0).
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
 
   # Web-dev (Next.js admin UI)
   - package-ecosystem: 'npm'
@@ -76,6 +83,13 @@ updates:
       # referencing Node APIs that don't exist at run time. 22.x patch/minor
       # still flow; revisit when the whole stack moves to the next Node LTS.
       - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+      # typescript 7.x is the Go-native compiler rewrite (tsgo), a breaking
+      # architectural change from the 5.x TS-in-TS compiler, not a routine
+      # semver bump. PR #495 (5.9.3 -> 7.0.2) failed build + typecheck + vitest
+      # CI outright. Revisit once the ecosystem (next.js, vitest, our own
+      # tsconfig usage) has validated support for TS7.
+      - dependency-name: 'typescript'
         update-types: ['version-update:semver-major']
 
   # GitHub Actions versions in workflow files

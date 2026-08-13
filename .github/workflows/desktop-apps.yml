@@ -30,6 +30,18 @@ on:
         description: 'Release tag to build + attach to (e.g. v0.3.0)'
         required: true
         type: string
+      notarize:
+        # Notarization needs an in-effect Apple Developer Program agreement. When
+        # one lapses, notarytool returns "HTTP 403: A required agreement is
+        # missing or has expired" and the whole build fails — even though signing
+        # itself is fine. Set false to validate the signing path meanwhile.
+        # NEVER ship a release built with this off: unnotarized apps are blocked
+        # by Gatekeeper on first launch.
+        description: 'Notarize with Apple (false = validate signing only, NOT releasable)'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
   # Called in-run from auto-release.yml: a GITHUB_TOKEN-created release does NOT
   # fire the `release` event, so the apps must be built from within the same run
   # that cut the release (same pattern as publish-images.yml).
@@ -52,11 +64,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS is Apple Silicon (arm64) only for v1 — see the rationale in
-          # desktop/electron-builder.yml (extraResources can't be arch-split, and
-          # Intel runners queue for hours). Intel x64 is a tracked follow-up.
+          # macOS ships BOTH architectures, each built on a runner of its own
+          # architecture. That is mandatory, not a preference: the omadia runtime
+          # rides along as unpacked extraResources (native node modules + the
+          # embedded Postgres engine) which electron-builder copies verbatim and
+          # cannot arch-split, so an x64 bundle produced on an arm64 host would
+          # contain arm64 binaries and crash on Intel.
           - os: macos-latest
             args: --mac --arm64
+          # macos-13 was retired in Dec 2025; macos-26-intel is the current
+          # x86_64 image. GitHub drops x86_64 entirely in August 2027, at which
+          # point this entry has to go (or move to a self-hosted Intel runner).
+          - os: macos-26-intel
+            args: --mac --x64
           # Linux + Windows each provision a PG17 pgvector for their embedded
           # engine below (apt pgdg / MSVC nmake build) before staging. x64 only.
           - os: ubuntu-latest
@@ -64,16 +84,23 @@ jobs:
           - os: windows-latest
             args: --win
     runs-on: ${{ matrix.os }}
-    # Hard cap so a stuck native build can never run for hours.
-    timeout-minutes: 30
+    # Hard cap so a stuck native build can never run for hours. Measured on a
+    # full signed+notarized run: linux 5 min, windows 9 min, macOS arm64 21 min,
+    # macOS Intel >30 min — the Intel runner is materially slower and blew the
+    # previous 30-minute cap mid-signing, which then took the update-feed merge
+    # down with it. 60 keeps the runaway protection with real headroom, and
+    # notarization wait times are set by Apple, not by us.
+    timeout-minutes: 60
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      # 'yes' unless a workflow_dispatch explicitly passed notarize=false. The
+      # `release` event and workflow_call leave the input undefined, so they
+      # always notarize — a release can never accidentally skip it.
+      NOTARIZE: ${{ inputs.notarize != 'false' && 'yes' || 'no' }}
       # Must match Supervisor.KERNEL_PORT in desktop/src/supervisor.ts — the
       # web-ui bakes this kernel URL into its routes-manifest at BUILD time, so
       # it cannot be a per-launch random port.
       KERNEL_URL: http://127.0.0.1:8769
-      # node-gyp's VS auto-detection is unreliable on windows-latest; pin VS2022.
-      GYP_MSVS_VERSION: '2022'
       # macOS signing (hoisted so they're addressable in step-level `if:`).
       APPLE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64_HIGH5 }}
       APPLE_P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD_HIGH5 }}
@@ -93,14 +120,14 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
       # node-gyp's bundled gyp imports Python's `distutils`, removed in Python
       # 3.12. The macOS/Windows runners default to 3.12+ (Ubuntu still ships
       # 3.11), so pin 3.11 everywhere to keep native rebuilds working.
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -113,10 +140,23 @@ jobs:
           git config --global url."https://github.com/".insteadOf "git@github.com:"
 
       # --- build the omadia runtime the installer bundles -------------------
+      # `--ignore-scripts` is load-bearing, not hardening theatre — the same
+      # reason it is load-bearing in the root Dockerfile. better-sqlite3 v13
+      # ships N-API prebuilds for every platform (including win32-x64) inside
+      # its own tarball and declares `gypfile: false` to say "do not build me".
+      # npm ignores that field and synthesises `install: node-gyp rebuild`
+      # anyway, purely because a `binding.gyp` is present in the package.
+      # macOS/Linux merely waste time on that pointless compile; Windows has no
+      # Visual Studio node-gyp can find, so it fails outright and the Windows
+      # installer silently stopped shipping (last `.exe`: v0.63.0). Skipping
+      # scripts lets the bundled prebuild be used. argon2 + esbuild are the only
+      # middleware packages with a real install script, so rebuild those two by
+      # hand (fsevents is macOS-only and resolves as an optional dependency).
       - name: Build middleware kernel
         working-directory: middleware
         run: |
-          npm ci
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm rebuild argon2 esbuild
           npm run build
 
       # No MIDDLEWARE_URL at build time: the /bot-api and /p proxies are route
@@ -133,27 +173,26 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      # Make the middleware's native modules load under Electron's Node (the kernel
-      # runs via ELECTRON_RUN_AS_NODE). argon2 + sharp are N-API → ABI-stable across
-      # node/electron, so their shipped binaries already work, no rebuild needed.
-      # Only better-sqlite3 (non-N-API) needs an Electron-ABI build — and it
-      # publishes Electron PREBUILDS, so fetch one with prebuild-install (no
-      # node-gyp / Visual Studio). Fall back to a source rebuild if no prebuild
-      # exists for this Electron version on this platform.
-      - name: Provision better-sqlite3 for Electron
+      # Verify the middleware's native modules load under Electron's Node (the
+      # kernel runs via ELECTRON_RUN_AS_NODE). All three are N-API → ABI-stable
+      # across node/electron, so their shipped binaries already work and NONE of
+      # them needs an Electron-ABI rebuild.
+      #
+      # better-sqlite3 needed one back when it was v12 and non-N-API. Since v13
+      # it ships N-API prebuilds in its own tarball (`prebuilds/<platform>-<arch>.node`)
+      # and — decisively — its loader in `lib/binding.js` checks that `prebuilds/`
+      # directory FIRST and only falls back to `build/Release/` if nothing is
+      # there. So an electron-rebuild artefact would be written and then never
+      # loaded. The old step was therefore a no-op that could only fail: upstream
+      # publishes no GitHub release assets for v13, so `prebuild-install` always
+      # missed and fell through to a source rebuild needing a full toolchain.
+      #
+      # The verification below is the real gate and is deliberately kept: if the
+      # N-API/ABI-stability assumption is ever wrong, this fails here instead of
+      # crashing the kernel at boot in the shipped app.
+      - name: Verify native modules load under the Electron ABI
         shell: bash
         run: |
-          EV="$(node -p "require('./desktop/node_modules/electron/package.json').version")"
-          echo "provisioning better-sqlite3 for Electron $EV"
-          ( cd middleware/node_modules/better-sqlite3 \
-            && npx --yes prebuild-install -r electron -t "$EV" --verbose ) \
-          || ( cd desktop \
-            && npx electron-rebuild --version "$EV" --module-dir ../middleware --only better-sqlite3 --force )
-          # Verify ALL three native modules actually load under Electron's runtime
-          # — not just the rebuilt better-sqlite3, but also argon2 + sharp, whose
-          # (un-rebuilt) prebuilds we ASSUME are N-API/ABI-stable. If that
-          # assumption is wrong, this fails here instead of crashing the kernel at
-          # boot in the shipped app.
           ELECTRON_RUN_AS_NODE=1 ./desktop/node_modules/.bin/electron -e \
             "require('./middleware/node_modules/better-sqlite3'); require('./middleware/node_modules/argon2'); require('./middleware/node_modules/sharp'); console.log('better-sqlite3 + argon2 + sharp load under Electron ABI OK')"
 
@@ -170,12 +209,32 @@ jobs:
         run: |
           brew install pgvector
           PV="$(brew --prefix pgvector)"
-          NATIVE="desktop/node_modules/@embedded-postgres/darwin-arm64/native"
+          # Must follow the RUNNER's architecture, not a fixed value: the Intel
+          # runner installs an x86_64 pgvector and needs it staged into the
+          # darwin-x64 engine. Homebrew also lives at a different prefix per arch
+          # (/usr/local vs /opt/homebrew), which `brew --prefix` already handles.
+          ARCH="$(node -p 'process.arch')"      # arm64 | x64
+          NATIVE="desktop/node_modules/@embedded-postgres/darwin-$ARCH/native"
+          if [ ! -d "$(dirname "$NATIVE")" ]; then
+            echo "FAIL: @embedded-postgres/darwin-$ARCH is not installed — the" >&2
+            echo "      engine for this architecture is missing, so the staged app" >&2
+            echo "      would ship without a database." >&2
+            exit 1
+          fi
           mkdir -p "$NATIVE/lib/postgresql" "$NATIVE/share/postgresql/extension"
           cp "$PV/lib/postgresql@17/vector.dylib" "$NATIVE/lib/postgresql/vector.dylib"
           cp "$PV/share/postgresql@17/extension/vector.control" "$NATIVE/share/postgresql/extension/"
           cp "$PV"/share/postgresql@17/extension/vector--*.sql "$NATIVE/share/postgresql/extension/"
-          echo "✓ pgvector staged into the embedded PG17 engine (darwin-arm64)"
+          # Prove the dylib really is this runner's architecture — a silently
+          # mismatched vector.dylib would only fail at CREATE EXTENSION, inside
+          # the shipped app, on a user's machine.
+          file "$NATIVE/lib/postgresql/vector.dylib"
+          EXPECT="$([ "$ARCH" = arm64 ] && echo arm64 || echo x86_64)"
+          if ! file "$NATIVE/lib/postgresql/vector.dylib" | grep -q "$EXPECT"; then
+            echo "FAIL: vector.dylib is not $EXPECT — wrong architecture staged." >&2
+            exit 1
+          fi
+          echo "✓ pgvector staged into the embedded PG17 engine (darwin-$ARCH, $EXPECT)"
 
       # Linux: the PostgreSQL APT repo (pgdg) ships a prebuilt postgresql-17-pgvector.
       # A PG17 vector.so loads in the embedded PG17 (extensions are ABI-stable within
@@ -241,12 +300,11 @@ jobs:
           printf '%s' "$APPLE_P12_BASE64" | base64 -d > "$RUNNER_TEMP/developer-id.p12"
           printf '%s' "$APPLE_ASC_KEY_P8_BASE64" | base64 -d > "$RUNNER_TEMP/asc-key.p8"
 
-          # Import the Developer ID into a keychain NOW (before afterPack signs the
-          # nested native modules). electron-builder imports CSC_LINK into its own
-          # temp keychain only during its sign step, which runs AFTER afterPack —
-          # so afterPack would otherwise have no usable private key. We create our
-          # own keychain, import the key, and put it on the search list so both
-          # afterPack's `codesign --sign` and electron-builder find the key.
+          # This keychain is the ONLY one used for signing — see the CSC_KEYCHAIN
+          # note below for why electron-builder is deliberately kept from making
+          # its own. It must exist before afterPack, which signs the nested
+          # extraResources binaries and runs ahead of electron-builder's own sign
+          # step. Put it on the search list so both find the key.
           KEYCHAIN="$RUNNER_TEMP/omadia-signing.keychain-db"
           KCPASS="$(openssl rand -base64 24)"
           security create-keychain -p "$KCPASS" "$KEYCHAIN"
@@ -271,17 +329,53 @@ jobs:
           IDENT=$(security find-identity -v -p codesigning "$KEYCHAIN" \
             | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)
 
+          if [ -z "$IDENT" ]; then
+            echo "FAIL: the Developer ID was imported but no codesigning identity" >&2
+            echo "      is visible in the keychain — refusing to continue." >&2
+            exit 1
+          fi
+
           {
-            echo "CSC_LINK=file://$RUNNER_TEMP/developer-id.p12"
-            echo "CSC_KEY_PASSWORD=$APPLE_P12_PASSWORD"
+            # Deliberately NOT CSC_LINK. With CSC_LINK set, electron-builder
+            # builds its OWN temp keychain and then runs:
+            #
+            #   security set-key-partition-list -S apple-tool:,apple: -s -k <pw> <keychain>
+            #
+            # passing the *P12 passphrase* as <pw> while the keychain was created
+            # with a different, random password (app-builder-lib macCodeSign.js
+            # importCerts). That only works while the keychain happens to still be
+            # unlocked from moments earlier — it broke outright on the Intel
+            # runner with "SecKeychainUnlock: The user name or passphrase you
+            # entered is not correct", and was luck on arm64.
+            #
+            # macPackager.js: when CSC_LINK is absent it skips that path entirely
+            # and uses CSC_KEYCHAIN + CSC_NAME. We already built a keychain above
+            # and set its partition list with the CORRECT password, so point
+            # electron-builder at it and skip the buggy detour.
+            echo "CSC_KEYCHAIN=$KEYCHAIN"
+            # WITHOUT the "Developer ID Application: " prefix — electron-builder
+            # rejects it outright ("Please remove prefix ... from the specified
+            # name"); it adds the certificate type itself. afterPack, which calls
+            # codesign directly, still gets the full identity via
+            # MAC_SIGN_IDENTITY below.
+            echo "CSC_NAME=${IDENT#Developer ID Application: }"
             echo "APPLE_API_KEY=$RUNNER_TEMP/asc-key.p8"
             echo "APPLE_API_KEY_ID=$APPLE_ASC_KEY_ID"
             echo "APPLE_API_ISSUER=$APPLE_ASC_ISSUER_ID"
-            echo "EB_NOTARIZE=--config.mac.notarize=true"
+            # Must be set EXPLICITLY either way: electron-builder auto-notarizes
+            # as soon as APPLE_API_KEY/_ID/_ISSUER are in the environment, so
+            # simply leaving the flag off does NOT disable it.
+            if [ "${NOTARIZE:-yes}" = yes ]; then
+              echo "EB_NOTARIZE=--config.mac.notarize=true"
+            else
+              echo "EB_NOTARIZE=--config.mac.notarize=false"
+            fi
             echo "MAC_SIGN_KEYCHAIN=$KEYCHAIN"
             echo "MAC_SIGN_EXPECTED=1"
+            # afterPack signs the nested extraResources binaries with this.
+            echo "MAC_SIGN_IDENTITY=$IDENT"
           } >> "$GITHUB_ENV"
-          if [ -n "$IDENT" ]; then echo "MAC_SIGN_IDENTITY=$IDENT" >> "$GITHUB_ENV"; fi
+          echo "signing identity: $IDENT"
 
       # --- Windows Authenticode signing (optional) --------------------------
       - name: Prepare Windows signing (optional — needs WINDOWS_CSC_* secrets)
@@ -295,12 +389,60 @@ jobs:
 
       - name: Package installers
         working-directory: desktop
-        run: npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
+        run: |
+          # Belt-and-braces only. Signing hashes EVERY file in the bundle, and
+          # this step used to die with "EMFILE: too many open files" — but the fd
+          # limit is NOT the real lever: macOS caps concurrent open files at
+          # `kern.maxfilesperproc` regardless of `ulimit -n`, and setting the
+          # limit to `unlimited` actively LOWERS the effective ceiling. The fix
+          # is the file-count reduction in stage-runtime.mjs; this just avoids a
+          # needlessly small default. Keep it an explicit number, never
+          # "unlimited".
+          ulimit -n 65536 2>/dev/null || true
+          echo "fd soft=$(ulimit -Sn) kern.maxfilesperproc=$(sysctl -n kern.maxfilesperproc 2>/dev/null || echo n/a)"
+          echo "files in staged runtime: $(find runtime -type f | wc -l)"
+          # Debugging note: electron-builder retries a failing `codesign` four
+          # times and then reports only the LAST error, which masks the real
+          # cause. Re-run this step with `DEBUG=electron-builder` to see the
+          # actual command and its stderr.
+          npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
+
+      # ALWAYS runs on macOS — signed or not. Without it, a build whose signature
+      # macOS considers corrupt sails through CI green and ships an app that
+      # cannot be opened at all ("omadia is damaged and can't be opened"), which
+      # is exactly what happened to v0.56.0 and v0.57.0. The stricter Developer ID
+      # assertions (not-adhoc, notarized, stapled) stay in the gate below; this one
+      # only asserts the bundle is STRUCTURALLY valid, which must hold either way.
+      - name: Verify the macOS bundle is structurally signed (always)
+        if: ${{ startsWith(matrix.os, 'macos') }}
+        working-directory: desktop
+        run: |
+          set -e
+          shopt -s nullglob
+          apps=(release/mac*/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then
+            echo "FAIL: no .app produced under release/mac*/ — nothing to verify" >&2
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
+            if [ ! -e "$app/Contents/_CodeSignature/CodeResources" ]; then
+              echo "FAIL: $app has no _CodeSignature/CodeResources — the bundle was never sealed." >&2
+              echo "      macOS reads this as corrupt and refuses to launch it." >&2
+              exit 1
+            fi
+            # `--deep` is required HERE: a plain `--verify --strict` passes even
+            # when a nested bundle (e.g. Electron Framework.framework) was never
+            # sealed, which is precisely the state that makes the app unopenable.
+            # Catches both that and a tree codesign cannot walk (e.g. dangling
+            # node_modules/.bin symlinks → "No such file or directory").
+            codesign --verify --deep --strict --verbose=2 "$app"
+          done
+          echo "✓ macOS bundle carries a structurally valid signature (nested code included)"
 
       # The .app is notarized + stapled by electron-builder above; the DMG needs
       # its own ticket so `stapler validate` passes on the disk image itself.
       - name: Notarize + staple the DMGs
-        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' }}
+        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' && env.NOTARIZE == 'yes' }}
         working-directory: desktop
         run: |
           for dmg in release/*.dmg; do
@@ -313,7 +455,7 @@ jobs:
           done
 
       - name: Verify macOS signatures (acceptance gate)
-        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' }}
+        if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' && env.NOTARIZE == 'yes' }}
         working-directory: desktop
         run: |
           set -e
@@ -385,6 +527,18 @@ jobs:
         run: |
           shopt -s nullglob
           files=(release/*.dmg release/*.zip release/*.exe release/*.AppImage release/*.deb release/*.blockmap release/latest*.yml)
+          # macOS is built once per architecture, and each run emits a
+          # `latest-mac.yml` listing only ITS OWN artifacts. Uploading both would
+          # leave whichever job finished last as the only updatable architecture.
+          # The `mac-update-feed` job below merges them and uploads the result.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            keep=()
+            for f in "${files[@]}"; do
+              [[ "$(basename "$f")" == "latest-mac.yml" ]] || keep+=("$f")
+            done
+            files=("${keep[@]}")
+            echo "holding back latest-mac.yml — merged across architectures by the mac-update-feed job"
+          fi
           if [ ${#files[@]} -eq 0 ]; then
             echo "no installer artifacts found in desktop/release/" >&2
             exit 1
@@ -396,3 +550,66 @@ jobs:
             exit 0
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
+
+  # Publishes the ONE `latest-mac.yml` that covers both architectures.
+  #
+  # electron-updater's MacUpdater picks its download by testing the file URL for
+  # "arm64", so a feed listing a single architecture leaves the other with no
+  # matching file (Intel) or silently pushes everyone onto Rosetta (arm64). The
+  # two mac jobs cannot produce this file between them — each only knows its own
+  # artifacts — so it is assembled here from both run artifacts.
+  mac-update-feed:
+    needs: build
+    # Runs even when another matrix leg failed (fail-fast is off), so a broken
+    # Windows build does not also cost macOS its update feed. If a mac artifact
+    # is genuinely missing the step below fails loudly rather than publishing a
+    # feed that covers only half the users.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Download the macOS build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: omadia-installers-macos-*
+
+      - name: Merge the per-architecture update feeds
+        run: |
+          set -e
+          ARM="artifacts/omadia-installers-macos-latest/latest-mac.yml"
+          INTEL="artifacts/omadia-installers-macos-26-intel/latest-mac.yml"
+          for f in "$ARM" "$INTEL"; do
+            if [ ! -f "$f" ]; then
+              echo "FAIL: missing $f — one macOS architecture did not produce an" >&2
+              echo "      update feed. Refusing to publish a single-architecture" >&2
+              echo "      latest-mac.yml, which would break auto-update for the other." >&2
+              exit 1
+            fi
+          done
+          # arm64 goes first: it supplies the legacy top-level path/sha512 that
+          # pre-arch-aware updaters follow, and it is the majority of Macs.
+          node desktop/scripts/merge-mac-update-feed.mjs "$ARM" "$INTEL" latest-mac.yml
+          echo "--- merged latest-mac.yml ---"
+          cat latest-mac.yml
+
+      - name: Upload the merged feed to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "no GitHub Release for '$TAG' — merge validated, skipping upload."
+            exit 0
+          fi
+          gh release upload "$TAG" latest-mac.yml --clobber
