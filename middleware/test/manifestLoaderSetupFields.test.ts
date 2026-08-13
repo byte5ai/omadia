@@ -21,8 +21,17 @@ import type { PluginCatalogEntry } from '../src/plugins/manifestLoader.js';
 
 /** The one fixture both paths are measured against. */
 const SETUP_FIELDS: Array<Record<string, unknown>> = [
+  // #602 (OM-17) — a bare-string label is read as English on BOTH paths.
   { key: 'base_url', type: 'url', label: 'Base URL' },
-  { key: 'api_key', type: 'secret', label: 'API key', required: true },
+  {
+    key: 'api_key',
+    type: 'secret',
+    // #602 (OM-17) — a localized label/help map must survive identically on
+    // both projections, or a German operator and the install wizard disagree.
+    label: { en: 'API key', de: 'API-Schlüssel' },
+    help: { en: 'From the provider console', de: 'Aus der Anbieter-Konsole' },
+    required: true,
+  },
   { key: 'note', type: 'string', label: 'Note', required: false },
   {
     key: 'tenant',
@@ -73,6 +82,35 @@ test('`pattern` is passed through unchanged, and absent when not declared', () =
   assert.equal(loadedFields().get('base_url')?.pattern, undefined);
 });
 
+// #602 (OM-17) — label/help are localized maps.
+test('a bare-string label is read as English (`{ en }`)', () => {
+  assert.deepEqual(loadedFields().get('base_url')?.label, { en: 'Base URL' });
+});
+
+test('a localized label/help map is preserved verbatim', () => {
+  const f = loadedFields().get('api_key');
+  assert.deepEqual(f?.label, { en: 'API key', de: 'API-Schlüssel' });
+  assert.deepEqual(f?.help, {
+    en: 'From the provider console',
+    de: 'Aus der Anbieter-Konsole',
+  });
+});
+
+test('a label-less field falls back to `{ en: <key> }` on the store view', () => {
+  const plugin = adaptManifestV1({
+    schema_version: '1',
+    identity: {
+      id: 'de.byte5.integration.test',
+      kind: 'integration',
+      domain: 'test',
+      name: 'Test Plugin',
+      version: '1.0.0',
+    },
+    setup: { fields: [{ key: 'lonely', type: 'string' }] },
+  })!;
+  assert.deepEqual(plugin.setup_fields[0]?.label, { en: 'lonely' });
+});
+
 test('store and install-wizard paths agree on required for the SAME fixture', () => {
   const store = loadedFields();
   const entry = {
@@ -102,6 +140,19 @@ test('store and install-wizard paths agree on required for the SAME fixture', ()
       storeField.pattern,
       installField.pattern,
       `pattern drift on '${installField.key}'`,
+    );
+    // #602 (OM-17) — the localized label/help maps must be identical on both
+    // projections, or the store card and the install wizard say different
+    // things (or different languages) about the same field.
+    assert.deepEqual(
+      storeField.label,
+      installField.label,
+      `label drift on '${installField.key}'`,
+    );
+    assert.deepEqual(
+      storeField.help,
+      installField.help,
+      `help drift on '${installField.key}'`,
     );
   }
 });

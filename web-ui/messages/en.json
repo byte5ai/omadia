@@ -2904,7 +2904,16 @@
       "updateTitleWithVersion": "Update available: {from} → {to}",
       "updateSticker": "Update",
       "noDescription": "No description provided.",
-      "actionRequired": "Action required"
+      "actionRequired": "Action required",
+      "setupProfileLabel": "Setup",
+      "setupProfile": {
+        "audience": {
+          "it_admin": "Setup by IT administrator",
+          "operator": "Setup by operator",
+          "end_user": "Setup by end user"
+        },
+        "minutes": "~{minutes} min"
+      }
     },
     "stateBadge": {
       "available": "Available",

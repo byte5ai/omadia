@@ -767,7 +767,6 @@ export async function shutdownPatternWorker(): Promise<void> {
 /** The subset of a setup field this module needs. */
 export interface PatternCheckableField {
   key: string;
-  label?: string;
   pattern?: string;
   pattern_hint?: Record<string, string> | undefined;
 }

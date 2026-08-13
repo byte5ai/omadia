@@ -68,12 +68,12 @@ function fakeCatalog(plugins: Plugin[]): PluginCatalog {
 
 const secretField: PluginSetupField = {
   key: 'api_key',
-  label: 'API key',
+  label: { en: 'API key' },
   type: 'secret',
 };
 const configField: PluginSetupField = {
   key: 'workspace',
-  label: 'Workspace',
+  label: { en: 'Workspace' },
   type: 'string',
 };
 

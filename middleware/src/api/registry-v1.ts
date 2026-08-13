@@ -14,7 +14,12 @@
 // `GET /registry/index.json` implementation.
 // ===========================================================================
 
-import type { ISO8601, LocalizedMarkdown, PluginKind } from './admin-v1.js';
+import type {
+  ISO8601,
+  LocalizedMarkdown,
+  PluginKind,
+  SetupProfile,
+} from './admin-v1.js';
 
 /** A single installable version of a plugin, as advertised by a registry. */
 export interface RegistryVersionEntry {
@@ -49,6 +54,10 @@ export interface RegistryManifestSummary {
    *  `setup.guide`. Display-only — rendered on the hub detail page and the
    *  Omadia store; never parsed for behaviour. */
   setup_guide?: LocalizedMarkdown;
+  /** OM-15 (#602) — installation-effort profile for the store card (audience,
+   *  time, a key prerequisite). Kept loose; the store re-validates it through
+   *  the same parser the local catalog uses before rendering. */
+  setup_profile?: SetupProfile;
   permissions?: Record<string, unknown>;
 }
 

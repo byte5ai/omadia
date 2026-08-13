@@ -10,6 +10,7 @@ import type {
 } from '../api/admin-v1.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import { parseSetupProfile } from '../plugins/manifestLoader.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { PluginVerdictLookup } from '../services/pluginVerdict.js';
 import { withReadiness, type ReadinessVault } from '../plugins/readiness.js';
@@ -489,6 +490,10 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
     summary.setup_guide && Object.keys(summary.setup_guide).length > 0
       ? summary.setup_guide
       : undefined;
+  // OM-15 (#602) — re-validate the untrusted registry teaser through the same
+  // parser the local catalog uses, so a malformed remote profile degrades to
+  // "no prerequisites row" instead of a raw/partial object on the card.
+  const setupProfile = parseSetupProfile(summary.setup_profile);
 
   return {
     id: entry.id,
@@ -516,6 +521,7 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
     multi_instance: true,
     privacy_class: 'default',
     ...(setupGuide ? { setup_guide: setupGuide } : {}),
+    ...(setupProfile ? { setup_profile: setupProfile } : {}),
     source: registrySource(resolved),
   };
 }
