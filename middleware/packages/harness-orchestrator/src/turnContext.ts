@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ChatParticipantsProvider } from './chatParticipants.js';
+import type { McpInputSentinelMint } from './mcp/pendingMcpInput.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 
 /**
@@ -203,6 +204,22 @@ export interface TurnContextValue {
    * server, and this string reaches the LLM and the session log.
    */
   mcpInputReplayNote?: string;
+  /**
+   * #570 — per-dispatch provenance receipt for the MRTR sentinel.
+   *
+   * Installed by `dispatchTool` in a nested scope around a SINGLE tool dispatch
+   * (one box per call, so concurrent calls in one `allSettled` batch cannot see
+   * each other's), and written only by `McpManager.parkInputRequired` when it
+   * mints a `[mcp_input_required:<id>]` sentinel. The Privacy Shield reads it
+   * back to decide whether a result may skip interning: without this the
+   * sentinel is interned like any other tool result and the whole #544 card
+   * flow is dead whenever a privacy guard is installed — which is the default.
+   *
+   * Undefined when no privacy handle is active (nothing interns, so nothing
+   * needs exempting) — dispatch then behaves byte-identically to before.
+   * See {@link McpInputSentinelMint} for why this is not a string-shape check.
+   */
+  mcpInputSentinelMint?: McpInputSentinelMint;
 }
 
 const storage = new AsyncLocalStorage<TurnContextValue>();

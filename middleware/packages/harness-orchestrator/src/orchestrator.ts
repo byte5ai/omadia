@@ -63,11 +63,13 @@ import type {
 import type {
   McpInputReplayer,
   McpInputReply,
+  McpInputSentinelMint,
   PendingMcpInput,
   PendingMcpInputStore,
 } from './mcp/pendingMcpInput.js';
 import {
   claimMcpInputFromResults,
+  isOwnMintedSentinel,
   mcpInputReplyLabel,
   parseMcpInputReply,
 } from './mcp/pendingMcpInput.js';
@@ -5767,6 +5769,13 @@ export class Orchestrator {
     // whether to pass the narration through raw (sub-agent already saw
     // real values, its synthesis carries them) or intern as before.
     const subAgentBypassFlag = { value: false };
+    // #570 — provenance receipt for an MRTR sentinel minted DURING this
+    // dispatch. Scoped per call (never per turn) so two MCP tools parking in
+    // the same `allSettled` batch cannot exempt each other's results. Only
+    // installed when a privacy guard is active: with no guard nothing interns,
+    // so the extra scope would buy nothing and every guard-less dispatch stays
+    // byte-identical to before. See `McpInputSentinelMint`.
+    const mcpInputSentinelMint: McpInputSentinelMint = {};
     let result: string;
     if (
       privacy !== undefined &&
@@ -5782,10 +5791,21 @@ export class Orchestrator {
           ...ctx,
           subAgentDatasetSink: subAgentSink,
           subAgentBypassFlag,
+          mcpInputSentinelMint,
           ...(domainToolAgentId !== undefined
             ? { subAgentOwnerPluginId: domainToolAgentId }
             : {}),
         },
+        () => this.dispatchToolInner(name, input, observer),
+      );
+    } else if (privacy !== undefined && ctx !== undefined) {
+      // #570 — MCP tools reach dispatch as NATIVE tools (`mcpNativeHandler`),
+      // not as domain tools, so the branch above never covers them. They need
+      // the same per-dispatch scope for the mint box and nothing else: the
+      // sub-agent sinks stay out, so this scope is a plain copy of the turn
+      // context plus the receipt.
+      result = await turnContext.run(
+        { ...ctx, mcpInputSentinelMint },
         () => this.dispatchToolInner(name, input, observer),
       );
     } else {
@@ -5836,6 +5856,25 @@ export class Orchestrator {
       }
     }
     if (privacy !== undefined && typeof result === 'string') {
+      // #570 — MRTR provenance exemption. This dispatch parked an MCP call and
+      // the result IS the sentinel omadia minted for it. Interning it would
+      // replace the correlation id with a digest, `parseMcpInputSentinel` (
+      // prefix-anchored) would miss, `drainPendingMcpInput` would find nothing
+      // and the input card would never render — i.e. the entire #544 feature is
+      // dead whenever a privacy guard is installed, which is the default.
+      //
+      // What this newly exposes to the LLM is bounded by what the sentinel
+      // contains and nothing else: a random UUID, the operator-configured
+      // server name, the tool name, and up to 8 server-authored field NAMES
+      // clamped to 64 chars each. The user-facing `prompt`/`label`/
+      // `description` are server-authored too but live on the card, never in
+      // the sentinel, and the collected VALUES never come near this path.
+      //
+      // Checked before the name allowlist because it is the narrower rule: it
+      // exempts one specific string in one specific dispatch, not a tool.
+      if (isOwnMintedSentinel(mcpInputSentinelMint, result)) {
+        return result;
+      }
       // Interning-exemption: the agent's own infrastructure/self tools
       // (memory, stored-process CRUD, self-produced meta output) are never
       // interned — masking them blinds the agent to its own operational
