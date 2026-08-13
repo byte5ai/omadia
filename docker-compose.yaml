@@ -12,6 +12,7 @@
 #   -f docker-compose.diagrams.yaml    Kroki diagram rendering (needs storage too)
 #   -f docker-compose.embeddings.yaml  in-tenant embeddings (Ollama)
 #   -f docker-compose.skillspector.yaml  advisory plugin code scanning (SkillSpector)
+#   -f docker-compose.update.yaml      operator-triggered self-update (#432)
 #   -f docker-compose.build.yaml       build middleware + web-ui from source
 #
 # Example — full stack:
@@ -23,6 +24,11 @@
 # with `OMADIA_VERSION=vX.Y.Z` as a shell env var, or in a project-root `.env`
 # file next to this compose file. Compose reads image-tag variables only from
 # the shell or the root `.env`, never from middleware/.env.
+#
+# NOTE (#432): `OMADIA_VERSION` is deliberately NOT listed under the services'
+# `environment:` below. It is baked into each image at build time and reported
+# by `/health` and Admin → Update; passing it through compose would override
+# that baked stamp with an empty string whenever the variable is unset.
 #
 # Usage:
 #   cp middleware/.env.example middleware/.env   # set ANTHROPIC_API_KEY
