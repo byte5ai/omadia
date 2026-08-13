@@ -268,10 +268,53 @@ export class InMemoryTaskStore implements TaskStore {
   }
 
   /**
-   * The one deliberately UNFENCED writer on this store.
+   * Resume a human-parked task: `input_required` → `working` (issue #560,
+   * criterion 5). UNFENCED and status-guarded — the parked row holds no lease, so
+   * there is nothing to fence on; see the seam contract on {@link TaskStore}.
    *
-   * Every other write goes through {@link fenced} and needs the owning lease.
-   * This one does not, and cannot: the whole premise of an orphan sweep is that
+   * `input` replaces the stored input so the re-driven executor sees the human's
+   * answer rather than re-running to the same gate. Idempotent on an already
+   * `working` row (returns it unchanged); a missing or terminal row throws — a
+   * finished task cannot be un-finished.
+   */
+  async provideInput(id: string, input: unknown): Promise<TaskDescriptor> {
+    const row = this.rows.get(id);
+    if (!row) throw new TaskLeaseLostError(id);
+    if (isTerminalTaskStatus(row.descriptor.status)) {
+      throw new TaskLeaseLostError(id);
+    }
+    // Already re-claimable — a second resume is a no-op, not an error. Deliberately
+    // does NOT overwrite the input again: the first resume already installed the
+    // answer, and a re-claim may be in flight.
+    if (row.descriptor.status === 'working') return row.descriptor;
+    row.input = input;
+    const ts = this.nowIso();
+    row.descriptor = {
+      ...row.descriptor,
+      status: 'working',
+      // Lease stays null: the task returns to the UNCLAIMED pool so the claim loop
+      // picks it up, exactly as a freshly created task would be.
+      claimedBy: null,
+      // Reset the liveness clock. The row parked with a FROZEN `lastHeartbeatAt`
+      // from its pre-park claim; leaving it would make the reaper's worker-window
+      // (`coalesce(lastHeartbeatAt, createdAt) < staleCutoff`) judge the freshly
+      // resumed task by a heartbeat that predates the whole human wait and
+      // force-fail it as "abandoned" before the resume driver re-claims it — the
+      // human's answer landing on a `failed` task. A resumed row is as live as a
+      // freshly claimed one, so it gets a full window measured from NOW.
+      lastHeartbeatAt: ts,
+      updatedAt: ts,
+    };
+    return row.descriptor;
+  }
+
+  /**
+   * A deliberately UNFENCED writer on this store (the other is
+   * {@link provideInput}; both act on rows that hold no lease by construction).
+   *
+   * Every LEASE-BOUND write goes through {@link fenced} and needs the owning
+   * lease. This one does not, and cannot: the whole premise of an orphan sweep is
+   * that
    * the lease holder is gone, so demanding its lease would make the sweep
    * unable to do its job. It is the administrative exception the `TaskStore`
    * doc calls out, not a hole in the fence — and it is why terminal
