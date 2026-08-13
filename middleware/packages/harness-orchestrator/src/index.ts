@@ -417,6 +417,19 @@ export type {
 // Session logger + chat-session store
 export { SessionLogger, graphScopeFor } from './sessionLogger.js';
 export type { SessionLogEntry } from './sessionLogger.js';
+
+// #684 — run-trace outcome tallies. Exported so an operator surface can read
+// how often the trace was dropped without SessionLogger growing a reporting
+// responsibility of its own.
+export {
+  RunTraceOutcomeStats,
+  recordRunTraceOutcome,
+  RUN_TRACE_RECORDED,
+} from './runTraceObservability.js';
+export type {
+  RunTraceOutcome,
+  RunTraceOutcomeCounts,
+} from './runTraceObservability.js';
 export {
   ChatSessionStore,
   InvalidSessionIdError,

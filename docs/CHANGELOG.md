@@ -48,6 +48,34 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   levels, sources and booleans only. The assistant name and the free-form
   operator note are reported as *configured* / *not configured*, never by value
   — asserted against the serialised payload, not left to review.
+### Changed — the run trace is best-effort telemetry, and its gaps are now countable (#684, epic #642)
+
+- **Decision recorded, not behaviour changed.** #650 added `model` / `provider`
+  to the persisted trace and deliberately left the harder question open: is the
+  record guaranteed? It is not, and #684 settled that it should not be promised
+  to be. A missing trace now means "not recorded" — never "no such turn".
+- **Why telemetry and not a provenance record.** The graph sink is optional by
+  construction (`SessionLogger` guards every ingest behind `if (this.graph)`);
+  the Markdown transcript is the surface that is actually guaranteed, and the
+  logger already refuses graph ingest when the transcript write fails so the two
+  can never disagree. Promoting the trace to a record would require
+  auto-creating User-Cluster nodes — which both backends refuse on purpose,
+  because orphan clusters with no `IS_IDENTITY_OF` edges would hide exactly the
+  channel-resolution bugs the refusal exists to surface. That trades a visible
+  gap for an invisible data-integrity defect.
+- **Named where a reader looks**: `RunTrace` and `KnowledgeGraph.ingestRun` now
+  state the contract in their own doc comments, so nobody builds a compliance
+  answer on a best-effort store by inference.
+- **Every drop is now observable** (`runTraceObservability.ts`): one greppable
+  `console.warn` naming the reason, plus per-outcome tallies on
+  `SessionLogger.runTraceStats`. The issue described the drops as silent; three
+  of the four paths already logged. The genuinely invisible one was **no graph
+  sink configured**, which returned with no signal at all — a deployment that
+  had never recorded a single trace looked identical to a healthy one.
+- **`warn`, not `error`**: the turn succeeded. Logging at error level would flag
+  every single turn in a deployment that simply runs without a knowledge graph.
+- A turn that carried no trace is not counted as a drop — counting it would make
+  the drop total meaningless.
 
 ### Added — the persisted run trace records which model answered (#650, epic #642)
 
