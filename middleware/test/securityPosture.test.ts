@@ -95,12 +95,12 @@ describe('#579 provenance bundling + typed source tags', () => {
   it('puts direct human input first and labels every non-human source', () => {
     const pairs = bundleProvenance(input);
     assert.equal(pairs.length, 3);
-    assert.deepEqual(pairs[0].source, { kind: 'direct_human' });
-    assert.equal(pairs[0].content, 'summarise the attached invoice');
-    assert.deepEqual(pairs[1].source, { kind: 'prior_turn', role: 'user' });
-    assert.equal(pairs[1].content, 'hi');
-    assert.deepEqual(pairs[2].source, { kind: 'attachment', name: 'invoice.pdf' });
-    assert.match(pairs[2].content, /invoice\.pdf \(application\/pdf\)/);
+    assert.deepEqual(pairs[0]!.source, { kind: 'direct_human' });
+    assert.equal(pairs[0]!.content, 'summarise the attached invoice');
+    assert.deepEqual(pairs[1]!.source, { kind: 'prior_turn', role: 'user' });
+    assert.equal(pairs[1]!.content, 'hi');
+    assert.deepEqual(pairs[2]!.source, { kind: 'attachment', name: 'invoice.pdf' });
+    assert.match(pairs[2]!.content, /invoice\.pdf \(application\/pdf\)/);
   });
 
   it('labels an unnamed attachment deterministically', () => {
@@ -108,7 +108,7 @@ describe('#579 provenance bundling + typed source tags', () => {
       userMessage: 'x',
       attachments: [{ kind: 'image', url: 'https://x/a', mediaType: 'image/png' }],
     });
-    assert.deepEqual(pairs[1].source, { kind: 'attachment', name: 'unnamed-image' });
+    assert.deepEqual(pairs[1]!.source, { kind: 'attachment', name: 'unnamed-image' });
   });
 
   it('only attachments are screenable; direct human + prior turns are not', () => {

@@ -359,10 +359,10 @@ describe('#579 AC4 — quarantine short-circuits the turn (enforce)', () => {
     assert.equal(seen.length, 0, 'the provider (model) was never called');
     assert.ok(sa.text.startsWith(SECURITY_QUARANTINE_NOTICE), 'delivered the refusal');
     assert.equal(audits.length, 1);
-    assert.equal(audits[0].kind, 'quarantine');
-    assert.equal(audits[0].mode, 'enforce');
-    assert.equal(audits[0].posture, 'auto');
-    assert.deepEqual(audits[0].sourceTags, ['attachment:invoice.pdf']);
+    assert.equal(audits[0]!.kind, 'quarantine');
+    assert.equal(audits[0]!.mode, 'enforce');
+    assert.equal(audits[0]!.posture, 'auto');
+    assert.deepEqual(audits[0]!.sourceTags, ['attachment:invoice.pdf']);
   });
 
   it('streaming: mirrors the non-streaming short-circuit', async () => {
@@ -399,12 +399,12 @@ describe('#579 AC5 — unscreenable fails open with evidence', () => {
     // The turn ran…
     assert.equal(seen.length, 1, 'fail-open: the turn still reached the model');
     // …the untrusted marker reached the model (wire system prompt)…
-    assert.ok(systemText(seen[0]).includes(UNSCREENED_MARKER), 'marker on the wire');
+    assert.ok(systemText(seen[0]!).includes(UNSCREENED_MARKER), 'marker on the wire');
     // …but it is NOT echoed into the delivered answer (wire-only, not persisted).
     assert.ok(!sa.text.includes(UNSCREENED_MARKER), 'marker not folded into the answer');
     // …and the miss is audited.
     assert.equal(audits.length, 1);
-    assert.equal(audits[0].kind, 'unscreenable');
+    assert.equal(audits[0]!.kind, 'unscreenable');
   });
 
   it('is unscreenable when screening is on with content but no screener is wired', async () => {
@@ -414,7 +414,7 @@ describe('#579 AC5 — unscreenable fails open with evidence', () => {
     const o = makeOrchestrator({ answer: 'Antwort.', seen, audits });
     const sa = await o.chat({ userMessage: 'read this', attachments: [PDF_ATTACHMENT] });
     assert.equal(seen.length, 1, 'fail-open: still ran');
-    assert.ok(systemText(seen[0]).includes(UNSCREENED_MARKER));
+    assert.ok(systemText(seen[0]!).includes(UNSCREENED_MARKER));
     assert.equal(audits[0]?.kind, 'unscreenable');
   });
 });
@@ -435,8 +435,8 @@ describe('#579 AC6 — shadow mode observes but never blocks', () => {
     assert.match(sa.text, /Antwort\./);
     assert.ok(!sa.text.startsWith(SECURITY_QUARANTINE_NOTICE));
     assert.equal(audits.length, 1, 'the would-have-blocked verdict is still recorded');
-    assert.equal(audits[0].kind, 'quarantine');
-    assert.equal(audits[0].mode, 'shadow');
+    assert.equal(audits[0]!.kind, 'quarantine');
+    assert.equal(audits[0]!.mode, 'shadow');
   });
 });
 
@@ -487,7 +487,7 @@ describe('#579 AC2 — posture floor + tighten-only, end to end', () => {
     const sa = await o.chat({ userMessage: 'read this', attachments: [PDF_ATTACHMENT] });
     // strict currently enforces at-least-auto screening → an offline screener
     // fails open with the marker, proving strict did NOT silently skip screening.
-    assert.ok(systemText(seen[0]).includes(UNSCREENED_MARKER));
+    assert.ok(systemText(seen[0]!).includes(UNSCREENED_MARKER));
     assert.equal(audits[0]?.kind, 'unscreenable');
     assert.ok(!sa.text.includes(UNSCREENED_MARKER));
   });
