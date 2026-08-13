@@ -131,8 +131,8 @@ export interface FinalizeResult {
 
 /**
  * Transition a job to a terminal `status`, idempotently, and report whether THIS
- * call did the flip. This is the real implementation; {@link finalizeDevJob} is
- * the thin state-only wrapper every caller that does not need the count uses.
+ * call did the flip. This is the real implementation; the thin state-only
+ * wrapper below is what every caller that does not need the count uses.
  */
 export async function finalizeDevJobDetailed(
   deps: FinalizeDevJobDeps,
@@ -206,7 +206,7 @@ export async function finalizeDevJobDetailed(
  * job (or `null` if it does not exist). Calling it on an already-terminal job
  * returns that job unchanged with no side effects.
  *
- * State-only wrapper over {@link finalizeDevJobDetailed}. A caller that needs to
+ * State-only wrapper over the detailed form above. A caller that needs to
  * know whether THIS call performed the flip (e.g. the orphan sweep, to count a
  * row exactly once cluster-wide) must call the detailed form.
  */

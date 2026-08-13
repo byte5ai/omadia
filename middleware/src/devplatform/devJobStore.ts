@@ -83,7 +83,7 @@ export interface TerminalPatch {
  *
  * `job` is the post-write state (the freshly-flipped row, the pre-existing
  * terminal row on a no-op, or `null` when the id is absent) — unchanged from the
- * old `DevJob | null` return, so callers that only need the state read `.job`.
+ * old nullable-job return, so callers that only need the state read `.job`.
  *
  * `transitioned` is the load-bearing addition: `true` ONLY when THIS call
  * performed the status flip (the guarded UPDATE matched a row). It is `false`
@@ -91,7 +91,8 @@ export interface TerminalPatch {
  * writer (another replica's reaper, a cancel route) flipped a moment earlier.
  * The guarded UPDATE is the only place in the system that knows this; collapsing
  * it into a plain truthy job is what let the orphan sweep double-count a row a
- * second replica had already reaped (#561). See `finalizeDevJob`.
+ * second replica had already reaped (#561). See the terminal-transition choke
+ * point that wraps this call.
  */
 export interface TerminalWriteResult {
   readonly job: DevJob | null;

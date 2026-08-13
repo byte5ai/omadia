@@ -17,8 +17,8 @@ import {
  *
  * This module owns only the SCHEDULE and the option-forwarding; the fencing that
  * makes the sweep safe across replicas lives in the store implementor and is
- * tested there (`devJobTaskStoreReap.test.ts`, `finalizeDevJob.test.ts`). What
- * this file pins:
+ * tested there, alongside that store's own reap and terminal-transition suites.
+ * What this file pins:
  *
  *  - `runTaskReaperOnce` forwards the windows to `reapOrphans` — including the
  *    deliberate rule that `parkedStaleAfterMs` is passed ONLY when the operator
