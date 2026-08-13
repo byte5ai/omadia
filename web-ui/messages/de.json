@@ -1130,6 +1130,12 @@
     "expiredBody": "Deine Sitzung ist abgelaufen. Bitte melde dich erneut an, um weiterzuarbeiten.",
     "expiredCta": "Neu anmelden"
   },
+  "runtimeReadiness": {
+    "title": "LLM-API-Key fehlt",
+    "body": "Die Agent-Runtime ist offline — meistens, weil noch kein LLM-API-Key hinterlegt ist. Hinterlege deinen Key in den Einstellungen; Chat, Agenten, Channels und Skills sind danach sofort verfügbar. Routinen brauchen zusätzlich einen Neustart der Middleware.",
+    "cta": "Einstellungen öffnen",
+    "dismiss": "Später"
+  },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} Tool-Aufrufe",
     "ariaCloseBackdrop": "Schließen",

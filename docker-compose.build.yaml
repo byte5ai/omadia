@@ -17,8 +17,6 @@ services:
     build:
       context: ./web-ui
       dockerfile: Dockerfile
-      args:
-        # Build-arg: the rewrite target baked into the Next.js build. Use the
-        # in-network service name so the browser-loaded UI reaches the
-        # middleware through Docker's DNS, not the host's localhost.
-        MIDDLEWARE_URL: http://middleware:8080
+      # No MIDDLEWARE_URL build-arg: the /bot-api and /p proxies read it at
+      # request time (web-ui/app/_lib/middlewareProxy.ts), and the runtime
+      # value comes from the web-ui service env in docker-compose.yaml.
