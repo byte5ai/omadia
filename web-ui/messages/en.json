@@ -946,6 +946,10 @@
         "what": "The request did not name which plugin it is about.",
         "next": "Reload the page and repeat the action from the plugin screen."
       },
+      "invalid_json_file_body": {
+        "what": "The upload request did not name both a setup field and a file, so the server could not tell what to parse.",
+        "next": "Reload the page and pick the file again."
+      },
       "invalid_multiselect": {
         "what": "One of the selected values is not in a shape the server accepts.",
         "next": "Clear the selection and pick the entries again from the list."
@@ -953,6 +957,34 @@
       "invalid_secrets_body": {
         "what": "The credential change was sent in a shape the server rejected.",
         "next": "Reload the page and enter the credentials again."
+      },
+      "json_file_bad_extract_path": {
+        "what": "The plugin declares an upload path the server does not support, so the file could not be read.",
+        "next": "This is a fault in the plugin, not in your file — report it to the plugin author."
+      },
+      "json_file_invalid_spec": {
+        "what": "The plugin declares this file upload incorrectly, so it cannot produce any value.",
+        "next": "This is a fault in the plugin, not in your file — report it to the plugin author."
+      },
+      "json_file_missing_value": {
+        "what": "The uploaded file does not contain one of the values this field needs.",
+        "next": "Check that you selected the right file; the message below names the missing value."
+      },
+      "json_file_not_an_object": {
+        "what": "The uploaded file is valid JSON but not a JSON object, so it holds no named values.",
+        "next": "Upload the credential file the provider issued, not a list or a fragment of one."
+      },
+      "json_file_not_json": {
+        "what": "The uploaded file is not valid JSON, so nothing could be read out of it.",
+        "next": "Download the key file again from the provider and upload it unchanged."
+      },
+      "json_file_too_large": {
+        "what": "The uploaded file is larger than the server accepts for a credential file.",
+        "next": "Check that you picked the key file itself and not an archive or export."
+      },
+      "json_file_unexpected_document": {
+        "what": "The uploaded file is the wrong kind of credential — its contents do not match what this field expects.",
+        "next": "Check the message below for which value disagreed, then upload the right file."
       },
       "no_options_provider": {
         "what": "This field has no live option source, so nothing can be fetched for it.",
@@ -986,6 +1018,10 @@
       "setup_field_invalid": {
         "what": "One of the values does not match the format this field expects.",
         "next": "Correct the flagged field and save again."
+      },
+      "unknown_json_file_field": {
+        "what": "The upload names a setup field this plugin does not offer as a file upload.",
+        "next": "Reload the page so the form matches the plugin, then upload the file again."
       },
       "update_failed": {
         "what": "The change could not be written.",
