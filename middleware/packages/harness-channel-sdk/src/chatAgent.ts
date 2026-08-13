@@ -847,7 +847,25 @@ export type ChatStreamEvent =
    * Additive; clients that don't recognise it ignore it.
    */
   | { type: 'steer_applied'; iteration: number; message: string }
-  | { type: 'error'; message: string }
+  /**
+   * #641 — a failed turn, with a handle the user can act on.
+   *
+   * `message` alone leaves a genuine failure undiagnosable by anyone not
+   * reading server logs: no code, no id, nothing to hand to support. The
+   * information exists (the orchestrator `console.error`s the technical
+   * detail) — it just never reached the person who hit the problem, whose only
+   * anchor was a wall-clock timestamp.
+   *
+   * `correlationId` is the turn id the orchestrator already mints per turn —
+   * deliberately NOT a second identifier invented for errors. It is the same
+   * value MCP call auditing and the session logger key on, so a support query
+   * by this token joins against records that already exist. It also appears in
+   * the server-side `console.error` line, so grepping for it is exact.
+   *
+   * Optional so existing adapters keep compiling; an adapter that does not
+   * render it behaves exactly as before.
+   */
+  | { type: 'error'; message: string; correlationId?: string }
   /**
    * Omadia UI canvas surface events (omadia-canvas-protocol/1.0). Additive;
    * channels not declaring the `'canvas'` capability default-ignore these.

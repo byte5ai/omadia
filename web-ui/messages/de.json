@@ -1111,7 +1111,6 @@
     "pillTitle": "{id} — Details anzeigen"
   },
   "chat": {
-    "errorMiddlewareUnreachable": "Middleware nicht erreichbar auf localhost:3979. Läuft `npm run dev` im middleware-Ordner?",
     "errorProxyFailure": "Proxy-Fehler (HTTP {status}). Prüf die Middleware-Logs.",
     "errorAborted": "Abgebrochen.",
     "errorProviderGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
@@ -1307,7 +1306,9 @@
       "factNotEmbedded": "— kein Vektor",
       "factPrivateBlocks": "'<private>'-Blöcke",
       "factHintTags": "'<palaia-hint>'-Tags"
-    }
+    },
+    "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber.",
+    "errorCorrelationRef": "Referenz für den Support: {id}"
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -2849,7 +2850,7 @@
       "emptyHubBody": "Verbinde eine Registry unter <adminLink>Admin · Registries</adminLink> — oder lade ein eigenes Paket im <localLink>Lokal</localLink>-Tab hoch.",
       "errorKicker": "Fehler",
       "errorTitle": "Katalog konnte nicht geladen werden.",
-      "errorHint": "Prüfe, ob die Middleware unter <host>http://localhost:3979</host> erreichbar ist und der Endpoint <endpoint>/api/v1/store/plugins</endpoint> antwortet.",
+      "errorHint": "Prüfe, ob die Middleware erreichbar ist und der Endpoint <endpoint>/api/v1/store/plugins</endpoint> antwortet.",
       "footerSource": "Quelle:"
     },
     "detail": {
@@ -4402,7 +4403,6 @@
     }
   },
   "memory": {
-    "errorMiddlewareUnreachable": "Middleware nicht erreichbar (localhost:3979). Läuft `npm run dev` im middleware-Ordner?",
     "errorDevEndpointUnavailable": "Dev-Memory-Endpoint nicht verfügbar. Setze DEV_ENDPOINTS_ENABLED=true in middleware/.env und starte die Middleware neu.",
     "errorListFailed": "List fehlgeschlagen (HTTP {status})",
     "errorFileFailed": "File fehlgeschlagen (HTTP {status})",
@@ -4414,7 +4414,8 @@
     "reload": "↻ neu laden",
     "loading": "lädt…",
     "empty": "leer",
-    "selectEntry": "Eintrag links wählen…"
+    "selectEntry": "Eintrag links wählen…",
+    "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber."
   },
   "memories": {
     "kinds": {

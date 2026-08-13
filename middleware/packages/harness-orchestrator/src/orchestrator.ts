@@ -5472,6 +5472,14 @@ export class Orchestrator {
 
       yield {
         type: 'error',
+        // #641 — see the `correlationId` doc on `ChatStreamEvent`. Read from the
+        // turn context rather than threaded as a parameter, for the same reason
+        // `privacyHandle` is: every call site here already runs inside the
+        // turn's `runGenerator` scope, and the value is the id the session
+        // logger and MCP audit already key on.
+        ...(turnContext.currentTurnId()
+          ? { correlationId: turnContext.currentTurnId() as string }
+          : {}),
         message: `Orchestrator exceeded maxToolIterations (${String(this.maxIterations)}) without reaching a final answer.`,
       };
     } catch (err) {
@@ -5480,8 +5488,12 @@ export class Orchestrator {
       // invisible in the server logs. Log the technical detail here. The
       // user-facing error-message wording is handled separately (Privacy
       // Shield v4).
+      // #641 — the correlation id goes in the LOG LINE, not just on the event.
+      // The whole point of handing the user a token is that someone can then
+      // find this entry by it; a token that appears only in the user's message
+      // is a token that joins nothing.
       console.error(
-        '[orchestrator] turn failed:',
+        `[orchestrator] turn failed (correlationId=${turnContext.currentTurnId() ?? 'unknown'}):`,
         err instanceof Error ? (err.stack ?? err.message) : err,
       );
       // Issue #506 — a tool call earlier in this turn may have already
@@ -5567,6 +5579,11 @@ export class Orchestrator {
       } else {
         yield {
           type: 'error',
+          // #641 — the token that makes this failure diagnosable. Same value as
+          // the one in the `console.error` above, so a log query by it is exact.
+          ...(turnContext.currentTurnId()
+            ? { correlationId: turnContext.currentTurnId() as string }
+            : {}),
           message: err instanceof Error ? err.message : String(err),
         };
       }

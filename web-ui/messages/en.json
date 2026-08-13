@@ -1111,7 +1111,6 @@
     "pillTitle": "{id} — show details"
   },
   "chat": {
-    "errorMiddlewareUnreachable": "Middleware unreachable on localhost:3979. Is `npm run dev` running in the middleware folder?",
     "errorProxyFailure": "Proxy error (HTTP {status}). Check the middleware logs.",
     "errorAborted": "Aborted.",
     "errorProviderGeneric": "Something went wrong while talking to the AI provider. Please try again.",
@@ -1307,7 +1306,9 @@
       "factNotEmbedded": "— no vector",
       "factPrivateBlocks": "'<private>' blocks",
       "factHintTags": "'<palaia-hint>' tags"
-    }
+    },
+    "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
+    "errorCorrelationRef": "Reference for support: {id}"
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -2849,7 +2850,7 @@
       "emptyHubBody": "Connect a registry under <adminLink>Admin · Registries</adminLink> — or upload your own package in the <localLink>Local</localLink> tab.",
       "errorKicker": "Error",
       "errorTitle": "The catalog could not be loaded.",
-      "errorHint": "Check that the middleware is reachable at <host>http://localhost:3979</host> and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
+      "errorHint": "Check that the middleware is reachable and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
       "footerSource": "Source:"
     },
     "detail": {
@@ -4402,7 +4403,6 @@
     }
   },
   "memory": {
-    "errorMiddlewareUnreachable": "Middleware unreachable (localhost:3979). Is `npm run dev` running in the middleware folder?",
     "errorDevEndpointUnavailable": "Dev memory endpoint unavailable. Set DEV_ENDPOINTS_ENABLED=true in middleware/.env and restart the middleware.",
     "errorListFailed": "Listing failed (HTTP {status})",
     "errorFileFailed": "File load failed (HTTP {status})",
@@ -4414,7 +4414,8 @@
     "reload": "↻ Reload",
     "loading": "Loading…",
     "empty": "empty",
-    "selectEntry": "Select an entry on the left…"
+    "selectEntry": "Select an entry on the left…",
+    "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator."
   },
   "memories": {
     "kinds": {
