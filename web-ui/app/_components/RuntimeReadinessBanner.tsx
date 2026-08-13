@@ -7,6 +7,8 @@ import { motion } from 'framer-motion';
 import { KeyRound } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
+import { Button } from './ui/Button';
+
 /**
  * RuntimeReadinessBanner — turns the fresh-install "everything 503s" state
  * into a visible, actionable hint.
@@ -128,13 +130,14 @@ function ReadinessCard({
         >
           {t('cta')}
         </Link>
-        <button
+        <Button
           type="button"
+          variant="secondary"
           onClick={onDismiss}
-          className="border border-[color:var(--rule-strong)] px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-[color:var(--muted-ink)] transition hover:text-[color:var(--ink)]"
+          className="px-3 py-2 text-[11px] uppercase tracking-[0.16em]"
         >
           {t('dismiss')}
-        </button>
+        </Button>
       </div>
     </motion.div>
   );
