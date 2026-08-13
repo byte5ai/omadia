@@ -5,6 +5,10 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 
 import type { RegistryConfigEntry } from './api/registry-v1.js';
+// TYPE-ONLY (erased at build): core builds the dev platform's config namespace but
+// does not otherwise depend on the subsystem. When the dev platform is extracted,
+// this import and `buildDevPlatformConfig` below are the only things to delete.
+import type { DevPlatformConfig } from './devplatform/config.js';
 
 // Resolve .env relative to this file so the server works from any CWD.
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -189,11 +193,25 @@ const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(true),
 
-  // Local-dev endpoints (unauthenticated memory browser, …). Keep this OFF in
-  // any deployed environment — the router mounts under /api/dev and exposes
-  // raw memory contents without auth. Only enable when iterating on the
+  // Local-dev endpoints (raw graph browser, memory browser, …) under /api/dev.
+  //
+  // Issue #669: these used to mount WITHOUT authentication, so this flag alone
+  // published knowledge-graph state — and three destructive maintenance sweeps —
+  // to anyone who knew the path. They now sit behind the same operator session
+  // gate as every other /api route, and the KG-Lifecycle / priorities operator
+  // pages moved to /api/v1/admin/kg-* so they no longer need this flag at all.
+  // Still dev scaffolding: leave it off unless you are iterating on the
   // Next.js dev UI against a local middleware.
   DEV_ENDPOINTS_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(false),
+
+  // Issue #669 — belt-and-braces for /api/dev: refuse any request that did not
+  // arrive over a loopback socket (403), on top of the session gate. Off by
+  // default because a containerised dev setup proxies through the Next.js
+  // server from a non-loopback address. See auth/loopbackOnly.ts.
+  DEV_ENDPOINTS_LOOPBACK_ONLY: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
     .default(false),
@@ -633,7 +651,137 @@ const ConfigSchema = z.object({
   DEV_FLY_REGION: optionalNonEmpty(z.string().min(1)),
 });
 
-export type Config = z.infer<typeof ConfigSchema>;
+/**
+ * Schema keys that begin `DEV_`/`FLY_` but are core, NOT dev-platform. Everything
+ * else with those prefixes is collapsed out of the top-level `Config` and served
+ * only through `config.devPlatform` (epic #470 C3).
+ *
+ *   - `DEV_ENDPOINTS_ENABLED` — the core dev-graph endpoints (`/api/dev/*`).
+ *   - `DEV_ENDPOINTS_LOOPBACK_ONLY` — the #669 address gate over the same surface.
+ *   - `FLY_APP_NAME`          — Fly-injected identity of THIS app. The dev platform
+ *                               reads its value (copied into `devPlatform.fly`),
+ *                               but the key describes the host, not the feature, so
+ *                               it must survive the extraction.
+ *
+ * A third lookalike needs no entry here because it does not carry either prefix:
+ * `PLUGIN_DEV_DIR`, the plugin author's local-dev source directory.
+ *
+ * Stating the EXCEPTIONS rather than enumerating the 40 members is deliberate: a
+ * new `DEV_PLATFORM_*` key added to the schema lands in the namespace on its own,
+ * with no second list to forget. A new *core* key with those prefixes must be
+ * added here — and that is the change that deserves the review attention.
+ */
+const CORE_DEV_PREFIXED_KEYS = [
+  'DEV_ENDPOINTS_ENABLED',
+  'DEV_ENDPOINTS_LOOPBACK_ONLY',
+  'FLY_APP_NAME',
+] as const;
+type CoreDevPrefixedKey = (typeof CORE_DEV_PREFIXED_KEYS)[number];
+
+type ParsedConfig = z.infer<typeof ConfigSchema>;
+
+/** Every schema key the dev platform owns: prefix-matched, minus the exceptions. */
+type DevPlatformEnvKey = Exclude<
+  Extract<keyof ParsedConfig, `DEV_${string}` | `FLY_${string}`>,
+  CoreDevPrefixedKey
+>;
+
+/** Runtime half of `DevPlatformEnvKey` — same rule, applied to actual key strings. */
+function isDevPlatformEnvKey(key: string): boolean {
+  if ((CORE_DEV_PREFIXED_KEYS as readonly string[]).includes(key)) return false;
+  return key.startsWith('DEV_') || key.startsWith('FLY_');
+}
+
+/**
+ * The core config: everything the schema parses EXCEPT the dev-platform keys,
+ * which are reachable only via `config.devPlatform`. Collapsing them out of the
+ * top level is what makes the later extraction mechanical — when the subsystem
+ * leaves, one property and one builder disappear instead of 40 call sites.
+ */
+export type Config = Omit<ParsedConfig, DevPlatformEnvKey> & {
+  devPlatform: DevPlatformConfig;
+};
+
+/** Comma-separated env list → trimmed non-empty entries (egress allowlist, model
+ *  allowlist). Entry-level validation happens in the consumer (deriveJobPolicy). */
+function csvList(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * Build the dev-platform namespace from the parsed env. The ONLY place that maps
+ * `DEV_*`/`FLY_*` env names onto the subsystem's own vocabulary — everything
+ * downstream takes the object. Post-processing that used to be scattered lives
+ * here: the runner base-URL default from `PORT`, `resolvePath` on the workspace
+ * dir, the `DEV_RUNNER_IMAGE ?? DEV_RUNNER_DEFAULT_IMAGE` fallback, the
+ * `DEV_PLATFORM_GITHUB_CLIENT_ID ?? GITHUB_OAUTH_CLIENT_ID` fallback, and the two
+ * comma-separated list splits.
+ */
+function buildDevPlatformConfig(parsed: ParsedConfig): DevPlatformConfig {
+  return {
+    enabled: parsed.DEV_PLATFORM_ENABLED,
+    // Runner phone-home base URL: explicit override, else loopback + PORT.
+    baseUrl:
+      parsed.DEV_PLATFORM_RUNNER_BASE_URL ?? `http://127.0.0.1:${String(parsed.PORT)}`,
+    cliBin: parsed.DEV_PLATFORM_CLI_BIN,
+    wallClockMs: parsed.DEV_PLATFORM_JOB_WALL_CLOCK_MS,
+    heartbeatTimeoutMs: parsed.DEV_PLATFORM_HEARTBEAT_TIMEOUT_MS,
+    maxConcurrentJobs: parsed.DEV_PLATFORM_MAX_CONCURRENT_JOBS,
+    commitAuthor: parsed.DEV_PLATFORM_COMMIT_AUTHOR,
+    subscriptionModeEnabled: parsed.DEV_PLATFORM_SUBSCRIPTION_MODE,
+    subscriptionAck: parsed.DEV_PLATFORM_SUBSCRIPTION_ACK,
+    workspaceDir: resolvePath(parsed.DEV_PLATFORM_WORKSPACE_DIR),
+    unsafeLocal: parsed.DEV_PLATFORM_UNSAFE_LOCAL,
+    localUid: parsed.DEV_PLATFORM_LOCAL_UID,
+    githubClientId: parsed.DEV_PLATFORM_GITHUB_CLIENT_ID ?? parsed.GITHUB_OAUTH_CLIENT_ID,
+    daemonToken: parsed.DEV_RUNNER_DAEMON_TOKEN,
+    daemonUrl: parsed.DEV_RUNNER_DAEMON_URL,
+    backend: parsed.DEV_PLATFORM_BACKEND,
+    leaseTtlSec: parsed.DEV_JOB_LEASE_TTL_SEC,
+    // `DEV_RUNNER_IMAGE` wins when set (the daemon's own allowlist config uses
+    // that name too, so one operator-set var keeps every side in agreement);
+    // `DEV_RUNNER_DEFAULT_IMAGE` is the fallback.
+    runnerImage: parsed.DEV_RUNNER_IMAGE ?? parsed.DEV_RUNNER_DEFAULT_IMAGE,
+    egressBaseAllowlist: parsed.DEV_EGRESS_BASE_ALLOWLIST
+      ? csvList(parsed.DEV_EGRESS_BASE_ALLOWLIST)
+      : undefined,
+    middlewareHost: parsed.DEV_PLATFORM_MIDDLEWARE_HOST,
+    llm: {
+      provider: parsed.DEV_PLATFORM_LLM_PROVIDER,
+      upstreamBaseUrl: parsed.DEV_PLATFORM_LLM_UPSTREAM_BASE_URL,
+      allowedModels: parsed.DEV_PLATFORM_LLM_ALLOWED_MODELS
+        ? csvList(parsed.DEV_PLATFORM_LLM_ALLOWED_MODELS)
+        : [],
+      defaultBudgetCostUsd: parsed.DEV_JOB_DEFAULT_BUDGET_USD,
+      maxOutputTokens: parsed.DEV_JOB_MAX_OUTPUT_TOKENS,
+    },
+    fly: {
+      runnerApp: parsed.DEV_FLY_RUNNER_APP,
+      hostAppName: parsed.FLY_APP_NAME,
+      phoneHomeUrl: parsed.DEV_FLY_PHONE_HOME_URL,
+      publicBaseUrl: parsed.PUBLIC_BASE_URL,
+      maxCpus: parsed.DEV_FLY_MAX_CPUS,
+      maxMemoryMb: parsed.DEV_FLY_MAX_MEMORY_MB,
+      guestCpus: parsed.DEV_FLY_GUEST_CPUS,
+      guestMemoryMb: parsed.DEV_FLY_GUEST_MEMORY_MB,
+      region: parsed.DEV_FLY_REGION,
+    },
+    webhooks: {
+      enabled: parsed.DEV_WEBHOOKS_ENABLED,
+      maxJobsPerRepoHour: parsed.DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR,
+      maxJobsPerSenderHour: parsed.DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR,
+    },
+    retention: {
+      eventRetentionDays: parsed.DEV_PLATFORM_EVENT_RETENTION_DAYS,
+      auditRetentionDays: parsed.DEV_PLATFORM_AUDIT_RETENTION_DAYS,
+      maxEventsPerJob: parsed.DEV_JOB_MAX_EVENTS,
+      artifactMaxBytes: parsed.DEV_ARTIFACT_MAX_BYTES,
+    },
+  };
+}
 
 // Relative path-like settings are resolved against the middleware root so the server
 // works regardless of the CWD (local dev, Docker, Fly machine, tests).
@@ -716,8 +864,16 @@ function loadConfig(): Config {
   if (refusals.length > 0) {
     throw new Error(`Invalid configuration:\n${refusals.map((r) => `  - ${r}`).join('\n')}`);
   }
+  // The dev-platform keys are lifted out of the top level and served only through
+  // `devPlatform`. Deleting them from the returned object (rather than merely
+  // hiding them in the type) means there is no second, stale way to read them.
+  const core: Record<string, unknown> = { ...parsed.data };
+  for (const key of Object.keys(core)) {
+    if (isDevPlatformEnvKey(key)) delete core[key];
+  }
+
   return {
-    ...parsed.data,
+    ...(core as Omit<ParsedConfig, DevPlatformEnvKey>),
     MEMORY_SEED_DIR: resolvePath(parsed.data.MEMORY_SEED_DIR),
     SKILLS_DIR: resolvePath(parsed.data.SKILLS_DIR),
     UPLOADED_PACKAGES_DIR: resolveStateDir(
@@ -728,10 +884,7 @@ function loadConfig(): Config {
     PLUGIN_DEV_DIR: parsed.data.PLUGIN_DEV_DIR
       ? resolvePath(parsed.data.PLUGIN_DEV_DIR)
       : undefined,
-    // Runner phone-home base URL: explicit override, else loopback + PORT.
-    DEV_PLATFORM_RUNNER_BASE_URL:
-      parsed.data.DEV_PLATFORM_RUNNER_BASE_URL ?? `http://127.0.0.1:${String(parsed.data.PORT)}`,
-    DEV_PLATFORM_WORKSPACE_DIR: resolvePath(parsed.data.DEV_PLATFORM_WORKSPACE_DIR),
+    devPlatform: buildDevPlatformConfig(parsed.data),
   };
 }
 

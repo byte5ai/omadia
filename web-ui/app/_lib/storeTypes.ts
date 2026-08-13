@@ -13,18 +13,29 @@ export type SetupFieldType =
   | 'boolean'
   | 'integer'
   /** #91 — operator-curated list of bare hostnames. */
-  | 'host_list';
+  | 'host_list'
+  /**
+   * #603 (OM-17) — upload a JSON credential file instead of transcribing it.
+   * Sixth place this union is mirrored (three in the middleware's own sources,
+   * `SUPPORTED_TYPES` in installService, and `agents.ts` next door). The field
+   * stores nothing itself: the server explodes the upload into the keys named
+   * in `extracts`.
+   */
+  | 'json_file';
 
 /** #91 — operator-selected egress mode for an audit/scanner plugin. */
 export type AuditMode = 'single-host' | 'allowlist' | 'public-web';
 
 export interface PluginSetupField {
   key: string;
-  label: string;
+  /** #602 (OM-17) — localized label map (`{ en, de, … }`); a manifest may also
+   *  ship a bare string that the loader reads as English. Resolve with
+   *  `pickLocalized`; falls back to `key`. Mirrors middleware admin-v1. */
+  label: LocalizedMarkdown;
   type: SetupFieldType;
-  /** Optional help text from the manifest. Surfaced inline in the
-   *  post-install credentials editor. */
-  help?: string;
+  /** #602 (OM-17) — localized help map from the manifest. Surfaced in the
+   *  install wizard and the post-install editor; render with `pickLocalized`. */
+  help?: LocalizedMarkdown;
   /** Manifest default. The post-install editor pre-selects this value in
    *  an `enum` dropdown when nothing is stored yet. */
   default?: string;
@@ -63,6 +74,14 @@ export interface PluginSetupField {
    *  show the SHAPE of the expected value, which is exactly the information a
    *  tester lacked when they typed a password into a private-key field. */
   placeholder?: string;
+  /**
+   * #603 (OM-17) — `json_file` only. `accept` is the file picker's hint; the
+   * server, not the picker, decides what an upload actually is. `extracts` names
+   * the setup keys the upload explodes into — carried here so the renderer can
+   * tell the operator which fields the file will fill in.
+   */
+  accept?: string;
+  extracts?: Record<string, string>;
 }
 
 /** Spec 005 — how a declarative OAuth descriptor authenticates to the token
@@ -258,11 +277,28 @@ export interface Plugin {
    *  page and in the install drawer ("how to create a Discord bot", "how to get
    *  M365 credentials"). Mirrors middleware admin-v1. */
   setup_guide?: LocalizedMarkdown;
+  /** OM-15 (#602) — installation-effort profile shown on the store card BEFORE
+   *  install (audience · time · a key prerequisite). From the manifest's
+   *  `listing.setup_profile`. Mirrors middleware admin-v1. Optional. */
+  setup_profile?: SetupProfile;
 }
 
 /** UI text available in several languages, keyed by locale (`en`, `de`, …).
  *  Mirrors `LocalizedMarkdown` in middleware admin-v1. */
 export type LocalizedMarkdown = Record<string, string>;
+
+/** OM-15 (#602) — who performs the plugin's setup. The card resolves this to a
+ *  localized label via next-intl. Mirrors middleware admin-v1 `SetupAudience`. */
+export type SetupAudience = 'it_admin' | 'operator' | 'end_user';
+
+/** OM-15 (#602) — structured install-effort metadata for the store card. The
+ *  card COMPOSES a localized line from these parts (next-intl), so no wording is
+ *  baked into the manifest. Mirrors middleware admin-v1 `SetupProfile`. */
+export interface SetupProfile {
+  audience?: SetupAudience;
+  estimated_minutes?: number;
+  requirement?: LocalizedMarkdown;
+}
 
 export interface StoreListResponse {
   items: Plugin[];
@@ -300,6 +336,16 @@ export interface StoreGetResponse {
   blocking_reasons?: string[];
   /** Advisory-only — never blocks install (issue #453). */
   verdict?: PluginVerdict;
+  /** OM-06 / #671 — an ACTIVE plugin already provides one of this plugin's
+   *  capabilities, so the install would be refused with 409. Structured, not
+   *  folded into `blocking_reasons` (server-authored English the client can
+   *  only print), because the operator's next step is to CONFIGURE the
+   *  provider that already exists — and that link cannot be built by parsing
+   *  prose. Absent on pre-#671 middleware payloads. */
+  blocked_by_active_provider?: {
+    capability: string;
+    owner_id: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -317,8 +363,10 @@ export type InstallJobState =
 export interface InstallSetupField {
   key: string;
   type: SetupFieldType;
-  label: string;
-  help?: string;
+  /** #602 (OM-17) — localized label map; see `PluginSetupField.label`. */
+  label: LocalizedMarkdown;
+  /** #602 (OM-17) — localized help map; see `PluginSetupField.help`. */
+  help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
   enum?: Array<{ value: string; label: string }>;
@@ -335,6 +383,14 @@ export interface InstallSetupField {
    *  `'••••••••'` for every secret field, hiding the one piece of information
    *  that distinguishes a service-account key from an account password. */
   placeholder?: string;
+  /**
+   * #603 (OM-17) — `json_file` only. `accept` is the file picker's hint; the
+   * server, not the picker, decides what an upload actually is. `extracts` names
+   * the setup keys the upload explodes into — carried here so the renderer can
+   * tell the operator which fields the file will fill in.
+   */
+  accept?: string;
+  extracts?: Record<string, string>;
   multiline?: boolean;
   /** Omitted from the install flyout (flow-managed / editable later). */
   install_hidden?: boolean;

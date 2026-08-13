@@ -13,7 +13,11 @@
  * than retrofitting the transition logic across every caller (spec §4).
  */
 
-import { TERMINAL_FINISH_BRAND, type TerminalPatch } from './devJobStore.js';
+import {
+  TERMINAL_FINISH_BRAND,
+  type TerminalPatch,
+  type TerminalWriteResult,
+} from './devJobStore.js';
 import {
   isTerminalDevJobStatus,
   type DevJob,
@@ -67,7 +71,7 @@ export interface FinalizeStore {
     jobId: string,
     status: DevJobStatus,
     patch?: TerminalPatch,
-  ): Promise<DevJob | null>;
+  ): Promise<TerminalWriteResult>;
   appendHostEvent(
     jobId: string,
     type: DevJobEventType,
@@ -111,25 +115,40 @@ function toRegistry(revokers: FinalizeDevJobDeps['revokers']): CredentialRevoker
 }
 
 /**
- * Transition a job to a terminal `status`, idempotently. Returns the finalized
- * job (or `null` if it does not exist). Calling it on an already-terminal job
- * returns that job unchanged with no side effects.
+ * What a terminal transition did — the finalized `job` (or `null` if it does not
+ * exist) plus whether THIS call performed the flip.
+ *
+ * `transitioned` is `true` only when this call moved a live job to `status`, and
+ * `false` for every no-op: an already-terminal job, or one a CONCURRENT finalize
+ * (another replica's reaper, a cancel route) terminalized first — even to the
+ * SAME status. A caller that keeps a per-sweep count must gate on this, not on
+ * the truthiness of `job`, or it double-counts a row another replica reaped.
  */
-export async function finalizeDevJob(
+export interface FinalizeResult {
+  readonly job: DevJob | null;
+  readonly transitioned: boolean;
+}
+
+/**
+ * Transition a job to a terminal `status`, idempotently, and report whether THIS
+ * call did the flip. This is the real implementation; the thin state-only
+ * wrapper below is what every caller that does not need the count uses.
+ */
+export async function finalizeDevJobDetailed(
   deps: FinalizeDevJobDeps,
   jobId: string,
   status: DevJobStatus,
   ctx: FinalizeContext = {},
-): Promise<DevJob | null> {
+): Promise<FinalizeResult> {
   if (!isTerminalDevJobStatus(status)) {
     throw new TypeError(`finalizeDevJob: '${status}' is not a terminal status`);
   }
 
   const before = await deps.store.getJob(jobId);
-  if (!before) return null;
+  if (!before) return { job: null, transitioned: false };
   // Already terminal ⇒ idempotent no-op. No status flip, no event, no revoke,
   // no terminate — this is what makes a double-finalize safe.
-  if (isTerminalDevJobStatus(before.status)) return before;
+  if (isTerminalDevJobStatus(before.status)) return { job: before, transitioned: false };
 
   const patch: TerminalPatch = {
     error: ctx.error ?? null,
@@ -137,13 +156,21 @@ export async function finalizeDevJob(
     branch: ctx.branch ?? null,
     prUrl: ctx.prUrl ?? null,
   };
-  const after = await deps.store.finishTerminal(TERMINAL_FINISH_BRAND, jobId, status, patch);
-  if (!after) return before;
+  const { job: after, transitioned } = await deps.store.finishTerminal(
+    TERMINAL_FINISH_BRAND,
+    jobId,
+    status,
+    patch,
+  );
+  if (!after) return { job: before, transitioned: false };
 
-  // Run side effects only when THIS call performed the flip. If a concurrent
-  // finalize won with a different terminal status, `after.status` reflects
-  // theirs and we skip — they already ran the side effects.
-  if (after.status === status) {
+  // Run side effects only when THIS call performed the flip. The flag comes from
+  // the guarded UPDATE itself, so a concurrent finalize that won — even with the
+  // SAME status (two replicas both reaping to `stalled`) — leaves `transitioned`
+  // false here and we skip: they already ran the side effects. The old
+  // `after.status === status` gate could not see that same-status race and let
+  // the loser append a duplicate status event.
+  if (transitioned) {
     try {
       await deps.store.appendHostEvent(jobId, 'status', {
         status,
@@ -171,5 +198,23 @@ export async function finalizeDevJob(
     }
   }
 
-  return after;
+  return { job: after, transitioned };
+}
+
+/**
+ * Transition a job to a terminal `status`, idempotently. Returns the finalized
+ * job (or `null` if it does not exist). Calling it on an already-terminal job
+ * returns that job unchanged with no side effects.
+ *
+ * State-only wrapper over the detailed form above. A caller that needs to
+ * know whether THIS call performed the flip (e.g. the orphan sweep, to count a
+ * row exactly once cluster-wide) must call the detailed form.
+ */
+export async function finalizeDevJob(
+  deps: FinalizeDevJobDeps,
+  jobId: string,
+  status: DevJobStatus,
+  ctx: FinalizeContext = {},
+): Promise<DevJob | null> {
+  return (await finalizeDevJobDetailed(deps, jobId, status, ctx)).job;
 }

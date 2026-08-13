@@ -30,6 +30,7 @@ import {
   checkSetupFieldPattern,
   compileSetupPattern,
 } from './setupFieldPattern.js';
+import { normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
 
 export interface InstallServiceDeps {
   catalog: PluginCatalog;
@@ -510,15 +511,44 @@ export function extractSetupSchema(
     const field: InstallSetupField = {
       key,
       type,
-      label: asString(f['label']) ?? key,
+      // #602 (OM-17) — localized label map, byte-for-byte identical to the
+      // catalog projection in manifestLoader (bare string → English, empty →
+      // the field key). The shared-fixture test guards that agreement.
+      label: normalizeLocalized(f['label']) ?? { en: key },
       required: f['required'] !== false,
     };
-    const help = asString(f['help']);
+    const help = normalizeLocalized(f['help']);
     if (help) field.help = help;
     // OM-17 — forward the manifest placeholder to the install wizard, which
     // previously masked every secret field with a hardcoded `••••••••`.
     const placeholder = asString(f['placeholder']);
     if (placeholder) field.placeholder = placeholder;
+    // #603 (OM-17) — the `json_file` upload contract. Must stay in agreement
+    // with the catalog projection in `manifestLoader.ts`, which applies the SAME
+    // "no usable extracts ⇒ drop the field" rule: a `json_file` field that
+    // survives one projection but not the other is a file picker that renders on
+    // one screen and cannot save from the other.
+    if (type === 'json_file') {
+      const extractsRaw = f['extracts'];
+      const extracts: Record<string, string> = {};
+      if (extractsRaw && typeof extractsRaw === 'object' && !Array.isArray(extractsRaw)) {
+        for (const [target, path] of Object.entries(
+          extractsRaw as Record<string, unknown>,
+        )) {
+          const p = asString(path);
+          if (target.length > 0 && p !== undefined) extracts[target] = p;
+        }
+      }
+      if (Object.keys(extracts).length === 0) continue;
+      field.extracts = extracts;
+      const expectRaw = f['expect'];
+      if (expectRaw && typeof expectRaw === 'object' && !Array.isArray(expectRaw)) {
+        const expect = expectRaw as Record<string, unknown>;
+        if (Object.keys(expect).length > 0) field.expect = expect;
+      }
+      const accept = asString(f['accept']);
+      if (accept) field.accept = accept;
+    }
     if (f['default'] !== undefined) field.default = f['default'];
     // OM-17 — same load-time compile gate as manifestLoader: an uncompilable or
     // catastrophically-backtracking pattern is dropped (warned once, cached) so
@@ -528,7 +558,7 @@ export function extractSetupSchema(
     if (pattern) {
       if (compileSetupPattern(pattern, `install/${key}`)) {
         field.pattern = pattern;
-        const patternHint = asLocalizedHint(f['pattern_hint']);
+        const patternHint = normalizeLocalized(f['pattern_hint']);
         if (patternHint) field.pattern_hint = patternHint;
       } else {
         // OM-17 / F2 — a DROPPED pattern must never silently look like a field
@@ -635,10 +665,13 @@ function privacyModeField(entry: PluginCatalogEntry): InstallSetupField {
   return {
     key: PRIVACY_MODE_CONFIG_KEY,
     type: 'enum',
-    label: 'Privacy Mode',
+    // #602 (OM-17) — label/help are localized maps now. These kernel-injected
+    // fields carry German copy, so tag them `de`; a non-German UI resolves via
+    // the same fallback and still shows this text (unchanged from before).
+    label: { de: 'Privacy Mode' },
     required: false,
     default: PRIVACY_MODE_DEFAULT,
-    help,
+    help: { de: help },
     enum: PRIVACY_MODE_VALUES.map((value) => ({
       value,
       label: privacyModeLabel(value),
@@ -671,14 +704,17 @@ function privacyBypassScopesField(): InstallSetupField {
   return {
     key: PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
     type: 'string',
-    label: 'Bypass-Tool-Whitelist (nur bei Privacy Mode = Per-Tool)',
+    // #602 (OM-17) — German kernel copy tagged `de`; see privacyModeField.
+    label: { de: 'Bypass-Tool-Whitelist (nur bei Privacy Mode = Per-Tool)' },
     required: false,
-    help:
-      'Komma- oder Leerzeichen-getrennte Liste von Tool-Namen, die bei ' +
-      'Privacy Mode "Per-Tool" unmaskiert durchgelassen werden. Beispiel: ' +
-      '"confluence_get_page, confluence_get_page_by_title". Tools die hier ' +
-      'NICHT stehen bleiben "guarded". Wird ignoriert wenn Privacy Mode auf ' +
-      '"Geschützt" oder "Bypass" steht.',
+    help: {
+      de:
+        'Komma- oder Leerzeichen-getrennte Liste von Tool-Namen, die bei ' +
+        'Privacy Mode "Per-Tool" unmaskiert durchgelassen werden. Beispiel: ' +
+        '"confluence_get_page, confluence_get_page_by_title". Tools die hier ' +
+        'NICHT stehen bleiben "guarded". Wird ignoriert wenn Privacy Mode auf ' +
+        '"Geschützt" oder "Bypass" steht.',
+    },
   };
 }
 
@@ -712,6 +748,14 @@ async function validateValues(
   const errors: Array<{ key: string; code: string; message: string }> = [];
 
   for (const field of schema.fields) {
+    // #602 (OM-17) — these validation messages are German templates and this
+    // path has no request locale, so resolve the localized label to German
+    // (falling back to en/any, else the key). A German sentence with a German
+    // label beats the mixed-locale message that was a named cause of OM-17.
+    // NB: 'de' is hardcoded because the surrounding templates are German-only;
+    // if they ever localize, thread the request locale here — same root cause
+    // as the server-side always-English pattern hint tracked in #605.
+    const label = resolveLocalized(field.label, 'de') ?? field.key;
     const raw = incoming[field.key];
     const missing =
       raw === undefined ||
@@ -732,7 +776,7 @@ async function validateValues(
         errors.push({
           key: field.key,
           code: 'required',
-          message: `Feld "${field.label}" ist erforderlich.`,
+          message: `Feld "${label}" ist erforderlich.`,
         });
       } else if (field.default !== undefined) {
         values[field.key] = field.default;
@@ -775,7 +819,7 @@ async function validateValues(
           // reads German. See `setupFieldPattern.ts` → `PatternViolation.hint`.
           message:
             violation.hint ??
-            `"${field.label}" entspricht nicht dem erwarteten Muster.`,
+            `"${label}" entspricht nicht dem erwarteten Muster.`,
         });
         continue;
       }
@@ -792,7 +836,23 @@ type CoerceResult =
   | { error: { code: string; message: string } };
 
 function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
+  // #602 (OM-17) — see validateValues: German templates, no request locale.
+  const label = resolveLocalized(field.label, 'de') ?? field.key;
   switch (field.type) {
+    // #603 (OM-17) — a `json_file` field is an INPUT affordance, not a stored
+    // value: the server explodes the upload into the keys named in `extracts`
+    // and stores only those. So nothing may be submitted under this field's own
+    // key, and a value arriving here means the client tried to write the raw
+    // document into the vault — which is exactly what this feature exists to
+    // avoid. Refused rather than ignored: silently dropping it would let a
+    // client believe it had stored a credential.
+    case 'json_file':
+      return {
+        error: {
+          code: 'not_submittable',
+          message: `"${label}" wird hochgeladen, nicht eingegeben — es kann nicht direkt gesetzt werden.`,
+        },
+      };
     case 'string':
     case 'secret':
       return typeof raw === 'string'
@@ -800,7 +860,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         : {
             error: {
               code: 'wrong_type',
-              message: `"${field.label}" muss Text sein.`,
+              message: `"${label}" muss Text sein.`,
             },
           };
     case 'url': {
@@ -808,7 +868,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         return {
           error: {
             code: 'wrong_type',
-            message: `"${field.label}" muss eine URL sein.`,
+            message: `"${label}" muss eine URL sein.`,
           },
         };
       }
@@ -821,7 +881,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         return {
           error: {
             code: 'invalid_url',
-            message: `"${field.label}" ist keine gültige http(s)-URL.`,
+            message: `"${label}" ist keine gültige http(s)-URL.`,
           },
         };
       }
@@ -834,7 +894,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
       return {
         error: {
           code: 'wrong_type',
-          message: `"${field.label}" muss true oder false sein.`,
+          message: `"${label}" muss true oder false sein.`,
         },
       };
     case 'integer': {
@@ -843,7 +903,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         return {
           error: {
             code: 'wrong_type',
-            message: `"${field.label}" muss eine ganze Zahl sein.`,
+            message: `"${label}" muss eine ganze Zahl sein.`,
           },
         };
       }
@@ -854,7 +914,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         return {
           error: {
             code: 'wrong_type',
-            message: `"${field.label}" muss ein Text sein.`,
+            message: `"${label}" muss ein Text sein.`,
           },
         };
       }
@@ -863,7 +923,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         return {
           error: {
             code: 'enum_mismatch',
-            message: `"${field.label}" muss einer der erlaubten Werte sein: ${allowed.join(', ')}.`,
+            message: `"${label}" muss einer der erlaubten Werte sein: ${allowed.join(', ')}.`,
           },
         };
       }
@@ -880,7 +940,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         return {
           error: {
             code: 'wrong_type',
-            message: `"${field.label}" muss eine Liste von Hostnamen sein.`,
+            message: `"${label}" muss eine Liste von Hostnamen sein.`,
           },
         };
       }
@@ -890,7 +950,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
           return {
             error: {
               code: 'wrong_type',
-              message: `"${field.label}" darf nur Text-Hostnamen enthalten.`,
+              message: `"${label}" darf nur Text-Hostnamen enthalten.`,
             },
           };
         }
@@ -953,6 +1013,12 @@ const SUPPORTED_TYPES = new Set<string>([
   'boolean',
   'integer',
   'host_list',
+  // #603 (OM-17). Fifth place this union is mirrored — the issue named three
+  // (`admin-v1.ts`, `manifestLoader.isSetupFieldType`, `agentSpec`'s z.enum);
+  // this set and `InstallSetupField`'s shape are the other two. A member missing
+  // HERE does not error: `isSupportedType` simply skips the field, so the upload
+  // disappears from the install wizard with no diagnostic at all.
+  'json_file',
 ]);
 
 function isSupportedType(t: string): t is InstallSetupField['type'] {
@@ -961,25 +1027,4 @@ function isSupportedType(t: string): t is InstallSetupField['type'] {
 
 function asString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
-}
-
-/**
- * OM-17 — normalise a manifest `pattern_hint` into a `{ locale: text }` map.
- * Mirrors `manifestLoader.asLocalizedGuide`: accepts the canonical object form
- * and tolerates a bare string (treated as English).
- */
-function asLocalizedHint(value: unknown): Record<string, string> | undefined {
-  if (typeof value === 'string') {
-    return value.trim().length > 0 ? { en: value } : undefined;
-  }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return undefined;
-  }
-  const out: Record<string, string> = {};
-  for (const [locale, text] of Object.entries(
-    value as Record<string, unknown>,
-  )) {
-    if (typeof text === 'string' && text.trim().length > 0) out[locale] = text;
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
 }

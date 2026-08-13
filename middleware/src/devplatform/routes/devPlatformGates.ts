@@ -1,7 +1,7 @@
 import { Router, json as expressJson } from 'express';
 import type { Request, Response } from 'express';
 
-import type { DevJobGate, DevJobGateStore, GateAnswer } from '../devplatform/pipeline/gateStore.js';
+import type { DevJobGate, DevJobGateStore, GateAnswer } from '../pipeline/gateStore.js';
 
 /**
  * Epic #470 W2 — the human-gate admin routes (spec §5).

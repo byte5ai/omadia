@@ -61,6 +61,7 @@ import {
 } from '@omadia/orchestrator';
 
 import type { DevJobSweepScope, ListJobsFilter } from './devJobStore.js';
+import type { FinalizeResult } from './finalizeDevJob.js';
 import type {
   DevJob,
   DevJobEvent,
@@ -168,15 +169,19 @@ export interface DevJobTaskStoreDeps {
    */
   readonly createJob: (input: unknown) => Promise<DevJob>;
   /**
-   * The terminal transition. Bound to `finalizeDevJob` so the brand-gated single
-   * choke point is preserved: this adapter cannot and does not call
-   * `DevJobStore.finishTerminal` itself.
+   * The terminal transition. Bound to `finalizeDevJobDetailed` so the brand-gated
+   * single choke point is preserved (this adapter cannot and does not call
+   * `DevJobStore.finishTerminal` itself) AND the sweep can tell whether IT
+   * reaped a row: `transitioned` is `true` only for the call that flipped the
+   * status. Counting a truthy `job` instead double-counted rows a second replica
+   * had already reaped, because the terminal write is idempotent but the metric
+   * was not (#561).
    */
   readonly finalize: (
     jobId: string,
     status: DevJobStatus,
     patch: { error?: string },
-  ) => Promise<DevJob | null>;
+  ) => Promise<FinalizeResult>;
   /** Terminal-row purge, bound to `DevRetentionRunner.purgeTerminalJobs`. */
   readonly purgeTerminalJobs?: (
     olderThanDays: number,
@@ -328,7 +333,7 @@ export function createDevJobTaskStore(deps: DevJobTaskStoreDeps): TaskStore {
     ): Promise<TaskDescriptor> {
       await fenced(id, lease);
       const devStatus: DevJobStatus = patch.status === 'completed' ? 'done' : 'failed';
-      const job = await deps.finalize(id, devStatus, {
+      const { job } = await deps.finalize(id, devStatus, {
         ...(patch.error !== undefined ? { error: patch.error } : {}),
       });
       if (!job) throw new TaskLeaseLostError(id);
@@ -344,6 +349,19 @@ export function createDevJobTaskStore(deps: DevJobTaskStoreDeps): TaskStore {
       return toTaskDescriptor(job);
     },
 
+    async provideInput(id: string): Promise<TaskDescriptor> {
+      // Symmetric to `requireInput`: the backing pipeline un-parks a `waiting` job
+      // through its OWN gate resolution (`requeueAtPhase` re-queues the job at the
+      // implement phase once the human approves), fenced on `await_human` and
+      // attributable to the approving human. The seam is not given a way to drive
+      // that — the resume transition here is an OBSERVER, returning the current
+      // projection. Resuming through this generic path (and replacing its input)
+      // would bypass the gate's authorization, so it deliberately does nothing.
+      const job = await jobStore.getJob(id);
+      if (!job) throw new TaskLeaseLostError(id);
+      return toTaskDescriptor(job);
+    },
+
     async reapOrphans(opts: TaskReapOptions): Promise<TaskReapResult> {
       const now = opts.now ?? new Date();
       const cutoff = new Date(now.getTime() - opts.staleAfterMs);
@@ -353,12 +371,18 @@ export function createDevJobTaskStore(deps: DevJobTaskStoreDeps): TaskStore {
       );
       let staleFailed = 0;
       for (const job of stalled) {
-        const finished = await deps.finalize(job.id, 'stalled', {
+        // Count ONLY when this call did the flip. `findStalled` on two replicas
+        // returns the same row; whichever finalize wins the guarded UPDATE gets
+        // `transitioned: true`, the loser gets a truthy-but-already-terminal
+        // `job` and `transitioned: false`. Gating on the flag makes the metric
+        // idempotent across replicas the same way the terminal write already is
+        // (#561) — the row a peer reaped a moment earlier is not re-counted.
+        const { transitioned } = await deps.finalize(job.id, 'stalled', {
           error:
             'task abandoned: no worker heartbeat within the orphan window ' +
             '(worker crashed, restarted, or was never started)',
         });
-        if (finished) staleFailed += 1;
+        if (transitioned) staleFailed += 1;
       }
       const purged = deps.purgeTerminalJobs
         ? await deps.purgeTerminalJobs(

@@ -63,10 +63,14 @@ import {
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
 import { createChatSessionsRouter } from './routes/chatSessions.js';
-import { createDevGraphRouter } from './routes/devGraph.js';
-import { createDevGraphLifecycleRouter } from './routes/devGraphLifecycle.js';
-import { createAgentPrioritiesRouter } from './routes/agentPriorities.js';
-import { createAdminDomainsRouter } from './routes/adminDomains.js';
+import {
+  DEV_GRAPH_PATH,
+  KG_LIFECYCLE_ADMIN_PATH,
+  KG_PRIORITIES_ADMIN_PATH,
+  PLUGIN_DOMAINS_ADMIN_PATH,
+  mountDevGraph,
+  mountKnowledgeGraphAdmin,
+} from './routes/graphRouterMounts.js';
 import type { LifecycleService } from '@omadia/knowledge-graph-neon/dist/lifecycleService.js';
 import type {
   AgentPrioritiesStore,
@@ -178,8 +182,8 @@ import { createRequireAuth } from './auth/requireAuth.js';
 import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
 import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
 import { createChatDevJobOrchestratorTools } from './devplatform/chatDevJobToolWiring.js';
-import { isPermittedLauncher } from './routes/devPlatformShared.js';
-import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from './routes/devWebhooks.js';
+import { isPermittedLauncher } from './devplatform/routes/devPlatformShared.js';
+import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from './devplatform/routes/devWebhooks.js';
 import { WebhookDeliveryStore } from './devplatform/triggers/webhookDeliveryStore.js';
 import { DevGithubAppStore } from './devplatform/githubApp/appStore.js';
 import {
@@ -238,13 +242,19 @@ import { PluginCatalog } from './plugins/manifestLoader.js';
 import {
   EMBEDDING_GATE_STATUS_SERVICE,
   buildKgHealth,
+  probeGraphPool,
   type EmbeddingGateStatus,
 } from './health/kgHealth.js';
+import {
+  AI_DISCLOSURE_POSTURE_SERVICE,
+  buildDisclosureHealth,
+  type AiDisclosurePostureStatus,
+} from './health/disclosureHealth.js';
 import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
 import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
 import type { PluginTemplateRegistrar } from './plugins/pluginTemplates.js';
-import { createDevPlatformGithubAppRouter } from './routes/devPlatformGithubApp.js';
+import { createDevPlatformGithubAppRouter } from './devplatform/routes/devPlatformGithubApp.js';
 import {
   OAuthBrokerService,
   PendingFlowStore,
@@ -292,7 +302,14 @@ import { NativeToolRegistry } from '@omadia/orchestrator';
 // W3-A / W4 — boot-time enforcement of the tool-timeout ordering invariant.
 import { assertTimeoutHierarchy } from '@omadia/orchestrator';
 // W2-2 (issue #543) — generic long-running task seam.
-import { InMemoryTaskStore, startTaskReaper } from '@omadia/orchestrator';
+// Issue #560 — durable backing + boot resume driver for it.
+import {
+  InMemoryTaskStore,
+  startTaskReaper,
+  startTaskResumeDriver,
+  type ResumableTaskSource,
+} from '@omadia/orchestrator';
+import { DurableTaskStore } from './tasks/durableTaskStore.js';
 import {
   McpManager,
   type McpCallLogEntry,
@@ -447,18 +464,11 @@ async function main(): Promise<void> {
   const longRunningSubAgentTools = config.LONG_RUNNING_SUBAGENT_TOOLS.split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  const subAgentTaskStore = new InMemoryTaskStore();
-  if (longRunningSubAgentTools.length > 0) {
-    startTaskReaper(subAgentTaskStore, {
-      staleAfterMs: config.LONG_RUNNING_TASK_STALE_MS,
-      purgeTerminalAfterMs: config.LONG_RUNNING_TASK_RETAIN_MS,
-      onError: (err: unknown) =>
-        console.warn('[middleware] long-running task reaper sweep failed:', err),
-    });
-    console.log(
-      `[middleware] deferred sub-agent dispatch enabled for: ${longRunningSubAgentTools.join(', ')}`,
-    );
-  }
+  // Issue #560 — deferred sub-agent tool handles are collected into this sink
+  // during hydration so the resume driver (started after the hydrate loop) can
+  // re-drive their tasks with no task-id hint (#560 criterion 3). The task store
+  // itself is constructed once `graphPool` resolves, far below.
+  const deferredTaskToolHandles: ResumableTaskSource[] = [];
   // LLM provider catalog: kernel-owned registry of plugin-contributed providers
   // (e.g. @omadia/plugin-llm-minimax). Published pre-activate and populated from
   // installed plugins' `llm_provider` manifest blocks below, so the orchestrator
@@ -1483,7 +1493,7 @@ async function main(): Promise<void> {
     // those so the channel plugins can run their own auth downstream —
     // same protection as before for `/api/chat`, `/api/v1/operator/*`,
     // `/api/v1/admin/*`, etc. since none of them match these regexes.
-    publicPaths: publicPaths({ devEndpointsEnabled: config.DEV_ENDPOINTS_ENABLED }),
+    publicPaths: publicPaths(),
   });
 
   // ContextRetriever + FactExtractor construction moved to AFTER
@@ -1587,6 +1597,29 @@ async function main(): Promise<void> {
   }
   const graphPool = serviceRegistry.get<Pool>('graphPool');
   const graphTenantId = process.env['GRAPH_TENANT_ID'] ?? 'default';
+
+  // Issue #560 — now that graphPool is known, back the long-running task seam
+  // durably when Postgres is present (tasks survive a restart; the `tasks` table
+  // ships in migration 0034), else keep the process-local store. The reaper is
+  // started here rather than at declaration so it sweeps the store actually in
+  // use. The resume driver is started later, after the hydrate loop populates
+  // `deferredTaskToolHandles`.
+  const subAgentTaskStore = graphPool
+    ? new DurableTaskStore(graphPool)
+    : new InMemoryTaskStore();
+  if (longRunningSubAgentTools.length > 0) {
+    startTaskReaper(subAgentTaskStore, {
+      staleAfterMs: config.LONG_RUNNING_TASK_STALE_MS,
+      purgeTerminalAfterMs: config.LONG_RUNNING_TASK_RETAIN_MS,
+      onError: (err: unknown) =>
+        console.warn('[middleware] long-running task reaper sweep failed:', err),
+    });
+    console.log(
+      `[middleware] deferred sub-agent dispatch enabled (${
+        graphPool ? 'durable' : 'in-memory'
+      } store) for: ${longRunningSubAgentTools.join(', ')}`,
+    );
+  }
 
   // Generic MCP OAuth service (epic #459 W9) — outer scope so both the
   // McpManager (auth provider) and the operator router (begin/callback routes)
@@ -2182,6 +2215,9 @@ async function main(): Promise<void> {
             // (the default) leaves every sub-agent on today's inline path.
             longRunningSubAgentTools: longRunningSubAgentTools,
             taskStore: subAgentTaskStore,
+            // Issue #560 — collect each deferred tool's handle so the resume
+            // driver can re-drive its tasks (`resumeOne`) with no id hint.
+            deferredTaskToolHandles,
             log: (m: string) => console.log(`[middleware] ${m}`),
           },
         );
@@ -2203,6 +2239,22 @@ async function main(): Promise<void> {
       console.log(
         `[middleware] registry orchestrators: hydrated with ${String(attached)} domain-tool registrations across ${String(registryForHydrate.list().length)} agent(s) (per-Agent plugin-scoped)`,
       );
+      // Issue #560 — start the boot resume driver once the deferred tool handles
+      // exist. It claims and re-drives any `working` task with no lease (a
+      // durable row a restart orphaned before its runner claimed it, or a task a
+      // later turn un-parked via `provideInput`), calling `claimNextPending` with
+      // no task-id hint — the boot claim loop criterion 3 asks for. A no-op
+      // against the in-memory store (its rows die with the process) and against
+      // an empty handle set.
+      // Gated on the feature, not on handles being present yet: the sink is a
+      // shared array a later agent rebuild may append to, and each sweep re-reads
+      // it, so a handle registered after boot is still driven.
+      if (longRunningSubAgentTools.length > 0) {
+        startTaskResumeDriver(deferredTaskToolHandles, {
+          onError: (err: unknown) =>
+            console.warn('[middleware] long-running task resume sweep failed:', err),
+        });
+      }
       // Persist the wiring so a later `registry.reload()` that REBUILDS an
       // Agent (privacy_profile flip, etc.) re-hydrates the new orchestrator —
       // still scoped to the Agent's enabled plugins, and now from the LIVE tool
@@ -2337,7 +2389,7 @@ async function main(): Promise<void> {
   // kill switch. The webhook stores are pool/vault-backed and stateless, so building
   // them here (before the full platform assembly) is safe and keeps the mount order
   // correct; the worker (assembled later) claims the created jobs from the DB.
-  if (config.DEV_PLATFORM_ENABLED && graphPool && config.DEV_WEBHOOKS_ENABLED) {
+  if (config.devPlatform.enabled && graphPool && config.devPlatform.webhooks.enabled) {
     const webhookAppStore = new DevGithubAppStore(graphPool, secretVault);
     const webhookRepoStore = new DevRepoStoreForWebhooks(graphPool);
     const webhookJobStore = new DevJobStoreForWebhooks(graphPool);
@@ -2370,7 +2422,7 @@ async function main(): Promise<void> {
     // Webhook jobs run on the non-local default backend: Fly when a runner app is
     // configured, else the docker shipping path. `local` is structurally refused by
     // the trigger job service, so it is never selected here.
-    const webhookBackend = config.DEV_FLY_RUNNER_APP ? ('fly' as const) : ('docker' as const);
+    const webhookBackend = config.devPlatform.fly?.runnerApp ? ('fly' as const) : ('docker' as const);
 
     const webhookDeps: DevWebhooksRouterDeps = {
       listWebhookSecrets,
@@ -2388,9 +2440,9 @@ async function main(): Promise<void> {
         ),
       mintRunnerToken: () => mintDevRunnerToken(),
       webhookBackend,
-      webhooksEnabled: config.DEV_WEBHOOKS_ENABLED,
-      maxJobsPerRepoHour: config.DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR,
-      maxJobsPerSenderHour: config.DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR,
+      webhooksEnabled: config.devPlatform.webhooks.enabled,
+      maxJobsPerRepoHour: config.devPlatform.webhooks.maxJobsPerRepoHour,
+      maxJobsPerSenderHour: config.devPlatform.webhooks.maxJobsPerSenderHour,
       log: (msg) => console.log(msg),
     };
     app.use(createDevWebhooksRouter(webhookDeps));
@@ -2438,10 +2490,38 @@ async function main(): Promise<void> {
     // model/dimension gate actually let the knowledge-graph write vectors, so
     // the gate outcome is read here too. Resolved per request rather than
     // captured at boot: plugins can be toggled at runtime.
-    const gate = serviceRegistry.get<EmbeddingGateStatus>(
-      EMBEDDING_GATE_STATUS_SERVICE,
-    );
-    res.json({ status: 'ok', kg: buildKgHealth(installedRegistry, gate) });
+    //
+    // #665 — everything above is a projection of the REGISTRY, so it could not
+    // see the instance being dead: the KG plugin ended the process-wide pg
+    // pool, every query started failing, and this endpoint still answered
+    // `ok` because the registry entry said `active`. The pool is now asked
+    // directly. Async because that is a query; it is bounded by its own
+    // timeout and never throws, so /health cannot hang or 500 on it.
+    void (async (): Promise<void> => {
+      const gate = serviceRegistry.get<EmbeddingGateStatus>(
+        EMBEDDING_GATE_STATUS_SERVICE,
+      );
+      const probe = await probeGraphPool(serviceRegistry.get('graphPool'));
+      const kg = buildKgHealth(installedRegistry, gate, probe);
+      // #648 (epic #642) — the resolved AI-Act marking posture per channel.
+      // Read per request for the same reason the embedding gate is: a config
+      // change re-activates the orchestrator and re-publishes, and a boot-time
+      // capture would keep reporting the old posture until a restart.
+      // Non-sensitive by construction: levels, sources and booleans only, no
+      // assistant name, operator note or composed line — see disclosureHealth.ts.
+      const disclosure = buildDisclosureHealth(
+        serviceRegistry.get<AiDisclosurePostureStatus>(
+          AI_DISCLOSURE_POSTURE_SERVICE,
+        ),
+      );
+      // A dead pool is not a degradation to report at 200 — nothing in the
+      // process can serve a request. 503 is what a load balancer needs to see.
+      // A deviating marking posture deliberately does NOT change the status:
+      // it is a legitimate operator decision, and #648 is explicit that the
+      // hint informs rather than blocks.
+      const status = kg.pool === 'dead' ? 'error' : 'ok';
+      res.status(kg.pool === 'dead' ? 503 : 200).json({ status, kg, disclosure });
+    })();
   });
 
   // Friction-free pairing discovery (#293). Public-by-design (lives outside
@@ -3017,116 +3097,26 @@ async function main(): Promise<void> {
   // spine + repo/artifact tables live there); in-memory mode has nowhere to
   // persist a durable queue. The two safety-critical modes (subscription auth,
   // unsafe-local backend) already refused boot in config.ts if misconfigured.
-  if (config.DEV_PLATFORM_ENABLED && graphPool) {
+  if (config.devPlatform.enabled && graphPool) {
     const devPlatformGithubDeviceProvider = createGitHubDeviceProvider(
-      config.DEV_PLATFORM_GITHUB_CLIENT_ID ?? config.GITHUB_OAUTH_CLIENT_ID,
+      config.devPlatform.githubClientId,
     );
     const shimEntry = fileURLToPath(
       new URL('../packages/dev-runner-shim/dist/src/index.js', import.meta.url),
     );
-    // Comma-separated env list → trimmed non-empty entries (egress allowlist,
-    // model allowlist). Entry-level validation happens in deriveJobPolicy.
-    const csvList = (raw: string): string[] =>
-      raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
     // W2: role-principal gates resolve their live holder set against the same
     // conductor role store the conductor await gate uses.
     const devPlatformRoleStore = new ConductorRoleStore(graphPool);
-    // The runner image, shared by every backend: FlyMachinesBackend (below) AND
-    // the DockerBackend job-policy config (assembleDevPlatform's `runnerImage`,
-    // further down) both derive from this one resolution. `DEV_RUNNER_IMAGE`
-    // wins when set (it's the name the daemon's own DEV_RUNNER_IMAGES/allowlist
-    // config uses too, so one operator-set var keeps every side in agreement);
-    // `DEV_RUNNER_DEFAULT_IMAGE` is the fallback. A digest-pinned image is
-    // required on Fly (enforced below); locally a floating tag is fine.
-    //
-    // Epic #470 W4 — the on-/off-Fly selection for the Machines backend lives
-    // HERE so the assembly layer stays env-free: on Fly (FLY_APP_NAME injected)
-    // use the internal Machines API + a `.internal` 6PN phone-home address; off
-    // Fly use the public endpoints. These operator URLs are DELIBERATELY not
-    // SSRF-guarded (`.internal` is valid here).
-    const resolvedRunnerImage = config.DEV_RUNNER_IMAGE ?? config.DEV_RUNNER_DEFAULT_IMAGE;
-    // The runner app MUST be dedicated — NEVER this middleware's own Fly app, or a
-    // job's ephemeral machine (running hostile repo code) would be provisioned into
-    // the app that holds the middleware's machines, volumes, and app-level secrets
-    // (Forge W4 wiring audit — the "dedicated app" invariant was comment-only).
-    const flyAppIsSelf = Boolean(
-      config.DEV_FLY_RUNNER_APP && config.FLY_APP_NAME && config.DEV_FLY_RUNNER_APP === config.FLY_APP_NAME,
-    );
-    if (flyAppIsSelf) {
-      console.warn(
-        `[middleware] DEV_FLY_RUNNER_APP (${config.DEV_FLY_RUNNER_APP}) equals this app's FLY_APP_NAME — refusing to provision runners into the middleware's own app; FlyMachinesBackend NOT registered`,
-      );
-    }
-    const flyConfig =
-      config.DEV_FLY_RUNNER_APP && resolvedRunnerImage && !flyAppIsSelf
-        ? {
-            runnerApp: config.DEV_FLY_RUNNER_APP,
-            apiBase: config.FLY_APP_NAME
-              ? 'http://_api.internal:4280/v1'
-              : 'https://api.machines.dev/v1',
-            image: resolvedRunnerImage,
-            phoneHomeUrl:
-              config.DEV_FLY_PHONE_HOME_URL ??
-              (config.FLY_APP_NAME
-                ? `http://${config.FLY_APP_NAME}.internal:8080`
-                : config.PUBLIC_BASE_URL),
-            guest: {
-              cpus: config.DEV_FLY_GUEST_CPUS,
-              memoryMb: config.DEV_FLY_GUEST_MEMORY_MB,
-              cpuKind: 'shared',
-            },
-            maxCpus: config.DEV_FLY_MAX_CPUS,
-            maxMemoryMb: config.DEV_FLY_MAX_MEMORY_MB,
-            ...(config.DEV_FLY_REGION ? { region: config.DEV_FLY_REGION } : {}),
-          }
-        : undefined;
-    if (config.DEV_FLY_RUNNER_APP && !resolvedRunnerImage) {
-      console.warn(
-        '[middleware] DEV_FLY_RUNNER_APP set but no runner image (DEV_RUNNER_IMAGE / DEV_RUNNER_DEFAULT_IMAGE) — FlyMachinesBackend NOT registered',
-      );
-    }
+    // Epic #470 C3: ONE namespaced config object, built in config.ts. Everything
+    // operator-settable — the runner image fallback, the on-/off-Fly selection,
+    // the comma-separated lists — is resolved behind that boundary or inside the
+    // assembly, so no `DEV_*` env name appears at this call site any more.
     const wiredDevPlatform = assembleDevPlatform({
       pool: graphPool,
       vault: secretVault,
+      config: config.devPlatform,
       resolveRoleHolders: (key) => devPlatformRoleStore.resolve(key),
-      baseUrl: config.DEV_PLATFORM_RUNNER_BASE_URL ?? `http://127.0.0.1:${String(config.PORT)}`,
-      cliBin: config.DEV_PLATFORM_CLI_BIN,
-      wallClockMs: config.DEV_PLATFORM_JOB_WALL_CLOCK_MS,
-      heartbeatTimeoutMs: config.DEV_PLATFORM_HEARTBEAT_TIMEOUT_MS,
-      maxConcurrentJobs: config.DEV_PLATFORM_MAX_CONCURRENT_JOBS,
-      commitAuthor: config.DEV_PLATFORM_COMMIT_AUTHOR,
-      subscriptionModeEnabled: config.DEV_PLATFORM_SUBSCRIPTION_MODE,
-      workspaceDir: config.DEV_PLATFORM_WORKSPACE_DIR,
-      unsafeLocal: config.DEV_PLATFORM_UNSAFE_LOCAL,
-      ...(config.DEV_PLATFORM_LOCAL_UID !== undefined ? { localUid: config.DEV_PLATFORM_LOCAL_UID } : {}),
       shimEntry,
-      // W1 keystones (spec §4/§6b): the daemon job-policy endpoint + the LLM
-      // proxy. Absent daemon token / runner image ⇒ the internal endpoint 503s;
-      // the LLM proxy is always mounted (its origin probe must answer 2xx).
-      ...(config.DEV_RUNNER_DAEMON_TOKEN ? { daemonToken: config.DEV_RUNNER_DAEMON_TOKEN } : {}),
-      ...(config.DEV_RUNNER_DAEMON_URL ? { daemonUrl: config.DEV_RUNNER_DAEMON_URL } : {}),
-      backend: config.DEV_PLATFORM_BACKEND,
-      leaseTtlSec: config.DEV_JOB_LEASE_TTL_SEC,
-      ...(resolvedRunnerImage ? { runnerImage: resolvedRunnerImage } : {}),
-      ...(config.DEV_EGRESS_BASE_ALLOWLIST
-        ? { egressBaseAllowlist: csvList(config.DEV_EGRESS_BASE_ALLOWLIST) }
-        : {}),
-      ...(config.DEV_PLATFORM_MIDDLEWARE_HOST
-        ? { middlewareHost: config.DEV_PLATFORM_MIDDLEWARE_HOST }
-        : {}),
-      llm: {
-        provider: config.DEV_PLATFORM_LLM_PROVIDER,
-        upstreamBaseUrl: config.DEV_PLATFORM_LLM_UPSTREAM_BASE_URL,
-        allowedModels: config.DEV_PLATFORM_LLM_ALLOWED_MODELS
-          ? csvList(config.DEV_PLATFORM_LLM_ALLOWED_MODELS)
-          : [],
-        // W4 (spec §5): the budget hook's config default + the max_tokens clamp ceiling.
-        defaultBudgetCostUsd: config.DEV_JOB_DEFAULT_BUDGET_USD,
-        maxOutputTokens: config.DEV_JOB_MAX_OUTPUT_TOKENS,
-      },
-      // W4 (spec §2): the Fly Machines backend, present only when a dedicated runner
-      // app is configured (absent ⇒ not registered).
-      ...(flyConfig ? { fly: flyConfig } : {}),
       ...(devPlatformGithubDeviceProvider
         ? {
             deviceFlow: {
@@ -3177,7 +3167,7 @@ async function main(): Promise<void> {
         repoStore: wiredDevPlatform.repoStore,
         jobStore: wiredDevPlatform.jobStore,
         isPermittedLauncher,
-        defaultBackend: config.DEV_PLATFORM_BACKEND,
+        defaultBackend: config.devPlatform.backend,
         getCallerUserId: () => turnContext.current()?.userId,
       });
       for (const reg of chatDevJobTools.registrations) {
@@ -3205,7 +3195,7 @@ async function main(): Promise<void> {
     process.once('SIGTERM', stopDevPlatformWorker);
     process.once('SIGINT', stopDevPlatformWorker);
     console.log(
-      `[middleware] dev platform ENABLED — worker running (max ${String(config.DEV_PLATFORM_MAX_CONCURRENT_JOBS)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
+      `[middleware] dev platform ENABLED — worker running (max ${String(config.devPlatform.maxConcurrentJobs)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
     );
 
     // Contribute the operator menu entry instead of hardcoding it in the
@@ -3233,8 +3223,8 @@ async function main(): Promise<void> {
     // cron only prunes aged rows. Terminal-job purge stays operator-driven via
     // `scripts/dev-transcript.ts purge`. `overlap:'skip'` so a slow run never stacks.
     const devRetention = new DevRetentionRunner(graphPool, {
-      eventRetentionDays: config.DEV_PLATFORM_EVENT_RETENTION_DAYS,
-      auditRetentionDays: config.DEV_PLATFORM_AUDIT_RETENTION_DAYS,
+      eventRetentionDays: config.devPlatform.retention.eventRetentionDays,
+      auditRetentionDays: config.devPlatform.retention.auditRetentionDays,
     });
     jobScheduler.register(
       'dev-platform',
@@ -3247,7 +3237,7 @@ async function main(): Promise<void> {
       },
     );
     console.log('[middleware] dev-retention cron registered (17 3 * * *)');
-  } else if (config.DEV_PLATFORM_ENABLED) {
+  } else if (config.devPlatform.enabled) {
     console.warn(
       '[middleware] DEV_PLATFORM_ENABLED=true but no graphPool (in-memory KG backend) — dev platform NOT started; set DATABASE_URL to enable',
     );
@@ -4601,51 +4591,41 @@ async function main(): Promise<void> {
 
   // `/api/dev/memory` is now mounted by the @omadia/memory plugin via
   // ctx.routes.register when its `dev_memory_endpoints_enabled` config is true.
-  if (config.DEV_ENDPOINTS_ENABLED) {
-    app.use('/api/dev/graph', createDevGraphRouter({ graph: knowledgeGraph }));
-    // OB-73 — palaia Phase 4 lifecycle admin (Tier-Histogram + Run-Now).
-    // Mounted only when the KG-Neon plugin published `graphLifecycle@1`
-    // (in-memory backend stays unmounted because the lifecycle is
-    // Postgres-specific).
-    const lifecycleService =
-      serviceRegistry.get<LifecycleService>('graphLifecycle');
-    if (lifecycleService) {
-      app.use(
-        '/api/dev/graph/lifecycle',
-        createDevGraphLifecycleRouter({ lifecycle: lifecycleService }),
-      );
-      console.log(
-        '[middleware] kg-lifecycle admin endpoints ready at /api/dev/graph/lifecycle',
-      );
-    }
-    // OB-74 — palaia Phase 5 per-agent block/boost admin. Mounted only when
-    // the KG-Neon plugin published `agentPriorities@1` (in-memory backend
-    // can leave the page empty — the admin UI degrades to "no entries").
-    const agentPrioritiesStore =
-      serviceRegistry.get<AgentPrioritiesStore>('agentPriorities');
-    if (agentPrioritiesStore) {
-      app.use(
-        '/api/dev/graph/priorities',
-        createAgentPrioritiesRouter({ store: agentPrioritiesStore }),
-      );
-      console.log(
-        '[middleware] kg-priorities admin endpoints ready at /api/dev/graph/priorities',
-      );
-    }
+  // It is authenticated by the same OB-106 `/api` requireAuth line as everything
+  // else here — issue #669 removed the `/api/dev` entry from `publicPaths`.
 
-    // OB-77 — Palaia Phase 8 plugin-domain admin. Read-only listing of
-    // all loaded plugins grouped by their declared identity.domain.
-    // Mounted unconditionally (the catalog is always present); curation
-    // is deferred to OB-78 Phase 9 Agent-Profile work.
-    app.use(
-      '/api/admin/domains',
-      createAdminDomainsRouter({ catalog: pluginCatalog }),
-    );
+  // Issue #669 — the operator surfaces (KG lifecycle, per-agent priorities,
+  // plugin domains) no longer live behind DEV_ENDPOINTS_ENABLED. They are
+  // authenticated admin routers; publishing the dev scaffolding was never a
+  // supported price for reaching them. `graphLifecycle@1`/`agentPriorities@1`
+  // are published by the Neon KG plugin only — the in-memory backend leaves
+  // them unmounted because the lifecycle sweeps are Postgres-specific.
+  const kgAdminMounted = mountKnowledgeGraphAdmin(app, requireAuth, {
+    lifecycle: serviceRegistry.get<LifecycleService>('graphLifecycle'),
+    priorities: serviceRegistry.get<AgentPrioritiesStore>('agentPriorities'),
+    catalog: pluginCatalog,
+  });
+  console.log(
+    `[middleware] KG admin endpoints ready (auth: required) — lifecycle=${
+      kgAdminMounted.lifecycle ? KG_LIFECYCLE_ADMIN_PATH : 'unmounted (no graphLifecycle@1)'
+    }, priorities=${
+      kgAdminMounted.priorities ? KG_PRIORITIES_ADMIN_PATH : 'unmounted (no agentPriorities@1)'
+    }, domains=${PLUGIN_DOMAINS_ADMIN_PATH}`,
+  );
+
+  // The flag is read inside `mountDevGraph`, not in an `if` here — see its doc
+  // comment: one tested consumer, and an admin mount that cannot depend on it.
+  if (
+    mountDevGraph(app, requireAuth, {
+      graph: knowledgeGraph,
+      enabled: config.DEV_ENDPOINTS_ENABLED,
+      loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY,
+    })
+  ) {
     console.log(
-      '[middleware] domains admin endpoint ready at /api/admin/domains',
-    );
-    console.warn(
-      '[middleware] ⚠ DEV endpoints enabled at /api/dev — unauthenticated, LOCAL USE ONLY',
+      `[middleware] DEV endpoints enabled at ${DEV_GRAPH_PATH} (auth: required${
+        config.DEV_ENDPOINTS_LOOPBACK_ONLY ? ', loopback-only' : ''
+      })`,
     );
   }
 

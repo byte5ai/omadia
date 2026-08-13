@@ -11,7 +11,7 @@ import {
   type DeriveJobPolicyConfig,
   type JobPolicyRepoInput,
 } from '../../src/devplatform/deriveJobPolicy.js';
-import { createDevRunnerRouter } from '../../src/routes/devRunnerApi.js';
+import { createDevRunnerRouter } from '../../src/devplatform/routes/devRunnerApi.js';
 import type { DevJobStatus, DevRepo } from '../../src/devplatform/types.js';
 import { FakeStore, makeJob, auth, hasCredentialKey } from './devRunnerApi.harness.js';
 

@@ -321,14 +321,17 @@ describe('devplatform/DevJobStore (pg)', { skip: !pgAvailable }, () => {
       prUrl: 'https://example.com/pr/1',
       branch: 'omadia/job-x',
     });
-    assert.equal(done?.status, 'done');
-    assert.equal(done?.prUrl, 'https://example.com/pr/1');
-    assert.ok(done?.endedAt, 'ended_at stamped');
+    assert.equal(done.transitioned, true, 'the first call performed the flip');
+    assert.equal(done.job?.status, 'done');
+    assert.equal(done.job?.prUrl, 'https://example.com/pr/1');
+    assert.ok(done.job?.endedAt, 'ended_at stamped');
 
-    // Second call on an already-terminal job is a no-op returning existing state.
+    // Second call on an already-terminal job is a no-op returning existing state,
+    // and reports transitioned:false so a caller counting reaps does not count it.
     const again = await store.finishTerminal(TERMINAL_FINISH_BRAND, job.id, 'failed', { error: 'x' });
-    assert.equal(again?.status, 'done', 'idempotent — status unchanged, not flipped to failed');
-    assert.equal(again?.error, null, 'the no-op did not write the failure error');
+    assert.equal(again.transitioned, false, 'the no-op did not flip anything');
+    assert.equal(again.job?.status, 'done', 'idempotent — status unchanged, not flipped to failed');
+    assert.equal(again.job?.error, null, 'the no-op did not write the failure error');
   });
 
   it('deleteJob refuses an active job, deletes a terminal one, and reports a missing id', async () => {

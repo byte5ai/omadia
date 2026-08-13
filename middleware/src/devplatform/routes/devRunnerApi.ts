@@ -24,15 +24,15 @@
 import { Router, json as expressJson, text as expressText } from 'express';
 import type { NextFunction, Request, Response, Router as ExpressRouter } from 'express';
 
-import type { DeriveJobPolicyConfig } from '../devplatform/deriveJobPolicy.js';
+import type { DeriveJobPolicyConfig } from '../deriveJobPolicy.js';
 import { mountJobPolicyRoute } from './devRunnerJobPolicyRoute.js';
-import type { FinalizeContext } from '../devplatform/finalizeDevJob.js';
-import type { RunnerEventInput } from '../devplatform/devJobStore.js';
+import type { FinalizeContext } from '../finalizeDevJob.js';
+import type { RunnerEventInput } from '../devJobStore.js';
 import {
   StalePhaseError,
   type PhaseDirective,
   type PhaseResultInput,
-} from '../devplatform/pipeline/phaseEngine.js';
+} from '../pipeline/phaseEngine.js';
 import {
   RUNNER_PROTOCOL_VERSION,
   isDevJobEventType,
@@ -47,7 +47,7 @@ import {
   type DevReviewFinding,
   type DevJobUsage,
   type DevRepo,
-} from '../devplatform/types.js';
+} from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Injected seams. Each is the narrow structural slice this router needs, so a

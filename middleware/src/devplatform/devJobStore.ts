@@ -78,6 +78,27 @@ export interface TerminalPatch {
   prUrl?: string | null;
 }
 
+/**
+ * The outcome of a `finishTerminal` call.
+ *
+ * `job` is the post-write state (the freshly-flipped row, the pre-existing
+ * terminal row on a no-op, or `null` when the id is absent) — unchanged from the
+ * old nullable-job return, so callers that only need the state read `.job`.
+ *
+ * `transitioned` is the load-bearing addition: `true` ONLY when THIS call
+ * performed the status flip (the guarded UPDATE matched a row). It is `false`
+ * for an idempotent no-op — an already-terminal row, including one a CONCURRENT
+ * writer (another replica's reaper, a cancel route) flipped a moment earlier.
+ * The guarded UPDATE is the only place in the system that knows this; collapsing
+ * it into a plain truthy job is what let the orphan sweep double-count a row a
+ * second replica had already reaped (#561). See the terminal-transition choke
+ * point that wraps this call.
+ */
+export interface TerminalWriteResult {
+  readonly job: DevJob | null;
+  readonly transitioned: boolean;
+}
+
 /** Shared with `devJobWorkerSeams.ts` (worker-seam bodies live there for the
  *  500-line rule); not part of the public store API. */
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -951,13 +972,19 @@ export class DevJobStore {
    * UPDATE touches 0 rows and the existing row is returned unchanged, so a
    * double-finalize is a no-op, not an error. NOT lease-fenced: cancel routes
    * and the reaper legitimately finalize jobs they do not lease.
+   *
+   * Returns a {@link TerminalWriteResult}: `job` is the post-write state (as
+   * before), and `transitioned` reports whether THIS call did the flip — `true`
+   * only when the guarded UPDATE matched a row, `false` for any no-op including a
+   * row a concurrent replica flipped first. That flag is the fence the sweep
+   * metric needs; see the type doc and #561.
    */
   async finishTerminal(
     brand: typeof TERMINAL_FINISH_BRAND,
     jobId: string,
     status: DevJobStatus,
     patch: TerminalPatch = {},
-  ): Promise<DevJob | null> {
+  ): Promise<TerminalWriteResult> {
     if (brand !== TERMINAL_FINISH_BRAND) {
       throw new Error('devplatform: finishTerminal() is reserved for finalizeDevJob()');
     }
@@ -983,8 +1010,11 @@ export class DevJobStore {
         patch.prUrl ?? null,
       ],
     );
-    if (r.rows[0]) return toJob(r.rows[0]);
-    // Already terminal or absent — idempotent no-op, return existing state.
-    return this.getJob(jobId);
+    // A matched row ⇒ THIS call flipped it. `RETURNING` gives the new state.
+    if (r.rows[0]) return { job: toJob(r.rows[0]), transitioned: true };
+    // 0 rows ⇒ already terminal or absent — idempotent no-op. Return the
+    // existing state (unchanged from the old contract) and, crucially, report
+    // `transitioned: false` so the caller does not count a row it did not reap.
+    return { job: await this.getJob(jobId), transitioned: false };
   }
 }

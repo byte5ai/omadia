@@ -1,7 +1,7 @@
 import { Router, json as expressJson } from 'express';
 import type { Request, Response } from 'express';
 
-import { mintAppJwt } from '../services/githubAppJwt.js';
+import { mintAppJwt } from '../../services/githubAppJwt.js';
 import {
   buildManifest,
   exchangeManifestCode,
@@ -9,12 +9,12 @@ import {
   type AppConversion,
   type ConversionFetch,
   type ManifestFlowStore,
-} from '../devplatform/githubApp/manifestFlow.js';
+} from '../githubApp/manifestFlow.js';
 import type {
   DevGithubApp,
   DevGithubAppInstallation,
   DevGithubAppSecrets,
-} from '../devplatform/githubApp/appStore.js';
+} from '../githubApp/appStore.js';
 import {
   DevPlatformError,
   handler,

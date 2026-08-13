@@ -19,6 +19,7 @@ import { DevRepoCredentialStore } from '../../src/devplatform/devRepoCredentials
 import { mintRunnerToken } from '../../src/devplatform/jobToken.js';
 import { publicPaths } from '../../src/auth/publicPaths.js';
 import { assembleDevPlatform, mountDevPlatform } from '../../src/devplatform/wireDevPlatform.js';
+import { devPlatformTestConfig } from './devPlatformConfig.harness.js';
 import { InMemorySecretVault } from '../../src/secrets/vault.js';
 import type {
   ApplyDiffInput,
@@ -261,7 +262,7 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
   // does, so a path dropped from that list fails this test instead of only
   // failing in production. Mounted both at `/api` (like index.ts) and around
   // the admin router (like mountDevPlatform).
-  const allowlist = publicPaths({ devEndpointsEnabled: false });
+  const allowlist = publicPaths();
   const requireAuth: RequestHandler = (req, res, next) => {
     const url = req.originalUrl || req.url;
     if (allowlist.some((rx) => rx.test(url))) {
@@ -348,26 +349,23 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
     wired = assembleDevPlatform({
       pool,
       vault,
-      baseUrl,
-      cliBin: 'claude',
-      wallClockMs: 10 * 60_000,
-      heartbeatTimeoutMs: 10 * 60_000,
-      maxConcurrentJobs: 1,
-      commitAuthor: 'omadia-dev <dev-platform@omadia.ai>',
-      subscriptionModeEnabled: false,
-      workspaceDir: '/tmp/e2e-dev-jobs',
-      unsafeLocal: false,
+      config: devPlatformTestConfig({
+        baseUrl,
+        wallClockMs: 10 * 60_000,
+        heartbeatTimeoutMs: 10 * 60_000,
+        workspaceDir: '/tmp/e2e-dev-jobs',
+        // W1 keystones (spec §4/§6b): the daemon job-policy endpoint + the LLM
+        // proxy, wired exactly as index.ts does — so this test fails if either is
+        // left unmounted, instead of the routes silently not existing.
+        daemonToken: `${E2E_DAEMON_TOKEN},${E2E_DAEMON_TOKEN_OLD}`,
+        runnerImage: E2E_RUNNER_IMAGE,
+        egressBaseAllowlist: ['registry.npmjs.org'],
+        llm: { allowedModels: [E2E_MODEL] },
+      }),
       shimEntry: '/dev/null',
       backends: [fakeBackend],
       forgeFactory: () => stubForge,
-      // W1 keystones (spec §4/§6b): the daemon job-policy endpoint + the LLM
-      // proxy, wired exactly as index.ts does — so this test fails if either is
-      // left unmounted, instead of the routes silently not existing.
-      daemonToken: `${E2E_DAEMON_TOKEN},${E2E_DAEMON_TOKEN_OLD}`,
-      runnerImage: E2E_RUNNER_IMAGE,
-      egressBaseAllowlist: ['registry.npmjs.org'],
-      llm: {
-        allowedModels: [E2E_MODEL],
+      llmSeams: {
         // A fake upstream so a POST reaches the proxy without real network.
         fetchImpl: (async () =>
           new Response(JSON.stringify({ usage: { input_tokens: 1, output_tokens: 1 } }), {
@@ -679,21 +677,16 @@ describe('devplatform — docker rehydration after a middleware restart (pg)', {
     return assembleDevPlatform({
       pool,
       vault: new InMemorySecretVault(),
-      baseUrl: 'http://127.0.0.1:3333',
-      cliBin: 'claude',
-      wallClockMs: 600_000,
-      heartbeatTimeoutMs: 600_000,
-      maxConcurrentJobs: 1,
-      commitAuthor: 'omadia-dev <dev-platform@omadia.ai>',
-      subscriptionModeEnabled: false,
-      workspaceDir: '/tmp/rehydrate-e2e',
-      unsafeLocal: false,
+      config: devPlatformTestConfig({
+        baseUrl: 'http://127.0.0.1:3333',
+        workspaceDir: '/tmp/rehydrate-e2e',
+        // A daemon URL that is never dialled: adoption is a pure in-memory read of
+        // the persisted handle, and we stop the backend before its renew loop ticks.
+        daemonUrl: 'http://127.0.0.1:1',
+        daemonToken: 'tok',
+        runnerImage: 'ghcr.io/byte5ai/omadia-dev-runner@sha256:' + 'a'.repeat(64),
+      }),
       shimEntry: '/dev/null',
-      // A daemon URL that is never dialled: adoption is a pure in-memory read of
-      // the persisted handle, and we stop the backend before its renew loop ticks.
-      daemonUrl: 'http://127.0.0.1:1',
-      daemonToken: 'tok',
-      runnerImage: 'ghcr.io/byte5ai/omadia-dev-runner@sha256:' + 'a'.repeat(64),
       log: (m) => logs.push(m),
     });
   }

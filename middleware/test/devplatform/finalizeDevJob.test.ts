@@ -1,10 +1,15 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { TERMINAL_FINISH_BRAND, type TerminalPatch } from '../../src/devplatform/devJobStore.js';
+import {
+  TERMINAL_FINISH_BRAND,
+  type TerminalPatch,
+  type TerminalWriteResult,
+} from '../../src/devplatform/devJobStore.js';
 import {
   CredentialRevokerRegistry,
   finalizeDevJob,
+  finalizeDevJobDetailed,
   type FinalizeStore,
 } from '../../src/devplatform/finalizeDevJob.js';
 import { isTerminalDevJobStatus, type DevJob, type DevJobStatus, type RunnerHandle } from '../../src/devplatform/types.js';
@@ -70,12 +75,13 @@ class FakeStore implements FinalizeStore {
     jobId: string,
     status: DevJobStatus,
     patch: TerminalPatch = {},
-  ): Promise<DevJob | null> {
+  ): Promise<TerminalWriteResult> {
     this.finishCalls++;
     this.brandSeen = brand;
-    if (!this.job || this.job.id !== jobId) return null;
-    // Idempotent guard, exactly as the real UPDATE ... WHERE status NOT IN (terminal).
-    if (isTerminalDevJobStatus(this.job.status)) return this.job;
+    if (!this.job || this.job.id !== jobId) return { job: null, transitioned: false };
+    // Idempotent guard, exactly as the real UPDATE ... WHERE status NOT IN
+    // (terminal): a no-op reports `transitioned: false` and touches no rows.
+    if (isTerminalDevJobStatus(this.job.status)) return { job: this.job, transitioned: false };
     this.job = {
       ...this.job,
       status,
@@ -84,7 +90,7 @@ class FakeStore implements FinalizeStore {
       prUrl: patch.prUrl ?? this.job.prUrl,
       endedAt: new Date().toISOString(),
     };
-    return this.job;
+    return { job: this.job, transitioned: true };
   }
 
   async appendHostEvent(_jobId: string, type: string, payload: Record<string, unknown> = {}) {
@@ -136,6 +142,35 @@ describe('devplatform/finalizeDevJob', () => {
     assert.equal(second?.status, 'cancelled', 'second call returns the first terminal state');
     assert.equal(store.finishCalls, 1, 'finishTerminal ran once across two finalize calls');
     assert.equal(store.eventCalls.length, 1, 'one status event across two finalize calls');
+  });
+
+  it('reports transitioned:true only for the call that flips the status', async () => {
+    const store = new FakeStore(makeJob({ status: 'running' }));
+    const first = await finalizeDevJobDetailed({ store }, 'job-1', 'stalled');
+    const second = await finalizeDevJobDetailed({ store }, 'job-1', 'stalled');
+
+    assert.equal(first.transitioned, true, 'the flipping call transitioned');
+    assert.equal(second.transitioned, false, 'the idempotent no-op did not');
+    assert.equal(second.job?.status, 'stalled', 'but still returns the terminal state');
+  });
+
+  it('a lost SAME-status race appends no duplicate event (#561)', async () => {
+    // This replica's getJob still sees the job live (it read before the peer
+    // wrote), but the guarded UPDATE finds a peer already flipped it to the SAME
+    // status and reports transitioned:false. The old `after.status === status`
+    // gate could not tell the loser from the winner and appended a SECOND status
+    // event; the transitioned gate skips it.
+    const store = new FakeStore(makeJob({ status: 'running' }));
+    const peerTerminal = makeJob({ status: 'stalled', endedAt: new Date().toISOString() });
+    store.finishTerminal = async (): Promise<TerminalWriteResult> => ({
+      job: peerTerminal,
+      transitioned: false,
+    });
+
+    const out = await finalizeDevJobDetailed({ store }, 'job-1', 'stalled');
+    assert.equal(out.transitioned, false, 'this call did not perform the flip');
+    assert.equal(out.job?.status, 'stalled', 'it returns the peer’s terminal state');
+    assert.equal(store.eventCalls.length, 0, 'no duplicate status event on the lost race');
   });
 
   it('returns null for an unknown job and never writes', async () => {

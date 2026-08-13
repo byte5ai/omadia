@@ -37,7 +37,7 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // Epic #470 — the dev-platform runner phone-home router. A runner is a
   // process, not an operator: it holds a one-time job token and no session
   // cookie. Every request is authenticated against the job-token hash in
-  // routes/devRunnerApi.ts — that IS its authentication.
+  // devplatform/routes/devRunnerApi.ts — that IS its authentication.
   /^\/api\/v1\/dev-runner(?:\/|$|\?)/,
   // Epic #470 — GitHub redirects finish the dev-platform GitHub-App setup on a
   // signed state token / installation ownership check, not on an operator session.
@@ -97,11 +97,27 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
 ];
 
 /**
- * `/api/dev/*` is public only while `DEV_ENDPOINTS_ENABLED=true`, and those
- * routes are not mounted at all otherwise — so the bypass cannot leak.
+ * The allowlist `requireAuth` runs against.
+ *
+ * Issue #669 — this used to take `{ devEndpointsEnabled }` and append
+ * `/^\/api\/dev(?:\/|$|\?)/` when the flag was on. The reasoning recorded here
+ * was "those routes are not mounted at all otherwise — so the bypass cannot
+ * leak", which answers the wrong question: the leak was never a *stale* entry,
+ * it was the entry doing exactly what it said while the flag was on. One
+ * boolean turned knowledge-graph state and three destructive maintenance
+ * sweeps (`POST /api/dev/graph/lifecycle/run-{decay,gc,access-flush}`) into
+ * an anonymous surface on any internet-reachable deployment — confirmed with
+ * uncredentialed `200`s against a real one.
+ *
+ * So there is no config-dependent entry any more. `/api/dev/*` is behind the
+ * same session gate as every other `/api` route, and the operator surfaces
+ * that were trapped behind that flag moved to `/api/v1/admin/kg-*` (see
+ * `routes/graphRouterMounts.ts`).
+ *
+ * Kept as a function, not re-exported as the array, so the ONE production
+ * mount and every test keep going through a single accessor — the drift this
+ * module's doc comment above exists to prevent.
  */
-export function publicPaths(opts: { devEndpointsEnabled: boolean }): readonly RegExp[] {
-  return opts.devEndpointsEnabled
-    ? [...STATIC_PUBLIC_PATHS, /^\/api\/dev(?:\/|$|\?)/]
-    : STATIC_PUBLIC_PATHS;
+export function publicPaths(): readonly RegExp[] {
+  return STATIC_PUBLIC_PATHS;
 }

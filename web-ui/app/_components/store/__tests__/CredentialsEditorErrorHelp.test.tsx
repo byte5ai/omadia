@@ -59,7 +59,7 @@ vi.mock('../../../_lib/api', () => ({
 function field(over: Partial<PluginSetupField> = {}): PluginSetupField {
   return {
     key: 'api_token',
-    label: 'API token',
+    label: { en: 'API token' },
     // `string`, not `secret`: a secret renders a password input, which has no
     // ARIA role, and this file is about the error line, not the input.
     type: 'string',

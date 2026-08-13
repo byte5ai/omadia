@@ -85,6 +85,17 @@ export async function runTaskReaperOnce(
  * implementor can back it, and there a slow sweep would stack concurrent
  * transactions contending on the same rows. The guard is cheaper than relying
  * on every future implementor being fast.
+ *
+ * Scope of this guard (#561): it is PER-PROCESS. Two replicas each run their own
+ * `startTaskReaper`, so nothing here stops them sweeping the same rows at once —
+ * and deliberately so. Cross-replica safety is the STORE's job, not the
+ * schedule's: the terminal write is idempotent (a status-guarded UPDATE), and
+ * the reap metric is idempotent too because `reapOrphans` counts only the rows
+ * whose flip its own call performed. So concurrent replica sweeps converge on
+ * the same terminal state and each stale row is counted once, without a
+ * distributed lock. An implementor that additionally wants to avoid the wasted
+ * double-scan may take an advisory lock inside its own `reapOrphans`; the
+ * schedule neither needs nor provides one.
  */
 export function startTaskReaper(
   store: TaskStore,

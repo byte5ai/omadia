@@ -515,9 +515,23 @@ const CHIP_CLASS: Record<AdminProvider['status'], string> = {
 
 const CHIP_LABEL_KEY: Record<AdminProvider['status'], string> = {
   verified: 'providers.verified',
-  unverified: 'providers.unverified',
   invalid: 'providers.invalid',
+  unverified: 'providers.unverified',
   no_key: 'providers.notConnected',
+};
+
+/** #671 — `ProviderVerificationReason` codes → localized copy. Deliberately a
+ *  closed map rather than a template lookup: an unknown code from a newer
+ *  middleware renders nothing, instead of printing the raw code at the
+ *  operator. Mirrors `ProviderVerificationReason` in
+ *  `middleware/src/platform/providerCredentialVerifier.ts`. */
+const UNVERIFIED_REASON_KEYS: Record<string, string | undefined> = {
+  forbidden: 'providers.unverifiedReason.forbidden',
+  non_json_response: 'providers.unverifiedReason.nonJsonResponse',
+  unexpected_body: 'providers.unverifiedReason.unexpectedBody',
+  http_error: 'providers.unverifiedReason.httpError',
+  network_error: 'providers.unverifiedReason.networkError',
+  no_probe: 'providers.unverifiedReason.noProbe',
 };
 
 /**
@@ -548,6 +562,17 @@ function ConnectionChip({
           {t('providers.verifiedAt', {
             time: format.relativeTime(new Date(p.verifiedAt)),
           })}
+        </span>
+      )}
+      {/* #671 — `unverified` on its own is not actionable: it covers "your key
+          is fine but your region is blocked" and "the provider was down" with
+          the same chip. #599 was right to stop calling a bare 403 a bad key;
+          this says which of those it actually was. Unknown codes render
+          nothing rather than a raw string — a newer middleware must never leak
+          an untranslated code into the UI. */}
+      {p.status === 'unverified' && p.verifyReason && UNVERIFIED_REASON_KEYS[p.verifyReason] && (
+        <span className="text-[11px] text-[color:var(--fg-muted)]">
+          {t(UNVERIFIED_REASON_KEYS[p.verifyReason]!)}
         </span>
       )}
     </span>

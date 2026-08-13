@@ -289,6 +289,33 @@ export interface TaskStore extends TaskReadStore {
   /** Lease-fenced flip to `input_required` (a human gate). */
   requireInput(id: string, lease: string, phase?: string): Promise<TaskDescriptor>;
   /**
+   * The RESUME transition: `input_required` → `working` (issue #560, criterion
+   * 5). The one transition the seam did not previously have, and the load-bearing
+   * one — without it a task {@link requireInput} parked can never be re-claimed,
+   * because {@link claimNextPending} filters on `status === 'working'` (pinned by
+   * `inMemoryTaskStore.test.ts`), so `requireInput` was a one-way trap.
+   *
+   * It is DELIBERATELY NOT a widening of {@link claimNextPending} to also claim
+   * parked rows — that would make the claim loop spin on a task still waiting on a
+   * human. Un-parking is a distinct, explicit act: a later turn supplies the
+   * awaited input, this flips the row back to `working` with NO lease, and the
+   * ordinary claim loop (the boot resume driver, `taskResumeDriver.ts`) then
+   * re-claims and re-drives it.
+   *
+   * `input` REPLACES the task's stored input. It must: the re-driven executor is
+   * re-invoked with the stored input, so resuming with the SAME input would just
+   * re-run to the same gate and park again — an infinite re-park loop. The
+   * resumed input is where the human's answer enters, so the second run takes a
+   * different branch and can complete.
+   *
+   * UNFENCED and status-guarded, like {@link reapOrphans}: the parked row holds
+   * no lease (requireInput cleared it), so there is no lease to present. Guarded
+   * on the status being `input_required` — an idempotent double-resume of an
+   * already-`working` row returns it unchanged; a missing or terminal row throws
+   * {@link TaskLeaseLostError} (a finished task cannot be resumed).
+   */
+  provideInput(id: string, input: unknown): Promise<TaskDescriptor>;
+  /**
    * Orphan sweep (criterion 7). A task nobody polls must not leak a `working`
    * row forever. See `taskReaper.ts` for the scheduled driver.
    */

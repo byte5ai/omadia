@@ -28,7 +28,7 @@ const DE = 'erwartet eine Dienstkonto-Adresse, kein Personenkonto';
 function field(over: Partial<InstallSetupField> = {}): InstallSetupField {
   return {
     key: 'gw_sa_client_email',
-    label: 'Service account email',
+    label: { en: 'Service account email' },
     type: 'string',
     required: true,
     pattern_hint: { en: EN, de: DE },

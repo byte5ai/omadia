@@ -72,8 +72,22 @@ export const ERROR_HELP_CODES = [
   'runtime.invalid_audit_mode',
   'runtime.invalid_config',
   'runtime.invalid_id',
+  // #603 (OM-17) — the `json_file` upload path. The `json_file_*` codes mirror
+  // `JsonFileFailure` in `middleware/src/plugins/setupJsonFile.ts`; the two
+  // spec-level ones say plainly that the fault is in the plugin, not in the
+  // operator's file, because that distinction is the whole difference between
+  // "try another file" and "report this".
+  'runtime.invalid_json_file_body',
   'runtime.invalid_multiselect',
   'runtime.invalid_secrets_body',
+  'runtime.json_file_bad_extract_path',
+  'runtime.json_file_invalid_spec',
+  'runtime.json_file_missing_value',
+  'runtime.json_file_not_an_object',
+  'runtime.json_file_not_json',
+  'runtime.json_file_too_large',
+  'runtime.json_file_unexpected_document',
+  'runtime.unknown_json_file_field',
   'runtime.no_options_provider',
   'runtime.not_installed',
   'runtime.not_web_scanner',

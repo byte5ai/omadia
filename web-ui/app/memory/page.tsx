@@ -45,7 +45,10 @@ export default function MemoryPage(): React.ReactElement {
           contentType.includes('text/html') ||
           body.trimStart().toLowerCase().startsWith('<!doctype');
         if (res.status === 500 && looksHtml) {
-          setListError(t('errorMiddlewareUnreachable'));
+          // #667 — same misdiagnosis as the chat path: a 500 means something
+          // answered, so "middleware unreachable" (on a hardcoded dev host) is
+          // an assertion this code never checked.
+          setListError(t('errorUpstreamErrorPage'));
         } else if (res.status === 404) {
           setListError(t('errorDevEndpointUnavailable'));
         } else {

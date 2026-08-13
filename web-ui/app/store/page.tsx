@@ -14,9 +14,10 @@ import { PluginCard } from '../_components/store/PluginCard';
 import { UploadDropzone } from '../_components/store/UploadDropzone';
 import { cn } from '../_lib/cn';
 
-export const metadata: Metadata = {
-  title: 'Hub · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('store.page');
+  return { title: t('metaTitle') };
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -416,12 +417,13 @@ async function LoadErrorState({
         {message}
       </p>
       <p className="mt-4 text-sm leading-relaxed text-[color:var(--fg-muted)]">
+        {/*
+          #667 — the `host` chunk is gone with the string that carried it. It
+          named `http://localhost:3979`, which is meaningless on a hosted
+          instance and, in #665, pointed the operator at a component that was
+          healthy. The endpoint PATH stays: it is a fact the reader can check.
+        */}
         {t.rich('errorHint', {
-          host: (chunks) => (
-            <span className="font-mono-num text-[color:var(--fg)]">
-              {chunks}
-            </span>
-          ),
           endpoint: (chunks) => (
             <span className="font-mono-num text-[color:var(--fg)]">
               {chunks}

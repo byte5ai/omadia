@@ -7,7 +7,7 @@ import {
   type PluginTrackerFactory,
 } from '../../src/devplatform/triggers/trackerRegistry.js';
 import type { IssuesFetch } from '../../src/devplatform/githubIssuesTracker.js';
-import type { DevPlatformTracker } from '../../src/routes/devPlatformShared.js';
+import type { DevPlatformTracker } from '../../src/devplatform/routes/devPlatformShared.js';
 import type { DevRepo } from '../../src/devplatform/types.js';
 
 /**

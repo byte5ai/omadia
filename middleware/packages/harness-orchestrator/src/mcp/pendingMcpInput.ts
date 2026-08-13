@@ -482,6 +482,57 @@ export function parseMcpInputSentinel(result: string): string | undefined {
   return id.length > 0 && id.length <= NAME_MAX ? id : undefined;
 }
 
+/**
+ * #570 — provenance receipt for ONE tool dispatch.
+ *
+ * The Privacy Shield interns every non-allowlisted tool result, so the sentinel
+ * above never survives to `claimMcpInputFromResults` and the whole two-turn MRTR
+ * flow (#544) is dead in the default configuration. The exemption that fixes
+ * that must NOT be shaped like "the result starts with the sentinel prefix":
+ * `McpManager.callTool` returns the server's rendered text verbatim, so any MCP
+ * server could then prefix an exfiltrated row with `[mcp_input_required:…]` and
+ * opt ITSELF out of interning — a broken feature traded for a
+ * server-triggerable privacy bypass.
+ *
+ * So the exemption keys on provenance instead: omadia minted this exact
+ * correlation id, in THIS dispatch. The mint is a mutable box the orchestrator
+ * installs on the turn context around a single dispatch (one box per call, so
+ * concurrent tool calls in one batch each get their own via AsyncLocalStorage —
+ * the same technique as `subAgentDatasetSink`). Only {@link parkInputRequired}
+ * writes it, and it writes a freshly-generated UUID that no server has ever
+ * seen. A server cannot reach the box, and cannot guess its contents.
+ *
+ * `correlationId` stays undefined for every dispatch that did not park.
+ */
+export interface McpInputSentinelMint {
+  correlationId?: string;
+}
+
+/**
+ * True when `result` is the sentinel THIS dispatch minted — the only condition
+ * under which the Privacy Shield may hand a tool result to the model unmasked
+ * on account of MRTR.
+ *
+ * Both facts must agree: the box was written (so omadia parked a call in this
+ * very dispatch) AND the result parses, prefix-anchored, to that same id (so it
+ * is the sentinel string rather than a server result that merely rode along).
+ * Either one alone is forgeable or over-broad; together they are neither.
+ *
+ * Deliberately reuses {@link parseMcpInputSentinel} rather than comparing the
+ * whole string, so the exemption holds exactly when the downstream claim path
+ * would recognise the result as a card. An exemption that could fire for a
+ * string the claim path then ignores would be a silent unmasking with nothing
+ * to show for it.
+ */
+export function isOwnMintedSentinel(
+  mint: McpInputSentinelMint | undefined,
+  result: string,
+): boolean {
+  const minted = mint?.correlationId;
+  if (minted === undefined) return false;
+  return parseMcpInputSentinel(result) === minted;
+}
+
 /** The bounce cap tripped — tell the model plainly, do not park again. */
 export function mcpInputReplayCappedError(record: PendingMcpInput): string {
   return (

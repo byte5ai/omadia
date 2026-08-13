@@ -10,7 +10,7 @@ import {
   createDevPlatformGithubAppRouter,
   type DevPlatformGithubAppDeps,
   type GithubAppStorePort,
-} from '../../src/routes/devPlatformGithubApp.js';
+} from '../../src/devplatform/routes/devPlatformGithubApp.js';
 import { ManifestFlowStore } from '../../src/devplatform/githubApp/manifestFlow.js';
 import type {
   DevGithubApp,
@@ -162,7 +162,7 @@ async function mountLikeIndex(deps: DevPlatformGithubAppDeps): Promise<{
   close: () => Promise<void>;
 }> {
   const routers = createDevPlatformGithubAppRouter(deps);
-  const allowlist = publicPaths({ devEndpointsEnabled: false });
+  const allowlist = publicPaths();
   const requireAuth: RequestHandler = (req, res, next) => {
     if (allowlist.some((pattern) => pattern.test(req.originalUrl))) {
       next();

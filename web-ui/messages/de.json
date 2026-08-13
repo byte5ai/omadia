@@ -500,7 +500,7 @@
     "agentSlugLabel": "Agent-Slug",
     "promptLabel": "Prompt",
     "actionIdLabel": "Action-ID",
-    "inputLabel": "Input (JSON)",
+    "inputLabel": "Eingabe (JSON)",
     "principalLabel": "Principal",
     "channelLabel": "Channel",
     "messageLabel": "Nachricht",
@@ -701,6 +701,7 @@
     "templateNoMatches": "Keine Vorlagen entsprechen deinen Filtern."
   },
   "operatorChannels": {
+    "metaTitle": "Channels · omadia",
     "title": "Channels",
     "subtitle": "Eingehende Webhooks pro Channel-Key auf einen Orchestrator routen. Jeder Channel-Plugin meldet seine eigenen Keys — du wählst nur, welcher Orchestrator sie beantwortet.",
     "loadError": "Konnte Channels nicht laden",
@@ -713,7 +714,18 @@
     "staleBadge": "veraltet",
     "routesTo": "→ Orchestrator:",
     "routesToFallback": "(Standard · {fallback})",
-    "clearStale": "Binding entfernen"
+    "clearStale": "Binding entfernen",
+    "disclosure": {
+      "heading": "KI-Kennzeichnung weicht vom Auslieferungszustand ab",
+      "body": "Auf diesen Channels werden Antworten anders gekennzeichnet als im Auslieferungszustand: {channels}.",
+      "inert": "Konfiguriert, aber noch nicht wirksam: {channels}. Turns auf diesen Channels melden ihren Channel-Typ nicht, daher gilt dort die globale Einstellung.",
+      "note": "Das ist deine Entscheidung als Betreiber — es wird nichts blockiert. Angezeigt, damit eine Einstellung aus einem Test-Setup nicht unbemerkt bleibt.",
+      "level": {
+        "standard": "volle Kennzeichnung",
+        "concise": "kurze Kennzeichnung",
+        "off": "keine Kennzeichnung"
+      }
+    }
   },
   "layout": {
     "logoAriaLabel": "omadia · Startseite",
@@ -950,6 +962,10 @@
         "what": "Die Anfrage nennt nicht, um welches Plugin es geht.",
         "next": "Lade die Seite neu und wiederhole die Aktion auf dem Plugin-Screen."
       },
+      "invalid_json_file_body": {
+        "what": "Die Upload-Anfrage nannte nicht zugleich ein Setup-Feld und eine Datei — der Server konnte nicht erkennen, was er auswerten soll.",
+        "next": "Lade die Seite neu und wähle die Datei erneut aus."
+      },
       "invalid_multiselect": {
         "what": "Einer der ausgewählten Werte hat nicht die Form, die der Server akzeptiert.",
         "next": "Leere die Auswahl und wähle die Einträge erneut aus der Liste."
@@ -957,6 +973,34 @@
       "invalid_secrets_body": {
         "what": "Die Zugangsdaten kamen in einer Form an, die der Server ablehnt.",
         "next": "Lade die Seite neu und trage die Zugangsdaten erneut ein."
+      },
+      "json_file_bad_extract_path": {
+        "what": "Das Plugin deklariert einen Upload-Pfad, den der Server nicht unterstützt — die Datei konnte nicht gelesen werden.",
+        "next": "Das liegt am Plugin, nicht an deiner Datei — melde es dem Plugin-Autor."
+      },
+      "json_file_invalid_spec": {
+        "what": "Das Plugin deklariert diesen Datei-Upload fehlerhaft, er kann keinen Wert erzeugen.",
+        "next": "Das liegt am Plugin, nicht an deiner Datei — melde es dem Plugin-Autor."
+      },
+      "json_file_missing_value": {
+        "what": "In der hochgeladenen Datei fehlt einer der Werte, die dieses Feld braucht.",
+        "next": "Prüfe, ob du die richtige Datei ausgewählt hast — die Meldung unten nennt den fehlenden Wert."
+      },
+      "json_file_not_an_object": {
+        "what": "Die Datei ist zwar gültiges JSON, aber kein JSON-Objekt — sie enthält also keine benannten Werte.",
+        "next": "Lade die Zugangsdatei hoch, die der Anbieter ausgestellt hat, keine Liste und keinen Ausschnitt davon."
+      },
+      "json_file_not_json": {
+        "what": "Die hochgeladene Datei ist kein gültiges JSON, es konnte also nichts daraus gelesen werden.",
+        "next": "Lade die Schlüsseldatei beim Anbieter erneut herunter und lade sie unverändert hoch."
+      },
+      "json_file_too_large": {
+        "what": "Die hochgeladene Datei ist größer, als der Server für eine Zugangsdatei akzeptiert.",
+        "next": "Prüfe, ob du die Schlüsseldatei selbst ausgewählt hast und kein Archiv oder einen Export."
+      },
+      "json_file_unexpected_document": {
+        "what": "Die hochgeladene Datei ist die falsche Art von Zugangsdatei — ihr Inhalt passt nicht zu dem, was dieses Feld erwartet.",
+        "next": "Die Meldung unten nennt den abweichenden Wert; lade anschließend die richtige Datei hoch."
       },
       "no_options_provider": {
         "what": "Dieses Feld hat keine Live-Quelle für Optionen, es lässt sich also nichts nachladen.",
@@ -990,6 +1034,10 @@
       "setup_field_invalid": {
         "what": "Einer der Werte passt nicht zum Format, das dieses Feld erwartet.",
         "next": "Korrigiere das markierte Feld und speichere erneut."
+      },
+      "unknown_json_file_field": {
+        "what": "Der Upload nennt ein Setup-Feld, das dieses Plugin nicht als Datei-Upload anbietet.",
+        "next": "Lade die Seite neu, damit das Formular zum Plugin passt, und lade die Datei erneut hoch."
       },
       "update_failed": {
         "what": "Die Änderung konnte nicht geschrieben werden.",
@@ -1115,7 +1163,6 @@
     "pillTitle": "{id} — Details anzeigen"
   },
   "chat": {
-    "errorMiddlewareUnreachable": "Middleware nicht erreichbar auf localhost:3979. Läuft `npm run dev` im middleware-Ordner?",
     "errorProxyFailure": "Proxy-Fehler (HTTP {status}). Prüf die Middleware-Logs.",
     "errorAborted": "Abgebrochen.",
     "errorProviderGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
@@ -1170,15 +1217,15 @@
       "taskId": "Task {id}",
       "phase": "Phase {phase}"
     },
-    "inputLabel": "input",
-    "outputLabel": "output",
+    "inputLabel": "Eingabe",
+    "outputLabel": "Ausgabe",
     "persona": {
       "title": "Persona",
       "matched": "Antwortet als {name}",
       "none": "Standard-Identität",
       "fallback": "Persona-Klassifikator nicht verfügbar — Standard-Identität"
     },
-    "subAgentTrace": "sub-agent trace",
+    "subAgentTrace": "Sub-Agent-Trace",
     "mcpAuth": {
       "kicker": "Autorisierung erforderlich",
       "body": "{server} muss verbunden werden, bevor es genutzt werden kann.",
@@ -1194,9 +1241,9 @@
       "warning": "Was du hier eingibst, geht an den externen Server „{server}“. Gib nur Daten ein, die dieser Server bekommen darf.",
       "submit": "An Server senden"
     },
-    "iterationLabel": "── iteration {n}",
+    "iterationLabel": "── Iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
-    "attachmentCachedSuffix": " · cached",
+    "attachmentCachedSuffix": " · zwischengespeichert",
     "clarifyKicker": "🤔 Rückfrage",
     "followUpsLabel": "Nächste Varianten",
     "streamLive": "Stream live · {seconds}s",
@@ -1311,7 +1358,9 @@
       "factNotEmbedded": "— kein Vektor",
       "factPrivateBlocks": "'<private>'-Blöcke",
       "factHintTags": "'<palaia-hint>'-Tags"
-    }
+    },
+    "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber.",
+    "errorCorrelationRef": "Referenz für den Support: {id}"
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -1412,6 +1461,7 @@
     "actionDelete": "Session löschen"
   },
   "skills": {
+    "metaTitle": "Skills · omadia",
     "title": "Skills",
     "subtitle": "Deine Skill-Bibliothek — Skills importieren, ansehen, bearbeiten und exportieren.",
     "loadError": "Skills konnten nicht geladen werden.",
@@ -1493,6 +1543,7 @@
     }
   },
   "operatorAgents": {
+    "metaTitle": "Orchestratoren · omadia",
     "title": "Orchestratoren",
     "subtitle": "Multi-Orchestrator-Runtime — Orchestratoren anlegen, editieren, deaktivieren, drainen oder killen und der Registry live beim Reagieren zuschauen über den LISTEN/NOTIFY-Hot-Reload-Bus.",
     "loadError": "Konnte Orchestratoren nicht laden",
@@ -1537,7 +1588,7 @@
     "catalogEmpty": "Keine installierten Plugins.",
     "multiInstanceFalseBadge": "multi_instance: false — darf nur auf EINEM Orchestrator aktiv sein",
     "multiInstanceFalseShort": "Single-Instance",
-    "privacyStrictBadge": "strict",
+    "privacyStrictBadge": "strikt",
     "memoryReadTooltip": "Memory-Read-Scope dieses Plugins",
     "memoryWriteTooltip": "Memory-Write-Scope dieses Plugins",
     "networkLabel": "Netzwerk:",
@@ -1556,7 +1607,7 @@
     "routingTesterMatched": "→ Orchestrator „{slug}\" (via {via})",
     "routingTesterNoMatch": "Kein Match — und kein Standard-Orchestrator konfiguriert.",
     "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · {plugins} Plugins angehängt · {bindings} Bindings",
-    "sessionsLabel": "Sessions:",
+    "sessionsLabel": "Sitzungen:",
     "pluginsAvailable": "Verfügbar",
     "pluginsAvailableToAttach": "Zum Anhängen verfügbar",
     "pluginsAttachedHere": "An diesen Orchestrator angehängt",
@@ -1574,7 +1625,8 @@
     "orphanDetachAll": "Alle entfernen",
     "orphanDetachAllTooltip": "Entfernt alle veralteten Plugin-Zuordnungen (alte IDs aus früheren Deployments) auf einmal.",
     "orphanExplain": "Plugin-IDs aus früheren Seeds, die im aktuellen Katalog nicht mehr existieren (typisch: Umbenennung de.byte5.agent.* → @omadia/*). Werden beim nächsten „Speichern\" verworfen, außer du markierst sie als „Behalten\".",
-    "orphanKeep": "Behalten"
+    "orphanKeep": "Behalten",
+    "seededDescription": "Beim ersten Start automatisch angelegt. Empfängt Channel-Traffic ohne explizite Zuordnung, bis du eine einrichtest."
   },
   "builder": {
     "issueReport": {
@@ -1705,8 +1757,8 @@
       "autoFixDismissAria": "Hinweis ausblenden",
       "buildStatusLabel": "Build-Status",
       "buildBusLive": "live",
-      "buildBusReconnecting": "reconnecting",
-      "buildBusIdle": "idle",
+      "buildBusReconnecting": "verbindet neu",
+      "buildBusIdle": "inaktiv",
       "buildSse": "SSE {status}",
       "buildErrorsHeading": "{count} TypeScript-Fehler",
       "buildErrorsHeadingWithBuild": "{count} TypeScript-Fehler · build #{buildN}",
@@ -1745,7 +1797,7 @@
         "removeTool": "Tool {id} entfernen",
         "formPlaceholder": "Tool-Form folgt in B.11-2.",
         "stuckTitle": "Builder-Agent ist auf diesem Tool/Slot stecken geblieben — manuell prüfen",
-        "stuckBadge": "stuck"
+        "stuckBadge": "hängt"
       },
       "bulkImport": {
         "dialogLabel": "Tools-Bulk-Import",
@@ -1796,7 +1848,7 @@
         "propertyKeyTaken": "Property-Key bereits vergeben",
         "description": "Beschreibung",
         "descriptionPlaceholder": "Vom LLM gelesener Hint",
-        "entityTitle": "Entity {name} (v{version})",
+        "entityTitle": "Entität {name} (v{version})",
         "booleanNoConstraints": "Boolean — keine zusätzlichen Constraints.",
         "objectNestedHint": "Object — verschachtelte Properties unten editieren.",
         "allowedValues": "Erlaubte Werte",
@@ -1907,9 +1959,9 @@
         "smoke": {
           "running": "smoke #{buildN} läuft …",
           "okNoTools": "smoke #{buildN} ✓ (keine Tools deklariert)",
-          "okTools": "smoke #{buildN} ✓ ({count} {count, plural, one {tool} other {tools}} ok)",
-          "activateFailed": "smoke #{buildN} ✗ — preview activate failed{detail}",
-          "toolsFailed": "smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {tool} other {tools}} failed",
+          "okTools": "Smoke #{buildN} ✓ ({count} {count, plural, one {Tool} other {Tools}} ok)",
+          "activateFailed": "Smoke #{buildN} ✗ — Preview-Aktivierung fehlgeschlagen{detail}",
+          "toolsFailed": "Smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {Tool} other {Tools}} fehlgeschlagen",
           "fixWithBuilder": "Fix mit Builder"
         }
       },
@@ -2055,11 +2107,11 @@
         "templateBadgeAdjusted": "Vorlage: {template} — angepasst",
         "templateBadgeNone": "Keine Vorlage",
         "applyTemplate": "Vorlage anwenden",
-        "templateLabel": "Template (optional)",
+        "templateLabel": "Vorlage (optional)",
         "templatePlaceholder": "z.B. software-engineer (Templates kommen in Phase 4)",
-        "coreHeading": "Core (8)",
-        "extendedHeading": "Extended (4)",
-        "customNotesLabel": "Custom Notes (optional)",
+        "coreHeading": "Kern (8)",
+        "extendedHeading": "Erweitert (4)",
+        "customNotesLabel": "Eigene Notizen (optional)",
         "customNotesPlaceholder": "z.B. „Antworte auf Deutsch wenn der User auf Deutsch schreibt.\"",
         "saved": "Gespeichert.",
         "unsavedChanges": "Änderungen nicht gespeichert.",
@@ -2079,15 +2131,15 @@
         "applying": "Anwenden…",
         "templates": {
           "customerService": {
-            "label": "Customer Service Agent",
+            "label": "Kundenservice-Agent",
             "description": "Professioneller Support mit Empathie und klarer Eskalation."
           },
           "salesDev": {
-            "label": "Sales Development Rep",
+            "label": "Vertriebsmitarbeiter (SDR)",
             "description": "Proaktiver Vertrieb mit persönlicher Note und klarem Follow-up."
           },
           "contentMarketing": {
-            "label": "Content & Marketing Agent",
+            "label": "Content- & Marketing-Agent",
             "description": "Kreative Brand Voice mit strategischem Denken."
           },
           "researchAnalyst": {
@@ -2099,7 +2151,7 @@
             "description": "Teamorientierter Entwickler mit klarem Kommunikationsstil."
           },
           "teamLead": {
-            "label": "Team Lead / Coordinator",
+            "label": "Teamleitung / Koordination",
             "description": "Orchestrator, der Delegation, Eskalation und Teamstruktur steuert."
           }
         }
@@ -2138,7 +2190,7 @@
         "noSelection": "— Keine Auswahl —",
         "modalLabel": "Kultur-Preset anwenden",
         "overwriteNotice": "Diese Achsen würden überschrieben:",
-        "unset": "unset",
+        "unset": "nicht gesetzt",
         "noChange": "Keine Änderung — alle Werte stimmen bereits überein.",
         "apply": "Anwenden",
         "applying": "Anwenden…",
@@ -2258,7 +2310,7 @@
           "toggleLabel": "Admin UI bereitstellen",
           "toggleHelp": "Plugin mountet eine HTML-Page unter <code>admin_ui_path</code>. Web-UI embed sie als <code>&lt;iframe&gt;</code> auf der Store-Detail-Seite nach Install.",
           "pathLabel": "Pfad (absolut, endet auf <code>index.html</code>)",
-          "bodyLabel": "Admin UI Body (HTML)",
+          "bodyLabel": "Admin-UI-Body (HTML)",
           "bodyHint": "Inhalt zwischen den Marker-Regions. inline style + script erlaubt.",
           "operatorContract": "<strong>Operator-Contract:</strong> Frontend-Fetches müssen <strong>relative URLs</strong> nutzen (<code>fetch('api/devices')</code>, nicht <code>fetch('/api/...')</code>) — die UI läuft hinter einem <code>/bot-api/*</code>-Rewrite. JSON-Responses brauchen das <code>{ ok: boolean, ... }</code>-Schema, sonst flagged der RuntimeSmoke sie als kaputt.",
           "disabledHint": "Aus. Plugins ohne <code>admin_ui_path</code> haben keine Admin-Tile in der Store-Detail-Seite — das ist der Default.",
@@ -2286,7 +2338,7 @@
           "tabLabelHelp": "Max 24 Zeichen. Wird in Teams-Tab + Hub-Card angezeigt.",
           "pageTitleLabel": "Page-Title (title)",
           "pageTitleHelp": "Voller Page-Title im HTML-Doc. Max 80 Zeichen.",
-          "refreshLabel": "Refresh (s)",
+          "refreshLabel": "Aktualisierung (s)",
           "refreshHelp": "Meta-Refresh-Intervall. 0 = kein Auto-Reload."
         },
         "renderMode": {
@@ -2307,7 +2359,7 @@
           "help": "Das gewählte Tool wird bei jedem Page-Request mit leerem Input aufgerufen; Output fließt als Props in die Render-Funktion."
         },
         "interactive": {
-          "label": "Interactive (Hydration)",
+          "label": "Interaktiv (Hydration)",
           "help": "SSR + Client-Side-Hydration via esm.sh-Importmap. Setze auf true wenn dein Component <code>useState</code>, <code>onClick</code> o.ä. nutzt. Root-Element MUSS <code>data-omadia-page=\"{routeId}\"</code> tragen."
         },
         "componentSlot": {
@@ -2320,8 +2372,8 @@
         },
         "itemTemplate": {
           "heading": "Item-Template (Path-Interpolation: <code>item.feldname</code>)",
-          "titleLabel": "Title (required)",
-          "subtitleLabel": "Subtitle (optional)",
+          "titleLabel": "Titel (erforderlich)",
+          "subtitleLabel": "Untertitel (optional)",
           "metaLabel": "Meta (optional)",
           "urlLabel": "URL (optional — macht das Item klickbar)",
           "suffixHelp": "Whitelisted Suffixe: <code>.join(\", \")</code> für Arrays, <code>.toLocaleString()</code> für Zahlen. Sonstige Function-Calls werden ignoriert."
@@ -2347,7 +2399,7 @@
         "refreshTitle": "Preview neu laden",
         "openInNewTabAriaLabel": "Preview in neuem Tab öffnen",
         "openInNewTabTitle": "In neuem Tab öffnen",
-        "iframeTitle": "Preview: {label}",
+        "iframeTitle": "Vorschau: {label}",
         "unavailableTitle": "Preview nicht verfügbar",
         "hintLine": "<strong>Hinweis:</strong> {hint}",
         "hints": {
@@ -2373,14 +2425,14 @@
       "relMinutesAgo": "vor {count} min",
       "relHoursAgo": "vor {count} h",
       "relDaysAgo": "vor {count, plural, one {# Tag} other {# Tagen}}",
-      "detailTemplate": "Template: {template}",
+      "detailTemplate": "Vorlage: {template}",
       "detailAxes": "{count, plural, one {# Achse} other {# Achsen}}",
       "detailCustomNotes": "Custom notes",
       "detailSycophancy": "Sycophancy: {value}",
       "detailPresets": "{count, plural, one {# Preset} other {# Presets}}",
       "detailCustom": "{count} Custom",
       "detailOperations": "{count, plural, one {# Operation} other {# Operationen}}",
-      "detailSlotBytes": "{slot} — {bytes} bytes",
+      "detailSlotBytes": "{slot} — {bytes} Bytes",
       "createSnapshot": "Snapshot erstellen",
       "refresh": "Aktualisieren",
       "loadFailed": "Konnte Snapshots nicht laden: {message}",
@@ -2456,7 +2508,7 @@
       "sectionSetupFields": "Setup-Felder",
       "sectionSetupFieldsSubtitle": "vom Operator beim Aktivieren auszufüllen",
       "noSetupNeeded": "Kein Setup nötig.",
-      "required": "required",
+      "required": "erforderlich",
       "failureGenericHeading": "Bereitstellung fehlgeschlagen",
       "headingConflict": "Plugin-ID-Konflikt",
       "headingBuildFailed": "Build fehlgeschlagen (tsc)",
@@ -2499,6 +2551,7 @@
     },
     "drafts": {
       "list": {
+        "metaTitle": "Plugin-Builder · omadia",
         "eyebrow": "Plugin-Builder",
         "headline": "Neue Plugins bauen.",
         "lede": "Ein Plugin kann deterministischen Code bündeln (die Tools und Integrationen, auf denen die Plattform läuft), die Agents, die damit arbeiten, oder beides zusammen. Lege hier Drafts an, iteriere parallel an mehreren und installiere sie per Klick. Jeder Draft bleibt in deinem persönlichen Arbeitsbereich, sichtbar nur für dich.",
@@ -2537,6 +2590,7 @@
         }
       },
       "detail": {
+        "metaTitle": "Workspace · Agent-Builder · omadia",
         "error": {
           "label": "Fehler",
           "loadFailed": "Workspace konnte nicht geladen werden.",
@@ -2672,7 +2726,15 @@
       "saveKey": "Schlüssel speichern",
       "cancel": "Abbrechen",
       "cliNotInstalledReason": "Die Claude-CLI ist auf diesem Server nicht installiert.",
-      "helpLink": "Was bedeutet das?"
+      "helpLink": "Was bedeutet das?",
+      "unverifiedReason": {
+        "forbidden": "Der Provider hat die Anfrage abgelehnt (HTTP 403). Das ist meist eine Regions- oder Organisationsbeschränkung, kein falscher Schlüssel.",
+        "nonJsonResponse": "Der Provider hat kein JSON geliefert — oft eine Proxy- oder Portalseite statt der API.",
+        "unexpectedBody": "Der Provider hat geantwortet, aber nicht mit einer Modell-Liste, die wir erkennen.",
+        "httpError": "Der Provider hat einen Fehler zurückgegeben (serverseitig oder Rate-Limit). Nicht dein Schlüssel.",
+        "networkError": "Der Provider war nicht erreichbar — Timeout, DNS oder keine Verbindung.",
+        "noProbe": "Dieser Provider-Typ lässt sich nicht günstig prüfen, der Schlüssel bleibt daher unbestätigt."
+      }
     },
     "assignments": {
       "heading": "Zuordnung pro Agent",
@@ -2815,6 +2877,7 @@
       "lead": "Der Hub ist unser Katalog für die bereitgestellten Plugins. Er bündelt Integrations (Credential-Container), Agents (Domain-Capabilities) und Channels (User-Kanäle wie Teams, Telegram). Ein Klick auf eine Kachel zeigt Berechtigungen, Secrets und Abhängigkeiten vor der Installation."
     },
     "page": {
+      "metaTitle": "Hub · omadia",
       "filters": {
         "all": "Alle",
         "integration": "Integrations",
@@ -2845,7 +2908,7 @@
       "emptyHubBody": "Verbinde eine Registry unter <adminLink>Admin · Registries</adminLink> — oder lade ein eigenes Paket im <localLink>Lokal</localLink>-Tab hoch.",
       "errorKicker": "Fehler",
       "errorTitle": "Katalog konnte nicht geladen werden.",
-      "errorHint": "Prüfe, ob die Middleware unter <host>http://localhost:3979</host> erreichbar ist und der Endpoint <endpoint>/api/v1/store/plugins</endpoint> antwortet.",
+      "errorHint": "Prüfe, ob die Middleware erreichbar ist und der Endpoint <endpoint>/api/v1/store/plugins</endpoint> antwortet.",
       "footerSource": "Quelle:"
     },
     "detail": {
@@ -2854,6 +2917,8 @@
       "signed": "signiert",
       "unsigned": "unsigniert",
       "connectedOk": "Verbindung hergestellt.",
+      "alreadyProvided": "Diese Capability wird bereits von {owner} bereitgestellt. Ein zweiter Provider lässt sich nicht installieren — konfiguriere stattdessen den vorhandenen.",
+      "alreadyProvidedCta": "Provider konfigurieren",
       "connectedError": "Verbindung fehlgeschlagen. Bitte erneut versuchen.",
       "connectedErrorWithReason": "Verbindung fehlgeschlagen ({reason}). Bitte erneut versuchen.",
       "sectionDescription": "Beschreibung",
@@ -2898,7 +2963,16 @@
       "updateTitleWithVersion": "Update verfügbar: {from} → {to}",
       "updateSticker": "Update",
       "noDescription": "Keine Beschreibung hinterlegt.",
-      "actionRequired": "Aktion erforderlich"
+      "actionRequired": "Aktion erforderlich",
+      "setupProfileLabel": "Einrichtung",
+      "setupProfile": {
+        "audience": {
+          "it_admin": "Einrichtung durch IT-Administrator",
+          "operator": "Einrichtung durch Betreiber",
+          "end_user": "Einrichtung durch Endnutzer"
+        },
+        "minutes": "ca. {minutes} Min"
+      }
     },
     "stateBadge": {
       "available": "Verfügbar",
@@ -3601,14 +3675,14 @@
       "notFound": "Diesen Job gibt es nicht.",
       "railLabel": "Pipeline-Phasen",
       "phases": {
-        "analyze": "analyze",
-        "bootstrap": "bootstrap",
-        "plan": "plan",
-        "clarify": "clarify",
-        "gate": "gate",
-        "implement": "implement",
-        "review": "review",
-        "pr": "pr"
+        "analyze": "Analyse",
+        "bootstrap": "Bootstrap",
+        "plan": "Planung",
+        "clarify": "Klärung",
+        "gate": "Gate",
+        "implement": "Umsetzung",
+        "review": "Review",
+        "pr": "PR"
       },
       "phaseSkipped": "übersprungen — keine Fragen",
       "toolCall": {
@@ -3739,7 +3813,7 @@
     "create": {
       "heading": "Neuen Schlüssel erstellen",
       "fields": {
-        "label": "Label (optional)",
+        "label": "Bezeichnung (optional)",
         "rateLimit": "Rate-Limit (Anfragen/Minute, optional)"
       },
       "rateLimitInvalid": "Rate-Limit muss zwischen {min} und {max} Anfragen/Minute liegen.",
@@ -4049,7 +4123,7 @@
       "intro": "Memories die semantisch fast identisch sind. Tab „Memories“ zeigt MK-Paare (cosine ≥ 0.95), Tab „Excerpts“ zeigt Palaia-Excerpt-Paare (cosine ≥ 0.97). Klick auf einen Eintrag öffnet die Side-by-side-Ansicht mit Resolve-Knopf.",
       "tabs": {
         "memories": "Memories",
-        "excerpts": "Excerpts (Palaia)"
+        "excerpts": "Auszüge (Palaia)"
       },
       "confirmBulkRun": "Bulk-Merge-Detect für bis zu {count} Memories starten? Cosine-only, kostenfrei — aber der Bulk-Scan ist O(n × top-k) cosine-Vergleiche.",
       "confirmExcerptBulkRun": "Bulk Excerpt-Duplicate-Detect für bis zu {count} Excerpts? Cosine-only, kostenfrei.",
@@ -4148,7 +4222,7 @@
       "unchecked": "ungeprüft",
       "alreadyChecked": "schon geprüft",
       "withoutEmbedding": "ohne Embedding",
-      "detectorReady": "ready",
+      "detectorReady": "bereit",
       "detectorNoKey": "kein Key",
       "limitLabel": "Limit",
       "running": "läuft",
@@ -4199,7 +4273,52 @@
     "quotaTooltip": "{percent}% des Quota",
     "quotaOverTooltip": "{percent}% — wird beim nächsten GC-Sweep evicted",
     "unavailableTitle": "Knowledge-Graph-Lifecycle ist nicht verfügbar",
-    "unavailableBody": "Diese Seite benötigt das Postgres-/Knowledge-Graph-Backend. Die Lifecycle-Endpoints werden nur eingebunden, wenn das KG-Plugin installiert und eine Datenbank konfiguriert ist — bis dahin gibt es hier nichts anzuzeigen."
+    "unavailableBody": "Die Middleware hat den Lifecycle-Service nicht veröffentlicht, deshalb gibt es hier nichts anzuzeigen. Die Sweeps sind Postgres-spezifisch: Sie existieren nur, solange das Knowledge-Graph-Plugin gegen eine Postgres-/Neon-Datenbank aktiv ist. Ein In-Memory-Knowledge-Graph hat keinen Lifecycle. Diese Seite hängt an keinem Feature-Flag mehr — wenn das Plugin auf Postgres aktiv ist und das hier trotzdem erscheint, prüfe den Plugin-Status.",
+    "signedOutTitle": "Deine Session ist abgelaufen",
+    "signedOutBody": "Diese Endpoints brauchen eine Operator-Session. Melde dich erneut an und lade die Seite neu.",
+    "actions": {
+      "decayTitle": "Decay + Rotation ausführen",
+      "decayDescription": "Access-Tracker leeren → decay_score neu berechnen → HOT→WARM→COLD rotieren → erledigte Tasks nach Ablauf der TTL endgültig löschen.",
+      "gcTitle": "GC-Quoten ausführen",
+      "gcDescription": "Eviction pro Scope nach Typ-Gewicht × Decay-Score. Erzwingt hot_max_entries + max_total_chars.",
+      "accessFlushTitle": "Nur Access-Flush ausführen",
+      "accessFlushDescription": "Access-Tracker ohne Rotation in access_count + accessed_at schreiben. Nur zum Debuggen."
+    },
+    "cards": {
+      "tierBreakdown": "Verteilung nach Tier",
+      "entryTypeBreakdown": "Verteilung nach Eintragstyp",
+      "decayDistribution": "Verteilung der Decay-Scores",
+      "totalTurns": "Turns gesamt"
+    },
+    "topScopes": {
+      "heading": "Top-Scopes (nach Turn-Anzahl)",
+      "empty": "Noch keine Scopes erfasst.",
+      "colScope": "Scope",
+      "colTurns": "Turns",
+      "colQuota": "Quote",
+      "colChars": "Zeichen",
+      "colCharQuota": "Zeichen-Quote"
+    },
+    "lastRuns": {
+      "heading": "Letzte Sweep-Läufe",
+      "decay": "Decay",
+      "gc": "GC",
+      "accessFlush": "Access-Flush",
+      "neverRun": "in diesem Prozess noch nie gelaufen",
+      "updated": "Aktualisiert",
+      "hotToWarm": "HOT → WARM",
+      "warmToCold": "WARM → COLD",
+      "doneTasksDeleted": "Erledigte Tasks gelöscht",
+      "durationMs": "Dauer (ms)",
+      "scopesAffected": "Betroffene Scopes",
+      "evictedByCount": "Nach Anzahl entfernt",
+      "evictedByChars": "Nach Zeichen entfernt",
+      "flushed": "Geschrieben",
+      "promotedColdToWarm": "COLD → WARM hochgestuft"
+    },
+    "title": "Knowledge-Graph-Lifecycle",
+    "intro": "Palaia Phase 4 — Tier-Rotation, Decay, GC. Die Sweeps laufen nach Cron-Zeitplan; die Buttons unten stoßen sie sofort an.",
+    "refresh": "Aktualisieren"
   },
   "adminKgPriorities": {
     "intro": "Per-Agent Block/Boost-Liste für den Token-Budget-Assembler. Block droppt einen Turn aus dem Recall-Pool; Boost multipliziert den Score mit `weight` (Default 1.3). `manuallyAuthored=true` bringt zusätzlich einen unabhängigen ×1.3 Boost — beide kombinieren.",
@@ -4208,7 +4327,7 @@
     "load": "Laden",
     "newEntryTitle": "Neuer Eintrag",
     "weightIgnoredTitle": "weight ignoriert für block",
-    "weightMultiplierTitle": "score multiplier",
+    "weightMultiplierTitle": "Score-Multiplikator",
     "empty": "Keine Einträge für diesen Agent."
   },
   "adminMemoryBackend": {
@@ -4441,10 +4560,15 @@
       "auditLoading": "lädt Audit-Trail…",
       "auditEmpty": "Keine Audit-Einträge.",
       "reasonQuoted": "„{reason}“"
+    },
+    "listView": {
+      "runTrace": "Run-Trace",
+      "noEntities": "Keine Entities in diesem Turn",
+      "loadingRun": "lade Run…",
+      "noRunTrace": "Kein Run-Trace erfasst"
     }
   },
   "memory": {
-    "errorMiddlewareUnreachable": "Middleware nicht erreichbar (localhost:3979). Läuft `npm run dev` im middleware-Ordner?",
     "errorDevEndpointUnavailable": "Dev-Memory-Endpoint nicht verfügbar. Setze DEV_ENDPOINTS_ENABLED=true in middleware/.env und starte die Middleware neu.",
     "errorListFailed": "List fehlgeschlagen (HTTP {status})",
     "errorFileFailed": "File fehlgeschlagen (HTTP {status})",
@@ -4456,7 +4580,8 @@
     "reload": "↻ neu laden",
     "loading": "lädt…",
     "empty": "leer",
-    "selectEntry": "Eintrag links wählen…"
+    "selectEntry": "Eintrag links wählen…",
+    "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber."
   },
   "memories": {
     "kinds": {
@@ -4523,6 +4648,7 @@
   },
   "routines": {
     "page": {
+      "metaTitle": "Routinen · omadia",
       "kicker": "Routinen",
       "title": "Cronjobs & Routinen.",
       "intro": "User-eigene wiederkehrende Agent-Aufrufe. Anlegen passiert im Chat (manage_routine Tool); hier siehst du alles auf einen Blick und kannst pausieren oder löschen.",
@@ -4545,7 +4671,20 @@
       "historyErrorTitle": "Run-Historie nicht erreichbar",
       "historyEmpty": "Noch keine Run-Historie für diese Routine — sobald sie zum ersten Mal feuert, erscheint hier eine Zeile.",
       "columnDuration": "Dauer",
-      "columnError": "Fehler"
+      "columnError": "Fehler",
+      "promptLabel": "Prompt",
+      "fieldRoutineId": "Routine-ID",
+      "fieldUserId": "User-ID",
+      "fieldTenant": "Mandant",
+      "fieldChannel": "Channel",
+      "fieldCron": "Cron",
+      "fieldTimeout": "Timeout",
+      "fieldStatus": "Status",
+      "columnStarted": "Gestartet",
+      "columnTrigger": "Auslöser",
+      "columnStatus": "Status",
+      "columnIterTools": "Iter. · Tools",
+      "columnDetail": "Detail"
     },
     "trigger": {
       "cron": "Cron",
@@ -4591,6 +4730,7 @@
       "showLess": "weniger"
     },
     "runDetail": {
+      "metaTitle": "Routine-Lauf · omadia",
       "errorUnreachableFallback": "Run-Detail nicht erreichbar.",
       "breadcrumbRoutines": "Routinen",
       "loadErrorTitle": "Run nicht erreichbar",
@@ -4604,6 +4744,7 @@
   },
   "system": {
     "page": {
+      "metaTitle": "System · omadia",
       "title": "Plattform-Zustand.",
       "intro": "Laufzeit, Persistenz, Backup. Nur Metadaten — keine Secrets.",
       "errorUnknownLoad": "Unbekannter Fehler beim Laden des Vault-Status.",
@@ -4637,6 +4778,7 @@
     }
   },
   "help": {
+    "metaTitle": "Hilfe · omadia",
     "kicker": "Hilfe",
     "title": "Hilfe & Support",
     "intro": "Antworten auf die Zustände, in denen man am ehesten hängenbleibt — und wohin du dich wenden kannst, wenn sie nicht reichen.",

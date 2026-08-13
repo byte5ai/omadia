@@ -43,19 +43,58 @@ export type SetupFieldType =
   | 'integer'
   /** #91: operator-curated list of bare hostnames. Values are unioned into
    *  the plugin's effective `ctx.http` allowlist at runtime (Option B). */
-  | 'host_list';
+  | 'host_list'
+  /**
+   * #603 (OM-17): upload a JSON credential file instead of transcribing values
+   * out of it. The field itself stores NOTHING — the server parses the upload
+   * and explodes it into the keys named in `extracts`, which remain ordinary
+   * `secret`/`string` fields for every other code path.
+   *
+   * Exists because hand-transcribing a service-account key into an email field
+   * and a masked field stacked beneath it is the visual pattern of a login, and
+   * a tester duly typed their real password into it.
+   */
+  | 'json_file';
 
 export interface PluginSetupField {
   key: string;
-  label: string;
+  /**
+   * #602 (OM-17) — the field's label, as a `{ <locale>: text }` map. Authored
+   * either localized (`{ en: "…", de: "…" }`) or as a bare string the loader
+   * reads as English. Resolve with `pickLocalized` at the active locale; falls
+   * back to the field `key` when the map is empty. Localized because a manifest
+   * that shows an English label above German setup instructions is exactly the
+   * two-languages-on-one-page defect OM-17 was raised for.
+   */
+  label: LocalizedMarkdown;
   type: SetupFieldType;
-  /** Manifest-defined help text. Surfaced on the post-install credentials
-   *  editor so the operator sees the same hint as in the install wizard. */
-  help?: string;
+  /** #602 (OM-17) — Manifest-defined help text as a `{ <locale>: text }` map
+   *  (bare string tolerated, read as English). Surfaced on the install wizard
+   *  and the post-install credentials editor; render with `pickLocalized`. */
+  help?: LocalizedMarkdown;
   /** Manifest-defined input placeholder. Optional UI hint surfaced by the
    *  install wizard and post-install editor; loader passes it through
    *  unchanged. */
   placeholder?: string;
+  /**
+   * #603 — `json_file` only. MIME type for the file picker's `accept`
+   * attribute. Advisory: a picker hint, never a validation. The server decides
+   * what the upload is, and `expect` is what actually rejects the wrong file.
+   */
+  accept?: string;
+  /**
+   * #603 — `json_file` only. Target setup-field key → `$.dotted.path` into the
+   * uploaded document. The extracted values are stored under those keys; the
+   * `json_file` field itself stores nothing. See `setupJsonFile.ts` for the
+   * supported path subset and why it is not full JSONPath.
+   */
+  extracts?: Record<string, string>;
+  /**
+   * #603 — `json_file` only. Shallow equality assertions the uploaded document
+   * must satisfy (e.g. `{ type: 'service_account' }`), checked BEFORE any value
+   * is extracted so the wrong file is rejected rather than half-consumed.
+   */
+  expect?: Record<string, unknown>;
   /** Manifest default. Forwarded so the post-install editor can pre-select
    *  the default option in an `enum` dropdown when no value is stored yet.
    *  A `string[]` for `type === 'host_list'`, a `string` otherwise. */
@@ -234,14 +273,6 @@ export interface PluginPermissionsSummary {
    *  descriptions of the servers the plugin expects, shown in the grant UI.
    *  Granting is ALWAYS an explicit operator action. */
   mcp_servers_hint?: string[];
-  /** Epic #470 W3: plugin declares `permissions.devJobs` (true or a block) and
-   *  receives `ctx.devJobs`, scoped to operator-granted repos
-   *  (`dev_repo_plugin_grants`). Loader defaults to `false`. */
-  dev_jobs?: boolean;
-  /** Optional author hint (`permissions.devJobs.repos_hint`): repos the plugin
-   *  expects to drive, shown in the operator grant UI. Documentation only —
-   *  granting a repo is ALWAYS an explicit operator action. */
-  dev_jobs_repos_hint?: string[];
   /** Spec 005: true when the manifest declares >=1 `oauth_providers`
    *  descriptor — the plugin acquires standard authorization-code credentials
    *  through the kernel OAuth broker (tokens stored + refreshed kernel-side;
@@ -526,6 +557,39 @@ export interface Plugin {
    * never parsed for behaviour.
    */
   setup_guide?: LocalizedMarkdown;
+  /**
+   * OM-15 (#602) — installation-effort profile surfaced on the store CARD,
+   * BEFORE install. Declared in the manifest's `listing.setup_profile`. Exists
+   * because a tester installed a plugin, then discovered it needed a Google
+   * Cloud service account, seven enabled APIs and Workspace super-admin rights —
+   * information they should have had while still deciding whether to install.
+   * Optional and additive; absent for plugins that declare no profile.
+   */
+  setup_profile?: SetupProfile;
+}
+
+/**
+ * OM-15 (#602) — who has to perform the setup. Renders as a localized label on
+ * the card (`it_admin` → "Einrichtung durch IT-Administrator"). Unknown values
+ * are dropped by the loader rather than shown raw.
+ */
+export type SetupAudience = 'it_admin' | 'operator' | 'end_user';
+
+/**
+ * OM-15 (#602) — structured installation-effort metadata for the store card.
+ * The platform COMPOSES the display line from these fields via next-intl (so the
+ * card stays localized and the plugin author does not hand-write German), e.g.
+ * "Einrichtung durch IT-Administrator · ca. 15 Min · Google-Workspace-Super-Admin
+ * erforderlich". Every field is optional; the card renders only the parts present.
+ */
+export interface SetupProfile {
+  /** Who performs the setup. Omitted when the manifest value is unrecognised. */
+  audience?: SetupAudience;
+  /** Rough hands-on setup time in minutes. Positive integer; omitted otherwise. */
+  estimated_minutes?: number;
+  /** A single extra prerequisite worth calling out up front (e.g. required
+   *  admin role), as a `{ <locale>: text }` map. Render with `pickLocalized`. */
+  requirement?: LocalizedMarkdown;
 }
 
 /**
@@ -600,6 +664,21 @@ export interface StoreGetResponse {
   blocking_reasons?: string[];
   /** Advisory-only — never blocks install (issue #453). */
   verdict?: PluginVerdict;
+  /** OM-06 / #671 — set when install is blocked because an ACTIVE plugin
+   *  already provides one of this plugin's capabilities. The install would be
+   *  refused with 409 `install.capability_already_provided`, so the store must
+   *  not advertise it.
+   *
+   *  Structured rather than folded into `blocking_reasons`, which is a list of
+   *  server-authored English strings the client can only print: the operator's
+   *  next step here is to CONFIGURE the provider that already exists, and a
+   *  client cannot build that link by parsing prose. */
+  blocked_by_active_provider?: {
+    /** The capability slot, e.g. `llmProvider@1`. */
+    capability: string;
+    /** Plugin id already providing it. */
+    owner_id: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -617,8 +696,12 @@ export type InstallJobState =
 export interface InstallSetupField {
   key: string;
   type: SetupFieldType;
-  label: string;
-  help?: string;
+  /** #602 (OM-17) — localized label map; see `PluginSetupField.label`. Both
+   *  projections normalise it identically so the install wizard and the store
+   *  view render the same text. */
+  label: LocalizedMarkdown;
+  /** #602 (OM-17) — localized help map; see `PluginSetupField.help`. */
+  help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
   enum?: Array<{ value: string; label: string }>;
@@ -647,6 +730,27 @@ export interface InstallSetupField {
    *  it just isn't shown at install time. For flow-populated credentials.
    *  Older UIs ignore the flag and render the field as usual. */
   install_hidden?: boolean;
+  /**
+   * #603 — `json_file` only. Mirrors {@link PluginSetupField.accept}: the file
+   * picker's `accept` hint. Advisory — the server, not the picker, decides what
+   * an upload actually is.
+   */
+  accept?: string;
+  /**
+   * #603 — `json_file` only. Mirrors {@link PluginSetupField.extracts}.
+   *
+   * Carried on the INSTALL projection too, not just the catalog one, because
+   * `POST …/secrets/from-json` resolves the extraction map through
+   * `extractSetupSchema` — which returns THIS type. A `json_file` field that
+   * reaches the route without it carries no upload contract and is refused,
+   * so an omission here is a silently dead upload button.
+   */
+  extracts?: Record<string, string>;
+  /**
+   * #603 — `json_file` only. Mirrors {@link PluginSetupField.expect}: shallow
+   * assertions the uploaded document must satisfy before anything is extracted.
+   */
+  expect?: Record<string, unknown>;
 }
 
 export interface InstallSetupSchema {

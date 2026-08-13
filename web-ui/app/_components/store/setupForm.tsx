@@ -44,6 +44,10 @@ export function FieldRow({
   const locale = useLocale();
   const id = `${idPrefix}-${field.key}`;
   const patternHint = pickLocalized(field.pattern_hint, locale);
+  // #602 (OM-17) — label/help are localized maps; resolve them at the active
+  // locale. A missing label falls back to the field key (never blank).
+  const fieldLabel = pickLocalized(field.label, locale) ?? field.key;
+  const fieldHelp = pickLocalized(field.help, locale);
   // OM-17 — a German operator must not read an English rejection. Only the
   // pattern code is overridden: every other install error is either already a
   // catalog string or a value-shape message the manifest cannot explain.
@@ -73,7 +77,7 @@ export function FieldRow({
         className="flex items-baseline justify-between gap-3 text-[11px] uppercase tracking-[0.16em] text-[color:var(--muted-ink)]"
       >
         <span>
-          {field.label}
+          {fieldLabel}
           {field.required ? (
             <span className="ml-1 text-[color:var(--oxblood)]">*</span>
           ) : null}
@@ -84,7 +88,24 @@ export function FieldRow({
       </label>
 
       <div className="mt-2">
-        {field.type === 'boolean' ? (
+        {/*
+          #603 (OM-17) — a `json_file` field is a FILE PICKER, never a text box.
+          Falling through to the text input below would be worse than not having
+          the type at all: it would ask the operator to paste a raw
+          service-account key into a field, which is the transcription step this
+          feature exists to remove. The upload is posted to
+          `…/secrets/from-json`, parsed server-side, and only the derived keys
+          are stored — so this input has no `name` and submits nothing itself.
+        */}
+        {field.type === 'json_file' ? (
+          <input
+            id={id}
+            type="file"
+            accept={field.accept ?? 'application/json'}
+            data-json-file-field={field.key}
+            className="block w-full border border-[color:var(--rule-strong)] bg-[color:var(--paper)] px-3 py-2 text-sm file:mr-3 file:border-0 file:bg-[color:var(--rule)] file:px-3 file:py-1 file:text-sm"
+          />
+        ) : field.type === 'boolean' ? (
           <label
             htmlFor={id}
             className="flex items-center gap-3 border border-[color:var(--rule-strong)] bg-[color:var(--paper)] px-3 py-2 text-sm"
@@ -97,7 +118,7 @@ export function FieldRow({
               className="size-4 accent-[color:var(--oxblood)]"
             />
             <span className="text-[color:var(--muted-ink)]">
-              {field.help ?? t('enable')}
+              {fieldHelp ?? t('enable')}
             </span>
           </label>
         ) : field.type === 'enum' ? (
@@ -215,9 +236,9 @@ export function FieldRow({
         </p>
       ) : null}
 
-      {field.help && field.type !== 'boolean' ? (
+      {fieldHelp && field.type !== 'boolean' ? (
         <p className="mt-1 text-[11px] leading-relaxed text-[color:var(--faint-ink)]">
-          {field.help}
+          {fieldHelp}
         </p>
       ) : null}
       {errorText ? (
@@ -244,6 +265,13 @@ export function extractValues(
 ): Record<string, unknown> {
   const values: Record<string, unknown> = {};
   for (const field of fields) {
+    // #603 (OM-17) — a `json_file` field submits NOTHING under its own key. The
+    // file goes to `…/secrets/from-json`, where the server parses it and stores
+    // only the derived keys; the middleware's `coerce()` refuses a value here
+    // for the same reason. Skipping it in one place and not the other would send
+    // the raw document to an endpoint that rejects it, and the operator would
+    // see a validation error for a field they never typed in.
+    if (field.type === 'json_file') continue;
     if (field.type === 'boolean') {
       values[field.key] = formData.get(field.key) === 'on';
       continue;

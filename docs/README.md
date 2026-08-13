@@ -23,6 +23,7 @@ Dieser Ordner ist das kollektive Gedächtnis des Omadia-Projekts. Mehrere Agents
 | [`CHANGELOG.md`](CHANGELOG.md) | Rolling chronologische Chronik aller signifikanten Änderungen | Nach jeder Aufgabe | Der Agent, der die Änderung macht |
 | [`security-architecture.md`](security-architecture.md) | Security-Design-Patterns (Vault-Credentials, Proxy-Routes, Scope-Locked Sub-Agents, signed URLs) | Bei Security-Architektur-Änderungen | Security-Thread |
 | [`creating-plugins.md`](creating-plugins.md) | HowTo: Plugin bauen (Scaffold → Manifest → ZIP) + Publish auf den Hub | Bei Änderungen am Package-Contract / Publish-Flow | Plugin-/Registry-Thread |
+| [`ai-act-transparency.md`](ai-act-transparency.md) | Was omadia bei KI-Antworten kennzeichnet und was **nicht** (EU AI Act Art. 50) + DE/EN-Textbausteine für die Transparenzseite. Bindend: keine Aussage ohne Codestelle | Bei jeder Änderung an Kennzeichnung oder Provenienz-Markierung | Epic-#642-Thread |
 
 ## Lebende Docs (öffentliche Untermenge)
 

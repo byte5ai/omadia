@@ -8,7 +8,7 @@ import {
   createDevRunnerRouter,
   type DevRunnerJobStore,
   type DevRunnerRouterDeps,
-} from '../../src/routes/devRunnerApi.js';
+} from '../../src/devplatform/routes/devRunnerApi.js';
 import type { RunnerEventInput } from '../../src/devplatform/devJobStore.js';
 import type { FinalizeContext } from '../../src/devplatform/finalizeDevJob.js';
 import {

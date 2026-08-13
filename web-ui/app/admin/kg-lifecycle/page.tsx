@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 
@@ -17,9 +17,14 @@ import { Button } from '@/app/_components/ui/Button';
  *   - Buttons to manually trigger decay / GC / access-flush
  *   - Last-run summaries
  *
- * Backed by `/bot-api/dev/graph/lifecycle/{stats,run-decay,run-gc,run-access-flush,last-runs}`.
- * Mounted only when DEV_ENDPOINTS_ENABLED is on the middleware side; the
- * page just renders an error banner if the routes 404.
+ * Backed by `/bot-api/v1/admin/kg-lifecycle/{stats,run-decay,run-gc,run-access-flush,last-runs}`.
+ *
+ * Issue #669 — these used to live under `/bot-api/dev/graph/lifecycle`, which
+ * mounted only when the middleware ran with `DEV_ENDPOINTS_ENABLED=true`, an
+ * unauthenticated surface. The routes are now authenticated operator admin
+ * endpoints with no flag involved, so a 404 here means exactly one thing:
+ * the middleware never published `graphLifecycle@1` (i.e. the knowledge graph
+ * is not running on Postgres). The empty state says that and only that.
  */
 
 type LifecycleStats = {
@@ -69,15 +74,17 @@ type LastRuns = {
   accessFlush: { at: string; stats: AccessFlushStats } | null;
 };
 
-const STAT_BASE = '/bot-api/dev/graph/lifecycle';
+const STAT_BASE = '/bot-api/v1/admin/kg-lifecycle';
 
 export default function KgLifecyclePage(): JSX.Element {
   const [stats, setStats] = useState<LifecycleStats | null>(null);
   const [lastRuns, setLastRuns] = useState<LastRuns | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const [signedOut, setSignedOut] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const tPage = useTranslations('adminKgLifecycle');
+  const format = useFormatter();
 
   const reload = useCallback(async () => {
     try {
@@ -86,6 +93,16 @@ export default function KgLifecyclePage(): JSX.Element {
         fetch(`${STAT_BASE}/stats`, { cache: 'no-store' }),
         fetch(`${STAT_BASE}/last-runs`, { cache: 'no-store' }),
       ]);
+      // #669 — the routes are behind the operator session gate now, so an
+      // expired cookie is a distinct outcome from an absent backend. Rendering
+      // both as "needs the Postgres backend" is the misdiagnosis this page
+      // already cost once.
+      if (statsRes.status === 401 || statsRes.status === 403) {
+        setSignedOut(true);
+        setUnavailable(false);
+        return;
+      }
+      setSignedOut(false);
       // The lifecycle router is mounted only when the KG/Postgres plugin has
       // published the `graphLifecycle` service. Without it Express falls
       // through to its default 404 — the feature is absent, not broken. Show
@@ -149,19 +166,29 @@ export default function KgLifecyclePage(): JSX.Element {
       <header className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="font-display text-2xl text-[color:var(--fg-strong)]">
-            Knowledge-Graph Lifecycle
+            {tPage('title')}
           </h1>
           <p className="mt-1 text-sm text-[color:var(--fg-muted)]">
-            Palaia Phase 4 — Tier-Rotation, Decay, GC. Sweeps run on the
-            cron schedule; the buttons below trigger them on demand.
+            {tPage('intro')}
           </p>
         </div>
         <Button variant="secondary" onClick={() => void reload()}>
-          Refresh
+          {tPage('refresh')}
         </Button>
       </header>
 
-      {unavailable ? (
+      {signedOut ? (
+        <div className="mb-6 rounded-md border border-[color:var(--border)] bg-[color:var(--surface-muted)] px-4 py-3">
+          <div className="text-sm font-semibold text-[color:var(--fg-strong)]">
+            {tPage('signedOutTitle')}
+          </div>
+          <p className="mt-1 text-sm text-[color:var(--fg-muted)]">
+            {tPage('signedOutBody')}
+          </p>
+        </div>
+      ) : null}
+
+      {unavailable && !signedOut ? (
         <div className="mb-6 rounded-md border border-[color:var(--border)] bg-[color:var(--surface-muted)] px-4 py-3">
           <div className="text-sm font-semibold text-[color:var(--fg-strong)]">
             {tPage('unavailableTitle')}
@@ -172,37 +199,42 @@ export default function KgLifecyclePage(): JSX.Element {
         </div>
       ) : null}
 
-      {error && !unavailable ? (
+      {error && !unavailable && !signedOut ? (
         <div className="mb-6 rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 px-4 py-3 text-sm text-[color:var(--danger)]">
           {error}
         </div>
       ) : null}
 
-      {unavailable ? null : (
+      {unavailable || signedOut ? null : (
       <>
         <section className="mb-8 grid gap-4 md:grid-cols-3">
           <ActionCard
-            title="Run decay + rotation"
-            description="Flush access tracker → recompute decay_score → rotate HOT→WARM→COLD → hard-delete done tasks past TTL."
+            title={tPage('actions.decayTitle')}
+            description={tPage('actions.decayDescription')}
             busy={busy === 'decay'}
             onClick={() => void trigger('decay')}
           />
           <ActionCard
-            title="Run GC quotas"
-            description="Per-scope eviction by type-weight × decay-score. Enforces hot_max_entries + max_total_chars."
+            title={tPage('actions.gcTitle')}
+            description={tPage('actions.gcDescription')}
             busy={busy === 'gc'}
             onClick={() => void trigger('gc')}
           />
           <ActionCard
-            title="Run access flush only"
-            description="Drain the access tracker into access_count + accessed_at without rotating. Debug-only."
+            title={tPage('actions.accessFlushTitle')}
+            description={tPage('actions.accessFlushDescription')}
             busy={busy === 'access-flush'}
             onClick={() => void trigger('access-flush')}
           />
         </section>
 
         <section className="mb-8 grid gap-6 md:grid-cols-3">
-          <Card title="Tier breakdown">
+          {/* #679 / I3 — the tier and entry-type NAMES below (HOT/WARM/COLD,
+              memory/process/task) stay untranslated on purpose: they are the
+              literal enum values the API returns and the SQL stores, so an
+              operator matching this screen against a log or a query needs them
+              to read identically. Only the chrome around them is catalogued. */}
+          <Card title={tPage('cards.tierBreakdown')}>
             {stats ? (
               <ul className="space-y-2 text-sm">
                 <li>
@@ -218,7 +250,7 @@ export default function KgLifecyclePage(): JSX.Element {
                   <strong>{stats.byTier.COLD}</strong>
                 </li>
                 <li className="border-t border-[color:var(--border)] pt-2">
-                  <span className="text-[color:var(--fg-muted)]">Total Turns</span>:{' '}
+                  <span className="text-[color:var(--fg-muted)]">{tPage('cards.totalTurns')}</span>:{' '}
                   <strong>{stats.totalTurns}</strong>
                 </li>
               </ul>
@@ -227,7 +259,7 @@ export default function KgLifecyclePage(): JSX.Element {
             )}
           </Card>
 
-          <Card title="Entry-type breakdown">
+          <Card title={tPage('cards.entryTypeBreakdown')}>
             {stats ? (
               <ul className="space-y-2 text-sm">
                 <li>
@@ -248,7 +280,7 @@ export default function KgLifecyclePage(): JSX.Element {
             )}
           </Card>
 
-          <Card title="Decay-score distribution">
+          <Card title={tPage('cards.decayDistribution')}>
             {stats ? (
               <ul className="space-y-2 text-sm">
                 <li>
@@ -276,23 +308,23 @@ export default function KgLifecyclePage(): JSX.Element {
 
         <section className="mb-8">
           <h2 className="mb-3 font-display text-lg text-[color:var(--fg-strong)]">
-            Top scopes (by Turn count)
+            {tPage('topScopes.heading')}
           </h2>
           <Card title="">
             {stats ? (
               stats.topScopesByCount.length === 0 ? (
                 <p className="text-sm text-[color:var(--fg-muted)]">
-                  No scopes recorded yet.
+                  {tPage('topScopes.empty')}
                 </p>
               ) : (
                 <table className="w-full text-sm">
                   <thead className="text-left text-xs uppercase tracking-wider text-[color:var(--fg-muted)]">
                     <tr>
-                      <th className="pb-2">Scope</th>
-                      <th className="pb-2 text-right">Turns</th>
-                      <th className="pb-2 text-right">Quota</th>
-                      <th className="pb-2 text-right">Chars</th>
-                      <th className="pb-2 text-right">Char-Quota</th>
+                      <th className="pb-2">{tPage('topScopes.colScope')}</th>
+                      <th className="pb-2 text-right">{tPage('topScopes.colTurns')}</th>
+                      <th className="pb-2 text-right">{tPage('topScopes.colQuota')}</th>
+                      <th className="pb-2 text-right">{tPage('topScopes.colChars')}</th>
+                      <th className="pb-2 text-right">{tPage('topScopes.colCharQuota')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -310,7 +342,7 @@ export default function KgLifecyclePage(): JSX.Element {
                           />
                         </td>
                         <td className="py-2 text-right">
-                          {row.chars.toLocaleString()}
+                          {format.number(row.chars)}
                         </td>
                         <td className="py-2 text-right">
                           <QuotaPill
@@ -331,50 +363,50 @@ export default function KgLifecyclePage(): JSX.Element {
 
         <section>
           <h2 className="mb-3 font-display text-lg text-[color:var(--fg-strong)]">
-            Last sweep runs
+            {tPage('lastRuns.heading')}
           </h2>
           <div className="grid gap-4 md:grid-cols-3">
             <LastRunCard
-              title="Decay"
+              title={tPage('lastRuns.decay')}
               at={lastRuns?.decay?.at}
               rows={
                 lastRuns?.decay
                   ? [
-                      ['Updated', lastRuns.decay.stats.decayUpdated],
-                      ['HOT → WARM', lastRuns.decay.stats.hotToWarm],
-                      ['WARM → COLD', lastRuns.decay.stats.warmToCold],
-                      ['Done tasks deleted', lastRuns.decay.stats.doneTasksDeleted],
-                      ['Duration (ms)', lastRuns.decay.stats.durationMs],
+                      [tPage('lastRuns.updated'), lastRuns.decay.stats.decayUpdated],
+                      [tPage('lastRuns.hotToWarm'), lastRuns.decay.stats.hotToWarm],
+                      [tPage('lastRuns.warmToCold'), lastRuns.decay.stats.warmToCold],
+                      [tPage('lastRuns.doneTasksDeleted'), lastRuns.decay.stats.doneTasksDeleted],
+                      [tPage('lastRuns.durationMs'), lastRuns.decay.stats.durationMs],
                     ]
                   : null
               }
             />
             <LastRunCard
-              title="GC"
+              title={tPage('lastRuns.gc')}
               at={lastRuns?.gc?.at}
               rows={
                 lastRuns?.gc
                   ? [
-                      ['Scopes affected', lastRuns.gc.stats.scopesAffected],
-                      ['Evicted by count', lastRuns.gc.stats.evictedByCount],
-                      ['Evicted by chars', lastRuns.gc.stats.evictedByChars],
-                      ['Duration (ms)', lastRuns.gc.stats.durationMs],
+                      [tPage('lastRuns.scopesAffected'), lastRuns.gc.stats.scopesAffected],
+                      [tPage('lastRuns.evictedByCount'), lastRuns.gc.stats.evictedByCount],
+                      [tPage('lastRuns.evictedByChars'), lastRuns.gc.stats.evictedByChars],
+                      [tPage('lastRuns.durationMs'), lastRuns.gc.stats.durationMs],
                     ]
                   : null
               }
             />
             <LastRunCard
-              title="Access flush"
+              title={tPage('lastRuns.accessFlush')}
               at={lastRuns?.accessFlush?.at}
               rows={
                 lastRuns?.accessFlush
                   ? [
-                      ['Flushed', lastRuns.accessFlush.stats.flushed],
+                      [tPage('lastRuns.flushed'), lastRuns.accessFlush.stats.flushed],
                       [
-                        'Promoted COLD → WARM',
+                        tPage('lastRuns.promotedColdToWarm'),
                         lastRuns.accessFlush.stats.promotedColdToWarm,
                       ],
-                      ['Duration (ms)', lastRuns.accessFlush.stats.durationMs],
+                      [tPage('lastRuns.durationMs'), lastRuns.accessFlush.stats.durationMs],
                     ]
                   : null
               }
@@ -447,13 +479,25 @@ function LastRunCard({
   at?: string | undefined;
   rows: ReadonlyArray<readonly [string, number]> | null;
 }): JSX.Element {
+  const t = useTranslations('adminKgLifecycle');
+  // `toLocaleString()` with no argument follows the BROWSER's locale, not the
+  // app's — so a German operator on an English-configured machine read this
+  // timestamp in a different language from the page around it. `useFormatter`
+  // follows the active locale (`web-ui/CLAUDE.md` § no hardcoded locale
+  // formatting).
+  const format = useFormatter();
   return (
     <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--bg)]/40 p-4">
       <h3 className="mb-1 font-medium text-[color:var(--fg-strong)]">
         {title}
       </h3>
       <p className="mb-3 text-xs text-[color:var(--fg-muted)]">
-        {at ? new Date(at).toLocaleString() : 'never run in this process'}
+        {at
+          ? format.dateTime(new Date(at), {
+              dateStyle: 'medium',
+              timeStyle: 'medium',
+            })
+          : t('lastRuns.neverRun')}
       </p>
       {rows ? (
         <ul className="space-y-1 text-sm">
@@ -495,6 +539,7 @@ function QuotaPill({
   limit?: number;
 }): JSX.Element {
   const t = useTranslations('adminKgLifecycle');
+  const format = useFormatter();
   if (limit === undefined || limit <= 0) {
     return (
       <span className="text-xs text-[color:var(--fg-muted)]">—</span>
@@ -507,7 +552,7 @@ function QuotaPill({
       : ratio > 0.8
         ? 'bg-[color:var(--warning)]/20 text-[color:var(--warning)]'
         : 'bg-[color:var(--success)]/20 text-[color:var(--success)]';
-  const formatted = `${value.toLocaleString()}/${limit.toLocaleString()}`;
+  const formatted = `${format.number(value)}/${format.number(limit)}`;
   const percent = (ratio * 100).toFixed(0);
   const tooltip =
     ratio > 1.0

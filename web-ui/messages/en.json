@@ -701,6 +701,7 @@
     "templateNoMatches": "No templates match your filters."
   },
   "operatorChannels": {
+    "metaTitle": "Channels · omadia",
     "title": "Channels",
     "subtitle": "Route inbound webhooks per channel-key to an Orchestrator. Each channel plugin reports its own keys — you only pick which Orchestrator answers them.",
     "loadError": "Failed to load channels",
@@ -713,7 +714,18 @@
     "staleBadge": "stale",
     "routesTo": "→ Orchestrator:",
     "routesToFallback": "(standard · {fallback})",
-    "clearStale": "Clear binding"
+    "clearStale": "Clear binding",
+    "disclosure": {
+      "heading": "AI marking differs from the delivered state",
+      "body": "Answers on these channels are marked differently than on delivery: {channels}.",
+      "inert": "Configured but not yet in effect: {channels}. Turns on these channels do not report their channel type, so they use the global setting.",
+      "note": "This is your decision as the operator — nothing is blocked. Shown so a setting from a test setup does not go unnoticed.",
+      "level": {
+        "standard": "full marking",
+        "concise": "short marking",
+        "off": "no marking"
+      }
+    }
   },
   "layout": {
     "logoAriaLabel": "omadia · Home",
@@ -950,6 +962,10 @@
         "what": "The request did not name which plugin it is about.",
         "next": "Reload the page and repeat the action from the plugin screen."
       },
+      "invalid_json_file_body": {
+        "what": "The upload request did not name both a setup field and a file, so the server could not tell what to parse.",
+        "next": "Reload the page and pick the file again."
+      },
       "invalid_multiselect": {
         "what": "One of the selected values is not in a shape the server accepts.",
         "next": "Clear the selection and pick the entries again from the list."
@@ -957,6 +973,34 @@
       "invalid_secrets_body": {
         "what": "The credential change was sent in a shape the server rejected.",
         "next": "Reload the page and enter the credentials again."
+      },
+      "json_file_bad_extract_path": {
+        "what": "The plugin declares an upload path the server does not support, so the file could not be read.",
+        "next": "This is a fault in the plugin, not in your file — report it to the plugin author."
+      },
+      "json_file_invalid_spec": {
+        "what": "The plugin declares this file upload incorrectly, so it cannot produce any value.",
+        "next": "This is a fault in the plugin, not in your file — report it to the plugin author."
+      },
+      "json_file_missing_value": {
+        "what": "The uploaded file does not contain one of the values this field needs.",
+        "next": "Check that you selected the right file; the message below names the missing value."
+      },
+      "json_file_not_an_object": {
+        "what": "The uploaded file is valid JSON but not a JSON object, so it holds no named values.",
+        "next": "Upload the credential file the provider issued, not a list or a fragment of one."
+      },
+      "json_file_not_json": {
+        "what": "The uploaded file is not valid JSON, so nothing could be read out of it.",
+        "next": "Download the key file again from the provider and upload it unchanged."
+      },
+      "json_file_too_large": {
+        "what": "The uploaded file is larger than the server accepts for a credential file.",
+        "next": "Check that you picked the key file itself and not an archive or export."
+      },
+      "json_file_unexpected_document": {
+        "what": "The uploaded file is the wrong kind of credential — its contents do not match what this field expects.",
+        "next": "Check the message below for which value disagreed, then upload the right file."
       },
       "no_options_provider": {
         "what": "This field has no live option source, so nothing can be fetched for it.",
@@ -990,6 +1034,10 @@
       "setup_field_invalid": {
         "what": "One of the values does not match the format this field expects.",
         "next": "Correct the flagged field and save again."
+      },
+      "unknown_json_file_field": {
+        "what": "The upload names a setup field this plugin does not offer as a file upload.",
+        "next": "Reload the page so the form matches the plugin, then upload the file again."
       },
       "update_failed": {
         "what": "The change could not be written.",
@@ -1115,7 +1163,6 @@
     "pillTitle": "{id} — show details"
   },
   "chat": {
-    "errorMiddlewareUnreachable": "Middleware unreachable on localhost:3979. Is `npm run dev` running in the middleware folder?",
     "errorProxyFailure": "Proxy error (HTTP {status}). Check the middleware logs.",
     "errorAborted": "Aborted.",
     "errorProviderGeneric": "Something went wrong while talking to the AI provider. Please try again.",
@@ -1311,7 +1358,9 @@
       "factNotEmbedded": "— no vector",
       "factPrivateBlocks": "'<private>' blocks",
       "factHintTags": "'<palaia-hint>' tags"
-    }
+    },
+    "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
+    "errorCorrelationRef": "Reference for support: {id}"
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -1412,6 +1461,7 @@
     "actionDelete": "Delete session"
   },
   "skills": {
+    "metaTitle": "Skills · omadia",
     "title": "Skills",
     "subtitle": "Your skill library — import, view, edit and export skills used across agents.",
     "loadError": "Could not load skills.",
@@ -1493,6 +1543,7 @@
     }
   },
   "operatorAgents": {
+    "metaTitle": "Orchestrators · omadia",
     "title": "Orchestrators",
     "subtitle": "Multi-orchestrator runtime — create, edit, disable, drain, or kill Orchestrators and watch the registry react in real time via the LISTEN/NOTIFY hot-reload bus.",
     "loadError": "Failed to load orchestrators",
@@ -1574,7 +1625,8 @@
     "orphanDetachAll": "Remove all",
     "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
     "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
-    "orphanKeep": "Keep"
+    "orphanKeep": "Keep",
+    "seededDescription": "Auto-created on first boot. Receives channel traffic that has no explicit binding, until you configure one."
   },
   "builder": {
     "issueReport": {
@@ -2499,6 +2551,7 @@
     },
     "drafts": {
       "list": {
+        "metaTitle": "Plugin-Builder · omadia",
         "eyebrow": "Plugin Builder",
         "headline": "Build new plugins.",
         "lede": "A plugin can package deterministic code (the tools and integrations the platform runs on), the agents that put them to work, or both together. Draft here, iterate on several in parallel, and install with one click. Every draft stays in your personal workspace, visible only to you.",
@@ -2537,6 +2590,7 @@
         }
       },
       "detail": {
+        "metaTitle": "Workspace · Agent-Builder · omadia",
         "error": {
           "label": "Error",
           "loadFailed": "Workspace could not be loaded.",
@@ -2672,7 +2726,15 @@
       "saveKey": "Save key",
       "cancel": "Cancel",
       "cliNotInstalledReason": "The Claude CLI is not installed on this server.",
-      "helpLink": "What does this mean?"
+      "helpLink": "What does this mean?",
+      "unverifiedReason": {
+        "forbidden": "The provider refused the request (HTTP 403). This is usually a region or organisation restriction, not a wrong key.",
+        "nonJsonResponse": "The provider answered with something other than JSON — often a proxy or captive-portal page rather than the API.",
+        "unexpectedBody": "The provider answered, but not with a model list we recognise.",
+        "httpError": "The provider returned an error (server-side or rate limit). Not your key.",
+        "networkError": "The provider could not be reached — timeout, DNS or no connection.",
+        "noProbe": "This provider type cannot be probed cheaply, so the key stays unverified."
+      }
     },
     "assignments": {
       "heading": "Per-agent assignment",
@@ -2815,6 +2877,7 @@
       "lead": "The Hub is our catalog of ready-made plugins. It bundles integrations (credential containers), agents (domain capabilities) and channels (user channels like Teams and Telegram). Click a tile to see permissions, secrets and dependencies before you install."
     },
     "page": {
+      "metaTitle": "Hub · omadia",
       "filters": {
         "all": "All",
         "integration": "Integrations",
@@ -2845,7 +2908,7 @@
       "emptyHubBody": "Connect a registry under <adminLink>Admin · Registries</adminLink> — or upload your own package in the <localLink>Local</localLink> tab.",
       "errorKicker": "Error",
       "errorTitle": "The catalog could not be loaded.",
-      "errorHint": "Check that the middleware is reachable at <host>http://localhost:3979</host> and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
+      "errorHint": "Check that the middleware is reachable and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
       "footerSource": "Source:"
     },
     "detail": {
@@ -2854,6 +2917,8 @@
       "signed": "signed",
       "unsigned": "unsigned",
       "connectedOk": "Connection established.",
+      "alreadyProvided": "This capability is already provided by {owner}. Installing a second provider is not possible — configure the existing one instead.",
+      "alreadyProvidedCta": "Configure providers",
       "connectedError": "Connection failed. Please try again.",
       "connectedErrorWithReason": "Connection failed ({reason}). Please try again.",
       "sectionDescription": "Description",
@@ -2898,7 +2963,16 @@
       "updateTitleWithVersion": "Update available: {from} → {to}",
       "updateSticker": "Update",
       "noDescription": "No description provided.",
-      "actionRequired": "Action required"
+      "actionRequired": "Action required",
+      "setupProfileLabel": "Setup",
+      "setupProfile": {
+        "audience": {
+          "it_admin": "Setup by IT administrator",
+          "operator": "Setup by operator",
+          "end_user": "Setup by end user"
+        },
+        "minutes": "~{minutes} min"
+      }
     },
     "stateBadge": {
       "available": "Available",
@@ -4199,7 +4273,52 @@
     "quotaTooltip": "{percent}% of the quota",
     "quotaOverTooltip": "{percent}% — will be evicted on the next GC sweep",
     "unavailableTitle": "Knowledge-graph lifecycle is not available",
-    "unavailableBody": "This page needs the Postgres/knowledge-graph backend. The lifecycle endpoints are only mounted when the KG plugin is installed and a database is configured — until then there is nothing to show here."
+    "unavailableBody": "The middleware did not publish the lifecycle service, so there is nothing to show here. The sweeps are Postgres-specific: they exist only while the knowledge-graph plugin is active against a Postgres/Neon database. An in-memory knowledge graph has no lifecycle to run. This page no longer depends on any feature flag — if the plugin is active on Postgres and you still see this, check the plugin status.",
+    "signedOutTitle": "Your session has expired",
+    "signedOutBody": "These endpoints require an operator session. Sign in again, then reload this page.",
+    "actions": {
+      "decayTitle": "Run decay + rotation",
+      "decayDescription": "Flush access tracker → recompute decay_score → rotate HOT→WARM→COLD → hard-delete done tasks past TTL.",
+      "gcTitle": "Run GC quotas",
+      "gcDescription": "Per-scope eviction by type-weight × decay-score. Enforces hot_max_entries + max_total_chars.",
+      "accessFlushTitle": "Run access flush only",
+      "accessFlushDescription": "Drain the access tracker into access_count + accessed_at without rotating. Debug-only."
+    },
+    "cards": {
+      "tierBreakdown": "Tier breakdown",
+      "entryTypeBreakdown": "Entry-type breakdown",
+      "decayDistribution": "Decay-score distribution",
+      "totalTurns": "Total Turns"
+    },
+    "topScopes": {
+      "heading": "Top scopes (by Turn count)",
+      "empty": "No scopes recorded yet.",
+      "colScope": "Scope",
+      "colTurns": "Turns",
+      "colQuota": "Quota",
+      "colChars": "Chars",
+      "colCharQuota": "Char-Quota"
+    },
+    "lastRuns": {
+      "heading": "Last sweep runs",
+      "decay": "Decay",
+      "gc": "GC",
+      "accessFlush": "Access flush",
+      "neverRun": "never run in this process",
+      "updated": "Updated",
+      "hotToWarm": "HOT → WARM",
+      "warmToCold": "WARM → COLD",
+      "doneTasksDeleted": "Done tasks deleted",
+      "durationMs": "Duration (ms)",
+      "scopesAffected": "Scopes affected",
+      "evictedByCount": "Evicted by count",
+      "evictedByChars": "Evicted by chars",
+      "flushed": "Flushed",
+      "promotedColdToWarm": "Promoted COLD → WARM"
+    },
+    "title": "Knowledge-Graph Lifecycle",
+    "intro": "Palaia Phase 4 — tier rotation, decay, GC. Sweeps run on the cron schedule; the buttons below trigger them on demand.",
+    "refresh": "Refresh"
   },
   "adminKgPriorities": {
     "intro": "Per-agent block/boost list for the token-budget assembler. Block drops a turn from the recall pool; boost multiplies the score by `weight` (default 1.3). `manuallyAuthored=true` additionally applies an independent ×1.3 boost — both combine.",
@@ -4441,10 +4560,15 @@
       "auditLoading": "Loading audit trail…",
       "auditEmpty": "No audit entries.",
       "reasonQuoted": "“{reason}”"
+    },
+    "listView": {
+      "runTrace": "Run trace",
+      "noEntities": "No entities in this turn",
+      "loadingRun": "loading run…",
+      "noRunTrace": "No run trace recorded"
     }
   },
   "memory": {
-    "errorMiddlewareUnreachable": "Middleware unreachable (localhost:3979). Is `npm run dev` running in the middleware folder?",
     "errorDevEndpointUnavailable": "Dev memory endpoint unavailable. Set DEV_ENDPOINTS_ENABLED=true in middleware/.env and restart the middleware.",
     "errorListFailed": "Listing failed (HTTP {status})",
     "errorFileFailed": "File load failed (HTTP {status})",
@@ -4456,7 +4580,8 @@
     "reload": "↻ Reload",
     "loading": "Loading…",
     "empty": "empty",
-    "selectEntry": "Select an entry on the left…"
+    "selectEntry": "Select an entry on the left…",
+    "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator."
   },
   "memories": {
     "kinds": {
@@ -4523,6 +4648,7 @@
   },
   "routines": {
     "page": {
+      "metaTitle": "Routines · omadia",
       "kicker": "Routines",
       "title": "Cron jobs & routines.",
       "intro": "User-owned recurring agent invocations. They are created in the chat (manage_routine tool); here you can see everything at a glance and pause or delete.",
@@ -4545,7 +4671,20 @@
       "historyErrorTitle": "Run history unreachable",
       "historyEmpty": "No run history for this routine yet — as soon as it fires for the first time, a row will appear here.",
       "columnDuration": "Duration",
-      "columnError": "Error"
+      "columnError": "Error",
+      "promptLabel": "Prompt",
+      "fieldRoutineId": "Routine ID",
+      "fieldUserId": "User ID",
+      "fieldTenant": "Tenant",
+      "fieldChannel": "Channel",
+      "fieldCron": "Cron",
+      "fieldTimeout": "Timeout",
+      "fieldStatus": "Status",
+      "columnStarted": "Started",
+      "columnTrigger": "Trigger",
+      "columnStatus": "Status",
+      "columnIterTools": "Iter · Tools",
+      "columnDetail": "Detail"
     },
     "trigger": {
       "cron": "Cron",
@@ -4591,6 +4730,7 @@
       "showLess": "less"
     },
     "runDetail": {
+      "metaTitle": "Routine Run · omadia",
       "errorUnreachableFallback": "Run detail unreachable.",
       "breadcrumbRoutines": "Routines",
       "loadErrorTitle": "Run unreachable",
@@ -4604,6 +4744,7 @@
   },
   "system": {
     "page": {
+      "metaTitle": "System · omadia",
       "title": "Platform health.",
       "intro": "Runtime, persistence, backup. Metadata only — no secrets.",
       "errorUnknownLoad": "Unknown error while loading the vault status.",
@@ -4637,6 +4778,7 @@
     }
   },
   "help": {
+    "metaTitle": "Help · omadia",
     "kicker": "Help",
     "title": "Help & support",
     "intro": "Answers to the states you are most likely to get stuck in, plus where to reach us when they do not help.",

@@ -698,6 +698,15 @@ export class McpManager {
     }
     this.emitCall(cfg, toolName, 'input_required', null, startedAt, actingIdentity);
     this.emitInputRequired(cfg, toolName, record);
+    // #570 — hand the dispatch that is awaiting us a provenance receipt for the
+    // id we just minted, so the Privacy Shield can tell OUR sentinel apart from
+    // a server-authored string that merely looks like one. The box belongs to a
+    // single dispatch and is absent when no privacy guard is installed (nothing
+    // interns then) or when this call did not come from a tool dispatch at all
+    // (skill/plugin accessor paths) — in both cases there is simply nothing to
+    // exempt and the sentinel is returned exactly as before.
+    const mint = turnContext.current()?.mcpInputSentinelMint;
+    if (mint !== undefined) mint.correlationId = record.correlationId;
     return mcpInputRequiredSentinel(record);
   }
 
