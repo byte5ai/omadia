@@ -111,6 +111,12 @@ function fakeCatalog(plugins: Plugin[]): PluginCatalog {
 const fakeRegistry = {
   has: () => false,
   get: () => undefined,
+  // `list()` is not optional on InstalledRegistry — the `as unknown as` cast
+  // below is what let this stub omit it. The store's already-provided check
+  // (#671) walks the installed set, so a stub without `list` 500s the very
+  // routes these tests assert on. Empty is the right answer here: nothing is
+  // installed in these fixtures.
+  list: () => [],
 } as unknown as InstalledRegistry;
 
 // --- C3: store merge -------------------------------------------------------
@@ -355,6 +361,16 @@ function fakeInstalled(map: Record<string, string>): InstalledRegistry {
     has: (id: string) => id in map,
     get: (id: string) =>
       id in map ? { id, installed_version: map[id]! } : undefined,
+    // See the note on `fakeRegistry` above: `list()` is required by the
+    // interface, and the store's already-provided check (#671) calls it.
+    // These entries are `status: 'active'` so the projection matches what a
+    // real registry would report for an installed plugin.
+    list: () =>
+      Object.entries(map).map(([id, version]) => ({
+        id,
+        installed_version: version,
+        status: 'active',
+      })),
   } as unknown as InstalledRegistry;
 }
 

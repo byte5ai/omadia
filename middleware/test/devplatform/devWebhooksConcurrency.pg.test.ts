@@ -20,7 +20,7 @@ import {
   hasActiveTriggerJob,
 } from '../../src/devplatform/triggers/triggerJobService.js';
 import { WebhookDeliveryStore } from '../../src/devplatform/triggers/webhookDeliveryStore.js';
-import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from '../../src/routes/devWebhooks.js';
+import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from '../../src/devplatform/routes/devWebhooks.js';
 import type { DevRepo } from '../../src/devplatform/types.js';
 
 /**

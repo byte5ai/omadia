@@ -13,9 +13,12 @@ When you add or change any user-facing string:
 1. Add the key to `messages/en.json` (English is the source of truth).
 2. Mirror the **same key** in `messages/de.json` with the German translation.
 3. Use it in components via `next-intl`: `const t = useTranslations('<area>.<feature>')`.
-4. Run `npm run i18n:check` — the parity test fails on missing/extra/empty keys,
-   forbidden HTML (`script/iframe/object/embed/link`), or mismatched ICU/tag
-   placeholders across locales.
+4. Run `npm run i18n:check` — `scripts/i18n-validate.mjs` fails on missing/extra
+   keys, empty or non-string values, and forbidden HTML
+   (`script/iframe/object/embed/link`).
+5. Run `npm test` — the parity suite (`app/_lib/i18n-parity.test.ts`) additionally
+   fails on **mismatched ICU arguments and rich-text tags** across locales. This
+   check is not part of `i18n:check`; it runs under vitest, and CI runs it.
 
 Do **not** hardcode user-facing strings in components. See `messages/README.md`
 for the full key-naming convention, ICU placeholders, and `t.rich` usage.

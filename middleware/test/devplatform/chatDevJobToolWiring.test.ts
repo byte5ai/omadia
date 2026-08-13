@@ -8,7 +8,7 @@ import {
   DEV_JOB_STATUS_TOOL_NAME,
   type KernelToolRegistration,
 } from '../../src/devplatform/devJobOrchestratorTool.js';
-import { isPermittedLauncher } from '../../src/routes/devPlatformShared.js';
+import { isPermittedLauncher } from '../../src/devplatform/routes/devPlatformShared.js';
 import type {
   ChatDevJobJobStore,
   ChatDevJobRepoStore,

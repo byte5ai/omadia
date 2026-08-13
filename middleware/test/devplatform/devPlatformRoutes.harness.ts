@@ -10,7 +10,7 @@ import {
   assertAuthModeAdmissible,
   assertLocalBackendAdmissible,
   type DevPlatformRouterDeps,
-} from '../../src/routes/devPlatform.js';
+} from '../../src/devplatform/routes/devPlatform.js';
 import { DevJobEventBus } from '../../src/devplatform/devJobEventBus.js';
 import type { Ticket } from '../../src/devplatform/githubIssuesTracker.js';
 import type { FinalizeContext } from '../../src/devplatform/finalizeDevJob.js';

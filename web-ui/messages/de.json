@@ -2668,7 +2668,15 @@
       "saveKey": "Schlüssel speichern",
       "cancel": "Abbrechen",
       "cliNotInstalledReason": "Die Claude-CLI ist auf diesem Server nicht installiert.",
-      "helpLink": "Was bedeutet das?"
+      "helpLink": "Was bedeutet das?",
+      "unverifiedReason": {
+        "forbidden": "Der Provider hat die Anfrage abgelehnt (HTTP 403). Das ist meist eine Regions- oder Organisationsbeschränkung, kein falscher Schlüssel.",
+        "nonJsonResponse": "Der Provider hat kein JSON geliefert — oft eine Proxy- oder Portalseite statt der API.",
+        "unexpectedBody": "Der Provider hat geantwortet, aber nicht mit einer Modell-Liste, die wir erkennen.",
+        "httpError": "Der Provider hat einen Fehler zurückgegeben (serverseitig oder Rate-Limit). Nicht dein Schlüssel.",
+        "networkError": "Der Provider war nicht erreichbar — Timeout, DNS oder keine Verbindung.",
+        "noProbe": "Dieser Provider-Typ lässt sich nicht günstig prüfen, der Schlüssel bleibt daher unbestätigt."
+      }
     },
     "assignments": {
       "heading": "Zuordnung pro Agent",
@@ -2850,6 +2858,8 @@
       "signed": "signiert",
       "unsigned": "unsigniert",
       "connectedOk": "Verbindung hergestellt.",
+      "alreadyProvided": "Diese Capability wird bereits von {owner} bereitgestellt. Ein zweiter Provider lässt sich nicht installieren — konfiguriere stattdessen den vorhandenen.",
+      "alreadyProvidedCta": "Provider konfigurieren",
       "connectedError": "Verbindung fehlgeschlagen. Bitte erneut versuchen.",
       "connectedErrorWithReason": "Verbindung fehlgeschlagen ({reason}). Bitte erneut versuchen.",
       "sectionDescription": "Beschreibung",
@@ -4195,7 +4205,9 @@
     "quotaTooltip": "{percent}% des Quota",
     "quotaOverTooltip": "{percent}% — wird beim nächsten GC-Sweep evicted",
     "unavailableTitle": "Knowledge-Graph-Lifecycle ist nicht verfügbar",
-    "unavailableBody": "Diese Seite benötigt das Postgres-/Knowledge-Graph-Backend. Die Lifecycle-Endpoints werden nur eingebunden, wenn das KG-Plugin installiert und eine Datenbank konfiguriert ist — bis dahin gibt es hier nichts anzuzeigen."
+    "unavailableBody": "Die Middleware hat den Lifecycle-Service nicht veröffentlicht, deshalb gibt es hier nichts anzuzeigen. Die Sweeps sind Postgres-spezifisch: Sie existieren nur, solange das Knowledge-Graph-Plugin gegen eine Postgres-/Neon-Datenbank aktiv ist. Ein In-Memory-Knowledge-Graph hat keinen Lifecycle. Diese Seite hängt an keinem Feature-Flag mehr — wenn das Plugin auf Postgres aktiv ist und das hier trotzdem erscheint, prüfe den Plugin-Status.",
+    "signedOutTitle": "Deine Session ist abgelaufen",
+    "signedOutBody": "Diese Endpoints brauchen eine Operator-Session. Melde dich erneut an und lade die Seite neu."
   },
   "adminKgPriorities": {
     "intro": "Per-Agent Block/Boost-Liste für den Token-Budget-Assembler. Block droppt einen Turn aus dem Recall-Pool; Boost multipliziert den Score mit `weight` (Default 1.3). `manuallyAuthored=true` bringt zusätzlich einen unabhängigen ×1.3 Boost — beide kombinieren.",

@@ -11,7 +11,7 @@ import { strict as assert } from 'node:assert';
 import {
   assertAuthModeAdmissible,
   assertLocalBackendAdmissible,
-} from '../../src/routes/devPlatformShared.js';
+} from '../../src/devplatform/routes/devPlatformShared.js';
 
 import {
   DEVICE_TOKEN,

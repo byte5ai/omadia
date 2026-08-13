@@ -329,8 +329,8 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       if (err instanceof AwaitNotPendingError) {
         res.status(409).json({ code: 'conductor.await_not_pending', message: err.message });
       } else if (err instanceof AwaitResponderNotHolderError) {
-        // A non-holder tried to answer (incl. the phantom `dev_job:<id>` principal an operator
-        // must never own). The authz gate already refused; surface it as 403, not a generic 500.
+        // A non-holder tried to answer. The authz gate already refused; surface it as 403,
+        // not a generic 500.
         res.status(403).json({ code: 'conductor.await_forbidden', message: err.message });
       } else {
         console.error('[conductor] respond failed:', err);

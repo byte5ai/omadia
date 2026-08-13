@@ -17,9 +17,14 @@ import { Button } from '@/app/_components/ui/Button';
  *   - Buttons to manually trigger decay / GC / access-flush
  *   - Last-run summaries
  *
- * Backed by `/bot-api/dev/graph/lifecycle/{stats,run-decay,run-gc,run-access-flush,last-runs}`.
- * Mounted only when DEV_ENDPOINTS_ENABLED is on the middleware side; the
- * page just renders an error banner if the routes 404.
+ * Backed by `/bot-api/v1/admin/kg-lifecycle/{stats,run-decay,run-gc,run-access-flush,last-runs}`.
+ *
+ * Issue #669 — these used to live under `/bot-api/dev/graph/lifecycle`, which
+ * mounted only when the middleware ran with `DEV_ENDPOINTS_ENABLED=true`, an
+ * unauthenticated surface. The routes are now authenticated operator admin
+ * endpoints with no flag involved, so a 404 here means exactly one thing:
+ * the middleware never published `graphLifecycle@1` (i.e. the knowledge graph
+ * is not running on Postgres). The empty state says that and only that.
  */
 
 type LifecycleStats = {
@@ -69,13 +74,14 @@ type LastRuns = {
   accessFlush: { at: string; stats: AccessFlushStats } | null;
 };
 
-const STAT_BASE = '/bot-api/dev/graph/lifecycle';
+const STAT_BASE = '/bot-api/v1/admin/kg-lifecycle';
 
 export default function KgLifecyclePage(): JSX.Element {
   const [stats, setStats] = useState<LifecycleStats | null>(null);
   const [lastRuns, setLastRuns] = useState<LastRuns | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const [signedOut, setSignedOut] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const tPage = useTranslations('adminKgLifecycle');
 
@@ -86,6 +92,16 @@ export default function KgLifecyclePage(): JSX.Element {
         fetch(`${STAT_BASE}/stats`, { cache: 'no-store' }),
         fetch(`${STAT_BASE}/last-runs`, { cache: 'no-store' }),
       ]);
+      // #669 — the routes are behind the operator session gate now, so an
+      // expired cookie is a distinct outcome from an absent backend. Rendering
+      // both as "needs the Postgres backend" is the misdiagnosis this page
+      // already cost once.
+      if (statsRes.status === 401 || statsRes.status === 403) {
+        setSignedOut(true);
+        setUnavailable(false);
+        return;
+      }
+      setSignedOut(false);
       // The lifecycle router is mounted only when the KG/Postgres plugin has
       // published the `graphLifecycle` service. Without it Express falls
       // through to its default 404 — the feature is absent, not broken. Show
@@ -161,7 +177,18 @@ export default function KgLifecyclePage(): JSX.Element {
         </Button>
       </header>
 
-      {unavailable ? (
+      {signedOut ? (
+        <div className="mb-6 rounded-md border border-[color:var(--border)] bg-[color:var(--surface-muted)] px-4 py-3">
+          <div className="text-sm font-semibold text-[color:var(--fg-strong)]">
+            {tPage('signedOutTitle')}
+          </div>
+          <p className="mt-1 text-sm text-[color:var(--fg-muted)]">
+            {tPage('signedOutBody')}
+          </p>
+        </div>
+      ) : null}
+
+      {unavailable && !signedOut ? (
         <div className="mb-6 rounded-md border border-[color:var(--border)] bg-[color:var(--surface-muted)] px-4 py-3">
           <div className="text-sm font-semibold text-[color:var(--fg-strong)]">
             {tPage('unavailableTitle')}
@@ -172,13 +199,13 @@ export default function KgLifecyclePage(): JSX.Element {
         </div>
       ) : null}
 
-      {error && !unavailable ? (
+      {error && !unavailable && !signedOut ? (
         <div className="mb-6 rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/10 px-4 py-3 text-sm text-[color:var(--danger)]">
           {error}
         </div>
       ) : null}
 
-      {unavailable ? null : (
+      {unavailable || signedOut ? null : (
       <>
         <section className="mb-8 grid gap-4 md:grid-cols-3">
           <ActionCard

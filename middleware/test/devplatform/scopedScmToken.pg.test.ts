@@ -11,6 +11,7 @@ import { probePgTest } from '../_helpers/pgTestDb.js';
 import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
 import { assembleDevPlatform, mountDevPlatform } from '../../src/devplatform/wireDevPlatform.js';
+import { devPlatformTestConfig } from './devPlatformConfig.harness.js';
 import { DevGithubAppStore } from '../../src/devplatform/githubApp/appStore.js';
 import { DevRepoStore } from '../../src/devplatform/devRepoStore.js';
 import { InMemorySecretVault } from '../../src/secrets/vault.js';
@@ -104,15 +105,10 @@ describe('dev-platform wiring — the runner gets a SCOPED, revocable App token 
     wired = assembleDevPlatform({
       pool,
       vault,
-      baseUrl: 'http://127.0.0.1:3333',
-      cliBin: 'claude',
-      wallClockMs: 600_000,
-      heartbeatTimeoutMs: 600_000,
-      maxConcurrentJobs: 1,
-      commitAuthor: 'omadia-dev <dev-platform@omadia.ai>',
-      subscriptionModeEnabled: false,
-      workspaceDir: '/tmp/scoped-scm',
-      unsafeLocal: false,
+      config: devPlatformTestConfig({
+        baseUrl: 'http://127.0.0.1:3333',
+        workspaceDir: '/tmp/scoped-scm',
+      }),
       shimEntry: '/dev/null',
       backends: [new InertBackend()],
       githubAppFetch,

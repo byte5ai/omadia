@@ -47,9 +47,14 @@ import { NeonNudgeStateStore } from './nudgeStateStore.js';
  *     correlation is preserved.
  *
  * Lifetime: activate() constructs Pool + Migrations + Graph + Bus +
- * Backfill scheduler. close() reverses (stop scheduler → dispose service
- * registrations → drain Pool with end()). SIGTERM/SIGINT shutdown is owned
- * by the kernel runtime which calls close() on every active plugin.
+ * Backfill scheduler. close() reverses it — stop scheduler → dispose service
+ * registrations → drop the Pool REFERENCE. It deliberately does NOT call
+ * `pool.end()` (issue #665): close() is not only the shutdown path, it also
+ * runs on deactivate and on the config editor's reactivate, and the kernel
+ * shares one boot-resolved pool with ~40 subsystems that never re-resolve it.
+ * Ending it there took the whole process down until restart. SIGTERM/SIGINT
+ * shutdown is owned by the kernel runtime, which calls close() on every active
+ * plugin; the pool is released with the process.
  *
  * S+11-2b: capability ownership flipped here from the legacy
  * @omadia/knowledge-graph plugin. Mutual exclusion with the
@@ -674,11 +679,29 @@ export async function activate(
       disposePool();
       disposeBus();
       disposeGraph();
-      try {
-        await graphPool.end();
-      } catch {
-        // process exit path — pool draining is best-effort
-      }
+      // DO NOT call graphPool.end() here (issue #665).
+      //
+      // This plugin creates the pool, but `close()` is NOT a process-exit
+      // path — it also runs on every deactivate and on the reactivate that
+      // the config editor triggers after any settings save. The kernel
+      // resolves `graphPool` ONCE at boot (src/index.ts) and hands that same
+      // object to ~40 subsystems, which never re-resolve it. Ending it here
+      // therefore did not release "our" pool; it killed the one the whole
+      // process was still using, and every later query failed with
+      // `Cannot use a pool after calling end on the pool` until the machine
+      // was restarted.
+      //
+      // Dropping the reference without ending it is the same contract
+      // memory-postgres already follows ("The pool is owned by the graphPool
+      // provider — do NOT call pool.end() here"). The pool is released when
+      // the process exits, which is the only moment no one can still hold it.
+      //
+      // Cost of this choice, stated plainly: a reactivate leaves the previous
+      // pool open, because `activate()` builds a fresh one. That is a bounded
+      // leak on an operator-initiated action, and it is strictly better than
+      // a live outage — but it is the reason a future change should let
+      // `activate()` reuse an already-provided pool rather than always
+      // creating one.
     },
   };
 }

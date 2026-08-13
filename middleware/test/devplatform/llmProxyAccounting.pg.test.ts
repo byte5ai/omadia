@@ -25,7 +25,7 @@ import {
   type LlmProxyBudgetHook,
   type LlmProxyUsageRecord,
 } from '../../src/devplatform/llmProxy.js';
-import { createDevRunnerRouter, type DevRunnerRouterDeps } from '../../src/routes/devRunnerApi.js';
+import { createDevRunnerRouter, type DevRunnerRouterDeps } from '../../src/devplatform/routes/devRunnerApi.js';
 
 /**
  * Epic #470 W4 (spec §5) — LLM budget accounting + enforcement, wired through the

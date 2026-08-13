@@ -5,7 +5,7 @@ import type {
   DevJobDescriptor,
   DevJobEventRecord,
   DevJobStatus,
-} from '@omadia/plugin-api';
+} from '../../src/devplatform/devJobTypes.js';
 
 import {
   createChatDevJobService,
@@ -22,7 +22,7 @@ import {
   type ChatDevJobService,
   type DevJobStatusResult,
 } from '../../src/devplatform/devJobOrchestratorTool.js';
-import { isPermittedLauncher } from '../../src/routes/devPlatformShared.js';
+import { isPermittedLauncher } from '../../src/devplatform/routes/devPlatformShared.js';
 import type {
   DevJob,
   DevJobEvent,

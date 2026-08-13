@@ -4,7 +4,7 @@ import { after, describe, it } from 'node:test';
 
 import express, { type RequestHandler } from 'express';
 
-import { createDevPlatformGatesRouter, type DevPlatformGatesDeps } from '../../src/routes/devPlatformGates.js';
+import { createDevPlatformGatesRouter, type DevPlatformGatesDeps } from '../../src/devplatform/routes/devPlatformGates.js';
 import type { DevJobGate, GateAnswer } from '../../src/devplatform/pipeline/gateStore.js';
 
 function gate(over: Partial<DevJobGate> = {}): DevJobGate {

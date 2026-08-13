@@ -234,14 +234,6 @@ export interface PluginPermissionsSummary {
    *  descriptions of the servers the plugin expects, shown in the grant UI.
    *  Granting is ALWAYS an explicit operator action. */
   mcp_servers_hint?: string[];
-  /** Epic #470 W3: plugin declares `permissions.devJobs` (true or a block) and
-   *  receives `ctx.devJobs`, scoped to operator-granted repos
-   *  (`dev_repo_plugin_grants`). Loader defaults to `false`. */
-  dev_jobs?: boolean;
-  /** Optional author hint (`permissions.devJobs.repos_hint`): repos the plugin
-   *  expects to drive, shown in the operator grant UI. Documentation only —
-   *  granting a repo is ALWAYS an explicit operator action. */
-  dev_jobs_repos_hint?: string[];
   /** Spec 005: true when the manifest declares >=1 `oauth_providers`
    *  descriptor — the plugin acquires standard authorization-code credentials
    *  through the kernel OAuth broker (tokens stored + refreshed kernel-side;
@@ -600,6 +592,21 @@ export interface StoreGetResponse {
   blocking_reasons?: string[];
   /** Advisory-only — never blocks install (issue #453). */
   verdict?: PluginVerdict;
+  /** OM-06 / #671 — set when install is blocked because an ACTIVE plugin
+   *  already provides one of this plugin's capabilities. The install would be
+   *  refused with 409 `install.capability_already_provided`, so the store must
+   *  not advertise it.
+   *
+   *  Structured rather than folded into `blocking_reasons`, which is a list of
+   *  server-authored English strings the client can only print: the operator's
+   *  next step here is to CONFIGURE the provider that already exists, and a
+   *  client cannot build that link by parsing prose. */
+  blocked_by_active_provider?: {
+    /** The capability slot, e.g. `llmProvider@1`. */
+    capability: string;
+    /** Plugin id already providing it. */
+    owner_id: string;
+  };
 }
 
 // ---------------------------------------------------------------------------

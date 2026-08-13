@@ -12,7 +12,7 @@ import type {
  * OB-73, Slice D).
  *
  * Service capability published as `graphLifecycle@1` so kernel-side admin
- * routes (`/api/dev/graph/lifecycle/*`) can render the Tier-Histogram and
+ * routes (`/api/v1/admin/kg-lifecycle/*`) can render the Tier-Histogram and
  * trigger sweeps without re-reading the plugin's setup-fields. Holds the
  * bound configuration the plugin's `activate()` resolved at startup.
  *

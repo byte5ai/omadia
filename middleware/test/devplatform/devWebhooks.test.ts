@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 
 import express from 'express';
 
-import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from '../../src/routes/devWebhooks.js';
+import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from '../../src/devplatform/routes/devWebhooks.js';
 import {
   createTriggerJob,
   type CreateTriggerJobInput,

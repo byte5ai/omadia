@@ -22,6 +22,7 @@ import { DevRepoStore } from '../../src/devplatform/devRepoStore.js';
 import { DevRepoCredentialStore } from '../../src/devplatform/devRepoCredentials.js';
 import { applyHunks } from '../../src/devplatform/policy/parseUnifiedDiff.js';
 import { assembleDevPlatform, mountDevPlatform } from '../../src/devplatform/wireDevPlatform.js';
+import { devPlatformTestConfig } from './devPlatformConfig.harness.js';
 import { InMemorySecretVault } from '../../src/secrets/vault.js';
 import type {
   ApplyDiffInput,
@@ -342,7 +343,7 @@ describe('dev-platform golden fixture (pg + git)', { skip: !pgAvailable || !gitA
     const app = express();
     app.use(express.json({ limit: '10mb' }));
     app.use(express.text({ type: 'text/plain', limit: '10mb' }));
-    const allowlist = publicPaths({ devEndpointsEnabled: false });
+    const allowlist = publicPaths();
     const requireAuth: RequestHandler = (req, res, next) => {
       const url = req.originalUrl || req.url;
       if (allowlist.some((rx) => rx.test(url))) {
@@ -363,15 +364,13 @@ describe('dev-platform golden fixture (pg + git)', { skip: !pgAvailable || !gitA
     wired = assembleDevPlatform({
       pool,
       vault,
-      baseUrl,
-      cliBin: fakeCli,
-      wallClockMs: 120_000,
-      heartbeatTimeoutMs: 120_000,
-      maxConcurrentJobs: 1,
-      commitAuthor: 'omadia-dev <dev-platform@omadia.ai>',
-      subscriptionModeEnabled: false,
-      workspaceDir: path.join(scratch, 'jobs'),
-      unsafeLocal: false,
+      config: devPlatformTestConfig({
+        baseUrl,
+        cliBin: fakeCli,
+        wallClockMs: 120_000,
+        heartbeatTimeoutMs: 120_000,
+        workspaceDir: path.join(scratch, 'jobs'),
+      }),
       shimEntry: '/dev/null',
       backends: [backend],
       forgeFactory: () => forge,
