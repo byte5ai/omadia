@@ -697,6 +697,7 @@
     "templateNoMatches": "Keine Vorlagen entsprechen deinen Filtern."
   },
   "operatorChannels": {
+    "metaTitle": "Channels · omadia",
     "title": "Channels",
     "subtitle": "Eingehende Webhooks pro Channel-Key auf einen Orchestrator routen. Jeder Channel-Plugin meldet seine eigenen Keys — du wählst nur, welcher Orchestrator sie beantwortet.",
     "loadError": "Konnte Channels nicht laden",
@@ -1445,6 +1446,7 @@
     "actionDelete": "Session löschen"
   },
   "skills": {
+    "metaTitle": "Skills · omadia",
     "title": "Skills",
     "subtitle": "Deine Skill-Bibliothek — Skills importieren, ansehen, bearbeiten und exportieren.",
     "loadError": "Skills konnten nicht geladen werden.",
@@ -1526,6 +1528,7 @@
     }
   },
   "operatorAgents": {
+    "metaTitle": "Orchestratoren · omadia",
     "title": "Orchestratoren",
     "subtitle": "Multi-Orchestrator-Runtime — Orchestratoren anlegen, editieren, deaktivieren, drainen oder killen und der Registry live beim Reagieren zuschauen über den LISTEN/NOTIFY-Hot-Reload-Bus.",
     "loadError": "Konnte Orchestratoren nicht laden",
@@ -1607,7 +1610,8 @@
     "orphanDetachAll": "Alle entfernen",
     "orphanDetachAllTooltip": "Entfernt alle veralteten Plugin-Zuordnungen (alte IDs aus früheren Deployments) auf einmal.",
     "orphanExplain": "Plugin-IDs aus früheren Seeds, die im aktuellen Katalog nicht mehr existieren (typisch: Umbenennung de.byte5.agent.* → @omadia/*). Werden beim nächsten „Speichern\" verworfen, außer du markierst sie als „Behalten\".",
-    "orphanKeep": "Behalten"
+    "orphanKeep": "Behalten",
+    "seededDescription": "Beim ersten Start automatisch angelegt. Empfängt Channel-Traffic ohne explizite Zuordnung, bis du eine einrichtest."
   },
   "builder": {
     "issueReport": {
@@ -2532,6 +2536,7 @@
     },
     "drafts": {
       "list": {
+        "metaTitle": "Plugin-Builder · omadia",
         "eyebrow": "Plugin-Builder",
         "headline": "Neue Plugins bauen.",
         "lede": "Ein Plugin kann deterministischen Code bündeln (die Tools und Integrationen, auf denen die Plattform läuft), die Agents, die damit arbeiten, oder beides zusammen. Lege hier Drafts an, iteriere parallel an mehreren und installiere sie per Klick. Jeder Draft bleibt in deinem persönlichen Arbeitsbereich, sichtbar nur für dich.",
@@ -2570,6 +2575,7 @@
         }
       },
       "detail": {
+        "metaTitle": "Workspace · Agent-Builder · omadia",
         "error": {
           "label": "Fehler",
           "loadFailed": "Workspace konnte nicht geladen werden.",
@@ -2856,6 +2862,7 @@
       "lead": "Der Hub ist unser Katalog für die bereitgestellten Plugins. Er bündelt Integrations (Credential-Container), Agents (Domain-Capabilities) und Channels (User-Kanäle wie Teams, Telegram). Ein Klick auf eine Kachel zeigt Berechtigungen, Secrets und Abhängigkeiten vor der Installation."
     },
     "page": {
+      "metaTitle": "Hub · omadia",
       "filters": {
         "all": "Alle",
         "integration": "Integrations",
@@ -4253,7 +4260,50 @@
     "unavailableTitle": "Knowledge-Graph-Lifecycle ist nicht verfügbar",
     "unavailableBody": "Die Middleware hat den Lifecycle-Service nicht veröffentlicht, deshalb gibt es hier nichts anzuzeigen. Die Sweeps sind Postgres-spezifisch: Sie existieren nur, solange das Knowledge-Graph-Plugin gegen eine Postgres-/Neon-Datenbank aktiv ist. Ein In-Memory-Knowledge-Graph hat keinen Lifecycle. Diese Seite hängt an keinem Feature-Flag mehr — wenn das Plugin auf Postgres aktiv ist und das hier trotzdem erscheint, prüfe den Plugin-Status.",
     "signedOutTitle": "Deine Session ist abgelaufen",
-    "signedOutBody": "Diese Endpoints brauchen eine Operator-Session. Melde dich erneut an und lade die Seite neu."
+    "signedOutBody": "Diese Endpoints brauchen eine Operator-Session. Melde dich erneut an und lade die Seite neu.",
+    "actions": {
+      "decayTitle": "Decay + Rotation ausführen",
+      "decayDescription": "Access-Tracker leeren → decay_score neu berechnen → HOT→WARM→COLD rotieren → erledigte Tasks nach Ablauf der TTL endgültig löschen.",
+      "gcTitle": "GC-Quoten ausführen",
+      "gcDescription": "Eviction pro Scope nach Typ-Gewicht × Decay-Score. Erzwingt hot_max_entries + max_total_chars.",
+      "accessFlushTitle": "Nur Access-Flush ausführen",
+      "accessFlushDescription": "Access-Tracker ohne Rotation in access_count + accessed_at schreiben. Nur zum Debuggen."
+    },
+    "cards": {
+      "tierBreakdown": "Verteilung nach Tier",
+      "entryTypeBreakdown": "Verteilung nach Eintragstyp",
+      "decayDistribution": "Verteilung der Decay-Scores",
+      "totalTurns": "Turns gesamt"
+    },
+    "topScopes": {
+      "heading": "Top-Scopes (nach Turn-Anzahl)",
+      "empty": "Noch keine Scopes erfasst.",
+      "colScope": "Scope",
+      "colTurns": "Turns",
+      "colQuota": "Quote",
+      "colChars": "Zeichen",
+      "colCharQuota": "Zeichen-Quote"
+    },
+    "lastRuns": {
+      "heading": "Letzte Sweep-Läufe",
+      "decay": "Decay",
+      "gc": "GC",
+      "accessFlush": "Access-Flush",
+      "neverRun": "in diesem Prozess noch nie gelaufen",
+      "updated": "Aktualisiert",
+      "hotToWarm": "HOT → WARM",
+      "warmToCold": "WARM → COLD",
+      "doneTasksDeleted": "Erledigte Tasks gelöscht",
+      "durationMs": "Dauer (ms)",
+      "scopesAffected": "Betroffene Scopes",
+      "evictedByCount": "Nach Anzahl entfernt",
+      "evictedByChars": "Nach Zeichen entfernt",
+      "flushed": "Geschrieben",
+      "promotedColdToWarm": "COLD → WARM hochgestuft"
+    },
+    "title": "Knowledge-Graph-Lifecycle",
+    "intro": "Palaia Phase 4 — Tier-Rotation, Decay, GC. Die Sweeps laufen nach Cron-Zeitplan; die Buttons unten stoßen sie sofort an.",
+    "refresh": "Aktualisieren"
   },
   "adminKgPriorities": {
     "intro": "Per-Agent Block/Boost-Liste für den Token-Budget-Assembler. Block droppt einen Turn aus dem Recall-Pool; Boost multipliziert den Score mit `weight` (Default 1.3). `manuallyAuthored=true` bringt zusätzlich einen unabhängigen ×1.3 Boost — beide kombinieren.",
@@ -4436,6 +4486,12 @@
       "auditLoading": "lädt Audit-Trail…",
       "auditEmpty": "Keine Audit-Einträge.",
       "reasonQuoted": "„{reason}“"
+    },
+    "listView": {
+      "runTrace": "Run-Trace",
+      "noEntities": "Keine Entities in diesem Turn",
+      "loadingRun": "lade Run…",
+      "noRunTrace": "Kein Run-Trace erfasst"
     }
   },
   "memory": {
@@ -4518,6 +4574,7 @@
   },
   "routines": {
     "page": {
+      "metaTitle": "Routinen · omadia",
       "kicker": "Routinen",
       "title": "Cronjobs & Routinen.",
       "intro": "User-eigene wiederkehrende Agent-Aufrufe. Anlegen passiert im Chat (manage_routine Tool); hier siehst du alles auf einen Blick und kannst pausieren oder löschen.",
@@ -4540,7 +4597,20 @@
       "historyErrorTitle": "Run-Historie nicht erreichbar",
       "historyEmpty": "Noch keine Run-Historie für diese Routine — sobald sie zum ersten Mal feuert, erscheint hier eine Zeile.",
       "columnDuration": "Dauer",
-      "columnError": "Fehler"
+      "columnError": "Fehler",
+      "promptLabel": "Prompt",
+      "fieldRoutineId": "Routine-ID",
+      "fieldUserId": "User-ID",
+      "fieldTenant": "Mandant",
+      "fieldChannel": "Channel",
+      "fieldCron": "Cron",
+      "fieldTimeout": "Timeout",
+      "fieldStatus": "Status",
+      "columnStarted": "Gestartet",
+      "columnTrigger": "Auslöser",
+      "columnStatus": "Status",
+      "columnIterTools": "Iter. · Tools",
+      "columnDetail": "Detail"
     },
     "trigger": {
       "cron": "Cron",
@@ -4586,6 +4656,7 @@
       "showLess": "weniger"
     },
     "runDetail": {
+      "metaTitle": "Routine-Lauf · omadia",
       "errorUnreachableFallback": "Run-Detail nicht erreichbar.",
       "breadcrumbRoutines": "Routinen",
       "loadErrorTitle": "Run nicht erreichbar",
@@ -4599,6 +4670,7 @@
   },
   "system": {
     "page": {
+      "metaTitle": "System · omadia",
       "title": "Plattform-Zustand.",
       "intro": "Laufzeit, Persistenz, Backup. Nur Metadaten — keine Secrets.",
       "errorUnknownLoad": "Unbekannter Fehler beim Laden des Vault-Status.",
@@ -4632,6 +4704,7 @@
     }
   },
   "help": {
+    "metaTitle": "Hilfe · omadia",
     "kicker": "Hilfe",
     "title": "Hilfe & Support",
     "intro": "Antworten auf die Zustände, in denen man am ehesten hängenbleibt — und wohin du dich wenden kannst, wenn sie nicht reichen.",

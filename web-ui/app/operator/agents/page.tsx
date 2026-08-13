@@ -20,9 +20,10 @@ import { ChannelsDashboard } from '../channels/_components/ChannelsDashboard';
  * the channel routing table. The nav links here directly (no sub-dropdown).
  */
 
-export const metadata: Metadata = {
-  title: 'Orchestrators · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('operatorAgents');
+  return { title: t('metaTitle') };
+}
 
 export const dynamic = 'force-dynamic';
 

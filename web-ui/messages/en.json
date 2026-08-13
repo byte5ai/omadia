@@ -697,6 +697,7 @@
     "templateNoMatches": "No templates match your filters."
   },
   "operatorChannels": {
+    "metaTitle": "Channels · omadia",
     "title": "Channels",
     "subtitle": "Route inbound webhooks per channel-key to an Orchestrator. Each channel plugin reports its own keys — you only pick which Orchestrator answers them.",
     "loadError": "Failed to load channels",
@@ -1445,6 +1446,7 @@
     "actionDelete": "Delete session"
   },
   "skills": {
+    "metaTitle": "Skills · omadia",
     "title": "Skills",
     "subtitle": "Your skill library — import, view, edit and export skills used across agents.",
     "loadError": "Could not load skills.",
@@ -1526,6 +1528,7 @@
     }
   },
   "operatorAgents": {
+    "metaTitle": "Orchestrators · omadia",
     "title": "Orchestrators",
     "subtitle": "Multi-orchestrator runtime — create, edit, disable, drain, or kill Orchestrators and watch the registry react in real time via the LISTEN/NOTIFY hot-reload bus.",
     "loadError": "Failed to load orchestrators",
@@ -1607,7 +1610,8 @@
     "orphanDetachAll": "Remove all",
     "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
     "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
-    "orphanKeep": "Keep"
+    "orphanKeep": "Keep",
+    "seededDescription": "Auto-created on first boot. Receives channel traffic that has no explicit binding, until you configure one."
   },
   "builder": {
     "issueReport": {
@@ -2532,6 +2536,7 @@
     },
     "drafts": {
       "list": {
+        "metaTitle": "Plugin-Builder · omadia",
         "eyebrow": "Plugin Builder",
         "headline": "Build new plugins.",
         "lede": "A plugin can package deterministic code (the tools and integrations the platform runs on), the agents that put them to work, or both together. Draft here, iterate on several in parallel, and install with one click. Every draft stays in your personal workspace, visible only to you.",
@@ -2570,6 +2575,7 @@
         }
       },
       "detail": {
+        "metaTitle": "Workspace · Agent-Builder · omadia",
         "error": {
           "label": "Error",
           "loadFailed": "Workspace could not be loaded.",
@@ -2856,6 +2862,7 @@
       "lead": "The Hub is our catalog of ready-made plugins. It bundles integrations (credential containers), agents (domain capabilities) and channels (user channels like Teams and Telegram). Click a tile to see permissions, secrets and dependencies before you install."
     },
     "page": {
+      "metaTitle": "Hub · omadia",
       "filters": {
         "all": "All",
         "integration": "Integrations",
@@ -4253,7 +4260,50 @@
     "unavailableTitle": "Knowledge-graph lifecycle is not available",
     "unavailableBody": "The middleware did not publish the lifecycle service, so there is nothing to show here. The sweeps are Postgres-specific: they exist only while the knowledge-graph plugin is active against a Postgres/Neon database. An in-memory knowledge graph has no lifecycle to run. This page no longer depends on any feature flag — if the plugin is active on Postgres and you still see this, check the plugin status.",
     "signedOutTitle": "Your session has expired",
-    "signedOutBody": "These endpoints require an operator session. Sign in again, then reload this page."
+    "signedOutBody": "These endpoints require an operator session. Sign in again, then reload this page.",
+    "actions": {
+      "decayTitle": "Run decay + rotation",
+      "decayDescription": "Flush access tracker → recompute decay_score → rotate HOT→WARM→COLD → hard-delete done tasks past TTL.",
+      "gcTitle": "Run GC quotas",
+      "gcDescription": "Per-scope eviction by type-weight × decay-score. Enforces hot_max_entries + max_total_chars.",
+      "accessFlushTitle": "Run access flush only",
+      "accessFlushDescription": "Drain the access tracker into access_count + accessed_at without rotating. Debug-only."
+    },
+    "cards": {
+      "tierBreakdown": "Tier breakdown",
+      "entryTypeBreakdown": "Entry-type breakdown",
+      "decayDistribution": "Decay-score distribution",
+      "totalTurns": "Total Turns"
+    },
+    "topScopes": {
+      "heading": "Top scopes (by Turn count)",
+      "empty": "No scopes recorded yet.",
+      "colScope": "Scope",
+      "colTurns": "Turns",
+      "colQuota": "Quota",
+      "colChars": "Chars",
+      "colCharQuota": "Char-Quota"
+    },
+    "lastRuns": {
+      "heading": "Last sweep runs",
+      "decay": "Decay",
+      "gc": "GC",
+      "accessFlush": "Access flush",
+      "neverRun": "never run in this process",
+      "updated": "Updated",
+      "hotToWarm": "HOT → WARM",
+      "warmToCold": "WARM → COLD",
+      "doneTasksDeleted": "Done tasks deleted",
+      "durationMs": "Duration (ms)",
+      "scopesAffected": "Scopes affected",
+      "evictedByCount": "Evicted by count",
+      "evictedByChars": "Evicted by chars",
+      "flushed": "Flushed",
+      "promotedColdToWarm": "Promoted COLD → WARM"
+    },
+    "title": "Knowledge-Graph Lifecycle",
+    "intro": "Palaia Phase 4 — tier rotation, decay, GC. Sweeps run on the cron schedule; the buttons below trigger them on demand.",
+    "refresh": "Refresh"
   },
   "adminKgPriorities": {
     "intro": "Per-agent block/boost list for the token-budget assembler. Block drops a turn from the recall pool; boost multiplies the score by `weight` (default 1.3). `manuallyAuthored=true` additionally applies an independent ×1.3 boost — both combine.",
@@ -4436,6 +4486,12 @@
       "auditLoading": "Loading audit trail…",
       "auditEmpty": "No audit entries.",
       "reasonQuoted": "“{reason}”"
+    },
+    "listView": {
+      "runTrace": "Run trace",
+      "noEntities": "No entities in this turn",
+      "loadingRun": "loading run…",
+      "noRunTrace": "No run trace recorded"
     }
   },
   "memory": {
@@ -4518,6 +4574,7 @@
   },
   "routines": {
     "page": {
+      "metaTitle": "Routines · omadia",
       "kicker": "Routines",
       "title": "Cron jobs & routines.",
       "intro": "User-owned recurring agent invocations. They are created in the chat (manage_routine tool); here you can see everything at a glance and pause or delete.",
@@ -4540,7 +4597,20 @@
       "historyErrorTitle": "Run history unreachable",
       "historyEmpty": "No run history for this routine yet — as soon as it fires for the first time, a row will appear here.",
       "columnDuration": "Duration",
-      "columnError": "Error"
+      "columnError": "Error",
+      "promptLabel": "Prompt",
+      "fieldRoutineId": "Routine ID",
+      "fieldUserId": "User ID",
+      "fieldTenant": "Tenant",
+      "fieldChannel": "Channel",
+      "fieldCron": "Cron",
+      "fieldTimeout": "Timeout",
+      "fieldStatus": "Status",
+      "columnStarted": "Started",
+      "columnTrigger": "Trigger",
+      "columnStatus": "Status",
+      "columnIterTools": "Iter · Tools",
+      "columnDetail": "Detail"
     },
     "trigger": {
       "cron": "Cron",
@@ -4586,6 +4656,7 @@
       "showLess": "less"
     },
     "runDetail": {
+      "metaTitle": "Routine Run · omadia",
       "errorUnreachableFallback": "Run detail unreachable.",
       "breadcrumbRoutines": "Routines",
       "loadErrorTitle": "Run unreachable",
@@ -4599,6 +4670,7 @@
   },
   "system": {
     "page": {
+      "metaTitle": "System · omadia",
       "title": "Platform health.",
       "intro": "Runtime, persistence, backup. Metadata only — no secrets.",
       "errorUnknownLoad": "Unknown error while loading the vault status.",
@@ -4632,6 +4704,7 @@
     }
   },
   "help": {
+    "metaTitle": "Help · omadia",
     "kicker": "Help",
     "title": "Help & support",
     "intro": "Answers to the states you are most likely to get stuck in, plus where to reach us when they do not help.",

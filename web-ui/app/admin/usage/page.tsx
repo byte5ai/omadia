@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 /**
  * Cost dashboard — visualises the LLM token-usage ledger written by
@@ -50,17 +50,81 @@ const RANGES: ReadonlyArray<{ key: RangeKey; labelKey: string; hours: number | n
   { key: 'all', labelKey: 'all', hours: null, bucket: 'day' },
 ];
 
-const usd = (n: number): string =>
-  n >= 1
-    ? `$${n.toFixed(2)}`
-    : n > 0
-      ? `$${n.toFixed(4)}`
-      : '$0.00';
-const compact = (n: number): string => new Intl.NumberFormat('de-DE', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
-const pct = (n: number): string => `${(n * 100).toFixed(1)}%`;
+/**
+ * #679 / I6 — the ledger records cost in US dollars (`costUsd`, written by
+ * `@omadia/usage-telemetry` from provider pricing).
+ *
+ * The currency is therefore NOT localised, and that is the point: converting
+ * to euros for a German operator would require an exchange rate this app does
+ * not have and cannot honestly invent — the resulting number would be a
+ * fabrication presented as a ledger figure. What IS localised is the
+ * PRESENTATION: symbol placement, decimal separator and grouping all follow
+ * the active locale, so a German operator reads `1.234,56 $` instead of
+ * `$1,234.56`. The amount stays the amount.
+ */
+const LEDGER_CURRENCY = 'USD';
+
+/**
+ * Per-call costs are routinely sub-cent, so two decimals would render most
+ * rows as `$0.00` and lose the entire signal. Four decimals below one unit,
+ * two at or above it — the same split the previous hardcoded formatter made,
+ * kept deliberately rather than inherited by accident.
+ */
+function currencyDigits(n: number): number {
+  return n > 0 && n < 1 ? 4 : 2;
+}
+
+interface UsageFormatters {
+  /** Ledger cost, presented in the active locale. */
+  usd: (n: number) => string;
+  /** Token / call counts in compact notation (`1,2 Mio.` / `1.2M`). */
+  compact: (n: number) => string;
+  /** A 0–1 ratio as a percentage. */
+  pct: (n: number) => string;
+  /** A bucket timestamp, in the active locale. */
+  dateTime: (d: Date) => string;
+}
+
+/**
+ * The three number formats this dashboard renders, all locale-aware.
+ *
+ * A hook rather than module-level helpers because the page and
+ * `BreakdownTable` are separate components that need the same three formats —
+ * and `useFormatter` can only be called from inside one. Duplicating the
+ * options in both is how a currency ends up with four decimals in one table
+ * and two in the next.
+ */
+function useUsageFormatters(): UsageFormatters {
+  // next-intl's formatter, not a hand-built `Intl.NumberFormat`: `compact`
+  // previously pinned `de-DE`, so an English operator read German grouping —
+  // the mirror image of the bug #679 filed for the currency. Both now follow
+  // the active locale (`web-ui/CLAUDE.md` § no hardcoded locale formatting).
+  const format = useFormatter();
+  return useMemo(
+    () => ({
+      usd: (n: number): string =>
+        format.number(n, {
+          style: 'currency',
+          currency: LEDGER_CURRENCY,
+          minimumFractionDigits: currencyDigits(n),
+          maximumFractionDigits: currencyDigits(n),
+        }),
+      compact: (n: number): string =>
+        format.number(n, { notation: 'compact', maximumFractionDigits: 1 }),
+      // `style: 'percent'` scales by 100 itself, so the ratio goes in
+      // unmultiplied.
+      pct: (n: number): string =>
+        format.number(n, { style: 'percent', maximumFractionDigits: 1 }),
+      dateTime: (d: Date): string =>
+        format.dateTime(d, { dateStyle: 'medium', timeStyle: 'short' }),
+    }),
+    [format],
+  );
+}
 
 export default function UsageDashboardPage(): React.ReactElement {
   const t = useTranslations('adminUsage');
+  const { usd, compact, pct, dateTime } = useUsageFormatters();
   const [range, setRange] = useState<RangeKey>('24h');
   const [data, setData] = useState<UsageDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -180,7 +244,9 @@ export default function UsageDashboardPage(): React.ReactElement {
                     key={b.bucket}
                     className="group relative flex-1"
                     title={t('barTitle', {
-                      date: new Date(b.bucket).toLocaleString('de-DE'),
+                      // Was pinned to `de-DE`, so an English operator read a
+                      // German timestamp inside an English tooltip.
+                      date: dateTime(new Date(b.bucket)),
                       cost: usd(b.costUsd),
                       calls: b.calls,
                     })}
@@ -235,6 +301,7 @@ function Empty(): React.ReactElement {
 
 function BreakdownTable({ rows, max }: { rows: UsageByKey[]; max: number }): React.ReactElement {
   const t = useTranslations('adminUsage');
+  const { usd, compact } = useUsageFormatters();
   if (rows.length === 0) return <Empty />;
   return (
     <ul className="space-y-3">

@@ -22,9 +22,10 @@ import { APP_VERSION } from '../_lib/appVersion';
  * its place instead of being a generic link farm.
  */
 
-export const metadata: Metadata = {
-  title: 'Help · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('help');
+  return { title: t('metaTitle') };
+}
 
 const DOCS_URL = 'https://github.com/byte5ai/omadia/tree/main/docs';
 const REPO_URL = 'https://github.com/byte5ai/omadia';
