@@ -54,6 +54,13 @@ export interface KnowledgeGraph {
    * EXECUTED / INVOKED_* / PRODUCED edges. Safe to call independently of
    * {@link ingestTurn}; missing Turn/Entity nodes are tolerated (edges
    * pointing at non-existent external ids are skipped rather than aborting).
+   *
+   * #684 — BEST-EFFORT. This call MAY throw and its caller
+   * (`SessionLogger`) deliberately does not fail the user's turn when it does:
+   * implementations refuse to write a Run whose Turn or User-Cluster node does
+   * not exist, and no channel except the browser-login flow resolves a
+   * User-Cluster per turn. Treat a present trace as evidence and an absent one
+   * as no evidence either way — see {@link RunTrace} for the full contract.
    */
   ingestRun(trace: RunTrace): Promise<RunIngestResult>;
   /**
@@ -1597,6 +1604,35 @@ export interface RunAgentInvocation {
   toolCalls: RunToolCall[];
 }
 
+/**
+ * The agentic trace of one turn.
+ *
+ * #684 (epic #642) — **this is best-effort telemetry, not a provenance
+ * record.** The distinction is load-bearing and was decided rather than
+ * inherited: a missing trace means "not recorded", never "no such turn".
+ *
+ * A turn can complete successfully and leave no trace at all, for four reasons
+ * that are all deliberate:
+ *
+ *  - no knowledge-graph plugin is configured (the sink is optional — the
+ *    Markdown transcript is the guaranteed surface, not this);
+ *  - the transcript write failed, so graph ingest was skipped on purpose to
+ *    keep both surfaces consistent;
+ *  - `ingestTurn` failed, so no Run is written that would dangle off a missing
+ *    Turn;
+ *  - `ingestRun` refused because no User-Cluster node exists for the user —
+ *    which is the ordinary state for every channel except the browser-login
+ *    flow, since nothing else calls `resolveOrCreateChannelIdentity` per turn.
+ *
+ * The alternative — guaranteeing the ingest — was rejected because it would
+ * require auto-creating User-Cluster nodes, which both implementations refuse
+ * precisely so that channel-resolution bugs cannot hide behind orphan clusters.
+ *
+ * Consequence for anyone building on this: do not phrase a compliance or audit
+ * claim as "the trace shows". Drops are counted and warned about at the call
+ * site (`runTraceObservability.ts`), so the size of the gap is at least
+ * knowable.
+ */
 export interface RunTrace {
   /** Must match the turn-id returned by a matching ingestTurn call. */
   turnId: string;
