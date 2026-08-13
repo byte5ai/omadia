@@ -25,6 +25,7 @@ import {
   mcpToolToNativeSpec,
   turnContext,
   type DomainTool,
+  type ResumableTaskSource,
   type TaskStore,
   type DomainToolSpec,
   type McpConfigField,
@@ -89,6 +90,13 @@ export interface HydrateDeps {
   readonly longRunningSubAgentTools?: readonly string[];
   /** Shared store backing the deferred sub-agent tasks. Omit ⇒ feature off. */
   readonly taskStore?: TaskStore;
+  /**
+   * Issue #560 — a caller-owned sink the deferred tool handles are appended to,
+   * so the boot resume driver can re-drive their tasks. A handle is pushed once,
+   * when its triple is newly registered (a rebuild that re-creates an
+   * already-registered tool does not push a duplicate). Omit ⇒ no resume driving.
+   */
+  readonly deferredTaskToolHandles?: ResumableTaskSource[];
   readonly log?: (msg: string) => void;
 }
 
@@ -443,6 +451,7 @@ export function registerDbSubAgentTools(
           );
         },
       });
+      let registeredNew = 0;
       for (const r of handle.registrations) {
         if (deps.nativeToolRegistry.get(r.name)) {
           deps.log?.(
@@ -455,6 +464,14 @@ export function registerDbSubAgentTools(
           spec: r.spec,
           promptDoc: r.promptDoc,
         });
+        registeredNew += 1;
+      }
+      // Issue #560 — retain the handle for the resume driver ONLY when this call
+      // actually registered the triple. A later rebuild re-creates the handle but
+      // skips registration (names already present); pushing it then would leave
+      // the driver re-driving through a stale handle whose registrations are dead.
+      if (registeredNew > 0 && deps.deferredTaskToolHandles) {
+        deps.deferredTaskToolHandles.push(handle);
       }
     }
   }
