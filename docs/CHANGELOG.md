@@ -18,6 +18,28 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — product documentation for the AI marking (#649, epic #642)
+
+- **New `docs/ai-act-transparency.md`** — what omadia actually marks and, just as
+  explicitly, what it does not. Every statement carries the code site it comes
+  from; the binding rule for the document is that a claim without one does not
+  go in. A promise phrased too widely on a public page is worse than a named gap.
+- **DE and EN copy blocks** for the product section of `omadia.ai/ai-transparency`,
+  written along what the code actually does. Finished here, **not live**: the
+  section goes through internal approval before publication.
+- **Corrected `docs/architecture.md`**, which claimed the full trace "is stored as
+  the run's audit receipt". That collides with the #684 decision, so it now states
+  best-effort telemetry and names the three ways a turn can leave no trace.
+- **`docs/middleware-agent-handoff.md`**: the outgoing-contract extension in §11
+  (stream protocol), the five `ai_disclosure_*` setup fields in §10, and the open
+  provenance items in §13. The issue pointed at §3/§8 for the contract half; §8 is
+  "Skills" on current main, and the contract actually belongs next to the stream
+  protocol, so it went there.
+- **Limits named rather than omitted**: the coarser `.xlsx` coverage, connectors
+  being plugins whose rendering the core cannot force, two provenance vocabularies
+  in one epic, per-channel overrides that only fire on teams/slack/telegram, and
+  C2PA — which appears nowhere in the tree and is therefore an open point, not a
+  capability.
 ### Fixed — the structural i18n categories left by #601 (#679)
 
 - **I4 — page titles now follow the active locale.** All **10** remaining
