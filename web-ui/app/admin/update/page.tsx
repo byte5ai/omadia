@@ -35,7 +35,14 @@ import {
  *     answer 409.
  */
 
-const POLL_INTERVAL_MS = 4_000;
+/**
+ * Idle polling is slow on purpose: every `/status` call also settles open audit
+ * rows (two UPDATEs) and pings the sidecar, and a version number does not
+ * change while nobody is updating. The fast cadence is only for the window
+ * where the middleware is being replaced and the page has to notice it return.
+ */
+const IDLE_POLL_MS = 30_000;
+const ACTIVE_POLL_MS = 4_000;
 
 /** Error codes the backend returns for a refused trigger. Anything else falls
  *  back to the generic message with the technical detail behind it. */
@@ -90,11 +97,18 @@ export default function UpdatePage(): React.ReactElement {
     }
   }, []);
 
+  const active = awaitingRestart || status?.executor.state === 'updating';
+
   useEffect(() => {
     void load();
-    const timer = setInterval(() => { void load(); }, POLL_INTERVAL_MS);
+    const timer = setInterval(
+      () => { void load(); },
+      active ? ACTIVE_POLL_MS : IDLE_POLL_MS,
+    );
     return () => { clearInterval(timer); };
-  }, [load]);
+    // `active` is a dependency on purpose: the timer is rebuilt when the page
+    // switches cadence, which is the only time the interval should change.
+  }, [load, active]);
 
   const target = status?.latest?.tag ?? '';
   const executorReady =
