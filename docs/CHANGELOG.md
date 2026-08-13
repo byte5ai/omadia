@@ -52,6 +52,36 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   the scan under-counts multi-line JSX text on top. The remaining tail
   (~217 candidates / 63 files, plus 18 files still calling `toLocaleString`) is
   filed as its own issue rather than silently declared done.
+### Added — the AI-marking posture is readable per channel (#648, epic #642)
+
+- **`GET /health` gains a `disclosure` block**: the resolved AI-Act Art. 50
+  marking level per channel, whether it came from the shipping default or the
+  operator, and whether it deviates from the delivered state. Builds on the
+  post-#665 shape (`{ status, kg }` → `{ status, kg, disclosure }`) rather than
+  the older registry-projector form.
+- **Boot warning on deviation only.** A delivered-state instance logs nothing —
+  a line that fires on every default install is one nobody reads.
+- **Operator channels dashboard** shows an informing hint when the instance
+  deviates, DE/EN through the message catalogue. In the delivered state the
+  surface is unchanged and completely quiet.
+- **Why**: the operator may grade the marking down per channel or switch it off
+  — omadia is self-hosted, that is their decision. The problem was that the
+  decision was visible nowhere, so a copied config or a leftover from a test
+  setup was never noticed. The hint describes the state and blocks nothing.
+- **One derivation, not two.** `resolveDisclosureLevelForChannel` is now the
+  single place the override → global → shipped precedence lives;
+  `Orchestrator.resolveTurnDisclosure` calls it per turn and the posture view
+  calls it per channel. A second copy of those rules would let the reported
+  posture disagree with what turns actually do, silently — the exact failure
+  this feature exists to prevent.
+- **An override that cannot fire says so.** Only `teams` / `slack` / `telegram`
+  currently carry a `channelKind` into a turn, so a configured `web=off` never
+  takes effect. Both `/health` and the dashboard report that instead of letting
+  the operator conclude their override is in force.
+- **Nothing that permits conclusions about content or users leaves the process**:
+  levels, sources and booleans only. The assistant name and the free-form
+  operator note are reported as *configured* / *not configured*, never by value
+  — asserted against the serialised payload, not left to review.
 ### Changed — the run trace is best-effort telemetry, and its gaps are now countable (#684, epic #642)
 
 - **Decision recorded, not behaviour changed.** #650 added `model` / `provider`

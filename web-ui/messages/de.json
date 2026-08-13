@@ -710,7 +710,18 @@
     "staleBadge": "veraltet",
     "routesTo": "→ Orchestrator:",
     "routesToFallback": "(Standard · {fallback})",
-    "clearStale": "Binding entfernen"
+    "clearStale": "Binding entfernen",
+    "disclosure": {
+      "heading": "KI-Kennzeichnung weicht vom Auslieferungszustand ab",
+      "body": "Auf diesen Channels werden Antworten anders gekennzeichnet als im Auslieferungszustand: {channels}.",
+      "inert": "Konfiguriert, aber noch nicht wirksam: {channels}. Turns auf diesen Channels melden ihren Channel-Typ nicht, daher gilt dort die globale Einstellung.",
+      "note": "Das ist deine Entscheidung als Betreiber — es wird nichts blockiert. Angezeigt, damit eine Einstellung aus einem Test-Setup nicht unbemerkt bleibt.",
+      "level": {
+        "standard": "volle Kennzeichnung",
+        "concise": "kurze Kennzeichnung",
+        "off": "keine Kennzeichnung"
+      }
+    }
   },
   "layout": {
     "logoAriaLabel": "omadia · Startseite",

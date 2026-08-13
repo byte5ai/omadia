@@ -4,6 +4,7 @@ import {
   mcpDomainForServer,
   resolveMcpCallTimeouts,
 } from './mcp/mcpClient.js';
+import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
 import {
   deriveAgentsConsulted,
   toSemanticAnswer,
@@ -2777,10 +2778,15 @@ export class Orchestrator {
   private resolveTurnDisclosure(input: ChatTurnInput): AiDisclosure | undefined {
     const setup = this.aiDisclosure;
     const channelKind = input.channelIdentity?.channelKind;
-    const override =
-      channelKind !== undefined ? setup?.overrides?.[channelKind] : undefined;
-    const level: AiDisclosureLevel =
-      override ?? setup?.level ?? DEFAULT_AI_DISCLOSURE_POLICY.level;
+    // #648 — the precedence lives in ONE place now. `/health`, the boot log and
+    // the operator dashboard project the same function over every channel; a
+    // second copy of these rules here would let the reported posture disagree
+    // with what turns actually do, silently, which is the failure #648 exists
+    // to prevent.
+    const level: AiDisclosureLevel = resolveDisclosureLevelForChannel(
+      setup,
+      channelKind,
+    );
     // `source` gates the `'off'` opt-out: only an operator-sourced policy may
     // silence a turn. A resolved `setup` object exists ONLY when the operator
     // configured at least one disclosure field (the plugin passes `undefined`
