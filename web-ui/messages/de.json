@@ -496,7 +496,7 @@
     "agentSlugLabel": "Agent-Slug",
     "promptLabel": "Prompt",
     "actionIdLabel": "Action-ID",
-    "inputLabel": "Input (JSON)",
+    "inputLabel": "Eingabe (JSON)",
     "principalLabel": "Principal",
     "channelLabel": "Channel",
     "messageLabel": "Nachricht",
@@ -1166,15 +1166,15 @@
       "taskId": "Task {id}",
       "phase": "Phase {phase}"
     },
-    "inputLabel": "input",
-    "outputLabel": "output",
+    "inputLabel": "Eingabe",
+    "outputLabel": "Ausgabe",
     "persona": {
       "title": "Persona",
       "matched": "Antwortet als {name}",
       "none": "Standard-Identität",
       "fallback": "Persona-Klassifikator nicht verfügbar — Standard-Identität"
     },
-    "subAgentTrace": "sub-agent trace",
+    "subAgentTrace": "Sub-Agent-Trace",
     "mcpAuth": {
       "kicker": "Autorisierung erforderlich",
       "body": "{server} muss verbunden werden, bevor es genutzt werden kann.",
@@ -1190,9 +1190,9 @@
       "warning": "Was du hier eingibst, geht an den externen Server „{server}“. Gib nur Daten ein, die dieser Server bekommen darf.",
       "submit": "An Server senden"
     },
-    "iterationLabel": "── iteration {n}",
+    "iterationLabel": "── Iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
-    "attachmentCachedSuffix": " · cached",
+    "attachmentCachedSuffix": " · zwischengespeichert",
     "clarifyKicker": "🤔 Rückfrage",
     "followUpsLabel": "Nächste Varianten",
     "streamLive": "Stream live · {seconds}s",
@@ -1533,7 +1533,7 @@
     "catalogEmpty": "Keine installierten Plugins.",
     "multiInstanceFalseBadge": "multi_instance: false — darf nur auf EINEM Orchestrator aktiv sein",
     "multiInstanceFalseShort": "Single-Instance",
-    "privacyStrictBadge": "strict",
+    "privacyStrictBadge": "strikt",
     "memoryReadTooltip": "Memory-Read-Scope dieses Plugins",
     "memoryWriteTooltip": "Memory-Write-Scope dieses Plugins",
     "networkLabel": "Netzwerk:",
@@ -1552,7 +1552,7 @@
     "routingTesterMatched": "→ Orchestrator „{slug}\" (via {via})",
     "routingTesterNoMatch": "Kein Match — und kein Standard-Orchestrator konfiguriert.",
     "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · {plugins} Plugins angehängt · {bindings} Bindings",
-    "sessionsLabel": "Sessions:",
+    "sessionsLabel": "Sitzungen:",
     "pluginsAvailable": "Verfügbar",
     "pluginsAvailableToAttach": "Zum Anhängen verfügbar",
     "pluginsAttachedHere": "An diesen Orchestrator angehängt",
@@ -1701,8 +1701,8 @@
       "autoFixDismissAria": "Hinweis ausblenden",
       "buildStatusLabel": "Build-Status",
       "buildBusLive": "live",
-      "buildBusReconnecting": "reconnecting",
-      "buildBusIdle": "idle",
+      "buildBusReconnecting": "verbindet neu",
+      "buildBusIdle": "inaktiv",
       "buildSse": "SSE {status}",
       "buildErrorsHeading": "{count} TypeScript-Fehler",
       "buildErrorsHeadingWithBuild": "{count} TypeScript-Fehler · build #{buildN}",
@@ -1741,7 +1741,7 @@
         "removeTool": "Tool {id} entfernen",
         "formPlaceholder": "Tool-Form folgt in B.11-2.",
         "stuckTitle": "Builder-Agent ist auf diesem Tool/Slot stecken geblieben — manuell prüfen",
-        "stuckBadge": "stuck"
+        "stuckBadge": "hängt"
       },
       "bulkImport": {
         "dialogLabel": "Tools-Bulk-Import",
@@ -1792,7 +1792,7 @@
         "propertyKeyTaken": "Property-Key bereits vergeben",
         "description": "Beschreibung",
         "descriptionPlaceholder": "Vom LLM gelesener Hint",
-        "entityTitle": "Entity {name} (v{version})",
+        "entityTitle": "Entität {name} (v{version})",
         "booleanNoConstraints": "Boolean — keine zusätzlichen Constraints.",
         "objectNestedHint": "Object — verschachtelte Properties unten editieren.",
         "allowedValues": "Erlaubte Werte",
@@ -1903,9 +1903,9 @@
         "smoke": {
           "running": "smoke #{buildN} läuft …",
           "okNoTools": "smoke #{buildN} ✓ (keine Tools deklariert)",
-          "okTools": "smoke #{buildN} ✓ ({count} {count, plural, one {tool} other {tools}} ok)",
-          "activateFailed": "smoke #{buildN} ✗ — preview activate failed{detail}",
-          "toolsFailed": "smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {tool} other {tools}} failed",
+          "okTools": "Smoke #{buildN} ✓ ({count} {count, plural, one {Tool} other {Tools}} ok)",
+          "activateFailed": "Smoke #{buildN} ✗ — Preview-Aktivierung fehlgeschlagen{detail}",
+          "toolsFailed": "Smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {Tool} other {Tools}} fehlgeschlagen",
           "fixWithBuilder": "Fix mit Builder"
         }
       },
@@ -2051,11 +2051,11 @@
         "templateBadgeAdjusted": "Vorlage: {template} — angepasst",
         "templateBadgeNone": "Keine Vorlage",
         "applyTemplate": "Vorlage anwenden",
-        "templateLabel": "Template (optional)",
+        "templateLabel": "Vorlage (optional)",
         "templatePlaceholder": "z.B. software-engineer (Templates kommen in Phase 4)",
-        "coreHeading": "Core (8)",
-        "extendedHeading": "Extended (4)",
-        "customNotesLabel": "Custom Notes (optional)",
+        "coreHeading": "Kern (8)",
+        "extendedHeading": "Erweitert (4)",
+        "customNotesLabel": "Eigene Notizen (optional)",
         "customNotesPlaceholder": "z.B. „Antworte auf Deutsch wenn der User auf Deutsch schreibt.\"",
         "saved": "Gespeichert.",
         "unsavedChanges": "Änderungen nicht gespeichert.",
@@ -2075,15 +2075,15 @@
         "applying": "Anwenden…",
         "templates": {
           "customerService": {
-            "label": "Customer Service Agent",
+            "label": "Kundenservice-Agent",
             "description": "Professioneller Support mit Empathie und klarer Eskalation."
           },
           "salesDev": {
-            "label": "Sales Development Rep",
+            "label": "Vertriebsmitarbeiter (SDR)",
             "description": "Proaktiver Vertrieb mit persönlicher Note und klarem Follow-up."
           },
           "contentMarketing": {
-            "label": "Content & Marketing Agent",
+            "label": "Content- & Marketing-Agent",
             "description": "Kreative Brand Voice mit strategischem Denken."
           },
           "researchAnalyst": {
@@ -2095,7 +2095,7 @@
             "description": "Teamorientierter Entwickler mit klarem Kommunikationsstil."
           },
           "teamLead": {
-            "label": "Team Lead / Coordinator",
+            "label": "Teamleitung / Koordination",
             "description": "Orchestrator, der Delegation, Eskalation und Teamstruktur steuert."
           }
         }
@@ -2134,7 +2134,7 @@
         "noSelection": "— Keine Auswahl —",
         "modalLabel": "Kultur-Preset anwenden",
         "overwriteNotice": "Diese Achsen würden überschrieben:",
-        "unset": "unset",
+        "unset": "nicht gesetzt",
         "noChange": "Keine Änderung — alle Werte stimmen bereits überein.",
         "apply": "Anwenden",
         "applying": "Anwenden…",
@@ -2254,7 +2254,7 @@
           "toggleLabel": "Admin UI bereitstellen",
           "toggleHelp": "Plugin mountet eine HTML-Page unter <code>admin_ui_path</code>. Web-UI embed sie als <code>&lt;iframe&gt;</code> auf der Store-Detail-Seite nach Install.",
           "pathLabel": "Pfad (absolut, endet auf <code>index.html</code>)",
-          "bodyLabel": "Admin UI Body (HTML)",
+          "bodyLabel": "Admin-UI-Body (HTML)",
           "bodyHint": "Inhalt zwischen den Marker-Regions. inline style + script erlaubt.",
           "operatorContract": "<strong>Operator-Contract:</strong> Frontend-Fetches müssen <strong>relative URLs</strong> nutzen (<code>fetch('api/devices')</code>, nicht <code>fetch('/api/...')</code>) — die UI läuft hinter einem <code>/bot-api/*</code>-Rewrite. JSON-Responses brauchen das <code>{ ok: boolean, ... }</code>-Schema, sonst flagged der RuntimeSmoke sie als kaputt.",
           "disabledHint": "Aus. Plugins ohne <code>admin_ui_path</code> haben keine Admin-Tile in der Store-Detail-Seite — das ist der Default.",
@@ -2282,7 +2282,7 @@
           "tabLabelHelp": "Max 24 Zeichen. Wird in Teams-Tab + Hub-Card angezeigt.",
           "pageTitleLabel": "Page-Title (title)",
           "pageTitleHelp": "Voller Page-Title im HTML-Doc. Max 80 Zeichen.",
-          "refreshLabel": "Refresh (s)",
+          "refreshLabel": "Aktualisierung (s)",
           "refreshHelp": "Meta-Refresh-Intervall. 0 = kein Auto-Reload."
         },
         "renderMode": {
@@ -2303,7 +2303,7 @@
           "help": "Das gewählte Tool wird bei jedem Page-Request mit leerem Input aufgerufen; Output fließt als Props in die Render-Funktion."
         },
         "interactive": {
-          "label": "Interactive (Hydration)",
+          "label": "Interaktiv (Hydration)",
           "help": "SSR + Client-Side-Hydration via esm.sh-Importmap. Setze auf true wenn dein Component <code>useState</code>, <code>onClick</code> o.ä. nutzt. Root-Element MUSS <code>data-omadia-page=\"{routeId}\"</code> tragen."
         },
         "componentSlot": {
@@ -2316,8 +2316,8 @@
         },
         "itemTemplate": {
           "heading": "Item-Template (Path-Interpolation: <code>item.feldname</code>)",
-          "titleLabel": "Title (required)",
-          "subtitleLabel": "Subtitle (optional)",
+          "titleLabel": "Titel (erforderlich)",
+          "subtitleLabel": "Untertitel (optional)",
           "metaLabel": "Meta (optional)",
           "urlLabel": "URL (optional — macht das Item klickbar)",
           "suffixHelp": "Whitelisted Suffixe: <code>.join(\", \")</code> für Arrays, <code>.toLocaleString()</code> für Zahlen. Sonstige Function-Calls werden ignoriert."
@@ -2343,7 +2343,7 @@
         "refreshTitle": "Preview neu laden",
         "openInNewTabAriaLabel": "Preview in neuem Tab öffnen",
         "openInNewTabTitle": "In neuem Tab öffnen",
-        "iframeTitle": "Preview: {label}",
+        "iframeTitle": "Vorschau: {label}",
         "unavailableTitle": "Preview nicht verfügbar",
         "hintLine": "<strong>Hinweis:</strong> {hint}",
         "hints": {
@@ -2369,14 +2369,14 @@
       "relMinutesAgo": "vor {count} min",
       "relHoursAgo": "vor {count} h",
       "relDaysAgo": "vor {count, plural, one {# Tag} other {# Tagen}}",
-      "detailTemplate": "Template: {template}",
+      "detailTemplate": "Vorlage: {template}",
       "detailAxes": "{count, plural, one {# Achse} other {# Achsen}}",
       "detailCustomNotes": "Custom notes",
       "detailSycophancy": "Sycophancy: {value}",
       "detailPresets": "{count, plural, one {# Preset} other {# Presets}}",
       "detailCustom": "{count} Custom",
       "detailOperations": "{count, plural, one {# Operation} other {# Operationen}}",
-      "detailSlotBytes": "{slot} — {bytes} bytes",
+      "detailSlotBytes": "{slot} — {bytes} Bytes",
       "createSnapshot": "Snapshot erstellen",
       "refresh": "Aktualisieren",
       "loadFailed": "Konnte Snapshots nicht laden: {message}",
@@ -2452,7 +2452,7 @@
       "sectionSetupFields": "Setup-Felder",
       "sectionSetupFieldsSubtitle": "vom Operator beim Aktivieren auszufüllen",
       "noSetupNeeded": "Kein Setup nötig.",
-      "required": "required",
+      "required": "erforderlich",
       "failureGenericHeading": "Bereitstellung fehlgeschlagen",
       "headingConflict": "Plugin-ID-Konflikt",
       "headingBuildFailed": "Build fehlgeschlagen (tsc)",
@@ -3616,14 +3616,14 @@
       "notFound": "Diesen Job gibt es nicht.",
       "railLabel": "Pipeline-Phasen",
       "phases": {
-        "analyze": "analyze",
-        "bootstrap": "bootstrap",
-        "plan": "plan",
-        "clarify": "clarify",
-        "gate": "gate",
-        "implement": "implement",
-        "review": "review",
-        "pr": "pr"
+        "analyze": "Analyse",
+        "bootstrap": "Bootstrap",
+        "plan": "Planung",
+        "clarify": "Klärung",
+        "gate": "Gate",
+        "implement": "Umsetzung",
+        "review": "Review",
+        "pr": "PR"
       },
       "phaseSkipped": "übersprungen — keine Fragen",
       "toolCall": {
@@ -3754,7 +3754,7 @@
     "create": {
       "heading": "Neuen Schlüssel erstellen",
       "fields": {
-        "label": "Label (optional)",
+        "label": "Bezeichnung (optional)",
         "rateLimit": "Rate-Limit (Anfragen/Minute, optional)"
       },
       "rateLimitInvalid": "Rate-Limit muss zwischen {min} und {max} Anfragen/Minute liegen.",
@@ -4064,7 +4064,7 @@
       "intro": "Memories die semantisch fast identisch sind. Tab „Memories“ zeigt MK-Paare (cosine ≥ 0.95), Tab „Excerpts“ zeigt Palaia-Excerpt-Paare (cosine ≥ 0.97). Klick auf einen Eintrag öffnet die Side-by-side-Ansicht mit Resolve-Knopf.",
       "tabs": {
         "memories": "Memories",
-        "excerpts": "Excerpts (Palaia)"
+        "excerpts": "Auszüge (Palaia)"
       },
       "confirmBulkRun": "Bulk-Merge-Detect für bis zu {count} Memories starten? Cosine-only, kostenfrei — aber der Bulk-Scan ist O(n × top-k) cosine-Vergleiche.",
       "confirmExcerptBulkRun": "Bulk Excerpt-Duplicate-Detect für bis zu {count} Excerpts? Cosine-only, kostenfrei.",
@@ -4163,7 +4163,7 @@
       "unchecked": "ungeprüft",
       "alreadyChecked": "schon geprüft",
       "withoutEmbedding": "ohne Embedding",
-      "detectorReady": "ready",
+      "detectorReady": "bereit",
       "detectorNoKey": "kein Key",
       "limitLabel": "Limit",
       "running": "läuft",
@@ -4225,7 +4225,7 @@
     "load": "Laden",
     "newEntryTitle": "Neuer Eintrag",
     "weightIgnoredTitle": "weight ignoriert für block",
-    "weightMultiplierTitle": "score multiplier",
+    "weightMultiplierTitle": "Score-Multiplikator",
     "empty": "Keine Einträge für diesen Agent."
   },
   "adminMemoryBackend": {
