@@ -300,6 +300,16 @@ export interface StoreGetResponse {
   blocking_reasons?: string[];
   /** Advisory-only — never blocks install (issue #453). */
   verdict?: PluginVerdict;
+  /** OM-06 / #671 — an ACTIVE plugin already provides one of this plugin's
+   *  capabilities, so the install would be refused with 409. Structured, not
+   *  folded into `blocking_reasons` (server-authored English the client can
+   *  only print), because the operator's next step is to CONFIGURE the
+   *  provider that already exists — and that link cannot be built by parsing
+   *  prose. Absent on pre-#671 middleware payloads. */
+  blocked_by_active_provider?: {
+    capability: string;
+    owner_id: string;
+  };
 }
 
 // ---------------------------------------------------------------------------

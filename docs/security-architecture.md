@@ -393,7 +393,72 @@ entry meaningful.
 Telegram, Omadia UI) — no second, parallel response path — so
 privacy-guard's prompt masking and receipt behavior apply identically.
 
-## 10. Reviewer checklist
+## 10. Operator surfaces vs. dev endpoints (`/api/dev`, issue #669)
+
+Everything under `/api` is gated by one line in `middleware/src/index.ts`:
+
+```ts
+app.use('/api', requireAuth, createChatRouter({ … }));   // OB-106
+```
+
+It runs for **every** `/api/*` request, whichever router ultimately answers it.
+The only way past it is an entry in `middleware/src/auth/publicPaths.ts`, and
+every entry there is a surface that is unauthenticated until its own handler
+says otherwise.
+
+`/api/dev/*` used to hold such an entry, added whenever
+`DEV_ENDPOINTS_ENABLED=true`. That made a single boolean the difference between
+"operator only" and "anyone who knows the path" for:
+
+- `GET /api/dev/graph/*` — raw knowledge-graph browsing (sessions, turns,
+  neighbours, memories, plans)
+- `/api/dev/memory/*` — the memory-store browser contributed by the memory plugin
+- three `POST` routes that **triggered destructive knowledge-graph maintenance
+  sweeps** (decay/rotation, GC eviction, access flush)
+
+Confirmed empirically against a deployment under our control: uncredentialed
+`GET`s returned `200` with real payloads.
+
+**What holds now:**
+
+1. There is no `/api/dev` entry in `publicPaths`, and `publicPaths()` takes no
+   configuration — there is nothing left to flip. Every `/api/dev/*` request
+   needs an operator session, exactly like `/api/v1/admin/*`.
+2. The **operator** surfaces were never dev scaffolding and no longer live
+   behind the flag. They mount unconditionally under the authenticated admin
+   prefix (`middleware/src/routes/graphRouterMounts.ts`):
+
+   | Surface | Path | Mounted when |
+   |---|---|---|
+   | KG lifecycle admin | `/api/v1/admin/kg-lifecycle` | `graphLifecycle@1` is published |
+   | KG per-agent priorities | `/api/v1/admin/kg-priorities` | `agentPriorities@1` is published |
+   | Plugin domains (read-only) | `/api/admin/domains` | always |
+
+   `DEV_ENDPOINTS_ENABLED` is not an input to `mountKnowledgeGraphAdmin` — its
+   deps type has no field to carry it, so the separation is a type, not a
+   convention.
+3. `DEV_ENDPOINTS_LOOPBACK_ONLY=true` (optional, default off) additionally
+   refuses any `/api/dev` request that did not arrive over a loopback socket.
+   It reads `req.socket.remoteAddress`, never `X-Forwarded-For` — `trust proxy`
+   is on, so a guard on `req.ip` would be defeated by a header. Leave it off in
+   containerised setups, where the Next.js server proxies from a container
+   address.
+
+**Operating guidance.** `DEV_ENDPOINTS_ENABLED` is dev scaffolding: leave it off
+on deployed environments. It is no longer a security boundary on its own — but
+it is still extra attack surface, and on any middleware build **older than this
+change** it is unsafe on any internet-reachable deployment, with no mitigation
+short of turning it off or blocking `/api/dev` upstream.
+
+Tests: `middleware/test/devEndpoints/` (one no-credentials case per route,
+including all three destructive `POST`s, plus the negative control that
+restores the old allowlist entry and requires the surface to go open again).
+`bash middleware/test/devEndpoints/mutation-check.sh` breaks each guard in
+source and requires the suite to go red.
+
+---
+
+## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
 
@@ -405,7 +470,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] Any new proxy route validates the response shape before returning it
       to the agent (defends against prompt injection from upstream).
 - [ ] Any new sub-agent tool is scope-locked at construction time.
+- [ ] No new entry in `auth/publicPaths.ts` unless the route authenticates
+      itself, and then only the narrowest regex covering that one route (§10).
+- [ ] No operator surface is mounted inside a `DEV_ENDPOINTS_ENABLED` block —
+      operator routers belong under `/api/v1/admin/*` (§10).
 
 ---
 
-*Last reviewed: 2026-05.*
+*Last reviewed: 2026-08 (§10 added with issue #669).*

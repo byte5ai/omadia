@@ -295,6 +295,22 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           ...(verification.code !== undefined
             ? { verifyErrorCode: verification.code }
             : {}),
+          // #671 — why the probe could not confirm the key. A CODE, never a
+          // sentence: the web-ui owns all user-facing copy.
+          //
+          // This is what makes the #599 403 decision legible instead of just
+          // lenient. That change stopped calling every 403 a bad key, because
+          // OpenAI and Anthropic also answer 403 for region and org-permission
+          // blocks — only an explicit `authentication_error` marker still
+          // earns `invalid`. Correct, but it left the operator with a bare
+          // `UNVERIFIED` chip and no way to tell "your key is fine, your
+          // region is blocked" from "the provider was down". The verdict
+          // already carried `reason`; `ProviderVerificationReason`'s own
+          // comment says it exists so "a future UI can map it to a localized
+          // string without a second server change". This is that UI.
+          ...(verification.reason !== undefined
+            ? { verifyReason: verification.reason }
+            : {}),
           // Retained for backwards compatibility: "a key is on file". Callers
           // that need "the key actually works" must read `status` instead.
           connected: verification.status !== 'no_key',

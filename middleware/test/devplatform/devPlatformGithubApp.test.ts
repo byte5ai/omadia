@@ -162,7 +162,7 @@ async function mountLikeIndex(deps: DevPlatformGithubAppDeps): Promise<{
   close: () => Promise<void>;
 }> {
   const routers = createDevPlatformGithubAppRouter(deps);
-  const allowlist = publicPaths({ devEndpointsEnabled: false });
+  const allowlist = publicPaths();
   const requireAuth: RequestHandler = (req, res, next) => {
     if (allowlist.some((pattern) => pattern.test(req.originalUrl))) {
       next();

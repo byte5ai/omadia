@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { buildKgHealth } from '../src/health/kgHealth.js';
+import { buildKgHealth, probeGraphPool } from '../src/health/kgHealth.js';
 import type { EmbeddingGateStatus } from '../src/health/kgHealth.js';
 import type { InstalledRegistry } from '../src/plugins/installedRegistry.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
@@ -232,5 +232,114 @@ describe('buildKgHealth', () => {
       'one warning, not two — the operator has no provider to un-block',
     );
     assert.ok(h.warnings.some((w) => w.includes('embeddings disabled')));
+  });
+});
+
+/**
+ * #665 — the pool dimension.
+ *
+ * Everything above projects the REGISTRY, which is why the outage in #665 was
+ * invisible here: the plugin ended the process-wide pg pool, every query in
+ * the process failed, and this snapshot still reported a healthy neon backend
+ * because the registry entry said `active`. These cases pin the one field that
+ * can contradict the registry.
+ */
+describe('buildKgHealth — pg pool liveness (#665)', () => {
+  it('reports the pool dead and leads with it, so it cannot read as a degradation', async () => {
+    const h = buildKgHealth(await reg([{ id: KG_NEON }]), undefined, {
+      state: 'dead',
+      error: 'Cannot use a pool after calling end on the pool',
+    });
+    assert.equal(h.pool, 'dead');
+    // First, not merely present: the capability warnings below it describe what
+    // the deployment is configured to do, which is academic once nothing runs.
+    assert.ok(
+      h.warnings[0]?.includes('pg pool is not usable'),
+      'the outage must be the first warning',
+    );
+    assert.ok(
+      h.warnings[0]?.includes('Cannot use a pool after calling end on the pool'),
+      'the underlying error belongs in the payload — it names the cause',
+    );
+  });
+
+  it('reports a live pool without adding noise', async () => {
+    const h = buildKgHealth(
+      await reg([
+        { id: KG_NEON },
+        { id: EMBEDDINGS, config: { ollama_base_url: 'http://ollama:11434' } },
+      ]),
+      undefined,
+      { state: 'live' },
+    );
+    assert.equal(h.pool, 'live');
+    assert.deepEqual(h.warnings, [], 'a healthy pool says nothing');
+  });
+
+  it('skips the pool for backends that do not have one', async () => {
+    const h = buildKgHealth(await reg([{ id: KG_INMEMORY }]), undefined, {
+      state: 'dead',
+    });
+    // inmemory has no pg pool, so a probe result must not be projected onto it
+    // as a fault — otherwise every inmemory deployment reports an outage.
+    assert.equal(h.pool, 'skipped');
+    assert.ok(!h.warnings.some((w) => w.includes('pg pool is not usable')));
+  });
+
+  it('treats a missing probe as skipped rather than healthy', async () => {
+    const h = buildKgHealth(await reg([{ id: KG_NEON }]));
+    assert.equal(
+      h.pool,
+      'skipped',
+      'no probe is not evidence of health — it must not claim `live`',
+    );
+  });
+});
+
+describe('probeGraphPool (#665)', () => {
+  it('calls the pool and reports live', async () => {
+    let asked = '';
+    const probe = await probeGraphPool({
+      query: async (sql: string) => {
+        asked = sql;
+        return { rows: [] };
+      },
+    });
+    assert.deepEqual(probe, { state: 'live' });
+    assert.equal(asked, 'SELECT 1', 'the cheapest question that still proves usability');
+  });
+
+  it('reports dead with the pg error text when the pool was ended', async () => {
+    const probe = await probeGraphPool({
+      query: async () => {
+        throw new Error('Cannot use a pool after calling end on the pool');
+      },
+    });
+    assert.equal(probe.state, 'dead');
+    assert.equal(probe.error, 'Cannot use a pool after calling end on the pool');
+  });
+
+  it('skips when there is no pool at all', async () => {
+    assert.deepEqual(await probeGraphPool(undefined), { state: 'skipped' });
+    assert.deepEqual(await probeGraphPool({}), { state: 'skipped' });
+  });
+
+  it('bounds a hanging pool instead of hanging /health with it', async () => {
+    const started = Date.now();
+    const probe = await probeGraphPool(
+      {
+        query: () =>
+          new Promise(() => {
+            /* never settles — an unreachable database */
+          }),
+      },
+      50,
+    );
+    assert.equal(probe.state, 'dead');
+    assert.ok(probe.error?.includes('timed out'));
+    assert.ok(
+      Date.now() - started < 2000,
+      'the probe must return on its own timeout, not wait for the query',
+    );
   });
 });
