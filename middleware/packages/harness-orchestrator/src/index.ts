@@ -399,6 +399,21 @@ export type { RunTracePayload } from '@omadia/channel-sdk';
 export { SteeringBus, steeringBus, MAX_STEER_LENGTH } from './steeringBus.js';
 export type { SteerEnqueueResult } from './steeringBus.js';
 
+// #648 — resolved AI-Act marking posture, published to the ServiceRegistry and
+// projected onto `/health` + the operator dashboard.
+export {
+  AI_DISCLOSURE_CHANNEL_KINDS,
+  AI_DISCLOSURE_POSTURE_SERVICE,
+  describeAiDisclosurePosture,
+  formatDisclosureBootWarning,
+  resolveDisclosureLevelForChannel,
+} from './aiDisclosurePosture.js';
+export type {
+  AiDisclosureChannelKind,
+  AiDisclosurePosture,
+  ChannelPosture,
+} from './aiDisclosurePosture.js';
+
 // Session logger + chat-session store
 export { SessionLogger, graphScopeFor } from './sessionLogger.js';
 export type { SessionLogEntry } from './sessionLogger.js';

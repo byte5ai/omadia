@@ -709,7 +709,18 @@
     "staleBadge": "stale",
     "routesTo": "→ Orchestrator:",
     "routesToFallback": "(standard · {fallback})",
-    "clearStale": "Clear binding"
+    "clearStale": "Clear binding",
+    "disclosure": {
+      "heading": "AI marking differs from the delivered state",
+      "body": "Answers on these channels are marked differently than on delivery: {channels}.",
+      "inert": "Configured but not yet in effect: {channels}. Turns on these channels do not report their channel type, so they use the global setting.",
+      "note": "This is your decision as the operator — nothing is blocked. Shown so a setting from a test setup does not go unnoticed.",
+      "level": {
+        "standard": "full marking",
+        "concise": "short marking",
+        "off": "no marking"
+      }
+    }
   },
   "layout": {
     "logoAriaLabel": "omadia · Home",
