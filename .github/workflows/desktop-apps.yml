@@ -101,8 +101,6 @@ jobs:
       # web-ui bakes this kernel URL into its routes-manifest at BUILD time, so
       # it cannot be a per-launch random port.
       KERNEL_URL: http://127.0.0.1:8769
-      # node-gyp's VS auto-detection is unreliable on windows-latest; pin VS2022.
-      GYP_MSVS_VERSION: '2022'
       # macOS signing (hoisted so they're addressable in step-level `if:`).
       APPLE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64_HIGH5 }}
       APPLE_P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD_HIGH5 }}
@@ -142,10 +140,23 @@ jobs:
           git config --global url."https://github.com/".insteadOf "git@github.com:"
 
       # --- build the omadia runtime the installer bundles -------------------
+      # `--ignore-scripts` is load-bearing, not hardening theatre — the same
+      # reason it is load-bearing in the root Dockerfile. better-sqlite3 v13
+      # ships N-API prebuilds for every platform (including win32-x64) inside
+      # its own tarball and declares `gypfile: false` to say "do not build me".
+      # npm ignores that field and synthesises `install: node-gyp rebuild`
+      # anyway, purely because a `binding.gyp` is present in the package.
+      # macOS/Linux merely waste time on that pointless compile; Windows has no
+      # Visual Studio node-gyp can find, so it fails outright and the Windows
+      # installer silently stopped shipping (last `.exe`: v0.63.0). Skipping
+      # scripts lets the bundled prebuild be used. argon2 + esbuild are the only
+      # middleware packages with a real install script, so rebuild those two by
+      # hand (fsevents is macOS-only and resolves as an optional dependency).
       - name: Build middleware kernel
         working-directory: middleware
         run: |
-          npm ci
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm rebuild argon2 esbuild
           npm run build
 
       - name: Build web-ui (bake the fixed kernel URL into the standalone build)
@@ -160,27 +171,26 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      # Make the middleware's native modules load under Electron's Node (the kernel
-      # runs via ELECTRON_RUN_AS_NODE). argon2 + sharp are N-API → ABI-stable across
-      # node/electron, so their shipped binaries already work, no rebuild needed.
-      # Only better-sqlite3 (non-N-API) needs an Electron-ABI build — and it
-      # publishes Electron PREBUILDS, so fetch one with prebuild-install (no
-      # node-gyp / Visual Studio). Fall back to a source rebuild if no prebuild
-      # exists for this Electron version on this platform.
-      - name: Provision better-sqlite3 for Electron
+      # Verify the middleware's native modules load under Electron's Node (the
+      # kernel runs via ELECTRON_RUN_AS_NODE). All three are N-API → ABI-stable
+      # across node/electron, so their shipped binaries already work and NONE of
+      # them needs an Electron-ABI rebuild.
+      #
+      # better-sqlite3 needed one back when it was v12 and non-N-API. Since v13
+      # it ships N-API prebuilds in its own tarball (`prebuilds/<platform>-<arch>.node`)
+      # and — decisively — its loader in `lib/binding.js` checks that `prebuilds/`
+      # directory FIRST and only falls back to `build/Release/` if nothing is
+      # there. So an electron-rebuild artefact would be written and then never
+      # loaded. The old step was therefore a no-op that could only fail: upstream
+      # publishes no GitHub release assets for v13, so `prebuild-install` always
+      # missed and fell through to a source rebuild needing a full toolchain.
+      #
+      # The verification below is the real gate and is deliberately kept: if the
+      # N-API/ABI-stability assumption is ever wrong, this fails here instead of
+      # crashing the kernel at boot in the shipped app.
+      - name: Verify native modules load under the Electron ABI
         shell: bash
         run: |
-          EV="$(node -p "require('./desktop/node_modules/electron/package.json').version")"
-          echo "provisioning better-sqlite3 for Electron $EV"
-          ( cd middleware/node_modules/better-sqlite3 \
-            && npx --yes prebuild-install -r electron -t "$EV" --verbose ) \
-          || ( cd desktop \
-            && npx electron-rebuild --version "$EV" --module-dir ../middleware --only better-sqlite3 --force )
-          # Verify ALL three native modules actually load under Electron's runtime
-          # — not just the rebuilt better-sqlite3, but also argon2 + sharp, whose
-          # (un-rebuilt) prebuilds we ASSUME are N-API/ABI-stable. If that
-          # assumption is wrong, this fails here instead of crashing the kernel at
-          # boot in the shipped app.
           ELECTRON_RUN_AS_NODE=1 ./desktop/node_modules/.bin/electron -e \
             "require('./middleware/node_modules/better-sqlite3'); require('./middleware/node_modules/argon2'); require('./middleware/node_modules/sharp'); console.log('better-sqlite3 + argon2 + sharp load under Electron ABI OK')"
 
