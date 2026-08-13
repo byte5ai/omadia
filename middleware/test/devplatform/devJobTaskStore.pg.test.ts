@@ -14,6 +14,7 @@ import {
   DevJobStore,
   TERMINAL_FINISH_BRAND,
   type DevJobSweepScope,
+  type TerminalWriteResult,
 } from '../../src/devplatform/devJobStore.js';
 import {
   createDevJobTaskStore,
@@ -62,7 +63,7 @@ describe('devplatform/devJobTaskStore — seam conformance (pg)', { skip: !pgAva
     jobId: string,
     status: DevJobStatus,
     patch: { error?: string },
-  ): Promise<DevJob | null> {
+  ): Promise<TerminalWriteResult> {
     return jobStore.finishTerminal(TERMINAL_FINISH_BRAND, jobId, status, patch);
   }
 

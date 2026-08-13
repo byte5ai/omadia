@@ -1,7 +1,11 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { TERMINAL_FINISH_BRAND, type TerminalPatch } from '../../src/devplatform/devJobStore.js';
+import {
+  TERMINAL_FINISH_BRAND,
+  type TerminalPatch,
+  type TerminalWriteResult,
+} from '../../src/devplatform/devJobStore.js';
 import type { ApplyInput, ApplyResult } from '../../src/devplatform/diffApplyService.js';
 import type { FinalizeStore } from '../../src/devplatform/finalizeDevJob.js';
 import { RunnerBackendError } from '../../src/devplatform/runnerBackend.js';
@@ -219,12 +223,13 @@ class FakeStore implements DevJobWorkerStore {
     jobId: string,
     status: DevJobStatus,
     patch: TerminalPatch = {},
-  ): Promise<DevJob | null> {
+  ): Promise<TerminalWriteResult> {
     if (brand !== TERMINAL_FINISH_BRAND) throw new Error('finishTerminal reserved for finalizeDevJob');
     this.finishCalls.set(jobId, (this.finishCalls.get(jobId) ?? 0) + 1);
     const job = this.jobs.get(jobId);
-    if (!job) return null;
-    if (isTerminalDevJobStatus(job.status)) return job; // idempotent guard
+    if (!job) return { job: null, transitioned: false };
+    // Idempotent guard — a no-op reports transitioned:false, touches no rows.
+    if (isTerminalDevJobStatus(job.status)) return { job, transitioned: false };
     const next: DevJob = {
       ...job,
       status,
@@ -235,7 +240,7 @@ class FakeStore implements DevJobWorkerStore {
       endedAt: new Date().toISOString(),
     };
     this.jobs.set(jobId, next);
-    return next;
+    return { job: next, transitioned: true };
   }
 
   async appendHostEvent(jobId: string, type: string, payload: Record<string, unknown> = {}) {

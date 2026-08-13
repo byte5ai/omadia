@@ -321,6 +321,16 @@ export class InMemoryTaskStore implements TaskStore {
    * immutability in `fenced()` is load-bearing rather than redundant: it is what
    * a zombie worker (which still presents a MATCHING lease, because the sweep
    * preserves `claimedBy`) runs into afterwards.
+   *
+   * Cross-replica note (#561): this store is process-local, so its `rows` Map has
+   * exactly ONE writer and the sweep cannot race a peer — each stale row is
+   * flipped here by this process alone, so `staleFailed` counts it exactly once
+   * by construction, with no fencing needed. That is a property of being
+   * single-replica, NOT of the sweep being safe to run everywhere: run two
+   * replicas against this store and they have DISJOINT maps, so a task created on
+   * one is `not found` on the other (see the module header) — a multi-replica
+   * deployment needs the durable implementor, whose reaper is fenced across
+   * replicas by the guarded terminal write reporting who actually flipped the row.
    */
   async reapOrphans(opts: TaskReapOptions): Promise<TaskReapResult> {
     if (!Number.isFinite(opts.staleAfterMs) || opts.staleAfterMs <= 0) {

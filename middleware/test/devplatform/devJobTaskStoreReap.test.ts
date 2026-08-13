@@ -9,7 +9,7 @@ import {
   projectDevJobStatus,
   type DevJobTaskJobStore,
 } from '../../src/devplatform/devJobTaskStore.js';
-import type { DevJob, DevJobStatus } from '../../src/devplatform/types.js';
+import { isTerminalDevJobStatus, type DevJob, type DevJobStatus } from '../../src/devplatform/types.js';
 
 /**
  * W2-2 — the dev_job adapter's orphan sweep, isolated.
@@ -113,11 +113,17 @@ function harness(opts: {
         status,
         ...(patch.error !== undefined ? { error: patch.error } : {}),
       });
-      if (opts.finalizeReturnsNull) return null;
+      if (opts.finalizeReturnsNull) return { job: null, transitioned: false };
       const existing = byId.get(jobId) ?? job({ id: jobId });
+      // Model `finishTerminal`'s status-guarded UPDATE: a no-op on an
+      // already-terminal row (the row a peer replica flipped first), reporting
+      // `transitioned: false` so the sweep does not re-count it.
+      if (isTerminalDevJobStatus(existing.status)) {
+        return { job: existing, transitioned: false };
+      }
       const updated = job({ ...existing, status, error: patch.error ?? null });
       byId.set(jobId, updated);
-      return updated;
+      return { job: updated, transitioned: true };
     },
     purgeTerminalJobs: async (days, now) => {
       purgeCalls.push({ days, now });
@@ -218,13 +224,34 @@ describe('devplatform/devJobTaskStore — orphan sweep', () => {
       createJob: async () => {
         throw new Error('unused');
       },
-      finalize: async () => null,
+      finalize: async () => ({ job: null, transitioned: false }),
     });
     const r = await store.reapOrphans({
       staleAfterMs: 1,
       purgeTerminalAfterMs: 1,
     });
     assert.deepEqual(r, { staleFailed: 0, purged: 0 });
+  });
+
+  it('does not double-count a row a peer replica already reaped (#561)', async () => {
+    // Two replicas' `findStalled` return the SAME non-terminal row (both queried
+    // before either wrote). The first sweep flips it and counts it; the second's
+    // finalize hits the guarded no-op — a truthy but already-terminal `job` — and
+    // must NOT count it. The terminal write is idempotent; so now is the metric.
+    const a = job();
+    const h = harness({ stalled: [a], jobs: [a] });
+    const opts = {
+      now: new Date(1_000_000),
+      staleAfterMs: 1,
+      purgeTerminalAfterMs: 3_600_000,
+    };
+
+    const first = await h.store.reapOrphans(opts);
+    const second = await h.store.reapOrphans(opts);
+
+    assert.equal(first.staleFailed, 1, 'the replica that wins the flip counts the reap');
+    assert.equal(second.staleFailed, 0, 'the replica that loses the race counts nothing');
+    assert.equal(h.finalizeCalls.length, 2, 'but BOTH replicas attempted the finalize');
   });
 });
 
