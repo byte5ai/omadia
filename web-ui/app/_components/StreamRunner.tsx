@@ -106,10 +106,23 @@ export async function runOneTurn(
     let outgoing = event;
     if (event.type === 'error') {
       const clean = humanizeProviderError(event.message, t('errorProviderGeneric'));
-      inbandErrorMessage = clean;
-      if (clean !== event.message) {
-        console.warn('[chat] provider error', event.message);
-        outgoing = { ...event, message: clean };
+      // #641 — a failed turn used to reach the user with nothing they could act
+      // on: no code, no id, nothing to hand to support. The detail was logged
+      // server-side, so the information existed and simply never arrived. The
+      // orchestrator now sends the turn's correlation id (the same one in its
+      // `console.error` line); append it so the message is a handle rather than
+      // just an apology. Absent on older middleware — then this is a no-op and
+      // the bubble reads exactly as before.
+      const withRef =
+        event.correlationId !== undefined && event.correlationId !== ''
+          ? `${clean}\n\n${t('errorCorrelationRef', { id: event.correlationId })}`
+          : clean;
+      inbandErrorMessage = withRef;
+      if (withRef !== event.message) {
+        if (clean !== event.message) {
+          console.warn('[chat] provider error', event.message);
+        }
+        outgoing = { ...event, message: withRef };
       }
     }
     applyStreamEvent(liveSessions, sessionId, pendingMessageId, outgoing);
@@ -160,9 +173,16 @@ export async function runOneTurn(
       const { t } = depsRef.current;
       let msg: string;
       if (looksHtml || contentType.includes('text/html')) {
+        // #667 — this used to claim the middleware was UNREACHABLE and name
+        // `localhost:3979`. Both are things the client has not checked: a 500
+        // means something answered, and the dev host is meaningless on a hosted
+        // instance. In #665 the middleware was up and serving — its pg pool was
+        // dead — and this string sent the investigation at `MIDDLEWARE_URL`
+        // while the real fault was a plugin's pool lifetime. Say only what is
+        // known: an upstream 500 with a non-JSON body.
         msg =
           res.status === 500
-            ? t('errorMiddlewareUnreachable')
+            ? t('errorUpstreamErrorPage')
             : t('errorProxyFailure', { status: String(res.status) });
       } else if (contentType.includes('application/json')) {
         try {

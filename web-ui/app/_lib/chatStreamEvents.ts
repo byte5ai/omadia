@@ -148,7 +148,16 @@ export type ChatStreamEvent =
   /** Mid-turn steering — a user message injected via `/chat/steer` was folded
    *  into the running turn at iteration `iteration`. */
   | { type: 'steer_applied'; iteration: number; message: string }
-  | { type: 'error'; message: string };
+  /**
+   * #641 — `correlationId` is the orchestrator's per-turn id, the same value it
+   * writes into its own `console.error` line, so a support query by the token
+   * the user was shown finds the log entry exactly. Mirrors the `error` variant
+   * in `@omadia/channel-sdk`'s `ChatStreamEvent`.
+   *
+   * Optional because middleware older than this change does not send it; the
+   * renderer then behaves exactly as before.
+   */
+  | { type: 'error'; message: string; correlationId?: string };
 
 /**
  * Fold one stream event into the session that owns the pending assistant
