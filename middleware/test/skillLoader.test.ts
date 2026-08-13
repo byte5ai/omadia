@@ -82,6 +82,54 @@ describe('parseSkillMarkdown', () => {
   });
 });
 
+describe('parseSkillMarkdown unparsed-frontmatter reporting', () => {
+  it('reports list entries the flat parser cannot represent', () => {
+    // A skill authored for an ecosystem that uses list-valued frontmatter
+    // (agentskills.io, Hermes). The flat parser keeps `tools` as an empty
+    // string and drops the entries — that loss must be visible, not silent.
+    const parsed = parseSkillMarkdown(
+      '---\nname: n\ntools:\n  - read\n  - write\n---\n\nBody.\n',
+    );
+    assert.equal(parsed.frontmatter['tools'], '');
+    assert.deepEqual(parsed.unparsedLines, ['  - read', '  - write']);
+  });
+
+  it('reports indented nested mappings', () => {
+    const parsed = parseSkillMarkdown(
+      '---\nname: n\nmetadata:\n  author: someone\n---\n\nBody.\n',
+    );
+    assert.deepEqual(parsed.unparsedLines, ['  author: someone']);
+  });
+
+  it('is empty for frontmatter the parser fully represents', () => {
+    const parsed = parseSkillMarkdown('---\nname: n\ndescription: d\n---\n\nBody.\n');
+    assert.deepEqual(parsed.unparsedLines, []);
+  });
+
+  it('does not report blank lines or YAML comments as dropped', () => {
+    const parsed = parseSkillMarkdown(
+      '---\nname: n\n\n# a comment\n   \n  # indented comment\ndescription: d\n---\n\nBody.\n',
+    );
+    assert.deepEqual(parsed.unparsedLines, []);
+    assert.equal(parsed.frontmatter['name'], 'n');
+    assert.equal(parsed.description, 'd');
+  });
+
+  it('is empty when there is no frontmatter block at all', () => {
+    assert.deepEqual(parseSkillMarkdown('# Just a body').unparsedLines, []);
+  });
+
+  it('reports unparsed lines from CRLF sources too', () => {
+    const parsed = parseSkillMarkdown('---\r\nname: n\r\ntools:\r\n  - read\r\n---\r\n\r\nBody.\r\n');
+    assert.deepEqual(parsed.unparsedLines, ['  - read']);
+  });
+
+  it('round-trips serializeSkillMarkdown output with nothing dropped', () => {
+    const md = serializeSkillMarkdown({ name: 'a: b', description: 'line1\nline2' }, '# body');
+    assert.deepEqual(parseSkillMarkdown(md).unparsedLines, []);
+  });
+});
+
 describe('serializeSkillMarkdown', () => {
   it('round-trips simple scalars through parseSkillMarkdown', () => {
     const fm = { name: 'Research Helper', description: 'Helps research.' };

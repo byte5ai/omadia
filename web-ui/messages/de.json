@@ -285,6 +285,10 @@
           "updated": "Aktualisiert den bestehenden importierten Skill.",
           "unchanged": "Bereits importiert — keine Änderungen."
         },
+        "unparsedFrontmatter": {
+          "title": "Teile des Frontmatters konnten nicht importiert werden",
+          "explain": "omadia liest ein „Schlüssel: Wert“ pro Zeile. Diese Zeilen enthalten Listen oder verschachtelte Werte und wurden ausgelassen — der Rest des Skills wurde normal importiert."
+        },
         "risks": {
           "title": "Vor dem Import prüfen — dieser Inhalt könnte versuchen:",
           "code": {

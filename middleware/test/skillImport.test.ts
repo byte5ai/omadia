@@ -288,3 +288,59 @@ describe('importSkillMarkdown', () => {
     assert.ok(r.risks.length > 0, 'risky content should surface at least one risk');
   });
 });
+
+describe('unparsed frontmatter is surfaced, not silently dropped', () => {
+  // A skill authored against a richer frontmatter dialect (agentskills.io,
+  // Hermes). omadia's frontmatter is flat `key: scalar`, so the list entries
+  // cannot be represented — the import must say so instead of truncating.
+  const LIST_FRONTMATTER =
+    '---\nname: Ported skill\ndescription: From another ecosystem.\nallowed-tools:\n  - read\n  - write\n---\n\n# Body\n';
+  let store: FakeStore;
+  beforeEach(() => {
+    store = new FakeStore();
+  });
+
+  it('reports the dropped lines on a dry-run preview', async () => {
+    const res = await importSkillMarkdown(store, { raw: LIST_FRONTMATTER }, { dryRun: true });
+    assert.deepEqual(res.unparsedFrontmatter, ['  - read', '  - write']);
+  });
+
+  it('reports them on a committed import too', async () => {
+    const res = await importSkillMarkdown(store, {
+      raw: LIST_FRONTMATTER,
+      sourcePath: 'a/SKILL.md',
+    });
+    assert.equal(res.outcome, 'created');
+    assert.deepEqual(res.unparsedFrontmatter, ['  - read', '  - write']);
+  });
+
+  it('still reports on the unchanged (re-import) path', async () => {
+    await importSkillMarkdown(store, { raw: LIST_FRONTMATTER, sourcePath: 'a/SKILL.md' });
+    const again = await importSkillMarkdown(store, {
+      raw: LIST_FRONTMATTER,
+      sourcePath: 'a/SKILL.md',
+    });
+    assert.equal(again.outcome, 'unchanged');
+    assert.deepEqual(again.unparsedFrontmatter, ['  - read', '  - write']);
+  });
+
+  it('is empty for frontmatter omadia represents fully', async () => {
+    const res = await importSkillMarkdown(
+      store,
+      { raw: '---\nname: Clean\ndescription: d\n---\n\nBody.\n' },
+      { dryRun: true },
+    );
+    assert.deepEqual(res.unparsedFrontmatter, []);
+  });
+
+  it('is empty for the adapters that have no frontmatter at all', async () => {
+    const gpt = await importSkillMarkdown(
+      store,
+      { raw: '{"name":"G","instructions":"Do things."}' },
+      { dryRun: true },
+    );
+    assert.deepEqual(gpt.unparsedFrontmatter, []);
+    const agents = await importSkillMarkdown(store, { raw: '# Plain\n\nBody.' }, { dryRun: true });
+    assert.deepEqual(agents.unparsedFrontmatter, []);
+  });
+});
