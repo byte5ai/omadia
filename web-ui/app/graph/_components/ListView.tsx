@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import type {
@@ -56,6 +57,11 @@ function TurnCard({
   runState: RunTraceView | 'loading' | 'missing' | undefined;
   onLoadRun: () => void;
 }): React.ReactElement {
+  // #679 / I3 — this component carried three GERMAN literals, which is the
+  // rule in `web-ui/CLAUDE.md` violated twice over: hardcoded, and hardcoded in
+  // the language that is supposed to live only in `messages/de.json`. An
+  // English operator read German here.
+  const t = useTranslations('graph.listView');
   const [open, setOpen] = useState(false);
   const time = String(turn.props['time'] ?? '')
     .replace('T', ' ')
@@ -80,7 +86,7 @@ function TurnCard({
           onClick={toggle}
           className="ml-auto px-2 py-0.5 font-mono"
         >
-          {open ? '▾' : '▸'} Run-Trace
+          {open ? '▾' : '▸'} {t('runTrace')}
         </Button>
       </div>
       <div className="mb-2 whitespace-pre-wrap text-[color:var(--fg)]">
@@ -108,17 +114,19 @@ function TurnCard({
         </div>
       ) : (
         <div className="text-[11px] text-[color:var(--fg-subtle)]">
-          keine Entities in diesem Turn
+          {t('noEntities')}
         </div>
       )}
       {open && (
         <div className="mt-3 border-t border-[color:var(--border)] pt-3">
           {runState === 'loading' && (
-            <div className="text-[11px] text-[color:var(--fg-muted)]">lade Run…</div>
+            <div className="text-[11px] text-[color:var(--fg-muted)]">
+              {t('loadingRun')}
+            </div>
           )}
           {runState === 'missing' && (
             <div className="text-[11px] text-[color:var(--fg-muted)]">
-              keine Run-Trace erfasst
+              {t('noRunTrace')}
             </div>
           )}
           {runState && runState !== 'loading' && runState !== 'missing' && (

@@ -18,6 +18,40 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — the structural i18n categories left by #601 (#679)
+
+- **I4 — page titles now follow the active locale.** All **10** remaining
+  `export const metadata` exports became `generateMetadata`, so the window /
+  tab title is German for a German operator instead of always English. A static
+  `metadata` object is evaluated once at build time, where no request and
+  therefore no locale exists. The category is now at **zero** and pinned
+  repo-wide by a test.
+- **I5 — the boot-seeded agent description.** Decided rather than translated:
+  the sentence is written by the server into the database at first boot, before
+  any locale exists to write it in, so it is a record of why the row exists,
+  not UI copy. Localising it at write time would freeze whichever locale the
+  boot happened to pick into persisted data; dropping it would leave consumers
+  without a catalogue (API, exports, CLI) saying nothing at all. The UI now
+  renders its own catalogued sentence, recognising the untouched seed by exact
+  match — the moment an operator edits it, their words are shown verbatim.
+- **I6 — currency and number formatting.** `admin/usage` rendered cost with a
+  hardcoded `$` and `toFixed`, and — not mentioned in the issue — pinned
+  `de-DE` for compact counts and timestamps, so an *English* operator read
+  German grouping. All now go through next-intl's `useFormatter()`. The
+  currency stays USD deliberately: the ledger records USD, and converting
+  without an exchange rate would present a fabricated number as a ledger
+  figure. What is localised is the presentation.
+- **I3 — hardcoded literals**, scoped and measured. `app/graph/ListView.tsx`
+  held three GERMAN sentences (the rule broken twice over — hardcoded, and in
+  the language that belongs only in `de.json`); `admin/kg-lifecycle`, the
+  issue's named worst offender, is fully swept. API enum values (`HOT`/`WARM`/
+  `COLD`, `memory`/`process`/`task`) stay untranslated on purpose so the screen
+  still matches logs and SQL.
+- **The issue's I3 count did not survive measurement**: it claims 25 literals
+  across 11 files with 11 in `kg-lifecycle`; that file alone holds **22**, and
+  the scan under-counts multi-line JSX text on top. The remaining tail
+  (~217 candidates / 63 files, plus 18 files still calling `toLocaleString`) is
+  filed as its own issue rather than silently declared done.
 ### Added — the AI-marking posture is readable per channel (#648, epic #642)
 
 - **`GET /health` gains a `disclosure` block**: the resolved AI-Act Art. 50
