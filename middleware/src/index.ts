@@ -3456,6 +3456,20 @@ async function main(): Promise<void> {
             ...(input.email ? { email: input.email } : {}),
             emailVerified: true,
             ...(isEntra ? { aadObjectId: input.providerUserId } : {}),
+            // #568 — record WHICH IdP subject just authenticated. This is
+            // the session JWT's `sub`, and therefore the exact key
+            // `/mcp-servers/:id/authorize` stores a `per_user` OAuth token
+            // under. Persisting it here is what later lets a Teams or
+            // Telegram turn — which knows only the canonical omadia user
+            // id — find that token instead of failing closed.
+            //
+            // Safe to record because THIS call site sits behind a completed
+            // login: the subject is authenticated, not asserted by a
+            // channel payload.
+            authSubject: {
+              provider: input.provider,
+              providerUserId: input.providerUserId,
+            },
           });
           return result.omadiaUserId;
         },

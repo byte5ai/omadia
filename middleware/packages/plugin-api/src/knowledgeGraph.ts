@@ -1205,6 +1205,30 @@ export interface ChannelIdentityIngest {
    * them deterministically land on the same User-Cluster.
    */
   aadObjectId?: string;
+  /**
+   * The IdP subject this identity authenticates as — issue #568.
+   *
+   * `provider` is the auth-provider id (`local`, `entra`, …) and
+   * `providerUserId` is that provider's own subject for the user: exactly
+   * the value the session JWT carries as `sub`, and therefore exactly the
+   * key `/mcp-servers/:id/authorize` stores a `per_user` OAuth token under
+   * (see `middleware/src/auth/sessionIdentity.ts`).
+   *
+   * Stored so a CHANNEL turn — which only ever knows the KG-canonical
+   * `omadiaUserId` — can find the token an operator authorized in the web
+   * UI. Without it the two namespaces never meet and every `per_user`
+   * server fails closed on Teams/Telegram/Slack.
+   *
+   * Recorded as an explicit FACT rather than inferred from the shape of
+   * other fields. The tempting inference — "for the local provider
+   * `providerUserId` IS the lowercased email, so reuse `email`" — happens
+   * to hold today and is exactly the kind of convention that rots
+   * silently in a credential path.
+   *
+   * Only set by a login flow that has actually authenticated the subject;
+   * a channel adapter must NOT populate it from channel-side payload.
+   */
+  authSubject?: { provider: string; providerUserId: string };
   /** Free-form channel-side payload (Telegram from-object, etc.).
    *  AAD oid is NOT stored here — it has its own first-class field. */
   internalChannelData?: Record<string, unknown>;
@@ -1221,6 +1245,48 @@ export interface ResolveOrCreateChannelIdentityResult {
   isNewIdentity: boolean;
   /** True if a fresh User-Cluster was spun up (vs. joining an existing one). */
   isNewCluster: boolean;
+  /**
+   * The IdP subject of ANY identity in the resolved cluster that carries one
+   * — issue #568. `undefined` when no identity in the cluster has ever been
+   * through an authenticating login (the common case for a channel-only
+   * user), which must be read as "no web-authorized token to inherit", never
+   * as a licence to substitute another key.
+   *
+   * Returned from THIS call rather than a follow-up lookup because the
+   * per-turn channel path already pays for exactly one identity round-trip
+   * and deliberately avoids a second (see `orchestrator.ts`'s `mcpUserKey`
+   * producer).
+   *
+   * Cluster-level, not identity-level: the subject typically belongs to a
+   * SIBLING `web:` identity (the operator's Admin-UI login), which is the
+   * whole point — that sibling is who authorized the token.
+   */
+  clusterAuthSubject?: { provider: string; providerUserId: string };
+}
+
+/**
+ * The ChannelIdentity node properties that carry {@link
+ * ChannelIdentityIngest.authSubject} — issue #568.
+ *
+ * Lives in the contract package because BOTH graph backends persist these
+ * and both must read them back under the same names; two private copies of
+ * a property name is one that drifts, and the drift would surface as a
+ * `per_user` MCP server silently failing closed on one backend only.
+ *
+ * Returns an empty object when there is no subject, so the result spreads
+ * into a props literal without introducing `undefined`-valued keys.
+ */
+export function authSubjectProps(
+  ingest: Pick<ChannelIdentityIngest, 'authSubject'>,
+): Record<string, string> {
+  const subject = ingest.authSubject;
+  if (!subject) return {};
+  const provider = subject.provider.trim();
+  const providerUserId = subject.providerUserId.trim();
+  // A blank half is not a subject. Storing one would create an identity that
+  // claims to be authenticated and matches nothing.
+  if (provider === '' || providerUserId === '') return {};
+  return { authProvider: provider, authProviderUserId: providerUserId };
 }
 
 // ---------------------------------------------------------------------------

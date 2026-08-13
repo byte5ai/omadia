@@ -2879,10 +2879,8 @@ export class Orchestrator {
     // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
     // `turnContext.current()?.resolvedOmadiaUserId` instead of each
     // re-deriving it independently.
-    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
-      this.knowledgeGraph,
-      input,
-    );
+    const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
+    const resolvedOmadiaUserId = turnOwner.omadiaUserId;
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -2919,9 +2917,20 @@ export class Orchestrator {
     // `??`, a parent carrying an empty string would short-circuit, suppress the
     // valid key this branch would have produced, and then be dropped by the
     // truthy spread — silently downgrading a resolvable turn to `unresolved`.
+    // #568 — prefer the cluster's IdP subject over the canonical uuid.
+    //
+    // Both are KG-attested and neither is client-controlled, so this is not a
+    // trust downgrade; it is a NAMESPACE correction. `/authorize` stores a
+    // `per_user` token under the session's `sub` (= the provider's subject),
+    // never under the canonical uuid, so keying a channel turn on the uuid
+    // looks up a token that was never stored and every such turn failed
+    // closed. The uuid remains the fallback: a channel-only user has no IdP
+    // subject, and for them nothing changes.
     const mcpUserKey =
       parent?.mcpUserKey ||
-      (input.channelIdentity ? resolvedOmadiaUserId : undefined);
+      (input.channelIdentity
+        ? turnOwner.authSubjectKey || resolvedOmadiaUserId
+        : undefined);
 
     return turnContext.run(
       {
@@ -4404,10 +4413,8 @@ export class Orchestrator {
     // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
     // without this the resolved identity would never reach a channel turn's
     // tool dispatch at all — see `resolveTurnOwnerIdentity`.
-    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
-      this.knowledgeGraph,
-      input,
-    );
+    const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
+    const resolvedOmadiaUserId = turnOwner.omadiaUserId;
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -4444,9 +4451,20 @@ export class Orchestrator {
     // `??`, a parent carrying an empty string would short-circuit, suppress the
     // valid key this branch would have produced, and then be dropped by the
     // truthy spread — silently downgrading a resolvable turn to `unresolved`.
+    // #568 — prefer the cluster's IdP subject over the canonical uuid.
+    //
+    // Both are KG-attested and neither is client-controlled, so this is not a
+    // trust downgrade; it is a NAMESPACE correction. `/authorize` stores a
+    // `per_user` token under the session's `sub` (= the provider's subject),
+    // never under the canonical uuid, so keying a channel turn on the uuid
+    // looks up a token that was never stored and every such turn failed
+    // closed. The uuid remains the fallback: a channel-only user has no IdP
+    // subject, and for them nothing changes.
     const mcpUserKey =
       parent?.mcpUserKey ||
-      (input.channelIdentity ? resolvedOmadiaUserId : undefined);
+      (input.channelIdentity
+        ? turnOwner.authSubjectKey || resolvedOmadiaUserId
+        : undefined);
 
     const context: TurnContextValue = {
       turnId,
