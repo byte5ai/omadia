@@ -946,6 +946,10 @@
         "what": "Die Anfrage nennt nicht, um welches Plugin es geht.",
         "next": "Lade die Seite neu und wiederhole die Aktion auf dem Plugin-Screen."
       },
+      "invalid_json_file_body": {
+        "what": "Die Upload-Anfrage nannte nicht zugleich ein Setup-Feld und eine Datei — der Server konnte nicht erkennen, was er auswerten soll.",
+        "next": "Lade die Seite neu und wähle die Datei erneut aus."
+      },
       "invalid_multiselect": {
         "what": "Einer der ausgewählten Werte hat nicht die Form, die der Server akzeptiert.",
         "next": "Leere die Auswahl und wähle die Einträge erneut aus der Liste."
@@ -953,6 +957,34 @@
       "invalid_secrets_body": {
         "what": "Die Zugangsdaten kamen in einer Form an, die der Server ablehnt.",
         "next": "Lade die Seite neu und trage die Zugangsdaten erneut ein."
+      },
+      "json_file_bad_extract_path": {
+        "what": "Das Plugin deklariert einen Upload-Pfad, den der Server nicht unterstützt — die Datei konnte nicht gelesen werden.",
+        "next": "Das liegt am Plugin, nicht an deiner Datei — melde es dem Plugin-Autor."
+      },
+      "json_file_invalid_spec": {
+        "what": "Das Plugin deklariert diesen Datei-Upload fehlerhaft, er kann keinen Wert erzeugen.",
+        "next": "Das liegt am Plugin, nicht an deiner Datei — melde es dem Plugin-Autor."
+      },
+      "json_file_missing_value": {
+        "what": "In der hochgeladenen Datei fehlt einer der Werte, die dieses Feld braucht.",
+        "next": "Prüfe, ob du die richtige Datei ausgewählt hast — die Meldung unten nennt den fehlenden Wert."
+      },
+      "json_file_not_an_object": {
+        "what": "Die Datei ist zwar gültiges JSON, aber kein JSON-Objekt — sie enthält also keine benannten Werte.",
+        "next": "Lade die Zugangsdatei hoch, die der Anbieter ausgestellt hat, keine Liste und keinen Ausschnitt davon."
+      },
+      "json_file_not_json": {
+        "what": "Die hochgeladene Datei ist kein gültiges JSON, es konnte also nichts daraus gelesen werden.",
+        "next": "Lade die Schlüsseldatei beim Anbieter erneut herunter und lade sie unverändert hoch."
+      },
+      "json_file_too_large": {
+        "what": "Die hochgeladene Datei ist größer, als der Server für eine Zugangsdatei akzeptiert.",
+        "next": "Prüfe, ob du die Schlüsseldatei selbst ausgewählt hast und kein Archiv oder einen Export."
+      },
+      "json_file_unexpected_document": {
+        "what": "Die hochgeladene Datei ist die falsche Art von Zugangsdatei — ihr Inhalt passt nicht zu dem, was dieses Feld erwartet.",
+        "next": "Die Meldung unten nennt den abweichenden Wert; lade anschließend die richtige Datei hoch."
       },
       "no_options_provider": {
         "what": "Dieses Feld hat keine Live-Quelle für Optionen, es lässt sich also nichts nachladen.",
@@ -986,6 +1018,10 @@
       "setup_field_invalid": {
         "what": "Einer der Werte passt nicht zum Format, das dieses Feld erwartet.",
         "next": "Korrigiere das markierte Feld und speichere erneut."
+      },
+      "unknown_json_file_field": {
+        "what": "Der Upload nennt ein Setup-Feld, das dieses Plugin nicht als Datei-Upload anbietet.",
+        "next": "Lade die Seite neu, damit das Formular zum Plugin passt, und lade die Datei erneut hoch."
       },
       "update_failed": {
         "what": "Die Änderung konnte nicht geschrieben werden.",

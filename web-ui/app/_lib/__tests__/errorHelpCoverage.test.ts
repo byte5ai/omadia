@@ -76,6 +76,25 @@ const FORWARDED_CODE_SOURCES = [
     /** Throw sites present when this forwarder was registered. */
     minCodes: 11,
   },
+  {
+    /**
+     * #603 (OM-17) — `POST …/secrets/from-json` maps `JsonFileFailure['code']`
+     * onto a wire code through the `JSON_FILE_ERROR_CODES` table, so the
+     * `code:` expression at the emission site is an index, not a literal. The
+     * literals all live in that table, in this same file.
+     *
+     * The table exists BECAUSE of this guard: the route originally built the
+     * code with a template (`runtime.json_file_${failure.code}`), which this
+     * extractor cannot see at all — the codes would have shipped with no
+     * operator copy while the suite stayed green.
+     */
+    route: 'runtime.ts',
+    forwards: 'code: JSON_FILE_ERROR_CODES[outcome.failure.code]',
+    source: ['middleware', 'src', 'routes', 'runtime.ts'],
+    /** `too_large: 'runtime.json_file_too_large',` */
+    literal: /:\s*'(runtime\.json_file_[a-z_]+)'/g,
+    minCodes: 7,
+  },
 ] as const;
 
 /**
@@ -106,6 +125,10 @@ const ACKNOWLEDGED_NON_LITERAL_CODE: Readonly<
     {
       expr: 'code: string;',
       why: "type annotation on validateMultiselectValue's error result",
+    },
+    {
+      expr: 'code: JSON_FILE_ERROR_CODES[outcome.failure.code]',
+      why: '#603 json_file extraction failure — followed via FORWARDED_CODE_SOURCES',
     },
   ],
 };

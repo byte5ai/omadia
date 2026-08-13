@@ -43,7 +43,18 @@ export type SetupFieldType =
   | 'integer'
   /** #91: operator-curated list of bare hostnames. Values are unioned into
    *  the plugin's effective `ctx.http` allowlist at runtime (Option B). */
-  | 'host_list';
+  | 'host_list'
+  /**
+   * #603 (OM-17): upload a JSON credential file instead of transcribing values
+   * out of it. The field itself stores NOTHING — the server parses the upload
+   * and explodes it into the keys named in `extracts`, which remain ordinary
+   * `secret`/`string` fields for every other code path.
+   *
+   * Exists because hand-transcribing a service-account key into an email field
+   * and a masked field stacked beneath it is the visual pattern of a login, and
+   * a tester duly typed their real password into it.
+   */
+  | 'json_file';
 
 export interface PluginSetupField {
   key: string;
@@ -65,6 +76,25 @@ export interface PluginSetupField {
    *  install wizard and post-install editor; loader passes it through
    *  unchanged. */
   placeholder?: string;
+  /**
+   * #603 — `json_file` only. MIME type for the file picker's `accept`
+   * attribute. Advisory: a picker hint, never a validation. The server decides
+   * what the upload is, and `expect` is what actually rejects the wrong file.
+   */
+  accept?: string;
+  /**
+   * #603 — `json_file` only. Target setup-field key → `$.dotted.path` into the
+   * uploaded document. The extracted values are stored under those keys; the
+   * `json_file` field itself stores nothing. See `setupJsonFile.ts` for the
+   * supported path subset and why it is not full JSONPath.
+   */
+  extracts?: Record<string, string>;
+  /**
+   * #603 — `json_file` only. Shallow equality assertions the uploaded document
+   * must satisfy (e.g. `{ type: 'service_account' }`), checked BEFORE any value
+   * is extracted so the wrong file is rejected rather than half-consumed.
+   */
+  expect?: Record<string, unknown>;
   /** Manifest default. Forwarded so the post-install editor can pre-select
    *  the default option in an `enum` dropdown when no value is stored yet.
    *  A `string[]` for `type === 'host_list'`, a `string` otherwise. */
@@ -700,6 +730,27 @@ export interface InstallSetupField {
    *  it just isn't shown at install time. For flow-populated credentials.
    *  Older UIs ignore the flag and render the field as usual. */
   install_hidden?: boolean;
+  /**
+   * #603 — `json_file` only. Mirrors {@link PluginSetupField.accept}: the file
+   * picker's `accept` hint. Advisory — the server, not the picker, decides what
+   * an upload actually is.
+   */
+  accept?: string;
+  /**
+   * #603 — `json_file` only. Mirrors {@link PluginSetupField.extracts}.
+   *
+   * Carried on the INSTALL projection too, not just the catalog one, because
+   * `POST …/secrets/from-json` resolves the extraction map through
+   * `extractSetupSchema` — which returns THIS type. A `json_file` field that
+   * reaches the route without it carries no upload contract and is refused,
+   * so an omission here is a silently dead upload button.
+   */
+  extracts?: Record<string, string>;
+  /**
+   * #603 — `json_file` only. Mirrors {@link PluginSetupField.expect}: shallow
+   * assertions the uploaded document must satisfy before anything is extracted.
+   */
+  expect?: Record<string, unknown>;
 }
 
 export interface InstallSetupSchema {

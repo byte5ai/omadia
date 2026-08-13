@@ -154,6 +154,10 @@ const SetupFieldSchema = z
       'boolean',
       'integer',
       'host_list',
+      // #603 (OM-17). This schema is `.strict()`, so an unknown member is
+      // REJECTED outright rather than ignored — a builder spec declaring
+      // `json_file` fails to load until this list carries it.
+      'json_file',
     ]),
     required: z.boolean().optional(),
     description: z.string().optional(),
