@@ -13,6 +13,12 @@ import {
 // narrow accessor shape that matches what the plugin publishes under
 // `microsoft365.graph`.
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
+import {
+  AI_DISCLOSURE_CHANNEL_KINDS as AI_DISCLOSURE_CHANNEL_KIND_LIST,
+  AI_DISCLOSURE_POSTURE_SERVICE,
+  describeAiDisclosurePosture,
+  formatDisclosureBootWarning,
+} from './aiDisclosurePosture.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -207,14 +213,14 @@ function parseNumberOrDefault(raw: unknown, fallback: number): number {
  *  marking. NOTE: today only `teams`/`slack`/`telegram` are ever produced as a
  *  per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`); `email` and
  *  `web` are accepted here but currently resolve to the global level, same as
- *  the kind-less channels — see the `ai_disclosure_level_overrides` help text. */
-const AI_DISCLOSURE_CHANNEL_KINDS = new Set([
-  'teams',
-  'telegram',
-  'slack',
-  'email',
-  'web',
-]);
+ *  the kind-less channels — see the `ai_disclosure_level_overrides` help text.
+ *
+ *  #648 — derived from the shared list rather than spelled again here. The
+ *  posture view reports one row per accepted kind, so a second literal would
+ *  let the parser accept a channel the dashboard never shows (or vice versa). */
+const AI_DISCLOSURE_CHANNEL_KINDS = new Set<string>(
+  AI_DISCLOSURE_CHANNEL_KIND_LIST,
+);
 
 const AI_DISCLOSURE_LEVELS = new Set<AiDisclosureLevel>([
   'standard',
@@ -511,6 +517,24 @@ export async function activate(
   // channel; a set value flips the whole policy to operator-sourced.
   const aiDisclosure = resolveAiDisclosureSetup((key) =>
     ctx.config.get<unknown>(key),
+  );
+  // #648 — publish the RESOLVED posture so `/health` and the operator
+  // dashboard can read what this instance actually does, and warn once at boot
+  // when it deviates from the delivered state. A reduced marking is a
+  // legitimate operator decision; the failure mode #648 is about is that it was
+  // previously invisible, so a copy-paste error in a config or a leftover from
+  // a test setup was never noticed by anyone.
+  //
+  // A plain frozen snapshot, unlike the embedding gate's live getter object:
+  // this posture is derived from setup fields read once at activation, and a
+  // config change re-activates the plugin, which re-publishes. Nothing mutates
+  // it underneath a reader.
+  const disclosurePosture = describeAiDisclosurePosture(aiDisclosure);
+  const disclosureWarning = formatDisclosureBootWarning(disclosurePosture);
+  if (disclosureWarning) console.warn(disclosureWarning);
+  const disposeDisclosurePosture = ctx.services.provide(
+    AI_DISCLOSURE_POSTURE_SERVICE,
+    disclosurePosture,
   );
   // Floor at DEFAULT_MAX_TOKENS: a stale installed config (older deployments
   // persisted 4096) would otherwise truncate large file-building tool calls.
@@ -929,6 +953,14 @@ export async function activate(
       }
       try {
         disposeNudgeRegistry();
+      } catch {
+        // best-effort
+      }
+      // #648 — released like every other published service, so a reactivate
+      // (the path a disclosure config change takes) can re-publish the posture
+      // instead of failing with "duplicate provider".
+      try {
+        disposeDisclosurePosture();
       } catch {
         // best-effort
       }
