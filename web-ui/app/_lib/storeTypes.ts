@@ -20,11 +20,14 @@ export type AuditMode = 'single-host' | 'allowlist' | 'public-web';
 
 export interface PluginSetupField {
   key: string;
-  label: string;
+  /** #602 (OM-17) — localized label map (`{ en, de, … }`); a manifest may also
+   *  ship a bare string that the loader reads as English. Resolve with
+   *  `pickLocalized`; falls back to `key`. Mirrors middleware admin-v1. */
+  label: LocalizedMarkdown;
   type: SetupFieldType;
-  /** Optional help text from the manifest. Surfaced inline in the
-   *  post-install credentials editor. */
-  help?: string;
+  /** #602 (OM-17) — localized help map from the manifest. Surfaced in the
+   *  install wizard and the post-install editor; render with `pickLocalized`. */
+  help?: LocalizedMarkdown;
   /** Manifest default. The post-install editor pre-selects this value in
    *  an `enum` dropdown when nothing is stored yet. */
   default?: string;
@@ -258,11 +261,28 @@ export interface Plugin {
    *  page and in the install drawer ("how to create a Discord bot", "how to get
    *  M365 credentials"). Mirrors middleware admin-v1. */
   setup_guide?: LocalizedMarkdown;
+  /** OM-15 (#602) — installation-effort profile shown on the store card BEFORE
+   *  install (audience · time · a key prerequisite). From the manifest's
+   *  `listing.setup_profile`. Mirrors middleware admin-v1. Optional. */
+  setup_profile?: SetupProfile;
 }
 
 /** UI text available in several languages, keyed by locale (`en`, `de`, …).
  *  Mirrors `LocalizedMarkdown` in middleware admin-v1. */
 export type LocalizedMarkdown = Record<string, string>;
+
+/** OM-15 (#602) — who performs the plugin's setup. The card resolves this to a
+ *  localized label via next-intl. Mirrors middleware admin-v1 `SetupAudience`. */
+export type SetupAudience = 'it_admin' | 'operator' | 'end_user';
+
+/** OM-15 (#602) — structured install-effort metadata for the store card. The
+ *  card COMPOSES a localized line from these parts (next-intl), so no wording is
+ *  baked into the manifest. Mirrors middleware admin-v1 `SetupProfile`. */
+export interface SetupProfile {
+  audience?: SetupAudience;
+  estimated_minutes?: number;
+  requirement?: LocalizedMarkdown;
+}
 
 export interface StoreListResponse {
   items: Plugin[];
@@ -327,8 +347,10 @@ export type InstallJobState =
 export interface InstallSetupField {
   key: string;
   type: SetupFieldType;
-  label: string;
-  help?: string;
+  /** #602 (OM-17) — localized label map; see `PluginSetupField.label`. */
+  label: LocalizedMarkdown;
+  /** #602 (OM-17) — localized help map; see `PluginSetupField.help`. */
+  help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
   enum?: Array<{ value: string; label: string }>;

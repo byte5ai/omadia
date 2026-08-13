@@ -2904,7 +2904,16 @@
       "updateTitleWithVersion": "Update verfügbar: {from} → {to}",
       "updateSticker": "Update",
       "noDescription": "Keine Beschreibung hinterlegt.",
-      "actionRequired": "Aktion erforderlich"
+      "actionRequired": "Aktion erforderlich",
+      "setupProfileLabel": "Einrichtung",
+      "setupProfile": {
+        "audience": {
+          "it_admin": "Einrichtung durch IT-Administrator",
+          "operator": "Einrichtung durch Betreiber",
+          "end_user": "Einrichtung durch Endnutzer"
+        },
+        "minutes": "ca. {minutes} Min"
+      }
     },
     "stateBadge": {
       "available": "Verfügbar",

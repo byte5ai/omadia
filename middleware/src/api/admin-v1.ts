@@ -47,11 +47,20 @@ export type SetupFieldType =
 
 export interface PluginSetupField {
   key: string;
-  label: string;
+  /**
+   * #602 (OM-17) — the field's label, as a `{ <locale>: text }` map. Authored
+   * either localized (`{ en: "…", de: "…" }`) or as a bare string the loader
+   * reads as English. Resolve with `pickLocalized` at the active locale; falls
+   * back to the field `key` when the map is empty. Localized because a manifest
+   * that shows an English label above German setup instructions is exactly the
+   * two-languages-on-one-page defect OM-17 was raised for.
+   */
+  label: LocalizedMarkdown;
   type: SetupFieldType;
-  /** Manifest-defined help text. Surfaced on the post-install credentials
-   *  editor so the operator sees the same hint as in the install wizard. */
-  help?: string;
+  /** #602 (OM-17) — Manifest-defined help text as a `{ <locale>: text }` map
+   *  (bare string tolerated, read as English). Surfaced on the install wizard
+   *  and the post-install credentials editor; render with `pickLocalized`. */
+  help?: LocalizedMarkdown;
   /** Manifest-defined input placeholder. Optional UI hint surfaced by the
    *  install wizard and post-install editor; loader passes it through
    *  unchanged. */
@@ -518,6 +527,39 @@ export interface Plugin {
    * never parsed for behaviour.
    */
   setup_guide?: LocalizedMarkdown;
+  /**
+   * OM-15 (#602) — installation-effort profile surfaced on the store CARD,
+   * BEFORE install. Declared in the manifest's `listing.setup_profile`. Exists
+   * because a tester installed a plugin, then discovered it needed a Google
+   * Cloud service account, seven enabled APIs and Workspace super-admin rights —
+   * information they should have had while still deciding whether to install.
+   * Optional and additive; absent for plugins that declare no profile.
+   */
+  setup_profile?: SetupProfile;
+}
+
+/**
+ * OM-15 (#602) — who has to perform the setup. Renders as a localized label on
+ * the card (`it_admin` → "Einrichtung durch IT-Administrator"). Unknown values
+ * are dropped by the loader rather than shown raw.
+ */
+export type SetupAudience = 'it_admin' | 'operator' | 'end_user';
+
+/**
+ * OM-15 (#602) — structured installation-effort metadata for the store card.
+ * The platform COMPOSES the display line from these fields via next-intl (so the
+ * card stays localized and the plugin author does not hand-write German), e.g.
+ * "Einrichtung durch IT-Administrator · ca. 15 Min · Google-Workspace-Super-Admin
+ * erforderlich". Every field is optional; the card renders only the parts present.
+ */
+export interface SetupProfile {
+  /** Who performs the setup. Omitted when the manifest value is unrecognised. */
+  audience?: SetupAudience;
+  /** Rough hands-on setup time in minutes. Positive integer; omitted otherwise. */
+  estimated_minutes?: number;
+  /** A single extra prerequisite worth calling out up front (e.g. required
+   *  admin role), as a `{ <locale>: text }` map. Render with `pickLocalized`. */
+  requirement?: LocalizedMarkdown;
 }
 
 /**
@@ -624,8 +666,12 @@ export type InstallJobState =
 export interface InstallSetupField {
   key: string;
   type: SetupFieldType;
-  label: string;
-  help?: string;
+  /** #602 (OM-17) — localized label map; see `PluginSetupField.label`. Both
+   *  projections normalise it identically so the install wizard and the store
+   *  view render the same text. */
+  label: LocalizedMarkdown;
+  /** #602 (OM-17) — localized help map; see `PluginSetupField.help`. */
+  help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
   enum?: Array<{ value: string; label: string }>;

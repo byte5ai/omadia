@@ -1,7 +1,8 @@
 import Link from 'next/link';
-import { AlertTriangle, ArrowUpRight, RefreshCw, Store } from 'lucide-react';
-import { useTranslations } from 'next-intl';
+import { AlertTriangle, ArrowUpRight, RefreshCw, Store, Wrench } from 'lucide-react';
+import { useLocale, useTranslations } from 'next-intl';
 
+import { pickLocalized } from '../../_lib/localized';
 import type { Plugin } from '../../_lib/storeTypes';
 import { Chip } from './Chip';
 import { PluginIcon } from './PluginIcon';
@@ -20,6 +21,24 @@ export function PluginCard({
   initials,
 }: PluginCardProps): React.ReactElement {
   const t = useTranslations('store.card');
+  const locale = useLocale();
+  // OM-15 (#602) — installation-effort line composed from the structured
+  // `setup_profile`, so the wording stays localized (next-intl) rather than
+  // baked into the manifest. Only the parts the manifest declared are shown; an
+  // empty profile renders nothing. This is decision-support the tester lacked
+  // BEFORE install ("~15 min · Google Workspace super-admin required").
+  const profile = plugin.setup_profile;
+  const profileParts = profile
+    ? [
+        profile.audience
+          ? t(`setupProfile.audience.${profile.audience}`)
+          : null,
+        typeof profile.estimated_minutes === 'number'
+          ? t('setupProfile.minutes', { minutes: profile.estimated_minutes })
+          : null,
+        pickLocalized(profile.requirement, locale) ?? null,
+      ].filter((p): p is string => Boolean(p))
+    : [];
   const isLegacy = plugin.categories.includes('legacy');
   const visibleCategories = plugin.categories
     .filter((c) => c !== 'legacy')
@@ -87,6 +106,19 @@ export function PluginCard({
       >
         {plugin.description || <em>{t('noDescription')}</em>}
       </p>
+
+      {/* OM-15 (#602) — setup prerequisites, shown BEFORE install so the
+          effort (IT-admin, time, required admin role) is visible while the
+          operator is still deciding. */}
+      {profileParts.length > 0 ? (
+        <p
+          className="mt-3 flex items-start gap-1.5 text-[12px] leading-relaxed text-[color:var(--fg-subtle)]"
+          title={t('setupProfileLabel')}
+        >
+          <Wrench className="mt-px size-3.5 shrink-0" aria-hidden />
+          <span>{profileParts.join(' · ')}</span>
+        </p>
+      ) : null}
 
       {/* Metadata row. An update-available plugin IS installed — show that
           inline; the update itself is the top-right Störer. */}

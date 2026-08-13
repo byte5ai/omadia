@@ -284,6 +284,10 @@ export function CredentialsEditor({
             field.type === 'oauth'
               ? undefined
               : pickLocalized(field.pattern_hint, locale);
+          // #602 (OM-17) — label/help are localized maps; resolve at the active
+          // locale so this editor shows the same language as the install wizard.
+          const fieldLabel = pickLocalized(field.label, locale);
+          const fieldHelp = pickLocalized(field.help, locale);
           return (
             <li
               key={field.key}
@@ -317,14 +321,14 @@ export function CredentialsEditor({
                     {isSecret ? 'Secret · Vault' : 'Config'}
                   </span>
                 </div>
-                {field.label ? (
+                {fieldLabel ? (
                   <div className="mt-0.5 text-[11px] text-[color:var(--muted-ink)]">
-                    {field.label}
+                    {fieldLabel}
                   </div>
                 ) : null}
-                {field.help ? (
+                {fieldHelp ? (
                   <div className="mt-1 text-[11px] leading-relaxed text-[color:var(--faint-ink)]">
-                    {field.help}
+                    {fieldHelp}
                   </div>
                 ) : null}
                 {/* OM-17 — THE single highest-value line in this file.
