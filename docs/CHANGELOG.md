@@ -18,6 +18,31 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — the persisted run trace records which model answered (#650, epic #642)
+
+- **`RunTrace` / `RunTracePayload`** gain optional `model` and `provider`. The
+  trace recorded how long a turn ran, which sub-agents ran and which tools were
+  called, but not the one fact a provenance question about a past turn starts
+  from. The model id already existed on the `done` event and in the cost
+  telemetry; it just never reached the persisted record.
+- **Stamped once per turn**, right after model routing resolves
+  (`RunTraceCollector.recordModel`), on both the buffered and streaming paths —
+  not threaded through `finish()`'s five call sites, where missing one would
+  leave the field absent on a single exit path and looking recorded elsewhere.
+- **Both knowledge-graph backends** write it, so the answer to "which model
+  wrote this?" does not depend on which store a deployment runs.
+- **No schema migration, and none was needed.** The issue's acceptance criteria
+  asked for one; that premise does not hold for this table.
+  `graph_nodes.properties` is a generic `JSONB` column (`0001_graph_init.sql`)
+  and `RunPropsSchema` is `.passthrough()`, so adding a property is a
+  schema-level change only. The fields are declared optional in the Zod schema
+  anyway — passthrough means "tolerated", and a provenance field that is merely
+  tolerated is one nothing validates and nothing documents. Run nodes written
+  before this change stay valid and readable, which is what a migration would
+  have existed to guarantee.
+- Absent rather than empty when unknown: a trace carrying `model: ''` claims to
+  know and does not.
+
 ### Added — admin UI for the public API keys (#567)
 
 - **Admin UI** (`web-ui/app/admin/api-keys/`): create/list/revoke against

@@ -1612,6 +1612,30 @@ export interface RunTrace {
   /** One entry per sub-agent invocation in invocation-order. */
   agentInvocations: RunAgentInvocation[];
   error?: string;
+  /**
+   * #650 (epic #642) — which model actually produced the answer, e.g.
+   * `claude-sonnet-4-5-20250929`.
+   *
+   * The trace recorded how long a turn ran, which sub-agents ran and which
+   * tools were called, but not the one fact a provenance question about a past
+   * turn starts from. The id already existed in the system (on the `done` event
+   * and in the cost telemetry); it just never reached the persisted record.
+   *
+   * Optional, and that is load-bearing: every trace written before this field
+   * existed stays readable. `graph_nodes.properties` is a generic JSONB column
+   * and `RunPropsSchema` is `.passthrough()`, so no schema migration is
+   * involved — a row simply does not carry the key.
+   */
+  model?: string;
+  /**
+   * #650 — the provider that served the turn (`anthropic`, `openai`, …).
+   *
+   * Recorded alongside the model rather than derived from it: the same model id
+   * can be served through different providers (direct, Bedrock, a gateway), and
+   * a provenance record that infers the route instead of stating it is a
+   * record that can be wrong.
+   */
+  provider?: string;
 }
 
 export interface RunIngestResult {

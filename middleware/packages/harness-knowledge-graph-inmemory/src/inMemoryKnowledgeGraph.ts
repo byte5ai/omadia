@@ -594,6 +594,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
             (acc, inv) => acc + inv.toolCalls.length,
             0,
           ),
+        // #650 (epic #642) — the model that produced the answer and the
+        // provider that served it. Written here as well as in the Neon
+        // implementation: a provenance field present in one backend and absent
+        // in the other means the answer to "which model wrote this?" depends on
+        // which store the deployment happens to run.
+        ...(trace.model ? { model: trace.model } : {}),
+        ...(trace.provider ? { provider: trace.provider } : {}),
         ...(trace.error ? { error: trace.error } : {}),
       },
     });
