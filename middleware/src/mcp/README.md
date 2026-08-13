@@ -132,6 +132,60 @@ If masking is unavailable or fails, the call is **refused** rather than answered
 with unmasked data. You will see an error, not a result. That is intentional and
 not retryable in a tight loop — report it to the operator.
 
+## When a tool needs more input (MRTR)
+
+A tool may answer that it cannot finish without one more value from a human — a
+confirmation, a missing parameter, a disambiguation. Instead of failing with
+prose you cannot act on, the call comes back as
+[MRTR](https://modelcontextprotocol.io/specification/2026-07-28/changelog)
+`input_required`:
+
+```json
+{
+  "resultType": "input_required",
+  "message": "PIN required for this room.",
+  "inputRequests": [
+    { "name": "pin", "label": "PIN", "secret": true, "required": true }
+  ],
+  "content": [{ "type": "text", "text": "PIN required for this room." }]
+}
+```
+
+`content` is populated as well, so a client that predates MRTR still shows the
+human what is being asked for rather than an empty result.
+
+**This is not an error.** `isError` is absent, because the call succeeded — the
+tool asked a question.
+
+To continue, **retry the original request** with the collected values under
+`inputResponses`:
+
+```json
+{
+  "jsonrpc": "2.0", "method": "tools/call", "id": 2,
+  "params": {
+    "name": "book_room",
+    "arguments": { "roomId": "r1", "inputResponses": { "pin": "4711" } }
+  }
+}
+```
+
+Things worth knowing before you build on this:
+
+- **Nothing is parked server-side.** The endpoint is stateless (see above), so
+  the retry must carry the original arguments too — they are not remembered for
+  you. Any instance behind the load balancer can serve the retry.
+- **One round trip, not a loop.** A tool that asks for input *again* on a request
+  that already carried `inputResponses` is refused with an ordinary tool error.
+  You will never be bounced indefinitely.
+- **Render `message` and the field labels as untrusted text.** They are authored
+  by the tool. Field counts and lengths are clamped server-side (at most 8
+  fields; names ≤64 and labels ≤120 characters).
+- **`secret: true` means render it masked.** It is advisory about display only —
+  the value still crosses the wire to the tool.
+- A tool that emits an unusable request errors with the reason named, rather than
+  handing you a half-rendered form.
+
 ## Limits
 
 | Limit | Value |
