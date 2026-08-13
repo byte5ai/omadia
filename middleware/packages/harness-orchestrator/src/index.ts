@@ -244,6 +244,27 @@ export {
 } from './orchestrator.js';
 export type { OrchestratorOptions, AiDisclosureSetup } from './orchestrator.js';
 
+// #579 — org security postures + provenance-labelled inbound screening. The
+// screener backends + per-turn outcome resolution; the shared primitives live
+// in `@omadia/channel-sdk`.
+export {
+  LlmScreener,
+  HttpProxyScreener,
+  screenProvenance,
+  resolveEffectivePosture,
+  parseVerdict,
+  chunkString,
+} from './securityScreener.js';
+export type {
+  SecurityScreener,
+  SecurityVerdict,
+  SecurityScreenMode,
+  SecurityPostureSetup,
+  ScreenOutcome,
+  SecurityAuditEvent,
+  FetchLike,
+} from './securityScreener.js';
+
 // #332 Layer 2 — Direct Line directive parsing & target resolution (exported
 // for unit coverage and reuse by deterministic routers / the Conductor).
 export {

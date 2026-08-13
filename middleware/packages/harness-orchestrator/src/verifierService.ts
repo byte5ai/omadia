@@ -286,6 +286,9 @@ export class VerifierService implements ChatAgent {
     };
     let secondResult: ChatTurnResult;
     try {
+      // #579 — a correction retry re-runs an already-screened user turn; mark it
+      // so the inbound screening gate does not screen/audit it a second time.
+      this.orchestrator.markScreeningReentry(retryInput);
       secondResult = await this.orchestrator.runTurn(retryInput);
     } catch (err) {
       this.log(`[verifier/service] retry FAIL: ${errMsg(err)}`);
@@ -343,6 +346,9 @@ export class VerifierService implements ChatAgent {
     this.log(`[verifier/service] borderline resample run=${runId}`);
     let secondResult: ChatTurnResult;
     try {
+      // #579 — a borderline resample re-runs the same already-screened user
+      // turn; mark it so the inbound gate skips a redundant screen + audit.
+      this.orchestrator.markScreeningReentry(input);
       secondResult = await this.orchestrator.runTurn(input);
     } catch (err) {
       this.log(`[verifier/service] resample FAIL: ${errMsg(err)}`);
