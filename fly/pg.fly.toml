@@ -1,0 +1,37 @@
+# Fly config — Postgres + pgvector for the omadia minimal core.
+# Deployed by fly/deploy.sh (app name is passed via --app).
+#
+# Same image as docker-compose.yaml, so migrations behave identically.
+# Fly's own Postgres offerings don't fit here: the unmanaged postgres-flex
+# image ships without pgvector, and Managed Postgres gates the vector
+# extension behind a dashboard toggle (and starts at a much higher price
+# point). Running the pgvector image as a plain app keeps the stack
+# scriptable end to end.
+#
+# No [http_service] / [[services]]: the database is reachable only over
+# the org's private 6PN network at <app>.internal:5432 — never public.
+# Fly takes daily snapshots of the volume; for managed backups/HA,
+# migrate to Fly Managed Postgres and enable the vector extension there.
+
+primary_region = "fra"
+
+[build]
+  image = "pgvector/pgvector:pg17"
+
+[env]
+  # Subdirectory below the mount: the official postgres image refuses to
+  # initdb into a directory that already contains lost+found (which every
+  # fresh Fly volume does).
+  PGDATA = "/var/lib/postgresql/data/pgdata"
+  POSTGRES_USER = "omadia"
+  POSTGRES_DB = "omadia"
+  # POSTGRES_PASSWORD comes in as a Fly secret (set by deploy.sh).
+
+[mounts]
+  source = "omadia_pgdata"
+  destination = "/var/lib/postgresql/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "1gb"

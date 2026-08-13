@@ -1,0 +1,25 @@
+# Fly config — omadia admin UI (Next.js).
+# Deployed by fly/deploy.sh (app name is passed via --app).
+#
+# MIDDLEWARE_URL comes in as a Fly secret (set by deploy.sh) and points at
+# the middleware app over the org's private 6PN network — the same
+# topology as the compose stack's http://middleware:8080.
+
+primary_region = "fra"
+
+[build]
+  image = "ghcr.io/byte5ai/omadia-web-ui:latest"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # The UI may scale to zero between visits; the proxy cold-starts it.
+  # The middleware underneath stays always-on.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "512mb"

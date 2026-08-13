@@ -1,0 +1,50 @@
+# Fly config — omadia middleware (kernel API + plugin runtime).
+# Deployed by fly/deploy.sh (app name is passed via --app).
+#
+# Secrets set by deploy.sh: DATABASE_URL (points at the pg app over the
+# private network), VAULT_KEY (generated; the GHCR image bakes
+# NODE_ENV=production, which makes the key mandatory at boot — losing it
+# makes vault entries unrecoverable). The LLM key is collected by the
+# first-admin /setup wizard at runtime, so nothing else is required.
+#
+# DEV_ENDPOINTS_ENABLED stays unset on purpose: this app is publicly
+# reachable, and the dev mounts expose raw KG + memory state without auth.
+
+primary_region = "fra"
+
+[build]
+  image = "ghcr.io/byte5ai/omadia-middleware:latest"
+
+[env]
+  # Persist vault, installed.json, builder drafts.db, and uploaded plugin
+  # packages on the volume below instead of the image layer.
+  PLATFORM_DATA_DIR = "/data"
+
+[mounts]
+  source = "omadia_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Keep the kernel always-on: cron routines and channel webhooks
+  # (Teams / Telegram) must not wait for a cold start.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "10s"
+    timeout = "5s"
+    # First boot runs plugin-catalog load + KG migrations + bootstrap
+    # installs. Fly caps HTTP-check grace periods at 1 minute (longer
+    # values are lowered with a deploy warning), so this is the max —
+    # in practice the restart policy covers a slower first boot.
+    grace_period = "60s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "1gb"
