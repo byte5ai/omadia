@@ -29,6 +29,15 @@ export interface UpdaterStatus {
   readonly error: string | null;
   /** Human-readable progress trail, newest last. */
   readonly steps: readonly string[];
+  /** Which executor the sidecar runs (#696). Absent on an older sidecar. */
+  readonly engine?: 'docker' | 'fly';
+  /**
+   * Whether the chosen version survives the operator's next routine deploy.
+   * False on Fly: `fly deploy` reads the operator's local `fly.toml` and
+   * nothing server-side overrides it, so a later plain deploy reverts the app.
+   * Surfaced rather than hidden — the operator has to update that file too.
+   */
+  readonly pinPersisted?: boolean;
 }
 
 export interface UpdaterClient {

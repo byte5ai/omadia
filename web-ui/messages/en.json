@@ -4120,6 +4120,7 @@
     "confirmInstruction": "Type <code>{phrase}</code> to confirm.",
     "confirmWarning": "This replaces the running middleware and admin UI containers. Schema migrations are forward-only — a rollback restores the images, not the database. Snapshot your volume before a major bump.",
     "confirmInputLabel": "Target version",
+    "pinNotPersisted": "This executor cannot make the version stick: your next plain fly deploy reads fly.toml and would put the app back on the old tag. Update the image line there too.",
     "triggerButton": "Update to {version}",
     "triggering": "Starting…",
     "historyTitle": "Update history",

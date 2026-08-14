@@ -18,6 +18,33 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — one-click updates on Fly.io (#696, follow-up to #432)
+
+- **A Fly executor for the rolling self-update.** Fly Machines are Firecracker
+  microVMs with no Docker daemon, so the compose executor could never run
+  there. The updater now has an **engine seam**: `updateJob.mjs` keeps
+  everything platform-independent — the ordering that makes a failure safe, the
+  health gate on the *reported* version, rollback, the protected list — and an
+  engine supplies only the four things that differ. The Fly engine drives the
+  Machines API. **The middleware needed no changes** beyond passing two new
+  status fields through, which is the seam working as intended.
+- **Deployed as its own tiny app**, opt-in via `OMADIA_WITH_UPDATER=1
+  ./fly/deploy.sh`. It has no public address (6PN only), and holds one
+  **app-scoped** deploy token per managed app — a narrower capability than the
+  compose design, where a mounted Docker socket is host-root-equivalent and
+  all-or-nothing. It also has to be a separate app: `/data` is a Fly volume and
+  a volume attaches to exactly one machine, so the middleware is structurally
+  single-machine there and cannot health-gate its own replacement.
+- **The "pull before you stop anything" property is preserved** without a pull
+  step: Fly fetches the image itself, so the engine checks the registry
+  manifest up front. A missing tag now aborts before any machine is told to
+  move, and an unreachable registry is reported as such rather than as a
+  missing tag.
+- **Named the limit instead of hiding it:** the Fly engine reports
+  `pinPersisted: false`, and Admin → Update says so next to the button. On
+  compose the updater writes `OMADIA_VERSION` into the project `.env`; on Fly
+  nothing can, because `fly deploy` reads the operator's local `fly.toml`.
+
 ### Changed — the loopback MCP server runs on the `@modelcontextprotocol/*@2` family (#562, phase 1)
 
 - **`createMcpHandler` replaces a hand-rolled per-request dance.** The loopback

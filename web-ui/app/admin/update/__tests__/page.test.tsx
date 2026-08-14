@@ -213,6 +213,52 @@ describe('/admin/update', () => {
     ).toBeInTheDocument();
   });
 
+  it('warns that the Fly executor cannot make the version stick', async () => {
+    // The updater moves the machines but cannot write the pin — `fly deploy`
+    // reads the operator's local fly.toml. Saying so is the difference between
+    // an informed click and a surprise revert on the next routine deploy.
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        executor: {
+          configured: true,
+          reachable: true,
+          state: 'idle',
+          steps: [],
+          engine: 'fly',
+          pinPersisted: false,
+        },
+      }),
+    );
+    renderWithIntl(<UpdatePage />);
+
+    expect(await screen.findByText(/cannot make the version stick/i)).toBeInTheDocument();
+    // Still offered — this is a caveat, not a blocker.
+    expect(
+      screen.getByRole('button', { name: /update to v0\.75\.0/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('stays quiet about the pin on an executor that does persist it', async () => {
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        executor: {
+          configured: true,
+          reachable: true,
+          state: 'idle',
+          steps: [],
+          engine: 'docker',
+          pinPersisted: true,
+        },
+      }),
+    );
+    renderWithIntl(<UpdatePage />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/target version/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/cannot make the version stick/i)).not.toBeInTheDocument();
+  });
+
   it('refuses to offer an update that could not be recorded', async () => {
     mockGetUpdateStatus.mockResolvedValue(status({ auditAvailable: false }));
     mockGetUpdateHistory.mockResolvedValue({ entries: [], available: false });
