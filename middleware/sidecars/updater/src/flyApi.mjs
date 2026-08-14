@@ -34,6 +34,9 @@ export class FlyApiError extends Error {
  */
 const LEASE_HEADER = (nonce) => ({ 'fly-machine-lease-nonce': nonce });
 
+/** Hard ceiling Fly enforces on `/wait?timeout=` — `[1s, 1m0s]`, 400 above it. */
+const FLY_MAX_WAIT_SECONDS = 60;
+
 /**
  * @param {{ baseUrl?: string, tokenFor: (app: string) => string, timeoutMs?: number }} opts
  */
@@ -171,20 +174,57 @@ export function createFlyApi(opts) {
     },
 
     /**
-     * Block until a Machine reaches a state. Fly caps this server-side; the
-     * caller still runs its own health gate afterwards, because "started" only
-     * means the VM booted, not that the new build is serving.
+     * Block until a Machine reaches a state. The caller still runs its own
+     * health gate afterwards, because "started" only means the VM booted, not
+     * that the new build is serving.
+     *
+     * Fly rejects a `timeout` above 60s outright:
+     * `400 invalid WaitMachineRequest.Timeout: value must be inside range
+     * [1s, 1m0s]`. Asking for more does not get you a longer wait, it gets you
+     * no wait at all — which is how a 120s default turned every update into a
+     * failed one. So the request is capped at the API's maximum and re-issued
+     * until the caller's own budget runs out.
+     *
+     * A wait that returns without reaching the state is not an error, so the
+     * machine is re-read and its state checked explicitly rather than trusting
+     * the endpoint's timeout semantics.
      *
      * @param {string} app @param {string} id @param {string} state @param {number} [seconds]
      */
     async waitForState(app, id, state, seconds = 120) {
-      const query = new URLSearchParams({ state, timeout: String(seconds) });
-      await json(
-        app,
-        'GET',
-        `/v1/apps/${encodeURIComponent(app)}/machines/${encodeURIComponent(id)}/wait?${query.toString()}`,
-        undefined,
-        { timeoutMs: (seconds + 30) * 1000 },
+      const budgetMs = Math.max(1, seconds) * 1000;
+      const startedAt = Date.now();
+      let lastError = null;
+
+      for (;;) {
+        const remainingS = Math.ceil((budgetMs - (Date.now() - startedAt)) / 1000);
+        if (remainingS <= 0) break;
+
+        const slice = Math.min(FLY_MAX_WAIT_SECONDS, remainingS);
+        const query = new URLSearchParams({ state, timeout: String(slice) });
+        try {
+          await json(
+            app,
+            'GET',
+            `/v1/apps/${encodeURIComponent(app)}/machines/${encodeURIComponent(id)}/wait?${query.toString()}`,
+            undefined,
+            { timeoutMs: (slice + 30) * 1000 },
+          );
+        } catch (err) {
+          lastError = err;
+        }
+
+        const machine = await json(
+          app,
+          'GET',
+          `/v1/apps/${encodeURIComponent(app)}/machines/${encodeURIComponent(id)}`,
+        );
+        if (machine?.state === state) return;
+      }
+
+      throw new FlyApiError(
+        `machine ${app}/${id} did not reach "${state}" within ${seconds}s` +
+          (lastError instanceof Error ? `: ${lastError.message}` : ''),
       );
     },
 

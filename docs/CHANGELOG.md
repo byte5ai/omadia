@@ -18,6 +18,27 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — the Fly updater asked for a wait longer than Fly allows (#696)
+
+- **`/wait?timeout=120` is rejected outright.** Fly caps the machine-wait at
+  60s and answers anything larger with
+  `400 invalid WaitMachineRequest.Timeout: value must be inside range
+  [1s, 1m0s]` — asking for more does not buy a longer wait, it buys no wait at
+  all. `waitForState`'s 120s default therefore failed every update on the step
+  right after the image was written. Found on a real deployment, once the
+  lease-nonce fix let the update get that far. The request is now capped at the
+  API maximum and re-issued until the caller's own budget is spent, and the
+  machine's state is re-read and checked explicitly instead of trusting the
+  long-poll's timeout semantics — a `/wait` that errors is not the oracle.
+- **A "rolled back" job now really rolls back.** `replace()` can fail *past the
+  point of mutation*: on Fly the machine is already carrying the new image when
+  the wait step throws. The bookkeeping entry was written only after `replace()`
+  returned, so that case left `replaced` empty, rollback restored nothing, and
+  the operator was told the update had been rolled back while the service ran
+  the new build — exactly what happened in production. The entry is now recorded
+  before the call; restoring an image the service never left is a no-op, so
+  pessimistic bookkeeping is safe in the other direction.
+
 ### Fixed — the Fly updater was blocked by its own lease (#696)
 
 - **Applying an update on Fly always failed and rolled back.** `replace()`
