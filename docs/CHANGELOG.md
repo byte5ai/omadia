@@ -46,6 +46,41 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   converted site. The helper already resolves after `listening`, so a second
   wait could never fire — it hung 12 files to the 120s test timeout.
 
+
+### Added — the public MCP endpoint serves MRTR to 2026-07-28 clients (#700)
+
+- **Two SDK generations behind one path, routed by protocol era.** A request
+  that negotiates the 2025 `initialize` handshake is served by the v1 wiring
+  exactly as before; one carrying the 2026-07-28 envelope is served by
+  `@modelcontextprotocol/server@2`. Neither generation can serve the other's
+  era, which is why this is a router and not a port: the v1 line never answers
+  `server/discover` (so a modern client negotiating against it falls back to
+  legacy, where it strips `resultType` and MRTR becomes invisible to it), and
+  the v2 line refuses to emit omadia's flat `inputRequests` array at all, on
+  either era. Routing is the SDK's own documented composition for this.
+- **The documented 2025 contract is untouched.** Same array dialect, same
+  `arguments.inputResponses` retry, byte for byte — the existing endpoint suite
+  passes unmodified. Modern callers instead get the revision's shape: one
+  embedded `elicitation/create` request and an opaque `requestState`.
+- **`requestState` is integrity-protected, which the spec requires and the SDK
+  does not do for you.** HMAC-SHA256 via the SDK's own codec, over a
+  vault-persisted key (so any instance behind the load balancer can verify what
+  another minted), bound to the API key and the method, one-hour TTL. A
+  modified, expired or borrowed state is refused with the frozen `-32602`.
+  Without a vault the endpoint generates a per-process key and warns — still
+  signed and still verified, just not across instances.
+- **The bounce cap stops being guessable.** On the 2025 dialect it is inferred
+  from `inputResponses` appearing in the arguments, so a caller that strips the
+  key gets a fresh card forever. On the modern dialect the round counter is
+  inside the signed state.
+- **A tool cannot tell which era its caller spoke.** The translation lives
+  entirely in the endpoint: a tool still asks with the `_pendingInputRequest`
+  sentinel and still receives a flat `inputResponses` object.
+- **Known gap, stated rather than papered over:** the revision's elicitation
+  schema has no masked-input concept (`email`, `date`, `uri`, `date-time` are
+  the only string formats), so a field the tool marked `secret` is named in the
+  prose instead of flagged in the schema. Emitting a `password` format anyway
+  would produce a request a conforming client rejects.
 ### Fixed — test servers bound a port they never dialled (CI flake)
 
 - **Intermittent 401/404 in the middleware test suite.** A test would fail with
