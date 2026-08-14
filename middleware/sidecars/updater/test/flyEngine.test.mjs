@@ -222,6 +222,32 @@ describe('fly engine — end to end through runUpdate', () => {
     );
   });
 
+  it('rolls back a machine whose replace failed AFTER the image was written', async () => {
+    // The shape that hit production: the update landed, the wait-for-started
+    // step then failed, and because the bookkeeping entry was only written on
+    // success there was nothing to roll back. The job reported "rolled back"
+    // while the machine was serving the new build.
+    const api = createFakeFlyApi({ waitThrows: true });
+    const engine = createFlyEngine({ config: CONFIG, api, manifestCheck: ok });
+    const before = api.machines.get('omadia-middleware-x').config.image;
+
+    const result = await runUpdate({
+      engine,
+      config: CONFIG,
+      targetVersion: 'v0.75.0',
+      log,
+      healthWaiter: async () => ({ ok: true, reason: 'version_match' }),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.rolledBack, true);
+    assert.equal(
+      api.machines.get('omadia-middleware-x').config.image,
+      before,
+      'a "rolled back" job must actually leave the previous image running',
+    );
+  });
+
   it('rolls both apps back when the health gate fails', async () => {
     const api = createFakeFlyApi();
     const engine = createFlyEngine({ config: CONFIG, api, manifestCheck: ok });

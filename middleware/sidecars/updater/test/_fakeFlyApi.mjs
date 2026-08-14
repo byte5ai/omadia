@@ -14,6 +14,10 @@ export function createFakeFlyApi(options = {}) {
     },
     failUpdateFor = null,
     leaseThrows = false,
+    // Fail the wait-for-started step, i.e. AFTER the machine already carries
+    // the new image. This is the shape the real 400 on `/wait?timeout=120`
+    // had, and the one that made rollback a no-op.
+    waitThrows = false,
   } = options;
 
   const calls = [];
@@ -91,6 +95,12 @@ export function createFakeFlyApi(options = {}) {
 
     async waitForState(app, id, state) {
       calls.push({ op: 'wait', app, id, state });
+      if (waitThrows) {
+        throw new Error(
+          `fly api GET /v1/apps/${app}/machines/${id}/wait?state=${state}&timeout=120 → 400: ` +
+            `{"error":"invalid_argument: invalid WaitMachineRequest.Timeout"}`,
+        );
+      }
     },
 
     async acquireLease(app, id) {
