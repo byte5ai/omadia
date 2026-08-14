@@ -326,7 +326,7 @@ import {
 // W2-1 (#544) — MRTR mid-call user input: the process-shared park store and the
 // replayer registration. See `mcp/pendingMcpInput.ts` for why these are shared.
 import {
-  REPLAY_ARG_KEY,
+  planMcpInputReplay,
   setSharedMcpInputReplayer,
   sharedPendingMcpInputStore,
 } from '@omadia/orchestrator';
@@ -2150,13 +2150,14 @@ async function main(): Promise<void> {
               endpoint: server.endpoint,
               ...(server.privacyBypass ? { privacyBypass: true } : {}),
             };
-            // `originalArgs` first: a server that (incorrectly) declared an
-            // `inputResponses` input field must not be able to shadow the
-            // collected answers with a stale value from the original call.
-            return mcpManager.callTool(cfg, record.toolName, {
-              ...record.originalArgs,
-              [REPLAY_ARG_KEY]: inputResponses,
-            });
+            // #562 phase 3 — the RECORD decides which dialect the retry
+            // speaks: omadia's flat `inputResponses` argument for a 2025-era
+            // peer, the spec's per-request `inputResponses` param plus a
+            // verbatim `requestState` echo for a 2026-07-28 one. See
+            // `planMcpInputReplay` for why that is derived from the card
+            // rather than from the connection.
+            const plan = planMcpInputReplay(record, inputResponses);
+            return mcpManager.callTool(cfg, record.toolName, plan.args, plan.replay);
           },
         });
       }

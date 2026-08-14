@@ -183,6 +183,13 @@ Things worth knowing before you build on this:
   fields; names ≤64 and labels ≤120 characters).
 - **`secret: true` means render it masked.** It is advisory about display only —
   the value still crosses the wire to the tool.
+- **This endpoint speaks the 2025-era dialect only** (`inputRequests` as a flat
+  array). The 2026-07-28 revision instead sends a MAP of whole
+  `elicitation/create` requests plus an opaque `requestState`. omadia's MCP
+  *client* understands both since #562 phase 3 — its `parseMcpInputRequests`
+  branches on the shape — but this server surface still emits only the array
+  form, so a strictly-2026-07-28 client cannot complete MRTR against omadia.
+  Tracked in #700; porting this surface is not part of #562.
 - A tool that emits an unusable request errors with the reason named, rather than
   handing you a half-rendered form.
 

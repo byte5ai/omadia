@@ -35,6 +35,44 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   compose `.env` pin — except nothing server-side can write it, so the operator
   has to. Also corrected the docs' implication that Fly rolls back on its own;
   neither `fly deploy` nor the Machines API does.
+### Added — MRTR reads the declared 2026-07-28 contract, not an SDK internal (#562, phase 3)
+
+- **`callTool` now passes `allowInputRequired: true`.** On a modern-era
+  connection that is what makes the SDK hand an `input_required` result back
+  with `resultType`, `inputRequests` and `requestState` present verbatim,
+  instead of fulfilling it in-process or raising a typed error. Until now MRTR
+  read those fields only because SDK 1.30's `ResultSchema` happens to be a
+  `.passthrough()` — a dependency `mcpClient.ts` already documented as one it
+  did not want.
+- **The elicitation capability is declared** — measured prerequisite, not
+  boilerplate: without it the SDK refuses an embedded `elicitation/create`
+  request with `MissingRequiredClientCapabilityError` *before* the result
+  reaches omadia, so every modern-era MRTR call would fail instead of parking.
+  A decline handler backs the declaration, because omadia genuinely does not
+  answer elicitation in-process — it asks a human over a channel.
+- **The parser learned the spec's dialect.** A 2026-07-28 peer sends
+  `inputRequests` as a MAP of whole elicitation requests, not omadia's flat
+  array; each request's `requestedSchema` properties become card fields, with
+  `required` honoured literally and `format: 'password'` / `writeOnly` marking a
+  field masked. The array dialect is untouched — the *shape* decides, so both
+  eras work on the same code path. `sampling/createMessage` and `roots/list`
+  are reported as `unsupported_request_method` rather than silently dropped: a
+  card missing one of several embedded requests could never satisfy the retry.
+- **`requestState` is adopted instead of running a second park handle.** The
+  server's opaque state rides the parked record and is echoed back byte-exact on
+  the retry, alongside spec-shaped `inputResponses` keyed by the server's own
+  request ids. The tool's `arguments` stay unchanged across the park — on the
+  modern dialect the answers ride the params, not the arguments.
+- **The park-and-ask form survives, which was the explicit risk.** Auto-fulfil
+  stays off, and the bounce cap now reads an explicit replay marker: on the spec
+  dialect there is nothing left in `arguments` for it to recognise, so without
+  that a server asking forever would bounce forever.
+- Coverage is **per era, and each file pins its own era** so neither can quietly
+  stop being exercised: `mcpPendingInput.test.ts` (2025) and the new
+  `mcpModernMrtr.test.ts` (2026-07-28, against a real v2 server, asserting on
+  the wire bodies because v2's server decode consumes the retry params before a
+  raw handler sees them).
+
 ### Changed — the MCP **client** speaks `@modelcontextprotocol/client@2` over `http` (#562, phase 2)
 
 - **Only `http` moved.** `McpManager` now connects streamable-HTTP servers with

@@ -136,6 +136,7 @@ export {
   McpManager,
   MCP_RESULT_TYPE_INPUT_REQUIRED,
   REPLAY_ARG_KEY,
+  planMcpInputReplay,
   extractStructured,
   isInputRequiredResult,
   mcpNativeHandler,

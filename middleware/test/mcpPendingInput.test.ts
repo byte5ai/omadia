@@ -351,7 +351,27 @@ describe('parseMcpInputRequests (#544 W2-1)', () => {
 
   it('MUTATION CHECK: rejects every malformed shape with a distinguishable reason', () => {
     const cases: ReadonlyArray<readonly [unknown, string]> = [
-      [{ not: 'an array' }, 'not_an_array'],
+      // A non-empty plain object is the 2026-07-28 dialect (#562 phase 3), so
+      // it is judged as one — an entry that is not an elicitation request is
+      // reported as such rather than as "not an array", which would have been
+      // an actively misleading diagnosis for a spec-conformant peer.
+      [{ not: 'an array' }, 'unsupported_request_method'],
+      [{ ask: { method: 'sampling/createMessage', params: {} } }, 'unsupported_request_method'],
+      [{ ask: { method: 'elicitation/create', params: {} } }, 'request_without_fields'],
+      [
+        { ask: { method: 'elicitation/create', params: { requestedSchema: { properties: {} } } } },
+        'request_without_fields',
+      ],
+      [
+        {
+          a: { method: 'elicitation/create', params: { requestedSchema: { properties: { pin: {} } } } },
+          b: { method: 'elicitation/create', params: { requestedSchema: { properties: { pin: {} } } } },
+        },
+        'duplicate_field_name',
+      ],
+      // An EMPTY object carries no dialect signal at all, so it stays on the
+      // array branch and keeps its old reason.
+      [{}, 'not_an_array'],
       ['a string', 'not_an_array'],
       [null, 'not_an_array'],
       [undefined, 'not_an_array'],
@@ -504,7 +524,9 @@ function buildMcpServerInstance(): McpSdkServer {
       return {
         content: [{ type: 'text' as const, text: 'need input' }],
         resultType: 'input_required',
-        // Off-spec on purpose: an object where the array belongs.
+        // Off-spec on purpose, and off-spec in BOTH dialects since #562 phase
+        // 3: a non-empty object is read as the 2026-07-28 request map, and a
+        // bare string is not an embedded request.
         inputRequests: { customerNumber: 'Kundennummer' },
       } as never;
     }
@@ -777,7 +799,7 @@ describe('callTool parks an input_required result (#544 W2-1)', () => {
     // A plain tool error — NOT a sentinel, NOT a half-built card.
     assert.ok(out.startsWith('Error:'), out);
     assert.ok(!out.startsWith(MCP_INPUT_REQUIRED_SENTINEL_PREFIX));
-    assert.ok(out.includes('not_an_array'));
+    assert.ok(out.includes('unsupported_request_method'), out);
     assert.equal(h.store.size(), 0, 'nothing may be parked');
     assert.equal(claimFrom(h, out), undefined, 'no card may be claimable');
     assert.equal(h.sidecars.length, 0);
