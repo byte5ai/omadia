@@ -52,6 +52,14 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=8080
+# Build identity (#432). Stamped by .github/workflows/publish-images.yml —
+# `vX.Y.Z` on a release build, `edge`/`sha-<short>` otherwise. `/health` and the
+# admin update page report this; the updater sidecar's health gate polls it to
+# confirm the new image is actually serving before it stops rolling back.
+# Left empty for a local build, which then honestly reports `unknown` rather
+# than repeating package.json's long-stale 0.2.0.
+ARG OMADIA_VERSION=
+ENV OMADIA_VERSION=${OMADIA_VERSION}
 # Optional skills directory. Per-domain SKILL.md bundles ship here when a
 # deployment carries domain-specific runtime prompts. Empty by default.
 ENV SKILLS_DIR=/app/skills

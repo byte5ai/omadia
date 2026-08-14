@@ -163,6 +163,9 @@
         "access": {
           "heading": "Access"
         },
+        "system": {
+          "heading": "System"
+        },
         "danger": {
           "heading": "Danger Zone"
         }
@@ -239,6 +242,10 @@
         "apiKeys": {
           "title": "Public API Keys",
           "description": "Create, list, and revoke bearer credentials for the public chat API."
+        },
+        "update": {
+          "title": "Update",
+          "description": "See the version this instance is running, check for a newer release, and — with the updater overlay deployed — bump the stack from here."
         },
         "dangerZone": {
           "title": "Memory Purge",
@@ -1129,6 +1136,12 @@
     "expiredTitle": "Session expired",
     "expiredBody": "Your session has expired. Please sign in again to continue working.",
     "expiredCta": "Sign in again"
+  },
+  "runtimeReadiness": {
+    "title": "LLM API key missing",
+    "body": "The agent runtime is offline — usually because no LLM API key is configured yet. Add your key in the settings; chat, agents, channels and skills come online right away. Routines additionally need one middleware restart.",
+    "cta": "Open settings",
+    "dismiss": "Later"
   },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} tool calls",
@@ -4074,6 +4087,53 @@
     "resultTitle": "Result ({duration} ms)",
     "scorePhaseTitle": "Phase 1 · SCORE",
     "promotePhaseTitle": "Phase 2 · PROMOTE"
+  },
+  "adminUpdate": {
+    "title": "Update",
+    "intro": "The version this instance is running, whether a newer release exists, and — when the optional updater overlay is deployed — a one-click bump of the running containers.",
+    "versionsTitle": "Versions",
+    "running": "Running",
+    "latest": "Latest release",
+    "latestUnknown": "unknown",
+    "unstamped": "(build not stamped)",
+    "floating": "(moving tag — no comparison possible)",
+    "updateAvailable": "{version} is available.",
+    "upToDate": "This instance is running the latest release.",
+    "checkStale": "The release check could not reach GitHub; the value shown may be out of date.",
+    "checkNow": "Check now",
+    "checking": "Checking…",
+    "notifyOnlyTitle": "Manual update",
+    "notifyOnlyBody": "No updater is configured, so this instance can report versions but not apply an update. Deploy the optional overlay (docker-compose.update.yaml) to enable it, or update manually from the host:",
+    "executorUnreachable": "The updater is configured but did not answer: {message}",
+    "auditUnavailable": "Updates are disabled because no Postgres is connected: a stack replacement that cannot be recorded is not offered.",
+    "inProgressTitle": "Update in progress",
+    "inProgressBody": "The containers are being replaced. This page keeps polling — the middleware is briefly unavailable while it restarts.",
+    "rolledBack": "The last update failed and was rolled back: {message}",
+    "confirmTitle": "Confirm",
+    "confirmInstruction": "Type <code>{phrase}</code> to confirm.",
+    "confirmWarning": "This replaces the running middleware and admin UI containers. Schema migrations are forward-only — a rollback restores the images, not the database. Snapshot your volume before a major bump.",
+    "confirmInputLabel": "Target version",
+    "triggerButton": "Update to {version}",
+    "triggering": "Starting…",
+    "historyTitle": "Update history",
+    "outcomes": {
+      "requested": "requested",
+      "succeeded": "succeeded",
+      "failed": "failed"
+    },
+    "loadError": "Could not load the update status: {message}",
+    "errors": {
+      "confirmation_mismatch": "The confirmation did not match the target version.",
+      "invalid_target_version": "Only release versions like v1.2.3 can be applied — moving tags cannot be rolled back.",
+      "updater_not_configured": "No updater is configured on this instance.",
+      "audit_unavailable": "The update was refused because it could not be recorded.",
+      "update_in_progress": "An update is already running.",
+      "already_on_target": "This instance is already running that version.",
+      "updater_unreachable": "The updater did not answer.",
+      "updater_rejected": "The updater refused the job.",
+      "audit_write_failed": "The audit record could not be written, so the update was not started.",
+      "generic": "The update could not be started: {message}"
+    }
   },
   "adminDangerZone": {
     "title": "Danger Zone · Memory Purge",

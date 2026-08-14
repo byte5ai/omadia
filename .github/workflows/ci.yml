@@ -151,6 +151,12 @@ jobs:
       - name: Test file durations (per-file timeout headroom, #566)
         run: npm run test:filetimes
 
+      # Updater sidecar (#432). It is a STANDALONE zero-dependency `.mjs`
+      # service, so it is outside the `test/**/*.test.ts` glob above and would
+      # otherwise be tested nowhere. No install step — it has no dependencies.
+      - name: Test — updater sidecar (node --test)
+        run: npm run test:updater
+
       # Anti-silent-skip guard (#565). The pg suites self-skip when the DB
       # is unreachable, so a broken/renamed service would once again pass
       # green with zero Postgres coverage. Fail loudly here instead if the

@@ -11,6 +11,7 @@ import { LocaleSwitcher } from './_components/LocaleSwitcher';
 import { Nav } from './_components/Nav';
 import { ThemeControls } from './_components/ThemeControls';
 import { SessionWatcher } from './_components/SessionWatcher';
+import { RuntimeReadinessBanner } from './_components/RuntimeReadinessBanner';
 import { StreamRunner } from './_components/StreamRunner';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
 import { StreamStoreProvider } from './_lib/streamStore';
@@ -153,6 +154,7 @@ export default async function RootLayout({
                   (issue #286, Lume §7.4/§7.6), not in a floating toast. */}
               <StreamRunner />
               <SessionWatcher />
+              <RuntimeReadinessBanner />
             </StreamStoreProvider>
           </ChatSessionsProvider>
         </NextIntlClientProvider>

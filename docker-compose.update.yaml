@@ -1,0 +1,112 @@
+# Optional overlay — operator-triggered rolling self-update (issue #432).
+#
+# Without this overlay omadia runs in NOTIFY-ONLY mode: Admin → Update still
+# shows the running version and flags when a newer release exists, it just
+# cannot apply one. That is the default on purpose — the ability to replace
+# running containers requires Docker Engine access, which is host-root
+# equivalent, and no self-host should acquire that by accident.
+#
+#   # one-time: compose reads the pinned tag from the project-root .env, and
+#   # the updater writes it there, so the file must exist as a FILE before the
+#   # bind mount is created (Docker would otherwise create a directory).
+#   touch .env
+#
+#   # required: the shared secret between middleware and updater
+#   echo "UPDATER_TOKEN=$(openssl rand -hex 24)" >> .env
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d
+#
+# On Linux, set UPDATER_UID/UPDATER_GID in .env to your own uid/gid if it is
+# not 1000 — the sidecar has to be able to write that .env file.
+
+services:
+  middleware:
+    environment:
+      # Presence of this URL is what flips the admin page from notify-only to
+      # "Update"-capable. The token is the same secret the sidecar demands.
+      OMADIA_UPDATER_URL: http://updater:8090
+      OMADIA_UPDATER_TOKEN: ${UPDATER_TOKEN:?UPDATER_TOKEN must be set in the project-root .env}
+
+  # --- Docker Engine API proxy ---------------------------------------------
+  # The ONLY container with the socket mounted. Exposes a narrowed HTTP API to
+  # the compose network; the updater talks to this, never to the socket.
+  #
+  # Endpoints the updater actually uses — audit against this list if you tighten
+  # the allowlist further:
+  #   GET    /_ping
+  #   GET    /containers/json               (find services by compose label)
+  #   GET    /containers/{id}/json          (inspect, to rebuild the container)
+  #   POST   /containers/create|{id}/start|{id}/stop
+  #   DELETE /containers/{id}
+  #   POST   /images/create                 (pull)
+  #   POST   /networks/{id}/connect         (multi-network stacks only)
+  #
+  # `POST=1` is what permits the write methods (POST *and* DELETE). Everything
+  # not listed below stays denied: no exec, no volumes, no secrets, no build,
+  # no swarm — so a compromised updater cannot read secrets or spawn a shell.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      PING: 1
+      VERSION: 1
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      POST: 1
+      # Explicitly off — listed rather than omitted so a future edit has to
+      # make a deliberate decision to turn any of them on.
+      AUTH: 0
+      BUILD: 0
+      COMMIT: 0
+      CONFIGS: 0
+      EXEC: 0
+      NODES: 0
+      PLUGINS: 0
+      SECRETS: 0
+      SERVICES: 0
+      SESSION: 0
+      SWARM: 0
+      SYSTEM: 0
+      TASKS: 0
+      VOLUMES: 0
+    volumes:
+      # Read-only mount: the proxy only needs to read/write the socket stream,
+      # and :ro prevents the socket file itself from being replaced.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # No ports: — reachable only from inside the compose network.
+    networks: [omadia]
+
+  # --- Updater sidecar ------------------------------------------------------
+  updater:
+    build: middleware/sidecars/updater
+    restart: unless-stopped
+    # Must be able to write the project .env. Override in .env when the host
+    # user is not uid 1000.
+    user: '${UPDATER_UID:-1000}:${UPDATER_GID:-1000}'
+    environment:
+      UPDATER_TOKEN: ${UPDATER_TOKEN:?UPDATER_TOKEN must be set in the project-root .env}
+      UPDATER_DOCKER_API: http://docker-socket-proxy:2375
+      UPDATER_SERVICES: middleware,web-ui
+      UPDATER_ENV_FILE: /workspace/.env
+      UPDATER_HEALTH_URL: http://middleware:8080/health
+    volumes:
+      # Single-file bind mount of the compose project's .env — the updater
+      # rewrites OMADIA_VERSION in place so the operator's next manual
+      # `docker compose up -d` keeps the version they chose. `touch .env`
+      # first; Docker creates a DIRECTORY for a missing bind source.
+      - ./.env:/workspace/.env
+    depends_on:
+      - docker-socket-proxy
+    # No ports: — the control plane is compose-network only and bearer-authed.
+    networks: [omadia]
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'node'
+        - '-e'
+        - "fetch('http://localhost:8090/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
