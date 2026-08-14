@@ -26,6 +26,18 @@ export class FlyApiError extends Error {
 }
 
 /**
+ * The header Fly gates writes to a leased Machine on. One definition, used by
+ * both the write path and the release path, so the two can never drift.
+ *
+ * @param {string} nonce
+ * @returns {Record<string, string>}
+ */
+const LEASE_HEADER = (nonce) => ({ 'fly-machine-lease-nonce': nonce });
+
+/** Hard ceiling Fly enforces on `/wait?timeout=` — `[1s, 1m0s]`, 400 above it. */
+const FLY_MAX_WAIT_SECONDS = 60;
+
+/**
  * @param {{ baseUrl?: string, tokenFor: (app: string) => string, timeoutMs?: number }} opts
  */
 export function createFlyApi(opts) {
@@ -38,13 +50,12 @@ export function createFlyApi(opts) {
    * @param {string} method
    * @param {string} path
    * @param {unknown} [body]
-   * @param {{ timeoutMs?: number }} [callOpts]
+   * @param {{ timeoutMs?: number, headers?: Record<string, string> }} [callOpts]
    * @returns {Promise<{ statusCode: number, body: string }>}
    */
   function raw(app, method, path, body, callOpts = {}) {
     return new Promise((resolve, reject) => {
-      const payload =
-        body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+      const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
       const req = transport.request(
         {
           protocol: base.protocol,
@@ -61,6 +72,11 @@ export function createFlyApi(opts) {
                   'content-length': String(payload.byteLength),
                 }
               : {}),
+            // Per-call headers last: a lease nonce must be able to ride along
+            // on writes to a leased Machine. Without a way to send it here the
+            // caller's nonce has nowhere to go and Fly rejects the write with
+            // 409 "lease currently held by" — its own lease.
+            ...(callOpts.headers ?? {}),
           },
           timeout: callOpts.timeoutMs ?? timeoutMs,
         },
@@ -86,7 +102,8 @@ export function createFlyApi(opts) {
 
   /**
    * @param {string} app @param {string} method @param {string} path
-   * @param {unknown} [body] @param {{ timeoutMs?: number }} [callOpts]
+   * @param {unknown} [body]
+   * @param {{ timeoutMs?: number, headers?: Record<string, string> }} [callOpts]
    * @returns {Promise<any>}
    */
   async function json(app, method, path, body, callOpts) {
@@ -108,9 +125,7 @@ export function createFlyApi(opts) {
   return {
     /** @param {string} app @returns {Promise<any[]>} */
     async listMachines(app) {
-      return (
-        (await json(app, 'GET', `/v1/apps/${encodeURIComponent(app)}/machines`)) ?? []
-      );
+      return (await json(app, 'GET', `/v1/apps/${encodeURIComponent(app)}/machines`)) ?? [];
     },
 
     /** @param {string} app @param {string} id @returns {Promise<any>} */
@@ -131,6 +146,10 @@ export function createFlyApi(opts) {
      * single field they mean to change. `current_version` makes a concurrent
      * change fail loudly instead of being overwritten.
      *
+     * `leaseNonce` is REQUIRED whenever the Machine is leased — which is the
+     * normal case here, because `replace()` leases it first. It travels as the
+     * `fly-machine-lease-nonce` header, not in the body.
+     *
      * @param {string} app @param {string} id
      * @param {{ config: any, currentVersion?: string, leaseNonce?: string }} input
      */
@@ -141,29 +160,71 @@ export function createFlyApi(opts) {
         `/v1/apps/${encodeURIComponent(app)}/machines/${encodeURIComponent(id)}`,
         {
           config: input.config,
-          ...(input.currentVersion !== undefined
-            ? { current_version: input.currentVersion }
-            : {}),
+          ...(input.currentVersion !== undefined ? { current_version: input.currentVersion } : {}),
         },
-        { timeoutMs: 5 * 60_000 },
+        {
+          timeoutMs: 5 * 60_000,
+          // Writing to a LEASED Machine requires the lease nonce. Omitting it
+          // makes Fly answer 409 "lease currently held by …" — and since the
+          // caller takes the lease itself moments earlier, the updater ends up
+          // blocked by its own lease and every update rolls back.
+          ...(input.leaseNonce ? { headers: LEASE_HEADER(input.leaseNonce) } : {}),
+        },
       );
     },
 
     /**
-     * Block until a Machine reaches a state. Fly caps this server-side; the
-     * caller still runs its own health gate afterwards, because "started" only
-     * means the VM booted, not that the new build is serving.
+     * Block until a Machine reaches a state. The caller still runs its own
+     * health gate afterwards, because "started" only means the VM booted, not
+     * that the new build is serving.
+     *
+     * Fly rejects a `timeout` above 60s outright:
+     * `400 invalid WaitMachineRequest.Timeout: value must be inside range
+     * [1s, 1m0s]`. Asking for more does not get you a longer wait, it gets you
+     * no wait at all — which is how a 120s default turned every update into a
+     * failed one. So the request is capped at the API's maximum and re-issued
+     * until the caller's own budget runs out.
+     *
+     * A wait that returns without reaching the state is not an error, so the
+     * machine is re-read and its state checked explicitly rather than trusting
+     * the endpoint's timeout semantics.
      *
      * @param {string} app @param {string} id @param {string} state @param {number} [seconds]
      */
     async waitForState(app, id, state, seconds = 120) {
-      const query = new URLSearchParams({ state, timeout: String(seconds) });
-      await json(
-        app,
-        'GET',
-        `/v1/apps/${encodeURIComponent(app)}/machines/${encodeURIComponent(id)}/wait?${query.toString()}`,
-        undefined,
-        { timeoutMs: (seconds + 30) * 1000 },
+      const budgetMs = Math.max(1, seconds) * 1000;
+      const startedAt = Date.now();
+      let lastError = null;
+
+      for (;;) {
+        const remainingS = Math.ceil((budgetMs - (Date.now() - startedAt)) / 1000);
+        if (remainingS <= 0) break;
+
+        const slice = Math.min(FLY_MAX_WAIT_SECONDS, remainingS);
+        const query = new URLSearchParams({ state, timeout: String(slice) });
+        try {
+          await json(
+            app,
+            'GET',
+            `/v1/apps/${encodeURIComponent(app)}/machines/${encodeURIComponent(id)}/wait?${query.toString()}`,
+            undefined,
+            { timeoutMs: (slice + 30) * 1000 },
+          );
+        } catch (err) {
+          lastError = err;
+        }
+
+        const machine = await json(
+          app,
+          'GET',
+          `/v1/apps/${encodeURIComponent(app)}/machines/${encodeURIComponent(id)}`,
+        );
+        if (machine?.state === state) return;
+      }
+
+      throw new FlyApiError(
+        `machine ${app}/${id} did not reach "${state}" within ${seconds}s` +
+          (lastError instanceof Error ? `: ${lastError.message}` : ''),
       );
     },
 
@@ -176,6 +237,27 @@ export function createFlyApi(opts) {
       );
       const nonce = res?.data?.nonce ?? res?.nonce;
       return typeof nonce === 'string' ? nonce : null;
+    },
+
+    /**
+     * Hand the lease back.
+     *
+     * Not cosmetic: an unreleased lease keeps blocking writes for the rest of
+     * its TTL, so a failed run would lock the machine against its own retry
+     * (and against a human running `fly deploy`) for minutes afterwards.
+     * Releasing also needs the nonce — a lease can only be dropped by whoever
+     * holds it.
+     *
+     * @param {string} app @param {string} id @param {string} nonce
+     */
+    async releaseLease(app, id, nonce) {
+      await json(
+        app,
+        'DELETE',
+        `/v1/apps/${encodeURIComponent(app)}/machines/${encodeURIComponent(id)}/lease`,
+        undefined,
+        { headers: LEASE_HEADER(nonce) },
+      );
     },
   };
 }
