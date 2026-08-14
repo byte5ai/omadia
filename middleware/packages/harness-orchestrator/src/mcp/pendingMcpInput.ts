@@ -77,6 +77,18 @@ export interface McpInputField {
   /** Render masked. Advisory: the value still crosses the wire to the server. */
   readonly secret?: boolean;
   readonly required?: boolean;
+  /**
+   * The key of the embedded `input_required` request this field came from
+   * (#562 phase 3, spec dialect only).
+   *
+   * The 2026-07-28 shape is a MAP of whole elicitation requests, and the retry
+   * has to answer it request-by-request — one `inputResponses` entry per key,
+   * each an `ElicitResult`. The card is a flat field list, so this is what
+   * lets the replay put every collected value back under the request that
+   * asked for it. Absent on omadia's own array dialect, which has no such
+   * grouping and replays as a single flat object.
+   */
+  readonly requestKey?: string;
 }
 
 /** A tool call parked mid-flight, waiting for the human to fill in fields. */
@@ -101,6 +113,17 @@ export interface PendingMcpInput {
   readonly prompt?: string;
   /** See {@link MCP_INPUT_MAX_REPLAY_DEPTH}. */
   readonly replayDepth: number;
+  /**
+   * The server's opaque `requestState`, echoed back VERBATIM on the retry
+   * (#562 phase 3). Present only on a 2026-07-28 connection, which is the only
+   * era that mints one.
+   *
+   * Opaque means opaque: it is never parsed, inspected, or used as a key here.
+   * The spec has the *server* treat it as attacker-controlled on re-entry and
+   * protect its own integrity; omadia's side of that contract is to hand back
+   * exactly the bytes it received and nothing else.
+   */
+  readonly requestState?: string;
 }
 
 /** Who a CLAIMED record belongs to. Both components participate in the key. */
@@ -363,7 +386,18 @@ export type McpInputParseFailure =
   | 'empty'
   | 'too_many_fields'
   | 'field_without_name'
-  | 'duplicate_field_name';
+  | 'duplicate_field_name'
+  /**
+   * A spec-shaped embedded request omadia cannot answer with a form (#562
+   * phase 3): `sampling/createMessage` and `roots/list` ask the CLIENT to run
+   * a model or expose filesystem roots, which is not a question for a human
+   * and is deprecated in the same revision anyway. Reported rather than
+   * skipped — silently dropping one of several embedded requests would build
+   * a card that cannot possibly satisfy the server's retry.
+   */
+  | 'unsupported_request_method'
+  /** A spec-shaped elicitation whose `requestedSchema` carries no properties. */
+  | 'request_without_fields';
 
 export type McpInputParseOutcome =
   | { readonly ok: true; readonly fields: readonly McpInputField[] }
@@ -390,6 +424,12 @@ function clamp(value: unknown, max: number): string | undefined {
  * Servers in the wild use all of these and none of them is normative yet.
  */
 export function parseMcpInputRequests(raw: unknown): McpInputParseOutcome {
+  // #562 phase 3 — a 2026-07-28 peer sends a MAP of whole embedded requests,
+  // not omadia's flat array. Both dialects are live at the same time (the
+  // client negotiates per connection), so the shape decides, not the era: a
+  // non-array object goes down the spec branch, everything else keeps the
+  // behaviour 2025-era peers have relied on since #544.
+  if (isRequestMap(raw)) return parseSpecInputRequests(raw);
   if (!Array.isArray(raw)) return { ok: false, reason: 'not_an_array' };
   if (raw.length === 0) return { ok: false, reason: 'empty' };
   if (raw.length > MCP_INPUT_REQUEST_MAX_FIELDS) {
@@ -426,6 +466,98 @@ export function parseMcpInputRequests(raw: unknown): McpInputParseOutcome {
   return { ok: true, fields };
 }
 
+/**
+ * The 2026-07-28 `inputRequests`: a non-empty plain object keyed by
+ * server-assigned request ids. An ARRAY is omadia's own dialect and must not
+ * come down this branch — arrays are objects in JS, so the check is explicit.
+ */
+function isRequestMap(raw: unknown): raw is Record<string, unknown> {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  return Object.keys(raw).length > 0;
+}
+
+/** The only embedded request method a human form can answer. */
+const ELICITATION_METHOD = 'elicitation/create';
+
+/**
+ * Flatten a spec-shaped `inputRequests` map into card fields (#562 phase 3).
+ *
+ * Every entry is a whole `elicitation/create` request whose `requestedSchema`
+ * is a JSON Schema object; its `properties` become the fields, `required`
+ * marks them, and `format: 'password'` / `writeOnly` mark them masked. Each
+ * field remembers the request key it came from so the replay can answer the
+ * server request-by-request rather than as one flat blob.
+ *
+ * Field names are the property names, NOT `key.property`: they are what the
+ * card shows and what the replay writes back into that request's own
+ * `content`, so qualifying them would have to be undone on both ends. A name
+ * colliding across two embedded requests is therefore a genuine ambiguity and
+ * is reported as `duplicate_field_name` rather than silently resolved.
+ */
+function parseSpecInputRequests(map: Record<string, unknown>): McpInputParseOutcome {
+  const fields: McpInputField[] = [];
+  const seen = new Set<string>();
+  for (const [requestKey, entry] of Object.entries(map)) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      return { ok: false, reason: 'unsupported_request_method' };
+    }
+    const request = entry as Record<string, unknown>;
+    if (request['method'] !== ELICITATION_METHOD) {
+      return { ok: false, reason: 'unsupported_request_method' };
+    }
+    const params = request['params'];
+    const schema =
+      params !== null && typeof params === 'object'
+        ? (params as Record<string, unknown>)['requestedSchema']
+        : undefined;
+    const properties =
+      schema !== null && typeof schema === 'object'
+        ? (schema as Record<string, unknown>)['properties']
+        : undefined;
+    if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) {
+      return { ok: false, reason: 'request_without_fields' };
+    }
+    const requiredNames = new Set(
+      Array.isArray((schema as Record<string, unknown>)['required'])
+        ? ((schema as Record<string, unknown>)['required'] as unknown[]).filter(
+            (name): name is string => typeof name === 'string',
+          )
+        : [],
+    );
+    const entries = Object.entries(properties as Record<string, unknown>);
+    if (entries.length === 0) return { ok: false, reason: 'request_without_fields' };
+    for (const [propertyName, propertySchema] of entries) {
+      const name = clamp(propertyName, NAME_MAX);
+      if (name === undefined) return { ok: false, reason: 'field_without_name' };
+      if (seen.has(name)) return { ok: false, reason: 'duplicate_field_name' };
+      seen.add(name);
+      if (fields.length >= MCP_INPUT_REQUEST_MAX_FIELDS) {
+        return { ok: false, reason: 'too_many_fields' };
+      }
+      const shape =
+        propertySchema !== null && typeof propertySchema === 'object'
+          ? (propertySchema as Record<string, unknown>)
+          : {};
+      const label = clamp(shape['title'], LABEL_MAX);
+      const description = clamp(shape['description'], DESCRIPTION_MAX);
+      fields.push({
+        name,
+        requestKey,
+        ...(label !== undefined ? { label } : {}),
+        ...(description !== undefined ? { description } : {}),
+        ...(shape['format'] === 'password' || shape['writeOnly'] === true
+          ? { secret: true }
+          : {}),
+        // Unlike the array dialect, the spec is explicit: a property is
+        // optional unless `required` names it. Nothing is inferred here.
+        ...(requiredNames.has(propertyName) ? { required: true } : {}),
+      });
+    }
+  }
+  if (fields.length === 0) return { ok: false, reason: 'empty' };
+  return { ok: true, fields };
+}
+
 /** Pull the server's prose prompt out of an `input_required` result, if any. */
 export function extractMcpInputPrompt(res: unknown): string | undefined {
   if (res === null || typeof res !== 'object') return undefined;
@@ -433,8 +565,26 @@ export function extractMcpInputPrompt(res: unknown): string | undefined {
   return (
     clamp(shape['message'], PROMPT_MAX) ??
     clamp(shape['prompt'], PROMPT_MAX) ??
-    undefined
+    // #562 phase 3 — the spec dialect has no top-level prose: each embedded
+    // elicitation carries its own `params.message`. The card shows one prompt,
+    // so they are joined in map order. Without this a 2026-07-28 peer's card
+    // would render fields with no explanation of what is being asked.
+    embeddedElicitationPrompt(shape['inputRequests'])
   );
+}
+
+/** Join the `params.message` of every embedded elicitation, in map order. */
+function embeddedElicitationPrompt(raw: unknown): string | undefined {
+  if (!isRequestMap(raw)) return undefined;
+  const messages: string[] = [];
+  for (const entry of Object.values(raw)) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const params = (entry as Record<string, unknown>)['params'];
+    if (params === null || typeof params !== 'object') continue;
+    const message = clamp((params as Record<string, unknown>)['message'], PROMPT_MAX);
+    if (message !== undefined) messages.push(message);
+  }
+  return clamp(messages.join(' '), PROMPT_MAX);
 }
 
 // ── model-facing sentinels ──────────────────────────────────────────────────
