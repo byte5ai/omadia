@@ -4755,6 +4755,14 @@ export interface UpdateStatus {
     steps?: string[];
   };
   auditAvailable: boolean;
+  /** Where the middleware runs. Only used to make the manual instructions
+   *  concrete — `unknown` on compose and anywhere else, which is the generic
+   *  case, not an error. */
+  platform?: {
+    kind: 'fly' | 'unknown';
+    appName?: string;
+    machineId?: string;
+  };
 }
 
 export interface UpdateAuditEntry {

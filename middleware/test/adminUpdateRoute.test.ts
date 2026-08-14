@@ -130,6 +130,9 @@ before(async () => {
     '/api/v1/admin/update',
     createAdminUpdateRouter({
       currentVersion: RUNNING,
+      get platform() {
+        return currentDeps.platform ?? { kind: 'unknown' as const };
+      },
       // Delegate every per-request read to whatever the running test wired up.
       get releaseLookup() {
         return currentDeps.releaseLookup ?? fakeLookup();
@@ -188,6 +191,7 @@ interface StatusBody {
     error?: string;
   };
   auditAvailable: boolean;
+  platform: { kind: string; appName?: string; machineId?: string };
 }
 
 interface ErrorBody {
@@ -254,6 +258,23 @@ describe('GET /api/v1/admin/update/status', () => {
     assert.equal(body.latest, null);
     assert.equal(body.updateAvailable, false);
     assert.equal(body.check.stale, true);
+  });
+
+  it('passes the detected platform through so the UI can name the real app', async () => {
+    const { baseUrl } = harness({
+      platform: { kind: 'fly', appName: 'omadia-middleware-a1b2c3' },
+    });
+    const body = await readJson<StatusBody>(await fetch(`${baseUrl}/status`));
+    assert.deepEqual(body.platform, {
+      kind: 'fly',
+      appName: 'omadia-middleware-a1b2c3',
+    });
+  });
+
+  it('reports an unknown platform without inventing one', async () => {
+    const { baseUrl } = harness();
+    const body = await readJson<StatusBody>(await fetch(`${baseUrl}/status`));
+    assert.deepEqual(body.platform, { kind: 'unknown' });
   });
 
   it('settles open audit rows against the version now running', async () => {

@@ -117,12 +117,26 @@ fly deploy --app omadia-web-ui-<suffix> --config fly/web-ui.fly.toml \
   --image ghcr.io/byte5ai/omadia-web-ui:$VERSION
 ```
 
-`--image` overrides the `[build] image` line in the TOML for that deploy, so
-the config files stay on `:latest` and each upgrade is explicit. Fly keeps the
-previous release: `fly releases --app <app>` then
-`fly deploy --image <previous ref>` (or `fly releases rollback`) puts it back —
-the same forward-only-migration caveat applies, so snapshot the Postgres volume
-first (`fly volumes snapshots create <volume-id>`).
+Admin → Update fills these commands in with your **actual** app names when the
+middleware detects it is running on Fly (it reads `FLY_APP_NAME`), so they are
+copy-pasteable rather than templates.
+
+> **`--image` lasts one deploy.** It overrides the `[build] image` line for that
+> invocation only. Whoever next runs a plain `fly deploy` — a config change, a
+> secret rotation, anyone following the README — puts the app back on whatever
+> the TOML says. **Update the `image` line in `fly/middleware.fly.toml` and
+> `fly/web-ui.fly.toml` too**, or keep pinning `--image` on every future deploy.
+>
+> This is the Fly counterpart to the compose stack's `.env` pin, with one
+> difference worth knowing: on compose the updater writes that pin for you, and
+> on Fly nothing can — `fly deploy` reads the operator's local TOML and no
+> server-side setting overrides it.
+
+Fly keeps the previous release: `fly releases --app <app>` then
+`fly deploy --image <previous ref>` (or `fly releases rollback`) puts it back.
+Neither path rolls back on its own, so watch the deploy — and the same
+forward-only-migration caveat applies, so snapshot the Postgres volume first
+(`fly volumes snapshots create <volume-id>`).
 
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
