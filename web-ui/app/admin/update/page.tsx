@@ -260,9 +260,24 @@ export default function UpdatePage(): React.ReactElement {
             {t('notifyOnlyTitle')}
           </h2>
           <p className="text-[color:var(--fg-muted)]">{t('notifyOnlyBody')}</p>
-          <pre className="mt-3 overflow-x-auto rounded bg-[color:var(--bg)] p-3 font-mono text-xs">
+          {/* Labelled per platform: the executor is compose-only, so an
+              unlabelled `docker compose` line would be actively misleading on
+              a Fly.io or Kubernetes deployment, which reach this same state. */}
+          <p className="mt-3 text-[11px] tracking-wider text-[color:var(--fg-muted)] uppercase">
+            {t('notifyOnlyComposeLabel')}
+          </p>
+          <pre className="mt-1 overflow-x-auto rounded bg-[color:var(--bg)] p-3 font-mono text-xs">
             {`OMADIA_VERSION=${target.length > 0 ? target : 'vX.Y.Z'} docker compose up -d`}
           </pre>
+          <p className="mt-3 text-[11px] tracking-wider text-[color:var(--fg-muted)] uppercase">
+            {t('notifyOnlyFlyLabel')}
+          </p>
+          <pre className="mt-1 overflow-x-auto rounded bg-[color:var(--bg)] p-3 font-mono text-xs">
+            {`fly deploy --app <middleware-app> --config fly/middleware.fly.toml \\\n  --image ghcr.io/byte5ai/omadia-middleware:${target.length > 0 ? target : 'vX.Y.Z'}`}
+          </pre>
+          <p className="mt-3 text-xs text-[color:var(--fg-muted)]">
+            {t('notifyOnlyDocsHint')}
+          </p>
         </section>
       )}
 

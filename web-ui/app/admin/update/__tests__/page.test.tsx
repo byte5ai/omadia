@@ -122,6 +122,25 @@ describe('/admin/update', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('labels the manual commands per platform and offers the Fly one too', async () => {
+    // The executor is compose-only, so Fly.io and Kubernetes deployments land
+    // in exactly this state — an unlabelled `docker compose` line would be
+    // actively misleading there.
+    mockGetUpdateStatus.mockResolvedValue(
+      status({ executor: { configured: false, reachable: false } }),
+    );
+    renderWithIntl(<UpdatePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Docker Compose')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Fly.io')).toBeInTheDocument();
+    expect(
+      screen.getByText(/ghcr\.io\/byte5ai\/omadia-middleware:v0\.75\.0/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/docs\/upgrading\.md/)).toBeInTheDocument();
+  });
+
   it('says so when the updater is configured but unreachable', async () => {
     mockGetUpdateStatus.mockResolvedValue(
       status({
