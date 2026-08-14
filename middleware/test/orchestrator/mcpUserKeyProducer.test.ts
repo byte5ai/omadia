@@ -382,12 +382,31 @@ const CLUSTER_BY_CHANNEL_USER: Record<string, string> = {
   'aad-oid-5678': CANONICAL_UUID_B,
 };
 
+/**
+ * #568 — the IdP subject the operator's web login established on the cluster.
+ * This is the session `sub`, i.e. the key `/mcp-servers/:id/authorize` stored
+ * the `per_user` token under.
+ */
+const AUTH_SUBJECT_KEY = 'aad-oid-1234-provider-subject';
+
 /** The one KG method `resolveTurnOwnerIdentity` calls. */
-function fakeKnowledgeGraph(): KnowledgeGraph {
+function fakeKnowledgeGraph(opts?: {
+  readonly withAuthSubject?: boolean;
+}): KnowledgeGraph {
   return {
     resolveOrCreateChannelIdentity: async (ingest: { channelUserId: string }) =>
       Promise.resolve({
         omadiaUserId: CLUSTER_BY_CHANNEL_USER[ingest.channelUserId] ?? CANONICAL_UUID,
+        // Absent unless some identity in the cluster has been through an
+        // authenticating login — a channel-only user genuinely has none.
+        ...(opts?.withAuthSubject
+          ? {
+              clusterAuthSubject: {
+                provider: 'entra',
+                providerUserId: AUTH_SUBJECT_KEY,
+              },
+            }
+          : {}),
       }),
   } as unknown as KnowledgeGraph;
 }
@@ -397,7 +416,10 @@ interface ChannelHarness {
   readonly probes: Probe[];
 }
 
-function channelHarness(opts?: { readonly withGraph?: boolean }): ChannelHarness {
+function channelHarness(opts?: {
+  readonly withGraph?: boolean;
+  readonly withAuthSubject?: boolean;
+}): ChannelHarness {
   const probes: Probe[] = [];
   const registry = new NativeToolRegistry();
   registry.register(PROBE_TOOL, {
@@ -421,7 +443,13 @@ function channelHarness(opts?: { readonly withGraph?: boolean }): ChannelHarness
     domainTools: [],
     nativeToolRegistry: registry,
     agentId: 'probe-agent',
-    ...(opts?.withGraph === false ? {} : { knowledgeGraph: fakeKnowledgeGraph() }),
+    ...(opts?.withGraph === false
+      ? {}
+      : {
+          knowledgeGraph: fakeKnowledgeGraph({
+            withAuthSubject: opts?.withAuthSubject === true,
+          }),
+        }),
   });
   return { orchestrator, probes };
 }
@@ -443,27 +471,59 @@ async function drainStream(h: ChannelHarness, input: object): Promise<void> {
 }
 
 describe('W4-1 producer — channel turns (orchestrator, option (b))', () => {
-  it('MUTATION CHECK: a Teams turn reaches a per_user server AS the canonical omadia user', async () => {
+  // #568 — REWRITTEN. These two tests previously asserted
+  // `perUser.userKey === CANONICAL_UUID` as the desired outcome. That pinned
+  // the BUG rather than the contract: `/mcp-servers/:id/authorize` stores a
+  // `per_user` OAuth token under the session's `sub` (the IdP subject), never
+  // under the canonical omadia uuid, so a turn keyed on the uuid looks up a
+  // token that was never stored and fails closed 100% of the time. The old
+  // assertions were green because they only ever checked that SOME key was
+  // produced — never that it was a key a token could exist under.
+  //
+  // Same failure mode as the security test called out in #550, which asserted
+  // the vulnerable behaviour and so protected it from being fixed.
+  //
+  // The canonical uuid remains correct for a channel-only user and is still
+  // asserted below — as the FALLBACK it is, not as the goal.
+  it('MUTATION CHECK: a Teams turn reaches a per_user server AS the IdP subject the token is stored under', async () => {
     // Channels go through `chatStream` via `createOrchestratorDispatcher`.
-    const h = channelHarness();
+    const h = channelHarness({ withAuthSubject: true });
     await drainStream(h, teamsTurn);
     assert.equal(h.probes.length, 1, 'the probe tool never ran');
     const { perUser } = h.probes[0]!;
     assert.equal(
       perUser.userKey,
+      AUTH_SUBJECT_KEY,
+      'the channel turn keyed on something other than the IdP subject — the ' +
+        'operator-authorized token stays unreachable and per_user servers stay dead on Teams',
+    );
+    assert.notEqual(
+      perUser.userKey,
       CANONICAL_UUID,
-      'a channel turn resolved no MCP identity — per_user servers stay dead on Teams',
+      'regression: back to the canonical uuid, which no token is ever stored under',
     );
     assert.equal(perUser.blockedWith, null, 'the channel turn was blocked despite a mapped user');
     assert.notEqual(perUser.audited, UNRESOLVED_IDENTITY);
   });
 
-  it('MUTATION CHECK: the buffered path (runTurn) resolves it too', async () => {
-    const h = channelHarness();
+  it('MUTATION CHECK: the buffered path (runTurn) resolves the IdP subject too', async () => {
+    const h = channelHarness({ withAuthSubject: true });
     await h.orchestrator.runTurn(teamsTurn as never);
+    assert.equal(h.probes.length, 1, 'the probe tool never ran');
+    assert.equal(h.probes[0]!.perUser.userKey, AUTH_SUBJECT_KEY);
+    assert.equal(h.probes[0]!.perUser.blockedWith, null);
+  });
+
+  it('a channel-only user (no login on the cluster) still falls back to the canonical uuid', async () => {
+    // Nothing in this cluster has ever authenticated, so there is no IdP
+    // subject to borrow. Behaviour must be byte-identical to before #568
+    // rather than blocked — this user simply has no web-authorized token.
+    const h = channelHarness({ withAuthSubject: false });
+    await drainStream(h, teamsTurn);
     assert.equal(h.probes.length, 1, 'the probe tool never ran');
     assert.equal(h.probes[0]!.perUser.userKey, CANONICAL_UUID);
     assert.equal(h.probes[0]!.perUser.blockedWith, null);
+    assert.notEqual(h.probes[0]!.perUser.audited, UNRESOLVED_IDENTITY);
   });
 
   it('W0-1 preserved: an UNRESOLVABLE channel identity still fails closed', async () => {
