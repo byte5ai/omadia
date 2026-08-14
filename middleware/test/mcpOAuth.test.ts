@@ -1369,7 +1369,7 @@ describe('W2-4 — GET /.well-known/omadia-mcp-client', () => {
     const app = express();
     app.use(createMcpClientMetadataRouter(opts));
     const server: Server = await new Promise((resolve) => {
-      const s = app.listen(0, () => resolve(s));
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
     });
     const port = (server.address() as AddressInfo).port;
     return {
