@@ -18,6 +18,25 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — skill import no longer drops frontmatter silently
+
+- **`parseSkillMarkdown` reports what it cannot read.** omadia's SKILL.md
+  frontmatter is a flat one-line `key: scalar` format. Lines carrying lists or
+  nested mappings — routine in skills authored for other ecosystems — were
+  skipped with a bare `continue`, so an import reported success while the skill
+  landed with data missing. The parser now returns those lines, and the import
+  preview shows them as a warning before the user confirms.
+- **A key whose block could not be parsed is no longer stored as an empty
+  string.** `allowed-tools:` followed by list entries used to persist
+  `allowed-tools: ""` — a value the source file never contained, which then
+  travelled into the skill content hash and the risk scan. Such a key is now
+  reported together with its block instead of being invented, which also keeps
+  two identical dropped entries distinguishable by their owning key.
+- No YAML support was added; the parser stays deliberately flat. The response of
+  `POST /v1/operator/skills/import` gains an `unparsedFrontmatter: string[]`
+  field (additive; the web-ui treats it as optional so an older middleware still
+  type-checks). `loadSkill()` for plugin-borne on-disk skills is unchanged.
+
 ### Added — the updater sidecar is published, and the manual path is per-platform (#432)
 
 - **`ghcr.io/byte5ai/omadia-updater`** is now built and pushed by

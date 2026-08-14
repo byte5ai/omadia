@@ -27,6 +27,13 @@ export interface ParsedSkillMarkdown {
   body: string;
   /** `description` from the frontmatter, or undefined if absent. */
   description: string | undefined;
+  /**
+   * Frontmatter lines carrying data this flat parser cannot represent (list
+   * entries, nested mappings). They are dropped from `frontmatter`; reporting
+   * them lets the caller tell the user what was lost instead of silently
+   * truncating a skill authored for a richer frontmatter dialect.
+   */
+  unparsedLines: readonly string[];
 }
 
 /**
@@ -37,8 +44,13 @@ export interface ParsedSkillMarkdown {
 export function parseSkillMarkdown(raw: string): ParsedSkillMarkdown {
   // Normalize CRLF so Windows-authored SKILL.md files parse their frontmatter
   // (the delimiter checks below are LF-only) and hash identically to LF files.
-  const { frontmatter, body } = splitFrontmatter(raw.replace(/\r\n/g, '\n'));
-  return { frontmatter, body: body.trim(), description: frontmatter['description'] };
+  const { frontmatter, body, unparsedLines } = splitFrontmatter(raw.replace(/\r\n/g, '\n'));
+  return {
+    frontmatter,
+    body: body.trim(),
+    description: frontmatter['description'],
+    unparsedLines,
+  };
 }
 
 /** Emit a YAML scalar, quoting (as JSON, a YAML subset) when it could misparse. */
@@ -72,34 +84,75 @@ export async function loadSkill(skillDir: string): Promise<LoadedSkill> {
   return { sourcePath, description, body: parsed.body };
 }
 
+/** The only frontmatter shape this parser represents: one `key: scalar` line. */
+const SCALAR_LINE_RE = /^([A-Za-z0-9_-]+):\s*(.*)$/;
+
+/** Blank lines and YAML comments hold no data, so skipping them loses nothing. */
+function isIgnorableFrontmatterLine(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed === '' || trimmed.startsWith('#');
+}
+
+/**
+ * True when the next data-bearing line after `index` is one this parser cannot
+ * read — i.e. the key at `index` opens a YAML block (list or nested mapping)
+ * rather than holding an empty scalar.
+ */
+function opensUnparsableBlock(lines: readonly string[], index: number): boolean {
+  for (let i = index + 1; i < lines.length; i++) {
+    const next = lines[i] ?? '';
+    if (isIgnorableFrontmatterLine(next)) continue;
+    return !SCALAR_LINE_RE.test(next);
+  }
+  return false;
+}
+
 function splitFrontmatter(raw: string): {
   frontmatter: Record<string, string>;
   body: string;
+  unparsedLines: readonly string[];
 } {
   // Frontmatter is delimited by `---` on its own lines at the top of the file.
   // Anything else and we treat the whole file as body — no fallback parsing
   // heroics; the skill author should fix the file.
   if (!raw.startsWith('---\n')) {
-    return { frontmatter: {}, body: raw };
+    return { frontmatter: {}, body: raw, unparsedLines: [] };
   }
   const end = raw.indexOf('\n---\n', 4);
   if (end === -1) {
-    return { frontmatter: {}, body: raw };
+    return { frontmatter: {}, body: raw, unparsedLines: [] };
   }
   const fmRaw = raw.slice(4, end);
   const body = raw.slice(end + 5);
 
+  // This parser is deliberately flat: one `key: scalar` per line. Richer YAML
+  // (lists, nested maps) is not supported — but it must not vanish quietly, so
+  // every data-bearing line we cannot represent is collected for the caller.
+  const lines = fmRaw.split('\n');
   const frontmatter: Record<string, string> = {};
-  for (const line of fmRaw.split('\n')) {
-    const match = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
-    if (!match) continue;
+  const unparsedLines: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    const match = SCALAR_LINE_RE.exec(line);
+    if (!match) {
+      if (!isIgnorableFrontmatterLine(line)) unparsedLines.push(line);
+      continue;
+    }
     const key = match[1];
     const value = match[2];
-    if (key !== undefined && value !== undefined) {
-      frontmatter[key] = unquoteScalar(value.trim());
+    if (key === undefined || value === undefined) continue;
+    // `key:` with nothing after it, followed by lines we cannot read, is a YAML
+    // block opener. Storing it as an empty string would invent a value that was
+    // never in the source — and that value would travel into the content hash
+    // and the risk scan. Report the opener with its block instead, so the
+    // reader sees which key the orphaned lines belonged to.
+    if (value.trim() === '' && opensUnparsableBlock(lines, i)) {
+      unparsedLines.push(line);
+      continue;
     }
+    frontmatter[key] = unquoteScalar(value.trim());
   }
-  return { frontmatter, body };
+  return { frontmatter, body, unparsedLines };
 }
 
 /**

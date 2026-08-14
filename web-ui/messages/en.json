@@ -292,6 +292,10 @@
           "updated": "Will update the existing imported skill.",
           "unchanged": "Already imported — no changes."
         },
+        "unparsedFrontmatter": {
+          "title": "Some frontmatter could not be imported",
+          "explain": "omadia reads one “key: value” per line. These lines use lists or nested values, so the keys shown here were not imported. Everything else in the skill imported normally."
+        },
         "risks": {
           "title": "Review before importing — this content looks like it may try to:",
           "code": {
