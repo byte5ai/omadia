@@ -79,7 +79,21 @@ services:
 
   # --- Updater sidecar ------------------------------------------------------
   updater:
-    build: middleware/sidecars/updater
+    # Published to GHCR by the same workflow (and on the same tag) as the
+    # middleware it updates, so a self-hoster needs no source checkout.
+    #
+    # To run a locally built one instead, build it under the same name first:
+    #   docker build -t ghcr.io/byte5ai/omadia-updater:latest \
+    #     middleware/sidecars/updater
+    # (deliberately NOT a `build:` section here: this service is also absent
+    # from docker-compose.build.yaml, so that overlay cannot accidentally
+    # start an updater on a stack that never opted into one.)
+    #
+    # The updater never replaces ITSELF (it is on the protected list — a
+    # container cannot recreate the process doing the recreating), so after an
+    # update it keeps running the old image until the operator's next
+    # `docker compose up -d` picks up the new pin from .env.
+    image: ghcr.io/byte5ai/omadia-updater:${OMADIA_VERSION:-latest}
     restart: unless-stopped
     # Must be able to write the project .env. Override in .env when the host
     # user is not uid 1000.

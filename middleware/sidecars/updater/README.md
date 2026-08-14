@@ -9,6 +9,16 @@ flags a newer release, it just cannot apply one.
 docker compose -f docker-compose.yaml -f docker-compose.update.yaml up -d
 ```
 
+Published as `ghcr.io/byte5ai/omadia-updater` by
+`.github/workflows/publish-images.yml`, on the same tags as the middleware it
+updates — so the overlay pulls it with the same `${OMADIA_VERSION}` as
+everything else and no source checkout is needed. To run a locally built one,
+build it under the same name first:
+
+```bash
+docker build -t ghcr.io/byte5ai/omadia-updater:latest middleware/sidecars/updater
+```
+
 ## Why a sidecar at all
 
 Replacing a running container requires the Docker Engine API, and access to it
@@ -98,6 +108,16 @@ dependencies.
 
 ## Scope
 
-Compose stacks only. Fly.io, Kubernetes and the desktop build have their own
-update paths (the desktop app already auto-updates via `electron-updater`,
-see `desktop/src/updater.ts`) and are explicitly out of scope here.
+Compose stacks only — this sidecar needs a Docker Engine to talk to.
+
+- **Fly.io**: no Docker daemon (Firecracker microVMs), so the sidecar cannot
+  run there. The version surface and the release check still work; applying an
+  update is `fly deploy --image …`, documented in `docs/upgrading.md`.
+- **Kubernetes**: same shape — the update belongs to whatever reconciles the
+  Deployment.
+- **Desktop**: already auto-updates via `electron-updater`
+  (`desktop/src/updater.ts`).
+
+A Fly/Machines-API executor would slot in behind the same
+`middleware/src/update/updaterClient.ts` contract if it is ever wanted; nothing
+in the middleware assumes Docker.

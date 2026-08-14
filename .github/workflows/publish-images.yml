@@ -74,6 +74,15 @@ jobs:
             # proxies became route handlers (app/_lib/middlewareProxy.ts) —
             # nothing middleware-related is baked at build time anymore.
             build_args: ''
+          # Updater sidecar (#432) — the opt-in self-update executor. Rides
+          # THIS workflow so its tag moves in lockstep with the middleware it
+          # updates, which is what lets docker-compose.update.yaml pull it by
+          # the same ${OMADIA_VERSION} as everything else. Zero npm deps, so
+          # the build is seconds; context is the sidecar dir alone.
+          - name: updater
+            image: ghcr.io/byte5ai/omadia-updater
+            context: ./middleware/sidecars/updater
+            dockerfile: ./middleware/sidecars/updater/Dockerfile
           # Dev-platform images (epic #470 W1). Both ride THIS workflow so they
           # stay version-locked to the middleware release under ghcr.io/byte5ai.
           # `sha_on_release: true` also stamps an immutable :sha-<gitsha> on the

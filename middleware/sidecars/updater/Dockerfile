@@ -21,6 +21,13 @@ COPY src ./src
 # UPDATER_TOKEN. Nothing is defaulted here that would weaken that.
 ENV UPDATER_PORT=8090
 
+# Same build stamp every image in this repo carries, passed by
+# publish-images.yml. Not read by any logic here — the updater gates on the
+# MIDDLEWARE's reported version, never its own — but it makes `docker inspect`
+# on a running sidecar answer "which build is this?" during support.
+ARG OMADIA_VERSION=
+ENV OMADIA_VERSION=${OMADIA_VERSION}
+
 # node:22-alpine ships a `node` user (uid 1000); run unprivileged. The bind
 # mount of the project .env must be writable by this uid — see the overlay.
 USER node
