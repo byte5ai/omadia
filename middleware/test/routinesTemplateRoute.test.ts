@@ -99,7 +99,7 @@ async function makeHarness(): Promise<Harness> {
   app.use('/v1/routines', router);
 
   return new Promise<Harness>((resolve) => {
-    const server = app.listen(0, () => {
+    const server = app.listen(0, '127.0.0.1', () => {
       const addr = server.address() as AddressInfo;
       const baseUrl = `http://127.0.0.1:${addr.port}`;
       resolve({

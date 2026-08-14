@@ -315,7 +315,7 @@ async function startHarness(opts: {
   app.use('/api/v1/profiles', router);
 
   const server = await new Promise<Server>((resolve) => {
-    const s = app.listen(0, () => resolve(s));
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   const addr = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${addr.port}`;

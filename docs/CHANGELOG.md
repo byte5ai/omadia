@@ -18,6 +18,35 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — test servers bound a port they never dialled (CI flake)
+
+- **Intermittent 401/404 in the middleware test suite.** A test would fail with
+  a `401 devplatform.unauthorized` on a request that carried perfectly valid
+  session headers, or a `404` on a repo it had just registered — and pass on
+  the next run. The cause was neither the routes nor the fakes: the harnesses
+  bound their server with `app.listen(0)`, which binds the **IPv6** wildcard
+  `[::]`. On macOS/BSD that socket is `IPV6_V6ONLY`, so the kernel reserved the
+  port in the IPv6 ephemeral space only — while every harness handed out
+  `http://127.0.0.1:<port>`, an **IPv4** URL. The two spaces are independent,
+  so the port the test dialled was never reserved at all, and any unrelated
+  process holding that IPv4 port received the request and answered it. Observed
+  foreign responders on a developer machine included a local MCP server
+  (`401 … provide valid authorization token`) and a Flask dev server
+  (`404 Not Found`); a non-HTTP peer surfaced instead as
+  `HTTPParserError: Response does not match the HTTP/1.1 protocol`.
+- Every test listener that already waits for its `listening` callback now binds
+  `127.0.0.1` explicitly (both dev-platform harnesses, 36 call sites in all,
+  plus the updater sidecar's server test), so the reserved port and the dialled
+  port are the same port and the OS guarantees exclusivity — a colliding bind is
+  refused with `EADDRINUSE` instead of silently shadowing the harness.
+  `test/devplatform/harnessLoopbackBinding.test.ts` guards the property so the
+  old shape cannot come back.
+- Note for follow-up work: passing a host makes `listen()` bind
+  **asynchronously**, so the remaining 55 `app.listen(0)` sites that read
+  `server.address().port` synchronously on the next line cannot be converted by
+  adding the host alone — they each need to await `listening` first. They are
+  still exposed to this failure mode.
+
 ### Added — one-click updates on Fly.io (#696, follow-up to #432)
 
 - **A Fly executor for the rolling self-update.** Fly Machines are Firecracker

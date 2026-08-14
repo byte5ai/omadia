@@ -325,7 +325,7 @@ describe('MCP server mutations invalidate the pooled connection (#563)', { concu
       }),
     );
     const started = await new Promise<Server>((resolve) => {
-      const s = app.listen(0, () => resolve(s));
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
     });
     server = started;
     baseUrl = `http://127.0.0.1:${String((started.address() as AddressInfo).port)}`;

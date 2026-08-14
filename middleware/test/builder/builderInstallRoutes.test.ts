@@ -199,7 +199,7 @@ async function createTestApp(opts: {
   );
 
   const server: Server = await new Promise((resolve) => {
-    const s = app.listen(0, () => resolve(s));
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   const port = (server.address() as AddressInfo).port;
 
@@ -402,7 +402,7 @@ describe('POST /api/v1/builder/drafts/:id/install (B.6-1)', () => {
       }),
     );
     const server: Server = await new Promise((resolve) => {
-      const s = expressApp.listen(0, () => resolve(s));
+      const s = expressApp.listen(0, '127.0.0.1', () => resolve(s));
     });
     const port = (server.address() as AddressInfo).port;
     const baseUrl = `http://127.0.0.1:${String(port)}`;
