@@ -849,6 +849,17 @@ export class McpManager {
     }
   >();
 
+  /** #545 — purge generation for the tool-list cache. A purge that lands while
+   *  a `tools/list` fetch is in flight must win over that fetch's cache write:
+   *  the SDK dispatches a `list_changed` notification as a microtask, so it can
+   *  run between the response resolving and `listTools` priming the cache —
+   *  the purge would hit an empty map and the stale-marked list would then be
+   *  cached for its full TTL. `listTools` snapshots this counter before the
+   *  fetch and skips the write when any purge advanced it. Global rather than
+   *  per-server: the false positive (an unrelated purge skipping one write) is
+   *  just one extra fetch, and a purge is rare. */
+  private toolListPurgeGen = 0;
+
   /** Optional audit observer + dispatch guard (issues #462/#454). Existing
    *  `new McpManager()` call sites keep working unchanged. */
   constructor(private readonly options?: McpManagerOptions) {}
@@ -1091,6 +1102,10 @@ export class McpManager {
         this.cachedToolList(privateKey) ?? this.cachedToolList(cfg.id, { publicOnly: true });
       if (hit) return [...structuredClone(hit)];
     }
+    // Snapshot BEFORE the fetch: a purge (list_changed, close) arriving while
+    // the request is in flight advances the generation, and the write below
+    // then steps aside instead of resurrecting an invalidated entry.
+    const purgeGen = this.toolListPurgeGen;
     const { client } = await this.getOrConnect(await this.withResolvedConfig(cfg), token);
     const res = await client.listTools();
     const tools = Array.isArray(res?.tools) ? res.tools : [];
@@ -1118,7 +1133,7 @@ export class McpManager {
       cacheable.ttlMs,
       this.options?.toolListTtlMs ?? envToolListTtlMs(),
     );
-    if (ttl > 0) {
+    if (ttl > 0 && purgeGen === this.toolListPurgeGen) {
       this.toolLists.set(mcpToolListCacheKey(privateKey, cfg.id, cacheable.cacheScope), {
         // Deep-copied on write (and again on read): callers — plugins via
         // `ctx.mcp.listTools()` — must not be able to mutate the cached
@@ -1151,6 +1166,7 @@ export class McpManager {
   /** Drop every cached tool list belonging to server `id` (or to one exact
    *  pool key) — the same scoping rule `close()` applies to connections. */
   private purgeToolLists(id: string): void {
+    this.toolListPurgeGen += 1;
     for (const key of this.toolLists.keys()) {
       if (mcpPoolScopeMatches(key, id)) this.toolLists.delete(key);
     }
@@ -1437,6 +1453,7 @@ export class McpManager {
   }
 
   async closeAll(): Promise<void> {
+    this.toolListPurgeGen += 1;
     this.toolLists.clear();
     await Promise.all([...this.entries.keys()].map((key) => this.dropEntry(key)));
   }
