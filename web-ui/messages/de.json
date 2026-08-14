@@ -163,6 +163,9 @@
         "access": {
           "heading": "Zugang"
         },
+        "system": {
+          "heading": "System"
+        },
         "danger": {
           "heading": "Gefahrenzone"
         }
@@ -239,6 +242,10 @@
         "apiKeys": {
           "title": "Öffentliche API-Schlüssel",
           "description": "Bearer-Zugangsdaten für die öffentliche Chat-API erstellen, auflisten und widerrufen."
+        },
+        "update": {
+          "title": "Update",
+          "description": "Zeigt die laufende Version, prüft auf ein neueres Release und hebt den Stack – mit installiertem Updater-Overlay – direkt von hier an."
         },
         "dangerZone": {
           "title": "Memory-Purge",
@@ -4084,6 +4091,56 @@
     "resultTitle": "Ergebnis ({duration} ms)",
     "scorePhaseTitle": "Phase 1 · SCORE",
     "promotePhaseTitle": "Phase 2 · PROMOTE"
+  },
+  "adminUpdate": {
+    "title": "Update",
+    "intro": "Die Version, die diese Instanz gerade fährt, ob ein neueres Release existiert und – mit installiertem Updater-Overlay – ein Versionssprung der laufenden Container per Klick.",
+    "versionsTitle": "Versionen",
+    "running": "Läuft",
+    "latest": "Neuestes Release",
+    "latestUnknown": "unbekannt",
+    "unstamped": "(Build ohne Versionsstempel)",
+    "floating": "(bewegliches Tag — kein Vergleich möglich)",
+    "updateAvailable": "{version} ist verfügbar.",
+    "upToDate": "Diese Instanz fährt das neueste Release.",
+    "checkStale": "Die Release-Prüfung hat GitHub nicht erreicht; der angezeigte Wert kann veraltet sein.",
+    "checkNow": "Jetzt prüfen",
+    "checking": "Prüfe…",
+    "notifyOnlyTitle": "Manuelles Update",
+    "notifyOnlyBody": "Es ist kein Updater konfiguriert — diese Instanz kann Versionen melden, aber kein Update ausführen. Unter Docker Compose aktiviert das optionale Overlay (docker-compose.update.yaml) die Ausführung. Sonst vom Host aus aktualisieren:",
+    "notifyOnlyComposeLabel": "Docker Compose",
+    "notifyOnlyFlyLabel": "Fly.io",
+    "notifyOnlyDocsHint": "Kubernetes und andere Plattformen: siehe docs/upgrading.md. Die Desktop-App aktualisiert sich selbst.",
+    "executorUnreachable": "Der Updater ist konfiguriert, hat aber nicht geantwortet: {message}",
+    "auditUnavailable": "Updates sind deaktiviert, weil keine Postgres-Verbindung besteht: Ein Stack-Austausch, der nicht protokolliert werden kann, wird nicht angeboten.",
+    "inProgressTitle": "Update läuft",
+    "inProgressBody": "Die Container werden ersetzt. Diese Seite pollt weiter — die Middleware ist während des Neustarts kurz nicht erreichbar.",
+    "rolledBack": "Das letzte Update ist fehlgeschlagen und wurde zurückgerollt: {message}",
+    "confirmTitle": "Bestätigen",
+    "confirmInstruction": "Zum Bestätigen <code>{phrase}</code> eintippen.",
+    "confirmWarning": "Das ersetzt die laufenden Middleware- und Admin-UI-Container. Schema-Migrationen laufen nur vorwärts — ein Rollback stellt die Images wieder her, nicht die Datenbank. Vor einem größeren Sprung ein Volume-Snapshot ziehen.",
+    "confirmInputLabel": "Zielversion",
+    "triggerButton": "Auf {version} aktualisieren",
+    "triggering": "Starte…",
+    "historyTitle": "Update-Historie",
+    "outcomes": {
+      "requested": "angefordert",
+      "succeeded": "erfolgreich",
+      "failed": "fehlgeschlagen"
+    },
+    "loadError": "Update-Status konnte nicht geladen werden: {message}",
+    "errors": {
+      "confirmation_mismatch": "Die Bestätigung stimmt nicht mit der Zielversion überein.",
+      "invalid_target_version": "Nur Release-Versionen wie v1.2.3 sind zulässig — bewegliche Tags lassen sich nicht zurückrollen.",
+      "updater_not_configured": "Auf dieser Instanz ist kein Updater konfiguriert.",
+      "audit_unavailable": "Das Update wurde abgelehnt, weil es nicht protokolliert werden konnte.",
+      "update_in_progress": "Es läuft bereits ein Update.",
+      "already_on_target": "Diese Instanz fährt diese Version bereits.",
+      "updater_unreachable": "Der Updater hat nicht geantwortet.",
+      "updater_rejected": "Der Updater hat den Auftrag abgelehnt.",
+      "audit_write_failed": "Der Audit-Eintrag konnte nicht geschrieben werden, deshalb wurde das Update nicht gestartet.",
+      "generic": "Das Update konnte nicht gestartet werden: {message}"
+    }
   },
   "adminDangerZone": {
     "title": "Danger Zone · Memory-Purge",

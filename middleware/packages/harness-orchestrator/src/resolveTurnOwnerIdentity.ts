@@ -21,28 +21,57 @@ import type { KnowledgeGraph } from '@omadia/plugin-api';
  * id); absent → `input.userId` already IS the canonical uuid (HTTP/CLI turns,
  * and channel kinds the KG model doesn't cover yet) so it's used as-is.
  */
+export interface TurnOwnerIdentity {
+  /**
+   * The canonical omadia user id — what KnowledgeGraph ACLs (dataset
+   * ownership on import and on query) key on.
+   */
+  omadiaUserId?: string;
+  /**
+   * Issue #568 — the IdP subject of the cluster this turn's caller belongs
+   * to, i.e. the session `sub` under which a `per_user` MCP OAuth token was
+   * stored by `/mcp-servers/:id/authorize`.
+   *
+   * Present only when SOME identity in the caller's cluster has been
+   * through an authenticating login. A channel-only user has none, and the
+   * `per_user` server then fails closed exactly as before — absence must be
+   * read as "no token to inherit", never as licence to substitute a key.
+   */
+  authSubjectKey?: string;
+}
+
 export async function resolveTurnOwnerIdentity(
   knowledgeGraph: KnowledgeGraph | undefined,
   input: Pick<ChatTurnInput, 'userId' | 'channelIdentity'>,
-): Promise<string | undefined> {
-  if (!input.channelIdentity) return input.userId;
+): Promise<TurnOwnerIdentity> {
+  if (!input.channelIdentity) {
+    // Non-channel turns carry no cluster to read a subject from; the HTTP
+    // path produces its own `mcpUserKey` from the live session instead.
+    return input.userId ? { omadiaUserId: input.userId } : {};
+  }
   // No KnowledgeGraph wired up ⇒ no way to resolve a channel identity into a
-  // canonical uuid. Deliberately returns undefined rather than guessing with
+  // canonical uuid. Deliberately returns nothing rather than guessing with
   // the raw channel-native id — callers (dataset ACL checks) must degrade to
   // "no identity available" rather than silently using the wrong id.
-  if (!knowledgeGraph) return undefined;
+  if (!knowledgeGraph) return {};
   try {
-    const { omadiaUserId } = await knowledgeGraph.resolveOrCreateChannelIdentity({
-      channelKind: input.channelIdentity.channelKind,
-      channelUserId: input.channelIdentity.channelUserId,
-    });
-    return omadiaUserId;
+    const { omadiaUserId, clusterAuthSubject } =
+      await knowledgeGraph.resolveOrCreateChannelIdentity({
+        channelKind: input.channelIdentity.channelKind,
+        channelUserId: input.channelIdentity.channelUserId,
+      });
+    return {
+      ...(omadiaUserId ? { omadiaUserId } : {}),
+      ...(clusterAuthSubject
+        ? { authSubjectKey: clusterAuthSubject.providerUserId }
+        : {}),
+    };
   } catch (err) {
     console.warn(
       `[harness-orchestrator] resolveTurnOwnerIdentity: channel identity resolution failed — ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
-    return undefined;
+    return {};
   }
 }

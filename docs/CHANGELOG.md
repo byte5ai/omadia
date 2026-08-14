@@ -37,6 +37,24 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   field (additive; the web-ui treats it as optional so an older middleware still
   type-checks). `loadSkill()` for plugin-borne on-disk skills is unchanged.
 
+### Added — the updater sidecar is published, and the manual path is per-platform (#432)
+
+- **`ghcr.io/byte5ai/omadia-updater`** is now built and pushed by
+  `publish-images.yml` on the same tags as the middleware it updates, so
+  `docker-compose.update.yaml` pulls it with the same `${OMADIA_VERSION}` as
+  everything else instead of requiring a source build. Deliberately not added to
+  `docker-compose.build.yaml`: a service defined there would start an updater on
+  stacks that never opted into one.
+- **Admin → Update labels its manual commands per platform.** The executor is
+  compose-only, so Fly.io and Kubernetes deployments land in notify-only mode —
+  where an unlabelled `docker compose up -d` line was actively misleading. The
+  page now shows the compose *and* the `fly deploy --image` form, and points at
+  `docs/upgrading.md` for anything else.
+- **`docs/upgrading.md` gained a Fly.io section**: what Admin → Update can and
+  cannot do there, the middleware-before-web-ui redeploy order, the `/health`
+  version check between the two, rollback via `fly releases`, and the reminder
+  not to redeploy the Postgres app during a version bump.
+
 ### Added — product documentation for the AI marking (#649, epic #642)
 
 - **New `docs/ai-act-transparency.md`** — what omadia actually marks and, just as

@@ -392,3 +392,107 @@ describe('Slice 1b · Neon SQL guards tenant boundary', () => {
     );
   });
 });
+
+describe('#568 · cluster auth subject bridges channel turns to per_user MCP tokens', () => {
+  // The whole point: `/mcp-servers/:id/authorize` stores a per_user OAuth
+  // token under the session `sub` (the IdP subject). A channel turn only ever
+  // knows the canonical omadia uuid. Without a subject on the cluster the two
+  // namespaces never meet and every per_user server fails closed on Teams.
+  const WEB_LOGIN = {
+    channelKind: 'web' as const,
+    channelUserId: 'users-row-uuid-1',
+    email: 'ada@example.com',
+    emailVerified: true,
+    authSubject: { provider: 'entra', providerUserId: 'aad-oid-1234' },
+  };
+
+  it('returns the subject an authenticating login established', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const res = await kg.resolveOrCreateChannelIdentity(WEB_LOGIN);
+    assert.deepEqual(res.clusterAuthSubject, {
+      provider: 'entra',
+      providerUserId: 'aad-oid-1234',
+    });
+  });
+
+  it('a Teams identity merging into that cluster inherits the SUBJECT, not just the uuid', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const web = await kg.resolveOrCreateChannelIdentity(WEB_LOGIN);
+
+    // Same human arriving over Teams; merges on the verified email.
+    const teams = await kg.resolveOrCreateChannelIdentity({
+      channelKind: 'teams',
+      channelUserId: 'aad-oid-1234',
+      email: 'ada@example.com',
+      emailVerified: true,
+    });
+
+    assert.equal(teams.omadiaUserId, web.omadiaUserId, 'the merge itself did not happen');
+    assert.deepEqual(
+      teams.clusterAuthSubject,
+      { provider: 'entra', providerUserId: 'aad-oid-1234' },
+      'the Teams turn cannot see the subject its own operator authorized under — #568 is back',
+    );
+  });
+
+  it('a cluster with no authenticated identity reports NO subject', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const res = await kg.resolveOrCreateChannelIdentity({
+      channelKind: 'telegram',
+      channelUserId: '99887766',
+    });
+    assert.equal(
+      res.clusterAuthSubject,
+      undefined,
+      'a channel-only user must not appear to own an IdP subject — that key would be someone else',
+    );
+  });
+
+  it('backfills the subject on the FAST path, so pre-existing identities are not stranded', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    // Identity minted before the field existed.
+    const before = await kg.resolveOrCreateChannelIdentity({
+      channelKind: 'web',
+      channelUserId: 'users-row-uuid-2',
+    });
+    assert.equal(before.clusterAuthSubject, undefined);
+
+    // Next login re-enters through the fast path.
+    const after = await kg.resolveOrCreateChannelIdentity({
+      channelKind: 'web',
+      channelUserId: 'users-row-uuid-2',
+      authSubject: { provider: 'local', providerUserId: 'ada@example.com' },
+    });
+    assert.equal(after.isNewIdentity, false, 'expected the fast path, not a fresh identity');
+    assert.deepEqual(after.clusterAuthSubject, {
+      provider: 'local',
+      providerUserId: 'ada@example.com',
+    });
+  });
+
+  it('a channel-side re-resolve does NOT erase a subject a login established', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    await kg.resolveOrCreateChannelIdentity(WEB_LOGIN);
+    // Channel adapters never carry an authSubject; re-resolving must merge,
+    // not replace, or a single Teams message would blind the operator's own
+    // per_user servers.
+    const again = await kg.resolveOrCreateChannelIdentity({
+      channelKind: 'web',
+      channelUserId: 'users-row-uuid-1',
+    });
+    assert.deepEqual(again.clusterAuthSubject, {
+      provider: 'entra',
+      providerUserId: 'aad-oid-1234',
+    });
+  });
+
+  it('a half-blank subject is not stored — it would claim authentication and match nothing', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const res = await kg.resolveOrCreateChannelIdentity({
+      channelKind: 'web',
+      channelUserId: 'users-row-uuid-3',
+      authSubject: { provider: 'entra', providerUserId: '   ' },
+    });
+    assert.equal(res.clusterAuthSubject, undefined);
+  });
+});
