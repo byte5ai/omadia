@@ -24,6 +24,7 @@ import type {
 } from '../../src/plugins/builder/previewRuntime.js';
 import { createBuilderRouter } from '../../src/routes/builder.js';
 import type { BuildPipeline } from '../../src/plugins/builder/buildPipeline.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 // Augment express Request with the session shape the production code expects.
 declare module 'express-serve-static-core' {
@@ -283,8 +284,7 @@ async function startHarness(opts: {
     }),
   );
 
-  const server = app.listen(0);
-  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const server = await listenLoopback(app);
   const port = (server.address() as AddressInfo).port;
   const baseUrl = `http://127.0.0.1:${String(port)}`;
 
@@ -800,8 +800,7 @@ describe('builder preview routes', () => {
         next();
       });
       app.use('/api/v1/builder', createBuilderRouter({ store, quota }));
-      const server = app.listen(0);
-      await new Promise<void>((resolve) => server.once('listening', resolve));
+      const server = await listenLoopback(app);
       const port = (server.address() as AddressInfo).port;
 
       const res = await fetch(`http://127.0.0.1:${String(port)}/api/v1/builder/models`);

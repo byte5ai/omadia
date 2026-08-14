@@ -22,6 +22,7 @@ import {
 import { WebhookDeliveryStore } from '../../src/devplatform/triggers/webhookDeliveryStore.js';
 import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from '../../src/devplatform/routes/devWebhooks.js';
 import type { DevRepo } from '../../src/devplatform/types.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 /**
  * Epic #470 W4 — CONCURRENCY regression for the three defects a cross-family
@@ -100,8 +101,7 @@ describe('devplatform/webhook concurrency (pg)', { skip: !pgAvailable }, () => {
     };
     const app = express();
     app.use(createDevWebhooksRouter(deps));
-    const server = app.listen(0);
-    await new Promise((r) => server.once('listening', r));
+    const server = await listenLoopback(app);
     const port = (server.address() as AddressInfo).port;
     return {
       base: `http://127.0.0.1:${port}`,

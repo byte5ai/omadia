@@ -6,6 +6,7 @@ import express, { type RequestHandler } from 'express';
 
 import { createDevPlatformGatesRouter, type DevPlatformGatesDeps } from '../../src/devplatform/routes/devPlatformGates.js';
 import type { DevJobGate, GateAnswer } from '../../src/devplatform/pipeline/gateStore.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 function gate(over: Partial<DevJobGate> = {}): DevJobGate {
   return {
@@ -71,8 +72,7 @@ async function harness(seed: DevJobGate[], roles: Record<string, string[]> = {},
   const app = express();
   app.use(inject);
   app.use('/api/v1/admin/dev-platform', createDevPlatformGatesRouter(deps));
-  const server = app.listen(0);
-  await new Promise<void>((r) => server.once('listening', r));
+  const server = await listenLoopback(app);
   const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/api/v1/admin/dev-platform`;
   return {
     base,

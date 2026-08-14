@@ -13,6 +13,7 @@ import {
   makeJob,
   type Harness,
 } from './devRunnerApi.harness.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 /**
  * Epic #470 W0 — phone-home router contract: the job-token auth gate (no
@@ -340,7 +341,7 @@ describe('devRunnerApi — POST /result', () => {
 });
 
 /**
- * Same guard as the sibling routes test: `app.listen(0)` binds the IPv6
+ * Same guard as the sibling routes test: `await listenLoopback(app)` binds the IPv6
  * wildcard, whose port space is independent of the IPv4 loopback this harness
  * advertises — so the dialled port was never reserved and a foreign process
  * could answer these requests. See that file for the full explanation.

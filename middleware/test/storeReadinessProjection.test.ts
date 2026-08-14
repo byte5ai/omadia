@@ -19,6 +19,7 @@ import { createStoreRouter } from '../src/routes/store.js';
 import type { Plugin, PluginSetupField } from '../src/api/admin-v1.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 function plugin(id: string, over: Partial<Plugin> = {}): Plugin {
   return {
@@ -136,8 +137,7 @@ describe('store router · readiness projection (OM-16)', () => {
       '/store/plugins',
       createStoreRouter({ catalog, registry, vault }),
     );
-    server = app.listen(0);
-    await new Promise((r) => server.once('listening', r));
+    server = await listenLoopback(app);
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   });
 
@@ -222,8 +222,7 @@ describe('store router · readiness projection (OM-16)', () => {
         },
       }),
     );
-    const srv = app.listen(0);
-    await new Promise((r) => srv.once('listening', r));
+    const srv = await listenLoopback(app);
     try {
       const port = (srv.address() as AddressInfo).port;
       const res = await fetch(`http://127.0.0.1:${port}/store/plugins`);
@@ -249,8 +248,7 @@ describe('store router · readiness projection (OM-16)', () => {
     });
     const app = express();
     app.use('/store/plugins', createStoreRouter({ catalog, registry }));
-    const srv = app.listen(0);
-    await new Promise((r) => srv.once('listening', r));
+    const srv = await listenLoopback(app);
     try {
       const port = (srv.address() as AddressInfo).port;
       const res = await fetch(`http://127.0.0.1:${port}/store/plugins`);

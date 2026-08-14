@@ -29,6 +29,7 @@ import type {
   SessionConfigSnapshot,
 } from '@omadia/orchestrator';
 import { createChatRouter } from '../src/routes/chat.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 function fakeChatAgent(label: string): ChatAgent {
   return {
@@ -83,7 +84,7 @@ describe('createChatRouter (Phase A)', () => {
   let availableAgents: Map<string, ChatAgent>;
   let fallbackSlug: string | undefined;
 
-  function mountApp(): void {
+  async function mountApp(): Promise<void> {
     const app = express();
     app.use(express.json());
     app.use(
@@ -101,18 +102,18 @@ describe('createChatRouter (Phase A)', () => {
         }),
       }),
     );
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}/api/chat`;
   }
 
-  before(() => {
+  before(async () => {
     store = new FakeStore();
     availableAgents = new Map();
     availableAgents.set(SLUG_PUBLIC, fakeChatAgent(SLUG_PUBLIC));
     availableAgents.set(SLUG_GENERAL, fakeChatAgent(SLUG_GENERAL));
     fallbackSlug = SLUG_PUBLIC;
-    mountApp();
+    await mountApp();
   });
 
   after(async () => {

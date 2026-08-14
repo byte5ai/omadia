@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import express from 'express';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import { createDevGraphRouter } from '../src/routes/devGraph.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 describe('/api/dev/graph router', () => {
   let server: import('node:http').Server;
@@ -13,7 +14,7 @@ describe('/api/dev/graph router', () => {
   before(async () => {
     const app = express();
     app.use('/api/dev/graph', createDevGraphRouter({ graph }));
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}/api/dev/graph`;
 
@@ -121,7 +122,7 @@ describe('/api/dev/graph router · memories endpoint', () => {
   before(async () => {
     const app = express();
     app.use('/api/dev/graph', createDevGraphRouter({ graph }));
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}/api/dev/graph`;
 

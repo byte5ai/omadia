@@ -25,6 +25,7 @@ import { createStoreRouter } from '../src/routes/store.js';
 import type { Plugin } from '../src/api/admin-v1.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 function plugin(id: string, over: Partial<Plugin> = {}): Plugin {
   return {
@@ -111,8 +112,7 @@ describe('store router · already-provided capability (OM-06 / #671)', () => {
         vault: { listKeys: async (): Promise<string[]> => [] },
       }),
     );
-    server = app.listen(0);
-    await new Promise((r) => server.once('listening', r));
+    server = await listenLoopback(app);
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   });
 

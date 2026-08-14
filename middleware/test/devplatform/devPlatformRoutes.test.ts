@@ -29,6 +29,7 @@ import {
   postJson,
   throwsCode,
 } from './devPlatformRoutes.harness.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 describe('devPlatform — session gate', () => {
   let h: Harness;
@@ -487,7 +488,7 @@ describe('devPlatform — cross-operator authorization (review finding)', () => 
 /**
  * Regression guard for an intermittent 401/404 in this file.
  *
- * `app.listen(0)` binds the IPv6 wildcard `[::]`. On macOS/BSD that socket is
+ * `await listenLoopback(app)` binds the IPv6 wildcard `[::]`. On macOS/BSD that socket is
  * IPV6_V6ONLY, so the kernel reserves the port in the IPv6 ephemeral space
  * only — while the harness hands out `http://127.0.0.1:<port>`, an IPv4 URL.
  * The two spaces are independent, so the dialled port was never reserved and

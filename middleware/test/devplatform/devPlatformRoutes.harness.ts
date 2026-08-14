@@ -23,6 +23,7 @@ import {
   type NewDevJob,
   type NewDevRepo,
 } from '../../src/devplatform/types.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 /**
  * Epic #470 W0 — admin REST + SSE router (`/api/v1/admin/dev-platform`).
@@ -253,16 +254,9 @@ export async function makeHarness(overrides: Partial<DevPlatformRouterDeps> = {}
   });
   app.use('/api/v1/admin/dev-platform', createDevPlatformRouter(deps));
 
-  // Bind the IPv4 loopback explicitly. `listen(0)` binds the IPv6 wildcard
-  // `[::]`, which on macOS/BSD is IPV6_V6ONLY — so the kernel reserves the port
-  // in the IPv6 space only, while `baseUrl` below dials 127.0.0.1 (IPv4). The
-  // two ephemeral port spaces are independent, so the dialled port is never
-  // reserved and an unrelated process holding it silently receives these
-  // requests: the caller then sees that foreign server's answer (a 401, a 404,
-  // or bytes undici cannot parse) instead of ours.
-  const server: Server = await new Promise((resolve) => {
-    const s = app.listen(0, '127.0.0.1', () => resolve(s));
-  });
+  // Binds 127.0.0.1 — the address `baseUrl` below dials. See listenLoopback
+  // for why a wildcard bind lets a stranger answer these requests.
+  const server: Server = await listenLoopback(app);
   const port = (server.address() as AddressInfo).port;
   return {
     server, baseUrl: `http://127.0.0.1:${String(port)}/api/v1/admin/dev-platform`,

@@ -19,6 +19,7 @@ import {
   providerVerifiedAtVaultKey,
 } from '../../src/platform/providerCredentialVerifier.js';
 import type { SecretVault } from '../../src/secrets/vault.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 /**
  * OB-61 — /api/v1/auth/setup integration test. Drives the route via
@@ -203,8 +204,7 @@ async function startHarness(opts: {
     return originalFetch(input as RequestInfo, init);
   }) as typeof fetch;
 
-  const server = app.listen(0);
-  await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+  const server = await listenLoopback(app);
   const port = (server.address() as AddressInfo).port;
 
   return {

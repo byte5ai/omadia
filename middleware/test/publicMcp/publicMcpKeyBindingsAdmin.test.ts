@@ -18,6 +18,7 @@ import {
   type BindingExistenceCheck,
 } from '../../src/routes/publicMcpBindingsRouter.js';
 import { createInMemoryPublicMcpKeyBindingStore } from '../../src/mcp/publicMcpKeyBindings.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 /**
  * W5-1 — the admin surface for `public_mcp_key_bindings`.
@@ -55,11 +56,11 @@ function neverValidOperatorAuth(): { hasValidSession(): Promise<boolean> } {
 
 /** Mounts the router bare — no `requireAuth`, no parent gate. Anything that
  *  reaches a handler did so through the router's OWN `router.use`. */
-function mountRouter(opts: {
+async function mountRouter(opts: {
   store?: PublicMcpKeyBindingAdminStore | undefined;
   operatorAuth?: { hasValidSession(cookie: string | undefined): Promise<boolean> };
   existence?: BindingExistenceCheck;
-}): { server: Server; baseUrl: string } {
+}): Promise<{ server: Server; baseUrl: string }> {
   const app = express();
   app.use(express.json());
   app.use(
@@ -70,7 +71,7 @@ function mountRouter(opts: {
       ...(opts.existence ? { existence: opts.existence } : {}),
     }),
   );
-  const server = app.listen(0);
+  const server = await listenLoopback(app);
   const addr = server.address() as AddressInfo;
   return { server, baseUrl: `http://127.0.0.1:${String(addr.port)}/public-mcp-bindings` };
 }
@@ -89,7 +90,7 @@ async function withRouter(
   opts: Parameters<typeof mountRouter>[0],
   fn: (baseUrl: string) => Promise<void>,
 ): Promise<void> {
-  const { server, baseUrl } = mountRouter(opts);
+  const { server, baseUrl } = await mountRouter(opts);
   try {
     await fn(baseUrl);
   } finally {
@@ -113,8 +114,8 @@ describe('publicMcpBindingsRouter — fails closed without operatorAuth', () => 
   let server: Server;
   let baseUrl: string;
 
-  before(() => {
-    ({ server, baseUrl } = mountRouter({
+  before(async () => {
+    ({ server, baseUrl } = await mountRouter({
       store: createInMemoryPublicMcpKeyBindingAdminStore(),
     }));
   });
@@ -154,9 +155,9 @@ describe('publicMcpBindingsRouter — operator-session gate', () => {
   let baseUrl: string;
   let store: PublicMcpKeyBindingAdminStore;
 
-  before(() => {
+  before(async () => {
     store = createInMemoryPublicMcpKeyBindingAdminStore();
-    ({ server, baseUrl } = mountRouter({ store, operatorAuth: neverValidOperatorAuth() }));
+    ({ server, baseUrl } = await mountRouter({ store, operatorAuth: neverValidOperatorAuth() }));
   });
   after(async () => {
     await new Promise<void>((r) => server.close(() => r()));
@@ -208,9 +209,9 @@ describe('publicMcpBindingsRouter — CRUD (auth stubbed valid)', () => {
   let baseUrl: string;
   let store: PublicMcpKeyBindingAdminStore;
 
-  before(() => {
+  before(async () => {
     store = createInMemoryPublicMcpKeyBindingAdminStore();
-    ({ server, baseUrl } = mountRouter({ store, operatorAuth: alwaysValidOperatorAuth() }));
+    ({ server, baseUrl } = await mountRouter({ store, operatorAuth: alwaysValidOperatorAuth() }));
   });
   after(async () => {
     await new Promise<void>((r) => server.close(() => r()));

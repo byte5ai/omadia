@@ -16,6 +16,7 @@ import type {
   IngestInput,
   IngestResult,
 } from '../src/plugins/packageUploadService.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 const HUB = 'https://hub.test';
 const ZIP = Buffer.from('PK\x03\x04 office plugin zip');
@@ -125,7 +126,7 @@ describe('store router · remote registry merge (C3)', () => {
   let server: Server;
   let base: string;
 
-  before(() => {
+  before(async () => {
     const client = new RegistryClient({
       registries: [{ name: 'omadia-public', url: HUB }],
       log: () => {},
@@ -171,7 +172,7 @@ describe('store router · remote registry merge (C3)', () => {
 
     const app = express();
     app.use('/store', createStoreRouter({ catalog, registry: fakeRegistry, client }));
-    server = app.listen(0);
+    server = await listenLoopback(app);
     base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/store`;
   });
 
@@ -222,7 +223,7 @@ describe('store router · degrades when a registry is down', () => {
     const catalog = fakeCatalog([plugin('@x/localonly')]);
     const app = express();
     app.use('/store', createStoreRouter({ catalog, registry: fakeRegistry, client }));
-    const server = app.listen(0);
+    const server = await listenLoopback(app);
     const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/store`;
     try {
       const res = await fetch(base);
@@ -246,7 +247,7 @@ describe('store router · detail resolves a remote-only plugin (C3)', () => {
     });
     const app = express();
     app.use('/store', createStoreRouter({ catalog: fakeCatalog([]), registry: fakeRegistry, client }));
-    const server = app.listen(0);
+    const server = await listenLoopback(app);
     const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/store`;
     try {
       const res = await fetch(`${base}/${encodeURIComponent('@omadia/plugin-office')}`);
@@ -318,7 +319,7 @@ describe('store router · setup_guide flows from the registry manifest_summary',
     });
     const app = express();
     app.use('/store', createStoreRouter({ catalog: fakeCatalog([]), registry: fakeRegistry, client }));
-    const server = app.listen(0);
+    const server = await listenLoopback(app);
     const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/store`;
     try {
       const res = await fetch(`${base}/${encodeURIComponent('@omadia/channel-discord')}`);
@@ -341,7 +342,7 @@ describe('store router · setup_guide flows from the registry manifest_summary',
     });
     const app = express();
     app.use('/store', createStoreRouter({ catalog: fakeCatalog([]), registry: fakeRegistry, client }));
-    const server = app.listen(0);
+    const server = await listenLoopback(app);
     const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/store`;
     try {
       const res = await fetch(`${base}/${encodeURIComponent('@omadia/plugin-office')}`);
@@ -409,7 +410,7 @@ function indexWith(id: string, latest: string): string {
 
 const TEAMS = '@omadia/channel-teams';
 
-function storeServer(catalogPlugins: Plugin[], installed: Record<string, string>, hubLatest: string) {
+async function storeServer(catalogPlugins: Plugin[], installed: Record<string, string>, hubLatest: string) {
   const client = new RegistryClient({
     registries: [{ name: 'omadia-public', url: HUB }],
     log: () => {},
@@ -426,14 +427,14 @@ function storeServer(catalogPlugins: Plugin[], installed: Record<string, string>
       client,
     }),
   );
-  const server = app.listen(0);
+  const server = await listenLoopback(app);
   const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/store`;
   return { server, base };
 }
 
 describe('store router · update detection (C6)', () => {
   it('flags update-available + available_version when the hub is newer', async () => {
-    const { server, base } = storeServer(
+    const { server, base } = await storeServer(
       [plugin(TEAMS, { version: '0.10.1', kind: 'channel' })],
       { [TEAMS]: '0.10.1' },
       '0.11.0',
@@ -450,7 +451,7 @@ describe('store router · update detection (C6)', () => {
   });
 
   it('stays installed when the hub is NOT newer (numeric semver: 0.10.1 > 0.2.0)', async () => {
-    const { server, base } = storeServer(
+    const { server, base } = await storeServer(
       [plugin(TEAMS, { version: '0.10.1', kind: 'channel' })],
       { [TEAMS]: '0.10.1' },
       '0.2.0',
@@ -467,7 +468,7 @@ describe('store router · update detection (C6)', () => {
   });
 
   it('detail endpoint flags update-available for an installed plugin', async () => {
-    const { server, base } = storeServer(
+    const { server, base } = await storeServer(
       [plugin(TEAMS, { version: '0.10.1', kind: 'channel' })],
       { [TEAMS]: '0.10.1' },
       '0.11.0',
@@ -510,7 +511,7 @@ describe('registry install router (C2)', () => {
     },
   } as unknown as PackageUploadService;
 
-  before(() => {
+  before(async () => {
     const app = express();
     app.use(express.json());
     app.use(
@@ -522,7 +523,7 @@ describe('registry install router (C2)', () => {
         registry: fakeRegistry,
       }),
     );
-    server = app.listen(0);
+    server = await listenLoopback(app);
     base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/install/registry`;
   });
 
@@ -595,7 +596,7 @@ describe('registry install router · no registries configured', () => {
         registry: fakeRegistry,
       }),
     );
-    const server = app.listen(0);
+    const server = await listenLoopback(app);
     const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/install/registry`;
     try {
       const res = await fetch(`${base}/${encodeURIComponent('@omadia/plugin-office')}`, { method: 'POST' });

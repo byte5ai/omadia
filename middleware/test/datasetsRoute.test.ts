@@ -9,6 +9,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 
 import { createDatasetsRouter } from '../src/routes/datasets.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 /**
  * HTTP integration test for the #430 datasets REST surface, mirroring the
@@ -45,8 +46,7 @@ async function makeHarness(
   const app = express();
   app.use(express.json());
   app.use(MOUNT, withSession(userId), createDatasetsRouter({ graph }));
-  const server: Server = app.listen(0);
-  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const server: Server = await listenLoopback(app);
   const { port } = server.address() as AddressInfo;
   return {
     baseUrl: `http://127.0.0.1:${String(port)}${MOUNT}`,

@@ -33,6 +33,7 @@ import type {
   ForgeIssue,
 } from '../../src/devplatform/forgeClient.js';
 import type { DevJobProvisionInput, RunnerBackend, RunnerHandle } from '../../src/devplatform/types.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 /**
  * Epic #470 W1 — the golden fixture. The graph sink of the wave: one job, driven
@@ -357,8 +358,7 @@ describe('dev-platform golden fixture (pg + git)', { skip: !pgAvailable || !gitA
       next();
     };
     app.use('/api', requireAuth, (_req, _res, next) => next());
-    server = app.listen(0);
-    await new Promise<void>((r) => server.once('listening', r));
+    server = await listenLoopback(app);
     baseUrl = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
 
     wired = assembleDevPlatform({

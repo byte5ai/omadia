@@ -17,6 +17,7 @@ import type {
   DevGithubAppInstallation,
   DevGithubAppSecrets,
 } from '../../src/devplatform/githubApp/appStore.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 // A real RSA key so mintAppJwt can actually sign. Generated at runtime — never a
 // literal in this file (the fixture below stands in for a real one everywhere else).
@@ -141,8 +142,7 @@ async function harness(opts: HarnessOpts = {}) {
   app.use(inject);
   app.use('/api/v1/admin/dev-platform', routers.admin);
   app.use('/bot-api/v1/dev-platform', routers.public);
-  const server = app.listen(0);
-  await new Promise<void>((r) => server.once('listening', r));
+  const server = await listenLoopback(app);
   const port = String((server.address() as AddressInfo).port);
   return {
     state,
@@ -181,8 +181,7 @@ async function mountLikeIndex(deps: DevPlatformGithubAppDeps): Promise<{
   app.use('/api', requireAuth, (_req, _res, next) => next());
   app.use('/api/v1/admin/dev-platform', requireAuth, routers.admin);
   app.use('/api/v1/dev-platform', routers.public);
-  const server = app.listen(0);
-  await new Promise<void>((r) => server.once('listening', r));
+  const server = await listenLoopback(app);
   const port = String((server.address() as AddressInfo).port);
   return {
     admin: `http://127.0.0.1:${port}/api/v1/admin/dev-platform`,

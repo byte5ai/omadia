@@ -24,7 +24,11 @@ function stamp(message: Record<string, unknown>, turnId: string, canvasSessionId
 }
 
 export function startStubServer(port = 0): Promise<{ port: number; close: () => Promise<void> }> {
-  const wss = new WebSocketServer({ port, path: '/omadia-ui/canvas' });
+  // `host` is explicit for the same reason the HTTP test helper binds it: with
+  // `port = 0` and no host the socket lands on the wildcard, whose chosen port
+  // is not reserved against a process holding that port on 127.0.0.1 — the
+  // address every caller below actually dials.
+  const wss = new WebSocketServer({ port, host: '127.0.0.1', path: '/omadia-ui/canvas' });
 
   wss.on('connection', (ws: WebSocket) => {
     const handshakeId = `hs-${Math.random().toString(36).slice(2)}`;
