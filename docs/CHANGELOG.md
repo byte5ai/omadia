@@ -18,6 +18,28 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — the loopback MCP server runs on the `@modelcontextprotocol/*@2` family (#562, phase 1)
+
+- **`createMcpHandler` replaces a hand-rolled per-request dance.** The loopback
+  server built a fresh `Server` + stateless `StreamableHTTPServerTransport` for
+  every request and tore both down in a `finally`, purely because v1 throws
+  `'Stateless transport cannot be reused across requests'` on a transport's
+  second use. v2 offers that per-request-instance model as the serving entry
+  itself, so the workaround and its teardown block are deleted rather than
+  ported. `toNodeHandler` bridges the handler's web-standard `fetch` to the
+  Node `(req, res)` this server speaks.
+- **No wire change.** Statelessness, the POST-only `405` on the standalone SSE
+  stream, the `413` body cap, bearer auth, and name-sorted `tools/list` all
+  behave exactly as before — the existing suite passes unmodified, and the
+  omadia MCP *client* (still on v1) talks to the ported server unchanged, which
+  is the cross-era interop check.
+- **Scope is deliberately one surface.** The public MCP endpoint is NOT ported
+  in this phase: it serves MRTR (`resultType: "input_required"`, #544/#570), and
+  v2 offers no mode that reproduces that wire shape on a 2025-era connection —
+  its legacy shim converts the return into server→client `elicitation/create`
+  requests, and disabling the shim makes the same return fail loudly. Tracked on
+  #562.
+
 ### Fixed — skill import no longer drops frontmatter silently
 
 - **`parseSkillMarkdown` reports what it cannot read.** omadia's SKILL.md
