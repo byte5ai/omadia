@@ -14,7 +14,20 @@ Forward-only SQL migrations for the Omadia middleware (Neon Postgres).
 
 ## Runner
 
-The migration runner and its applied-migrations bookkeeping table are
-introduced with the multi-orchestrator runtime config tables — see
-`specs/001-multi-orchestrator-runtime/tasks.md` task T027 (US4). Until
-then this directory holds the convention only.
+`runMultiOrchestratorMigrations` in
+`middleware/packages/harness-orchestrator/src/registry/migrator.ts` applies
+this directory, and the harness-orchestrator plugin calls it during activation
+— so these migrations run automatically at boot, they are not operator-applied.
+The Docker image gets the directory via `COPY middleware/migrations ./migrations`
+(tsc does not bundle `.sql`), which is the path the runner's
+`defaultMigrationsDir()` resolves to.
+
+> This section previously said the runner was still to come with
+> `specs/001-multi-orchestrator-runtime` task T027. It landed; the note was
+> stale, and #432 depended on knowing which way round it is — an operator-facing
+> one-click update needs to know whether a version bump also migrates.
+
+Other subsystems keep their own independent series with their own runners and
+bookkeeping tables (`auth/migrations`, `conductor/migrations`,
+`plugins/routines/migrations`, `profileStorage/migrations`,
+`profileSnapshots/migrations`), so numbering here is independent of theirs.

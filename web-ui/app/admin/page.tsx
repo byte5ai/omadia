@@ -88,6 +88,13 @@ const GROUPS: readonly GroupDef[] = [
     ],
   },
   {
+    key: 'system',
+    // Rolling self-update (#432). Always shown: even without the opt-in
+    // updater overlay the page is the honest answer to "what version am I
+    // running, and is there a newer one".
+    cards: [{ href: '/admin/update', key: 'update' }],
+  },
+  {
     key: 'danger',
     cards: [{ href: '/admin/danger-zone', key: 'dangerZone', danger: true }],
   },

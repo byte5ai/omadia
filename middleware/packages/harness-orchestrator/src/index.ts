@@ -65,6 +65,10 @@ export {
   ensureFallbackAgent,
   attachAllPlugins,
   FALLBACK_AGENT_SLUG,
+  // #679 / I5 — exported so a locale-aware surface can recognise the
+  // server-written seed prose and render its own copy instead.
+  FALLBACK_AGENT_SEED_NAME,
+  FALLBACK_AGENT_SEED_DESCRIPTION,
 } from './registry/onboarding.js';
 export type { OnboardingOptions } from './registry/onboarding.js';
 // US8 — per-Agent memory scope.
@@ -405,9 +409,37 @@ export type { RunTracePayload } from '@omadia/channel-sdk';
 export { SteeringBus, steeringBus, MAX_STEER_LENGTH } from './steeringBus.js';
 export type { SteerEnqueueResult } from './steeringBus.js';
 
+// #648 — resolved AI-Act marking posture, published to the ServiceRegistry and
+// projected onto `/health` + the operator dashboard.
+export {
+  AI_DISCLOSURE_CHANNEL_KINDS,
+  AI_DISCLOSURE_POSTURE_SERVICE,
+  describeAiDisclosurePosture,
+  formatDisclosureBootWarning,
+  resolveDisclosureLevelForChannel,
+} from './aiDisclosurePosture.js';
+export type {
+  AiDisclosureChannelKind,
+  AiDisclosurePosture,
+  ChannelPosture,
+} from './aiDisclosurePosture.js';
+
 // Session logger + chat-session store
 export { SessionLogger, graphScopeFor } from './sessionLogger.js';
 export type { SessionLogEntry } from './sessionLogger.js';
+
+// #684 — run-trace outcome tallies. Exported so an operator surface can read
+// how often the trace was dropped without SessionLogger growing a reporting
+// responsibility of its own.
+export {
+  RunTraceOutcomeStats,
+  recordRunTraceOutcome,
+  RUN_TRACE_RECORDED,
+} from './runTraceObservability.js';
+export type {
+  RunTraceOutcome,
+  RunTraceOutcomeCounts,
+} from './runTraceObservability.js';
 export {
   ChatSessionStore,
   InvalidSessionIdError,

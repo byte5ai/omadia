@@ -68,6 +68,14 @@ import type {
 } from '@omadia/orchestrator';
 
 import { rawBodyBytes } from '../http/rawBodySize.js';
+import {
+  carriesInputResponses,
+  inputRequestBounceError,
+  inputRequestMalformedError,
+  parseToolEmittedInputRequest,
+  renderInputRequiredResult,
+  type McpInputRequiredResult,
+} from './publicMcpInputRequired.js';
 import type { PublicMcpKeyBinding, PublicMcpKeyBindingStore } from './publicMcpKeyBindings.js';
 import {
   createFailClosedPrivacyGate,
@@ -499,9 +507,25 @@ export class PublicMcpServer {
             ? meta.idempotencyKey
             : undefined;
         const result = await this.callToolFor(principal, name, args ?? {}, idempotencyKey);
+        // #544 (server half) — MRTR. A tool that cannot finish without one more
+        // value from the human says so in-band; render it as
+        // `resultType: "input_required"` so the caller can collect the values
+        // and retry, instead of shipping our internal sentinel JSON as if it
+        // were an answer. Failed calls are excluded: a failure has no pending
+        // continuation, and treating one as a prompt would turn every tool error
+        // into a question for the user.
+        const pendingInput = result.isError
+          ? undefined
+          : this.resolveInputRequired(name, args, result.content);
+        const body =
+          pendingInput !== undefined
+            ? pendingInput
+            : {
+                content: [{ type: 'text' as const, text: result.content }],
+                ...(result.isError ? { isError: true } : {}),
+              };
         return {
-          content: [{ type: 'text' as const, text: result.content }],
-          ...(result.isError ? { isError: true } : {}),
+          ...body,
           // #647 — AI-Act Art. 50 provenance, per call. The envelope-level twin
           // of the router's response header, carried in the spec's designated
           // passthrough (`_meta`) so an existing client that does not read the
@@ -614,6 +638,55 @@ export class PublicMcpServer {
       callable.add(tool);
     }
     return callable;
+  }
+
+  /**
+   * #544 (server half) — decide whether this successful dispatch is really a
+   * request for more input, and render it.
+   *
+   * Returns `undefined` for every ordinary result, which is the overwhelming
+   * majority: the caller then builds the normal body and nothing about this
+   * endpoint changes. Three outcomes when the sentinel IS present:
+   *
+   *   - malformed request  → an ordinary tool error naming the reason. A tool
+   *     that emits an unrenderable request has a bug; shipping its raw sentinel
+   *     JSON to the caller as a "result" is how that bug stays invisible.
+   *   - already answered   → an ordinary tool error. The caller already sent
+   *     `inputResponses` once, so a second request means the tool would bounce
+   *     the human indefinitely. Mirrors `MCP_INPUT_MAX_REPLAY_DEPTH` on the
+   *     client half — one round trip, not a loop.
+   *   - otherwise          → the MRTR body.
+   *
+   * The two error outcomes deliberately produce `isError`, not a request: they
+   * ARE failed calls, and the client half's `isInputRequiredResult` refuses to
+   * read an `isError` result as a card — so mislabelling either one would make
+   * omadia's own endpoint unreadable by omadia's own client.
+   */
+  private resolveInputRequired(
+    name: string,
+    args: unknown,
+    content: string,
+  ):
+    | McpInputRequiredResult
+    | { content: Array<{ type: 'text'; text: string }>; isError: true }
+    | undefined {
+    const parsed = parseToolEmittedInputRequest(content);
+    if (!parsed.ok) {
+      if (parsed.rejection.kind === 'absent') return undefined;
+      return {
+        content: [
+          { type: 'text', text: inputRequestMalformedError(name, parsed.rejection.reason) },
+        ],
+        isError: true,
+      };
+    }
+    if (carriesInputResponses(args)) {
+      return {
+        content: [{ type: 'text', text: inputRequestBounceError(name) }],
+        isError: true,
+      };
+    }
+    return renderInputRequiredResult(parsed.request);
   }
 
   private async callToolFor(

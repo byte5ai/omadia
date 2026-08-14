@@ -34,6 +34,44 @@ const ORCHESTRATOR_PLUGIN_ID = '@omadia/orchestrator';
 
 export const FALLBACK_AGENT_SLUG = 'fallback';
 
+/**
+ * #679 / I5 — the prose this seed writes on first boot, exported so the UI can
+ * recognise it.
+ *
+ * ## The decision
+ *
+ * A German operator saw an English sentence in their agent list, and the
+ * obvious reading is "a translation is missing". It is not: this string is
+ * written by the SERVER into the database, once, at first boot, before any
+ * locale exists to write it in. There is no request, no `Accept-Language`, no
+ * operator preference — the row is created by the boot sequence.
+ *
+ * Three options were on the table:
+ *
+ *  1. **Localise the seed at write time.** Rejected: the value is *persisted*.
+ *     Whatever locale the boot happens to pick is frozen into the row, so an
+ *     operator who later switches the UI to English still reads German — the
+ *     same bug, pointing the other way, and now baked into data.
+ *  2. **Seed no description at all** and let the UI fill the blank. Rejected:
+ *     the column is part of the store's contract and is read by consumers that
+ *     have no message catalogue (the API, exports, the CLI). An empty
+ *     description would degrade those to say nothing at all.
+ *  3. **Keep the seed as a provenance record and localise at the boundary** —
+ *     chosen. The stored sentence describes *why the row exists*, which is a
+ *     fact about the system, not UI copy. The UI is where a locale exists, so
+ *     the UI renders its own catalogue text — the same split
+ *     `fetchNavEntries(locale)` already uses for plugin nav labels.
+ *
+ * Recognition is by exact match against these constants AND the seed slug, so
+ * the moment an operator edits the description their words are shown verbatim.
+ * A row the operator has touched is operator content and is never overridden.
+ */
+export const FALLBACK_AGENT_SEED_NAME = 'Standard Orchestrator';
+
+/** @see FALLBACK_AGENT_SEED_NAME for why this stays English in the store. */
+export const FALLBACK_AGENT_SEED_DESCRIPTION =
+  'Auto-seeded on first boot. Receives unbound channel traffic until the operator configures explicit bindings.';
+
 export interface OnboardingOptions {
   readonly slug?: string;
   readonly name?: string;
@@ -122,10 +160,8 @@ export async function ensureFallbackAgent(
   if (!fallback) {
     fallback = await store.createAgent({
       slug,
-      name: options.name ?? 'Standard Orchestrator',
-      description:
-        options.description ??
-        'Auto-seeded on first boot. Receives unbound channel traffic until the operator configures explicit bindings.',
+      name: options.name ?? FALLBACK_AGENT_SEED_NAME,
+      description: options.description ?? FALLBACK_AGENT_SEED_DESCRIPTION,
       privacyProfile: 'strict',
       status: 'enabled',
     });

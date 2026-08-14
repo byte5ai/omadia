@@ -13,8 +13,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {
   DEPRECATED_MCP_TRANSPORTS,
   isDeprecatedMcpTransport,
@@ -59,6 +59,16 @@ function makeTransport(cfg: McpServerConfig): unknown {
   return (
     manager as unknown as { makeTransport(c: McpServerConfig, token?: string | null): unknown }
   ).makeTransport(cfg);
+}
+
+/** Same narrow cast for the v2 (`http`) factory #562 phase 2 introduced. */
+function makeModernHttpTransport(cfg: McpServerConfig): unknown {
+  const manager = new McpManager();
+  return (
+    manager as unknown as {
+      makeModernHttpTransport(c: McpServerConfig, token: string | null): unknown;
+    }
+  ).makeModernHttpTransport(cfg, null);
 }
 
 function serverConfig(transport: McpTransportKind, endpoint: string): McpServerConfig {
@@ -110,8 +120,21 @@ describe('sse regression — deprecation must not change runtime behaviour (#541
     );
   });
 
-  it('still builds a StreamableHTTPClientTransport for an http server', () => {
-    const transport = makeTransport(serverConfig('http', 'https://modern.example/mcp'));
-    assert.ok(transport instanceof StreamableHTTPClientTransport);
+  it('builds the v2 Streamable-HTTP transport for an http server (#562 phase 2)', () => {
+    const transport = makeModernHttpTransport(serverConfig('http', 'https://modern.example/mcp'));
+    assert.ok(
+      transport instanceof ModernStreamableHTTPClientTransport,
+      'http is the one transport that moved to @modelcontextprotocol/client@2',
+    );
+  });
+
+  it('leaves sse on the v1 family — it is NOT a v2 transport (#562 phase 2)', () => {
+    // Deliberate, and measured rather than assumed: `McpServer` never answers
+    // `server/discover` off the HTTP edge, so an `'auto'` probe on sse can only
+    // fall back to `initialize` and a pin fails outright. Porting sse would
+    // swap the API and buy no protocol capability, so it stays on v1.
+    const transport = makeTransport(serverConfig('sse', 'https://legacy.example/sse'));
+    assert.ok(!(transport instanceof ModernStreamableHTTPClientTransport));
+    assert.ok(transport instanceof SSEClientTransport);
   });
 });

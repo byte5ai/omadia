@@ -4,6 +4,7 @@ import {
   mcpDomainForServer,
   resolveMcpCallTimeouts,
 } from './mcp/mcpClient.js';
+import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
 import {
   deriveAgentsConsulted,
   toSemanticAnswer,
@@ -2777,10 +2778,15 @@ export class Orchestrator {
   private resolveTurnDisclosure(input: ChatTurnInput): AiDisclosure | undefined {
     const setup = this.aiDisclosure;
     const channelKind = input.channelIdentity?.channelKind;
-    const override =
-      channelKind !== undefined ? setup?.overrides?.[channelKind] : undefined;
-    const level: AiDisclosureLevel =
-      override ?? setup?.level ?? DEFAULT_AI_DISCLOSURE_POLICY.level;
+    // #648 — the precedence lives in ONE place now. `/health`, the boot log and
+    // the operator dashboard project the same function over every channel; a
+    // second copy of these rules here would let the reported posture disagree
+    // with what turns actually do, silently, which is the failure #648 exists
+    // to prevent.
+    const level: AiDisclosureLevel = resolveDisclosureLevelForChannel(
+      setup,
+      channelKind,
+    );
     // `source` gates the `'off'` opt-out: only an operator-sourced policy may
     // silence a turn. A resolved `setup` object exists ONLY when the operator
     // configured at least one disclosure field (the plugin passes `undefined`
@@ -2873,10 +2879,8 @@ export class Orchestrator {
     // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
     // `turnContext.current()?.resolvedOmadiaUserId` instead of each
     // re-deriving it independently.
-    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
-      this.knowledgeGraph,
-      input,
-    );
+    const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
+    const resolvedOmadiaUserId = turnOwner.omadiaUserId;
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -2913,9 +2917,20 @@ export class Orchestrator {
     // `??`, a parent carrying an empty string would short-circuit, suppress the
     // valid key this branch would have produced, and then be dropped by the
     // truthy spread — silently downgrading a resolvable turn to `unresolved`.
+    // #568 — prefer the cluster's IdP subject over the canonical uuid.
+    //
+    // Both are KG-attested and neither is client-controlled, so this is not a
+    // trust downgrade; it is a NAMESPACE correction. `/authorize` stores a
+    // `per_user` token under the session's `sub` (= the provider's subject),
+    // never under the canonical uuid, so keying a channel turn on the uuid
+    // looks up a token that was never stored and every such turn failed
+    // closed. The uuid remains the fallback: a channel-only user has no IdP
+    // subject, and for them nothing changes.
     const mcpUserKey =
       parent?.mcpUserKey ||
-      (input.channelIdentity ? resolvedOmadiaUserId : undefined);
+      (input.channelIdentity
+        ? turnOwner.authSubjectKey || resolvedOmadiaUserId
+        : undefined);
 
     return turnContext.run(
       {
@@ -3860,6 +3875,9 @@ export class Orchestrator {
     ]);
     const turnModel = turnModelResolved.model;
     const turnPersonaBody = turnPersonaResolved.skillBody;
+    // #650 — stamp the resolved model on the trace here, once, rather than at
+    // each of `finish()`'s call sites. Buffered path.
+    traceCollector?.recordModel(turnModel, this.provider.id);
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -4395,10 +4413,8 @@ export class Orchestrator {
     // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
     // without this the resolved identity would never reach a channel turn's
     // tool dispatch at all — see `resolveTurnOwnerIdentity`.
-    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
-      this.knowledgeGraph,
-      input,
-    );
+    const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
+    const resolvedOmadiaUserId = turnOwner.omadiaUserId;
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -4435,9 +4451,20 @@ export class Orchestrator {
     // `??`, a parent carrying an empty string would short-circuit, suppress the
     // valid key this branch would have produced, and then be dropped by the
     // truthy spread — silently downgrading a resolvable turn to `unresolved`.
+    // #568 — prefer the cluster's IdP subject over the canonical uuid.
+    //
+    // Both are KG-attested and neither is client-controlled, so this is not a
+    // trust downgrade; it is a NAMESPACE correction. `/authorize` stores a
+    // `per_user` token under the session's `sub` (= the provider's subject),
+    // never under the canonical uuid, so keying a channel turn on the uuid
+    // looks up a token that was never stored and every such turn failed
+    // closed. The uuid remains the fallback: a channel-only user has no IdP
+    // subject, and for them nothing changes.
     const mcpUserKey =
       parent?.mcpUserKey ||
-      (input.channelIdentity ? resolvedOmadiaUserId : undefined);
+      (input.channelIdentity
+        ? turnOwner.authSubjectKey || resolvedOmadiaUserId
+        : undefined);
 
     const context: TurnContextValue = {
       turnId,
@@ -4852,6 +4879,10 @@ export class Orchestrator {
     ]);
     const turnModel = resolved.model;
     const turnPersonaBody = resolvedPersona.skillBody;
+    // #650 — streaming mirror of the buffered stamp above. Both paths, or the
+    // field is present on some traces and absent on others for no visible
+    // reason, which is worse for a provenance record than not having it.
+    traceCollector?.recordModel(turnModel, this.provider.id);
     // Surface the Haiku-triage decision inline, before the first model call —
     // the UI renders it at the top of the turn card so the operator sees the
     // classifier's verdict (simple/complex → model) as soon as it lands.
@@ -5472,6 +5503,14 @@ export class Orchestrator {
 
       yield {
         type: 'error',
+        // #641 — see the `correlationId` doc on `ChatStreamEvent`. Read from the
+        // turn context rather than threaded as a parameter, for the same reason
+        // `privacyHandle` is: every call site here already runs inside the
+        // turn's `runGenerator` scope, and the value is the id the session
+        // logger and MCP audit already key on.
+        ...(turnContext.currentTurnId()
+          ? { correlationId: turnContext.currentTurnId() as string }
+          : {}),
         message: `Orchestrator exceeded maxToolIterations (${String(this.maxIterations)}) without reaching a final answer.`,
       };
     } catch (err) {
@@ -5480,8 +5519,12 @@ export class Orchestrator {
       // invisible in the server logs. Log the technical detail here. The
       // user-facing error-message wording is handled separately (Privacy
       // Shield v4).
+      // #641 — the correlation id goes in the LOG LINE, not just on the event.
+      // The whole point of handing the user a token is that someone can then
+      // find this entry by it; a token that appears only in the user's message
+      // is a token that joins nothing.
       console.error(
-        '[orchestrator] turn failed:',
+        `[orchestrator] turn failed (correlationId=${turnContext.currentTurnId() ?? 'unknown'}):`,
         err instanceof Error ? (err.stack ?? err.message) : err,
       );
       // Issue #506 — a tool call earlier in this turn may have already
@@ -5567,6 +5610,11 @@ export class Orchestrator {
       } else {
         yield {
           type: 'error',
+          // #641 — the token that makes this failure diagnosable. Same value as
+          // the one in the `console.error` above, so a log query by it is exact.
+          ...(turnContext.currentTurnId()
+            ? { correlationId: turnContext.currentTurnId() as string }
+            : {}),
           message: err instanceof Error ? err.message : String(err),
         };
       }

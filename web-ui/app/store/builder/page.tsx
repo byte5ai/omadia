@@ -14,9 +14,10 @@ import { DraftRow } from './_components/DraftRow';
 import { ImportBundleButton } from './_components/ImportBundleButton';
 import { QuotaBadge } from './_components/QuotaBadge';
 
-export const metadata: Metadata = {
-  title: 'Plugin-Builder · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('builder.drafts.list');
+  return { title: t('metaTitle') };
+}
 
 export const dynamic = 'force-dynamic';
 

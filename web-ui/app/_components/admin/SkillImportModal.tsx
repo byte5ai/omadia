@@ -114,6 +114,23 @@ export function SkillImportModal({
             <div className="mt-1 text-xs text-[color:var(--accent)]">
               {t(`outcome.${preview.outcome}`)}
             </div>
+            {(preview.unparsedFrontmatter?.length ?? 0) > 0 && (
+              <div className="mt-2 rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 p-2 text-xs text-[color:var(--warning)]">
+                <div className="font-semibold">{t('unparsedFrontmatter.title')}</div>
+                <p className="mt-1 text-[color:var(--fg-muted)]">
+                  {t('unparsedFrontmatter.explain')}
+                </p>
+                <ul className="mt-1 flex flex-col gap-1 font-mono">
+                  {/* Index keys: the same line can legitimately repeat (two
+                      keys with identical entries), and this list is static. */}
+                  {preview.unparsedFrontmatter?.map((line, i) => (
+                    <li key={`${i}-${line}`} className="break-all text-[color:var(--fg-muted)]">
+                      {line}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {preview.risks.length > 0 && (
               <div className="mt-2 rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 p-2 text-xs text-[color:var(--warning)]">
                 <div className="font-semibold">{t('risks.title')}</div>

@@ -5,9 +5,10 @@ import { redirectIfUnauthorized } from '../../_lib/authRedirect';
 import { listSkills, type SkillNode } from '../../_lib/agentBuilder';
 import { SkillsRegistry } from '../../_components/admin/SkillsRegistry';
 
-export const metadata: Metadata = {
-  title: 'Skills · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('skills');
+  return { title: t('metaTitle') };
+}
 
 export const dynamic = 'force-dynamic';
 

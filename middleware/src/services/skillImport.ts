@@ -5,7 +5,7 @@ import {
   type SkillRow,
 } from '@omadia/orchestrator';
 
-import { parseSkillMarkdown } from './skillLoader.js';
+import { parseSkillMarkdown, type ParsedSkillMarkdown } from './skillLoader.js';
 import { scanSkillForRisks, type SkillRisk } from './skillGuard.js';
 
 /**
@@ -47,6 +47,13 @@ export interface SkillImportResult {
   readonly risks: SkillRisk[];
   /** Number of bundled resource files carried by this import. */
   readonly resourceCount: number;
+  /**
+   * Frontmatter lines dropped because omadia's frontmatter is flat `key: scalar`
+   * (see `parseSkillMarkdown`). Non-empty means the imported skill lost data —
+   * surfaced in the preview so the user can fix the source rather than
+   * discovering the truncation after the skill misbehaves.
+   */
+  readonly unparsedFrontmatter: readonly string[];
   /** Id of the affected/existing skill (absent for a dry-run create). */
   readonly skillId?: string;
 }
@@ -77,9 +84,8 @@ export function slugify(input: string): string {
   return slug || 'imported-skill';
 }
 
-/** Parse + derive name/slug/description from a raw SKILL.md (Claude format). */
-export function normalizeSkillMarkdown(req: SkillImportRequest): NormalizedSkill {
-  const parsed = parseSkillMarkdown(req.raw);
+/** Derive name/slug/description from an already-parsed SKILL.md. */
+function normalizeParsedSkill(parsed: ParsedSkillMarkdown, req: SkillImportRequest): NormalizedSkill {
   const fmName = typeof parsed.frontmatter['name'] === 'string' ? parsed.frontmatter['name'].trim() : '';
   const name = fmName || parsed.description || 'Imported skill';
   return {
@@ -90,6 +96,11 @@ export function normalizeSkillMarkdown(req: SkillImportRequest): NormalizedSkill
     frontmatter: parsed.frontmatter,
     sourcePath: req.sourcePath ?? null,
   };
+}
+
+/** Parse + derive name/slug/description from a raw SKILL.md (Claude format). */
+export function normalizeSkillMarkdown(req: SkillImportRequest): NormalizedSkill {
+  return normalizeParsedSkill(parseSkillMarkdown(req.raw), req);
 }
 
 /** Supported import source formats. One front door, per-source adapters (#391). */
@@ -144,6 +155,8 @@ function normalizeAgentsMarkdown(req: SkillImportRequest): NormalizedSkill {
 export function detectAndNormalize(req: SkillImportRequest): {
   skill: NormalizedSkill;
   format: SkillSourceFormat;
+  /** Data-bearing frontmatter lines the flat parser could not represent. */
+  unparsedFrontmatter: readonly string[];
 } {
   // Normalize + trim ONCE and route all branches off the same string, so a
   // stray leading newline or BOM (common on copy/paste) can't send a Claude
@@ -157,7 +170,8 @@ export function detectAndNormalize(req: SkillImportRequest): {
       const parsed: unknown = JSON.parse(trimmed);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         const gpt = normalizeOpenAiGptJson(parsed as Record<string, unknown>, req);
-        if (gpt) return { skill: gpt, format: 'openai-gpt-json' };
+        // JSON exports have no YAML frontmatter, so nothing can be dropped.
+        if (gpt) return { skill: gpt, format: 'openai-gpt-json', unparsedFrontmatter: [] };
       }
     } catch {
       /* not JSON — fall through to the text adapters */
@@ -166,10 +180,16 @@ export function detectAndNormalize(req: SkillImportRequest): {
   // 2. Claude SKILL.md (has a YAML frontmatter block). Feed the trimmed raw so
   //    the parser's own `startsWith('---\n')` check also succeeds.
   if (trimmed.startsWith('---\n')) {
-    return { skill: normalizeSkillMarkdown({ ...req, raw: trimmed }), format: 'claude-skill' };
+    const trimmedReq = { ...req, raw: trimmed };
+    const parsed = parseSkillMarkdown(trimmed);
+    return {
+      skill: normalizeParsedSkill(parsed, trimmedReq),
+      format: 'claude-skill',
+      unparsedFrontmatter: parsed.unparsedLines,
+    };
   }
-  // 3. Codex AGENTS.md / plain instruction markdown.
-  return { skill: normalizeAgentsMarkdown(req), format: 'agents-md' };
+  // 3. Codex AGENTS.md / plain instruction markdown — the whole text is body.
+  return { skill: normalizeAgentsMarkdown(req), format: 'agents-md', unparsedFrontmatter: [] };
 }
 
 /** Dedupe bundled resources by name (last-wins), so the count never lies. */
@@ -208,7 +228,7 @@ export async function importSkillMarkdown(
   req: SkillImportRequest,
   opts: { dryRun?: boolean } = {},
 ): Promise<SkillImportResult> {
-  const normalized = detectAndNormalize(req).skill;
+  const { skill: normalized, unparsedFrontmatter } = detectAndNormalize(req);
   const contentHash = computeSkillHash(normalized.frontmatter, normalized.body);
   const risks = scanSkillForRisks(normalized.frontmatter, normalized.body);
   // Distinguish "no resources key sent" (leave bundle untouched) from an
@@ -224,7 +244,7 @@ export async function importSkillMarkdown(
     // Body/frontmatter unchanged, but the caller may still be re-syncing the
     // bundle (content_hash intentionally excludes resources).
     if (providedResources !== undefined) await store.replaceSkillResources(byHash.id, resources);
-    return { outcome: 'unchanged', skill: normalized, contentHash, risks, resourceCount, skillId: byHash.id };
+    return { outcome: 'unchanged', skill: normalized, contentHash, risks, resourceCount, unparsedFrontmatter, skillId: byHash.id };
   }
 
   // 2. Newer version of the same origin file → update in place. Requires a
@@ -239,7 +259,7 @@ export async function importSkillMarkdown(
     bySlug.sourcePath === normalized.sourcePath
   ) {
     if (opts.dryRun) {
-      return { outcome: 'updated', skill: normalized, contentHash, risks, resourceCount, skillId: bySlug.id };
+      return { outcome: 'updated', skill: normalized, contentHash, risks, resourceCount, unparsedFrontmatter, skillId: bySlug.id };
     }
     const row = await store.upsertSkill({
       slug: bySlug.slug,
@@ -251,14 +271,14 @@ export async function importSkillMarkdown(
       sourcePath: normalized.sourcePath,
     });
     if (providedResources !== undefined) await store.replaceSkillResources(row.id, resources);
-    return { outcome: 'updated', skill: { ...normalized, slug: bySlug.slug }, contentHash, risks, resourceCount, skillId: row.id };
+    return { outcome: 'updated', skill: { ...normalized, slug: bySlug.slug }, contentHash, risks, resourceCount, unparsedFrontmatter, skillId: row.id };
   }
 
   // 3. Create, disambiguating the slug against any existing skill.
   const targetSlug = bySlug ? await uniqueSlug(store, normalized.slug) : normalized.slug;
   const created = { ...normalized, slug: targetSlug };
   if (opts.dryRun) {
-    return { outcome: 'created', skill: created, contentHash, risks, resourceCount };
+    return { outcome: 'created', skill: created, contentHash, risks, resourceCount, unparsedFrontmatter };
   }
 
   // Race-safe insert: ON CONFLICT DO NOTHING, re-disambiguate if a concurrent
@@ -276,7 +296,7 @@ export async function importSkillMarkdown(
     });
     if (row) {
       if (providedResources !== undefined) await store.replaceSkillResources(row.id, resources);
-      return { outcome: 'created', skill: { ...normalized, slug }, contentHash, risks, resourceCount, skillId: row.id };
+      return { outcome: 'created', skill: { ...normalized, slug }, contentHash, risks, resourceCount, unparsedFrontmatter, skillId: row.id };
     }
   }
   throw new Error(`could not create imported skill "${normalized.slug}" after repeated slug conflicts`);

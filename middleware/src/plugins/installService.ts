@@ -523,6 +523,32 @@ export function extractSetupSchema(
     // previously masked every secret field with a hardcoded `••••••••`.
     const placeholder = asString(f['placeholder']);
     if (placeholder) field.placeholder = placeholder;
+    // #603 (OM-17) — the `json_file` upload contract. Must stay in agreement
+    // with the catalog projection in `manifestLoader.ts`, which applies the SAME
+    // "no usable extracts ⇒ drop the field" rule: a `json_file` field that
+    // survives one projection but not the other is a file picker that renders on
+    // one screen and cannot save from the other.
+    if (type === 'json_file') {
+      const extractsRaw = f['extracts'];
+      const extracts: Record<string, string> = {};
+      if (extractsRaw && typeof extractsRaw === 'object' && !Array.isArray(extractsRaw)) {
+        for (const [target, path] of Object.entries(
+          extractsRaw as Record<string, unknown>,
+        )) {
+          const p = asString(path);
+          if (target.length > 0 && p !== undefined) extracts[target] = p;
+        }
+      }
+      if (Object.keys(extracts).length === 0) continue;
+      field.extracts = extracts;
+      const expectRaw = f['expect'];
+      if (expectRaw && typeof expectRaw === 'object' && !Array.isArray(expectRaw)) {
+        const expect = expectRaw as Record<string, unknown>;
+        if (Object.keys(expect).length > 0) field.expect = expect;
+      }
+      const accept = asString(f['accept']);
+      if (accept) field.accept = accept;
+    }
     if (f['default'] !== undefined) field.default = f['default'];
     // OM-17 — same load-time compile gate as manifestLoader: an uncompilable or
     // catastrophically-backtracking pattern is dropped (warned once, cached) so
@@ -813,6 +839,20 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
   // #602 (OM-17) — see validateValues: German templates, no request locale.
   const label = resolveLocalized(field.label, 'de') ?? field.key;
   switch (field.type) {
+    // #603 (OM-17) — a `json_file` field is an INPUT affordance, not a stored
+    // value: the server explodes the upload into the keys named in `extracts`
+    // and stores only those. So nothing may be submitted under this field's own
+    // key, and a value arriving here means the client tried to write the raw
+    // document into the vault — which is exactly what this feature exists to
+    // avoid. Refused rather than ignored: silently dropping it would let a
+    // client believe it had stored a credential.
+    case 'json_file':
+      return {
+        error: {
+          code: 'not_submittable',
+          message: `"${label}" wird hochgeladen, nicht eingegeben — es kann nicht direkt gesetzt werden.`,
+        },
+      };
     case 'string':
     case 'secret':
       return typeof raw === 'string'
@@ -973,6 +1013,12 @@ const SUPPORTED_TYPES = new Set<string>([
   'boolean',
   'integer',
   'host_list',
+  // #603 (OM-17). Fifth place this union is mirrored — the issue named three
+  // (`admin-v1.ts`, `manifestLoader.isSetupFieldType`, `agentSpec`'s z.enum);
+  // this set and `InstallSetupField`'s shape are the other two. A member missing
+  // HERE does not error: `isSupportedType` simply skips the field, so the upload
+  // disappears from the install wizard with no diagnostic at all.
+  'json_file',
 ]);
 
 function isSupportedType(t: string): t is InstallSetupField['type'] {

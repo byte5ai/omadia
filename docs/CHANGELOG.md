@@ -18,6 +18,240 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — the MCP **client** speaks `@modelcontextprotocol/client@2` over `http` (#562, phase 2)
+
+- **Only `http` moved.** `McpManager` now connects streamable-HTTP servers with
+  the v2 `Client` + `StreamableHTTPClientTransport` and
+  `versionNegotiation: { mode: 'auto' }`, so a 2026-07-28 peer is negotiated as
+  such and a 2025-era peer still falls back to the plain `initialize` handshake.
+  Deliberately **not** a pin: a pin has no fallback and most third-party servers
+  are 2025-era, so pinning would break exactly the peers that work today.
+- **`stdio` and `sse` stay on v1**, from measurement rather than convenience:
+  `McpServer` never answers `server/discover` off the HTTP edge, so an `'auto'`
+  probe there can only fall back and a pin fails with `ERA_NEGOTIATION_FAILED`.
+  Porting them would swap the API and buy no protocol capability.
+- **MRTR on 2025-era peers keeps working — this is the part the port could have
+  broken in silence.** v2 treats `resultType` as a wire-only discriminator and
+  strips it when it decodes a legacy `tools/call` reply as a complete result,
+  while leaving `inputRequests` in place. Unrepaired, `isInputRequiredResult`
+  goes false, the call is never parked, the human is never asked, and the model
+  is handed the server's holding text as if it were the answer — with nothing
+  red anywhere. `restoreLegacyInputRequired` puts the discriminator back on
+  legacy-era connections only (on a modern one `resultType` arrives verbatim and
+  inventing one would mask a real divergence). Removing it turns eleven tests in
+  `mcpPendingInput.test.ts` red.
+- **Two v2 behaviours are switched off on purpose.** Auto-fulfilment of
+  `input_required` (`inputRequired: { autoFulfill: false }`) — omadia parks the
+  call and asks a *human* over a channel, possibly hours later, and letting the
+  driver answer in-process would mean the human silently stops being asked. And
+  client-side output-schema validation, by fetching `tools/list` with
+  `cacheMode: 'bypass'` — it would turn a server whose `structuredContent` does
+  not match its declared `outputSchema` into a hard call failure on `http` only,
+  and its validator is reachable only through an `ajv` that neither
+  `@modelcontextprotocol/client` nor `/core` declares as a dependency.
+- Coverage runs on **both eras**: the existing live round-trip suite plus a new
+  modern-era assertion against the phase-1 loopback server, and a hand-rolled
+  2025-era peer that refuses `server/discover`.
+
+### Changed — the loopback MCP server runs on the `@modelcontextprotocol/*@2` family (#562, phase 1)
+
+- **`createMcpHandler` replaces a hand-rolled per-request dance.** The loopback
+  server built a fresh `Server` + stateless `StreamableHTTPServerTransport` for
+  every request and tore both down in a `finally`, purely because v1 throws
+  `'Stateless transport cannot be reused across requests'` on a transport's
+  second use. v2 offers that per-request-instance model as the serving entry
+  itself, so the workaround and its teardown block are deleted rather than
+  ported. `toNodeHandler` bridges the handler's web-standard `fetch` to the
+  Node `(req, res)` this server speaks.
+- **No wire change.** Statelessness, the POST-only `405` on the standalone SSE
+  stream, the `413` body cap, bearer auth, and name-sorted `tools/list` all
+  behave exactly as before — the existing suite passes unmodified, and the
+  omadia MCP *client* (still on v1) talks to the ported server unchanged, which
+  is the cross-era interop check.
+- **Scope is deliberately one surface.** The public MCP endpoint is NOT ported
+  in this phase: it serves MRTR (`resultType: "input_required"`, #544/#570), and
+  v2 offers no mode that reproduces that wire shape on a 2025-era connection —
+  its legacy shim converts the return into server→client `elicitation/create`
+  requests, and disabling the shim makes the same return fail loudly. Tracked on
+  #562.
+
+### Fixed — skill import no longer drops frontmatter silently
+
+- **`parseSkillMarkdown` reports what it cannot read.** omadia's SKILL.md
+  frontmatter is a flat one-line `key: scalar` format. Lines carrying lists or
+  nested mappings — routine in skills authored for other ecosystems — were
+  skipped with a bare `continue`, so an import reported success while the skill
+  landed with data missing. The parser now returns those lines, and the import
+  preview shows them as a warning before the user confirms.
+- **A key whose block could not be parsed is no longer stored as an empty
+  string.** `allowed-tools:` followed by list entries used to persist
+  `allowed-tools: ""` — a value the source file never contained, which then
+  travelled into the skill content hash and the risk scan. Such a key is now
+  reported together with its block instead of being invented, which also keeps
+  two identical dropped entries distinguishable by their owning key.
+- No YAML support was added; the parser stays deliberately flat. The response of
+  `POST /v1/operator/skills/import` gains an `unparsedFrontmatter: string[]`
+  field (additive; the web-ui treats it as optional so an older middleware still
+  type-checks). `loadSkill()` for plugin-borne on-disk skills is unchanged.
+
+### Added — the updater sidecar is published, and the manual path is per-platform (#432)
+
+- **`ghcr.io/byte5ai/omadia-updater`** is now built and pushed by
+  `publish-images.yml` on the same tags as the middleware it updates, so
+  `docker-compose.update.yaml` pulls it with the same `${OMADIA_VERSION}` as
+  everything else instead of requiring a source build. Deliberately not added to
+  `docker-compose.build.yaml`: a service defined there would start an updater on
+  stacks that never opted into one.
+- **Admin → Update labels its manual commands per platform.** The executor is
+  compose-only, so Fly.io and Kubernetes deployments land in notify-only mode —
+  where an unlabelled `docker compose up -d` line was actively misleading. The
+  page now shows the compose *and* the `fly deploy --image` form, and points at
+  `docs/upgrading.md` for anything else.
+- **`docs/upgrading.md` gained a Fly.io section**: what Admin → Update can and
+  cannot do there, the middleware-before-web-ui redeploy order, the `/health`
+  version check between the two, rollback via `fly releases`, and the reminder
+  not to redeploy the Postgres app during a version bump.
+
+### Added — product documentation for the AI marking (#649, epic #642)
+
+- **New `docs/ai-act-transparency.md`** — what omadia actually marks and, just as
+  explicitly, what it does not. Every statement carries the code site it comes
+  from; the binding rule for the document is that a claim without one does not
+  go in. A promise phrased too widely on a public page is worse than a named gap.
+- **DE and EN copy blocks** for the product section of `omadia.ai/ai-transparency`,
+  written along what the code actually does. Finished here, **not live**: the
+  section goes through internal approval before publication.
+- **Corrected `docs/architecture.md`**, which claimed the full trace "is stored as
+  the run's audit receipt". That collides with the #684 decision, so it now states
+  best-effort telemetry and names the three ways a turn can leave no trace.
+- **`docs/middleware-agent-handoff.md`**: the outgoing-contract extension in §11
+  (stream protocol), the five `ai_disclosure_*` setup fields in §10, and the open
+  provenance items in §13. The issue pointed at §3/§8 for the contract half; §8 is
+  "Skills" on current main, and the contract actually belongs next to the stream
+  protocol, so it went there.
+- **Limits named rather than omitted**: the coarser `.xlsx` coverage, connectors
+  being plugins whose rendering the core cannot force, two provenance vocabularies
+  in one epic, per-channel overrides that only fire on teams/slack/telegram, and
+  C2PA — which appears nowhere in the tree and is therefore an open point, not a
+  capability.
+### Fixed — the structural i18n categories left by #601 (#679)
+
+- **I4 — page titles now follow the active locale.** All **10** remaining
+  `export const metadata` exports became `generateMetadata`, so the window /
+  tab title is German for a German operator instead of always English. A static
+  `metadata` object is evaluated once at build time, where no request and
+  therefore no locale exists. The category is now at **zero** and pinned
+  repo-wide by a test.
+- **I5 — the boot-seeded agent description.** Decided rather than translated:
+  the sentence is written by the server into the database at first boot, before
+  any locale exists to write it in, so it is a record of why the row exists,
+  not UI copy. Localising it at write time would freeze whichever locale the
+  boot happened to pick into persisted data; dropping it would leave consumers
+  without a catalogue (API, exports, CLI) saying nothing at all. The UI now
+  renders its own catalogued sentence, recognising the untouched seed by exact
+  match — the moment an operator edits it, their words are shown verbatim.
+- **I6 — currency and number formatting.** `admin/usage` rendered cost with a
+  hardcoded `$` and `toFixed`, and — not mentioned in the issue — pinned
+  `de-DE` for compact counts and timestamps, so an *English* operator read
+  German grouping. All now go through next-intl's `useFormatter()`. The
+  currency stays USD deliberately: the ledger records USD, and converting
+  without an exchange rate would present a fabricated number as a ledger
+  figure. What is localised is the presentation.
+- **I3 — hardcoded literals**, scoped and measured. `app/graph/ListView.tsx`
+  held three GERMAN sentences (the rule broken twice over — hardcoded, and in
+  the language that belongs only in `de.json`); `admin/kg-lifecycle`, the
+  issue's named worst offender, is fully swept. API enum values (`HOT`/`WARM`/
+  `COLD`, `memory`/`process`/`task`) stay untranslated on purpose so the screen
+  still matches logs and SQL.
+- **The issue's I3 count did not survive measurement**: it claims 25 literals
+  across 11 files with 11 in `kg-lifecycle`; that file alone holds **22**, and
+  the scan under-counts multi-line JSX text on top. The remaining tail
+  (~217 candidates / 63 files, plus 18 files still calling `toLocaleString`) is
+  filed as its own issue rather than silently declared done.
+### Added — the AI-marking posture is readable per channel (#648, epic #642)
+
+- **`GET /health` gains a `disclosure` block**: the resolved AI-Act Art. 50
+  marking level per channel, whether it came from the shipping default or the
+  operator, and whether it deviates from the delivered state. Builds on the
+  post-#665 shape (`{ status, kg }` → `{ status, kg, disclosure }`) rather than
+  the older registry-projector form.
+- **Boot warning on deviation only.** A delivered-state instance logs nothing —
+  a line that fires on every default install is one nobody reads.
+- **Operator channels dashboard** shows an informing hint when the instance
+  deviates, DE/EN through the message catalogue. In the delivered state the
+  surface is unchanged and completely quiet.
+- **Why**: the operator may grade the marking down per channel or switch it off
+  — omadia is self-hosted, that is their decision. The problem was that the
+  decision was visible nowhere, so a copied config or a leftover from a test
+  setup was never noticed. The hint describes the state and blocks nothing.
+- **One derivation, not two.** `resolveDisclosureLevelForChannel` is now the
+  single place the override → global → shipped precedence lives;
+  `Orchestrator.resolveTurnDisclosure` calls it per turn and the posture view
+  calls it per channel. A second copy of those rules would let the reported
+  posture disagree with what turns actually do, silently — the exact failure
+  this feature exists to prevent.
+- **An override that cannot fire says so.** Only `teams` / `slack` / `telegram`
+  currently carry a `channelKind` into a turn, so a configured `web=off` never
+  takes effect. Both `/health` and the dashboard report that instead of letting
+  the operator conclude their override is in force.
+- **Nothing that permits conclusions about content or users leaves the process**:
+  levels, sources and booleans only. The assistant name and the free-form
+  operator note are reported as *configured* / *not configured*, never by value
+  — asserted against the serialised payload, not left to review.
+### Changed — the run trace is best-effort telemetry, and its gaps are now countable (#684, epic #642)
+
+- **Decision recorded, not behaviour changed.** #650 added `model` / `provider`
+  to the persisted trace and deliberately left the harder question open: is the
+  record guaranteed? It is not, and #684 settled that it should not be promised
+  to be. A missing trace now means "not recorded" — never "no such turn".
+- **Why telemetry and not a provenance record.** The graph sink is optional by
+  construction (`SessionLogger` guards every ingest behind `if (this.graph)`);
+  the Markdown transcript is the surface that is actually guaranteed, and the
+  logger already refuses graph ingest when the transcript write fails so the two
+  can never disagree. Promoting the trace to a record would require
+  auto-creating User-Cluster nodes — which both backends refuse on purpose,
+  because orphan clusters with no `IS_IDENTITY_OF` edges would hide exactly the
+  channel-resolution bugs the refusal exists to surface. That trades a visible
+  gap for an invisible data-integrity defect.
+- **Named where a reader looks**: `RunTrace` and `KnowledgeGraph.ingestRun` now
+  state the contract in their own doc comments, so nobody builds a compliance
+  answer on a best-effort store by inference.
+- **Every drop is now observable** (`runTraceObservability.ts`): one greppable
+  `console.warn` naming the reason, plus per-outcome tallies on
+  `SessionLogger.runTraceStats`. The issue described the drops as silent; three
+  of the four paths already logged. The genuinely invisible one was **no graph
+  sink configured**, which returned with no signal at all — a deployment that
+  had never recorded a single trace looked identical to a healthy one.
+- **`warn`, not `error`**: the turn succeeded. Logging at error level would flag
+  every single turn in a deployment that simply runs without a knowledge graph.
+- A turn that carried no trace is not counted as a drop — counting it would make
+  the drop total meaningless.
+
+### Added — the persisted run trace records which model answered (#650, epic #642)
+
+- **`RunTrace` / `RunTracePayload`** gain optional `model` and `provider`. The
+  trace recorded how long a turn ran, which sub-agents ran and which tools were
+  called, but not the one fact a provenance question about a past turn starts
+  from. The model id already existed on the `done` event and in the cost
+  telemetry; it just never reached the persisted record.
+- **Stamped once per turn**, right after model routing resolves
+  (`RunTraceCollector.recordModel`), on both the buffered and streaming paths —
+  not threaded through `finish()`'s five call sites, where missing one would
+  leave the field absent on a single exit path and looking recorded elsewhere.
+- **Both knowledge-graph backends** write it, so the answer to "which model
+  wrote this?" does not depend on which store a deployment runs.
+- **No schema migration, and none was needed.** The issue's acceptance criteria
+  asked for one; that premise does not hold for this table.
+  `graph_nodes.properties` is a generic `JSONB` column (`0001_graph_init.sql`)
+  and `RunPropsSchema` is `.passthrough()`, so adding a property is a
+  schema-level change only. The fields are declared optional in the Zod schema
+  anyway — passthrough means "tolerated", and a provenance field that is merely
+  tolerated is one nothing validates and nothing documents. Run nodes written
+  before this change stay valid and readable, which is what a migration would
+  have existed to guarantee.
+- Absent rather than empty when unknown: a trace carrying `model: ''` claims to
+  know and does not.
+
 ### Added — admin UI for the public API keys (#567)
 
 - **Admin UI** (`web-ui/app/admin/api-keys/`): create/list/revoke against

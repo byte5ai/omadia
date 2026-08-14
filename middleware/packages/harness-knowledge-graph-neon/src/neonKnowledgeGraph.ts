@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   agentInvocationNodeId,
+  authSubjectProps,
   channelIdentityNodeId,
   entityNodeId,
   excerptMergeCandidateNodeId,
@@ -1262,6 +1263,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         status: trace.status,
         iterations: trace.iterations,
         toolCalls: totalToolCalls,
+        // #650 (epic #642) — model + provider on the persisted Run node.
+        // `graph_nodes.properties` is generic JSONB, so this needs no SQL
+        // migration; the twin write in the in-memory implementation keeps the
+        // two backends answering "which model wrote this?" the same way.
+        ...(trace.model ? { model: trace.model } : {}),
+        ...(trace.provider ? { provider: trace.provider } : {}),
         ...(trace.error ? { error: trace.error } : {}),
       });
       const runUuid = await this.upsertNode(client, {
@@ -2140,17 +2147,29 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       );
       const existing = existingIdentity.rows[0];
       if (existing) {
+        // #568 — merge the auth subject in on the FAST path as well. Every
+        // login re-enters here, so an identity minted before this field
+        // existed would otherwise never acquire it, and that operator would
+        // stay unreachable from their own channel turns forever. `||`
+        // merges rather than replaces so a channel-side call (which never
+        // carries a subject) cannot erase one a login established.
         await client.query(
           `UPDATE graph_nodes
-             SET properties = jsonb_set(properties, '{lastSeenAt}', to_jsonb($2::text))
+             SET properties =
+               jsonb_set(properties, '{lastSeenAt}', to_jsonb($2::text))
+               || $3::jsonb
            WHERE id = $1`,
-          [existing.identity_uuid, now],
+          [existing.identity_uuid, now, JSON.stringify(authSubjectProps(ingest))],
         );
         await client.query(
           `UPDATE graph_nodes
              SET properties = jsonb_set(properties, '{lastSeenAt}', to_jsonb($2::text))
            WHERE id = $1`,
           [existing.cluster_uuid, now],
+        );
+        const clusterAuthSubject = await this.readClusterAuthSubject(
+          client,
+          existing.cluster_uuid,
         );
         await client.query('COMMIT');
         return {
@@ -2159,6 +2178,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           omadiaUserId: existing.omadia_user_id,
           isNewIdentity: false,
           isNewCluster: false,
+          ...clusterAuthSubject,
         };
       }
 
@@ -2264,6 +2284,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           ? { emailVerified: ingest.emailVerified }
           : {}),
         ...(ingest.aadObjectId ? { aadObjectId: ingest.aadObjectId } : {}),
+        ...authSubjectProps(ingest),
         ...(ingest.internalChannelData
           ? { internalChannelData: ingest.internalChannelData }
           : {}),
@@ -2281,6 +2302,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         toUuid: clusterUuid,
       });
 
+      const clusterAuthSubject = await this.readClusterAuthSubject(
+        client,
+        clusterUuid,
+      );
       await client.query('COMMIT');
       return {
         channelIdentityNodeId: identityExtId,
@@ -2288,6 +2313,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         omadiaUserId: clusterOmadiaUserId,
         isNewIdentity: true,
         isNewCluster,
+        ...clusterAuthSubject,
       };
     } catch (err) {
       await client.query('ROLLBACK');
@@ -2295,6 +2321,47 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * The IdP subject of the cluster's most recently seen authenticating
+   * identity — issue #568. See the in-memory twin for why the pick is
+   * deterministic-but-single and why the ambiguous case fails closed.
+   *
+   * Read INSIDE the caller's transaction so the subject reflects the writes
+   * this same call just made (the backfill on the fast path in particular);
+   * reading it after COMMIT on a fresh connection would race.
+   */
+  private async readClusterAuthSubject(
+    client: PoolClient,
+    clusterUuid: string,
+  ): Promise<Pick<ResolveOrCreateChannelIdentityResult, 'clusterAuthSubject'>> {
+    const res = await client.query<{
+      auth_provider: string;
+      auth_provider_user_id: string;
+    }>(
+      `SELECT
+         ci.properties->>'authProvider'       AS auth_provider,
+         ci.properties->>'authProviderUserId' AS auth_provider_user_id
+       FROM graph_nodes ci
+       JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
+       WHERE e.to_node = $1
+         AND ci.tenant_id = $2
+         AND ci.type = 'ChannelIdentity'
+         AND ci.properties->>'authProvider' IS NOT NULL
+         AND ci.properties->>'authProviderUserId' IS NOT NULL
+       ORDER BY ci.properties->>'lastSeenAt' DESC, ci.external_id ASC
+       LIMIT 1`,
+      [clusterUuid, this.tenantId],
+    );
+    const row = res.rows[0];
+    if (!row) return {};
+    return {
+      clusterAuthSubject: {
+        provider: row.auth_provider,
+        providerUserId: row.auth_provider_user_id,
+      },
+    };
   }
 
   async createMemorableKnowledge(

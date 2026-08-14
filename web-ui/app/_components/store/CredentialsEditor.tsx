@@ -260,7 +260,19 @@ export function CredentialsEditor({
       </div>
 
       <ul className="divide-y divide-[color:var(--rule)] border-y border-[color:var(--rule)]">
-        {setupFields.map((field) => {
+        {/*
+          #603 (OM-17) — `json_file` fields are omitted here on purpose.
+          They carry no value of their own (the server explodes the upload into
+          the keys named in `extracts`), and every row below renders a text
+          input — so leaving them in would show a text box asking for a
+          service-account key, which is precisely the transcription step #603
+          exists to remove. The DERIVED fields are ordinary `secret` fields and
+          are listed here as usual, so post-install editing still works.
+          Offering the upload here too is a follow-up, not a gap in the flow.
+        */}
+        {setupFields
+          .filter((field) => field.type !== 'json_file')
+          .map((field) => {
           const state =
             fieldStates[field.key] ??
             ({ draft: '', dirty: false, pendingDelete: false } as FieldState);

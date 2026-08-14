@@ -122,6 +122,26 @@ export class RunTraceCollector {
     };
   }
 
+  /**
+   * #650 — record which model produced this turn's answer, and who served it.
+   *
+   * Set ONCE, right after per-turn model routing resolves, rather than passed
+   * to `finish()`. `finish()` has five call sites across the buffered and
+   * streaming paths; threading two more arguments through all of them is five
+   * chances to miss one, and a trace that silently lacks the model on exactly
+   * one exit path is worse than not having the field — it looks recorded.
+   *
+   * Last write wins, so a turn that re-routes mid-flight reports the model that
+   * actually answered.
+   */
+  recordModel(model: string, provider?: string): void {
+    this.model = model;
+    this.provider = provider;
+  }
+
+  private model?: string;
+  private provider?: string;
+
   finish(opts: {
     iterations: number;
     status: RunStatus;
@@ -141,6 +161,10 @@ export class RunTraceCollector {
       iterations: opts.iterations,
       orchestratorToolCalls: this.orchestratorToolCalls,
       agentInvocations: this.agentInvocations,
+      // #650 — omitted entirely when unknown rather than written as an empty
+      // string: a trace that carries `model: ''` claims to know and does not.
+      ...(this.model ? { model: this.model } : {}),
+      ...(this.provider ? { provider: this.provider } : {}),
       ...(opts.error ? { error: opts.error } : {}),
     };
     return payload;

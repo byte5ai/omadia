@@ -21,6 +21,11 @@ import { createTigrisStore } from '@omadia/diagrams';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
+import { createAdminUpdateRouter } from './routes/adminUpdate.js';
+import { createUpdateAuditStore } from './update/auditStore.js';
+import { createReleaseLookup } from './update/releaseLookup.js';
+import { createUpdaterClient } from './update/updaterClient.js';
+import { resolveAppVersion } from './update/version.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
@@ -245,6 +250,11 @@ import {
   probeGraphPool,
   type EmbeddingGateStatus,
 } from './health/kgHealth.js';
+import {
+  AI_DISCLOSURE_POSTURE_SERVICE,
+  buildDisclosureHealth,
+  type AiDisclosurePostureStatus,
+} from './health/disclosureHealth.js';
 import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
 import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
@@ -404,6 +414,13 @@ interface Microsoft365AccessorShim {
  */
 const WEB_UI_LOCALES = ['en', 'de'] as const;
 const WEB_UI_DEFAULT_LOCALE = 'en';
+
+/**
+ * The running build's identity (#432). Resolved once at module load — the
+ * value is stamped into the image at build time and cannot change while the
+ * process lives. Reported by `/health` and by the admin update surface.
+ */
+const appVersion = resolveAppVersion();
 
 function xmlAttr(value: string): string {
   return value
@@ -2498,10 +2515,31 @@ async function main(): Promise<void> {
       );
       const probe = await probeGraphPool(serviceRegistry.get('graphPool'));
       const kg = buildKgHealth(installedRegistry, gate, probe);
+      // #648 (epic #642) — the resolved AI-Act marking posture per channel.
+      // Read per request for the same reason the embedding gate is: a config
+      // change re-activates the orchestrator and re-publishes, and a boot-time
+      // capture would keep reporting the old posture until a restart.
+      // Non-sensitive by construction: levels, sources and booleans only, no
+      // assistant name, operator note or composed line — see disclosureHealth.ts.
+      const disclosure = buildDisclosureHealth(
+        serviceRegistry.get<AiDisclosurePostureStatus>(
+          AI_DISCLOSURE_POSTURE_SERVICE,
+        ),
+      );
       // A dead pool is not a degradation to report at 200 — nothing in the
       // process can serve a request. 503 is what a load balancer needs to see.
+      // A deviating marking posture deliberately does NOT change the status:
+      // it is a legitimate operator decision, and #648 is explicit that the
+      // hint informs rather than blocks.
       const status = kg.pool === 'dead' ? 'error' : 'ok';
-      res.status(kg.pool === 'dead' ? 503 : 200).json({ status, kg });
+      // #432 — the build stamp (`unknown` when the image was built without
+      // one). Load-bearing beyond display: the updater sidecar's health gate
+      // polls THIS field to decide whether the new image is actually serving,
+      // and rolls the stack back when the requested version never appears.
+      // Non-sensitive: a release tag that is public on GitHub anyway.
+      res
+        .status(kg.pool === 'dead' ? 503 : 200)
+        .json({ status, version: appVersion.version, kg, disclosure });
     })();
   });
 
@@ -2759,6 +2797,38 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] memory-purge endpoint ready at /api/v1/admin/memory/purge',
+  );
+
+  // Rolling self-update (#432). Cookie-auth admin surface like the Danger Zone
+  // above. Three capability tiers, and the endpoint reports honestly which one
+  // is active rather than hiding the difference:
+  //   - always:                  version surface + newer-release check
+  //   - with a Postgres graph:   the `update_audit` trail
+  //   - with the update overlay: actually executing a version bump
+  app.use(
+    '/api/v1/admin/update',
+    requireAuth,
+    createAdminUpdateRouter({
+      currentVersion: appVersion,
+      releaseLookup: createReleaseLookup({
+        repo: config.OMADIA_RELEASE_REPO,
+        ...(config.OMADIA_RELEASE_TOKEN
+          ? { token: config.OMADIA_RELEASE_TOKEN }
+          : {}),
+      }),
+      ...(config.OMADIA_UPDATER_URL && config.OMADIA_UPDATER_TOKEN
+        ? {
+            updater: createUpdaterClient({
+              baseUrl: config.OMADIA_UPDATER_URL,
+              token: config.OMADIA_UPDATER_TOKEN,
+            }),
+          }
+        : {}),
+      ...(graphPool ? { audit: createUpdateAuditStore(graphPool) } : {}),
+    }),
+  );
+  console.log(
+    `[middleware] update endpoint ready at /api/v1/admin/update (version=${appVersion.version}, executor=${config.OMADIA_UPDATER_URL ? 'on' : 'notify-only'})`,
   );
 
   // Memory-storage backend switch (postgres ↔ inmemory). Cookie-auth admin
@@ -3437,6 +3507,20 @@ async function main(): Promise<void> {
             ...(input.email ? { email: input.email } : {}),
             emailVerified: true,
             ...(isEntra ? { aadObjectId: input.providerUserId } : {}),
+            // #568 — record WHICH IdP subject just authenticated. This is
+            // the session JWT's `sub`, and therefore the exact key
+            // `/mcp-servers/:id/authorize` stores a `per_user` OAuth token
+            // under. Persisting it here is what later lets a Teams or
+            // Telegram turn — which knows only the canonical omadia user
+            // id — find that token instead of failing closed.
+            //
+            // Safe to record because THIS call site sits behind a completed
+            // login: the subject is authenticated, not asserted by a
+            // channel payload.
+            authSubject: {
+              provider: input.provider,
+              providerUserId: input.providerUserId,
+            },
           });
           return result.omadiaUserId;
         },
