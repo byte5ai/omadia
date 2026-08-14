@@ -18,6 +18,28 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — the Fly updater was blocked by its own lease (#696)
+
+- **Applying an update on Fly always failed and rolled back.** `replace()`
+  leases the Machine, and Fly gates every write to a leased Machine behind the
+  `fly-machine-lease-nonce` header — which was sent nowhere. `updateMachine`
+  declared `leaseNonce` in its signature but never read it, the engine never
+  passed it, and the HTTP helper had no way to carry a header at all. Every
+  real update therefore came back
+  `409 aborted: … lease currently held by …@tokens.fly.io` and rolled back,
+  seconds after taking that lease itself. Threaded end to end now: per-call
+  headers on the client, the nonce on the update, the lease from the engine.
+- **The lease is handed back in a `finally`.** It was acquired and abandoned,
+  so it kept blocking writes for the rest of its 300s TTL — which also meant
+  the rollback after a failed update hit the same 409, and the machine stayed
+  locked against a human `fly deploy` for minutes.
+- **The test fake now enforces the lease.** It returned a nonce and ignored it
+  on writes, so it could not produce Fly's 409 and 263 lines of green tests
+  said the path worked. It now rejects an unnonced write and validates the
+  nonce on release. New wire-level `flyApi.test.mjs` asserts against the bytes
+  an HTTP server actually receives, because a fake can only ever prove the
+  engine *passes* a value, never that the client *sends* it.
+
 ### Added — one-click updates on Fly.io (#696, follow-up to #432)
 
 - **A Fly executor for the rolling self-update.** Fly Machines are Firecracker
