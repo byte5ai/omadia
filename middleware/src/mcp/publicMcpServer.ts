@@ -45,7 +45,7 @@
  * present. Any looser rule turns the list into an inventory of what to attack.
  */
 
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 import type { Request, RequestHandler, Response } from 'express';
 import { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
@@ -56,10 +56,23 @@ import {
   ListToolsRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
+import {
+  McpServer as ModernMcpServer,
+  createMcpHandler,
+  inputRequired,
+  isLegacyRequest,
+  type RequestStateCodec,
+  type Tool as ModernTool,
+} from '@modelcontextprotocol/server';
 
 import type { ApiKeyPrincipal, RateLimiter } from '@omadia/api-key-auth';
 import { hasScope, hasWriteScope, MCP_INVOKE_SCOPE, MCP_LIST_SCOPE } from '@omadia/api-key-auth';
-import { AI_PROVENANCE_META_KEY, ENVELOPE_PROVENANCE } from '@omadia/channel-sdk';
+import {
+  AI_PROVENANCE_HEADER,
+  AI_PROVENANCE_META_KEY,
+  ENVELOPE_PROVENANCE,
+} from '@omadia/channel-sdk';
+import { REPLAY_ARG_KEY } from '@omadia/orchestrator';
 import type {
   DispatchableToolSpec,
   PrivacyTurnHandle,
@@ -78,10 +91,19 @@ import {
 } from './publicMcpInputRequired.js';
 import type { PublicMcpKeyBinding, PublicMcpKeyBindingStore } from './publicMcpKeyBindings.js';
 import {
+  flattenInputResponses,
+  toEmbeddedInputRequests,
+} from './publicMcpModernMrtr.js';
+import {
   createFailClosedPrivacyGate,
   isPubliclyServableTool,
   type PublicMcpPrivacyGate,
 } from './publicMcpPrivacy.js';
+import {
+  PUBLIC_MCP_MAX_INPUT_ROUNDS,
+  createPublicMcpRequestStateCodec,
+  type PublicMcpRequestState,
+} from './publicMcpRequestState.js';
 
 /** Mirrors `LoopbackMcpServer`'s ceiling. See `enforceBodyCap` for why it is
  *  re-checked here instead of being handed to `express.json`. */
@@ -206,6 +228,24 @@ export interface PublicMcpServerDeps {
   readonly serverVersion?: string;
   readonly toolTimeoutMs?: number;
   readonly maxConcurrentCalls?: number;
+  /**
+   * HMAC codec for the 2026-07-28 `requestState` (issue #700).
+   *
+   * SHOULD be supplied by the wiring from the vault-backed key, because the
+   * endpoint is stateless and horizontally scaled: the instance that verifies
+   * an echoed state is usually not the one that minted it, and a per-process
+   * key makes retries fail only when they land elsewhere — intermittently,
+   * under load, which is the worst way to discover a key problem.
+   *
+   * Omitted, this class generates a process-local key and says so once. That
+   * keeps single-process installs and tests working with the integrity check
+   * fully intact, rather than degrading to an unverified passthrough, which is
+   * the one option that would be silently insecure.
+   *
+   * A resolver rather than a value because the key comes from the vault, which
+   * is async, while the mount that supplies it is not. Called at most once.
+   */
+  readonly resolveRequestStateCodec?: () => Promise<RequestStateCodec<PublicMcpRequestState>>;
 }
 
 /** Deliberately identical for "no such tool", "not allowlisted for this key",
@@ -217,8 +257,48 @@ function unavailableToolMessage(name: string): string {
   return `Tool \`${name}\` is not available to this API key.`;
 }
 
+/**
+ * The handler context fields the 2026-07-28 leg reads (#700).
+ *
+ * Typed structurally and read defensively: both are absent on the ORIGINAL
+ * call and present only on a retry, so every access here is on a value the
+ * seam may legitimately not have populated.
+ */
+interface ModernCallContext {
+  readonly mcpReq?: {
+    readonly inputResponses?: unknown;
+    readonly requestState?: <T>() => T | undefined;
+  };
+}
+
+/** The client's embedded answers on a retry, or `undefined` on a first call. */
+function readInputResponses(ctx: unknown): unknown {
+  return (ctx as ModernCallContext | undefined)?.mcpReq?.inputResponses;
+}
+
+/**
+ * The VERIFIED `requestState` payload.
+ *
+ * Safe to trust: the seam ran `requestState.verify` before the handler, and a
+ * value that failed it never gets this far — the request was already answered
+ * with the frozen `-32602`. What arrives here is the codec's decoded payload,
+ * not the wire string.
+ */
+function readVerifiedState(ctx: unknown): PublicMcpRequestState | undefined {
+  const accessor = (ctx as ModernCallContext | undefined)?.mcpReq?.requestState;
+  if (typeof accessor !== 'function') return undefined;
+  const state = accessor<PublicMcpRequestState>();
+  return state !== null && typeof state === 'object' && typeof state.round === 'number'
+    ? state
+    : undefined;
+}
+
 export class PublicMcpServer {
   private inFlight = 0;
+
+  /** Memoised so a generated fallback key stays stable for this process —
+   *  minting per request would refuse every retry, including its own. */
+  private resolvedCodec?: Promise<RequestStateCodec<PublicMcpRequestState>>;
 
   constructor(private readonly deps: PublicMcpServerDeps) {}
 
@@ -415,6 +495,31 @@ export class PublicMcpServer {
       return;
     }
 
+    // ── era routing (#700) ──────────────────────────────────────────────────
+    // Two SDK generations serve this one path, and the protocol era of the
+    // request decides which — never configuration, and never a per-deployment
+    // flag. The reason is that neither generation can serve both eras here:
+    //
+    //  - The v1 line has no `server/discover`, so a 2026-07-28 client
+    //    negotiating against it always falls back to the legacy era, where a
+    //    modern client STRIPS `resultType` off the reply. MRTR is invisible to
+    //    it no matter which dialect the body carries.
+    //  - The v2 line refuses to emit omadia's 2025-era `inputRequests` array at
+    //    all, on either era ("each inputRequests entry must be an embedded
+    //    elicitation/create, sampling/createMessage, or roots/list request"),
+    //    so serving legacy traffic from it would withdraw the dialect this
+    //    endpoint's README documents and existing integrations are built on.
+    //
+    // Routing is the SDK's own documented composition for exactly this
+    // situation. `isLegacyRequest` is authoritative and must not be
+    // second-guessed: everything it calls non-legacy — including malformed
+    // envelopes and unsupported-revision claims — belongs to the modern path,
+    // which owns those error answers.
+    if (!(await isLegacyRequest(this.toWebRequest(req), req.body))) {
+      await this.handleModern(req, res, principal);
+      return;
+    }
+
     let session: ReturnType<typeof this.createRequestScopedServer> | undefined;
     try {
       session = this.createRequestScopedServer(principal);
@@ -524,6 +629,217 @@ export class PublicMcpServer {
     });
 
     return { mcp, transport };
+  }
+
+  // ── the 2026-07-28 leg (#700) ─────────────────────────────────────────────
+
+  /**
+   * The `requestState` codec, resolved once.
+   *
+   * A generated key is a real fallback, not a disabled check: states are still
+   * signed and still verified, they just stop being verifiable by a SIBLING
+   * instance. The warning names that, because the symptom (a retry failing only
+   * when it lands on another process) is otherwise very hard to read.
+   */
+  private codec(): Promise<RequestStateCodec<PublicMcpRequestState>> {
+    // The PROMISE is memoised, not its value: two concurrent first requests
+    // must not each resolve a key, or the second would mint under a key the
+    // first never used and every retry would land on a coin flip.
+    this.resolvedCodec ??= (async () => {
+      const resolve = this.deps.resolveRequestStateCodec;
+      if (resolve) return resolve();
+      console.warn(
+        '[public-mcp] ⚠ MRTR requestState key GENERATED per process — a retry served by another instance will be refused. Wire `resolveRequestStateCodec` from the vault.',
+      );
+      return createPublicMcpRequestStateCodec(randomBytes(32));
+    })();
+    return this.resolvedCodec;
+  }
+
+  /**
+   * Rebuild the Express request as a web-standard `Request`.
+   *
+   * Built from the ALREADY-PARSED body rather than the socket: `express.json()`
+   * consumed the stream long before this runs, so a handler that tried to read
+   * `req` again would hang on a stream with nothing left in it. The parsed body
+   * is handed to the SDK separately (`parsedBody`) for the same reason — this
+   * copy exists so the request classifier and the transport see identical
+   * bytes.
+   */
+  private toWebRequest(req: Request): globalThis.Request {
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(req.headers)) {
+      if (value === undefined) continue;
+      headers.set(name, Array.isArray(value) ? value.join(', ') : value);
+    }
+    const url = `http://${req.headers.host ?? 'public-mcp.invalid'}${req.originalUrl}`;
+    return new globalThis.Request(url, {
+      method: req.method,
+      headers,
+      ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
+    });
+  }
+
+  /**
+   * Serve one 2026-07-28 request.
+   *
+   * The handler is built per request, like the legacy session above and for the
+   * same reason: the principal is baked into the factory's closure, so there is
+   * no window in which one caller's server instance can answer another
+   * caller's request. This surface is internet-facing and its whole
+   * authorization model is per-key; a shared instance would put that model one
+   * refactor away from a cross-key leak, and building a handler is cheaper than
+   * the server-plus-transport pair the legacy path already builds per request.
+   */
+  private async handleModern(
+    req: Request,
+    res: Response,
+    principal: ApiKeyPrincipal,
+  ): Promise<void> {
+    const handler = createMcpHandler(() => this.createModernServer(principal), {
+      // The legacy era never reaches here — `handleHttp` routed it to the v1
+      // path already. Saying so explicitly means a routing regression fails
+      // loudly at this boundary instead of quietly serving 2025 traffic from
+      // the generation that cannot speak omadia's dialect.
+      legacy: 'reject',
+    });
+    const response = await handler.fetch(this.toWebRequest(req), {
+      parsedBody: req.body,
+      // Pass-through only: authentication already happened in `requireApiKey`.
+      // The token is deliberately NOT forwarded — nothing downstream needs the
+      // secret, and the key id is what the `requestState` binding needs.
+      authInfo: { token: '', clientId: principal.keyId, scopes: [...principal.scopes] },
+    });
+    await this.writeWebResponse(res, response);
+  }
+
+  /** Copy a web `Response` onto the Express response. */
+  private async writeWebResponse(res: Response, response: globalThis.Response): Promise<void> {
+    response.headers.forEach((value, name) => {
+      // The provenance header is already set by the router's middleware for
+      // every reply on this route; letting the SDK's copy overwrite it would
+      // make the AI-Act marking depend on which leg answered (#647).
+      if (name.toLowerCase() === AI_PROVENANCE_HEADER) return;
+      res.setHeader(name, value);
+    });
+    res.status(response.status);
+    const body = response.body ? Buffer.from(await response.arrayBuffer()) : undefined;
+    if (body === undefined || body.length === 0) {
+      res.end();
+      return;
+    }
+    res.end(body);
+  }
+
+  /**
+   * The 2026-07-28 server instance for ONE request.
+   *
+   * Every authorization decision goes through the SAME `listToolsFor` /
+   * `callToolFor` the legacy leg uses. That is the point: the four gates
+   * (binding, allowlist, scope, privacy) are not reimplemented per era, so
+   * there is no second place for them to disagree. Only the MRTR dialect and
+   * the round accounting differ, and both live in the handler below.
+   */
+  private async createModernServer(principal: ApiKeyPrincipal): Promise<ModernMcpServer> {
+    const codec = await this.codec();
+    const mcp = new ModernMcpServer(
+      {
+        name: this.deps.serverName ?? 'omadia-public-mcp',
+        version: this.deps.serverVersion ?? '0.0.0',
+      },
+      {
+        capabilities: { tools: {} },
+        // BOTH of these belong on the SERVER options. Passing either to
+        // `createMcpHandler` compiles, runs, and does nothing — a tampered
+        // `requestState` is then accepted while the endpoint looks healthy.
+        // Measured; do not move them.
+        inputRequired: { legacyShim: false },
+        requestState: { verify: codec.verify },
+      },
+    );
+
+    mcp.server.setRequestHandler('tools/list', async () =>
+      this.sanitized('tools/list', async () => ({
+        // Same projection the legacy leg serves. The cast asserts what
+        // TypeScript cannot prove about a caller-supplied JSON Schema: v2
+        // models `inputSchema` as a concrete JSON value where this endpoint
+        // carries it as `unknown`. The runtime value is the identical object
+        // the v1 leg puts on the wire — nothing here reshapes it.
+        tools: (await this.listToolsFor(principal)) as unknown as ModernTool[],
+      })),
+    );
+
+    mcp.server.setRequestHandler('tools/call', async (request, ctx) =>
+      this.sanitized('tools/call', async () => {
+        const params = request.params as unknown as {
+          name: string;
+          arguments?: Record<string, unknown>;
+          _meta?: { idempotencyKey?: unknown };
+        };
+        const name = params.name;
+        const idempotencyKey =
+          typeof params._meta?.idempotencyKey === 'string' && params._meta.idempotencyKey.length > 0
+            ? params._meta.idempotencyKey
+            : undefined;
+
+        // The retry leg. The human's answers arrive as a spec `ElicitResult`
+        // and are handed to the tool as the SAME flat object the 2025-era
+        // dialect delivers, so a tool never learns which era its caller spoke.
+        const answered = flattenInputResponses(readInputResponses(ctx));
+        const args: Record<string, unknown> = {
+          ...(params.arguments ?? {}),
+          ...(answered !== undefined ? { [REPLAY_ARG_KEY]: answered } : {}),
+        };
+
+        const result = await this.callToolFor(principal, name, args, idempotencyKey);
+        const pending = result.isError
+          ? undefined
+          : parseToolEmittedInputRequest(result.content);
+
+        if (pending === undefined || !pending.ok) {
+          if (pending !== undefined && pending.rejection.kind === 'unusable') {
+            return this.modernBody({
+              content: [
+                { type: 'text' as const, text: inputRequestMalformedError(name, pending.rejection.reason) },
+              ],
+              isError: true,
+            });
+          }
+          return this.modernBody({
+            content: [{ type: 'text' as const, text: result.content }],
+            ...(result.isError ? { isError: true } : {}),
+          });
+        }
+
+        // The bounce cap, read off the SIGNED round rather than inferred from
+        // the arguments. On the 2025-era dialect a caller that strips
+        // `inputResponses` gets a fresh card forever; here it cannot, because
+        // the count it would have to forge is under the endpoint's own MAC.
+        const round = (readVerifiedState(ctx)?.round ?? 0) + 1;
+        if (round > PUBLIC_MCP_MAX_INPUT_ROUNDS) {
+          return this.modernBody({
+            content: [{ type: 'text' as const, text: inputRequestBounceError(name) }],
+            isError: true,
+          });
+        }
+
+        const rendered = renderInputRequiredResult(pending.request);
+        return inputRequired({
+          inputRequests: toEmbeddedInputRequests(pending.request, rendered.message ?? ''),
+          requestState: await codec.mint({ tool: name, round }, ctx),
+        });
+      }),
+    );
+
+    return mcp;
+  }
+
+  /** Attach the per-call AI-Act provenance twin, exactly as the legacy leg
+   *  does (#647) — the marking must not depend on which era answered. */
+  private modernBody<T extends Record<string, unknown>>(
+    body: T,
+  ): T & { _meta: Record<string, unknown> } {
+    return { ...body, _meta: { [AI_PROVENANCE_META_KEY]: ENVELOPE_PROVENANCE } };
   }
 
   /**
