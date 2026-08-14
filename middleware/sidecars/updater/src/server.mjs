@@ -22,7 +22,9 @@ import { timingSafeEqual } from 'node:crypto';
 
 import { isValidTargetVersion, loadConfig } from './config.mjs';
 import { createDockerApi } from './dockerApi.mjs';
+import { createEngine } from './engine/index.mjs';
 import { assertEnvFileUsable } from './envFile.mjs';
+import { createFlyApi } from './flyApi.mjs';
 import { detectComposeProject, runUpdate } from './updateJob.mjs';
 
 const MAX_STEPS = 200;
@@ -98,7 +100,17 @@ function send(res, status, payload) {
  */
 export function createServer(deps = {}) {
   const config = deps.config ?? loadConfig();
-  const docker = deps.docker ?? createDockerApi(config.dockerApiUrl);
+  const onFly = config.engine === 'fly';
+  const docker =
+    deps.docker ?? (onFly ? null : createDockerApi(config.dockerApiUrl));
+  const flyApi =
+    deps.flyApi ??
+    (onFly
+      ? createFlyApi({
+          baseUrl: config.flyApiUrl,
+          tokenFor: (app) => config.flyTokens[app] ?? '',
+        })
+      : null);
   const runUpdateImpl = deps.runUpdateImpl ?? runUpdate;
   const detectProjectImpl = deps.detectProjectImpl ?? detectComposeProject;
   const hostname = deps.hostname ?? os.hostname();
@@ -122,14 +134,20 @@ export function createServer(deps = {}) {
       startedAt: new Date().toISOString(),
     };
     try {
-      const project =
-        config.composeProject ?? (await detectProjectImpl(docker, hostname));
-      log(`compose project: ${project}`);
+      // The compose project is a docker-engine concern; on Fly the app names
+      // come from config and there is nothing to detect.
+      let project = '';
+      if (!onFly) {
+        project = config.composeProject ?? (await detectProjectImpl(docker, hostname));
+        log(`compose project: ${project}`);
+      }
+      const engine =
+        deps.engine ?? createEngine({ config, docker, flyApi, project });
+      log(`engine: ${engine.kind}`);
       const result = await runUpdateImpl({
-        docker,
+        engine,
         config,
         targetVersion,
-        project,
         log,
       });
       status.state = result.ok
@@ -162,7 +180,14 @@ export function createServer(deps = {}) {
     }
 
     if (req.method === 'GET' && url.pathname === '/status') {
-      send(res, 200, status);
+      // Capabilities travel with the status so the admin page can warn about
+      // what this platform cannot do — on Fly the chosen version is not
+      // persisted, and hiding that would be the dishonest option.
+      send(res, 200, {
+        ...status,
+        engine: config.engine,
+        pinPersisted: !onFly,
+      });
       return;
     }
 
@@ -203,11 +228,13 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   const { server, config } = createServer();
   // Fail fast on the pin target: an unusable .env mount would otherwise be
   // discovered mid-update, after images have been pulled and before anything
-  // has been recreated.
-  await assertEnvFileUsable(config.envFilePath).catch((err) => {
-    console.error(`[updater] ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
-  });
+  // has been recreated. Only the docker engine has a pin file at all.
+  if (config.engine !== 'fly') {
+    await assertEnvFileUsable(config.envFilePath).catch((err) => {
+      console.error(`[updater] ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    });
+  }
   server.listen(config.port, () => {
     // eslint-disable-next-line no-console -- boot banner
     console.log(

@@ -1,22 +1,22 @@
 /**
- * The update itself (#432, slice 4).
+ * The update itself (#432, slice 4) — platform-independent since #696.
  *
  * Sequencing is the safety property here, so it is spelled out rather than
  * inferred:
  *
- *   1. resolve every target container FIRST — an unknown service aborts before
+ *   1. resolve every target FIRST — an unknown or scaled service aborts before
  *      anything is touched
- *   2. pull EVERY new image before stopping ANY container — a typo'd tag or a
- *      GHCR outage must not be discovered halfway through, with the middleware
- *      already deleted
- *   3. pin the version in the project `.env`, so the operator's next manual
- *      `docker compose up -d` does not silently revert the stack
- *   4. recreate in the configured order (middleware before web-ui: web-ui's
- *      `depends_on` health condition applies at `up`, and this ordering keeps
- *      the UI's backend present when it comes back)
+ *   2. verify EVERY new image is available before replacing ANY instance — a
+ *      typo'd tag or a registry outage must not be discovered halfway through,
+ *      with the middleware already gone
+ *   3. persist the chosen version where the platform's own tooling will read
+ *      it, so the operator's next routine deploy does not silently revert the
+ *      stack (compose only — see `canPersistPin`)
+ *   4. replace in the configured order (middleware before web-ui: it applies
+ *      the schema migrations at boot)
  *   5. gate on the middleware's `/health` REPORTING THE NEW VERSION
- *   6. on failure, roll every recreated container back to its previous image
- *      and restore the previous `.env` pin
+ *   6. on failure, roll every replaced instance back to its previous image and
+ *      restore the previous pin
  *
  * What rollback does NOT undo: schema migrations. The kernel migrations under
  * `middleware/migrations/` are forward-only and are applied automatically at
@@ -27,62 +27,15 @@
  */
 
 import { PROTECTED_SERVICES } from './config.mjs';
-import { pinVersion, restoreVersion } from './envFile.mjs';
 import { waitForHealthyVersion } from './health.mjs';
-import { recreateContainer, splitImageRef } from './recreate.mjs';
 
-/**
- * Find the one container for a compose service.
- *
- * @param {any} docker
- * @param {string} project
- * @param {string} service
- */
-async function findServiceContainer(docker, project, service) {
-  const list = await docker.listContainers({
-    label: [
-      `com.docker.compose.project=${project}`,
-      `com.docker.compose.service=${service}`,
-    ],
-  });
-  if (list.length === 0) {
-    throw new Error(`no container found for compose service "${service}"`);
-  }
-  if (list.length > 1) {
-    // Scaled services are out of scope: recreating one replica of N with a
-    // different image is a rolling deploy, not what a single-instance
-    // self-hosted stack means by "update".
-    throw new Error(
-      `compose service "${service}" has ${list.length} containers — scaled services are not supported`,
-    );
-  }
-  return docker.inspectContainer(list[0].Id);
-}
-
-/**
- * Resolve the compose project name from the updater's own container labels,
- * so the operator does not have to repeat what compose already knows.
- *
- * @param {any} docker
- * @param {string} hostname
- */
-export async function detectComposeProject(docker, hostname) {
-  const self = await docker.inspectContainer(hostname);
-  const project = self?.Config?.Labels?.['com.docker.compose.project'];
-  if (typeof project !== 'string' || project.length === 0) {
-    throw new Error(
-      'could not detect the compose project from this container — set UPDATER_COMPOSE_PROJECT',
-    );
-  }
-  return project;
-}
+export { detectComposeProject } from './engine/docker.mjs';
 
 /**
  * @param {{
- *   docker: any,
+ *   engine: import('./engine/index.mjs').UpdateEngine,
  *   config: any,
  *   targetVersion: string,
- *   project: string,
  *   log: (msg: string) => void,
  *   healthWaiter?: typeof waitForHealthyVersion,
  * }} opts
@@ -90,10 +43,9 @@ export async function detectComposeProject(docker, hostname) {
  */
 export async function runUpdate(opts) {
   const {
-    docker,
+    engine,
     config,
     targetVersion,
-    project,
     log,
     healthWaiter = waitForHealthyVersion,
   } = opts;
@@ -104,50 +56,43 @@ export async function runUpdate(opts) {
     if (PROTECTED_SERVICES.includes(service) || service === config.selfService) {
       throw new Error(`refusing to update protected service "${service}"`);
     }
-    const inspect = await findServiceContainer(docker, project, service);
-    const currentRef = inspect?.Config?.Image ?? '';
-    const { repo } = splitImageRef(currentRef);
-    if (repo.length === 0) {
-      throw new Error(`service "${service}" has no resolvable image reference`);
-    }
-    targets.push({ service, inspect, repo, newImage: `${repo}:${targetVersion}` });
-    log(`resolved ${service}: ${currentRef} → ${repo}:${targetVersion}`);
+    const target = await engine.resolveTarget(service);
+    target.newImage = `${target.repo}:${targetVersion}`;
+    targets.push(target);
+    log(`resolved ${service}: ${target.currentImage} → ${target.newImage}`);
   }
 
-  // 2 — pull everything up front.
-  for (const target of targets) {
-    log(`pulling ${target.newImage}`);
-    await docker.pullImage(target.repo, targetVersion);
-  }
-  log('all images pulled');
+  // 2 — every new image must be obtainable before anything is replaced.
+  await engine.preflight(targets, targetVersion, log);
 
-  // 3 — persist the pin so a later `docker compose up -d` agrees with reality.
+  // 3 — persist the pin, where the platform allows it.
   let previousPin = null;
-  try {
-    ({ previous: previousPin } = await pinVersion(config.envFilePath, targetVersion));
-    log(`pinned OMADIA_VERSION=${targetVersion} in ${config.envFilePath}`);
-  } catch (err) {
-    throw new Error(
-      `could not write ${config.envFilePath}: ${err instanceof Error ? err.message : String(err)} — refusing to update, the change would be reverted by the next 'docker compose up -d'`,
+  if (engine.canPersistPin) {
+    try {
+      previousPin = await engine.pin(targetVersion);
+      log(`pinned ${targetVersion} in ${engine.pinDescription()}`);
+    } catch (err) {
+      throw new Error(
+        `could not write ${engine.pinDescription()}: ${err instanceof Error ? err.message : String(err)} — refusing to update, the change would be reverted by the next routine deploy`,
+      );
+    }
+  } else {
+    log(
+      'this platform cannot persist the version pin — a later routine deploy will use whatever the operator has configured locally',
     );
   }
 
-  // 4 — recreate.
-  const recreated = [];
+  // 4 — replace.
+  const replaced = [];
   try {
     for (const target of targets) {
-      const { previousImage } = await recreateContainer(
-        docker,
-        target.inspect,
-        target.newImage,
-        log,
-      );
-      recreated.push({ service: target.service, previousImage });
+      await engine.replace(target, target.newImage, log);
+      replaced.push({ service: target.service, previousImage: target.currentImage });
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(`recreate failed: ${message}`);
-    await rollback({ docker, config, project, recreated, previousPin, log });
+    log(`replace failed: ${message}`);
+    await rollback({ engine, replaced, previousPin, log });
     return { ok: false, rolledBack: true, error: message };
   }
 
@@ -167,28 +112,34 @@ export async function runUpdate(opts) {
   // 6 — revert.
   const reason = `health gate failed: ${health.reason} (observed version: ${health.observedVersion ?? 'none'})`;
   log(reason);
-  await rollback({ docker, config, project, recreated, previousPin, log });
+  await rollback({ engine, replaced, previousPin, log });
   return { ok: false, rolledBack: true, error: reason };
 }
 
 /**
- * Best-effort restore of every container this run replaced, in reverse order.
+ * Best-effort restore of every instance this run replaced, in reverse order.
  * Rollback failures are logged and swallowed: one service that refuses to come
  * back must not stop the others from being restored.
  */
-async function rollback({ docker, config, project, recreated, previousPin, log }) {
+async function rollback({ engine, replaced, previousPin, log }) {
   log('rolling back');
-  try {
-    await restoreVersion(config.envFilePath, previousPin);
-    log(`restored OMADIA_VERSION pin to ${previousPin ?? '(unset)'}`);
-  } catch (err) {
-    log(`could not restore ${config.envFilePath}: ${err instanceof Error ? err.message : String(err)}`);
+  if (engine.canPersistPin) {
+    try {
+      await engine.restorePin(previousPin);
+      log(`restored the version pin to ${previousPin ?? '(unset)'}`);
+    } catch (err) {
+      log(
+        `could not restore ${engine.pinDescription()}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
-  for (const entry of [...recreated].reverse()) {
+  for (const entry of [...replaced].reverse()) {
     try {
-      const inspect = await findServiceContainer(docker, project, entry.service);
-      await recreateContainer(docker, inspect, entry.previousImage, log);
+      // Re-resolve: the previous replace may have produced a new container id,
+      // and on Fly the machine's config version has moved on.
+      const fresh = await engine.resolveTarget(entry.service);
+      await engine.replace(fresh, entry.previousImage, log);
       log(`rolled ${entry.service} back to ${entry.previousImage}`);
     } catch (err) {
       log(

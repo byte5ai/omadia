@@ -23,6 +23,10 @@
 #                  three fly/*.fly.toml files)
 #   OMADIA_SUFFIX  app-name suffix; Fly app names    (default: random)
 #                  are globally unique, hence one
+#   OMADIA_WITH_UPDATER=1  also provision the updater sidecar app, which
+#                  enables one-click updates from Admin → Update (#696).
+#                  Opt-in: it mints app-scoped deploy tokens for the
+#                  middleware and web-ui apps and holds them.
 #
 # This is a one-shot installer, not an upgrade tool. To upgrade later:
 #   fly deploy --app <middleware-app> --config fly/middleware.fly.toml
@@ -75,6 +79,39 @@ echo "==> Deploying middleware (${MW_APP}) — first boot runs migrations, allow
 
 echo "==> Deploying admin UI (${UI_APP})"
 "$FLY" deploy --app "$UI_APP" --config web-ui.fly.toml --ha=false
+
+# --- Optional: one-click updates from the Operator UI (issue #696) ----------
+# Opt-in, like the compose overlay: replacing running machines is a capability
+# no deployment should acquire by accident. Without it the admin page still
+# reports versions and flags a newer release, it just cannot apply one.
+if [ "${OMADIA_WITH_UPDATER:-0}" = "1" ]; then
+  UPD_APP="omadia-updater-${SUFFIX}"
+  echo "==> Creating updater app (${UPD_APP})"
+  "$FLY" apps create "$UPD_APP" --org "$ORG"
+
+  # App-SCOPED deploy tokens: one per app the updater may move, and nothing
+  # else in the org. `fly tokens create deploy` prints the token on stdout.
+  echo "==> Minting app-scoped deploy tokens"
+  MW_TOKEN="$("$FLY" tokens create deploy --app "$MW_APP" --name "omadia-updater ${SUFFIX} middleware" --expiry 8760h)"
+  UI_TOKEN="$("$FLY" tokens create deploy --app "$UI_APP" --name "omadia-updater ${SUFFIX} web-ui" --expiry 8760h)"
+  UPDATER_TOKEN="$(openssl rand -hex 24)"
+
+  "$FLY" secrets set --app "$UPD_APP" \
+    UPDATER_TOKEN="$UPDATER_TOKEN" \
+    UPDATER_FLY_APP_MIDDLEWARE="$MW_APP" \
+    UPDATER_FLY_TOKEN_MIDDLEWARE="$MW_TOKEN" \
+    UPDATER_FLY_APP_WEB_UI="$UI_APP" \
+    UPDATER_FLY_TOKEN_WEB_UI="$UI_TOKEN" \
+    UPDATER_HEALTH_URL="http://${MW_APP}.internal:8080/health"
+
+  # This pair is what flips the admin page out of notify-only mode.
+  "$FLY" secrets set --app "$MW_APP" \
+    OMADIA_UPDATER_URL="http://${UPD_APP}.internal:8090" \
+    OMADIA_UPDATER_TOKEN="$UPDATER_TOKEN"
+
+  echo "==> Deploying updater (${UPD_APP})"
+  "$FLY" deploy --app "$UPD_APP" --config updater.fly.toml --ha=false
+fi
 
 echo
 echo "Done. Open https://${UI_APP}.fly.dev and finish the /setup wizard"

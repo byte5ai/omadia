@@ -106,18 +106,47 @@ node --test test/*.test.mjs
 Runs in CI as part of the `middleware` job. No install step — there are no
 dependencies.
 
+## Engines
+
+The platform-independent half — ordering, the health gate on the *reported*
+version, rollback, the protected list — lives in `updateJob.mjs`. An engine
+owns only what genuinely differs per platform: how a service is found, how its
+image is verified ahead of time, how the version pin is persisted, and how one
+instance is replaced.
+
+| | `docker` (default) | `fly` (#696) |
+|---|---|---|
+| Reaches the platform via | docker-socket-proxy | Machines API, app-scoped token |
+| Finds instances by | compose labels | one machine per configured app |
+| Verifies the tag first by | pulling every image | registry manifest check |
+| Replaces an instance by | stop → remove → create → start | read machine, change `config.image`, write back with `current_version` |
+| Persists the version pin | ✅ project `.env` | ❌ — `fly deploy` reads a local `fly.toml` |
+
+Select with `UPDATER_ENGINE`. The Fly engine additionally needs, per managed
+service, `UPDATER_FLY_APP_<SERVICE>` and `UPDATER_FLY_TOKEN_<SERVICE>`
+(`web-ui` → `WEB_UI`); it refuses to start if any is missing.
+
+**The trap in the Fly engine**, called out because it is invisible when you get
+it wrong: `config` on the machine-update endpoint is required and *replaces*
+the configuration. Building that object instead of reading it drops `mounts`
+(the data volume), `checks`, `services` and `env`. Same bug class as Docker's
+merged `Config.Env` — see the note above.
+
 ## Scope
 
-Compose stacks only — this sidecar needs a Docker Engine to talk to.
+Compose and Fly.io — both opt-in, and both behind the same
+`middleware/src/update/updaterClient.ts` contract. Adding the Fly engine needed
+**zero** middleware changes beyond passing two new status fields through, which
+is the seam working as intended.
 
-- **Fly.io**: no Docker daemon (Firecracker microVMs), so the sidecar cannot
-  run there. The version surface and the release check still work; applying an
-  update is `fly deploy --image …`, documented in `docs/upgrading.md`.
-- **Kubernetes**: same shape — the update belongs to whatever reconciles the
-  Deployment.
+- **Kubernetes**: the same seam would fit — the update belongs to whatever
+  reconciles the Deployment. Not implemented.
 - **Desktop**: already auto-updates via `electron-updater`
-  (`desktop/src/updater.ts`).
+  (`desktop/src/updater.ts`), out of scope here.
 
-A Fly/Machines-API executor would slot in behind the same
-`middleware/src/update/updaterClient.ts` contract if it is ever wanted; nothing
-in the middleware assumes Docker.
+Single-instance only, on both platforms. A scaled compose service or a
+multi-machine Fly app is refused rather than half-updated: replacing one
+replica of N with a different image is a rolling deploy, which is the
+platform's own job. On Fly this is not much of a restriction for the
+middleware anyway — `/data` is a volume, and a volume attaches to exactly one
+machine.

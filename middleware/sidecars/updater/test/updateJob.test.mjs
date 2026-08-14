@@ -5,6 +5,7 @@ import path from 'node:path';
 import { beforeEach, describe, it } from 'node:test';
 
 import { readVersion } from '../src/envFile.mjs';
+import { createDockerEngine } from '../src/engine/docker.mjs';
 import { detectComposeProject, runUpdate } from '../src/updateJob.mjs';
 
 import { createFakeDocker, ops } from './_fakeDocker.mjs';
@@ -45,7 +46,7 @@ describe('runUpdate (#432)', () => {
     const envFile = await makeEnvFile();
 
     const result = await runUpdate({
-      docker,
+      engine: createDockerEngine({ docker, config: makeConfig(envFile), project: 'omadia' }),
       config: makeConfig(envFile),
       targetVersion: 'v0.75.0',
       project: 'omadia',
@@ -70,7 +71,7 @@ describe('runUpdate (#432)', () => {
 
     await assert.rejects(
       runUpdate({
-        docker,
+        engine: createDockerEngine({ docker, config: makeConfig(envFile), project: 'omadia' }),
         config: makeConfig(envFile),
         targetVersion: 'v9.9.9',
         project: 'omadia',
@@ -92,7 +93,7 @@ describe('runUpdate (#432)', () => {
     const envFile = await makeEnvFile();
 
     await runUpdate({
-      docker,
+      engine: createDockerEngine({ docker, config: makeConfig(envFile), project: 'omadia' }),
       config: makeConfig(envFile),
       targetVersion: 'v0.75.0',
       project: 'omadia',
@@ -108,7 +109,7 @@ describe('runUpdate (#432)', () => {
     const envFile = await makeEnvFile();
 
     const result = await runUpdate({
-      docker,
+      engine: createDockerEngine({ docker, config: makeConfig(envFile), project: 'omadia' }),
       config: makeConfig(envFile),
       targetVersion: 'v0.75.0',
       project: 'omadia',
@@ -150,7 +151,7 @@ describe('runUpdate (#432)', () => {
     const envFile = await makeEnvFile();
 
     const result = await runUpdate({
-      docker,
+      engine: createDockerEngine({ docker, config: makeConfig(envFile), project: 'omadia' }),
       config: makeConfig(envFile),
       targetVersion: 'v0.75.0',
       project: 'omadia',
@@ -176,7 +177,7 @@ describe('runUpdate (#432)', () => {
 
     await assert.rejects(
       runUpdate({
-        docker,
+        engine: createDockerEngine({ docker, config: makeConfig(envFile, { services: ['postgres'] }), project: 'omadia' }),
         config: makeConfig(envFile, { services: ['postgres'] }),
         targetVersion: 'v0.75.0',
         project: 'omadia',
@@ -208,7 +209,7 @@ describe('runUpdate (#432)', () => {
 
     await assert.rejects(
       runUpdate({
-        docker,
+        engine: createDockerEngine({ docker, config: makeConfig(envFile, { services: ['middleware'] }), project: 'omadia' }),
         config: makeConfig(envFile, { services: ['middleware'] }),
         targetVersion: 'v0.75.0',
         project: 'omadia',
@@ -223,7 +224,7 @@ describe('runUpdate (#432)', () => {
 
     await assert.rejects(
       runUpdate({
-        docker,
+        engine: createDockerEngine({ docker, config: makeConfig('/nonexistent-dir/.env'), project: 'omadia' }),
         config: makeConfig('/nonexistent-dir/.env'),
         targetVersion: 'v0.75.0',
         project: 'omadia',

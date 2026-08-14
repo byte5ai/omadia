@@ -1,0 +1,51 @@
+# Fly config — omadia updater sidecar (issue #696).
+#
+# OPT-IN. `fly/deploy.sh` only provisions this app when OMADIA_WITH_UPDATER=1,
+# for the same reason the compose overlay is opt-in: the ability to replace
+# running machines is a capability no deployment should acquire by accident.
+#
+# Reachable only over the org's private 6PN network as
+# `omadia-updater-<suffix>.internal:8090` — there is deliberately no
+# [http_service] block, so this app has no public address at all. Access is
+# additionally gated by the shared UPDATER_TOKEN.
+#
+# Secrets set by deploy.sh:
+#   UPDATER_TOKEN               shared with the middleware
+#   UPDATER_FLY_APP_MIDDLEWARE  / UPDATER_FLY_TOKEN_MIDDLEWARE
+#   UPDATER_FLY_APP_WEB_UI      / UPDATER_FLY_TOKEN_WEB_UI
+#   UPDATER_HEALTH_URL          the middleware's /health over 6PN
+#
+# The two Fly tokens are APP-SCOPED deploy tokens (`fly tokens create deploy`),
+# one per app it is allowed to move. Never an org-scoped token: this app's whole
+# security story is that a compromise reaches exactly two apps.
+
+primary_region = "fra"
+
+[build]
+  image = "ghcr.io/byte5ai/omadia-updater:latest"
+
+[env]
+  UPDATER_ENGINE = "fly"
+  UPDATER_SERVICES = "middleware,web-ui"
+  UPDATER_PORT = "8090"
+
+# No [http_service]: no public IP, no proxy, no certificate. The middleware
+# reaches this over 6PN. `auto_stop` is therefore not even a question — but
+# note it would be wrong regardless: an updater that scaled to zero mid-job
+# would abandon its own health gate half-way through a stack replacement.
+[[services]]
+  internal_port = 8090
+  protocol = "tcp"
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "256mb"

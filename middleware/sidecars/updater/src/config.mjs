@@ -17,6 +17,12 @@ export const PROTECTED_SERVICES = Object.freeze(['postgres', 'updater', 'docker-
 
 const MIN_TOKEN_LENGTH = 16;
 
+/** `web-ui` → `WEB_UI`, so each app's config reads as its own env var and can
+ *  be set with a plain `fly secrets set`. */
+export function envSuffix(service) {
+  return service.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+}
+
 /**
  * @param {Record<string, string | undefined>} env
  * @returns {{
@@ -58,8 +64,41 @@ export function loadConfig(env = process.env) {
     );
   }
 
+  const engine = (env.UPDATER_ENGINE ?? 'docker').trim();
+  if (engine !== 'docker' && engine !== 'fly') {
+    throw new Error(`UPDATER_ENGINE must be "docker" or "fly", got "${engine}"`);
+  }
+
+  // Fly needs a service→app mapping and a token per app. Both are validated
+  // here rather than at update time: an operator finding out mid-update that
+  // one of two apps has no token is the worst moment to find out.
+  const flyApps = {};
+  const flyTokens = {};
+  if (engine === 'fly') {
+    for (const service of services) {
+      const app = (env[`UPDATER_FLY_APP_${envSuffix(service)}`] ?? '').trim();
+      if (app.length === 0) {
+        throw new Error(
+          `UPDATER_FLY_APP_${envSuffix(service)} is required for service "${service}" when UPDATER_ENGINE=fly`,
+        );
+      }
+      const appToken = (env[`UPDATER_FLY_TOKEN_${envSuffix(service)}`] ?? '').trim();
+      if (appToken.length === 0) {
+        throw new Error(
+          `UPDATER_FLY_TOKEN_${envSuffix(service)} is required for service "${service}" — use an APP-SCOPED deploy token (fly tokens create deploy), never an org-wide one`,
+        );
+      }
+      flyApps[service] = app;
+      flyTokens[app] = appToken;
+    }
+  }
+
   return {
     token,
+    engine,
+    flyApps,
+    flyTokens,
+    flyApiUrl: env.UPDATER_FLY_API ?? 'https://api.machines.dev',
     dockerApiUrl: env.UPDATER_DOCKER_API ?? 'http://docker-socket-proxy:2375',
     services,
     composeProject: (env.UPDATER_COMPOSE_PROJECT ?? '').trim() || null,
