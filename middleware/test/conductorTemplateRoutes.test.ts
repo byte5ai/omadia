@@ -274,7 +274,7 @@ async function makeHarness(opts?: { withCatalog?: boolean }): Promise<Harness> {
   });
   app.use('/api/v1/operator/conductors', createConductorRouter(deps));
   const server: Server = await new Promise((resolve) => {
-    const s = app.listen(0, () => resolve(s));
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   servers.push(server);
   const port = (server.address() as AddressInfo).port;

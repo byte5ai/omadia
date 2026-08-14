@@ -146,7 +146,7 @@ before(async () => {
     }),
   );
   server = await new Promise((resolve) => {
-    const s = app.listen(0, () => resolve(s));
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   const { port } = server.address() as AddressInfo;
   baseUrl = `http://127.0.0.1:${port}/api/v1/admin/update`;
