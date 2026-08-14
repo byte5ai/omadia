@@ -196,17 +196,27 @@ jobs:
       # skip does NOT increment "skipped": its tests simply never register
       # and vanish from the total. So "skipped == 0" is blind to exactly the
       # silent-skip this issue is about; only a floor on the test COUNT
-      # catches it. The *.pg.test.ts files register 240 tests today (+2 from
-      # kgPluginPoolLifetime.pg.test.ts, issue #665). If
+      # catches it. The *.pg.test.ts files register 269 tests today (+6 from
+      # channelIdentityAuthSubject.pg.test.ts, issue #568; +8 from
+      # updateAuditStore.pg.test.ts, issue #432). If
       # the count drops (broken DSN, a future suite reading an env var we
       # don't set here, a cold-connection flake), a suite silently vanished —
       # go red. Raise PG_TEST_FLOOR when you add Postgres tests, same
       # baseline-ratchet convention as the core-decoupling job above.
+      #
+      # NOTE — this floor is the INVERSE of the core-decoupling ratchet, and
+      # the reflex from that one is wrong here. It is a MINIMUM on desirable
+      # coverage, so raising it as suites land is the intended move; there the
+      # counted thing is debt and the rule is reword-don't-raise. It had
+      # drifted to 240 against an actual 269, i.e. 29 tests of slack in which
+      # a whole suite could self-skip unnoticed — precisely the #565 failure
+      # this guard exists to catch. Re-pinned to the measured count (the
+      # step below prints `ran=` on every run; read it there, don't guess).
       - name: Test — Postgres suites (serial, real pgvector)
         env:
           GRAPH_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
           MEMORY_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
-          PG_TEST_FLOOR: '240'
+          PG_TEST_FLOOR: '269'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
