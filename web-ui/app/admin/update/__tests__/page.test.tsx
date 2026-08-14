@@ -282,7 +282,7 @@ describe('/admin/update', () => {
         },
       }),
     );
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     expect(await screen.findByText(/cannot make the version stick/i)).toBeInTheDocument();
     // Still offered — this is a caveat, not a blocker.
@@ -304,7 +304,7 @@ describe('/admin/update', () => {
         },
       }),
     );
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     await waitFor(() => {
       expect(screen.getByLabelText(/target version/i)).toBeInTheDocument();
