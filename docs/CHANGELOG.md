@@ -44,6 +44,40 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `pinPersisted: false`, and Admin → Update says so next to the button. On
   compose the updater writes `OMADIA_VERSION` into the project `.env`; on Fly
   nothing can, because `fly deploy` reads the operator's local `fly.toml`.
+### Changed — the MCP **client** speaks `@modelcontextprotocol/client@2` over `http` (#562, phase 2)
+
+- **Only `http` moved.** `McpManager` now connects streamable-HTTP servers with
+  the v2 `Client` + `StreamableHTTPClientTransport` and
+  `versionNegotiation: { mode: 'auto' }`, so a 2026-07-28 peer is negotiated as
+  such and a 2025-era peer still falls back to the plain `initialize` handshake.
+  Deliberately **not** a pin: a pin has no fallback and most third-party servers
+  are 2025-era, so pinning would break exactly the peers that work today.
+- **`stdio` and `sse` stay on v1**, from measurement rather than convenience:
+  `McpServer` never answers `server/discover` off the HTTP edge, so an `'auto'`
+  probe there can only fall back and a pin fails with `ERA_NEGOTIATION_FAILED`.
+  Porting them would swap the API and buy no protocol capability.
+- **MRTR on 2025-era peers keeps working — this is the part the port could have
+  broken in silence.** v2 treats `resultType` as a wire-only discriminator and
+  strips it when it decodes a legacy `tools/call` reply as a complete result,
+  while leaving `inputRequests` in place. Unrepaired, `isInputRequiredResult`
+  goes false, the call is never parked, the human is never asked, and the model
+  is handed the server's holding text as if it were the answer — with nothing
+  red anywhere. `restoreLegacyInputRequired` puts the discriminator back on
+  legacy-era connections only (on a modern one `resultType` arrives verbatim and
+  inventing one would mask a real divergence). Removing it turns eleven tests in
+  `mcpPendingInput.test.ts` red.
+- **Two v2 behaviours are switched off on purpose.** Auto-fulfilment of
+  `input_required` (`inputRequired: { autoFulfill: false }`) — omadia parks the
+  call and asks a *human* over a channel, possibly hours later, and letting the
+  driver answer in-process would mean the human silently stops being asked. And
+  client-side output-schema validation, by fetching `tools/list` with
+  `cacheMode: 'bypass'` — it would turn a server whose `structuredContent` does
+  not match its declared `outputSchema` into a hard call failure on `http` only,
+  and its validator is reachable only through an `ajv` that neither
+  `@modelcontextprotocol/client` nor `/core` declares as a dependency.
+- Coverage runs on **both eras**: the existing live round-trip suite plus a new
+  modern-era assertion against the phase-1 loopback server, and a hand-rolled
+  2025-era peer that refuses `server/discover`.
 
 ### Changed — the loopback MCP server runs on the `@modelcontextprotocol/*@2` family (#562, phase 1)
 
