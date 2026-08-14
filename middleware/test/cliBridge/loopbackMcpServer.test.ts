@@ -146,11 +146,19 @@ describe('LoopbackMcpServer', () => {
       });
       assert.equal(listResponse.status, 200);
       const listPayload = parseMcpJson(await listResponse.text()) as {
-        result?: { tools?: Array<{ name: string }> };
+        result?: {
+          tools?: Array<{ name: string }>;
+          ttlMs?: unknown;
+          cacheScope?: unknown;
+        };
       };
       assert.ok(
         listPayload.result?.tools?.some((tool) => tool.name === 'ping'),
       );
+      // #545 — MCP 2026-07-28 CacheableResult: frozen per-turn list, one
+      // bearer, no per-principal filtering ⇒ generous TTL, public scope.
+      assert.equal(listPayload.result?.ttlMs, 300_000);
+      assert.equal(listPayload.result?.cacheScope, 'public');
 
       const callResponse = await fetch(handle.url, {
         method: 'POST',

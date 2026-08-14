@@ -84,6 +84,13 @@ export const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
  *  denial-of-service budget rather than a protection. */
 export const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 
+/** #545 — `ttlMs` advertised on `tools/list` (60s). Short on purpose: a
+ *  revoked/reconfigured binding may keep appearing in a client's cached list
+ *  for up to this long (authorization is separate — `tools/call` checks
+ *  bindings live). Also the only relief for the free-polling asymmetry noted
+ *  at the batch gate: each `tools/list` costs a Postgres `bindings.get`. */
+export const PUBLIC_TOOLLIST_TTL_MS = 60_000;
+
 /** Process-wide ceiling on tool calls in flight from this endpoint. Tools reach
  *  Odoo/M365/Confluence and the LLM providers; an unbounded public fan-in
  *  starves the operator-facing chat path that shares those pools. */
@@ -466,6 +473,16 @@ export class PublicMcpServer {
       // per-call `_meta` twin rides only the `tools/call` result below.
       this.sanitized('tools/list', async () => ({
         tools: await this.listToolsFor(principal),
+        // #545 — MCP 2026-07-28 `CacheableResult`. `private` is mandatory, not
+        // a choice: the list is filtered per API key (`callableToolNames`), so
+        // sharing it across auth contexts would leak which tools OTHER keys
+        // may call — exactly the enumeration `listToolsFor` exists to prevent.
+        // The TTL is short because a revoked binding stays invisible in a
+        // cached LIST for up to this long; authorization itself is unaffected
+        // (`tools/call` checks bindings live on every call, see
+        // `publicMcpKeyBindings`' no-positive-cache rule).
+        ttlMs: PUBLIC_TOOLLIST_TTL_MS,
+        cacheScope: 'private',
       })),
     );
 

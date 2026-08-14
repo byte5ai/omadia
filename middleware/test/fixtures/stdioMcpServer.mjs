@@ -45,6 +45,11 @@ function handle(request) {
     return;
   }
   if (method === 'tools/list') {
+    // `list <pid>` lines are the list-call counter for the tool-list cache
+    // tests (#545), the same way `start <pid>` counts spawns for #563.
+    if (marker) appendFileSync(marker, `list ${process.pid}\n`);
+    const ttlRaw = process.env['MCP_FIXTURE_LIST_TTL_MS'];
+    const scope = process.env['MCP_FIXTURE_LIST_SCOPE'];
     send({
       jsonrpc: '2.0',
       id,
@@ -56,8 +61,20 @@ function handle(request) {
             inputSchema: { type: 'object', properties: {}, required: [] },
           },
         ],
+        // MCP 2026-07-28 CacheableResult fields, emitted only when the test
+        // asks for them — the default fixture stays a ≤2025-11-25 server
+        // that sends neither.
+        ...(ttlRaw !== undefined ? { ttlMs: Number(ttlRaw) } : {}),
+        ...(scope ? { cacheScope: scope } : {}),
       },
     });
+    // One `notifications/tools/list_changed` right after the first list, when
+    // asked: lets a test observe the immediate mid-TTL invalidation without
+    // needing a side channel into the child.
+    if (process.env['MCP_FIXTURE_LIST_CHANGED'] === '1' && !globalThis.__sentListChanged) {
+      globalThis.__sentListChanged = true;
+      send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
+    }
     return;
   }
   if (method === 'tools/call') {
