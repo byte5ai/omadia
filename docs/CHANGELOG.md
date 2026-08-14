@@ -18,6 +18,24 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — Admin → Update names the operator's actual Fly apps (#432)
+
+- **The manual update command is no longer a template.** On Fly the middleware
+  reads `FLY_APP_NAME` / `FLY_MACHINE_ID` (set inside every Machine) and reports
+  them through `GET /api/v1/admin/update/status`; the admin page's server shell
+  contributes the web-ui app's own name. The notify-only box therefore prints
+  `fly deploy --app omadia-middleware-<yours> …` instead of
+  `--app <middleware-app>`, for both apps, middleware first.
+- Detection is **positive-only**: anything not demonstrably Fly reports
+  `unknown` and keeps the generic placeholders. A wrong app name in a
+  copy-pasteable command is worse than an obviously incomplete one.
+- **Named the `--image` pin caveat**, in the UI and in `docs/upgrading.md`:
+  `--image` applies to one deploy, so a later plain `fly deploy` silently puts
+  the app back on the tag in `fly.toml`. This is the Fly counterpart to the
+  compose `.env` pin — except nothing server-side can write it, so the operator
+  has to. Also corrected the docs' implication that Fly rolls back on its own;
+  neither `fly deploy` nor the Machines API does.
+
 ### Changed — the loopback MCP server runs on the `@modelcontextprotocol/*@2` family (#562, phase 1)
 
 - **`createMcpHandler` replaces a hand-rolled per-request dance.** The loopback

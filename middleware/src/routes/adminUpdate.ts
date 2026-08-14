@@ -7,6 +7,7 @@ import type { ReleaseLookup } from '../update/releaseLookup.js';
 import { releaseIsNewer } from '../update/releaseLookup.js';
 import { parseVersion, toTag } from '../update/semver.js';
 import type { UpdaterClient } from '../update/updaterClient.js';
+import type { PlatformInfo } from '../update/platform.js';
 import type { AppVersion } from '../update/version.js';
 
 /**
@@ -44,6 +45,9 @@ export interface AdminUpdateDeps {
    *  reported as unavailable and a trigger is refused, because an
    *  unauditable one-click stack replacement is not a trade worth making. */
   audit?: UpdateAuditStore;
+  /** Where this instance runs. Only used to make the notify-only instructions
+   *  concrete — it never gates anything. */
+  platform: PlatformInfo;
 }
 
 export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
@@ -103,6 +107,10 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
       },
       executor,
       auditAvailable: deps.audit !== undefined,
+      // Lets the admin page print the operator's ACTUAL manual command instead
+      // of one with `<middleware-app>` in it. Non-sensitive: a Fly app name is
+      // already public in the app's hostname.
+      platform: deps.platform,
     });
   });
 
