@@ -4122,6 +4122,7 @@
     "confirmInstruction": "Zum Bestätigen <code>{phrase}</code> eintippen.",
     "confirmWarning": "Das ersetzt die laufenden Middleware- und Admin-UI-Container. Schema-Migrationen laufen nur vorwärts — ein Rollback stellt die Images wieder her, nicht die Datenbank. Vor einem größeren Sprung ein Volume-Snapshot ziehen.",
     "confirmInputLabel": "Zielversion",
+    "pinNotPersisted": "Dieser Executor kann die Version nicht festschreiben: Ein späteres nacktes fly deploy liest die fly.toml und setzt die App zurück aufs alte Tag. Dort bitte die image-Zeile mit anpassen.",
     "triggerButton": "Auf {version} aktualisieren",
     "triggering": "Starte…",
     "historyTitle": "Update-Historie",

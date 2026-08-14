@@ -78,6 +78,8 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
       targetVersion?: string | null;
       error?: string;
       steps?: readonly string[];
+      engine?: string;
+      pinPersisted?: boolean;
     } = { configured: false, reachable: false };
 
     if (deps.updater) {
@@ -89,6 +91,16 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
             state: status.status.state,
             targetVersion: status.status.targetVersion,
             steps: status.status.steps,
+            // #696 — the executor tells us which platform it drives and
+            // whether it can make the chosen version stick. Both are passed
+            // through so the UI can warn instead of implying a guarantee the
+            // Fly path cannot give.
+            ...(status.status.engine !== undefined
+              ? { engine: status.status.engine }
+              : {}),
+            ...(status.status.pinPersisted !== undefined
+              ? { pinPersisted: status.status.pinPersisted }
+              : {}),
             ...(status.status.error !== null
               ? { error: status.status.error }
               : {}),

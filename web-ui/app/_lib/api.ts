@@ -4753,6 +4753,11 @@ export interface UpdateStatus {
     targetVersion?: string | null;
     error?: string;
     steps?: string[];
+    /** Which executor drives the update (#696). */
+    engine?: 'docker' | 'fly';
+    /** False on Fly: the chosen version does NOT survive the operator's next
+     *  plain `fly deploy`, because that reads their local fly.toml. */
+    pinPersisted?: boolean;
   };
   auditAvailable: boolean;
   /** Where the middleware runs. Only used to make the manual instructions

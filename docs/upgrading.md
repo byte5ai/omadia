@@ -88,16 +88,47 @@ unavailable while its container is replaced.
 
 ## Updating a Fly.io deployment
 
-Fly runs each app as a Firecracker microVM — there is no Docker daemon to talk
-to, so the updater sidecar **cannot** run there. What does work on Fly is
-everything that does not need it:
+Fly runs each app as a Firecracker microVM, so the *Docker* executor cannot run
+there. Since #696 there is a **Fly executor** that drives the Machines API
+instead, deployed as its own tiny app:
+
+```bash
+OMADIA_WITH_UPDATER=1 ./fly/deploy.sh
+```
+
+That provisions `omadia-updater-<suffix>`, mints an **app-scoped deploy token**
+per managed app (`fly tokens create deploy` — limited to one app, expirable,
+revocable), and points the middleware at it. The updater app has no public
+address at all: it is reachable only over the org's private 6PN network, and
+additionally behind the shared `UPDATER_TOKEN`.
+
+To add it to a stack that is already deployed, create the app and set the same
+secrets by hand — the block in `fly/deploy.sh` is the reference list.
+
+What it does per update: verify the tag exists in the registry **before**
+touching anything, then, per app, take a lease, read the machine, change only
+`config.image`, write it back with `current_version`, and wait for `started` —
+finally gating on the middleware's `/health` reporting the new version, and
+rolling both apps back if it does not.
+
+> **It cannot make the version stick.** The compose updater writes
+> `OMADIA_VERSION` into the project `.env`; on Fly there is no equivalent,
+> because `fly deploy` reads the operator's *local* `fly.toml` and nothing
+> server-side overrides it. Admin → Update says so next to the button. After a
+> one-click update, change the `image` line in `fly/middleware.fly.toml` and
+> `fly/web-ui.fly.toml` yourself, or the next plain `fly deploy` reverts the
+> apps.
+
+Without the updater app, a Fly deployment stays in notify-only mode — which is
+also what the rest of this section describes:
 
 | Admin → Update on Fly | |
 |---|---|
 | Running version | ✅ — the published image carries its `OMADIA_VERSION` stamp |
 | "A newer release exists" | ✅ — checked against GitHub Releases |
 | Audit trail | ✅ — the middleware has Postgres |
-| Apply the update | ❌ — notify-only; the page shows the `fly deploy` command |
+| Apply the update | ❌ without the updater app — notify-only; the page shows the `fly deploy` command. ✅ with it |
+| Keep the chosen version across a later `fly deploy` | ❌ always — see the note above |
 
 The update itself is a redeploy pinned to the release tag. Take the app names
 from `fly apps list` (the deploy script names them `omadia-middleware-<suffix>`

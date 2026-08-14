@@ -367,6 +367,15 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
           <p className="mb-2 text-xs text-[color:var(--fg-muted)]">
             {t('confirmWarning')}
           </p>
+          {/* #696 — on Fly the updater moves the machines but cannot write the
+              pin, because `fly deploy` reads the operator's local fly.toml.
+              Saying so here is the difference between an informed click and a
+              surprise revert on the next routine deploy. */}
+          {status?.executor.pinPersisted === false && (
+            <p className="mb-2 text-xs text-[color:var(--danger)]">
+              {t('pinNotPersisted')}
+            </p>
+          )}
           <input
             type="text"
             value={confirmInput}
