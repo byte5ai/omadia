@@ -25,6 +25,7 @@ import { createAdminUpdateRouter } from './routes/adminUpdate.js';
 import { createUpdateAuditStore } from './update/auditStore.js';
 import { createReleaseLookup } from './update/releaseLookup.js';
 import { createUpdaterClient } from './update/updaterClient.js';
+import { resolvePlatform } from './update/platform.js';
 import { resolveAppVersion } from './update/version.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
@@ -421,6 +422,13 @@ const WEB_UI_DEFAULT_LOCALE = 'en';
  * process lives. Reported by `/health` and by the admin update surface.
  */
 const appVersion = resolveAppVersion();
+
+/**
+ * Where this instance runs (#432 follow-up). Resolved once — the platform of a
+ * running process does not change. Used only to make the manual update
+ * instructions concrete on a deployment that has no executor.
+ */
+const appPlatform = resolvePlatform();
 
 function xmlAttr(value: string): string {
   return value
@@ -2811,6 +2819,7 @@ async function main(): Promise<void> {
     requireAuth,
     createAdminUpdateRouter({
       currentVersion: appVersion,
+      platform: appPlatform,
       releaseLookup: createReleaseLookup({
         repo: config.OMADIA_RELEASE_REPO,
         ...(config.OMADIA_RELEASE_TOKEN

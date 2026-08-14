@@ -4110,6 +4110,8 @@
     "notifyOnlyBody": "Es ist kein Updater konfiguriert — diese Instanz kann Versionen melden, aber kein Update ausführen. Unter Docker Compose aktiviert das optionale Overlay (docker-compose.update.yaml) die Ausführung. Sonst vom Host aus aktualisieren:",
     "notifyOnlyComposeLabel": "Docker Compose",
     "notifyOnlyFlyLabel": "Fly.io",
+    "notifyOnlyFlyOrderHint": "In dieser Reihenfolge ausführen — die Middleware fährt beim Start die Schema-Migrationen, also erst ihre neue Version abwarten, dann die Admin-UI nachziehen.",
+    "notifyOnlyFlyPinHint": "Danach auch die image-Zeile in der fly.toml anpassen: --image gilt nur für diesen Deploy, ein späteres nacktes fly deploy würde die App wieder auf das alte Tag setzen.",
     "notifyOnlyDocsHint": "Kubernetes und andere Plattformen: siehe docs/upgrading.md. Die Desktop-App aktualisiert sich selbst.",
     "executorUnreachable": "Der Updater ist konfiguriert, hat aber nicht geantwortet: {message}",
     "auditUnavailable": "Updates sind deaktiviert, weil keine Postgres-Verbindung besteht: Ein Stack-Austausch, der nicht protokolliert werden kann, wird nicht angeboten.",

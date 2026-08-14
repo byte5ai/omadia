@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../../_lib/test-utils';
-import UpdatePage from '../page';
+import { UpdateClient } from '../_components/UpdateClient';
 
 /**
  * Coverage for /admin/update (#432).
@@ -77,7 +77,7 @@ afterEach(() => {
 
 describe('/admin/update', () => {
   it('reports the running version and that a newer release exists', async () => {
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     await waitFor(() => {
       expect(screen.getByText('v0.74.0')).toBeInTheDocument();
@@ -98,7 +98,7 @@ describe('/admin/update', () => {
         updateAvailable: false,
       }),
     );
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     await waitFor(() => {
       expect(screen.getByText(/build not stamped/i)).toBeInTheDocument();
@@ -109,7 +109,7 @@ describe('/admin/update', () => {
     mockGetUpdateStatus.mockResolvedValue(
       status({ executor: { configured: false, reachable: false } }),
     );
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     await waitFor(() => {
       expect(screen.getByText(/no updater is configured/i)).toBeInTheDocument();
@@ -129,7 +129,7 @@ describe('/admin/update', () => {
     mockGetUpdateStatus.mockResolvedValue(
       status({ executor: { configured: false, reachable: false } }),
     );
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     await waitFor(() => {
       expect(screen.getByText('Docker Compose')).toBeInTheDocument();
@@ -141,13 +141,66 @@ describe('/admin/update', () => {
     expect(screen.getByText(/docs\/upgrading\.md/)).toBeInTheDocument();
   });
 
+  it('fills the Fly command in with the real app names when running on Fly', async () => {
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        executor: { configured: false, reachable: false },
+        platform: {
+          kind: 'fly',
+          appName: 'omadia-middleware-a1b2c3',
+          machineId: '148e392a7e1234',
+        },
+      }),
+    );
+    renderWithIntl(<UpdateClient webUiApp="omadia-web-ui-a1b2c3" />);
+
+    const block = await screen.findByText(/fly deploy --app omadia-middleware-a1b2c3/);
+    const command = block.textContent ?? '';
+
+    expect(command).toContain('--app omadia-web-ui-a1b2c3');
+    expect(command).not.toContain('<middleware-app>');
+    expect(command).not.toContain('<web-ui-app>');
+    // Middleware before web-ui: it applies the schema migrations at boot.
+    expect(command.indexOf('omadia-middleware-a1b2c3')).toBeLessThan(
+      command.indexOf('omadia-web-ui-a1b2c3'),
+    );
+    expect(screen.getByText(/in order/i)).toBeInTheDocument();
+    expect(screen.getByText(/image line in your fly\.toml/i)).toBeInTheDocument();
+  });
+
+  it('keeps the placeholders, and drops the Fly-only hints, off Fly', async () => {
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        executor: { configured: false, reachable: false },
+        platform: { kind: 'unknown' },
+      }),
+    );
+    renderWithIntl(<UpdateClient />);
+
+    const block = await screen.findByText(/fly deploy --app <middleware-app>/);
+    expect(block.textContent ?? '').toContain('<web-ui-app>');
+    expect(screen.queryByText(/image line in your fly\.toml/i)).not.toBeInTheDocument();
+  });
+
+  it('survives a middleware that does not report a platform at all', async () => {
+    // An older middleware behind a newer UI: `platform` is simply absent.
+    mockGetUpdateStatus.mockResolvedValue(
+      status({ executor: { configured: false, reachable: false }, platform: undefined }),
+    );
+    renderWithIntl(<UpdateClient webUiApp="omadia-web-ui-a1b2c3" />);
+
+    const block = await screen.findByText(/fly deploy --app <middleware-app>/);
+    // The half we DO know is still filled in.
+    expect(block.textContent ?? '').toContain('--app omadia-web-ui-a1b2c3');
+  });
+
   it('says so when the updater is configured but unreachable', async () => {
     mockGetUpdateStatus.mockResolvedValue(
       status({
         executor: { configured: true, reachable: false, error: 'ECONNREFUSED' },
       }),
     );
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     await waitFor(() => {
       expect(screen.getByText(/did not answer/i)).toBeInTheDocument();
@@ -159,7 +212,7 @@ describe('/admin/update', () => {
 
   it('keeps the trigger disabled until the target version is retyped exactly', async () => {
     const user = userEvent.setup();
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     const button = await screen.findByRole('button', { name: /update to v0\.75\.0/i });
     expect(button).toBeDisabled();
@@ -177,7 +230,7 @@ describe('/admin/update', () => {
 
   it('sends the confirmed target and switches to the in-progress view', async () => {
     const user = userEvent.setup();
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     const input = await screen.findByLabelText(/target version/i);
     await user.type(input, 'v0.75.0');
@@ -202,7 +255,7 @@ describe('/admin/update', () => {
         JSON.stringify({ error: 'update_in_progress' }),
       ),
     );
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     const input = await screen.findByLabelText(/target version/i);
     await user.type(input, 'v0.75.0');
@@ -262,7 +315,7 @@ describe('/admin/update', () => {
   it('refuses to offer an update that could not be recorded', async () => {
     mockGetUpdateStatus.mockResolvedValue(status({ auditAvailable: false }));
     mockGetUpdateHistory.mockResolvedValue({ entries: [], available: false });
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     await waitFor(() => {
       expect(screen.getByText(/no Postgres is connected/i)).toBeInTheDocument();
@@ -278,7 +331,7 @@ describe('/admin/update', () => {
         updateAvailable: false,
       }),
     );
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     await waitFor(() => {
       expect(screen.getByText(/running the latest release/i)).toBeInTheDocument();
@@ -290,7 +343,7 @@ describe('/admin/update', () => {
     mockGetUpdateStatus.mockResolvedValue(
       status({ check: { checkedAt: 1, stale: true, error: 'ENOTFOUND' } }),
     );
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     await waitFor(() => {
       expect(screen.getByText(/could not reach GitHub/i)).toBeInTheDocument();
@@ -312,7 +365,7 @@ describe('/admin/update', () => {
         },
       ],
     });
-    renderWithIntl(<UpdatePage />);
+    renderWithIntl(<UpdateClient />);
 
     await waitFor(() => {
       expect(screen.getByText('v0.73.0 → v0.74.0')).toBeInTheDocument();
