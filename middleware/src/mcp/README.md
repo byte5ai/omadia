@@ -189,7 +189,7 @@ Things worth knowing before you build on this:
   *client* understands both since #562 phase 3 — its `parseMcpInputRequests`
   branches on the shape — but this server surface still emits only the array
   form, so a strictly-2026-07-28 client cannot complete MRTR against omadia.
-  Tracked separately; porting this surface is not part of #562.
+  Tracked in #700; porting this surface is not part of #562.
 - A tool that emits an unusable request errors with the reason named, rather than
   handing you a half-rendered form.
 
