@@ -465,6 +465,30 @@ interface McpCallParams {
   readonly name: string;
   readonly arguments: Record<string, unknown>;
   readonly _meta?: Record<string, unknown>;
+  /** #562 phase 3, 2026-07-28 retry params — see {@link McpCallReplay}. */
+  readonly inputResponses?: Record<string, unknown>;
+  readonly requestState?: string;
+}
+
+/**
+ * What a replay of a parked MRTR call carries beyond its arguments
+ * (#562 phase 3).
+ *
+ * The 2026-07-28 revision answers an `input_required` result by re-issuing the
+ * ORIGINAL request on a fresh id with two extra params: `inputResponses`, one
+ * entry per embedded request, and a byte-exact echo of the server's opaque
+ * `requestState`. omadia's own 2025-era dialect instead puts the collected
+ * answers inside `arguments` under {@link REPLAY_ARG_KEY}; that form is
+ * untouched, and `planMcpInputReplay` picks per record which one applies.
+ *
+ * `isReplay` is separate from either payload on purpose: it is what the bounce
+ * cap reads, and on the spec dialect there is nothing in `arguments` left for
+ * it to recognise.
+ */
+export interface McpCallReplay {
+  readonly isReplay: true;
+  readonly requestState?: string;
+  readonly inputResponses?: Record<string, unknown>;
 }
 
 /** One `tools/list` entry, typed only as far as `listTools` reads it. Both SDK
@@ -518,7 +542,12 @@ function legacySdkSession(client: Client): McpSession {
     family: 'v1',
     era: () => 'legacy',
     listTools: () => client.listTools(),
-    callTool: (params, policy) =>
+    callTool: ({ inputResponses: _r, requestState: _s, ...params }, policy) =>
+      // The 2026-07-28 retry params are dropped rather than forwarded: this
+      // family only ever talks 2025-era, where they are not vocabulary. They
+      // cannot be populated on this path anyway (only a modern peer mints a
+      // `requestState` or a spec-shaped `inputRequests`), so the destructuring
+      // is a guarantee, not a workaround.
       client.callTool(params, LENIENT_CALL_TOOL_RESULT_SCHEMA, policy),
     close: () => client.close(),
   };
@@ -553,7 +582,15 @@ function modernSdkSession(client: ModernClient): McpSession {
     era: () => (client.getProtocolEra() === 'modern' ? 'modern' : 'legacy'),
     listTools: () => client.listTools(undefined, { cacheMode: 'bypass' }),
     async callTool(params, policy) {
-      const res = await client.callTool(params, policy);
+      // #562 phase 3 — read MRTR off the DECLARED contract instead of an SDK
+      // internal. `allowInputRequired` is what makes v2 hand an
+      // `input_required` result back to the caller (with `resultType`,
+      // `inputRequests` and `requestState` present verbatim) rather than
+      // fulfilling it in-process or raising a typed error. On a 2025-era
+      // connection it is documented as having no effect, and measurement
+      // agrees, so it is passed unconditionally rather than era-gated: one
+      // code path is one fewer place for the two eras to diverge.
+      const res = await client.callTool(params, { ...policy, allowInputRequired: true });
       return restoreLegacyInputRequired(res, client.getProtocolEra());
     },
     close: () => client.close(),
@@ -606,6 +643,20 @@ const CLIENT_INFO = { name: 'omadia-agent-builder', version: '0.1.0' } as const;
 const MODERN_CLIENT_OPTIONS = {
   versionNegotiation: { mode: 'auto' },
   inputRequired: { autoFulfill: false },
+  /**
+   * #562 phase 3 — MEASURED prerequisite, not boilerplate. On a 2026-07-28
+   * connection the SDK refuses an embedded `elicitation/create` request with
+   * `MissingRequiredClientCapabilityError` *before* the result reaches the
+   * caller unless the client declared the capability. Without this line
+   * `allowInputRequired` has nothing to hand back and every modern-era MRTR
+   * call fails instead of parking.
+   *
+   * Declaring it is honest here: omadia genuinely does serve elicitation — by
+   * parking the call and asking a human over a channel. What it does not do is
+   * answer one IN-PROCESS, which is why `autoFulfill` stays off and why the
+   * decline handler below exists for the one path that can still reach it.
+   */
+  capabilities: { elicitation: {} },
 } as const;
 
 /**
@@ -818,6 +869,7 @@ export class McpManager {
     res: unknown,
     startedAt: number,
     actingIdentity: string | null,
+    replay: McpCallReplay | undefined,
   ): string {
     const store = this.options?.pendingInput;
     if (!store) {
@@ -834,6 +886,12 @@ export class McpManager {
       return failure;
     }
     const prompt = extractMcpInputPrompt(res);
+    // #562 phase 3 — carry the server's opaque `requestState` so the retry can
+    // echo it back verbatim. Only a 2026-07-28 peer mints one; a string is the
+    // only shape the spec allows, and anything else is dropped rather than
+    // forwarded, because handing a server back something it did not send is
+    // worse than not echoing at all.
+    const requestState = (res as { requestState?: unknown }).requestState;
     const record: PendingMcpInput = {
       correlationId: randomUUID(),
       serverId: cfg.id,
@@ -842,9 +900,18 @@ export class McpManager {
       originalArgs: args,
       inputRequests: parsed.fields,
       ...(prompt !== undefined ? { prompt } : {}),
+      ...(typeof requestState === 'string' && requestState.length > 0
+        ? { requestState }
+        : {}),
       // A call that already carries `inputResponses` IS the replay — the only
-      // signal available here, since the manager is stateless per call.
-      replayDepth: REPLAY_ARG_KEY in args ? MCP_INPUT_MAX_REPLAY_DEPTH : 0,
+      // signal available here, since the manager is stateless per call. On the
+      // spec dialect the responses ride a top-level param instead of the
+      // arguments, so the replay says so explicitly; without that the bounce
+      // cap would never trip on a 2026-07-28 peer.
+      replayDepth:
+        REPLAY_ARG_KEY in args || replay?.isReplay === true
+          ? MCP_INPUT_MAX_REPLAY_DEPTH
+          : 0,
     };
     // Parked WITHOUT an owner: the manager has no reliable turn identity (see
     // `PendingMcpInputStore`). The orchestrator binds the owner when it claims
@@ -933,6 +1000,7 @@ export class McpManager {
     cfg: McpServerConfig,
     toolName: string,
     args: Record<string, unknown>,
+    replay?: McpCallReplay,
   ): Promise<string> {
     const startedAt = Date.now();
     // Resolve the acting identity FIRST (W0-1), before the guard can short-
@@ -1042,6 +1110,17 @@ export class McpManager {
             ...(idempotency !== undefined
               ? { _meta: { idempotencyKey: idempotency.key } }
               : {}),
+            // #562 phase 3 — the spec's retry params. Siblings of `arguments`,
+            // never inside them: the tool's own arguments must stay byte-exact
+            // across the park, which is the whole point of replaying
+            // `originalArgs`. Only ever populated for a 2026-07-28 peer; the
+            // v1-backed session drops them (see `legacySdkSession`).
+            ...(replay?.inputResponses !== undefined
+              ? { inputResponses: replay.inputResponses }
+              : {}),
+            ...(replay?.requestState !== undefined
+              ? { requestState: replay.requestState }
+              : {}),
           },
           // Stated request policy instead of the SDK's implicit 60s default —
           // see DEFAULT_MCP_CALL_TIMEOUT_MS. `maxTotalTimeout` is the SHARED
@@ -1083,6 +1162,7 @@ export class McpManager {
             res,
             startedAt,
             actingIdentity,
+            replay,
           );
         }
         this.emitCall(cfg, toolName, 'ok', null, startedAt, actingIdentity);
@@ -1254,6 +1334,14 @@ export class McpManager {
     // not in its transport. Picking the transport therefore picks the client.
     if (cfg.transport === 'http') {
       const client = new ModernClient(CLIENT_INFO, MODERN_CLIENT_OPTIONS);
+      // The honest half of declaring the elicitation capability (#562 phase 3).
+      // The in-band MRTR path never reaches this handler — `autoFulfill` is off
+      // and `allowInputRequired` returns the result first — but a server may
+      // still open a server→client `elicitation/create` request, and a declared
+      // capability with no handler answers that with "method not found", which
+      // reads as a broken client rather than a deliberate policy. omadia does
+      // not answer elicitation in-process by design, so it says so.
+      client.setRequestHandler('elicitation/create', async () => ({ action: 'decline' as const }));
       await client.connect(this.makeModernHttpTransport(cfg, token));
       return { client: modernSdkSession(client) };
     }
@@ -1514,6 +1602,68 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * cannot drift from it.
  */
 export const REPLAY_ARG_KEY = 'inputResponses';
+
+/** What a replay has to send: the arguments, plus the spec params when the
+ *  parked record came from a 2026-07-28 peer. */
+export interface McpInputReplayPlan {
+  readonly args: Record<string, unknown>;
+  readonly replay: McpCallReplay;
+}
+
+/**
+ * Turn a claimed card plus the human's answers into the retry that peer
+ * expects (#562 phase 3).
+ *
+ * TWO dialects, and the RECORD decides — not the era, not a flag. A field that
+ * remembers its `requestKey` was parsed out of a spec-shaped embedded request,
+ * so its answer belongs in that request's own `inputResponses` entry as an
+ * `ElicitResult`; a field without one came from omadia's flat array dialect and
+ * replays exactly as it has since #544, inside `arguments`. Deriving it from
+ * the record is what keeps a card parked before an upgrade replayable after
+ * one.
+ *
+ * `originalArgs` always goes first so a server that (incorrectly) declared an
+ * `inputResponses` input field cannot shadow the collected answers with a stale
+ * value from the original call.
+ */
+export function planMcpInputReplay(
+  record: PendingMcpInput,
+  answers: Record<string, string>,
+): McpInputReplayPlan {
+  const grouped = new Map<string, Record<string, string>>();
+  for (const field of record.inputRequests) {
+    if (field.requestKey === undefined) continue;
+    const value = answers[field.name];
+    if (value === undefined) continue;
+    const bucket = grouped.get(field.requestKey) ?? {};
+    bucket[field.name] = value;
+    grouped.set(field.requestKey, bucket);
+  }
+  if (grouped.size === 0) {
+    return {
+      args: { ...record.originalArgs, [REPLAY_ARG_KEY]: answers },
+      replay: {
+        isReplay: true,
+        ...(record.requestState !== undefined ? { requestState: record.requestState } : {}),
+      },
+    };
+  }
+  const inputResponses: Record<string, unknown> = {};
+  for (const [requestKey, content] of grouped) {
+    // `action: 'accept'` is the truthful report: the human filled the card in
+    // and submitted it. A declined or cancelled card never reaches a replay —
+    // the record is simply dropped — so no other action is representable here.
+    inputResponses[requestKey] = { action: 'accept', content };
+  }
+  return {
+    args: { ...record.originalArgs },
+    replay: {
+      isReplay: true,
+      inputResponses,
+      ...(record.requestState !== undefined ? { requestState: record.requestState } : {}),
+    },
+  };
+}
 
 /**
  * W2-1 (#544) — does this result ask for mid-call user input?
