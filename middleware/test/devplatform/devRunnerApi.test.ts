@@ -1,5 +1,6 @@
 import { describe, it, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
+import type { AddressInfo } from 'node:net';
 
 import { RUNNER_PROTOCOL_VERSION } from '../../src/devplatform/types.js';
 import {
@@ -335,5 +336,27 @@ describe('devRunnerApi — POST /result', () => {
     h.store.add(makeJob({ status: 'running' }));
     const res = await postResult(h, { outcome: 'weird' });
     assert.equal(res.status, 400);
+  });
+});
+
+/**
+ * Same guard as the sibling routes test: `app.listen(0)` binds the IPv6
+ * wildcard, whose port space is independent of the IPv4 loopback this harness
+ * advertises — so the dialled port was never reserved and a foreign process
+ * could answer these requests. See that file for the full explanation.
+ */
+describe('harness socket binding', () => {
+  let h: Harness;
+  afterEach(async () => { if (h) await h.close(); });
+
+  it('binds the IPv4 loopback address it advertises', async () => {
+    h = await makeHarness();
+    const addr = h.server.address() as AddressInfo;
+    assert.equal(addr.address, '127.0.0.1', 'must bind the loopback, not the IPv6 wildcard');
+    assert.equal(addr.family, 'IPv4');
+    assert.ok(
+      h.baseUrl.startsWith(`http://127.0.0.1:${String(addr.port)}/`),
+      'the advertised URL must dial the address the server actually bound',
+    );
   });
 });

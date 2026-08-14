@@ -38,9 +38,9 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `127.0.0.1` explicitly (both dev-platform harnesses, 36 call sites in all,
   plus the updater sidecar's server test), so the reserved port and the dialled
   port are the same port and the OS guarantees exclusivity — a colliding bind is
-  refused with `EADDRINUSE` instead of silently shadowing the harness.
-  `test/devplatform/harnessLoopbackBinding.test.ts` guards the property so the
-  old shape cannot come back.
+  refused with `EADDRINUSE` instead of silently shadowing the harness. A
+  `harness socket binding` suite in each affected route test guards the
+  property so the old shape cannot come back.
 - Note for follow-up work: passing a host makes `listen()` bind
   **asynchronously**, so the remaining 55 `app.listen(0)` sites that read
   `server.address().port` synchronously on the next line cannot be converted by

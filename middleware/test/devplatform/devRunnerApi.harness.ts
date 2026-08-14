@@ -198,7 +198,8 @@ export async function makeHarness(overrides: Partial<DevRunnerRouterDeps> = {}):
   );
 
   // Bind the IPv4 loopback explicitly — `listen(0)` reserves the port in the
-  // IPv6 space only, while `baseUrl` dials 127.0.0.1. See devPlatformRoutes.harness.ts.
+  // IPv6 space only, while `baseUrl` dials 127.0.0.1. See the sibling routes
+  // harness in this directory for the full explanation.
   const server: Server = await new Promise((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
