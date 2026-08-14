@@ -190,6 +190,100 @@ async function startRecordingProxy(
   };
 }
 
+/** The negotiated era lives on the pooled session, which is private — reach it
+ *  through the same narrow cast `mcpTransportDeprecation.test.ts` uses rather
+ *  than widening the manager's public API for a test. */
+async function pooledSession(
+  manager: McpManager,
+  cfg: McpServerConfig,
+): Promise<{ family: string; era: () => string }> {
+  return (
+    manager as unknown as {
+      getOrConnect(
+        c: McpServerConfig,
+        token: string | null,
+      ): Promise<{ client: { family: string; era: () => string } }>;
+    }
+  )
+    .getOrConnect(cfg, null)
+    .then((pooled) => pooled.client);
+}
+
+/**
+ * A genuine 2025-era Streamable-HTTP peer: hand-rolled JSON-RPC that answers
+ * `initialize` and refuses `server/discover` with `-32601`, exactly as a server
+ * built on the frozen v1 line does. Hand-rolled on purpose — driving the v1 SDK
+ * server here would pin the test to that SDK's own behaviour rather than to the
+ * wire shape the client has to cope with.
+ */
+async function startLegacyEraPeer(): Promise<{ url: string; stop: () => Promise<void> }> {
+  const server = createServer((req, res) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk);
+      }
+      const text = Buffer.concat(chunks).toString('utf8');
+      if (req.method !== 'POST' || text === '') {
+        res.writeHead(405).end();
+        return;
+      }
+      const message = JSON.parse(text) as { id?: unknown; method?: string };
+      const reply = (payload: Record<string, unknown>): void => {
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'mcp-session-id': 'legacy-era-session',
+        });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id ?? null, ...payload }));
+      };
+      if (message.method === 'initialize') {
+        reply({
+          result: {
+            protocolVersion: '2025-06-18',
+            capabilities: { tools: {} },
+            serverInfo: { name: 'legacy-era-peer', version: '0.0.0' },
+          },
+        });
+        return;
+      }
+      if (message.id === undefined) {
+        res.writeHead(202).end();
+        return;
+      }
+      if (message.method === 'tools/list') {
+        reply({
+          result: {
+            tools: [
+              { name: TOOL, description: 'echo', inputSchema: { type: 'object', properties: {} } },
+            ],
+          },
+        });
+        return;
+      }
+      if (message.method === 'tools/call') {
+        reply({ result: { content: [{ type: 'text', text: 'legacy-pong' }] } });
+        return;
+      }
+      // `server/discover` lands here — a 2025 server has never heard of it.
+      reply({ error: { code: -32601, message: `Method not found: ${String(message.method)}` } });
+    })().catch(() => {
+      if (!res.headersSent) res.writeHead(502);
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${String(port)}/mcp`,
+    stop: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      }),
+  };
+}
+
 describe('McpManager against a live MCP server (W0-5)', () => {
   const servers: LoopbackMcpServer[] = [];
   let proxy: RecordingProxy | undefined;
@@ -328,6 +422,53 @@ describe('McpManager against a live MCP server (W0-5)', () => {
       'the retry must drop the pooled connection once so it reconnects fresh',
     );
     assert.deepEqual(seen, [{ name: TOOL, input: { value: 'retry-me' } }]);
+  });
+
+  it('negotiates the MODERN era against a v2 server, on the v2 client family (#562 phase 2)', async (t) => {
+    // The five tests above are the port's real regression net — they were
+    // written against the v1 client and now run, unchanged, over
+    // `@modelcontextprotocol/client@2`. This one pins the thing that is
+    // genuinely NEW: `versionNegotiation: { mode: 'auto' }` probes with
+    // `server/discover` and lands on the 2026-07-28 era against the v2 server
+    // phase 1 landed. Without the probe the same connection would silently be
+    // an ordinary 2025 `initialize` and nothing else here would notice.
+    const url = await startServer(t);
+    if (!url) return;
+
+    manager = new McpManager();
+    const session = await pooledSession(
+      manager,
+      serverConfig(url, { headers: { Authorization: `Bearer ${BEARER}` } }),
+    );
+
+    assert.equal(session.family, 'v2', 'http must connect on the v2 SDK family');
+    assert.equal(session.era(), 'modern', 'an `auto` probe against a v2 server must select 2026-07-28');
+  });
+
+  it('falls back to the LEGACY era against a 2025-era http peer, and still round-trips', async () => {
+    // The other half of the matrix, and the reason the mode is `'auto'` and not
+    // a pin: most third-party servers are 2025-era. A pin has no fallback and
+    // would break exactly these peers. This one answers `server/discover` with
+    // `-32601`, which is what a 2025 server does.
+    const peer = await startLegacyEraPeer();
+    try {
+      manager = new McpManager();
+      const cfg = serverConfig(peer.url, { name: 'legacy-peer' });
+      const session = await pooledSession(manager, cfg);
+
+      assert.equal(session.family, 'v2', 'http is on the v2 client regardless of the peer era');
+      assert.equal(session.era(), 'legacy', 'a server without `server/discover` must fall back');
+
+      const tools = await manager.listTools(cfg);
+      assert.deepEqual(
+        tools.map((tool) => tool.name),
+        [TOOL],
+      );
+      const result = await manager.callTool(cfg, TOOL, { value: 'hello' });
+      assert.equal(result, 'legacy-pong');
+    } finally {
+      await peer.stop();
+    }
   });
 
   it('a stale token invalidates the pool and the next call reconnects and succeeds', async (t) => {

@@ -35,13 +35,16 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 
+import {
+  Client as ModernClient,
+  StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport,
+} from '@modelcontextprotocol/client';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import {
   StdioClientTransport,
   getDefaultEnvironment,
 } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
@@ -66,7 +69,13 @@ import {
 } from './pendingMcpInput.js';
 
 /**
- * Relaxed CallToolResult schema: the MCP spec says `structuredContent` MUST be a
+ * Relaxed CallToolResult schema for the **v1-backed** transports (`stdio`,
+ * `sse`). The v2 family has no result-schema parameter at all and types
+ * `structuredContent` as `unknown` by spec (SEP-2106), so the `http` path gets
+ * the same leniency without asking for it — see {@link modernSdkSession} for
+ * the one place v2 is stricter than v1 and what that costs.
+ *
+ * The MCP spec says `structuredContent` MUST be a
  * JSON object, but some hosted proxies (e.g. strava.run.mcp.com.ai) return it as
  * an array. The SDK's strict schema rejects the entire result, and callTool then
  * throws — which we surface as "-32000 Connection closed", making every call on
@@ -127,7 +136,7 @@ export type McpTransportKind = 'stdio' | 'http' | 'sse';
  * marketplace importer prefers an `http` remote when a catalog entry offers
  * both. Nothing is hard-blocked: the removal window is open, existing rows
  * keep working unchanged (`SSEClientTransport` stays wired in
- * `McpManager.transportFor`), and the `agent_mcp_servers.transport` CHECK
+ * `McpManager.makeTransport`), and the `agent_mcp_servers.transport` CHECK
  * constraint still accepts `'sse'`, so a legacy server can be re-created.
  *
  * This array is the single source of truth for "which transports are
@@ -435,8 +444,148 @@ function looksTransient(text: string): boolean {
   );
 }
 
+/**
+ * The MCP protocol revision a live connection settled on (issue #562 phase 2).
+ * `'legacy'` is the 2025-era `initialize` handshake, `'modern'` the 2026-07-28
+ * `server/discover` negotiation. `null` means the backing SDK cannot negotiate
+ * at all — the v1 line is frozen at 2025-11-25, so a v1-backed session is
+ * `'legacy'` by construction rather than by measurement.
+ */
+export type McpProtocolEra = 'legacy' | 'modern';
+
+/** The per-request policy `callTool` applies. See {@link resolveMcpCallTimeouts}. */
+interface McpRequestPolicy {
+  readonly timeout: number;
+  readonly resetTimeoutOnProgress: boolean;
+  readonly maxTotalTimeout: number;
+}
+
+/** `tools/call` params, as both SDK families accept them. */
+interface McpCallParams {
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
+  readonly _meta?: Record<string, unknown>;
+}
+
+/** One `tools/list` entry, typed only as far as `listTools` reads it. Both SDK
+ *  families put the same four fields on the wire; nothing here reshapes them. */
+interface McpToolListEntry {
+  readonly name?: unknown;
+  readonly description?: unknown;
+  readonly inputSchema?: unknown;
+  readonly outputSchema?: unknown;
+}
+
+interface McpListToolsResult {
+  readonly tools?: readonly McpToolListEntry[];
+}
+
+/**
+ * One pooled connection, reduced to the three verbs the manager actually uses.
+ *
+ * Issue #562 phase 2 — omadia now speaks TWO SDK families at once, and this is
+ * the seam between them: `http` connects with `@modelcontextprotocol/client@2`
+ * (which can negotiate the 2026-07-28 era), `stdio` and `sse` stay on the v1
+ * `@modelcontextprotocol/sdk`. Everything above this interface — pooling,
+ * retry, audit, MRTR parking — is family-agnostic and stayed unchanged.
+ *
+ * Why the other two transports did NOT move, measured rather than assumed:
+ * `McpServer` never answers `server/discover` off the HTTP edge, so an `'auto'`
+ * probe on stdio/sse can only ever fall back to `initialize` and a pin fails
+ * with `ERA_NEGOTIATION_FAILED`. Porting them would swap the API and gain no
+ * protocol capability.
+ */
+interface McpSession {
+  /** Which SDK family backs this session. Diagnostics and tests read it. */
+  readonly family: 'v1' | 'v2';
+  /** The negotiated era, once connected. */
+  era(): McpProtocolEra;
+  listTools(): Promise<McpListToolsResult>;
+  callTool(params: McpCallParams, policy: McpRequestPolicy): Promise<unknown>;
+  close(): Promise<void>;
+}
+
 interface Pooled {
-  readonly client: Client;
+  readonly client: McpSession;
+}
+
+/**
+ * v1-backed session (`stdio`, `sse`). Byte-identical to what the manager did
+ * before phase 2, including the lenient result schema.
+ */
+function legacySdkSession(client: Client): McpSession {
+  return {
+    family: 'v1',
+    era: () => 'legacy',
+    listTools: () => client.listTools(),
+    callTool: (params, policy) =>
+      client.callTool(params, LENIENT_CALL_TOOL_RESULT_SCHEMA, policy),
+    close: () => client.close(),
+  };
+}
+
+/**
+ * v2-backed session (`http`), with three deliberate settings. Each one exists
+ * because the alternative was measured and was worse:
+ *
+ *  - **`versionNegotiation: { mode: 'auto' }`, never a pin.** A pin has no
+ *    fallback and most third-party servers are 2025-era, so pinning breaks
+ *    exactly the peers that work today.
+ *  - **`inputRequired: { autoFulfill: false }`.** v2's driver would otherwise
+ *    fulfil an `input_required` result IN-PROCESS against a round limit.
+ *    omadia does not answer these itself — it parks the call and asks a HUMAN
+ *    over a channel, possibly hours later. Auto-fulfilment is not a faster
+ *    version of that; it is a different behaviour in which the human is never
+ *    asked and nothing turns red. Manual mode is the only correct setting here.
+ *  - **`listTools` with `cacheMode: 'bypass'`.** A cached `tools/list` is what
+ *    arms v2's client-side output-schema validation, which turns a server whose
+ *    `structuredContent` does not match its declared `outputSchema` — or which
+ *    declares one and sometimes omits the content — into a HARD `callTool`
+ *    failure. v1 never validated, this file already carries the scar of a
+ *    strict result schema breaking every call on a real server, and the
+ *    validator is only reachable through an `ajv` neither `@modelcontextprotocol
+ *    /client` nor `/core` declares as a dependency. Bypass keeps `http` behaving
+ *    exactly like `stdio`/`sse` instead of diverging by transport.
+ */
+function modernSdkSession(client: ModernClient): McpSession {
+  return {
+    family: 'v2',
+    era: () => (client.getProtocolEra() === 'modern' ? 'modern' : 'legacy'),
+    listTools: () => client.listTools(undefined, { cacheMode: 'bypass' }),
+    async callTool(params, policy) {
+      const res = await client.callTool(params, policy);
+      return restoreLegacyInputRequired(res, client.getProtocolEra());
+    },
+    close: () => client.close(),
+  };
+}
+
+/**
+ * Put back the MRTR discriminator v2 removes on a 2025-era connection.
+ *
+ * MEASURED, and it is the one thing that would have made this port a silent
+ * regression: `resultType` is wire-only in v2's type system, and a LEGACY-era
+ * `tools/call` decode lifts the body to a plain complete result — dropping
+ * `resultType` while leaving `inputRequests` (and `requestState`) in place.
+ * `isInputRequiredResult` therefore goes false, the call is never parked, and
+ * the model is handed the server's holding text as if it were an answer. The
+ * user simply stops being asked, and no test that only checks "the call
+ * returned something" can see it. #570/#544 made MRTR work on exactly these
+ * 2025-era peers; the port is not allowed to take it away again.
+ *
+ * The recovery is evidence-based, not a guess: `inputRequests` is MRTR-only
+ * vocabulary, it does not appear on a complete result, and v2 has already
+ * rejected the body if it carried `inputRequests` without `content`. On a
+ * MODERN connection nothing is restored — there `resultType` arrives verbatim
+ * (with `allowInputRequired`) and inventing one would mask a real divergence.
+ */
+function restoreLegacyInputRequired(res: unknown, era: string | undefined): unknown {
+  if (era === 'modern') return res;
+  if (!isPlainObject(res)) return res;
+  if (res['resultType'] !== undefined) return res;
+  if (res['inputRequests'] === undefined) return res;
+  if (res['isError'] === true) return res;
+  return { ...res, resultType: MCP_RESULT_TYPE_INPUT_REQUIRED };
 }
 
 /** One pooled connection. `promise` is the single source of truth for the
@@ -448,6 +597,16 @@ interface PoolEntry {
 }
 
 const CLIENT_INFO = { name: 'omadia-agent-builder', version: '0.1.0' } as const;
+
+/**
+ * Client options for the v2 (`http`) family. Rationale for each field is on
+ * {@link modernSdkSession}; they live here so a reader sees the whole opt-in
+ * surface in one place rather than spread across a factory.
+ */
+const MODERN_CLIENT_OPTIONS = {
+  versionNegotiation: { mode: 'auto' },
+  inputRequired: { autoFulfill: false },
+} as const;
 
 /**
  * W0-2 — explicit per-call MCP request policy. `callTool` used to pass no
@@ -884,12 +1043,6 @@ export class McpManager {
               ? { _meta: { idempotencyKey: idempotency.key } }
               : {}),
           },
-          // Tolerate off-spec `structuredContent` (some third-party MCP servers —
-          // e.g. the hosted Strava proxy — return it as a JSON array instead of an
-          // object). The strict SDK schema otherwise rejects the whole result and
-          // the failure surfaces to the model as "-32000 Connection closed",
-          // making every tool call on that server look like a transport failure.
-          LENIENT_CALL_TOOL_RESULT_SCHEMA,
           // Stated request policy instead of the SDK's implicit 60s default —
           // see DEFAULT_MCP_CALL_TIMEOUT_MS. `maxTotalTimeout` is the SHARED
           // remainder, not a fresh allowance per attempt, so N attempts still
@@ -1094,10 +1247,19 @@ export class McpManager {
   }
 
   private async connect(cfg: McpServerConfig, token: string | null): Promise<Pooled> {
-    const transport = this.makeTransport(cfg, token);
+    // #562 phase 2 — `http` is the only transport that moved to the v2 family.
+    // The branch is here rather than inside `makeTransport` because the two
+    // families' `Transport` interfaces are NOT interchangeable: a v2 transport
+    // cannot drive a v1 `Client`, and era negotiation lives in the v2 client,
+    // not in its transport. Picking the transport therefore picks the client.
+    if (cfg.transport === 'http') {
+      const client = new ModernClient(CLIENT_INFO, MODERN_CLIENT_OPTIONS);
+      await client.connect(this.makeModernHttpTransport(cfg, token));
+      return { client: modernSdkSession(client) };
+    }
     const client = new Client(CLIENT_INFO);
-    await client.connect(transport);
-    return { client };
+    await client.connect(this.makeTransport(cfg, token));
+    return { client: legacySdkSession(client) };
   }
 
   /** Resolve Vault-backed config into a cfg (epic #459): secret headers for
@@ -1147,19 +1309,38 @@ export class McpManager {
       return new StdioClientTransport({ command, args, ...(env ? { env } : {}) });
     }
     const url = new URL(cfg.endpoint);
-    // Merge the OAuth bearer token (issue #459 W9) with any configured headers;
-    // bearer_methods_supported is 'header' for spec-compliant servers.
-    const headers: Record<string, string> = { ...(cfg.headers ?? {}) };
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
-    if (cfg.transport === 'sse') {
-      return new SSEClientTransport(url, requestInit ? { requestInit } : {});
+    const requestInit = httpRequestInit(cfg, token);
+    return new SSEClientTransport(url, requestInit ? { requestInit } : {});
+  }
+
+  /** The v2 Streamable-HTTP transport (#562 phase 2). Same URL and the same
+   *  merged headers the v1 transport got — `requestInit` is byte-identical
+   *  between the families, so nothing about authentication changed. */
+  private makeModernHttpTransport(
+    cfg: McpServerConfig,
+    token: string | null,
+  ): ModernStreamableHTTPClientTransport {
+    if (!cfg.endpoint) {
+      throw new Error(`MCP server "${cfg.name}" has no endpoint configured`);
     }
-    return new StreamableHTTPClientTransport(
-      url,
+    const requestInit = httpRequestInit(cfg, token);
+    return new ModernStreamableHTTPClientTransport(
+      new URL(cfg.endpoint),
       requestInit ? { requestInit } : {},
     );
   }
+}
+
+/** Merge the OAuth bearer token (issue #459 W9) with any configured headers;
+ *  `bearer_methods_supported` is 'header' for spec-compliant servers. Shared by
+ *  both SDK families so the two HTTP-shaped transports cannot drift. */
+function httpRequestInit(
+  cfg: McpServerConfig,
+  token: string | null,
+): { headers: Record<string, string> } | undefined {
+  const headers: Record<string, string> = { ...(cfg.headers ?? {}) };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return Object.keys(headers).length > 0 ? { headers } : undefined;
 }
 
 // ── adapters ────────────────────────────────────────────────────────────────
