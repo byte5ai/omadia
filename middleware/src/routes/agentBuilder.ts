@@ -1242,7 +1242,9 @@ export function createAgentBuilderRouter(
         });
         return;
       }
-      const tools = await mcp.listTools(toMcpConfig(row));
+      // #545 — Discovery bypasses the tool-list cache: what gets scanned and
+      // persisted below must be what the server exposes NOW, not a cached view.
+      const tools = await mcp.listTools(toMcpConfig(row), { fresh: true });
       // Scan gate (epic #459 W1, issue #454): every discovered tool is scanned
       // and its verdict persisted BEFORE the tool list itself is stored, so no
       // unscanned tool ever becomes visible or grantable.

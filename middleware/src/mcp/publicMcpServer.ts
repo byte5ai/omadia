@@ -114,6 +114,13 @@ export const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
  *  denial-of-service budget rather than a protection. */
 export const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 
+/** #545 — `ttlMs` advertised on `tools/list` (60s). Short on purpose: a
+ *  revoked/reconfigured binding may keep appearing in a client's cached list
+ *  for up to this long (authorization is separate — `tools/call` checks
+ *  bindings live). Also the only relief for the free-polling asymmetry noted
+ *  at the batch gate: each `tools/list` costs a Postgres `bindings.get`. */
+export const PUBLIC_TOOLLIST_TTL_MS = 60_000;
+
 /** Process-wide ceiling on tool calls in flight from this endpoint. Tools reach
  *  Odoo/M365/Confluence and the LLM providers; an unbounded public fan-in
  *  starves the operator-facing chat path that shares those pools. */
@@ -579,6 +586,16 @@ export class PublicMcpServer {
       // per-call `_meta` twin rides only the `tools/call` result below.
       this.sanitized('tools/list', async () => ({
         tools: await this.listToolsFor(principal),
+        // #545 — MCP 2026-07-28 `CacheableResult`. `private` is mandatory, not
+        // a choice: the list is filtered per API key (`callableToolNames`), so
+        // sharing it across auth contexts would leak which tools OTHER keys
+        // may call — exactly the enumeration `listToolsFor` exists to prevent.
+        // The TTL is short because a revoked binding stays invisible in a
+        // cached LIST for up to this long; authorization itself is unaffected
+        // (`tools/call` checks bindings live on every call, see
+        // `publicMcpKeyBindings`' no-positive-cache rule).
+        ttlMs: PUBLIC_TOOLLIST_TTL_MS,
+        cacheScope: 'private',
       })),
     );
 
@@ -766,6 +783,21 @@ export class PublicMcpServer {
         // carries it as `unknown`. The runtime value is the identical object
         // the v1 leg puts on the wire — nothing here reshapes it.
         tools: (await this.listToolsFor(principal)) as unknown as ModernTool[],
+        // #545 — the SAME `CacheableResult` hints the legacy leg emits, and
+        // this is the leg that can actually be read: `ttlMs`/`cacheScope` are
+        // 2026-07-28 vocabulary, and a client only reaches that revision here.
+        // Emitting them on the 2025 leg alone (which is where they landed
+        // before #700 split this handler in two) advertises a cache policy to
+        // exactly the callers who cannot see it.
+        //
+        // `private` is mandatory rather than chosen: the list is filtered per
+        // API key by `listToolsFor`, so a shared entry would leak which tools
+        // OTHER keys may call — the enumeration that filtering exists to
+        // prevent. The short TTL bounds how long a revoked binding can linger
+        // in a client's cached LIST; authorization is unaffected, because
+        // `tools/call` re-checks bindings live on every call.
+        ttlMs: PUBLIC_TOOLLIST_TTL_MS,
+        cacheScope: 'private' as const,
       })),
     );
 
