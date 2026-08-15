@@ -783,6 +783,21 @@ export class PublicMcpServer {
         // carries it as `unknown`. The runtime value is the identical object
         // the v1 leg puts on the wire — nothing here reshapes it.
         tools: (await this.listToolsFor(principal)) as unknown as ModernTool[],
+        // #545 — the SAME `CacheableResult` hints the legacy leg emits, and
+        // this is the leg that can actually be read: `ttlMs`/`cacheScope` are
+        // 2026-07-28 vocabulary, and a client only reaches that revision here.
+        // Emitting them on the 2025 leg alone (which is where they landed
+        // before #700 split this handler in two) advertises a cache policy to
+        // exactly the callers who cannot see it.
+        //
+        // `private` is mandatory rather than chosen: the list is filtered per
+        // API key by `listToolsFor`, so a shared entry would leak which tools
+        // OTHER keys may call — the enumeration that filtering exists to
+        // prevent. The short TTL bounds how long a revoked binding can linger
+        // in a client's cached LIST; authorization is unaffected, because
+        // `tools/call` re-checks bindings live on every call.
+        ttlMs: PUBLIC_TOOLLIST_TTL_MS,
+        cacheScope: 'private' as const,
       })),
     );
 

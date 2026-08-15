@@ -6,4 +6,6 @@ The spec binds servers' emission, not clients' caching policy, so this is a poli
 
 Considered and rejected: spec-strict no-cache-without-ttlMs (defeats the purpose of the issue until the external ecosystem catches up to 2026-07-28).
 
+One correction to "until the ecosystem catches up": for `stdio` and `sse` peers it never will. #562 measured that `server/discover` is answered at the HTTP edge only — a non-HTTP peer returns `-32601` regardless of its advertised versions, and pinning fails with `ERA_NEGOTIATION_FAILED` — so those transports stay legacy-era by construction and can never carry `ttlMs`. The default TTL is therefore the permanent path for them, not a transitional one. `http` peers are the only ones from which a server-declared TTL can arrive, and it does: verified end to end that `ttlMs`/`cacheScope` reach the client verbatim even though `listTools` runs with the SDK's `cacheMode: 'bypass'` (that bypass skips the SDK's own response cache, not the hints).
+
 See also ADR-0008 (MCP connection lifetime) for the pool this cache is keyed against.

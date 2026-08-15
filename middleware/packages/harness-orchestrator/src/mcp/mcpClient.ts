@@ -563,6 +563,24 @@ interface McpToolListEntry {
 
 interface McpListToolsResult {
   readonly tools?: readonly McpToolListEntry[];
+  /**
+   * MCP 2026-07-28 `CacheableResult` (#545). Declared rather than cast at the
+   * read site, for the reason `LENIENT_CALL_TOOL_RESULT_SCHEMA` gives about
+   * `resultType`: a cast makes "the field is absent" and "this type forgot
+   * about the field" indistinguishable, so a change that really did stop
+   * these arriving would compile in silence and the tool-list cache would
+   * quietly fall back to its default TTL forever.
+   *
+   * Both are `unknown` on purpose. They come off the wire, `mcpToolListTtlMs`
+   * and `mcpToolListCacheKey` are the validators, and a second opinion here
+   * about what a well-formed value looks like is a second place to disagree.
+   *
+   * Measured, because the v2 path had reason to lose them: `listTools` runs
+   * with `cacheMode: 'bypass'`, and bypass only skips the SDK's own response
+   * cache — the hints still arrive verbatim on a modern-era connection.
+   */
+  readonly ttlMs?: unknown;
+  readonly cacheScope?: unknown;
 }
 
 /**
@@ -1124,23 +1142,33 @@ export class McpManager {
         : {}),
     }));
     for (const d of descriptors) this.rememberToolSchema(cfg.id, d);
-    // #545 — file the result under the scope the server declared. `ttlMs` and
-    // `cacheScope` survive the SDK's parse because `ResultSchema` is loose
-    // (same shipped-SDK reading as `resultType`, #544); read defensively all
-    // the same, since both come off the wire.
-    const cacheable = res as { ttlMs?: unknown; cacheScope?: unknown };
+    // #545 — file the result under the scope the server declared.
+    //
+    // The two fields reach here by DIFFERENT routes, and only one of them is
+    // the loose-passthrough argument #544 used for `resultType`:
+    //   - v1 legs (stdio, sse): `ResultSchema` is loose, so a server that
+    //     sends them survives parsing. 2025-era servers do not send them, so
+    //     in practice this is the ADR-0009 default-TTL path.
+    //   - the v2 leg (http): they are modelled 2026-07-28 fields and arrive
+    //     verbatim. MEASURED, because there was reason to doubt it —
+    //     `listTools` runs with `cacheMode: 'bypass'` (#562 phase 2), and
+    //     bypass skips only the SDK's own response cache, not the hints.
+    // Do not collapse that into "the SDK is lenient": on the v2 family that
+    // reasoning is what proved false for `resultType` on a legacy-era decode.
+    //
+    // Read defensively regardless — both come off the wire.
     const ttl = mcpToolListTtlMs(
-      cacheable.ttlMs,
+      res.ttlMs,
       this.options?.toolListTtlMs ?? envToolListTtlMs(),
     );
     if (ttl > 0 && purgeGen === this.toolListPurgeGen) {
-      this.toolLists.set(mcpToolListCacheKey(privateKey, cfg.id, cacheable.cacheScope), {
+      this.toolLists.set(mcpToolListCacheKey(privateKey, cfg.id, res.cacheScope), {
         // Deep-copied on write (and again on read): callers — plugins via
         // `ctx.mcp.listTools()` — must not be able to mutate the cached
         // descriptors that later callers receive.
         descriptors: structuredClone(descriptors),
         expiresAt: Date.now() + ttl,
-        sharedPublic: cacheable.cacheScope === 'public',
+        sharedPublic: res.cacheScope === 'public',
       });
     }
     return descriptors;
