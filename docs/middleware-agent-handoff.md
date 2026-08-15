@@ -1065,6 +1065,42 @@ Verdikt ohne `code`), `test/adminProvidersRoute.test.ts` (DTO trägt
 `test/adminSettingsRoute.test.ts` (abgelehnter Wert → `settings.invalid_values`,
 unbekannter Key bzw. nicht installiertes Ziel-Plugin → `settings.no_valid_changes`).
 
+### MCP Tool-List-Cache via `ttlMs`/`cacheScope` (issue #545)
+
+MCP 2026-07-28 macht `tools/list`-Results cachebar (`CacheableResult`:
+`ttlMs` + `cacheScope`). Umgesetzt auf SDK 1.30.0 — **kein** v2-Bump nötig,
+die Felder überleben das loose Result-Parsing (gleiches Muster wie
+`resultType`, #544).
+
+- **Client** (`McpManager.listTools`, `packages/harness-orchestrator/src/mcp/
+  mcpClient.ts`): TTL-Cache, Key via `mcpToolListCacheKey` — `public` ⇒ bare
+  Server-ID, `private`/unbekannt/fehlend ⇒ Pool-Key (Server-ID + Token-Hash,
+  Token-Rotation = Cache-Miss). Der Bare-Id-Probe akzeptiert nur als `public`
+  abgelegte Einträge (`sharedPublic`-Flag): die private Liste eines token-losen
+  Callers hat denselben Key (Pool-Key ohne Token = Server-ID) und darf nie
+  über Auth-Kontexte geteilt werden. Rückgaben sind Deep-Copies in beide
+  Richtungen — Caller-Mutation (Plugins!) erreicht den Cache nicht.
+  Server-`ttlMs` geclampt auf 15 min
+  (`MCP_TOOLLIST_MAX_TTL_MS`); fehlt `ttlMs`, greift ein Default von 60 s —
+  **bewusste Spec-Abweichung** (Spec: fehlend ⇒ nicht cachen), Begründung in
+  ADR-0009; `OMADIA_MCP_TOOLLIST_TTL_MS=0` stellt spec-strikt zurück.
+- **Invalidierung:** `notifications/tools/list_changed` purgt sofort (Handler
+  wird vor `connect` registriert); `close()`/`closeAll()` purgen mit; Expiry
+  lazy beim Read (kein Timer, wie `evictIdle`).
+- **Bypass:** Discovery (Builder-Route) und der Security-Rescan listen immer
+  frisch (`fresh: true`) — ein Scan über eine gecachte Liste scannt nichts.
+  Cache-Nutznießer ist der Plugin-Accessor `ctx.mcp.listTools()`.
+- **Eigene Server emittieren:** Loopback `ttlMs: 300000` / `public` (Liste ist
+  pro Turn-Instanz eingefroren, nicht caller-abhängig); Public-Server
+  `ttlMs: 60000` / `private` (Liste ist per API-Key gefiltert — `private` ist
+  Pflicht, sonst leaken fremde Tool-Sets; `tools/call` prüft Bindings weiter
+  live, Revoke bleibt sofort wirksam). `list_changed`-*Emission* aus eigenen
+  Servern ist bewusst Folge-Issue.
+
+Tests: `test/mcpToolListCache.test.ts` (pure Regeln + Stdio-/HTTP-Fixtures),
+Emission-Asserts in `test/cliBridge/loopbackMcpServer.test.ts` und
+`test/publicMcp/publicMcpEndpoint.e2e.test.ts`.
+
 ---
 
 ## 4. Migration Managed Agents → Lokal
@@ -1453,6 +1489,20 @@ PORT=3979
 
 `.env.example` ist gepflegt. Leere Strings parsed zod als `""`, nicht
 `undefined` — daher muss der Fallback `||` sein, nicht `??`.
+
+### Package-lokale Env-Variablen (`OMADIA_*`, ohne zod-Schema)
+
+Das `harness-orchestrator`-Package importiert `config.ts` **nicht**; seine
+Optionen laufen als `OMADIA_*`-Env mit Modul-Konstante als Default und werden
+pro Aufruf aufgelöst (Änderung greift ohne Restart):
+
+```
+OMADIA_TOOL_DISPATCH_TIMEOUT_MS=240000      # äußere Dispatch-Deadline (W3-A)
+OMADIA_MCP_CALL_TIMEOUT_MS=60000            # Idle-Budget pro MCP-Request (W0-2)
+OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS=180000 # absolute Decke inkl. Retry (W0-2)
+OMADIA_MCP_TOOLLIST_TTL_MS=60000            # Default-TTL Tool-List-Cache (#545,
+                                            # ADR-0009); 0 = spec-strikt aus
+```
 
 ### Wichtige Gotchas
 

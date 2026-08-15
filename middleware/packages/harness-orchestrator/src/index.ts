@@ -144,6 +144,12 @@ export {
   // Exported so the no-collateral-invalidation rule of `McpManager.close(id)`
   // can be unit tested and reused by ops tooling (issue #563).
   mcpPoolScopeMatches,
+  // #545 — the tool-list cache rules (TTL normalisation + scope keying) are
+  // the contract, unit-tested as pure functions like `mcpPoolScopeMatches`.
+  mcpToolListTtlMs,
+  mcpToolListCacheKey,
+  MCP_TOOLLIST_DEFAULT_TTL_MS,
+  MCP_TOOLLIST_MAX_TTL_MS,
   mcpToolToLocalSubAgentTool,
   mcpToolToNativeSpec,
   renderToolResult,

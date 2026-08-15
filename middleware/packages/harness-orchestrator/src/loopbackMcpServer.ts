@@ -35,6 +35,11 @@ import { sortByToolName } from './toolOrdering.js';
 
 const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 
+/** #545 — `ttlMs` advertised on `tools/list` (5 minutes). Any value is true
+ *  for as long as this per-turn server exists; 5 minutes comfortably covers a
+ *  turn without pretending the list is immortal across turns. */
+const LOOPBACK_TOOLLIST_TTL_MS = 300_000;
+
 class PayloadTooLargeError extends Error {}
 
 export interface LoopbackMcpServerDeps {
@@ -159,6 +164,13 @@ export class LoopbackMcpServer {
         // and nothing here reshapes it.
         inputSchema: tool.input_schema as unknown as Tool['inputSchema'],
       })),
+      // #545 — MCP 2026-07-28 `CacheableResult`. Both fields are honest by
+      // construction: `deps.tools` is readonly and this server lives exactly
+      // one turn, so the list cannot change while anyone holds it (`ttlMs` can
+      // afford to be generous), and it is identical for every caller — there
+      // is one bearer and no per-principal filtering (`public`).
+      ttlMs: LOOPBACK_TOOLLIST_TTL_MS,
+      cacheScope: 'public',
     }));
 
     mcp.server.setRequestHandler('tools/call', async (request) => {

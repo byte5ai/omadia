@@ -177,6 +177,26 @@ describe('#700 — the public endpoint serves MRTR to a 2026-07-28 client', () =
     assert.equal(client.getProtocolEra(), 'modern');
   });
 
+  it('MUTATION CHECK: emits the CacheableResult hints on the era that can read them (#545)', async (t) => {
+    // `publicMcpEndpoint.e2e.test.ts` pins the same two fields on the 2025
+    // leg. This is the half that matters: `ttlMs` / `cacheScope` are
+    // 2026-07-28 vocabulary, and #700 split this handler in two, so hints
+    // added to the legacy leg alone would advertise a cache policy to exactly
+    // the callers who cannot see it.
+    const h = await start(options(bookRoom), t);
+    if (!h) return;
+    const client = await connect(h);
+
+    const listed = (await client.listTools(undefined, { cacheMode: 'bypass' })) as unknown as {
+      ttlMs?: unknown;
+      cacheScope?: unknown;
+    };
+    assert.equal(listed.ttlMs, 60_000);
+    // `private` is mandatory, not chosen: the list is filtered per API key, so
+    // a shared entry would leak which tools OTHER keys may call.
+    assert.equal(listed.cacheScope, 'private');
+  });
+
   it('asks with a spec-shaped embedded elicitation and an opaque requestState', async (t) => {
     const h = await start(options(bookRoom), t);
     if (!h) return;

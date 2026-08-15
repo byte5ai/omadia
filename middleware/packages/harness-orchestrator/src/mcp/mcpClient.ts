@@ -46,7 +46,10 @@ import {
   getDefaultEnvironment,
 } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolResultSchema,
+  ToolListChangedNotificationSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type {
   LocalSubAgentTool,
@@ -395,10 +398,68 @@ export interface McpManagerOptions {
    *  child process) would live as long as the process. `0` or negative
    *  disables eviction. Defaults to `MCP_POOL_IDLE_TTL_MS`. */
   readonly idleTtlMs?: number;
+  /** Issue #545 — TTL applied to a cached tool list whose server sent no
+   *  `ttlMs` (ADR-0009). Same optional-dependency shape as `idleTtlMs`: wins
+   *  over the `OMADIA_MCP_TOOLLIST_TTL_MS` env override, defaults to
+   *  `MCP_TOOLLIST_DEFAULT_TTL_MS`. `0` (or negative) restores the
+   *  spec-strict reading — absent `ttlMs` means no caching. */
+  readonly toolListTtlMs?: number;
 }
 
 /** Default idle lifetime of a pooled MCP connection (5 minutes). */
 export const MCP_POOL_IDLE_TTL_MS = 300_000;
+
+/**
+ * Default TTL for a cached tool list when the server sent no `ttlMs` (#545).
+ *
+ * MCP 2026-07-28 says an absent `ttlMs` MUST be read as 0 — no caching. The
+ * ecosystem we connect to today speaks ≤ 2025-11-25 and never sends the field,
+ * so the spec-strict reading would make the cache a no-op and forfeit the
+ * discovery round-trips the cache exists to save. Deliberate client-side
+ * deviation, recorded in ADR-0009; `OMADIA_MCP_TOOLLIST_TTL_MS=0` (or
+ * `toolListTtlMs: 0`) opts back into spec-strict behaviour.
+ */
+export const MCP_TOOLLIST_DEFAULT_TTL_MS = 60_000;
+
+/**
+ * Ceiling on any tool-list TTL, server-provided or defaulted (ADR-0009).
+ * `notifications/tools/list_changed` invalidates cooperative servers
+ * immediately; this clamp bounds the staleness an uncooperative server can
+ * buy itself with an extravagant `ttlMs`.
+ */
+export const MCP_TOOLLIST_MAX_TTL_MS = 900_000;
+
+/**
+ * Effective TTL for one `tools/list` result. Exported for the same reason as
+ * `mcpPoolScopeMatches`: the rules are the contract, so they are unit-tested
+ * as a pure function rather than through timing-sensitive integration paths.
+ *
+ *   - server sent a finite number → clamped to [0, MCP_TOOLLIST_MAX_TTL_MS]
+ *     (spec: negative reads as 0; 0 means "do not cache")
+ *   - absent or malformed → `defaultTtlMs` (ADR-0009), same clamp
+ */
+export function mcpToolListTtlMs(ttlMs: unknown, defaultTtlMs: number): number {
+  const fromServer =
+    typeof ttlMs === 'number' && Number.isFinite(ttlMs) ? Math.max(0, ttlMs) : undefined;
+  return Math.min(fromServer ?? Math.max(0, defaultTtlMs), MCP_TOOLLIST_MAX_TTL_MS);
+}
+
+/**
+ * Cache key for one `tools/list` result (#545).
+ *
+ * `cacheScope: "public"` promises the list is identical across auth contexts,
+ * so it may be shared under the bare server id. Everything else — `"private"`,
+ * absent, or a value this client does not recognise — stays under the caller's
+ * pool key (server id + token hash), because a mis-shared tool list crosses
+ * auth contexts and a missed share only costs one extra round-trip.
+ */
+export function mcpToolListCacheKey(
+  poolKey: string,
+  serverId: string,
+  cacheScope: unknown,
+): string {
+  return cacheScope === 'public' ? serverId : poolKey;
+}
 
 /**
  * True when `key` is a pool key belonging to server `id`.
@@ -502,6 +563,24 @@ interface McpToolListEntry {
 
 interface McpListToolsResult {
   readonly tools?: readonly McpToolListEntry[];
+  /**
+   * MCP 2026-07-28 `CacheableResult` (#545). Declared rather than cast at the
+   * read site, for the reason `LENIENT_CALL_TOOL_RESULT_SCHEMA` gives about
+   * `resultType`: a cast makes "the field is absent" and "this type forgot
+   * about the field" indistinguishable, so a change that really did stop
+   * these arriving would compile in silence and the tool-list cache would
+   * quietly fall back to its default TTL forever.
+   *
+   * Both are `unknown` on purpose. They come off the wire, `mcpToolListTtlMs`
+   * and `mcpToolListCacheKey` are the validators, and a second opinion here
+   * about what a well-formed value looks like is a second place to disagree.
+   *
+   * Measured, because the v2 path had reason to lose them: `listTools` runs
+   * with `cacheMode: 'bypass'`, and bypass only skips the SDK's own response
+   * cache — the hints still arrive verbatim on a modern-era connection.
+   */
+  readonly ttlMs?: unknown;
+  readonly cacheScope?: unknown;
 }
 
 /**
@@ -719,6 +798,20 @@ function envMs(name: string, fallback: number): number {
   return parsed;
 }
 
+/** `OMADIA_MCP_TOOLLIST_TTL_MS`, resolved per Listing (an operator change
+ *  applies without a restart, like the dispatch timeout). NOT `envMs`: there
+ *  `<= 0` is a config mistake, here `0` is the deliberate spec-strict opt-out
+ *  (ADR-0009) and must survive parsing. A negative value reads as 0 too — the
+ *  same rule `mcpToolListTtlMs` applies to the `toolListTtlMs` option, so the
+ *  two config paths cannot disagree about what a negative default means. */
+function envToolListTtlMs(): number {
+  const raw = process.env['OMADIA_MCP_TOOLLIST_TTL_MS'];
+  if (raw === undefined || raw.trim() === '') return MCP_TOOLLIST_DEFAULT_TTL_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return MCP_TOOLLIST_DEFAULT_TTL_MS;
+  return Math.max(0, parsed);
+}
+
 /**
  * The MCP request policy as it would be applied to the NEXT `callTool` — the
  * same resolution `callTool` performs, exposed so the timeout-hierarchy
@@ -755,6 +848,35 @@ export class McpManager {
    *  rehydrated from the persisted descriptor by the adapters below) is cached
    *  here and attached to the sidecar. A miss just omits the schema. */
   private readonly outputSchemas = new Map<string, Record<string, unknown>>();
+
+  /** Issue #545 — cached `tools/list` results. Keyed via `mcpToolListCacheKey`
+   *  (bare server id for `public` scope, pool key otherwise), so the same
+   *  `mcpPoolScopeMatches` rule that scopes `close()` also scopes cache
+   *  invalidation. Expiry is lazy, like `evictIdle`: checked on read, never by
+   *  a timer. */
+  private readonly toolLists = new Map<
+    string,
+    {
+      readonly descriptors: readonly McpToolDescriptor[];
+      readonly expiresAt: number;
+      /** Filed under the bare server id BECAUSE the server said `public`. A
+       *  token-less caller's `private` list lands under the bare id too (its
+       *  pool key IS the id), and must never be served across auth contexts —
+       *  this flag is what tells the two apart on the shared-slot probe. */
+      readonly sharedPublic: boolean;
+    }
+  >();
+
+  /** #545 — purge generation for the tool-list cache. A purge that lands while
+   *  a `tools/list` fetch is in flight must win over that fetch's cache write:
+   *  the SDK dispatches a `list_changed` notification as a microtask, so it can
+   *  run between the response resolving and `listTools` priming the cache —
+   *  the purge would hit an empty map and the stale-marked list would then be
+   *  cached for its full TTL. `listTools` snapshots this counter before the
+   *  fetch and skips the write when any purge advanced it. Global rather than
+   *  per-server: the false positive (an unrelated purge skipping one write) is
+   *  just one extra fetch, and a purge is rare. */
+  private toolListPurgeGen = 0;
 
   /** Optional audit observer + dispatch guard (issues #462/#454). Existing
    *  `new McpManager()` call sites keep working unchanged. */
@@ -958,9 +1080,22 @@ export class McpManager {
     }
   }
 
-  /** Discover the tool list a server exposes. Throws on connection failure so
-   *  the operator-facing `/discover` endpoint can report it. */
-  async listTools(cfg: McpServerConfig): Promise<McpToolDescriptor[]> {
+  /**
+   * List the tools a server exposes. Throws on connection failure so the
+   * operator-facing `/discover` endpoint can report it.
+   *
+   * Issue #545 — results are cached per `ttlMs`/`cacheScope` (MCP 2026-07-28
+   * `CacheableResult`; ADR-0009 for the default applied when a server sends no
+   * `ttlMs`). Callers for whom a cached list would defeat the purpose pass
+   * `fresh: true`: Discovery (the Builder route persists what it fetches) and
+   * the security Rescan (a scan of a cached list scans nothing). The runtime
+   * Listing path — the plugin `ctx.mcp.listTools()` accessor — is the cache's
+   * beneficiary and uses the default.
+   */
+  async listTools(
+    cfg: McpServerConfig,
+    opts?: { readonly fresh?: boolean },
+  ): Promise<McpToolDescriptor[]> {
     // Attach the OAuth token (issue #459 W9): some servers (e.g. Figma) require
     // authorization even to `initialize`/`tools/list`, so discovery must use the
     // caller's token exactly like a tool call — otherwise every OAuth-protected
@@ -973,6 +1108,22 @@ export class McpManager {
         /* token resolution must not break discovery */
       }
     }
+    // The private key is derivable before the fetch; the public one is just the
+    // server id — so a read probes private-then-public and finds a hit wherever
+    // the last write's `cacheScope` filed it. The second probe accepts only
+    // entries filed as `public`: a token-less caller's `private` list sits
+    // under the bare id as well (its pool key IS the id) and serving it to a
+    // tokened caller would cross auth contexts.
+    const privateKey = this.poolKey(cfg, token);
+    if (!opts?.fresh) {
+      const hit =
+        this.cachedToolList(privateKey) ?? this.cachedToolList(cfg.id, { publicOnly: true });
+      if (hit) return [...structuredClone(hit)];
+    }
+    // Snapshot BEFORE the fetch: a purge (list_changed, close) arriving while
+    // the request is in flight advances the generation, and the write below
+    // then steps aside instead of resurrecting an invalidated entry.
+    const purgeGen = this.toolListPurgeGen;
     const { client } = await this.getOrConnect(await this.withResolvedConfig(cfg), token);
     const res = await client.listTools();
     const tools = Array.isArray(res?.tools) ? res.tools : [];
@@ -991,7 +1142,62 @@ export class McpManager {
         : {}),
     }));
     for (const d of descriptors) this.rememberToolSchema(cfg.id, d);
+    // #545 — file the result under the scope the server declared.
+    //
+    // The two fields reach here by DIFFERENT routes, and only one of them is
+    // the loose-passthrough argument #544 used for `resultType`:
+    //   - v1 legs (stdio, sse): `ResultSchema` is loose, so a server that
+    //     sends them survives parsing. 2025-era servers do not send them, so
+    //     in practice this is the ADR-0009 default-TTL path.
+    //   - the v2 leg (http): they are modelled 2026-07-28 fields and arrive
+    //     verbatim. MEASURED, because there was reason to doubt it —
+    //     `listTools` runs with `cacheMode: 'bypass'` (#562 phase 2), and
+    //     bypass skips only the SDK's own response cache, not the hints.
+    // Do not collapse that into "the SDK is lenient": on the v2 family that
+    // reasoning is what proved false for `resultType` on a legacy-era decode.
+    //
+    // Read defensively regardless — both come off the wire.
+    const ttl = mcpToolListTtlMs(
+      res.ttlMs,
+      this.options?.toolListTtlMs ?? envToolListTtlMs(),
+    );
+    if (ttl > 0 && purgeGen === this.toolListPurgeGen) {
+      this.toolLists.set(mcpToolListCacheKey(privateKey, cfg.id, res.cacheScope), {
+        // Deep-copied on write (and again on read): callers — plugins via
+        // `ctx.mcp.listTools()` — must not be able to mutate the cached
+        // descriptors that later callers receive.
+        descriptors: structuredClone(descriptors),
+        expiresAt: Date.now() + ttl,
+        sharedPublic: res.cacheScope === 'public',
+      });
+    }
     return descriptors;
+  }
+
+  /** A still-fresh cached tool list under `key`, expiring lazily on read.
+   *  `publicOnly` is set on the bare-server-id probe, so a token-less caller's
+   *  `private` entry (also keyed by the bare id) never crosses auth contexts. */
+  private cachedToolList(
+    key: string,
+    opts?: { readonly publicOnly?: boolean },
+  ): readonly McpToolDescriptor[] | undefined {
+    const entry = this.toolLists.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= Date.now()) {
+      this.toolLists.delete(key);
+      return undefined;
+    }
+    if (opts?.publicOnly && !entry.sharedPublic) return undefined;
+    return entry.descriptors;
+  }
+
+  /** Drop every cached tool list belonging to server `id` (or to one exact
+   *  pool key) — the same scoping rule `close()` applies to connections. */
+  private purgeToolLists(id: string): void {
+    this.toolListPurgeGen += 1;
+    for (const key of this.toolLists.keys()) {
+      if (mcpPoolScopeMatches(key, id)) this.toolLists.delete(key);
+    }
   }
 
   /** Invoke a tool. Never throws — returns an `Error: …` string on failure so
@@ -1266,11 +1472,17 @@ export class McpManager {
    * fully invalidated. It never crosses server ids; see `mcpPoolScopeMatches`.
    */
   async close(id: string): Promise<void> {
+    // #545 — a closed server is an invalidated server: its cached tool list
+    // must not outlive its connections (deleted/reconfigured/re-authorized
+    // servers all arrive here).
+    this.purgeToolLists(id);
     const keys = [...this.entries.keys()].filter((key) => mcpPoolScopeMatches(key, id));
     await Promise.all(keys.map((key) => this.dropEntry(key)));
   }
 
   async closeAll(): Promise<void> {
+    this.toolListPurgeGen += 1;
+    this.toolLists.clear();
     await Promise.all([...this.entries.keys()].map((key) => this.dropEntry(key)));
   }
 
@@ -1334,6 +1546,11 @@ export class McpManager {
     // not in its transport. Picking the transport therefore picks the client.
     if (cfg.transport === 'http') {
       const client = new ModernClient(CLIENT_INFO, MODERN_CLIENT_OPTIONS);
+      // #545 — same purge as the v1 branch below; the v2 client registers spec
+      // notifications by method string instead of by schema.
+      client.setNotificationHandler('notifications/tools/list_changed', () => {
+        this.purgeToolLists(cfg.id);
+      });
       // The honest half of declaring the elicitation capability (#562 phase 3).
       // The in-band MRTR path never reaches this handler — `autoFulfill` is off
       // and `allowInputRequired` returns the result first — but a server may
@@ -1346,6 +1563,14 @@ export class McpManager {
       return { client: modernSdkSession(client) };
     }
     const client = new Client(CLIENT_INFO);
+    // #545 — `notifications/tools/list_changed` invalidates a cached tool list
+    // IMMEDIATELY, even mid-TTL (the spec's two freshness mechanisms are
+    // complementary: the TTL bounds staleness, the notification reports it).
+    // All scopes of this server are dropped — the server said "changed", not
+    // for whom. Registered before `connect` so no notification can race past.
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      this.purgeToolLists(cfg.id);
+    });
     await client.connect(this.makeTransport(cfg, token));
     return { client: legacySdkSession(client) };
   }
