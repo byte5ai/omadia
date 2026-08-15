@@ -18,6 +18,112 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — the public MCP endpoint serves MRTR to 2026-07-28 clients (#700)
+
+- **Two SDK generations behind one path, routed by protocol era.** A request
+  that negotiates the 2025 `initialize` handshake is served by the v1 wiring
+  exactly as before; one carrying the 2026-07-28 envelope is served by
+  `@modelcontextprotocol/server@2`. Neither generation can serve the other's
+  era, which is why this is a router and not a port: the v1 line never answers
+  `server/discover` (so a modern client negotiating against it falls back to
+  legacy, where it strips `resultType` and MRTR becomes invisible to it), and
+  the v2 line refuses to emit omadia's flat `inputRequests` array at all, on
+  either era. Routing is the SDK's own documented composition for this.
+- **The documented 2025 contract is untouched.** Same array dialect, same
+  `arguments.inputResponses` retry, byte for byte — the existing endpoint suite
+  passes unmodified. Modern callers instead get the revision's shape: one
+  embedded `elicitation/create` request and an opaque `requestState`.
+- **`requestState` is integrity-protected, which the spec requires and the SDK
+  does not do for you.** HMAC-SHA256 via the SDK's own codec, over a
+  vault-persisted key (so any instance behind the load balancer can verify what
+  another minted), bound to the API key and the method, one-hour TTL. A
+  modified, expired or borrowed state is refused with the frozen `-32602`.
+  Without a vault the endpoint generates a per-process key and warns — still
+  signed and still verified, just not across instances.
+- **The bounce cap stops being guessable.** On the 2025 dialect it is inferred
+  from `inputResponses` appearing in the arguments, so a caller that strips the
+  key gets a fresh card forever. On the modern dialect the round counter is
+  inside the signed state.
+- **A tool cannot tell which era its caller spoke.** The translation lives
+  entirely in the endpoint: a tool still asks with the `_pendingInputRequest`
+  sentinel and still receives a flat `inputResponses` object.
+- **Known gap, stated rather than papered over:** the revision's elicitation
+  schema has no masked-input concept (`email`, `date`, `uri`, `date-time` are
+  the only string formats), so a field the tool marked `secret` is named in the
+  prose instead of flagged in the schema. Emitting a `password` format anyway
+  would produce a request a conforming client rejects.
+### Fixed — test servers bound a port they never dialled (CI flake)
+
+- **Intermittent 401/404 in the middleware test suite.** A test would fail with
+  a `401 devplatform.unauthorized` on a request that carried perfectly valid
+  session headers, or a `404` on a repo it had just registered — and pass on
+  the next run. The cause was neither the routes nor the fakes: the harnesses
+  bound their server with `app.listen(0)`, which binds the **IPv6** wildcard
+  `[::]`. On macOS/BSD that socket is `IPV6_V6ONLY`, so the kernel reserved the
+  port in the IPv6 ephemeral space only — while every harness handed out
+  `http://127.0.0.1:<port>`, an **IPv4** URL. The two spaces are independent,
+  so the port the test dialled was never reserved at all, and any unrelated
+  process holding that IPv4 port received the request and answered it. Observed
+  foreign responders on a developer machine included a local MCP server
+  (`401 … provide valid authorization token`) and a Flask dev server
+  (`404 Not Found`); a non-HTTP peer surfaced instead as
+  `HTTPParserError: Response does not match the HTTP/1.1 protocol`.
+- Every test listener that already waits for its `listening` callback now binds
+  `127.0.0.1` explicitly (both dev-platform harnesses, 36 call sites in all,
+  plus the updater sidecar's server test), so the reserved port and the dialled
+  port are the same port and the OS guarantees exclusivity — a colliding bind is
+  refused with `EADDRINUSE` instead of silently shadowing the harness. A
+  `harness socket binding` suite in each affected route test guards the
+  property so the old shape cannot come back.
+- Note for follow-up work: passing a host makes `listen()` bind
+  **asynchronously**, so the remaining 55 `app.listen(0)` sites that read
+  `server.address().port` synchronously on the next line cannot be converted by
+  adding the host alone — they each need to await `listening` first. They are
+  still exposed to this failure mode.
+
+### Fixed — the Fly updater asked for a wait longer than Fly allows (#696)
+
+- **`/wait?timeout=120` is rejected outright.** Fly caps the machine-wait at
+  60s and answers anything larger with
+  `400 invalid WaitMachineRequest.Timeout: value must be inside range
+  [1s, 1m0s]` — asking for more does not buy a longer wait, it buys no wait at
+  all. `waitForState`'s 120s default therefore failed every update on the step
+  right after the image was written. Found on a real deployment, once the
+  lease-nonce fix let the update get that far. The request is now capped at the
+  API maximum and re-issued until the caller's own budget is spent, and the
+  machine's state is re-read and checked explicitly instead of trusting the
+  long-poll's timeout semantics — a `/wait` that errors is not the oracle.
+- **A "rolled back" job now really rolls back.** `replace()` can fail *past the
+  point of mutation*: on Fly the machine is already carrying the new image when
+  the wait step throws. The bookkeeping entry was written only after `replace()`
+  returned, so that case left `replaced` empty, rollback restored nothing, and
+  the operator was told the update had been rolled back while the service ran
+  the new build — exactly what happened in production. The entry is now recorded
+  before the call; restoring an image the service never left is a no-op, so
+  pessimistic bookkeeping is safe in the other direction.
+
+### Fixed — the Fly updater was blocked by its own lease (#696)
+
+- **Applying an update on Fly always failed and rolled back.** `replace()`
+  leases the Machine, and Fly gates every write to a leased Machine behind the
+  `fly-machine-lease-nonce` header — which was sent nowhere. `updateMachine`
+  declared `leaseNonce` in its signature but never read it, the engine never
+  passed it, and the HTTP helper had no way to carry a header at all. Every
+  real update therefore came back
+  `409 aborted: … lease currently held by …@tokens.fly.io` and rolled back,
+  seconds after taking that lease itself. Threaded end to end now: per-call
+  headers on the client, the nonce on the update, the lease from the engine.
+- **The lease is handed back in a `finally`.** It was acquired and abandoned,
+  so it kept blocking writes for the rest of its 300s TTL — which also meant
+  the rollback after a failed update hit the same 409, and the machine stayed
+  locked against a human `fly deploy` for minutes.
+- **The test fake now enforces the lease.** It returned a nonce and ignored it
+  on writes, so it could not produce Fly's 409 and 263 lines of green tests
+  said the path worked. It now rejects an unnonced write and validates the
+  nonce on release. New wire-level `flyApi.test.mjs` asserts against the bytes
+  an HTTP server actually receives, because a fake can only ever prove the
+  engine *passes* a value, never that the client *sends* it.
+
 ### Added — one-click updates on Fly.io (#696, follow-up to #432)
 
 - **A Fly executor for the rolling self-update.** Fly Machines are Firecracker

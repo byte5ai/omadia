@@ -14,10 +14,16 @@ export function createFakeFlyApi(options = {}) {
     },
     failUpdateFor = null,
     leaseThrows = false,
+    // Fail the wait-for-started step, i.e. AFTER the machine already carries
+    // the new image. This is the shape the real 400 on `/wait?timeout=120`
+    // had, and the one that made rollback a no-op.
+    waitThrows = false,
   } = options;
 
   const calls = [];
   const machines = new Map();
+  /** app -> nonce currently holding the lease. Mirrors Fly's real gate. */
+  const leases = new Map();
   let nextId = 1;
 
   for (const [app, image] of Object.entries(apps)) {
@@ -60,7 +66,24 @@ export function createFakeFlyApi(options = {}) {
     },
 
     async updateMachine(app, id, input) {
-      calls.push({ op: 'update', app, id, config: input.config, currentVersion: input.currentVersion });
+      calls.push({
+        op: 'update',
+        app,
+        id,
+        config: input.config,
+        currentVersion: input.currentVersion,
+        leaseNonce: input.leaseNonce,
+      });
+      // Fly gates every write on a LEASED machine behind the lease nonce. A
+      // fake that skips this check cannot fail when the caller forgets to send
+      // it — which is exactly how the missing nonce shipped green.
+      const held = leases.get(app);
+      if (held !== undefined && input.leaseNonce !== held) {
+        throw new Error(
+          `fly api POST /v1/apps/${app}/machines/${id} → 409: ` +
+            `{"error":"aborted: machine ID ${id} lease currently held by tokens.fly.io"}`,
+        );
+      }
       if (failUpdateFor !== null && String(input.config.image).includes(failUpdateFor)) {
         throw new Error(`update ${app}/${id} failed: image not found`);
       }
@@ -72,12 +95,36 @@ export function createFakeFlyApi(options = {}) {
 
     async waitForState(app, id, state) {
       calls.push({ op: 'wait', app, id, state });
+      if (waitThrows) {
+        throw new Error(
+          `fly api GET /v1/apps/${app}/machines/${id}/wait?state=${state}&timeout=120 → 400: ` +
+            `{"error":"invalid_argument: invalid WaitMachineRequest.Timeout"}`,
+        );
+      }
     },
 
     async acquireLease(app, id) {
       calls.push({ op: 'lease', app, id });
       if (leaseThrows) throw new Error('lease unavailable');
-      return `nonce-${id}`;
+      if (leases.has(app)) {
+        throw new Error(`lease on ${app}/${id} is already held`);
+      }
+      const nonce = `nonce-${id}`;
+      leases.set(app, nonce);
+      return nonce;
+    },
+
+    async releaseLease(app, id, nonce) {
+      calls.push({ op: 'release', app, id, nonce });
+      const held = leases.get(app);
+      if (held === undefined) throw new Error(`no lease held on ${app}/${id}`);
+      if (held !== nonce) throw new Error(`wrong nonce for the lease on ${app}/${id}`);
+      leases.delete(app);
+    },
+
+    /** Test helper: is a lease still outstanding? */
+    leaseHeld(app) {
+      return leases.get(app) ?? null;
     },
   };
 }

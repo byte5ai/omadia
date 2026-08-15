@@ -223,7 +223,7 @@ describe('devplatform/llmProxyAccounting (pg)', { skip: !pgAvailable }, () => {
     await runMultiOrchestratorMigrations(pool, undefined, migrationsDir);
     await cleanup();
     await new Promise<void>((r) => {
-      server = app.listen(0, () => {
+      server = app.listen(0, '127.0.0.1', () => {
         base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/api/v1/dev-runner`;
         r();
       });
@@ -458,7 +458,7 @@ describe('llmProxy — max_tokens clamp (budget hook ceiling)', () => {
 
   before(async () => {
     await new Promise<void>((r) => {
-      server = app.listen(0, () => {
+      server = app.listen(0, '127.0.0.1', () => {
         base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/api/v1/dev-runner`;
         r();
       });

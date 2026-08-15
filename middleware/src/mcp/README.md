@@ -183,13 +183,39 @@ Things worth knowing before you build on this:
   fields; names ≤64 and labels ≤120 characters).
 - **`secret: true` means render it masked.** It is advisory about display only —
   the value still crosses the wire to the tool.
-- **This endpoint speaks the 2025-era dialect only** (`inputRequests` as a flat
-  array). The 2026-07-28 revision instead sends a MAP of whole
-  `elicitation/create` requests plus an opaque `requestState`. omadia's MCP
-  *client* understands both since #562 phase 3 — its `parseMcpInputRequests`
-  branches on the shape — but this server surface still emits only the array
-  form, so a strictly-2026-07-28 client cannot complete MRTR against omadia.
-  Tracked in #700; porting this surface is not part of #562.
+
+### Two dialects, chosen by your protocol era (#700)
+
+Everything above describes the **2025-era** dialect, and it is unchanged. If
+your client negotiates the 2025 `initialize` handshake, that is what you get,
+byte for byte.
+
+A client that negotiates **2026-07-28** (via `server/discover`) gets the
+revision's own MRTR instead:
+
+| | 2025-era | 2026-07-28 |
+|---|---|---|
+| the ask | `inputRequests` as a flat array of fields | `inputRequests` as a map with one embedded `elicitation/create` request |
+| the answers | `arguments.inputResponses`, flat | top-level `inputResponses` param, one `ElicitResult` per key |
+| the loop guard | inferred from `inputResponses` being present | a signed `requestState` you echo back verbatim |
+
+You do not choose between them and there is no configuration switch. The
+endpoint routes on the era of your request, because neither SDK generation can
+serve both: the 2025 line never answers `server/discover`, and the 2026 line
+refuses to emit the array form at all.
+
+Two things worth knowing on the modern dialect:
+
+- **Echo `requestState` unchanged.** It is HMAC-signed, bound to your API key
+  and the method, and valid for one hour. A modified, expired or borrowed one
+  is refused with `-32602 Invalid or expired requestState`. It is also what
+  counts your input rounds, so stripping it does not buy you another card.
+- **`secret` cannot be expressed.** The revision's elicitation schema admits
+  only the `email`, `date`, `uri` and `date-time` string formats, with no
+  masked-input concept, so a field the tool marked secret is named in the
+  prose instead of flagged in the schema. Your form widget will not mask it.
+
+omadia's own MCP client speaks both since #562 phase 3.
 - A tool that emits an unusable request errors with the reason named, rather than
   handing you a half-rendered form.
 

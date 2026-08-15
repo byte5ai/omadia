@@ -39,9 +39,7 @@ export function createFlyEngine({ config, api, manifestCheck = manifestExists })
   function appFor(service) {
     const app = config.flyApps?.[service];
     if (typeof app !== 'string' || app.length === 0) {
-      throw new Error(
-        `no Fly app configured for service "${service}" — set UPDATER_FLY_APPS`,
-      );
+      throw new Error(`no Fly app configured for service "${service}" — set UPDATER_FLY_APPS`);
     }
     return app;
   }
@@ -55,9 +53,7 @@ export function createFlyEngine({ config, api, manifestCheck = manifestExists })
     async resolveTarget(service) {
       const app = appFor(service);
       const machines = await api.listMachines(app);
-      const live = machines.filter(
-        (m) => m?.state !== 'destroyed' && m?.config?.image,
-      );
+      const live = machines.filter((m) => m?.state !== 'destroyed' && m?.config?.image);
       if (live.length === 0) {
         throw new Error(`no machine found for Fly app "${app}"`);
       }
@@ -123,23 +119,44 @@ export function createFlyEngine({ config, api, manifestCheck = manifestExists })
       }
       if (lease !== null) log(`leased ${app}/${machineId}`);
 
-      // Read-then-change-one-field. Never build this object from scratch.
-      const machine = await api.getMachine(app, machineId);
-      const current = machine?.config;
-      if (current === undefined || current === null) {
-        throw new Error(`machine ${app}/${machineId} returned no config to update`);
+      try {
+        // Read-then-change-one-field. Never build this object from scratch.
+        const machine = await api.getMachine(app, machineId);
+        const current = machine?.config;
+        if (current === undefined || current === null) {
+          throw new Error(`machine ${app}/${machineId} returned no config to update`);
+        }
+
+        log(`updating ${app}/${machineId} → ${image}`);
+        await api.updateMachine(app, machineId, {
+          config: { ...current, image },
+          ...(typeof machine.instance_id === 'string'
+            ? { currentVersion: machine.instance_id }
+            : {}),
+          // The lease we just took gates this write. Passing it is what makes
+          // the update possible at all; without it Fly answers 409 and we are
+          // blocked by our own lease.
+          ...(lease !== null ? { leaseNonce: lease } : {}),
+        });
+
+        log(`waiting for ${app}/${machineId} to start`);
+        await api.waitForState(app, machineId, 'started');
+      } finally {
+        // Always hand the lease back — including on the failure path. An
+        // abandoned lease keeps blocking writes for the rest of its TTL, so
+        // the rollback that follows a failed update would hit 409 as well and
+        // the machine would stay locked against `fly deploy` for minutes.
+        if (lease !== null) {
+          try {
+            await api.releaseLease(app, machineId, lease);
+            log(`released lease on ${app}/${machineId}`);
+          } catch (err) {
+            log(
+              `could not release the lease on ${app}/${machineId}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
       }
-
-      log(`updating ${app}/${machineId} → ${image}`);
-      await api.updateMachine(app, machineId, {
-        config: { ...current, image },
-        ...(typeof machine.instance_id === 'string'
-          ? { currentVersion: machine.instance_id }
-          : {}),
-      });
-
-      log(`waiting for ${app}/${machineId} to start`);
-      await api.waitForState(app, machineId, 'started');
     },
   };
 }

@@ -38,7 +38,8 @@ describe('updater HTTP control plane (#432)', () => {
       },
     });
     server = created.server;
-    await new Promise((r) => server.listen(0, r));
+    // Bind IPv4 loopback explicitly so the reserved port is the one `base` dials.
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
     base = `http://127.0.0.1:${server.address().port}`;
   });
 

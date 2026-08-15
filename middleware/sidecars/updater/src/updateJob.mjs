@@ -86,8 +86,16 @@ export async function runUpdate(opts) {
   const replaced = [];
   try {
     for (const target of targets) {
-      await engine.replace(target, target.newImage, log);
+      // Recorded BEFORE the call, not after. `replace()` can fail *past the
+      // point of mutation* — on Fly the machine is already carrying the new
+      // image when the wait-for-started step throws — and a bookkeeping entry
+      // written only on success makes that invisible: rollback finds nothing
+      // to restore and the operator is told "rolled back" while the service
+      // is running the new build. Recording pessimistically is safe in the
+      // other direction, because restoring an image the service never left is
+      // a no-op.
       replaced.push({ service: target.service, previousImage: target.currentImage });
+      await engine.replace(target, target.newImage, log);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

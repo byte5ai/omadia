@@ -67,10 +67,7 @@ describe('fly engine — resolving targets', () => {
   it('ignores destroyed machines when counting', async () => {
     const api = createFakeFlyApi();
     const original = api.machines.get('omadia-middleware-x');
-    api.listMachines = async () => [
-      { ...original, id: 'm-old', state: 'destroyed' },
-      original,
-    ];
+    api.listMachines = async () => [{ ...original, id: 'm-old', state: 'destroyed' }, original];
     const engine = createFlyEngine({ config: CONFIG, api, manifestCheck: ok });
 
     const target = await engine.resolveTarget('middleware');
@@ -121,13 +118,42 @@ describe('fly engine — replacing a machine', () => {
     assert.equal(update.currentVersion, `01HVERSION${target.handle.machineId}`);
   });
 
-  it('takes a lease first and waits for the machine to start', async () => {
+  it('takes a lease first, waits for the machine to start, then releases', async () => {
     const target = await engine.resolveTarget('middleware');
     await engine.replace(target, 'img:2', (m) => logs.push(m));
 
     const sequence = flyOps(api);
     assert.ok(sequence.indexOf('lease') < sequence.indexOf('update'));
-    assert.equal(sequence[sequence.length - 1], 'wait');
+    assert.ok(sequence.indexOf('update') < sequence.indexOf('wait'));
+    // The lease must be handed back last, not abandoned: it would keep
+    // blocking writes for the rest of its TTL otherwise.
+    assert.equal(sequence[sequence.length - 1], 'release');
+    assert.equal(api.leaseHeld('omadia-middleware-x'), null);
+  });
+
+  it('sends the lease nonce with the update, or Fly rejects its own lease', async () => {
+    const target = await engine.resolveTarget('middleware');
+    await engine.replace(target, 'img:2', (m) => logs.push(m));
+
+    // The regression this guards: the nonce was declared in updateMachine's
+    // signature but threaded from nowhere, so every real update came back
+    // 409 "lease currently held by …" and rolled back.
+    const update = api.calls.find((c) => c.op === 'update');
+    const lease = api.calls.find((c) => c.op === 'lease');
+    assert.equal(update.leaseNonce, `nonce-${lease.id}`);
+  });
+
+  it('releases the lease even when the update fails', async () => {
+    const failing = createFakeFlyApi({ failUpdateFor: 'boom' });
+    const e = createFlyEngine({ config: CONFIG, api: failing, manifestCheck: ok });
+    const target = await e.resolveTarget('middleware');
+
+    await assert.rejects(() => e.replace(target, 'boom:1', (m) => logs.push(m)));
+
+    // Without this the rollback that follows a failed update hits 409 too,
+    // and the machine stays locked against `fly deploy` for the full TTL.
+    assert.ok(flyOps(failing).includes('release'));
+    assert.equal(failing.leaseHeld('omadia-middleware-x'), null);
   });
 
   it('continues without a lease rather than refusing to update', async () => {
@@ -193,6 +219,32 @@ describe('fly engine — end to end through runUpdate', () => {
     assert.ok(
       !flyOps(api).includes('update'),
       'Fly would only discover a bad tag after the first machine is already moving',
+    );
+  });
+
+  it('rolls back a machine whose replace failed AFTER the image was written', async () => {
+    // The shape that hit production: the update landed, the wait-for-started
+    // step then failed, and because the bookkeeping entry was only written on
+    // success there was nothing to roll back. The job reported "rolled back"
+    // while the machine was serving the new build.
+    const api = createFakeFlyApi({ waitThrows: true });
+    const engine = createFlyEngine({ config: CONFIG, api, manifestCheck: ok });
+    const before = api.machines.get('omadia-middleware-x').config.image;
+
+    const result = await runUpdate({
+      engine,
+      config: CONFIG,
+      targetVersion: 'v0.75.0',
+      log,
+      healthWaiter: async () => ({ ok: true, reason: 'version_match' }),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.rolledBack, true);
+    assert.equal(
+      api.machines.get('omadia-middleware-x').config.image,
+      before,
+      'a "rolled back" job must actually leave the previous image running',
     );
   });
 

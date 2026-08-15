@@ -68,7 +68,7 @@ async function callRouter(
   const { default: http } = await import('node:http');
   return await new Promise((resolve, reject) => {
     const server = http.createServer(app);
-    server.listen(0, () => {
+    server.listen(0, '127.0.0.1', () => {
       const address = server.address();
       if (!address || typeof address === 'string') {
         reject(new Error('failed to bind ephemeral port'));
