@@ -2,9 +2,15 @@
 
 > **Status: DRAFT — awaiting sign-off. This document implements nothing.**
 > Phase 1 (code) is not authorized until the decisions in §8 are answered.
+>
+> **Rev 2** — after PR #711 merged, the private plugin repo (`omadia-byte5-plugins`
+> @ `7dcce57`) was inspected, which **closed D6 and corrected two findings in Rev 1**: the
+> two production channels bypass `CoreApi` and build their own `sessionScope`, and
+> `'teams-unknown'` has a live producer. See §2.2. New open item **D7**.
 
-**Measured against `origin/main` @ `e4e892e7`.** Every `file:line` in this document was
-re-read at that commit; §9 lists what I could *not* verify.
+**Measured against `origin/main` @ `e4e892e7`** (OSS tree) **and `omadia-byte5-plugins`
+@ `7dcce57`** (private plugins). Every `file:line` in this document was re-read at those
+commits; §10 lists what remains unverified.
 
 ---
 
@@ -49,23 +55,42 @@ collision that will land on `main` before #575 does — see decision **D5**.
 | HTTP chat, explicit `scope` | `routes/chat.ts:52` | `` `http-${scope}` `` |
 | HTTP chat, `sessionId` | `routes/chat.ts:53` | bare `sessionId`, `[A-Za-z0-9_-]{1,80}` |
 | HTTP chat, anonymous | `routes/chat.ts:54` | **`'http-default'`** — shared by *every* anonymous caller |
-| Channel turn (all channels) | `channels/coreApi.ts:80` | `` `${channelId}::${conversationId}` `` |
+| `CoreApi` channel path | `channels/coreApi.ts:80` | `` `${channelId}::${conversationId}` `` |
+| **Teams (private plugin)** | `omadia-byte5-plugins` `channel-teams/src/teamsBot.ts:441` | `` `teams-${conversationId}` ``, with `conversationId ?? 'unknown'` at `:440` |
+| **Telegram (private plugin)** | `omadia-byte5-plugins` `channel-telegram/src/telegramBot.ts:993` | `` `telegram:${chat.id}` `` |
 | Routine run | `plugins/routines/routineRunner.ts:671,707` | `` `routine:${routine.id}` `` |
 | Schedule run | `scheduler/scheduleWorker.ts:119` | `` `schedule:${scheduleId}` `` |
 | Conductor step | `conductor/realStepEffects.ts:116` | `` `conductor:${runId}:${step.id}` `` |
 | Conductor builder | `conductor/builderAgent.ts:189` | `` `conductor-builder:${slug}:${uuid}` `` |
 | Orchestrator fallback | `turnContext.ts:84` (doc) | the turn id, when the caller supplied none |
 
-Three separator conventions coexist: `-` (`http-…`), `::` (channels), `:` (machine scopes).
-A fourth shape — the bare `sessionId` — has no separator at all and is therefore
-**indistinguishable from a scope kind name** by inspection.
+**Five** separator conventions coexist: `-` (`http-…`, `teams-…`), `::` (`CoreApi`), `:`
+(machine scopes, `telegram:`), and the bare `sessionId` with no separator at all — the last
+being **indistinguishable from a scope kind name** by inspection.
 
-> **Finding — two denylist entries have no producer.** `'teams-unknown'` and `'unknown'`
-> (`directLineSticky.ts:70`) are emitted **nowhere** in the tree: grep over
-> `middleware/src` + `middleware/packages`, excluding the denylist itself and tests,
-> returns **0** hits. They defend against values that either never existed or came from a
-> since-removed adapter. **Caveat before deleting:** the private byte5 channel plugins ship
-> as gitignored `dist/`, so a producer could live in `omadia-byte5-plugins`. See **D6**.
+> ### ⚠️ The two production channels bypass `CoreApi` and build their own scope
+>
+> **This corrects the first published version of this document** (PR #711), which listed
+> `channels/coreApi.ts:80` as the producer for "all channels" and reported the
+> `directLineSticky` denylist entries as dead. Measured in `~/sources/omadia-byte5-plugins`
+> @ `7dcce57`:
+>
+> - Neither `channel-teams` nor `channel-telegram` calls `coreApi.handleTurnStream` at all
+>   (0 hits for `handleTurnStream` / `coreApi.` in either package's `src/`). They construct
+>   `sessionScope` themselves. **`${channelId}::${conversationId}` is therefore not the
+>   shape real channel traffic carries** — it is the shape the in-tree `CoreApi` path would
+>   produce for a channel that used it.
+> - **`'teams-unknown'` has a live producer.** `teamsBot.ts:440-441` is
+>   `const conversationId = context.activity.conversation?.id ?? 'unknown'` followed by
+>   `` const sessionScope = `teams-${conversationId}` ``. When Teams omits a conversation id,
+>   the scope is literally `teams-unknown`. **The denylist entry is load-bearing, not dead —
+>   it must not be deleted, it must be expressed in the type.**
+> - `'unknown'` **bare** still has no observed producer, in either repo.
+>
+> **This is a second live instance of the `'http-default'` hole, in production Teams**: every
+> Teams turn that arrives without a conversation id shares one scope. Today `SHARED_SCOPES`
+> is the only thing preventing a sticky binding from leaking across those callers — which is
+> precisely why §3(b) makes "no resolvable scope" a *type* rather than a value.
 
 ### 2.3 The hardest constraint: the graph key is a *lossy* projection
 
@@ -157,7 +182,8 @@ against the values measured in §2.2:
 | qm form | omadia value that maps to it | Verdict |
 |---|---|---|
 | `personal:<id>` | *none* — no producer emits a per-person scope today | **NEW** |
-| `channel:<ref>` | `` `${channelId}::${conversationId}` `` | maps (separator must change) |
+| `channel:<ref>` | `` `${channelId}::${conversationId}` `` (CoreApi), `` `teams-${conversationId}` ``, `` `telegram:${chat.id}` `` | maps — but **three** incompatible spellings, see §2.2 |
+| — | `'teams-unknown'` (Teams with no conversation id) | ❌ **does not map** — same class as `http-default` |
 | `group:<ref>` | *none* | NEW |
 | `team:<id>` | *none* | NEW — and undistinguished from `group:` |
 | `org:<id>` | *none* | NEW |
@@ -390,11 +416,12 @@ two-meanings-of-scope ambiguity in the setup surface.
 | ID | Decision | Recommendation | If deferred |
 |---|---|---|---|
 | **D1** | `ScopeId` shape — 6 variants incl. `system:` and `unscoped`, `conversation` over `channel`, drop `team` | §3 | Phase 1 cannot start |
-| **D2** | Does `sessionScope: string` change in the **published** channel-SDK contract? | **No** — keep `string` at the plugin boundary, type internally; parse at ingress | breaks byte5 private plugins across a repo boundary, silently |
+| **D2** | Does `sessionScope: string` change in the **published** channel-SDK contract? | **No** — keep `string` at the plugin boundary, type internally; parse at ingress. *Now measured:* consumed in both private plugins' `kernel-types.ts` and ~25 call sites in `teamsBot.ts` | breaks byte5 private plugins across a repo boundary, silently |
 | **D3** | Does the graph scope key become injective? | **Yes — but as its own PR *before* scope becomes a security boundary** | a silent cross-scope isolation bug (§2.3) |
 | **D4** | Mid-turn joiner: snapshot vs re-evaluate | **split by reversibility** — snapshot rendered context, re-evaluate egress | Phase 2 is undefined |
 | **D5** | Ask sneumannb5 to rename `security_posture_scope` → `security_posture_override` | **yes**, before #681 merges | permanent name collision in the setup surface |
-| **D6** | Confirm `'teams-unknown'` / `'unknown'` have no producer in `omadia-byte5-plugins` | check before deleting the denylist | deleting the denylist breaks a live private channel |
+| **D6** | ~~Confirm `'teams-unknown'` / `'unknown'` have no producer in `omadia-byte5-plugins`~~ | ✅ **RESOLVED by measurement — answer was NO.** `teams-unknown` has a live producer (`teamsBot.ts:440-441`); the denylist entry must be **expressed in the type, never deleted**. See §2.2. | — |
+| **D7** | *(new, raised by D6)* Do the private channel plugins keep building `sessionScope` themselves, or move onto the typed resolver? | **move them** — otherwise `ScopeId` governs only the paths that were already safe, and the two real production channels stay untyped | the type is decorative for actual channel traffic |
 
 ---
 
@@ -424,10 +451,15 @@ its description.
 
 **Not verified — carry as open risk:**
 
-1. **Private byte5 plugins were not inspected.** `omadia-byte5-plugins` is a separate
-   repository; `harness-channel-teams` / `-telegram` exist here only as gitignored `dist/`.
-   Producers of scope values, and consumers of the `sessionScope` plugin contract, may exist
-   there. This is why **D2** and **D6** are decisions rather than findings.
+1. ~~**Private byte5 plugins were not inspected.**~~ ✅ **Now inspected**
+   (`~/sources/omadia-byte5-plugins` @ `7dcce57`) — and the risk materialized. It produced
+   two corrections to the first published version of this document: the two production
+   channels **bypass `CoreApi`** and build their own scope, and **`'teams-unknown'` has a
+   live producer**, so the denylist entry is load-bearing rather than dead (§2.2). It also
+   confirmed **D2**: `sessionScope?: string` is consumed in both plugins' `kernel-types.ts`
+   (`channel-teams/src/kernel-types.ts:204`, `channel-telegram/src/kernel-types.ts:105`) and
+   threaded through ~25 call sites in `teamsBot.ts` alone — keeping `string` at the plugin
+   boundary is now measured, not assumed. New open item: **D7**.
 2. **The 6/10 decision-vs-mechanical split in §4 is a judgement**, made by reading each
    call site's role, not by attempting the migration. A mechanical entry could turn out to
    need a decision.
