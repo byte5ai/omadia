@@ -13,6 +13,7 @@ import {
 } from '../src/platform/cliBackendDetector.js';
 import { createAdminCliBackendsRouter } from '../src/routes/adminCliBackends.js';
 import { claudeCliAdapter } from '../src/platform/claudeCliAdapter.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 describe('cliBackendDetector', () => {
   afterEach(() => {
@@ -131,7 +132,7 @@ describe('adminCliBackends route', () => {
   it('GET / returns the detection snapshot as JSON', async () => {
     const app = express();
     app.use('/api/v1/admin/cli-backends', createAdminCliBackendsRouter());
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const port = (server.address() as AddressInfo).port;
 
     const res = await fetch(`http://127.0.0.1:${port}/api/v1/admin/cli-backends`);
@@ -148,7 +149,7 @@ describe('adminCliBackends route', () => {
     const app = express();
     app.use(express.json());
     app.use('/api/v1/admin/cli-backends', createAdminCliBackendsRouter());
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const port = (server.address() as AddressInfo).port;
 
     const res = await fetch(`http://127.0.0.1:${port}/api/v1/admin/cli-backends/claude/login/code`, {
@@ -163,7 +164,7 @@ describe('adminCliBackends route', () => {
     const app = express();
     app.use(express.json());
     app.use('/api/v1/admin/cli-backends', createAdminCliBackendsRouter());
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const port = (server.address() as AddressInfo).port;
 
     const res = await fetch(`http://127.0.0.1:${port}/api/v1/admin/cli-backends/claude/login/cancel`, {

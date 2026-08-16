@@ -15,6 +15,7 @@ import {
 } from '../../src/auth/providerRegistry.js';
 import type { AuthProvider } from '../../src/auth/providers/AuthProvider.js';
 import { createAdminAuthRouter } from '../../src/routes/adminAuth.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 /**
  * Provider-toggle integration test. Stubs the platform-settings KV +
@@ -98,7 +99,7 @@ describe('/api/v1/admin/auth/providers router', () => {
   let audit: InMemoryAuditLog;
   let session: ForgedSession;
 
-  before(() => {
+  before(async () => {
     catalog = new ProviderCatalog();
     catalog.add(fakeLocal);
     catalog.add(fakeEntra);
@@ -130,7 +131,7 @@ describe('/api/v1/admin/auth/providers router', () => {
         audit: audit as unknown as AdminAuditLog,
       }),
     );
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}`;
   });

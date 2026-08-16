@@ -18,6 +18,35 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — the rest of the test servers now bind the port they dial (#707)
+
+- **The remaining 57 `listen(0)` sites are converted.** #703 fixed the
+  mechanism but could only convert the call sites that already waited for
+  their `listening` callback. The rest read `server.address().port`
+  synchronously on the next line, which stops working the moment a host is
+  passed — `listen` then goes through the `dns.lookup` path even for an IP
+  literal and no longer binds synchronously. They now go through a
+  `listenLoopback()` helper that binds 127.0.0.1 and resolves on `listening`,
+  so no test server is left holding a port it never dials.
+- **A correction to #703's explanation.** That entry said the wildcard socket
+  is `IPV6_V6ONLY`. Measured on macOS, it is not: `[::]` is dual-stack and
+  `http://127.0.0.1:<port>` normally reaches it, which is exactly why the bug
+  presented as intermittent rather than as a hard failure. The real mechanism
+  is that the wildcard bind's port is chosen only against other wildcard
+  binds, while a process that binds `127.0.0.1:<port>` **specifically** may
+  already hold it — and on BSD/macOS the more specific bind coexists with the
+  wildcard and wins for connections to 127.0.0.1. Local dev servers bind
+  127.0.0.1 by default, which is why the observed shadowers were an MCP server
+  and a Flask app. The fix and its rationale are unchanged; only the
+  description of *why* the port was unprotected was wrong.
+- `canvas-core`'s WebSocket stub server had the same shape (`port: 0`, no
+  host, callers dialling `ws://127.0.0.1:<port>`) and now binds the loopback
+  too.
+- Removed 23 now-dead `await once('listening')` waits that followed a
+  converted site. The helper already resolves after `listening`, so a second
+  wait could never fire — it hung 12 files to the 120s test timeout.
+
+
 ### Added — the public MCP endpoint serves MRTR to 2026-07-28 clients (#700)
 
 - **Two SDK generations behind one path, routed by protocol era.** A request

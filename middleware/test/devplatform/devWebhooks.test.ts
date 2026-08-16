@@ -14,6 +14,7 @@ import {
   type TriggerJobStore,
 } from '../../src/devplatform/triggers/triggerJobService.js';
 import type { DevJob, DevRepo } from '../../src/devplatform/types.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -144,8 +145,7 @@ async function routeHarness(over: Partial<DevWebhooksRouterDeps> = {}) {
   };
   const app = express();
   app.use(createDevWebhooksRouter(deps));
-  const server = app.listen(0);
-  await new Promise((r) => server.once('listening', r));
+  const server = await listenLoopback(app);
   const port = (server.address() as AddressInfo).port;
   return {
     base: `http://127.0.0.1:${port}`,
@@ -439,8 +439,7 @@ describe('devWebhooks route', () => {
     const app = express();
     app.use(express.json()); // WRONG ORDER — consumes the raw bytes first.
     app.use(createDevWebhooksRouter(deps));
-    const server = app.listen(0);
-    await new Promise((r) => server.once('listening', r));
+    const server = await listenLoopback(app);
     const port = (server.address() as AddressInfo).port;
     try {
       const r = await post(`http://127.0.0.1:${port}`, issuesBody());
@@ -476,8 +475,7 @@ describe('devWebhooks route', () => {
     app.post('/echo', (req, res) => {
       res.json({ got: (req.body as { n?: number }).n ?? null });
     });
-    const server = app.listen(0);
-    await new Promise((r) => server.once('listening', r));
+    const server = await listenLoopback(app);
     const port = (server.address() as AddressInfo).port;
     const base = `http://127.0.0.1:${port}`;
     try {

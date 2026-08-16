@@ -19,6 +19,7 @@ import {
   type DevJobStatus,
   type DevRepo,
 } from '../../src/devplatform/types.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 /**
  * Shared test harness for the `/api/v1/dev-runner` router: in-memory fakes for
@@ -197,12 +198,9 @@ export async function makeHarness(overrides: Partial<DevRunnerRouterDeps> = {}):
     }),
   );
 
-  // Bind the IPv4 loopback explicitly — `listen(0)` reserves the port in the
-  // IPv6 space only, while `baseUrl` dials 127.0.0.1. See the sibling routes
-  // harness in this directory for the full explanation.
-  const server: Server = await new Promise((resolve) => {
-    const s = app.listen(0, '127.0.0.1', () => resolve(s));
-  });
+  // Binds 127.0.0.1 — the address `baseUrl` below dials. See listenLoopback
+  // for why a wildcard bind lets a stranger answer these requests.
+  const server: Server = await listenLoopback(app);
   const port = (server.address() as AddressInfo).port;
   return {
     server,

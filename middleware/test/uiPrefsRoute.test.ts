@@ -9,6 +9,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { InMemoryMemoryStore } from '@omadia/memory';
 
 import { createUiPrefsRouter } from '../src/routes/uiPrefs.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 /**
  * HTTP integration test for the per-user UI-prefs router (issue #287),
@@ -51,8 +52,7 @@ async function makeHarness(
   }
   app.use(MOUNT, createUiPrefsRouter({ store, log: () => {} }));
 
-  const server: Server = app.listen(0);
-  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const server: Server = await listenLoopback(app);
   const { port } = server.address() as AddressInfo;
 
   return {

@@ -11,6 +11,7 @@ import {
   type ConductorWebhookEmitResult,
 } from '../src/routes/conductorWebhooksInbound.js';
 import type { WebhookClaimResult, WebhookInboundOutcome } from '../src/conductor/webhookEndpointStore.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 // Issue #437 — inbound Conductor webhook route: signature-first verification
 // (unknown endpoint and wrong secret must answer byte-for-byte the same 401),
@@ -74,8 +75,7 @@ async function harness(
 
   const app = express();
   app.use(createConductorWebhooksInboundRouter(() => deps));
-  const server = app.listen(0);
-  await new Promise((r) => server.once('listening', r));
+  const server = await listenLoopback(app);
   const port = (server.address() as AddressInfo).port;
   return { base: `http://127.0.0.1:${port}`, outcomes, emitCalls, close: () => new Promise((r) => server.close(() => r())) };
 }

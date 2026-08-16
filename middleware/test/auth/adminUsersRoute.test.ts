@@ -14,6 +14,7 @@ import type {
   UserStore,
 } from '../../src/auth/userStore.js';
 import { createAdminUsersRouter } from '../../src/routes/adminUsers.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 /**
  * Postgres-free integration test for the admin-users router. Stubs out
@@ -167,7 +168,7 @@ describe('/api/v1/admin/users router', () => {
         audit: audit as unknown as AdminAuditLog,
       }),
     );
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}`;
   });

@@ -10,6 +10,7 @@ import { createAuditLog } from '../../packages/harness-api-key-auth/src/auditLog
 import { createRateLimiter } from '../../packages/harness-api-key-auth/src/rateLimiter.js';
 import { requireApiKey } from '../../packages/harness-api-key-auth/src/requireApiKey.js';
 import { createFakeSecrets } from '../channelApi/testSecrets.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 /**
  * Issue #439 — the reusable half of the story: any route, kernel or plugin,
@@ -17,16 +18,16 @@ import { createFakeSecrets } from '../channelApi/testSecrets.js';
  * key instead of the `omadia_session` cookie. Mirrors the router-level
  * fixture style of `test/channelApi/chatRouter.test.ts`.
  */
-function startGuardedServer(opts: {
+async function startGuardedServer(opts: {
   scope?: string;
   withRateLimiter?: boolean;
-}): {
+}): Promise<{
   baseUrl: string;
   apiKeys: ReturnType<typeof createApiKeyStore>;
   auditLog: ReturnType<typeof createAuditLog>;
   secrets: ReturnType<typeof createFakeSecrets>;
   close: () => Promise<void>;
-} {
+}> {
   const secrets = createFakeSecrets();
   const apiKeys = createApiKeyStore(secrets);
   const auditLog = createAuditLog(secrets);
@@ -47,7 +48,7 @@ function startGuardedServer(opts: {
       res.json({ keyId: req.apiKey?.keyId, scopes: req.apiKey?.scopes });
     },
   );
-  const server: Server = app.listen(0);
+  const server: Server = await listenLoopback(app);
   const addr = server.address() as AddressInfo;
   return {
     baseUrl: `http://127.0.0.1:${String(addr.port)}/guarded`,
@@ -59,10 +60,10 @@ function startGuardedServer(opts: {
 }
 
 describe('auth/requireApiKey — authentication', () => {
-  let harness: ReturnType<typeof startGuardedServer>;
+  let harness: Awaited<ReturnType<typeof startGuardedServer>>;
 
-  before(() => {
-    harness = startGuardedServer({});
+  before(async () => {
+    harness = await startGuardedServer({});
   });
   after(async () => {
     await harness.close();
@@ -123,7 +124,7 @@ describe('auth/requireApiKey — authentication', () => {
   });
 
   it('does not audit an unauthenticated call — there is no caller identity to attribute', async () => {
-    const local = startGuardedServer({});
+    const local = await startGuardedServer({});
     await fetch(local.baseUrl);
     await fetch(local.baseUrl, { headers: { authorization: 'Bearer omk_nope' } });
     assert.equal((await local.auditLog.list()).length, 0);
@@ -133,7 +134,7 @@ describe('auth/requireApiKey — authentication', () => {
 
 describe('auth/requireApiKey — scopes', () => {
   it('403s a key that lacks the required scope, and audits it as forbidden', async () => {
-    const local = startGuardedServer({ scope: 'memory:read' });
+    const local = await startGuardedServer({ scope: 'memory:read' });
     const created = await local.apiKeys.create({ label: 'chat-only' });
 
     const res = await fetch(local.baseUrl, {
@@ -153,7 +154,7 @@ describe('auth/requireApiKey — scopes', () => {
   });
 
   it('lets a key with the exact scope through', async () => {
-    const local = startGuardedServer({ scope: 'memory:read' });
+    const local = await startGuardedServer({ scope: 'memory:read' });
     const created = await local.apiKeys.create({ scopes: ['memory:read'] });
     const res = await fetch(local.baseUrl, {
       headers: { authorization: `Bearer ${created.token}` },
@@ -163,7 +164,7 @@ describe('auth/requireApiKey — scopes', () => {
   });
 
   it('lets a wildcard key through any scope gate', async () => {
-    const local = startGuardedServer({ scope: 'memory:read' });
+    const local = await startGuardedServer({ scope: 'memory:read' });
     const created = await local.apiKeys.create({ scopes: ['*'] });
     const res = await fetch(local.baseUrl, {
       headers: { authorization: `Bearer ${created.token}` },
@@ -173,7 +174,7 @@ describe('auth/requireApiKey — scopes', () => {
   });
 
   it('authenticates without any scope gate when `scope` is omitted', async () => {
-    const local = startGuardedServer({});
+    const local = await startGuardedServer({});
     const created = await local.apiKeys.create({ scopes: ['memory:read'] });
     const res = await fetch(local.baseUrl, {
       headers: { authorization: `Bearer ${created.token}` },
@@ -188,7 +189,7 @@ describe('auth/requireApiKey — scopes', () => {
     // used to hydrate to `['chat:write']`, so a key deliberately restricted
     // away from chat authenticated against a `chat:write` route.
     for (const corrupt of ['memory:read', ['Chat:Write'], ['chat:write', 'nonsense'], []]) {
-      const local = startGuardedServer({ scope: 'chat:write' });
+      const local = await startGuardedServer({ scope: 'chat:write' });
       const created = await local.apiKeys.create({ label: 'restricted', scopes: ['memory:read'] });
       const raw = await local.secrets.get(`key:${created.record.id}`);
       assert.ok(raw);
@@ -213,7 +214,7 @@ describe('auth/requireApiKey — scopes', () => {
 
 describe('auth/requireApiKey — rate limiting', () => {
   it('429s past the per-key budget and audits it, without invoking the handler', async () => {
-    const local = startGuardedServer({ withRateLimiter: true });
+    const local = await startGuardedServer({ withRateLimiter: true });
     const created = await local.apiKeys.create({ rateLimitPerMinute: 1 });
 
     const first = await fetch(local.baseUrl, {
@@ -241,7 +242,7 @@ describe('auth/requireApiKey — rate limiting', () => {
   });
 
   it('burns quota before the scope check, so scope probing is not free', async () => {
-    const local = startGuardedServer({ withRateLimiter: true, scope: 'memory:read' });
+    const local = await startGuardedServer({ withRateLimiter: true, scope: 'memory:read' });
     const created = await local.apiKeys.create({ rateLimitPerMinute: 1, scopes: ['chat:write'] });
 
     const first = await fetch(local.baseUrl, {

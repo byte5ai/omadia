@@ -17,6 +17,7 @@ import { createStoreRouter } from '../src/routes/store.js';
 import type { Plugin } from '../src/api/admin-v1.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../src/plugins/installedRegistry.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 const HUB = 'https://hub.test';
 
@@ -90,7 +91,7 @@ describe('store router · remote setup_profile projection (OM-15 #602)', () => {
   let server: Server;
   let base: string;
 
-  before(() => {
+  before(async () => {
     const client = new RegistryClient({
       registries: [{ name: 'omadia-public', url: HUB }],
       log: () => {},
@@ -113,7 +114,7 @@ describe('store router · remote setup_profile projection (OM-15 #602)', () => {
       '/store',
       createStoreRouter({ catalog: emptyCatalog, registry: fakeRegistry, client }),
     );
-    server = app.listen(0);
+    server = await listenLoopback(app);
     base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/store`;
   });
 
