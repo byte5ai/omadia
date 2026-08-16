@@ -18,6 +18,29 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — the resume/reaper conformance test raced the wall clock
+
+- **`a RESUMED task survives the reaper` could fail for reasons unrelated to
+  the behaviour it guards.** It aged a parked task by `sleep(120)`, resumed it,
+  and then swept with `staleAfterMs: 60` using the reaper's *default real-time*
+  `now`. That left a 60ms budget between `provideInput` returning and the sweep
+  running: any stall longer than that — a GC pause, a loaded CI box, the serial
+  Postgres job sharing a runner — aged the freshly reset heartbeat past its own
+  window, so the reaper failed the task and the test went red while the code
+  was correct. Reproduced deterministically by inserting an 80ms stall before
+  the sweep.
+- The sweep now takes an explicit `now` anchored on the resume's own
+  `updatedAt`. `provideInput` writes `updatedAt` and `lastHeartbeatAt` in one
+  statement, so that timestamp comes from the same clock that stamped the row —
+  the database's for the durable store, the process's for the in-memory one —
+  and the comparison no longer depends on how long the test itself takes. With
+  the fix the test survives even a 3s injected stall.
+- `updatedAt` is the anchor precisely because it stays correct when the
+  behaviour regresses: dropping the `lastHeartbeatAt` reset still advances
+  `updatedAt`, so the frozen heartbeat lands outside the window and the test
+  goes red. Verified by mutation against **both** stores — in-memory and real
+  Postgres.
+
 ### Fixed — the rest of the test servers now bind the port they dial (#707)
 
 - **The remaining 57 `listen(0)` sites are converted.** #703 fixed the
