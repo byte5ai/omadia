@@ -20,6 +20,8 @@
  * never interleave between a sticky read and its write.
  */
 
+import { formatSessionScope, parseSessionScope } from '@omadia/channel-sdk';
+
 import {
   parseDirectLineDirective,
   resolveDirectLineTarget,
@@ -62,31 +64,6 @@ export const STICKY_MAX_BINDINGS = 1000;
 export const DIRECT_LINE_EXIT_TOKENS: ReadonlySet<string> = new Set(['end', 'orchestrator']);
 
 /**
- * Session scopes that are NOT per-conversation. `resolveScope` in
- * `middleware/src/routes/chat.ts` returns the literal `'http-default'` for any
- * caller that sends neither `scope` nor `sessionId`, so binding on it alone
- * would hand one caller's specialist to every other anonymous caller.
- */
-export const SHARED_SCOPES: ReadonlySet<string> = new Set([
-  'http-default',
-  'teams-unknown',
-  'unknown',
-]);
-
-/**
- * Machine-driven scopes. These repeat verbatim across every execution
- * (`routine:<id>` is constant), so a binding would outlive any human intent
- * and accumulate forever. Refused unconditionally — a userId does not redeem
- * them, because there is no human conversation to be sticky about.
- */
-export const SYNTHETIC_SCOPE_PREFIXES: readonly string[] = [
-  'routine:',
-  'schedule:',
-  'conductor:',
-  'conductor-builder:',
-];
-
-/**
  * NUL separator. It cannot occur in a kebab agent slug, in a channel
  * conversation id, or in a `USER_ID_RE`-validated user id, so no field
  * combination can collide with another. This key never reaches the knowledge
@@ -105,26 +82,44 @@ export function stickyKeyFor(args: {
 /**
  * Allow-gate for sticky state. Names its refusal instead of silently doing
  * nothing, so the caller can tell the user why the binding did not take.
+ *
+ * #575 Phase 1: this used to carry its own `SHARED_SCOPES` and
+ * `SYNTHETIC_SCOPE_PREFIXES` denylists — a feature-local reconstruction of the
+ * scope model that did not exist. Both are gone; the three refusal reasons now
+ * fall out of `ScopeId` directly:
+ *
+ *   `unscoped`/`absent`  → `'no-scope'`      (nothing to be sticky about)
+ *   `unscoped`/`shared`  → `'shared-scope'`  (redeemable by a user id)
+ *   `system`             → `'synthetic-scope'` (no human conversation at all)
+ *
+ * That the mapping is total and reason-for-reason identical is the evidence
+ * that the type covers what the denylists were covering. If a future scope
+ * spelling needs a fourth denylist entry here, the type is wrong — fix the type.
  */
 export function classifyStickyScope(args: {
   readonly agentSlug: string;
   readonly sessionScope?: string;
   readonly userId?: string;
 }): StickyScopeClassification {
-  const scope = args.sessionScope?.trim() ?? '';
-  if (scope.length === 0) return { kind: 'refused', reason: 'no-scope' };
-  if (SYNTHETIC_SCOPE_PREFIXES.some((prefix) => scope.startsWith(prefix))) {
-    return { kind: 'refused', reason: 'synthetic-scope' };
+  const scope = parseSessionScope(args.sessionScope);
+  if (scope.kind === 'system') return { kind: 'refused', reason: 'synthetic-scope' };
+  if (scope.kind === 'unscoped' && scope.reason === 'absent') {
+    return { kind: 'refused', reason: 'no-scope' };
   }
+
   const userId = args.userId?.trim() ?? '';
-  if (SHARED_SCOPES.has(scope) && userId.length === 0) {
+  if (scope.kind === 'unscoped' && userId.length === 0) {
+    // A shared bucket. Only a user id makes the key per-person.
     return { kind: 'refused', reason: 'shared-scope' };
   }
+
   return {
     kind: 'eligible',
     key: stickyKeyFor({
       agentSlug: args.agentSlug,
-      sessionScope: scope,
+      // The wire spelling, unchanged — `formatSessionScope` round-trips, so the
+      // key is byte-identical to the pre-#575 one for every existing binding.
+      sessionScope: formatSessionScope(scope),
       ...(userId.length > 0 ? { userId } : {}),
     }),
   };

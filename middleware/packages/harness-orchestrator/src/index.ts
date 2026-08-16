@@ -283,8 +283,6 @@ export {
   stickyKeyFor,
   InMemoryDirectLineStickyStore,
   DIRECT_LINE_EXIT_TOKENS,
-  SHARED_SCOPES,
-  SYNTHETIC_SCOPE_PREFIXES,
   STICKY_IDLE_TTL_MS,
   STICKY_MAX_BINDINGS,
 } from './directLineSticky.js';
