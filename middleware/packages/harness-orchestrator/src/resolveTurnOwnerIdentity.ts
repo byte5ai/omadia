@@ -1,4 +1,4 @@
-import type { ChatTurnInput } from '@omadia/channel-sdk';
+import { makePrincipal, type ChatTurnInput, type Principal } from '@omadia/channel-sdk';
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 
 /**
@@ -38,6 +38,35 @@ export interface TurnOwnerIdentity {
    * read as "no token to inherit", never as licence to substitute a key.
    */
   authSubjectKey?: string;
+  /**
+   * Issue #333 — the turn owner as a `Principal`, the platform-wide way to name
+   * *who* a decision is about. This is the widening the Phase-0 spec (§6) calls
+   * for: #691 answered identity as two loose optional strings, and #575 needs a
+   * subject it can intersect entitlements over without re-deriving one.
+   *
+   * Derived from {@link TurnOwnerIdentity.omadiaUserId} only, never from
+   * `authSubjectKey`. An IdP subject names an account at a *provider*; a
+   * `Principal` names a subject in omadia's own id space. They are not
+   * interchangeable, and a turn whose cluster has a login but no canonical
+   * omadia id has no principal — the same fail-closed absence `omadiaUserId`
+   * already expresses.
+   *
+   * Always the `user` kind. A `role:` principal is a late-bound indirection
+   * over holders, which nothing about a single turn's caller can produce.
+   */
+  principal?: Principal;
+}
+
+/**
+ * #333 — attaches the `Principal` projection of an identity answer.
+ *
+ * A single place so both return paths agree by construction. `makePrincipal`
+ * canonicalizes, and refuses a blank id rather than minting a principal no
+ * binding row can ever match.
+ */
+function withPrincipal(identity: TurnOwnerIdentity): TurnOwnerIdentity {
+  const principal = identity.omadiaUserId ? makePrincipal('user', identity.omadiaUserId) : undefined;
+  return principal ? { ...identity, principal } : identity;
 }
 
 export async function resolveTurnOwnerIdentity(
@@ -47,7 +76,7 @@ export async function resolveTurnOwnerIdentity(
   if (!input.channelIdentity) {
     // Non-channel turns carry no cluster to read a subject from; the HTTP
     // path produces its own `mcpUserKey` from the live session instead.
-    return input.userId ? { omadiaUserId: input.userId } : {};
+    return input.userId ? withPrincipal({ omadiaUserId: input.userId }) : {};
   }
   // No KnowledgeGraph wired up ⇒ no way to resolve a channel identity into a
   // canonical uuid. Deliberately returns nothing rather than guessing with
@@ -60,12 +89,12 @@ export async function resolveTurnOwnerIdentity(
         channelKind: input.channelIdentity.channelKind,
         channelUserId: input.channelIdentity.channelUserId,
       });
-    return {
+    return withPrincipal({
       ...(omadiaUserId ? { omadiaUserId } : {}),
       ...(clusterAuthSubject
         ? { authSubjectKey: clusterAuthSubject.providerUserId }
         : {}),
-    };
+    });
   } catch (err) {
     console.warn(
       `[harness-orchestrator] resolveTurnOwnerIdentity: channel identity resolution failed — ${

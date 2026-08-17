@@ -233,3 +233,20 @@ export {
   type SystemScopeOrigin,
   type UnscopedReason,
 } from './scopeId.js';
+
+// #333 Phase 1 — the typed principal. Same home as `ScopeId` and for the same
+// reason: Conductor (`middleware/src`), the orchestrator and the kernel all
+// depend on this package and it depends on none of them. `Principal` says WHO;
+// it carries no entitlement, because #575 — not #333 — evaluates permissions
+// (spec §6).
+export {
+  PRINCIPAL_KINDS,
+  canonicalizePrincipalRef,
+  formatPrincipal,
+  makePrincipal,
+  parsePrincipal,
+  principalRef,
+  principalsEqual,
+  type Principal,
+  type PrincipalKind,
+} from './principal.js';
