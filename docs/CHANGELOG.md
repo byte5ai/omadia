@@ -18,6 +18,34 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — role and attribute sources: what a `Principal` is entitled to (#333, phase 2)
+
+- **A pluggable `RoleSource` registry in the channel SDK.** Phase 1 answered
+  *who* a turn's caller is; this answers *what they are entitled to* — the roles
+  an Entra group membership or an Odoo HR record confers. It still evaluates no
+  permission: the audience floor, grants and per-recipient filtering belong to
+  #575, which consumes these facts.
+- **Absence is a type, not an empty array.** `rolesFor` returns
+  `resolved | unavailable`, and the aggregate carries a `partial` flag. An empty
+  role set and "the directory was unreachable" are different facts, and merging
+  them is an authorization bug in whichever direction the caller guesses: read as
+  "this user has no roles" an outage silently strips every entitlement; read as
+  "unknown, so allow" it is a silent full grant. The same reasoning that made
+  `ScopeId`'s `unscoped` and `Principal`'s `undefined` types rather than values.
+- **The operator gate from `ProviderRegistry` is mirrored, and matters more
+  here.** Sources must be catalogued before they can be activated. An auth
+  provider decides whether you get in; a role source decides what you *are* once
+  inside, so registering one silently is privilege escalation with no login
+  event to notice.
+- **A throwing source degrades to `unavailable` instead of failing the turn** —
+  but it still appears in the per-source breakdown and still sets `partial`, so
+  a directory outage is diagnosable rather than invisible. Sources are queried
+  concurrently; they are independent network reads on a turn's hot path.
+- **A `role:` principal short-circuits without consulting any source.** Asking
+  what roles a role has is a category error — a role is an indirection over
+  holders — and answering it would invite a source to invent role nesting that
+  #575 has not specified.
+
 ### Added — `Principal`, the platform's typed answer to "who is this?" (#333, phase 1)
 
 - **A `Principal` type in the channel SDK**, the same home as `ScopeId` and for

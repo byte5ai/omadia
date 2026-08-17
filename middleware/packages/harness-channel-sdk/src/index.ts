@@ -250,3 +250,17 @@ export {
   type Principal,
   type PrincipalKind,
 } from './principal.js';
+
+// #333 Phase 2 — where a Principal's roles come from. Still no permission is
+// evaluated here: these resolve FACTS (Entra group membership, an Odoo HR
+// record) that #575 later intersects into decisions. The catalog/registry split
+// mirrors `auth/providerRegistry.ts` — and matters more, because a role source
+// decides what you ARE once inside, not merely whether you get in.
+export {
+  RoleSourceCatalog,
+  RoleSourceRegistry,
+  type AggregateRoleLookup,
+  type RoleLookup,
+  type RoleLookupUnavailableCode,
+  type RoleSource,
+} from './roleSource.js';
