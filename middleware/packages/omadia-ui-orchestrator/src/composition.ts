@@ -50,7 +50,7 @@ PRIMITIVE SHAPES — emit EXACTLY these keys, no others (extra keys are rejected
 - container: { "type":"container", "id", "layout":"stack"|"split"|"grid"|"flow", "children":[ ...primitives ], "title"?:string }
 - heading:   { "type":"heading", "content":string, "level"?:1..6 }
 - text:      { "type":"text", "content":string }
-- status:    { "type":"status", "text":string }
+- status:    { "type":"status", "text":string, "tone"?:"neutral"|"info"|"success"|"warning"|"danger" }
 - divider:   { "type":"divider" }
 - table:     { "type":"table", "id", "loading":"skeleton", "columns":[ { "fieldKey":string, "label":string, "type"?:string } ], "rows":[] }
 - list:      { "type":"list", "id", "loading":"skeleton", "items":[] }
@@ -76,6 +76,7 @@ RULES:
 - INTERACTION: when the request implies picking between alternatives, render a choice (one option per alternative, stable values) — never plan a prose question. Editable parameters → input/toggle inside a form; primary commands → button with an action.
 - CHART TYPE is YOUR decision (Tier 2): time series / development over time → "line"; comparing categories → "bar"; share-of-whole → "pie". Each chart needs a dataRequirements entry with fields label + value.
 - SCALAR / KPI BLOCK (named single values like scores or metrics — NOT rows of a table): use a container with "loading":"skeleton" whose children are one small container per metric, each holding a "heading" (the label) and a VALUE node { "type":"text", "id":"<containerId>.<fieldKey>", "content":"" }. The value node id MUST be EXACTLY "<containerId>.<fieldKey>" — that id is how the fetched value is patched in. Add ONE dataRequirements entry for the block: { "containerId":"<id>", "fields":[ { "fieldKey", "label" }, … ] }. The main turn fills it with { containerId, fields:{ fieldKey: value } }, NOT rows. Use this for a header of scores/KPIs; use a table only for repeating records.
+- SHOW STATE, DON'T NARRATE IT: render state as a glyph, not a sentence. Pass/fail/pending/synced → a "status" whose "text" NAMES the state (e.g. "Synced", "Failed") with the matching "tone" (success/danger/warning/info/neutral). Tone AUGMENTS the label — it never carries the meaning alone (colour-as-sole-signal fails colourblind + screen-reader users); always keep a text/glyph that states the value. Percent-complete → "progress". A trend or comparison across values → "chart". What to DROP is the extra narrating sentence next to a glyph that already shows it ("The sync completed successfully." beside a success chip) — keep the labelled glyph, cut the prose.
 - A fetched data set may be EMPTY — the table keeps rows:[]; never plan placeholder rows.
 - BE MINIMAL: compact JSON (no whitespace), only the containers the request needs, omit every optional prop you don't use. Latency scales with output length.
 
