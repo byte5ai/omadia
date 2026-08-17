@@ -146,6 +146,28 @@ export type {
   ApplyAiDisclosureResult,
 } from './aiDisclosure.js';
 
+// Org security postures + provenance-labelled inbound screening (#579). Shared
+// primitives — the posture model, tighten-only floor math, the provenance
+// bundler + judge-facing legend, the payload renderer, the shipping-default
+// policy and the unscreened marker. The screener call + quarantine/fail-open
+// wiring lives in the orchestrator; mirror of Privacy Shield on the ingress side.
+export {
+  POSTURE_ORDER,
+  tightenPosture,
+  screeningEnabled,
+  formatSourceTag,
+  isScreenableSource,
+  bundleProvenance,
+  hasScreenableContent,
+  renderScreeningPayload,
+  UNSCREENED_MARKER,
+  DEFAULT_SECURITY_POSTURE_POLICY,
+} from './securityPosture.js';
+export type {
+  SecurityPosture,
+  ProvenancePair,
+} from './securityPosture.js';
+
 // Semantic outgoing-message contracts (connectors render native)
 export type {
   SemanticAnswer,

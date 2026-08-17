@@ -1,8 +1,14 @@
 import {
   InMemoryDisclosureSeenStore,
+  POSTURE_ORDER,
   type ChatAgent,
   type AiDisclosureLevel,
+  type SecurityPosture,
 } from '@omadia/channel-sdk';
+import type {
+  SecurityPostureSetup,
+  SecurityScreenMode,
+} from './securityScreener.js';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import {
   resolveLlmProvider,
@@ -322,6 +328,89 @@ function resolveAiDisclosureSetup(
   };
 }
 
+/** #579 — parse a security-posture enum value. Returns undefined for unset /
+ *  unknown so the caller can fall back to the shipping floor. */
+function parseSecurityPosture(raw: unknown): SecurityPosture | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const v = raw.trim().toLowerCase();
+  return (POSTURE_ORDER as readonly string[]).includes(v)
+    ? (v as SecurityPosture)
+    : undefined;
+}
+
+/** #579 — parse the screen mode. Default (unset/unknown) → `enforce`, the safe
+ *  direction: an operator opts INTO shadow, never falls into it by a typo. */
+function parseSecurityScreenMode(raw: unknown): SecurityScreenMode {
+  if (typeof raw === 'string' && raw.trim().toLowerCase() === 'shadow') {
+    return 'shadow';
+  }
+  return 'enforce';
+}
+
+/**
+ * #579 — resolve the operator's security-posture setup from plugin config, the
+ * same arrival pattern as {@link resolveAiDisclosureSetup}. Returns `undefined`
+ * when the operator set NO security field at all — the signal the orchestrator
+ * reads as "shipping default (`auto`, enforce)". `security_posture` is the org
+ * FLOOR; `security_posture_override` may only TIGHTEN it (a looser value is
+ * warned and dropped, so it clamps to the floor at resolution — never a silent
+ * loosening). `security_screen_url` selects the external HTTP proxy;
+ * `security_screen_mode` is shadow/enforce.
+ *
+ * NAMING (#575): this field was `security_posture_scope`. It is a single
+ * deployment-wide posture VALUE with no identity, not a per-scope setting —
+ * and since #713 landed `ScopeId`, "scope" in this tree means an identified
+ * partition (`personal:` / `conversation:` / `group:` / `org:` / `system:`).
+ * Keeping the old name would have read as "the posture for a given scope",
+ * which is exactly what it is not. When the real per-scope posture arrives it
+ * folds `tightenPosture` over a scope's ancestor chain; this override stays the
+ * deployment-level knob.
+ */
+function resolveSecurityPostureSetup(
+  read: (key: string) => unknown,
+): SecurityPostureSetup | undefined {
+  const floor = parseSecurityPosture(read('security_posture'));
+  const overrideRaw = read('security_posture_override');
+  let override = parseSecurityPosture(overrideRaw);
+  const modeRaw = read('security_screen_mode');
+  const urlRaw = read('security_screen_url');
+  const screenUrl =
+    typeof urlRaw === 'string' && urlRaw.trim().length > 0
+      ? urlRaw.trim()
+      : undefined;
+
+  const anySet =
+    floor !== undefined ||
+    override !== undefined ||
+    screenUrl !== undefined ||
+    (typeof modeRaw === 'string' && modeRaw.trim().length > 0);
+  if (!anySet) return undefined;
+
+  const effectiveFloor = floor ?? 'auto';
+  // A scope that tries to LOOSEN below the floor is refused here with a warning
+  // (a silent drop would read as "floor honoured" when it was overridden). The
+  // tighten-only math is enforced again at runtime in `resolveEffectivePosture`;
+  // dropping it here keeps the setup itself honest.
+  if (
+    override !== undefined &&
+    POSTURE_ORDER.indexOf(override) < POSTURE_ORDER.indexOf(effectiveFloor)
+  ) {
+    console.warn(
+      `[orchestrator] security_posture_override="${String(overrideRaw)}" is looser than ` +
+        `the org floor "${effectiveFloor}" — refused (scopes may only tighten). ` +
+        `Falling back to the floor.`,
+    );
+    override = undefined;
+  }
+
+  return {
+    floor: effectiveFloor,
+    ...(override !== undefined ? { override } : {}),
+    mode: parseSecurityScreenMode(modeRaw),
+    ...(screenUrl ? { screenUrl } : {}),
+  };
+}
+
 /** Truthy values: '1', 'true', 'yes', 'on' (case-insensitive). Everything
  *  else is false — including undefined/empty. */
 function parseBooleanEnv(raw: string | undefined): boolean {
@@ -516,6 +605,13 @@ export async function activate(
   // orchestrator applies the shipping default (standard, active) on every
   // channel; a set value flips the whole policy to operator-sourced.
   const aiDisclosure = resolveAiDisclosureSetup((key) =>
+    ctx.config.get<unknown>(key),
+  );
+  // #579 — resolve the operator's security posture once at build time. Undefined
+  // → the orchestrator applies the shipping default (`auto`, enforce). The
+  // screener + audit sink are wired in `buildOrchestrator` (they need the
+  // provider + session logger); only the posture setup is config-derived here.
+  const securityPosture = resolveSecurityPostureSetup((key) =>
     ctx.config.get<unknown>(key),
   );
   // #648 — publish the RESOLVED posture so `/health` and the operator
@@ -731,6 +827,9 @@ export async function activate(
     graphTenantId,
     ...(assistantIdentity ? { assistantIdentity } : {}),
     ...(aiDisclosure ? { aiDisclosure } : {}),
+    // #579 — org security posture (org floor + optional scope tighten + mode +
+    // screen URL). Undefined → the orchestrator's shipping default (`auto`).
+    ...(securityPosture ? { securityPosture } : {}),
     // #644 — one fold-dedup store for the whole process, shared by every Agent
     // the registry builds (same lifetime rationale as `directLineStickyStore`
     // below): a per-instance store would re-fold the marking into a live

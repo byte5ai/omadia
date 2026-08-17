@@ -48,6 +48,13 @@ import {
   type OrchestratorPersonaSkill,
   type AiDisclosureSetup,
 } from './orchestrator.js';
+import {
+  LlmScreener,
+  HttpProxyScreener,
+  type SecurityScreener,
+  type SecurityPostureSetup,
+  type SecurityAuditEvent,
+} from './securityScreener.js';
 import type { DirectLineStickyStore } from './directLineSticky.js';
 import type {
   McpInputReplayer,
@@ -186,6 +193,14 @@ export interface OrchestratorDeps {
    * whenever an operator changed something unrelated.
    */
   readonly aiDisclosureSeenStore?: DisclosureSeenStore;
+  /**
+   * #579 — resolved org security posture (org floor + optional scope tighten +
+   * shadow/enforce mode + optional external screen URL). Absent → the shipping
+   * default (`auto`, enforce). The SCREENER and AUDIT SINK are built here (they
+   * need the provider + session logger), keyed off this setup — see
+   * `OrchestratorOptions.securityScreener` / `securityAuditSink`.
+   */
+  readonly securityPosture?: SecurityPostureSetup;
   /** #133 E0 — side-channel turn-hook runner, fired during each turn. */
   readonly turnHookRegistry?: TurnHookRunner;
   /**
@@ -290,6 +305,29 @@ export function buildOrchestratorForAgent(
       )
     : undefined;
 
+  // #579 — security screener + audit sink, keyed off the resolved posture.
+  // Late-bound thunks (see `OrchestratorOptions`): resolved once per turn, so a
+  // screen-URL change on rebuild takes effect without touching this closure.
+  // The screener is the external HTTP proxy when the operator set a URL, else
+  // the default LLM judge over THIS agent's provider + model (temperature 0).
+  const securityScreener = (): SecurityScreener => {
+    const url = deps.securityPosture?.screenUrl;
+    return url
+      ? new HttpProxyScreener({ url })
+      : new LlmScreener({ provider: deps.provider, model: config.model });
+  };
+  // The audit sink is fire-and-forget. `SessionLogger.log` is turn-shaped (it
+  // records a user/assistant exchange), so a security event does not fit it;
+  // the default sink writes a structured operational log line — the same idiom
+  // the codebase uses for the privacy-receipt drop and the override warnings.
+  // The injectable `securityAuditSink` option is the extension point for a
+  // durable audit store when one lands (there is no central audit bus today).
+  const securityAuditSink =
+    () =>
+    (event: SecurityAuditEvent): void => {
+      console.warn(`[security-audit] ${JSON.stringify(event)}`);
+    };
+
   // domainTools is intentionally empty at construct — sub-agents self-register
   // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
   const orchestrator = new Orchestrator({
@@ -374,6 +412,12 @@ export function buildOrchestratorForAgent(
     ...(deps.aiDisclosureSeenStore
       ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }
       : {}),
+    // #579 — org security posture + its screener/audit sink. Posture absent →
+    // orchestrator applies the shipping default (`auto`); the screener + sink
+    // are always wired (inert unless screening is enabled for the posture).
+    ...(deps.securityPosture ? { securityPosture: deps.securityPosture } : {}),
+    securityScreener,
+    securityAuditSink,
     ...(deps.turnHookRegistry
       ? { turnHookRegistry: deps.turnHookRegistry }
       : {}),
