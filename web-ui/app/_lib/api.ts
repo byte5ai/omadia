@@ -3488,6 +3488,132 @@ export async function reclusterTopics(opts: {
 }
 
 // -----------------------------------------------------------------------------
+// Structured datasets (#430 / #532). Backed by /api/v1/datasets, gated by
+// `requireAuth` plus a per-route session-user ACL — the same shape as
+// /api/v1/memory above, so a dataset is only ever visible to its importer.
+//
+// The types mirror `DatasetSummary` / `DatasetColumnSchema` / `DatasetQueryResult`
+// in `@omadia/plugin-api` rather than importing them: web-ui does not depend on
+// the middleware workspace, so every backend shape it consumes is re-declared
+// here (same convention as `MemorableKnowledgeNode` above).
+// -----------------------------------------------------------------------------
+
+/** Inferred per-column type from the CSV import. No `unknown` catch-all — a
+ *  column with no confidently-typed values falls back to `'string'`. */
+export type DatasetColumnType = 'string' | 'number' | 'boolean' | 'date';
+
+export interface DatasetColumnSchema {
+  name: string;
+  type: DatasetColumnType;
+  /** First non-empty value seen for this column — schema preview only. */
+  sample?: string;
+}
+
+export interface DatasetSummary {
+  id: string;
+  name: string;
+  sourceFileName: string;
+  ownerOmadiaUserId: string;
+  rowCount: number;
+  columns: DatasetColumnSchema[];
+  createdAt: string;
+}
+
+/**
+ * `GET /:id/rows` — the unaggregated branch of `queryDatasetRows`, so `rows`
+ * is always populated and `groups` / `aggregateValue` never are. `totalMatched`
+ * is the count BEFORE limit/offset, which is what lets the preview say
+ * "showing 25 of 4,213" instead of silently truncating.
+ */
+export interface DatasetRowsPage {
+  rows?: Array<Record<string, unknown>>;
+  totalMatched: number;
+}
+
+/**
+ * `POST /` — the import receipt. `privacyScan` is the count of cells the
+ * privacy pipeline looked at and masked; surfacing it is the point, since the
+ * REST upload runs the SAME scan as the chat-attachment auto-ingest path.
+ * `truncation` reports cells cut at the 4 000-char per-cell cap.
+ */
+export interface DatasetUploadResponse {
+  dataset: { datasetId: string; rowCount: number; graphNodeId: string };
+  privacyScan: { scannedCells: number; maskedCells: number };
+  truncation: { truncatedCellCount: number; truncatedColumns: string[] };
+}
+
+export async function listDatasets(): Promise<DatasetSummary[]> {
+  const res = await getJson<{ items: DatasetSummary[] }>('/v1/datasets');
+  return expectArray<DatasetSummary>(res.items, '/v1/datasets', 'items');
+}
+
+export async function getDataset(id: string): Promise<DatasetSummary> {
+  return getJson<DatasetSummary>(`/v1/datasets/${encodeURIComponent(id)}`);
+}
+
+export async function getDatasetRows(
+  id: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<DatasetRowsPage> {
+  const qs = new URLSearchParams();
+  if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) qs.set('offset', String(opts.offset));
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return getJson<DatasetRowsPage>(
+    `/v1/datasets/${encodeURIComponent(id)}/rows${suffix}`,
+  );
+}
+
+export async function deleteDataset(id: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi(`/v1/datasets/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+    headers: { accept: 'application/json', ...forwarded },
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (res.status === 204) return;
+  const text = await res.text().catch(() => '');
+  maybeNavigateToLogin(res.status);
+  throw new ApiError(
+    res.status,
+    `DELETE datasets/${id} failed: ${res.status}`,
+    text,
+  );
+}
+
+/**
+ * Multipart CSV upload. Same contract as `uploadPackage` above — exactly one
+ * `file` field and NO manual content-type, so the browser writes the boundary.
+ * `name` is optional; the route falls back to the file name when it is absent
+ * or blank.
+ */
+export async function uploadDataset(
+  file: File,
+  name?: string,
+): Promise<DatasetUploadResponse> {
+  const forwarded = await forwardCookieHeader();
+  const form = new FormData();
+  form.append('file', file, file.name);
+  if (name !== undefined && name.trim().length > 0) {
+    form.append('name', name.trim());
+  }
+  const res = await fetch(botApi('/v1/datasets'), {
+    method: 'POST',
+    body: form,
+    headers: { accept: 'application/json', ...forwarded },
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `POST /v1/datasets failed: ${res.status}`, text);
+  }
+  return JSON.parse(text) as DatasetUploadResponse;
+}
+
+// -----------------------------------------------------------------------------
 // Chat session reset (2026-05-26).
 // -----------------------------------------------------------------------------
 

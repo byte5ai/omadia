@@ -23,6 +23,7 @@
     "                 it stops being useful for diagnosis."
   ],
   "keys": {
+    "adminDatasets.fields.nameOptional": "loanword",
     "dashboard.onboarding.cases.hr.name": "loanword",
     "conductor.graphLabel": "loanword",
     "conductor.guardLabel": "glossary",
