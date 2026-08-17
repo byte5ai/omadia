@@ -1,4 +1,5 @@
 import type { MemoryStore } from '@omadia/plugin-api';
+import { scopeGraphKey } from '@omadia/channel-sdk';
 import {
   qualifyScope,
   turnNodeId,
@@ -229,8 +230,32 @@ export function graphScopeFor(
   agentSlug: string | undefined,
   rawScope: string,
 ): string {
-  const base = sanitizeScope(rawScope);
+  const base = injectiveScopeKeysEnabled() ? scopeGraphKey(rawScope) : sanitizeScope(rawScope);
   return agentSlug !== undefined ? qualifyScope(agentSlug, base) : base;
+}
+
+/**
+ * #575 D3 — opt-in switch for the injective graph key.
+ *
+ * `sanitizeScope` is not injective (spec §2.3): `teams::c1`, `teams:c1` and
+ * `teams-c1` share one partition, as do scopes differing only in case or beyond
+ * 80 characters. `scopeGraphKey` fixes that — but for any scope that WAS lossy
+ * it necessarily produces a different key, which orphans that scope's existing
+ * graph partition. In practice that is every `teams-<conv>`, `telegram:<id>`,
+ * `routine:<id>`, `conductor:<run>:<step>` and `channelId::conversationId` in a
+ * live deployment: their accumulated memory would stop being recalled.
+ *
+ * So the fix ships DISABLED and a deployment opts in deliberately, rather than
+ * discovering the discontinuity after an upgrade. Scopes that were already
+ * lossless keep a byte-identical key either way, so enabling it is a no-op for
+ * plain chat-tab ids, `'http-default'` and `'teams-unknown'`.
+ *
+ * Flipping this default to on is a migration, not a patch — it needs a
+ * partition rewrite or an accepted recall reset, and that decision is #575
+ * Phase 2's, not this PR's.
+ */
+function injectiveScopeKeysEnabled(): boolean {
+  return process.env['OMADIA_INJECTIVE_SCOPE_KEYS'] === '1';
 }
 
 function sanitizeScope(scope: string): string {
