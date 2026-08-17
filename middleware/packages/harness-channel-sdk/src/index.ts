@@ -206,6 +206,7 @@ export {
   isAddressableScope,
   parseSessionScope,
   scopeGraphKey,
+  unsharedConversationScope,
   type ScopeId,
   type SystemScopeOrigin,
   type UnscopedReason,
