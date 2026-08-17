@@ -264,3 +264,18 @@ export {
   type RoleLookupUnavailableCode,
   type RoleSource,
 } from './roleSource.js';
+
+// #333 Phase 3 — the inverse direction: role → holders, which Conductor already
+// depends on (`roleStore.ts:22` calls the external resolver "a follow-up").
+// Introducing sources beyond the local table makes a PARTIALLY-known holder list
+// possible for the first time, and two Conductor decisions fail OPEN on one —
+// `quorum='all'` completeness and "no holder → take the fallback". Hence
+// `AggregateHolderLookup.partial`.
+export {
+  RoleHolderCatalog,
+  RoleHolderRegistry,
+  type AggregateHolderLookup,
+  type HolderLookup,
+  type HolderLookupUnavailableCode,
+  type RoleHolderSource,
+} from './roleHolderSource.js';

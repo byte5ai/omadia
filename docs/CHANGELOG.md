@@ -18,6 +18,32 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — an approval quorum could complete with too few approvals (#333, phase 3)
+
+- **Conductor's role→holder resolution is now pluggable — and two decisions built
+  on it were fail-open.** Holders used to come only from
+  `conductor_role_assignments`, so a *partially known* holder list could not
+  exist. Sourcing holders from an Entra group or an Odoo HR reporting line makes
+  it possible, and it turns out two places treated a shrunken list as the truth:
+  - **`quorum='all'` completed with too few approvals.** Every holder still
+    visible may have answered while the people an unreachable directory knows
+    about were never asked — a four-eyes approval silently becoming two-eyes.
+    The pre-existing guard covered only the *empty* list; the partial one looks
+    legitimate. It now refuses to complete and lets the deadline fallback run.
+  - **A human step could be skipped entirely.** "Role has no holder" triggers
+    the step's fallback by design (FR-024), but an empty list from a failed
+    lookup is *"we could not ask"*, not *"nobody holds this"*. It now parks the
+    await instead, so the real holders still get their chance.
+- **The authorization gate is deliberately left alone.** A shrunken list there
+  only rejects a genuine holder — it fails closed, which is the safe direction.
+- **The local assignment table is registered as an ordinary holder source**
+  rather than special-cased, so there is one merge path and the local store gets
+  the same throw-becomes-`unavailable` handling as any remote directory. A
+  source may not claim the reserved `conductor-local` id — that would substitute
+  its own approver list, so it is a boot-time collision.
+- With no external source configured the behaviour is unchanged: one source,
+  never partial.
+
 ### Added — role and attribute sources: what a `Principal` is entitled to (#333, phase 2)
 
 - **A pluggable `RoleSource` registry in the channel SDK.** Phase 1 answered

@@ -69,7 +69,7 @@ function makeHarness(opts: { isDryRun: boolean; fallbackTransitionId?: string | 
     runStore: runStore as never,
     awaitStore: awaitStore as never,
     effects: {} as never,
-    resolveRoleHolders: async () => [],
+    resolveRoleHolders: async () => ({ holders: [], partial: false, bySource: [] }),
     notifyRunEnded: (endedRun) => notified.push(endedRun),
   });
   return { executor, notified };
@@ -135,7 +135,7 @@ describe('ConductorRunExecutor — notifyRunEnded (issue #437)', () => {
       runStore: runStore as never,
       awaitStore: awaitStore as never,
       effects: {} as never,
-      resolveRoleHolders: async () => [],
+      resolveRoleHolders: async () => ({ holders: [], partial: false, bySource: [] }),
       notifyRunEnded: () => {
         throw new Error('dispatcher blew up');
       },
