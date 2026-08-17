@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 
 import type {
   LlmProvider,
@@ -618,5 +619,36 @@ describe('#579 manifest — security posture setup fields', () => {
     const fields = entry?.plugin.setup_fields ?? [];
     assert.equal(fields.find((f) => f.key === 'security_posture')?.default, 'auto');
     assert.equal(fields.find((f) => f.key === 'security_screen_mode')?.default, 'enforce');
+  });
+
+  // A declared setup field that nothing reads is WORSE than a missing one: the
+  // operator sets it, the UI shows it as configured, and the deployment quietly
+  // runs on the shipping default. Nothing else in this suite catches that —
+  // verified by mutation: pointing the resolver at the old `_scope` key while
+  // the manifest declares `_override` left every other test green.
+  //
+  // A source-level wiring assertion is deliberate. `resolveSecurityPostureSetup`
+  // is module-private and the manifest is YAML, so there is no shared constant
+  // the two sides could be compared through; the honest check is that each
+  // declared key literally appears in a `read(...)` call.
+  it('every declared security field is actually READ by the resolver', async () => {
+    const entry = await loadManifestFromPath(MANIFEST);
+    const declared = (entry?.plugin.setup_fields ?? [])
+      .map((f) => f.key)
+      .filter((k) => k.startsWith('security_'));
+    assert.ok(declared.length >= 4, 'expected the security_* setup fields to be declared');
+
+    const pluginSource = await readFile(
+      fileURLToPath(
+        new URL('../packages/harness-orchestrator/src/plugin.ts', import.meta.url),
+      ),
+      'utf8',
+    );
+    for (const key of declared) {
+      assert.ok(
+        pluginSource.includes(`read('${key}')`),
+        `manifest declares "${key}" but plugin.ts never reads it — the setting would be silently ignored`,
+      );
+    }
   });
 });
