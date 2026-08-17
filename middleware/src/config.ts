@@ -484,6 +484,25 @@ const ConfigSchema = z.object({
    *  blocks an install. */
   SKILLSPECTOR_URL: z.string().url().optional(),
   SKILLSPECTOR_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
+  /** Build identity, stamped into the image by publish-images.yml (#432).
+   *  Unset ⇒ the build reports itself as `unknown` rather than guessing from
+   *  package.json, which has been stale for the whole current release series.
+   *  Deliberately NOT set by docker-compose.yaml: compose passing an empty
+   *  value would override the value baked into the image. */
+  OMADIA_VERSION: z.string().optional(),
+  /** Base URL of the updater sidecar (#432), e.g. http://updater:8090. Unset
+   *  ⇒ notify-only: the admin page still reports versions and flags a newer
+   *  release, but cannot execute an update. Enabled by the opt-in overlay
+   *  docker-compose.update.yaml. */
+  OMADIA_UPDATER_URL: z.string().url().optional(),
+  /** Shared bearer secret for the updater sidecar. Required whenever
+   *  OMADIA_UPDATER_URL is set — see the cross-field check below. */
+  OMADIA_UPDATER_TOKEN: z.string().min(16).optional(),
+  /** `owner/repo` the release check queries. Override for a fork. */
+  OMADIA_RELEASE_REPO: z.string().min(3).default('byte5ai/omadia'),
+  /** Optional PAT for the release check — only needed for a private fork or
+   *  a busy shared NAT (the unauthenticated GitHub budget is 60/h per IP). */
+  OMADIA_RELEASE_TOKEN: z.string().optional(),
   /** Root of the built-in package tree (scanned for manifest.yaml files at
    *  boot). In dev this resolves to `<repo>/middleware/packages`; in the
    *  Docker image it's `/app/packages`. Each subdirectory with a valid
@@ -863,6 +882,18 @@ function loadConfig(): Config {
   });
   if (refusals.length > 0) {
     throw new Error(`Invalid configuration:\n${refusals.map((r) => `  - ${r}`).join('\n')}`);
+  }
+  // #432 — an updater URL without its shared secret would leave the kernel
+  // calling an endpoint that can replace every container in the stack with no
+  // credential. Refuse at boot rather than fail at the one moment an operator
+  // is trying to update.
+  if (
+    parsed.data.OMADIA_UPDATER_URL !== undefined &&
+    (parsed.data.OMADIA_UPDATER_TOKEN ?? '').length === 0
+  ) {
+    throw new Error(
+      'Invalid configuration:\n  - OMADIA_UPDATER_TOKEN: required whenever OMADIA_UPDATER_URL is set',
+    );
   }
   // The dev-platform keys are lifted out of the top level and served only through
   // `devPlatform`. Deleting them from the returned object (rather than merely

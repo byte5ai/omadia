@@ -19,6 +19,12 @@ import {
 // narrow accessor shape that matches what the plugin publishes under
 // `microsoft365.graph`.
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
+import {
+  AI_DISCLOSURE_CHANNEL_KINDS as AI_DISCLOSURE_CHANNEL_KIND_LIST,
+  AI_DISCLOSURE_POSTURE_SERVICE,
+  describeAiDisclosurePosture,
+  formatDisclosureBootWarning,
+} from './aiDisclosurePosture.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -213,14 +219,14 @@ function parseNumberOrDefault(raw: unknown, fallback: number): number {
  *  marking. NOTE: today only `teams`/`slack`/`telegram` are ever produced as a
  *  per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`); `email` and
  *  `web` are accepted here but currently resolve to the global level, same as
- *  the kind-less channels — see the `ai_disclosure_level_overrides` help text. */
-const AI_DISCLOSURE_CHANNEL_KINDS = new Set([
-  'teams',
-  'telegram',
-  'slack',
-  'email',
-  'web',
-]);
+ *  the kind-less channels — see the `ai_disclosure_level_overrides` help text.
+ *
+ *  #648 — derived from the shared list rather than spelled again here. The
+ *  posture view reports one row per accepted kind, so a second literal would
+ *  let the parser accept a channel the dashboard never shows (or vice versa). */
+const AI_DISCLOSURE_CHANNEL_KINDS = new Set<string>(
+  AI_DISCLOSURE_CHANNEL_KIND_LIST,
+);
 
 const AI_DISCLOSURE_LEVELS = new Set<AiDisclosureLevel>([
   'standard',
@@ -346,17 +352,26 @@ function parseSecurityScreenMode(raw: unknown): SecurityScreenMode {
  * same arrival pattern as {@link resolveAiDisclosureSetup}. Returns `undefined`
  * when the operator set NO security field at all — the signal the orchestrator
  * reads as "shipping default (`auto`, enforce)". `security_posture` is the org
- * FLOOR; `security_posture_scope` may only TIGHTEN it (a looser value is warned
- * and dropped, so it clamps to the floor at resolution — never a silent
+ * FLOOR; `security_posture_override` may only TIGHTEN it (a looser value is
+ * warned and dropped, so it clamps to the floor at resolution — never a silent
  * loosening). `security_screen_url` selects the external HTTP proxy;
  * `security_screen_mode` is shadow/enforce.
+ *
+ * NAMING (#575): this field was `security_posture_scope`. It is a single
+ * deployment-wide posture VALUE with no identity, not a per-scope setting —
+ * and since #713 landed `ScopeId`, "scope" in this tree means an identified
+ * partition (`personal:` / `conversation:` / `group:` / `org:` / `system:`).
+ * Keeping the old name would have read as "the posture for a given scope",
+ * which is exactly what it is not. When the real per-scope posture arrives it
+ * folds `tightenPosture` over a scope's ancestor chain; this override stays the
+ * deployment-level knob.
  */
 function resolveSecurityPostureSetup(
   read: (key: string) => unknown,
 ): SecurityPostureSetup | undefined {
   const floor = parseSecurityPosture(read('security_posture'));
-  const scopeRaw = read('security_posture_scope');
-  let scope = parseSecurityPosture(scopeRaw);
+  const overrideRaw = read('security_posture_override');
+  let override = parseSecurityPosture(overrideRaw);
   const modeRaw = read('security_screen_mode');
   const urlRaw = read('security_screen_url');
   const screenUrl =
@@ -366,7 +381,7 @@ function resolveSecurityPostureSetup(
 
   const anySet =
     floor !== undefined ||
-    scope !== undefined ||
+    override !== undefined ||
     screenUrl !== undefined ||
     (typeof modeRaw === 'string' && modeRaw.trim().length > 0);
   if (!anySet) return undefined;
@@ -377,20 +392,20 @@ function resolveSecurityPostureSetup(
   // tighten-only math is enforced again at runtime in `resolveEffectivePosture`;
   // dropping it here keeps the setup itself honest.
   if (
-    scope !== undefined &&
-    POSTURE_ORDER.indexOf(scope) < POSTURE_ORDER.indexOf(effectiveFloor)
+    override !== undefined &&
+    POSTURE_ORDER.indexOf(override) < POSTURE_ORDER.indexOf(effectiveFloor)
   ) {
     console.warn(
-      `[orchestrator] security_posture_scope="${String(scopeRaw)}" is looser than ` +
+      `[orchestrator] security_posture_override="${String(overrideRaw)}" is looser than ` +
         `the org floor "${effectiveFloor}" — refused (scopes may only tighten). ` +
         `Falling back to the floor.`,
     );
-    scope = undefined;
+    override = undefined;
   }
 
   return {
     floor: effectiveFloor,
-    ...(scope !== undefined ? { scope } : {}),
+    ...(override !== undefined ? { override } : {}),
     mode: parseSecurityScreenMode(modeRaw),
     ...(screenUrl ? { screenUrl } : {}),
   };
@@ -598,6 +613,24 @@ export async function activate(
   // provider + session logger); only the posture setup is config-derived here.
   const securityPosture = resolveSecurityPostureSetup((key) =>
     ctx.config.get<unknown>(key),
+  );
+  // #648 — publish the RESOLVED posture so `/health` and the operator
+  // dashboard can read what this instance actually does, and warn once at boot
+  // when it deviates from the delivered state. A reduced marking is a
+  // legitimate operator decision; the failure mode #648 is about is that it was
+  // previously invisible, so a copy-paste error in a config or a leftover from
+  // a test setup was never noticed by anyone.
+  //
+  // A plain frozen snapshot, unlike the embedding gate's live getter object:
+  // this posture is derived from setup fields read once at activation, and a
+  // config change re-activates the plugin, which re-publishes. Nothing mutates
+  // it underneath a reader.
+  const disclosurePosture = describeAiDisclosurePosture(aiDisclosure);
+  const disclosureWarning = formatDisclosureBootWarning(disclosurePosture);
+  if (disclosureWarning) console.warn(disclosureWarning);
+  const disposeDisclosurePosture = ctx.services.provide(
+    AI_DISCLOSURE_POSTURE_SERVICE,
+    disclosurePosture,
   );
   // Floor at DEFAULT_MAX_TOKENS: a stale installed config (older deployments
   // persisted 4096) would otherwise truncate large file-building tool calls.
@@ -1019,6 +1052,14 @@ export async function activate(
       }
       try {
         disposeNudgeRegistry();
+      } catch {
+        // best-effort
+      }
+      // #648 — released like every other published service, so a reactivate
+      // (the path a disclosure config change takes) can re-publish the posture
+      // instead of failing with "duplicate provider".
+      try {
+        disposeDisclosurePosture();
       } catch {
         // best-effort
       }

@@ -35,6 +35,7 @@ import type {
   RunnerBackend,
   RunnerHandle,
 } from '../../src/devplatform/types.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 /**
  * Epic #470 W0 — the wire unit's end-to-end proof (spec §11/§12). Two parts:
@@ -342,8 +343,7 @@ describe('devplatform e2e (pg)', { skip: !pgAvailable }, () => {
     app.use('/api', requireAuth, (_req, _res, next) => {
       next();
     });
-    server = app.listen(0);
-    await new Promise<void>((r) => server.once('listening', r));
+    server = await listenLoopback(app);
     baseUrl = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
 
     wired = assembleDevPlatform({

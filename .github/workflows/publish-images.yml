@@ -70,8 +70,19 @@ jobs:
             image: ghcr.io/byte5ai/omadia-web-ui
             context: ./web-ui
             dockerfile: ./web-ui/Dockerfile
-            build_args: |
-              MIDDLEWARE_URL=http://middleware:8080
+            # MIDDLEWARE_URL is a runtime setting since the /bot-api and /p
+            # proxies became route handlers (app/_lib/middlewareProxy.ts) —
+            # nothing middleware-related is baked at build time anymore.
+            build_args: ''
+          # Updater sidecar (#432) — the opt-in self-update executor. Rides
+          # THIS workflow so its tag moves in lockstep with the middleware it
+          # updates, which is what lets docker-compose.update.yaml pull it by
+          # the same ${OMADIA_VERSION} as everything else. Zero npm deps, so
+          # the build is seconds; context is the sidecar dir alone.
+          - name: updater
+            image: ghcr.io/byte5ai/omadia-updater
+            context: ./middleware/sidecars/updater
+            dockerfile: ./middleware/sidecars/updater/Dockerfile
           # Dev-platform images (epic #470 W1). Both ride THIS workflow so they
           # stay version-locked to the middleware release under ghcr.io/byte5ai.
           # `sha_on_release: true` also stamps an immutable :sha-<gitsha> on the
@@ -111,6 +122,16 @@ jobs:
             echo "build=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=publish-images::Skipping ${{ matrix.name }}: ${{ matrix.dockerfile }} not present yet (added by a later unit)."
           fi
+          # Build identity baked into the image (#432). A release build stamps
+          # the semver tag, which is what makes "a newer release exists" and the
+          # updater's health gate decidable; an edge build stamps the same
+          # `sha-<short>` it is tagged with, which the version parser correctly
+          # classifies as a floating (non-comparable) build.
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "stamp=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "stamp=sha-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -143,7 +164,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: ${{ matrix.build_args }}
+          build-args: |
+            OMADIA_VERSION=${{ steps.guard.outputs.stamp }}
+            ${{ matrix.build_args }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: true

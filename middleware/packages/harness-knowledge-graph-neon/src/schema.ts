@@ -190,6 +190,22 @@ const ChannelIdentityPropsSchema = z
      *  identities across channels (Web admin UI + Teams). Indexed
      *  partially via migration 0014. */
     aadObjectId: z.string().min(1).optional(),
+    /**
+     * Issue #568 — the IdP subject this identity authenticates as.
+     * `authProviderUserId` is the auth provider's own subject for the user,
+     * i.e. the session JWT's `sub`, i.e. the key a `per_user` MCP OAuth
+     * token is stored under. Lets a CHANNEL turn (which knows only the
+     * canonical `omadiaUserId`) find a token the same human authorized in
+     * the web UI.
+     *
+     * Declared rather than left to `.passthrough()` on purpose: the schema
+     * is `.passthrough()`, so these would round-trip either way, but an
+     * undeclared key is passthrough RESIDUE — a reader cannot tell it is
+     * load-bearing, and a future tightening of this schema would break the
+     * per-user token bridge silently instead of loudly.
+     */
+    authProvider: z.string().min(1).optional(),
+    authProviderUserId: z.string().min(1).optional(),
     firstSeenAt: z.string().datetime(),
     lastSeenAt: z.string().datetime(),
     /** Free-form channel-side payload (Telegram from-object, etc.). */
@@ -210,6 +226,19 @@ const RunPropsSchema = z
     iterations: z.number().int().nonnegative(),
     toolCalls: z.number().int().nonnegative(),
     error: z.string().optional(),
+    // #650 (epic #642) — which model produced the answer, and who served it.
+    //
+    // Declared explicitly even though the schema is `.passthrough()` and would
+    // carry them regardless: passthrough means "tolerated", and a provenance
+    // field that is merely tolerated is one nothing validates and nothing
+    // documents. Optional, so every Run node written before this stays valid.
+    //
+    // NO SQL MIGRATION. `graph_nodes.properties` is a generic JSONB column
+    // (`0001_graph_init.sql`), so adding a property is a schema-level change
+    // only — the issue's assumption that a migration was required does not hold
+    // for this table.
+    model: z.string().optional(),
+    provider: z.string().optional(),
   })
   .passthrough();
 

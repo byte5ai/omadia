@@ -13,7 +13,15 @@ export type SetupFieldType =
   | 'boolean'
   | 'integer'
   /** #91 — operator-curated list of bare hostnames. */
-  | 'host_list';
+  | 'host_list'
+  /**
+   * #603 (OM-17) — upload a JSON credential file instead of transcribing it.
+   * Sixth place this union is mirrored (three in the middleware's own sources,
+   * `SUPPORTED_TYPES` in installService, and `agents.ts` next door). The field
+   * stores nothing itself: the server explodes the upload into the keys named
+   * in `extracts`.
+   */
+  | 'json_file';
 
 /** #91 — operator-selected egress mode for an audit/scanner plugin. */
 export type AuditMode = 'single-host' | 'allowlist' | 'public-web';
@@ -66,6 +74,14 @@ export interface PluginSetupField {
    *  show the SHAPE of the expected value, which is exactly the information a
    *  tester lacked when they typed a password into a private-key field. */
   placeholder?: string;
+  /**
+   * #603 (OM-17) — `json_file` only. `accept` is the file picker's hint; the
+   * server, not the picker, decides what an upload actually is. `extracts` names
+   * the setup keys the upload explodes into — carried here so the renderer can
+   * tell the operator which fields the file will fill in.
+   */
+  accept?: string;
+  extracts?: Record<string, string>;
 }
 
 /** Spec 005 — how a declarative OAuth descriptor authenticates to the token
@@ -367,6 +383,14 @@ export interface InstallSetupField {
    *  `'••••••••'` for every secret field, hiding the one piece of information
    *  that distinguishes a service-account key from an account password. */
   placeholder?: string;
+  /**
+   * #603 (OM-17) — `json_file` only. `accept` is the file picker's hint; the
+   * server, not the picker, decides what an upload actually is. `extracts` names
+   * the setup keys the upload explodes into — carried here so the renderer can
+   * tell the operator which fields the file will fill in.
+   */
+  accept?: string;
+  extracts?: Record<string, string>;
   multiline?: boolean;
   /** Omitted from the install flyout (flow-managed / editable later). */
   install_hidden?: boolean;

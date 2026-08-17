@@ -351,7 +351,27 @@ describe('parseMcpInputRequests (#544 W2-1)', () => {
 
   it('MUTATION CHECK: rejects every malformed shape with a distinguishable reason', () => {
     const cases: ReadonlyArray<readonly [unknown, string]> = [
-      [{ not: 'an array' }, 'not_an_array'],
+      // A non-empty plain object is the 2026-07-28 dialect (#562 phase 3), so
+      // it is judged as one — an entry that is not an elicitation request is
+      // reported as such rather than as "not an array", which would have been
+      // an actively misleading diagnosis for a spec-conformant peer.
+      [{ not: 'an array' }, 'unsupported_request_method'],
+      [{ ask: { method: 'sampling/createMessage', params: {} } }, 'unsupported_request_method'],
+      [{ ask: { method: 'elicitation/create', params: {} } }, 'request_without_fields'],
+      [
+        { ask: { method: 'elicitation/create', params: { requestedSchema: { properties: {} } } } },
+        'request_without_fields',
+      ],
+      [
+        {
+          a: { method: 'elicitation/create', params: { requestedSchema: { properties: { pin: {} } } } },
+          b: { method: 'elicitation/create', params: { requestedSchema: { properties: { pin: {} } } } },
+        },
+        'duplicate_field_name',
+      ],
+      // An EMPTY object carries no dialect signal at all, so it stays on the
+      // array branch and keeps its old reason.
+      [{}, 'not_an_array'],
       ['a string', 'not_an_array'],
       [null, 'not_an_array'],
       [undefined, 'not_an_array'],
@@ -504,7 +524,9 @@ function buildMcpServerInstance(): McpSdkServer {
       return {
         content: [{ type: 'text' as const, text: 'need input' }],
         resultType: 'input_required',
-        // Off-spec on purpose: an object where the array belongs.
+        // Off-spec on purpose, and off-spec in BOTH dialects since #562 phase
+        // 3: a non-empty object is read as the 2026-07-28 request map, and a
+        // bare string is not an embedded request.
         inputRequests: { customerNumber: 'Kundennummer' },
       } as never;
     }
@@ -635,11 +657,22 @@ async function inTurn<T>(
 }
 
 describe('callTool parks an input_required result (#544 W2-1)', () => {
-  it('reads resultType + inputRequests off the shipped SDK 1.29.0 over a real wire', async () => {
-    // Criterion 1, end to end: both fields survive `tools/call` on the SDK we
-    // actually ship, so MRTR needs no version bump and no v2 family (#540).
+  it('reads resultType + inputRequests off a 2025-era peer over a real wire', async () => {
+    // Criterion 1, end to end: both fields survive `tools/call` against the
+    // era most peers actually run — `startFakeMcpServer` above is hand-rolled
+    // 2025-era JSON-RPC and has never heard of `server/discover`.
     //
-    // NOT labelled a mutation check, deliberately: reverting the
+    // #562 phase 2 moved `transport: 'http'` (which is what `CFG` is) onto
+    // `@modelcontextprotocol/client@2`, so this file now exercises the v2
+    // client against a LEGACY-era peer. That combination is the one the port
+    // could have broken silently: v2 treats `resultType` as a wire-only
+    // discriminator and strips it when it decodes a legacy `tools/call` reply
+    // as a complete result, which would leave `isInputRequiredResult` false,
+    // the call unparked, and the holding text handed to the model as if it
+    // were the answer. `restoreLegacyInputRequired` in `mcpClient.ts` puts the
+    // discriminator back; deleting it turns ELEVEN tests in this file red.
+    //
+    // NOT labelled a mutation check for the schema, deliberately: reverting the
     // `LENIENT_CALL_TOOL_RESULT_SCHEMA` extension leaves this GREEN, because
     // `ResultSchema` is `.passthrough()` (characterized in the test below). The
     // extension makes the dependency explicit and typed rather than possible —
@@ -653,6 +686,24 @@ describe('callTool parks an input_required result (#544 W2-1)', () => {
       out.startsWith(MCP_INPUT_REQUIRED_SENTINEL_PREFIX),
       `resultType/inputRequests were stripped — got: ${out}`,
     );
+  });
+
+  it('MUTATION CHECK: the peer this file drives really is 2025-era (#562 phase 2)', async () => {
+    // Without this, every assertion above would still pass if the fake server
+    // silently became a modern-era peer — and the legacy path, where the
+    // discriminator is stripped and has to be restored, would stop being
+    // covered at all while the file kept reporting green.
+    const h = harness();
+    const session = await (
+      h.manager as unknown as {
+        getOrConnect(
+          cfg: McpServerConfig,
+          token: string | null,
+        ): Promise<{ client: { family: string; era: () => string } }>;
+      }
+    ).getOrConnect(CFG, null);
+    assert.equal(session.client.family, 'v2', 'http connects on the v2 client family');
+    assert.equal(session.client.era(), 'legacy', 'this file must cover the 2025 era');
   });
 
   it('returns a stable sentinel instead of the rendered text', async () => {
@@ -748,7 +799,7 @@ describe('callTool parks an input_required result (#544 W2-1)', () => {
     // A plain tool error — NOT a sentinel, NOT a half-built card.
     assert.ok(out.startsWith('Error:'), out);
     assert.ok(!out.startsWith(MCP_INPUT_REQUIRED_SENTINEL_PREFIX));
-    assert.ok(out.includes('not_an_array'));
+    assert.ok(out.includes('unsupported_request_method'), out);
     assert.equal(h.store.size(), 0, 'nothing may be parked');
     assert.equal(claimFrom(h, out), undefined, 'no card may be claimable');
     assert.equal(h.sidecars.length, 0);

@@ -16,6 +16,7 @@ import type {
 } from '@omadia/plugin-api';
 
 import { createMemoryPurgeRouter } from '../src/routes/memoryPurge.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 /**
  * The router calls `knowledgeGraph.countMemorableKnowledge(filter)` and
@@ -166,8 +167,7 @@ async function makeHarness(graphPool?: Pool): Promise<Harness> {
       ...(graphPool ? { graphPool } : {}),
     }),
   );
-  const server: Server = app.listen(0);
-  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const server: Server = await listenLoopback(app);
   const { port } = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${String(port)}${MOUNT}`;
 

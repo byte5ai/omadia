@@ -18,6 +18,479 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — the resume/reaper conformance test raced the wall clock
+
+- **`a RESUMED task survives the reaper` could fail for reasons unrelated to
+  the behaviour it guards.** It aged a parked task by `sleep(120)`, resumed it,
+  and then swept with `staleAfterMs: 60` using the reaper's *default real-time*
+  `now`. That left a 60ms budget between `provideInput` returning and the sweep
+  running: any stall longer than that — a GC pause, a loaded CI box, the serial
+  Postgres job sharing a runner — aged the freshly reset heartbeat past its own
+  window, so the reaper failed the task and the test went red while the code
+  was correct. Reproduced deterministically by inserting an 80ms stall before
+  the sweep.
+- The sweep now takes an explicit `now` anchored on the resume's own
+  `updatedAt`. `provideInput` writes `updatedAt` and `lastHeartbeatAt` in one
+  statement, so that timestamp comes from the same clock that stamped the row —
+  the database's for the durable store, the process's for the in-memory one —
+  and the comparison no longer depends on how long the test itself takes. With
+  the fix the test survives even a 3s injected stall.
+- `updatedAt` is the anchor precisely because it stays correct when the
+  behaviour regresses: dropping the `lastHeartbeatAt` reset still advances
+  `updatedAt`, so the frozen heartbeat lands outside the window and the test
+  goes red. Verified by mutation against **both** stores — in-memory and real
+  Postgres.
+
+### Fixed — the rest of the test servers now bind the port they dial (#707)
+
+- **The remaining 57 `listen(0)` sites are converted.** #703 fixed the
+  mechanism but could only convert the call sites that already waited for
+  their `listening` callback. The rest read `server.address().port`
+  synchronously on the next line, which stops working the moment a host is
+  passed — `listen` then goes through the `dns.lookup` path even for an IP
+  literal and no longer binds synchronously. They now go through a
+  `listenLoopback()` helper that binds 127.0.0.1 and resolves on `listening`,
+  so no test server is left holding a port it never dials.
+- **A correction to #703's explanation.** That entry said the wildcard socket
+  is `IPV6_V6ONLY`. Measured on macOS, it is not: `[::]` is dual-stack and
+  `http://127.0.0.1:<port>` normally reaches it, which is exactly why the bug
+  presented as intermittent rather than as a hard failure. The real mechanism
+  is that the wildcard bind's port is chosen only against other wildcard
+  binds, while a process that binds `127.0.0.1:<port>` **specifically** may
+  already hold it — and on BSD/macOS the more specific bind coexists with the
+  wildcard and wins for connections to 127.0.0.1. Local dev servers bind
+  127.0.0.1 by default, which is why the observed shadowers were an MCP server
+  and a Flask app. The fix and its rationale are unchanged; only the
+  description of *why* the port was unprotected was wrong.
+- `canvas-core`'s WebSocket stub server had the same shape (`port: 0`, no
+  host, callers dialling `ws://127.0.0.1:<port>`) and now binds the loopback
+  too.
+- Removed 23 now-dead `await once('listening')` waits that followed a
+  converted site. The helper already resolves after `listening`, so a second
+  wait could never fire — it hung 12 files to the 120s test timeout.
+
+
+### Added — the public MCP endpoint serves MRTR to 2026-07-28 clients (#700)
+
+- **Two SDK generations behind one path, routed by protocol era.** A request
+  that negotiates the 2025 `initialize` handshake is served by the v1 wiring
+  exactly as before; one carrying the 2026-07-28 envelope is served by
+  `@modelcontextprotocol/server@2`. Neither generation can serve the other's
+  era, which is why this is a router and not a port: the v1 line never answers
+  `server/discover` (so a modern client negotiating against it falls back to
+  legacy, where it strips `resultType` and MRTR becomes invisible to it), and
+  the v2 line refuses to emit omadia's flat `inputRequests` array at all, on
+  either era. Routing is the SDK's own documented composition for this.
+- **The documented 2025 contract is untouched.** Same array dialect, same
+  `arguments.inputResponses` retry, byte for byte — the existing endpoint suite
+  passes unmodified. Modern callers instead get the revision's shape: one
+  embedded `elicitation/create` request and an opaque `requestState`.
+- **`requestState` is integrity-protected, which the spec requires and the SDK
+  does not do for you.** HMAC-SHA256 via the SDK's own codec, over a
+  vault-persisted key (so any instance behind the load balancer can verify what
+  another minted), bound to the API key and the method, one-hour TTL. A
+  modified, expired or borrowed state is refused with the frozen `-32602`.
+  Without a vault the endpoint generates a per-process key and warns — still
+  signed and still verified, just not across instances.
+- **The bounce cap stops being guessable.** On the 2025 dialect it is inferred
+  from `inputResponses` appearing in the arguments, so a caller that strips the
+  key gets a fresh card forever. On the modern dialect the round counter is
+  inside the signed state.
+- **A tool cannot tell which era its caller spoke.** The translation lives
+  entirely in the endpoint: a tool still asks with the `_pendingInputRequest`
+  sentinel and still receives a flat `inputResponses` object.
+- **Known gap, stated rather than papered over:** the revision's elicitation
+  schema has no masked-input concept (`email`, `date`, `uri`, `date-time` are
+  the only string formats), so a field the tool marked `secret` is named in the
+  prose instead of flagged in the schema. Emitting a `password` format anyway
+  would produce a request a conforming client rejects.
+### Fixed — test servers bound a port they never dialled (CI flake)
+
+- **Intermittent 401/404 in the middleware test suite.** A test would fail with
+  a `401 devplatform.unauthorized` on a request that carried perfectly valid
+  session headers, or a `404` on a repo it had just registered — and pass on
+  the next run. The cause was neither the routes nor the fakes: the harnesses
+  bound their server with `app.listen(0)`, which binds the **IPv6** wildcard
+  `[::]`. On macOS/BSD that socket is `IPV6_V6ONLY`, so the kernel reserved the
+  port in the IPv6 ephemeral space only — while every harness handed out
+  `http://127.0.0.1:<port>`, an **IPv4** URL. The two spaces are independent,
+  so the port the test dialled was never reserved at all, and any unrelated
+  process holding that IPv4 port received the request and answered it. Observed
+  foreign responders on a developer machine included a local MCP server
+  (`401 … provide valid authorization token`) and a Flask dev server
+  (`404 Not Found`); a non-HTTP peer surfaced instead as
+  `HTTPParserError: Response does not match the HTTP/1.1 protocol`.
+- Every test listener that already waits for its `listening` callback now binds
+  `127.0.0.1` explicitly (both dev-platform harnesses, 36 call sites in all,
+  plus the updater sidecar's server test), so the reserved port and the dialled
+  port are the same port and the OS guarantees exclusivity — a colliding bind is
+  refused with `EADDRINUSE` instead of silently shadowing the harness. A
+  `harness socket binding` suite in each affected route test guards the
+  property so the old shape cannot come back.
+- Note for follow-up work: passing a host makes `listen()` bind
+  **asynchronously**, so the remaining 55 `app.listen(0)` sites that read
+  `server.address().port` synchronously on the next line cannot be converted by
+  adding the host alone — they each need to await `listening` first. They are
+  still exposed to this failure mode.
+
+### Fixed — the Fly updater asked for a wait longer than Fly allows (#696)
+
+- **`/wait?timeout=120` is rejected outright.** Fly caps the machine-wait at
+  60s and answers anything larger with
+  `400 invalid WaitMachineRequest.Timeout: value must be inside range
+  [1s, 1m0s]` — asking for more does not buy a longer wait, it buys no wait at
+  all. `waitForState`'s 120s default therefore failed every update on the step
+  right after the image was written. Found on a real deployment, once the
+  lease-nonce fix let the update get that far. The request is now capped at the
+  API maximum and re-issued until the caller's own budget is spent, and the
+  machine's state is re-read and checked explicitly instead of trusting the
+  long-poll's timeout semantics — a `/wait` that errors is not the oracle.
+- **A "rolled back" job now really rolls back.** `replace()` can fail *past the
+  point of mutation*: on Fly the machine is already carrying the new image when
+  the wait step throws. The bookkeeping entry was written only after `replace()`
+  returned, so that case left `replaced` empty, rollback restored nothing, and
+  the operator was told the update had been rolled back while the service ran
+  the new build — exactly what happened in production. The entry is now recorded
+  before the call; restoring an image the service never left is a no-op, so
+  pessimistic bookkeeping is safe in the other direction.
+
+### Fixed — the Fly updater was blocked by its own lease (#696)
+
+- **Applying an update on Fly always failed and rolled back.** `replace()`
+  leases the Machine, and Fly gates every write to a leased Machine behind the
+  `fly-machine-lease-nonce` header — which was sent nowhere. `updateMachine`
+  declared `leaseNonce` in its signature but never read it, the engine never
+  passed it, and the HTTP helper had no way to carry a header at all. Every
+  real update therefore came back
+  `409 aborted: … lease currently held by …@tokens.fly.io` and rolled back,
+  seconds after taking that lease itself. Threaded end to end now: per-call
+  headers on the client, the nonce on the update, the lease from the engine.
+- **The lease is handed back in a `finally`.** It was acquired and abandoned,
+  so it kept blocking writes for the rest of its 300s TTL — which also meant
+  the rollback after a failed update hit the same 409, and the machine stayed
+  locked against a human `fly deploy` for minutes.
+- **The test fake now enforces the lease.** It returned a nonce and ignored it
+  on writes, so it could not produce Fly's 409 and 263 lines of green tests
+  said the path worked. It now rejects an unnonced write and validates the
+  nonce on release. New wire-level `flyApi.test.mjs` asserts against the bytes
+  an HTTP server actually receives, because a fake can only ever prove the
+  engine *passes* a value, never that the client *sends* it.
+
+### Added — one-click updates on Fly.io (#696, follow-up to #432)
+
+- **A Fly executor for the rolling self-update.** Fly Machines are Firecracker
+  microVMs with no Docker daemon, so the compose executor could never run
+  there. The updater now has an **engine seam**: `updateJob.mjs` keeps
+  everything platform-independent — the ordering that makes a failure safe, the
+  health gate on the *reported* version, rollback, the protected list — and an
+  engine supplies only the four things that differ. The Fly engine drives the
+  Machines API. **The middleware needed no changes** beyond passing two new
+  status fields through, which is the seam working as intended.
+- **Deployed as its own tiny app**, opt-in via `OMADIA_WITH_UPDATER=1
+  ./fly/deploy.sh`. It has no public address (6PN only), and holds one
+  **app-scoped** deploy token per managed app — a narrower capability than the
+  compose design, where a mounted Docker socket is host-root-equivalent and
+  all-or-nothing. It also has to be a separate app: `/data` is a Fly volume and
+  a volume attaches to exactly one machine, so the middleware is structurally
+  single-machine there and cannot health-gate its own replacement.
+- **The "pull before you stop anything" property is preserved** without a pull
+  step: Fly fetches the image itself, so the engine checks the registry
+  manifest up front. A missing tag now aborts before any machine is told to
+  move, and an unreachable registry is reported as such rather than as a
+  missing tag.
+- **Named the limit instead of hiding it:** the Fly engine reports
+  `pinPersisted: false`, and Admin → Update says so next to the button. On
+  compose the updater writes `OMADIA_VERSION` into the project `.env`; on Fly
+  nothing can, because `fly deploy` reads the operator's local `fly.toml`.
+### Changed — Admin → Update names the operator's actual Fly apps (#432)
+
+- **The manual update command is no longer a template.** On Fly the middleware
+  reads `FLY_APP_NAME` / `FLY_MACHINE_ID` (set inside every Machine) and reports
+  them through `GET /api/v1/admin/update/status`; the admin page's server shell
+  contributes the web-ui app's own name. The notify-only box therefore prints
+  `fly deploy --app omadia-middleware-<yours> …` instead of
+  `--app <middleware-app>`, for both apps, middleware first.
+- Detection is **positive-only**: anything not demonstrably Fly reports
+  `unknown` and keeps the generic placeholders. A wrong app name in a
+  copy-pasteable command is worse than an obviously incomplete one.
+- **Named the `--image` pin caveat**, in the UI and in `docs/upgrading.md`:
+  `--image` applies to one deploy, so a later plain `fly deploy` silently puts
+  the app back on the tag in `fly.toml`. This is the Fly counterpart to the
+  compose `.env` pin — except nothing server-side can write it, so the operator
+  has to. Also corrected the docs' implication that Fly rolls back on its own;
+  neither `fly deploy` nor the Machines API does.
+### Added — MRTR reads the declared 2026-07-28 contract, not an SDK internal (#562, phase 3)
+
+- **`callTool` now passes `allowInputRequired: true`.** On a modern-era
+  connection that is what makes the SDK hand an `input_required` result back
+  with `resultType`, `inputRequests` and `requestState` present verbatim,
+  instead of fulfilling it in-process or raising a typed error. Until now MRTR
+  read those fields only because SDK 1.30's `ResultSchema` happens to be a
+  `.passthrough()` — a dependency `mcpClient.ts` already documented as one it
+  did not want.
+- **The elicitation capability is declared** — measured prerequisite, not
+  boilerplate: without it the SDK refuses an embedded `elicitation/create`
+  request with `MissingRequiredClientCapabilityError` *before* the result
+  reaches omadia, so every modern-era MRTR call would fail instead of parking.
+  A decline handler backs the declaration, because omadia genuinely does not
+  answer elicitation in-process — it asks a human over a channel.
+- **The parser learned the spec's dialect.** A 2026-07-28 peer sends
+  `inputRequests` as a MAP of whole elicitation requests, not omadia's flat
+  array; each request's `requestedSchema` properties become card fields, with
+  `required` honoured literally and `format: 'password'` / `writeOnly` marking a
+  field masked. The array dialect is untouched — the *shape* decides, so both
+  eras work on the same code path. `sampling/createMessage` and `roots/list`
+  are reported as `unsupported_request_method` rather than silently dropped: a
+  card missing one of several embedded requests could never satisfy the retry.
+- **`requestState` is adopted instead of running a second park handle.** The
+  server's opaque state rides the parked record and is echoed back byte-exact on
+  the retry, alongside spec-shaped `inputResponses` keyed by the server's own
+  request ids. The tool's `arguments` stay unchanged across the park — on the
+  modern dialect the answers ride the params, not the arguments.
+- **The park-and-ask form survives, which was the explicit risk.** Auto-fulfil
+  stays off, and the bounce cap now reads an explicit replay marker: on the spec
+  dialect there is nothing left in `arguments` for it to recognise, so without
+  that a server asking forever would bounce forever.
+- Coverage is **per era, and each file pins its own era** so neither can quietly
+  stop being exercised: `mcpPendingInput.test.ts` (2025) and the new
+  `mcpModernMrtr.test.ts` (2026-07-28, against a real v2 server, asserting on
+  the wire bodies because v2's server decode consumes the retry params before a
+  raw handler sees them).
+
+### Changed — the MCP **client** speaks `@modelcontextprotocol/client@2` over `http` (#562, phase 2)
+
+- **Only `http` moved.** `McpManager` now connects streamable-HTTP servers with
+  the v2 `Client` + `StreamableHTTPClientTransport` and
+  `versionNegotiation: { mode: 'auto' }`, so a 2026-07-28 peer is negotiated as
+  such and a 2025-era peer still falls back to the plain `initialize` handshake.
+  Deliberately **not** a pin: a pin has no fallback and most third-party servers
+  are 2025-era, so pinning would break exactly the peers that work today.
+- **`stdio` and `sse` stay on v1**, from measurement rather than convenience:
+  `McpServer` never answers `server/discover` off the HTTP edge, so an `'auto'`
+  probe there can only fall back and a pin fails with `ERA_NEGOTIATION_FAILED`.
+  Porting them would swap the API and buy no protocol capability.
+- **MRTR on 2025-era peers keeps working — this is the part the port could have
+  broken in silence.** v2 treats `resultType` as a wire-only discriminator and
+  strips it when it decodes a legacy `tools/call` reply as a complete result,
+  while leaving `inputRequests` in place. Unrepaired, `isInputRequiredResult`
+  goes false, the call is never parked, the human is never asked, and the model
+  is handed the server's holding text as if it were the answer — with nothing
+  red anywhere. `restoreLegacyInputRequired` puts the discriminator back on
+  legacy-era connections only (on a modern one `resultType` arrives verbatim and
+  inventing one would mask a real divergence). Removing it turns eleven tests in
+  `mcpPendingInput.test.ts` red.
+- **Two v2 behaviours are switched off on purpose.** Auto-fulfilment of
+  `input_required` (`inputRequired: { autoFulfill: false }`) — omadia parks the
+  call and asks a *human* over a channel, possibly hours later, and letting the
+  driver answer in-process would mean the human silently stops being asked. And
+  client-side output-schema validation, by fetching `tools/list` with
+  `cacheMode: 'bypass'` — it would turn a server whose `structuredContent` does
+  not match its declared `outputSchema` into a hard call failure on `http` only,
+  and its validator is reachable only through an `ajv` that neither
+  `@modelcontextprotocol/client` nor `/core` declares as a dependency.
+- Coverage runs on **both eras**: the existing live round-trip suite plus a new
+  modern-era assertion against the phase-1 loopback server, and a hand-rolled
+  2025-era peer that refuses `server/discover`.
+
+### Changed — the loopback MCP server runs on the `@modelcontextprotocol/*@2` family (#562, phase 1)
+
+- **`createMcpHandler` replaces a hand-rolled per-request dance.** The loopback
+  server built a fresh `Server` + stateless `StreamableHTTPServerTransport` for
+  every request and tore both down in a `finally`, purely because v1 throws
+  `'Stateless transport cannot be reused across requests'` on a transport's
+  second use. v2 offers that per-request-instance model as the serving entry
+  itself, so the workaround and its teardown block are deleted rather than
+  ported. `toNodeHandler` bridges the handler's web-standard `fetch` to the
+  Node `(req, res)` this server speaks.
+- **No wire change.** Statelessness, the POST-only `405` on the standalone SSE
+  stream, the `413` body cap, bearer auth, and name-sorted `tools/list` all
+  behave exactly as before — the existing suite passes unmodified, and the
+  omadia MCP *client* (still on v1) talks to the ported server unchanged, which
+  is the cross-era interop check.
+- **Scope is deliberately one surface.** The public MCP endpoint is NOT ported
+  in this phase: it serves MRTR (`resultType: "input_required"`, #544/#570), and
+  v2 offers no mode that reproduces that wire shape on a 2025-era connection —
+  its legacy shim converts the return into server→client `elicitation/create`
+  requests, and disabling the shim makes the same return fail loudly. Tracked on
+  #562.
+
+### Fixed — skill import no longer drops frontmatter silently
+
+- **`parseSkillMarkdown` reports what it cannot read.** omadia's SKILL.md
+  frontmatter is a flat one-line `key: scalar` format. Lines carrying lists or
+  nested mappings — routine in skills authored for other ecosystems — were
+  skipped with a bare `continue`, so an import reported success while the skill
+  landed with data missing. The parser now returns those lines, and the import
+  preview shows them as a warning before the user confirms.
+- **A key whose block could not be parsed is no longer stored as an empty
+  string.** `allowed-tools:` followed by list entries used to persist
+  `allowed-tools: ""` — a value the source file never contained, which then
+  travelled into the skill content hash and the risk scan. Such a key is now
+  reported together with its block instead of being invented, which also keeps
+  two identical dropped entries distinguishable by their owning key.
+- No YAML support was added; the parser stays deliberately flat. The response of
+  `POST /v1/operator/skills/import` gains an `unparsedFrontmatter: string[]`
+  field (additive; the web-ui treats it as optional so an older middleware still
+  type-checks). `loadSkill()` for plugin-borne on-disk skills is unchanged.
+
+### Added — the updater sidecar is published, and the manual path is per-platform (#432)
+
+- **`ghcr.io/byte5ai/omadia-updater`** is now built and pushed by
+  `publish-images.yml` on the same tags as the middleware it updates, so
+  `docker-compose.update.yaml` pulls it with the same `${OMADIA_VERSION}` as
+  everything else instead of requiring a source build. Deliberately not added to
+  `docker-compose.build.yaml`: a service defined there would start an updater on
+  stacks that never opted into one.
+- **Admin → Update labels its manual commands per platform.** The executor is
+  compose-only, so Fly.io and Kubernetes deployments land in notify-only mode —
+  where an unlabelled `docker compose up -d` line was actively misleading. The
+  page now shows the compose *and* the `fly deploy --image` form, and points at
+  `docs/upgrading.md` for anything else.
+- **`docs/upgrading.md` gained a Fly.io section**: what Admin → Update can and
+  cannot do there, the middleware-before-web-ui redeploy order, the `/health`
+  version check between the two, rollback via `fly releases`, and the reminder
+  not to redeploy the Postgres app during a version bump.
+
+### Added — product documentation for the AI marking (#649, epic #642)
+
+- **New `docs/ai-act-transparency.md`** — what omadia actually marks and, just as
+  explicitly, what it does not. Every statement carries the code site it comes
+  from; the binding rule for the document is that a claim without one does not
+  go in. A promise phrased too widely on a public page is worse than a named gap.
+- **DE and EN copy blocks** for the product section of `omadia.ai/ai-transparency`,
+  written along what the code actually does. Finished here, **not live**: the
+  section goes through internal approval before publication.
+- **Corrected `docs/architecture.md`**, which claimed the full trace "is stored as
+  the run's audit receipt". That collides with the #684 decision, so it now states
+  best-effort telemetry and names the three ways a turn can leave no trace.
+- **`docs/middleware-agent-handoff.md`**: the outgoing-contract extension in §11
+  (stream protocol), the five `ai_disclosure_*` setup fields in §10, and the open
+  provenance items in §13. The issue pointed at §3/§8 for the contract half; §8 is
+  "Skills" on current main, and the contract actually belongs next to the stream
+  protocol, so it went there.
+- **Limits named rather than omitted**: the coarser `.xlsx` coverage, connectors
+  being plugins whose rendering the core cannot force, two provenance vocabularies
+  in one epic, per-channel overrides that only fire on teams/slack/telegram, and
+  C2PA — which appears nowhere in the tree and is therefore an open point, not a
+  capability.
+### Fixed — the structural i18n categories left by #601 (#679)
+
+- **I4 — page titles now follow the active locale.** All **10** remaining
+  `export const metadata` exports became `generateMetadata`, so the window /
+  tab title is German for a German operator instead of always English. A static
+  `metadata` object is evaluated once at build time, where no request and
+  therefore no locale exists. The category is now at **zero** and pinned
+  repo-wide by a test.
+- **I5 — the boot-seeded agent description.** Decided rather than translated:
+  the sentence is written by the server into the database at first boot, before
+  any locale exists to write it in, so it is a record of why the row exists,
+  not UI copy. Localising it at write time would freeze whichever locale the
+  boot happened to pick into persisted data; dropping it would leave consumers
+  without a catalogue (API, exports, CLI) saying nothing at all. The UI now
+  renders its own catalogued sentence, recognising the untouched seed by exact
+  match — the moment an operator edits it, their words are shown verbatim.
+- **I6 — currency and number formatting.** `admin/usage` rendered cost with a
+  hardcoded `$` and `toFixed`, and — not mentioned in the issue — pinned
+  `de-DE` for compact counts and timestamps, so an *English* operator read
+  German grouping. All now go through next-intl's `useFormatter()`. The
+  currency stays USD deliberately: the ledger records USD, and converting
+  without an exchange rate would present a fabricated number as a ledger
+  figure. What is localised is the presentation.
+- **I3 — hardcoded literals**, scoped and measured. `app/graph/ListView.tsx`
+  held three GERMAN sentences (the rule broken twice over — hardcoded, and in
+  the language that belongs only in `de.json`); `admin/kg-lifecycle`, the
+  issue's named worst offender, is fully swept. API enum values (`HOT`/`WARM`/
+  `COLD`, `memory`/`process`/`task`) stay untranslated on purpose so the screen
+  still matches logs and SQL.
+- **The issue's I3 count did not survive measurement**: it claims 25 literals
+  across 11 files with 11 in `kg-lifecycle`; that file alone holds **22**, and
+  the scan under-counts multi-line JSX text on top. The remaining tail
+  (~217 candidates / 63 files, plus 18 files still calling `toLocaleString`) is
+  filed as its own issue rather than silently declared done.
+### Added — the AI-marking posture is readable per channel (#648, epic #642)
+
+- **`GET /health` gains a `disclosure` block**: the resolved AI-Act Art. 50
+  marking level per channel, whether it came from the shipping default or the
+  operator, and whether it deviates from the delivered state. Builds on the
+  post-#665 shape (`{ status, kg }` → `{ status, kg, disclosure }`) rather than
+  the older registry-projector form.
+- **Boot warning on deviation only.** A delivered-state instance logs nothing —
+  a line that fires on every default install is one nobody reads.
+- **Operator channels dashboard** shows an informing hint when the instance
+  deviates, DE/EN through the message catalogue. In the delivered state the
+  surface is unchanged and completely quiet.
+- **Why**: the operator may grade the marking down per channel or switch it off
+  — omadia is self-hosted, that is their decision. The problem was that the
+  decision was visible nowhere, so a copied config or a leftover from a test
+  setup was never noticed. The hint describes the state and blocks nothing.
+- **One derivation, not two.** `resolveDisclosureLevelForChannel` is now the
+  single place the override → global → shipped precedence lives;
+  `Orchestrator.resolveTurnDisclosure` calls it per turn and the posture view
+  calls it per channel. A second copy of those rules would let the reported
+  posture disagree with what turns actually do, silently — the exact failure
+  this feature exists to prevent.
+- **An override that cannot fire says so.** Only `teams` / `slack` / `telegram`
+  currently carry a `channelKind` into a turn, so a configured `web=off` never
+  takes effect. Both `/health` and the dashboard report that instead of letting
+  the operator conclude their override is in force.
+- **Nothing that permits conclusions about content or users leaves the process**:
+  levels, sources and booleans only. The assistant name and the free-form
+  operator note are reported as *configured* / *not configured*, never by value
+  — asserted against the serialised payload, not left to review.
+### Changed — the run trace is best-effort telemetry, and its gaps are now countable (#684, epic #642)
+
+- **Decision recorded, not behaviour changed.** #650 added `model` / `provider`
+  to the persisted trace and deliberately left the harder question open: is the
+  record guaranteed? It is not, and #684 settled that it should not be promised
+  to be. A missing trace now means "not recorded" — never "no such turn".
+- **Why telemetry and not a provenance record.** The graph sink is optional by
+  construction (`SessionLogger` guards every ingest behind `if (this.graph)`);
+  the Markdown transcript is the surface that is actually guaranteed, and the
+  logger already refuses graph ingest when the transcript write fails so the two
+  can never disagree. Promoting the trace to a record would require
+  auto-creating User-Cluster nodes — which both backends refuse on purpose,
+  because orphan clusters with no `IS_IDENTITY_OF` edges would hide exactly the
+  channel-resolution bugs the refusal exists to surface. That trades a visible
+  gap for an invisible data-integrity defect.
+- **Named where a reader looks**: `RunTrace` and `KnowledgeGraph.ingestRun` now
+  state the contract in their own doc comments, so nobody builds a compliance
+  answer on a best-effort store by inference.
+- **Every drop is now observable** (`runTraceObservability.ts`): one greppable
+  `console.warn` naming the reason, plus per-outcome tallies on
+  `SessionLogger.runTraceStats`. The issue described the drops as silent; three
+  of the four paths already logged. The genuinely invisible one was **no graph
+  sink configured**, which returned with no signal at all — a deployment that
+  had never recorded a single trace looked identical to a healthy one.
+- **`warn`, not `error`**: the turn succeeded. Logging at error level would flag
+  every single turn in a deployment that simply runs without a knowledge graph.
+- A turn that carried no trace is not counted as a drop — counting it would make
+  the drop total meaningless.
+
+### Added — the persisted run trace records which model answered (#650, epic #642)
+
+- **`RunTrace` / `RunTracePayload`** gain optional `model` and `provider`. The
+  trace recorded how long a turn ran, which sub-agents ran and which tools were
+  called, but not the one fact a provenance question about a past turn starts
+  from. The model id already existed on the `done` event and in the cost
+  telemetry; it just never reached the persisted record.
+- **Stamped once per turn**, right after model routing resolves
+  (`RunTraceCollector.recordModel`), on both the buffered and streaming paths —
+  not threaded through `finish()`'s five call sites, where missing one would
+  leave the field absent on a single exit path and looking recorded elsewhere.
+- **Both knowledge-graph backends** write it, so the answer to "which model
+  wrote this?" does not depend on which store a deployment runs.
+- **No schema migration, and none was needed.** The issue's acceptance criteria
+  asked for one; that premise does not hold for this table.
+  `graph_nodes.properties` is a generic `JSONB` column (`0001_graph_init.sql`)
+  and `RunPropsSchema` is `.passthrough()`, so adding a property is a
+  schema-level change only. The fields are declared optional in the Zod schema
+  anyway — passthrough means "tolerated", and a provenance field that is merely
+  tolerated is one nothing validates and nothing documents. Run nodes written
+  before this change stay valid and readable, which is what a migration would
+  have existed to guarantee.
+- Absent rather than empty when unknown: a trace carrying `model: ''` claims to
+  know and does not.
+
 ### Added — admin UI for the public API keys (#567)
 
 - **Admin UI** (`web-ui/app/admin/api-keys/`): create/list/revoke against

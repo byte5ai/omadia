@@ -177,6 +177,13 @@ describe('public MCP endpoint', () => {
     const { status, payload } = await h.rpc(listToolsRequest(), { token: KEY_TOKEN });
     assert.equal(status, 200);
     assert.deepEqual(toolNames(payload), SORTED_TOOLS);
+    // #545 — MCP 2026-07-28 CacheableResult: the list is filtered per API key,
+    // so `private` is mandatory (sharing it across auth contexts would leak
+    // other keys' tool sets), and the TTL stays short so a revoked binding
+    // does not linger in cached lists.
+    const result = (payload as { result?: { ttlMs?: unknown; cacheScope?: unknown } }).result;
+    assert.equal(result?.ttlMs, 60_000);
+    assert.equal(result?.cacheScope, 'private');
   });
 
   // ── statelessness ─────────────────────────────────────────────────────────

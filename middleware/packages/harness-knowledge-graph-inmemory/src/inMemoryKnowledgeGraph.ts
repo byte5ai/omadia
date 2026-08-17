@@ -13,6 +13,7 @@ import {
   planStepNodeId,
   runNodeId,
   sessionNodeId,
+  authSubjectProps,
   toolCallNodeId,
   topicNodeId,
   turnNodeId,
@@ -594,6 +595,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
             (acc, inv) => acc + inv.toolCalls.length,
             0,
           ),
+        // #650 (epic #642) — the model that produced the answer and the
+        // provider that served it. Written here as well as in the Neon
+        // implementation: a provenance field present in one backend and absent
+        // in the other means the answer to "which model wrote this?" depends on
+        // which store the deployment happens to run.
+        ...(trace.model ? { model: trace.model } : {}),
+        ...(trace.provider ? { provider: trace.provider } : {}),
         ...(trace.error ? { error: trace.error } : {}),
       },
     });
@@ -837,7 +845,15 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         this.upsertNode({
           id: identityExtId,
           type: 'ChannelIdentity',
-          props: { ...existing.props, lastSeenAt: now },
+          props: {
+            ...existing.props,
+            lastSeenAt: now,
+            // #568 — backfill on the FAST path too. Every login re-enters
+            // here, so without this an identity created before the field
+            // existed would never acquire it and the operator would stay
+            // invisible to their own channel turns forever.
+            ...authSubjectProps(ingest),
+          },
         });
         this.upsertNode({
           id: cluster.id,
@@ -850,6 +866,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           omadiaUserId: clusterOmadiaUserId,
           isNewIdentity: false,
           isNewCluster: false,
+          ...this.clusterAuthSubject(cluster.id),
         };
       }
     }
@@ -949,6 +966,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           ? { emailVerified: ingest.emailVerified }
           : {}),
         ...(ingest.aadObjectId ? { aadObjectId: ingest.aadObjectId } : {}),
+        ...authSubjectProps(ingest),
         ...(ingest.internalChannelData
           ? { internalChannelData: ingest.internalChannelData }
           : {}),
@@ -966,6 +984,50 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       omadiaUserId: clusterOmadiaUserId,
       isNewIdentity: true,
       isNewCluster,
+      ...this.clusterAuthSubject(clusterId),
+    };
+  }
+
+  /**
+   * The IdP subject of the cluster's most recently seen authenticating
+   * identity — issue #568. Spread into the result, so a cluster with no
+   * authenticated identity yields `{}` and the key stays ABSENT rather than
+   * present-and-undefined.
+   *
+   * "Most recently seen" is a deterministic pick, not a correctness claim: a
+   * cluster that merged a local-password login and an Entra login holds two
+   * subjects, and a token authorized under the OTHER one will not be found.
+   * That case fails closed (no token ⇒ blocked with a reason), which is the
+   * safe direction; widening it means teaching the token lookup to try an
+   * ordered set of keys, which is a change to the credential read path and
+   * deliberately out of scope here.
+   */
+  private clusterAuthSubject(
+    clusterId: string,
+  ): Pick<ResolveOrCreateChannelIdentityResult, 'clusterAuthSubject'> {
+    const members = [...this.edges.values()]
+      .filter((e) => e.type === 'IS_IDENTITY_OF' && e.to === clusterId)
+      .map((e) => this.nodes.get(e.from))
+      .filter(
+        (n): n is GraphNode =>
+          n !== undefined &&
+          n.type === 'ChannelIdentity' &&
+          typeof n.props['authProvider'] === 'string' &&
+          typeof n.props['authProviderUserId'] === 'string',
+      )
+      .sort((a, b) => {
+        const bySeen = String(b.props['lastSeenAt'] ?? '').localeCompare(
+          String(a.props['lastSeenAt'] ?? ''),
+        );
+        return bySeen !== 0 ? bySeen : a.id.localeCompare(b.id);
+      });
+    const winner = members[0];
+    if (!winner) return {};
+    return {
+      clusterAuthSubject: {
+        provider: String(winner.props['authProvider']),
+        providerUserId: String(winner.props['authProviderUserId']),
+      },
     };
   }
 

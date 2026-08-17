@@ -346,3 +346,31 @@ export async function rehydrateFallback(): Promise<{
     method: 'POST',
   });
 }
+
+/**
+ * #679 / I5 — the description the middleware seeds into the fallback Agent on
+ * first boot (`FALLBACK_AGENT_SEED_DESCRIPTION` in
+ * `packages/harness-orchestrator/src/registry/onboarding.ts`).
+ *
+ * Structural contract, same arrangement as the service-name literals: the
+ * middleware writes it, this module only recognises it, and neither imports the
+ * other. Keep the two spellings in sync.
+ */
+const FALLBACK_AGENT_SEED_DESCRIPTION =
+  'Auto-seeded on first boot. Receives unbound channel traffic until the operator configures explicit bindings.';
+
+/**
+ * Is this description the untouched server-written seed?
+ *
+ * The seed is written once, at boot, before any locale exists to write it in —
+ * so it is a record of why the row exists, not UI copy, and the UI renders its
+ * own localised sentence instead. Exact match on purpose: the moment an
+ * operator edits the description, those are their words and they are shown
+ * verbatim in whatever language they chose. A fuzzy match would silently
+ * overwrite operator content that merely resembled the seed.
+ */
+export function isSeededAgentDescription(
+  description: string | null | undefined,
+): boolean {
+  return description?.trim() === FALLBACK_AGENT_SEED_DESCRIPTION;
+}

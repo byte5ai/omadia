@@ -35,7 +35,9 @@ export async function rescanAllMcpServers(
   for (const server of servers) {
     if (server.status !== 'enabled') continue;
     try {
-      const tools = await manager.listTools(mcpRowToConfig(server));
+      // #545 — the security rescan bypasses the tool-list cache: re-scanning
+      // a cached list would re-scan what was already scanned.
+      const tools = await manager.listTools(mcpRowToConfig(server), { fresh: true });
       const verdicts = scanDiscoveredTools(server.id, tools);
       for (const verdict of verdicts) {
         await graph.upsertMcpToolVerdict(verdict);

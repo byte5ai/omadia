@@ -281,11 +281,11 @@ describe('#579 chunkString', () => {
 describe('#579 resolveEffectivePosture — tighten-only', () => {
   it('tightens a scope above the floor and clamps one below it', () => {
     assert.equal(
-      resolveEffectivePosture({ floor: 'auto', scope: 'strict', mode: 'enforce' }),
+      resolveEffectivePosture({ floor: 'auto', override: 'strict', mode: 'enforce' }),
       'strict',
     );
     assert.equal(
-      resolveEffectivePosture({ floor: 'auto', scope: 'dangerous', mode: 'enforce' }),
+      resolveEffectivePosture({ floor: 'auto', override: 'dangerous', mode: 'enforce' }),
       'auto',
     );
     assert.equal(resolveEffectivePosture({ floor: 'strict', mode: 'enforce' }), 'strict');
@@ -466,7 +466,7 @@ describe('#579 AC2 — posture floor + tighten-only, end to end', () => {
       answer: 'Antwort.',
       screener,
       // floor dangerous (off) but scope tightens to auto (on)
-      securityPosture: { floor: 'dangerous', scope: 'auto', mode: 'enforce' },
+      securityPosture: { floor: 'dangerous', override: 'auto', mode: 'enforce' },
       seen,
       audits,
     });
@@ -596,7 +596,7 @@ const MANIFEST = fileURLToPath(
 
 const SECURITY_FIELDS: ReadonlyArray<{ key: string; type: string }> = [
   { key: 'security_posture', type: 'enum' },
-  { key: 'security_posture_scope', type: 'enum' },
+  { key: 'security_posture_override', type: 'enum' },
   { key: 'security_screen_mode', type: 'enum' },
   { key: 'security_screen_url', type: 'url' },
 ];

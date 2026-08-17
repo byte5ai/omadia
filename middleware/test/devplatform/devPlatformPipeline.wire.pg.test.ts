@@ -19,6 +19,7 @@ import { InMemorySecretVault } from '../../src/secrets/vault.js';
 import { mintRunnerToken } from '../../src/devplatform/jobToken.js';
 import type { TokenFetch } from '../../src/devplatform/githubApp/installationTokens.js';
 import type { PhaseDirective } from '../../src/devplatform/pipeline/phaseEngine.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   label: 'pipeline.wire',
@@ -156,8 +157,7 @@ describe('dev-platform wiring — a real gated job, end to end through the assem
       next();
     };
     mountDevPlatform(app_, requireAuth, wired);
-    server = app_.listen(0);
-    await new Promise<void>((r) => server.once('listening', r));
+    server = await listenLoopback(app_);
     baseUrl = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
   });
 

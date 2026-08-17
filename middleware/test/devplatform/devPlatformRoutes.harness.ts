@@ -23,6 +23,7 @@ import {
   type NewDevJob,
   type NewDevRepo,
 } from '../../src/devplatform/types.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 /**
  * Epic #470 W0 — admin REST + SSE router (`/api/v1/admin/dev-platform`).
@@ -253,9 +254,9 @@ export async function makeHarness(overrides: Partial<DevPlatformRouterDeps> = {}
   });
   app.use('/api/v1/admin/dev-platform', createDevPlatformRouter(deps));
 
-  const server: Server = await new Promise((resolve) => {
-    const s = app.listen(0, () => resolve(s));
-  });
+  // Binds 127.0.0.1 — the address `baseUrl` below dials. See listenLoopback
+  // for why a wildcard bind lets a stranger answer these requests.
+  const server: Server = await listenLoopback(app);
   const port = (server.address() as AddressInfo).port;
   return {
     server, baseUrl: `http://127.0.0.1:${String(port)}/api/v1/admin/dev-platform`,

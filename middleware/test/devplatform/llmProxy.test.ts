@@ -161,7 +161,7 @@ function makeFixture(opts: {
   app.use('/api/v1/dev-runner', createDevRunnerRouter(runnerDeps));
 
   return new Promise((resolve) => {
-    const server = app.listen(0, () => {
+    const server = app.listen(0, '127.0.0.1', () => {
       const port = (server.address() as AddressInfo).port;
       resolve({
         server,
@@ -686,7 +686,7 @@ describe('llmProxy — survives a global express.json() ahead of the router (ind
     app.use('/api/v1/dev-runner', createDevRunnerRouter(runnerDeps));
 
     await new Promise<void>((resolve) => {
-      server = app.listen(0, () => {
+      server = app.listen(0, '127.0.0.1', () => {
         const port = (server.address() as AddressInfo).port;
         base = `http://127.0.0.1:${String(port)}/api/v1/dev-runner`;
         resolve();
@@ -714,7 +714,7 @@ describe('llmProxy — survives a global express.json() ahead of the router (ind
     });
 
     await new Promise<void>((resolve) => {
-      server = app.listen(0, () => {
+      server = app.listen(0, '127.0.0.1', () => {
         const port = (server.address() as AddressInfo).port;
         base = `http://127.0.0.1:${String(port)}`;
         resolve();

@@ -4710,3 +4710,96 @@ export async function createApiKey(input: CreateApiKeyInput): Promise<CreateApiK
 export async function revokeApiKey(id: string): Promise<{ key: ApiKeyPublicView }> {
   return postJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/revoke`, {});
 }
+
+// -----------------------------------------------------------------------------
+// Rolling self-update (#432). Backed by the admin router at
+// /api/v1/admin/update, surfaced to the browser as /bot-api/v1/admin/update.
+//
+// Three capability tiers, all reported by GET /status so the UI can be honest
+// about which one is active instead of offering a button that cannot work:
+//   - always            version surface + newer-release check
+//   - Postgres present  the audit trail
+//   - update overlay    executing a version bump
+//
+// The trigger returns 202 and does NOT wait: applying an update recreates the
+// middleware container serving the request. Poll `getUpdateStatus` afterwards.
+// -----------------------------------------------------------------------------
+
+const UPDATE_BASE = '/v1/admin/update';
+
+export type AppVersionSource = 'release' | 'floating' | 'unknown';
+
+export type UpdaterState =
+  | 'idle'
+  | 'updating'
+  | 'succeeded'
+  | 'failed'
+  | 'rolled_back';
+
+export interface UpdateStatus {
+  current: { version: string; source: AppVersionSource };
+  latest: {
+    tag: string;
+    url: string;
+    publishedAt: string;
+    prerelease: boolean;
+  } | null;
+  updateAvailable: boolean;
+  check: { checkedAt: number | null; stale: boolean; error?: string };
+  executor: {
+    configured: boolean;
+    reachable: boolean;
+    state?: UpdaterState;
+    targetVersion?: string | null;
+    error?: string;
+    steps?: string[];
+    /** Which executor drives the update (#696). */
+    engine?: 'docker' | 'fly';
+    /** False on Fly: the chosen version does NOT survive the operator's next
+     *  plain `fly deploy`, because that reads their local fly.toml. */
+    pinPersisted?: boolean;
+  };
+  auditAvailable: boolean;
+  /** Where the middleware runs. Only used to make the manual instructions
+   *  concrete — `unknown` on compose and anywhere else, which is the generic
+   *  case, not an error. */
+  platform?: {
+    kind: 'fly' | 'unknown';
+    appName?: string;
+    machineId?: string;
+  };
+}
+
+export interface UpdateAuditEntry {
+  id: string;
+  actor: string;
+  fromVersion: string;
+  toVersion: string;
+  outcome: 'requested' | 'succeeded' | 'failed';
+  detail: string | null;
+  createdAt: string;
+}
+
+export async function getUpdateStatus(refresh = false): Promise<UpdateStatus> {
+  return getJson<UpdateStatus>(
+    `${UPDATE_BASE}/status${refresh ? '?refresh=true' : ''}`,
+  );
+}
+
+export async function getUpdateHistory(): Promise<{
+  entries: UpdateAuditEntry[];
+  available: boolean;
+}> {
+  return getJson(`${UPDATE_BASE}/history`);
+}
+
+/**
+ * Trigger the update. `confirm` must be the target tag retyped by the
+ * operator; the backend re-checks it server-side and refuses on mismatch.
+ */
+export async function triggerUpdate(body: {
+  targetVersion: string;
+  confirm: string;
+}): Promise<{ accepted: boolean; targetVersion: string; auditId: string }> {
+  return postJson(UPDATE_BASE, body);
+}

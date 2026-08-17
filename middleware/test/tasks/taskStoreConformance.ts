@@ -292,10 +292,27 @@ export function runTaskStoreConformance(
         'provideInput advanced lastHeartbeatAt past creation',
       );
 
-      // Reap immediately with a window (60ms) that sits BETWEEN the frozen
-      // pre-park heartbeat (~120ms old) and the just-reset one (~0ms old). Uses
-      // the reaper's default real-time `now`, so both stores' wall clocks agree.
+      // Reap with a window (60ms) that sits BETWEEN the frozen pre-park
+      // heartbeat (>=120ms before the resume) and the just-reset one.
+      //
+      // `now` is anchored on the resume's OWN timestamp rather than the wall
+      // clock. `provideInput` writes `updatedAt` and `lastHeartbeatAt` in one
+      // statement, so `updatedAt` marks the instant of the resume in whichever
+      // clock the store uses — the database's for the durable store, the
+      // process's for the in-memory one — which is the same clock the row's
+      // `lastHeartbeatAt` was stamped by. Reading the default real-time `now`
+      // instead left a 60ms budget between `provideInput` returning and the
+      // sweep running: a GC pause or a loaded CI box aged the freshly reset
+      // heartbeat past its own window and failed this test for reasons that had
+      // nothing to do with the behaviour under test.
+      //
+      // `updatedAt` is the right anchor precisely because it stays correct when
+      // the behaviour under test regresses: drop the `lastHeartbeatAt` reset and
+      // `updatedAt` still advances, so the frozen heartbeat lands outside the
+      // window and this test goes red — which is the whole point of it.
+      const resumeAt = Date.parse(afterResume.updatedAt);
       const result = await store.reapOrphans({
+        now: new Date(resumeAt + 30),
         staleAfterMs: 60,
         purgeTerminalAfterMs: HOUR_MS,
       });

@@ -215,3 +215,21 @@ export type {
   ChannelKeyDirectory,
   ChannelKeyEntry,
 } from './channelKeyDirectory.js';
+
+// #575 Phase 1 — the typed session scope. Lives in the channel SDK because it
+// is consumed by the orchestrator, the kernel AND the channel plugins, and this
+// package is the leaf all three already depend on. `sessionScope` stays a
+// `string` on the plugin-facing contract (spec §8 D2); the type is produced and
+// consumed internally by parsing at ingress.
+export {
+  SHARED_SCOPE_TOKENS,
+  SYSTEM_SCOPE_ORIGINS,
+  formatSessionScope,
+  isAddressableScope,
+  parseSessionScope,
+  scopeGraphKey,
+  unsharedConversationScope,
+  type ScopeId,
+  type SystemScopeOrigin,
+  type UnscopedReason,
+} from './scopeId.js';

@@ -28,6 +28,7 @@ import {
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
 import { createOperatorAgentsRouter } from '../src/routes/operatorAgents.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 interface AgentMem {
   id: string;
@@ -211,7 +212,7 @@ describe('createOperatorAgentsRouter', () => {
   let registry: FakeRegistry;
   let sessionStore: { list: () => Promise<unknown[]> };
 
-  before(() => {
+  before(async () => {
     store = new FakeConfigStore();
     registry = new FakeRegistry();
     sessionStore = { list: () => Promise.resolve([]) };
@@ -225,7 +226,7 @@ describe('createOperatorAgentsRouter', () => {
         getChatSessionStore: () => sessionStore as unknown as ChatSessionStore,
       }),
     );
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}/api/v1/operator/agents`;
   });
@@ -441,7 +442,7 @@ describe('createOperatorAgentsRouter', () => {
         getChatSessionStore: () => undefined,
       }),
     );
-    const s = app.listen(0);
+    const s = await listenLoopback(app);
     try {
       const addr = s.address() as AddressInfo;
       const res = await fetch(

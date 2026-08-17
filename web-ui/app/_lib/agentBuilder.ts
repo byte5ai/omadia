@@ -583,6 +583,14 @@ export interface SkillImportResult {
     severity: SkillVerdictSeverity;
     riskCodes: string[];
   };
+  /**
+   * Frontmatter lines the import had to drop: omadia's frontmatter is flat
+   * `key: scalar`, so lists and nested maps (common in skills authored for
+   * other ecosystems) cannot be represented. Reporting them keeps a truncated
+   * import visible instead of letting the skill quietly lose data. Optional so
+   * a middleware predating this field still type-checks.
+   */
+  unparsedFrontmatter?: string[];
 }
 
 export interface SkillResource {

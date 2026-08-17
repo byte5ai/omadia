@@ -60,22 +60,28 @@ export interface SecurityScreener {
 export type SecurityScreenMode = 'shadow' | 'enforce';
 
 /**
- * Operator-resolved posture setup for a turn. `floor` is the org floor; `scope`
- * is an optional per-scope value that may only TIGHTEN it (a looser `scope` is
- * clamped back to `floor` — see {@link resolveEffectivePosture}). `screenUrl`,
- * when set, selects {@link HttpProxyScreener} over the default LLM judge.
+ * Operator-resolved posture setup for a turn. `floor` is the org floor;
+ * `override` is an optional deployment-wide value that may only TIGHTEN it (a
+ * looser `override` is clamped back to `floor` — see
+ * {@link resolveEffectivePosture}). `screenUrl`, when set, selects
+ * {@link HttpProxyScreener} over the default LLM judge.
+ *
+ * NAMING (#575): `override` was called `scope`. It carries no identity — there
+ * is exactly one of it per deployment — whereas `ScopeId` (#713) is an
+ * identified partition. A real per-scope posture folds `tightenPosture` over a
+ * scope's ancestor chain and is a separate, additive change.
  */
 export interface SecurityPostureSetup {
   readonly floor: SecurityPosture;
-  readonly scope?: SecurityPosture;
+  readonly override?: SecurityPosture;
   readonly mode: SecurityScreenMode;
   readonly screenUrl?: string;
 }
 
-/** The effective posture for a turn: the scope value tightened against the org
- *  floor, never below it (AC2). Absent scope → the floor itself. */
+/** The effective posture for a turn: the override tightened against the org
+ *  floor, never below it (AC2). Absent override → the floor itself. */
 export function resolveEffectivePosture(setup: SecurityPostureSetup): SecurityPosture {
-  return tightenPosture(setup.floor, setup.scope ?? setup.floor);
+  return tightenPosture(setup.floor, setup.override ?? setup.floor);
 }
 
 /**

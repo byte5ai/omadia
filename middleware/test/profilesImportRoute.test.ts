@@ -20,6 +20,7 @@ import {
 } from '../src/plugins/uploadedPackageStore.js';
 import type { LiveProfileStorageService } from '../src/profileStorage/liveProfileStorageService.js';
 import { createProfilesRouter } from '../src/routes/profiles.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 /**
  * Phase 2.4 — POST /api/v1/profiles/import-bundle (OB-66) end-to-end tests.
@@ -256,7 +257,7 @@ describe('POST /api/v1/profiles/import-bundle', () => {
         }),
       }),
     );
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}`;
   });
@@ -409,7 +410,7 @@ describe('POST /api/v1/profiles/import-bundle', () => {
         uploadedPackageStore: emptyStore,
       }),
     );
-    const altServer = altApp.listen(0);
+    const altServer = await listenLoopback(altApp);
     const altPort = (altServer.address() as AddressInfo).port;
     try {
       const res = await uploadBundle(

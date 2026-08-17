@@ -34,6 +34,10 @@ import {
   type PublicMcpKeyBindingStore,
 } from './publicMcpKeyBindings.js';
 import { PUBLIC_MCP_PATH, PUBLIC_MCP_SERVER_NAME } from './publicMcpPath.js';
+import {
+  createPublicMcpRequestStateCodec,
+  resolvePublicMcpRequestStateKey,
+} from './publicMcpRequestState.js';
 import { createPublicMcpRouter } from './publicMcpRouter.js';
 import type { PublicMcpAuditEntry, PublicMcpDispatcher } from './publicMcpServer.js';
 
@@ -346,6 +350,21 @@ export function mountPublicMcp(app: Express, requireAuth: RequestHandler, deps: 
       privacy:
         deps.privacy ?? makePrivacyProvider(deps.getPrivacyService ?? (() => undefined)),
       serverName: PUBLIC_MCP_SERVER_NAME,
+      // #700 — the MRTR `requestState` key for 2026-07-28 callers. Vault-backed
+      // so every instance behind the load balancer verifies what any other one
+      // minted; without a vault the endpoint falls back to a per-process key
+      // and says so, which is right for a single-process install and loud
+      // enough to notice in a scaled one.
+      ...(deps.vault
+        ? {
+            resolveRequestStateCodec: async (): Promise<
+              ReturnType<typeof createPublicMcpRequestStateCodec>
+            > =>
+              createPublicMcpRequestStateCodec(
+                await resolvePublicMcpRequestStateKey(requireVault(deps)),
+              ),
+          }
+        : {}),
       ...(deps.toolTimeoutMs !== undefined ? { toolTimeoutMs: deps.toolTimeoutMs } : {}),
       ...(deps.maxConcurrentCalls !== undefined
         ? { maxConcurrentCalls: deps.maxConcurrentCalls }

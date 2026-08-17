@@ -163,6 +163,9 @@
         "access": {
           "heading": "Access"
         },
+        "system": {
+          "heading": "System"
+        },
         "danger": {
           "heading": "Danger Zone"
         }
@@ -240,6 +243,10 @@
           "title": "Public API Keys",
           "description": "Create, list, and revoke bearer credentials for the public chat API."
         },
+        "update": {
+          "title": "Update",
+          "description": "See the version this instance is running, check for a newer release, and — with the updater overlay deployed — bump the stack from here."
+        },
         "dangerZone": {
           "title": "Memory Purge",
           "description": "Irreversibly delete memory along one axis (all, agent, user, team, channel); preview-gated with a confirm phrase, no undo."
@@ -284,6 +291,10 @@
           "created": "Will be created as a new skill.",
           "updated": "Will update the existing imported skill.",
           "unchanged": "Already imported — no changes."
+        },
+        "unparsedFrontmatter": {
+          "title": "Some frontmatter could not be imported",
+          "explain": "omadia reads one “key: value” per line. These lines use lists or nested values, so the keys shown here were not imported. Everything else in the skill imported normally."
         },
         "risks": {
           "title": "Review before importing — this content looks like it may try to:",
@@ -697,6 +708,7 @@
     "templateNoMatches": "No templates match your filters."
   },
   "operatorChannels": {
+    "metaTitle": "Channels · omadia",
     "title": "Channels",
     "subtitle": "Route inbound webhooks per channel-key to an Orchestrator. Each channel plugin reports its own keys — you only pick which Orchestrator answers them.",
     "loadError": "Failed to load channels",
@@ -709,7 +721,18 @@
     "staleBadge": "stale",
     "routesTo": "→ Orchestrator:",
     "routesToFallback": "(standard · {fallback})",
-    "clearStale": "Clear binding"
+    "clearStale": "Clear binding",
+    "disclosure": {
+      "heading": "AI marking differs from the delivered state",
+      "body": "Answers on these channels are marked differently than on delivery: {channels}.",
+      "inert": "Configured but not yet in effect: {channels}. Turns on these channels do not report their channel type, so they use the global setting.",
+      "note": "This is your decision as the operator — nothing is blocked. Shown so a setting from a test setup does not go unnoticed.",
+      "level": {
+        "standard": "full marking",
+        "concise": "short marking",
+        "off": "no marking"
+      }
+    }
   },
   "layout": {
     "logoAriaLabel": "omadia · Home",
@@ -946,6 +969,10 @@
         "what": "The request did not name which plugin it is about.",
         "next": "Reload the page and repeat the action from the plugin screen."
       },
+      "invalid_json_file_body": {
+        "what": "The upload request did not name both a setup field and a file, so the server could not tell what to parse.",
+        "next": "Reload the page and pick the file again."
+      },
       "invalid_multiselect": {
         "what": "One of the selected values is not in a shape the server accepts.",
         "next": "Clear the selection and pick the entries again from the list."
@@ -953,6 +980,34 @@
       "invalid_secrets_body": {
         "what": "The credential change was sent in a shape the server rejected.",
         "next": "Reload the page and enter the credentials again."
+      },
+      "json_file_bad_extract_path": {
+        "what": "The plugin declares an upload path the server does not support, so the file could not be read.",
+        "next": "This is a fault in the plugin, not in your file — report it to the plugin author."
+      },
+      "json_file_invalid_spec": {
+        "what": "The plugin declares this file upload incorrectly, so it cannot produce any value.",
+        "next": "This is a fault in the plugin, not in your file — report it to the plugin author."
+      },
+      "json_file_missing_value": {
+        "what": "The uploaded file does not contain one of the values this field needs.",
+        "next": "Check that you selected the right file; the message below names the missing value."
+      },
+      "json_file_not_an_object": {
+        "what": "The uploaded file is valid JSON but not a JSON object, so it holds no named values.",
+        "next": "Upload the credential file the provider issued, not a list or a fragment of one."
+      },
+      "json_file_not_json": {
+        "what": "The uploaded file is not valid JSON, so nothing could be read out of it.",
+        "next": "Download the key file again from the provider and upload it unchanged."
+      },
+      "json_file_too_large": {
+        "what": "The uploaded file is larger than the server accepts for a credential file.",
+        "next": "Check that you picked the key file itself and not an archive or export."
+      },
+      "json_file_unexpected_document": {
+        "what": "The uploaded file is the wrong kind of credential — its contents do not match what this field expects.",
+        "next": "Check the message below for which value disagreed, then upload the right file."
       },
       "no_options_provider": {
         "what": "This field has no live option source, so nothing can be fetched for it.",
@@ -986,6 +1041,10 @@
       "setup_field_invalid": {
         "what": "One of the values does not match the format this field expects.",
         "next": "Correct the flagged field and save again."
+      },
+      "unknown_json_file_field": {
+        "what": "The upload names a setup field this plugin does not offer as a file upload.",
+        "next": "Reload the page so the form matches the plugin, then upload the file again."
       },
       "update_failed": {
         "what": "The change could not be written.",
@@ -1082,6 +1141,12 @@
     "expiredBody": "Your session has expired. Please sign in again to continue working.",
     "expiredCta": "Sign in again"
   },
+  "runtimeReadiness": {
+    "title": "LLM API key missing",
+    "body": "The agent runtime is offline — usually because no LLM API key is configured yet. Add your key in the settings; chat, agents, channels and skills come online right away. Routines additionally need one middleware restart.",
+    "cta": "Open settings",
+    "dismiss": "Later"
+  },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} tool calls",
     "ariaCloseBackdrop": "Close",
@@ -1111,7 +1176,6 @@
     "pillTitle": "{id} — show details"
   },
   "chat": {
-    "errorMiddlewareUnreachable": "Middleware unreachable on localhost:3979. Is `npm run dev` running in the middleware folder?",
     "errorProxyFailure": "Proxy error (HTTP {status}). Check the middleware logs.",
     "errorAborted": "Aborted.",
     "errorProviderGeneric": "Something went wrong while talking to the AI provider. Please try again.",
@@ -1307,7 +1371,9 @@
       "factNotEmbedded": "— no vector",
       "factPrivateBlocks": "'<private>' blocks",
       "factHintTags": "'<palaia-hint>' tags"
-    }
+    },
+    "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
+    "errorCorrelationRef": "Reference for support: {id}"
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -1408,6 +1474,7 @@
     "actionDelete": "Delete session"
   },
   "skills": {
+    "metaTitle": "Skills · omadia",
     "title": "Skills",
     "subtitle": "Your skill library — import, view, edit and export skills used across agents.",
     "loadError": "Could not load skills.",
@@ -1489,6 +1556,7 @@
     }
   },
   "operatorAgents": {
+    "metaTitle": "Orchestrators · omadia",
     "title": "Orchestrators",
     "subtitle": "Multi-orchestrator runtime — create, edit, disable, drain, or kill Orchestrators and watch the registry react in real time via the LISTEN/NOTIFY hot-reload bus.",
     "loadError": "Failed to load orchestrators",
@@ -1570,7 +1638,8 @@
     "orphanDetachAll": "Remove all",
     "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
     "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
-    "orphanKeep": "Keep"
+    "orphanKeep": "Keep",
+    "seededDescription": "Auto-created on first boot. Receives channel traffic that has no explicit binding, until you configure one."
   },
   "builder": {
     "issueReport": {
@@ -2495,6 +2564,7 @@
     },
     "drafts": {
       "list": {
+        "metaTitle": "Plugin-Builder · omadia",
         "eyebrow": "Plugin Builder",
         "headline": "Build new plugins.",
         "lede": "A plugin can package deterministic code (the tools and integrations the platform runs on), the agents that put them to work, or both together. Draft here, iterate on several in parallel, and install with one click. Every draft stays in your personal workspace, visible only to you.",
@@ -2533,6 +2603,7 @@
         }
       },
       "detail": {
+        "metaTitle": "Workspace · Agent-Builder · omadia",
         "error": {
           "label": "Error",
           "loadFailed": "Workspace could not be loaded.",
@@ -2819,6 +2890,7 @@
       "lead": "The Hub is our catalog of ready-made plugins. It bundles integrations (credential containers), agents (domain capabilities) and channels (user channels like Teams and Telegram). Click a tile to see permissions, secrets and dependencies before you install."
     },
     "page": {
+      "metaTitle": "Hub · omadia",
       "filters": {
         "all": "All",
         "integration": "Integrations",
@@ -2849,7 +2921,7 @@
       "emptyHubBody": "Connect a registry under <adminLink>Admin · Registries</adminLink> — or upload your own package in the <localLink>Local</localLink> tab.",
       "errorKicker": "Error",
       "errorTitle": "The catalog could not be loaded.",
-      "errorHint": "Check that the middleware is reachable at <host>http://localhost:3979</host> and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
+      "errorHint": "Check that the middleware is reachable and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
       "footerSource": "Source:"
     },
     "detail": {
@@ -4020,6 +4092,59 @@
     "scorePhaseTitle": "Phase 1 · SCORE",
     "promotePhaseTitle": "Phase 2 · PROMOTE"
   },
+  "adminUpdate": {
+    "title": "Update",
+    "intro": "The version this instance is running, whether a newer release exists, and — when the optional updater overlay is deployed — a one-click bump of the running containers.",
+    "versionsTitle": "Versions",
+    "running": "Running",
+    "latest": "Latest release",
+    "latestUnknown": "unknown",
+    "unstamped": "(build not stamped)",
+    "floating": "(moving tag — no comparison possible)",
+    "updateAvailable": "{version} is available.",
+    "upToDate": "This instance is running the latest release.",
+    "checkStale": "The release check could not reach GitHub; the value shown may be out of date.",
+    "checkNow": "Check now",
+    "checking": "Checking…",
+    "notifyOnlyTitle": "Manual update",
+    "notifyOnlyBody": "No updater is configured, so this instance can report versions but not apply an update. On Docker Compose, deploy the optional overlay (docker-compose.update.yaml) to enable it. Otherwise update from the host:",
+    "notifyOnlyComposeLabel": "Docker Compose",
+    "notifyOnlyFlyLabel": "Fly.io",
+    "notifyOnlyFlyOrderHint": "Run these in order — the middleware applies the schema migrations at boot, so let it report the new version before you move the admin UI.",
+    "notifyOnlyFlyPinHint": "Also update the image line in your fly.toml: --image applies to this deploy only, so a later plain fly deploy would put the app back on the old tag.",
+    "notifyOnlyDocsHint": "Kubernetes and other platforms: see docs/upgrading.md. The desktop app updates itself.",
+    "executorUnreachable": "The updater is configured but did not answer: {message}",
+    "auditUnavailable": "Updates are disabled because no Postgres is connected: a stack replacement that cannot be recorded is not offered.",
+    "inProgressTitle": "Update in progress",
+    "inProgressBody": "The containers are being replaced. This page keeps polling — the middleware is briefly unavailable while it restarts.",
+    "rolledBack": "The last update failed and was rolled back: {message}",
+    "confirmTitle": "Confirm",
+    "confirmInstruction": "Type <code>{phrase}</code> to confirm.",
+    "confirmWarning": "This replaces the running middleware and admin UI containers. Schema migrations are forward-only — a rollback restores the images, not the database. Snapshot your volume before a major bump.",
+    "confirmInputLabel": "Target version",
+    "pinNotPersisted": "This executor cannot make the version stick: your next plain fly deploy reads fly.toml and would put the app back on the old tag. Update the image line there too.",
+    "triggerButton": "Update to {version}",
+    "triggering": "Starting…",
+    "historyTitle": "Update history",
+    "outcomes": {
+      "requested": "requested",
+      "succeeded": "succeeded",
+      "failed": "failed"
+    },
+    "loadError": "Could not load the update status: {message}",
+    "errors": {
+      "confirmation_mismatch": "The confirmation did not match the target version.",
+      "invalid_target_version": "Only release versions like v1.2.3 can be applied — moving tags cannot be rolled back.",
+      "updater_not_configured": "No updater is configured on this instance.",
+      "audit_unavailable": "The update was refused because it could not be recorded.",
+      "update_in_progress": "An update is already running.",
+      "already_on_target": "This instance is already running that version.",
+      "updater_unreachable": "The updater did not answer.",
+      "updater_rejected": "The updater refused the job.",
+      "audit_write_failed": "The audit record could not be written, so the update was not started.",
+      "generic": "The update could not be started: {message}"
+    }
+  },
   "adminDangerZone": {
     "title": "Danger Zone · Memory Purge",
     "intro": "Deletes memory irreversibly along one axis. <strong>Everything</strong> wipes agent scratch <em>and</em> knowledge graph; the user / team / channel axes only affect the knowledge graph. There is no undo — always check the preview first.",
@@ -4216,7 +4341,50 @@
     "unavailableTitle": "Knowledge-graph lifecycle is not available",
     "unavailableBody": "The middleware did not publish the lifecycle service, so there is nothing to show here. The sweeps are Postgres-specific: they exist only while the knowledge-graph plugin is active against a Postgres/Neon database. An in-memory knowledge graph has no lifecycle to run. This page no longer depends on any feature flag — if the plugin is active on Postgres and you still see this, check the plugin status.",
     "signedOutTitle": "Your session has expired",
-    "signedOutBody": "These endpoints require an operator session. Sign in again, then reload this page."
+    "signedOutBody": "These endpoints require an operator session. Sign in again, then reload this page.",
+    "actions": {
+      "decayTitle": "Run decay + rotation",
+      "decayDescription": "Flush access tracker → recompute decay_score → rotate HOT→WARM→COLD → hard-delete done tasks past TTL.",
+      "gcTitle": "Run GC quotas",
+      "gcDescription": "Per-scope eviction by type-weight × decay-score. Enforces hot_max_entries + max_total_chars.",
+      "accessFlushTitle": "Run access flush only",
+      "accessFlushDescription": "Drain the access tracker into access_count + accessed_at without rotating. Debug-only."
+    },
+    "cards": {
+      "tierBreakdown": "Tier breakdown",
+      "entryTypeBreakdown": "Entry-type breakdown",
+      "decayDistribution": "Decay-score distribution",
+      "totalTurns": "Total Turns"
+    },
+    "topScopes": {
+      "heading": "Top scopes (by Turn count)",
+      "empty": "No scopes recorded yet.",
+      "colScope": "Scope",
+      "colTurns": "Turns",
+      "colQuota": "Quota",
+      "colChars": "Chars",
+      "colCharQuota": "Char-Quota"
+    },
+    "lastRuns": {
+      "heading": "Last sweep runs",
+      "decay": "Decay",
+      "gc": "GC",
+      "accessFlush": "Access flush",
+      "neverRun": "never run in this process",
+      "updated": "Updated",
+      "hotToWarm": "HOT → WARM",
+      "warmToCold": "WARM → COLD",
+      "doneTasksDeleted": "Done tasks deleted",
+      "durationMs": "Duration (ms)",
+      "scopesAffected": "Scopes affected",
+      "evictedByCount": "Evicted by count",
+      "evictedByChars": "Evicted by chars",
+      "flushed": "Flushed",
+      "promotedColdToWarm": "Promoted COLD → WARM"
+    },
+    "title": "Knowledge-Graph Lifecycle",
+    "intro": "Palaia Phase 4 — tier rotation, decay, GC. Sweeps run on the cron schedule; the buttons below trigger them on demand.",
+    "refresh": "Refresh"
   },
   "adminKgPriorities": {
     "intro": "Per-agent block/boost list for the token-budget assembler. Block drops a turn from the recall pool; boost multiplies the score by `weight` (default 1.3). `manuallyAuthored=true` additionally applies an independent ×1.3 boost — both combine.",
@@ -4399,10 +4567,15 @@
       "auditLoading": "Loading audit trail…",
       "auditEmpty": "No audit entries.",
       "reasonQuoted": "“{reason}”"
+    },
+    "listView": {
+      "runTrace": "Run trace",
+      "noEntities": "No entities in this turn",
+      "loadingRun": "loading run…",
+      "noRunTrace": "No run trace recorded"
     }
   },
   "memory": {
-    "errorMiddlewareUnreachable": "Middleware unreachable (localhost:3979). Is `npm run dev` running in the middleware folder?",
     "errorDevEndpointUnavailable": "Dev memory endpoint unavailable. Set DEV_ENDPOINTS_ENABLED=true in middleware/.env and restart the middleware.",
     "errorListFailed": "Listing failed (HTTP {status})",
     "errorFileFailed": "File load failed (HTTP {status})",
@@ -4414,7 +4587,8 @@
     "reload": "↻ Reload",
     "loading": "Loading…",
     "empty": "empty",
-    "selectEntry": "Select an entry on the left…"
+    "selectEntry": "Select an entry on the left…",
+    "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator."
   },
   "memories": {
     "kinds": {
@@ -4481,6 +4655,7 @@
   },
   "routines": {
     "page": {
+      "metaTitle": "Routines · omadia",
       "kicker": "Routines",
       "title": "Cron jobs & routines.",
       "intro": "User-owned recurring agent invocations. They are created in the chat (manage_routine tool); here you can see everything at a glance and pause or delete.",
@@ -4503,7 +4678,20 @@
       "historyErrorTitle": "Run history unreachable",
       "historyEmpty": "No run history for this routine yet — as soon as it fires for the first time, a row will appear here.",
       "columnDuration": "Duration",
-      "columnError": "Error"
+      "columnError": "Error",
+      "promptLabel": "Prompt",
+      "fieldRoutineId": "Routine ID",
+      "fieldUserId": "User ID",
+      "fieldTenant": "Tenant",
+      "fieldChannel": "Channel",
+      "fieldCron": "Cron",
+      "fieldTimeout": "Timeout",
+      "fieldStatus": "Status",
+      "columnStarted": "Started",
+      "columnTrigger": "Trigger",
+      "columnStatus": "Status",
+      "columnIterTools": "Iter · Tools",
+      "columnDetail": "Detail"
     },
     "trigger": {
       "cron": "Cron",
@@ -4549,6 +4737,7 @@
       "showLess": "less"
     },
     "runDetail": {
+      "metaTitle": "Routine Run · omadia",
       "errorUnreachableFallback": "Run detail unreachable.",
       "breadcrumbRoutines": "Routines",
       "loadErrorTitle": "Run unreachable",
@@ -4562,6 +4751,7 @@
   },
   "system": {
     "page": {
+      "metaTitle": "System · omadia",
       "title": "Platform health.",
       "intro": "Runtime, persistence, backup. Metadata only — no secrets.",
       "errorUnknownLoad": "Unknown error while loading the vault status.",
@@ -4595,6 +4785,7 @@
     }
   },
   "help": {
+    "metaTitle": "Help · omadia",
     "kicker": "Help",
     "title": "Help & support",
     "intro": "Answers to the states you are most likely to get stuck in, plus where to reach us when they do not help.",

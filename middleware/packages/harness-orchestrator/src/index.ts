@@ -65,6 +65,10 @@ export {
   ensureFallbackAgent,
   attachAllPlugins,
   FALLBACK_AGENT_SLUG,
+  // #679 / I5 — exported so a locale-aware surface can recognise the
+  // server-written seed prose and render its own copy instead.
+  FALLBACK_AGENT_SEED_NAME,
+  FALLBACK_AGENT_SEED_DESCRIPTION,
 } from './registry/onboarding.js';
 export type { OnboardingOptions } from './registry/onboarding.js';
 // US8 — per-Agent memory scope.
@@ -132,6 +136,7 @@ export {
   McpManager,
   MCP_RESULT_TYPE_INPUT_REQUIRED,
   REPLAY_ARG_KEY,
+  planMcpInputReplay,
   extractStructured,
   isInputRequiredResult,
   mcpNativeHandler,
@@ -139,6 +144,12 @@ export {
   // Exported so the no-collateral-invalidation rule of `McpManager.close(id)`
   // can be unit tested and reused by ops tooling (issue #563).
   mcpPoolScopeMatches,
+  // #545 — the tool-list cache rules (TTL normalisation + scope keying) are
+  // the contract, unit-tested as pure functions like `mcpPoolScopeMatches`.
+  mcpToolListTtlMs,
+  mcpToolListCacheKey,
+  MCP_TOOLLIST_DEFAULT_TTL_MS,
+  MCP_TOOLLIST_MAX_TTL_MS,
   mcpToolToLocalSubAgentTool,
   mcpToolToNativeSpec,
   renderToolResult,
@@ -180,6 +191,7 @@ export {
   claimMcpInputFromResults,
   extractMcpInputPrompt,
   formatMcpInputReply,
+  isOwnMintedSentinel,
   mcpInputMalformedError,
   mcpInputReplayCappedError,
   mcpInputRequiredSentinel,
@@ -200,6 +212,7 @@ export type {
   McpInputParseOutcome,
   McpInputReplayer,
   McpInputReply,
+  McpInputSentinelMint,
   PendingMcpInput,
   PendingMcpInputKey,
   PendingMcpInputOwner,
@@ -291,8 +304,6 @@ export {
   stickyKeyFor,
   InMemoryDirectLineStickyStore,
   DIRECT_LINE_EXIT_TOKENS,
-  SHARED_SCOPES,
-  SYNTHETIC_SCOPE_PREFIXES,
   STICKY_IDLE_TTL_MS,
   STICKY_MAX_BINDINGS,
 } from './directLineSticky.js';
@@ -418,9 +429,37 @@ export type { RunTracePayload } from '@omadia/channel-sdk';
 export { SteeringBus, steeringBus, MAX_STEER_LENGTH } from './steeringBus.js';
 export type { SteerEnqueueResult } from './steeringBus.js';
 
+// #648 — resolved AI-Act marking posture, published to the ServiceRegistry and
+// projected onto `/health` + the operator dashboard.
+export {
+  AI_DISCLOSURE_CHANNEL_KINDS,
+  AI_DISCLOSURE_POSTURE_SERVICE,
+  describeAiDisclosurePosture,
+  formatDisclosureBootWarning,
+  resolveDisclosureLevelForChannel,
+} from './aiDisclosurePosture.js';
+export type {
+  AiDisclosureChannelKind,
+  AiDisclosurePosture,
+  ChannelPosture,
+} from './aiDisclosurePosture.js';
+
 // Session logger + chat-session store
 export { SessionLogger, graphScopeFor } from './sessionLogger.js';
 export type { SessionLogEntry } from './sessionLogger.js';
+
+// #684 — run-trace outcome tallies. Exported so an operator surface can read
+// how often the trace was dropped without SessionLogger growing a reporting
+// responsibility of its own.
+export {
+  RunTraceOutcomeStats,
+  recordRunTraceOutcome,
+  RUN_TRACE_RECORDED,
+} from './runTraceObservability.js';
+export type {
+  RunTraceOutcome,
+  RunTraceOutcomeCounts,
+} from './runTraceObservability.js';
 export {
   ChatSessionStore,
   InvalidSessionIdError,

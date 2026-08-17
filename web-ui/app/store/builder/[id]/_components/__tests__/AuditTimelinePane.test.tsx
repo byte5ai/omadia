@@ -83,7 +83,10 @@ describe('<AuditTimelinePane />', () => {
     });
     const event1 = screen.getByTestId('audit-event-1');
     expect(event1).toHaveTextContent('Persona geändert');
-    expect(event1).toHaveTextContent('Template: software-engineer');
+    // #601 — this rendered in the `de` locale but asserted the ENGLISH label,
+    // because `builder.versions.detailTemplate` was untranslated. It is German
+    // now, and pinning the old value would have re-pinned the bug.
+    expect(event1).toHaveTextContent('Vorlage: software-engineer');
     expect(event1).toHaveTextContent('2 Achsen');
 
     const event2 = screen.getByTestId('audit-event-2');

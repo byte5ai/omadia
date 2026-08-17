@@ -87,7 +87,7 @@ async function createTestApp(fetch: CacheFetch): Promise<TestApp> {
   );
 
   const server: Server = await new Promise((resolve) => {
-    const s = app.listen(0, () => resolve(s));
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   const baseUrl = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
   return {

@@ -1,4 +1,5 @@
 import type { MemoryStore } from '@omadia/plugin-api';
+import { scopeGraphKey } from '@omadia/channel-sdk';
 import {
   qualifyScope,
   turnNodeId,
@@ -7,6 +8,10 @@ import {
 } from '@omadia/plugin-api';
 import { isValidSessionId, type ChatSessionStore } from './chatSessionStore.js';
 import type { RunTracePayload } from './runTraceCollector.js';
+import {
+  recordRunTraceOutcome,
+  RunTraceOutcomeStats,
+} from './runTraceObservability.js';
 
 export interface SessionLogEntry {
   /** Scope identifier — Teams conversation id, 'http', etc. Becomes a safe dir name. */
@@ -74,6 +79,15 @@ export class SessionLogger {
      * so `turnNodeId` agrees on both the write and the recall side.
      */
     private readonly agentSlug?: string,
+    /**
+     * #684 — per-process tallies of run-trace outcomes. Public so an operator
+     * surface can read the drop counts without this class growing a reporting
+     * responsibility; injectable so two tests in one process cannot read each
+     * other's turns. Only ever written for a turn that actually CARRIED a
+     * trace: a turn with no `runTrace` is not a drop, it is a turn the
+     * orchestrator collected nothing for.
+     */
+    readonly runTraceStats: RunTraceOutcomeStats = new RunTraceOutcomeStats(),
   ) {}
 
   async log(entry: SessionLogEntry): Promise<{ turnExternalId: string }> {
@@ -117,6 +131,9 @@ export class SessionLogger {
       );
       // Don't try graph ingest if the markdown write fell over — keeps the
       // two surfaces consistent (either both recorded the turn, or neither).
+      if (entry.runTrace) {
+        recordRunTraceOutcome(this.runTraceStats, 'transcript-failed', err);
+      }
       return { turnExternalId: earlyTurnId };
     }
 
@@ -168,6 +185,9 @@ export class SessionLogger {
         );
         // Skip run-trace ingest if the turn write failed — keeps the graph
         // internally consistent (no Run pointing at a missing Turn).
+        if (entry.runTrace) {
+          recordRunTraceOutcome(this.runTraceStats, 'turn-ingest-failed', err);
+        }
         return { turnExternalId };
       }
 
@@ -177,14 +197,22 @@ export class SessionLogger {
             ...entry.runTrace,
             turnId: turnExternalId,
           });
+          recordRunTraceOutcome(this.runTraceStats, 'recorded');
         } catch (err) {
-          console.error(
-            '[session-log] run-trace ingest failed:',
-            err instanceof Error ? err.message : err,
-          );
+          // #684 — this is the drop the issue was filed about: `ingestRun`
+          // throws when no User-Cluster node exists for the user, which is the
+          // NORMAL state for every channel except the browser-login flow. The
+          // turn still succeeded and the transcript still holds it; only the
+          // trace is missing. Recorded as telemetry loss, not as a turn error.
+          recordRunTraceOutcome(this.runTraceStats, 'run-ingest-failed', err);
         }
       }
       return { turnExternalId };
+    }
+    // No graph sink at all. Before #684 this returned in silence, which made a
+    // permanently trace-less deployment indistinguishable from a healthy one.
+    if (entry.runTrace) {
+      recordRunTraceOutcome(this.runTraceStats, 'no-graph-sink');
     }
     return { turnExternalId: turnNodeId(gScope, iso) };
   }
@@ -202,8 +230,32 @@ export function graphScopeFor(
   agentSlug: string | undefined,
   rawScope: string,
 ): string {
-  const base = sanitizeScope(rawScope);
+  const base = injectiveScopeKeysEnabled() ? scopeGraphKey(rawScope) : sanitizeScope(rawScope);
   return agentSlug !== undefined ? qualifyScope(agentSlug, base) : base;
+}
+
+/**
+ * #575 D3 — opt-in switch for the injective graph key.
+ *
+ * `sanitizeScope` is not injective (spec §2.3): `teams::c1`, `teams:c1` and
+ * `teams-c1` share one partition, as do scopes differing only in case or beyond
+ * 80 characters. `scopeGraphKey` fixes that — but for any scope that WAS lossy
+ * it necessarily produces a different key, which orphans that scope's existing
+ * graph partition. In practice that is every `teams-<conv>`, `telegram:<id>`,
+ * `routine:<id>`, `conductor:<run>:<step>` and `channelId::conversationId` in a
+ * live deployment: their accumulated memory would stop being recalled.
+ *
+ * So the fix ships DISABLED and a deployment opts in deliberately, rather than
+ * discovering the discontinuity after an upgrade. Scopes that were already
+ * lossless keep a byte-identical key either way, so enabling it is a no-op for
+ * plain chat-tab ids, `'http-default'` and `'teams-unknown'`.
+ *
+ * Flipping this default to on is a migration, not a patch — it needs a
+ * partition rewrite or an accepted recall reset, and that decision is #575
+ * Phase 2's, not this PR's.
+ */
+function injectiveScopeKeysEnabled(): boolean {
+  return process.env['OMADIA_INJECTIVE_SCOPE_KEYS'] === '1';
 }
 
 function sanitizeScope(scope: string): string {

@@ -4,6 +4,7 @@ import {
   mcpDomainForServer,
   resolveMcpCallTimeouts,
 } from './mcp/mcpClient.js';
+import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
 import {
   deriveAgentsConsulted,
   toSemanticAnswer,
@@ -77,11 +78,13 @@ import type {
 import type {
   McpInputReplayer,
   McpInputReply,
+  McpInputSentinelMint,
   PendingMcpInput,
   PendingMcpInputStore,
 } from './mcp/pendingMcpInput.js';
 import {
   claimMcpInputFromResults,
+  isOwnMintedSentinel,
   mcpInputReplyLabel,
   parseMcpInputReply,
 } from './mcp/pendingMcpInput.js';
@@ -2856,10 +2859,15 @@ export class Orchestrator {
   private resolveTurnDisclosure(input: ChatTurnInput): AiDisclosure | undefined {
     const setup = this.aiDisclosure;
     const channelKind = input.channelIdentity?.channelKind;
-    const override =
-      channelKind !== undefined ? setup?.overrides?.[channelKind] : undefined;
-    const level: AiDisclosureLevel =
-      override ?? setup?.level ?? DEFAULT_AI_DISCLOSURE_POLICY.level;
+    // #648 — the precedence lives in ONE place now. `/health`, the boot log and
+    // the operator dashboard project the same function over every channel; a
+    // second copy of these rules here would let the reported posture disagree
+    // with what turns actually do, silently, which is the failure #648 exists
+    // to prevent.
+    const level: AiDisclosureLevel = resolveDisclosureLevelForChannel(
+      setup,
+      channelKind,
+    );
     // `source` gates the `'off'` opt-out: only an operator-sourced policy may
     // silence a turn. A resolved `setup` object exists ONLY when the operator
     // configured at least one disclosure field (the plugin passes `undefined`
@@ -3069,10 +3077,8 @@ export class Orchestrator {
     // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
     // `turnContext.current()?.resolvedOmadiaUserId` instead of each
     // re-deriving it independently.
-    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
-      this.knowledgeGraph,
-      input,
-    );
+    const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
+    const resolvedOmadiaUserId = turnOwner.omadiaUserId;
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -3109,9 +3115,20 @@ export class Orchestrator {
     // `??`, a parent carrying an empty string would short-circuit, suppress the
     // valid key this branch would have produced, and then be dropped by the
     // truthy spread — silently downgrading a resolvable turn to `unresolved`.
+    // #568 — prefer the cluster's IdP subject over the canonical uuid.
+    //
+    // Both are KG-attested and neither is client-controlled, so this is not a
+    // trust downgrade; it is a NAMESPACE correction. `/authorize` stores a
+    // `per_user` token under the session's `sub` (= the provider's subject),
+    // never under the canonical uuid, so keying a channel turn on the uuid
+    // looks up a token that was never stored and every such turn failed
+    // closed. The uuid remains the fallback: a channel-only user has no IdP
+    // subject, and for them nothing changes.
     const mcpUserKey =
       parent?.mcpUserKey ||
-      (input.channelIdentity ? resolvedOmadiaUserId : undefined);
+      (input.channelIdentity
+        ? turnOwner.authSubjectKey || resolvedOmadiaUserId
+        : undefined);
 
     return turnContext.run(
       {
@@ -4056,6 +4073,9 @@ export class Orchestrator {
     ]);
     const turnModel = turnModelResolved.model;
     const turnPersonaBody = turnPersonaResolved.skillBody;
+    // #650 — stamp the resolved model on the trace here, once, rather than at
+    // each of `finish()`'s call sites. Buffered path.
+    traceCollector?.recordModel(turnModel, this.provider.id);
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -4614,10 +4634,8 @@ export class Orchestrator {
     // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
     // without this the resolved identity would never reach a channel turn's
     // tool dispatch at all — see `resolveTurnOwnerIdentity`.
-    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(
-      this.knowledgeGraph,
-      input,
-    );
+    const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
+    const resolvedOmadiaUserId = turnOwner.omadiaUserId;
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -4654,9 +4672,20 @@ export class Orchestrator {
     // `??`, a parent carrying an empty string would short-circuit, suppress the
     // valid key this branch would have produced, and then be dropped by the
     // truthy spread — silently downgrading a resolvable turn to `unresolved`.
+    // #568 — prefer the cluster's IdP subject over the canonical uuid.
+    //
+    // Both are KG-attested and neither is client-controlled, so this is not a
+    // trust downgrade; it is a NAMESPACE correction. `/authorize` stores a
+    // `per_user` token under the session's `sub` (= the provider's subject),
+    // never under the canonical uuid, so keying a channel turn on the uuid
+    // looks up a token that was never stored and every such turn failed
+    // closed. The uuid remains the fallback: a channel-only user has no IdP
+    // subject, and for them nothing changes.
     const mcpUserKey =
       parent?.mcpUserKey ||
-      (input.channelIdentity ? resolvedOmadiaUserId : undefined);
+      (input.channelIdentity
+        ? turnOwner.authSubjectKey || resolvedOmadiaUserId
+        : undefined);
 
     const context: TurnContextValue = {
       turnId,
@@ -5071,6 +5100,10 @@ export class Orchestrator {
     ]);
     const turnModel = resolved.model;
     const turnPersonaBody = resolvedPersona.skillBody;
+    // #650 — streaming mirror of the buffered stamp above. Both paths, or the
+    // field is present on some traces and absent on others for no visible
+    // reason, which is worse for a provenance record than not having it.
+    traceCollector?.recordModel(turnModel, this.provider.id);
     // Surface the Haiku-triage decision inline, before the first model call —
     // the UI renders it at the top of the turn card so the operator sees the
     // classifier's verdict (simple/complex → model) as soon as it lands.
@@ -5691,6 +5724,14 @@ export class Orchestrator {
 
       yield {
         type: 'error',
+        // #641 — see the `correlationId` doc on `ChatStreamEvent`. Read from the
+        // turn context rather than threaded as a parameter, for the same reason
+        // `privacyHandle` is: every call site here already runs inside the
+        // turn's `runGenerator` scope, and the value is the id the session
+        // logger and MCP audit already key on.
+        ...(turnContext.currentTurnId()
+          ? { correlationId: turnContext.currentTurnId() as string }
+          : {}),
         message: `Orchestrator exceeded maxToolIterations (${String(this.maxIterations)}) without reaching a final answer.`,
       };
     } catch (err) {
@@ -5699,8 +5740,12 @@ export class Orchestrator {
       // invisible in the server logs. Log the technical detail here. The
       // user-facing error-message wording is handled separately (Privacy
       // Shield v4).
+      // #641 — the correlation id goes in the LOG LINE, not just on the event.
+      // The whole point of handing the user a token is that someone can then
+      // find this entry by it; a token that appears only in the user's message
+      // is a token that joins nothing.
       console.error(
-        '[orchestrator] turn failed:',
+        `[orchestrator] turn failed (correlationId=${turnContext.currentTurnId() ?? 'unknown'}):`,
         err instanceof Error ? (err.stack ?? err.message) : err,
       );
       // Issue #506 — a tool call earlier in this turn may have already
@@ -5786,6 +5831,11 @@ export class Orchestrator {
       } else {
         yield {
           type: 'error',
+          // #641 — the token that makes this failure diagnosable. Same value as
+          // the one in the `console.error` above, so a log query by it is exact.
+          ...(turnContext.currentTurnId()
+            ? { correlationId: turnContext.currentTurnId() as string }
+            : {}),
           message: err instanceof Error ? err.message : String(err),
         };
       }
@@ -5988,6 +6038,13 @@ export class Orchestrator {
     // whether to pass the narration through raw (sub-agent already saw
     // real values, its synthesis carries them) or intern as before.
     const subAgentBypassFlag = { value: false };
+    // #570 — provenance receipt for an MRTR sentinel minted DURING this
+    // dispatch. Scoped per call (never per turn) so two MCP tools parking in
+    // the same `allSettled` batch cannot exempt each other's results. Only
+    // installed when a privacy guard is active: with no guard nothing interns,
+    // so the extra scope would buy nothing and every guard-less dispatch stays
+    // byte-identical to before. See `McpInputSentinelMint`.
+    const mcpInputSentinelMint: McpInputSentinelMint = {};
     let result: string;
     if (
       privacy !== undefined &&
@@ -6003,10 +6060,21 @@ export class Orchestrator {
           ...ctx,
           subAgentDatasetSink: subAgentSink,
           subAgentBypassFlag,
+          mcpInputSentinelMint,
           ...(domainToolAgentId !== undefined
             ? { subAgentOwnerPluginId: domainToolAgentId }
             : {}),
         },
+        () => this.dispatchToolInner(name, input, observer),
+      );
+    } else if (privacy !== undefined && ctx !== undefined) {
+      // #570 — MCP tools reach dispatch as NATIVE tools (`mcpNativeHandler`),
+      // not as domain tools, so the branch above never covers them. They need
+      // the same per-dispatch scope for the mint box and nothing else: the
+      // sub-agent sinks stay out, so this scope is a plain copy of the turn
+      // context plus the receipt.
+      result = await turnContext.run(
+        { ...ctx, mcpInputSentinelMint },
         () => this.dispatchToolInner(name, input, observer),
       );
     } else {
@@ -6057,6 +6125,25 @@ export class Orchestrator {
       }
     }
     if (privacy !== undefined && typeof result === 'string') {
+      // #570 — MRTR provenance exemption. This dispatch parked an MCP call and
+      // the result IS the sentinel omadia minted for it. Interning it would
+      // replace the correlation id with a digest, `parseMcpInputSentinel` (
+      // prefix-anchored) would miss, `drainPendingMcpInput` would find nothing
+      // and the input card would never render — i.e. the entire #544 feature is
+      // dead whenever a privacy guard is installed, which is the default.
+      //
+      // What this newly exposes to the LLM is bounded by what the sentinel
+      // contains and nothing else: a random UUID, the operator-configured
+      // server name, the tool name, and up to 8 server-authored field NAMES
+      // clamped to 64 chars each. The user-facing `prompt`/`label`/
+      // `description` are server-authored too but live on the card, never in
+      // the sentinel, and the collected VALUES never come near this path.
+      //
+      // Checked before the name allowlist because it is the narrower rule: it
+      // exempts one specific string in one specific dispatch, not a tool.
+      if (isOwnMintedSentinel(mcpInputSentinelMint, result)) {
+        return result;
+      }
       // Interning-exemption: the agent's own infrastructure/self tools
       // (memory, stored-process CRUD, self-produced meta output) are never
       // interned — masking them blinds the agent to its own operational

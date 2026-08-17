@@ -275,6 +275,34 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
       const defaultValue = asString(f['default']);
       if (defaultValue !== undefined) entry.default = defaultValue;
     }
+    if (type === 'json_file') {
+      // #603 (OM-17) — the upload's extraction map. Validated HERE, at load
+      // time, for the same reason `pattern` is: a manifest is untrusted input,
+      // and a `json_file` field whose `extracts` is missing or unusable would
+      // otherwise reach the operator as a file picker that silently produces
+      // nothing. Dropping the field entirely is the honest degradation — the
+      // form then shows the underlying `secret` fields, i.e. exactly the
+      // pre-#603 behaviour, instead of an upload that cannot work.
+      const extractsRaw = asRecord(f['extracts']);
+      const extracts: Record<string, string> = {};
+      for (const [target, path] of Object.entries(extractsRaw ?? {})) {
+        const p = asString(path);
+        if (target.length > 0 && p !== undefined) extracts[target] = p;
+      }
+      if (Object.keys(extracts).length === 0) {
+        console.warn(
+          `[manifestLoader] ${id}: setup field '${key}' is type json_file but declares no usable 'extracts' — dropping the field.`,
+        );
+        continue;
+      }
+      entry.extracts = extracts;
+      const expectRaw = asRecord(f['expect']);
+      if (expectRaw && Object.keys(expectRaw).length > 0) {
+        entry.expect = expectRaw;
+      }
+      const accept = asString(f['accept']);
+      if (accept) entry.accept = accept;
+    }
     if (type === 'enum') {
       const enumRaw = f['enum'];
       if (Array.isArray(enumRaw)) {
@@ -974,6 +1002,8 @@ function isSetupFieldType(value: string): value is PluginSetupField['type'] {
     value === 'enum' ||
     value === 'boolean' ||
     value === 'integer' ||
-    value === 'host_list'
+    value === 'host_list' ||
+    // #603 (OM-17) — upload a JSON credential file instead of transcribing it.
+    value === 'json_file'
   );
 }

@@ -13,6 +13,7 @@ import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { loadProfile } from '../src/plugins/profileLoader.js';
 import { createProfilesRouter } from '../src/routes/profiles.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 type Partial_Plugin = Pick<
   Plugin,
@@ -90,7 +91,7 @@ describe('/api/v1/profiles router', () => {
   let tmpDir: string;
   let registry: InMemoryInstalledRegistry;
 
-  before(() => {
+  before(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'profiles-router-test-'));
 
     writeProfile(
@@ -192,7 +193,7 @@ describe('/api/v1/profiles router', () => {
       '/api/v1/profiles',
       createProfilesRouter({ catalog, registry, profilesDir: tmpDir }),
     );
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}`;
   });
@@ -455,7 +456,7 @@ describe('/api/v1/profiles router', () => {
             profilesDir: roundTripDir,
           }),
         );
-        const secondServer = secondApp.listen(0);
+        const secondServer = await listenLoopback(secondApp);
         try {
           const secondAddr = secondServer.address() as AddressInfo;
           const secondBase = `http://127.0.0.1:${String(secondAddr.port)}`;

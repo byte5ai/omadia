@@ -6,7 +6,9 @@ import {
   listOperatorChannels,
   type ChannelsListDto,
 } from '../../_lib/channels';
+import { fetchDisclosurePosture } from '../../_lib/disclosure';
 import { ChannelsDashboard } from './_components/ChannelsDashboard';
+import { DisclosureNotice } from './_components/DisclosureNotice';
 
 /**
  * Phase B+ — operator-facing channels dashboard.
@@ -17,9 +19,10 @@ import { ChannelsDashboard } from './_components/ChannelsDashboard';
  * `ChannelKeyDirectory` contribution.
  */
 
-export const metadata: Metadata = {
-  title: 'Channels · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('operatorChannels');
+  return { title: t('metaTitle') };
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -33,6 +36,12 @@ export default async function OperatorChannelsPage(): Promise<React.ReactElement
     await redirectIfUnauthorized(err);
     loadError = err instanceof Error ? err.message : t('loadError');
   }
+  // #648 — the resolved AI-Act marking posture. Fetched separately and
+  // never allowed to fail the page: it feeds an informational hint, and a
+  // channels dashboard that 500s because a hint could not be read would be a
+  // worse outcome than a missing hint. `fetchDisclosurePosture` swallows its
+  // own errors and returns null.
+  const disclosurePosture = await fetchDisclosurePosture();
 
   return (
     <main className="mx-auto w-full max-w-[1400px] px-6 py-12 lg:px-8 lg:py-16">
@@ -42,6 +51,7 @@ export default async function OperatorChannelsPage(): Promise<React.ReactElement
           {t('subtitle')}
         </p>
       </header>
+      <DisclosureNotice posture={disclosurePosture} />
       {loadError ? (
         <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
           {loadError}

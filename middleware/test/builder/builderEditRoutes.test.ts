@@ -73,7 +73,7 @@ async function createTestApp(opts: { email?: string | null } = {}): Promise<Test
   );
 
   const server: Server = await new Promise((resolve) => {
-    const s = app.listen(0, () => resolve(s));
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   const port = (server.address() as AddressInfo).port;
 
@@ -227,7 +227,7 @@ describe('PATCH /api/v1/builder/drafts/:id/spec', () => {
       }),
     );
     const otherServer: Server = await new Promise((resolve) => {
-      const s = otherApp.listen(0, () => resolve(s));
+      const s = otherApp.listen(0, '127.0.0.1', () => resolve(s));
     });
     const otherPort = (otherServer.address() as AddressInfo).port;
     try {

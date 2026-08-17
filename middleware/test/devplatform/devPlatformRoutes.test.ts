@@ -7,6 +7,8 @@
 
 import { describe, it, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 import {
   assertAuthModeAdmissible,
@@ -27,6 +29,7 @@ import {
   postJson,
   throwsCode,
 } from './devPlatformRoutes.harness.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 describe('devPlatform — session gate', () => {
   let h: Harness;
@@ -479,5 +482,45 @@ describe('devPlatform — cross-operator authorization (review finding)', () => 
     assert.deepEqual(asAlice.jobs.map((j) => j.id), ['job-1']);
     const asBob = await (await fetch(`${h.baseUrl}/jobs`, { headers: bob() })).json() as { jobs: Array<{ id: string }> };
     assert.deepEqual(asBob.jobs.map((j) => j.id), ['job-2']);
+  });
+});
+
+/**
+ * Regression guard for an intermittent 401/404 in this file.
+ *
+ * `await listenLoopback(app)` binds the IPv6 wildcard `[::]`. On macOS/BSD that socket is
+ * IPV6_V6ONLY, so the kernel reserves the port in the IPv6 ephemeral space
+ * only — while the harness hands out `http://127.0.0.1:<port>`, an IPv4 URL.
+ * The two spaces are independent, so the dialled port was never reserved and
+ * an unrelated process holding that IPv4 port answered these requests instead:
+ * a 401 where a 404 was expected, a 404 where a 201 was, or bytes undici could
+ * not parse as HTTP at all. Binding the loopback makes the reserved port and
+ * the dialled port the same port, so the OS guarantees exclusivity.
+ */
+describe('harness socket binding', () => {
+  let h: Harness;
+  afterEach(async () => { if (h) await h.close(); });
+
+  it('binds the IPv4 loopback address it advertises', async () => {
+    h = await makeHarness();
+    const addr = h.server.address() as AddressInfo;
+    assert.equal(addr.address, '127.0.0.1', 'must bind the loopback, not the IPv6 wildcard');
+    assert.equal(addr.family, 'IPv4');
+    assert.ok(
+      h.baseUrl.startsWith(`http://127.0.0.1:${String(addr.port)}/`),
+      'the advertised URL must dial the address the server actually bound',
+    );
+  });
+
+  it('holds its port exclusively, so no other listener can shadow it', async () => {
+    h = await makeHarness();
+    const { port } = h.server.address() as AddressInfo;
+    const intruder = http.createServer((_req, res) => { res.writeHead(401); res.end(); });
+    const outcome = await new Promise<string>((resolve) => {
+      intruder.once('error', (err: NodeJS.ErrnoException) => resolve(err.code ?? 'unknown'));
+      intruder.listen(port, '127.0.0.1', () => resolve('bound'));
+    });
+    if (outcome === 'bound') await new Promise<void>((r) => intruder.close(() => r()));
+    assert.equal(outcome, 'EADDRINUSE', 'a colliding bind must be refused, not silently accepted');
   });
 });

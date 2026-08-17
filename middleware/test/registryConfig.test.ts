@@ -17,6 +17,7 @@ import {
 import { InMemorySecretVault } from '../src/secrets/vault.js';
 import { RegistryClient } from '../src/plugins/registryClient.js';
 import { createAdminRegistriesRouter } from '../src/routes/adminRegistries.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 function freshStore(): {
   store: VaultBackedRegistryConfigStore;
@@ -153,7 +154,7 @@ describe('createAdminRegistriesRouter', () => {
   let store: RegistryConfigStore;
   let client: RegistryClient;
 
-  before(() => {
+  before(async () => {
     const settings = new InMemoryRegistrySettings();
     const vault = new InMemorySecretVault();
     store = new VaultBackedRegistryConfigStore({ settings, vault });
@@ -162,7 +163,7 @@ describe('createAdminRegistriesRouter', () => {
     const app = express();
     app.use(express.json());
     app.use('/api/v1/admin/registries', createAdminRegistriesRouter({ store, client }));
-    server = app.listen(0);
+    server = await listenLoopback(app);
     baseUrl = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/api/v1/admin/registries`;
   });
 

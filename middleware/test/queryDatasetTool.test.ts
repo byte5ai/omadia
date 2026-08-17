@@ -113,10 +113,13 @@ describe('QueryDatasetTool', () => {
 
     // What the orchestrator's per-turn resolution computes at turn start —
     // this is the identical call `runTurn`/`chatStream` make.
-    const resolvedOmadiaUserId = await resolveTurnOwnerIdentity(graph, {
-      userId: rawChannelUserId,
-      channelIdentity,
-    });
+    // #568 widened the return to `{ omadiaUserId, authSubjectKey }` so the one
+    // round-trip also carries the IdP subject the MCP token is keyed on. The
+    // dataset-ACL half this test covers still reads only the canonical id.
+    const { omadiaUserId: resolvedOmadiaUserId } = await resolveTurnOwnerIdentity(
+      graph,
+      { userId: rawChannelUserId, channelIdentity },
+    );
     assert.ok(resolvedOmadiaUserId, 'channel identity must resolve to a canonical id');
     assert.notEqual(
       resolvedOmadiaUserId,

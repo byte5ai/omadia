@@ -35,15 +35,21 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 
+import {
+  Client as ModernClient,
+  StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport,
+} from '@modelcontextprotocol/client';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import {
   StdioClientTransport,
   getDefaultEnvironment,
 } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolResultSchema,
+  ToolListChangedNotificationSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type {
   LocalSubAgentTool,
@@ -66,7 +72,13 @@ import {
 } from './pendingMcpInput.js';
 
 /**
- * Relaxed CallToolResult schema: the MCP spec says `structuredContent` MUST be a
+ * Relaxed CallToolResult schema for the **v1-backed** transports (`stdio`,
+ * `sse`). The v2 family has no result-schema parameter at all and types
+ * `structuredContent` as `unknown` by spec (SEP-2106), so the `http` path gets
+ * the same leniency without asking for it — see {@link modernSdkSession} for
+ * the one place v2 is stricter than v1 and what that costs.
+ *
+ * The MCP spec says `structuredContent` MUST be a
  * JSON object, but some hosted proxies (e.g. strava.run.mcp.com.ai) return it as
  * an array. The SDK's strict schema rejects the entire result, and callTool then
  * throws — which we surface as "-32000 Connection closed", making every call on
@@ -127,7 +139,7 @@ export type McpTransportKind = 'stdio' | 'http' | 'sse';
  * marketplace importer prefers an `http` remote when a catalog entry offers
  * both. Nothing is hard-blocked: the removal window is open, existing rows
  * keep working unchanged (`SSEClientTransport` stays wired in
- * `McpManager.transportFor`), and the `agent_mcp_servers.transport` CHECK
+ * `McpManager.makeTransport`), and the `agent_mcp_servers.transport` CHECK
  * constraint still accepts `'sse'`, so a legacy server can be re-created.
  *
  * This array is the single source of truth for "which transports are
@@ -386,10 +398,68 @@ export interface McpManagerOptions {
    *  child process) would live as long as the process. `0` or negative
    *  disables eviction. Defaults to `MCP_POOL_IDLE_TTL_MS`. */
   readonly idleTtlMs?: number;
+  /** Issue #545 — TTL applied to a cached tool list whose server sent no
+   *  `ttlMs` (ADR-0009). Same optional-dependency shape as `idleTtlMs`: wins
+   *  over the `OMADIA_MCP_TOOLLIST_TTL_MS` env override, defaults to
+   *  `MCP_TOOLLIST_DEFAULT_TTL_MS`. `0` (or negative) restores the
+   *  spec-strict reading — absent `ttlMs` means no caching. */
+  readonly toolListTtlMs?: number;
 }
 
 /** Default idle lifetime of a pooled MCP connection (5 minutes). */
 export const MCP_POOL_IDLE_TTL_MS = 300_000;
+
+/**
+ * Default TTL for a cached tool list when the server sent no `ttlMs` (#545).
+ *
+ * MCP 2026-07-28 says an absent `ttlMs` MUST be read as 0 — no caching. The
+ * ecosystem we connect to today speaks ≤ 2025-11-25 and never sends the field,
+ * so the spec-strict reading would make the cache a no-op and forfeit the
+ * discovery round-trips the cache exists to save. Deliberate client-side
+ * deviation, recorded in ADR-0009; `OMADIA_MCP_TOOLLIST_TTL_MS=0` (or
+ * `toolListTtlMs: 0`) opts back into spec-strict behaviour.
+ */
+export const MCP_TOOLLIST_DEFAULT_TTL_MS = 60_000;
+
+/**
+ * Ceiling on any tool-list TTL, server-provided or defaulted (ADR-0009).
+ * `notifications/tools/list_changed` invalidates cooperative servers
+ * immediately; this clamp bounds the staleness an uncooperative server can
+ * buy itself with an extravagant `ttlMs`.
+ */
+export const MCP_TOOLLIST_MAX_TTL_MS = 900_000;
+
+/**
+ * Effective TTL for one `tools/list` result. Exported for the same reason as
+ * `mcpPoolScopeMatches`: the rules are the contract, so they are unit-tested
+ * as a pure function rather than through timing-sensitive integration paths.
+ *
+ *   - server sent a finite number → clamped to [0, MCP_TOOLLIST_MAX_TTL_MS]
+ *     (spec: negative reads as 0; 0 means "do not cache")
+ *   - absent or malformed → `defaultTtlMs` (ADR-0009), same clamp
+ */
+export function mcpToolListTtlMs(ttlMs: unknown, defaultTtlMs: number): number {
+  const fromServer =
+    typeof ttlMs === 'number' && Number.isFinite(ttlMs) ? Math.max(0, ttlMs) : undefined;
+  return Math.min(fromServer ?? Math.max(0, defaultTtlMs), MCP_TOOLLIST_MAX_TTL_MS);
+}
+
+/**
+ * Cache key for one `tools/list` result (#545).
+ *
+ * `cacheScope: "public"` promises the list is identical across auth contexts,
+ * so it may be shared under the bare server id. Everything else — `"private"`,
+ * absent, or a value this client does not recognise — stays under the caller's
+ * pool key (server id + token hash), because a mis-shared tool list crosses
+ * auth contexts and a missed share only costs one extra round-trip.
+ */
+export function mcpToolListCacheKey(
+  poolKey: string,
+  serverId: string,
+  cacheScope: unknown,
+): string {
+  return cacheScope === 'public' ? serverId : poolKey;
+}
 
 /**
  * True when `key` is a pool key belonging to server `id`.
@@ -435,8 +505,203 @@ function looksTransient(text: string): boolean {
   );
 }
 
+/**
+ * The MCP protocol revision a live connection settled on (issue #562 phase 2).
+ * `'legacy'` is the 2025-era `initialize` handshake, `'modern'` the 2026-07-28
+ * `server/discover` negotiation. `null` means the backing SDK cannot negotiate
+ * at all — the v1 line is frozen at 2025-11-25, so a v1-backed session is
+ * `'legacy'` by construction rather than by measurement.
+ */
+export type McpProtocolEra = 'legacy' | 'modern';
+
+/** The per-request policy `callTool` applies. See {@link resolveMcpCallTimeouts}. */
+interface McpRequestPolicy {
+  readonly timeout: number;
+  readonly resetTimeoutOnProgress: boolean;
+  readonly maxTotalTimeout: number;
+}
+
+/** `tools/call` params, as both SDK families accept them. */
+interface McpCallParams {
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
+  readonly _meta?: Record<string, unknown>;
+  /** #562 phase 3, 2026-07-28 retry params — see {@link McpCallReplay}. */
+  readonly inputResponses?: Record<string, unknown>;
+  readonly requestState?: string;
+}
+
+/**
+ * What a replay of a parked MRTR call carries beyond its arguments
+ * (#562 phase 3).
+ *
+ * The 2026-07-28 revision answers an `input_required` result by re-issuing the
+ * ORIGINAL request on a fresh id with two extra params: `inputResponses`, one
+ * entry per embedded request, and a byte-exact echo of the server's opaque
+ * `requestState`. omadia's own 2025-era dialect instead puts the collected
+ * answers inside `arguments` under {@link REPLAY_ARG_KEY}; that form is
+ * untouched, and `planMcpInputReplay` picks per record which one applies.
+ *
+ * `isReplay` is separate from either payload on purpose: it is what the bounce
+ * cap reads, and on the spec dialect there is nothing in `arguments` left for
+ * it to recognise.
+ */
+export interface McpCallReplay {
+  readonly isReplay: true;
+  readonly requestState?: string;
+  readonly inputResponses?: Record<string, unknown>;
+}
+
+/** One `tools/list` entry, typed only as far as `listTools` reads it. Both SDK
+ *  families put the same four fields on the wire; nothing here reshapes them. */
+interface McpToolListEntry {
+  readonly name?: unknown;
+  readonly description?: unknown;
+  readonly inputSchema?: unknown;
+  readonly outputSchema?: unknown;
+}
+
+interface McpListToolsResult {
+  readonly tools?: readonly McpToolListEntry[];
+  /**
+   * MCP 2026-07-28 `CacheableResult` (#545). Declared rather than cast at the
+   * read site, for the reason `LENIENT_CALL_TOOL_RESULT_SCHEMA` gives about
+   * `resultType`: a cast makes "the field is absent" and "this type forgot
+   * about the field" indistinguishable, so a change that really did stop
+   * these arriving would compile in silence and the tool-list cache would
+   * quietly fall back to its default TTL forever.
+   *
+   * Both are `unknown` on purpose. They come off the wire, `mcpToolListTtlMs`
+   * and `mcpToolListCacheKey` are the validators, and a second opinion here
+   * about what a well-formed value looks like is a second place to disagree.
+   *
+   * Measured, because the v2 path had reason to lose them: `listTools` runs
+   * with `cacheMode: 'bypass'`, and bypass only skips the SDK's own response
+   * cache — the hints still arrive verbatim on a modern-era connection.
+   */
+  readonly ttlMs?: unknown;
+  readonly cacheScope?: unknown;
+}
+
+/**
+ * One pooled connection, reduced to the three verbs the manager actually uses.
+ *
+ * Issue #562 phase 2 — omadia now speaks TWO SDK families at once, and this is
+ * the seam between them: `http` connects with `@modelcontextprotocol/client@2`
+ * (which can negotiate the 2026-07-28 era), `stdio` and `sse` stay on the v1
+ * `@modelcontextprotocol/sdk`. Everything above this interface — pooling,
+ * retry, audit, MRTR parking — is family-agnostic and stayed unchanged.
+ *
+ * Why the other two transports did NOT move, measured rather than assumed:
+ * `McpServer` never answers `server/discover` off the HTTP edge, so an `'auto'`
+ * probe on stdio/sse can only ever fall back to `initialize` and a pin fails
+ * with `ERA_NEGOTIATION_FAILED`. Porting them would swap the API and gain no
+ * protocol capability.
+ */
+interface McpSession {
+  /** Which SDK family backs this session. Diagnostics and tests read it. */
+  readonly family: 'v1' | 'v2';
+  /** The negotiated era, once connected. */
+  era(): McpProtocolEra;
+  listTools(): Promise<McpListToolsResult>;
+  callTool(params: McpCallParams, policy: McpRequestPolicy): Promise<unknown>;
+  close(): Promise<void>;
+}
+
 interface Pooled {
-  readonly client: Client;
+  readonly client: McpSession;
+}
+
+/**
+ * v1-backed session (`stdio`, `sse`). Byte-identical to what the manager did
+ * before phase 2, including the lenient result schema.
+ */
+function legacySdkSession(client: Client): McpSession {
+  return {
+    family: 'v1',
+    era: () => 'legacy',
+    listTools: () => client.listTools(),
+    callTool: ({ inputResponses: _r, requestState: _s, ...params }, policy) =>
+      // The 2026-07-28 retry params are dropped rather than forwarded: this
+      // family only ever talks 2025-era, where they are not vocabulary. They
+      // cannot be populated on this path anyway (only a modern peer mints a
+      // `requestState` or a spec-shaped `inputRequests`), so the destructuring
+      // is a guarantee, not a workaround.
+      client.callTool(params, LENIENT_CALL_TOOL_RESULT_SCHEMA, policy),
+    close: () => client.close(),
+  };
+}
+
+/**
+ * v2-backed session (`http`), with three deliberate settings. Each one exists
+ * because the alternative was measured and was worse:
+ *
+ *  - **`versionNegotiation: { mode: 'auto' }`, never a pin.** A pin has no
+ *    fallback and most third-party servers are 2025-era, so pinning breaks
+ *    exactly the peers that work today.
+ *  - **`inputRequired: { autoFulfill: false }`.** v2's driver would otherwise
+ *    fulfil an `input_required` result IN-PROCESS against a round limit.
+ *    omadia does not answer these itself — it parks the call and asks a HUMAN
+ *    over a channel, possibly hours later. Auto-fulfilment is not a faster
+ *    version of that; it is a different behaviour in which the human is never
+ *    asked and nothing turns red. Manual mode is the only correct setting here.
+ *  - **`listTools` with `cacheMode: 'bypass'`.** A cached `tools/list` is what
+ *    arms v2's client-side output-schema validation, which turns a server whose
+ *    `structuredContent` does not match its declared `outputSchema` — or which
+ *    declares one and sometimes omits the content — into a HARD `callTool`
+ *    failure. v1 never validated, this file already carries the scar of a
+ *    strict result schema breaking every call on a real server, and the
+ *    validator is only reachable through an `ajv` neither `@modelcontextprotocol
+ *    /client` nor `/core` declares as a dependency. Bypass keeps `http` behaving
+ *    exactly like `stdio`/`sse` instead of diverging by transport.
+ */
+function modernSdkSession(client: ModernClient): McpSession {
+  return {
+    family: 'v2',
+    era: () => (client.getProtocolEra() === 'modern' ? 'modern' : 'legacy'),
+    listTools: () => client.listTools(undefined, { cacheMode: 'bypass' }),
+    async callTool(params, policy) {
+      // #562 phase 3 — read MRTR off the DECLARED contract instead of an SDK
+      // internal. `allowInputRequired` is what makes v2 hand an
+      // `input_required` result back to the caller (with `resultType`,
+      // `inputRequests` and `requestState` present verbatim) rather than
+      // fulfilling it in-process or raising a typed error. On a 2025-era
+      // connection it is documented as having no effect, and measurement
+      // agrees, so it is passed unconditionally rather than era-gated: one
+      // code path is one fewer place for the two eras to diverge.
+      const res = await client.callTool(params, { ...policy, allowInputRequired: true });
+      return restoreLegacyInputRequired(res, client.getProtocolEra());
+    },
+    close: () => client.close(),
+  };
+}
+
+/**
+ * Put back the MRTR discriminator v2 removes on a 2025-era connection.
+ *
+ * MEASURED, and it is the one thing that would have made this port a silent
+ * regression: `resultType` is wire-only in v2's type system, and a LEGACY-era
+ * `tools/call` decode lifts the body to a plain complete result — dropping
+ * `resultType` while leaving `inputRequests` (and `requestState`) in place.
+ * `isInputRequiredResult` therefore goes false, the call is never parked, and
+ * the model is handed the server's holding text as if it were an answer. The
+ * user simply stops being asked, and no test that only checks "the call
+ * returned something" can see it. #570/#544 made MRTR work on exactly these
+ * 2025-era peers; the port is not allowed to take it away again.
+ *
+ * The recovery is evidence-based, not a guess: `inputRequests` is MRTR-only
+ * vocabulary, it does not appear on a complete result, and v2 has already
+ * rejected the body if it carried `inputRequests` without `content`. On a
+ * MODERN connection nothing is restored — there `resultType` arrives verbatim
+ * (with `allowInputRequired`) and inventing one would mask a real divergence.
+ */
+function restoreLegacyInputRequired(res: unknown, era: string | undefined): unknown {
+  if (era === 'modern') return res;
+  if (!isPlainObject(res)) return res;
+  if (res['resultType'] !== undefined) return res;
+  if (res['inputRequests'] === undefined) return res;
+  if (res['isError'] === true) return res;
+  return { ...res, resultType: MCP_RESULT_TYPE_INPUT_REQUIRED };
 }
 
 /** One pooled connection. `promise` is the single source of truth for the
@@ -448,6 +713,30 @@ interface PoolEntry {
 }
 
 const CLIENT_INFO = { name: 'omadia-agent-builder', version: '0.1.0' } as const;
+
+/**
+ * Client options for the v2 (`http`) family. Rationale for each field is on
+ * {@link modernSdkSession}; they live here so a reader sees the whole opt-in
+ * surface in one place rather than spread across a factory.
+ */
+const MODERN_CLIENT_OPTIONS = {
+  versionNegotiation: { mode: 'auto' },
+  inputRequired: { autoFulfill: false },
+  /**
+   * #562 phase 3 — MEASURED prerequisite, not boilerplate. On a 2026-07-28
+   * connection the SDK refuses an embedded `elicitation/create` request with
+   * `MissingRequiredClientCapabilityError` *before* the result reaches the
+   * caller unless the client declared the capability. Without this line
+   * `allowInputRequired` has nothing to hand back and every modern-era MRTR
+   * call fails instead of parking.
+   *
+   * Declaring it is honest here: omadia genuinely does serve elicitation — by
+   * parking the call and asking a human over a channel. What it does not do is
+   * answer one IN-PROCESS, which is why `autoFulfill` stays off and why the
+   * decline handler below exists for the one path that can still reach it.
+   */
+  capabilities: { elicitation: {} },
+} as const;
 
 /**
  * W0-2 — explicit per-call MCP request policy. `callTool` used to pass no
@@ -509,6 +798,20 @@ function envMs(name: string, fallback: number): number {
   return parsed;
 }
 
+/** `OMADIA_MCP_TOOLLIST_TTL_MS`, resolved per Listing (an operator change
+ *  applies without a restart, like the dispatch timeout). NOT `envMs`: there
+ *  `<= 0` is a config mistake, here `0` is the deliberate spec-strict opt-out
+ *  (ADR-0009) and must survive parsing. A negative value reads as 0 too — the
+ *  same rule `mcpToolListTtlMs` applies to the `toolListTtlMs` option, so the
+ *  two config paths cannot disagree about what a negative default means. */
+function envToolListTtlMs(): number {
+  const raw = process.env['OMADIA_MCP_TOOLLIST_TTL_MS'];
+  if (raw === undefined || raw.trim() === '') return MCP_TOOLLIST_DEFAULT_TTL_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return MCP_TOOLLIST_DEFAULT_TTL_MS;
+  return Math.max(0, parsed);
+}
+
 /**
  * The MCP request policy as it would be applied to the NEXT `callTool` — the
  * same resolution `callTool` performs, exposed so the timeout-hierarchy
@@ -545,6 +848,35 @@ export class McpManager {
    *  rehydrated from the persisted descriptor by the adapters below) is cached
    *  here and attached to the sidecar. A miss just omits the schema. */
   private readonly outputSchemas = new Map<string, Record<string, unknown>>();
+
+  /** Issue #545 — cached `tools/list` results. Keyed via `mcpToolListCacheKey`
+   *  (bare server id for `public` scope, pool key otherwise), so the same
+   *  `mcpPoolScopeMatches` rule that scopes `close()` also scopes cache
+   *  invalidation. Expiry is lazy, like `evictIdle`: checked on read, never by
+   *  a timer. */
+  private readonly toolLists = new Map<
+    string,
+    {
+      readonly descriptors: readonly McpToolDescriptor[];
+      readonly expiresAt: number;
+      /** Filed under the bare server id BECAUSE the server said `public`. A
+       *  token-less caller's `private` list lands under the bare id too (its
+       *  pool key IS the id), and must never be served across auth contexts —
+       *  this flag is what tells the two apart on the shared-slot probe. */
+      readonly sharedPublic: boolean;
+    }
+  >();
+
+  /** #545 — purge generation for the tool-list cache. A purge that lands while
+   *  a `tools/list` fetch is in flight must win over that fetch's cache write:
+   *  the SDK dispatches a `list_changed` notification as a microtask, so it can
+   *  run between the response resolving and `listTools` priming the cache —
+   *  the purge would hit an empty map and the stale-marked list would then be
+   *  cached for its full TTL. `listTools` snapshots this counter before the
+   *  fetch and skips the write when any purge advanced it. Global rather than
+   *  per-server: the false positive (an unrelated purge skipping one write) is
+   *  just one extra fetch, and a purge is rare. */
+  private toolListPurgeGen = 0;
 
   /** Optional audit observer + dispatch guard (issues #462/#454). Existing
    *  `new McpManager()` call sites keep working unchanged. */
@@ -659,6 +991,7 @@ export class McpManager {
     res: unknown,
     startedAt: number,
     actingIdentity: string | null,
+    replay: McpCallReplay | undefined,
   ): string {
     const store = this.options?.pendingInput;
     if (!store) {
@@ -675,6 +1008,12 @@ export class McpManager {
       return failure;
     }
     const prompt = extractMcpInputPrompt(res);
+    // #562 phase 3 — carry the server's opaque `requestState` so the retry can
+    // echo it back verbatim. Only a 2026-07-28 peer mints one; a string is the
+    // only shape the spec allows, and anything else is dropped rather than
+    // forwarded, because handing a server back something it did not send is
+    // worse than not echoing at all.
+    const requestState = (res as { requestState?: unknown }).requestState;
     const record: PendingMcpInput = {
       correlationId: randomUUID(),
       serverId: cfg.id,
@@ -683,9 +1022,18 @@ export class McpManager {
       originalArgs: args,
       inputRequests: parsed.fields,
       ...(prompt !== undefined ? { prompt } : {}),
+      ...(typeof requestState === 'string' && requestState.length > 0
+        ? { requestState }
+        : {}),
       // A call that already carries `inputResponses` IS the replay — the only
-      // signal available here, since the manager is stateless per call.
-      replayDepth: REPLAY_ARG_KEY in args ? MCP_INPUT_MAX_REPLAY_DEPTH : 0,
+      // signal available here, since the manager is stateless per call. On the
+      // spec dialect the responses ride a top-level param instead of the
+      // arguments, so the replay says so explicitly; without that the bounce
+      // cap would never trip on a 2026-07-28 peer.
+      replayDepth:
+        REPLAY_ARG_KEY in args || replay?.isReplay === true
+          ? MCP_INPUT_MAX_REPLAY_DEPTH
+          : 0,
     };
     // Parked WITHOUT an owner: the manager has no reliable turn identity (see
     // `PendingMcpInputStore`). The orchestrator binds the owner when it claims
@@ -698,6 +1046,15 @@ export class McpManager {
     }
     this.emitCall(cfg, toolName, 'input_required', null, startedAt, actingIdentity);
     this.emitInputRequired(cfg, toolName, record);
+    // #570 — hand the dispatch that is awaiting us a provenance receipt for the
+    // id we just minted, so the Privacy Shield can tell OUR sentinel apart from
+    // a server-authored string that merely looks like one. The box belongs to a
+    // single dispatch and is absent when no privacy guard is installed (nothing
+    // interns then) or when this call did not come from a tool dispatch at all
+    // (skill/plugin accessor paths) — in both cases there is simply nothing to
+    // exempt and the sentinel is returned exactly as before.
+    const mint = turnContext.current()?.mcpInputSentinelMint;
+    if (mint !== undefined) mint.correlationId = record.correlationId;
     return mcpInputRequiredSentinel(record);
   }
 
@@ -723,9 +1080,22 @@ export class McpManager {
     }
   }
 
-  /** Discover the tool list a server exposes. Throws on connection failure so
-   *  the operator-facing `/discover` endpoint can report it. */
-  async listTools(cfg: McpServerConfig): Promise<McpToolDescriptor[]> {
+  /**
+   * List the tools a server exposes. Throws on connection failure so the
+   * operator-facing `/discover` endpoint can report it.
+   *
+   * Issue #545 — results are cached per `ttlMs`/`cacheScope` (MCP 2026-07-28
+   * `CacheableResult`; ADR-0009 for the default applied when a server sends no
+   * `ttlMs`). Callers for whom a cached list would defeat the purpose pass
+   * `fresh: true`: Discovery (the Builder route persists what it fetches) and
+   * the security Rescan (a scan of a cached list scans nothing). The runtime
+   * Listing path — the plugin `ctx.mcp.listTools()` accessor — is the cache's
+   * beneficiary and uses the default.
+   */
+  async listTools(
+    cfg: McpServerConfig,
+    opts?: { readonly fresh?: boolean },
+  ): Promise<McpToolDescriptor[]> {
     // Attach the OAuth token (issue #459 W9): some servers (e.g. Figma) require
     // authorization even to `initialize`/`tools/list`, so discovery must use the
     // caller's token exactly like a tool call — otherwise every OAuth-protected
@@ -738,6 +1108,22 @@ export class McpManager {
         /* token resolution must not break discovery */
       }
     }
+    // The private key is derivable before the fetch; the public one is just the
+    // server id — so a read probes private-then-public and finds a hit wherever
+    // the last write's `cacheScope` filed it. The second probe accepts only
+    // entries filed as `public`: a token-less caller's `private` list sits
+    // under the bare id as well (its pool key IS the id) and serving it to a
+    // tokened caller would cross auth contexts.
+    const privateKey = this.poolKey(cfg, token);
+    if (!opts?.fresh) {
+      const hit =
+        this.cachedToolList(privateKey) ?? this.cachedToolList(cfg.id, { publicOnly: true });
+      if (hit) return [...structuredClone(hit)];
+    }
+    // Snapshot BEFORE the fetch: a purge (list_changed, close) arriving while
+    // the request is in flight advances the generation, and the write below
+    // then steps aside instead of resurrecting an invalidated entry.
+    const purgeGen = this.toolListPurgeGen;
     const { client } = await this.getOrConnect(await this.withResolvedConfig(cfg), token);
     const res = await client.listTools();
     const tools = Array.isArray(res?.tools) ? res.tools : [];
@@ -756,7 +1142,62 @@ export class McpManager {
         : {}),
     }));
     for (const d of descriptors) this.rememberToolSchema(cfg.id, d);
+    // #545 — file the result under the scope the server declared.
+    //
+    // The two fields reach here by DIFFERENT routes, and only one of them is
+    // the loose-passthrough argument #544 used for `resultType`:
+    //   - v1 legs (stdio, sse): `ResultSchema` is loose, so a server that
+    //     sends them survives parsing. 2025-era servers do not send them, so
+    //     in practice this is the ADR-0009 default-TTL path.
+    //   - the v2 leg (http): they are modelled 2026-07-28 fields and arrive
+    //     verbatim. MEASURED, because there was reason to doubt it —
+    //     `listTools` runs with `cacheMode: 'bypass'` (#562 phase 2), and
+    //     bypass skips only the SDK's own response cache, not the hints.
+    // Do not collapse that into "the SDK is lenient": on the v2 family that
+    // reasoning is what proved false for `resultType` on a legacy-era decode.
+    //
+    // Read defensively regardless — both come off the wire.
+    const ttl = mcpToolListTtlMs(
+      res.ttlMs,
+      this.options?.toolListTtlMs ?? envToolListTtlMs(),
+    );
+    if (ttl > 0 && purgeGen === this.toolListPurgeGen) {
+      this.toolLists.set(mcpToolListCacheKey(privateKey, cfg.id, res.cacheScope), {
+        // Deep-copied on write (and again on read): callers — plugins via
+        // `ctx.mcp.listTools()` — must not be able to mutate the cached
+        // descriptors that later callers receive.
+        descriptors: structuredClone(descriptors),
+        expiresAt: Date.now() + ttl,
+        sharedPublic: res.cacheScope === 'public',
+      });
+    }
     return descriptors;
+  }
+
+  /** A still-fresh cached tool list under `key`, expiring lazily on read.
+   *  `publicOnly` is set on the bare-server-id probe, so a token-less caller's
+   *  `private` entry (also keyed by the bare id) never crosses auth contexts. */
+  private cachedToolList(
+    key: string,
+    opts?: { readonly publicOnly?: boolean },
+  ): readonly McpToolDescriptor[] | undefined {
+    const entry = this.toolLists.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= Date.now()) {
+      this.toolLists.delete(key);
+      return undefined;
+    }
+    if (opts?.publicOnly && !entry.sharedPublic) return undefined;
+    return entry.descriptors;
+  }
+
+  /** Drop every cached tool list belonging to server `id` (or to one exact
+   *  pool key) — the same scoping rule `close()` applies to connections. */
+  private purgeToolLists(id: string): void {
+    this.toolListPurgeGen += 1;
+    for (const key of this.toolLists.keys()) {
+      if (mcpPoolScopeMatches(key, id)) this.toolLists.delete(key);
+    }
   }
 
   /** Invoke a tool. Never throws — returns an `Error: …` string on failure so
@@ -765,6 +1206,7 @@ export class McpManager {
     cfg: McpServerConfig,
     toolName: string,
     args: Record<string, unknown>,
+    replay?: McpCallReplay,
   ): Promise<string> {
     const startedAt = Date.now();
     // Resolve the acting identity FIRST (W0-1), before the guard can short-
@@ -874,13 +1316,18 @@ export class McpManager {
             ...(idempotency !== undefined
               ? { _meta: { idempotencyKey: idempotency.key } }
               : {}),
+            // #562 phase 3 — the spec's retry params. Siblings of `arguments`,
+            // never inside them: the tool's own arguments must stay byte-exact
+            // across the park, which is the whole point of replaying
+            // `originalArgs`. Only ever populated for a 2026-07-28 peer; the
+            // v1-backed session drops them (see `legacySdkSession`).
+            ...(replay?.inputResponses !== undefined
+              ? { inputResponses: replay.inputResponses }
+              : {}),
+            ...(replay?.requestState !== undefined
+              ? { requestState: replay.requestState }
+              : {}),
           },
-          // Tolerate off-spec `structuredContent` (some third-party MCP servers —
-          // e.g. the hosted Strava proxy — return it as a JSON array instead of an
-          // object). The strict SDK schema otherwise rejects the whole result and
-          // the failure surfaces to the model as "-32000 Connection closed",
-          // making every tool call on that server look like a transport failure.
-          LENIENT_CALL_TOOL_RESULT_SCHEMA,
           // Stated request policy instead of the SDK's implicit 60s default —
           // see DEFAULT_MCP_CALL_TIMEOUT_MS. `maxTotalTimeout` is the SHARED
           // remainder, not a fresh allowance per attempt, so N attempts still
@@ -921,6 +1368,7 @@ export class McpManager {
             res,
             startedAt,
             actingIdentity,
+            replay,
           );
         }
         this.emitCall(cfg, toolName, 'ok', null, startedAt, actingIdentity);
@@ -1024,11 +1472,17 @@ export class McpManager {
    * fully invalidated. It never crosses server ids; see `mcpPoolScopeMatches`.
    */
   async close(id: string): Promise<void> {
+    // #545 — a closed server is an invalidated server: its cached tool list
+    // must not outlive its connections (deleted/reconfigured/re-authorized
+    // servers all arrive here).
+    this.purgeToolLists(id);
     const keys = [...this.entries.keys()].filter((key) => mcpPoolScopeMatches(key, id));
     await Promise.all(keys.map((key) => this.dropEntry(key)));
   }
 
   async closeAll(): Promise<void> {
+    this.toolListPurgeGen += 1;
+    this.toolLists.clear();
     await Promise.all([...this.entries.keys()].map((key) => this.dropEntry(key)));
   }
 
@@ -1085,10 +1539,40 @@ export class McpManager {
   }
 
   private async connect(cfg: McpServerConfig, token: string | null): Promise<Pooled> {
-    const transport = this.makeTransport(cfg, token);
+    // #562 phase 2 — `http` is the only transport that moved to the v2 family.
+    // The branch is here rather than inside `makeTransport` because the two
+    // families' `Transport` interfaces are NOT interchangeable: a v2 transport
+    // cannot drive a v1 `Client`, and era negotiation lives in the v2 client,
+    // not in its transport. Picking the transport therefore picks the client.
+    if (cfg.transport === 'http') {
+      const client = new ModernClient(CLIENT_INFO, MODERN_CLIENT_OPTIONS);
+      // #545 — same purge as the v1 branch below; the v2 client registers spec
+      // notifications by method string instead of by schema.
+      client.setNotificationHandler('notifications/tools/list_changed', () => {
+        this.purgeToolLists(cfg.id);
+      });
+      // The honest half of declaring the elicitation capability (#562 phase 3).
+      // The in-band MRTR path never reaches this handler — `autoFulfill` is off
+      // and `allowInputRequired` returns the result first — but a server may
+      // still open a server→client `elicitation/create` request, and a declared
+      // capability with no handler answers that with "method not found", which
+      // reads as a broken client rather than a deliberate policy. omadia does
+      // not answer elicitation in-process by design, so it says so.
+      client.setRequestHandler('elicitation/create', async () => ({ action: 'decline' as const }));
+      await client.connect(this.makeModernHttpTransport(cfg, token));
+      return { client: modernSdkSession(client) };
+    }
     const client = new Client(CLIENT_INFO);
-    await client.connect(transport);
-    return { client };
+    // #545 — `notifications/tools/list_changed` invalidates a cached tool list
+    // IMMEDIATELY, even mid-TTL (the spec's two freshness mechanisms are
+    // complementary: the TTL bounds staleness, the notification reports it).
+    // All scopes of this server are dropped — the server said "changed", not
+    // for whom. Registered before `connect` so no notification can race past.
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      this.purgeToolLists(cfg.id);
+    });
+    await client.connect(this.makeTransport(cfg, token));
+    return { client: legacySdkSession(client) };
   }
 
   /** Resolve Vault-backed config into a cfg (epic #459): secret headers for
@@ -1138,19 +1622,38 @@ export class McpManager {
       return new StdioClientTransport({ command, args, ...(env ? { env } : {}) });
     }
     const url = new URL(cfg.endpoint);
-    // Merge the OAuth bearer token (issue #459 W9) with any configured headers;
-    // bearer_methods_supported is 'header' for spec-compliant servers.
-    const headers: Record<string, string> = { ...(cfg.headers ?? {}) };
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
-    if (cfg.transport === 'sse') {
-      return new SSEClientTransport(url, requestInit ? { requestInit } : {});
+    const requestInit = httpRequestInit(cfg, token);
+    return new SSEClientTransport(url, requestInit ? { requestInit } : {});
+  }
+
+  /** The v2 Streamable-HTTP transport (#562 phase 2). Same URL and the same
+   *  merged headers the v1 transport got — `requestInit` is byte-identical
+   *  between the families, so nothing about authentication changed. */
+  private makeModernHttpTransport(
+    cfg: McpServerConfig,
+    token: string | null,
+  ): ModernStreamableHTTPClientTransport {
+    if (!cfg.endpoint) {
+      throw new Error(`MCP server "${cfg.name}" has no endpoint configured`);
     }
-    return new StreamableHTTPClientTransport(
-      url,
+    const requestInit = httpRequestInit(cfg, token);
+    return new ModernStreamableHTTPClientTransport(
+      new URL(cfg.endpoint),
       requestInit ? { requestInit } : {},
     );
   }
+}
+
+/** Merge the OAuth bearer token (issue #459 W9) with any configured headers;
+ *  `bearer_methods_supported` is 'header' for spec-compliant servers. Shared by
+ *  both SDK families so the two HTTP-shaped transports cannot drift. */
+function httpRequestInit(
+  cfg: McpServerConfig,
+  token: string | null,
+): { headers: Record<string, string> } | undefined {
+  const headers: Record<string, string> = { ...(cfg.headers ?? {}) };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return Object.keys(headers).length > 0 ? { headers } : undefined;
 }
 
 // ── adapters ────────────────────────────────────────────────────────────────
@@ -1324,6 +1827,68 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * cannot drift from it.
  */
 export const REPLAY_ARG_KEY = 'inputResponses';
+
+/** What a replay has to send: the arguments, plus the spec params when the
+ *  parked record came from a 2026-07-28 peer. */
+export interface McpInputReplayPlan {
+  readonly args: Record<string, unknown>;
+  readonly replay: McpCallReplay;
+}
+
+/**
+ * Turn a claimed card plus the human's answers into the retry that peer
+ * expects (#562 phase 3).
+ *
+ * TWO dialects, and the RECORD decides — not the era, not a flag. A field that
+ * remembers its `requestKey` was parsed out of a spec-shaped embedded request,
+ * so its answer belongs in that request's own `inputResponses` entry as an
+ * `ElicitResult`; a field without one came from omadia's flat array dialect and
+ * replays exactly as it has since #544, inside `arguments`. Deriving it from
+ * the record is what keeps a card parked before an upgrade replayable after
+ * one.
+ *
+ * `originalArgs` always goes first so a server that (incorrectly) declared an
+ * `inputResponses` input field cannot shadow the collected answers with a stale
+ * value from the original call.
+ */
+export function planMcpInputReplay(
+  record: PendingMcpInput,
+  answers: Record<string, string>,
+): McpInputReplayPlan {
+  const grouped = new Map<string, Record<string, string>>();
+  for (const field of record.inputRequests) {
+    if (field.requestKey === undefined) continue;
+    const value = answers[field.name];
+    if (value === undefined) continue;
+    const bucket = grouped.get(field.requestKey) ?? {};
+    bucket[field.name] = value;
+    grouped.set(field.requestKey, bucket);
+  }
+  if (grouped.size === 0) {
+    return {
+      args: { ...record.originalArgs, [REPLAY_ARG_KEY]: answers },
+      replay: {
+        isReplay: true,
+        ...(record.requestState !== undefined ? { requestState: record.requestState } : {}),
+      },
+    };
+  }
+  const inputResponses: Record<string, unknown> = {};
+  for (const [requestKey, content] of grouped) {
+    // `action: 'accept'` is the truthful report: the human filled the card in
+    // and submitted it. A declined or cancelled card never reaches a replay —
+    // the record is simply dropped — so no other action is representable here.
+    inputResponses[requestKey] = { action: 'accept', content };
+  }
+  return {
+    args: { ...record.originalArgs },
+    replay: {
+      isReplay: true,
+      inputResponses,
+      ...(record.requestState !== undefined ? { requestState: record.requestState } : {}),
+    },
+  };
+}
 
 /**
  * W2-1 (#544) — does this result ask for mid-call user input?
