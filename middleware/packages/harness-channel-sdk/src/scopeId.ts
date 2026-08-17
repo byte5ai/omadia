@@ -26,7 +26,7 @@
  * Everything here is pure and synchronous.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 /** Machine-driven scope origins. No human is present in any of them. */
 export type SystemScopeOrigin = 'routine' | 'schedule' | 'conductor' | 'conductor-builder';
@@ -186,6 +186,51 @@ export function formatSessionScope(scope: ScopeId): string {
  */
 export function isAddressableScope(scope: ScopeId): boolean {
   return scope.kind !== 'system' && scope.kind !== 'unscoped';
+}
+
+/**
+ * #575 D7 — derive a channel turn's scope, refusing to land it in a SHARED one.
+ *
+ * A channel adapter builds its scope from the conversation id its platform
+ * supplies. When that id is missing, the natural `?? 'unknown'` fallback
+ * produces a literal that EVERY such turn shares — measured live in
+ * `omadia-byte5-plugins` `channel-teams/src/teamsBot.ts:440-441`, where a Teams
+ * activity without a conversation id yields `teams-unknown`. That single bucket
+ * then keys conversation history and the knowledge-graph partition for every
+ * unrelated caller who hits the same gap: the `'http-default'` hole again, in a
+ * second place.
+ *
+ * This helper is the one decision point for that gap:
+ *
+ *  - A scope that resolves to a real conversation is returned **untouched**, so
+ *    the wire form does not move and no existing partition is orphaned.
+ *  - A scope that resolves to `unscoped` — absent OR any known shared token —
+ *    is replaced by a scope unique to this turn. Two callers who both hit the
+ *    gap get two scopes, which is the entire point.
+ *  - Anything else (a machine scope arriving at a channel ingress — a routing
+ *    bug) is returned as-is rather than laundered into a conversation.
+ *
+ * Because the decision is driven by `parseSessionScope`, a shared token added
+ * to `SHARED_SCOPE_TOKENS` later is handled here automatically; no channel
+ * plugin has to learn about it.
+ *
+ * `uniqueSuffix` should be the platform's per-message id (a Bot Framework
+ * activity id, a Telegram update id) so a retry of the SAME message resolves to
+ * the same scope. When the platform offers nothing to key on, a random id is
+ * used — isolation is preserved, continuity genuinely is not recoverable.
+ */
+export function unsharedConversationScope(args: {
+  readonly scope: string | undefined;
+  readonly uniqueSuffix?: string | undefined;
+}): ScopeId {
+  const parsed = parseSessionScope(args.scope);
+  if (parsed.kind !== 'unscoped') return parsed;
+
+  const suffix =
+    args.uniqueSuffix !== undefined && args.uniqueSuffix.trim().length > 0
+      ? args.uniqueSuffix.trim()
+      : randomUUID();
+  return { kind: 'conversation', conversationId: `unresolved-${suffix}` };
 }
 
 /** Legacy graph-key constraints, preserved verbatim from `sessionLogger.ts`. */
