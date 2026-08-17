@@ -27,6 +27,42 @@ test('graphScopeFor qualifies with the agent slug; sanitizes the base; undefined
   assert.equal(graphScopeFor(undefined, 'conv'), 'conv');
 });
 
+/**
+ * #575 D3 — the injective graph key is behind `OMADIA_INJECTIVE_SCOPE_KEYS`.
+ *
+ * `scopeGraphKey` has its own unit tests (`scopeId.test.ts`), but those prove
+ * only that the FUNCTION is injective. They say nothing about whether
+ * `graphScopeFor` — the single formula both the write and the read side use —
+ * actually consults the flag. A gate that is declared but never read passes
+ * every test while the fix it guards is unreachable, so the wiring needs its
+ * own assertion.
+ */
+test('OMADIA_INJECTIVE_SCOPE_KEYS switches graphScopeFor onto the injective key', () => {
+  const previous = process.env['OMADIA_INJECTIVE_SCOPE_KEYS'];
+  // `teams::c1` and `teams-c1` are distinct scopes that `sanitizeScope` folds
+  // onto one partition — the isolation hazard D3 exists for.
+  const collidingA = 'teams::c1';
+  const collidingB = 'teams-c1';
+  try {
+    delete process.env['OMADIA_INJECTIVE_SCOPE_KEYS'];
+    assert.equal(graphScopeFor(undefined, collidingA), graphScopeFor(undefined, collidingB));
+
+    process.env['OMADIA_INJECTIVE_SCOPE_KEYS'] = '1';
+    assert.notEqual(graphScopeFor(undefined, collidingA), graphScopeFor(undefined, collidingB));
+    // Already-lossless scopes keep a byte-identical key, so opting in does not
+    // orphan the partitions that were never at risk.
+    assert.equal(graphScopeFor(undefined, 'http-default'), 'http-default');
+    assert.equal(graphScopeFor('agent-a', 'conv'), 'agent-a::conv');
+
+    // Only the exact opt-in value counts — anything else stays on the old key.
+    process.env['OMADIA_INJECTIVE_SCOPE_KEYS'] = 'true';
+    assert.equal(graphScopeFor(undefined, collidingA), graphScopeFor(undefined, collidingB));
+  } finally {
+    if (previous === undefined) delete process.env['OMADIA_INJECTIVE_SCOPE_KEYS'];
+    else process.env['OMADIA_INJECTIVE_SCOPE_KEYS'] = previous;
+  }
+});
+
 test('an agent-bound SessionLogger ingests Turns under the qualified scope', async () => {
   const store = new InMemoryMemoryStore();
   const graph = new InMemoryKnowledgeGraph();

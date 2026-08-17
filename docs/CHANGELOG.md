@@ -18,6 +18,46 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — `Principal`, the platform's typed answer to "who is this?" (#333, phase 1)
+
+- **A `Principal` type in the channel SDK**, the same home as `ScopeId` and for
+  the same reason: the orchestrator, the kernel and `middleware/src` all depend
+  on that package and it depends on none of them. Until now only Conductor could
+  name a principal, and only as two loose columns (`principal_kind`,
+  `principal_ref`) plus a bare-string canonicalizer. `specs/575-scope-and-identity-foundation/spec.md`
+  §6 draws the line this implements: **#333 produces Principals, #575 consumes
+  them and produces decisions.** Nothing in the new code evaluates a permission.
+- **`user` and `role` do not share a canonicalization rule, and now cannot be
+  written as if they did.** User ids are trimmed and lowercased, because the SQL
+  deciding whether a reminder reaches a person is a case-sensitive `=`. Role keys
+  are trimmed only, because `createRole` writes them verbatim — lowercasing them
+  would stop matching every mixed-case row already in a deployment's
+  `conductor_roles` table. The two variants therefore carry differently-named
+  fields (`userId` / `roleKey`), so the difference is visible at each use site
+  rather than hidden behind a shared `ref: string`.
+- **`parsePrincipal` splits on the first separator only.** Principal references
+  legitimately contain colons — `coreApi.resolveIdentity` builds its platform id
+  as `` `${kind}:${id}` `` — so `user:teams:29:1a2b` is a real value that a naive
+  `split(':')` would truncate into a principal addressing the wrong person. An
+  unparseable string yields `undefined`, never a `user`: a role key misread as a
+  user id routes an approval to somebody who does not exist.
+- **Conductor's `canonicalizePrincipalId` now delegates to that rule** instead of
+  keeping its own copy, so the two cannot drift apart and reintroduce the
+  case-sensitive miss both exist to prevent.
+- **`resolveTurnOwnerIdentity` also returns the turn owner as a `Principal`**,
+  widening the `{ omadiaUserId?, authSubjectKey? }` answer #568 shipped. Derived
+  from the canonical omadia id only — an IdP subject names an account at a
+  *provider*, not a subject in omadia's id space, so a turn with a login but no
+  canonical id still has no principal.
+
+### Added — a wiring test for the injective graph-scope key (#575 D3)
+
+- **`OMADIA_INJECTIVE_SCOPE_KEYS` now has a test proving `graphScopeFor` reads
+  it.** `scopeGraphKey`'s own tests show the *function* is injective; they say
+  nothing about whether the formula both the write and the read side use ever
+  consults the flag. A gate that is declared but never read passes every test
+  while the fix it guards is unreachable.
+
 ### Fixed — the resume/reaper conformance test raced the wall clock
 
 - **`a RESUMED task survives the reaper` could fail for reasons unrelated to
