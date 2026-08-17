@@ -1993,17 +1993,34 @@ gekettet, weil `requires` beim Boot enforced wird): docs-RFC (diese PR)
 omadia-ui-Orchestrator-Consumer. Details + per-PR-Doc-Pflichten in §15
 des RFC.
 
-### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up)
+### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up) — **erledigt (#532)**
 
-Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckt
-absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete bleibt
+Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckte
+absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete blieb
 API-only (`POST/GET/DELETE /api/v1/datasets*`, siehe §3). #430's eigene
-Triage-Acceptance-Criteria verlangen aber genau diese UI; der Branch
-schließt das Issue deshalb NICHT, sondern "addresses" es — ein
-Folge-Issue für die Admin-UI-Seite (`web-ui/app/admin/datasets/` o.ä.,
-Upload-Dropzone + Schema-Tabelle + Zeilen-Preview + Delete-Bestätigung,
-Pattern analog zur bestehenden Package-Upload-Seite) ist offen zu
-erfassen.
+Triage-Acceptance-Criteria verlangen aber genau diese UI; das
+Folge-Issue #532 hat sie nachgezogen.
+
+Geliefert, rein `web-ui`-seitig — an der REST-Surface aus §3 wurde nichts
+geändert:
+
+- `web-ui/app/admin/datasets/page.tsx` — Upload (Datei + optionaler Name),
+  Liste, aufklappbares Detail mit Schema-Tabelle und Zeilen-Vorschau,
+  Delete mit Bestätigung.
+- Der Client (`web-ui/app/_lib/api.ts`) spiegelt `DatasetSummary` /
+  `DatasetColumnSchema` / den unaggregierten Zweig von
+  `DatasetQueryResult`, weil `web-ui` nicht gegen den
+  middleware-Workspace baut.
+- Die Zeilen-Vorschau paginiert **server-seitig** über `limit`/`offset`
+  (25 pro Seite, Server clamped auf [1, 200]). Ein Datensatz fasst bis zu
+  `MAX_DATASET_ROWS` (50 000) Zeilen — genau der Fall, gegen den
+  `queryDatasetRows` existiert.
+- Nach einem Import werden `privacyScan.scannedCells` /
+  `maskedCells` und eine etwaige Zell-Truncation angezeigt: der Scan läuft
+  auf diesem Pfad genauso wie beim Chat-Attachment-Auto-Ingest, und das
+  soll sichtbar sein statt geglaubt werden zu müssen.
+- ACL unverändert owner-only: die Seite zeigt ausschließlich Datensätze
+  des eingeloggten Kontos, nicht die der Instanz.
 
 ---
 

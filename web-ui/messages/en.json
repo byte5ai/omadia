@@ -195,6 +195,10 @@
           "title": "Knowledge-Graph Priorities",
           "description": "Set per-agent block and boost lists that override recall hits in the token-budget assembler."
         },
+        "datasets": {
+          "title": "Datasets",
+          "description": "Import CSVs as structured datasets agents can query, inspect the inferred schema and rows, and delete them again."
+        },
         "bulkPromote": {
           "title": "Bulk Promotion",
           "description": "Re-score historical turns and promote high-significance ones to durable knowledge (idempotent)."
@@ -4141,6 +4145,54 @@
     "colWeight": "Weight",
     "colReason": "Reason",
     "colUpdated": "Updated"
+  },
+  "adminDatasets": {
+    "title": "Knowledge · Datasets",
+    "intro": "Import a CSV as a structured dataset, read back the schema omadia inferred from it, and delete it again. Agents reach a dataset through the <code>query_dataset</code> tool — filtered and aggregated server-side, never as a whole table pulled into a turn. A dataset is visible only to the account that imported it, so this list is yours, not the instance's.",
+    "uploadHeading": "Import CSV",
+    "fields": {
+      "file": "CSV file",
+      "nameOptional": "Name (optional)"
+    },
+    "placeholders": {
+      "name": "Defaults to the file name"
+    },
+    "upload": "Import",
+    "uploading": "Importing",
+    "uploadLimits": "Up to {maxRows} rows and {maxMb} MB per file. Every cell passes the privacy scan before it is stored.",
+    "receipt": {
+      "imported": "Import complete — {rows} rows stored.",
+      "privacyScan": "Privacy scan: {scanned} cells checked, {masked} masked.",
+      "truncated": "{cells} cells exceeded the 4,000-character per-cell cap and were cut. Affected columns: {columns}."
+    },
+    "loading": "loading…",
+    "loadError": "Loading failed: {message}",
+    "empty": "No datasets imported yet.",
+    "listCapped": "Showing the {cap} most recent datasets — the endpoint returns no more than that, so older ones may exist without appearing here.",
+    "meta": "{rows} rows · {columns} columns · imported {created}",
+    "showDetails": "Schema & rows",
+    "hideDetails": "Close",
+    "remove": "Delete",
+    "confirmDelete": "Delete the dataset “{name}” with all its rows and its graph node? This cannot be undone.",
+    "schemaHeading": "Inferred schema",
+    "schema": {
+      "column": "Column",
+      "type": "Type",
+      "sample": "Sample value"
+    },
+    "rowsHeading": "Row preview",
+    "noRows": "This dataset holds no rows.",
+    "rowsRange": "Showing {from}–{to} of {total} rows",
+    "previousPage": "Back",
+    "nextPage": "Next",
+    "errors": {
+      "tooLarge": "The file exceeds the 25 MB upload limit.",
+      "notCsv": "Only CSV files are supported so far.",
+      "noFile": "No file arrived — pick a CSV first.",
+      "importFailed": "The CSV could not be imported. {detail}",
+      "notFound": "This dataset no longer exists — it may have been deleted in another tab.",
+      "generic": "The request failed (HTTP {status})."
+    }
   },
   "adminMemoryBackend": {
     "title": "Memory · Storage Backend",
