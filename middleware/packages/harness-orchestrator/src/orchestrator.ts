@@ -203,6 +203,7 @@ import {
   turnContext,
   type TurnContextValue,
 } from './turnContext.js';
+import { guardToolEgress } from './audienceFloorGuard.js';
 import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
@@ -5971,6 +5972,16 @@ export class Orchestrator {
     input: unknown,
     observer?: AskObserver,
   ): Promise<string> {
+    // #575 — the audience floor's egress guard, at the ONE choke point every
+    // tool dispatch passes through. Placed before the deadline machinery so a
+    // refused call costs nothing, and before the Privacy Shield boundary in
+    // `dispatchToolDeadlined` because the floor decides WHETHER an effect
+    // happens while Privacy Shield decides what a permitted one may carry
+    // (spec §5.4). Re-evaluated per call, not per turn: a turn-start snapshot
+    // is a TOCTOU hole. Inert unless an audience source is installed.
+    const refusal = await guardToolEgress(name);
+    if (refusal !== undefined) return refusal;
+
     const timeoutMs = resolveToolDispatchTimeoutMs();
     if (timeoutMs === 0) {
       // Deadline explicitly disabled by the operator — legacy behaviour.
