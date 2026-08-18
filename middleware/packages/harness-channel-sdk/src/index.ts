@@ -168,6 +168,28 @@ export type {
   ProvenancePair,
 } from './securityPosture.js';
 
+// Shell-normalizing command policy for gating agent-executed commands (#580).
+// The reusable primitive: the shell normalizer + tokenizer, the rule/decision
+// model, the shipped org floor and the cascade evaluator. Pure and byte-stable;
+// the honest-inert enforcement seam lives in the orchestrator (commandPolicyGuard).
+export {
+  normalizeCommand,
+  decideCommand,
+  defaultCommandPolicy,
+  DEFAULT_ORG_FLOOR,
+  MAX_SUBSTITUTION_DEPTH,
+} from './commandPolicy.js';
+export type {
+  CommandDecision,
+  CommandDecisionLayer,
+  CommandDecisionResult,
+  CommandMatcher,
+  CommandPolicy,
+  CommandRule,
+  NormalizedCommand,
+  ParsedCommand,
+} from './commandPolicy.js';
+
 // Semantic outgoing-message contracts (connectors render native)
 export type {
   SemanticAnswer,

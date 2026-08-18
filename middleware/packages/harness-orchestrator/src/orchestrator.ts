@@ -204,6 +204,7 @@ import {
   type TurnContextValue,
 } from './turnContext.js';
 import { guardToolEgress } from './audienceFloorGuard.js';
+import { guardToolCommands } from './commandPolicyGuard.js';
 import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
@@ -5981,6 +5982,14 @@ export class Orchestrator {
     // is a TOCTOU hole. Inert unless an audience source is installed.
     const refusal = await guardToolEgress(name);
     if (refusal !== undefined) return refusal;
+
+    // #580 — the command policy's enforcement seam, at the same choke point.
+    // Normalizes any command-shaped argument (unwrapping quoting/substitution)
+    // and applies the org floor + cascade. Inert unless a policy provider is
+    // installed AND the tool input carries a command field — no shell-execute
+    // tool ships yet, so this is a no-op in every current deployment.
+    const policyRefusal = await guardToolCommands(name, input);
+    if (policyRefusal !== undefined) return policyRefusal;
 
     const timeoutMs = resolveToolDispatchTimeoutMs();
     if (timeoutMs === 0) {
