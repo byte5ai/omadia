@@ -18,6 +18,32 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — the audience floor can now be switched on (#575)
+
+- **The piece that makes the three guards non-inert.** Until now the floor, the
+  grants and all three guards were merged but unreachable, because nothing
+  installed an audience source. Passing `audienceGrants` to the orchestrator now
+  builds one per turn, and enforcement begins.
+- **It is an explicit opt-in, not a default.** The floor fails closed by design,
+  so a deployment that has not decided who may do what would otherwise find its
+  rooms bounded by an empty grant table. Omit the option and every guard
+  short-circuits exactly as before.
+- **The chain runs end to end**: roster → Principal per participant (via the
+  same knowledge-graph join `resolveTurnOwnerIdentity` uses) → roles → grants →
+  the intersection. Every failure along it was already made explicit by the
+  layer that owns it, so this adds no policy of its own — an unreadable role
+  source, an unplaceable participant or an empty roster each close the room,
+  with a reason.
+- **It deliberately does not cache.** The egress guard re-evaluates per tool
+  call so a mid-turn joiner narrows the floor before the next call fires;
+  memoizing the roster here would hand it the turn's opening answer every time.
+  Caching stays where the `ChatParticipantsProvider` contract already puts it —
+  with the channel adapter, which knows when its roster goes stale.
+- A turn that did not arrive through a channel resolves to no principals rather
+  than defaulting to a plausible-looking channel kind: a wrong kind resolves to
+  a *different* identity cluster, which would hand the room somebody else's
+  grants.
+
 ### Added — the audience floor now guards attachment-handle resolution (#575)
 
 - **The floor's third and last guard**, completing the trio the spec names. A

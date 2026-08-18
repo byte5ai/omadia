@@ -204,6 +204,10 @@ import {
   type TurnContextValue,
 } from './turnContext.js';
 import { guardContextRecall, guardToolEgress } from './audienceFloorGuard.js';
+import {
+  createAudienceFloorProvider,
+  knowledgeGraphPrincipalResolver,
+} from './audienceFloorProvider.js';
 import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
@@ -224,6 +228,9 @@ export type {
   VerifierResultSummary,
 } from '@omadia/channel-sdk';
 export { toSemanticAnswer } from '@omadia/channel-sdk';
+// #575 — the audience floor's inputs, supplied by the deployment.
+import type { GrantStore, RoleSourceRegistry } from '@omadia/channel-sdk';
+import { RoleSourceRegistry as RoleSourceRegistryImpl } from '@omadia/channel-sdk';
 
 /**
  * Kernel-owned native-tool names. Registered into the Orchestrator's
@@ -418,6 +425,24 @@ export interface OrchestratorOptions {
    * Callers that don't want context-retrieval just omit this.
    */
   contextRetriever?: ContextRetriever;
+  /**
+   * #575 — capability grants. Supplying this is what TURNS THE AUDIENCE FLOOR
+   * ON: with it, every turn resolves who is present and the three guards
+   * (tool egress, context recall, attachment handles) start enforcing the
+   * intersection of what those people may do. Omit it and all three
+   * short-circuit, which is every deployment's behaviour today.
+   *
+   * It is an explicit opt-in rather than a default because the floor fails
+   * closed by design: a deployment that has not decided who may do what would
+   * otherwise find its rooms bounded by an empty grant table.
+   */
+  audienceGrants?: GrantStore;
+  /**
+   * #575 / #333 — role sources feeding the floor. Only consulted when
+   * `audienceGrants` is set. Defaults to an empty registry, which means
+   * principals hold no roles and therefore only their direct grants.
+   */
+  audienceRoleSources?: RoleSourceRegistry;
   /**
    * OB-75 (Palaia Phase 6) — Session-Continuity Briefings. When set,
    * the orchestrator prepends a session-summary + open-tasks block to
@@ -1693,6 +1718,9 @@ export class Orchestrator {
   private readonly entityRefBus: EntityRefBus | undefined;
   private readonly knowledgeGraphTool: KnowledgeGraphTool | undefined;
   private readonly contextRetriever: ContextRetriever | undefined;
+  /** #575 — set only when the deployment opted the audience floor in. */
+  private readonly audienceGrants: GrantStore | undefined;
+  private readonly audienceRoleSources: RoleSourceRegistry;
   private readonly sessionBriefing: SessionBriefingService | undefined;
   private readonly factExtractor: FactExtractor | undefined;
   /** #133 E0 — optional side-channel turn-hook runner (see OrchestratorOptions). */
@@ -1861,6 +1889,8 @@ export class Orchestrator {
     this.sessionLogger = options.sessionLogger;
     this.entityRefBus = options.entityRefBus;
     this.contextRetriever = options.contextRetriever;
+    this.audienceGrants = options.audienceGrants;
+    this.audienceRoleSources = options.audienceRoleSources ?? new RoleSourceRegistryImpl();
     this.sessionBriefing = options.sessionBriefing;
     this.turnHookRegistry = options.turnHookRegistry;
 
@@ -3166,6 +3196,25 @@ export class Orchestrator {
         // every call as `unresolved` and then fails closed. See the W4-1 block
         // above for where the value comes from.
         ...(mcpUserKey ? { mcpUserKey } : {}),
+        // #575 — installed ONLY when the deployment supplied a grant store.
+        // Without it the three guards short-circuit and behaviour is unchanged,
+        // which is the "not enforced ≠ closed" rule the guards are built on.
+        // Deliberately not memoized: the egress guard re-evaluates per tool
+        // call so a mid-turn joiner narrows the floor, and caching here would
+        // hand it the turn's opening answer every time.
+        ...(this.audienceGrants
+          ? {
+              audienceFloor: createAudienceFloorProvider({
+                participants: parent?.chatParticipants,
+                resolvePrincipal: knowledgeGraphPrincipalResolver(
+                  this.knowledgeGraph,
+                  input.channelIdentity?.channelKind,
+                ),
+                roles: this.audienceRoleSources,
+                grants: this.audienceGrants,
+              }),
+            }
+          : {}),
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
