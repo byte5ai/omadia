@@ -77,6 +77,65 @@ export function toolCapability(name: string): Capability {
 export const MEMORY_RECALL_CAPABILITY: Capability = 'memory:recall';
 
 /**
+ * The capability resolving a stored attachment handle requires.
+ *
+ * Separate from `tool:read_attachment` on purpose. That one asks "may this room
+ * invoke the read tool"; this one asks "may this room redeem a storage handle",
+ * and the handle is redeemable from paths that are not tool calls at all — see
+ * {@link guardAttachmentRead}.
+ */
+export const ATTACHMENT_READ_CAPABILITY: Capability = 'attachment:read';
+
+/**
+ * #575 — the third guard: file / credential handle resolution.
+ *
+ * ## Why this is not already covered by the egress guard
+ *
+ * `read_attachment` is a tool, so it passes `dispatchTool` and Guard 1 does
+ * bound it. But that is not the only way a handle gets redeemed: the
+ * orchestrator's own `ingestAttachments` resolves storage keys straight off the
+ * inbound turn, with no tool call in sight. Guarding only the tool would leave
+ * the path a caller actually controls wide open.
+ *
+ * ## Why the check rides with the handle rather than sitting at call sites
+ *
+ * Spec §5.2 says the check "must ride with" the handle, because a handle
+ * outlives the turn that minted it. A storage key issued in a private chat is
+ * just a string, and a string can be pasted into a group chat. Adding a call to
+ * every resolution site would work exactly until somebody adds the next site
+ * and forgets — so the enforcement lives in a wrapper around `AttachmentReader`
+ * itself (`attachmentReaderFactory.ts`). Every consumer, present and future, is
+ * covered by construction.
+ *
+ * ## What this version does NOT do
+ *
+ * It checks the floor **at redemption**, not the floor **at minting**. So it
+ * stops a room from redeeming a handle that room may not read — but it cannot
+ * yet stop a handle minted in a narrow room from being redeemed in a room that
+ * happens to hold the capability. Binding the minting audience to the handle
+ * needs the attachment store to persist it, and that store lives in the channel
+ * plugins rather than here. Stated so the remaining gap is visible rather than
+ * assumed closed.
+ */
+export async function guardAttachmentRead(): Promise<string | undefined> {
+  const provider = turnContext.current()?.audienceFloor;
+  if (!provider) return undefined;
+
+  let floor: AudienceFloor;
+  try {
+    floor = await provider();
+  } catch (err) {
+    return `audience unresolvable (${err instanceof Error ? err.message : String(err)})`;
+  }
+
+  if (floorPermits(floor, ATTACHMENT_READ_CAPABILITY)) return undefined;
+
+  return floor.outcome === 'closed'
+    ? floor.reason
+    : 'not every participant in this conversation may read stored attachments';
+}
+
+/**
  * #575 — the second guard: context / memory recall.
  *
  * ## Why this one SNAPSHOTS while egress re-computes

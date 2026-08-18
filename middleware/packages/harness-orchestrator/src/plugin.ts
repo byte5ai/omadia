@@ -63,6 +63,7 @@ import {
   type OrchestratorDeps,
 } from './buildOrchestrator.js';
 import {
+  audienceGuardedAttachmentReader,
   createAttachmentReader,
   type AttachmentByteStore,
 } from './attachmentReaderFactory.js';
@@ -554,7 +555,13 @@ export async function activate(
   // tool; harness-orchestrator stays free of any @aws-sdk dependency.
   const attachmentByteStore =
     ctx.services.get<AttachmentByteStore>('tigrisStore');
-  const attachmentReader = createAttachmentReader(attachmentByteStore);
+  // #575 — every attachment-handle redemption passes the audience floor. Wrapped
+  // here, at the ONE construction site, so the check rides with the handle rather
+  // than depending on each resolution site remembering to ask. Inert unless an
+  // audience source is installed.
+  const attachmentReader = audienceGuardedAttachmentReader(
+    createAttachmentReader(attachmentByteStore),
+  );
   // Phase-1 of the Kemia integration. Late-bound `responseGuard@1` getter —
   // the orchestrator generally activates BEFORE its tool plugins, so a
   // bind-at-activate lookup would always miss the responseGuard provider
