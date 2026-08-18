@@ -24,9 +24,14 @@ import { audienceGuardedAttachmentReader } from '../packages/harness-orchestrato
 import { turnContext } from '../packages/harness-orchestrator/src/turnContext.js';
 import type { AudienceFloor } from '../packages/harness-channel-sdk/src/audienceFloor.js';
 
+// `denied` is required on an open floor: a consumer with its own allow-list to
+// narrow must be able to tell "explicitly forbidden" from "never granted", and
+// an optional field would collapse the two. These cases are about the
+// capability set, so they carry no prohibitions.
 const open = (...caps: string[]): AudienceFloor => ({
   outcome: 'open',
   capabilities: new Set(caps),
+  denied: new Set<string>(),
 });
 const closed = (reason: string): AudienceFloor => ({ outcome: 'closed', reason });
 

@@ -134,7 +134,23 @@ export type Audience =
  * #333's role lookups.
  */
 export type AudienceFloor =
-  | { readonly outcome: 'open'; readonly capabilities: ReadonlySet<Capability> }
+  | {
+      readonly outcome: 'open';
+      readonly capabilities: ReadonlySet<Capability>;
+      /**
+       * The union of every explicit prohibition in the room, already subtracted
+       * from `capabilities` above.
+       *
+       * Exposed rather than discarded because "denied" and "never granted" are
+       * indistinguishable once only the difference survives — both simply mean
+       * "absent from `capabilities`". A consumer that has its own allow-list to
+       * narrow (the per-plugin HTTP accessor's outbound hosts, say) must be able
+       * to tell them apart: a capability nobody was granted says nothing about
+       * that list, while a capability somebody explicitly forbade has to be
+       * removed from it.
+       */
+      readonly denied: ReadonlySet<Capability>;
+    }
   | { readonly outcome: 'closed'; readonly reason: string };
 
 /** What #333's join hands back for one participant. */
@@ -267,6 +283,7 @@ export function audienceFloor(audience: Audience): AudienceFloor {
   return {
     outcome: 'open',
     capabilities: new Set([...capabilities].filter((c) => !denied.has(c))),
+    denied,
   };
 }
 
@@ -279,4 +296,34 @@ export function audienceFloor(audience: Audience): AudienceFloor {
  */
 export function floorPermits(floor: AudienceFloor, capability: Capability): boolean {
   return floor.outcome === 'open' && floor.capabilities.has(capability);
+}
+
+/**
+ * The capability token for reaching one outbound host.
+ *
+ * Hosts live in the same flat, opaque token space as everything else the floor
+ * intersects — `net:api.example.com` alongside `tool:send_email`. Giving them a
+ * structured type of their own would put a network model in the layer that is
+ * supposed to know nothing about what a capability means.
+ *
+ * Lower-cased because a hostname is case-insensitive, so `API.example.com` and
+ * `api.example.com` must not be two different prohibitions.
+ */
+export function hostCapability(host: string): Capability {
+  return `net:${host.trim().toLowerCase()}`;
+}
+
+/**
+ * Whether the room explicitly FORBIDS reaching `host`.
+ *
+ * Deliberately not the negation of {@link floorPermits}. A host absent from
+ * `capabilities` merely means nobody granted it through the floor — which says
+ * nothing, because outbound hosts are granted by a plugin's manifest, not by
+ * the grant store. Only an explicit prohibition may narrow that manifest list.
+ *
+ * A `closed` floor denies everything, so it denies every host too.
+ */
+export function floorDeniesHost(floor: AudienceFloor, host: string): boolean {
+  if (floor.outcome === 'closed') return true;
+  return floor.denied.has(hostCapability(host));
 }
