@@ -3,6 +3,7 @@ import {
   POSTURE_ORDER,
   type ChatAgent,
   type AiDisclosureLevel,
+  type GrantStore,
   type SecurityPosture,
 } from '@omadia/channel-sdk';
 import type {
@@ -621,6 +622,13 @@ export async function activate(
   const securityPosture = resolveSecurityPostureSetup((key) =>
     ctx.config.get<unknown>(key),
   );
+  // #575 — the audience floor's capability grants. Published by the kernel
+  // BEFORE plugin activation (as a late-bound wrapper, because the Postgres
+  // pool it needs is published by the knowledge-graph plugin during this same
+  // pass) and ONLY when `AUDIENCE_FLOOR_ENABLED` is set. Undefined is the
+  // ordinary case: the orchestrator then installs no audience provider at all
+  // and every guard short-circuits, leaving behaviour unchanged.
+  const audienceGrants = ctx.services.get<GrantStore>('audienceGrants');
   // #648 — publish the RESOLVED posture so `/health` and the operator
   // dashboard can read what this instance actually does, and warn once at boot
   // when it deviates from the delivered state. A reduced marking is a
@@ -837,6 +845,10 @@ export async function activate(
     // #579 — org security posture (org floor + optional scope tighten + mode +
     // screen URL). Undefined → the orchestrator's shipping default (`auto`).
     ...(securityPosture ? { securityPosture } : {}),
+    // #575 — the audience floor's grant store, published by the kernel only
+    // when the operator enabled the floor. Absent is the normal case and means
+    // the guards stay inert; see `OrchestratorDeps.audienceGrants`.
+    ...(audienceGrants ? { audienceGrants } : {}),
     // #644 — one fold-dedup store for the whole process, shared by every Agent
     // the registry builds (same lifetime rationale as `directLineStickyStore`
     // below): a per-instance store would re-fold the marking into a live
