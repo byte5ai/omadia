@@ -68,6 +68,7 @@ import {
   createAttachmentReader,
   type AttachmentByteStore,
 } from './attachmentReaderFactory.js';
+import type { AttachmentBindingStore } from './attachmentBinding.js';
 import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
@@ -560,8 +561,14 @@ export async function activate(
   // here, at the ONE construction site, so the check rides with the handle rather
   // than depending on each resolution site remembering to ask. Inert unless an
   // audience source is installed.
+  // The binding store additionally pins each handle to the room that minted it
+  // (#575). Published by the kernel only when the audience floor is enabled —
+  // absent means that second check stands down, and the reader behaves exactly
+  // as it did before.
+  const attachmentBindings = ctx.services.get<AttachmentBindingStore>('attachmentBindings');
   const attachmentReader = audienceGuardedAttachmentReader(
     createAttachmentReader(attachmentByteStore),
+    attachmentBindings,
   );
   // Phase-1 of the Kemia integration. Late-bound `responseGuard@1` getter —
   // the orchestrator generally activates BEFORE its tool plugins, so a

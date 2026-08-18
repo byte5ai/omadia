@@ -107,15 +107,24 @@ export const ATTACHMENT_READ_CAPABILITY: Capability = 'attachment:read';
  * itself (`attachmentReaderFactory.ts`). Every consumer, present and future, is
  * covered by construction.
  *
- * ## What this version does NOT do
+ * ## What this function does NOT do — and what now does it
  *
- * It checks the floor **at redemption**, not the floor **at minting**. So it
- * stops a room from redeeming a handle that room may not read — but it cannot
- * yet stop a handle minted in a narrow room from being redeemed in a room that
- * happens to hold the capability. Binding the minting audience to the handle
- * needs the attachment store to persist it, and that store lives in the channel
- * plugins rather than here. Stated so the remaining gap is visible rather than
- * assumed closed.
+ * It checks the floor **at redemption**: may this room redeem a handle at all.
+ * That leaves a handle minted in a narrow room redeemable by any room that
+ * happens to hold the capability, because a storage key is just a string.
+ *
+ * That second half is no longer open, but it is deliberately NOT here:
+ * `attachmentBinding.ts` pins each key to the `ScopeId` it was first resolved
+ * in, and the reader wrapper enforces both checks in order. Two separate
+ * questions — *may this room read attachments* and *was this handle minted
+ * here* — kept in two places, because collapsing them would make a capability
+ * answer look like an identity answer.
+ *
+ * The residual gap, stated rather than assumed closed: a handle first resolved
+ * from a **non-addressable** scope (`'http-default'`, `teams-unknown`, a system
+ * scope) is not bound at all, because those strings identify no room. See
+ * `attachmentBinding.ts` for why approximating there would be worse than
+ * standing down.
  */
 export async function guardAttachmentRead(): Promise<string | undefined> {
   const provider = turnContext.current()?.audienceFloor;

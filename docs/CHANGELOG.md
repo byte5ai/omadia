@@ -18,6 +18,27 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — an attachment handle only redeems in the room that minted it
+
+- **A storage key was just a string (#575).** The handle guard checked the floor
+  at *redemption* — may this room read attachments — but not at *minting*. So a
+  key issued in a private chat stayed redeemable in any room that happened to
+  hold `attachment:read`, which is what "a string can be pasted into a group
+  chat" means in practice.
+- **New:** each key is pinned on first sighting to the `ScopeId` it was resolved
+  in (migration `0036_attachment_scope_bindings.sql`), and every later
+  resolution must come from the same room.
+- **The binding rides on the reader, not on the call sites** — a storage key
+  outlives its turn, so a check at one resolution site holds only until somebody
+  adds the next one.
+- **Non-addressable scopes are deliberately not bound.** `'http-default'` is
+  shared by every unscoped HTTP caller (the #445 cross-user hole) and
+  `teams-unknown` by every Teams activity without a conversation id. Binding to
+  one of those would declare all of them the same room — enforcement in
+  appearance, universal access in fact.
+- Enabled by the same `AUDIENCE_FLOOR_ENABLED` flag; without it the check stands
+  down and the reader behaves exactly as before.
+
 ### Added — audience-floor grants survive a restart, and an operator can see them
 
 - **The audience floor had no durable store (#575).** `InMemoryGrantStore` was
