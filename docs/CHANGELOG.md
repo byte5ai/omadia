@@ -18,6 +18,26 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — a withheld answer no longer ships its full reasoning to the channel
+
+- **`NO_REPLY` stopped suppressing delivery the moment the AI-Act Art. 50
+  marking shipped (#661, #662).** `isNoReply` anchors the sentinel at the END of
+  the message; `applyAiDisclosure` folds the marking line into that same `text`.
+  Folded onto a sentinel answer, the anchor stops matching and the agent's
+  entire turn goes out.
+- **Seen in production.** A weekly approval routine emitted the sentinel in all
+  four of its recorded runs and still pushed 9,381 characters of intermediate
+  reasoning into a Teams chat on the first Monday after the deploy. Every
+  routine on every channel that relies on the sentinel was affected, and both
+  sentinel forms were — the mandated bare `NO_REPLY` as much as the lenient
+  trailing one.
+- **Suppression now precedes decoration.** The guard sits in the one shared
+  derivation, so the streaming and non-streaming paths, and every channel that
+  renders `text`, are covered by construction rather than per call site.
+- **A withheld message no longer spends the scope's first-turn marking slot.**
+  The guard short-circuits before `shouldFold`, which marks a scope seen as a
+  side effect; otherwise the next answer that really was delivered would have
+  shipped without its Art. 50 marking.
 ### Added — the audience floor can now be switched on (#575)
 
 - **The piece that makes the three guards non-inert.** Until now the floor, the
