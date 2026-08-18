@@ -179,6 +179,16 @@ test('synthetic `_privacy_*` fields are never counted as missing', async () => {
   assert.equal(r.state, 'ready');
 });
 
+test('synthetic `_transcription_*` fields are never counted as missing', async () => {
+  const registry = await registryWith({ config: {} });
+  const r = await computeReadiness(
+    plugin([field({ key: '_transcription_minutes_quota', type: 'integer' })]),
+    registry,
+    vaultWith([]),
+  );
+  assert.equal(r.state, 'ready');
+});
+
 test('oauth fields are broker-owned and never counted as missing', async () => {
   const registry = await registryWith({ config: {} });
   const r = await computeReadiness(

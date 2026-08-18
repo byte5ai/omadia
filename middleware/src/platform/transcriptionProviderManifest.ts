@@ -17,6 +17,8 @@
  */
 import type { ProviderPolicy } from '@omadia/llm-provider';
 
+import type { TranscriptionProviderCatalog } from './transcriptionProviderCatalog.js';
+
 /** The two capability surfaces a transcription model can serve
  *  (`TranscriptionService.transcribeFile` / `.transcribeStream`). A model
  *  whose manifest entry omits a surface is unreachable on that surface —
@@ -132,4 +134,59 @@ export function parseTranscriptionProviderManifestBlock(
     ...(policy !== undefined ? { policy } : {}),
     models: modelsRaw.map(parseModel),
   };
+}
+
+/** Read a plugin manifest's `transcription_provider` block and register the
+ *  resulting provider into `catalog` under its owning plugin id. Resolves a
+ *  per-install `baseURL` override from the plugin's own config scope when the
+ *  descriptor declares a `base_url_config_key` (same contract as
+ *  `registerPluginLlmProvider`). Returns the registered descriptor (with the
+ *  resolved baseURL) so the caller can log it, or `undefined` when the
+ *  manifest declares no provider. Throws on a MALFORMED block — the caller
+ *  logs + skips.
+ *
+ *  Shared by the boot-time registration loop and the hot-install path
+ *  (InstallService.onInstalled) so a provider plugin installed at runtime
+ *  appears on the admin page WITHOUT a middleware restart. Idempotent:
+ *  `catalog.register` replaces an existing same-id entry. */
+export function registerPluginTranscriptionProvider(
+  manifest: unknown,
+  config: Record<string, unknown> | undefined,
+  catalog: TranscriptionProviderCatalog,
+  pluginId: string,
+): TranscriptionProviderDescriptor | undefined {
+  const block = (
+    manifest as { transcription_provider?: unknown } | null | undefined
+  )?.transcription_provider;
+  if (block === undefined || block === null) return undefined;
+  const descriptor = parseTranscriptionProviderManifestBlock(block);
+  let baseURL = descriptor.baseURL;
+  if (descriptor.baseUrlConfigKey !== undefined) {
+    const override = (config ?? {})[descriptor.baseUrlConfigKey];
+    if (typeof override === 'string' && override.trim().length > 0) {
+      baseURL = override.trim();
+    }
+  }
+  const resolved = { ...descriptor, baseURL };
+  catalog.register(resolved, pluginId);
+  return resolved;
+}
+
+/** Counterpart to {@link registerPluginTranscriptionProvider}: drop a plugin's
+ *  contributed provider from `catalog`. Returns the unregistered provider id,
+ *  or `undefined` when the manifest declares no provider OR the provider was
+ *  not registered. Throws only on a malformed block (which never registered)
+ *  — the caller ignores. */
+export function unregisterPluginTranscriptionProvider(
+  manifest: unknown,
+  catalog: TranscriptionProviderCatalog,
+): string | undefined {
+  const block = (
+    manifest as { transcription_provider?: unknown } | null | undefined
+  )?.transcription_provider;
+  if (block === undefined || block === null) return undefined;
+  const { id } = parseTranscriptionProviderManifestBlock(block);
+  if (!catalog.has(id)) return undefined;
+  catalog.unregister(id);
+  return id;
 }

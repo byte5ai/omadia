@@ -211,6 +211,10 @@
           "title": "Embedding Provider",
           "description": "Switch the active embedding adapter live — no restart. Shows the dimension gate, the stored corpus, and what a switch would discard."
         },
+        "transcriptionProvider": {
+          "title": "Transcription Provider",
+          "description": "Connect and select the transcription provider agents use to turn recordings into text. Includes API-key verification and the data-processing disclosure."
+        },
         "domains": {
           "title": "Domains",
           "description": "Browse registered plugins grouped by domain (read-only)."
@@ -2764,6 +2768,26 @@
       "saving": "saving …",
       "saved": "✓ saved",
       "errorChip": "✗ error"
+    }
+  },
+  "adminTranscriptionProvider": {
+    "metaTitle": "Transcription provider",
+    "title": "Transcription provider",
+    "intro": "Connect the transcription provider agents use to turn audio recordings into text. Keys are stored encrypted in the vault and never leave your server; exactly one provider is active at a time.",
+    "loadError": "The transcription provider list could not be loaded.",
+    "noProviders": "No transcription provider plugin is installed. Install a transcription adapter from the plugin store first — without one, audio simply stays untranscribed.",
+    "providers": {
+      "surfaceFile": "batch (file upload)",
+      "surfaceStream": "realtime (stream)",
+      "removeKeyConfirm": "Remove the stored API key for {provider}? Transcription will stop working until a new key is added."
+    },
+    "selection": {
+      "activeBadge": "active",
+      "activate": "Activate",
+      "activating": "Activating …",
+      "noneActive": "No transcription provider is active. Activate one so agents can transcribe recordings.",
+      "avvDisclosure": "Transcriptions run on {provider}. Uploaded audio is sent to a third-party processor. Ensure a data-processing agreement (GDPR Art. 28) is in place before transcribing personal data.",
+      "euHostedNote": "{provider} is hosted in the EU. An Art. 28 GDPR processing agreement is still required, but there is no third-country transfer — unlike US-based providers."
     }
   },
   "adminSubscriptionClis": {

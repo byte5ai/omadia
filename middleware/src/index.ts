@@ -106,6 +106,7 @@ import { createRuntimeRouter } from './routes/runtime.js';
 import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createAdminProvidersRouter } from './routes/adminProviders.js';
 import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
+import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
@@ -288,6 +289,11 @@ import {
   registerPluginLlmProvider,
   unregisterPluginLlmProvider,
 } from './platform/llmProviderManifest.js';
+import {
+  registerPluginTranscriptionProvider,
+  unregisterPluginTranscriptionProvider,
+} from './platform/transcriptionProviderManifest.js';
+import { TranscriptionProviderCatalog } from './platform/transcriptionProviderCatalog.js';
 import { registerBuiltinLlmProviders } from './platform/builtinLlmProviders.js';
 import { BackgroundJobRegistry } from './platform/backgroundJobRegistry.js';
 import { ChatAgentWrapRegistry } from './platform/chatAgentWrapRegistry.js';
@@ -494,6 +500,10 @@ async function main(): Promise<void> {
   // installed plugins' `llm_provider` manifest blocks below, so the orchestrator
   // can resolve a plugin-contributed provider at its own activation.
   const llmProviderCatalog = new LlmProviderCatalog();
+  // #584 — providers contributed via `transcription_provider` manifest
+  // blocks; read by the admin transcription-provider route. Populated from the
+  // same boot loop + hot-install hooks as the LLM catalog below.
+  const transcriptionProviderCatalog = new TranscriptionProviderCatalog();
   serviceRegistry.provide('llmProviderCatalog', llmProviderCatalog);
   // Bundled wire-format adapters (issue #298): the llm-provider runtime resolves
   // a provider by looking up the adapter for its wire format. The concrete
@@ -828,12 +838,51 @@ async function main(): Promise<void> {
     }
   };
 
+  // Transcription twins of the two wrappers above (#584): same boot
+  // loop + hot-install call sites, same never-fatal error handling.
+  const registerTranscriptionProviderFromPlugin = (pluginId: string): void => {
+    try {
+      const descriptor = registerPluginTranscriptionProvider(
+        pluginCatalog.get(pluginId)?.manifest,
+        installedRegistry.get(pluginId)?.config,
+        transcriptionProviderCatalog,
+        pluginId,
+      );
+      if (descriptor !== undefined) {
+        console.log(
+          `[middleware] transcription provider '${descriptor.id}' registered from ${pluginId} (${String(descriptor.models.length)} model(s), baseURL ${descriptor.baseURL})`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[middleware] skipped transcription_provider block in ${pluginId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  };
+  const unregisterTranscriptionProviderFromPlugin = (pluginId: string): void => {
+    try {
+      const id = unregisterPluginTranscriptionProvider(
+        pluginCatalog.get(pluginId)?.manifest,
+        transcriptionProviderCatalog,
+      );
+      if (id !== undefined) {
+        console.log(
+          `[middleware] transcription provider '${id}' unregistered (plugin ${pluginId} uninstalled)`,
+        );
+      }
+    } catch {
+      // malformed block never registered — nothing to clean up
+    }
+  };
+
   // Populate the LLM provider catalog from INSTALLED plugins at boot. Done
   // BEFORE `toolPluginRuntime.activateAllInstalled()` so the orchestrator
   // resolves a plugin-contributed provider at its own activate().
   for (const entry of pluginCatalog.list()) {
     if (!installedRegistry.has(entry.plugin.id)) continue;
     registerProviderFromPlugin(entry.plugin.id);
+    registerTranscriptionProviderFromPlugin(entry.plugin.id);
   }
 
   // Phase B (B1) — publish `pluginCapabilities@1` so the orchestrator's
@@ -1269,6 +1318,7 @@ async function main(): Promise<void> {
       // catalog + model registry and appears on the admin Providers page
       // without a restart. No-ops when the manifest declares no provider.
       registerProviderFromPlugin(agentId);
+      registerTranscriptionProviderFromPlugin(agentId);
       // Dispatch by manifest.identity.kind. Without this, every uploaded
       // package — channels, integrations, tools — is fed to the agent
       // runtime, which crashes (channel: wrong handle shape; integration:
@@ -1303,6 +1353,7 @@ async function main(): Promise<void> {
       // an uninstalled provider plugin disappears from the admin Providers page
       // without a restart. Runs BEFORE runtime deactivation/registry removal.
       unregisterProviderFromPlugin(agentId);
+      unregisterTranscriptionProviderFromPlugin(agentId);
       const kind = pluginCatalog.get(agentId)?.plugin.kind ?? 'agent';
       switch (kind) {
         case 'channel':
@@ -3959,6 +4010,26 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] embedding-provider switch ready at /api/v1/admin/embedding-provider (auth: required)',
+  );
+
+  // Transcription-provider admin (#584) — provider listing with the
+  // 4-state key verdict + AVV/EU policy flags, key entry into the adapter
+  // plugin's own vault scope, verify probe, and single-active-provider
+  // selection via the tool-plugin runtime (the embedding-provider precedent).
+  app.use(
+    '/api/v1/admin/transcription-provider',
+    requireAuth,
+    createAdminTranscriptionProviderRouter({
+      installedRegistry,
+      vault: secretVault,
+      catalog: transcriptionProviderCatalog,
+      reactivate: reactivateAgent,
+      activate: (id) => toolPluginRuntime.activate(id),
+      deactivate: (id) => toolPluginRuntime.deactivate(id),
+    }),
+  );
+  console.log(
+    '[middleware] transcription-provider admin ready at /api/v1/admin/transcription-provider (auth: required)',
   );
 
   // Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs

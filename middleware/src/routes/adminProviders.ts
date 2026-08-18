@@ -43,13 +43,8 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { detectCliBackends } from '../platform/cliBackendDetector.js';
 import {
-  decodeVerifiedRecord,
-  encodeVerifiedRecord,
-  getCachedVerification,
-  keyFingerprint,
-  primeVerification,
-  providerVerifiedAtVaultKey,
-  verifyProviderCredential,
+  probeAndPersistVerification,
+  resolveStoredVerification,
   type ProviderVerification,
 } from '../platform/providerCredentialVerifier.js';
 
@@ -194,26 +189,12 @@ async function resolveStatus(
   const found = await findProviderKey(vault, provider);
   if (found === undefined) return { status: 'no_key' };
 
-  const cached = getCachedVerification(provider, found.apiKey);
-  if (cached !== undefined) return cached;
-
-  // Cold cache (fresh process). A durable record proves an earlier probe
-  // succeeded — but only if it was written for the key that is stored NOW.
-  const raw = await vault?.get(
-    found.scope,
-    providerVerifiedAtVaultKey(provider),
-  );
-  const verifiedAt = decodeVerifiedRecord(raw, found.apiKey);
-  if (verifiedAt !== undefined) {
-    const verification: ProviderVerification = {
-      status: 'verified',
-      verifiedAt,
-      checkedAt: verifiedAt,
-    };
-    primeVerification(provider, found.apiKey, verification);
-    return verification;
-  }
-  return { status: 'unverified' };
+  return resolveStoredVerification({
+    vault,
+    scope: found.scope,
+    verificationId: provider,
+    apiKey: found.apiKey,
+  });
 }
 
 /**
@@ -409,45 +390,26 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
         return;
       }
 
-      const verification = await verifyProviderCredential({
-        providerId,
+      // Probe + durable record in one shared step (also used by the
+      // transcription twin) — see `probeAndPersistVerification` for the
+      // durability contract.
+      const verification = await probeAndPersistVerification({
+        vault: deps.vault,
+        scope: found.scope,
+        verificationId: providerId,
         apiKey: found.apiKey,
-        ...(descriptor?.wireFormat !== undefined
-          ? { wireFormat: descriptor.wireFormat }
-          : {}),
-        ...(descriptor?.baseURL !== undefined
-          ? { baseURL: descriptor.baseURL }
-          : {}),
-        ...(descriptor?.policy?.requiresApiKey !== undefined
-          ? { requiresApiKey: descriptor.policy.requiresApiKey }
-          : {}),
-        force: true,
+        probe: {
+          ...(descriptor?.wireFormat !== undefined
+            ? { wireFormat: descriptor.wireFormat }
+            : {}),
+          ...(descriptor?.baseURL !== undefined
+            ? { baseURL: descriptor.baseURL }
+            : {}),
+          ...(descriptor?.policy?.requiresApiKey !== undefined
+            ? { requiresApiKey: descriptor.policy.requiresApiKey }
+            : {}),
+        },
       });
-
-      // Durability. Written ONLY here and on a key save — never on a read: the
-      // vault is a single encrypted blob rewritten in full on every write.
-      if (deps.vault) {
-        const vaultKey = providerVerifiedAtVaultKey(providerId);
-        try {
-          if (verification.status === 'verified') {
-            await deps.vault.setMany(found.scope, {
-              [vaultKey]: encodeVerifiedRecord(
-                verification.verifiedAt ?? new Date().toISOString(),
-                keyFingerprint(found.apiKey),
-              ),
-            });
-          } else if (verification.status === 'invalid') {
-            await deps.vault.deleteKey(found.scope, vaultKey);
-          }
-        } catch (err) {
-          // The verdict itself is still valid and cached in memory — a vault
-          // write failure must not turn a successful probe into an error.
-          console.warn(
-            `[adminProviders] could not persist verification for ${providerId}:`,
-            err instanceof Error ? err.message : err,
-          );
-        }
-      }
 
       res.json(verification);
     } catch (err) {

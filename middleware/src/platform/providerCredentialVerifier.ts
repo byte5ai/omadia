@@ -284,6 +284,110 @@ export function __clearVerificationCache(): void {
   cache.clear();
 }
 
+/** The vault operations the verdict lifecycle needs — structural, so this
+ *  platform module never hard-depends on the secrets layer's `SecretVault`
+ *  class (which satisfies this shape as-is). */
+export interface VerificationVaultView {
+  get(scope: string, key: string): Promise<string | undefined>;
+  setMany(scope: string, entries: Record<string, string>): Promise<void>;
+  deleteKey(scope: string, key: string): Promise<void>;
+}
+
+/**
+ * The stored credential's verdict WITHOUT touching the network — the shared
+ * read path behind every provider-admin GET (LLM, transcription, …):
+ *   - a fresh cached probe for THIS key            → that verdict
+ *   - a durable `verified_at` record for THIS key  → `verified` (and primed)
+ *   - otherwise                                    → `unverified`
+ *
+ * `unverified` is the honest default: a key exists, but nothing has ever
+ * proved it works. Callers own everything upstream of a stored key — the
+ * keyless-provider policy short-circuit, the key lookup, and the `no_key`
+ * verdict — because those genuinely differ per capability surface.
+ */
+export async function resolveStoredVerification(opts: {
+  readonly vault: VerificationVaultView | undefined;
+  /** Vault scope that owns the key AND its durable verdict record. */
+  readonly scope: string;
+  /** Cache + durable-record id (e.g. `openai`, `transcription:openai`). */
+  readonly verificationId: string;
+  readonly apiKey: string;
+}): Promise<ProviderVerification> {
+  const cached = getCachedVerification(opts.verificationId, opts.apiKey);
+  if (cached !== undefined) return cached;
+
+  // Cold cache (fresh process). A durable record proves an earlier probe
+  // succeeded — but only if it was written for the key that is stored NOW.
+  const raw = await opts.vault?.get(
+    opts.scope,
+    providerVerifiedAtVaultKey(opts.verificationId),
+  );
+  const verifiedAt = decodeVerifiedRecord(raw, opts.apiKey);
+  if (verifiedAt !== undefined) {
+    const verification: ProviderVerification = {
+      status: 'verified',
+      verifiedAt,
+      checkedAt: verifiedAt,
+    };
+    primeVerification(opts.verificationId, opts.apiKey, verification);
+    return verification;
+  }
+  return { status: 'unverified' };
+}
+
+/**
+ * Force-probe a stored credential and persist the verdict — the shared write
+ * path behind every provider-admin verify endpoint. On `verified` the record
+ * goes to a vault sibling key so it survives a restart; on `invalid` that
+ * record is deleted, so a revoked key cannot come back as `verified` after a
+ * reboot. Written ONLY here and dropped on a key write — never on a read: the
+ * vault is a single encrypted blob rewritten in full on every write.
+ *
+ * A vault write failure is logged, not thrown — the verdict itself is still
+ * valid and cached in memory, and a persistence hiccup must not turn a
+ * successful probe into an error response.
+ */
+export async function probeAndPersistVerification(opts: {
+  readonly vault: VerificationVaultView | undefined;
+  readonly scope: string;
+  readonly verificationId: string;
+  readonly apiKey: string;
+  /** Probe parameters (wire format, base URL, key policy, test fetch). */
+  readonly probe?: Omit<
+    VerifyProviderCredentialOptions,
+    'providerId' | 'apiKey' | 'force'
+  >;
+}): Promise<ProviderVerification> {
+  const verification = await verifyProviderCredential({
+    ...opts.probe,
+    providerId: opts.verificationId,
+    apiKey: opts.apiKey,
+    force: true,
+  });
+
+  if (opts.vault) {
+    const vaultKey = providerVerifiedAtVaultKey(opts.verificationId);
+    try {
+      if (verification.status === 'verified') {
+        await opts.vault.setMany(opts.scope, {
+          [vaultKey]: encodeVerifiedRecord(
+            verification.verifiedAt ?? new Date().toISOString(),
+            keyFingerprint(opts.apiKey),
+          ),
+        });
+      } else if (verification.status === 'invalid') {
+        await opts.vault.deleteKey(opts.scope, vaultKey);
+      }
+    } catch (err) {
+      console.warn(
+        `[providerCredentialVerifier] could not persist verification for ${opts.verificationId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  return verification;
+}
+
 function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
 }

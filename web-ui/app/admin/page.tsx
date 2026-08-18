@@ -59,6 +59,8 @@ const GROUPS: readonly GroupDef[] = [
       { href: '/admin/memory-backend', key: 'memoryBackend' },
       // #440 follow-up — live embeddingClient@1 provider switch.
       { href: '/admin/embedding-provider', key: 'embeddingProvider' },
+      // #584 — transcription@1 provider selection + key verification.
+      { href: '/admin/transcription-provider', key: 'transcriptionProvider' },
     ],
   },
   {

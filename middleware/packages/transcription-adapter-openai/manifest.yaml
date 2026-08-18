@@ -36,6 +36,12 @@ setup:
       help: "Basis-URL des OpenAI-kompatiblen Endpoints inklusive Versions-Präfix. Default: https://api.openai.com/v1"
       required: false
       default: "https://api.openai.com/v1"
+    - key: "max_source_minutes"
+      type: "integer"
+      label: "Max. Aufnahmedauer (Source-Minuten)"
+      help: "Capability-weite Obergrenze der Aufnahmedauer pro Transkription in Minuten (Source Minutes, #584). Vor jedem transcribe_recording-Aufruf wird die Dauer per Header-Probe ermittelt und fail-closed geprüft — nicht ermittelbare Dauer wird abgelehnt. Default: 60."
+      required: false
+      default: 60
 
 playbook:
   when_to_use: |

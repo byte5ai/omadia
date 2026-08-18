@@ -49,17 +49,20 @@ export interface ReadinessVault {
 }
 
 /** Kernel-injected synthetic setup fields (`_privacy_mode`,
- *  `_privacy_bypass_scopes`, …) are never operator-required — they always have
- *  a kernel default. They are not part of the plugin's manifest contract, so
- *  they must never make a plugin look unconfigured. */
-const SYNTHETIC_FIELD_PREFIX = '_privacy_';
+ *  `_privacy_bypass_scopes`, `_transcription_minutes_quota`, …) are never
+ *  operator-required — they are optional or carry a kernel default. They are
+ *  not part of the plugin's manifest contract, so they must never make a
+ *  plugin look unconfigured. */
+const SYNTHETIC_FIELD_PREFIXES = ['_privacy_', '_transcription_'] as const;
 
 /** Field types the operator cannot satisfy by typing a value into the setup
  *  form. `oauth` fields are completed by the kernel broker flow and store their
  *  tokens under broker-owned keys, so a "missing" check against the manifest
  *  key would report a false positive on every OAuth plugin. */
 function isCheckableField(field: PluginSetupField): boolean {
-  if (field.key.startsWith(SYNTHETIC_FIELD_PREFIX)) return false;
+  if (SYNTHETIC_FIELD_PREFIXES.some((p) => field.key.startsWith(p))) {
+    return false;
+  }
   if (field.type === 'oauth') return false;
   // Required-by-default mirrors manifestLoader / installService.
   return field.required !== false;

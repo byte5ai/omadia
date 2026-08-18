@@ -455,6 +455,90 @@ export async function verifyProvider(
 }
 
 // -----------------------------------------------------------------------------
+// Transcription provider — admin (/api/v1/admin/transcription-provider, #584).
+// The transcription twin of the LLM providers block above: same 4-state
+// credential verdict and policy flags, but the key lives in the ADAPTER
+// PLUGIN's own vault scope (written via the dedicated key endpoint, not the
+// settings catalog) and selection switches the active adapter plugin.
+// -----------------------------------------------------------------------------
+
+export type TranscriptionSurface = 'file' | 'stream';
+
+export interface TranscriptionProviderModel {
+  id: string;
+  modelId: string;
+  label: string;
+  /** Which capability surfaces the model serves (batch upload / realtime). */
+  surfaces: TranscriptionSurface[];
+}
+
+export interface TranscriptionProvider {
+  id: string;
+  label: string;
+  /** The adapter plugin contributing this provider. */
+  pluginId: string;
+  /** Whether this provider's plugin is the active `transcription@1` adapter. */
+  active: boolean;
+  /** Credential verdict — same four states as `AdminProvider.status`. */
+  status: ProviderCredentialStatus;
+  verifiedAt?: string;
+  verifyError?: string;
+  /** Machine-readable counterpart to `verifyError` (`invalid` only). */
+  verifyErrorCode?: string;
+  /** Why the probe could not confirm the key (`unverified` only) — same codes
+   *  as `AdminProvider.verifyReason`. */
+  verifyReason?: string;
+  /** Legacy meaning retained from the LLM block: "a key is on file". */
+  connected: boolean;
+  /** Data-protection hints for the AVV/EU banner (defaulted server-side). */
+  requiresAvvDisclosure: boolean;
+  euHosted: boolean;
+  models: TranscriptionProviderModel[];
+}
+
+export interface TranscriptionProviderState {
+  providers: TranscriptionProvider[];
+  /** Active provider id, or null when no transcription plugin is active. */
+  active: string | null;
+  vault_available: boolean;
+}
+
+export async function getTranscriptionProviderState(): Promise<TranscriptionProviderState> {
+  return getJson<TranscriptionProviderState>('/v1/admin/transcription-provider');
+}
+
+/** Force a live probe of the provider's stored transcription key. */
+export async function verifyTranscriptionProvider(
+  providerId: string,
+): Promise<ProviderVerification> {
+  return postJson<ProviderVerification>(
+    `/v1/admin/transcription-provider/${encodeURIComponent(providerId)}/verify`,
+    {},
+  );
+}
+
+/** Store (string) or remove (null) the provider's API key. The middleware
+ *  writes the adapter plugin's own vault scope, drops the old verdict and
+ *  reactivates the plugin so the capability (un)publishes immediately. */
+export async function setTranscriptionProviderKey(
+  providerId: string,
+  apiKey: string | null,
+): Promise<{ ok: boolean; providerId: string; hasKey: boolean }> {
+  return postJson(
+    `/v1/admin/transcription-provider/${encodeURIComponent(providerId)}/key`,
+    { apiKey },
+  );
+}
+
+/** Switch the active transcription provider (deactivates the previous
+ *  adapter plugin, activates the target, rolls back on failure). */
+export async function selectTranscriptionProvider(
+  providerId: string,
+): Promise<{ ok: boolean; active: string }> {
+  return postJson('/v1/admin/transcription-provider/select', { providerId });
+}
+
+// -----------------------------------------------------------------------------
 // Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
 // (Claude/Codex/Gemini) so an operator can run agents on a subscription instead
 // of a metered API key. Read-only host-capability probe.

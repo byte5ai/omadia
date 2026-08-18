@@ -2,16 +2,23 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { useFormatter, useTranslations } from 'next-intl';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import { ErrorHelp } from '@/app/_components/ErrorHelp';
+import {
+  compareProviders,
+  ConnectionChip,
+  errorCode,
+  SaveError,
+  StatusChip,
+  type SaveStatus,
+} from '@/app/admin/_components/providerCredential';
 import {
   assignProvider,
   getProviders,
   patchSettings,
   verifyProvider,
-  ApiError,
   type AdminProvider,
   type ProviderAssignment,
   type ProvidersResponse,
@@ -26,37 +33,6 @@ import {
  */
 function providerKeyEnv(id: string): string {
   return `${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
-}
-
-/**
- * Stable provider ordering, mirroring the server's comparator (OM-10b): keyed
- * providers first, then by label, then by id. The server already sorts, but
- * saving a key re-activates the plugin and re-registers its models, which used
- * to bounce the provider the operator just configured to the bottom of the
- * list — so the presentation order is pinned here too and never depends on the
- * order the response happened to arrive in.
- *
- * Deliberately NOT `localeCompare`: server and client can resolve different
- * collations, and a mismatch would break hydration (see `_components/Nav.tsx`).
- */
-function compareProviders(a: AdminProvider, b: AdminProvider): number {
-  if (a.connected !== b.connected) return a.connected ? -1 : 1;
-  if (a.label !== b.label) return a.label < b.label ? -1 : 1;
-  if (a.id === b.id) return 0;
-  return a.id < b.id ? -1 : 1;
-}
-
-/**
- * The machine code behind a failed call, or `null` when there is none.
- *
- * OM-09: this used to be `friendlyError`, which parsed the same body, threw
- * the code away and returned the backend's English `message` for the panel to
- * render as its headline. `ApiError` now parses the code once, and the
- * headline comes from the localized catalogue instead; the server's own text
- * survives only inside the support disclosure of `<ErrorHelp>`.
- */
-function errorCode(err: unknown): string | null {
-  return err instanceof ApiError ? err.code : null;
 }
 
 /**
@@ -75,8 +51,6 @@ function errorCode(err: unknown): string | null {
  * saved (DSGVO Art. 28 — operator must have a processing agreement in place).
  */
 
-type Status = 'idle' | 'saving' | 'saved' | 'error';
-
 type State =
   | { kind: 'loading' }
   | { kind: 'ready'; data: ProvidersResponse }
@@ -93,7 +67,7 @@ export function ProvidersPanel({
 }): React.ReactElement {
   const t = useTranslations('adminProviders');
   const [state, setState] = useState<State>({ kind: 'loading' });
-  const [status, setStatus] = useState<Record<string, Status>>({});
+  const [status, setStatus] = useState<Record<string, SaveStatus>>({});
   // The thrown error itself, not a pre-flattened string: the component decides
   // what is headline and what is disclosed detail, not the state.
   const [errors, setErrors] = useState<Record<string, unknown>>({});
@@ -240,7 +214,7 @@ function ProviderRow({
   // then reload so the connection chip updates — all without leaving this tab.
   const [editing, setEditing] = useState(false);
   const [keyValue, setKeyValue] = useState('');
-  const [saveStatus, setSaveStatus] = useState<Status>('idle');
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   // Either a per-field message from a 200 PATCH response (already a plain
   // string the server produced per key) or the thrown ApiError itself.
   const [saveError, setSaveError] = useState<unknown>(undefined);
@@ -327,7 +301,7 @@ function ProviderRow({
           </span>
         </span>
         <span className="flex items-center gap-3">
-          <ConnectionChip provider={p} t={t} />
+          <ConnectionChip provider={p} />
           {/* Explicit re-probe. Only offered where there is a credential to
               probe — the CLI provider authenticates on the Subscriptions tab. */}
           {!p.toolLess && p.status !== 'no_key' && (
@@ -400,7 +374,7 @@ function ProviderRow({
                 >
                   {t('providers.removeKey')}
                 </button>
-                {saveStatus === 'saving' && <StatusChip status={saveStatus} t={t} />}
+                {saveStatus === 'saving' && <StatusChip status={saveStatus} />}
               </span>
             ) : (
               // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
@@ -457,7 +431,7 @@ function ProviderRow({
             >
               {t('providers.cancel')}
             </Button>
-            <StatusChip status={saveStatus} t={t} />
+            <StatusChip status={saveStatus} />
           </div>
           <SaveError error={saveError} />
         </div>
@@ -492,93 +466,6 @@ function ProviderRow({
   );
 }
 
-/**
- * One failed key save. A per-field message from a 200 PATCH response is
- * already a plain per-key string and stays as-is; a thrown `ApiError` goes
- * through the catalogue, so its code never reaches the screen as text.
- */
-function SaveError({ error }: { error: unknown }): React.ReactElement | null {
-  if (error === undefined || error === null) return null;
-  if (typeof error === 'string') {
-    return <p className="text-[12px] text-[color:var(--danger)]">{error}</p>;
-  }
-  return <ErrorHelp code={errorCode(error)} rawDetail={error} />;
-}
-
-/** Chip colours per Lume: text + edge only, never a filled state block. */
-const CHIP_CLASS: Record<AdminProvider['status'], string> = {
-  verified: 'border-[color:var(--success)]/40 text-[color:var(--success)]',
-  unverified: 'border-[color:var(--warning)]/40 text-[color:var(--warning)]',
-  invalid: 'border-[color:var(--danger)]/40 text-[color:var(--danger)]',
-  no_key: 'border-[color:var(--border)] text-[color:var(--fg-muted)]',
-};
-
-const CHIP_LABEL_KEY: Record<AdminProvider['status'], string> = {
-  verified: 'providers.verified',
-  invalid: 'providers.invalid',
-  unverified: 'providers.unverified',
-  no_key: 'providers.notConnected',
-};
-
-/** #671 — `ProviderVerificationReason` codes → localized copy. Deliberately a
- *  closed map rather than a template lookup: an unknown code from a newer
- *  middleware renders nothing, instead of printing the raw code at the
- *  operator. Mirrors `ProviderVerificationReason` in
- *  `middleware/src/platform/providerCredentialVerifier.ts`. */
-const UNVERIFIED_REASON_KEYS: Record<string, string | undefined> = {
-  forbidden: 'providers.unverifiedReason.forbidden',
-  non_json_response: 'providers.unverifiedReason.nonJsonResponse',
-  unexpected_body: 'providers.unverifiedReason.unexpectedBody',
-  http_error: 'providers.unverifiedReason.httpError',
-  network_error: 'providers.unverifiedReason.networkError',
-  no_probe: 'providers.unverifiedReason.noProbe',
-};
-
-/**
- * Four-state credential chip. The old two-state version showed "CONNECTED" for
- * any non-empty vault string, which is what let a dead key look healthy — so
- * "a key exists" and "the key works" are now visibly different states.
- */
-function ConnectionChip({
-  provider: p,
-  t,
-}: {
-  provider: AdminProvider;
-  t: T;
-}): React.ReactElement {
-  const format = useFormatter();
-  return (
-    <span className="flex items-center gap-2">
-      <span
-        className={[
-          'inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
-          CHIP_CLASS[p.status],
-        ].join(' ')}
-      >
-        {t(CHIP_LABEL_KEY[p.status])}
-      </span>
-      {p.status === 'verified' && p.verifiedAt && (
-        <span className="text-[11px] text-[color:var(--fg-muted)]">
-          {t('providers.verifiedAt', {
-            time: format.relativeTime(new Date(p.verifiedAt)),
-          })}
-        </span>
-      )}
-      {/* #671 — `unverified` on its own is not actionable: it covers "your key
-          is fine but your region is blocked" and "the provider was down" with
-          the same chip. #599 was right to stop calling a bare 403 a bad key;
-          this says which of those it actually was. Unknown codes render
-          nothing rather than a raw string — a newer middleware must never leak
-          an untranslated code into the UI. */}
-      {p.status === 'unverified' && p.verifyReason && UNVERIFIED_REASON_KEYS[p.verifyReason] && (
-        <span className="text-[11px] text-[color:var(--fg-muted)]">
-          {t(UNVERIFIED_REASON_KEYS[p.verifyReason]!)}
-        </span>
-      )}
-    </span>
-  );
-}
-
 const selectCls =
   'rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)] disabled:opacity-50';
 
@@ -592,7 +479,7 @@ function AssignmentRow({
 }: {
   assignment: ProviderAssignment;
   providers: AdminProvider[];
-  status: Status;
+  status: SaveStatus;
   /** The thrown value from the last failed apply, resolved by <ErrorHelp>. */
   error?: unknown;
   onApply: (pluginId: string, provider: string, model: string) => void;
@@ -630,7 +517,7 @@ function AssignmentRow({
             </span>
           )}
         </div>
-        <StatusChip status={status} t={t} />
+        <StatusChip status={status} />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -706,19 +593,3 @@ function AssignmentRow({
   );
 }
 
-function StatusChip({
-  status,
-  t,
-}: {
-  status: Status;
-  t: T;
-}): React.ReactElement | null {
-  if (status === 'idle') return null;
-  const map: Record<Exclude<Status, 'idle'>, { key: string; cls: string }> = {
-    saving: { key: 'saving', cls: 'text-[color:var(--fg-muted)]' },
-    saved: { key: 'saved', cls: 'text-[color:var(--success)]' },
-    error: { key: 'errorChip', cls: 'text-[color:var(--danger)]' },
-  };
-  const { key, cls } = map[status];
-  return <span className={`text-[11px] ${cls}`}>{t(`status.${key}`)}</span>;
-}

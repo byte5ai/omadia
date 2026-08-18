@@ -1179,6 +1179,67 @@ alle Error-Code-Zweige, Retry→attempts, Abort, Stream-Stub) und
 `test/transcriptionProviderManifest.test.ts` (Root-Suite; Parse-Mapping +
 malformed → throw).
 
+### Transcription-Admin-Surface (issue #584)
+
+Admin-Route + Web-UI-Seite für Provider-Auswahl und Key-Eingabe — der
+Transcription-Zwilling von `adminProviders.ts` (Key-Verdict) und
+`adminEmbeddingProvider.ts` (Single-Active-Capability-Auswahl).
+
+- **Katalog:** `src/platform/transcriptionProviderCatalog.ts` — Einträge
+  tragen die **owning `pluginId`** (Key liegt im Adapter-eigenen Vault-Scope
+  unter `api_key`, Embedding-Präzedenz; Auswahl = Plugin
+  aktivieren/deaktivieren). Kein Model-Registry-Overlay.
+  Registrierungs-Helfer `registerPluginTranscriptionProvider` /
+  `unregister…` in `transcriptionProviderManifest.ts` (Boot-Loop +
+  Hot-Install-Hooks in `index.ts`, gleiche Stellen wie die LLM-Zwillinge).
+- **Route** `/api/v1/admin/transcription-provider`
+  (`src/routes/adminTranscriptionProvider.ts`, Mount hinter `requireAuth`):
+  Verdict-Lifecycle (No-Network-Read, Force-Probe + Durable-Record) läuft über
+  die **geteilten Helfer** `resolveStoredVerification` /
+  `probeAndPersistVerification` in `providerCredentialVerifier.ts` — dieselben,
+  die `adminProviders.ts` nutzt (dort im Zuge von #584 extrahiert; Verhalten
+  unverändert, bestehende Suiten grün).
+  `GET /` (nie Netzwerk; Cache/Durable-Record/`unverified`),
+  `POST /:id/verify` (Force-Probe + Durable-Record im Plugin-Scope),
+  `POST /:id/key` (Key setzen/löschen → Verdict invalidieren → Plugin
+  reaktivieren, damit die Capability sofort (un)published),
+  `POST /select` (deactivate alt → activate neu, Rollback bei Fehler,
+  Statuse im installedRegistry = Persistenz).
+- **Verifier UNVERÄNDERT:** jeder v1-Provider spricht OpenAI-Wire, die
+  billigste authentifizierte Probe ist das bestehende `GET {base}/models`
+  (`wireFormat: 'openai'`). Cache-/Record-IDs sind
+  `transcription:<providerId>` genamespaced (kein Cross-Talk mit dem
+  LLM-`openai`). Weil der Verifier nicht angefasst wurde, braucht auch der
+  **Desktop-Twin (`desktop/src/ipc.ts`) keine Änderung** (change one,
+  change both — hier: change none).
+- **Web-UI:** `web-ui/app/admin/transcription-provider/` (Server-Page +
+  Client-Panel, `providers/`-Shape): 4-State-Chip, Inline-Key-Eingabe mit
+  Auto-Verify nach Save, Aktivieren-Button, AVV/EU-Banner datengetrieben aus
+  `policy` des AKTIVEN Providers. Chip-/Key-Entry-Bausteine (ConnectionChip,
+  StatusChip, SaveError, compareProviders) leben geteilt in
+  `web-ui/app/admin/_components/providerCredential.tsx` und werden auch vom
+  LLM-`ProvidersPanel` genutzt; ihre Copy kommt aus `adminProviders.*`. Der
+  Namespace `adminTranscriptionProvider` (en+de, Parity grün) enthält nur noch
+  genuin transkriptionsspezifische Strings (Intro, Surfaces, Selection,
+  AVV/EU); Admin-Karte in der `knowledge`-Gruppe.
+- **Metering-Config (nur Konfiguration — Enforcement folgt in einem
+  weiteren Commit zu #584):**
+  `max_source_minutes` (integer, Default 60) als `setup.fields` im
+  Adapter-Manifest; synthetisches Install-Formular-Feld
+  `_transcription_minutes_quota` (Kernel-injiziert in
+  `installService.extractSetupSchema`, `_privacy_mode`-Präzedenz; Konstante
+  `TRANSCRIPTION_MINUTES_QUOTA_CONFIG_KEY` in `@omadia/plugin-api`; leer =
+  unbegrenzt, KEIN Default). `readiness.ts` kennt jetzt mehrere
+  Synthetic-Prefixe (`_privacy_`, `_transcription_`).
+
+Tests: `test/adminTranscriptionProviderRoute.test.ts` (Listing/Policy-Flags,
+4-State-Verdict inkl. Cache/Durable-Record/Fingerprint-Bindung, Key-Endpoint,
+Select inkl. Rollback, Mount-Time-Auth), Register-Helfer in
+`test/transcriptionProviderManifest.test.ts`,
+`test/installServiceTranscriptionQuota.test.ts` (Kernel-Injection),
+Readiness-Fall in `test/pluginReadiness.test.ts`, Web-UI-Panel-Suite
+`web-ui/app/admin/transcription-provider/__tests__/`.
+
 ---
 
 ## 4. Migration Managed Agents → Lokal

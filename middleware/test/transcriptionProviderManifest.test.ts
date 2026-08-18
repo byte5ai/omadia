@@ -1,7 +1,12 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { parseTranscriptionProviderManifestBlock } from '../src/platform/transcriptionProviderManifest.js';
+import {
+  parseTranscriptionProviderManifestBlock,
+  registerPluginTranscriptionProvider,
+  unregisterPluginTranscriptionProvider,
+} from '../src/platform/transcriptionProviderManifest.js';
+import { TranscriptionProviderCatalog } from '../src/platform/transcriptionProviderCatalog.js';
 
 /** The block the OpenAI adapter's manifest.yaml actually ships. */
 const OPENAI_BLOCK = {
@@ -139,5 +144,90 @@ describe('parseTranscriptionProviderManifestBlock', () => {
         }),
       /surface 'batch' must be 'file' or 'stream'/,
     );
+  });
+});
+
+describe('registerPluginTranscriptionProvider', () => {
+  const PLUGIN = '@omadia/transcription-adapter-openai';
+  const MANIFEST = { transcription_provider: OPENAI_BLOCK };
+
+  it('registers the descriptor under its owning plugin id', () => {
+    const catalog = new TranscriptionProviderCatalog();
+    const d = registerPluginTranscriptionProvider(MANIFEST, {}, catalog, PLUGIN);
+    assert.equal(d?.id, 'openai');
+    assert.equal(catalog.get('openai')?.pluginId, PLUGIN);
+    assert.equal(catalog.get('openai')?.descriptor.baseURL, 'https://api.openai.com/v1');
+  });
+
+  it('resolves a per-install baseURL override via base_url_config_key', () => {
+    const catalog = new TranscriptionProviderCatalog();
+    const d = registerPluginTranscriptionProvider(
+      MANIFEST,
+      { base_url: '  https://proxy.example/v1  ' },
+      catalog,
+      PLUGIN,
+    );
+    assert.equal(d?.baseURL, 'https://proxy.example/v1');
+    assert.equal(
+      catalog.get('openai')?.descriptor.baseURL,
+      'https://proxy.example/v1',
+    );
+  });
+
+  it('ignores a blank or non-string override', () => {
+    const catalog = new TranscriptionProviderCatalog();
+    for (const base_url of ['   ', 42]) {
+      const d = registerPluginTranscriptionProvider(
+        MANIFEST,
+        { base_url },
+        catalog,
+        PLUGIN,
+      );
+      assert.equal(d?.baseURL, 'https://api.openai.com/v1');
+    }
+  });
+
+  it('returns undefined when the manifest declares no provider', () => {
+    const catalog = new TranscriptionProviderCatalog();
+    assert.equal(
+      registerPluginTranscriptionProvider({ identity: {} }, {}, catalog, PLUGIN),
+      undefined,
+    );
+    assert.deepEqual(catalog.list(), []);
+  });
+
+  it('throws on a malformed block without registering anything', () => {
+    const catalog = new TranscriptionProviderCatalog();
+    assert.throws(() =>
+      registerPluginTranscriptionProvider(
+        { transcription_provider: { id: 'x' } },
+        {},
+        catalog,
+        PLUGIN,
+      ),
+    );
+    assert.deepEqual(catalog.list(), []);
+  });
+
+  it('re-registering the same id replaces the entry (idempotent hot-install)', () => {
+    const catalog = new TranscriptionProviderCatalog();
+    registerPluginTranscriptionProvider(MANIFEST, {}, catalog, PLUGIN);
+    registerPluginTranscriptionProvider(
+      MANIFEST,
+      { base_url: 'https://other.example/v1' },
+      catalog,
+      PLUGIN,
+    );
+    assert.equal(catalog.list().length, 1);
+    assert.equal(catalog.get('openai')?.descriptor.baseURL, 'https://other.example/v1');
+  });
+
+  it('unregister drops the entry and reports the id; absent block/entry → undefined', () => {
+    const catalog = new TranscriptionProviderCatalog();
+    registerPluginTranscriptionProvider(MANIFEST, {}, catalog, PLUGIN);
+    assert.equal(unregisterPluginTranscriptionProvider(MANIFEST, catalog), 'openai');
+    assert.equal(catalog.has('openai'), false);
+    assert.equal(unregisterPluginTranscriptionProvider(MANIFEST, catalog), undefined);
+    assert.equal(unregisterPluginTranscriptionProvider({}, catalog), undefined);
   });
 });

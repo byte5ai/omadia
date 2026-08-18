@@ -6,6 +6,7 @@ import {
   PRIVACY_MODE_CONFIG_KEY,
   PRIVACY_MODE_DEFAULT,
   PRIVACY_MODE_VALUES,
+  TRANSCRIPTION_MINUTES_QUOTA_CONFIG_KEY,
 } from '@omadia/plugin-api';
 import type { TemplateManifest } from '@omadia/conductor-core';
 
@@ -626,6 +627,13 @@ export function extractSetupSchema(
     // and arrays (programmatic API). Optional string field — operators
     // using `guarded` or `bypass` simply leave it empty.
     fields.push(privacyBypassScopesField());
+    // #584 — per-agent monthly transcription quota (Billed Minutes),
+    // enforced by the metering layer at dispatch time. Same synthetic-field
+    // mechanism and gate as `_privacy_mode`: kernel-injected, never in the
+    // manifest, lands in the plugin's config bag via the standard
+    // `configure()` path. Deliberately NO default — empty means unlimited,
+    // so installations that never touch audio carry no new obligations.
+    fields.push(transcriptionMinutesQuotaField());
   }
   return { fields };
 }
@@ -714,6 +722,23 @@ function privacyBypassScopesField(): InstallSetupField {
         '"confluence_get_page, confluence_get_page_by_title". Tools die hier ' +
         'NICHT stehen bleiben "guarded". Wird ignoriert wenn Privacy Mode auf ' +
         '"Geschützt" oder "Bypass" steht.',
+    },
+  };
+}
+
+function transcriptionMinutesQuotaField(): InstallSetupField {
+  return {
+    key: TRANSCRIPTION_MINUTES_QUOTA_CONFIG_KEY,
+    type: 'integer',
+    // #602 (OM-17) — German kernel copy tagged `de`; see privacyModeField.
+    label: { de: 'Transkriptions-Quota (Minuten pro Monat)' },
+    required: false,
+    help: {
+      de:
+        'Optionale Obergrenze der abgerechneten Transkriptions-Minuten ' +
+        '(Billed Minutes) dieses Agents pro Kalendermonat. Der Grenzwert ' +
+        'wirkt level-getriggert: der überschreitende Aufruf läuft noch zu ' +
+        'Ende, der nächste wird geblockt. Leer lassen = unbegrenzt.',
     },
   };
 }

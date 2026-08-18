@@ -65,6 +65,11 @@ export * from './privacyReceiptFixtures.js';
 // plugin's setup schema).
 export * from './privacyMode.js';
 
+// #584 — per-agent transcription minute quota. Shared by the install
+// service (injects the synthetic `_transcription_minutes_quota` field) and
+// the metering layer (reads it at dispatch time; empty = unlimited).
+export * from './transcriptionQuota.js';
+
 // Palaia-Phase-6 (OB-75): Session-Continuity Briefings. Lazy summary
 // + open tasks for bootstrap system messages. Provider lives in
 // `harness-orchestrator-extras` (needs KG + ContextRetriever +

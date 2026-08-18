@@ -211,6 +211,10 @@
           "title": "Embedding-Provider",
           "description": "Aktiven Embedding-Adapter im laufenden Betrieb wechseln — ohne Neustart. Zeigt Dimensions-Gate, gespeicherten Korpus und was ein Wechsel verwirft."
         },
+        "transcriptionProvider": {
+          "title": "Transkriptions-Provider",
+          "description": "Verbinde und wähle den Transkriptions-Provider, mit dem Agents Aufnahmen in Text verwandeln. Inklusive API-Key-Prüfung und AVV-Hinweis."
+        },
         "domains": {
           "title": "Domains",
           "description": "Registrierte Plugins nach Domain gruppiert ansehen (read-only)."
@@ -2764,6 +2768,26 @@
       "saving": "speichert …",
       "saved": "✓ gespeichert",
       "errorChip": "✗ Fehler"
+    }
+  },
+  "adminTranscriptionProvider": {
+    "metaTitle": "Transkriptions-Provider",
+    "title": "Transkriptions-Provider",
+    "intro": "Verbinde den Transkriptions-Provider, mit dem Agents Audio-Aufnahmen in Text verwandeln. Schlüssel werden verschlüsselt im Vault gespeichert und verlassen deinen Server nie; es ist immer genau ein Provider aktiv.",
+    "loadError": "Die Transkriptions-Provider-Liste konnte nicht geladen werden.",
+    "noProviders": "Kein Transkriptions-Provider-Plugin installiert. Installiere zuerst einen Transkriptions-Adapter aus dem Plugin-Store — ohne ihn bleibt Audio einfach untranskribiert.",
+    "providers": {
+      "surfaceFile": "Batch (Datei-Upload)",
+      "surfaceStream": "Realtime (Stream)",
+      "removeKeyConfirm": "Den gespeicherten API-Key für {provider} entfernen? Transkription funktioniert dann nicht mehr, bis ein neuer Schlüssel hinterlegt wird."
+    },
+    "selection": {
+      "activeBadge": "aktiv",
+      "activate": "Aktivieren",
+      "activating": "Wird aktiviert …",
+      "noneActive": "Kein Transkriptions-Provider aktiv. Aktiviere einen, damit Agents Aufnahmen transkribieren können.",
+      "avvDisclosure": "Transkriptionen laufen über {provider}. Hochgeladenes Audio wird an einen Drittanbieter (Auftragsverarbeiter) übermittelt. Stelle sicher, dass ein Auftragsverarbeitungsvertrag (DSGVO Art. 28) vorliegt, bevor personenbezogene Aufnahmen transkribiert werden.",
+      "euHostedNote": "{provider} wird in der EU gehostet. Ein Auftragsverarbeitungsvertrag nach DSGVO Art. 28 ist weiterhin erforderlich, aber es findet keine Drittlandübermittlung statt — anders als bei US-Anbietern."
     }
   },
   "adminSubscriptionClis": {
