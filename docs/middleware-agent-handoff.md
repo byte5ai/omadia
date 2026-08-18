@@ -1130,6 +1130,55 @@ Tests: `packages/transcription-api/test/` (`npm test -w
 der Delta-Union — Letztere greift auch im Root-`typecheck`, weil das
 Package-tsconfig `test/` einschließt).
 
+### Transcription-Adapter `@omadia/transcription-adapter-openai` (issue #584)
+
+Neues Workspace-Package `packages/transcription-adapter-openai/` — erster
+`transcription@1`-Provider (#584). EIN Package für beide
+OpenAI-Provider (gleicher Vendor, Key, Client-Bau, Admin-Surface); bewusst
+KEINE Dependency auf `@omadia/llm-adapter-openai` (eigene minimale
+Client-Factory `openaiClient.ts`, Doku-Stil gespiegelt).
+
+- **Batch (`transcribeFile`):** `client.audio.transcriptions.create`, Modell
+  `gpt-transcribe`. Hint-Mapping Intent → Wire-Param
+  (`languageHints`→`languages`, `keywordHints`→`keywords`,
+  `context`→`prompt`). EIN Segment pro Datei (`id: 'seg-0'`,
+  `timing: 'none'` — der Provider liefert einen Text-Blob, der Adapter
+  erfindet keine Struktur), `detectedLanguages` aus der Response, nie ein
+  `speaker` (gpt-transcribe diarisiert nicht).
+- **Attempt-Metering:** `TranscriptionUsage.attempts` zählt Provider-Calls
+  inkl. SDK-interner Retries — die SDK hat keinen Retry-Hook, daher baut jeder
+  `transcribeFile`-Call seinen Client um einen zählenden fetch-Wrapper
+  (`data:`-URLs der Form-Encodierung werden herausgefiltert). Auf dem
+  Error-Pfad trägt der geworfene `TranscriptionError` die partielle `usage`.
+- **Error-Klassifikation** auf die `TranscriptionErrorCode`-Union:
+  Status-first (401/403→`auth`, 413→`too-large`, 415→`unsupported-format`),
+  dann `err.code`, dann Message-Heuristik für 400er; AbortSignal →
+  `'aborted'` (`APIUserAbortError`); Rest `'provider'`. `'session-limit'`
+  ist realtime-only und entsteht im Batch-Pfad nie.
+- **`transcribeStream`:** Stub, wirft synchron einen
+  not-implemented-`TranscriptionError` — Realtime-Implementierung
+  (gpt-live-transcribe via `OpenAIRealtimeWS`) ist der Follow-up-PR. Das
+  Manifest deklariert nur `surfaces: [file]`, der Stub ist über die Registry
+  also legal unerreichbar.
+- **Manifest `transcription_provider`-Block** (`manifest.yaml`): Zwilling des
+  `llm_provider`-Blocks, geparst von
+  `src/platform/transcriptionProviderManifest.ts` (throw bei malformed,
+  Caller loggt + skippt; `policy` reused `ProviderPolicy` für das
+  AVV/EU-Banner; `models[].surfaces` = `file`|`stream`). Registrierender
+  Caller (Katalog/Admin) folgt in einem weiteren Commit zu #584.
+- **Plugin-Registrierung** (web-search-Template): `activate()` published EIN
+  Service-Objekt via `ctx.services.provide('transcription', service)`;
+  `ServiceName`-Union in `serviceRegistry.ts` um `'transcription'` erweitert.
+  Ohne Vault-`api_key` aktiviert das Plugin, published aber nichts
+  (Embedding-Adapter-Präzedenz); der `secret`-Typ verhindert Auto-Install.
+
+Tests: `packages/transcription-adapter-openai/test/` (`npm test -w
+@omadia/transcription-adapter-openai`; lokaler `node:http`-Fake-Provider gegen
+injizierte baseURL — Multipart-Request-Shape, Hint-Mapping, Result-Mapping,
+alle Error-Code-Zweige, Retry→attempts, Abort, Stream-Stub) und
+`test/transcriptionProviderManifest.test.ts` (Root-Suite; Parse-Mapping +
+malformed → throw).
+
 ---
 
 ## 4. Migration Managed Agents → Lokal

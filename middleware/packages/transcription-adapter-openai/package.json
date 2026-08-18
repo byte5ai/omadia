@@ -1,0 +1,25 @@
+{
+  "name": "@omadia/transcription-adapter-openai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "OpenAI adapter for the omadia transcription@1 capability (byte5ai/omadia#584). Implements the @omadia/transcription-api TranscriptionService via the openai SDK: batch through client.audio.transcriptions.create (model gpt-transcribe, one segment per file, timing 'none'); transcribeStream is a not-implemented stub until the realtime follow-up PR (gpt-live-transcribe via OpenAIRealtimeWS). ONE package houses both providers — same vendor, key, client construction, and admin surface. All transcription-side openai SDK knowledge lives here (ESLint no-restricted-imports allowlist); deliberately NO dependency on @omadia/llm-adapter-openai.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test 'test/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@omadia/transcription-api": "*"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "openai": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

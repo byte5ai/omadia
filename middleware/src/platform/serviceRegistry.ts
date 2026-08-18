@@ -39,6 +39,7 @@ export type ServiceName =
   | 'diagrams'
   | 'attachments'
   | 'memory'
+  | 'transcription'
   | (string & {});
 
 /** A registration remembered for its owner so `disposeBySource` can unwind

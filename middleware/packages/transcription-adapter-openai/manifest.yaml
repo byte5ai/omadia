@@ -1,0 +1,89 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/transcription-adapter-openai"
+  name: "Transcription (OpenAI)"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.transcription"
+  description: "Transcription-Adapter für OpenAI: liefert die Capability 'transcription@1' (Batch-Transkription via gpt-transcribe). Die Realtime-Surface (gpt-live-transcribe) folgt in einem eigenen PR — das Manifest deklariert bis dahin nur die 'file'-Surface. Es darf immer nur ein transcription@1-Provider aktiv sein."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "ml"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+setup:
+  fields:
+    - key: "api_key"
+      type: "secret"
+      label: "API-Key"
+      help: "OpenAI-API-Key für den Transkriptions-Endpoint. Liegt im Vault, nie in installed.json. Ohne Key aktiviert sich das Plugin, published aber keine Capability (Konsumenten degraden auf no-transcription-Pfade). Der secret-Typ sorgt zusätzlich dafür, dass der Built-in-Katalog dieses Plugin NICHT automatisch installiert — der Operator entscheidet bewusst, ob und wohin Audio zur Transkription fließt."
+      required: false
+    - key: "base_url"
+      type: "string"
+      label: "Base-URL"
+      help: "Basis-URL des OpenAI-kompatiblen Endpoints inklusive Versions-Präfix. Default: https://api.openai.com/v1"
+      required: false
+      default: "https://api.openai.com/v1"
+
+playbook:
+  when_to_use: |
+    Installieren, wenn Agents Audio-Aufnahmen transkribieren sollen
+    (transcribe_recording-Tool, #584). Der Adapter
+    published die Capability 'transcription@1'; ohne installierten
+    Provider bootet die Plattform unverändert und Audio bleibt einfach
+    untranskribiert. Zwei aktive transcription@1-Provider sind ein
+    Konfigurationsfehler — 'ctx.services.provide' wirft beim zweiten.
+    Provider-Limits (Stand der Recherche zu #584): 25 MB pro Datei, neun
+    Formate (flac/mp3/mp4/mpeg/mpga/m4a/ogg/wav/webm), keine
+    Wort-/Segment-Timestamps auf gpt-transcribe.
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound:
+      - "api.openai.com"
+  filesystem:
+    scratch: false
+
+integrations:
+  - id: "openai_transcriptions"
+    kind: "http"
+    target: "POST {base_url}/audio/transcriptions"
+    auth_from: "api_key"
+    docs: "https://platform.openai.com/docs/api-reference/audio/createTranscription"
+
+transcription_provider:
+  id: "openai"
+  label: "OpenAI"
+  default_base_url: "https://api.openai.com/v1"
+  base_url_config_key: "base_url"
+  policy:
+    requires_avv_disclosure: true
+    eu_hosted: false
+    requires_api_key: true
+  models:
+    - id: "openai:gpt-transcribe"
+      model_id: "gpt-transcribe"
+      label: "GPT Transcribe (Batch)"
+      surfaces: ["file"]
+
+provides:
+  - "transcription@1"
+requires: []
