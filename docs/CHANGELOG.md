@@ -18,6 +18,33 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — the audience floor now guards context recall (#575)
+
+- **The floor's second guard**, at the single context-assembly call site. In a
+  shared room the recalled context is rendered into one prompt that everyone's
+  reply derives from, so the room may only recall what **everyone present** may
+  read. That is the same intersection, applied to a `memory:recall` capability.
+- **This one snapshots, while egress re-computes** — the two halves of decision
+  D4. Rendered context cannot be un-sent, so re-filtering it later in the turn
+  would be theatre; an unfired tool call can still be refused, so that one
+  recomputes per call.
+- **A denial is a skip, not an error.** The turn proceeds without prior context,
+  exactly as it already does when no retriever is configured, and the reason is
+  logged. Dressing a policy decision up as a fault would be misleading.
+- **Recall and tool use are separate capabilities.** Being allowed to run a tool
+  says nothing about being allowed to read the room's history, and neither
+  grants the other.
+- Same inertness as the egress guard: with no audience source installed, recall
+  behaves exactly as before.
+
+> **Known limitation, stated rather than papered over.** The spec asks for "per
+> retrieval, **per recipient**", and this is not that. Two preconditions do not
+> exist in the tree yet: context is assembled once per turn into a single prompt
+> (there is no per-recipient render for a per-recipient context to go to), and
+> recalled items carry scores and scopes but no capability labels (there is
+> nothing per item to check). A per-item filter would have to invent a labelling
+> scheme, which is policy and not this layer's to invent.
+
 ### Added — the audience floor now guards tool egress (#575)
 
 - **The first of the floor's three guards is wired**, at `dispatchTool` — the

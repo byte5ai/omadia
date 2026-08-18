@@ -69,6 +69,79 @@ export function toolCapability(name: string): Capability {
 }
 
 /**
+ * The capability recalling prior context into the prompt requires.
+ *
+ * One flat token rather than a per-item permission, and that is a measured
+ * limitation rather than a shortcut — see {@link guardContextRecall}.
+ */
+export const MEMORY_RECALL_CAPABILITY: Capability = 'memory:recall';
+
+/**
+ * #575 — the second guard: context / memory recall.
+ *
+ * ## Why this one SNAPSHOTS while egress re-computes
+ *
+ * Decision **D4** splits by reversibility. Once recalled context has been
+ * rendered into the prompt it cannot be un-sent, so re-filtering it later in
+ * the turn is theatre. This guard therefore evaluates the floor **once**, at
+ * the moment of recall, and that answer stands for the assembled context. The
+ * egress guard does the opposite because an unfired tool call can still be
+ * refused.
+ *
+ * ## Why it is one gate and not a per-item, per-recipient filter
+ *
+ * Spec §5.2 asks for "per retrieval, per recipient", and that is the right
+ * target. It is not what this wires, because two of its preconditions do not
+ * exist in the tree today, and pretending otherwise would ship a filter that
+ * only looks like one:
+ *
+ *  1. **There is no per-recipient render.** Context is assembled once per turn
+ *     into a single prompt string; every participant sees the same model reply
+ *     derived from it. Until output is rendered per person, "the context for
+ *     Alice" has nowhere to go.
+ *  2. **Recalled items carry no capability labels.** The retriever returns
+ *     turns and memories from the knowledge graph with scores and scopes, not
+ *     entitlements. There is nothing per item to check against, so a per-item
+ *     filter would have to invent a labelling scheme — policy, and not this
+ *     layer's to invent.
+ *
+ * What IS enforceable today is the honest reduction of the same rule: in a
+ * shared room the recalled context reaches everyone present, so the room may
+ * only recall what **everyone** present may read. That is exactly the
+ * intersection, applied to one capability.
+ *
+ * ## A denial here is a skip, not an error
+ *
+ * Unlike a refused tool call, a refused recall has a natural degraded mode: the
+ * turn proceeds without prior context, which is precisely what already happens
+ * when no retriever is configured. So this returns a *reason to log*, and the
+ * caller takes its existing "skip recall" path rather than surfacing anything
+ * to the model. Turning a missing memory into an error would make a policy
+ * decision look like a fault.
+ *
+ * Returns `undefined` when recall may proceed — including when no audience
+ * provider is installed, for the same "not enforced ≠ closed" reason spelled
+ * out at the top of this file.
+ */
+export async function guardContextRecall(): Promise<string | undefined> {
+  const provider = turnContext.current()?.audienceFloor;
+  if (!provider) return undefined;
+
+  let floor: AudienceFloor;
+  try {
+    floor = await provider();
+  } catch (err) {
+    return `audience unresolvable (${err instanceof Error ? err.message : String(err)})`;
+  }
+
+  if (floorPermits(floor, MEMORY_RECALL_CAPABILITY)) return undefined;
+
+  return floor.outcome === 'closed'
+    ? floor.reason
+    : 'not every participant in this conversation may read recalled context';
+}
+
+/**
  * Check whether the current audience permits dispatching `name`.
  *
  * Returns `undefined` when the call may proceed — including when no provider is
