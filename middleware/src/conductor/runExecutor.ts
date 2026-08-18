@@ -9,6 +9,8 @@ import { RunLeaseLostError } from './runStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { StepEffects } from './stepEffects.js';
 import { canonicalizePrincipalId } from './principalId.js';
+import type { RoleHolderResolver } from './roleHolderResolver.js';
+import type { AggregateHolderLookup } from '@omadia/channel-sdk';
 
 export class WorkflowNotFoundError extends Error {}
 export class WorkflowDisabledError extends Error {}
@@ -75,8 +77,14 @@ export class ConductorRunExecutor {
   private readonly awaitStore: ConductorAwaitStore;
   private readonly effects: StepEffects;
   /** Late-bound role→holders resolver — the required responders for a quorum='all' role await.
-   *  Required (not optional) so a role-based 'all' can never silently degrade to 'any' when unwired. */
-  private readonly resolveRoleHolders: (roleKey: string) => Promise<string[]>;
+   *  Required (not optional) so a role-based 'all' can never silently degrade to 'any' when unwired.
+   *
+   *  #333 phase 3 — returns an `AggregateHolderLookup`, not a bare list, because both decisions
+   *  this executor makes from it fail OPEN on a shrunken list: a quorum='all' would complete with
+   *  too few approvals, and `openHumanAwait` would mistake "we could not ask" for "nobody holds
+   *  this role" and take the fallback, skipping the human step entirely. The type forces both
+   *  sites to see `partial`. */
+  private readonly resolveRoleHolders: RoleHolderResolver;
   /** Issue #437 — fired once a REAL (non-dry-run) run reaches a terminal status
    *  ('completed'/'failed'). Feeds the outbound webhook dispatcher; best-effort and
    *  never awaited inline — a slow/broken subscriber must not stall run driving. */
@@ -88,7 +96,7 @@ export class ConductorRunExecutor {
     runStore: ConductorRunStore;
     awaitStore: ConductorAwaitStore;
     effects: StepEffects;
-    resolveRoleHolders: (roleKey: string) => Promise<string[]>;
+    resolveRoleHolders: RoleHolderResolver;
     notifyRunEnded?: (run: ConductorRun) => void;
     log?: (msg: string) => void;
   }) {
@@ -276,9 +284,17 @@ export class ConductorRunExecutor {
     // Holders resolved LIVE (baton moves re-target) and canonicalized so a lowercased-email responder
     // (the channel layer always lowercases) matches an operator-typed holder. Used for BOTH the
     // authorization gate below and the quorum='all' completeness check.
-    const required = (
-      aw.principalKind === 'role' ? await this.resolveRoleHolders(aw.principalRef) : [aw.principalRef]
-    ).map(canonicalizePrincipalId);
+    //
+    // #333 phase 3 — `holdersPartial` is true when a holder source could not answer, which makes
+    // `required` a LOWER BOUND rather than the truth. It is deliberately NOT applied to the
+    // authorization gate: a shrunken list there merely rejects a real holder, which fails closed.
+    // It IS applied to the quorum='all' completeness check below, which fails OPEN.
+    const roleHolders: AggregateHolderLookup =
+      aw.principalKind === 'role'
+        ? await this.resolveRoleHolders(aw.principalRef)
+        : { holders: [aw.principalRef], partial: false, bySource: [] };
+    const required = [...roleHolders.holders].map(canonicalizePrincipalId);
+    const holdersPartial = roleHolders.partial;
     const requiredSet = new Set(required);
     const responder = canonicalizePrincipalId(responderId);
 
@@ -303,8 +319,24 @@ export class ConductorRunExecutor {
       // Empty `required` (a role with no current holders, e.g. all batons moved away) is NOT
       // vacuously complete — that would let one stray response resolve a no-holder await. Such a
       // run stays waiting until its deadline fires the fallback (FR-024).
-      const complete = required.length > 0 && required.every((h) => respondedRequired.has(h));
+      //
+      // #333 phase 3 — nor is a PARTIAL holder list ever complete. The pre-existing guard above
+      // covers the empty case; the partial case could not arise while holders came only from the
+      // local table, and it is the more dangerous one: `required` looks plausible and non-empty
+      // while silently omitting whoever the unreachable source knows about, so a four-eyes
+      // approval would complete on two. Failing closed stalls the run until its deadline fires
+      // the fallback — the same well-trodden path an unanswered await already takes.
+      const complete =
+        !holdersPartial && required.length > 0 && required.every((h) => respondedRequired.has(h));
       if (!complete) {
+        if (holdersPartial) {
+          this.log(
+            `[conductor] await ${awaitId} quorum 'all': REFUSING to complete — holder list is partial (${roleHolders.bySource
+              .filter((s) => s.lookup.outcome === 'unavailable')
+              .map((s) => s.sourceId)
+              .join(', ')} unavailable)`,
+          );
+        }
         this.log(`[conductor] await ${awaitId} quorum 'all': ${respondedRequired.size}/${required.length} required responded`);
         return (await this.runStore.get(aw.runId)) ?? (await this.requireRun(aw.runId));
       }
@@ -434,8 +466,17 @@ export class ConductorRunExecutor {
   private async openHumanAwait(runId: string, step: Step, context: JsonObject, lease: string): Promise<boolean> {
     const h = step.human;
     if (h?.principal.kind === 'role') {
-      const holders = await this.resolveRoleHolders(h.principal.ref);
-      if (holders.length === 0) {
+      const lookup = await this.resolveRoleHolders(h.principal.ref);
+      // #333 phase 3 — "no holders" may only trigger the fallback when we actually KNOW there are
+      // none. On a partial lookup an empty list means "we could not ask", and taking the fallback
+      // there would skip the human step altogether — an approval silently bypassed by a directory
+      // outage. Park instead: the await's own deadline reaches the same fallback later, but only
+      // after giving the real holders a chance to answer.
+      if (lookup.holders.length === 0 && lookup.partial) {
+        this.log(
+          `[conductor] run ${runId} human step '${step.id}' role '${h.principal.ref}': holder lookup is PARTIAL and empty — parking rather than taking the fallback`,
+        );
+      } else if (lookup.holders.length === 0) {
         this.log(`[conductor] run ${runId} human step '${step.id}' role '${h.principal.ref}' has no current holder`);
         return false;
       }

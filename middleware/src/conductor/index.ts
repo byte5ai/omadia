@@ -5,7 +5,10 @@ import type { Pool } from 'pg';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
 import type { JsonObject, KnownRefs } from '@omadia/conductor-core';
 
+import type { RoleHolderSource } from '@omadia/channel-sdk';
+
 import { runConductorMigrations } from './migrator.js';
+import { buildRoleHolderRegistry, holdersOnly } from './roleHolderResolver.js';
 import { ConductorWorkflowStore } from './workflowStore.js';
 import { ConductorRunStore } from './runStore.js';
 import type { ConductorRun } from './runStore.js';
@@ -136,6 +139,15 @@ export async function wireConductor(deps: {
   eventCatalog?: { list(): string[]; byPluginId(): Record<string, string[]> };
   /** resolves a proactive sender for a channel (US5 reminders) — from the routines senderRegistry. */
   getProactiveSender?: (channel: string) => ProactiveSenderLike | undefined;
+  /**
+   * #333 phase 3 — external role→holder sources (Entra group, Odoo HR reporting line) unioned
+   * with Conductor's own assignment table. Omit for local-only behaviour, which is what every
+   * deployment has today: one source, never a partial lookup.
+   *
+   * Each source must be one the operator allowed; the registry rejects a duplicate id, so an
+   * external source cannot shadow `conductor-local` and substitute its own approver list.
+   */
+  roleHolderSources?: readonly RoleHolderSource[];
   /** Per-agent-scoped secret vault (issue #437) — inbound endpoint secrets and outbound
    *  subscription signing secrets live here under the `core:conductor` namespace, never
    *  in a Postgres column or an API response body beyond their one-time creation reply. */
@@ -161,6 +173,10 @@ export async function wireConductor(deps: {
   const runStore = new ConductorRunStore(deps.pool);
   const awaitStore = new ConductorAwaitStore(deps.pool);
   const roleStore = new ConductorRoleStore(deps.pool);
+  // #333 phase 3 — role→holder resolution goes through a registry, with the local assignment
+  // table registered as an ordinary source. `deps.roleHolderSources` is where an integration
+  // (Entra group, Odoo HR reporting line) plugs in; empty today, so behaviour is unchanged.
+  const roleHolderRegistry = buildRoleHolderRegistry(roleStore, deps.roleHolderSources ?? []);
   const scheduleStore = new ConductorScheduleStore(deps.pool);
   const channelBindingStore = new ConductorChannelBindingStore(deps.pool);
 
@@ -215,7 +231,11 @@ export async function wireConductor(deps: {
       ...(deps.invokeAction ? { invokeAction: deps.invokeAction } : {}),
       log,
     }),
-    resolveRoleHolders: (key) => roleStore.resolve(key), // quorum='all' required-responder resolution
+    // #333 phase 3 — resolved through the holder registry rather than the assignment table
+    // directly. With no external source activated this is byte-for-byte today's behaviour (one
+    // source, never partial); once one is, the executor sees `partial` and refuses to complete a
+    // quorum='all' or take a fallback on a holder list it could not fully read.
+    resolveRoleHolders: (key) => roleHolderRegistry.resolveHolders(key),
     // Issue #437 — run-lifecycle outbound webhooks. Best-effort and fire-and-forget;
     // a delivery lost to a crash in this exact window is recovered by
     // `reconcileMissingWebhookDeliveries` above (issue #437 finding).
@@ -264,7 +284,11 @@ export async function wireConductor(deps: {
     awaitStore,
     executor,
     bindingStore: channelBindingStore,
-    resolveRoleHolders: (key) => roleStore.resolve(key),
+    // Same registry as the executor, flattened to a list: nudging is the one consumer where a
+    // partial lookup degrades safely — reminding fewer people is a missed nudge, not a wrong
+    // decision, and the await's deadline still fires. `holdersOnly` marks that choice explicitly
+    // rather than letting a `.holders` access hide it.
+    resolveRoleHolders: holdersOnly((key) => roleHolderRegistry.resolveHolders(key)),
     ...(deps.getProactiveSender ? { getProactiveSender: deps.getProactiveSender } : {}),
     describeApproval,
     log,

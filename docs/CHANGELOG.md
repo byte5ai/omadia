@@ -18,6 +18,60 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — an approval quorum could complete with too few approvals (#333, phase 3)
+
+- **Conductor's role→holder resolution is now pluggable — and two decisions built
+  on it were fail-open.** Holders used to come only from
+  `conductor_role_assignments`, so a *partially known* holder list could not
+  exist. Sourcing holders from an Entra group or an Odoo HR reporting line makes
+  it possible, and it turns out two places treated a shrunken list as the truth:
+  - **`quorum='all'` completed with too few approvals.** Every holder still
+    visible may have answered while the people an unreachable directory knows
+    about were never asked — a four-eyes approval silently becoming two-eyes.
+    The pre-existing guard covered only the *empty* list; the partial one looks
+    legitimate. It now refuses to complete and lets the deadline fallback run.
+  - **A human step could be skipped entirely.** "Role has no holder" triggers
+    the step's fallback by design (FR-024), but an empty list from a failed
+    lookup is *"we could not ask"*, not *"nobody holds this"*. It now parks the
+    await instead, so the real holders still get their chance.
+- **The authorization gate is deliberately left alone.** A shrunken list there
+  only rejects a genuine holder — it fails closed, which is the safe direction.
+- **The local assignment table is registered as an ordinary holder source**
+  rather than special-cased, so there is one merge path and the local store gets
+  the same throw-becomes-`unavailable` handling as any remote directory. A
+  source may not claim the reserved `conductor-local` id — that would substitute
+  its own approver list, so it is a boot-time collision.
+- With no external source configured the behaviour is unchanged: one source,
+  never partial.
+
+### Added — role and attribute sources: what a `Principal` is entitled to (#333, phase 2)
+
+- **A pluggable `RoleSource` registry in the channel SDK.** Phase 1 answered
+  *who* a turn's caller is; this answers *what they are entitled to* — the roles
+  an Entra group membership or an Odoo HR record confers. It still evaluates no
+  permission: the audience floor, grants and per-recipient filtering belong to
+  #575, which consumes these facts.
+- **Absence is a type, not an empty array.** `rolesFor` returns
+  `resolved | unavailable`, and the aggregate carries a `partial` flag. An empty
+  role set and "the directory was unreachable" are different facts, and merging
+  them is an authorization bug in whichever direction the caller guesses: read as
+  "this user has no roles" an outage silently strips every entitlement; read as
+  "unknown, so allow" it is a silent full grant. The same reasoning that made
+  `ScopeId`'s `unscoped` and `Principal`'s `undefined` types rather than values.
+- **The operator gate from `ProviderRegistry` is mirrored, and matters more
+  here.** Sources must be catalogued before they can be activated. An auth
+  provider decides whether you get in; a role source decides what you *are* once
+  inside, so registering one silently is privilege escalation with no login
+  event to notice.
+- **A throwing source degrades to `unavailable` instead of failing the turn** —
+  but it still appears in the per-source breakdown and still sets `partial`, so
+  a directory outage is diagnosable rather than invisible. Sources are queried
+  concurrently; they are independent network reads on a turn's hot path.
+- **A `role:` principal short-circuits without consulting any source.** Asking
+  what roles a role has is a category error — a role is an indirection over
+  holders — and answering it would invite a source to invent role nesting that
+  #575 has not specified.
+
 ### Added — `Principal`, the platform's typed answer to "who is this?" (#333, phase 1)
 
 - **A `Principal` type in the channel SDK**, the same home as `ScopeId` and for
