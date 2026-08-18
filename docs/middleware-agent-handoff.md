@@ -1101,6 +1101,35 @@ Tests: `test/mcpToolListCache.test.ts` (pure Regeln + Stdio-/HTTP-Fixtures),
 Emission-Asserts in `test/cliBridge/loopbackMcpServer.test.ts` und
 `test/publicMcp/publicMcpEndpoint.e2e.test.ts`.
 
+### Transcription-Contract-Package `@omadia/transcription-api` (issue #584)
+
+Neues Workspace-Package `packages/transcription-api/` — der versionierte,
+SDK-freie Vertrag der `transcription@1`-Capability, Spiegel von
+`llm-provider-api` (nur Typen, Error-Klasse, Capability-Konstante; keine
+SDK-Deps, keine Manifest-/YAML-Belange). Public Surface: `TRANSCRIPTION_CAPABILITY`,
+`TranscriptionService` (`transcribeFile` + `transcribeStream`), `AudioFile`,
+`AudioFormat`, `TranscribeOptions`/`TranscribeStreamOptions`,
+`Transcript`/`TranscriptSegment`/`TranscriptDelta`, `TimingProvenance`,
+`TranscriptionUsage`, `TranscriptionError` (+ `TranscriptionErrorCode`).
+
+- **Vertragssemantik in Doc-Comments:** Segmente append-only/immutable
+  (Proof-Readiness ohne Hash-Feld), Timing-Provenance ehrlich deklariert
+  (`provider`/`estimated`/`none`), Metering-Vertrag auf `TranscriptionUsage`
+  (attempts inkl. SDK-Retries; per-Attempt-Dauern nur Realtime), partielle
+  `usage` auf dem Error-Pfad (ein AsyncIterable kann nach throw nichts mehr
+  yielden).
+- **ESLint-Prep:** `packages/transcription-adapter-openai/**/*.ts` in der
+  `no-restricted-imports`-Allowlist (`eslint.config.mjs`), damit das
+  Adapter-Package als reiner Package-Add folgen kann.
+- Adapter/Registry/Manifest/Ingestion folgen in weiteren Commits zu #584;
+  Transcript-**Artifact** (canonical, proof-ready) lebt beim Ingestion-Tool,
+  nicht in diesem Package.
+
+Tests: `packages/transcription-api/test/` (`npm test -w
+@omadia/transcription-api`; Error-Shape, Konstante, Compile-Time-Exhaustiveness
+der Delta-Union — Letztere greift auch im Root-`typecheck`, weil das
+Package-tsconfig `test/` einschließt).
+
 ---
 
 ## 4. Migration Managed Agents → Lokal

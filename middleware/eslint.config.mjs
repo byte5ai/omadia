@@ -48,6 +48,7 @@ export default tseslint.config(
     files: [
       'packages/llm-adapter-anthropic/**/*.ts',
       'packages/llm-adapter-openai/**/*.ts',
+      'packages/transcription-adapter-openai/**/*.ts',
     ],
     rules: {
       '@typescript-eslint/no-restricted-imports': 'off',

@@ -1,0 +1,18 @@
+{
+  "name": "@omadia/transcription-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "The versioned, SDK-free transcription CONTRACT for the omadia middleware. Holds only the `transcription@1` capability constant, the TranscriptionService interface, the neutral audio/option DTOs (AudioFile, AudioFormat, TranscribeOptions), the result types (Transcript, TranscriptSegment, TranscriptDelta, TimingProvenance, TranscriptionUsage), and the TranscriptionError class. Zero runtime dependencies — this is the public surface a transcription adapter package compiles against. See byte5ai/omadia#584.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test 'test/**/*.test.ts'"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
