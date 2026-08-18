@@ -18,6 +18,30 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — the audience floor now guards tool egress (#575)
+
+- **The first of the floor's three guards is wired**, at `dispatchTool` — the
+  single choke point every tool call passes through. Placed before the dispatch
+  deadline so a refused call costs nothing, and before the Privacy Shield
+  boundary because the floor decides *whether* an effect happens while Privacy
+  Shield decides what a permitted one may carry.
+- **Evaluated per call, not per turn.** A turn-start snapshot is a TOCTOU hole:
+  somebody can join between the model choosing a tool and the call firing. This
+  is also the half of decision D4 that re-evaluates — rendered context cannot be
+  un-sent, but an unfired call can still be refused.
+- **Inert unless a deployment opts in.** No audience source installed means the
+  floor is *not enforced*, which is emphatically not the same as *closed*. A
+  closed floor denies everything, so reading "nobody configured this" as
+  "closed" would silently disable every tool everywhere. Same shape and same
+  reasoning as `turnContext.privacyHandle`.
+- **But a provider that throws closes rather than opens** — deliberately the
+  opposite of the privacy precedent. Privacy degrading to "unmodified"
+  over-shares detail; this degrading to "allowed" performs an effect nobody
+  authorized.
+- A refusal comes back as a tool result, not an exception, and says that
+  retrying will not help — a policy decision should not read as an outage, and
+  an unexplained denial just produces a retry loop.
+
 ### Added — the audience floor and capability grants (#575, phase 2)
 
 - **The first module in this cluster that decides something.** #333 produces
