@@ -203,7 +203,7 @@ import {
   turnContext,
   type TurnContextValue,
 } from './turnContext.js';
-import { guardToolEgress } from './audienceFloorGuard.js';
+import { guardContextRecall, guardToolEgress } from './audienceFloorGuard.js';
 import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
@@ -2637,6 +2637,19 @@ export class Orchestrator {
     }
     if (!input.sessionScope && !input.userId) {
       console.error('[context] SKIP no-scope-no-user');
+      return { text: undefined, recalled: undefined };
+    }
+    // #575 — the audience floor's context guard. Recalled context is rendered
+    // into one prompt that every participant's reply derives from, so the room
+    // may only recall what EVERYONE present may read. Evaluated once here and
+    // not revisited: rendered context cannot be un-sent, which is the half of
+    // decision D4 that snapshots (egress re-computes instead). Inert unless an
+    // audience source is installed. A denial is a skip, not an error — the turn
+    // simply proceeds without prior context, exactly as it already does when no
+    // retriever is configured.
+    const recallRefusal = await guardContextRecall();
+    if (recallRefusal !== undefined) {
+      console.error(`[context] SKIP audience-floor: ${recallRefusal}`);
       return { text: undefined, recalled: undefined };
     }
     try {

@@ -13,6 +13,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  MEMORY_RECALL_CAPABILITY,
+  guardContextRecall,
   guardToolEgress,
   toolCapability,
 } from '../packages/harness-orchestrator/src/audienceFloorGuard.js';
@@ -115,6 +117,66 @@ describe('capability naming', () => {
       () => guardToolEgress('write_file'),
     );
     assert.ok(refusal);
+  });
+});
+
+// ─── guard 2: context / memory recall ──────────────────────────────────────
+
+describe('the context guard', () => {
+  it('an unconfigured deployment recalls exactly as before', async () => {
+    // Same load-bearing property as the egress guard: "not enforced" is not
+    // "closed". If this fails, every deployment silently loses its memory.
+    assert.equal(await withFloor(undefined, () => guardContextRecall()), undefined);
+  });
+
+  it('permits recall when the whole room may read it', async () => {
+    const refusal = await withFloor(
+      async () => open(MEMORY_RECALL_CAPABILITY),
+      () => guardContextRecall(),
+    );
+    assert.equal(refusal, undefined);
+  });
+
+  it('refuses recall when someone present may not read it', async () => {
+    // A shared room renders ONE prompt that everyone's reply derives from, so
+    // recalled context reaches everyone. The room may only recall what
+    // everyone may read.
+    const refusal = await withFloor(async () => open('tool:t'), () => guardContextRecall());
+    assert.match(refusal ?? '', /not every participant/);
+  });
+
+  it('a closed floor blocks recall and passes its reason through', async () => {
+    const refusal = await withFloor(
+      async () => closed('audience unknown (no_provider)'),
+      () => guardContextRecall(),
+    );
+    assert.match(refusal ?? '', /no_provider/);
+  });
+
+  it('a throwing provider blocks recall rather than allowing it', async () => {
+    const refusal = await withFloor(
+      async () => {
+        throw new Error('roster exploded');
+      },
+      () => guardContextRecall(),
+    );
+    assert.match(refusal ?? '', /roster exploded/);
+  });
+
+  it('a reason to log, not an Error string for the model', async () => {
+    // Unlike a refused tool call, a refused recall has a natural degraded
+    // mode — the turn proceeds without prior context. Dressing that up as an
+    // error would make a policy decision look like a fault.
+    const refusal = await withFloor(async () => closed('nope'), () => guardContextRecall());
+    assert.ok(refusal);
+    assert.doesNotMatch(refusal ?? '', /^Error: /);
+  });
+
+  it('the tool capability does NOT grant recall, and vice versa', async () => {
+    // Two distinct capabilities: being allowed to run a tool says nothing
+    // about being allowed to read the room's history.
+    assert.ok(await withFloor(async () => open(toolCapability('t')), () => guardContextRecall()));
+    assert.ok(await withFloor(async () => open(MEMORY_RECALL_CAPABILITY), () => guardToolEgress('t')));
   });
 });
 
