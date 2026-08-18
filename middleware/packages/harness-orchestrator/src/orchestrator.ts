@@ -126,6 +126,7 @@ import { parseAttachmentsInfo } from './attachmentsInfo.js';
 import {
   checkVisionEmbeddable,
   extractAttachmentText,
+  isAudioAttachment,
   isCsvAttachment,
 } from './attachmentExtract.js';
 import { importCsvDataset } from './datasetImport.js';
@@ -6857,6 +6858,15 @@ export class Orchestrator {
           // silently acting as if the image never existed.
           if (c.isImage && !visionSupported) {
             skippedVisionImageCount += 1;
+            continue;
+          }
+          // #584 — audio skip-guard: recorded audio is handled by
+          // the explicit `transcribe_recording` tool, never auto-ingested.
+          // Skipped BEFORE the fetch (no point pulling up to 25 MB of bytes
+          // that `extractAttachmentText` could only reject); the
+          // `storage_key` stays visible in the `[attachments-info]` manifest
+          // for the tool to pick up.
+          if (!c.isImage && isAudioAttachment(c.contentType, c.fileName)) {
             continue;
           }
           // Prefer storage_key (durable) over url (Teams signed urls expire).

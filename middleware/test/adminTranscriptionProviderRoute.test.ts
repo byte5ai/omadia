@@ -134,7 +134,9 @@ async function makeHarness(
   const probeCalls: string[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (
-    input: string | URL | Request,
+    // `globalThis.Request`, not express's `Request` — this file imports the
+    // express type, which would otherwise shadow the fetch one.
+    input: string | URL | globalThis.Request,
     init?: RequestInit,
   ): Promise<globalThis.Response> => {
     const url = typeof input === 'string' ? input : input.toString();
@@ -150,7 +152,7 @@ async function makeHarness(
           })
         : new globalThis.Response('', { status: probeStatus });
     }
-    return originalFetch(input as RequestInfo, init);
+    return originalFetch(input, init);
   }) as typeof fetch;
 
   return {

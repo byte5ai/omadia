@@ -1,0 +1,54 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/plugin-transcription"
+  name: "Transcription-Ingestion"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.transcription"
+  description: "Audio-Ingestion für die transcription@1-Capability (#584): operator-authentifizierter Multipart-Upload-Endpoint unter /transcriptions, der Aufnahmen in den Blob-Store legt und den storage_key zurückgibt. Das explizite transcribe_recording-Tool inklusive Transcript-Artifact, Session-Projektion und Privacy-Wiring folgt in diesem Paket."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "MIT"
+  categories:
+    - "infrastructure"
+    - "ml"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+setup:
+  fields: []
+
+playbook:
+  when_to_use: |
+    Installieren, wenn Audio-Aufnahmen (Meetings, Sprachnotizen) in die
+    Plattform gelangen sollen (#584, Workstream I). Der Upload-Endpoint
+    /transcriptions nimmt genau eine Datei pro Request an (Multipart-Feld
+    'file', max. 25 MB, neun Provider-Formate:
+    flac/mp3/mp4/mpeg/mpga/m4a/ogg/wav/webm) und ist ausschließlich für
+    Operator-Sessions zugänglich (fail closed). Es findet KEINE
+    Auto-Transkription statt — Transkription läuft über das explizite
+    transcribe_recording-Tool. Ohne konfigurierten Blob-Store (tigrisStore)
+    antwortet der Endpoint mit 503; die Plattform bootet unverändert.
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound: []
+  filesystem:
+    scratch: false
+
+provides: []
+requires: []

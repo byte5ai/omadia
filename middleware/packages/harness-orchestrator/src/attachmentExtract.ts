@@ -19,6 +19,8 @@
  * underlying pdf.js worker/canvas resources.
  */
 
+import { TRANSCRIPTION_AUDIO_EXTENSIONS } from '@omadia/transcription-api';
+
 /** Hard cap on extracted text to protect the turn's token budget. */
 const MAX_TEXT_CHARS = 20_000;
 const TRUNCATION_MARKER = '\n…[truncated]';
@@ -154,6 +156,29 @@ export function isCsvAttachment(
   return (
     CSV_TYPES.has(normalizeContentType(contentType)) ||
     CSV_EXTS.has(extOf(fileName))
+  );
+}
+
+/**
+ * #584 — true when an attachment is a recorded-audio candidate for
+ * the explicit `transcribe_recording` tool. Checked BEFORE the fetch in the
+ * chat-attachment auto-ingest path (`orchestrator.ts`), so audio is neither
+ * downloaded nor handed to `extractAttachmentText`: transcription is an
+ * agent tool, not hidden channel magic, and the `storage_key` stays visible
+ * in the `[attachments-info]` manifest for the tool to pick up.
+ *
+ * Content-type first (`audio/*` catches every audio MIME variant), then the
+ * nine provider container extensions (owned by `@omadia/transcription-api`)
+ * as fallback — mp4/mpeg/webm are ambiguous video containers, but none of
+ * them is text-extractable anyway, so skipping them here loses nothing.
+ */
+export function isAudioAttachment(
+  contentType: string | undefined,
+  fileName: string | undefined,
+): boolean {
+  return (
+    normalizeContentType(contentType).startsWith('audio/') ||
+    TRANSCRIPTION_AUDIO_EXTENSIONS.has(extOf(fileName))
   );
 }
 

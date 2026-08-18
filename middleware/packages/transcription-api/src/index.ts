@@ -27,3 +27,12 @@ export { TRANSCRIPTION_CAPABILITY } from './types.js';
 
 export type { TranscriptionErrorCode } from './errors.js';
 export { TranscriptionError } from './errors.js';
+
+export {
+  TRANSCRIPTION_AUDIO_EXTENSIONS,
+  TRANSCRIPTION_AUDIO_MIME_TYPES,
+  TRANSCRIPTION_EXTENSION_TO_MIME,
+  TRANSCRIPTION_MAX_UPLOAD_BYTES,
+  fileExtension,
+  normalizeContentType,
+} from './formats.js';

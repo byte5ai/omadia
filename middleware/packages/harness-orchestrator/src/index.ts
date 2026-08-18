@@ -539,7 +539,7 @@ export {
   QueryDatasetTool,
   queryDatasetToolSpec,
 } from './tools/queryDatasetTool.js';
-export { isCsvAttachment } from './attachmentExtract.js';
+export { isAudioAttachment, isCsvAttachment } from './attachmentExtract.js';
 export {
   buildDatasetFromCsv,
   importCsvDataset,

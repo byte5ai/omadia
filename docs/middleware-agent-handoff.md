@@ -1240,6 +1240,54 @@ Select inkl. Rollback, Mount-Time-Auth), Register-Helfer in
 Readiness-Fall in `test/pluginReadiness.test.ts`, Web-UI-Panel-Suite
 `web-ui/app/admin/transcription-provider/__tests__/`.
 
+### Audio-Upload-Endpoint `@omadia/plugin-transcription` + Audio-Skip-Guard (issue #584)
+
+Neues Workspace-Package `packages/harness-plugin-transcription/` — das
+Ingestion-Plugin der Transcription-Capability. In diesem Schritt: der
+Multipart-Upload-Endpoint; `transcribe_recording`-Tool, Transcript-Artifact,
+Session-Projektion und Privacy-Wiring folgen im selben Package.
+
+- **Route `POST /transcriptions`** — vom Plugin via
+  `ctx.routes.register('/transcriptions', router)` beigesteuert
+  (Office-Präzedenz), KEINE Core-Route. Der Kernel injiziert keine Auth um
+  contributed Router; der Router gated sich selbst: **Operator-Session only**
+  über `ctx.operatorAuth`, fail closed (`adminKeysRouter`-Muster: Accessor
+  fehlt → 503 auf jeden Request, Session fehlt/ungültig → 401).
+- **Guards:** multer memory storage, `fileSize` 25 MB (= Provider-Cap),
+  `files: 1`; Content-Type-Allowlist = die neun Provider-Formate
+  (flac/mp3/mp4/mpeg/mpga/m4a/ogg/wav/webm; inkl. gängiger
+  `audio/x-*`-/`video/*`-Container-Spellings, Extension-Fallback für
+  `application/octet-stream`). Format-Allowlist, Extension→MIME-Map und
+  der 25-MB-Cap kommen aus `@omadia/transcription-api`
+  (`formats.ts` — der EINE Owner des `transcription@1`-Container-Kontrakts;
+  Upload-Endpoint, Orchestrator-Skip-Guard und Web-UI leiten daraus ab).
+  KEINE Dauer-Probe beim Upload — der Duration-Cap greift fail-closed zur
+  Transcribe-Zeit. Fehler im `{code, message}`-Envelope
+  (`datasets.ts`-Form), aber mit STABILEN Codes —
+  `transcription.too_large` (413), `transcription.too_many_files` (400),
+  `transcription.multipart_invalid` (400); multers interne Error-Codes
+  leaken nie in den Kontrakt.
+- **Byte-Pfad:** Bytes → Kernel-Service `tigrisStore`
+  (per Request lazy via `ctx.services.get`, Duck-Typing statt
+  `@omadia/diagrams`-Dependency; Store fehlt → 503). Key-Schema
+  `transcription-uploads/<iso>-<sha256-16>.<ext>` (Teams-Konvention).
+  Response = die vier Manifest-Zeilen-Felder für die
+  `[attachments-info]`-Producer: `storage_key`, `file_name`, `content_type`,
+  `size_bytes` (201).
+- **Audio-Skip-Guard im Auto-Ingest:** `isAudioAttachment` in
+  `attachmentExtract.ts` (Export aus `@omadia/orchestrator`; Extension-Set
+  aus `@omadia/transcription-api`);
+  `ingestAttachments` überspringt Audio-Kandidaten VOR dem Fetch — Audio
+  läuft ausschließlich über das explizite Tool, nie durch
+  `extractAttachmentText`; der `storage_key` bleibt im
+  `[attachments-info]`-Block sichtbar. Kein Auto-Transcribe-Branch (#584).
+
+Tests: `test/transcriptionUploadRouter.test.ts` (Happy-Path-Felder,
+413/422/Multi-File-Envelopes, 401/503-fail-closed, Storage-Fehlerpfade),
+`test/orchestratorAudioAttachmentSkipGuard.test.ts` (kein Fetch, kein
+Junk-Text, Key bleibt sichtbar, Nicht-Audio-Sibling unverändert),
+Plugin-Lifecycle in `packages/harness-plugin-transcription/test/`.
+
 ---
 
 ## 4. Migration Managed Agents → Lokal
