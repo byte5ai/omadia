@@ -193,6 +193,20 @@ const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(true),
 
+  // #575 — enforce the audience floor: a room may only do what EVERY
+  // participant is granted. Off by default, and that default is load-bearing
+  // rather than cautious. The floor fails closed by design, so switching it on
+  // against an empty grant table does not mean "no policy yet" — it means every
+  // tool refused, no context recalled and no attachment readable, in every
+  // room, at once. Seed and review the grants through
+  // /api/v1/admin/audience-grants (available whenever Postgres is), THEN set
+  // this. It also needs Postgres: with the in-memory backend there is nowhere
+  // durable for grants to live, and a restart would shut the rooms.
+  AUDIENCE_FLOOR_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(false),
+
   // Local-dev endpoints (raw graph browser, memory browser, …) under /api/dev.
   //
   // Issue #669: these used to mount WITHOUT authentication, so this flag alone

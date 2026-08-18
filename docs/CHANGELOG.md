@@ -18,6 +18,28 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — audience-floor grants survive a restart, and an operator can see them
+
+- **The audience floor had no durable store (#575).** `InMemoryGrantStore` was
+  the only implementation, so a deployment that switched the floor on lost every
+  grant on restart. Because the floor fails closed, that did not degrade the
+  feature — an empty grant table means "nobody may do anything", so a restart
+  shut every room until someone re-seeded by hand.
+- **New:** `AUDIENCE_FLOOR_ENABLED` (default off) plus Postgres-backed grants
+  (migration `0035_audience_grants.sql`) and an operator surface at
+  `/api/v1/admin/audience-grants` (cookie auth, like the other admin routers).
+- **The admin surface is available whenever Postgres is, independently of
+  enforcement** — grants have to be seedable and reviewable *before* the floor
+  starts enforcing, or the only way to populate the table would be to switch the
+  floor on against an empty one.
+- **Enabling the floor without Postgres refuses to boot.** The alternative is
+  worse than a crash: every lookup would throw, every room would refuse every
+  tool, recall nothing and read no attachment, and the deployment would look
+  configured while behaving as though someone had forbidden everything.
+- Role grants additionally need a role source registered (#333 phase 2); direct
+  grants work on their own, because an empty role registry is a complete answer
+  rather than a partial one.
+
 ### Fixed — a withheld answer no longer ships its full reasoning to the channel
 
 - **`NO_REPLY` stopped suppressing delivery the moment the AI-Act Art. 50
