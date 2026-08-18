@@ -69,6 +69,15 @@ export function createLateBoundGrantStore(
     async roleGrants(roleKey: string): Promise<readonly Capability[]> {
       return target().roleGrants(roleKey);
     },
+    // Forwarded, not omitted. `GrantStore` treats an ABSENT denial method as
+    // "this implementation has none" — so dropping these here would quietly
+    // strip every prohibition in the deployment while the grants kept working.
+    async directDenials(principal: Principal): Promise<readonly Capability[]> {
+      return target().directDenials?.(principal) ?? [];
+    },
+    async roleDenials(roleKey: string): Promise<readonly Capability[]> {
+      return target().roleDenials?.(roleKey) ?? [];
+    },
   };
 }
 

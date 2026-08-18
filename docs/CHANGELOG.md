@@ -18,6 +18,24 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — one participant's prohibition binds the whole room
+
+- **The audience floor could express "may" but not "must not" (#575).** It
+  intersected allowances, which is half of what spec §5.2 asks for
+  ("allowlist ∩, denylist ∪"). There was no way to say *this person must never
+  do X* at all.
+- **New:** explicit denials for a principal or a role (migration
+  `0037_audience_denials.sql`), with endpoints under
+  `/api/v1/admin/audience-grants/{direct,roles}/deny`.
+- **Allowances intersect, prohibitions union — deliberately asymmetric.** An
+  allowance says what someone *may* do, so the room may do what everyone may;
+  a prohibition binds the room even when only one participant carries it.
+  Applying intersection to prohibitions would mean a rule only bites when
+  everybody is under it.
+- **A denial overrides a grant**, rather than being modelled as "simply do not
+  grant it" — otherwise any role that happens to confer the capability would
+  silently lift an operator's explicit prohibition.
+
 ### Added — an attachment handle only redeems in the room that minted it
 
 - **A storage key was just a string (#575).** The handle guard checked the floor

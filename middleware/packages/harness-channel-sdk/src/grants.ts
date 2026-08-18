@@ -61,6 +61,21 @@ export interface GrantStore {
   directGrants(principal: Principal): Promise<readonly Capability[]>;
   /** Capabilities granted to a role, held by whoever currently holds it. */
   roleGrants(roleKey: string): Promise<readonly Capability[]>;
+  /**
+   * Capabilities explicitly FORBIDDEN to this principal, whatever their grants
+   * say. Unioned across the audience and subtracted from the intersection — see
+   * `audienceFloor` for why the two directions differ.
+   *
+   * Optional so a store with no concept of prohibitions stays valid; **absent**
+   * means this implementation has none. That is safe in a way a *failing*
+   * lookup is not: absent is a static property of the implementation, whereas a
+   * throw means the answer is unknown, and an unknown prohibition read as "none"
+   * would widen the floor. A store that has denials must therefore throw rather
+   * than return `[]` when it cannot read them — same rule as the grant side.
+   */
+  directDenials?(principal: Principal): Promise<readonly Capability[]>;
+  /** Capabilities forbidden to everyone currently holding this role. */
+  roleDenials?(roleKey: string): Promise<readonly Capability[]>;
 }
 
 /**
@@ -98,6 +113,16 @@ export async function resolveCapabilities(
       if (trimmed.length > 0) capabilities.add(trimmed);
     }
 
+    // Prohibitions are collected alongside, never subtracted here: they must
+    // reach the floor intact so it can UNION them across the audience. Applying
+    // them per principal first would make a veto bind only the person carrying
+    // it, which is the opposite of what a prohibition is for.
+    const denials = new Set<Capability>();
+    for (const capability of (await grants.directDenials?.(principal)) ?? []) {
+      const trimmed = capability.trim();
+      if (trimmed.length > 0) denials.add(trimmed);
+    }
+
     // Role keys keep their case (#333 phase 1: `createRole` writes them
     // verbatim), so they are canonicalized with the ROLE rule before lookup —
     // lowercasing here would miss every mixed-case grant row.
@@ -111,7 +136,19 @@ export async function resolveCapabilities(
       }
     }
 
-    return { principal, capabilities };
+    const perRoleDenials = await Promise.all(
+      roleLookup.roles.map(
+        (role) => grants.roleDenials?.(canonicalizePrincipalRef('role', role)) ?? [],
+      ),
+    );
+    for (const forbidden of perRoleDenials) {
+      for (const capability of forbidden) {
+        const trimmed = capability.trim();
+        if (trimmed.length > 0) denials.add(trimmed);
+      }
+    }
+
+    return { principal, capabilities, denials };
   } catch {
     // Deliberately swallowed here and surfaced as `unresolved` by the caller:
     // the floor's `closed` reason is the operator-facing signal, and letting
@@ -131,6 +168,8 @@ export async function resolveCapabilities(
 export class InMemoryGrantStore implements GrantStore {
   private readonly direct = new Map<string, Set<Capability>>();
   private readonly byRole = new Map<string, Set<Capability>>();
+  private readonly directDenied = new Map<string, Set<Capability>>();
+  private readonly roleDenied = new Map<string, Set<Capability>>();
 
   grantToPrincipal(principal: Principal, ...capabilities: Capability[]): this {
     const key = principalKey(principal);
@@ -154,6 +193,31 @@ export class InMemoryGrantStore implements GrantStore {
 
   async roleGrants(roleKey: string): Promise<readonly Capability[]> {
     return [...(this.byRole.get(canonicalizePrincipalRef('role', roleKey)) ?? [])];
+  }
+
+  /** Forbid a capability outright — beats any grant the principal holds. */
+  denyToPrincipal(principal: Principal, ...capabilities: Capability[]): this {
+    const key = principalKey(principal);
+    const set = this.directDenied.get(key) ?? new Set<Capability>();
+    for (const c of capabilities) set.add(c);
+    this.directDenied.set(key, set);
+    return this;
+  }
+
+  denyToRole(roleKey: string, ...capabilities: Capability[]): this {
+    const key = canonicalizePrincipalRef('role', roleKey);
+    const set = this.roleDenied.get(key) ?? new Set<Capability>();
+    for (const c of capabilities) set.add(c);
+    this.roleDenied.set(key, set);
+    return this;
+  }
+
+  async directDenials(principal: Principal): Promise<readonly Capability[]> {
+    return [...(this.directDenied.get(principalKey(principal)) ?? [])];
+  }
+
+  async roleDenials(roleKey: string): Promise<readonly Capability[]> {
+    return [...(this.roleDenied.get(canonicalizePrincipalRef('role', roleKey)) ?? [])];
   }
 }
 

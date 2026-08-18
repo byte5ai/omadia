@@ -32,10 +32,14 @@ import {
 const alice: Principal = { kind: 'user', userId: 'alice' };
 const bob: Principal = { kind: 'user', userId: 'bob' };
 
+// `denials` is required on a resolved member (see `audienceFloor.ts`): an
+// optional field that a caller forgets to thread would silently widen the
+// floor. These cases are about the intersection, so they carry none.
 const member = (principal: Principal, ...caps: Capability[]): AudienceMember => ({
   kind: 'resolved',
   principal,
   capabilities: new Set(caps),
+  denials: new Set<Capability>(),
 });
 
 const known = (...members: AudienceMember[]): Audience => ({ kind: 'known', members });
@@ -104,7 +108,13 @@ describe('the intersection itself', () => {
 
 describe('resolveAudience refuses to invent a room', () => {
   const join = async (p: string) =>
-    p === 'unknown-person' ? undefined : { principal: { kind: 'user' as const, userId: p }, capabilities: new Set(['read']) };
+    p === 'unknown-person'
+      ? undefined
+      : {
+          principal: { kind: 'user' as const, userId: p },
+          capabilities: new Set(['read']),
+          denials: new Set<Capability>(),
+        };
 
   it('no provider installed → unknown, not an empty room', async () => {
     // HTTP and web turns install no participant provider (spec §5.1).

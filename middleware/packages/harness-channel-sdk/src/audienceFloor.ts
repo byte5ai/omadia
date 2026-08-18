@@ -94,6 +94,15 @@ export type AudienceMember =
       readonly principal: Principal;
       /** What this principal may do. Empty is a real answer: they may do nothing. */
       readonly capabilities: ReadonlySet<Capability>;
+      /**
+       * What this principal is explicitly FORBIDDEN, whatever their grants say.
+       *
+       * Required rather than optional, deliberately. An optional field that a
+       * caller forgets to thread produces an empty denial set — which is the
+       * direction that silently WIDENS the floor. Making it mandatory turns
+       * that omission into a compile error instead of a permission bug.
+       */
+      readonly denials: ReadonlySet<Capability>;
     }
   | {
       readonly kind: 'unresolved';
@@ -132,6 +141,8 @@ export type AudienceFloor =
 export interface ResolvedAudienceMember {
   readonly principal: Principal;
   readonly capabilities: ReadonlySet<Capability>;
+  /** Explicit prohibitions. See {@link AudienceMember} for why it is required. */
+  readonly denials: ReadonlySet<Capability>;
 }
 
 /**
@@ -157,7 +168,12 @@ export async function resolveAudience<TParticipant>(
       try {
         const resolved = await resolve(participant);
         return resolved
-          ? { kind: 'resolved', principal: resolved.principal, capabilities: resolved.capabilities }
+          ? {
+              kind: 'resolved',
+              principal: resolved.principal,
+              capabilities: resolved.capabilities,
+              denials: resolved.denials,
+            }
           : { kind: 'unresolved', reason: 'no principal could be resolved for this participant' };
       } catch (err) {
         return {
@@ -185,8 +201,32 @@ export async function resolveAudience<TParticipant>(
  *     intersecting it would yield "everything", so it is refused explicitly
  *     rather than left to the reduce.
  *
- * Otherwise the floor is the set intersection across resolved members. An empty
- * intersection is `open` with nothing in it — a real answer, not a failure.
+ * Otherwise the floor is the set intersection across resolved members, minus
+ * every explicit denial. An empty result is `open` with nothing in it — a real
+ * answer, not a failure.
+ *
+ * ## Allowances INTERSECT, prohibitions UNION — and the asymmetry is the point
+ *
+ * Spec §5.2 states the rule as "allowlist ∩, denylist ∪". They are not two
+ * spellings of one operation:
+ *
+ *  - An **allowance** is a statement about what a principal MAY do, so a room
+ *    may only do what everyone may do. Intersect.
+ *  - A **prohibition** is a statement about what a principal must NOT be party
+ *    to, and it binds the room even if only one participant carries it. Union.
+ *
+ * Applying intersection to prohibitions would mean a rule only bites when
+ * *everyone* is under it — which inverts what a prohibition is for. Applying
+ * union to allowances would hand the room the most permissive participant's
+ * rights, which is the classic full-permission grant.
+ *
+ * ## A denial beats a grant, rather than merely being absent from one
+ *
+ * Subtracting denials AFTER the intersection is what makes them override roles.
+ * If a prohibition were expressed as "simply do not grant it", then adding any
+ * role that happens to confer the capability would silently lift it — an
+ * operator's explicit "this person must never do X" would be undone by an
+ * unrelated role assignment somewhere else.
  */
 export function audienceFloor(audience: Audience): AudienceFloor {
   if (audience.kind === 'unknown') {
@@ -215,7 +255,19 @@ export function audienceFloor(audience: Audience): AudienceFloor {
     if (capabilities.size === 0) break;
   }
 
-  return { outcome: 'open', capabilities };
+  // Prohibitions are collected across EVERY resolved member, including the ones
+  // whose allowances the intersection has already discarded: a denial is not a
+  // missing grant, it is a veto, and it must be read even from a participant who
+  // was granted nothing.
+  const denied = new Set<Capability>();
+  for (const member of resolved) {
+    for (const capability of member.denials) denied.add(capability);
+  }
+
+  return {
+    outcome: 'open',
+    capabilities: new Set([...capabilities].filter((c) => !denied.has(c))),
+  };
 }
 
 /**
