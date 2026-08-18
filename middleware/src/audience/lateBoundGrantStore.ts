@@ -33,6 +33,10 @@
  */
 
 import type { Capability, GrantStore, Principal } from '@omadia/channel-sdk';
+import type {
+  AttachmentBindingStore,
+  AttachmentScopeBinding,
+} from '@omadia/orchestrator';
 
 export class GrantStoreNotReadyError extends Error {
   constructor() {
@@ -64,6 +68,35 @@ export function createLateBoundGrantStore(
     },
     async roleGrants(roleKey: string): Promise<readonly Capability[]> {
       return target().roleGrants(roleKey);
+    },
+  };
+}
+
+/**
+ * The same forward reference for #575's handle→room bindings, which the
+ * orchestrator plugin also consumes at activation.
+ *
+ * Unhydrated throws here too, and the consequence is the mirror image of the
+ * grant case: the reader wrapper turns a throwing binding store into a
+ * **refusal**, so a handle is withheld rather than read. Reporting "no binding"
+ * instead would silently unbind every handle in the deployment for as long as
+ * the store stayed unresolved.
+ */
+export function createLateBoundAttachmentBindingStore(
+  resolve: () => AttachmentBindingStore | undefined,
+): AttachmentBindingStore {
+  const target = (): AttachmentBindingStore => {
+    const store = resolve();
+    if (!store) throw new GrantStoreNotReadyError();
+    return store;
+  };
+
+  return {
+    async get(storageKey: string): Promise<AttachmentScopeBinding | undefined> {
+      return target().get(storageKey);
+    },
+    async bindIfAbsent(storageKey: string, binding: AttachmentScopeBinding): Promise<void> {
+      return target().bindIfAbsent(storageKey, binding);
     },
   };
 }

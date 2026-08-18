@@ -303,7 +303,11 @@ import { CanvasOutputRegistry } from './platform/canvasOutputRegistry.js';
 import { EventCatalogRegistry } from './platform/eventCatalogRegistry.js';
 import { DeterministicActionRegistry } from './platform/deterministicActionRegistry.js';
 import { ServiceRegistry } from './platform/serviceRegistry.js';
-import { createLateBoundGrantStore } from './audience/lateBoundGrantStore.js';
+import {
+  createLateBoundAttachmentBindingStore,
+  createLateBoundGrantStore,
+} from './audience/lateBoundGrantStore.js';
+import { PostgresAttachmentBindingStore } from './audience/postgresAttachmentBindingStore.js';
 import { PostgresGrantStore } from './audience/postgresGrantStore.js';
 import { createAudienceGrantRouter } from './audience/routes.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
@@ -853,13 +857,22 @@ async function main(): Promise<void> {
   // when it received a grant store, so an unconfigured deployment behaves
   // exactly as before ("not enforced ≠ closed").
   let audienceGrantStoreRef: PostgresGrantStore | undefined;
+  let attachmentBindingStoreRef: PostgresAttachmentBindingStore | undefined;
   if (config.AUDIENCE_FLOOR_ENABLED) {
     serviceRegistry.provide(
       'audienceGrants',
       createLateBoundGrantStore(() => audienceGrantStoreRef),
     );
+    // #575 — pins each attachment handle to the room that minted it. Same flag,
+    // because it is the same policy: without the floor there is no notion of a
+    // room to bind to, and enforcing one alone would refuse handles for a
+    // deployment that never opted into audience control at all.
+    serviceRegistry.provide(
+      'attachmentBindings',
+      createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
+    );
     console.log(
-      '[middleware] #575 audience floor ENABLED — grants read from Postgres; rooms are limited to what every participant is granted',
+      '[middleware] #575 audience floor ENABLED — grants read from Postgres; rooms are limited to what every participant is granted, and attachment handles only redeem in the room that minted them',
     );
   }
 
@@ -1661,7 +1674,7 @@ async function main(): Promise<void> {
   // empty table first.
   const audienceGrantStore = graphPool ? new PostgresGrantStore(graphPool) : undefined;
   if (config.AUDIENCE_FLOOR_ENABLED) {
-    if (!audienceGrantStore) {
+    if (!graphPool || !audienceGrantStore) {
       throw new Error(
         '[middleware] AUDIENCE_FLOOR_ENABLED=true requires Postgres (DATABASE_URL) — ' +
           'the in-memory backend has nowhere to store grants, and the floor fails closed, ' +
@@ -1669,6 +1682,7 @@ async function main(): Promise<void> {
       );
     }
     audienceGrantStoreRef = audienceGrantStore;
+    attachmentBindingStoreRef = new PostgresAttachmentBindingStore(graphPool);
   }
 
   // Issue #560 — now that graphPool is known, back the long-running task seam
