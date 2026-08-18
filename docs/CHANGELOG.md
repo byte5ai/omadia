@@ -18,6 +18,36 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — the audience floor now guards attachment-handle resolution (#575)
+
+- **The floor's third and last guard**, completing the trio the spec names. A
+  storage key is a handle: it is minted in one turn and can be redeemed later,
+  potentially in a different room.
+- **The check rides with the handle, not with the call sites.** Enforcement
+  lives in a wrapper around `AttachmentReader` applied at its single
+  construction site, so `read_attachment`, the orchestrator's own
+  `ingestAttachments` and any future resolution path are covered by
+  construction rather than by remembering to add a call.
+- **This closes a path the egress guard did not.** `read_attachment` is a tool
+  and so already passed the first guard, but `ingestAttachments` resolves
+  storage keys straight off the inbound turn with no tool call involved — the
+  path a caller actually controls.
+- **A refusal is indistinguishable from "unknown key" to the caller, on
+  purpose.** Confirming that a key exists but is off-limits would leak the
+  document's existence to a room that may not know it. The real reason goes to
+  the operator log, where it is actionable and not a side channel. The inner
+  reader is never reached, so a refused redemption does not even touch the
+  store.
+- Redeeming a handle and invoking the read tool are separate capabilities;
+  neither grants the other.
+
+> **Remaining gap, named rather than assumed closed.** This checks the floor at
+> *redemption*, not at *minting*. It stops a room from redeeming a handle that
+> room may not read, but cannot yet stop a handle minted in a narrow room from
+> being redeemed in a wider one that happens to hold the capability. Binding the
+> minting audience to the handle needs the attachment store to persist it, and
+> that store lives in the channel plugins.
+
 ### Added — the audience floor now guards context recall (#575)
 
 - **The floor's second guard**, at the single context-assembly call site. In a

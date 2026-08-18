@@ -13,11 +13,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  ATTACHMENT_READ_CAPABILITY,
   MEMORY_RECALL_CAPABILITY,
+  guardAttachmentRead,
   guardContextRecall,
   guardToolEgress,
   toolCapability,
 } from '../packages/harness-orchestrator/src/audienceFloorGuard.js';
+import { audienceGuardedAttachmentReader } from '../packages/harness-orchestrator/src/attachmentReaderFactory.js';
 import { turnContext } from '../packages/harness-orchestrator/src/turnContext.js';
 import type { AudienceFloor } from '../packages/harness-channel-sdk/src/audienceFloor.js';
 
@@ -177,6 +180,90 @@ describe('the context guard', () => {
     // about being allowed to read the room's history.
     assert.ok(await withFloor(async () => open(toolCapability('t')), () => guardContextRecall()));
     assert.ok(await withFloor(async () => open(MEMORY_RECALL_CAPABILITY), () => guardToolEgress('t')));
+  });
+});
+
+// ─── guard 3: file / credential handle resolution ──────────────────────────
+
+describe('the handle guard', () => {
+  it('an unconfigured deployment resolves handles exactly as before', async () => {
+    assert.equal(await withFloor(undefined, () => guardAttachmentRead()), undefined);
+  });
+
+  it('permits redemption when the whole room may read stored attachments', async () => {
+    assert.equal(
+      await withFloor(async () => open(ATTACHMENT_READ_CAPABILITY), () => guardAttachmentRead()),
+      undefined,
+    );
+  });
+
+  it('refuses redemption when someone present may not', async () => {
+    const refusal = await withFloor(async () => open('tool:t'), () => guardAttachmentRead());
+    assert.match(refusal ?? '', /not every participant/);
+  });
+
+  it('the read-attachment TOOL capability does not grant handle redemption', async () => {
+    // Being allowed to invoke the tool is a different question from being
+    // allowed to redeem a storage handle — the handle is redeemable from paths
+    // that are not tool calls at all.
+    const refusal = await withFloor(
+      async () => open(toolCapability('read_attachment')),
+      () => guardAttachmentRead(),
+    );
+    assert.ok(refusal);
+  });
+});
+
+describe('the check rides with the handle, not with the call site', () => {
+  const inner = {
+    readByStorageKey: async () => ({ bytes: Buffer.from('secret'), contentType: 'text/plain' }),
+    readByUrl: async () => ({ bytes: Buffer.from('secret'), contentType: 'text/plain' }),
+  };
+
+  it('a wrapped reader serves bytes when the floor permits', async () => {
+    const reader = audienceGuardedAttachmentReader(inner);
+    const got = await withFloor(
+      async () => open(ATTACHMENT_READ_CAPABILITY),
+      () => reader.readByStorageKey('k'),
+    );
+    assert.equal(got?.bytes.toString(), 'secret');
+  });
+
+  it('BOTH resolution methods are guarded, not just the storage-key one', async () => {
+    // `ingestAttachments` prefers `readByStorageKey` but falls back to
+    // `readByUrl`; guarding only the first would leave the fallback open.
+    const reader = audienceGuardedAttachmentReader(inner);
+    await withFloor(async () => closed('nope'), async () => {
+      assert.equal(await reader.readByStorageKey('k'), undefined);
+      assert.equal(await reader.readByUrl('https://x/y'), undefined);
+    });
+  });
+
+  it('a refusal is indistinguishable from "unknown key" TO THE CALLER', async () => {
+    // Deliberate: confirming the key exists but is off-limits would leak the
+    // document's existence. The reason goes to the operator log instead.
+    const reader = audienceGuardedAttachmentReader(inner);
+    const got = await withFloor(async () => closed('nope'), () => reader.readByStorageKey('k'));
+    assert.equal(got, undefined);
+  });
+
+  it('the inner reader is never even reached on a refusal', async () => {
+    // The bytes must not be fetched and then discarded — that would still hit
+    // the store, and a store hit is itself observable.
+    let touched = false;
+    const spy = {
+      readByStorageKey: async () => {
+        touched = true;
+        return undefined;
+      },
+      readByUrl: async () => {
+        touched = true;
+        return undefined;
+      },
+    };
+    const reader = audienceGuardedAttachmentReader(spy);
+    await withFloor(async () => closed('nope'), () => reader.readByStorageKey('k'));
+    assert.equal(touched, false);
   });
 });
 
