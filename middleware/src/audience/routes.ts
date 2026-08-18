@@ -68,11 +68,16 @@ export function createAudienceGrantRouter(deps: AudienceGrantRoutesDeps): Router
 
   router.get('/', async (_req: Request, res: Response): Promise<void> => {
     try {
-      const [direct, roles] = await Promise.all([
+      const [direct, roles, deniedDirect, deniedRoles] = await Promise.all([
         deps.store.listDirectGrants(),
         deps.store.listRoleGrants(),
+        deps.store.listDirectDenials(),
+        deps.store.listRoleDenials(),
       ]);
-      res.json({ direct, roles });
+      // Prohibitions are listed alongside rather than merged into the grant
+      // lists: they do not cancel a grant row, they override it at evaluation
+      // time, and an operator reading this needs to see both statements.
+      res.json({ direct, roles, denials: { direct: deniedDirect, roles: deniedRoles } });
     } catch (err) {
       res.status(500).json({ code: 'audience.grants_list_failed', message: errMsg(err) });
     }
@@ -162,6 +167,97 @@ export function createAudienceGrantRouter(deps: AudienceGrantRoutesDeps): Router
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ code: 'audience.revoke_failed', message: errMsg(err) });
+    }
+  });
+
+  // ── prohibitions ─────────────────────────────────────────────────────────
+  // A denial is not "revoke a grant". Revoking removes an allowance and any
+  // role may hand it straight back; a denial survives every role and is
+  // unioned across the audience, so one participant's prohibition binds the
+  // whole room. Separate endpoints so the two are not confused at the API
+  // either.
+
+  router.post('/direct/deny', async (req: Request, res: Response): Promise<void> => {
+    const body = asObject(req.body);
+    const principal = parseUserPrincipal(str(body.userId));
+    const capability = str(body.capability).trim();
+    if (!principal || !capability) {
+      res.status(400).json({
+        code: 'audience.invalid_input',
+        message: 'userId and capability are required',
+      });
+      return;
+    }
+    try {
+      await deps.store.denyToPrincipal(principal, capability, deps.actor(req));
+      res.status(201).json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ code: 'audience.deny_failed', message: errMsg(err) });
+    }
+  });
+
+  router.delete('/direct/deny', async (req: Request, res: Response): Promise<void> => {
+    const body = asObject(req.body);
+    const principal = parseUserPrincipal(str(body.userId));
+    const capability = str(body.capability).trim();
+    if (!principal || !capability) {
+      res.status(400).json({
+        code: 'audience.invalid_input',
+        message: 'userId and capability are required',
+      });
+      return;
+    }
+    try {
+      const lifted = await deps.store.liftPrincipalDenial(principal, capability);
+      if (!lifted) {
+        res.status(404).json({ code: 'audience.denial_not_found', message: 'no such denial' });
+        return;
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ code: 'audience.lift_failed', message: errMsg(err) });
+    }
+  });
+
+  router.post('/roles/deny', async (req: Request, res: Response): Promise<void> => {
+    const body = asObject(req.body);
+    const roleKey = str(body.roleKey).trim();
+    const capability = str(body.capability).trim();
+    if (!roleKey || !capability) {
+      res.status(400).json({
+        code: 'audience.invalid_input',
+        message: 'roleKey and capability are required',
+      });
+      return;
+    }
+    try {
+      await deps.store.denyToRole(roleKey, capability, deps.actor(req));
+      res.status(201).json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ code: 'audience.deny_failed', message: errMsg(err) });
+    }
+  });
+
+  router.delete('/roles/deny', async (req: Request, res: Response): Promise<void> => {
+    const body = asObject(req.body);
+    const roleKey = str(body.roleKey).trim();
+    const capability = str(body.capability).trim();
+    if (!roleKey || !capability) {
+      res.status(400).json({
+        code: 'audience.invalid_input',
+        message: 'roleKey and capability are required',
+      });
+      return;
+    }
+    try {
+      const lifted = await deps.store.liftRoleDenial(roleKey, capability);
+      if (!lifted) {
+        res.status(404).json({ code: 'audience.denial_not_found', message: 'no such denial' });
+        return;
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ code: 'audience.lift_failed', message: errMsg(err) });
     }
   });
 

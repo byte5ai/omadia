@@ -64,6 +64,23 @@ export interface RoleGrantRow {
   readonly grantedAt: Date;
 }
 
+/** One stored prohibition against a principal. */
+export interface DirectDenialRow {
+  readonly principalKind: string;
+  readonly principalRef: string;
+  readonly capability: Capability;
+  readonly deniedBy: string;
+  readonly deniedAt: Date;
+}
+
+/** One stored prohibition against a role. */
+export interface RoleDenialRow {
+  readonly roleKey: string;
+  readonly capability: Capability;
+  readonly deniedBy: string;
+  readonly deniedAt: Date;
+}
+
 /**
  * A capability is stored verbatim apart from surrounding whitespace, matching
  * what `resolveCapabilities` does when it builds the set. Rejecting the empty
@@ -97,6 +114,29 @@ export class PostgresGrantStore implements GrantStore {
     const key = canonicalizePrincipalRef('role', roleKey);
     const result = await this.pool.query<{ capability: string }>(
       `SELECT capability FROM audience_role_grants WHERE role_key = $1`,
+      [key],
+    );
+    return result.rows.map((row) => row.capability);
+  }
+
+  // Prohibitions. Same no-try/catch rule as the grant side, and it matters more
+  // here: an unread denial that came back as `[]` would not merely under-report
+  // permissions, it would REMOVE a veto the operator put in place.
+
+  async directDenials(principal: Principal): Promise<readonly Capability[]> {
+    const ref = canonicalizePrincipalRef(principal.kind, principalRef(principal));
+    const result = await this.pool.query<{ capability: string }>(
+      `SELECT capability FROM audience_direct_denials
+        WHERE principal_kind = $1 AND principal_ref = $2`,
+      [principal.kind, ref],
+    );
+    return result.rows.map((row) => row.capability);
+  }
+
+  async roleDenials(roleKey: string): Promise<readonly Capability[]> {
+    const key = canonicalizePrincipalRef('role', roleKey);
+    const result = await this.pool.query<{ capability: string }>(
+      `SELECT capability FROM audience_role_denials WHERE role_key = $1`,
       [key],
     );
     return result.rows.map((row) => row.capability);
@@ -157,6 +197,95 @@ export class PostgresGrantStore implements GrantStore {
       [canonicalizePrincipalRef('role', roleKey), normalizeCapability(capability)],
     );
     return (result.rowCount ?? 0) > 0;
+  }
+
+  async denyToPrincipal(
+    principal: Principal,
+    capability: string,
+    deniedBy: string,
+  ): Promise<void> {
+    const value = normalizeCapability(capability);
+    if (value.length === 0) throw new Error('capability must not be empty');
+    const ref = canonicalizePrincipalRef(principal.kind, principalRef(principal));
+    await this.pool.query(
+      `INSERT INTO audience_direct_denials (principal_kind, principal_ref, capability, denied_by)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (principal_kind, principal_ref, capability)
+       DO UPDATE SET denied_by = EXCLUDED.denied_by, denied_at = now()`,
+      [principal.kind, ref, value, deniedBy],
+    );
+  }
+
+  async denyToRole(roleKey: string, capability: string, deniedBy: string): Promise<void> {
+    const value = normalizeCapability(capability);
+    if (value.length === 0) throw new Error('capability must not be empty');
+    const key = canonicalizePrincipalRef('role', roleKey);
+    if (key.length === 0) throw new Error('role key must not be empty');
+    await this.pool.query(
+      `INSERT INTO audience_role_denials (role_key, capability, denied_by)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (role_key, capability)
+       DO UPDATE SET denied_by = EXCLUDED.denied_by, denied_at = now()`,
+      [key, value, deniedBy],
+    );
+  }
+
+  async liftPrincipalDenial(principal: Principal, capability: string): Promise<boolean> {
+    const ref = canonicalizePrincipalRef(principal.kind, principalRef(principal));
+    const result = await this.pool.query(
+      `DELETE FROM audience_direct_denials
+        WHERE principal_kind = $1 AND principal_ref = $2 AND capability = $3`,
+      [principal.kind, ref, normalizeCapability(capability)],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async liftRoleDenial(roleKey: string, capability: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `DELETE FROM audience_role_denials WHERE role_key = $1 AND capability = $2`,
+      [canonicalizePrincipalRef('role', roleKey), normalizeCapability(capability)],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async listDirectDenials(): Promise<DirectDenialRow[]> {
+    const result = await this.pool.query<{
+      principal_kind: string;
+      principal_ref: string;
+      capability: string;
+      denied_by: string;
+      denied_at: Date;
+    }>(
+      `SELECT principal_kind, principal_ref, capability, denied_by, denied_at
+         FROM audience_direct_denials
+        ORDER BY principal_kind, principal_ref, capability`,
+    );
+    return result.rows.map((row) => ({
+      principalKind: row.principal_kind,
+      principalRef: row.principal_ref,
+      capability: row.capability,
+      deniedBy: row.denied_by,
+      deniedAt: row.denied_at,
+    }));
+  }
+
+  async listRoleDenials(): Promise<RoleDenialRow[]> {
+    const result = await this.pool.query<{
+      role_key: string;
+      capability: string;
+      denied_by: string;
+      denied_at: Date;
+    }>(
+      `SELECT role_key, capability, denied_by, denied_at
+         FROM audience_role_denials
+        ORDER BY role_key, capability`,
+    );
+    return result.rows.map((row) => ({
+      roleKey: row.role_key,
+      capability: row.capability,
+      deniedBy: row.denied_by,
+      deniedAt: row.denied_at,
+    }));
   }
 
   async listDirectGrants(): Promise<DirectGrantRow[]> {
