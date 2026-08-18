@@ -279,3 +279,30 @@ export {
   type HolderLookupUnavailableCode,
   type RoleHolderSource,
 } from './roleHolderSource.js';
+
+// #575 Phase 2 — the first module that DECIDES something. #333 produces
+// Principals and says what they are entitled to; this consumes them and answers
+// "given who is present, what may happen in this room?". Everything fails
+// closed, because the intersection of nothing is everything and an empty roster
+// already means "unknown" in `ChatParticipantsProvider`'s own contract.
+export {
+  audienceFloor,
+  floorPermits,
+  resolveAudience,
+  type Audience,
+  type AudienceFloor,
+  type AudienceMember,
+  type AudienceUnknownReason,
+  type Capability,
+  type ResolvedAudienceMember,
+} from './audienceFloor.js';
+
+// #575 Phase 2 — where a principal's capabilities come from. Capabilities UNION
+// within one principal (two roles give you both) and INTERSECT across the
+// audience (a room may only do what everyone may do); the two live apart so the
+// directions cannot be confused.
+export {
+  InMemoryGrantStore,
+  resolveCapabilities,
+  type GrantStore,
+} from './grants.js';

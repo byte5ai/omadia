@@ -18,6 +18,40 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — the audience floor and capability grants (#575, phase 2)
+
+- **The first module in this cluster that decides something.** #333 produces
+  Principals and says what they are entitled to; this consumes them and answers
+  *"given who is present, what may happen in this room?"*.
+- **One intersection function, three guards.** The spec is emphatic that the
+  floor is not a single interception point: egress must be checked **per tool
+  call** (a turn-start snapshot is a TOCTOU hole), context **per retrieval, per
+  recipient**, and file/credential handles **at handle resolution**. So the
+  intersection ships as a pure, cheap function the three guards share rather
+  than as a hook.
+- **Everything fails closed, because the intersection of nothing is
+  everything.** An audience that cannot be established permits nothing rather
+  than everything, and that trap is live today: `ChatParticipantsProvider`'s own
+  contract says "returning an empty array is a valid unknown/unavailable state",
+  so an empty roster is `unknown`, never "the room is empty". One participant
+  who cannot be resolved to a Principal closes the whole room — bounding only
+  the people you could identify is not bounding the room.
+- **`closed` and `open`-with-nothing are different answers.** Both permit
+  nothing, but the first is an outage and the second is policy. An operator
+  looking at a blocked workflow needs to tell them apart.
+- **Grants: capabilities union within a principal, intersect across the room.**
+  A principal's capabilities are their direct grants plus the grants of every
+  role they hold; the room's floor is the intersection of everyone's. The two
+  directions live in separate modules because confusing them is a privilege bug
+  either way.
+- **A partial role lookup never becomes a capability set.** #333 phase 2 made
+  "we could not read a role source" distinct from "no roles"; that distinction
+  survives into the floor, which closes with a diagnosable reason instead of
+  quietly applying a stricter policy nobody chose.
+- Capabilities are deliberately **not** roles: intersecting role labels would be
+  wrong in a way that looks right, since two people with different roles may
+  well share a right.
+
 ### Fixed — an approval quorum could complete with too few approvals (#333, phase 3)
 
 - **Conductor's role→holder resolution is now pluggable — and two decisions built
