@@ -12,15 +12,30 @@
  *
  * Scanning uses the SAME `createBaselineDetector()` (C0 regex) pass that
  * protects free-text user prompts today (`@omadia/plugin-privacy-guard`).
- * Only `string`/`date`-typed columns are scanned: a `number`/`boolean`
- * column is, by construction, a cell that parsed cleanly as a number/bool
- * for EVERY row — there is no free-text surface left for the regex to
- * match, and running it anyway risks corrupting legitimate numeric data on
- * a false-positive hit (e.g. a 7-digit id that happens to start with a
- * leading `0`, which the phone-number pattern would flag). This is a v1
+ * Only `string`-typed columns are scanned. A `number`/`boolean`/`date`
+ * column is, by construction, a cell that parsed cleanly as a
+ * number/bool/date for EVERY row — there is no free-text surface left for
+ * the regex to match, and running it anyway risks corrupting legitimate
+ * data on a false-positive hit (e.g. a 7-digit id that happens to start
+ * with a leading `0`, which the phone-number pattern would flag).
+ *
+ * `date` is skipped for the same structural reason AND a correctness one
+ * (#727): masking runs over a *persisted* value here — no pseudonym map is
+ * retained after import, so the substitution is irreversible, and a masked
+ * date would make the stored value contradict the column's declared `date`
+ * type (a `query_dataset` gt/lt/min/max over it would then compare against a
+ * surrogate string, returning confidently-wrong answers). A pure date carries
+ * no name/email/phone/address on its own, so there is nothing to redact; the
+ * real date is stored as-is and the schema stays honest. This is a v1
  * scoping call, not a bypass: every ROW still goes through the pipeline,
  * exactly as the issue requires — only cells the pipeline could not
  * possibly find PII in are skipped.
+ *
+ * Known residual (documented, not glossed): a column that is a *bare* PII
+ * date — e.g. a `birth_date` of ISO dates — is persisted un-redacted, the
+ * same class of trade as a national-ID column inferred as `number`. Reversible
+ * masking of date columns needs a retained per-dataset pseudonym map, a #430
+ * design question tracked as a follow-up, not a blocker for the masker fix.
  *
  * Cost note: this is O(rows × string-columns) baseline-detector calls,
  * each a handful of regex passes over one cell's text — CPU-bound, not
@@ -175,7 +190,7 @@ function inferColumnType(values: readonly string[]): DatasetColumnType {
 
 export interface PrivacyScanStats {
   /** Total cells (across every row) that were passed through the baseline
-   *  detector — string/date-typed columns only, see module doc. */
+   *  detector — string-typed columns only, see module doc. */
   scannedCells: number;
   /** Cells where at least one span was masked. */
   maskedCells: number;
@@ -226,8 +241,15 @@ export async function buildDatasetFromCsv(bytes: Buffer): Promise<
         outRow[header] = raw.trim() === '' ? null : /^true$/i.test(raw.trim());
         continue;
       }
-      // 'string' | 'date' — the only cells that can carry free text, so the
-      // only ones that go through the privacy scan (see module doc).
+      if (type === 'date') {
+        // Skipped like number/boolean: no free-text surface, and masking a
+        // persisted date is irreversible + contradicts the declared type
+        // (#727). Store the real date so the schema and the data agree.
+        outRow[header] = raw.trim() === '' ? null : raw;
+        continue;
+      }
+      // 'string' — the only cells that can carry free text, so the only ones
+      // that go through the privacy scan (see module doc).
       scannedCells += 1;
       if (raw.length === 0) {
         outRow[header] = raw;

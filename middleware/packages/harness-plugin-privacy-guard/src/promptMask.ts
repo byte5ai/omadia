@@ -209,6 +209,11 @@ interface ExtendedSpan {
   readonly type: string;
   readonly detector: string;
   readonly confidence: number;
+  /** Length of the detector's OWN match, BEFORE word-boundary extension. A
+   *  span that matched its whole value natively is more self-contained than
+   *  one that only reached the same range by growing across a shared
+   *  separator — used as a tie-break key below (#727). */
+  readonly nativeLen: number;
 }
 
 /** The parts of `[candidate.start, candidate.end)` not covered by any of
@@ -240,8 +245,17 @@ function hasWordChar(text: string, start: number, end: number): boolean {
 
 /**
  * Merge detector outputs: extend to word boundaries, then resolve overlaps
- * by letting the higher-confidence span (ties → the longer span) own the
- * contested characters. A losing span is NOT discarded wholesale: the parts
+ * by letting the higher-confidence span own the contested characters. Ties
+ * are broken by a documented, order-independent rule so the outcome never
+ * depends on detector/pattern declaration order (#727): (1) higher
+ * confidence, then (2) longer extended span, then (3) larger NATIVE match —
+ * a span that matched its value directly beats one that only grew into the
+ * same range (this is what makes the ISO date `2026-07-02` beat the phone
+ * pattern that grabbed its `-07-02` tail and extended back over the `-`),
+ * then — only for two spans still identical on all three — (4) a fixed
+ * lexical order of the type name (present purely for determinism, NOT
+ * semantic priority), then (5) earliest start.
+ * A losing span is NOT discarded wholesale: the parts
  * of it no winning span covers are kept as masking spans of their own —
  * otherwise a long low-confidence C1 span (e.g. a free-form address at
  * score 0.8) that merely brushes a short confidence-1 C0 hit (the postal
@@ -257,11 +271,30 @@ export function dedupSpans(
     .filter(({ span }) => span.end > span.start && span.start >= 0 && span.end <= text.length)
     .map(({ span, detector }) => {
       const { start, end } = extendToWordBoundaries(text, span.start, span.end);
-      return { start, end, type: span.type, detector, confidence: span.confidence };
+      return {
+        start,
+        end,
+        type: span.type,
+        detector,
+        confidence: span.confidence,
+        nativeLen: span.end - span.start,
+      };
     })
     .sort(
       (a, b) =>
-        b.confidence - a.confidence || b.end - b.start - (a.end - a.start) || a.start - b.start,
+        b.confidence - a.confidence ||
+        b.end - b.start - (a.end - a.start) ||
+        // Native (pre-extension) match: the span that matched its whole value
+        // beats one that only grew into the range across a shared separator.
+        b.nativeLen - a.nativeLen ||
+        // Deterministic last resort: a fixed lexical order of the type NAME.
+        // The point is determinism — never array/pattern order (#727) — not
+        // semantic priority: this only fires for two identical-range,
+        // identical-native-length spans of different types, where no type is
+        // "more right", so a fixed arbitrary order is the honest choice. Plain
+        // code-unit compare, not localeCompare (which varies by locale).
+        (a.type < b.type ? -1 : a.type > b.type ? 1 : 0) ||
+        a.start - b.start,
     );
 
   const kept: ExtendedSpan[] = [];
