@@ -2,7 +2,7 @@
   "name": "@omadia/plugin-transcription",
   "version": "0.1.0",
   "private": true,
-  "description": "Audio-Ingestion-Plugin für die transcription@1-Capability (#584): operator-authentifizierter Multipart-Upload-Endpoint (/transcriptions) für Aufnahmen in den Blob-Store. Das transcribe_recording-Tool, Session-Mapping und Privacy-Wiring folgen in diesem Paket.",
+  "description": "Audio-Ingestion-Plugin für die transcription@1-Capability (#584): operator-authentifizierter Multipart-Upload-Endpoint (/transcriptions) für Aufnahmen in den Blob-Store plus das explizite transcribe_recording-Tool — kanonisches Transcript-Artifact (unmaskiert, Blob-Store), maskierte Chunk-Projektion in die Session-Substrate.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,7 +14,9 @@
   },
   "dependencies": {},
   "peerDependencies": {
+    "@omadia/orchestrator": "*",
     "@omadia/plugin-api": "*",
+    "@omadia/plugin-privacy-guard": "*",
     "@omadia/transcription-api": "*",
     "express": "^5.1.0",
     "multer": "^2.1.1"

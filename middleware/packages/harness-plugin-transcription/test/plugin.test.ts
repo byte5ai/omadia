@@ -6,13 +6,15 @@ import type { PluginContext } from '@omadia/plugin-api';
 import { activate } from '../src/plugin.js';
 
 /** Minimal fake of the PluginContext members `activate` touches (routes,
- *  services, operatorAuth, log) — the rest is never dereferenced. */
+ *  tools, services, operatorAuth, log) — the rest is never dereferenced. */
 function fakeContext(opts: { operatorAuth?: boolean }): {
   ctx: PluginContext;
   registered: Map<string, unknown>;
+  registeredTools: string[];
   logs: string[];
 } {
   const registered = new Map<string, unknown>();
+  const registeredTools: string[] = [];
   const logs: string[] = [];
   const ctx = {
     routes: {
@@ -26,6 +28,15 @@ function fakeContext(opts: { operatorAuth?: boolean }): {
         };
       },
     },
+    tools: {
+      register: (spec: { name: string }): (() => void) => {
+        registeredTools.push(spec.name);
+        return () => {
+          const idx = registeredTools.indexOf(spec.name);
+          if (idx >= 0) registeredTools.splice(idx, 1);
+        };
+      },
+    },
     services: {
       get: (): undefined => undefined,
     },
@@ -36,7 +47,7 @@ function fakeContext(opts: { operatorAuth?: boolean }): {
       logs.push(args.map(String).join(' '));
     },
   };
-  return { ctx: ctx as unknown as PluginContext, registered, logs };
+  return { ctx: ctx as unknown as PluginContext, registered, registeredTools, logs };
 }
 
 describe('plugin-transcription activate', () => {
@@ -49,6 +60,16 @@ describe('plugin-transcription activate', () => {
 
     await handle.close();
     assert.equal(registered.size, 0);
+  });
+
+  it('registers the transcribe_recording tool and disposes it on close', async () => {
+    const { ctx, registeredTools } = fakeContext({ operatorAuth: true });
+    const handle = await activate(ctx);
+
+    assert.deepEqual(registeredTools, ['transcribe_recording']);
+
+    await handle.close();
+    assert.deepEqual(registeredTools, []);
   });
 
   it('activates without an operatorAuth accessor (router serves 503 fail-closed) and logs it loudly', async () => {

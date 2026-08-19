@@ -39,6 +39,22 @@ export interface SessionLogEntry {
    * turn id and calls ingestRun alongside ingestTurn.
    */
   runTrace?: RunTracePayload;
+  /**
+   * Turn timestamp override — default is "now". The transcript chunk
+   * projection (#584) logs each chunk at `recordingStart + chunk offset` so a
+   * recording's turns carry recording time, not ingest time; the millisecond
+   * precision of the markdown heading and `turnNodeId` is what keeps
+   * back-to-back chunks collision-free.
+   */
+  time?: Date;
+  /**
+   * Skip the user-message display cap for this turn's markdown. The
+   * transcript chunk projection (#584) pre-sizes its chunks and the markdown
+   * is their replay source (parser → graph backfill, zero-change guarantee) —
+   * the cap would silently amputate canonical recall text. Chat turns keep
+   * the default cap.
+   */
+  losslessUserMessage?: boolean;
 }
 
 const USER_MSG_MAX = 1_500;
@@ -91,7 +107,7 @@ export class SessionLogger {
   ) {}
 
   async log(entry: SessionLogEntry): Promise<{ turnExternalId: string }> {
-    const now = new Date();
+    const now = entry.time ?? new Date();
     const iso = now.toISOString();
     const day = iso.slice(0, 10);
     // Millisecond-precision time so back-to-back turns have unique ids. Trade
@@ -112,7 +128,10 @@ export class SessionLogger {
       const virtualPath = `/memories/sessions/${scope}/${day}.md`;
       const turn = renderTurn({
         time,
-        userMessage: truncate(entry.userMessage, USER_MSG_MAX),
+        userMessage: truncate(
+          entry.userMessage,
+          entry.losslessUserMessage ? Number.POSITIVE_INFINITY : USER_MSG_MAX,
+        ),
         assistantAnswer: truncate(entry.assistantAnswer, ASSISTANT_MSG_MAX),
         toolCalls: entry.toolCalls,
         iterations: entry.iterations,
@@ -341,12 +360,19 @@ function serialiseRef(ref: EntityRef): Record<string, unknown> {
 
 /**
  * A scope is a chat-session id when it's ID_RE-valid and NOT one of the
- * reserved prefixes used by other surfaces (http-*, teams-*). This keeps
- * the server-side chat-session mirror from accidentally creating entries
- * for HTTP smoke tests or Teams conversations.
+ * reserved prefixes used by other surfaces (http-*, teams-*, transcript-*).
+ * This keeps the server-side chat-session mirror from accidentally creating
+ * entries for HTTP smoke tests, Teams conversations, or transcript chunk
+ * projections (#584 — one scope per recording, no chat tab behind it).
  */
 function isChatSessionScope(scope: string): boolean {
-  if (scope.startsWith('http-') || scope.startsWith('teams-')) return false;
+  if (
+    scope.startsWith('http-') ||
+    scope.startsWith('teams-') ||
+    scope.startsWith('transcript-')
+  ) {
+    return false;
+  }
   return isValidSessionId(scope);
 }
 

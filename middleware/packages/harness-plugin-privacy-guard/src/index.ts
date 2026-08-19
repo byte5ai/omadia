@@ -25,3 +25,4 @@ export type { C1HttpDetectorOptions } from './c1Detector.js';
 // directly. #430 (dataset import) is the first such caller.
 export { createBaselineDetector, maskPrompt, dedupSpans } from './promptMask.js';
 export type { MaskPromptResult, ResolvedSpan } from './promptMask.js';
+export type { PseudonymMap } from './v4/types.js';

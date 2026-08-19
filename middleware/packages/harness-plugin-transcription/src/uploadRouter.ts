@@ -88,6 +88,17 @@ function buildStorageKey(bytes: Buffer, fileName: string | undefined): string {
   return `${STORAGE_KEY_PREFIX}/${new Date().toISOString()}-${shortHash}${ext ? `.${ext}` : ''}`;
 }
 
+/** Inverse of {@link buildStorageKey}'s timestamp part — kept NEXT to the
+ *  mint so the key format evolves in one place. Used by the ingestion tool
+ *  as the "default recording_start = upload time" without a second store
+ *  round-trip. Teams-style keys carry no timestamp → `undefined`. */
+export function uploadTimeFromKey(storageKey: string): Date | undefined {
+  const match = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)/.exec(storageKey);
+  if (!match) return undefined;
+  const parsed = new Date(match[1]!);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
 /** Operator-session gate, fail closed (adminKeysRouter precedent): missing
  *  accessor ⇒ 503, absent/invalid session ⇒ 401, verifier rejection ⇒ 401. */
 function operatorSessionGate(

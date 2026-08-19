@@ -6,7 +6,7 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.transcription"
-  description: "Audio-Ingestion für die transcription@1-Capability (#584): operator-authentifizierter Multipart-Upload-Endpoint unter /transcriptions, der Aufnahmen in den Blob-Store legt und den storage_key zurückgibt. Das explizite transcribe_recording-Tool inklusive Transcript-Artifact, Session-Projektion und Privacy-Wiring folgt in diesem Paket."
+  description: "Audio-Ingestion für die transcription@1-Capability (#584): operator-authentifizierter Multipart-Upload-Endpoint unter /transcriptions, der Aufnahmen in den Blob-Store legt und den storage_key zurückgibt, plus das explizite transcribe_recording-Tool — schreibt das kanonische Transcript-Artifact (unmaskiert, Blob-Store) und projiziert den Inhalt als maskierte Chunk-Turns in die Session-Substrate (Scope transcript-<recordingId>)."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -35,8 +35,13 @@ playbook:
     flac/mp3/mp4/mpeg/mpga/m4a/ogg/wav/webm) und ist ausschließlich für
     Operator-Sessions zugänglich (fail closed). Es findet KEINE
     Auto-Transkription statt — Transkription läuft über das explizite
-    transcribe_recording-Tool. Ohne konfigurierten Blob-Store (tigrisStore)
-    antwortet der Endpoint mit 503; die Plattform bootet unverändert.
+    transcribe_recording-Tool: es schreibt das kanonische, unmaskierte
+    Transcript-Artifact in den Blob-Store und projiziert den Inhalt als
+    maskierte Chunk-Turns (maskPrompt vor dem Logging) in den Recall-Scope
+    transcript-<recordingId>; idempotent pro Aufnahme. Ohne konfigurierten
+    Blob-Store (tigrisStore) antwortet der Endpoint mit 503 bzw. das Tool
+    mit einer Fehlermeldung; ohne aktiven transcription@1-Provider degradiert
+    das Tool ebenso. Die Plattform bootet unverändert.
 
 permissions:
   memory:

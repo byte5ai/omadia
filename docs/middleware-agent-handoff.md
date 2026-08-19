@@ -1288,6 +1288,68 @@ Tests: `test/transcriptionUploadRouter.test.ts` (Happy-Path-Felder,
 Junk-Text, Key bleibt sichtbar, Nicht-Audio-Sibling unverändert),
 Plugin-Lifecycle in `packages/harness-plugin-transcription/test/`.
 
+### `transcribe_recording`-Tool + Transcript-Artifact + Chunk-Projektion + Privacy (issue #584)
+
+Der Ingestion-Kern der Transcription-Capability, komplett in
+`packages/harness-plugin-transcription/` (Core bleibt unangetastet):
+
+- **Tool `transcribe_recording`** (`transcribeRecordingTool.ts`, registriert
+  via `ctx.tools.register` mit `promptDoc`, Office-Präzedenz): Input
+  `{storage_key, recording_start?}`. `recording_start` defaulted auf den im
+  Upload-Key eingebetteten ISO-Zeitstempel (Teams-Keys tragen keinen →
+  "jetzt"). Bytes via `createAttachmentReader` (`@omadia/orchestrator`,
+  Duck-Typing auf `tigrisStore`), Transkription via Service-Registry-Key
+  `'transcription'` — ALLE Abhängigkeiten lazy pro Tool-Call aufgelöst und
+  VOR jedem Seiteneffekt geprüft (ein Half-Ingest würde die Idempotenz zum
+  permanenten Chunk-Verlust machen). `TranscriptionError` → Code-tragende
+  Fehlermeldung an das Modell, kein Throw.
+- **Transcript-Artifact** (`transcriptArtifact.ts`, Typ lebt HIER, nicht im
+  Contract-Package): JSON unter
+  `transcription-artifacts/<recordingId>.json`, **unmaskiert** (Proof-Treue;
+  Store-Zugriffsschutz = Privacy-Grenze; Artifact-Inhalt geht nie an
+  Wire/LLM). `recordingId = sha256(storage_key)[:16]` — der Upload-Endpoint
+  mintet keine eigene Id, der Key IST die Identität. Felder: capability-
+  Segmente + `speaker` (Pflicht-Speaker-Label; Default `speaker_0`, wenn der
+  Provider nichts attribuiert — OHNE Diarization sind Segmente
+  ununterscheidbar, also ehrlich EIN Label statt erfundener Sprecher),
+  optionales `resolvedUserId`, `recordingStart`, Uploader-Identität aus dem
+  `turnContext` (raw `userId` + `resolvedOmadiaUserId`), transcript-level
+  `timing`-Provenance; `startMs`/`endMs` optional. **Idempotenz:**
+  `exists(artifactKey)` → No-op-Antwort, kein zweiter Provider-Call.
+- **Chunk-Projektion** (`chunkProjection.ts`): Segmente → Zeilen
+  `[<label>]: <text>` → Chunks mit Max **2000** Zeichen (die
+  factExtractor-USER-MESSAGE-Grenze; 4000 ist die Assistant-Grenze und
+  greift hier nie), Bruch NUR an Segmentgrenzen; überlange Monolog-Segmente
+  werden NUR in der Projektion an Satzgrenzen gesplittet
+  (Speaker-Präfix wiederholt, Artifact-Segment bleibt ganz). Ein Chunk = ein
+  Turn via `SessionLogger.log()`: `userMessage` = Chunk, `assistantAnswer`
+  `''`, Scope `transcript-<recordingId>`, `time` = `recordingStart` +
+  Chunk-Offset (Segment-`startMs` wenn vorhanden, sonst Chunk-Index; strikt
+  monoton → kollisionsfreie `turnNodeId`s), `userId` unset. Logger-Auflösung
+  pro Call: `orchestratorRegistry.get(turnContext-Slug)` →
+  `built.bundle.sessionLogger`, Fallback `chatAgent`-Bundle.
+- **Privacy:** `maskPrompt` + `createBaselineDetector` aus
+  `@omadia/plugin-privacy-guard` über jeden Chunk VOR `log()`
+  (datasetImport-Präzedenz); die Pseudonym-Map wird über die Chunks EINER
+  Aufnahme durchgereicht (gleicher Realwert → gleiches Surrogat).
+- **`SessionLogEntry` additiv erweitert** (`sessionLogger.ts`):
+  `time?: Date` (Turn-Zeitstempel-Override — Aufnahmezeit statt
+  Ingest-Zeit) und `losslessUserMessage?: boolean` (überspringt den
+  1500-Zeichen-Markdown-Cap: das Markdown ist die Replay-Quelle der Chunks,
+  Kappung würde kanonischen Recall-Text amputieren; Chat-Turns unverändert).
+  Außerdem `transcript-` als reserviertes Prefix in `isChatSessionScope`
+  (sonst legte der Chat-Session-Mirror Phantom-Sessions pro Aufnahme an).
+
+Tests: `packages/harness-plugin-transcription/test/chunkProjection.test.ts`
+(Segmentgrenzen-Bruch, Monolog-Satzsplit lossless, Offset-Regeln) +
+`transcribeRecordingTool.test.ts` (Fake-`TranscriptionService`:
+Artifact-Felder/Default-Labels/unmaskiert, Maskierung vor Logging,
+Idempotenz, recording_start-Default, Fehlerpfade) und
+`test/transcriptProjectionReplay.test.ts` (Root-Suite: echter
+`SessionLogger` → Parser → `graphBackfill` — Chunk-Turns überleben
+byte-identisch inkl. >1500-Zeichen-Chunk, Graph-Stats live == restored,
+Zero-Change-Garantie).
+
 ---
 
 ## 4. Migration Managed Agents → Lokal
