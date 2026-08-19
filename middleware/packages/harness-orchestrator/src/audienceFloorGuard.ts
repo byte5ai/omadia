@@ -210,6 +210,50 @@ export async function guardContextRecall(): Promise<string | undefined> {
 }
 
 /**
+ * The capability recalling from OTHER conversations requires.
+ *
+ * Separate from {@link MEMORY_RECALL_CAPABILITY}, because the two questions are
+ * not the same one. Recall is ACL-gated by the RECALLING user, so a hit from
+ * their other conversations lands in the single prompt everyone's answer is
+ * derived from — the room learns something only one participant was entitled
+ * to, and never asked for.
+ *
+ * Splitting it turns the previous all-or-nothing into a narrowing: a room that
+ * holds `memory:recall` but not this one still recalls its OWN history, and
+ * only cross-session hits are dropped. #732 named the missing granularity as a
+ * limitation; this is the part of it that today's data actually supports,
+ * because recall hits carry a `scope` even though they carry no entitlement
+ * labels.
+ */
+export const CROSS_SCOPE_RECALL_CAPABILITY: Capability = 'memory:recall:cross_scope';
+
+/**
+ * Whether recall must be restricted to the current conversation.
+ *
+ * Returns `false` — unrestricted — when no provider is installed, the same
+ * "not enforced ≠ closed" rule as every other guard here. A `closed` floor is
+ * not answered here at all: {@link guardContextRecall} has already refused the
+ * whole recall by then, and answering "restrict" would suggest something still
+ * gets through.
+ */
+export async function crossScopeRecallRefused(): Promise<boolean> {
+  const provider = turnContext.current()?.audienceFloor;
+  if (!provider) return false;
+
+  let floor: AudienceFloor;
+  try {
+    floor = await provider();
+  } catch {
+    // An unresolvable audience restricts. The turn is not aborted — the
+    // recall simply stays inside the room, which is the safe half of what
+    // `guardContextRecall` would do with the same failure.
+    return true;
+  }
+
+  return !floorPermits(floor, CROSS_SCOPE_RECALL_CAPABILITY);
+}
+
+/**
  * Check whether the current audience permits dispatching `name`.
  *
  * Returns `undefined` when the call may proceed — including when no provider is
