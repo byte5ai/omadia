@@ -3213,6 +3213,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         -- Durable-tier filter: when set, rank only manually-authored MK among
         -- itself (so the always-surface leg isn't crowded out by session noise).
         AND ($7::boolean IS NOT TRUE OR manually_authored = true)
+        -- #575 sharedOnly: narrow to the shared tier alone. Applied as its own
+        -- AND rather than by editing the branches below, so an owner-owned row
+        -- that IS team/public still qualifies while an owner-owned private one
+        -- cannot slip through the owner branch.
+        AND ($8::boolean IS NOT TRUE OR COALESCE(visibility, 'team') IN ('team', 'public'))
         AND (
           -- team/public-promoted MK stays shareable across Agents.
           ($5::boolean AND COALESCE(visibility, 'team') IN ('team', 'public'))
@@ -3236,9 +3241,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       this.tenantId,
       opts.viewerOmadiaUserId,
       limit,
-      opts.teamVisibility === true,
+      // sharedOnly implies the team branch: without it the query would return
+      // only the viewer's OWN shared rows, which is never what a caller means.
+      opts.teamVisibility === true || opts.sharedOnly === true,
       opts.viewerAgentSlug ?? null,
       opts.manuallyAuthoredOnly === true,
+      opts.sharedOnly === true,
     ]);
     return rows.rows
       .filter((r) => Number(r.cosine_sim) >= minSimilarity)
@@ -3274,6 +3282,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         AND ex.type = 'PalaiaExcerpt'
         AND ex.embedding IS NOT NULL
         AND mk.tenant_id = $2
+        -- #575 sharedOnly: the excerpt inherits its parent MK's tier, so the
+        -- narrowing runs against the PARENT's visibility.
+        AND ($7::boolean IS NOT TRUE OR COALESCE(mk.visibility, 'team') IN ('team', 'public'))
         AND (
           -- team/public-promoted parent MK stays shareable across Agents.
           ($5::boolean AND COALESCE(mk.visibility, 'team') IN ('team', 'public'))
@@ -3305,8 +3316,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       this.tenantId,
       opts.viewerOmadiaUserId,
       limit,
-      opts.teamVisibility === true,
+      opts.teamVisibility === true || opts.sharedOnly === true,
       opts.viewerAgentSlug ?? null,
+      opts.sharedOnly === true,
     ]);
 
     return rows.rows

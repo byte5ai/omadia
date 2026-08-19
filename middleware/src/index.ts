@@ -303,6 +303,13 @@ import { CanvasOutputRegistry } from './platform/canvasOutputRegistry.js';
 import { EventCatalogRegistry } from './platform/eventCatalogRegistry.js';
 import { DeterministicActionRegistry } from './platform/deterministicActionRegistry.js';
 import { ServiceRegistry } from './platform/serviceRegistry.js';
+import {
+  createLateBoundAttachmentBindingStore,
+  createLateBoundGrantStore,
+} from './audience/lateBoundGrantStore.js';
+import { PostgresAttachmentBindingStore } from './audience/postgresAttachmentBindingStore.js';
+import { PostgresGrantStore } from './audience/postgresGrantStore.js';
+import { createAudienceGrantRouter } from './audience/routes.js';
 import { TurnHookRegistry } from './platform/turnHookRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
 // W3-A / W4 — boot-time enforcement of the tool-timeout ordering invariant.
@@ -834,6 +841,39 @@ async function main(): Promise<void> {
   for (const entry of pluginCatalog.list()) {
     if (!installedRegistry.has(entry.plugin.id)) continue;
     registerProviderFromPlugin(entry.plugin.id);
+  }
+
+  // #575 — the audience floor's grant store. Published HERE, before
+  // `activateAllInstalled()`, because the orchestrator plugin reads the
+  // services it consumes at its own activate(); published as a LATE-BOUND
+  // wrapper because the Postgres pool it needs is itself published by the
+  // knowledge-graph plugin during that same activation pass and is only
+  // readable afterwards. `audienceGrantStoreRef` is filled in below, where
+  // `graphPool` resolves — the same forward-reference shape the conductor's
+  // template registrar uses.
+  //
+  // Nothing is published when the flag is off, and that absence is what keeps
+  // the three guards inert: the orchestrator installs an audience provider only
+  // when it received a grant store, so an unconfigured deployment behaves
+  // exactly as before ("not enforced ≠ closed").
+  let audienceGrantStoreRef: PostgresGrantStore | undefined;
+  let attachmentBindingStoreRef: PostgresAttachmentBindingStore | undefined;
+  if (config.AUDIENCE_FLOOR_ENABLED) {
+    serviceRegistry.provide(
+      'audienceGrants',
+      createLateBoundGrantStore(() => audienceGrantStoreRef),
+    );
+    // #575 — pins each attachment handle to the room that minted it. Same flag,
+    // because it is the same policy: without the floor there is no notion of a
+    // room to bind to, and enforcing one alone would refuse handles for a
+    // deployment that never opted into audience control at all.
+    serviceRegistry.provide(
+      'attachmentBindings',
+      createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
+    );
+    console.log(
+      '[middleware] #575 audience floor ENABLED — grants read from Postgres; rooms are limited to what every participant is granted, and attachment handles only redeem in the room that minted them',
+    );
   }
 
   // Phase B (B1) — publish `pluginCapabilities@1` so the orchestrator's
@@ -1617,6 +1657,33 @@ async function main(): Promise<void> {
   }
   const graphPool = serviceRegistry.get<Pool>('graphPool');
   const graphTenantId = process.env['GRAPH_TENANT_ID'] ?? 'default';
+
+  // #575 — hydrate the forward reference published before activation.
+  //
+  // Refusing to boot without Postgres is deliberate, and it is the kinder
+  // failure. The floor fails closed, so an enabled floor with no durable store
+  // would not degrade to "unenforced" — every lookup would throw, every room
+  // would refuse every tool, recall nothing and read no attachment, and the
+  // operator would see a system that looks configured and behaves as though
+  // someone had forbidden everything. A boot refusal names the cause once,
+  // at the only moment it is still cheap to fix.
+  //
+  // The store is built whenever Postgres is present, NOT only when the floor is
+  // enabled — the admin surface has to be usable before enforcement starts, or
+  // the only way to seed grants would be to switch the floor on against an
+  // empty table first.
+  const audienceGrantStore = graphPool ? new PostgresGrantStore(graphPool) : undefined;
+  if (config.AUDIENCE_FLOOR_ENABLED) {
+    if (!graphPool || !audienceGrantStore) {
+      throw new Error(
+        '[middleware] AUDIENCE_FLOOR_ENABLED=true requires Postgres (DATABASE_URL) — ' +
+          'the in-memory backend has nowhere to store grants, and the floor fails closed, ' +
+          'so booting like this would silently refuse every tool call in every room.',
+      );
+    }
+    audienceGrantStoreRef = audienceGrantStore;
+    attachmentBindingStoreRef = new PostgresAttachmentBindingStore(graphPool);
+  }
 
   // Issue #560 — now that graphPool is known, back the long-running task seam
   // durably when Postgres is present (tasks survive a restart; the `tasks` table
@@ -2807,6 +2874,27 @@ async function main(): Promise<void> {
   console.log(
     '[middleware] memory-purge endpoint ready at /api/v1/admin/memory/purge',
   );
+
+  // #575 — audience-floor grants. Cookie-auth admin surface like the routers
+  // above. Mounted whenever Postgres is present, INDEPENDENTLY of whether the
+  // floor is enforcing: an operator has to be able to seed and review the grant
+  // table before enforcement starts, because the floor fails closed and
+  // switching it on against an empty table bounds every room to nothing.
+  if (audienceGrantStore) {
+    app.use(
+      '/api/v1/admin/audience-grants',
+      requireAuth,
+      createAudienceGrantRouter({
+        store: audienceGrantStore,
+        actor: (req) => req.session?.email ?? 'unknown',
+      }),
+    );
+    console.log(
+      `[middleware] audience-grants endpoint ready at /api/v1/admin/audience-grants (enforcement ${
+        config.AUDIENCE_FLOOR_ENABLED ? 'ON' : 'off'
+      })`,
+    );
+  }
 
   // Rolling self-update (#432). Cookie-auth admin surface like the Danger Zone
   // above. Three capability tiers, and the endpoint reports honestly which one

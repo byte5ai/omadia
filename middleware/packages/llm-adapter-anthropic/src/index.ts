@@ -11,6 +11,7 @@ export { anthropicAdapter, registerAnthropicAdapter } from './adapter.js';
 export {
   createAnthropicProvider,
   classifyAnthropicError,
+  supportsTemperature,
   type AnthropicProviderOptions,
 } from './anthropicProvider.js';
 

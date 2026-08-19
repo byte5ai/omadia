@@ -1,0 +1,16 @@
+{
+  // #498 — static type coverage for the adversarial-eval harness. The
+  // middleware `typecheck` only covers `src/` + package `src/` dirs, so nothing
+  // under `test/` is checked by default. This puts the pure runner, the model
+  // layer, the CLI and both suites back under `tsc --noEmit`, chained into the
+  // top-level `typecheck` (run on every PR) so a drift in the Privacy Shield v4
+  // digest types, the sanitizer or the LLM-provider contract fails a PR instead
+  // of surfacing only at the key-gated eval on `main`. Requires the workspace
+  // `dist/` to be built first (the model layer imports it), same as golden.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../.."
+  },
+  "include": ["*.ts", "../adversarialRunner.test.ts", "../adversarialModel.test.ts"]
+}

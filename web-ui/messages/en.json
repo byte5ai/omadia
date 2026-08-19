@@ -4572,7 +4572,12 @@
       "runTrace": "Run trace",
       "noEntities": "No entities in this turn",
       "loadingRun": "loading run…",
-      "noRunTrace": "No run trace recorded"
+      "noRunTrace": "No run trace recorded",
+      "noToolCalls": "Run without tool calls (plain text answer)",
+      "toolsLabel": "tools={count}",
+      "iterations": "{count} iter",
+      "orchestratorTools": "Orchestrator tools",
+      "toolCalls": "{count, plural, one {# tool call} other {# tool calls}}"
     }
   },
   "memory": {

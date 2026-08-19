@@ -8,6 +8,22 @@ before `mask_user_prompt` flips on for it.
 
 Two runs are recorded, newest first:
 
+- **#727 re-run — 2026-08-19 · overlap tie-break (no pattern change).** #727
+  makes the `dedupSpans` overlap tie-break a documented, order-independent
+  rule (native match length, then a fixed lexical order of the type name,
+  present for determinism only — not semantic priority) so an ISO-8601 date
+  (`2026-07-02`) no longer loses its exact-tie to the general phone pattern
+  and mask as a phone surrogate. This changes only **which surrogate type**
+  replaces an already-masked span — never **whether** a span is masked. The
+  harness scores span *coverage* (was the labelled region masked?), not
+  surrogate type, so the ISO date was always counted as covered (it was
+  masked, just as the wrong type) — which is exactly why the harness never
+  surfaced the bug, and why a fresh `c0` run reproduces Run 2's tables
+  **byte-for-byte**: de/en 100%, es/fr/it 99.1% (PASS), nl 89.0% (FAIL,
+  address-only, C1-carried), precision proxy 32/32 clean in every locale.
+  No recall/precision/latency number moves. Verified 2026-08-19 with
+  `node --import tsx …/promptDetectorEval.ts --markdown` (c0 only, no
+  sidecar). C1 is untouched, so the derived `c0+c1` projection stands.
 - **Run 2 — 2026-08-05 · locale-aware C0 patterns (#482).** Extends the C0
   regex baseline with the recorded es/fr/nl miss classes: separator-less
   (`899 €`) and space-grouped (`2 400 €`) amounts, dashed (`30-06-2027`) and

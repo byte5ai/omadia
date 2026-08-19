@@ -85,6 +85,7 @@ import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
 import type { NotificationRouter } from './notificationRouter.js';
 import type { UiRouteCatalog } from './uiRouteCatalog.js';
 import { createHttpAccessor, isAuditMode, type AuditMode } from './httpAccessor.js';
+import { audienceDeniesHost } from './audienceHostPolicy.js';
 import { createNetAccessor, type NetTarget } from './netAccessor.js';
 import { signFlowState, verifyFlowState } from './flowState.js';
 import type { PluginStatusRegistry } from './pluginStatusRegistry.js';
@@ -399,6 +400,11 @@ export function createPluginContext(
           ...(auditConfig.auditMode
             ? { auditMode: auditConfig.auditMode }
             : {}),
+          // #575 — the room's host prohibitions, asked per request rather than
+          // captured here: the accessor is built once at activation and the
+          // audience changes within a turn, so a value bound now would be a
+          // snapshot of a room that no longer exists.
+          audienceDeniesHost,
         })
       : undefined;
 

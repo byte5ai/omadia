@@ -63,6 +63,19 @@ export function createHttpAccessor(opts: {
    *  uses undici's OWN fetch — it must match the guarded undici `Agent`, or
    *  the global (version-skewed) fetch throws "invalid onRequestStart method". */
   guardedFetch?: (url: string, init: Record<string, unknown>) => Promise<Response>;
+  /**
+   * #575 — "may the CURRENT ROOM reach this host at all", asked per request.
+   *
+   * Passed in rather than read from the orchestrator's turn context directly,
+   * so this module keeps knowing nothing about turns; the caller that builds a
+   * plugin context owns that wiring.
+   *
+   * It can only ever NARROW the manifest allow-list: a host absent from the
+   * floor's grants says nothing here, because outbound hosts are granted by the
+   * manifest, not by the grant store. Only an explicit prohibition subtracts.
+   * Absent ⇒ not enforced, the same rule every other audience guard follows.
+   */
+  audienceDeniesHost?: (host: string) => Promise<boolean>;
 }): HttpAccessor {
   const { agentId, outbound } = opts;
   const limit = opts.rateLimitPerMinute ?? DEFAULT_RATE_LIMIT_PER_MINUTE;
@@ -113,6 +126,15 @@ export function createHttpAccessor(opts: {
         rawHost.startsWith('[') && rawHost.endsWith(']')
           ? rawHost.slice(1, -1)
           : rawHost;
+
+      // #575 — the room's prohibition is checked BEFORE the mode branches, so
+      // it also binds `public-web`: a web_scanner must not be the way around a
+      // host an operator forbade. Also before the rate-limit bucket, so a
+      // refused call costs the plugin nothing — same ordering as the egress
+      // guard sitting ahead of the dispatch deadline.
+      if (opts.audienceDeniesHost && (await opts.audienceDeniesHost(host))) {
+        throw new HttpForbiddenError(agentId, host);
+      }
 
       if (mode === 'public-web') {
         // Any public host is permitted; the guarded dispatcher enforces the

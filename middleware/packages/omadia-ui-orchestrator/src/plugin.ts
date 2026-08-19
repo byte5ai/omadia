@@ -199,6 +199,13 @@ export async function handleCanvasPublishRows(
     );
   }
   let truncatedFrom: number | undefined;
+  /** #326 — the resolved dataset's authoritative column schema, forwarded to
+   *  the composer so cells resolve by PATH rather than by the skeleton's own
+   *  field keys. Undefined for a plain `rows` publish, where the agent's keys
+   *  already are the row keys and nothing needs remapping. */
+  let datasetColumns:
+    | Array<{ path: string; type: string; classification?: string }>
+    | undefined;
   if (datasetId !== undefined) {
     const resolved = resolveDataset === undefined ? 'unavailable' : resolveDataset(datasetId);
     if (resolved === 'unavailable') {
@@ -214,6 +221,16 @@ export async function handleCanvasPublishRows(
       );
     }
     rows = resolved.rows.map((r) => ({ ...r }));
+    // The dataset's own column schema travels with the rows. Without it the
+    // composer maps cells by the SKELETON's field keys, which are the agent's
+    // naming — `invoice_number` where the source path is Odoo's `name` — and
+    // every mismatched column renders blank. The paths here are authoritative
+    // because they are the keys the rows are actually built on.
+    datasetColumns = resolved.columns.map((c) => ({
+      path: c.path,
+      type: c.type,
+      ...(c.classification ? { classification: c.classification } : {}),
+    }));
     if (rows.length > MAX_DATASET_PUBLISH_ROWS) {
       truncatedFrom = rows.length;
       rows = rows.slice(0, MAX_DATASET_PUBLISH_ROWS);
@@ -276,6 +293,7 @@ export async function handleCanvasPublishRows(
         // A fields publish targets a scalar/KPI container; omit `rows` so the
         // synthesis layer routes it through the fields branch, not the table one.
         ...(hasMappableFields ? { fields } : { rows }),
+        ...(datasetColumns ? { datasetColumns } : {}),
         ...(source ? { source } : {}),
         ...(actions.length > 0 ? { actions } : {}),
         ...(chartType ? { chartType } : {}),
