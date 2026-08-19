@@ -309,7 +309,11 @@ export {
 // already means "unknown" in `ChatParticipantsProvider`'s own contract.
 export {
   audienceFloor,
+  UNRESTRICTED_HOST_CAPABILITY,
+  floorAllowsHost,
+  floorDeniesHost,
   floorPermits,
+  hostCapability,
   resolveAudience,
   type Audience,
   type AudienceFloor,

@@ -69,6 +69,191 @@ export function toolCapability(name: string): Capability {
 }
 
 /**
+ * The capability recalling prior context into the prompt requires.
+ *
+ * One flat token rather than a per-item permission, and that is a measured
+ * limitation rather than a shortcut — see {@link guardContextRecall}.
+ */
+export const MEMORY_RECALL_CAPABILITY: Capability = 'memory:recall';
+
+/**
+ * The capability resolving a stored attachment handle requires.
+ *
+ * Separate from `tool:read_attachment` on purpose. That one asks "may this room
+ * invoke the read tool"; this one asks "may this room redeem a storage handle",
+ * and the handle is redeemable from paths that are not tool calls at all — see
+ * {@link guardAttachmentRead}.
+ */
+export const ATTACHMENT_READ_CAPABILITY: Capability = 'attachment:read';
+
+/**
+ * #575 — the third guard: file / credential handle resolution.
+ *
+ * ## Why this is not already covered by the egress guard
+ *
+ * `read_attachment` is a tool, so it passes `dispatchTool` and Guard 1 does
+ * bound it. But that is not the only way a handle gets redeemed: the
+ * orchestrator's own `ingestAttachments` resolves storage keys straight off the
+ * inbound turn, with no tool call in sight. Guarding only the tool would leave
+ * the path a caller actually controls wide open.
+ *
+ * ## Why the check rides with the handle rather than sitting at call sites
+ *
+ * Spec §5.2 says the check "must ride with" the handle, because a handle
+ * outlives the turn that minted it. A storage key issued in a private chat is
+ * just a string, and a string can be pasted into a group chat. Adding a call to
+ * every resolution site would work exactly until somebody adds the next site
+ * and forgets — so the enforcement lives in a wrapper around `AttachmentReader`
+ * itself (`attachmentReaderFactory.ts`). Every consumer, present and future, is
+ * covered by construction.
+ *
+ * ## What this function does NOT do — and what now does it
+ *
+ * It checks the floor **at redemption**: may this room redeem a handle at all.
+ * That leaves a handle minted in a narrow room redeemable by any room that
+ * happens to hold the capability, because a storage key is just a string.
+ *
+ * That second half is no longer open, but it is deliberately NOT here:
+ * `attachmentBinding.ts` pins each key to the `ScopeId` it was first resolved
+ * in, and the reader wrapper enforces both checks in order. Two separate
+ * questions — *may this room read attachments* and *was this handle minted
+ * here* — kept in two places, because collapsing them would make a capability
+ * answer look like an identity answer.
+ *
+ * The residual gap, stated rather than assumed closed: a handle first resolved
+ * from a **non-addressable** scope (`'http-default'`, `teams-unknown`, a system
+ * scope) is not bound at all, because those strings identify no room. See
+ * `attachmentBinding.ts` for why approximating there would be worse than
+ * standing down.
+ */
+export async function guardAttachmentRead(): Promise<string | undefined> {
+  const provider = turnContext.current()?.audienceFloor;
+  if (!provider) return undefined;
+
+  let floor: AudienceFloor;
+  try {
+    floor = await provider();
+  } catch (err) {
+    return `audience unresolvable (${err instanceof Error ? err.message : String(err)})`;
+  }
+
+  if (floorPermits(floor, ATTACHMENT_READ_CAPABILITY)) return undefined;
+
+  return floor.outcome === 'closed'
+    ? floor.reason
+    : 'not every participant in this conversation may read stored attachments';
+}
+
+/**
+ * #575 — the second guard: context / memory recall.
+ *
+ * ## Why this one SNAPSHOTS while egress re-computes
+ *
+ * Decision **D4** splits by reversibility. Once recalled context has been
+ * rendered into the prompt it cannot be un-sent, so re-filtering it later in
+ * the turn is theatre. This guard therefore evaluates the floor **once**, at
+ * the moment of recall, and that answer stands for the assembled context. The
+ * egress guard does the opposite because an unfired tool call can still be
+ * refused.
+ *
+ * ## Why it is one gate and not a per-item, per-recipient filter
+ *
+ * Spec §5.2 asks for "per retrieval, per recipient", and that is the right
+ * target. It is not what this wires, because two of its preconditions do not
+ * exist in the tree today, and pretending otherwise would ship a filter that
+ * only looks like one:
+ *
+ *  1. **There is no per-recipient render.** Context is assembled once per turn
+ *     into a single prompt string; every participant sees the same model reply
+ *     derived from it. Until output is rendered per person, "the context for
+ *     Alice" has nowhere to go.
+ *  2. **Recalled items carry no capability labels.** The retriever returns
+ *     turns and memories from the knowledge graph with scores and scopes, not
+ *     entitlements. There is nothing per item to check against, so a per-item
+ *     filter would have to invent a labelling scheme — policy, and not this
+ *     layer's to invent.
+ *
+ * What IS enforceable today is the honest reduction of the same rule: in a
+ * shared room the recalled context reaches everyone present, so the room may
+ * only recall what **everyone** present may read. That is exactly the
+ * intersection, applied to one capability.
+ *
+ * ## A denial here is a skip, not an error
+ *
+ * Unlike a refused tool call, a refused recall has a natural degraded mode: the
+ * turn proceeds without prior context, which is precisely what already happens
+ * when no retriever is configured. So this returns a *reason to log*, and the
+ * caller takes its existing "skip recall" path rather than surfacing anything
+ * to the model. Turning a missing memory into an error would make a policy
+ * decision look like a fault.
+ *
+ * Returns `undefined` when recall may proceed — including when no audience
+ * provider is installed, for the same "not enforced ≠ closed" reason spelled
+ * out at the top of this file.
+ */
+export async function guardContextRecall(): Promise<string | undefined> {
+  const provider = turnContext.current()?.audienceFloor;
+  if (!provider) return undefined;
+
+  let floor: AudienceFloor;
+  try {
+    floor = await provider();
+  } catch (err) {
+    return `audience unresolvable (${err instanceof Error ? err.message : String(err)})`;
+  }
+
+  if (floorPermits(floor, MEMORY_RECALL_CAPABILITY)) return undefined;
+
+  return floor.outcome === 'closed'
+    ? floor.reason
+    : 'not every participant in this conversation may read recalled context';
+}
+
+/**
+ * The capability recalling from OTHER conversations requires.
+ *
+ * Separate from {@link MEMORY_RECALL_CAPABILITY}, because the two questions are
+ * not the same one. Recall is ACL-gated by the RECALLING user, so a hit from
+ * their other conversations lands in the single prompt everyone's answer is
+ * derived from — the room learns something only one participant was entitled
+ * to, and never asked for.
+ *
+ * Splitting it turns the previous all-or-nothing into a narrowing: a room that
+ * holds `memory:recall` but not this one still recalls its OWN history, and
+ * only cross-session hits are dropped. #732 named the missing granularity as a
+ * limitation; this is the part of it that today's data actually supports,
+ * because recall hits carry a `scope` even though they carry no entitlement
+ * labels.
+ */
+export const CROSS_SCOPE_RECALL_CAPABILITY: Capability = 'memory:recall:cross_scope';
+
+/**
+ * Whether recall must be restricted to the current conversation.
+ *
+ * Returns `false` — unrestricted — when no provider is installed, the same
+ * "not enforced ≠ closed" rule as every other guard here. A `closed` floor is
+ * not answered here at all: {@link guardContextRecall} has already refused the
+ * whole recall by then, and answering "restrict" would suggest something still
+ * gets through.
+ */
+export async function crossScopeRecallRefused(): Promise<boolean> {
+  const provider = turnContext.current()?.audienceFloor;
+  if (!provider) return false;
+
+  let floor: AudienceFloor;
+  try {
+    floor = await provider();
+  } catch {
+    // An unresolvable audience restricts. The turn is not aborted — the
+    // recall simply stays inside the room, which is the safe half of what
+    // `guardContextRecall` would do with the same failure.
+    return true;
+  }
+
+  return !floorPermits(floor, CROSS_SCOPE_RECALL_CAPABILITY);
+}
+
+/**
  * Check whether the current audience permits dispatching `name`.
  *
  * Returns `undefined` when the call may proceed — including when no provider is

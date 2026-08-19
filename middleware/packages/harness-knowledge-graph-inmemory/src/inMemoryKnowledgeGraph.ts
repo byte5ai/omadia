@@ -1631,10 +1631,18 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       // Mirror neon's `COALESCE(visibility, 'team')`: an MK with no explicit
       // visibility is team-visible by default; `private` is never admitted
       // by the team branch.
+      // sharedOnly implies the team branch — see the contract: asking for
+      // shared rows with the shared branch off would return only the viewer's
+      // OWN shared rows.
       const teamMatch =
-        opts.teamVisibility === true &&
+        (opts.teamVisibility === true || opts.sharedOnly === true) &&
         ['team', 'public'].includes(node.visibility ?? 'team');
-      if (!ownerMatch && !teamMatch) continue;
+      // #575 sharedOnly: narrowed as its own gate rather than by editing the
+      // branches, so an owner-owned row that IS team/public still qualifies
+      // while an owner-owned private one cannot slip through the owner branch.
+      const sharedOk =
+        opts.sharedOnly !== true || ['team', 'public'].includes(node.visibility ?? 'team');
+      if ((!ownerMatch && !teamMatch) || !sharedOk) continue;
       const vector = this.embeddings.get(node.id);
       if (!vector) continue;
       const sim = cosine(opts.queryEmbedding, vector);
@@ -1680,9 +1688,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         owners.includes(opts.viewerOmadiaUserId) && agentMatch;
       // Excerpts inherit the parent MK's ACL + visibility.
       const teamMatch =
-        opts.teamVisibility === true &&
+        (opts.teamVisibility === true || opts.sharedOnly === true) &&
         ['team', 'public'].includes(parent.visibility ?? 'team');
-      if (!ownerMatch && !teamMatch) continue;
+      // #575 sharedOnly: the excerpt inherits its parent's tier, so the
+      // narrowing runs against the PARENT's visibility.
+      const sharedOk =
+        opts.sharedOnly !== true || ['team', 'public'].includes(parent.visibility ?? 'team');
+      if ((!ownerMatch && !teamMatch) || !sharedOk) continue;
       const sim = cosine(opts.queryEmbedding, vector);
       if (!Number.isFinite(sim) || sim < minSimilarity) continue;
       hits.push({

@@ -13,15 +13,25 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  ATTACHMENT_READ_CAPABILITY,
+  MEMORY_RECALL_CAPABILITY,
+  guardAttachmentRead,
+  guardContextRecall,
   guardToolEgress,
   toolCapability,
 } from '../packages/harness-orchestrator/src/audienceFloorGuard.js';
+import { audienceGuardedAttachmentReader } from '../packages/harness-orchestrator/src/attachmentReaderFactory.js';
 import { turnContext } from '../packages/harness-orchestrator/src/turnContext.js';
 import type { AudienceFloor } from '../packages/harness-channel-sdk/src/audienceFloor.js';
 
+// `denied` is required on an open floor: a consumer with its own allow-list to
+// narrow must be able to tell "explicitly forbidden" from "never granted", and
+// an optional field would collapse the two. These cases are about the
+// capability set, so they carry no prohibitions.
 const open = (...caps: string[]): AudienceFloor => ({
   outcome: 'open',
   capabilities: new Set(caps),
+  denied: new Set<string>(),
 });
 const closed = (reason: string): AudienceFloor => ({ outcome: 'closed', reason });
 
@@ -115,6 +125,150 @@ describe('capability naming', () => {
       () => guardToolEgress('write_file'),
     );
     assert.ok(refusal);
+  });
+});
+
+// ─── guard 2: context / memory recall ──────────────────────────────────────
+
+describe('the context guard', () => {
+  it('an unconfigured deployment recalls exactly as before', async () => {
+    // Same load-bearing property as the egress guard: "not enforced" is not
+    // "closed". If this fails, every deployment silently loses its memory.
+    assert.equal(await withFloor(undefined, () => guardContextRecall()), undefined);
+  });
+
+  it('permits recall when the whole room may read it', async () => {
+    const refusal = await withFloor(
+      async () => open(MEMORY_RECALL_CAPABILITY),
+      () => guardContextRecall(),
+    );
+    assert.equal(refusal, undefined);
+  });
+
+  it('refuses recall when someone present may not read it', async () => {
+    // A shared room renders ONE prompt that everyone's reply derives from, so
+    // recalled context reaches everyone. The room may only recall what
+    // everyone may read.
+    const refusal = await withFloor(async () => open('tool:t'), () => guardContextRecall());
+    assert.match(refusal ?? '', /not every participant/);
+  });
+
+  it('a closed floor blocks recall and passes its reason through', async () => {
+    const refusal = await withFloor(
+      async () => closed('audience unknown (no_provider)'),
+      () => guardContextRecall(),
+    );
+    assert.match(refusal ?? '', /no_provider/);
+  });
+
+  it('a throwing provider blocks recall rather than allowing it', async () => {
+    const refusal = await withFloor(
+      async () => {
+        throw new Error('roster exploded');
+      },
+      () => guardContextRecall(),
+    );
+    assert.match(refusal ?? '', /roster exploded/);
+  });
+
+  it('a reason to log, not an Error string for the model', async () => {
+    // Unlike a refused tool call, a refused recall has a natural degraded
+    // mode — the turn proceeds without prior context. Dressing that up as an
+    // error would make a policy decision look like a fault.
+    const refusal = await withFloor(async () => closed('nope'), () => guardContextRecall());
+    assert.ok(refusal);
+    assert.doesNotMatch(refusal ?? '', /^Error: /);
+  });
+
+  it('the tool capability does NOT grant recall, and vice versa', async () => {
+    // Two distinct capabilities: being allowed to run a tool says nothing
+    // about being allowed to read the room's history.
+    assert.ok(await withFloor(async () => open(toolCapability('t')), () => guardContextRecall()));
+    assert.ok(await withFloor(async () => open(MEMORY_RECALL_CAPABILITY), () => guardToolEgress('t')));
+  });
+});
+
+// ─── guard 3: file / credential handle resolution ──────────────────────────
+
+describe('the handle guard', () => {
+  it('an unconfigured deployment resolves handles exactly as before', async () => {
+    assert.equal(await withFloor(undefined, () => guardAttachmentRead()), undefined);
+  });
+
+  it('permits redemption when the whole room may read stored attachments', async () => {
+    assert.equal(
+      await withFloor(async () => open(ATTACHMENT_READ_CAPABILITY), () => guardAttachmentRead()),
+      undefined,
+    );
+  });
+
+  it('refuses redemption when someone present may not', async () => {
+    const refusal = await withFloor(async () => open('tool:t'), () => guardAttachmentRead());
+    assert.match(refusal ?? '', /not every participant/);
+  });
+
+  it('the read-attachment TOOL capability does not grant handle redemption', async () => {
+    // Being allowed to invoke the tool is a different question from being
+    // allowed to redeem a storage handle — the handle is redeemable from paths
+    // that are not tool calls at all.
+    const refusal = await withFloor(
+      async () => open(toolCapability('read_attachment')),
+      () => guardAttachmentRead(),
+    );
+    assert.ok(refusal);
+  });
+});
+
+describe('the check rides with the handle, not with the call site', () => {
+  const inner = {
+    readByStorageKey: async () => ({ bytes: Buffer.from('secret'), contentType: 'text/plain' }),
+    readByUrl: async () => ({ bytes: Buffer.from('secret'), contentType: 'text/plain' }),
+  };
+
+  it('a wrapped reader serves bytes when the floor permits', async () => {
+    const reader = audienceGuardedAttachmentReader(inner);
+    const got = await withFloor(
+      async () => open(ATTACHMENT_READ_CAPABILITY),
+      () => reader.readByStorageKey('k'),
+    );
+    assert.equal(got?.bytes.toString(), 'secret');
+  });
+
+  it('BOTH resolution methods are guarded, not just the storage-key one', async () => {
+    // `ingestAttachments` prefers `readByStorageKey` but falls back to
+    // `readByUrl`; guarding only the first would leave the fallback open.
+    const reader = audienceGuardedAttachmentReader(inner);
+    await withFloor(async () => closed('nope'), async () => {
+      assert.equal(await reader.readByStorageKey('k'), undefined);
+      assert.equal(await reader.readByUrl('https://x/y'), undefined);
+    });
+  });
+
+  it('a refusal is indistinguishable from "unknown key" TO THE CALLER', async () => {
+    // Deliberate: confirming the key exists but is off-limits would leak the
+    // document's existence. The reason goes to the operator log instead.
+    const reader = audienceGuardedAttachmentReader(inner);
+    const got = await withFloor(async () => closed('nope'), () => reader.readByStorageKey('k'));
+    assert.equal(got, undefined);
+  });
+
+  it('the inner reader is never even reached on a refusal', async () => {
+    // The bytes must not be fetched and then discarded — that would still hit
+    // the store, and a store hit is itself observable.
+    let touched = false;
+    const spy = {
+      readByStorageKey: async () => {
+        touched = true;
+        return undefined;
+      },
+      readByUrl: async () => {
+        touched = true;
+        return undefined;
+      },
+    };
+    const reader = audienceGuardedAttachmentReader(spy);
+    await withFloor(async () => closed('nope'), () => reader.readByStorageKey('k'));
+    assert.equal(touched, false);
   });
 });
 

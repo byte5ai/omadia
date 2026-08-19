@@ -94,6 +94,15 @@ export type AudienceMember =
       readonly principal: Principal;
       /** What this principal may do. Empty is a real answer: they may do nothing. */
       readonly capabilities: ReadonlySet<Capability>;
+      /**
+       * What this principal is explicitly FORBIDDEN, whatever their grants say.
+       *
+       * Required rather than optional, deliberately. An optional field that a
+       * caller forgets to thread produces an empty denial set — which is the
+       * direction that silently WIDENS the floor. Making it mandatory turns
+       * that omission into a compile error instead of a permission bug.
+       */
+      readonly denials: ReadonlySet<Capability>;
     }
   | {
       readonly kind: 'unresolved';
@@ -125,13 +134,31 @@ export type Audience =
  * #333's role lookups.
  */
 export type AudienceFloor =
-  | { readonly outcome: 'open'; readonly capabilities: ReadonlySet<Capability> }
+  | {
+      readonly outcome: 'open';
+      readonly capabilities: ReadonlySet<Capability>;
+      /**
+       * The union of every explicit prohibition in the room, already subtracted
+       * from `capabilities` above.
+       *
+       * Exposed rather than discarded because "denied" and "never granted" are
+       * indistinguishable once only the difference survives — both simply mean
+       * "absent from `capabilities`". A consumer that has its own allow-list to
+       * narrow (the per-plugin HTTP accessor's outbound hosts, say) must be able
+       * to tell them apart: a capability nobody was granted says nothing about
+       * that list, while a capability somebody explicitly forbade has to be
+       * removed from it.
+       */
+      readonly denied: ReadonlySet<Capability>;
+    }
   | { readonly outcome: 'closed'; readonly reason: string };
 
 /** What #333's join hands back for one participant. */
 export interface ResolvedAudienceMember {
   readonly principal: Principal;
   readonly capabilities: ReadonlySet<Capability>;
+  /** Explicit prohibitions. See {@link AudienceMember} for why it is required. */
+  readonly denials: ReadonlySet<Capability>;
 }
 
 /**
@@ -157,7 +184,12 @@ export async function resolveAudience<TParticipant>(
       try {
         const resolved = await resolve(participant);
         return resolved
-          ? { kind: 'resolved', principal: resolved.principal, capabilities: resolved.capabilities }
+          ? {
+              kind: 'resolved',
+              principal: resolved.principal,
+              capabilities: resolved.capabilities,
+              denials: resolved.denials,
+            }
           : { kind: 'unresolved', reason: 'no principal could be resolved for this participant' };
       } catch (err) {
         return {
@@ -185,8 +217,32 @@ export async function resolveAudience<TParticipant>(
  *     intersecting it would yield "everything", so it is refused explicitly
  *     rather than left to the reduce.
  *
- * Otherwise the floor is the set intersection across resolved members. An empty
- * intersection is `open` with nothing in it — a real answer, not a failure.
+ * Otherwise the floor is the set intersection across resolved members, minus
+ * every explicit denial. An empty result is `open` with nothing in it — a real
+ * answer, not a failure.
+ *
+ * ## Allowances INTERSECT, prohibitions UNION — and the asymmetry is the point
+ *
+ * Spec §5.2 states the rule as "allowlist ∩, denylist ∪". They are not two
+ * spellings of one operation:
+ *
+ *  - An **allowance** is a statement about what a principal MAY do, so a room
+ *    may only do what everyone may do. Intersect.
+ *  - A **prohibition** is a statement about what a principal must NOT be party
+ *    to, and it binds the room even if only one participant carries it. Union.
+ *
+ * Applying intersection to prohibitions would mean a rule only bites when
+ * *everyone* is under it — which inverts what a prohibition is for. Applying
+ * union to allowances would hand the room the most permissive participant's
+ * rights, which is the classic full-permission grant.
+ *
+ * ## A denial beats a grant, rather than merely being absent from one
+ *
+ * Subtracting denials AFTER the intersection is what makes them override roles.
+ * If a prohibition were expressed as "simply do not grant it", then adding any
+ * role that happens to confer the capability would silently lift it — an
+ * operator's explicit "this person must never do X" would be undone by an
+ * unrelated role assignment somewhere else.
  */
 export function audienceFloor(audience: Audience): AudienceFloor {
   if (audience.kind === 'unknown') {
@@ -215,7 +271,20 @@ export function audienceFloor(audience: Audience): AudienceFloor {
     if (capabilities.size === 0) break;
   }
 
-  return { outcome: 'open', capabilities };
+  // Prohibitions are collected across EVERY resolved member, including the ones
+  // whose allowances the intersection has already discarded: a denial is not a
+  // missing grant, it is a veto, and it must be read even from a participant who
+  // was granted nothing.
+  const denied = new Set<Capability>();
+  for (const member of resolved) {
+    for (const capability of member.denials) denied.add(capability);
+  }
+
+  return {
+    outcome: 'open',
+    capabilities: new Set([...capabilities].filter((c) => !denied.has(c))),
+    denied,
+  };
 }
 
 /**
@@ -227,4 +296,73 @@ export function audienceFloor(audience: Audience): AudienceFloor {
  */
 export function floorPermits(floor: AudienceFloor, capability: Capability): boolean {
   return floor.outcome === 'open' && floor.capabilities.has(capability);
+}
+
+/**
+ * The capability token for reaching one outbound host.
+ *
+ * Hosts live in the same flat, opaque token space as everything else the floor
+ * intersects — `net:api.example.com` alongside `tool:send_email`. Giving them a
+ * structured type of their own would put a network model in the layer that is
+ * supposed to know nothing about what a capability means.
+ *
+ * Lower-cased because a hostname is case-insensitive, so `API.example.com` and
+ * `api.example.com` must not be two different prohibitions.
+ */
+export function hostCapability(host: string): Capability {
+  return `net:${host.trim().toLowerCase()}`;
+}
+
+/**
+ * "May reach any host at all."
+ *
+ * The escape hatch that makes the host allow-list usable. Without it an
+ * operator switching the intersection on would have to enumerate, per
+ * principal, every host every installed plugin might legitimately reach — and
+ * anything they missed would break silently at the worst moment.
+ *
+ * It is an ordinary capability, so it INTERSECTS like every other one: the room
+ * is unrestricted only when *everyone present* is. One host-restricted
+ * participant restricts the room, which is the whole point of a floor.
+ */
+export const UNRESTRICTED_HOST_CAPABILITY: Capability = 'net:*';
+
+/**
+ * Whether the room may reach `host`, under the allow-list reading.
+ *
+ * Only consulted by deployments that switched the host allow-list on. The
+ * default reading is {@link floorDeniesHost} — prohibitions only — because
+ * outbound hosts are granted by a plugin's manifest, so intersecting before
+ * positive host grants exist would bound every room to nothing.
+ *
+ * Order matters and is not interchangeable:
+ *
+ *  1. a `closed` floor allows nothing;
+ *  2. an explicit **prohibition wins over everything**, including `net:*` —
+ *     otherwise the unrestricted grant would quietly undo an operator's veto,
+ *     which is the one thing a veto must survive;
+ *  3. `net:*` allows the rest;
+ *  4. otherwise the host must be granted by name.
+ */
+export function floorAllowsHost(floor: AudienceFloor, host: string): boolean {
+  if (floor.outcome === 'closed') return false;
+  const token = hostCapability(host);
+  if (floor.denied.has(token)) return false;
+  if (floor.capabilities.has(UNRESTRICTED_HOST_CAPABILITY)) return true;
+  return floor.capabilities.has(token);
+}
+
+/**
+ * Whether the room explicitly FORBIDS reaching `host`.
+ *
+ * Deliberately not the negation of {@link floorPermits}. A host absent from
+ * `capabilities` merely means nobody granted it through the floor — which says
+ * nothing, because outbound hosts are granted by a plugin's manifest, not by
+ * the grant store. Only an explicit prohibition may narrow that manifest list.
+ *
+ * A `closed` floor denies everything, so it denies every host too.
+ */
+export function floorDeniesHost(floor: AudienceFloor, host: string): boolean {
+  if (floor.outcome === 'closed') return true;
+  return floor.denied.has(hostCapability(host));
 }

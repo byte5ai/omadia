@@ -14,7 +14,7 @@
  * than once in one process.
  */
 
-import type { ChatAgent, DisclosureSeenStore } from '@omadia/channel-sdk';
+import type { ChatAgent, DisclosureSeenStore, GrantStore } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { LlmProvider } from '@omadia/llm-provider';
 import type {
@@ -201,6 +201,18 @@ export interface OrchestratorDeps {
    * `OrchestratorOptions.securityScreener` / `securityAuditSink`.
    */
   readonly securityPosture?: SecurityPostureSetup;
+  /**
+   * #575 — durable capability grants for the audience floor.
+   *
+   * Present ONLY when the operator enabled the floor: the kernel publishes the
+   * `audienceGrants` service behind `AUDIENCE_FLOOR_ENABLED`. Absent ⇒ the
+   * orchestrator installs no audience provider and the three guards
+   * short-circuit, which is the "not enforced ≠ closed" rule they are built on.
+   * Passing a store is therefore the switch, and the reason it is a switch
+   * rather than a default is that the floor fails closed — an empty grant table
+   * bounds every room to nothing.
+   */
+  readonly audienceGrants?: GrantStore;
   /** #133 E0 — side-channel turn-hook runner, fired during each turn. */
   readonly turnHookRegistry?: TurnHookRunner;
   /**
@@ -416,6 +428,8 @@ export function buildOrchestratorForAgent(
     // orchestrator applies the shipping default (`auto`); the screener + sink
     // are always wired (inert unless screening is enabled for the posture).
     ...(deps.securityPosture ? { securityPosture: deps.securityPosture } : {}),
+    // #575 — supplying this is what makes the audience guards non-inert.
+    ...(deps.audienceGrants ? { audienceGrants: deps.audienceGrants } : {}),
     securityScreener,
     securityAuditSink,
     ...(deps.turnHookRegistry
