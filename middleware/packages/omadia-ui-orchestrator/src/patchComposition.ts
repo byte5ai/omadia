@@ -43,7 +43,7 @@ export interface ComposedPatch {
 interface TableNode {
   type: 'table';
   loading?: string;
-  columns?: Array<{ fieldKey: string; label: string }>;
+  columns?: Array<{ fieldKey: string; label: string; privacy?: 'guard-protected' }>;
   rows: Array<{ rowKey: string; cells: Record<string, unknown> }>;
   [key: string]: unknown;
 }
@@ -454,7 +454,36 @@ export function composeStructuredPayloadPatch(opts: {
 
   // Cells are mapped against the SKELETON's own columns — the contract the
   // [canvas-context] handoff asked Tier 3 to fill.
-  const fieldKeys = (table.node.columns ?? []).map((c) => c.fieldKey);
+  //
+  // #326: that contract does NOT hold for a privacy-shield dataset publish.
+  // `resolveDatasetForRender` returns rows "keyed by column path" — the
+  // source's own field names — while the skeleton carries the agent's naming.
+  // Reading `row[fieldKey]` then misses and the cell is silently blanked, so a
+  // masked column renders as if the data did not exist. When the publish
+  // carried the dataset schema, THOSE paths are authoritative.
+  const datasetColumns = readDatasetColumns(opts.payload.data);
+  const skeletonColumns = table.node.columns ?? [];
+  const effectiveColumns = datasetColumns
+    ? datasetColumns.map((c, i) => ({
+        // The path is the row key, so values can never land in the wrong
+        // column — the one property that must not depend on a guess.
+        fieldKey: c.path,
+        // The agent's human label is a display nicety and the ONLY thing
+        // matched positionally. There is no semantic link between an agent
+        // field key and a source path anywhere in the system (checked:
+        // `DataRequirement.fields` carries agent keys only), so this is a
+        // guess — taken only when the two column lists are the same length,
+        // and otherwise declined in favour of the raw path.
+        label:
+          datasetColumns.length === skeletonColumns.length
+            ? (skeletonColumns[i]?.label ?? c.path)
+            : c.path,
+        ...(c.classification === 'sensitive-masked'
+          ? { privacy: 'guard-protected' as const }
+          : {}),
+      }))
+    : skeletonColumns;
+  const fieldKeys = effectiveColumns.map((c) => c.fieldKey);
   if (fieldKeys.length === 0) {
     opts.log?.(`[patch-composition] skip: table ${String(table.node['id'])} has no columns`);
     return null;
@@ -481,6 +510,12 @@ export function composeStructuredPayloadPatch(opts: {
   const patches: TreePatchOp[] = [];
   if (table.node.loading === 'skeleton') {
     patches.push({ op: 'replace', path: `${table.path}/loading`, value: 'none' });
+  }
+  if (datasetColumns) {
+    // The rows are keyed by path, so the client's column list has to be too —
+    // otherwise it would look up cells that are no longer there. This is also
+    // what carries the guard marking to the renderer.
+    patches.push({ op: 'replace', path: `${table.path}/columns`, value: effectiveColumns });
   }
   const replaceRows = opts.refreshContainers?.delete(String(table.node['id'])) === true;
   if (replaceRows) {
@@ -541,4 +576,31 @@ export function composeStructuredPayloadPatch(opts: {
     return null;
   }
   return { patches, nextTree };
+}
+
+/**
+ * #326 — the dataset column schema a privacy-shield publish forwards.
+ *
+ * Read defensively: `PendingStructuredPayload.data` is `unknown` by contract,
+ * and a malformed or absent schema must leave the pre-existing skeleton
+ * mapping untouched rather than produce a half-derived column list.
+ */
+function readDatasetColumns(
+  data: unknown,
+): Array<{ path: string; type: string; classification?: string }> | undefined {
+  if (typeof data !== 'object' || data === null) return undefined;
+  const raw = (data as { datasetColumns?: unknown }).datasetColumns;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const columns: Array<{ path: string; type: string; classification?: string }> = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) return undefined;
+    const c = entry as { path?: unknown; type?: unknown; classification?: unknown };
+    if (typeof c.path !== 'string' || c.path.length === 0) return undefined;
+    columns.push({
+      path: c.path,
+      type: typeof c.type === 'string' ? c.type : 'string',
+      ...(typeof c.classification === 'string' ? { classification: c.classification } : {}),
+    });
+  }
+  return columns;
 }

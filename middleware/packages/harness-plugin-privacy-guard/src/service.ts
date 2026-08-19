@@ -577,7 +577,13 @@ export function createPrivacyGuardService(deps?: {
       );
       return {
         rowCount: dataset.rows.length,
-        columns: dataset.schema.fields.map((f) => ({ path: f.path, type: f.type })),
+        // The classification travels with the column. Dropping it here was why
+        // a renderer had no way to tell a shielded column from an ordinary one.
+        columns: dataset.schema.fields.map((f) => ({
+          path: f.path,
+          type: f.type,
+          classification: f.classification,
+        })),
         rows: dataset.rows as ReadonlyArray<Record<string, unknown>>,
       };
     },
