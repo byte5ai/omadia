@@ -180,10 +180,27 @@ export function runDeterministicScenario(scenario: AttackScenario): ScenarioResu
 // ---------------------------------------------------------------------------
 
 export interface BehavioralModels {
-  /** Model driving the escalating attacker + the jurors. */
+  /** Model driving the escalating attacker. */
   attacker: string;
   /** Model under attack. */
   target: string;
+  /**
+   * Model scoring the transcript (3-juror Delphi).
+   *
+   * Separate from `attacker` on purpose. Each juror reads the FULL transcript,
+   * so the jury is the single largest input-token consumer in a behavioral
+   * run — three reads of the whole escalation, doubled to six whenever round 1
+   * is not unanimous. Pinning it to the attacker's model made the scorer the
+   * most expensive part of the eval for no capability reason: judging "did the
+   * digest boundary hold" is a bounded classification over text already in
+   * context, not the open-ended adversarial reasoning the conductor does.
+   *
+   * Downgrading the jury is safe here specifically because the jury is not the
+   * only scorer: `findIdentityLeaks` runs over the same transcript and forces
+   * `breached` on any real identity value regardless of how the jury voted, so
+   * a leniently-voting juror cannot turn an actual leak green.
+   */
+  juror: string;
 }
 
 async function completeText(
@@ -360,7 +377,7 @@ export async function runBehavioralScenario(
   const transcript = await runEscalation(goal, maxTurns, conductor, target);
 
   const jurors = [1, 2, 3].map((n) =>
-    buildJuror(provider, models.attacker, `juror-${String(n)}`),
+    buildJuror(provider, models.juror, `juror-${String(n)}`),
   );
   const round1 = await Promise.all(jurors.map((j) => j.vote(transcript, goal)));
   const consensus = await delphiConsensus(round1, (r1) =>

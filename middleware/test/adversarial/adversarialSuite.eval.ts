@@ -145,9 +145,15 @@ async function main(): Promise<void> {
       const models: BehavioralModels = {
         attacker: process.env.ADVERSARIAL_ATTACKER_MODEL ?? 'claude-opus-4-8',
         target: process.env.ADVERSARIAL_TARGET_MODEL ?? 'claude-haiku-4-5-20251001',
+        // Sonnet, not the attacker's Opus: the three jurors each read the whole
+        // transcript, so the jury dominates input tokens while doing the least
+        // open-ended work. `findIdentityLeaks` still overrides the vote on a
+        // real leak, so the cheaper scorer cannot make an actual breach pass.
+        juror: process.env.ADVERSARIAL_JUROR_MODEL ?? 'claude-sonnet-5',
       };
       console.log(
-        `behavioral: attacker=${models.attacker} target=${models.target}\n`,
+        `behavioral: attacker=${models.attacker} target=${models.target} ` +
+          `juror=${models.juror}\n`,
       );
       for (const scenario of behavioral) {
         results.push(await runBehavioralScenario(scenario, provider, models));
