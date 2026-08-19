@@ -267,8 +267,25 @@ export interface PrivacyStructuredPayloadRequest {
 export interface PrivacyResolvedDataset {
   /** Number of rows the dataset holds (the postcondition target). */
   readonly rowCount: number;
-  /** Column schema — `path` is the row-object key, `type` the field type. */
-  readonly columns: ReadonlyArray<{ readonly path: string; readonly type: string }>;
+  /**
+   * Column schema — `path` is the row-object key, `type` the field type.
+   *
+   * `classification` says whether the shield considers this column sensitive.
+   * It is what lets a renderer mark a column as guard-protected instead of
+   * showing a bare value with no indication of where it came from; the verdict
+   * exists on the interned dataset either way, and used to be dropped here.
+   *
+   * Optional so an alternative privacy provider stays compilable. **Absent
+   * means unknown, never "safe"** — a consumer must not render a
+   * cleartext-looking column on the strength of a missing field, because the
+   * one thing worse than an unmarked masked value is a value marked safe that
+   * is not.
+   */
+  readonly columns: ReadonlyArray<{
+    readonly path: string;
+    readonly type: string;
+    readonly classification?: 'safe-cleartext' | 'sensitive-masked';
+  }>;
   /** The full real rows, keyed by column `path`. */
   readonly rows: ReadonlyArray<Record<string, unknown>>;
 }
