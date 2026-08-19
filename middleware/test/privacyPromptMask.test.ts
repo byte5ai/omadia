@@ -191,10 +191,11 @@ describe('dedupSpans', () => {
     const text = '2026-07-02';
     const mk = (type: string) => ({ span: { start: 0, end: 10, type, confidence: 1 }, detector: 'c0-regex' });
     // 'date' < 'phone'  and  'amount' < 'phone'  (code-unit order)
-    for (const [lo, hi] of [
+    const pairs: readonly (readonly [lo: string, hi: string])[] = [
       ['date', 'phone'],
       ['amount', 'phone'],
-    ]) {
+    ];
+    for (const [lo, hi] of pairs) {
       for (const order of [
         [mk(hi), mk(lo)],
         [mk(lo), mk(hi)],
