@@ -106,7 +106,7 @@ const DOCUMENTED_EXCEPTIONS = new Map([
   ['chat/page.tsx', 'MOCK_KG_WALK is a dev-only fixture behind ?kgmock=1'],
 ]);
 
-const REASONS = ['translate', 'review', 'spec-keyword', 'api-enum', 'code', 'placeholder', 'brand', 'symbol'];
+const REASONS = ['translate', 'review', 'diagnostic', 'spec-keyword', 'api-enum', 'code', 'placeholder', 'brand', 'symbol'];
 
 /** A token that names something the machine reads, not something a human reads. */
 function isCodeToken(tok) {
@@ -135,6 +135,14 @@ function classify(text) {
 
   // `HOT`, `WARM | COLD`, `PENDING/DONE` — API enum values echoed into a badge.
   if (/^[A-Z][A-Z0-9_]*([\s]*[|/,][\s]*[A-Z][A-Z0-9_]*)*$/.test(t)) return 'api-enum';
+
+  // A version, phase or build stamp: `omadia · v1`, `B.0 Draft-Store`,
+  // `Phase B.5 (Workspace-UI)`, `omadia · v1 · Slice 1.1`. These sit in product
+  // footers and read like prose, but localising them changes an identifier an
+  // operator quotes back in a bug report. Whether they belong in the UI at all
+  // is a product question — the scan's job is only to keep them out of the
+  // translation list.
+  if (/(^|[\s·])(v\d+|[A-Z]\.?\d+(\.\d+)*)([\s·]|$)/.test(t)) return 'diagnostic';
 
   // A format being demonstrated, not a sentence: `https://…`, `{orgId}`,
   // `user@example.com`. Localising these teaches a wrong value.
@@ -202,11 +210,21 @@ export function scanFile(rel) {
       if (USER_FACING_PROPS.has(name)) {
         const value = stringValueOf(node.initializer);
         if (value !== undefined) {
-          // A one-word `placeholder=` is a format demo — `acme`, `api`,
-          // `github_pat_…`. GLOSSARY.md: "a form hint teaches a FORMAT;
-          // localising it teaches a wrong value."
+          // A `placeholder=` is a judgement call by nature, and the first
+          // triage pass proved it: of six hits, five were example VALUES that
+          // must not be translated (`Release sign-off`, `Release approver`,
+          // `id-1, id-2, …`, `email | uri | date-time | uuid`) and one was a
+          // real instruction (`Reason (optional)`). GLOSSARY.md: "a form hint
+          // teaches a FORMAT; localising it teaches a wrong value." Nothing in
+          // the syntax separates the two, so they go to `review` — except the
+          // single-token case, which is unambiguously a format demo.
+          const trimmedValue = value.trim();
           const forced =
-            name === 'placeholder' && !/\s/.test(value.trim()) ? 'placeholder' : undefined;
+            name !== 'placeholder'
+              ? undefined
+              : /\s/.test(trimmedValue)
+                ? 'review'
+                : 'placeholder';
           record(node, value, `prop:${name}`, forced);
         }
       }

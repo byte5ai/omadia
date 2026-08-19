@@ -4243,7 +4243,11 @@
         }
       },
       "openMemory": "zur Memory →",
-      "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner)."
+      "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner).",
+      "memoryA": "Memory A",
+      "memoryB": "Memory B",
+      "status": "Status",
+      "resolution": "Behebung"
     },
     "excerptDetail": {
       "title": "Excerpt-Duplikat auflösen",
@@ -4273,7 +4277,11 @@
       "excerptUnavailable": "Excerpt nicht zugänglich (gelöscht oder kein Owner).",
       "positionLine": "Position {position} · {source}",
       "quotedText": "„{text}“",
-      "parentMemory": "Parent-Memory: {summary}"
+      "parentMemory": "Parent-Memory: {summary}",
+      "excerptA": "Auszug A",
+      "excerptB": "Auszug B",
+      "status": "Status",
+      "resolution": "Behebung"
     }
   },
   "adminInconsistencies": {
@@ -4332,7 +4340,12 @@
         }
       },
       "openMemory": "zur Memory →",
-      "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner)."
+      "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner).",
+      "memoryA": "Memory A",
+      "memoryB": "Memory B",
+      "severity": "Schweregrad",
+      "status": "Status",
+      "resolution": "Behebung"
     }
   },
   "adminKgLifecycle": {
@@ -4394,7 +4407,16 @@
     "newEntryTitle": "Neuer Eintrag",
     "weightIgnoredTitle": "weight ignoriert für block",
     "weightMultiplierTitle": "Score-Multiplikator",
-    "empty": "Keine Einträge für diesen Agent."
+    "empty": "Keine Einträge für diesen Agent.",
+    "title": "Knowledge-Graph-Prioritäten",
+    "colEntryExternalId": "Externe Eintrags-ID",
+    "actionBlock": "blockieren",
+    "actionBoost": "hervorheben",
+    "reasonPlaceholder": "Grund (optional)",
+    "colAction": "Aktion",
+    "colWeight": "Gewicht",
+    "colReason": "Grund",
+    "colUpdated": "Aktualisiert"
   },
   "adminMemoryBackend": {
     "title": "Memory · Speicher-Backend",
@@ -4540,7 +4562,11 @@
         "excerptDuplicate": "Excerpt-Duplikat",
         "planStep": "Plan-Schritt",
         "hasTopicTransitive": "HAS_TOPIC (Excerpt, transitiv)"
-      }
+      },
+      "zoomIn": "Vergrößern",
+      "zoomOut": "Verkleinern",
+      "fit": "Einpassen",
+      "relayout": "Neu anordnen"
     },
     "detailPanel": {
       "manualTitle": "manuell erfasst — Score-Boost ×1.3 im Token-Budget-Assembler",
@@ -4786,7 +4812,11 @@
       "dotDanger": "Fehler",
       "dotInactive": "Inaktiv",
       "keySourceDevFile": "dev-file (nicht für Produktion)",
-      "keySourceDevFileCreated": "dev-file (neu generiert — DEV ONLY)"
+      "keySourceDevFileCreated": "dev-file (neu generiert — DEV ONLY)",
+      "eyebrow": "Verschlüsselter Secret Vault",
+      "heading": "Vault",
+      "bucket": "Bucket",
+      "prefix": "Präfix"
     }
   },
   "help": {
