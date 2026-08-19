@@ -617,16 +617,36 @@ export function decideCommand(policy: CommandPolicy, raw: string): CommandDecisi
 // ---------------------------------------------------------------------------
 
 /**
+ * Deep-freeze a rule list. `Object.freeze` on the array alone is SHALLOW: it
+ * stops `rules[0] = …` but NOT `rules[0].decision = 'allow'`, which would
+ * silently disarm the shipped org floor process-wide for every policy built on
+ * the shared value — the one layer #580 requires to hold in every posture. So
+ * the rule objects and the `longFlags` array a matcher may carry are frozen too.
+ * The `RegExp` itself is deliberately NOT frozen: {@link matcherFires} resets its
+ * `lastIndex` before each test, and that write must not throw.
+ */
+function freezeRules(rules: readonly CommandRule[]): readonly CommandRule[] {
+  for (const rule of rules) {
+    Object.freeze(rule);
+    Object.freeze(rule.match);
+    if (rule.match.kind === 'commandFlag' && rule.match.longFlags) {
+      Object.freeze(rule.match.longFlags);
+    }
+  }
+  return Object.freeze(rules);
+}
+
+/**
  * The org floor omadia ships: the catastrophic shapes qm hard-denies, expressed
- * against the normalized command so quoting cannot launder them. Frozen so no
- * caller can mutate the shared value (same guard as DEFAULT_SECURITY_POSTURE_POLICY).
+ * against the normalized command so quoting cannot launder them. DEEP-frozen so
+ * no caller can mutate the shared value (see {@link freezeRules}).
  *
  * All regexes here are authored in this file — trusted, no `g` flag, no
  * exponential backtracking (the SQL rule is linear; the fork-bomb rule is bounded
  * to at-worst quadratic on crafted input). NO untrusted pattern in this array
  * (see the module header).
  */
-export const DEFAULT_ORG_FLOOR: readonly CommandRule[] = Object.freeze([
+export const DEFAULT_ORG_FLOOR: readonly CommandRule[] = freezeRules([
   {
     id: 'floor.rm-recursive',
     decision: 'deny',

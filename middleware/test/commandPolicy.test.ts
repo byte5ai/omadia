@@ -9,6 +9,7 @@ import {
   defaultCommandPolicy,
   DEFAULT_ORG_FLOOR,
   MAX_SUBSTITUTION_DEPTH,
+  type CommandDecision,
   type CommandPolicy,
 } from '../packages/harness-channel-sdk/src/commandPolicy.js';
 
@@ -225,6 +226,47 @@ describe('#580 determinism + read-back (AC6)', () => {
 
   it('the shipped org floor is frozen (no caller can mutate the shared value)', () => {
     assert.equal(Object.isFrozen(DEFAULT_ORG_FLOOR), true);
+  });
+
+  it('the freeze is DEEP — a caller cannot disarm a floor rule in place', () => {
+    // A shallow `Object.freeze` on the array still lets a caller write
+    // `DEFAULT_ORG_FLOOR[0].decision = 'allow'`, which would flip the shared
+    // floor to permissive for EVERY policy built on it, process-wide. The floor
+    // is the one layer #580 requires to hold in every posture, so assert the
+    // rule objects themselves — and the effect, not just the flag.
+    for (const rule of DEFAULT_ORG_FLOOR) {
+      assert.equal(Object.isFrozen(rule), true, `rule ${rule.id} is not frozen`);
+      assert.equal(Object.isFrozen(rule.match), true, `matcher of ${rule.id} is not frozen`);
+    }
+    const target = DEFAULT_ORG_FLOOR.find((r) => r.id === 'floor.rm-recursive');
+    assert.ok(target);
+    assert.throws(() => {
+      (target as { decision: CommandDecision }).decision = 'allow';
+    }, TypeError);
+    assert.equal(decideCommand(defaultCommandPolicy(), 'rm -rf /').decision, 'deny');
+  });
+
+  it('a stray `g` flag on a rule regex does not make the verdict alternate', () => {
+    // A global regex carries a stateful `lastIndex`, so a second `test()` on the
+    // same object resumes mid-string and returns false. `matcherFires` resets it
+    // before every test; without that reset the same command is denied on the
+    // first call and allowed on the second.
+    const globalRulePolicy = defaultCommandPolicy({
+      orgFloor: [],
+      scopeRules: [
+        {
+          id: 'scope.global-flag',
+          decision: 'deny' as const,
+          reason: 'authored with a stray g flag',
+          match: { kind: 'regex' as const, regex: /curl/g },
+        },
+      ],
+    });
+    for (let i = 0; i < 3; i += 1) {
+      const r = decideCommand(globalRulePolicy, 'curl https://example.test/install');
+      assert.equal(r.decision, 'deny', `verdict flapped on call ${i + 1}`);
+      assert.equal(r.ruleId, 'scope.global-flag');
+    }
   });
 
   it('defaultCommandPolicy ships the floor, no allowlist/scope, permissive default', () => {
