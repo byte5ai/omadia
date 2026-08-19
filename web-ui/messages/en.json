@@ -1373,7 +1373,13 @@
       "factHintTags": "'<palaia-hint>' tags"
     },
     "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
-    "errorCorrelationRef": "Reference for support: {id}"
+    "errorCorrelationRef": "Reference for support: {id}",
+    "routing": {
+      "classifierTooltip": "Triage classifier: {classifier} → {bucket} → {model}",
+      "bucketSimple": "simple",
+      "bucketComplex": "complex",
+      "bucketFallback": "Fallback"
+    }
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -3156,6 +3162,9 @@
       "dontSet": "(leave unset)",
       "noPasswordWarning": "No account password belongs here. This expects a technical key from the provider's console.",
       "patternUnavailable": "This field declares a format check that could not be applied — its value is not validated."
+    },
+    "adminUi": {
+      "iframeTitle": "{plugin} admin UI"
     }
   },
   "adminAuth": {
@@ -4603,7 +4612,8 @@
       "toolsLabel": "tools={count}",
       "iterations": "{count} iter",
       "orchestratorTools": "Orchestrator tools",
-      "toolCalls": "{count, plural, one {# tool call} other {# tool calls}}"
+      "toolCalls": "{count, plural, one {# tool call} other {# tool calls}}",
+      "userTooltip": "User: {user}"
     }
   },
   "memory": {

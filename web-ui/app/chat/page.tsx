@@ -1230,17 +1230,18 @@ function TriageBadge({
     model: string;
   };
 }): React.ReactElement {
+  const t = useTranslations('chat.routing');
   const verdict: Record<typeof routing.bucket, { label: string; cls: string }> = {
     simple: {
-      label: 'einfach',
+      label: t('bucketSimple'),
       cls: 'bg-[color:var(--success)]/10 text-[color:var(--success)] ring-[color:var(--success)]',
     },
     complex: {
-      label: 'komplex',
+      label: t('bucketComplex'),
       cls: 'bg-[color:var(--accent)]/10 text-[color:var(--accent)] ring-[color:var(--accent)]',
     },
     fallback: {
-      label: 'Fallback',
+      label: t('bucketFallback'),
       cls: 'bg-[color:var(--warning)]/10 text-[color:var(--warning)] ring-[color:var(--warning)]',
     },
   };
@@ -1248,7 +1249,11 @@ function TriageBadge({
   return (
     <div
       className="mb-2 inline-flex flex-wrap items-center gap-2 text-[11px] text-[color:var(--fg-muted)]"
-      title={`Triage-Klassifizierer: ${routing.classifierModel} → ${routing.bucket} → ${routing.model}`}
+      title={t('classifierTooltip', {
+        classifier: routing.classifierModel,
+        bucket: routing.bucket,
+        model: routing.model,
+      })}
     >
       <span className="font-medium uppercase tracking-[0.12em]">Triage</span>
       <span className="text-[color:var(--fg-subtle)]">

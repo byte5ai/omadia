@@ -74,6 +74,7 @@
     "adminDuplicates.excerptDetail.status": "loanword",
     "adminInconsistencies.detail.status": "loanword",
     "system.vaultStatus.heading": "brand",
-    "system.vaultStatus.bucket": "loanword"
+    "system.vaultStatus.bucket": "loanword",
+    "chat.routing.bucketFallback": "loanword"
   }
 }
