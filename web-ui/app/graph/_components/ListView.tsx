@@ -67,7 +67,9 @@ function TurnCard({
     .replace('T', ' ')
     .slice(0, 19);
   const user = String(turn.props['userMessage'] ?? '');
-  const tools = turn.props['toolCalls'];
+  // `props` is untyped JSON; coerce once and render only when it really is a
+  // number, rather than stringifying whatever came back.
+  const toolCount = Number(turn.props['toolCalls']);
 
   const toggle = (): void => {
     const next = !open;
@@ -79,7 +81,9 @@ function TurnCard({
     <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4 text-sm shadow-sm">
       <div className="mb-2 flex items-center gap-3 text-[11px] text-[color:var(--fg-muted)]">
         <span className="font-mono">{time}</span>
-        {tools !== undefined && <span>tools={String(tools)}</span>}
+        {Number.isFinite(toolCount) && (
+          <span>{t('toolsLabel', { count: toolCount })}</span>
+        )}
         <Button
           variant="secondary"
           size="sm"
@@ -145,6 +149,7 @@ function RunTracePanel({
   run: RunTraceView;
   onEntityClick: (id: string) => void;
 }): React.ReactElement {
+  const t = useTranslations('graph.listView');
   const status = String(run.run.props['status'] ?? 'unknown');
   const duration = Number(run.run.props['durationMs'] ?? 0);
   const iterations = Number(run.run.props['iterations'] ?? 0);
@@ -156,7 +161,7 @@ function RunTracePanel({
         <StatusPill status={status} />
         <span>{formatMs(duration)}</span>
         <span>·</span>
-        <span>{iterations} iter</span>
+        <span>{t('iterations', { count: iterations })}</span>
         {user && (
           <>
             <span>·</span>
@@ -168,7 +173,7 @@ function RunTracePanel({
       {run.orchestratorToolCalls.length > 0 && (
         <div className="flex flex-col gap-1 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-2">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--fg-subtle)]">
-            Orchestrator-Tools
+            {t('orchestratorTools')}
           </div>
           {run.orchestratorToolCalls.map((tc) => (
             <ToolCallRow
@@ -200,11 +205,12 @@ function RunTracePanel({
               <span className="font-semibold">🤖 {agentName}</span>
               <span className="text-[color:var(--fg-muted)]">{formatMs(invDur)}</span>
               <span className="text-[color:var(--fg-muted)]">·</span>
-              <span className="text-[color:var(--fg-muted)]">{subIter} iter</span>
+              <span className="text-[color:var(--fg-muted)]">
+                {t('iterations', { count: subIter })}
+              </span>
               <span className="text-[color:var(--fg-muted)]">·</span>
               <span className="text-[color:var(--fg-muted)]">
-                {inv.toolCalls.length} tool-call
-                {inv.toolCalls.length === 1 ? '' : 's'}
+                {t('toolCalls', { count: inv.toolCalls.length })}
               </span>
             </div>
             {inv.toolCalls.length > 0 && (
@@ -225,7 +231,7 @@ function RunTracePanel({
       {run.orchestratorToolCalls.length === 0 &&
         run.agentInvocations.length === 0 && (
           <div className="text-[11px] italic text-[color:var(--fg-subtle)]">
-            Run ohne Tool-Calls (reine Textantwort)
+            {t('noToolCalls')}
           </div>
         )}
     </div>
