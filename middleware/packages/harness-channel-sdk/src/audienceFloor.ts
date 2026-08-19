@@ -314,6 +314,45 @@ export function hostCapability(host: string): Capability {
 }
 
 /**
+ * "May reach any host at all."
+ *
+ * The escape hatch that makes the host allow-list usable. Without it an
+ * operator switching the intersection on would have to enumerate, per
+ * principal, every host every installed plugin might legitimately reach — and
+ * anything they missed would break silently at the worst moment.
+ *
+ * It is an ordinary capability, so it INTERSECTS like every other one: the room
+ * is unrestricted only when *everyone present* is. One host-restricted
+ * participant restricts the room, which is the whole point of a floor.
+ */
+export const UNRESTRICTED_HOST_CAPABILITY: Capability = 'net:*';
+
+/**
+ * Whether the room may reach `host`, under the allow-list reading.
+ *
+ * Only consulted by deployments that switched the host allow-list on. The
+ * default reading is {@link floorDeniesHost} — prohibitions only — because
+ * outbound hosts are granted by a plugin's manifest, so intersecting before
+ * positive host grants exist would bound every room to nothing.
+ *
+ * Order matters and is not interchangeable:
+ *
+ *  1. a `closed` floor allows nothing;
+ *  2. an explicit **prohibition wins over everything**, including `net:*` —
+ *     otherwise the unrestricted grant would quietly undo an operator's veto,
+ *     which is the one thing a veto must survive;
+ *  3. `net:*` allows the rest;
+ *  4. otherwise the host must be granted by name.
+ */
+export function floorAllowsHost(floor: AudienceFloor, host: string): boolean {
+  if (floor.outcome === 'closed') return false;
+  const token = hostCapability(host);
+  if (floor.denied.has(token)) return false;
+  if (floor.capabilities.has(UNRESTRICTED_HOST_CAPABILITY)) return true;
+  return floor.capabilities.has(token);
+}
+
+/**
  * Whether the room explicitly FORBIDS reaching `host`.
  *
  * Deliberately not the negation of {@link floorPermits}. A host absent from
