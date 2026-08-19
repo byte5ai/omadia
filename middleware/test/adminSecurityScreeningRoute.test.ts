@@ -37,7 +37,9 @@ before(async () => {
   await new Promise<void>((resolve) => {
     // Bind on loopback explicitly: a wildcard listen(0) plus a 127.0.0.1 dial
     // has produced cross-process port collisions in this suite before.
-    server = app.listen(0, '127.0.0.1', resolve);
+    server = app.listen(0, '127.0.0.1', () => {
+      resolve();
+    });
   });
   base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
 });
