@@ -534,6 +534,18 @@ export {
 export type { AttachmentReader } from './tools/readAttachmentTool.js';
 export { createAttachmentReader } from './attachmentReaderFactory.js';
 export type { AttachmentByteStore } from './attachmentReaderFactory.js';
+// #575 — the handle→room binding contract. Exported so the kernel can supply a
+// Postgres implementation; the enforcement itself stays inside the reader
+// wrapper, where every resolution path is covered by construction.
+export {
+  bindingForRawScope,
+  bindingForScope,
+  bindingsEqual,
+} from './attachmentBinding.js';
+export type {
+  AttachmentBindingStore,
+  AttachmentScopeBinding,
+} from './attachmentBinding.js';
 export {
   QUERY_DATASET_TOOL_NAME,
   QueryDatasetTool,

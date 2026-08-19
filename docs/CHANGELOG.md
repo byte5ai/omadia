@@ -18,6 +18,393 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — a command policy that reads what a command actually does
+
+- **Shell-normalizing command policy (#580).** Command gating is not
+  regex-on-the-raw-string: `r""m -rf /`, `rm${IFS}-rf${IFS}/`, `$'\x72\x6d' -rf /`
+  and `$(printf rm) -rf /` are the same command wearing four disguises, and a
+  naive `includes('rm -rf')` misses every one. The new primitive **normalizes
+  first** — unwraps quoting, decodes ANSI-C `$'…'`, collapses `${IFS}` to a field
+  split, recurses into `$(…)` and backticks — then tokenizes, and only then runs
+  the rule cascade (org floor → org allowlist → scope rules → default).
+- **The org floor holds in every posture.** Recursive `rm`, `git push --force`,
+  destructive SQL, fork bombs and pipe-to-shell are denied with no caller flag
+  that turns them off — a `dangerous` posture is not an exemption. The shipped
+  floor is **deep-frozen**, so no caller can flip a rule from `deny` to `allow`
+  on the shared value.
+- **A command that could not be fully read is refused, not cleared.** When
+  substitution nesting passes the depth cap the normalizer reports `truncated`;
+  the enforcement seam treats that as suspicious rather than clean, because a
+  floored command could be hiding below the cap (`$($($(…rm -rf…)))`).
+- **This is a speed bump, not a sandbox boundary** — the framing is borrowed
+  from qm's own SECURITY.md, and it is the honest one. Unresolved variables,
+  `eval` of a computed string and exotic here-docs are documented blind spots;
+  the durable sandbox is the real containment.
+- The enforcement seam is **honest-inert**: omadia ships no shell-execute tool
+  yet, and with no policy provider installed the guard is a no-op. Nothing
+  changes for any existing turn.
+
+### Changed — a restricted room keeps the curated knowledge it is entitled to
+
+- **`sharedOnly` recall (#575).** Narrowing a room to its own conversation used
+  to drop curated memory entirely along with the other cross-session legs. But
+  curated memory is **tiered**: `team` / `public` knowledge is shared by
+  construction, so a restricted room may have it — only rows the recalling user
+  privately owns are off-limits.
+- **`sharedOnly` is not the opposite of `teamVisibility`.** The latter *widens*
+  the ACL (owner rows plus shared ones); this *narrows* it to the shared tier
+  alone. They answer different questions, and the audience floor needs the
+  second one: "what may **everyone present** see?"
+- `sharedOnly` **implies** the shared branch in every implementation — asking
+  for shared rows while that branch is off would silently return only the
+  viewer's own shared rows, a misconfiguration with no legitimate use.
+
+### Fixed — shielded result tables no longer render blank columns
+
+- **Masked columns came out empty on the canvas (#326).** A privacy-shield
+  dataset resolves to rows *keyed by the source's column paths*, but the canvas
+  composer looked cells up under the **agent's** field keys. Where the agent
+  called a column `invoice_number` and Odoo's path was `name`, the lookup missed
+  and the cell was silently blanked — so an invoice table rendered without
+  invoice numbers or customers.
+- Columns that happened to reuse the real field name filled correctly, which is
+  why this looked like a rendering glitch rather than a mapping fault.
+- **Fixed by deriving the table's columns from the resolved dataset**, so values
+  resolve by path. Shielded columns now also carry
+  `privacy: "guard-protected"` — a marking the canvas protocol already defined
+  and the `v4_render_answer` path already emitted; only this path never did.
+- **Labels are matched positionally**, and only when the agent's and the
+  dataset's column lists are the same length; otherwise the raw path is shown.
+  No field-key↔path mapping exists anywhere in the system, so the alternative
+  would be a header that confidently names the wrong column.
+
+### Changed — a restricted room narrows its recall instead of losing it
+
+- **`memory:recall:cross_scope` (#575).** Recall used to be all-or-nothing: a
+  room that could not satisfy `memory:recall` got no prior context at all. A
+  room can now hold `memory:recall` without the new capability — it recalls its
+  **own** history and drops hits from other conversations.
+- **Why it matters:** recall is ACL-gated by the *recalling* user, so in a
+  shared room a hit from that person's other chats lands in the single prompt
+  everyone's answer is derived from. Only one participant was entitled to it.
+- **The cross-session legs are skipped too** — plans, processes and curated
+  insights bypass the candidate pool and render their own blocks, so filtering
+  candidates alone would have looked thorough while letting those through.
+- Dropped hits are recorded as exclusions with reason `audience-scope`, so a
+  thin context block is explainable rather than mysterious.
+
+### Added — outbound hosts can be read as an allow-list, not just prohibitions
+
+- **`AUDIENCE_HOST_ALLOWLIST_ENABLED` (default off, #575).** With it, a host must
+  also be granted through the audience floor — `net:<host>` per host, or `net:*`
+  for unrestricted — and the grants intersect across everyone present. This is
+  the "allowlist = intersection of allowed hosts" half of the issue.
+- **Off by default because switching it on is consequential**, not out of
+  caution: outbound hosts are granted by a plugin's manifest, so a room whose
+  participants hold no host grants reaches nothing at all. Seed grants first.
+- **A prohibition beats `net:*`.** The unrestricted grant is a convenience for
+  operators who should not have to enumerate hosts; if it also overrode an
+  explicit veto, the veto would be worthless exactly where it matters, since
+  `net:*` is what a broad role is most likely to carry.
+- **`net:*` intersects like any other capability** — the room is unrestricted
+  only when *everyone* present is. One host-restricted participant restricts the
+  room.
+
+### Added — a room can forbid an outbound host
+
+- **Host-level egress (#575).** A `net:<host>` prohibition now narrows a
+  plugin's manifest outbound allow-list for the duration of a turn, enforced in
+  `ctx.http` — the accessor that already carries the manifest allow-list, the
+  SSRF guard and the rate limiter.
+- **It binds `public-web` audit mode too**, so a `web_scanner` plugin is not a
+  way around a host an operator forbade, and it is checked *before* the rate
+  limiter so a refused call costs the plugin nothing.
+- **Prohibitions only — the allow-side intersection is deliberately not
+  shipped.** Outbound hosts are granted by the plugin manifest, not by the grant
+  store, so intersecting would reduce every room's effective allow-list to the
+  empty set the moment the floor is switched on. A prohibition can only ever
+  narrow, and only where an operator wrote one.
+- `AudienceFloor` now exposes the union of prohibitions alongside the permitted
+  set: with only the difference, "explicitly forbidden" and "never granted" are
+  indistinguishable, and a consumer with its own allow-list has to tell them
+  apart.
+
+### Added — one participant's prohibition binds the whole room
+
+- **The audience floor could express "may" but not "must not" (#575).** It
+  intersected allowances, which is half of what spec §5.2 asks for
+  ("allowlist ∩, denylist ∪"). There was no way to say *this person must never
+  do X* at all.
+- **New:** explicit denials for a principal or a role (migration
+  `0037_audience_denials.sql`), with endpoints under
+  `/api/v1/admin/audience-grants/{direct,roles}/deny`.
+- **Allowances intersect, prohibitions union — deliberately asymmetric.** An
+  allowance says what someone *may* do, so the room may do what everyone may;
+  a prohibition binds the room even when only one participant carries it.
+  Applying intersection to prohibitions would mean a rule only bites when
+  everybody is under it.
+- **A denial overrides a grant**, rather than being modelled as "simply do not
+  grant it" — otherwise any role that happens to confer the capability would
+  silently lift an operator's explicit prohibition.
+
+### Added — an attachment handle only redeems in the room that minted it
+
+- **A storage key was just a string (#575).** The handle guard checked the floor
+  at *redemption* — may this room read attachments — but not at *minting*. So a
+  key issued in a private chat stayed redeemable in any room that happened to
+  hold `attachment:read`, which is what "a string can be pasted into a group
+  chat" means in practice.
+- **New:** each key is pinned on first sighting to the `ScopeId` it was resolved
+  in (migration `0036_attachment_scope_bindings.sql`), and every later
+  resolution must come from the same room.
+- **The binding rides on the reader, not on the call sites** — a storage key
+  outlives its turn, so a check at one resolution site holds only until somebody
+  adds the next one.
+- **Non-addressable scopes are deliberately not bound.** `'http-default'` is
+  shared by every unscoped HTTP caller (the #445 cross-user hole) and
+  `teams-unknown` by every Teams activity without a conversation id. Binding to
+  one of those would declare all of them the same room — enforcement in
+  appearance, universal access in fact.
+- Enabled by the same `AUDIENCE_FLOOR_ENABLED` flag; without it the check stands
+  down and the reader behaves exactly as before.
+
+### Added — audience-floor grants survive a restart, and an operator can see them
+
+- **The audience floor had no durable store (#575).** `InMemoryGrantStore` was
+  the only implementation, so a deployment that switched the floor on lost every
+  grant on restart. Because the floor fails closed, that did not degrade the
+  feature — an empty grant table means "nobody may do anything", so a restart
+  shut every room until someone re-seeded by hand.
+- **New:** `AUDIENCE_FLOOR_ENABLED` (default off) plus Postgres-backed grants
+  (migration `0035_audience_grants.sql`) and an operator surface at
+  `/api/v1/admin/audience-grants` (cookie auth, like the other admin routers).
+- **The admin surface is available whenever Postgres is, independently of
+  enforcement** — grants have to be seedable and reviewable *before* the floor
+  starts enforcing, or the only way to populate the table would be to switch the
+  floor on against an empty one.
+- **Enabling the floor without Postgres refuses to boot.** The alternative is
+  worse than a crash: every lookup would throw, every room would refuse every
+  tool, recall nothing and read no attachment, and the deployment would look
+  configured while behaving as though someone had forbidden everything.
+- Role grants additionally need a role source registered (#333 phase 2); direct
+  grants work on their own, because an empty role registry is a complete answer
+  rather than a partial one.
+
+### Fixed — a withheld answer no longer ships its full reasoning to the channel
+
+- **`NO_REPLY` stopped suppressing delivery the moment the AI-Act Art. 50
+  marking shipped (#661, #662).** `isNoReply` anchors the sentinel at the END of
+  the message; `applyAiDisclosure` folds the marking line into that same `text`.
+  Folded onto a sentinel answer, the anchor stops matching and the agent's
+  entire turn goes out.
+- **Seen in production.** A weekly approval routine emitted the sentinel in all
+  four of its recorded runs and still pushed 9,381 characters of intermediate
+  reasoning into a Teams chat on the first Monday after the deploy. Every
+  routine on every channel that relies on the sentinel was affected, and both
+  sentinel forms were — the mandated bare `NO_REPLY` as much as the lenient
+  trailing one.
+- **Suppression now precedes decoration.** The guard sits in the one shared
+  derivation, so the streaming and non-streaming paths, and every channel that
+  renders `text`, are covered by construction rather than per call site.
+- **A withheld message no longer spends the scope's first-turn marking slot.**
+  The guard short-circuits before `shouldFold`, which marks a scope seen as a
+  side effect; otherwise the next answer that really was delivered would have
+  shipped without its Art. 50 marking.
+### Added — the audience floor can now be switched on (#575)
+
+- **The piece that makes the three guards non-inert.** Until now the floor, the
+  grants and all three guards were merged but unreachable, because nothing
+  installed an audience source. Passing `audienceGrants` to the orchestrator now
+  builds one per turn, and enforcement begins.
+- **It is an explicit opt-in, not a default.** The floor fails closed by design,
+  so a deployment that has not decided who may do what would otherwise find its
+  rooms bounded by an empty grant table. Omit the option and every guard
+  short-circuits exactly as before.
+- **The chain runs end to end**: roster → Principal per participant (via the
+  same knowledge-graph join `resolveTurnOwnerIdentity` uses) → roles → grants →
+  the intersection. Every failure along it was already made explicit by the
+  layer that owns it, so this adds no policy of its own — an unreadable role
+  source, an unplaceable participant or an empty roster each close the room,
+  with a reason.
+- **It deliberately does not cache.** The egress guard re-evaluates per tool
+  call so a mid-turn joiner narrows the floor before the next call fires;
+  memoizing the roster here would hand it the turn's opening answer every time.
+  Caching stays where the `ChatParticipantsProvider` contract already puts it —
+  with the channel adapter, which knows when its roster goes stale.
+- A turn that did not arrive through a channel resolves to no principals rather
+  than defaulting to a plausible-looking channel kind: a wrong kind resolves to
+  a *different* identity cluster, which would hand the room somebody else's
+  grants.
+
+### Added — the audience floor now guards attachment-handle resolution (#575)
+
+- **The floor's third and last guard**, completing the trio the spec names. A
+  storage key is a handle: it is minted in one turn and can be redeemed later,
+  potentially in a different room.
+- **The check rides with the handle, not with the call sites.** Enforcement
+  lives in a wrapper around `AttachmentReader` applied at its single
+  construction site, so `read_attachment`, the orchestrator's own
+  `ingestAttachments` and any future resolution path are covered by
+  construction rather than by remembering to add a call.
+- **This closes a path the egress guard did not.** `read_attachment` is a tool
+  and so already passed the first guard, but `ingestAttachments` resolves
+  storage keys straight off the inbound turn with no tool call involved — the
+  path a caller actually controls.
+- **A refusal is indistinguishable from "unknown key" to the caller, on
+  purpose.** Confirming that a key exists but is off-limits would leak the
+  document's existence to a room that may not know it. The real reason goes to
+  the operator log, where it is actionable and not a side channel. The inner
+  reader is never reached, so a refused redemption does not even touch the
+  store.
+- Redeeming a handle and invoking the read tool are separate capabilities;
+  neither grants the other.
+
+> **Remaining gap, named rather than assumed closed.** This checks the floor at
+> *redemption*, not at *minting*. It stops a room from redeeming a handle that
+> room may not read, but cannot yet stop a handle minted in a narrow room from
+> being redeemed in a wider one that happens to hold the capability. Binding the
+> minting audience to the handle needs the attachment store to persist it, and
+> that store lives in the channel plugins.
+
+### Added — the audience floor now guards context recall (#575)
+
+- **The floor's second guard**, at the single context-assembly call site. In a
+  shared room the recalled context is rendered into one prompt that everyone's
+  reply derives from, so the room may only recall what **everyone present** may
+  read. That is the same intersection, applied to a `memory:recall` capability.
+- **This one snapshots, while egress re-computes** — the two halves of decision
+  D4. Rendered context cannot be un-sent, so re-filtering it later in the turn
+  would be theatre; an unfired tool call can still be refused, so that one
+  recomputes per call.
+- **A denial is a skip, not an error.** The turn proceeds without prior context,
+  exactly as it already does when no retriever is configured, and the reason is
+  logged. Dressing a policy decision up as a fault would be misleading.
+- **Recall and tool use are separate capabilities.** Being allowed to run a tool
+  says nothing about being allowed to read the room's history, and neither
+  grants the other.
+- Same inertness as the egress guard: with no audience source installed, recall
+  behaves exactly as before.
+
+> **Known limitation, stated rather than papered over.** The spec asks for "per
+> retrieval, **per recipient**", and this is not that. Two preconditions do not
+> exist in the tree yet: context is assembled once per turn into a single prompt
+> (there is no per-recipient render for a per-recipient context to go to), and
+> recalled items carry scores and scopes but no capability labels (there is
+> nothing per item to check). A per-item filter would have to invent a labelling
+> scheme, which is policy and not this layer's to invent.
+
+### Added — the audience floor now guards tool egress (#575)
+
+- **The first of the floor's three guards is wired**, at `dispatchTool` — the
+  single choke point every tool call passes through. Placed before the dispatch
+  deadline so a refused call costs nothing, and before the Privacy Shield
+  boundary because the floor decides *whether* an effect happens while Privacy
+  Shield decides what a permitted one may carry.
+- **Evaluated per call, not per turn.** A turn-start snapshot is a TOCTOU hole:
+  somebody can join between the model choosing a tool and the call firing. This
+  is also the half of decision D4 that re-evaluates — rendered context cannot be
+  un-sent, but an unfired call can still be refused.
+- **Inert unless a deployment opts in.** No audience source installed means the
+  floor is *not enforced*, which is emphatically not the same as *closed*. A
+  closed floor denies everything, so reading "nobody configured this" as
+  "closed" would silently disable every tool everywhere. Same shape and same
+  reasoning as `turnContext.privacyHandle`.
+- **But a provider that throws closes rather than opens** — deliberately the
+  opposite of the privacy precedent. Privacy degrading to "unmodified"
+  over-shares detail; this degrading to "allowed" performs an effect nobody
+  authorized.
+- A refusal comes back as a tool result, not an exception, and says that
+  retrying will not help — a policy decision should not read as an outage, and
+  an unexplained denial just produces a retry loop.
+
+### Added — the audience floor and capability grants (#575, phase 2)
+
+- **The first module in this cluster that decides something.** #333 produces
+  Principals and says what they are entitled to; this consumes them and answers
+  *"given who is present, what may happen in this room?"*.
+- **One intersection function, three guards.** The spec is emphatic that the
+  floor is not a single interception point: egress must be checked **per tool
+  call** (a turn-start snapshot is a TOCTOU hole), context **per retrieval, per
+  recipient**, and file/credential handles **at handle resolution**. So the
+  intersection ships as a pure, cheap function the three guards share rather
+  than as a hook.
+- **Everything fails closed, because the intersection of nothing is
+  everything.** An audience that cannot be established permits nothing rather
+  than everything, and that trap is live today: `ChatParticipantsProvider`'s own
+  contract says "returning an empty array is a valid unknown/unavailable state",
+  so an empty roster is `unknown`, never "the room is empty". One participant
+  who cannot be resolved to a Principal closes the whole room — bounding only
+  the people you could identify is not bounding the room.
+- **`closed` and `open`-with-nothing are different answers.** Both permit
+  nothing, but the first is an outage and the second is policy. An operator
+  looking at a blocked workflow needs to tell them apart.
+- **Grants: capabilities union within a principal, intersect across the room.**
+  A principal's capabilities are their direct grants plus the grants of every
+  role they hold; the room's floor is the intersection of everyone's. The two
+  directions live in separate modules because confusing them is a privilege bug
+  either way.
+- **A partial role lookup never becomes a capability set.** #333 phase 2 made
+  "we could not read a role source" distinct from "no roles"; that distinction
+  survives into the floor, which closes with a diagnosable reason instead of
+  quietly applying a stricter policy nobody chose.
+- Capabilities are deliberately **not** roles: intersecting role labels would be
+  wrong in a way that looks right, since two people with different roles may
+  well share a right.
+
+### Fixed — an approval quorum could complete with too few approvals (#333, phase 3)
+
+- **Conductor's role→holder resolution is now pluggable — and two decisions built
+  on it were fail-open.** Holders used to come only from
+  `conductor_role_assignments`, so a *partially known* holder list could not
+  exist. Sourcing holders from an Entra group or an Odoo HR reporting line makes
+  it possible, and it turns out two places treated a shrunken list as the truth:
+  - **`quorum='all'` completed with too few approvals.** Every holder still
+    visible may have answered while the people an unreachable directory knows
+    about were never asked — a four-eyes approval silently becoming two-eyes.
+    The pre-existing guard covered only the *empty* list; the partial one looks
+    legitimate. It now refuses to complete and lets the deadline fallback run.
+  - **A human step could be skipped entirely.** "Role has no holder" triggers
+    the step's fallback by design (FR-024), but an empty list from a failed
+    lookup is *"we could not ask"*, not *"nobody holds this"*. It now parks the
+    await instead, so the real holders still get their chance.
+- **The authorization gate is deliberately left alone.** A shrunken list there
+  only rejects a genuine holder — it fails closed, which is the safe direction.
+- **The local assignment table is registered as an ordinary holder source**
+  rather than special-cased, so there is one merge path and the local store gets
+  the same throw-becomes-`unavailable` handling as any remote directory. A
+  source may not claim the reserved `conductor-local` id — that would substitute
+  its own approver list, so it is a boot-time collision.
+- With no external source configured the behaviour is unchanged: one source,
+  never partial.
+
+### Added — role and attribute sources: what a `Principal` is entitled to (#333, phase 2)
+
+- **A pluggable `RoleSource` registry in the channel SDK.** Phase 1 answered
+  *who* a turn's caller is; this answers *what they are entitled to* — the roles
+  an Entra group membership or an Odoo HR record confers. It still evaluates no
+  permission: the audience floor, grants and per-recipient filtering belong to
+  #575, which consumes these facts.
+- **Absence is a type, not an empty array.** `rolesFor` returns
+  `resolved | unavailable`, and the aggregate carries a `partial` flag. An empty
+  role set and "the directory was unreachable" are different facts, and merging
+  them is an authorization bug in whichever direction the caller guesses: read as
+  "this user has no roles" an outage silently strips every entitlement; read as
+  "unknown, so allow" it is a silent full grant. The same reasoning that made
+  `ScopeId`'s `unscoped` and `Principal`'s `undefined` types rather than values.
+- **The operator gate from `ProviderRegistry` is mirrored, and matters more
+  here.** Sources must be catalogued before they can be activated. An auth
+  provider decides whether you get in; a role source decides what you *are* once
+  inside, so registering one silently is privilege escalation with no login
+  event to notice.
+- **A throwing source degrades to `unavailable` instead of failing the turn** —
+  but it still appears in the per-source breakdown and still sets `partial`, so
+  a directory outage is diagnosable rather than invisible. Sources are queried
+  concurrently; they are independent network reads on a turn's hot path.
+- **A `role:` principal short-circuits without consulting any source.** Asking
+  what roles a role has is a category error — a role is an indirection over
+  holders — and answering it would invite a source to invent role nesting that
+  #575 has not specified.
+
 ### Added — `Principal`, the platform's typed answer to "who is this?" (#333, phase 1)
 
 - **A `Principal` type in the channel SDK**, the same home as `ScopeId` and for

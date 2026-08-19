@@ -210,6 +210,45 @@ describe('buildDatasetFromCsv — privacy scan', () => {
       'expected the phone number to be masked by the baseline detector',
     );
   });
+
+  it('#727 — an ISO-8601 date column is stored as its real dates, not masked to a phone surrogate at rest', async () => {
+    // The reported corruption: a `date`-typed column of ISO dates was run
+    // through the masker, which mis-typed `2026-07-02` as a phone and
+    // persisted `+49 30 55590000` — destroying the column irreversibly (no
+    // map retained) and contradicting the declared `date` type. Date columns
+    // are now excluded from the scan (like number/boolean), so the real,
+    // DISTINCT dates are stored and the schema stays honest.
+    const csv =
+      'customer,order_date\n' +
+      'Meier GmbH,2026-07-02\n' +
+      'Weber AG,2026-08-01\n';
+    const built = await buildDatasetFromCsv(Buffer.from(csv, 'utf8'));
+    assert.equal(built.ok, true);
+    if (!built.ok) return;
+
+    const byName = new Map(built.columns.map((c) => [c.name, c]));
+    assert.equal(byName.get('order_date')?.type, 'date');
+
+    // Read the values back OUT of the produced rows (the persisted artifact),
+    // not the renderer input: real dates, distinct per row, no phone leak.
+    assert.equal(built.rows[0]?.['order_date'], '2026-07-02');
+    assert.equal(built.rows[1]?.['order_date'], '2026-08-01');
+    assert.notEqual(built.rows[0]?.['order_date'], built.rows[1]?.['order_date']);
+    for (const row of built.rows) {
+      assert.ok(!String(row['order_date']).includes('+49'), 'a date must never become a phone surrogate');
+    }
+
+    // The schema sample no longer advertises a type the stored value contradicts.
+    assert.equal(byName.get('order_date')?.sample, '2026-07-02');
+
+    // The date column was NOT scanned — only the two `customer` (string) cells
+    // were. This pins the "skip date columns" decision, not just its effect.
+    assert.equal(
+      built.privacyScan.scannedCells,
+      2,
+      'only the string column may be scanned; the date column must be skipped',
+    );
+  });
 });
 
 describe('importCsvDataset', () => {

@@ -168,6 +168,28 @@ export type {
   ProvenancePair,
 } from './securityPosture.js';
 
+// Shell-normalizing command policy for gating agent-executed commands (#580).
+// The reusable primitive: the shell normalizer + tokenizer, the rule/decision
+// model, the shipped org floor and the cascade evaluator. Pure and byte-stable;
+// the honest-inert enforcement seam lives in the orchestrator (commandPolicyGuard).
+export {
+  normalizeCommand,
+  decideCommand,
+  defaultCommandPolicy,
+  DEFAULT_ORG_FLOOR,
+  MAX_SUBSTITUTION_DEPTH,
+} from './commandPolicy.js';
+export type {
+  CommandDecision,
+  CommandDecisionLayer,
+  CommandDecisionResult,
+  CommandMatcher,
+  CommandPolicy,
+  CommandRule,
+  NormalizedCommand,
+  ParsedCommand,
+} from './commandPolicy.js';
+
 // Semantic outgoing-message contracts (connectors render native)
 export type {
   SemanticAnswer,
@@ -250,3 +272,63 @@ export {
   type Principal,
   type PrincipalKind,
 } from './principal.js';
+
+// #333 Phase 2 — where a Principal's roles come from. Still no permission is
+// evaluated here: these resolve FACTS (Entra group membership, an Odoo HR
+// record) that #575 later intersects into decisions. The catalog/registry split
+// mirrors `auth/providerRegistry.ts` — and matters more, because a role source
+// decides what you ARE once inside, not merely whether you get in.
+export {
+  RoleSourceCatalog,
+  RoleSourceRegistry,
+  type AggregateRoleLookup,
+  type RoleLookup,
+  type RoleLookupUnavailableCode,
+  type RoleSource,
+} from './roleSource.js';
+
+// #333 Phase 3 — the inverse direction: role → holders, which Conductor already
+// depends on (`roleStore.ts:22` calls the external resolver "a follow-up").
+// Introducing sources beyond the local table makes a PARTIALLY-known holder list
+// possible for the first time, and two Conductor decisions fail OPEN on one —
+// `quorum='all'` completeness and "no holder → take the fallback". Hence
+// `AggregateHolderLookup.partial`.
+export {
+  RoleHolderCatalog,
+  RoleHolderRegistry,
+  type AggregateHolderLookup,
+  type HolderLookup,
+  type HolderLookupUnavailableCode,
+  type RoleHolderSource,
+} from './roleHolderSource.js';
+
+// #575 Phase 2 — the first module that DECIDES something. #333 produces
+// Principals and says what they are entitled to; this consumes them and answers
+// "given who is present, what may happen in this room?". Everything fails
+// closed, because the intersection of nothing is everything and an empty roster
+// already means "unknown" in `ChatParticipantsProvider`'s own contract.
+export {
+  audienceFloor,
+  UNRESTRICTED_HOST_CAPABILITY,
+  floorAllowsHost,
+  floorDeniesHost,
+  floorPermits,
+  hostCapability,
+  resolveAudience,
+  type Audience,
+  type AudienceFloor,
+  type AudienceMember,
+  type AudienceUnknownReason,
+  type Capability,
+  type ResolvedAudienceMember,
+} from './audienceFloor.js';
+
+// #575 Phase 2 — where a principal's capabilities come from. Capabilities UNION
+// within one principal (two roles give you both) and INTERSECT across the
+// audience (a room may only do what everyone may do); the two live apart so the
+// directions cannot be confused.
+export {
+  InMemoryGrantStore,
+  resolveCapabilities,
+  type GrantStore,
+} from './grants.js';

@@ -3,6 +3,7 @@ import {
   POSTURE_ORDER,
   type ChatAgent,
   type AiDisclosureLevel,
+  type GrantStore,
   type SecurityPosture,
 } from '@omadia/channel-sdk';
 import type {
@@ -63,9 +64,11 @@ import {
   type OrchestratorDeps,
 } from './buildOrchestrator.js';
 import {
+  audienceGuardedAttachmentReader,
   createAttachmentReader,
   type AttachmentByteStore,
 } from './attachmentReaderFactory.js';
+import type { AttachmentBindingStore } from './attachmentBinding.js';
 import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
@@ -554,7 +557,19 @@ export async function activate(
   // tool; harness-orchestrator stays free of any @aws-sdk dependency.
   const attachmentByteStore =
     ctx.services.get<AttachmentByteStore>('tigrisStore');
-  const attachmentReader = createAttachmentReader(attachmentByteStore);
+  // #575 — every attachment-handle redemption passes the audience floor. Wrapped
+  // here, at the ONE construction site, so the check rides with the handle rather
+  // than depending on each resolution site remembering to ask. Inert unless an
+  // audience source is installed.
+  // The binding store additionally pins each handle to the room that minted it
+  // (#575). Published by the kernel only when the audience floor is enabled —
+  // absent means that second check stands down, and the reader behaves exactly
+  // as it did before.
+  const attachmentBindings = ctx.services.get<AttachmentBindingStore>('attachmentBindings');
+  const attachmentReader = audienceGuardedAttachmentReader(
+    createAttachmentReader(attachmentByteStore),
+    attachmentBindings,
+  );
   // Phase-1 of the Kemia integration. Late-bound `responseGuard@1` getter —
   // the orchestrator generally activates BEFORE its tool plugins, so a
   // bind-at-activate lookup would always miss the responseGuard provider
@@ -614,6 +629,13 @@ export async function activate(
   const securityPosture = resolveSecurityPostureSetup((key) =>
     ctx.config.get<unknown>(key),
   );
+  // #575 — the audience floor's capability grants. Published by the kernel
+  // BEFORE plugin activation (as a late-bound wrapper, because the Postgres
+  // pool it needs is published by the knowledge-graph plugin during this same
+  // pass) and ONLY when `AUDIENCE_FLOOR_ENABLED` is set. Undefined is the
+  // ordinary case: the orchestrator then installs no audience provider at all
+  // and every guard short-circuits, leaving behaviour unchanged.
+  const audienceGrants = ctx.services.get<GrantStore>('audienceGrants');
   // #648 — publish the RESOLVED posture so `/health` and the operator
   // dashboard can read what this instance actually does, and warn once at boot
   // when it deviates from the delivered state. A reduced marking is a
@@ -830,6 +852,10 @@ export async function activate(
     // #579 — org security posture (org floor + optional scope tighten + mode +
     // screen URL). Undefined → the orchestrator's shipping default (`auto`).
     ...(securityPosture ? { securityPosture } : {}),
+    // #575 — the audience floor's grant store, published by the kernel only
+    // when the operator enabled the floor. Absent is the normal case and means
+    // the guards stay inert; see `OrchestratorDeps.audienceGrants`.
+    ...(audienceGrants ? { audienceGrants } : {}),
     // #644 — one fold-dedup store for the whole process, shared by every Agent
     // the registry builds (same lifetime rationale as `directLineStickyStore`
     // below): a per-instance store would re-fold the marking into a live
