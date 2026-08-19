@@ -203,7 +203,11 @@ import {
   turnContext,
   type TurnContextValue,
 } from './turnContext.js';
-import { guardContextRecall, guardToolEgress } from './audienceFloorGuard.js';
+import {
+  crossScopeRecallRefused,
+  guardContextRecall,
+  guardToolEgress,
+} from './audienceFloorGuard.js';
 import {
   createAudienceFloorProvider,
   knowledgeGraphPrincipalResolver,
@@ -2682,6 +2686,18 @@ export class Orchestrator {
       console.error(`[context] SKIP audience-floor: ${recallRefusal}`);
       return { text: undefined, recalled: undefined };
     }
+    // #575 — a room that may recall, but may not recall from OTHER
+    // conversations, narrows instead of losing recall entirely. Only meaningful
+    // when this turn HAS a scope to be restricted to; without one there is
+    // nothing to compare a hit against, so the restriction would silently drop
+    // every candidate rather than the cross-session ones.
+    const restrictRecallScope =
+      input.sessionScope !== undefined && (await crossScopeRecallRefused())
+        ? graphScopeFor(this.agentId, input.sessionScope)
+        : undefined;
+    if (restrictRecallScope !== undefined) {
+      console.error('[context] audience-floor: recall restricted to this conversation');
+    }
     try {
       // OB-74 (Palaia Phase 5) — switch to the token-budget assembler. The
       // recall legs are unchanged (tail + entity + hybrid-FTS); the
@@ -2704,6 +2720,9 @@ export class Orchestrator {
           ? { sessionScope: graphScopeFor(this.agentId, input.sessionScope) }
           : {}),
         ...(input.userId ? { userId: input.userId } : {}),
+        ...(restrictRecallScope !== undefined
+          ? { restrictToScope: restrictRecallScope }
+          : {}),
       });
       console.error(
         `[context] assembled scope=${input.sessionScope ?? '-'} user=${input.userId ?? '-'} pool=${String(result.stats.candidatePool)} included=${String(result.included.length)} excluded=${String(result.excluded.length)} compact=${String(result.stats.compactMode)} tokens=${String(result.stats.tokensUsed)} rendered=${String(result.text.length)}B`,

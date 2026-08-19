@@ -18,6 +18,21 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — a restricted room narrows its recall instead of losing it
+
+- **`memory:recall:cross_scope` (#575).** Recall used to be all-or-nothing: a
+  room that could not satisfy `memory:recall` got no prior context at all. A
+  room can now hold `memory:recall` without the new capability — it recalls its
+  **own** history and drops hits from other conversations.
+- **Why it matters:** recall is ACL-gated by the *recalling* user, so in a
+  shared room a hit from that person's other chats lands in the single prompt
+  everyone's answer is derived from. Only one participant was entitled to it.
+- **The cross-session legs are skipped too** — plans, processes and curated
+  insights bypass the candidate pool and render their own blocks, so filtering
+  candidates alone would have looked thorough while letting those through.
+- Dropped hits are recorded as exclusions with reason `audience-scope`, so a
+  thin context block is explainable rather than mysterious.
+
 ### Added — outbound hosts can be read as an allow-list, not just prohibitions
 
 - **`AUDIENCE_HOST_ALLOWLIST_ENABLED` (default off, #575).** With it, a host must
