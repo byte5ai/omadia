@@ -41,6 +41,7 @@ import {
   type SecurityAuditEvent,
   type ScreenOutcome,
 } from './securityScreener.js';
+import { recordScreenOutcome } from './securityScreenMetrics.js';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { LlmProvider } from '@omadia/llm-provider';
 import type {
@@ -3056,10 +3057,22 @@ export class Orchestrator {
     } else if (hasScreenableContent(pairs)) {
       // Screening is ON and there is non-human content, but no screener is
       // wired → UNSCREENABLE. Fail open with evidence, never silently clear.
-      outcome = { status: 'unscreenable', reason: 'no screener configured' };
+      outcome = {
+        status: 'unscreenable',
+        reason: 'no screener configured',
+        cause: 'not-configured',
+      };
     } else {
       outcome = { status: 'allow' };
     }
+
+    // #749 — count every resolved attempt before acting on it. The fail-open
+    // policy below is unchanged; this only makes its exercise visible, so a
+    // screener that fails on EVERY turn stops looking like one that failed once.
+    recordScreenOutcome(
+      outcome.status,
+      outcome.status === 'unscreenable' ? outcome.cause : undefined,
+    );
 
     switch (outcome.status) {
       case 'allow':
@@ -3083,6 +3096,7 @@ export class Orchestrator {
           mode: setup.mode,
           posture,
           reason: outcome.reason,
+          cause: outcome.cause,
           ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
           sourceTags,
         });
