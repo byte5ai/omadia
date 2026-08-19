@@ -854,6 +854,21 @@ export interface MemorableKnowledgeSearchOptions {
    */
   teamVisibility?: boolean;
   /**
+   * #575 — admit ONLY shared knowledge: rows whose `visibility` is `team` or
+   * `public`, never a row the viewer merely owns.
+   *
+   * `teamVisibility` WIDENS the ACL (owner rows plus shared ones); this NARROWS
+   * it to the shared tier alone. The two are not opposites and not
+   * interchangeable: the audience floor asks "what may everyone present see",
+   * and a row the recalling user owns privately is exactly what the rest of the
+   * room is not entitled to.
+   *
+   * Implies `teamVisibility` in every implementation — asking for shared rows
+   * while the shared branch is off would silently return only the viewer's OWN
+   * shared rows, a misconfiguration with no legitimate use.
+   */
+  sharedOnly?: boolean;
+  /**
    * Per-orchestrator isolation — the recalling Agent's slug. When set,
    * owner-gated MK is additionally constrained to rows the viewing Agent
    * produced (`origin_agent = viewerAgentSlug`); MK with no `origin_agent`
@@ -891,6 +906,21 @@ export interface ExcerptSearchOptions {
    * against the parent MK's `visibility`. Default false.
    */
   teamVisibility?: boolean;
+  /**
+   * #575 — admit ONLY shared knowledge: rows whose `visibility` is `team` or
+   * `public`, never a row the viewer merely owns.
+   *
+   * `teamVisibility` WIDENS the ACL (owner rows plus shared ones); this NARROWS
+   * it to the shared tier alone. The two are not opposites and not
+   * interchangeable: the audience floor asks "what may everyone present see",
+   * and a row the recalling user owns privately is exactly what the rest of the
+   * room is not entitled to.
+   *
+   * Implies `teamVisibility` in every implementation — asking for shared rows
+   * while the shared branch is off would silently return only the viewer's OWN
+   * shared rows, a misconfiguration with no legitimate use.
+   */
+  sharedOnly?: boolean;
   /**
    * Per-orchestrator isolation — mirrors
    * {@link MemorableKnowledgeSearchOptions.viewerAgentSlug}. Constrains the

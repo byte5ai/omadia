@@ -18,6 +18,40 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — a restricted room keeps the curated knowledge it is entitled to
+
+- **`sharedOnly` recall (#575).** Narrowing a room to its own conversation used
+  to drop curated memory entirely along with the other cross-session legs. But
+  curated memory is **tiered**: `team` / `public` knowledge is shared by
+  construction, so a restricted room may have it — only rows the recalling user
+  privately owns are off-limits.
+- **`sharedOnly` is not the opposite of `teamVisibility`.** The latter *widens*
+  the ACL (owner rows plus shared ones); this *narrows* it to the shared tier
+  alone. They answer different questions, and the audience floor needs the
+  second one: "what may **everyone present** see?"
+- `sharedOnly` **implies** the shared branch in every implementation — asking
+  for shared rows while that branch is off would silently return only the
+  viewer's own shared rows, a misconfiguration with no legitimate use.
+
+### Fixed — shielded result tables no longer render blank columns
+
+- **Masked columns came out empty on the canvas (#326).** A privacy-shield
+  dataset resolves to rows *keyed by the source's column paths*, but the canvas
+  composer looked cells up under the **agent's** field keys. Where the agent
+  called a column `invoice_number` and Odoo's path was `name`, the lookup missed
+  and the cell was silently blanked — so an invoice table rendered without
+  invoice numbers or customers.
+- Columns that happened to reuse the real field name filled correctly, which is
+  why this looked like a rendering glitch rather than a mapping fault.
+- **Fixed by deriving the table's columns from the resolved dataset**, so values
+  resolve by path. Shielded columns now also carry
+  `privacy: "guard-protected"` — a marking the canvas protocol already defined
+  and the `v4_render_answer` path already emitted; only this path never did.
+- **Labels are matched positionally**, and only when the agent's and the
+  dataset's column lists are the same length; otherwise the raw path is shown.
+  No field-key↔path mapping exists anywhere in the system, so the alternative
+  would be a header that confidently names the wrong column.
+
 ### Changed — a restricted room narrows its recall instead of losing it
 
 - **`memory:recall:cross_scope` (#575).** Recall used to be all-or-nothing: a
