@@ -50,6 +50,17 @@ export interface LocalSubAgentToolResult {
    * downcast. See `./limitSignal.js`.
    */
   readonly limitSignal?: LimitSignal;
+  /**
+   * Optional metering marker (#584, additive). A tool that metered a
+   * transcription call sets Source/Billed Minutes here; the sub-agent runner
+   * surfaces it to the observer and the RunTraceCollector copies it onto the
+   * `RunToolCall` — same route as `postcondition`. Ignored by the legacy
+   * `string | LocalSubAgentToolResult` downcast.
+   */
+  readonly usage?: {
+    readonly sourceMinutes: number;
+    readonly billedMinutes: number;
+  };
 }
 
 /**

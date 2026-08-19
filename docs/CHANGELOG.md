@@ -18,6 +18,20 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — transcription metering: usage ledger, duration cap, per-agent quota (#584)
+
+- Migration `0031_transcription_usage.sql` (KG-neon chain): append-only
+  `transcription_usage` ledger — one row per transcription provider call with
+  `source_minutes`, `billed_minutes` (client-derived estimate; retries book in
+  full), `model`, `cost_usd` (frozen at write time from the per-minute price
+  table), `agent_id`, `recording_id`, `turn_id`, `created_at`. The per-agent
+  monthly quota (`_transcription_minutes_quota`, level-triggered, fail-open
+  with audit warning on DB error) sums `billed_minutes` per calendar month
+  over it; the duration cap (`max_source_minutes`, default 60) is enforced
+  fail-closed at transcribe-tool time via a pure-JS header probe. Per-call
+  Source/Billed Minutes additionally ride the run trace as
+  `RunToolCall.usage` (visibility only — the table is truth).
+
 ### Fixed — a withheld answer no longer ships its full reasoning to the channel
 
 - **`NO_REPLY` stopped suppressing delivery the moment the AI-Act Art. 50

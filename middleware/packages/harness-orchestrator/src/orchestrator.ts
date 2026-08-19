@@ -205,6 +205,7 @@ import {
   type TurnContextValue,
 } from './turnContext.js';
 import { guardContextRecall, guardToolEgress } from './audienceFloorGuard.js';
+import { toolUsage, type ToolCallUsageReport } from './toolUsageContext.js';
 import {
   createAudienceFloorProvider,
   knowledgeGraphPrincipalResolver,
@@ -1387,6 +1388,10 @@ interface ParallelSlot {
   readonly invocation: InvocationHandle | undefined;
   readonly promise: Promise<string>;
   readonly started: number;
+  /** #584 — per-slot metering box, written inside the dispatch's
+   * `toolUsage.capture` scope and stamped onto the trace entry in
+   * `finishSlotInvocation`. */
+  readonly usageBox: { value?: ToolCallUsageReport };
   lastHeartbeat: number;
   settled: boolean;
   output?: string;
@@ -4392,9 +4397,16 @@ export class Orchestrator {
               )
             : undefined;
         });
+        // #584 — one metering box per call (never shared), written inside the
+        // dispatch's `toolUsage.capture` scope, stamped onto the trace below.
+        const usageBoxes = toolUses.map(
+          (): { value?: ToolCallUsageReport } => ({}),
+        );
         const settled = await Promise.allSettled(
           toolUses.map((use: ContentBlock, i: number) =>
-            this.dispatchTool(use.name, use.input, invocations[i]?.observer),
+            toolUsage.capture(usageBoxes[i]!, () =>
+              this.dispatchTool(use.name, use.input, invocations[i]?.observer),
+            ),
           ),
         );
         const toolResults: ContentBlock[] = toolUses.map((use: ContentBlock, i: number) => {
@@ -4421,6 +4433,7 @@ export class Orchestrator {
               toolName: use.name,
               durationMs,
               isError,
+              ...(usageBoxes[i]?.value ? { usage: usageBoxes[i]!.value } : {}),
             });
           }
           return {
@@ -5930,7 +5943,13 @@ export class Orchestrator {
         : undefined;
     const observer = this.makeSlotObserver(use.id, subEvents, invocation);
     const started = Date.now();
-    const promise = this.dispatchTool(use.name, use.input, observer);
+    // #584 — per-slot metering box. The capture scope is per call (one box
+    // per slot, its own AsyncLocalStorage — see toolUsageContext.ts), so
+    // concurrent slots in one batch cannot see each other's usage.
+    const usageBox: ParallelSlot['usageBox'] = {};
+    const promise = toolUsage.capture(usageBox, () =>
+      this.dispatchTool(use.name, use.input, observer),
+    );
     return {
       idx,
       use,
@@ -5938,6 +5957,7 @@ export class Orchestrator {
       invocation,
       promise,
       started,
+      usageBox,
       lastHeartbeat: started,
       settled: false,
     };
@@ -5978,6 +5998,11 @@ export class Orchestrator {
         output: string;
         durationMs: number;
         isError: boolean;
+        // #130/#584 — declared so the pass-through below stays honest at the
+        // type level; both fields survive because the same object reference
+        // is forwarded to the invocation observer.
+        postcondition?: { issues: readonly string[] };
+        usage?: ToolCallUsageReport;
       }): void {
         invocation?.observer.onSubToolResult?.(ev);
         queue.push({
@@ -6013,6 +6038,7 @@ export class Orchestrator {
         toolName: slot.use.name,
         durationMs,
         isError,
+        ...(slot.usageBox.value ? { usage: slot.usageBox.value } : {}),
       });
     }
   }

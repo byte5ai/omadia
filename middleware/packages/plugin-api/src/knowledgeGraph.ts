@@ -1634,6 +1634,16 @@ export interface CaptureDisclosure {
 
 export type RunStatus = 'success' | 'error';
 
+/** #584 — per-tool-call metering visibility. Source Minutes = probed duration
+ * of the source recording (counted once per recording); Billed Minutes =
+ * client-derived estimate of provider-billed time (every retry books in
+ * full). The trace is best-effort by contract — billing/quota truth lives in
+ * the `transcription_usage` table, never here. Trace = visibility. */
+export interface RunToolCallUsage {
+  sourceMinutes: number;
+  billedMinutes: number;
+}
+
 export interface RunToolCall {
   /** Unique id within the turn — orchestrator tool_use id or nanoid from the
    * sub-agent. Becomes part of the ToolCall node's external id. */
@@ -1653,6 +1663,11 @@ export interface RunToolCall {
   postcondition?: {
     issues: readonly string[];
   };
+  /** #584 — set when the tool metered a transcription call. Declared
+   * explicitly rather than riding the JSONB `.passthrough()` (a
+   * tolerated-only field is an undocumented field — #650 precedent).
+   * Absent on every non-metered call. */
+  usage?: RunToolCallUsage;
 }
 
 export interface RunAgentInvocation {

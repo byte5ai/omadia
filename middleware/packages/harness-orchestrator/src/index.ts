@@ -483,6 +483,10 @@ export {
   onTurnTeardownError,
 } from './turnContext.js';
 export type { TurnContextValue } from './turnContext.js';
+// #584 — per-dispatch metering side-channel for native tools (its own
+// AsyncLocalStorage, deliberately NOT a turn-context field).
+export { toolUsage } from './toolUsageContext.js';
+export type { ToolCallUsageReport } from './toolUsageContext.js';
 export {
   setMcpPrivacyBypassServers,
   isMcpServerPrivacyBypassed,

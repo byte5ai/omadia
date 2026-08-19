@@ -1222,8 +1222,9 @@ Transcription-Zwilling von `adminProviders.ts` (Key-Verdict) und
   Namespace `adminTranscriptionProvider` (en+de, Parity grün) enthält nur noch
   genuin transkriptionsspezifische Strings (Intro, Surfaces, Selection,
   AVV/EU); Admin-Karte in der `knowledge`-Gruppe.
-- **Metering-Config (nur Konfiguration — Enforcement folgt in einem
-  weiteren Commit zu #584):**
+- **Metering-Config (Enforcement zu #584 aktiv: Duration-Cap fail-closed
+  per Header-Probe im Tool, Quota level-getriggert gegen
+  `transcription_usage`, Migration `0031`):**
   `max_source_minutes` (integer, Default 60) als `setup.fields` im
   Adapter-Manifest; synthetisches Install-Formular-Feld
   `_transcription_minutes_quota` (Kernel-injiziert in

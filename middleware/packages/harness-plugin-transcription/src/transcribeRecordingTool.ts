@@ -6,12 +6,21 @@ import {
   type PseudonymMap,
 } from '@omadia/plugin-privacy-guard';
 import {
+  DEFAULT_MAX_SOURCE_MINUTES,
   TranscriptionError,
   type Transcript,
+  type TranscriptionMeteringConfig,
   type TranscriptionService,
 } from '@omadia/transcription-api';
 
 import { projectTranscriptChunks } from './chunkProjection.js';
+import {
+  deriveBilledMinutes,
+  formatMinutes,
+  probeSourceMinutes as probeSourceMinutesDefault,
+  type MeteredMinutes,
+  type TranscriptionUsageMeter,
+} from './metering.js';
 import { uploadTimeFromKey } from './uploadRouter.js';
 import {
   DEFAULT_SPEAKER_LABEL,
@@ -39,7 +48,14 @@ import {
  * every projection dependency resolved, but BEFORE the chunks are logged
  * (canonical truth first; the projection is derived and disposable).
  *
- * Duration cap + metering land in the follow-up metering commit (#584).
+ * Metering (#584, see `metering.ts`): pre-flight header probe → duration
+ * cap (Source Minutes, FAIL-CLOSED on unprobeable duration) → per-agent
+ * monthly quota (Billed Minutes, LEVEL-triggered: calls run while the
+ * month's committed sum is under the limit, the crossing call completes, the
+ * next blocks; FAIL-OPEN with an audit warning on a metering-DB error) →
+ * provider call → one ledger row per provider call (success AND error path —
+ * a retried-then-failed call has still been billed) + Source/Billed Minutes
+ * onto the run trace (visibility only; the table is truth).
  */
 
 export interface TranscriptArtifactStore {
@@ -67,6 +83,20 @@ export interface TranscribeRecordingToolDeps {
   getRecordingReader(): RecordingReader | undefined;
   getSessionLogger(): TranscriptTurnLogger | undefined;
   currentUploader(): TranscriptArtifactUploader | undefined;
+  /** #584 — duration cap + model id, published live by the active adapter.
+   *  Absent ⇒ cap falls back fail-safe to DEFAULT_MAX_SOURCE_MINUTES. */
+  getMeteringConfig(): TranscriptionMeteringConfig | undefined;
+  /** #584 — usage ledger seam. Absent ⇒ nothing books, quota unenforced. */
+  getUsageMeter(): TranscriptionUsageMeter | undefined;
+  /** #584 — the agent's `_transcription_minutes_quota`. `undefined` =
+   *  unlimited (empty field); an explicit 0 blocks every call. */
+  getQuotaMinutes(): number | undefined;
+  /** #584 — header probe override for tests; default is the real
+   *  `music-metadata` probe. `undefined` result = fail-closed rejection. */
+  probeSourceMinutes?(bytes: Buffer): Promise<number | undefined>;
+  /** #584 — hands Source/Billed Minutes to the run trace (`toolUsageSink`).
+   *  Visibility only — never load-bearing for billing or quota. */
+  reportUsage?(usage: MeteredMinutes): void;
   log?(msg: string): void;
 }
 
@@ -160,6 +190,57 @@ export async function handleTranscribeRecording(
   const recordingStart =
     parsed.recordingStart ?? uploadTimeFromKey(parsed.storageKey) ?? new Date();
 
+  // #584 — duration cap (Source Minutes), pre-flight, FAIL-CLOSED: the
+  // upload endpoint deliberately probes nothing (#584), and the size
+  // cap is no duration ceiling. Unprobeable duration ⇒ rejection.
+  const probe = deps.probeSourceMinutes ?? probeSourceMinutesDefault;
+  const sourceMinutes = await probe(recording.bytes);
+  if (sourceMinutes === undefined) {
+    return 'Fehler: Die Dauer der Aufnahme konnte nicht aus dem Datei-Header ermittelt werden — Transkription abgelehnt (Duration-Cap prüft fail-closed).';
+  }
+  const metering = deps.getMeteringConfig();
+  const capMinutes = metering?.maxSourceMinutes() ?? DEFAULT_MAX_SOURCE_MINUTES;
+  if (sourceMinutes > capMinutes) {
+    return `Fehler: Aufnahme ist ${formatMinutes(sourceMinutes)} Minuten lang und überschreitet die maximale Aufnahmedauer von ${String(capMinutes)} Minuten (max_source_minutes).`;
+  }
+
+  // #584 — per-agent monthly quota (Billed Minutes), LEVEL-triggered like
+  // the dev-job budget: every call whose committed month sum is at/over the
+  // limit blocks; the call that crosses still completes (overshoot bounded
+  // by one duration-cap length, no mid-run abort). FAIL-OPEN with an audit
+  // warning on a metering-DB error — a broken meter must not 402 legitimate
+  // work; the loss is surfaced, not swallowed. A missing metering store
+  // (in-memory KG) makes the quota structurally unenforceable — the sum
+  // comes back `undefined` and the call proceeds (documented on the
+  // recorder).
+  const meter = deps.getUsageMeter();
+  const quotaMinutes = deps.getQuotaMinutes();
+  if (quotaMinutes !== undefined && meter) {
+    try {
+      const monthSum = await meter.sumBilledMinutesThisMonth();
+      if (monthSum !== undefined && monthSum >= quotaMinutes) {
+        return `Fehler: Die monatliche Transkriptions-Quota dieses Agents ist erreicht (${formatMinutes(monthSum)} von ${String(quotaMinutes)} Minuten verbraucht). Weitere Transkriptionen sind ab dem nächsten Kalendermonat wieder möglich; ein Operator kann die Quota unter _transcription_minutes_quota anpassen.`;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log(
+        `[transcription] WARNING: Quota-Prüfung fehlgeschlagen — fail-open, Aufruf läuft weiter (agent-quota=${String(quotaMinutes)} min): ${message}`,
+      );
+    }
+  }
+
+  const model = metering?.model('file') ?? 'unknown';
+  const bookUsage = (usage: { attempts: number; attemptDurationsMs?: number[] }): MeteredMinutes => {
+    const minutes: MeteredMinutes = {
+      sourceMinutes,
+      billedMinutes: deriveBilledMinutes(usage, sourceMinutes),
+    };
+    // Ledger row (truth) — fire-and-forget; trace field (visibility).
+    meter?.record({ ...minutes, model, recordingId });
+    deps.reportUsage?.(minutes);
+    return minutes;
+  };
+
   let transcript: Transcript;
   try {
     transcript = await service.transcribeFile({
@@ -169,11 +250,15 @@ export async function handleTranscribeRecording(
     });
   } catch (err) {
     if (err instanceof TranscriptionError) {
+      // #584 — the error path books too: a retried-then-failed batch call
+      // has still been billed per attempt (`TranscriptionError.usage`).
+      if (err.usage) bookUsage(err.usage);
       return `Fehler bei der Transkription (${err.code}): ${err.message}`;
     }
     const message = err instanceof Error ? err.message : String(err);
     return `Fehler bei der Transkription: ${message}`;
   }
+  const metered = bookUsage(transcript.usage);
 
   const uploader = deps.currentUploader();
   const artifact = buildTranscriptArtifact({
@@ -194,7 +279,7 @@ export async function handleTranscribeRecording(
   );
 
   // v1 resolves no label→person mapping, so the line label IS the Speaker
-  // Label (display-name-or-label rule, ticket 02).
+  // Label (display-name-or-label rule, #584).
   const chunks = projectTranscriptChunks(
     artifact.segments.map((segment) => ({
       label: segment.speaker,
@@ -245,5 +330,6 @@ export async function handleTranscribeRecording(
     `- Transcript-Artifact: ${artifactKey} (kanonisch, unmaskiert im Blob-Store)`,
     `- Segmente: ${String(artifact.segments.length)}, Sprecher: ${speakers.join(', ') || DEFAULT_SPEAKER_LABEL}, timing=${artifact.timing}${artifact.detectedLanguages ? `, Sprachen: ${artifact.detectedLanguages.join(', ')}` : ''}`,
     `- Recall-Projektion: ${String(chunks.length)} Chunk-Turn(s) in Scope '${scope}' (maskiert), Zeitbasis ${artifact.recordingStart}`,
+    `- Metering: ${formatMinutes(metered.sourceMinutes)} Source-Minuten, ${formatMinutes(metered.billedMinutes)} Billed-Minuten (geschätzt, Modell ${model})`,
   ].join('\n');
 }

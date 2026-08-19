@@ -56,7 +56,10 @@ import {
 import type { VerifierBundle } from '@omadia/verifier';
 
 import type { Pool } from 'pg';
-import { initUsageRecorder } from '@omadia/usage-telemetry';
+import {
+  initUsageRecorder,
+  initTranscriptionUsageRecorder,
+} from '@omadia/usage-telemetry';
 
 import {
   buildOrchestratorForAgent,
@@ -716,6 +719,10 @@ export async function activate(
   // orchestrator + sub-agent usage is captured inside streamMessageEvents;
   // this just ensures the recorder has a pool to flush to. Idempotent.
   if (graphPool) initUsageRecorder(graphPool);
+  // #584 — transcription-minute metering rides the same pool. No pool
+  // (in-memory KG) ⇒ rows drop and the per-agent quota is structurally
+  // unenforced; the duration cap does not depend on this and still holds.
+  if (graphPool) initTranscriptionUsageRecorder(graphPool);
 
   // (LLM provider built above from the configured provider id.)
 

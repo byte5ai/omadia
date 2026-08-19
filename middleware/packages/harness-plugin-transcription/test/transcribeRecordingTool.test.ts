@@ -10,6 +10,10 @@ import {
   type TranscriptionService,
 } from '@omadia/transcription-api';
 
+import type {
+  MeteredMinutes,
+  TranscriptionUsageMeter,
+} from '../src/metering.js';
 import {
   handleTranscribeRecording,
   type TranscribeRecordingToolDeps,
@@ -69,11 +73,30 @@ class FakeLogger {
   }
 }
 
+/** #584 — controllable usage-ledger fake for the metering tests. */
+class FakeMeter implements TranscriptionUsageMeter {
+  records: Array<MeteredMinutes & { model: string; recordingId: string }> = [];
+  /** Month sum the quota pre-check sees; `undefined` = no metering store. */
+  monthSum: number | undefined = 0;
+  failWith: Error | undefined;
+
+  record(row: MeteredMinutes & { model: string; recordingId: string }): void {
+    this.records.push(row);
+  }
+
+  async sumBilledMinutesThisMonth(): Promise<number | undefined> {
+    if (this.failWith) throw this.failWith;
+    return this.monthSum;
+  }
+}
+
 function makeDeps(overrides?: Partial<TranscribeRecordingToolDeps>): {
   deps: TranscribeRecordingToolDeps;
   service: FakeTranscriptionService;
   store: FakeArtifactStore;
   logger: FakeLogger;
+  meter: FakeMeter;
+  reported: MeteredMinutes[];
 } {
   const service = new FakeTranscriptionService({
     segments: [
@@ -86,6 +109,8 @@ function makeDeps(overrides?: Partial<TranscribeRecordingToolDeps>): {
   });
   const store = new FakeArtifactStore();
   const logger = new FakeLogger();
+  const meter = new FakeMeter();
+  const reported: MeteredMinutes[] = [];
   const deps: TranscribeRecordingToolDeps = {
     getTranscription: () => service,
     getArtifactStore: () => store,
@@ -101,9 +126,20 @@ function makeDeps(overrides?: Partial<TranscribeRecordingToolDeps>): {
     }),
     getSessionLogger: () => logger,
     currentUploader: () => ({ userId: 'aad-123', omadiaUserId: 'uuid-456' }),
+    // #584 — metering defaults: probe injected (the fake bytes above carry no
+    // real audio header; the REAL probe is covered by metering.test.ts with
+    // fixture audio), 2-minute source, cap 60, quota unlimited.
+    getMeteringConfig: () => ({
+      maxSourceMinutes: () => 60,
+      model: () => 'gpt-transcribe',
+    }),
+    getUsageMeter: () => meter,
+    getQuotaMinutes: () => undefined,
+    probeSourceMinutes: async () => 2,
+    reportUsage: (usage) => reported.push(usage),
     ...overrides,
   };
-  return { deps, service, store, logger };
+  return { deps, service, store, logger, meter, reported };
 }
 
 describe('handleTranscribeRecording', () => {
@@ -353,5 +389,255 @@ describe('handleTranscribeRecording', () => {
       ),
       /recording_start/,
     );
+  });
+});
+
+describe('#584 — duration cap (Source Minutes, fail-closed)', () => {
+  it('rejects a recording over the cap before any provider call', async () => {
+    const { deps, service, meter } = makeDeps({
+      probeSourceMinutes: async () => 61,
+    });
+    const result = await handleTranscribeRecording(
+      { storage_key: STORAGE_KEY },
+      deps,
+    );
+    assert.match(result, /überschreitet die maximale Aufnahmedauer von 60 Minuten/);
+    assert.equal(service.calls.length, 0);
+    assert.equal(meter.records.length, 0);
+  });
+
+  it('rejects fail-closed when the duration cannot be probed', async () => {
+    const { deps, service } = makeDeps({
+      probeSourceMinutes: async () => undefined,
+    });
+    const result = await handleTranscribeRecording(
+      { storage_key: STORAGE_KEY },
+      deps,
+    );
+    assert.match(result, /fail-closed/);
+    assert.equal(service.calls.length, 0);
+  });
+
+  it('reads the cap live from the adapter metering config', async () => {
+    const { deps, service } = makeDeps({
+      probeSourceMinutes: async () => 5,
+      getMeteringConfig: () => ({
+        maxSourceMinutes: () => 4,
+        model: () => 'gpt-transcribe',
+      }),
+    });
+    const result = await handleTranscribeRecording(
+      { storage_key: STORAGE_KEY },
+      deps,
+    );
+    assert.match(result, /maximale Aufnahmedauer von 4 Minuten/);
+    assert.equal(service.calls.length, 0);
+  });
+
+  it('falls back fail-safe to 60 minutes when no metering config is published', async () => {
+    const under = makeDeps({
+      getMeteringConfig: () => undefined,
+      probeSourceMinutes: async () => 59,
+    });
+    assert.match(
+      await handleTranscribeRecording({ storage_key: STORAGE_KEY }, under.deps),
+      /Aufnahme transkribiert/,
+    );
+    const over = makeDeps({
+      getMeteringConfig: () => undefined,
+      probeSourceMinutes: async () => 61,
+    });
+    assert.match(
+      await handleTranscribeRecording({ storage_key: STORAGE_KEY }, over.deps),
+      /maximale Aufnahmedauer von 60 Minuten/,
+    );
+  });
+});
+
+describe('#584 — per-agent monthly quota (Billed Minutes, level-triggered)', () => {
+  it('lets a call through while the month sum is under the limit — even when it crosses', async () => {
+    // Level-trigger semantics: 59 of 60 minutes used, the 2-minute call still
+    // runs (the crossing call completes; overshoot ≤ one duration-cap length).
+    const { deps, meter, service } = makeDeps();
+    meter.monthSum = 59;
+    deps.getQuotaMinutes = () => 60;
+
+    const result = await handleTranscribeRecording(
+      { storage_key: STORAGE_KEY },
+      deps,
+    );
+    assert.match(result, /Aufnahme transkribiert/);
+    assert.equal(service.calls.length, 1);
+    assert.equal(meter.records.length, 1);
+  });
+
+  it('blocks the next call once the month sum is at/over the limit', async () => {
+    const { deps, meter, service } = makeDeps();
+    meter.monthSum = 61;
+    deps.getQuotaMinutes = () => 60;
+
+    const result = await handleTranscribeRecording(
+      { storage_key: STORAGE_KEY },
+      deps,
+    );
+    assert.match(result, /monatliche Transkriptions-Quota dieses Agents ist erreicht/);
+    assert.match(result, /61 von 60 Minuten/);
+    assert.equal(service.calls.length, 0);
+    assert.equal(meter.records.length, 0);
+  });
+
+  it('blocks at exactly the limit (level-triggered, >=)', async () => {
+    const { deps, meter, service } = makeDeps();
+    meter.monthSum = 60;
+    deps.getQuotaMinutes = () => 60;
+    assert.match(
+      await handleTranscribeRecording({ storage_key: STORAGE_KEY }, deps),
+      /Quota dieses Agents ist erreicht/,
+    );
+    assert.equal(service.calls.length, 0);
+  });
+
+  it('an explicit quota of 0 blocks every call', async () => {
+    const { deps, meter, service } = makeDeps();
+    meter.monthSum = 0;
+    deps.getQuotaMinutes = () => 0;
+    assert.match(
+      await handleTranscribeRecording({ storage_key: STORAGE_KEY }, deps),
+      /Quota dieses Agents ist erreicht/,
+    );
+    assert.equal(service.calls.length, 0);
+  });
+
+  it('empty quota = unlimited: no sum lookup, call proceeds', async () => {
+    const { deps, meter, service } = makeDeps();
+    meter.monthSum = 10_000;
+    meter.failWith = new Error('must never be consulted');
+    deps.getQuotaMinutes = () => undefined;
+
+    assert.match(
+      await handleTranscribeRecording({ storage_key: STORAGE_KEY }, deps),
+      /Aufnahme transkribiert/,
+    );
+    assert.equal(service.calls.length, 1);
+  });
+
+  it('fails OPEN with an audit warning on a metering-DB error', async () => {
+    const warnings: string[] = [];
+    const { deps, meter, service } = makeDeps({
+      log: (msg) => warnings.push(msg),
+    });
+    meter.failWith = new Error('db down');
+    deps.getQuotaMinutes = () => 60;
+
+    const result = await handleTranscribeRecording(
+      { storage_key: STORAGE_KEY },
+      deps,
+    );
+    assert.match(result, /Aufnahme transkribiert/);
+    assert.equal(service.calls.length, 1);
+    assert.ok(
+      warnings.some((w) => /WARNING: Quota-Prüfung fehlgeschlagen — fail-open/.test(w)),
+      'fail-open must leave an audit warning',
+    );
+  });
+
+  it('proceeds when no metering store exists (in-memory KG: structurally unenforced)', async () => {
+    const { deps, meter, service } = makeDeps();
+    meter.monthSum = undefined;
+    deps.getQuotaMinutes = () => 1;
+
+    assert.match(
+      await handleTranscribeRecording({ storage_key: STORAGE_KEY }, deps),
+      /Aufnahme transkribiert/,
+    );
+    assert.equal(service.calls.length, 1);
+  });
+});
+
+describe('#584 — usage recording (one row per provider call, retries book in full)', () => {
+  it('books source and billed minutes with the model and recording id on success', async () => {
+    const { deps, meter, reported } = makeDeps();
+    await handleTranscribeRecording({ storage_key: STORAGE_KEY }, deps);
+
+    assert.equal(meter.records.length, 1);
+    assert.deepEqual(meter.records[0], {
+      sourceMinutes: 2,
+      billedMinutes: 2, // 2 source minutes × 1 attempt
+      model: 'gpt-transcribe',
+      recordingId: recordingIdFor(STORAGE_KEY),
+    });
+    // Trace visibility rides along.
+    assert.deepEqual(reported, [{ sourceMinutes: 2, billedMinutes: 2 }]);
+  });
+
+  it('books every retry in full: billed = source × attempts', async () => {
+    const { deps, meter } = makeDeps();
+    deps.getTranscription = () =>
+      new FakeTranscriptionService({
+        segments: [{ id: 'seg-0', text: 'Kurz.' }],
+        timing: 'none',
+        usage: { attempts: 3 },
+      });
+    await handleTranscribeRecording({ storage_key: STORAGE_KEY }, deps);
+    assert.equal(meter.records[0]?.billedMinutes, 6);
+    assert.equal(meter.records[0]?.sourceMinutes, 2);
+  });
+
+  it('books the error path too when the failed call carried usage', async () => {
+    const { deps, meter, reported } = makeDeps();
+    deps.getTranscription = () => ({
+      transcribeFile: async () => {
+        throw new TranscriptionError('provider', 'boom', {
+          usage: { attempts: 2 },
+        });
+      },
+      transcribeStream: () => {
+        throw new Error('unused');
+      },
+    });
+
+    const result = await handleTranscribeRecording(
+      { storage_key: STORAGE_KEY },
+      deps,
+    );
+    assert.match(result, /Fehler bei der Transkription \(provider\)/);
+    assert.equal(meter.records.length, 1);
+    assert.equal(meter.records[0]?.billedMinutes, 4); // 2 min × 2 paid attempts
+    assert.deepEqual(reported, [{ sourceMinutes: 2, billedMinutes: 4 }]);
+  });
+
+  it('books nothing when the failure happened before any provider call', async () => {
+    const { deps, meter } = makeDeps();
+    deps.getTranscription = () => ({
+      transcribeFile: async () => {
+        throw new TranscriptionError('unsupported-format', 'nope');
+      },
+      transcribeStream: () => {
+        throw new Error('unused');
+      },
+    });
+    await handleTranscribeRecording({ storage_key: STORAGE_KEY }, deps);
+    assert.equal(meter.records.length, 0);
+  });
+
+  it('derives realtime billed minutes from per-attempt stream durations (shape fixed now)', async () => {
+    const { deps, meter } = makeDeps();
+    deps.getTranscription = () =>
+      new FakeTranscriptionService({
+        segments: [{ id: 'seg-0', text: 'Live.' }],
+        timing: 'estimated',
+        // 90s + 30s measured streams — a reconnect is a new attempt.
+        usage: { attempts: 2, attemptDurationsMs: [90_000, 30_000] },
+      });
+    await handleTranscribeRecording({ storage_key: STORAGE_KEY }, deps);
+    assert.equal(meter.records[0]?.billedMinutes, 2);
+  });
+
+  it('an idempotent re-ingest books nothing (Source Minutes count once per recording)', async () => {
+    const { deps, meter, store } = makeDeps();
+    const key = transcriptArtifactKey(recordingIdFor(STORAGE_KEY));
+    await store.put(key, Buffer.from('{}'), 'application/json');
+    await handleTranscribeRecording({ storage_key: STORAGE_KEY }, deps);
+    assert.equal(meter.records.length, 0);
   });
 });

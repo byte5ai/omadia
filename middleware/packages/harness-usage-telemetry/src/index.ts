@@ -26,6 +26,19 @@ export {
 
 export { withProviderUsageTracking } from './withProviderUsageTracking.js';
 
+// #584 — transcription-minute metering (sibling of the token recorder).
+export {
+  type TranscriptionUsageRecord,
+  transcriptionPricePerMinuteUsd,
+  computeTranscriptionCostUsd,
+  initTranscriptionUsageRecorder,
+  isTranscriptionUsageRecorderReady,
+  recordTranscriptionUsage,
+  flushTranscriptionUsage,
+  shutdownTranscriptionUsageRecorder,
+  sumTranscriptionBilledMinutesThisMonth,
+} from './transcriptionUsage.js';
+
 export {
   type UsageWindow,
   type UsageTotals,

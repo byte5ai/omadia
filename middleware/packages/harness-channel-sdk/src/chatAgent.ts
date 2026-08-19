@@ -206,6 +206,13 @@ export interface RunToolCall {
   postcondition?: {
     issues: readonly string[];
   };
+  /** #584 — set when the tool metered a transcription call. Structural copy
+   *  of KG-side `RunToolCall.usage` (Source/Billed Minutes); the trace is
+   *  visibility only, the `transcription_usage` table is truth. */
+  usage?: {
+    sourceMinutes: number;
+    billedMinutes: number;
+  };
 }
 
 /** Per-sub-agent invocation entry in a run trace. */

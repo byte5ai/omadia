@@ -9,6 +9,7 @@ import { streamMessageWithObserver } from './streaming.js';
 import type { AskObserver } from './tools/domainQueryTool.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
 import { buildDateHeader, turnContext } from './turnContext.js';
+import type { ToolCallUsageReport } from './toolUsageContext.js';
 
 // `LocalSubAgentTool` and `LocalSubAgentToolSpec` were inlined here
 // pre-S+9.3. They have moved to `@omadia/plugin-api` so plugin-side
@@ -358,7 +359,7 @@ export class LocalSubAgent {
             console.warn(`[sub-agent ${this.name}] observer.onSubToolUse threw:`, err);
           }
           const started = Date.now();
-          const { output, postcondition } = await this.dispatch(
+          const { output, postcondition, usage } = await this.dispatch(
             use.name,
             use.input,
           );
@@ -374,6 +375,7 @@ export class LocalSubAgent {
               durationMs: elapsed,
               isError,
               ...(postcondition ? { postcondition } : {}),
+              ...(usage ? { usage } : {}),
             });
           } catch (err) {
             console.warn(`[sub-agent ${this.name}] observer.onSubToolResult threw:`, err);
@@ -445,7 +447,11 @@ export class LocalSubAgent {
   private async dispatch(
     toolName: string,
     input: unknown,
-  ): Promise<{ output: string; postcondition?: { issues: readonly string[] } }> {
+  ): Promise<{
+    output: string;
+    postcondition?: { issues: readonly string[] };
+    usage?: ToolCallUsageReport;
+  }> {
     const tool = this.toolsByName.get(toolName);
     if (!tool) return { output: `Error: unknown tool \`${toolName}\`.` };
 
@@ -466,6 +472,10 @@ export class LocalSubAgent {
     // fall-through). PII-free + deterministic, safe through the data-plane.
     const result = appendLimitSignalNote(rawOutput, limitSignal);
     const postcondition = typeof raw === 'string' ? undefined : raw.postcondition;
+    // #584 — metering marker rides the same boundary unwrap as postcondition:
+    // downstream privacy/capture paths keep seeing a plain string while the
+    // usage surfaces upward to the observer for the run trace.
+    const usage = typeof raw === 'string' ? undefined : raw.usage;
     // Phase C.2 — Raw tool-result capture (parallel to orchestrator.dispatchTool).
     // Sub-agent tool calls also feed routine templates, so the capture
     // hook must fire here too. Absent callback ⇒ no capture.
@@ -487,7 +497,11 @@ export class LocalSubAgent {
       // reading memory / stored processes sees them in clear too. Checked
       // first so it wins over every other branch.
       if (isInternExemptTool(toolName)) {
-        return { output: result, ...(postcondition ? { postcondition } : {}) };
+        return {
+          output: result,
+          ...(postcondition ? { postcondition } : {}),
+          ...(usage ? { usage } : {}),
+        };
       }
       // Slice 2.5 — same operator-owned bypass check the orchestrator's
       // outer dispatch consults. If the tool's plugin opted into `bypass`,
@@ -511,7 +525,11 @@ export class LocalSubAgent {
             err,
           );
         }
-        return { output: result, ...(postcondition ? { postcondition } : {}) };
+        return {
+          output: result,
+          ...(postcondition ? { postcondition } : {}),
+          ...(usage ? { usage } : {}),
+        };
       }
       // Canvas sentinel tap — sub-tools (e.g. an agent plugin's deterministic
       // canvas tree) emit `_pending*` directives too; the synthesis needs the
@@ -543,6 +561,7 @@ export class LocalSubAgent {
           // note to the digest so the agent still learns the result is bounded.
           output: appendLimitSignalNote(v4.digestText, limitSignal),
           ...(postcondition ? { postcondition } : {}),
+          ...(usage ? { usage } : {}),
         };
       } catch (err) {
         console.warn(
@@ -551,7 +570,11 @@ export class LocalSubAgent {
         );
       }
     }
-    return { output: result, ...(postcondition ? { postcondition } : {}) };
+    return {
+      output: result,
+      ...(postcondition ? { postcondition } : {}),
+      ...(usage ? { usage } : {}),
+    };
   }
 }
 

@@ -1,5 +1,10 @@
 import type { PluginContext } from '@omadia/plugin-api';
-import type { TranscriptionService } from '@omadia/transcription-api';
+import {
+  DEFAULT_MAX_SOURCE_MINUTES,
+  TRANSCRIPTION_METERING_SERVICE_NAME,
+  type TranscriptionMeteringConfig,
+  type TranscriptionService,
+} from '@omadia/transcription-api';
 
 import { createOpenAiTranscriptionService } from './openaiTranscriptionService.js';
 
@@ -57,6 +62,27 @@ export async function activate(
     baseURL,
   });
   const dispose = ctx.services.provide(TRANSCRIPTION_SERVICE_NAME, service);
+  // #584 — metering config, published alongside the capability. Live reads
+  // (method, not value): `ctx.config.get` resolves against the installed
+  // registry per call, so an operator edit of `max_source_minutes` via the
+  // install UI takes effect on the very next transcribe_recording call
+  // without a plugin reactivation.
+  const metering: TranscriptionMeteringConfig = {
+    maxSourceMinutes(): number {
+      const raw = ctx.config.get<number>('max_source_minutes');
+      const n = typeof raw === 'number' ? raw : Number(raw);
+      return Number.isFinite(n) && n > 0
+        ? Math.floor(n)
+        : DEFAULT_MAX_SOURCE_MINUTES;
+    },
+    model(surface): string {
+      return surface === 'stream' ? 'gpt-live-transcribe' : 'gpt-transcribe';
+    },
+  };
+  const disposeMetering = ctx.services.provide(
+    TRANSCRIPTION_METERING_SERVICE_NAME,
+    metering,
+  );
   ctx.log(
     `[transcription-adapter-openai] ready (baseURL=${baseURL}, batch model gpt-transcribe; stream surface stubbed until the realtime follow-up PR)`,
   );
@@ -64,6 +90,7 @@ export async function activate(
   return {
     async close(): Promise<void> {
       ctx.log('[transcription-adapter-openai] deactivating');
+      disposeMetering();
       dispose();
     },
   };

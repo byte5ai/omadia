@@ -21,6 +21,13 @@ export interface AskObserver {
     postcondition?: {
       issues: readonly string[];
     };
+    /** #584 — present when the tool metered a transcription call
+     * (Source/Billed Minutes). RunTraceCollector copies it onto the
+     * RunToolCall, same route as `postcondition`. */
+    usage?: {
+      sourceMinutes: number;
+      billedMinutes: number;
+    };
   }): void;
   onIterationPhase?(ev: {
     iteration: number;

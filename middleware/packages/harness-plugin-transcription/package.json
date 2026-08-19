@@ -12,14 +12,18 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test 'test/**/*.test.ts'"
   },
-  "dependencies": {},
+  "dependencies": {
+    "music-metadata": "^11.15.0"
+  },
   "peerDependencies": {
     "@omadia/orchestrator": "*",
     "@omadia/plugin-api": "*",
     "@omadia/plugin-privacy-guard": "*",
     "@omadia/transcription-api": "*",
+    "@omadia/usage-telemetry": "*",
     "express": "^5.1.0",
-    "multer": "^2.1.1"
+    "multer": "^2.1.1",
+    "pg": "^8.13.0"
   },
   "engines": {
     "node": ">=20"

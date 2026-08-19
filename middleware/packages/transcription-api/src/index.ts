@@ -28,6 +28,12 @@ export { TRANSCRIPTION_CAPABILITY } from './types.js';
 export type { TranscriptionErrorCode } from './errors.js';
 export { TranscriptionError } from './errors.js';
 
+export type { TranscriptionMeteringConfig } from './metering.js';
+export {
+  DEFAULT_MAX_SOURCE_MINUTES,
+  TRANSCRIPTION_METERING_SERVICE_NAME,
+} from './metering.js';
+
 export {
   TRANSCRIPTION_AUDIO_EXTENSIONS,
   TRANSCRIPTION_AUDIO_MIME_TYPES,

@@ -196,6 +196,11 @@ interface RunToolCallWritePayload {
   isError: boolean;
   agentContext: string;
   producedEntityIds?: string[];
+  /** #584 — transcription metering visibility (Source/Billed Minutes).
+   * Persisted on the ToolCall node in BOTH backends — a metering field
+   * present in one backend and absent in the other means the answer
+   * depends on which store the deployment runs (#650 precedent). */
+  usage?: { sourceMinutes: number; billedMinutes: number };
 }
 
 export function createNeonPool(connectionString: string, poolMax = 5): Pool {
@@ -1299,6 +1304,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           durationMs: call.durationMs,
           isError: call.isError,
           agentContext: call.agentContext,
+          // #584 — omitted entirely when the call metered nothing.
+          ...(call.usage ? { usage: call.usage } : {}),
         });
         const tcUuid = await this.upsertNode(client, {
           externalId: tcExtId,

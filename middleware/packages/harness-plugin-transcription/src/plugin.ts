@@ -1,13 +1,28 @@
-import type { PluginContext } from '@omadia/plugin-api';
+import type { Pool } from 'pg';
+import {
+  TRANSCRIPTION_MINUTES_QUOTA_CONFIG_KEY,
+  type PluginContext,
+} from '@omadia/plugin-api';
 import {
   createAttachmentReader,
+  toolUsage,
   turnContext,
   type AttachmentByteStore,
   type ChatAgentBundle,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
-import type { TranscriptionService } from '@omadia/transcription-api';
+import {
+  TRANSCRIPTION_METERING_SERVICE_NAME,
+  type TranscriptionMeteringConfig,
+  type TranscriptionService,
+} from '@omadia/transcription-api';
+import {
+  flushTranscriptionUsage,
+  recordTranscriptionUsage,
+  sumTranscriptionBilledMinutesThisMonth,
+} from '@omadia/usage-telemetry';
 
+import type { TranscriptionUsageMeter } from './metering.js';
 import {
   handleTranscribeRecording,
   transcribeRecordingToolSpec,
@@ -59,6 +74,53 @@ function resolveSessionLogger(ctx: PluginContext): TranscriptTurnLogger | undefi
   return ctx.services.get<ChatAgentBundle>('chatAgent')?.sessionLogger;
 }
 
+/**
+ * #584 — the usage-ledger seam. `record` closes over the owning agent id
+ * (`ctx.agentId` — the dimension the quota is keyed on) and the current
+ * turn; it delegates to the fire-and-forget recorder, which drops rows
+ * without a pool (in-memory KG ⇒ quota structurally unenforced, warned once
+ * there). The month sum resolves `graphPool` lazily per call: `undefined`
+ * pool = no metering store (quota unenforceable, not an error), while a DB
+ * error propagates so the tool can fail OPEN with its audit warning.
+ */
+function buildUsageMeter(ctx: PluginContext): TranscriptionUsageMeter {
+  return {
+    record(row): void {
+      recordTranscriptionUsage({
+        ...row,
+        agentId: ctx.agentId,
+        turnId: turnContext.currentTurnId(),
+      });
+    },
+    async sumBilledMinutesThisMonth(): Promise<number | undefined> {
+      const pool = ctx.services.get<Pool>('graphPool');
+      if (!pool) return undefined;
+      // Drain the recorder buffer first: without this, calls landing inside
+      // one flush window (≤5 s) would each read a stale sum and the spec's
+      // "overshoot bounded by one duration-cap length" would silently become
+      // N × cap. A flush failure is swallowed by the recorder (fire-and-
+      // forget) — the sum then simply reads the committed state, which is
+      // the same level-trigger tolerance the dev-job budget accepts.
+      await flushTranscriptionUsage();
+      return sumTranscriptionBilledMinutesThisMonth(pool, ctx.agentId);
+    },
+  };
+}
+
+/**
+ * #584 — the agent's `_transcription_minutes_quota` (kernel-injected
+ * synthetic install field, `installService`). Read live per call so an
+ * operator edit takes effect on the next dispatch. Empty/absent/non-numeric
+ * = unlimited (`undefined`); the field is an integer ≥ 0 — an explicit 0
+ * blocks every call.
+ */
+function readQuotaMinutes(ctx: PluginContext): number | undefined {
+  const raw = ctx.config.get<unknown>(TRANSCRIPTION_MINUTES_QUOTA_CONFIG_KEY);
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
 export async function activate(
   ctx: PluginContext,
 ): Promise<TranscriptionPluginHandle> {
@@ -94,6 +156,16 @@ export async function activate(
               : {}),
           };
         },
+        getMeteringConfig: () =>
+          ctx.services.get<TranscriptionMeteringConfig>(
+            TRANSCRIPTION_METERING_SERVICE_NAME,
+          ),
+        getUsageMeter: () => buildUsageMeter(ctx),
+        getQuotaMinutes: () => readQuotaMinutes(ctx),
+        // Trace visibility (#584): the orchestrator opens a per-dispatch
+        // capture scope; outside one this is a no-op and only the trace
+        // field is lost — the ledger row above stays authoritative.
+        reportUsage: (usage) => toolUsage.report(usage),
         log: (msg) => ctx.log(msg),
       }),
     { promptDoc: TRANSCRIBE_PROMPT_DOC },

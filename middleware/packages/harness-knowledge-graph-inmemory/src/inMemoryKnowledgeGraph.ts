@@ -620,6 +620,10 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           durationMs: call.durationMs,
           isError: call.isError,
           agentContext: 'orchestrator',
+          // #584 — metering visibility, written in BOTH backends (#650
+          // precedent: a field present in one store and absent in the other
+          // makes the answer depend on the deployment).
+          ...(call.usage ? { usage: call.usage } : {}),
         },
       });
       this.addEdge({ type: 'INVOKED_TOOL', from: runId, to: tcId });
@@ -666,6 +670,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
             durationMs: call.durationMs,
             isError: call.isError,
             agentContext: inv.agentName,
+            // #584 — see the orchestrator-call twin above.
+            ...(call.usage ? { usage: call.usage } : {}),
           },
         });
         this.addEdge({ type: 'INVOKED_TOOL', from: invId, to: tcId });

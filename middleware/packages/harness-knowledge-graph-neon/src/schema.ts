@@ -264,6 +264,18 @@ const ToolCallPropsSchema = z
     isError: z.boolean(),
     /** Orchestrator-level tool, or the name of the sub-agent that owned it. */
     agentContext: z.string().optional(),
+    // #584 — transcription metering visibility (Source/Billed Minutes).
+    // Declared explicitly for the same reason as `model`/`provider` on the
+    // Run schema (#650): passthrough means "tolerated", and a metering field
+    // that is merely tolerated is one nothing validates and nothing
+    // documents. Optional, so every ToolCall node written before this stays
+    // valid. NO SQL MIGRATION — `graph_nodes.properties` is generic JSONB.
+    usage: z
+      .object({
+        sourceMinutes: z.number().nonnegative(),
+        billedMinutes: z.number().nonnegative(),
+      })
+      .optional(),
   })
   .passthrough();
 

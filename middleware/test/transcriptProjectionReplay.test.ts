@@ -1,6 +1,6 @@
 /**
- * #584 slice ⑤ — zero-change replay guarantee of the transcript chunk
- * projection (ticket-02 decision): chunks logged through the REAL
+ * #584 — zero-change replay guarantee of the transcript chunk
+ * projection: chunks logged through the REAL
  * `SessionLogger` must survive the existing markdown → parser → graph
  * backfill machinery unchanged. This is the acceptance seam that justifies
  * "one chunk = one turn via the shared log() path" — no new entryType, no
@@ -62,6 +62,12 @@ function makeDeps(args: {
     }),
     getSessionLogger: () => args.logger,
     currentUploader: () => undefined,
+    // #584 — metering is not under test here: probe injected (the fake bytes
+    // above carry no real audio header), cap default, quota unlimited.
+    getMeteringConfig: () => undefined,
+    getUsageMeter: () => undefined,
+    getQuotaMinutes: () => undefined,
+    probeSourceMinutes: async () => 1,
   };
 }
 
