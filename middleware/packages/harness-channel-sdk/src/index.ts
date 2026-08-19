@@ -287,7 +287,9 @@ export {
 // already means "unknown" in `ChatParticipantsProvider`'s own contract.
 export {
   audienceFloor,
+  floorDeniesHost,
   floorPermits,
+  hostCapability,
   resolveAudience,
   type Audience,
   type AudienceFloor,

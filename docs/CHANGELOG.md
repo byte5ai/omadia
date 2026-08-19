@@ -18,6 +18,25 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — a room can forbid an outbound host
+
+- **Host-level egress (#575).** A `net:<host>` prohibition now narrows a
+  plugin's manifest outbound allow-list for the duration of a turn, enforced in
+  `ctx.http` — the accessor that already carries the manifest allow-list, the
+  SSRF guard and the rate limiter.
+- **It binds `public-web` audit mode too**, so a `web_scanner` plugin is not a
+  way around a host an operator forbade, and it is checked *before* the rate
+  limiter so a refused call costs the plugin nothing.
+- **Prohibitions only — the allow-side intersection is deliberately not
+  shipped.** Outbound hosts are granted by the plugin manifest, not by the grant
+  store, so intersecting would reduce every room's effective allow-list to the
+  empty set the moment the floor is switched on. A prohibition can only ever
+  narrow, and only where an operator wrote one.
+- `AudienceFloor` now exposes the union of prohibitions alongside the permitted
+  set: with only the difference, "explicitly forbidden" and "never granted" are
+  indistinguishable, and a consumer with its own allow-list has to tell them
+  apart.
+
 ### Added — one participant's prohibition binds the whole room
 
 - **The audience floor could express "may" but not "must not" (#575).** It
