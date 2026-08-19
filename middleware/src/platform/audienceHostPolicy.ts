@@ -40,8 +40,10 @@
  * guard re-evaluate per tool call (spec §5.2).
  */
 
-import { floorDeniesHost, type AudienceFloor } from '@omadia/channel-sdk';
+import { floorAllowsHost, floorDeniesHost, type AudienceFloor } from '@omadia/channel-sdk';
 import { turnContext } from '@omadia/orchestrator';
+
+import { config } from '../config.js';
 
 /**
  * Resolve the current turn's floor and ask whether it forbids `host`.
@@ -70,9 +72,30 @@ export async function audienceDeniesHost(host: string): Promise<boolean> {
     return true;
   }
 
-  const denied = floorDeniesHost(floor, host);
+  const denied = allowlistMode()
+    ? !floorAllowsHost(floor, host)
+    : floorDeniesHost(floor, host);
   if (denied) {
-    console.warn(`[platform] outbound host '${host}' refused by the audience floor`);
+    console.warn(
+      `[platform] outbound host '${host}' refused by the audience floor (${
+        allowlistMode() ? 'allow-list' : 'prohibitions'
+      } mode)`,
+    );
   }
   return denied;
+}
+
+/**
+ * Whether this deployment reads host policy as an allow-list.
+ *
+ * Read per call rather than captured at module load so a test — and an operator
+ * restarting into a different setting — sees the current value rather than
+ * whichever one happened to be set when this file was first imported.
+ *
+ * Gated on the floor being enabled at all: without a floor there is no room to
+ * intersect, and honouring the allow-list flag alone would refuse every
+ * outbound call in a deployment that never opted into audience control.
+ */
+function allowlistMode(): boolean {
+  return config.AUDIENCE_FLOOR_ENABLED && config.AUDIENCE_HOST_ALLOWLIST_ENABLED;
 }

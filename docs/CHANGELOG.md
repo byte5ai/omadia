@@ -18,6 +18,23 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — outbound hosts can be read as an allow-list, not just prohibitions
+
+- **`AUDIENCE_HOST_ALLOWLIST_ENABLED` (default off, #575).** With it, a host must
+  also be granted through the audience floor — `net:<host>` per host, or `net:*`
+  for unrestricted — and the grants intersect across everyone present. This is
+  the "allowlist = intersection of allowed hosts" half of the issue.
+- **Off by default because switching it on is consequential**, not out of
+  caution: outbound hosts are granted by a plugin's manifest, so a room whose
+  participants hold no host grants reaches nothing at all. Seed grants first.
+- **A prohibition beats `net:*`.** The unrestricted grant is a convenience for
+  operators who should not have to enumerate hosts; if it also overrode an
+  explicit veto, the veto would be worthless exactly where it matters, since
+  `net:*` is what a broad role is most likely to carry.
+- **`net:*` intersects like any other capability** — the room is unrestricted
+  only when *everyone* present is. One host-restricted participant restricts the
+  room.
+
 ### Added — a room can forbid an outbound host
 
 - **Host-level egress (#575).** A `net:<host>` prohibition now narrows a
