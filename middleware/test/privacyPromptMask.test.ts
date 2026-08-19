@@ -233,7 +233,16 @@ describe('#727 — ISO-8601 dates mask as dates, not phone numbers', () => {
     // The dotted form was already correct; pin it beside the ISO form so a
     // future change cannot fix one and re-break the other. A genuine phone
     // must still take the phone surrogate — the fix narrows nothing.
-    for (const isoOrDotted of ['2026-07-02', '02.07.2026', '1990-06-15']) {
+    //
+    // `30-06-2027` (dashed dd-mm-yyyy, added for nl/fr by #482) is here
+    // deliberately: it was broken by the SAME mechanism the issue reported for
+    // the ISO shape — the phone pattern's `\b0` branch grabs its `06-2027`
+    // tail and word-boundary extension grows it over the whole token — but the
+    // issue only named the ISO form, and the C0 eval could not surface either,
+    // because it scores span COVERAGE, not surrogate type. Any date whose
+    // month/day segment starts with `0` after a `-` is in this class, so all
+    // three separator styles are pinned together.
+    for (const isoOrDotted of ['2026-07-02', '02.07.2026', '1990-06-15', '30-06-2027']) {
       const r = await maskPrompt(isoOrDotted, [createBaselineDetector()]);
       assert.equal(r.spans[0]?.type, 'date', `${isoOrDotted} must be typed date`);
       assert.ok(DATE_SHAPE.test(r.maskedText), `${isoOrDotted} -> non-date surrogate '${r.maskedText}'`);
