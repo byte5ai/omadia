@@ -125,6 +125,122 @@ describe('dedupSpans', () => {
       assert.ok(resolved[i - 1]!.end <= resolved[i]!.start);
     }
   });
+
+  it('#727 — the ISO-date exact tie resolves to date, in either input order', () => {
+    // The ISO-date bug in miniature: `2026-07-02` yields a native `date` span
+    // over the whole token [0,10] and a native `phone` span over the `07-02`
+    // tail [5,10] that word-boundary extension grows back to [0,10]. Both are
+    // confidence 1 and end up the same length at the same start — a total tie
+    // on (confidence, length, start). The tie MUST resolve to `date` because
+    // its NATIVE match is larger (it matched the value directly; phone only
+    // grew into the range) — and it must do so regardless of the order the
+    // spans arrive in (previously the winner was decided by C0_PATTERNS
+    // insertion order via stable-sort fall-through).
+    const text = '2026-07-02';
+    const dateSpan = { span: { start: 0, end: 10, type: 'date', confidence: 1 }, detector: 'c0-regex' };
+    const phoneSpan = { span: { start: 5, end: 10, type: 'phone', confidence: 1 }, detector: 'c0-regex' };
+
+    for (const order of [
+      [phoneSpan, dateSpan],
+      [dateSpan, phoneSpan],
+    ]) {
+      const resolved = dedupSpans(text, order);
+      assert.equal(resolved.length, 1);
+      assert.equal(
+        resolved[0]!.type,
+        'date',
+        'the native full-token date span must win the tie in either input order',
+      );
+      assert.equal(resolved[0]!.value, '2026-07-02');
+    }
+  });
+
+  it('#727 — native match length is the decider, ABOVE the lexical fallback', () => {
+    // Isolate the nativeLen key from the lexical last-resort. For date/phone
+    // both keys happen to favour `date`, so that pair alone cannot prove
+    // WHICH key decided. Here the full-token span is typed `phone` and the
+    // grown-in tail is typed `date`: the lexical fallback (`date` < `phone`)
+    // would pick `date`, but nativeLen (full 10 > tail 5) must pick `phone`.
+    // `phone` winning proves nativeLen outranks the lexical key AND input
+    // order. (Types are assigned synthetically to exercise the comparator —
+    // no real detector emits this arrangement.)
+    const text = '2026-07-02';
+    const fullSpan = { span: { start: 0, end: 10, type: 'phone', confidence: 1 }, detector: 'c0-regex' };
+    const tailSpan = { span: { start: 5, end: 10, type: 'date', confidence: 1 }, detector: 'c0-regex' };
+    for (const order of [
+      [fullSpan, tailSpan],
+      [tailSpan, fullSpan],
+    ]) {
+      const resolved = dedupSpans(text, order);
+      assert.equal(resolved.length, 1);
+      assert.equal(
+        resolved[0]!.type,
+        'phone',
+        'the larger native match must win regardless of the lexical fallback or input order',
+      );
+    }
+  });
+
+  it('#727 — when native length also ties, a fixed LEXICAL order (not array order) decides', () => {
+    // Force the last-resort key: two spans with the SAME native range but
+    // different types. The fall-through is a fixed lexical compare of the type
+    // NAME (determinism, not priority), so the lexically-smaller type wins in
+    // either input order — proving the tiebreak is the documented rule, never
+    // C0_PATTERNS insertion order. Checked with two pairs so a single
+    // `date`-always-wins coincidence cannot pass it.
+    const text = '2026-07-02';
+    const mk = (type: string) => ({ span: { start: 0, end: 10, type, confidence: 1 }, detector: 'c0-regex' });
+    // 'date' < 'phone'  and  'amount' < 'phone'  (code-unit order)
+    for (const [lo, hi] of [
+      ['date', 'phone'],
+      ['amount', 'phone'],
+    ]) {
+      for (const order of [
+        [mk(hi), mk(lo)],
+        [mk(lo), mk(hi)],
+      ]) {
+        const resolved = dedupSpans(text, order);
+        assert.equal(resolved.length, 1);
+        assert.equal(
+          resolved[0]!.type,
+          lo,
+          `the lexically-smaller type '${lo}' must win over '${hi}' in either input order`,
+        );
+      }
+    }
+  });
+});
+
+describe('#727 — ISO-8601 dates mask as dates, not phone numbers', () => {
+  const PHONE_SHAPE = /\+49\s/; // the phone surrogate pool is `+49 30 5559xxxx`
+  const DATE_SHAPE = /^\d{2}\.\d{2}\.\d{4}$/; // the date surrogate pool is `dd.mm.yyyy`
+
+  it('substitutes a bare ISO date from the DATE surrogate pool', async () => {
+    const result = await maskPrompt('2026-07-02', [createBaselineDetector()]);
+    // The winning span is typed `date`, not `phone`.
+    assert.equal(result.spans.length, 1);
+    assert.equal(result.spans[0]!.type, 'date');
+    assert.equal(result.spans[0]!.value, '2026-07-02');
+    // And the wire value is a date surrogate, never a phone number.
+    assert.ok(DATE_SHAPE.test(result.maskedText), `expected a date surrogate, got '${result.maskedText}'`);
+    assert.ok(!PHONE_SHAPE.test(result.maskedText), `ISO date leaked as a phone surrogate: '${result.maskedText}'`);
+    // Round-trips like any masked value.
+    assert.equal(resolvePseudonyms(result.maskedText, result.map), '2026-07-02');
+  });
+
+  it('the ISO and the dotted shape both mask as dates, and a real phone still masks as a phone (regression: the two must not drift)', async () => {
+    // The dotted form was already correct; pin it beside the ISO form so a
+    // future change cannot fix one and re-break the other. A genuine phone
+    // must still take the phone surrogate — the fix narrows nothing.
+    for (const isoOrDotted of ['2026-07-02', '02.07.2026', '1990-06-15']) {
+      const r = await maskPrompt(isoOrDotted, [createBaselineDetector()]);
+      assert.equal(r.spans[0]?.type, 'date', `${isoOrDotted} must be typed date`);
+      assert.ok(DATE_SHAPE.test(r.maskedText), `${isoOrDotted} -> non-date surrogate '${r.maskedText}'`);
+    }
+    const phone = await maskPrompt('+49 171 2345678', [createBaselineDetector()]);
+    assert.equal(phone.spans[0]?.type, 'phone');
+    assert.ok(PHONE_SHAPE.test(phone.maskedText), `phone -> non-phone surrogate '${phone.maskedText}'`);
+  });
 });
 
 describe('createPromptPseudonymMap', () => {
