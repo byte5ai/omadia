@@ -24,10 +24,36 @@ import {
   type GoldenEntry,
   type RunOnce,
   type StatusName,
+  type VerdictTag,
+  type ViaTag,
 } from './golden/goldenRunner.js';
+import { FixtureOdooReader } from './golden/fixtureOdooReader.js';
 
 function entry(expected: StatusName, id = 'e'): GoldenEntry {
   return { id, userMessage: 'u', answer: 'a', expected: { status: expected } };
+}
+
+function entryVia(status: StatusName, via: ViaTag, id = 'e'): GoldenEntry {
+  return { id, userMessage: 'u', answer: 'a', expected: { status, via } };
+}
+
+/** A RunOnce that yields scripted EntryRuns (status + verdict tags), then
+ *  repeats the last — for exercising the `via` path assertion. */
+function scriptedRuns(seq: EntryRun[]): RunOnce & { calls: () => number } {
+  let i = 0;
+  let calls = 0;
+  const fn = ((): Promise<EntryRun> => {
+    calls++;
+    const run = seq[Math.min(i, seq.length - 1)] ?? seq[seq.length - 1]!;
+    i++;
+    return Promise.resolve(run);
+  }) as unknown as RunOnce & { calls: () => number };
+  fn.calls = (): number => calls;
+  return fn;
+}
+
+function run(status: StatusName, verdicts?: VerdictTag[]): EntryRun {
+  return { status, tokens: 10, ...(verdicts ? { verdicts } : {}) };
 }
 
 /** A RunOnce that yields a scripted sequence of statuses, then repeats the last.
@@ -81,6 +107,47 @@ describe('goldenRunner/parseCorpusLine', () => {
 
   it('throws on malformed JSON', () => {
     assert.throws(() => parseCorpusLine('{not json', 'f.jsonl', 2), /f\.jsonl:2: invalid JSON/);
+  });
+
+  it('parses a v2 entry with expected.via and an odoo fixture (#639)', () => {
+    const e = parseCorpusLine(
+      JSON.stringify({
+        id: 'v2',
+        userMessage: 'q',
+        answer: 'INV/2026/0042',
+        trace: { domainToolsCalled: ['query_odoo_accounting'] },
+        odoo: { records: [{ model: 'account.move', id: 42, fields: { name: 'INV/2026/0042' } }] },
+        expected: { status: 'approved', via: 'deterministic-verified' },
+      }),
+      'f.jsonl',
+      1,
+    );
+    assert.equal(e.expected.via, 'deterministic-verified');
+    assert.equal(e.odoo?.records[0]?.id, 42);
+  });
+
+  it('throws on an unknown expected.via', () => {
+    assert.throws(
+      () =>
+        parseCorpusLine(
+          JSON.stringify({ id: 'x', userMessage: 'q', answer: 'a', expected: { status: 'approved', via: 'judge-verified' } }),
+          'f.jsonl',
+          4,
+        ),
+      /f\.jsonl:4: "expected\.via" must be one of/,
+    );
+  });
+
+  it('throws when odoo.records is not an array', () => {
+    assert.throws(
+      () =>
+        parseCorpusLine(
+          JSON.stringify({ id: 'x', userMessage: 'q', answer: 'a', odoo: { records: 'nope' }, expected: { status: 'approved' } }),
+          'f.jsonl',
+          9,
+        ),
+      /f\.jsonl:9: "odoo\.records" must be an array/,
+    );
   });
 });
 
@@ -147,6 +214,139 @@ describe('goldenRunner/runEntry', () => {
   });
 });
 
+describe('goldenRunner/runEntry via path assertion (#639 v2)', () => {
+  const VERIFIED_HARD: VerdictTag[] = [{ status: 'verified', claimType: 'id' }];
+  const CONTRA_HARD: VerdictTag[] = [{ status: 'contradicted', claimType: 'amount' }];
+
+  it('passes when the decided class AND the via path are both met', async () => {
+    const r = await runEntry(
+      entryVia('approved', 'deterministic-verified'),
+      scriptedRuns([run('approved', VERIFIED_HARD)]),
+    );
+    assert.equal(r.pass, true);
+    assert.equal(r.viaPass, true);
+    assert.equal(r.via, 'deterministic-verified');
+  });
+
+  it('FAILS an approved reached with no verified hard claim — the empty-extraction trap', async () => {
+    // Status matches but the path does not: an `approved` carrying no verified
+    // hard verdict (e.g. the extractor returned zero claims) must NOT pass. This
+    // is exactly the v1 blind spot #639 exists to close. The via-miss also
+    // drives the re-runs, so we pay the full flake budget before failing.
+    const runner = scriptedRuns([run('approved'), run('approved'), run('approved')]);
+    const r = await runEntry(entryVia('approved', 'deterministic-verified'), runner);
+    assert.equal(r.decided, 'approved');
+    assert.equal(r.viaPass, false);
+    assert.equal(r.pass, false);
+    assert.equal(runner.calls(), 3);
+  });
+
+  it('is flake-tolerant on the path: a lone via-miss is corrected by majority', async () => {
+    const r = await runEntry(
+      entryVia('approved', 'deterministic-verified'),
+      scriptedRuns([run('approved'), run('approved', VERIFIED_HARD), run('approved', VERIFIED_HARD)]),
+    );
+    assert.equal(r.pass, true);
+    assert.equal(r.viaPass, true);
+  });
+
+  it('deterministic-contradicted is satisfied by a contradicted HARD claim', async () => {
+    const r = await runEntry(
+      entryVia('blocked', 'deterministic-contradicted'),
+      scriptedRuns([run('blocked', CONTRA_HARD)]),
+    );
+    assert.equal(r.pass, true);
+    assert.equal(r.viaPass, true);
+  });
+
+  it('a SOFT (judge) contradiction does NOT satisfy deterministic-contradicted', async () => {
+    // Same blocked class, but the contradiction is on a qualitative claim — the
+    // judge path, not the deterministic checker. Keeps the two block-via-
+    // contradiction paths from being conflated.
+    const soft: VerdictTag[] = [{ status: 'contradicted', claimType: 'qualitative' }];
+    const runner = scriptedRuns([run('blocked', soft), run('blocked', soft), run('blocked', soft)]);
+    const r = await runEntry(entryVia('blocked', 'deterministic-contradicted'), runner);
+    assert.equal(r.decided, 'blocked');
+    assert.equal(r.viaPass, false);
+    assert.equal(r.pass, false);
+  });
+
+  it('a green first sample on both class and path costs exactly one call', async () => {
+    const runner = scriptedRuns([run('approved', VERIFIED_HARD)]);
+    await runEntry(entryVia('approved', 'deterministic-verified'), runner);
+    assert.equal(runner.calls(), 1);
+  });
+});
+
+describe('golden/FixtureOdooReader (#639 v2)', () => {
+  const reader = new FixtureOdooReader({
+    records: [
+      { model: 'account.move', id: 42, fields: { name: 'INV/2026/0042', amount_total: 1234.56 } },
+      { model: 'account.move', id: 7, fields: { name: 'INV/2026/0007', amount_total: 99 } },
+      { model: 'hr.leave', id: 3, fields: { number_of_days: 2, employee_id: 7 } },
+      { model: 'hr.leave', id: 4, fields: { number_of_days: 5, employee_id: 7 } },
+    ],
+  });
+
+  it('read([id],[field]) returns the row with id + selected fields', async () => {
+    const rows = (await reader.execute({
+      model: 'account.move',
+      method: 'read',
+      positionalArgs: [[42], ['amount_total']],
+      kwargs: {},
+    })) as Array<Record<string, unknown>>;
+    assert.deepEqual(rows, [{ id: 42, amount_total: 1234.56 }]);
+  });
+
+  it('read of a missing id returns [] (checker reads that as "not found")', async () => {
+    const rows = (await reader.execute({
+      model: 'account.move',
+      method: 'read',
+      positionalArgs: [[999], ['amount_total']],
+      kwargs: {},
+    })) as unknown[];
+    assert.deepEqual(rows, []);
+  });
+
+  it('search on name = present ref returns the id; absent ref returns []', async () => {
+    const hit = (await reader.execute({
+      model: 'account.move',
+      method: 'search',
+      positionalArgs: [[['name', '=', 'INV/2026/0042']]],
+      kwargs: { limit: 1 },
+    })) as number[];
+    assert.deepEqual(hit, [42]);
+    const miss = (await reader.execute({
+      model: 'account.move',
+      method: 'search',
+      positionalArgs: [[['name', '=', 'INV/2026/0099']]],
+      kwargs: { limit: 1 },
+    })) as number[];
+    assert.deepEqual(miss, []);
+  });
+
+  it('search_read filters by an employee_id domain and projects the field', async () => {
+    const rows = (await reader.execute({
+      model: 'hr.leave',
+      method: 'search_read',
+      positionalArgs: [[['employee_id', '=', 7]], ['number_of_days']],
+      kwargs: { limit: 1000 },
+    })) as Array<Record<string, unknown>>;
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map((r) => r.number_of_days).sort(), [2, 5]);
+  });
+
+  it('does not leak rows across models', async () => {
+    const rows = (await reader.execute({
+      model: 'account.move',
+      method: 'search_read',
+      positionalArgs: [[], ['amount_total']],
+      kwargs: {},
+    })) as unknown[];
+    assert.equal(rows.length, 2); // the two account.move rows, not hr.leave
+  });
+});
+
 describe('goldenRunner/corpus integrity (#129 acceptance, key-free)', () => {
   const dir = new URL('./golden/corpus/', import.meta.url);
   const files = readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
@@ -154,9 +354,9 @@ describe('goldenRunner/corpus integrity (#129 acceptance, key-free)', () => {
     loadCorpusFromText(readFileSync(new URL(f, dir), 'utf8'), f),
   );
 
-  it('every corpus line parses and there are at least 12 entries', () => {
+  it('every corpus line parses and there are at least 14 entries', () => {
     assert.ok(files.length > 0, 'corpus dir must contain .jsonl files');
-    assert.ok(entries.length >= 12, `expected >= 12 entries, got ${entries.length}`);
+    assert.ok(entries.length >= 14, `expected >= 14 entries, got ${entries.length}`);
   });
 
   it('entry ids are unique', () => {
@@ -180,6 +380,28 @@ describe('goldenRunner/corpus integrity (#129 acceptance, key-free)', () => {
     );
     assert.ok(hasToolPostcondition, 'need a tool_postcondition (#130) fixture');
     assert.ok(hasCitationPath, 'need a citation_missing (#131) fixture');
+  });
+
+  it('covers the deterministic verified (Gap 1) and contradicted (Gap 2) paths (#639)', () => {
+    const verifiedEntry = entries.find(
+      (e) => e.expected.via === 'deterministic-verified',
+    );
+    const contradictedEntry = entries.find(
+      (e) => e.expected.via === 'deterministic-contradicted',
+    );
+    assert.ok(verifiedEntry, 'need a deterministic-verified -> approved fixture (Gap 1)');
+    assert.ok(contradictedEntry, 'need a deterministic-contradicted -> blocked fixture (Gap 2)');
+    // Both paths need an odoo fixture to re-query and a declared Odoo call so the
+    // trace-cross-check does not pre-empt the deterministic checker.
+    for (const e of [verifiedEntry, contradictedEntry]) {
+      assert.ok((e.odoo?.records.length ?? 0) > 0, `${e.id}: expected an odoo fixture`);
+      assert.ok(
+        e.trace?.domainToolsCalled?.some((t) => t.startsWith('query_odoo_')),
+        `${e.id}: expected a query_odoo_* call in the trace`,
+      );
+    }
+    assert.equal(verifiedEntry.expected.status, 'approved');
+    assert.equal(contradictedEntry.expected.status, 'blocked');
   });
 });
 

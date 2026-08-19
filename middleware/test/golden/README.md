@@ -11,34 +11,70 @@ behaviour (LLM weakness #13, version drift) fails here instead of shipping.
 The assertion target is **not** the raw model string — it is the verifier
 verdict *class*, which is stable despite generation stochasticity:
 
-- `approved`
+- `approved` — via trigger-skip **or** (v2) a deterministic-verified hard claim
 - `approved_with_disclaimer` (the borderline path, `isBorderlineVerdict`)
-- `blocked` — including the two synthetic claim paths:
+- `blocked` — via a judge contradiction, a deterministic contradiction (v2), or
+  the two synthetic claim paths:
   - `tool_postcondition` (#130)
   - `citation_missing` (#131)
 
 Each corpus entry is a frozen `(userMessage, answer, trace fields, fixture
-evidence, expected status)` tuple run through a **real** `VerifierPipeline` —
-real `ClaimExtractor` + real `EvidenceJudge` on the Anthropic adapter — with
-**fixture-backed** deterministic sources (no Postgres, no Odoo, no orchestrator).
-That keeps the job hermetic and cheap while still exercising the two stochastic
-stages that actually drift.
+evidence, fixture Odoo records, expected status)` tuple run through a **real**
+`VerifierPipeline` — real `ClaimExtractor` + real `EvidenceJudge` +
+real `DeterministicChecker` on the Anthropic adapter — with **fixture-backed**
+sources (an in-memory `FixtureOdooReader`, no Postgres, no live Odoo, no
+orchestrator). That keeps the job hermetic and cheap while still exercising the
+stochastic stages that actually drift.
 
-## Scope (v1) and what is v2
+Since v2 (#639) an entry may also assert the **path** that produced the class,
+not just the class, via `expected.via`:
 
-- **v1 (this):** verifier-stage eval. The stochastic stages run on
-  `VERIFIER_MODEL` (default `claude-haiku-4-5-20251001`), so that is the model
-  pinned here — asserting against the orchestrator model would be dishonest,
-  those stages never call it. Hard-claim verdicts resolve to `unverified` (no
-  Odoo/graph reader is wired), so no fixture relies on deterministic hard-claim
-  verification. Consequence: the judge's `verified → approved` path is **not**
-  exercised in v1 (a triggering answer's hard claim is always `unverified` →
-  disclaimer), so v1's `approved` fixtures cover only the trigger-skip path.
-- **v2 (not built) — tracked in [#639](https://github.com/byte5ai/omadia/issues/639):**
-  a deterministic Odoo/graph fixture reader (enables a genuine judge/deterministic
-  `verified → approved` entry and a deterministic-contradiction `blocked` entry),
-  and a full-turn eval (`input → live orchestrator answer → verdict`) once a
-  headless turn runner exists.
+- `deterministic-verified` — an Odoo re-query CONFIRMED a hard claim (→ approved).
+- `deterministic-contradicted` — an Odoo re-query REFUTED a hard claim (→ blocked).
+
+This exists because the class alone is not enough for the deterministic
+`approved` case: a triggering answer whose extractor returns **zero** claims
+also lands in `approved`, so `status: "approved"` on its own would pass for the
+wrong reason and hide a checker regression. `via` requires a decided-class
+sample to also carry a hard-claim verdict of the required kind — a soft (judge)
+or synthetic contradiction, or an empty extraction, does not satisfy it.
+
+## Scope: v1, v2, and what is still open
+
+All corpus paths pin **`VERIFIER_MODEL`** (default `claude-haiku-4-5-20251001`)
+— the model the stochastic `ClaimExtractor`/`EvidenceJudge` actually run on.
+Asserting against the orchestrator model would be dishonest; those stages never
+call it. The deterministic checker is **pure code** (no model), so the v2
+paths still pin only `VERIFIER_MODEL` (for the extractor that produces the
+claim).
+
+- **v1 (#129):** verifier-stage eval with `DeterministicChecker({})` — no reader,
+  so every hard claim resolved `unverified` and the checker's verified/
+  contradicted branches had zero coverage. `approved` was reachable **only** via
+  trigger-skip (no hard signal → extraction skipped).
+- **v2 (#639), Gaps 1 & 2 — done (this):** a `FixtureOdooReader` injected into
+  `DeterministicChecker` lets a corpus entry declare frozen Odoo records the
+  checker re-queries. This adds:
+  - `corpus/approved-deterministic.jsonl` — a hard claim the ERP **confirms** →
+    a genuine `verified → approved` (not trigger-skip). Closes Gap 1.
+  - `corpus/blocked-deterministic-contradiction.jsonl` — a hard claim the ERP
+    **refutes** → `blocked`, distinct from the judge-contradiction and the
+    trace-missing-call paths. Closes Gap 2.
+
+  Both use the value-parse-free **id/ref existence** check (the extractor need
+  only fill `odoo_record`, not the optional `value`), which keeps the live eval
+  stable under the majority-of-3 policy. The `amount`/`value` branch (verified
+  and contradicted) is pinned **deterministically** in `goldenModel.test.ts`
+  with a scripted extractor stub — no key, no jitter — rather than trusting the
+  live model to populate `value`.
+- **v2 (#639), Gap 3 — still open:** a full-turn eval
+  (`userMessage → live orchestrator answer → verdict`) pinned to
+  `ORCHESTRATOR_MODEL`/`SUB_AGENT_MODEL`. Deliberately deferred: it needs a
+  headless turn runner that does not yet exist, and it is the larger lift called
+  out as its own slice in #639. Until it lands, a model/prompt regression in the
+  orchestrator itself (e.g. it stops calling a domain tool) is out of scope
+  here — the corpus evaluates the verifier on frozen answers, it does not
+  generate them.
 
 ## Running locally
 
@@ -54,13 +90,18 @@ never invokes this runner (it lives outside the `test/**/*.test.ts` glob); only
 the key-free suites run there:
 
 - `test/goldenRunner.test.ts` covers the **pure** harness (`goldenRunner.ts`:
-  parsing, majority voting, flake-tolerant `runEntry`, summary). That module
-  imports `@omadia/verifier` as `import type` only, so this suite needs no build.
+  parsing, majority voting, flake-tolerant `runEntry`, the `via` path assertion,
+  summary) and the pure `FixtureOdooReader` (`read`/`search`/`search_read` over
+  declared rows). Both import `@omadia/verifier` as `import type` only, so this
+  suite needs no build.
 - `test/goldenModel.test.ts` covers the **model** layer (`goldenModel.ts`: the
-  real `VerifierPipeline` wiring) with a **stub** `LlmProvider`. The synthetic
-  block paths (`tool_postcondition`, `citation_missing`) need no model, so this
-  drives the real pipeline to a verdict — and asserts the trace fields are wired
-  through — without a key. It does need the workspace `dist/` built.
+  real `VerifierPipeline` wiring) with a **stub** `LlmProvider`. Two stub flavours:
+  an empty-content stub drives the synthetic block paths (`tool_postcondition`,
+  `citation_missing`, no model needed); a scripted `record_claims` stub drives
+  the real extractor → classify → `DeterministicChecker` + `FixtureOdooReader`
+  path to a deterministic-verified `approved` and a deterministic-contradicted
+  `blocked`, and asserts the projected verdict tags — all without a key. It does
+  need the workspace `dist/` built.
 
 ## Type coverage
 
@@ -89,10 +130,11 @@ on `pull_request`, forks never attempt to run it.
 ## Adding a corpus entry (do this when you ship a new agent type or verdict path)
 
 1. Pick the file under `corpus/` that matches the **expected verdict class**
-   (`approve.jsonl`, `disclaimer.jsonl`, `blocked-citation.jsonl`,
-   `blocked-tool-postcondition.jsonl`, `blocked-contradiction.jsonl`), or add a
-   new `*.jsonl` file for a new class. Every `.jsonl` in `corpus/` is picked up
-   automatically.
+   (`approve.jsonl`, `approved-deterministic.jsonl`, `disclaimer.jsonl`,
+   `blocked-citation.jsonl`, `blocked-tool-postcondition.jsonl`,
+   `blocked-contradiction.jsonl`, `blocked-deterministic-contradiction.jsonl`),
+   or add a new `*.jsonl` file for a new class. Every `.jsonl` in `corpus/` is
+   picked up automatically.
 2. Append one JSON object per line with this shape:
 
    ```jsonc
@@ -112,9 +154,25 @@ on `pull_request`, forks never attempt to run it.
      "evidence": [                        // optional fixture evidence for the judge
        { "nodeId": "n1", "source": "graph", "content": "…", "title": "…" }
      ],
-     "expected": { "status": "blocked" } // required: approved | approved_with_disclaimer | blocked
+     "odoo": {                            // optional (v2) — frozen Odoo records the
+       "records": [                       //   DeterministicChecker re-queries this turn
+         { "model": "account.move", "id": 42,
+           "fields": { "name": "INV/2026/0042", "amount_total": 1234.56 } }
+       ]
+     },
+     "expected": {
+       "status": "blocked",               // required: approved | approved_with_disclaimer | blocked
+       "via": "deterministic-contradicted" // optional (v2): deterministic-verified | deterministic-contradicted
+     }
    }
    ```
+
+   The `odoo` fixture is a tiny in-memory Odoo: `FixtureOdooReader` answers the
+   checker's `read` / `search` / `search_read` calls against these rows, so a
+   hard claim can resolve `verified` or `contradicted` instead of the reader-less
+   `unverified`. `fields.name` is what a `search` on an accounting ref matches;
+   `amount_total` / `invoice_date` back the amount / date checks (see
+   `deterministicChecker.ts` for the per-model field map).
 
 3. **The trigger trap — read this before writing a judge fixture.** The
    pipeline runs the stochastic extractor + judge only when
@@ -143,10 +201,33 @@ on `pull_request`, forks never attempt to run it.
      that **explicitly** states something incompatible (the judge only
      contradicts on explicit conflict); a contradiction dominates the co-extracted
      `unverified` hard claim, so the verdict is `blocked`.
-   - `approved` is reachable in v1 **only** via the trigger-skip path (no signal →
-     extraction skipped). A judge-*verified* approve is not achievable in v1: any
-     triggering answer carries a hard claim that resolves `unverified` → disclaimer.
-     That path is v2 (needs the deterministic Odoo/graph reader).
+   - `approved` via **trigger-skip** needs an answer with **no** hard signal, so
+     extraction is skipped (`approve.jsonl`).
+   - `approved` via **deterministic-verified** (v2) and `blocked` via
+     **deterministic-contradicted** (v2) both need: a hard signal (use an
+     **accounting ref** like `INV/2026/0042` — it triggers without forcing a
+     value-dependent amount claim), `trace.domainToolsCalled: ["query_odoo_*"]`
+     (so the trace-cross-check does **not** pre-empt the checker), an `odoo`
+     fixture the checker re-queries, and `expected.via` set. Prefer the id/ref
+     **existence** check: the fixture holding the record → `verified`; the fixture
+     lacking it → `contradicted`. It needs only `odoo_record`, not the optional
+     `value`, so it is stable live. If you need to pin an amount/date `value`
+     branch, do it in `goldenModel.test.ts` with a scripted extractor stub rather
+     than a live corpus entry — the live model does not reliably fill `value`.
+     Always assert `via`, never the class alone: a `deterministic-verified` entry
+     that asserts only `status: "approved"` would silently pass on an empty
+     extraction and hide the very regression it guards.
+   - **`deterministic-verified` needs a soft-claim guard.** Clean `approved`
+     requires **every** extracted claim to be non-`unverified`, and a triggering
+     answer means the extractor ran. Beside the hard claim the model may
+     co-extract a soft/qualitative claim off the same sentence; with no
+     `evidence` that soft claim resolves `unverified` → the turn drops to
+     `approved_with_disclaimer` and the entry FAILS for a reason you never
+     controlled. So a `deterministic-verified` entry should also carry an
+     `evidence` snippet that confirms the qualitative reading (it is simply never
+     fetched if no soft claim is emitted). A `deterministic-contradicted` entry
+     needs no such guard — a contradiction dominates the aggregate regardless of
+     any co-extracted `unverified` claim.
 5. Lines starting with `#` and blank lines are ignored — use them for section
    headers.
 6. Validate the shape without spending tokens: `npm test` runs the parser over

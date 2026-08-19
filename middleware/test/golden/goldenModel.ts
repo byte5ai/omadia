@@ -27,7 +27,13 @@ import {
 } from '@omadia/verifier';
 import type { LlmProvider } from '@omadia/llm-provider-api';
 
-import type { EntryRun, GoldenEntry, RunOnce } from './goldenRunner.js';
+import { FixtureOdooReader } from './fixtureOdooReader.js';
+import type {
+  EntryRun,
+  GoldenEntry,
+  RunOnce,
+  VerdictTag,
+} from './goldenRunner.js';
 
 function toVerifierInput(entry: GoldenEntry): VerifierInput {
   const t = entry.trace;
@@ -62,16 +68,23 @@ function fixtureFetcher(evidence: EvidenceSnippet[]): EvidenceFetcher {
 function buildPipeline(
   llm: LlmProvider,
   model: string,
-  evidence: EvidenceSnippet[],
+  entry: GoldenEntry,
 ): VerifierPipeline {
+  // #639 v2 — when the entry declares `odoo` records, the DeterministicChecker
+  // re-queries them through a FixtureOdooReader, so a hard claim can resolve
+  // `verified` (→ approved) or `contradicted` (→ blocked). Without it, hard
+  // claims resolve `unverified` exactly as in v1 — no Postgres either way.
+  const deterministic = entry.odoo
+    ? new DeterministicChecker({ odoo: new FixtureOdooReader(entry.odoo) })
+    : new DeterministicChecker({});
   return new VerifierPipeline({
     extractor: new ClaimExtractor({ llm, model }),
-    // No odoo/graph reader: hard claims resolve to `unverified` rather than
-    // hitting Postgres. The verdict-class fixtures never depend on
-    // deterministic hard-claim verification (that path needs an Odoo fixture
-    // reader — v2, see README).
-    deterministic: new DeterministicChecker({}),
-    judge: new EvidenceJudge({ llm, fetcher: fixtureFetcher(evidence), model }),
+    deterministic,
+    judge: new EvidenceJudge({
+      llm,
+      fetcher: fixtureFetcher(entry.evidence ?? []),
+      model,
+    }),
     log: (): void => {
       /* silent */
     },
@@ -100,8 +113,15 @@ export function buildVerifierRunOnce(
       stream: provider.stream.bind(provider),
       classifyError: provider.classifyError.bind(provider),
     };
-    const pipeline = buildPipeline(counting, model, entry.evidence ?? []);
+    const pipeline = buildPipeline(counting, model, entry);
     const verdict = await pipeline.verify(toVerifierInput(entry));
-    return { status: verdict.status, tokens };
+    // Project the per-claim verdicts so the runner can assert the PATH (`via`),
+    // not just the class — an `approved` from an empty extraction carries no
+    // `verified` tag and so cannot satisfy `deterministic-verified`.
+    const verdicts: VerdictTag[] = verdict.claims.map((c) => ({
+      status: c.status,
+      claimType: c.claim.type,
+    }));
+    return { status: verdict.status, tokens, verdicts };
   };
 }
