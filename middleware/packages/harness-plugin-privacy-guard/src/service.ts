@@ -51,7 +51,7 @@ import {
   type LlmComplete,
   type PiiSchemaClassifier,
 } from './v4/piiClassifier.js';
-import { createBaselineDetector, maskPrompt } from './promptMask.js';
+import { createBaselineDetector, createCustomTermsDetector, maskPrompt } from './promptMask.js';
 import { findIdentityLeaks } from './v4/onTheWire.js';
 import { resolvePseudonyms } from './v4/pseudonym.js';
 import type { PseudonymMap } from './v4/types.js';
@@ -95,8 +95,55 @@ interface V4ReceiptAccum {
  *  and the orchestrator proceeds byte-identically to legacy behavior. */
 export const MASK_USER_PROMPT_CONFIG_KEY = 'mask_user_prompt';
 
+/** #760 — operator deny-list config keys (multiline strings, one entry per
+ *  line): literal terms and advanced regex patterns. Both feed the
+ *  'custom-terms' detector alongside the C0 baseline. */
+export const CUSTOM_TERMS_CONFIG_KEY = 'custom_terms';
+export const CUSTOM_PATTERNS_CONFIG_KEY = 'custom_patterns';
+
 function isPromptMaskEnabled(value: unknown): boolean {
   return value === true || value === 'true' || value === 'on';
+}
+
+/** Split a config value into entries. Terms additionally split on ';' (the
+ *  setup UI renders a single-line input); patterns split ONLY on newlines —
+ *  ';' is legal inside a regex and silently splitting one would corrupt it. */
+function configLines(value: unknown, alsoSemicolon: boolean): string[] {
+  if (typeof value !== 'string') return [];
+  return value
+    .split(alsoSemicolon ? /[\n;]/ : '\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+}
+
+/** #760 — build the fingerprint-cached custom-detector resolver. Pattern
+ *  vetting runs a wall-clock probe, so construction must happen on config
+ *  CHANGE, not on every turn; rejected patterns are logged once per config
+ *  change — an operator who typed a protection must learn it is not active.
+ *  The cache lives in the SERVICE closure (returned resolver), never at
+ *  module level: two service instances with different configs would
+ *  alternate-thrash a shared slot, re-running the probe budget and
+ *  re-emitting the rejection log on every turn (review M4). */
+function makeCustomDetectorResolver(): (
+  readConfig: ((key: string) => unknown) | undefined,
+) => PromptPiiDetector | undefined {
+  let cache: { fingerprint: string; detector: PromptPiiDetector | undefined } | undefined;
+  return (readConfig) => {
+    const terms = configLines(readConfig?.(CUSTOM_TERMS_CONFIG_KEY), true);
+    const patterns = configLines(readConfig?.(CUSTOM_PATTERNS_CONFIG_KEY), false);
+    const fingerprint = JSON.stringify([terms, patterns]);
+    if (cache?.fingerprint === fingerprint) {
+      return cache.detector;
+    }
+    const { detector, rejected } = createCustomTermsDetector({ terms, patterns });
+    for (const r of rejected) {
+      console.error(
+        `[privacy-guard v4] customPatternRejected reason=${r.reason} pattern=${JSON.stringify(r.source)} — this protection is NOT active`,
+      );
+    }
+    cache = { fingerprint, detector };
+    return detector;
+  };
 }
 
 const V4_RENDER_NOTE =
@@ -206,6 +253,8 @@ export function createPrivacyGuardService(deps?: {
   // ingested attachment tail) so surrogates stay stable; inverted over the
   // final answer by `restorePromptPseudonyms`; dropped by `finalizeTurn`.
   const promptMaskMaps = new Map<string, PseudonymMap>();
+  // #760 — per-service fingerprint cache for the operator deny-list detector.
+  const resolveCustomDetector = makeCustomDetectorResolver();
   // Slice 2 — cached, Haiku-backed schema PII classifier. Process-scoped
   // (its cache spans turns — schema verdicts are tool-shape-stable). Absent
   // when no host LLM is wired.
@@ -477,6 +526,10 @@ export function createPrivacyGuardService(deps?: {
         return { outcome: 'disabled' };
       }
       const detectors = [createBaselineDetector()];
+      // #760 — operator deny-list: literal terms + vetted regex patterns.
+      // Same confidence-1, fail-closed path as the baseline.
+      const customDetector = resolveCustomDetector(deps?.readConfig);
+      if (customDetector) detectors.push(customDetector);
       let degraded = false;
       if (deps?.c1Detector) {
         // Run the C1 detector up-front so its failure cannot take the C0
