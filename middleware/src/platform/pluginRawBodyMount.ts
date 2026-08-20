@@ -46,16 +46,39 @@ import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
  *     parses and calls `next()`. Routing, termination and authentication stay
  *     exactly where C4 put them.
  *
+ * OWNERSHIP FIRST, THEN RAWNESS
+ * -----------------------------
+ * `resolveRawBodyRoute` resolves the LONGEST live prefix covering the path and
+ * only then asks whether that winner is raw. It deliberately does not pick the
+ * longest *raw* prefix: a shorter raw entry beating a longer `'json'` entry
+ * would buffer a path the raw route does not own, and the json router would
+ * receive a `Buffer` where it asked for a parsed object — silently, because
+ * body-parser's `_body` marker makes every later parser a no-op. The rule is
+ * "the parser that runs here belongs to the router that will answer".
+ *
  * THE COST, STATED PLAINLY
  * ------------------------
  * This runs before authentication, because it has to. A raw route therefore
  * buffers up to its limit for an anonymous caller before anyone checks who
- * they are. That is why the default limit is 512 KB and not the global 10 MB
- * (`PLUGIN_RAW_BODY_LIMIT`), why only prefixes a live plugin explicitly
- * registered as `body: 'raw'` match, and why a disposed entry stops matching
- * immediately. Nothing here widens what is *reachable*: an unauthenticated
- * request to a raw route still meets the public-path mount and `requireAuth`
- * afterwards exactly as it would without this mount.
+ * they are. Four things bound that cost, and all four are load-bearing:
+ *
+ *   * the default limit is 512 KB, not the global 10 MB
+ *     (`PLUGIN_RAW_BODY_LIMIT`);
+ *   * only prefixes a live plugin explicitly registered as `body: 'raw'` match,
+ *     and a disposed entry stops matching immediately;
+ *   * `body: 'raw'` is only registerable beneath a prefix the plugin declared
+ *     in `permissions.public_paths` (`pluginContext.ts`) — the same
+ *     operator-visible gate `auth: 'public' | 'custom'` goes through, because a
+ *     global pre-auth parser is just as much a boundary decision as opting out
+ *     of the session gate. C4's declaration schema forbids one-segment paths,
+ *     core-reserved roots and core-`publicPaths` collisions, so no plugin can
+ *     claim a prefix broad enough to buffer core's own traffic;
+ *   * the registry keeps a floor of its own (`>= 2` path segments) so a call
+ *     site that bypasses the manifest layer still cannot register `/` as raw.
+ *
+ * Nothing here widens what is *reachable*: an unauthenticated request to a raw
+ * route still meets the public-path mount and `requireAuth` afterwards exactly
+ * as it would without this mount.
  */
 
 export interface PluginRawBodyMountOptions {

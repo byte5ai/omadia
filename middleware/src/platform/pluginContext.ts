@@ -504,25 +504,35 @@ export function createPluginContext(
   // Routes accessor: append to the kernel's route queue. The kernel mounts
   // after all plugins have activated.
   //
-  // Epic #470 C6 / G2 — this layer, and only this layer, decides whether a
-  // plugin is ALLOWED to ask for `auth: 'public' | 'custom'`. The route
-  // registry is a generic Express concern that must not know about manifests;
-  // the grant registry cannot answer yet (claims happen AFTER activate(), by
-  // design — see toolPluginRuntime.activate). What exists at registration time
-  // is the manifest declaration, and it is the right gate: a plugin may only
-  // opt a prefix out of the kernel session gate if it ASKED for that prefix in
+  // Epic #470 C6 / G2+G3 — this layer, and only this layer, decides whether a
+  // plugin is ALLOWED to ask for `auth: 'public' | 'custom'` OR `body:'raw'`.
+  // The route registry is a generic Express concern that must not know about
+  // manifests; the grant registry cannot answer yet (claims happen AFTER
+  // activate(), by design — see toolPluginRuntime.activate). What exists at
+  // registration time is the manifest declaration, and it is the right gate:
+  // a plugin may only opt a prefix out of the kernel session gate, or ask for
+  // the global pre-auth raw-body slot, if it ASKED for that prefix in
   // `permissions.public_paths`, which the operator saw in the install dialog.
   //
   // Declaration is necessary, not sufficient. Being served without a session
   // additionally needs exclusive ownership and operator consent, both checked
-  // at request time by the C4 mount. So the failure modes stack the safe way:
-  // declared-but-unconsented is claimed and unreachable-without-a-session;
-  // undeclared is not registerable at all.
+  // at request time by the C4 mount. And `body:'raw'` is just as operator-
+  // visible a decision: the prefix is buffered by a GLOBAL mount that runs
+  // before authentication, for anonymous callers, and it changes what every
+  // request under that prefix looks like. So the failure modes stack the safe
+  // way: declared-but-unconsented is claimed and unreachable-without-a-
+  // session; undeclared is not registerable at all.
   const routes: RoutesAccessor = {
     register(prefix, router, options) {
       const auth = options?.auth ?? 'session';
-      if (auth !== 'session') {
-        assertPrefixIsDeclaredPublic(agentId, prefix, auth, declaredPublicPaths);
+      const body = options?.body ?? 'json';
+      if (auth !== 'session' || body === 'raw') {
+        assertPrefixIsDeclared(
+          agentId,
+          prefix,
+          auth !== 'session' ? `auth:'${auth}'` : `body:'${body}'`,
+          declaredPublicPaths,
+        );
       }
       return opts.routeRegistry.register(prefix, router, agentId, options);
     },
@@ -1367,8 +1377,9 @@ export function createMigrationContext(
 }
 
 /**
- * Epic #470 C6 / G2 — a route may only opt out of the kernel session gate
- * beneath a prefix the plugin declared in `permissions.public_paths`.
+ * Epic #470 C6 / G2+G3 — a route may only opt out of the kernel session gate,
+ * or ask for the pre-auth global raw-body slot, beneath a prefix the plugin
+ * declared in `permissions.public_paths`.
  *
  * The direction of the containment check is the point. We require the
  * REGISTERED PREFIX to lie inside a DECLARED PATH, not the other way round.
@@ -1379,26 +1390,32 @@ export function createMigrationContext(
  * inside the declaration means every URL the router can possibly answer was
  * declared, and therefore shown to the operator.
  *
+ * `body:'raw'` belongs behind the same gate for the same operator-visibility
+ * reason. The raw parse is not a local router concern; it happens in a GLOBAL
+ * mount before authentication, buffers bytes for anonymous callers, and
+ * changes what every request under that prefix looks like. That is exactly the
+ * kind of boundary decision an operator must have seen in the manifest.
+ *
  * Throwing (rather than downgrading to `'session'`) is deliberate: a webhook
  * receiver that silently acquires a session gate answers 401 to every delivery
  * and looks like a broken integration. A plugin that mis-declares must fail to
  * activate, loudly, at install time.
  */
-function assertPrefixIsDeclaredPublic(
+function assertPrefixIsDeclared(
   agentId: string,
   prefix: string,
-  auth: 'public' | 'custom',
+  reason: string,
   declared: readonly string[],
 ): void {
   const covered = declared.some((decl) => isPathUnderPrefix(prefix, decl));
   if (covered) return;
   throw new Error(
-    `routes.register: '${agentId}' asked for auth:'${auth}' at '${prefix}' but that prefix is not covered by any ` +
+    `routes.register: '${agentId}' asked for ${reason} at '${prefix}' but that prefix is not covered by any ` +
       `permissions.public_paths declaration` +
       (declared.length === 0
         ? ' (the manifest declares none)'
         : ` (declared: ${declared.join(', ')})`) +
-      ` — a plugin cannot opt a route out of authentication without an operator-visible declaration`,
+      ` — a plugin cannot change authentication or raw-body parsing at a prefix without an operator-visible declaration`,
   );
 }
 

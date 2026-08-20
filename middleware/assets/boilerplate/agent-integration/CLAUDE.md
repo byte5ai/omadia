@@ -282,8 +282,8 @@ Plugins.
 | Wert | Bedeutung |
 |---|---|
 | `'session'` | Der Kernel prüft die Operator-Session — dieselbe `requireAuth`-Instanz, die Core an `/api` mountet. Unter `/api` ist das Defense-in-Depth, **außerhalb** von `/api` (z.B. `/diagrams`) ist es das einzige Session-Gate. CSRF-Haltung = die von Core: `SameSite=Lax`-Cookie, kein Token-Layer. |
-| `'public'` | Kein Kernel-Auth. **Registrierung wirft**, wenn das Prefix nicht unterhalb eines in `permissions.public_paths` deklarierten Pfads liegt. |
-| `'custom'` | Wie `'public'`, aber du sagst damit zu, **jeden** Request selbst zu authentifizieren (HMAC, Bearer, mTLS-Header). |
+| `'public'` | Kein Kernel-Auth. **Registrierung wirft**, wenn das Prefix nicht unterhalb eines in `permissions.public_paths` deklarierten Pfads liegt. Die Route wird **ausschließlich** über den Public-Path-Mount ausgeliefert — also nur, solange die Zustimmung des Operators für dieses Prefix steht. |
+| `'custom'` | Wie `'public'` — gleiche Deklarationspflicht, gleiche Erreichbarkeitsregel —, aber du sagst damit zu, **jeden** Request selbst zu authentifizieren (HMAC, Bearer, mTLS-Header). |
 
 Es gibt kein `'none'`. Ein Plugin kann sich nicht selbst aus der
 Authentifizierung herausdeklarieren — es kann ein Prefix nur **beantragen**
@@ -302,7 +302,7 @@ Operators.
 | Wert | Bedeutung |
 |---|---|
 | `'json'` | Geparstes JSON, Limit wie Core (10 MB). |
-| `'raw'` | Unveränderte Bytes als `Buffer` — auf `req.body` **und** `req.rawBody`. Limit default 512 KB. |
+| `'raw'` | Unveränderte Bytes als `Buffer` — auf `req.body` **und** `req.rawBody`. Limit default 512 KB. **Braucht dieselbe `permissions.public_paths`-Deklaration wie `auth: 'public'`** (siehe Kasten unten). |
 | `'none'` | Der Kernel mountet **keinen** Parser für diese Route; der Stream gehört dem Plugin (Uploads, Proxying, Streaming). |
 
 > **`'none'` schaltet den globalen JSON-Parser nicht ab.** Ein Request mit
@@ -315,6 +315,20 @@ Operators.
 > `bodyLimit` wirkt aus demselben Grund nur bei `'raw'` wirklich. Bei `'json'`
 > hat der globale 10-MB-Parser schon zugeschlagen; ein größerer Wert hebt die
 > effektive Grenze nicht an.
+
+> **`'raw'` ist deklarationspflichtig — und zwar aus demselben Grund wie
+> `auth: 'public'`.** Der Raw-Parser läuft **nicht** lokal an deinem Router,
+> sondern in einem **globalen Mount vor `express.json` und vor der
+> Authentifizierung**. Er puffert also Bytes für anonyme Aufrufer und verändert,
+> wie jeder Request unter diesem Prefix aussieht. Das ist genauso eine
+> Grenzentscheidung wie das Abschalten des Session-Gates — deshalb muss das
+> Prefix in `permissions.public_paths` stehen, damit der Operator es im
+> Install-Dialog gesehen hat. Ein nicht deklariertes `body: 'raw'` **wirft bei
+> der Registrierung**.
+>
+> Zwei Prefixe, zwei Modi: Es gewinnt immer der **längste** Prefix, der den Pfad
+> besitzt — erst dann wird gefragt, ob er `'raw'` ist. Ein `'json'`-Router
+> unterhalb eines `'raw'`-Prefixes bekommt also weiterhin geparstes JSON.
 
 **Webhook mit HMAC — das kanonische `raw`-Beispiel:**
 

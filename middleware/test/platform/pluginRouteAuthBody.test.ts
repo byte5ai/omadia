@@ -36,6 +36,10 @@ const WEBHOOK_SECRET = 'shhh-hmac-secret';
 /** Prefixes. `/api/plugins/<id>/…` is the reserved plugin root C4 defines. */
 const ADMIN_PREFIX = '/api/plugins/acme/admin';
 const HOOK_PREFIX = '/api/plugins/acme/hooks';
+const API_PUBLIC_PREFIX = '/api/plugins/acme/public';
+const DIAGRAM_PUBLIC_PREFIX = '/diagrams/acme-pub';
+const DIAGRAM_CUSTOM_PREFIX = '/diagrams/acme-hook';
+const DIAGRAM_SESSION_PREFIX = '/diagrams/acme-session';
 
 interface Harness {
   server: Server;
@@ -168,6 +172,13 @@ const CLAIM_CTX = {
   ownRoutePrefixes: [ADMIN_PREFIX, HOOK_PREFIX],
 };
 
+function claimCtx(...ownRoutePrefixes: string[]) {
+  return {
+    corePublicPaths: publicPaths(),
+    ownRoutePrefixes,
+  };
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // The exit condition: webhook HMAC works through the generic path.
 // ───────────────────────────────────────────────────────────────────────────
@@ -289,6 +300,32 @@ describe("#470 C6 — auth:'custom' + body:'raw' webhook through the generic pat
     }
   });
 
+  it("a body:'json' child beneath a raw parent still receives parsed JSON", async () => {
+    const auth = kernelRequireAuth();
+    const routes = newRegistry(auth);
+    const grants = new PublicPathGrantRegistry();
+    routes.register(HOOK_PREFIX, webhookRouter({}), 'acme', { body: 'raw' });
+    routes.register(`${HOOK_PREFIX}/admin`, jsonRouter(), 'acme');
+    const h = await buildApp({ routes, grants, sessionAuth: auth });
+    try {
+      const res = await fetch(`${h.baseUrl}${HOOK_PREFIX}/admin/echo`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: await operatorCookie(),
+        },
+        body: JSON.stringify({ hello: 'child-route' }),
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), {
+        parsed: { hello: 'child-route' },
+        rawBodyPresent: false,
+      });
+    } finally {
+      h.server.close();
+    }
+  });
+
   it('the raw slot buffers ONLY its own prefix — a core path is untouched', async () => {
     const { h } = await setup();
     try {
@@ -303,6 +340,14 @@ describe("#470 C6 — auth:'custom' + body:'raw' webhook through the generic pat
     } finally {
       h.server.close();
     }
+  });
+
+  it("rejects body:'raw' at '/' because a one-segment claim is too broad", () => {
+    const routes = newRegistry(kernelRequireAuth());
+    assert.throws(
+      () => routes.register('/', webhookRouter({}), 'evil', { body: 'raw' }),
+      /'evil'.*'\/'.*body:'raw'.*one-segment claim is too broad/,
+    );
   });
 });
 
@@ -368,6 +413,89 @@ describe("#470 C6 / G2 — auth:'session'", () => {
       () => unwired.register(ADMIN_PREFIX, jsonRouter(), 'acme'),
       /no session middleware is available yet/,
     );
+  });
+});
+
+describe("#470 C6 / G2 — consent stays load-bearing for auth:'public' and auth:'custom'", () => {
+  it("auth:'public' under /api without a grant still answers 401", async () => {
+    const auth = kernelRequireAuth();
+    const routes = newRegistry(auth);
+    const grants = new PublicPathGrantRegistry();
+    routes.register(API_PUBLIC_PREFIX, jsonRouter(), 'acme', { auth: 'public' });
+    grants.claim('acme', [API_PUBLIC_PREFIX], {
+      ...claimCtx(API_PUBLIC_PREFIX),
+      grantedPrefixes: new Set(),
+    });
+    const h = await buildApp({ routes, grants, sessionAuth: auth });
+    try {
+      const res = await fetch(`${h.baseUrl}${API_PUBLIC_PREFIX}/ping`);
+      assert.equal(res.status, 401);
+    } finally {
+      h.server.close();
+    }
+  });
+
+  it("auth:'public' outside /api without a grant is not served", async () => {
+    const auth = kernelRequireAuth();
+    const routes = newRegistry(auth);
+    const grants = new PublicPathGrantRegistry();
+    routes.register(DIAGRAM_PUBLIC_PREFIX, jsonRouter(), 'acme', { auth: 'public' });
+    grants.claim('acme', [DIAGRAM_PUBLIC_PREFIX], {
+      ...claimCtx(DIAGRAM_PUBLIC_PREFIX),
+      grantedPrefixes: new Set(),
+    });
+    const h = await buildApp({ routes, grants, sessionAuth: auth });
+    try {
+      const res = await fetch(`${h.baseUrl}${DIAGRAM_PUBLIC_PREFIX}/ping`);
+      assert.equal(res.status, 404);
+    } finally {
+      h.server.close();
+    }
+  });
+
+  it("revoking the grant stops serving an auth:'custom' route outside /api", async () => {
+    const auth = kernelRequireAuth();
+    const routes = newRegistry(auth);
+    const grants = new PublicPathGrantRegistry();
+    routes.register(DIAGRAM_CUSTOM_PREFIX, jsonRouter(), 'acme', { auth: 'custom' });
+    grants.claim('acme', [DIAGRAM_CUSTOM_PREFIX], {
+      ...claimCtx(DIAGRAM_CUSTOM_PREFIX),
+      grantedPrefixes: new Set([DIAGRAM_CUSTOM_PREFIX]),
+    });
+    const h = await buildApp({ routes, grants, sessionAuth: auth });
+    try {
+      const before = await fetch(`${h.baseUrl}${DIAGRAM_CUSTOM_PREFIX}/ping`);
+      assert.equal(before.status, 200);
+      grants.setGranted('acme', new Set());
+      const after = await fetch(`${h.baseUrl}${DIAGRAM_CUSTOM_PREFIX}/ping`);
+      assert.equal(after.status, 404);
+    } finally {
+      h.server.close();
+    }
+  });
+
+  it("a granted public prefix does NOT launder an auth:'session' route into a public one", async () => {
+    const auth = kernelRequireAuth();
+    const routes = newRegistry(auth);
+    const grants = new PublicPathGrantRegistry();
+    routes.register(DIAGRAM_SESSION_PREFIX, jsonRouter(), 'acme');
+    grants.claim('acme', [DIAGRAM_SESSION_PREFIX], {
+      ...claimCtx(DIAGRAM_SESSION_PREFIX),
+      grantedPrefixes: new Set([DIAGRAM_SESSION_PREFIX]),
+    });
+    const h = await buildApp({ routes, grants, sessionAuth: auth });
+    try {
+      // This is the property that keeps a grant from laundering a
+      // session-gated route into a public one.
+      const anon = await fetch(`${h.baseUrl}${DIAGRAM_SESSION_PREFIX}/ping`);
+      assert.equal(anon.status, 401);
+      const session = await fetch(`${h.baseUrl}${DIAGRAM_SESSION_PREFIX}/ping`, {
+        headers: { Cookie: await operatorCookie() },
+      });
+      assert.equal(session.status, 200);
+    } finally {
+      h.server.close();
+    }
   });
 });
 

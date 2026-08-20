@@ -85,15 +85,17 @@ declare module 'express-serve-static-core' {
  *    cross-site POST. Giving plugin routes a *different* CSRF mechanism would
  *    mean two postures to keep in sync, which is how they drift apart.
  *
- *  - `'public'` — no kernel authentication; the route is reachable by anyone
- *    the C4/H1 grant machinery lets through. Only registerable beneath a prefix
- *    the plugin declared in `permissions.public_paths` (enforced in
+ *  - `'public'` — no kernel authentication inside the route's own stack; the
+ *    route is served ONLY through C4/H1's terminating public-path mount, and
+ *    therefore only while the operator grant stands. Only registerable beneath
+ *    a prefix the plugin declared in `permissions.public_paths` (enforced in
  *    `pluginContext.ts`, which is the layer that knows the manifest).
  *
- *  - `'custom'` — same registration constraint as `'public'`; the difference is
- *    intent, and it is a documented one: the plugin asserts it authenticates
- *    every request itself (HMAC, bearer token, mTLS header). A webhook receiver
- *    verifying `X-Hub-Signature-256` over `req.rawBody` is the canonical case.
+ *  - `'custom'` — same registration constraint and same reachability rule as
+ *    `'public'`; the difference is intent, and it is a documented one: the
+ *    plugin asserts it authenticates every request itself (HMAC, bearer token,
+ *    mTLS header). A webhook receiver verifying `X-Hub-Signature-256` over
+ *    `req.rawBody` is the canonical case.
  *
  * There is deliberately no `'none'`. A plugin cannot self-declare its way out
  * of authentication: `'public'`/`'custom'` are only reachable through a
@@ -259,6 +261,22 @@ export class PluginRouteRegistry {
     }
     const auth: PluginRouteAuth = options?.auth ?? 'session';
     const body: PluginRouteBody = options?.body ?? 'json';
+    // A FLOOR, not the gate. The real gate is `pluginContext.ts`, which
+    // requires a `body: 'raw'` prefix to sit inside a declared
+    // `permissions.public_paths` entry. This registry must not know about
+    // manifests — but it must not be the silent failure mode either, because
+    // the raw parser it hands out runs in a GLOBAL mount ahead of core's
+    // `express.json`. A prefix like `/` or `/api` would match every request
+    // in the process, buffer it pre-auth at the raw limit, and deliver a
+    // `Buffer` to core routers that asked for parsed JSON. So any call site
+    // that bypasses the manifest layer still cannot claim one. The wording
+    // mirrors C4's `publicPathEntrySchema` refinement on purpose: same rule,
+    // stated once per layer.
+    if (body === 'raw' && countNonEmptySegments(prefix) < 2) {
+      throw new Error(
+        `PluginRouteRegistry: '${source}' registered '${prefix}' with body:'raw' but raw prefixes must be at least two segments deep — a one-segment claim is too broad`,
+      );
+    }
 
     let authHandler: RequestHandler | null = null;
     if (auth === 'session') {
@@ -323,7 +341,32 @@ export class PluginRouteRegistry {
     }
   }
 
+  /**
+   * Epic #470 C6 / G2 — the ambient app mount serves `auth: 'session'` ONLY.
+   *
+   * `'public'` and `'custom'` entries are reachable exclusively through
+   * {@link resolvePublicDispatch}, i.e. through C4's terminating public-path
+   * mount, which re-checks the operator grant on every request. Mounting them
+   * here too would make consent decorative: a non-session entry composes a
+   * stack with no auth handler, so an ambient mount answers it with no session
+   * AND no grant. Under `/api` the blanket `app.use('/api', requireAuth)`
+   * happens to mask that; outside `/api` — `/diagrams`, `/documents`, `/p/...`,
+   * all of which C4's `ownRoutePrefixes` branch permits — nothing does, and a
+   * declared-but-ungranted route serves anonymous traffic, while a revoked
+   * grant never closes one.
+   *
+   * With this rule the invariant the epic claims is the invariant the code
+   * enforces: being served without a session needs declaration AND exclusive
+   * ownership AND a standing operator grant. Revoke the grant and the route
+   * stops being served, inside and outside `/api` alike.
+   *
+   * No plugin regresses: `auth` ships in C6, so nothing uses
+   * `'public'`/`'custom'` yet.
+   */
   private mountEntry(app: Express, entry: RouteEntry): void {
+    if (entry.auth !== 'session') {
+      return;
+    }
     app.use(entry.prefix, guarded(entry));
   }
 
@@ -349,6 +392,11 @@ export class PluginRouteRegistry {
    * gate even when reached through a granted public prefix, and a route that
    * asked for `body: 'raw'` keeps its raw parser. One code path, one behaviour.
    *
+   * It is also the EXCLUSIVE reachability path for `auth:'public'` and
+   * `auth:'custom'`. Those entries are not ambiently mounted on the app at
+   * all, so operator consent is genuinely load-bearing: revoke the grant and
+   * the route stops being served, inside AND outside `/api`.
+   *
    * The disposed check lives INSIDE the wrapper, not just at resolve time, so
    * a plugin deactivated between resolution and dispatch still stops serving.
    */
@@ -370,16 +418,21 @@ export class PluginRouteRegistry {
   }
 
   /**
-   * Epic #470 C6 / G3 — the live `body: 'raw'` route owning `path`, if any.
+   * Epic #470 C6 / G3 — the live `body: 'raw'` route OWNING `path`, if any.
    *
    * Read by `pluginRawBodyMount.ts`, which sits ahead of the global
    * `express.json`. Resolution is per request rather than snapshotted at boot
    * because plugins install, activate and deactivate at runtime: a snapshot
    * would keep buffering for a plugin that is gone and miss one that just
    * arrived. Disposed entries never match.
+   *
+   * Ownership comes first, THEN rawness. The bug this prevents is subtle but
+   * severe: if a shorter raw prefix beats a longer non-raw prefix, the pre-
+   * `express.json` mount buffers a path the raw route does not own and hands a
+   * Buffer to a router that explicitly asked for parsed JSON.
    */
   resolveRawBodyRoute(path: string): PluginRawBodyRoute | null {
-    const entry = this.bestLiveEntry(path, (e) => e.rawParser !== null);
+    const entry = this.bestLiveEntry(path, () => true);
     if (!entry?.rawParser) return null;
     return {
       prefix: entry.prefix,
@@ -503,6 +556,11 @@ function isUnderPrefix(child: string, parent: string): boolean {
   if (child === parent) return true;
   const withSlash = parent.endsWith('/') ? parent : `${parent}/`;
   return child.startsWith(withSlash);
+}
+
+/** Path segments that carry a name — `/` is 0, `/api` is 1, `/api/x` is 2. */
+function countNonEmptySegments(path: string): number {
+  return path.split('/').filter((segment) => segment.length > 0).length;
 }
 
 function isExpressRouter(value: unknown): value is Router {

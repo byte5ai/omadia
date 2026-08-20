@@ -1,12 +1,14 @@
 /**
- * Epic #470 C6 / G2 — the register-time gate on opting a route OUT of the
- * kernel session gate.
+ * Epic #470 C6 / G2+G3 — the register-time gate on opting a route OUT of the
+ * kernel session gate, or into the pre-auth raw-body slot.
  *
  * `ctx.routes.register(prefix, router, { auth: 'public' | 'custom' })` is the
- * only way a plugin can ask for a route the kernel does not authenticate. This
- * suite pins the constraint that makes that safe: the prefix must lie beneath
- * a path the plugin declared in `permissions.public_paths` — the same list the
- * operator saw in the install dialog and consented to (or did not) via C4/H1.
+ * only way a plugin can ask for a route the kernel does not authenticate, and
+ * `body:'raw'` is the only way it can ask for the global pre-auth raw-body
+ * mount. This suite pins the constraint that makes both safe: the prefix must
+ * lie beneath a path the plugin declared in `permissions.public_paths` — the
+ * same list the operator saw in the install dialog and consented to (or did
+ * not) via C4/H1.
  *
  * The gate lives here, in the context, rather than in `PluginRouteRegistry`,
  * because this is the only layer that knows which manifest the caller is. The
@@ -117,7 +119,7 @@ function makeCtx(publicPathDecls: readonly string[]) {
 
 const DECLARED = '/api/plugins/acme/hooks';
 
-describe("#470 C6 / G2 — auth:'public' | 'custom' needs a declaration", () => {
+describe("#470 C6 / G2+G3 — auth:'public' | 'custom' and body:'raw' need a declaration", () => {
   it("auth:'session' (the default) needs no declaration at all", () => {
     const { ctx, seen } = makeCtx([]);
     ctx.routes.register('/api/plugins/acme/admin', Router());
@@ -132,6 +134,13 @@ describe("#470 C6 / G2 — auth:'public' | 'custom' needs a declaration", () => 
     assert.deepEqual(seen[0]?.options, { auth: 'custom', body: 'raw' });
   });
 
+  it("body:'raw' at a declared prefix registers, and forwards the options", () => {
+    const { ctx, seen } = makeCtx([DECLARED]);
+    ctx.routes.register(DECLARED, Router(), { body: 'raw' });
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen[0]?.options, { body: 'raw' });
+  });
+
   it("auth:'public' at a declared prefix registers", () => {
     const { ctx, seen } = makeCtx([DECLARED]);
     ctx.routes.register(DECLARED, Router(), { auth: 'public' });
@@ -143,6 +152,15 @@ describe("#470 C6 / G2 — auth:'public' | 'custom' needs a declaration", () => 
     assert.throws(
       () => ctx.routes.register('/api/plugins/acme/admin', Router(), { auth: 'public' }),
       /not covered by any permissions\.public_paths declaration/,
+    );
+    assert.equal(seen.length, 0, 'a rejected registration must not reach the registry');
+  });
+
+  it("body:'raw' under a NON-declared prefix throws — nothing is registered", () => {
+    const { ctx, seen } = makeCtx([]);
+    assert.throws(
+      () => ctx.routes.register('/api/plugins/acme/admin', Router(), { body: 'raw' }),
+      /asked for body:'raw'.*not covered by any permissions\.public_paths declaration/,
     );
     assert.equal(seen.length, 0, 'a rejected registration must not reach the registry');
   });

@@ -129,6 +129,15 @@ it at all.
   the inverse. The inverse would let a declaration for one webhook open the plugin's whole
   admin surface. Declaration is necessary, not sufficient: being served without a session
   still needs C4's exclusive ownership plus operator consent.
+- **Consent is load-bearing, not decorative: `'public'`/`'custom'` entries are never mounted
+  ambiently.** They are reachable exclusively through C4's terminating public-path mount,
+  which re-checks the grant per request. Mounting them on the app as well would leave a
+  non-session stack (no auth handler by construction) answering with neither session nor
+  grant — masked under `/api` by the blanket gate, wide open outside it, where C4's
+  `ownRoutePrefixes` branch legitimately permits prefixes like `/diagrams/…`. Two tests pin
+  it: declared-but-ungranted is not served, and revoking a standing grant closes a live
+  `'custom'` route. A third pins the converse — a granted prefix does **not** launder an
+  `auth:'session'` route into a public one; anonymous still gets 401.
 - **`body: 'raw' | 'json' | 'none'`, and the raw parse happens before the global JSON
   parser.** A route-local `express.raw()` alone does not work: body-parser marks the request
   `_body` and every later parser short-circuits, so a webhook posted as `application/json`
@@ -139,6 +148,19 @@ it at all.
 - **Raw default limit is 512 KB, not the global 10 MB.** A raw body is necessarily buffered
   before authentication, so the default is the one the hand-rolled GitHub receiver already
   chose for the same reason; `bodyLimit` raises it visibly.
+- **`body: 'raw'` goes through the same manifest declaration gate as `auth: 'public'`.** The
+  raw parser runs in a GLOBAL mount ahead of `express.json` and ahead of authentication, so
+  an unbounded raw prefix is not a local concern: `/` or `/api` would buffer every request in
+  the process pre-auth at the raw limit and hand core routers a `Buffer` where they expect
+  parsed JSON. Routing raw through C4's declaration schema (which forbids one-segment paths,
+  core-reserved roots and core-`publicPaths` collisions) makes that unregisterable, and the
+  registry keeps an independent `>= 2`-segment floor so a call site bypassing the manifest
+  layer cannot claim one either.
+- **The raw slot follows ownership, then rawness.** `resolveRawBodyRoute` takes the longest
+  live prefix covering the path and only then asks whether it is raw. Picking the longest
+  *raw* prefix instead let a shorter raw entry outrank a longer `body:'json'` entry that
+  actually owns the path, and the json router silently received a `Buffer`. Pinned by a
+  parent/child test — the pre-existing sibling test only covered disjoint prefixes.
 - **Exit condition met:** a fixture plugin registers `POST /webhook` with
   `auth:'custom', body:'raw'` under a granted prefix and verifies `X-Hub-Signature-256` with
   `crypto.timingSafeEqual` over `req.rawBody` — valid signature 200, tampered body 401, after
