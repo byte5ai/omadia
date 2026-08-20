@@ -52,6 +52,7 @@ import {
   type EmitResult,
   EventNotDeclaredError,
   ConductorUnavailableError,
+  type ServiceCaller,
 } from '@omadia/plugin-api';
 import type { DomainTool } from '@omadia/orchestrator';
 import { turnContext } from '@omadia/orchestrator';
@@ -92,6 +93,7 @@ import type { PluginStatusRegistry } from './pluginStatusRegistry.js';
 import { createMemoryAccessor } from './memoryAccessor.js';
 import { SCRATCH_DIR } from './paths.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
+import { createServiceGrantGate } from './pluginServiceGrants.js';
 
 /**
  * The plugin-facing types (PluginContext, SecretsAccessor, ConfigAccessor,
@@ -229,9 +231,24 @@ export function createPluginContext(
     domain = `unknown.${safeId}`;
   }
 
+  // Epic #470 (B1) — the consumer seam `serviceRegistry.ts` always said would
+  // exist. `get` resolves only capabilities this plugin's manifest declares;
+  // everything else throws `ServiceNotDeclaredError`. Built once per context:
+  // a manifest cannot change under a live plugin.
+  const assertServiceGranted = createServiceGrantGate({ agentId, catalog, log });
+
+  // Caller identity handed to per-caller service factories. Built from the
+  // kernel-known `agentId`, never from an argument — that is the whole point
+  // (§2.2: a self-attributed accessor is not an accessor, it is a suggestion).
+  const serviceCaller: ServiceCaller = Object.freeze({
+    agentId,
+    pluginId: agentId,
+  });
+
   const services: ServicesAccessor = {
     get<T>(name: string): T | undefined {
-      return serviceRegistry.get<T>(name);
+      assertServiceGranted(name);
+      return serviceRegistry.get<T>(name, serviceCaller);
     },
     has(name: string): boolean {
       return serviceRegistry.has(name);

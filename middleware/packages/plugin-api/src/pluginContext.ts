@@ -396,6 +396,113 @@ export function capabilitiesMatch(
   return provider.name === consumer.name && provider.major === consumer.major;
 }
 
+// ---------------------------------------------------------------------------
+// Service resolution — the grant gate and per-caller attribution (epic #470 B1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Who is asking for a service. Every field is the **kernel-known** installed
+ * plugin id — `createPluginContext` fills it from the id the kernel activated
+ * the plugin under, never from an argument the caller supplies. A provider can
+ * therefore trust it for attribution, scoping and per-tenant filtering.
+ *
+ * `agentId` and `pluginId` are the same value under two names: the kernel's
+ * internal term is `agentId`, the manifest/registry term is `pluginId`. Both
+ * are present so a provider can read whichever name its own domain uses
+ * without a lookup table.
+ */
+export interface ServiceCaller {
+  /** Kernel-known installed plugin id (kernel-internal name for it). */
+  readonly agentId: string;
+  /** The same kernel-known id under the manifest's name for it. */
+  readonly pluginId: string;
+}
+
+/** Brand for {@link PerCallerFactory}. A unique symbol, so a plain value a
+ *  plugin happens to register can never be mistaken for a factory — including
+ *  a value that *is* a function, which is why the factory is wrapped in a
+ *  branded object rather than detected by `typeof impl === 'function'`. */
+const PER_CALLER_FACTORY = Symbol.for('@omadia/plugin-api.perCallerService');
+
+/**
+ * A service registration that mints one implementation **per consuming
+ * plugin** instead of sharing a single instance.
+ *
+ * Build one with {@link perCallerService}; it is otherwise opaque.
+ */
+export interface PerCallerFactory<T> {
+  readonly [PER_CALLER_FACTORY]: (caller: ServiceCaller) => T;
+}
+
+/**
+ * Wrap a factory so the kernel invokes it once per consuming plugin, handing
+ * it the {@link ServiceCaller}.
+ *
+ *   ctx.services.provide(
+ *     'repoGrants',
+ *     perCallerService((caller) => grantsScopedTo(caller.pluginId)),
+ *   );
+ *
+ * Why this exists (epic #470 §2.2): before it, a provider that needed to know
+ * which plugin was calling had exactly one option — take the id as an argument
+ * from the consumer (`listGrantedRepoIds(myOwnPluginId)`). That is
+ * self-attribution: the caller names itself, and nothing stops it naming
+ * someone else. Routing attribution through the kernel closes that by
+ * construction.
+ *
+ * Value providers are unaffected: `provide(name, impl)` with a plain value
+ * keeps returning that exact value to every consumer.
+ */
+export function perCallerService<T>(
+  factory: (caller: ServiceCaller) => T,
+): PerCallerFactory<T> {
+  return { [PER_CALLER_FACTORY]: factory };
+}
+
+/** Narrow an arbitrary registration to a per-caller factory. */
+export function isPerCallerService<T = unknown>(
+  value: unknown,
+): value is PerCallerFactory<T> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Record<symbol, unknown>)[PER_CALLER_FACTORY] === 'function'
+  );
+}
+
+/** Invoke a per-caller factory. Exported for the kernel's registry; plugins
+ *  never need it — `ctx.services.get` already resolves the factory. */
+export function resolvePerCallerService<T>(
+  factory: PerCallerFactory<T>,
+  caller: ServiceCaller,
+): T {
+  return factory[PER_CALLER_FACTORY](caller);
+}
+
+/**
+ * Thrown by `ctx.services.get(name)` when the plugin's manifest does not
+ * declare `name` as a capability it `requires` (or `provides`).
+ *
+ * Typed so a plugin can distinguish "the operator has not installed a
+ * provider" (`get` returns `undefined`) from "I forgot to declare this"
+ * (this throw) — two very different bugs that used to look identical.
+ */
+export class ServiceNotDeclaredError extends Error {
+  public readonly pluginId: string;
+  public readonly capability: string;
+  /** The manifest field that would grant it. */
+  public readonly manifestField = 'requires';
+  constructor(pluginId: string, capability: string) {
+    super(
+      `plugin '${pluginId}' called ctx.services.get('${capability}') but its manifest does not declare that capability — ` +
+        `add '${capability}@<major>' to the manifest's \`requires:\` list (or \`provides:\` if this plugin is the provider)`,
+    );
+    this.name = 'ServiceNotDeclaredError';
+    this.pluginId = pluginId;
+    this.capability = capability;
+  }
+}
+
 /**
  * Accessor for plugin-bereitgestellte (plugin-provided) services.
  *
@@ -407,6 +514,19 @@ export function capabilitiesMatch(
  *   const graph = ctx.services.get<GraphAccessor>('graph');
  *   if (!graph) { // provider not installed — handle gracefully }
  *
+ * **`get` is manifest-gated (epic #470 B1).** The service-registry key IS the
+ * capability name, so a plugin may only resolve names it declared in its
+ * manifest's `requires:` (or `provides:`, for reading back its own
+ * registration). An undeclared name throws {@link ServiceNotDeclaredError}
+ * instead of handing over the implementation. Before this gate any installed
+ * plugin could ask for any service — including `graphPool`, the same Postgres
+ * pool core uses — with no manifest declaration and nothing in the install
+ * dialog.
+ *
+ * `has` stays ungated: it answers a yes/no existence question and hands over
+ * no capability, so gating it would only turn feature-probing into
+ * exception-handling.
+ *
  * Well-known service names and their accessor interfaces are documented
  * alongside the providing plugin. Plugins that depend on a specific service
  * should declare the provider in their manifest's `depends_on` so the
@@ -414,16 +534,26 @@ export function capabilitiesMatch(
  */
 export interface ServicesAccessor {
   /** Returns the registered provider for the given service, or undefined
-   *  if no provider is installed. */
+   *  if no provider is installed.
+   *
+   *  Throws {@link ServiceNotDeclaredError} when this plugin's manifest does
+   *  not declare `name` — that is a manifest bug, not a missing provider, and
+   *  the two must not be reported the same way. */
   get<T>(name: string): T | undefined;
-  /** Whether a provider is currently registered. */
+  /** Whether a provider is currently registered. Ungated — see the interface
+   *  doc. */
   has(name: string): boolean;
   /** Register THIS plugin as the provider for the given service name.
    *  Returns a dispose handle — the plugin's `close()` MUST invoke it to
    *  symmetrically unregister the service on deactivate. Throws on
    *  duplicate-provider (two plugins cannot both claim the same name; the
-   *  operator must uninstall one). */
-  provide<T>(name: string, impl: T): () => void;
+   *  operator must uninstall one).
+   *
+   *  `impl` is normally the shared implementation every consumer receives.
+   *  Wrap it in {@link perCallerService} instead to mint one implementation
+   *  per consuming plugin, with the kernel-known caller id supplied by the
+   *  kernel. */
+  provide<T>(name: string, impl: T | PerCallerFactory<T>): () => void;
   /**
    * OB-71 (palaia capture-pipeline): wrap an already-registered provider
    * with a decorator. The previous provider stays live behind the wrapper;
@@ -434,8 +564,11 @@ export interface ServicesAccessor {
    * decorator for the named capability (e.g. `harness-orchestrator-extras`
    * wrapping `knowledgeGraph` with the capture-filter). Treat the swap as
    * a coordinated handoff, not a competing provider.
+   *
+   * Accepts a {@link perCallerService} wrapper on the same terms as
+   * `provide`.
    */
-  replace<T>(name: string, impl: T): () => void;
+  replace<T>(name: string, impl: T | PerCallerFactory<T>): () => void;
 }
 
 /**

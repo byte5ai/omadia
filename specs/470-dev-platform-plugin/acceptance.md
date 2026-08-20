@@ -16,7 +16,7 @@ every row passes *and* the decoupling ratchet reads zero.
 
 | Guard | What it proves | Status |
 |---|---|---|
-| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight | **In place.** Baseline **3,288** across **14** zones, per-zone regression check |
+| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight | **In place.** Baseline **3,300** across **14** zones, per-zone regression check |
 | `middleware/test/devplatform/**` (54 files) | The behaviour itself, at unit/integration level. These **move with the plugin** and must stay green in the new repo | In place, moves in P4 |
 | §2 capability matrix below | Nothing is silently dropped in the move | **Written here; not yet automated** |
 | §3 install/uninstall | The result is genuinely installable | **Not yet built** — needs P3/P4 |
@@ -48,6 +48,14 @@ Two flaws were found and fixed, and one limitation is inherent:
   dev-platform-shaped". It does **not** mean the plugin works, that nothing was lost, or
   that a coupling expressed without a matching identifier is gone. §2 and §3 are what
   cover those, and neither is automated yet.
+- **Inherent — it counts prose as well as code.** C2b raised `middleware/packages` 84 → 89
+  (baseline 3,296 → 3,300) purely for `packages/plugin-api/CHANGELOG.md`, which has to name
+  the `DevJob*` types in order to record that they were removed. Three of those five lines
+  are unrewordable literals (a spec path, a test filename, the future
+  `@omadia/dev-platform-plugin-api` package name). The first measurement was +31; the
+  avoidable 26 were reworded away rather than excused, leaving `middleware/test` at its
+  1,030 baseline. Documenting a removal counts the same as performing one — worth knowing
+  before reading a raise as a regression.
 
 So: the ratchet is a necessary condition for done, not a sufficient one.
 

@@ -243,8 +243,14 @@ exactly one consumer; extracting a package for one consumer is speculative gener
 
 ### 4.2 What stays in core
 
-- `DevJob*` types in `@omadia/plugin-api` — a published, versioned contract that
-  third-party plugins consume via `ctx.devJobs`.
+- ~~`DevJob*` types in `@omadia/plugin-api` — a published, versioned contract that
+  third-party plugins consume via `ctx.devJobs`.~~ **Superseded — §4.1 wins.**
+  `implementation.md` §2.5 recorded that §4.1 and §4.2 contradicted each other on this
+  point and that the plugin-owned answer is the correct one; C2a (#555) then deleted the
+  accessor outright and C2b removed the types from the package. They are core-local in
+  `middleware/src/` today and leave with the extraction. There were never any third-party
+  consumers — nothing ever provided the backing host service, so every call threw
+  (`dormant-capabilities.md` §2).
 - `DevJobStepPort` / `devJobStepEffect.ts` — core-owned conductor port interfaces, already
   devplatform-free by design.
 - `mintAppJwt` — moves **out** of devplatform into `src/platform/githubAppJwt.ts`, closing

@@ -17,6 +17,8 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
+import { ServiceNotDeclaredError } from '@omadia/plugin-api';
+
 import type { Plugin } from '../src/api/admin-v1.js';
 import { adaptManifestV1 } from '../src/plugins/manifestLoader.js';
 import type {
@@ -126,10 +128,16 @@ describe('legacy permissions.devJobs manifests stay loadable', () => {
     // And the rest of the context is intact: the plugin activates normally.
     assert.equal(ctx.agentId, LEGACY_ID);
     assert.equal(typeof ctx.services.get, 'function');
-    assert.equal(
-      ctx.services.get('devJobs'),
-      undefined,
-      'no provider registers devJobs, so the service route yields nothing either',
+    // And the service-locator route is closed too. Before epic #470 B1 this
+    // returned `undefined` (no provider registered); now the manifest gate
+    // rejects it outright, because the stale permission key above is not a
+    // capability declaration and grants nothing. Either way the deleted
+    // accessor is unreachable — the gate just says so out loud instead of
+    // looking like a missing installation.
+    assert.throws(
+      () => ctx.services.get('devJobs'),
+      ServiceNotDeclaredError,
+      'the legacy permission key grants nothing through the service locator either',
     );
   });
 });
