@@ -737,7 +737,8 @@
   "layout": {
     "logoAriaLabel": "omadia · Startseite",
     "metaTitle": "omadia · Management UI",
-    "metaDescription": "Verwaltungsoberfläche für die omadia Agent-Plattform (lokal)."
+    "metaDescription": "Verwaltungsoberfläche für die omadia Agent-Plattform (lokal).",
+    "tagline": "an Agentic OS"
   },
   "localeSwitcher": {
     "ariaLabel": "Sprache wechseln"
@@ -758,6 +759,7 @@
   },
   "login": {
     "title": "Bei omadia anmelden",
+    "tagline": "an Agentic OS",
     "shellLoading": "Lade Login…",
     "loadingProviders": "Lade Login…",
     "errorPrefix": "Login-Provider konnten nicht geladen werden:",
@@ -2603,9 +2605,6 @@
         "error": {
           "label": "Fehler",
           "loadFailed": "Drafts konnten nicht geladen werden."
-        },
-        "footer": {
-          "phaseLabel": "Phase"
         }
       },
       "detail": {
