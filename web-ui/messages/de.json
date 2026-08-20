@@ -3036,6 +3036,9 @@
         "networkOutbound": "Netzwerk · Outbound",
         "flagRuntimeSecrets": "Schreibt eigene Credentials zur Laufzeit",
         "flagCredentialFlows": "Führt Credential-Flows auf eigenen Routes aus",
+        "publicPathsTitle": "Öffentliche (nicht authentifizierte) Pfade",
+        "publicPathsBody": "Dieses Plugin möchte die folgenden URL-Präfixe ohne Operator-Sitzung beantworten. Jede und jeder mit Zugriff auf diese Installation erreicht sie, und das Plugin allein verantwortet die Authentifizierung dieser Anfragen.",
+        "publicPathsNotGranted": "Deklarieren ist nicht Erteilen: Jedes Präfix bleibt hinter der Sitzungsprüfung, bis Sie zustimmen. Die Zustimmung wird automatisch entzogen, sobald das Plugin deaktiviert wird.",
         "none": "Keine Berechtigungen deklariert.",
         "runtimeCredentials": "Laufzeit-Credentials"
       },

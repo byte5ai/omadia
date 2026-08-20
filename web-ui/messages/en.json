@@ -3036,6 +3036,9 @@
         "networkOutbound": "Network · Outbound",
         "flagRuntimeSecrets": "Writes its own credentials at runtime",
         "flagCredentialFlows": "Runs credential flows on its own routes",
+        "publicPathsTitle": "Public (unauthenticated) paths",
+        "publicPathsBody": "This plugin asks to answer the URL prefixes below without an operator session. Anyone who can reach this deployment can reach them, and the plugin alone is responsible for authenticating those requests.",
+        "publicPathsNotGranted": "Declaring is not granting: each prefix stays behind the session gate until you consent to it, and consent is withdrawn automatically when the plugin is deactivated.",
         "none": "No permissions declared.",
         "runtimeCredentials": "Runtime credentials"
       },
