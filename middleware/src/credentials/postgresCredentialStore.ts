@@ -52,7 +52,7 @@ interface CredentialRow {
   enc_ciphertext: string;
   broker_host: string | null;
   broker_injection_scheme: string | null;
-  broker_header_name: string | null;
+  broker_injection_key: string | null;
   broker_allowed_methods: string[] | null;
   broker_path_prefixes: string[] | null;
   created_by: string;
@@ -99,7 +99,7 @@ function rowToCredential(row: CredentialRow): Credential {
         // Non-null by construction: broker_host is only ever written together
         // with the rest of the declaration (see createCredential below).
         injectionScheme: row.broker_injection_scheme as CredentialBrokerDeclaration['injectionScheme'],
-        headerName: row.broker_header_name ?? undefined,
+        injectionKey: row.broker_injection_key ?? undefined,
         allowedMethods: row.broker_allowed_methods ?? [],
         pathPrefixes: row.broker_path_prefixes ?? [],
       }
@@ -141,7 +141,7 @@ function rowToGrant(row: GrantRow): CredentialGrant {
 
 const CREDENTIAL_COLUMNS = `id, name, kind, owner_kind, owner_ref, fingerprint,
        enc_iv, enc_tag, enc_ciphertext,
-       broker_host, broker_injection_scheme, broker_header_name,
+       broker_host, broker_injection_scheme, broker_injection_key,
        broker_allowed_methods, broker_path_prefixes,
        created_by, created_at, revoked_at, revoked_by`;
 
@@ -165,7 +165,7 @@ export class PostgresCredentialStore implements CredentialStore {
         `INSERT INTO credentials (
            name, kind, owner_kind, owner_ref, fingerprint,
            enc_iv, enc_tag, enc_ciphertext,
-           broker_host, broker_injection_scheme, broker_header_name,
+           broker_host, broker_injection_scheme, broker_injection_key,
            broker_allowed_methods, broker_path_prefixes,
            created_by
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
@@ -181,7 +181,7 @@ export class PostgresCredentialStore implements CredentialStore {
           material.ciphertext,
           b?.host ?? null,
           b?.injectionScheme ?? null,
-          b?.headerName ?? null,
+          b?.injectionKey ?? null,
           b ? [...b.allowedMethods] : null,
           b ? [...b.pathPrefixes] : null,
           input.createdBy,

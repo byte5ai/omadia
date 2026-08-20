@@ -79,8 +79,10 @@ export interface CredentialBrokerDeclaration {
    *  wildcards — phase 2 compares this literally against the request host. */
   readonly host: string;
   readonly injectionScheme: CredentialInjectionScheme;
-  /** Header name for the `header` injection scheme. Ignored otherwise. */
-  readonly headerName?: string;
+  /** The header name for the `header` scheme, or the query parameter name for
+   *  `query-param`. Ignored by `bearer` and `basic-password`, which have no
+   *  separate name to declare (the whole secret IS the credential value). */
+  readonly injectionKey?: string;
   /** Uppercase HTTP methods the broker may use this credential for. */
   readonly allowedMethods: readonly string[];
   /** Path prefixes (e.g. `/v1/messages`) the broker may use this credential

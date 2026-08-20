@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS credentials (
   enc_ciphertext           TEXT NOT NULL,
   broker_host              TEXT,
   broker_injection_scheme  TEXT,
-  broker_header_name       TEXT,
+  broker_injection_key     TEXT,
   broker_allowed_methods   TEXT[],
   broker_path_prefixes     TEXT[],
   created_by               TEXT NOT NULL,
