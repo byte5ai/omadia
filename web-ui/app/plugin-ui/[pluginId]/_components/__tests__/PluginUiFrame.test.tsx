@@ -56,7 +56,11 @@ describe('<PluginUiFrame /> — sandbox', () => {
     expect(tokens).not.toContain('allow-popups');
   });
 
-  it('does not grant top-level navigation, downloads or modals', () => {
+  it('withholds top-level navigation, downloads or modals as intent, not as an enforceable boundary', () => {
+    // With `allow-same-origin` plus `allow-scripts`, a bundle can reach
+    // `window.frameElement`, strip the attribute and reload. This pins what we
+    // ASK for on the iframe element, not what the browser will enforce against
+    // an adversarial same-origin bundle.
     const tokens = frame().getAttribute('sandbox')?.split(' ') ?? [];
     for (const capability of [
       'allow-top-navigation',

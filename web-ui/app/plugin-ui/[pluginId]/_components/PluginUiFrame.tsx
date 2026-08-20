@@ -36,15 +36,29 @@ import { useLocale, useTranslations } from 'next-intl';
  *     way, and `localStorage` throws. A data-driven plugin UI opens every
  *     screen with a GET, so the sandbox did not isolate the plugin — it broke
  *     it, silently, into a correctly-themed error state.
- *   - It bought no privilege either. The plugin's server half already runs
- *     in-process in the middleware with the operator's authority. Denying its
- *     UI a session the plugin can read server-side removes function, not
- *     capability.
- *   - What still constrains the bundle is the response, not the attribute:
- *     core serves it from an ingest-scanned ZIP under a tight CSP
- *     (`default-src 'none'`, `script-src 'self'`, `connect-src 'self'`,
- *     `frame-ancestors 'self'`, `base-uri 'none'`, `form-action 'none'`), and
- *     the extension allowlist has no `.css`.
+ *   - The plugin grant model is REAL and deny-by-default: `ctx.services`,
+ *     `ctx.http`, `ctx.secrets`, `ctx.llm`, `ctx.mcp`, `ctx.memory`, public
+ *     paths and the rest are all manifest-declared and operator-consented.
+ *     The UI frame walks around that model once it rides the operator's
+ *     `Path=/` admin session. What makes this acceptable today is not that the
+ *     frame already had that grant, but that the plugin's SERVER half is
+ *     loaded by a bare in-process dynamic import with the host's `globalThis`
+ *     and `process.env`. Against a malicious plugin author the grant model is
+ *     a consent-and-contract seam, not a Node isolation boundary. The honest
+ *     residual exposure is different: a compromised browser-only dependency or
+ *     XSS in the plugin UI now inherits the operator's admin surface.
+ *   - What still constrains the bundle is the RESPONSE, not the attribute:
+ *     core serves it under a tight runtime CSP (`default-src 'none'`,
+ *     `script-src 'self'`, `connect-src 'self'`, `frame-ancestors 'self'`,
+ *     `base-uri 'none'`, `form-action 'none'`). Ingest scanning of the UI
+ *     bundle is narrower: it reads `.js` / `.mjs` only for arbitrary Tailwind
+ *     values; inline script, `javascript:` URLs and `<base>` are blocked at
+ *     runtime by that CSP, and the extension allowlist has no `.css`.
+ *
+ * The sandbox attribute itself is not an enforceable boundary once
+ * `allow-same-origin` is granted: a same-origin bundle can reach
+ * `window.frameElement`, strip `sandbox`, and reload. It remains as an intent
+ * marker for a non-adversarial bundle, not as a claim of isolation.
  *
  * `allow-popups` is deliberately GONE: nothing in a plugin UI opens a window,
  * and a capability nothing uses is only a surface.

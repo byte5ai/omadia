@@ -389,32 +389,64 @@ origin. This is a property of the browser, not of the client.
 
 #### The decision
 
-**Grant `allow-same-origin`.** Three arguments, in order of weight.
+**Grant `allow-same-origin`.** Four arguments, in order of weight.
 
-1. **It gives the plugin no privilege it does not already hold.** The plugin's server half
-   runs *in-process* in the middleware with `ctx.services`, its own Express router and the
-   operator's authority. A plugin that wanted the operator's session could read it
-   server-side today. Withholding it from the plugin's *UI* removed function, not capability
-   — it defended a boundary that does not exist.
-2. **The threat model the sandbox implied is not the one we have.** Denying same-origin only
-   helps if the UI bundle is less trusted than the server code. Both ship in the *same* ZIP,
-   through the *same* ingest, scanned by the *same* checks. There is no trust gradient
-   between them to enforce.
-3. **What actually confines the bundle is the response, not the attribute**, and that is
-   unchanged and tight. Core serves it from an ingest-scanned package under
+1. **The plugin grant model is real, and the frame walks around it.** The server-side plugin
+   contract is deliberately deny-by-default: `pluginServiceGrants.ts` throws
+   `ServiceNotDeclaredError` for undeclared services; `pluginContext.ts` gates `ctx.http`,
+   `ctx.net`, `ctx.secrets`, `ctx.memory`, `ctx.llm`, `ctx.subAgent`, `ctx.knowledgeGraph`,
+   `ctx.mcp`, `ctx.events.emit` and `ctx.flows` on manifest-declared permissions; and
+   `publicPathGrants.ts` reserves `/api/v1/admin` away from plugins even with operator
+   consent. A same-origin UI riding the operator's `Path=/` session reaches that surface
+   anyway, so saying it gains "no new privilege" is false as written.
+2. **What makes the decision acceptable today is narrower and simpler:** the plugin's server
+   half is loaded by a bare in-process dynamic import
+   (`toolPluginRuntime.ts: const mod = (await import(pathToFileURL(entryAbs).href)) ...`).
+   There is no `vm`, worker, child process or Node permission wall around that load. The
+   plugin shares `globalThis` and `process.env`, which includes the session-signing key.
+   Against a malicious plugin author the grant model was never a security boundary at all; it
+   is a consent-and-contract boundary. Such an author can already own the process and forge a
+   session outright. Withholding same-origin from the UI defended nothing against that actor
+   while breaking every honest plugin.
+3. **The threat model the sandbox implied is not the one we have.** Denying same-origin only
+   helps if the UI bundle is less trusted than the server code. That is only true for a
+   browser-only compromise: an XSS in the plugin UI or a compromised frontend dependency
+   controls the bundle but not the server half. That is the real delta this change accepts,
+   and it is why the distinct-origin upgrade path below remains recorded.
+4. **What actually confines the bundle is the response, not ingest.** Core serves it under
    `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'
    data:; font-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none';
-   frame-ancestors 'self'`, from an extension allowlist with no `.css` in it. The bundle
-   cannot load remote script, cannot talk to a third origin, cannot be framed off-site,
-   cannot retarget forms or the base URL.
+   frame-ancestors 'self'`, from an extension allowlist with no `.css` in it. The ingest scan
+   touching the UI bundle is narrower: `PackageUploadService` reads `.js` / `.mjs` only for
+   arbitrary Tailwind values, bounded at 200 files / 8 MB, and built-in / local-dev catalog
+   packages do not traverse that ingest path at all. Inline `<script>`, inline `onclick=`,
+   `javascript:` URLs and `<base>` are blocked at runtime by the CSP, not by ingest.
 
 `allow-popups` is **dropped**: nothing in a plugin UI opens a window, and a granted
 capability nothing uses is only a surface.
 
 The familiar objection — "`allow-scripts` plus `allow-same-origin` lets the frame remove its
-own sandbox attribute" — is true and, here, empty. The frame is already same-origin and
-already has the session. There is nothing left to escalate to. The sandbox is retained for
-what it still denies: top-level navigation, downloads, modals, pointer lock, presentation.
+own sandbox attribute" — is true, and it means the attribute is not an enforceable boundary
+here. A same-origin bundle can reach `window.frameElement`, strip `sandbox`, reload, and
+regain top-level navigation, downloads, modals, pointer lock and presentation. The attribute
+is still worth keeping as an intent marker for a non-adversarial bundle, but the rationale
+must not pretend it enforces isolation once same-origin is granted.
+
+#### The residual exposure
+
+The honest cost is the browser-only attacker. A compromised plugin frontend now reaches the
+operator's full same-origin admin surface, including `/bot-api/v1/admin/*` (core
+`/api/v1/admin/*`), can mint a durable API key from that surface, and can write to
+`window.top.document` for UI-redress / credential-phishing attacks in the real operator
+chrome. The plugin's server half does **not** get that route through the declared contract:
+`CORE_RESERVED_ROOTS` refuses `/api/v1/admin` to plugins even on consent, and there is no
+CSRF layer anywhere in the product to stop a same-origin document from riding the cookie.
+
+The accepted mitigation is the recorded distinct-origin upgrade path. It is optional while
+plugin server code is loaded unsandboxed in-process, because the malicious-author threat
+already owns the process. The moment plugin server code is actually sandboxed — a hardening
+pass `pluginContext.ts` already records as planned — that upgrade path becomes mandatory and
+this same-origin decision must be reopened.
 
 #### The two alternatives, and why not
 
@@ -428,12 +460,23 @@ what it still denies: top-level navigation, downloads, modals, pointer lock, pre
 - `web-ui/app/plugin-ui/[pluginId]/_components/__tests__/PluginUiFrame.test.tsx` pins the
   sandbox attribute to its **exact** string, so both dropping `allow-same-origin` again and
   re-adding `allow-popups` go red; it also pins the `src` to core's own origin, since
-  same-origin is a property of the URL as much as of the attribute.
+  same-origin is a property of the URL as much as of the attribute. The "withholds top-level
+  navigation..." test is explicitly documented as intent, not enforcement.
 - `middleware/test/pluginUiFrameCredentials.test.ts` asserts the posture the decision rests
   on: the session cookie is `SameSite=Lax; Path=/; HttpOnly` and **not** `SameSite=None`; a
   same-origin request replaying it authenticates while the same request without it 401s; and
   the served document still carries `connect-src 'self'`, `frame-ancestors 'self'`,
   `base-uri 'none'` and `form-action 'none'`.
+- `middleware/test/pluginUiTrustModel.test.ts` is the tripwire for the premise itself: it
+  source-pins the bare in-process plugin load, asserts `/api/v1/admin` stays in
+  `CORE_RESERVED_ROOTS` with the accepted-exposure comment next to it, exercises the real
+  `ServiceNotDeclaredError` gate for undeclared services, and pins the session JWT's
+  `role: 'admin'` plus `Path=/`. If any of those stop being true, the same-origin decision's
+  rationale has changed and the spec must be revisited.
+- `middleware/test/pluginUiStaticServing.test.ts` now table-drives **every** entry in
+  `CONTENT_TYPES`, asserting `Content-Type`, `X-Content-Type-Options: nosniff`, a non-empty
+  CSP, the SVG-specific sandboxing policy, the standard policy for every other extension, and
+  that the CSP survives the 304 branch.
 
 #### Two other C8 defects fixed alongside (C8b)
 
