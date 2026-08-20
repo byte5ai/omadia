@@ -190,6 +190,8 @@ export interface PluginActionStatus {
   state: PluginActionState;
   title?: string;
   detail?: string;
+  /** Kernel-stamped ISO time of the report (OM-16/24/33 follow-up). */
+  checked_at?: string;
 }
 
 /** OM-16 — kernel-derived plugin readiness (mirror of middleware admin-v1).
@@ -219,6 +221,8 @@ export interface Plugin {
   version: string;
   latest_version: string;
   description: string;
+  /** OM-28 (#602) — localized description map; `description` stays English. */
+  description_localized?: Record<string, string>;
   authors: Array<{ name: string; email?: string; url?: string }>;
   license: string;
   icon_url: string | null;

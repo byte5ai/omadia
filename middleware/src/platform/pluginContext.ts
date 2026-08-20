@@ -799,8 +799,10 @@ export function createPluginContext(
   // Status accessor (spec 004): the plugin pushes its operator-facing action
   // status to the kernel registry. Self-scoped to this plugin id — a plugin
   // cannot report another's status. No-op when no registry was threaded
-  // (migration/test contexts). `clear()` and `report({state:'ok'})` both leave
-  // no badge; the value is normalized to guard against malformed input.
+  // (migration/test contexts). `clear()` and a BARE `report({state:'ok'})`
+  // both leave no badge; an ok WITH a title renders as a positive
+  // "connection verified" badge. Values are normalized against malformed
+  // input and `checked_at` is kernel-stamped.
   const statusRegistry = opts.pluginStatusRegistry;
   const status: StatusAccessor = {
     report(next) {
@@ -813,8 +815,14 @@ export function createPluginContext(
         state,
         ...(typeof next?.title === 'string' ? { title: next.title } : {}),
         ...(typeof next?.detail === 'string' ? { detail: next.detail } : {}),
+        // Kernel-stamped, never taken from the caller: the time a status
+        // claims to have been checked must be the time it was reported.
+        checked_at: new Date().toISOString(),
       };
-      if (state === 'ok') {
+      if (state === 'ok' && normalized.title === undefined) {
+        // Bare ok stays the clear() synonym (previewRuntime's synthetic
+        // markers and every pre-existing caller rely on it). An ok WITH a
+        // title is a deliberate, renderable "connection verified" signal.
         statusRegistry.clear(agentId);
         return;
       }

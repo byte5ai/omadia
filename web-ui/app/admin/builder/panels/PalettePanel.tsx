@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import type { CanvasNodeKind, SkillImportResult } from '../../../_lib/agentBuilder';
 import { SkillImportModal } from '../../../_components/admin/SkillImportModal';
+import { SkillVerdictBadge } from '../../../_components/admin/SkillVerdictBadge';
 
 /** Node kinds the operator can drag onto the canvas to create new entities. */
 const ADDABLE: ReadonlyArray<Exclude<CanvasNodeKind, 'agent' | 'tool'>> = [
@@ -30,6 +31,9 @@ export function PalettePanel({
 }): React.ReactElement {
   const t = useTranslations('admin.builder');
   const [importing, setImporting] = useState(false);
+  // OM-25 — a flagged verdict must be visible WHERE the import happened, not
+  // only later in the skills registry. Held locally until the next import.
+  const [lastVerdict, setLastVerdict] = useState<SkillImportResult['verdict']>();
   return (
     <aside className="flex w-[180px] shrink-0 flex-col gap-2 border-r border-[color:var(--border)] bg-[color:var(--card)]/30 p-3">
       <h2 className="px-1 text-[11px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
@@ -56,6 +60,11 @@ export function PalettePanel({
       >
         {t('palette.importSkill')}
       </button>
+      {lastVerdict && lastVerdict.severity !== 'no_signals' ? (
+        <div className="mt-1 px-1">
+          <SkillVerdictBadge severity={lastVerdict.severity} />
+        </div>
+      ) : null}
       {importing && (
         <SkillImportModal
           onClose={() => setImporting(false)}
@@ -64,6 +73,7 @@ export function PalettePanel({
           // can surface a flagged import instead of silently adding the node.
           onImported={(result) => {
             setImporting(false);
+            setLastVerdict(result.verdict);
             onImported?.(result);
           }}
         />

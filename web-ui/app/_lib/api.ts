@@ -381,6 +381,10 @@ export interface AdminProvider {
    *  `requiresAvvDisclosure`: show the Art. 28 DSGVO third-party disclosure.
    *  `euHosted`: provider is hosted in the EU (no third-country transfer). */
   requiresAvvDisclosure?: boolean;
+  /** Provider runs on a personal consumer subscription — no AVV/DPA can exist;
+   *  the assignment UI shows a dedicated warning (stronger than the ordinary
+   *  third-party disclosure). */
+  subscriptionNotice?: boolean;
   euHosted?: boolean;
   /** Tool-less Shape-2 CLI provider — cannot drive a tool loop, so the UI
    *  disables it for tool-dependent plugins. */
