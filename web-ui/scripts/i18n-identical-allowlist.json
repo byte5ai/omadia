@@ -31,6 +31,7 @@
     "operatorChannels.routesTo": "glossary",
     "layout.metaTitle": "brand",
     "builder.drafts.list.metaTitle": "brand",
+    "builder.drafts.list.footerStamp": "brand",
     "builder.drafts.detail.metaTitle": "brand",
     "adminKgLifecycle.lastRuns.hotToWarm": "diagnostic",
     "adminKgLifecycle.lastRuns.warmToCold": "diagnostic",
@@ -75,6 +76,8 @@
     "adminInconsistencies.detail.status": "loanword",
     "system.vaultStatus.heading": "brand",
     "system.vaultStatus.bucket": "loanword",
-    "chat.routing.bucketFallback": "loanword"
+    "chat.routing.bucketFallback": "loanword",
+    "layout.tagline": "brand",
+    "login.tagline": "brand"
   }
 }

@@ -737,7 +737,8 @@
   "layout": {
     "logoAriaLabel": "omadia · Home",
     "metaTitle": "omadia · Management UI",
-    "metaDescription": "Admin UI for the omadia agent platform (local)."
+    "metaDescription": "Admin UI for the omadia agent platform (local).",
+    "tagline": "an Agentic OS"
   },
   "localeSwitcher": {
     "ariaLabel": "Switch language"
@@ -758,6 +759,7 @@
   },
   "login": {
     "title": "Sign in to omadia",
+    "tagline": "an Agentic OS",
     "shellLoading": "Loading login…",
     "loadingProviders": "Loading login…",
     "errorPrefix": "Failed to load login providers:",
@@ -2604,9 +2606,7 @@
           "label": "Error",
           "loadFailed": "Drafts could not be loaded."
         },
-        "footer": {
-          "phaseLabel": "Phase"
-        }
+        "footerStamp": "omadia · Plugin-Builder"
       },
       "detail": {
         "metaTitle": "Workspace · Agent-Builder · omadia",
