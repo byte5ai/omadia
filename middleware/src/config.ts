@@ -1,4 +1,3 @@
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
@@ -581,6 +580,28 @@ const ConfigSchema = z.object({
   // Set true ONLY on a deliberate, documented operator decision — e.g. an
   // install whose allowlisted tools provably carry no personal data.
   PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING: devFlag(),
+
+  // --- Long-running task seam (W2-2, issue #543) ------------------------------
+  // Generic, subsystem-agnostic. These sat interleaved with the extracted
+  // subsystem's keys before epic #470 C10 and are core: they govern the
+  // `<tool>_start`/`_status`/`_list` triple any slow tool can opt into.
+  //
+  // Comma-separated sub-agent tool names (`ask_<slug>`) that ALSO get the
+  // non-blocking triple, so a slow sub-agent stops blocking the chat turn it
+  // was delegated from. The blocking `ask_<slug>` tool stays registered either
+  // way; empty (the default) means every sub-agent keeps today's inline
+  // behaviour exactly.
+  LONG_RUNNING_SUBAGENT_TOOLS: z.string().default(''),
+  // Orphan windows for the long-running task seam: a live task silent this long
+  // is failed as abandoned, and a finished task is retained this long so a
+  // following turn can still collect its result.
+  LONG_RUNNING_TASK_STALE_MS: z.coerce.number().int().positive().default(900_000),
+  LONG_RUNNING_TASK_RETAIN_MS: z.coerce.number().int().positive().default(3_600_000),
+
+  // Fly-injected env; presence is the on-Fly detector. It describes the HOST,
+  // not any one feature, so it survives the epic #470 C10 extraction even
+  // though the extracted Fly runner backend was its only reader.
+  FLY_APP_NAME: optionalNonEmpty(z.string().min(1)),
 
 });
 

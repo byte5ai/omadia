@@ -1094,8 +1094,8 @@ function ToolTrace({ tools }: { tools: ToolEvent[] }): React.ReactElement {
         {tools.map((tool) => {
           // W2-2 (issue #543) — any `<tool>_start` from the generic
           // long-running task seam renders the tool-agnostic task card. Epic
-          // #470 H3: the bespoke dev-job card left with the Dev Platform, so a
-          // `dev_job_start` from the installed plugin now lands here too.
+          // #470 H3: the bespoke card left with the Dev Platform, so that
+          // plugin's start tool now lands here too.
           const taskSeed = isTaskStartToolName(tool.name)
             ? parseTaskStartResult(tool.output)
             : null;

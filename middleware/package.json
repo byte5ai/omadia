@@ -53,7 +53,7 @@
   },
   "description": "Omadia kernel: Anthropic Messages API orchestrator with plugin runtime, persistent memory, multi-channel ingress, and vault-backed credentials.",
   "license": "MIT",
-    "_dependencyNote": "epic #470 §5 — express, pg and zod must NOT be dropped even though core has no dev-platform code paths any more. They are peerDependencies of the extracted Dev Platform plugin (byte5ai/omadia-dev-platform) and of every other Hub plugin, resolved through the host node_modules symlink. Removing them breaks every installed plugin at runtime, with no compile-time signal in this repo.",
+    "_dependencyNote": "epic #470 §5 — express, pg and zod must NOT be dropped even though core no longer runs any Dev Platform code. They are peerDependencies of the extracted Dev Platform plugin and of every other Hub plugin, resolved through the host node_modules symlink. Removing them breaks every installed plugin at runtime, with no compile-time signal in this repo.",
 "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
     "@aws-sdk/client-s3": "^3.1111.0",
