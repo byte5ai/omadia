@@ -1,0 +1,27 @@
+# Expected verdict class: blocked, reached through a DETERMINISTIC CONTRADICTION
+# (#639 v2, closes Gap 2) — the ERP data itself refutes a hard claim. This is
+# DISTINCT from the two existing block-via-contradiction paths:
+#  - judge-contradiction (blocked-contradiction.jsonl): a SOFT claim the
+#    EvidenceJudge refutes against fixture evidence.
+#  - trace-missing-call (verifierPipeline): a hard claim whose turn made no
+#    Odoo call at all. This entry declares `query_odoo_accounting`, so that
+#    pre-check does NOT fire — the contradiction comes from the checker
+#    re-querying the fixture and finding the claimed record absent.
+#
+# How this entry forces the branch:
+#  - Accounting-ref INV/2026/0099 triggers the router and the extractor + real
+#    DeterministicChecker run (value-parse-free, same rationale as
+#    approved-deterministic.jsonl).
+#  - `domainToolsCalled: ["query_odoo_accounting"]` lets the hard claim reach the
+#    checker instead of being short-circuited as a replay.
+#  - The `odoo` fixture holds a DIFFERENT invoice (INV/2026/0042) but not
+#    INV/2026/0099, so FixtureOdooReader answers `search name=INV/2026/0099`
+#    with [] => contradicted ("no account.move with name=...") => blocked. The
+#    decoy row makes this an explicit "the ERP has invoices, just not this one"
+#    refutation rather than an empty-table artefact.
+#  - `expected.via = deterministic-contradicted` asserts the hard-claim
+#    contradiction path specifically (soft/judge and synthetic contradictions
+#    do not satisfy it — see viaSatisfied).
+#
+# Model pinned: VERIFIER_MODEL (the extractor). The refutation is pure code.
+{"id":"blocked_deterministic_id_absent","note":"Accounting-ref triggers; the extracted id claim (account.move / INV/2026/0099) is re-queried against the odoo fixture, no such record exists => contradicted => blocked. Closes Gap 2, distinct from judge-contradiction.","userMessage":"Ist die Rechnung INV/2026/0099 bereits verbucht?","answer":"Ja, die Rechnung INV/2026/0099 ist im Odoo-Modell account.move verbucht und abgeschlossen.","trace":{"agent":"accounting","domainToolsCalled":["query_odoo_accounting"]},"odoo":{"records":[{"model":"account.move","id":42,"fields":{"name":"INV/2026/0042","amount_total":1234.56}}]},"expected":{"status":"blocked","via":"deterministic-contradicted"}}

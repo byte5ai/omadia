@@ -1,0 +1,43 @@
+# Expected verdict class: approved, reached through a DETERMINISTIC-VERIFIED hard
+# claim (#639 v2, closes Gap 1). This is the path v1 could not reach: with no
+# Odoo reader, every triggering answer's hard claim resolved `unverified` and
+# landed in approved_with_disclaimer, so the checker's verified -> approved
+# branch had zero coverage and a regression that stopped confirming true claims
+# was invisible.
+#
+# How this entry forces the branch:
+#  - The answer names an Odoo record (accounting-ref INV/2026/0042) => the
+#    trigger router fires on the accounting-ref signal and the extractor + real
+#    DeterministicChecker actually run. We use an accounting-ref (NOT a currency
+#    amount) on purpose: an amount claim needs the extractor to also fill the
+#    optional `value` field, and a value-less amount would resolve `unverified`
+#    and mask the class. The amount/value branch is pinned deterministically in
+#    the key-free goldenModel tests instead.
+#  - `domainToolsCalled: ["query_odoo_accounting"]` so the trace-cross-check
+#    (hard claim without an Odoo call => contradicted replay) does NOT pre-empt
+#    the real checker.
+#  - The `odoo` fixture holds the record, so FixtureOdooReader answers the
+#    checker's `search name=INV/2026/0042` with id 42 => verified => approved.
+#  - `expected.via = deterministic-verified` asserts the PATH, not just the
+#    class: an approved produced by an empty extraction carries no verified hard
+#    claim and so FAILS this entry — the class assertion alone would not.
+#
+# Why the `evidence` snippet is here even though the PATH is deterministic:
+# clean `approved` requires EVERY extracted claim to be non-`unverified`, and
+# reaching a deterministic verdict means the extractor actually ran. Beside the
+# `id` claim the model may ALSO emit a soft/qualitative claim off the same
+# sentence ("die Rechnung ist vorhanden"). A soft claim with no evidence
+# resolves `unverified` (evidenceJudge: "no evidence available") — one such
+# claim drags the whole turn to approved_with_disclaimer and the entry would
+# FAIL for a reason the fixture never controlled. The snippet gives the judge a
+# fact that confirms that existence reading, so an incidental soft claim lands
+# `verified` (still `approved`) instead of sinking the entry. If the model emits
+# no soft claim the snippet is simply never fetched. The `via` assertion keeps
+# this honest: the HARD id claim, not the judge, must still be what earns the
+# class. (The mirror entry blocked-deterministic-contradiction.jsonl needs no
+# such snippet — a contradiction dominates the aggregate regardless of any
+# co-extracted soft/unverified claim.)
+#
+# Model pinned: VERIFIER_MODEL (extractor + judge). The deterministic
+# verification itself is pure code (FixtureOdooReader + DeterministicChecker).
+{"id":"approve_deterministic_id_verified","note":"Accounting-ref triggers; the extracted id claim (account.move / INV/2026/0042) is re-queried against the odoo fixture, the record exists => verified => approved. Closes Gap 1. Evidence snippet guards against an incidental soft claim being unverified.","userMessage":"Existiert die Rechnung INV/2026/0042 in unserem ERP?","answer":"Ja, die Rechnung INV/2026/0042 ist im Odoo-Modell account.move als Datensatz vorhanden.","trace":{"agent":"accounting","domainToolsCalled":["query_odoo_accounting"]},"evidence":[{"nodeId":"odoo-inv-42","source":"odoo","content":"Der Datensatz INV/2026/0042 existiert im Odoo-Modell account.move (Betrag 1.234,56 €, Rechnungsdatum 2026-04-19). Die Rechnung ist im System vorhanden.","title":"account.move INV/2026/0042"}],"odoo":{"records":[{"model":"account.move","id":42,"fields":{"name":"INV/2026/0042","amount_total":1234.56,"invoice_date":"2026-04-19"}}]},"expected":{"status":"approved","via":"deterministic-verified"}}

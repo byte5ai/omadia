@@ -59,6 +59,143 @@ function stubProvider(onComplete?: () => void): LlmProvider {
   };
 }
 
+/**
+ * A provider whose `complete` returns a fixed `record_claims` tool call — it
+ * lets us drive the REAL ClaimExtractor -> classify -> DeterministicChecker path
+ * deterministically (no key, no model jitter). We use it to pin the
+ * hard-claim amount branch and the verdict-tag projection that the live corpus
+ * (majority-of-3, value-fill dependent) deliberately does not lean on.
+ */
+function claimStub(claims: unknown[]): LlmProvider {
+  return {
+    id: 'stub',
+    capabilities: {
+      tools: true,
+      vision: false,
+      streaming: false,
+      promptCaching: false,
+      forcedToolChoice: true,
+      parallelToolCalls: false,
+      interleavedToolUse: false,
+    },
+    complete(_req) {
+      return Promise.resolve({
+        content: [
+          { type: 'tool_call', id: 'call_x', name: 'record_claims', input: { claims } },
+        ],
+        finishReason: 'stop',
+        model: 'stub',
+        usage: { inputTokens: 5, outputTokens: 5 },
+      });
+    },
+    stream() {
+      throw new Error('stub: stream() must not be called on the verify path');
+    },
+    classifyError() {
+      throw new Error('stub: classifyError() must not be called on the verify path');
+    },
+  };
+}
+
+describe('goldenModel/deterministic hard-claim path (#639 v2, key-free)', () => {
+  // A currency amount triggers the router; the stub extracts it as an amount
+  // claim pinned to account.move:42; the odoo fixture supplies amount_total.
+  const answer = 'Der Gesamtbetrag von INV/2026/0042 beträgt 1.234,56 €.';
+  const amountClaim = {
+    text: '1.234,56 €',
+    type: 'amount',
+    expected_source: 'odoo',
+    value: 1234.56,
+    unit: '€',
+    odoo_record: { model: 'account.move', id: 42 },
+  };
+  function entry(amount_total: number): GoldenEntry {
+    return {
+      id: 'det',
+      userMessage: 'Wie hoch ist der Gesamtbetrag von INV/2026/0042?',
+      answer,
+      trace: { agent: 'accounting', domainToolsCalled: ['query_odoo_accounting'] },
+      odoo: { records: [{ model: 'account.move', id: 42, fields: { amount_total } }] },
+      expected: { status: 'approved' },
+    };
+  }
+
+  it('APPROVES via a deterministic-verified amount and tags the verdict (Gap 1)', async () => {
+    const r = await buildVerifierRunOnce(claimStub([amountClaim]), 'stub-model')(entry(1234.56));
+    assert.equal(r.status, 'approved');
+    assert.ok(
+      r.verdicts?.some((v) => v.status === 'verified' && v.claimType === 'amount'),
+      'expected a verified amount tag so `via: deterministic-verified` can be asserted',
+    );
+  });
+
+  it('BLOCKS via a deterministic contradiction when the ERP amount differs (Gap 2)', async () => {
+    const r = await buildVerifierRunOnce(claimStub([amountClaim]), 'stub-model')(entry(2000));
+    assert.equal(r.status, 'blocked');
+    assert.ok(
+      r.verdicts?.some((v) => v.status === 'contradicted' && v.claimType === 'amount'),
+      'expected a contradicted amount tag',
+    );
+  });
+
+  it('without an odoo fixture the same claim resolves unverified -> disclaimer (v1 behaviour)', async () => {
+    const noReader: GoldenEntry = { ...entry(1234.56), odoo: undefined };
+    const r = await buildVerifierRunOnce(claimStub([amountClaim]), 'stub-model')(noReader);
+    assert.equal(r.status, 'approved_with_disclaimer');
+  });
+});
+
+describe('goldenModel/deterministic id-ref path (#639 v2, key-free)', () => {
+  // Key-free PARITY for the branch the two live corpus entries actually ride:
+  // an `id` claim with `odoo_record.ref` (no numeric id) drives the REAL
+  // checkOdooId `search [['name','=',ref]]` path — distinct from the amount
+  // block above, which no key-free test otherwise exercises. The fixture
+  // holding the ref => verified => approved; a fixture with only a DECOY row
+  // => search returns [] => contradicted => blocked.
+  const answer =
+    'Ja, die Rechnung INV/2026/0042 ist im Odoo-Modell account.move als Datensatz vorhanden.';
+  const idClaim = {
+    text: 'INV/2026/0042',
+    type: 'id',
+    expected_source: 'odoo',
+    odoo_record: { model: 'account.move', ref: 'INV/2026/0042' },
+  };
+  function entry(records: Array<{ model: string; id: number; fields: Record<string, unknown> }>): GoldenEntry {
+    return {
+      id: 'det-id',
+      userMessage: 'Existiert die Rechnung INV/2026/0042 in unserem ERP?',
+      answer,
+      trace: { agent: 'accounting', domainToolsCalled: ['query_odoo_accounting'] },
+      odoo: { records },
+      expected: { status: 'approved' },
+    };
+  }
+  const present = [
+    { model: 'account.move', id: 42, fields: { name: 'INV/2026/0042', amount_total: 1234.56 } },
+  ];
+  const decoyOnly = [
+    { model: 'account.move', id: 7, fields: { name: 'INV/2026/0007', amount_total: 99 } },
+  ];
+
+  it('APPROVES via a deterministic-verified id/ref existence check (Gap 1 path)', async () => {
+    const r = await buildVerifierRunOnce(claimStub([idClaim]), 'stub-model')(entry(present));
+    assert.equal(r.status, 'approved');
+    assert.ok(
+      r.verdicts?.some((v) => v.status === 'verified' && v.claimType === 'id'),
+      'expected a verified id tag so `via: deterministic-verified` can be asserted',
+    );
+  });
+
+  it('BLOCKS via a deterministic contradiction when the ref is absent (Gap 2 path)', async () => {
+    const r = await buildVerifierRunOnce(claimStub([idClaim]), 'stub-model')(entry(decoyOnly));
+    assert.equal(r.status, 'blocked');
+    assert.ok(
+      r.verdicts?.some((v) => v.status === 'contradicted' && v.claimType === 'id'),
+      'expected a contradicted id tag',
+    );
+  });
+});
+
 describe('goldenModel/buildVerifierRunOnce (synthetic paths, key-free)', () => {
   it('blocks via a recorded tool_postcondition violation (#130)', async () => {
     const entry: GoldenEntry = {
