@@ -110,8 +110,46 @@ export const CORE_MIGRATION_DONOR_ID_COLUMN = 'id';
  */
 const DONOR_IDENTIFIER_RE = /^[a-z_][a-z0-9_]{0,62}$/;
 
-/** A per-file proof that the schema this file creates is actually present. */
-export type MigrationWitness = (client: PoolClient) => Promise<boolean>;
+/**
+ * A per-file proof that the schema this file creates is actually present.
+ *
+ * Plain SQL, executed by core under a read-only subtransaction. A callback
+ * would hand the plugin the privileged client that is holding the handoff's
+ * outer transaction and advisory lock, which is exactly the escape this module
+ * exists to prevent.
+ */
+export type MigrationWitness = string;
+
+const WITNESS_SAVEPOINT = 'omadia_witness';
+
+/**
+ * A query forced onto PostgreSQL's EXTENDED query protocol.
+ *
+ * This is the half of the witness fence that PostgreSQL enforces for us. The
+ * SIMPLE query protocol — which is what `client.query(text)` uses whenever
+ * there are no bind values, `Query.requiresPreparation()` returning
+ * `this.values.length > 0` — accepts MULTIPLE commands in one message. A
+ * witness of `SELECT true; COMMIT; DROP TABLE x` therefore ran all three: the
+ * `COMMIT` ended the handoff's transaction, releasing the advisory lock and
+ * turning `dryRun`'s closing `ROLLBACK` into a no-op, and the `DROP` committed.
+ * Over the extended protocol the server refuses that same string outright
+ * ("cannot insert multiple commands into a prepared statement") before any
+ * part of it executes.
+ *
+ * `@types/pg` 8.21 predates the option, which pg 8.22 implements at runtime, so
+ * the config is typed here and reaches the driver through the single cast in
+ * {@link queryExtendedWitness}. A pg test asserts that a multi-command witness
+ * is refused by a real server, so a driver or types update that silently
+ * dropped `queryMode` fails there rather than quietly reopening the hole.
+ */
+interface ExtendedQueryConfig {
+  readonly text: string;
+  readonly queryMode: 'extended';
+}
+
+type ExtendedQueryRunner = (
+  config: ExtendedQueryConfig,
+) => Promise<{ rows: unknown[] }>;
 
 export interface DonorLedger {
   /** Core-owned ledger table to read. Never written, never deleted from. */
@@ -141,7 +179,7 @@ export interface SeedPluginLedgerOptions {
    *  checksum each seeded row must carry. */
   readonly dir: string;
   readonly donor: DonorLedger;
-  /** filename → witness. A file absent from this map is never seeded. */
+  /** filename → witness SQL. A file absent from this map is never seeded. */
   readonly witnesses: Readonly<Record<string, MigrationWitness>>;
   /** Evaluate and report, write nothing. Defaults to false. */
   readonly dryRun?: boolean;
@@ -184,8 +222,10 @@ export interface LedgerSeedPlan {
  * (`PLUGIN_MIGRATION_LOCK_NS`, keyed on the ledger) that `runPluginMigrations`
  * takes, so a seed and a migrate — or two concurrent seeds — serialise against
  * each other instead of interleaving. Under `dryRun` the transaction is rolled
- * back, which is also what contains any side effect a plugin-supplied witness
- * might have.
+ * back, and the witness path itself is fenced inside a read-only savepoint over
+ * the extended protocol: a multi-command witness is refused by PostgreSQL
+ * before it can `COMMIT`, and a write witness is refused before it can touch
+ * either the donor ledger or any bystander table.
  */
 export async function seedPluginLedgerFromDonor(
   opts: SeedPluginLedgerOptions,
@@ -279,8 +319,10 @@ export async function seedPluginLedgerFromDonor(
           continue;
         }
 
-        const witness = witnesses[file];
-        const proven = witness ? await witness(client) : false;
+        const witnessSql = witnesses[file];
+        const proven = witnessSql
+          ? await runWitness(client, pluginId, ledger, file, witnessSql)
+          : false;
 
         if (!proven) {
           applied.push(file);
@@ -334,6 +376,146 @@ export async function seedPluginLedgerFromDonor(
   } finally {
     client.release();
   }
+}
+
+async function runWitness(
+  client: PoolClient,
+  pluginId: string,
+  ledger: string,
+  filename: string,
+  sql: string,
+): Promise<boolean> {
+  const witnessSql = sql.trim();
+  if (witnessSql.length === 0) {
+    throw new SqlMigrationError(
+      pluginId,
+      ledger,
+      `witness for '${filename}' is empty after trimming - a file with no proof is never seeded, so a blank witness is a caller bug rather than a false result`,
+    );
+  }
+
+  // THE WITNESS FENCE. Everything between this savepoint and its rollback runs
+  // as the PLUGIN's SQL against CORE's privileged connection — the one holding
+  // the handoff transaction and the advisory lock. Two independent guards, both
+  // enforced by PostgreSQL rather than by parsing the string here:
+  //
+  //   1. `transaction_read_only` makes the subtransaction refuse every write.
+  //      A witness of `DELETE FROM <core ledger> RETURNING true` otherwise
+  //      returns one row, one column, one boolean — it PASSES the shape check
+  //      below — and deletes the donor rows this module is careful never to
+  //      touch. Those rows are the rollback path for the whole extraction.
+  //   2. The extended protocol (see `ExtendedQueryConfig`) makes the server
+  //      refuse multi-command strings, which is what closes the escape:
+  //      `SELECT true; COMMIT; DROP TABLE x` used to run all three, and the
+  //      `COMMIT` ended this transaction — releasing the lock and reducing
+  //      `dryRun`'s closing `ROLLBACK` to a no-op.
+  //
+  // Neither guard is a semicolon scan: a semicolon inside a legal string
+  // literal is a valid witness and stays one.
+  await client.query(`SAVEPOINT ${WITNESS_SAVEPOINT}`);
+
+  let outcome: { ok: true; value: boolean } | { ok: false; error: unknown };
+  try {
+    await client.query('SET LOCAL transaction_read_only = on');
+    const result = await queryExtendedWitness(client, witnessSql);
+    outcome = {
+      ok: true,
+      value: coerceWitnessResult(pluginId, ledger, filename, result.rows),
+    };
+  } catch (err) {
+    outcome = { ok: false, error: err };
+  }
+
+  // Teardown is deliberately NOT in a `finally`. A `throw` from `finally`
+  // replaces whatever was already in flight, so a cleanup failure would erase
+  // the witness error that caused it — the exact case an operator most needs to
+  // read. Both errors are carried out of here instead, and reported together.
+  //
+  // `ROLLBACK TO SAVEPOINT` is the only way back to a read-write transaction:
+  // PostgreSQL refuses to clear `transaction_read_only` once a statement has
+  // taken a snapshot. It is also what recovers the aborted subtransaction after
+  // a refused witness, which is why it runs on the failure path too.
+  let cleanupError: unknown = undefined;
+  try {
+    await client.query(`ROLLBACK TO SAVEPOINT ${WITNESS_SAVEPOINT}`);
+    await client.query(`RELEASE SAVEPOINT ${WITNESS_SAVEPOINT}`);
+  } catch (err) {
+    cleanupError = err;
+  }
+
+  if (cleanupError !== undefined) {
+    throw new SqlMigrationError(
+      pluginId,
+      ledger,
+      outcome.ok
+        ? `witness for '${filename}' could not tear down savepoint '${WITNESS_SAVEPOINT}': ${quoteDriverError(cleanupError)}`
+        : `witness for '${filename}' failed: ${quoteDriverError(outcome.error)}; recovery of savepoint '${WITNESS_SAVEPOINT}' then failed: ${quoteDriverError(cleanupError)}`,
+    );
+  }
+
+  if (!outcome.ok) {
+    // A shape failure already carries a precise, file-named message; wrapping
+    // it again would bury that inside a second envelope and quote it as JSON.
+    // Only a driver error — the refusal of a multi-command or writing witness,
+    // a statement timeout — needs the surrounding context added here.
+    throw outcome.error instanceof SqlMigrationError
+      ? outcome.error
+      : new SqlMigrationError(
+          pluginId,
+          ledger,
+          `witness for '${filename}' failed: ${quoteDriverError(outcome.error)}`,
+        );
+  }
+
+  return outcome.value;
+}
+
+function coerceWitnessResult(
+  pluginId: string,
+  ledger: string,
+  filename: string,
+  rows: readonly unknown[],
+): boolean {
+  const row = rows[0];
+  if (rows.length !== 1 || typeof row !== 'object' || row === null) {
+    throw new SqlMigrationError(
+      pluginId,
+      ledger,
+      `witness for '${filename}' returned ${String(rows.length)} rows - a witness must be a single-row, single-column boolean SELECT`,
+    );
+  }
+
+  // `SELECT count(*)` is the tempting wrong witness — `1` for a table that
+  // exists, `0` for one that exists but is empty, and a throw for one that
+  // does not. Coercing truthiness would accept all three readings, so the
+  // shape is enforced instead of guessed.
+  const values: unknown[] = Object.values(row);
+  if (values.length !== 1 || typeof values[0] !== 'boolean') {
+    throw new SqlMigrationError(
+      pluginId,
+      ledger,
+      `witness for '${filename}' returned ${String(values.length)} column(s) of type ${typeof values[0]} - a witness must yield exactly one boolean`,
+    );
+  }
+  return values[0];
+}
+
+function quoteDriverError(err: unknown): string {
+  const message =
+    err instanceof Error ? err.message : typeof err === 'string' ? err : String(err);
+  return JSON.stringify(message);
+}
+
+function queryExtendedWitness(
+  client: PoolClient,
+  text: string,
+): Promise<{ rows: unknown[] }> {
+  // The one cast. `client.query` is overloaded eight ways in `@types/pg` and
+  // none of the overloads carries `queryMode`, so the option cannot be passed
+  // without asserting the runtime shape the installed driver actually has.
+  // Bound rather than called through the alias so `this` is still the client.
+  const run = client.query.bind(client) as unknown as ExtendedQueryRunner;
+  return run({ text, queryMode: 'extended' });
 }
 
 /**

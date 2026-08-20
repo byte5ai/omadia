@@ -8,13 +8,21 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.3.0 — 2026-08-20
+## 1.4.0 — 2026-08-20
+
+> **Why 1.4.0 and not 1.3.0.** This change was written against a tree where
+> `1.3.0` was free. #802 (epic #470 C9) landed on `main` first and took it, so
+> the number moved rather than the meaning: everything below is the same
+> additive surface, and `1.3.0` on `main` is C9's. Two open PRs claiming one
+> version is a merge-order accident, not a semantic one — but a duplicate
+> version is indistinguishable from a silently-changed contract to anything
+> that resolves by version, so it gets its own.
 
 Additive. A plugin that was extracted out of core can now ADOPT an existing
 installation's schema instead of re-applying it — and does so on proof rather
 than on trust (epic #470, C11 — the migration handoff). Every existing consumer
 keeps compiling: `seedLedger` is optional on `SqlAccessor`, so a plugin built
-against 1.3.0 still activates on a 1.2.0 core, where the accessor is
+against 1.4.0 still activates on an older core, where the accessor is
 `undefined` and the (idempotent) migrations simply run.
 
 ### Added

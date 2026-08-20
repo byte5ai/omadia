@@ -123,12 +123,7 @@ describe('#470 C11 seedPluginLedgerFromDonor', { skip: !pgAvailable }, () => {
    *  rather than a `::regclass` cast because the cast THROWS on a missing
    *  object — which is the case the witness exists to detect. */
   function witnessFor(table: string): MigrationWitness {
-    return async (client) => {
-      const r = await client.query<{ present: boolean }>(
-        `SELECT to_regclass('public.${table}') IS NOT NULL AS present`,
-      );
-      return r.rows[0]?.present === true;
-    };
+    return `SELECT to_regclass('public.${table}') IS NOT NULL AS present`;
   }
 
   async function recordDonorRows(names: readonly string[]): Promise<void> {
@@ -175,11 +170,22 @@ describe('#470 C11 seedPluginLedgerFromDonor', { skip: !pgAvailable }, () => {
   }
 
   async function ledgerExists(): Promise<boolean> {
+    return tableExists(ledger);
+  }
+
+  async function tableExists(table: string): Promise<boolean> {
     const r = await pool.query<{ present: boolean }>(
       'SELECT to_regclass($1) IS NOT NULL AS present',
-      [`public.${ledger}`],
+      [`public.${table}`],
     );
     return r.rows[0]?.present === true;
+  }
+
+  async function rowCount(table: string): Promise<number> {
+    const r = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM ${table}`,
+    );
+    return Number(r.rows[0]?.n ?? '0');
   }
 
   // --- (a) the happy handoff ------------------------------------------------
@@ -323,6 +329,138 @@ describe('#470 C11 seedPluginLedgerFromDonor', { skip: !pgAvailable }, () => {
     assert.equal(await ledgerRowCount(), rowsBefore, 'nothing was written');
   });
 
+  it('refuses a multi-command witness and leaves both the canary and plugin ledger untouched', async () => {
+    const first = files[0] as string;
+    const canary = `c11_${suffix}_canary_multi`;
+    tables.push(canary);
+    await recordDonorRows([donorFilenames[0] as string]);
+    await pool.query(`CREATE TABLE IF NOT EXISTS ${canary} (id int)`);
+
+    await assert.rejects(
+      seed({
+        donor: { ledgerTable: donorLedger, filenames: [first] },
+        witnesses: {
+          [first]: `SELECT true AS ok; COMMIT; DROP TABLE ${canary}`,
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof SqlMigrationError);
+        assert.match(err.message, /multiple commands/i);
+        return true;
+      },
+    );
+
+    assert.equal(await tableExists(canary), true, 'the canary survived the refused witness');
+    assert.equal(await ledgerExists(), false, 'the plugin ledger DDL did not survive the refusal');
+  });
+
+  it('refuses a genuine multi-command witness but still allows a semicolon inside a legal string literal', async () => {
+    const first = files[0] as string;
+    const canary = `c11_${suffix}_canary_quote`;
+    tables.push(canary);
+    await pool.query(`CREATE TABLE IF NOT EXISTS ${canary} (id int)`);
+
+    const legalLiteral = await seed({
+      donor: { ledgerTable: donorLedger, filenames: [first] },
+      witnesses: {
+        [first]: "SELECT to_regclass('public.a;b') IS NOT NULL AS present",
+      },
+    });
+    assert.deepEqual([...legalLiteral.seeded], []);
+    assert.deepEqual([...legalLiteral.applied], [first]);
+    // The ledger TABLE exists after this one: the witness was merely false, so
+    // the seed committed normally and its `CREATE TABLE IF NOT EXISTS` stands.
+    // Zero ROWS is the claim — a false witness seeds nothing. (The refusal
+    // cases below assert the stronger `ledgerExists() === false`, because a
+    // refused seed rolls the DDL back too.)
+    assert.equal(await ledgerRowCount(), 0, 'a false witness leaves no ledger rows behind');
+
+    await assert.rejects(
+      seed({
+        donor: { ledgerTable: donorLedger, filenames: [first] },
+        witnesses: {
+          [first]: `SELECT true AS ok; DROP TABLE ${canary}`,
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof SqlMigrationError);
+        assert.match(err.message, /multiple commands/i);
+        return true;
+      },
+    );
+
+    assert.equal(await tableExists(canary), true, 'the hostile semicolon did not reach the canary');
+    // The ledger table is standing because the LEGAL-literal seed above
+    // committed its DDL, not because this refusal leaked one. What the refusal
+    // must not leave behind is a ROW: the multi-command witness never returned
+    // a verdict, so nothing may be recorded as applied.
+    assert.equal(await ledgerRowCount(), 0, 'the refusal recorded no ledger row');
+  });
+
+  it('refuses a witness that tries to write and leaves donor rows unchanged', async () => {
+    const first = files[0] as string;
+    await recordDonorRows([donorFilenames[0] as string]);
+    const before = await rowCount(donorLedger);
+
+    await assert.rejects(
+      seed({
+        donor: { ledgerTable: donorLedger, filenames: [first] },
+        witnesses: {
+          [first]: `DELETE FROM ${donorLedger} RETURNING true`,
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof SqlMigrationError);
+        assert.match(err.message, /read-only transaction/i);
+        return true;
+      },
+    );
+
+    assert.equal(await rowCount(donorLedger), before, 'the donor ledger row count is unchanged');
+    assert.equal(await ledgerExists(), false, 'the failed witness did not leave a plugin ledger behind');
+  });
+
+  it('dryRun with a hostile witness leaves nothing behind', async () => {
+    const first = files[0] as string;
+    const canary = `c11_${suffix}_canary_dry`;
+    tables.push(canary);
+    await recordDonorRows([donorFilenames[0] as string]);
+    await pool.query(`CREATE TABLE IF NOT EXISTS ${canary} (id int)`);
+
+    await assert.rejects(
+      seed({
+        donor: { ledgerTable: donorLedger, filenames: [first] },
+        witnesses: {
+          [first]: `SELECT true AS ok; COMMIT; DROP TABLE ${canary}`,
+        },
+        dryRun: true,
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof SqlMigrationError);
+        assert.match(err.message, /multiple commands/i);
+        return true;
+      },
+    );
+
+    assert.equal(await tableExists(canary), true, 'the canary survived the dry-run refusal');
+    assert.equal(await ledgerExists(), false, 'dryRun still left no ledger behind');
+  });
+
+  it('still seeds a legitimate witness through the hardened execution path', async () => {
+    const first = files[0] as string;
+    await recordDonorRows([donorFilenames[0] as string]);
+    await pool.query(`CREATE TABLE IF NOT EXISTS ${tables[0] as string} (id int)`);
+
+    const plan = await seed({
+      donor: { ledgerTable: donorLedger, filenames: [first] },
+      witnesses: { [first]: witnesses[first] as MigrationWitness },
+    });
+
+    assert.deepEqual([...plan.seeded], [first]);
+    assert.deepEqual([...plan.applied], []);
+    assert.equal(await ledgerRowCount(), 1, 'the legitimate witness still seeds one row');
+  });
+
   // --- (e) donor rows are never touched ------------------------------------
 
   it('leaves the donor ledger byte-for-byte intact — that is the rollback path', async () => {
@@ -459,4 +597,3 @@ describe('#470 C11 seedPluginLedgerFromDonor', { skip: !pgAvailable }, () => {
     assert.equal(plan.seeded.length, FILE_COUNT, 'the witness still decides');
   });
 });
-

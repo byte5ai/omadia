@@ -17,7 +17,11 @@
  *   node middleware/scripts/plugin-ledger-handoff.mjs --plan handoff.json
  *
  * That is the whole de-risking of the epic's most irreversible-looking step,
- * and it costs one read-only transaction.
+ * and it costs one read-only transaction. That claim is now literally true:
+ * witnesses run inside a read-only subtransaction over PostgreSQL's extended
+ * protocol, so a multi-command witness is refused by the server before it can
+ * escape the dry run and a write witness is refused before it can touch
+ * either the donor ledger or any bystander table.
  *
  * DRY RUN IS THE DEFAULT, and `--apply` is the only way to write. The inverse
  * default — write unless told otherwise — is wrong for a tool whose entire
@@ -126,32 +130,6 @@ function loadPlan(planPath) {
   return plan;
 }
 
-/**
- * Wrap one plan entry's SQL as a witness.
- *
- * The shape is enforced, not coerced: exactly one row, exactly one column,
- * and a real boolean. `SELECT count(*)` is the tempting wrong witness — 1 for
- * a table that exists, 0 for one that exists but is empty, and a throw for one
- * that does not — and truthiness would have accepted all three readings.
- */
-function witnessFor(entry) {
-  return async (client) => {
-    const result = await client.query(entry.witnessSql);
-    if (result.rows.length !== 1) {
-      throw new Error(
-        `witness for '${entry.filename}' returned ${result.rows.length} rows; expected exactly 1`,
-      );
-    }
-    const values = Object.values(result.rows[0]);
-    if (values.length !== 1 || typeof values[0] !== 'boolean') {
-      throw new Error(
-        `witness for '${entry.filename}' must yield exactly one boolean column`,
-      );
-    }
-    return values[0];
-  };
-}
-
 function report(plan, result, apply) {
   const lines = [];
   lines.push('');
@@ -216,9 +194,7 @@ async function main() {
         ledgerTable: CORE_MIGRATION_DONOR_LEDGER,
         filenames: plan.entries.map((e) => e.filename),
       },
-      witnesses: Object.fromEntries(
-        plan.entries.map((e) => [e.filename, witnessFor(e)]),
-      ),
+      witnesses: Object.fromEntries(plan.entries.map((e) => [e.filename, e.witnessSql])),
       dryRun: !args.apply,
     });
 

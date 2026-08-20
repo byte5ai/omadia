@@ -114,7 +114,6 @@ import { runPluginMigrations } from './pluginMigrations.js';
 import {
   CORE_MIGRATION_DONOR_LEDGER,
   seedPluginLedgerFromDonor,
-  type MigrationWitness,
 } from './pluginMigrationHandoff.js';
 
 /**
@@ -1065,12 +1064,7 @@ function createSqlAccessor(opts: SqlAccessorOptions): SqlAccessor {
           ledgerTable: CORE_MIGRATION_DONOR_LEDGER,
           filenames: entries.map((e) => e.filename),
         },
-        witnesses: Object.fromEntries(
-          entries.map((e) => [
-            e.filename,
-            makeSqlWitness(agentId, ledger, e.filename, e.witnessSql),
-          ]),
-        ),
+        witnesses: Object.fromEntries(entries.map((e) => [e.filename, e.witnessSql])),
         dryRun: seedOpts.dryRun ?? false,
         log,
       });
@@ -1130,42 +1124,6 @@ function validateSeedEntries(
   });
 }
 
-/**
- * Turn one plugin-supplied witness query into a witness function.
- *
- * The result must be a real boolean from a single row and a single column.
- * Coercing a truthy value would accept `SELECT count(*) FROM ...` - which is
- * `1` on a table that exists AND `0` on one that exists but is empty, and
- * throws on one that does not. Every one of those readings is wrong for a
- * witness, so the shape is enforced instead of guessed.
- */
-function makeSqlWitness(
-  agentId: string,
-  ledger: string,
-  filename: string,
-  witnessSql: string,
-): MigrationWitness {
-  return async (client) => {
-    const result = await client.query(witnessSql);
-    const row: unknown = result.rows[0];
-    if (result.rows.length !== 1 || typeof row !== 'object' || row === null) {
-      throw new SqlMigrationError(
-        agentId,
-        ledger,
-        `witness for '${filename}' returned ${String(result.rows.length)} rows - a witness must be a single-row, single-column boolean SELECT`,
-      );
-    }
-    const values: unknown[] = Object.values(row);
-    if (values.length !== 1 || typeof values[0] !== 'boolean') {
-      throw new SqlMigrationError(
-        agentId,
-        ledger,
-        `witness for '${filename}' returned ${String(values.length)} column(s) of type ${typeof values[0]} - a witness must yield exactly one boolean`,
-      );
-    }
-    return values[0];
-  };
-}
 
 /**
  * Resolve a migrations directory inside the package root, and prove it stayed

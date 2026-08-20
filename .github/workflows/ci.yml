@@ -243,10 +243,12 @@ jobs:
       #        269 and went red for it — the floor was describing a tree that
       #        no longer exists. A coverage floor that outlives its suites is
       #        not protecting anything; it is just failing.
-      #   +21  C11 adds `pluginMigrationHandoff.pg.test.ts` (14) and
-      #        `pluginMigrationHandoffAccessor.pg.test.ts` (7).
+      #   +27  C11 adds `pluginMigrationHandoff.pg.test.ts` (19) and
+      #        `pluginMigrationHandoffAccessor.pg.test.ts` (8) — including six
+      #        that pin the witness fence (a witness is plugin-supplied SQL, so
+      #        it runs in a read-only savepoint over the extended protocol).
       #
-      # 243 + 21 = 264, and CI reports exactly 264 — which is also the check
+      # 243 + 27 = 270, and CI reports exactly 270 — which is also the check
       # that nothing ELSE went quiet along the way. This is the one legitimate
       # reason to lower a coverage floor: the covered code was deliberately
       # removed. Any other drop is the silent skip this guard exists to catch.
@@ -254,7 +256,7 @@ jobs:
         env:
           GRAPH_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
           MEMORY_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
-          PG_TEST_FLOOR: '264'
+          PG_TEST_FLOOR: '270'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

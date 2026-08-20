@@ -308,6 +308,42 @@ describe('#470 C11 ctx.sql.seedLedger', { skip: !pgAvailable }, () => {
     );
   });
 
+  it('refuses a multi-command witness through ctx.sql.seedLedger and leaves the canary intact', async () => {
+    const ctx = makeCtx({ declared: true, granted: true });
+    const seedLedger = seedLedgerOf(ctx);
+    const canary = `c11a_${suffix}_canary`;
+    await pool.query(`CREATE TABLE IF NOT EXISTS ${canary} (id int)`);
+
+    await assert.rejects(
+      seedLedger({
+        entries: [
+          {
+            filename: file,
+            witnessSql: `SELECT true AS ok; COMMIT; DROP TABLE ${canary}`,
+          },
+        ],
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof SqlMigrationError);
+        assert.match(err.message, /multiple commands/i);
+        return true;
+      },
+    );
+
+    const canaryExists = await pool.query<{ present: boolean }>(
+      'SELECT to_regclass($1) IS NOT NULL AS present',
+      [`public.${canary}`],
+    );
+    const ledgerExists = await pool.query<{ present: boolean }>(
+      'SELECT to_regclass($1) IS NOT NULL AS present',
+      [`public.${ledger}`],
+    );
+    assert.equal(canaryExists.rows[0]?.present, true, 'the canary table survived');
+    assert.equal(ledgerExists.rows[0]?.present, false, 'the refused seed left no plugin ledger behind');
+
+    await pool.query(`DROP TABLE IF EXISTS ${canary}`);
+  });
+
   it('rejects an empty entry list, a blank witness, and a duplicated filename', async () => {
     const ctx = makeCtx({ declared: true, granted: true });
     const seedLedger = seedLedgerOf(ctx);
