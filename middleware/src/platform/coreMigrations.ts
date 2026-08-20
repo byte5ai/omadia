@@ -48,6 +48,30 @@ import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
  * so the steady-state boot is one SELECT and the orchestrator's own later call
  * is a no-op second pass. Multiple replicas booting together serialise on the
  * same lock they always did.
+ *
+ * LOCK CONTENTION
+ * ---------------
+ * The migrator gives up on the advisory lock after
+ * `MULTI_ORCH_MIGRATION_LOCK_WAIT_MS` (2s) and throws. That budget was sized
+ * for its ORIGINAL call site — inside the orchestrator plugin's `activate()`,
+ * which `ToolPluginRuntime` hard-caps at 10s, and where the throw was caught
+ * per-plugin: `activateAllInstalled` logged it, marked that one plugin
+ * errored, and boot continued. The wording ("timed out") was even chosen so
+ * `bootstrap.retryErroredPlugins` would classify it as transient and
+ * re-attempt on the next boot.
+ *
+ * Here there is no such catch: this runs at top level in `main()`, so an
+ * escaping throw becomes `process.exit(1)`. Moving the call without moving
+ * that assumption would convert a survivable, self-healing lock race into a
+ * boot crash — a cold multi-replica boot has 47 files to apply, and "the
+ * winner finishes inside 2s" is not a contract anyone can offer.
+ *
+ * So contention specifically is retried here, up to
+ * {@link LOCK_CONTENTION_TOTAL_WAIT_MS}. Each attempt re-enters the migrator,
+ * which re-reads the ledger — so once the winner commits, the next attempt
+ * takes the migrator's own "applied by another replica while waiting" path and
+ * returns clean. Every other error still propagates on its first occurrence:
+ * core without its schema must fail loudly, which is the entire point of #796.
  */
 
 /** Outcome of a boot-time core-migration run. Returned rather than logged-only
@@ -70,6 +94,46 @@ export interface CoreMigrationsOptions {
    * the environment.
    */
   readonly createPool?: ((connectionString: string) => Pool) | undefined;
+  /**
+   * Migration-runner seam. Defaults to the real
+   * `runMultiOrchestratorMigrations`; overridden in tests that need to drive
+   * the lock-contention retry without racing two real boots against one
+   * database.
+   */
+  readonly runMigrations?:
+    | ((pool: Pool, log: (msg: string) => void) => Promise<void>)
+    | undefined;
+}
+
+/**
+ * How long boot keeps re-attempting while another replica holds the migration
+ * lock. Generous on purpose: the cost of waiting is a slower boot, the cost of
+ * giving up early is a crash loop that competes with the replica actually
+ * making progress. Past this, the migrator's own error propagates unchanged.
+ */
+const LOCK_CONTENTION_TOTAL_WAIT_MS = 60_000;
+/** Pause between attempts. The migrator already spends its own 2s inside each
+ *  attempt waiting on the lock, so this only spaces the retries out. */
+const LOCK_CONTENTION_RETRY_DELAY_MS = 500;
+
+/**
+ * Does this error mean "another replica is mid-migration" rather than "the
+ * migration is broken"? Matched on the migrator's message because it exports
+ * no error type — and pinned by `coreMigrationsBootWiring.test.ts`, which
+ * reads `migrator.ts` and fails if that phrase stops being produced. Only
+ * contention is retryable; a failed SQL file must surface on attempt one.
+ */
+function isLockContentionError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    err.message.includes(
+      'waiting for the _multi_orchestrator_migrations advisory lock',
+    )
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((done) => setTimeout(done, ms));
 }
 
 export async function runCoreMigrations(
@@ -88,10 +152,25 @@ export async function runCoreMigrations(
       // long-lived pools plugins open later.
       new Pool({ connectionString, max: 2, idleTimeoutMillis: 1_000 }));
 
+  const runMigrations = opts.runMigrations ?? runMultiOrchestratorMigrations;
+
   const pool = createPool(databaseUrl);
+  const deadline = Date.now() + LOCK_CONTENTION_TOTAL_WAIT_MS;
   try {
-    await runMultiOrchestratorMigrations(pool, log);
-    return 'applied';
+    for (;;) {
+      try {
+        await runMigrations(pool, log);
+        return 'applied';
+      } catch (err) {
+        const remaining = deadline - Date.now();
+        if (!isLockContentionError(err) || remaining <= 0) throw err;
+        log(
+          '[middleware] core migrations: another replica holds the migration lock — ' +
+            `retrying for up to ${String(Math.ceil(remaining / 1_000))}s`,
+        );
+        await sleep(Math.min(LOCK_CONTENTION_RETRY_DELAY_MS, remaining));
+      }
+    }
   } finally {
     // `end()` must not mask a migration failure, and must not itself fail the
     // boot: the migrations are already committed by the time we get here.
