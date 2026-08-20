@@ -263,6 +263,7 @@ export function InstallButton({
 
   async function handleSubmit(
     values: Record<string, unknown>,
+    jsonFiles?: Record<string, string>,
   ): Promise<void> {
     if (phase.kind !== 'form' && phase.kind !== 'error') return;
     const job = phase.kind === 'form' ? phase.job : phase.job;
@@ -270,7 +271,7 @@ export function InstallButton({
     setPhase({ kind: 'submitting', job, values });
     setFieldErrors({});
     try {
-      const resp = await configureInstallJob(job.id, values);
+      const resp = await configureInstallJob(job.id, values, jsonFiles);
       if (resp.job.state === 'active') {
         setPhase({ kind: 'success' });
         // Give the user a moment to see the confirmation, then close + refresh.
@@ -625,7 +626,10 @@ interface InstallDrawerProps {
   pluginName: string;
   fieldErrors: Record<string, SetupFieldError>;
   onClose: () => void;
-  onSubmit: (values: Record<string, unknown>) => void | Promise<void>;
+  onSubmit: (
+    values: Record<string, unknown>,
+    jsonFiles?: Record<string, string>,
+  ) => void | Promise<void>;
   /** Markdown setup guide rendered above the fields. */
   setupGuide?: string;
 }
@@ -725,9 +729,26 @@ function InstallDrawer({
             onSubmit={(e) => {
               e.preventDefault();
               if (submitting) return;
-              const formData = new FormData(e.currentTarget);
+              const formEl = e.currentTarget;
+              const formData = new FormData(formEl);
               const values = extractValues(fields, formData);
-              void onSubmit(values);
+              // #603 (OM-17) — read any selected json_file uploads and ship the
+              // RAW documents with the configure call. The server parses them
+              // (never the client — its doctrine, see secrets/from-json) and
+              // the derived values run through normal validation. Reading a
+              // File is async, hence the wrapper.
+              void (async () => {
+                const jsonFiles: Record<string, string> = {};
+                for (const field of fields) {
+                  if (field.type !== 'json_file') continue;
+                  const input = formEl.querySelector<HTMLInputElement>(
+                    `[data-json-file-field="${field.key}"]`,
+                  );
+                  const file = input?.files?.[0];
+                  if (file) jsonFiles[field.key] = await file.text();
+                }
+                await onSubmit(values, jsonFiles);
+              })();
             }}
           >
             <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
