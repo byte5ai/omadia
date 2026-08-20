@@ -106,6 +106,13 @@ import {
   runStoredProcessToolSpec,
   writeProcessToolSpec,
 } from './tools/processMemoryTool.js';
+import {
+  EXECUTE_SYSTEM_PROMPT_DOC,
+  EXECUTE_TOOL_NAME,
+  createExecuteHandler,
+  executeToolSpec,
+} from './tools/executeTool.js';
+import { DockerSandboxBackend } from '@omadia/sandbox';
 /**
  * @omadia/orchestrator — plugin entry point.
  *
@@ -824,6 +831,39 @@ export async function activate(
     );
   }
 
+  // #576 P2 — `execute` native tool: a shell command runner backed by a
+  // durable per-scope sandbox (`@omadia/sandbox`). Off by default — same
+  // honest-inert opt-in convention as the #575 audience floor and #580
+  // command policy, and for the sharpest reason of all of them: this tool's
+  // entire job is running arbitrary commands, so a deployment that hasn't
+  // explicitly turned it on must not get it "for free" from a default.
+  // `executeTool.ts`'s handler runs its OWN org-floor command-policy check
+  // independently of the turn-context `commandPolicy` seam (see that
+  // module's doc) — belt AND braces, not a replacement for the existing
+  // `guardToolCommands` choke point in `orchestrator.ts`'s `dispatchTool`.
+  const disposeExecuteTool: Array<() => void> = [];
+  const sandboxExecuteEnabled = ctx.config.get<boolean>('sandbox_execute_enabled') === true;
+  if (sandboxExecuteEnabled) {
+    const sandboxBackend = new DockerSandboxBackend();
+    // No `writeCapabilities` annotation: that contract is a `{dataClass,
+    // operation}` pair for canvas inline-edit + idempotency dedupe of
+    // STRUCTURED writes (an Odoo record, a Jira ticket) — `execute`'s
+    // effects are arbitrary and untyped, so neither half of the contract
+    // fits, and re-running the "same" shell command is not safely
+    // deduplicable the way replaying a structured write is. Deliberately
+    // absent, not an oversight.
+    disposeExecuteTool.push(
+      nativeToolRegistry.register(EXECUTE_TOOL_NAME, {
+        handler: createExecuteHandler({ backend: sandboxBackend }),
+        spec: executeToolSpec,
+        promptDoc: EXECUTE_SYSTEM_PROMPT_DOC,
+      }),
+    );
+    ctx.log('[harness-orchestrator] sandbox_execute_enabled=true — registered execute native tool (Docker backend)');
+  } else {
+    ctx.log('[harness-orchestrator] sandbox_execute_enabled not set — skipping execute native tool');
+  }
+
   // US3 — per-Agent Orchestrator construction. The orchestrator plugin
   // builds the single "default" Agent; the multi-orchestrator registry
   // (US4) calls the same factory once per configured Agent against the
@@ -1099,6 +1139,13 @@ export async function activate(
         // best-effort
       }
       for (const dispose of disposeProcessMemoryTools) {
+        try {
+          dispose();
+        } catch {
+          // best-effort
+        }
+      }
+      for (const dispose of disposeExecuteTool) {
         try {
           dispose();
         } catch {
