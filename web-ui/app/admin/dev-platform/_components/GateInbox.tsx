@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
+
+type Formatter = ReturnType<typeof useFormatter>;
 
 import { Button } from '@/app/_components/ui/Button';
 import { ApiError } from '@/app/_lib/api';
@@ -109,6 +111,7 @@ export function GateCard({
   compact?: boolean;
 }): React.ReactElement {
   const t = useTranslations('adminDevPlatform.gates');
+  const format = useFormatter();
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState<'approve' | 'reject' | null>(null);
@@ -182,7 +185,7 @@ export function GateCard({
           </div>
         )}
         <div className="text-xs text-[color:var(--fg-subtle)]">
-          {gate.deadlineAt ? t('deadline', { at: formatTs(gate.deadlineAt) }) : t('noDeadline')}
+          {gate.deadlineAt ? t('deadline', { at: formatTs(gate.deadlineAt, format) }) : t('noDeadline')}
         </div>
       </div>
 
@@ -298,7 +301,7 @@ export function GateCard({
 }
 
 /** ISO timestamp → locale string; falls back to the raw value if unparseable. */
-function formatTs(iso: string): string {
+function formatTs(iso: string, format: Formatter): string {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? iso : format.dateTime(d);
 }

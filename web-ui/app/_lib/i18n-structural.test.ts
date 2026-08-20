@@ -66,7 +66,29 @@ describe('#679 / I6 — number and date formatting follows the active locale', (
   // `toLocaleString()` with no argument follows the BROWSER locale, and with a
   // pinned tag it follows that tag — neither is the locale the user chose in
   // the app. next-intl's `useFormatter()` is the only one that is.
-  const SWEPT = ['admin/usage/page.tsx', 'admin/kg-lifecycle/page.tsx'];
+  const SWEPT = [
+    'admin/usage/page.tsx',
+    'admin/kg-lifecycle/page.tsx',
+    // #687 Q3 I6 sweep — toLocaleString() replaced with next-intl's
+    // useFormatter()/getFormatter().
+    'graph/_components/MemoryAclSection.tsx',
+    'admin/kg-priorities/page.tsx',
+    'admin/inconsistencies/page.tsx',
+    'admin/users/page.tsx',
+    'admin/dev-platform/_components/GateInbox.tsx',
+    'admin/webhooks/_components/WebhookSubscriptionsSection.tsx',
+    'admin/webhooks/_components/WebhookEndpointsSection.tsx',
+    'admin/duplicates/page.tsx',
+    'admin/topics/page.tsx',
+    'system/_components/VaultStatusCard.tsx',
+    'routines/[id]/runs/[runId]/page.tsx',
+    'routines/_components/RoutineRow.tsx',
+    'conductor/page.tsx',
+    'conductor/_components/ConductorRunTrace.tsx',
+    'memories/page.tsx',
+    'memories/[id]/page.tsx',
+    'store/builder/[id]/_components/VersionsTab.tsx',
+  ];
 
   for (const file of SWEPT) {
     it(`${file} has no toLocaleString call`, () => {

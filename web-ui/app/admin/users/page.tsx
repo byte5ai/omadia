@@ -3,7 +3,9 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
+
+type Formatter = ReturnType<typeof useFormatter>;
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -20,6 +22,7 @@ type State =
 
 export default function AdminUsersPage(): React.ReactElement {
   const t = useTranslations('adminUsers');
+  const format = useFormatter();
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [showCreate, setShowCreate] = useState(false);
   const [newEmail, setNewEmail] = useState('');
@@ -207,7 +210,7 @@ export default function AdminUsersPage(): React.ReactElement {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-xs text-[color:var(--fg-muted)]">
-                    {u.last_login_at ? formatDate(u.last_login_at) : '—'}
+                    {u.last_login_at ? formatDate(u.last_login_at, format) : '—'}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Link
@@ -227,9 +230,9 @@ export default function AdminUsersPage(): React.ReactElement {
   );
 }
 
-function formatDate(iso: string): string {
+function formatDate(iso: string, format: Formatter): string {
   try {
-    return new Date(iso).toLocaleString('de-DE', {
+    return format.dateTime(new Date(iso), {
       dateStyle: 'short',
       timeStyle: 'short',
     });
