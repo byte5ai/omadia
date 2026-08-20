@@ -30,3 +30,21 @@ export { execDockerViaSpawn } from './dockerExec.js';
 
 export type { DockerSandboxBackendOptions } from './dockerSandbox.js';
 export { DockerSandboxBackend } from './dockerSandbox.js';
+
+export type { SyncReadOnlyLayerResult } from './contentHash.js';
+export { computeContentHash, syncReadOnlyLayer } from './contentHash.js';
+
+export type {
+  SandboxRegistry,
+  SandboxRegistryEntry,
+  SandboxRegistryUpsertInput,
+} from './sandboxRegistry.js';
+export { InMemorySandboxRegistry } from './sandboxRegistry.js';
+
+export { PostgresSandboxRegistry } from './postgresSandboxRegistry.js';
+
+export type {
+  ReapOrphanedSandboxesOptions,
+  ReapOrphanedSandboxesResult,
+} from './reaper.js';
+export { reapOrphanedSandboxes } from './reaper.js';
