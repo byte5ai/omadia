@@ -18,6 +18,29 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — Conductor run cancellation + approval hardening (#759)
+
+- **Run cancel.** `POST /api/v1/operator/conductors/:slug/runs/:runId/cancel`
+  (+ a cancel button on the run trace): a `waiting` run ends immediately — its
+  open awaits close as `cancelled` (writing, for the first time, the enum value
+  the schema carried since 0001) and a synthetic step records the cancelling
+  operator; a `running` run is flagged and its driver stops at the next step
+  boundary (a mid-step kill is deliberately not attempted — the at-least-once
+  effect window stays bounded to one step, same as crash recovery); terminal
+  runs answer 409. Schema: conductor migration `0008_run_cancel.sql` (status
+  CHECK + `cancel_requested_by/at`).
+- **Strict approvals.** New per-human-step `strictApproval` flag (designer
+  checkbox): only an explicit `{approved:true}` advances — inverting the
+  documented fail-open default where anything but `{approved:false}` counts as
+  approval. Default unchanged for existing workflows.
+- **Validator warnings (non-blocking).** `timeout_equals_approval` (a deadline
+  fallback that lands on the approval path — a timeout would silently approve)
+  and `approval_fail_open` (a non-strict human step gating an action step),
+  surfaced amber in the designer on publish.
+- **Role-holder audit.** Every baton add/remove now lands in `admin_audit`
+  (`conductor.role_holders_change`) — who may approve is a security decision;
+  in the current single-role system any operator can assign themselves.
+
 ### Added — persistent per-turn privacy receipts (#757)
 
 - **`turn_receipts` (migration `0039`).** The per-turn `PrivacyReceipt` is no

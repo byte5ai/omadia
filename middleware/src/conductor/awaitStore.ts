@@ -210,6 +210,18 @@ export class ConductorAwaitStore {
     return r.rows.map((row) => ({ responderId: row.responder_id, response: row.response }));
   }
 
+  /** #759 — close every waiting await of a run as 'cancelled' (operator run
+   *  cancel). Returns the number of awaits closed. The first writer of the
+   *  'cancelled' enum value the schema has carried since 0001. */
+  async cancelForRun(runId: string): Promise<number> {
+    const r = await this.pool.query(
+      `UPDATE conductor_awaits SET status = 'cancelled', resolved_at = now()
+        WHERE run_id = $1 AND status = 'waiting'`,
+      [runId],
+    );
+    return r.rowCount ?? 0;
+  }
+
   /** Atomic transition waiting → resolved/timed_out (FR-018). Returns true iff this call won. */
   async close(awaitId: string, status: 'resolved' | 'timed_out'): Promise<boolean> {
     const r = await this.pool.query(

@@ -152,6 +152,16 @@ export async function wireConductor(deps: {
    *  subscription signing secrets live here under the `core:conductor` namespace, never
    *  in a Postgres column or an API response body beyond their one-time creation reply. */
   vault: SecretVault;
+  /** #759 — audit sink for role-holder (baton) changes, wired to the kernel's
+   *  AdminAuditLog. Late-bound thunk shape at the caller so boot order does
+   *  not matter. */
+  auditRoleChange?: (entry: {
+    actor: string;
+    roleKey: string;
+    action: 'add' | 'remove';
+    holderId: string;
+    holdersAfter: string[];
+  }) => Promise<void>;
   /** Global inbound kill switch (`CONDUCTOR_WEBHOOKS_ENABLED`). Default true. */
   webhooksEnabled?: boolean;
   /** Outbound delivery attempt cap + per-attempt timeout — defaults live in webhookDispatcher.ts. */
@@ -360,6 +370,7 @@ export async function wireConductor(deps: {
       templateKnownRefs,
       webhookEndpoints,
       webhookSubscriptions,
+      ...(deps.auditRoleChange ? { auditRoleChange: deps.auditRoleChange } : {}),
       assertOutboundUrlAllowed: (url) => {
         assertOutboundUrlAllowed(url); // throws WebhookUrlNotAllowedError — route catches + 400s it
       },

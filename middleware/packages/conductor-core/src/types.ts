@@ -108,6 +108,16 @@ export interface HumanStepConfig {
   /** default 'any'. */
   quorum?: Quorum;
   responseSchema?: JsonObject;
+  /**
+   * #759 — strict approval semantics. Default (false, the historical
+   * behaviour) is fail-open: only an explicit `{approved:false}` counts as a
+   * rejection, so an absent/garbage payload advances as approved. With
+   * `strictApproval: true` the executor normalizes the step result so
+   * `approved` is true ONLY for an explicit `{approved:true}` — everything
+   * else is a rejection. Set it on any human step that gates an
+   * irreversible action.
+   */
+  strictApproval?: boolean;
 }
 
 export interface CanvasPosition {
@@ -216,9 +226,21 @@ export interface ValidationError {
   nodeIds: string[];
 }
 
+/** #759 — non-blocking validation findings. A warning never fails `ok`; it
+ *  surfaces a legal-but-dangerous shape the designer should consciously keep. */
+export type ValidationWarningCode = 'timeout_equals_approval' | 'approval_fail_open';
+
+export interface ValidationWarning {
+  code: ValidationWarningCode;
+  message: string;
+  nodeIds: string[];
+}
+
 export interface ValidationResult {
   ok: boolean;
   errors: ValidationError[];
+  /** Optional so pre-#759 consumers (and template checks) stay source-compatible. */
+  warnings?: ValidationWarning[];
 }
 
 /** Optional known-reference sets supplied by the kernel so the pure engine can verify that

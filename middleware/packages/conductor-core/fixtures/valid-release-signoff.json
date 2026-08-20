@@ -18,7 +18,8 @@
         "message": "Release {{ctx.tag}} ready — approve?",
         "reminderInterval": "PT6H",
         "deadline": "PT24H",
-        "quorum": "any"
+        "quorum": "any",
+        "strictApproval": true
       },
       "fallbackTransitionId": "t_deadline",
       "position": { "x": 240, "y": 40 }

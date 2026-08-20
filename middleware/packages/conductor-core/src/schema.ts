@@ -60,6 +60,7 @@ export const conductorGraphSchema = {
         deadline: { type: ['string', 'null'] },
         quorum: { enum: ['any', 'all'] },
         responseSchema: { type: 'object' },
+        strictApproval: { type: 'boolean' },
       },
     },
     transition: {
