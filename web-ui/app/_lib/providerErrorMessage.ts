@@ -54,6 +54,30 @@ export function humanizeProviderError(raw: string, fallback: string): string {
 }
 
 /**
+ * True when a provider error is a credential rejection — the one failure class
+ * a user can actually FIX themselves, so chat surfaces show a localized
+ * sentence pointing at Admin → LLM access instead of the provider's raw
+ * English sentence ("API key is invalid.", "invalid x-api-key", …).
+ *
+ * Field-test provenance (OM-26, retest 2026-08-20): the packaged app already
+ * stripped the JSON envelope, but the extracted sentence itself was English in
+ * a German UI and named no next step. The middleware has no request locale
+ * (see `PatternViolation.hint` in the middleware for the doctrine), so the
+ * client owns this mapping, keyed on the error's SHAPE — status 401,
+ * `authentication_error`, or the well-known key phrasings — never on full
+ * message equality, which would break on the provider's next wording change.
+ */
+export function isProviderAuthError(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  if (/^401\b/.test(trimmed)) return true;
+  if (/authentication_error/i.test(trimmed)) return true;
+  return /\b(api[ -]?key|x-api-key)\b[^.\n]{0,40}\b(invalid|abgelehnt|rejected|expired|revoked)\b|\b(invalid|expired|revoked)\b[^.\n]{0,24}\b(api[ -]?key|x-api-key)\b/i.test(
+    trimmed,
+  );
+}
+
+/**
  * Parse `candidate` as a whole and return it only when it is a non-null JSON
  * object. Anything else (parse failure, array, string, number, `null`) yields
  * `null` — the string is then treated as an application message, not envelope.
