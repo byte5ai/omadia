@@ -361,6 +361,99 @@ parent.
 allowlisted, so a compiled SPA can ship today; what is missing is a static-asset serving
 path from the plugin's router. That is a much smaller problem than a styling story.
 
+### 4.3a addendum — the iframe trust model (C8b)
+
+> **Status: DECIDED and SHIPPED (C8b).** The frame is **sandboxed but same-origin**:
+> `sandbox="allow-same-origin allow-scripts allow-forms"`.
+
+C8 shipped the frame as `allow-scripts allow-forms allow-popups`, deliberately without
+`allow-same-origin`, with a comment saying the bundle is third-party code and this keeps it
+out of the operator's cookies, and that a plugin needing authenticated calls "does them from
+its own backend router, which is where its authentication lives anyway."
+
+The first half was sound. The second half does not follow, and it made the feature
+non-functional. A sandbox without `allow-same-origin` gives the document an **opaque
+origin**. The plugin's own backend router is still reached over HTTP *from inside that
+document*, so:
+
+- every `fetch('/bot-api/v1/...')` leaves with `Origin: null` and is a cross-site request;
+- our session cookie is `SameSite=Lax`, so it is **not attached**;
+- `EventSource(url, { withCredentials: true })` — the live job-event tail — fails identically;
+- `localStorage` throws outright.
+
+The first plugin to port a real SPA (`byte5ai/omadia-dev-platform`) is entirely
+data-driven: all four screens open with a `GET`. The host page therefore rendered a
+correctly-styled, correctly-themed, correctly-translated shell showing an **error state on
+every screen**. Neither repo's suite caught it, because both stub `fetch` and a stub has no
+origin. This is a property of the browser, not of the client.
+
+#### The decision
+
+**Grant `allow-same-origin`.** Three arguments, in order of weight.
+
+1. **It gives the plugin no privilege it does not already hold.** The plugin's server half
+   runs *in-process* in the middleware with `ctx.services`, its own Express router and the
+   operator's authority. A plugin that wanted the operator's session could read it
+   server-side today. Withholding it from the plugin's *UI* removed function, not capability
+   — it defended a boundary that does not exist.
+2. **The threat model the sandbox implied is not the one we have.** Denying same-origin only
+   helps if the UI bundle is less trusted than the server code. Both ship in the *same* ZIP,
+   through the *same* ingest, scanned by the *same* checks. There is no trust gradient
+   between them to enforce.
+3. **What actually confines the bundle is the response, not the attribute**, and that is
+   unchanged and tight. Core serves it from an ingest-scanned package under
+   `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'
+   data:; font-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none';
+   frame-ancestors 'self'`, from an extension allowlist with no `.css` in it. The bundle
+   cannot load remote script, cannot talk to a third origin, cannot be framed off-site,
+   cannot retarget forms or the base URL.
+
+`allow-popups` is **dropped**: nothing in a plugin UI opens a window, and a granted
+capability nothing uses is only a surface.
+
+The familiar objection — "`allow-scripts` plus `allow-same-origin` lets the frame remove its
+own sandbox attribute" — is true and, here, empty. The frame is already same-origin and
+already has the session. There is nothing left to escalate to. The sandbox is retained for
+what it still denies: top-level navigation, downloads, modals, pointer lock, presentation.
+
+#### The two alternatives, and why not
+
+| Alternative | Why rejected |
+|---|---|
+| **Keep the opaque origin; core proxies the plugin's API under the frame's own path with permissive CORS** | `Access-Control-Allow-Origin: null` matches *every* opaque origin on the internet, not just ours — a weaker boundary than the one it replaces, plus a real proxy to build and maintain. The other route to the same place, loosening the session cookie to `SameSite=None; Secure`, weakens authentication **product-wide** to serve one iframe. |
+| **Serve plugin bundles from a distinct origin and treat plugins as genuinely third-party** | The clean answer, and the recorded upgrade path. It needs a second hostname, its own TLS and a cross-origin auth story on *every* install target — Docker Compose, Fly, Render, bare VM. Disproportionate while plugins are operator-installed from a curated hub. Revisit if plugins ever become genuinely untrusted third-party code. |
+
+#### What is machine-checked
+
+- `web-ui/app/plugin-ui/[pluginId]/_components/__tests__/PluginUiFrame.test.tsx` pins the
+  sandbox attribute to its **exact** string, so both dropping `allow-same-origin` again and
+  re-adding `allow-popups` go red; it also pins the `src` to core's own origin, since
+  same-origin is a property of the URL as much as of the attribute.
+- `middleware/test/pluginUiFrameCredentials.test.ts` asserts the posture the decision rests
+  on: the session cookie is `SameSite=Lax; Path=/; HttpOnly` and **not** `SameSite=None`; a
+  same-origin request replaying it authenticates while the same request without it 401s; and
+  the served document still carries `connect-src 'self'`, `frame-ancestors 'self'`,
+  `base-uri 'none'` and `form-action 'none'`.
+
+#### Two other C8 defects fixed alongside (C8b)
+
+- **The host page rejected every scoped plugin id.** Its regex claimed to mirror
+  `manifestLoader.ts` and omitted the optional `@scope/`, so `/plugin-ui/@omadia/dev-platform`
+  — the id of the plugin the route was built for, and the shape of *every* omadia plugin id —
+  called `notFound()`. The gate now lives in `web-ui/app/_lib/pluginId.ts` and a test reads
+  `manifestLoader.ts` and asserts the two definitions are character-identical, turning the
+  "mirrors" comment into a check.
+- **Three vocabulary declarations emitted nothing.** `@source inline()` expands braces; a
+  top-level comma is not a list separator, so `@source inline("border,border-{0,2,4}")` asked
+  Tailwind for a class literally named `border,border-0` and produced no CSS. `border`,
+  `divide-*` and `transition*` were all absent from the artifact while
+  `plugin-ui-vocabulary.md` listed them. Worse than a missing utility: Tailwind's reset is
+  `border: 0 solid`, so `class="border border-border"` set a colour on a zero-width edge and
+  rendered invisible. Fixed at source, artifact regenerated (69,559 → 72,659 B raw; 12,105 →
+  12,486 B gzip), and `web-ui/scripts/__tests__/pluginUiVocabulary.test.ts` now checks parity
+  in both directions — every class the source declares and every class the document promises
+  must exist in the committed sheet.
+
 ### Back to the option table
 
 **Recommendation: B**, now materially cheaper than when first written — with §4.3a it is

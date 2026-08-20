@@ -25,11 +25,29 @@ import { useLocale, useTranslations } from 'next-intl';
  * MutationObserver re-reads it, so flipping the appearance in the header
  * updates the embedded UI without a reload.
  *
- * SANDBOX. `allow-scripts allow-forms allow-popups` and NOT
- * `allow-same-origin`: the bundle is third-party code and this keeps it out
- * of the operator's cookies and localStorage on our origin. A plugin needing
- * authenticated calls does them from its own backend router, which is where
- * its authentication lives anyway.
+ * SANDBOX — `allow-same-origin allow-scripts allow-forms`. This is a trust-
+ * model decision, not a default; the reasoning is recorded in
+ * `plan.md` §4.3a addendum in the epic #470 spec directory. In short:
+ *
+ *   - WITHOUT `allow-same-origin` the document gets an OPAQUE origin. Every
+ *     `fetch('/bot-api/...')` then leaves with `Origin: null` and is a
+ *     cross-site request, so the `SameSite=Lax` session cookie is not
+ *     attached, `EventSource(..., { withCredentials: true })` fails the same
+ *     way, and `localStorage` throws. A data-driven plugin UI opens every
+ *     screen with a GET, so the sandbox did not isolate the plugin — it broke
+ *     it, silently, into a correctly-themed error state.
+ *   - It bought no privilege either. The plugin's server half already runs
+ *     in-process in the middleware with the operator's authority. Denying its
+ *     UI a session the plugin can read server-side removes function, not
+ *     capability.
+ *   - What still constrains the bundle is the response, not the attribute:
+ *     core serves it from an ingest-scanned ZIP under a tight CSP
+ *     (`default-src 'none'`, `script-src 'self'`, `connect-src 'self'`,
+ *     `frame-ancestors 'self'`, `base-uri 'none'`, `form-action 'none'`), and
+ *     the extension allowlist has no `.css`.
+ *
+ * `allow-popups` is deliberately GONE: nothing in a plugin UI opens a window,
+ * and a capability nothing uses is only a surface.
  */
 
 type Theme = 'light' | 'dark';
@@ -98,7 +116,7 @@ export function PluginUiFrame({ pluginId }: { pluginId: string }): React.ReactEl
       src={src}
       title={t('frameTitle', { pluginId })}
       className="h-full w-full rounded-md border border-border bg-bg"
-      sandbox="allow-scripts allow-forms allow-popups"
+      sandbox="allow-same-origin allow-scripts allow-forms"
       referrerPolicy="no-referrer"
       loading="lazy"
     />
