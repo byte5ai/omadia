@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 
 import { PrivacyReceiptCard } from '../../../_components/chat/PrivacyReceiptCard';
+import { Button } from '../../../_components/ui/Button';
 import {
   listReceipts,
   type ReceiptsPageDto,
@@ -106,14 +107,16 @@ export function ReceiptsList({ initial }: ReceiptsListProps): React.ReactElement
         <p className="text-sm text-[color:var(--danger)]">{loadError}</p>
       ) : null}
       {nextCursor ? (
-        <button
+        <Button
           type="button"
+          variant="secondary"
           onClick={() => void loadMore()}
           disabled={loading}
-          className="rounded border border-[color:var(--edge)] px-4 py-2 text-sm hover:bg-[color:var(--bg-subtle)] disabled:opacity-50"
+          busy={loading}
+          busyLabel={t('loadingMore')}
         >
-          {loading ? t('loadingMore') : t('loadMore')}
-        </button>
+          {t('loadMore')}
+        </Button>
       ) : null}
     </div>
   );
