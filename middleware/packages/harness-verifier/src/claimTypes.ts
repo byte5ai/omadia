@@ -185,3 +185,46 @@ export function isHardClaim(claim: Claim): claim is HardClaim {
 export function isSoftClaim(claim: Claim): claim is SoftClaim {
   return claim.type === 'name' || claim.type === 'qualitative';
 }
+
+/**
+ * #129 — a *qualitative* claim is *anchored* when it names a concrete Odoo
+ * record (`odooRecord.id` or a document-style `.ref`) with
+ * `expectedSource: 'odoo'`. Whether that record EXISTS is checkable
+ * deterministically no matter how the extractor typed the claim — Haiku
+ * types "INV/2026/0099 ist verbucht" as `id` in some samples and
+ * `qualitative` in others.
+ *
+ * Deliberately narrow (review on PR #781): `name` claims are excluded —
+ * an exact `name = "John Doe"` search would refute "Doe, John" and block a
+ * correct answer — and a `ref` only counts when it looks like a document
+ * sequence (contains a digit), never a bare person/company name.
+ * Pure predicate; no I/O.
+ */
+/** A reference that starts with a non-space and carries at least one digit —
+ *  "INV/2026/0042", "SO0123", "RE-4711"; not "ACME GmbH" or "John Doe". */
+const DOCUMENT_REF_PATTERN = /^\S.*\d/;
+
+export function hasOdooRecordAnchor(claim: Claim): boolean {
+  if (claim.type !== 'qualitative' || claim.expectedSource !== 'odoo') return false;
+  const ref = claim.odooRecord;
+  if (!ref || typeof ref.model !== 'string' || ref.model.length === 0) return false;
+  if (typeof ref.id === 'number' && Number.isInteger(ref.id) && ref.id > 0) return true;
+  return typeof ref.ref === 'string' && DOCUMENT_REF_PATTERN.test(ref.ref);
+}
+
+/**
+ * Per-model fields that may hold a human-readable record reference. `name`
+ * is the sequence on customer invoices / orders / pickings, but vendor bills
+ * carry the supplier number in `ref`, sale orders the customer's PO in
+ * `client_order_ref`, purchase orders the vendor's in `partner_ref`.
+ * A model outside this map has no safe reference field → the existence
+ * check stays `unverified` (judge decides) instead of guessing.
+ */
+export const SOFT_ANCHOR_REF_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  'account.move': ['name', 'ref'],
+  'account.payment': ['name', 'ref'],
+  'sale.order': ['name', 'client_order_ref'],
+  'purchase.order': ['name', 'partner_ref'],
+  'stock.picking': ['name', 'origin'],
+  'hr.expense.sheet': ['name'],
+};

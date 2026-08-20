@@ -3,7 +3,7 @@ import type { Pool } from 'pg';
 /**
  * Epic #470 C4 / H1 — durable operator consent for plugin public paths.
  *
- * Backs `plugin_public_path_grants` (migration 0044). The in-memory
+ * Backs `plugin_public_path_grants` (migration 0046). The in-memory
  * `PublicPathGrantRegistry` decides routing; this decides what the operator
  * actually agreed to, and it survives a restart.
  *

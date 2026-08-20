@@ -18,6 +18,25 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — verifier: hallucinated record references no longer pass with a disclaimer (#129, PR #781)
+
+- **Behaviour change (blocking).** A qualitative answer that names a concrete
+  Odoo document (`INV/2026/0099`, `SO0123`, `RE-4711`) which does **not**
+  exist is now `blocked`, not `approved_with_disclaimer`. Root cause: the
+  LLM claim extractor typed such sentences as `qualitative` in roughly a
+  third of samples, and qualitative claims bypassed the deterministic
+  re-query entirely. `golden-eval.yml` flaked on exactly this
+  (`blocked_deterministic_id_absent`).
+- Scope is deliberately narrow: only `qualitative` claims with a
+  document-style `ref` (contains a digit) or numeric `id`; only models with
+  known reference fields (`account.move` `name|ref`, `sale.order`
+  `name|client_order_ref`, `purchase.order` `name|partner_ref`,
+  `stock.picking` `name|origin`, `account.payment`, `hr.expense.sheet`).
+  Person/company names, unknown models and reader errors stay on the judge
+  path (fail-open). Anchors already covered by a hard `id` claim in the same
+  turn are not re-queried twice.
+- Extractor prompt now asks for a separate `id` claim per record reference.
+
 ### Added — provenance verification surface: verify API, signed export, offline verifier (#761)
 
 - **`GET /api/v1/operator/provenance/verify`** walks the stored chain,
