@@ -219,7 +219,7 @@ function ManualInstallSteps({
       <li>
         {t('connect.step2')}{' '}
         <code className="select-all text-[color:var(--fg-strong)]">
-          {b.bin} auth login
+          {t('connect.loginCmd', { bin: b.bin })}
         </code>
       </li>
       <li>{t('connect.step3')}</li>

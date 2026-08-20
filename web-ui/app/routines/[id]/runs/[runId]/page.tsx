@@ -108,7 +108,7 @@ async function RunDetail({
             mono
           />
           <Field
-            label="Iter · Tools"
+            label={t('fieldIterTools')}
             value={`${run.iterations ?? '—'} · ${run.toolCalls ?? '—'}`}
             mono
           />

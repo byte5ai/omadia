@@ -296,7 +296,7 @@ export default function KgLifecyclePage(): JSX.Element {
                   <strong>{stats.decayDistribution.lowerMid}</strong>
                 </li>
                 <li>
-                  <span className="text-[color:var(--fg-muted)]">&lt; 0.2</span>:{' '}
+                  <span className="text-[color:var(--fg-muted)]">{'< 0.2'}</span>:{' '}
                   <strong>{stats.decayDistribution.cold}</strong>
                 </li>
               </ul>

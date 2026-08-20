@@ -118,7 +118,7 @@ export function ToolBulkImportModal({
 
         <div className="flex items-center gap-1 border-b border-[color:var(--border)] bg-[color:var(--bg-soft)] px-4 pb-2">
           <TabBtn active={tab === 'openapi'} onClick={() => setTab('openapi')}>
-            OpenAPI 3 (JSON)
+            {t('tabOpenApi')}
           </TabBtn>
           <TabBtn
             active={tab === 'jsonschema'}
