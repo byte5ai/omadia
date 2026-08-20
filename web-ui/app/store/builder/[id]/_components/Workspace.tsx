@@ -2062,12 +2062,9 @@ function BuildStatusStrip({
             {tw('fixWithBuilder')}
           </Button>
         ) : null}
-        <span className="font-mono-num inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
+        <span className="ml-auto font-mono-num inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
           <span className={`inline-block size-1.5 rounded-full ${busColor}`} />
           {tw('buildSse', { status: busLabel })}
-        </span>
-        <span className="ml-auto font-mono-num text-[color:var(--fg-subtle)]">
-          Phase B.5 (Workspace-UI)
         </span>
       </footer>
     </div>

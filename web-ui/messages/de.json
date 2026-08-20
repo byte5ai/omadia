@@ -745,7 +745,8 @@
   "layout": {
     "logoAriaLabel": "omadia · Startseite",
     "metaTitle": "omadia · Management UI",
-    "metaDescription": "Verwaltungsoberfläche für die omadia Agent-Plattform (lokal)."
+    "metaDescription": "Verwaltungsoberfläche für die omadia Agent-Plattform (lokal).",
+    "tagline": "an Agentic OS"
   },
   "localeSwitcher": {
     "ariaLabel": "Sprache wechseln"
@@ -766,6 +767,7 @@
   },
   "login": {
     "title": "Bei omadia anmelden",
+    "tagline": "an Agentic OS",
     "shellLoading": "Lade Login…",
     "loadingProviders": "Lade Login…",
     "errorPrefix": "Login-Provider konnten nicht geladen werden:",
@@ -1829,6 +1831,7 @@
       "bulkImport": {
         "dialogLabel": "Tools-Bulk-Import",
         "title": "Tools importieren",
+        "tabOpenApi": "OpenAPI 3 (JSON)",
         "closeModal": "Modal schließen",
         "inputLabel": "Eingabe",
         "preview": "Vorschau",
@@ -1879,6 +1882,7 @@
         "booleanNoConstraints": "Boolean — keine zusätzlichen Constraints.",
         "objectNestedHint": "Object — verschachtelte Properties unten editieren.",
         "allowedValues": "Erlaubte Werte",
+        "patternRegexLabel": "pattern (regex)",
         "removeValue": "Wert {value} entfernen",
         "valueEnterPlaceholder": "Wert + Enter",
         "itemType": "Item-Typ",
@@ -1926,11 +1930,14 @@
         "send": "Senden"
       },
       "liveness": {
+        "streamLive": "Stream live · {elapsed} · Modell {model}",
+        "iterActivity": "Iter. {iteration} · letzte Aktivität {gap}",
         "likelyStuck": "vermutlich hängt — Stop drücken?"
       },
       "turnStats": {
         "live": "Turn live",
-        "last": "Letzter Turn"
+        "last": "Letzter Turn",
+        "toolTime": "{seconds} s Tool-Zeit"
       },
       "empty": {
         "title": "Sag dem Builder, womit du anfangen willst.",
@@ -2527,6 +2534,7 @@
       "sectionTools": "Tools",
       "toolsCount": "{count, plural, one {# Tool} other {# Tools}}",
       "noToolsDefined": "Keine Tools definiert.",
+      "toolInputSchema": "Input-Schema",
       "sectionDependencies": "Abhängigkeiten",
       "sectionDependenciesSubtitle": "depends_on (gewährt Vault-Scopes)",
       "noDependencies": "Keine Plugin-Abhängigkeiten.",
@@ -2612,9 +2620,7 @@
           "label": "Fehler",
           "loadFailed": "Drafts konnten nicht geladen werden."
         },
-        "footer": {
-          "phaseLabel": "Phase"
-        }
+        "footerStamp": "omadia · Plugin-Builder"
       },
       "detail": {
         "metaTitle": "Workspace · Agent-Builder · omadia",
@@ -2822,6 +2828,7 @@
       "step1": "Stelle sicher, dass die CLI installiert ist (im omadia-Image enthalten oder selbst installieren):",
       "installCmd": "npm install -g @anthropic-ai/claude-code",
       "step2": "Melde dich mit deinem Abo-Konto an:",
+      "loginCmd": "{bin} auth login",
       "step3": "Komm hierher zurück und drücke Erneut prüfen. Eine angemeldete CLI zeigt ein grünes Badge."
     },
     "logout": {
@@ -3059,6 +3066,7 @@
       "installing": "Wird installiert …",
       "confirmInstall": "Installation bestätigen",
       "errorKicker": "Fehler",
+      "privacyModeLabel": "Privacy-Modus",
       "privacyGuarded": "Geschützt (Privacy Shield)",
       "privacyBypass": "Bypass (roh durchlassen)",
       "privacyPerTool": "Per-Tool (Whitelist)",
@@ -4126,6 +4134,7 @@
     "notifyOnlyTitle": "Manuelles Update",
     "notifyOnlyBody": "Es ist kein Updater konfiguriert — diese Instanz kann Versionen melden, aber kein Update ausführen. Unter Docker Compose aktiviert das optionale Overlay (docker-compose.update.yaml) die Ausführung. Sonst vom Host aus aktualisieren:",
     "notifyOnlyComposeLabel": "Docker Compose",
+    "notifyOnlyComposeCmd": "OMADIA_VERSION={version} docker compose up -d",
     "notifyOnlyFlyLabel": "Fly.io",
     "notifyOnlyFlyOrderHint": "In dieser Reihenfolge ausführen — die Middleware fährt beim Start die Schema-Migrationen, also erst ihre neue Version abwarten, dann die Admin-UI nachziehen.",
     "notifyOnlyFlyPinHint": "Danach auch die image-Zeile in der fly.toml anpassen: --image gilt nur für diesen Deploy, ein späteres nacktes fly deploy würde die App wieder auf das alte Tag setzen.",
@@ -4713,6 +4722,7 @@
       "summaryPaused": "Pausiert",
       "errorUnknownLoad": "Unbekannter Fehler beim Laden der Routinen.",
       "loadErrorTitle": "Routinen nicht erreichbar",
+      "columnUserTenant": "User · Mandant",
       "columnLastRun": "Letzter Lauf",
       "columnActions": "Aktionen",
       "emptyTitle": "Noch keine Routinen.",
@@ -4755,9 +4765,14 @@
       "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden."
     },
     "templateEditor": {
+      "heading": "Output Template",
+      "badgeInactive": "legacy LLM-renders",
       "badgeActive": "aktiv · {format}",
       "description": "JSON-Schema: <schema>{schemaShape}</schema>. Beim Trigger rendert der Server alle data- + static-Sektionen selbst; der LLM füllt nur die narrative-slot-Strings. Leerer Editor = Template entfernen, Routine läuft wieder im Legacy-Pfad.",
       "templatePlaceholder": "'{ \"format\": \"markdown\", \"sections\": [ { \"kind\": \"narrative-slot\", \"id\": \"intro\", \"hint\": \"Ein Satz Einleitung.\" } ] }'",
+      "jsonSyntaxLabel": "JSON-Syntax:",
+      "renderedMarkdownLabel": "gerendertes Markdown ({count} Zeichen)",
+      "renderedAdaptiveCardLabel": "gerenderter Adaptive-Card-Body ({count} Elemente)",
       "saveFailedLabel": "Save fehlgeschlagen:",
       "saved": "Gespeichert.",
       "save": "Speichern",
@@ -4791,6 +4806,7 @@
       "breadcrumbRoutines": "Routinen",
       "loadErrorTitle": "Run nicht erreichbar",
       "fieldDuration": "Dauer",
+      "fieldIterTools": "Iter. · Tools",
       "errorLabel": "Fehler",
       "sectionAnswer": "Antwort",
       "sectionTrace": "Call-Stack · Run-Trace",

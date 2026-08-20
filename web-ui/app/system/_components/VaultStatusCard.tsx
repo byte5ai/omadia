@@ -1,4 +1,4 @@
-import { getTranslations } from 'next-intl/server';
+import { getFormatter, getTranslations } from 'next-intl/server';
 
 import type { VaultStatusResponse } from '../../_lib/api';
 
@@ -7,11 +7,13 @@ interface Props {
 }
 
 type TFn = (key: string, values?: Record<string, string | number>) => string;
+type Formatter = Awaited<ReturnType<typeof getFormatter>>;
 
 export async function VaultStatusCard({
   status,
 }: Props): Promise<React.ReactElement> {
   const t = await getTranslations('system.vaultStatus');
+  const format = await getFormatter();
   const { vault, backup } = status;
   const keySourceLabel = formatKeySource(vault.master_key_source, t);
   const keyTone = vault.production_ready ? 'ok' : 'warn';
@@ -55,7 +57,7 @@ export async function VaultStatusCard({
         />
         <Row
           label={t('lastModified')}
-          value={formatDate(vault.last_modified)}
+          value={formatDate(vault.last_modified, format)}
         />
         <Row
           label={t('agentsWithSecrets')}
@@ -90,16 +92,16 @@ export async function VaultStatusCard({
           />
           <Row
             label={t('lastRun')}
-            value={formatDate(backup.last_run_at)}
+            value={formatDate(backup.last_run_at, format)}
           />
           <Row
             label={t('lastSuccess')}
-            value={formatDate(backup.last_success_at)}
+            value={formatDate(backup.last_success_at, format)}
             tone={backup.last_success_at ? 'ok' : 'warn'}
           />
           <Row
             label={t('nextRun')}
-            value={formatDate(backup.next_run_at)}
+            value={formatDate(backup.next_run_at, format)}
           />
           <Row
             label={t('storedSnapshots')}
@@ -215,10 +217,10 @@ function formatKeySource(
   }
 }
 
-function formatDate(iso: string | null): string {
+function formatDate(iso: string | null, format: Formatter): string {
   if (!iso) return '—';
   try {
-    return new Date(iso).toLocaleString('de-DE');
+    return format.dateTime(new Date(iso));
   } catch {
     return iso;
   }

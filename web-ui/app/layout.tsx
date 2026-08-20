@@ -125,7 +125,7 @@ export default async function RootLayout({
                         omadia
                       </span>
                       <span className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-muted)]">
-                        an Agentic OS
+                        {t('tagline')}
                       </span>
                     </span>
                   </Link>
