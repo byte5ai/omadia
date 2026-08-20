@@ -28,10 +28,10 @@ export async function VaultStatusCard({
       <header className="flex items-baseline justify-between gap-3">
         <div>
           <div className="text-[11px] uppercase tracking-[0.22em] text-[color:var(--fg-subtle)]">
-            Encrypted Secret Vault
+            {t('eyebrow')}
           </div>
           <h2 className="font-display mt-1 text-2xl text-[color:var(--fg-strong)]">
-            Vault
+            {t('heading')}
           </h2>
         </div>
         <StatusDot tone={keyTone} label={dotLabel(keyTone, t)} />
@@ -79,8 +79,8 @@ export async function VaultStatusCard({
 
       {backup.enabled ? (
         <dl className="mt-4 grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
-          <Row label="Bucket" value={backup.bucket} mono />
-          <Row label="Prefix" value={backup.prefix} mono />
+          <Row label={t('bucket')} value={backup.bucket} mono />
+          <Row label={t('prefix')} value={backup.prefix} mono />
           <Row
             label={t('interval')}
             value={t('intervalValue', {
