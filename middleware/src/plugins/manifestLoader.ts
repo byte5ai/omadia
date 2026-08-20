@@ -25,6 +25,11 @@ import type {
   SetupAudience,
   SetupProfile,
 } from '../api/admin-v1.js';
+import {
+  MAX_DECLARED_PUBLIC_PATHS,
+  publicPathEntrySchema,
+  publicPathsDeclarationSchema,
+} from '../platform/publicPathGrants.js';
 import { compileSetupPattern } from './setupFieldPattern.js';
 import { normalizeLocalized } from './manifestLocalized.js';
 
@@ -427,7 +432,7 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   // Spec 005 — declarative OAuth-provider descriptors. Inert data the kernel
   // broker reads at flow time; no plugin code runs during the OAuth dance.
   const oauthProviders = extractOAuthProviders(doc['oauth_providers'], id);
-  const permissionsSummary = extractPermissions(permissions);
+  const permissionsSummary = extractPermissions(permissions, id);
   if (oauthProviders.length > 0) {
     permissionsSummary.acquires_oauth = true;
   }
@@ -693,7 +698,9 @@ function extractChannelBlock(
 
 function extractPermissions(
   permissions: Record<string, unknown> | undefined,
+  pluginId: string,
 ): PluginPermissionsSummary {
+  warnOnUnknownPermissionKeys(permissions, pluginId);
   const memory = asRecord(permissions?.['memory']);
   const graph = asRecord(permissions?.['graph']);
   const network = asRecord(permissions?.['network']);
@@ -768,7 +775,104 @@ function extractPermissions(
     // Spec 005 — overridden to true in adaptManifestV1 when the manifest
     // declares >=1 valid oauth_providers descriptor.
     acquires_oauth: false,
+    // Epic #470 C4 / H1 — the prefixes the plugin ASKS to serve without a
+    // session. Validated here for shape only; ownership and operator consent
+    // are decided at activation (`platform/publicPathGrants.ts`). A malformed
+    // entry is dropped with a warning rather than rejecting the manifest,
+    // matching this loader's graceful-degradation rule everywhere else — and
+    // dropping is the safe direction, because a dropped entry is one fewer
+    // unauthenticated surface, never one more.
+    public_paths: extractPublicPaths(permissions?.['public_paths'], pluginId),
   };
+}
+
+/**
+ * Keys this loader understands under `permissions:`. Anything else is a typo,
+ * a key from a newer core, or a key from a core that dropped it — all three of
+ * which used to be silently ignored (recorded in `implementation.md` §2.5 as
+ * the reason a plugin could declare `permissions.public_paths` against an
+ * unpatched core and activate with no grant and no error).
+ *
+ * The manifest is still not rejected over an unknown key — that would make
+ * every core upgrade a breaking change for plugins built against a newer
+ * schema. It is now VISIBLE, which is the part that was missing.
+ */
+const KNOWN_PERMISSION_KEYS: ReadonlySet<string> = new Set([
+  'events',
+  'flows',
+  'graph',
+  'llm',
+  'mcp',
+  'memory',
+  'network',
+  'public_paths',
+  'secrets',
+  'subAgents',
+  'templates',
+]);
+
+/**
+ * Retired keys are deliberately NOT listed above. A manifest still declaring
+ * one keeps loading and activating exactly as before — the warning is the
+ * whole point: "core removed this, your manifest still asks for it" is
+ * information the plugin author needs, and it is the same signal a typo gets.
+ */
+
+function warnOnUnknownPermissionKeys(
+  permissions: Record<string, unknown> | undefined,
+  pluginId: string,
+): void {
+  if (!permissions) return;
+  const unknown = Object.keys(permissions).filter(
+    (key) => !KNOWN_PERMISSION_KEYS.has(key),
+  );
+  if (unknown.length === 0) return;
+  console.warn(
+    `[catalog] plugin '${pluginId}' declares unknown permission key(s) ${unknown
+      .map((k) => `permissions.${k}`)
+      .join(', ')} — ignored. Check the spelling, or the core version this ` +
+      'manifest was written against.',
+  );
+}
+
+/**
+ * Epic #470 C4 / H1 — shape-validate `permissions.public_paths`.
+ *
+ * Only the syntactic gate lives here; it deliberately does NOT decide whether
+ * the path is claimable. Ownership needs to know about every other installed
+ * plugin, and the "must be a prefix this plugin actually serves" rule needs the
+ * live route registry — neither exists at catalog-load time. Both run at
+ * activation, where a violation is a loud activation failure rather than a
+ * quietly-shortened list.
+ */
+function extractPublicPaths(raw: unknown, pluginId: string): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    console.warn(
+      `[catalog] plugin '${pluginId}': permissions.public_paths must be an array of path prefixes — ignored.`,
+    );
+    return [];
+  }
+  const parsed = publicPathsDeclarationSchema.safeParse(raw);
+  if (parsed.success) return [...parsed.data];
+
+  // Keep the entries that are individually well-formed, name the ones that are
+  // not. A single bad entry must not silently take a plugin's whole
+  // declaration with it, and it must not pass unmentioned either.
+  const kept: string[] = [];
+  for (const entry of raw) {
+    const one = publicPathEntrySchema.safeParse(entry);
+    if (one.success) {
+      kept.push(one.data);
+      continue;
+    }
+    console.warn(
+      `[catalog] plugin '${pluginId}': permissions.public_paths entry ${JSON.stringify(entry)} rejected — ${
+        one.error.issues[0]?.message ?? 'invalid'
+      }`,
+    );
+  }
+  return kept.slice(0, MAX_DECLARED_PUBLIC_PATHS);
 }
 
 /**

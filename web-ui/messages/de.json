@@ -1034,6 +1034,14 @@
         "what": "Einer der ausgewählten Werte hat nicht die Form, die der Server akzeptiert.",
         "next": "Leere die Auswahl und wähle die Einträge erneut aus der Liste."
       },
+      "invalid_public_path": {
+        "what": "Einer dieser Pfade ist kein gültiges öffentliches Präfix — zu breit, prozentkodiert oder für Core-Routen reserviert.",
+        "next": "Prüfe den Pfad gegen die Präfixe, die das Plugin deklariert, und gib ihn dann erneut frei."
+      },
+      "invalid_public_paths": {
+        "what": "Die freigegebenen Pfade kamen nicht als Liste von Pfad-Strings an.",
+        "next": "Schicke die vollständige Menge der Pfade, die du freigibst, als Liste von Strings."
+      },
       "invalid_secrets_body": {
         "what": "Die Zugangsdaten kamen in einer Form an, die der Server ablehnt.",
         "next": "Lade die Seite neu und trage die Zugangsdaten erneut ein."
@@ -1094,6 +1102,14 @@
       "options_unavailable": {
         "what": "Dieser Core kann keine Setup-Optionen aus einem laufenden Plugin holen.",
         "next": "Trag den Wert von Hand ein."
+      },
+      "public_path_not_declared": {
+        "what": "Einen dieser Pfade fordert das Plugin in seinem Manifest gar nicht an, und eine Freigabe kann nie weiter reichen als die Anforderung.",
+        "next": "Gib nur die Pfade frei, die das Plugin deklariert, oder installiere eine Version, die den gewünschten Pfad deklariert."
+      },
+      "public_paths_unavailable": {
+        "what": "Die Freigabe öffentlicher Pfade liegt in der Datenbank, und in diesem Deployment ist keine verdrahtet.",
+        "next": "Richte im Deployment eine Datenbank ein und setze die freigegebenen Pfade danach erneut."
       },
       "setup_field_invalid": {
         "what": "Einer der Werte passt nicht zum Format, das dieses Feld erwartet.",
@@ -3036,6 +3052,9 @@
         "networkOutbound": "Netzwerk · Outbound",
         "flagRuntimeSecrets": "Schreibt eigene Credentials zur Laufzeit",
         "flagCredentialFlows": "Führt Credential-Flows auf eigenen Routes aus",
+        "publicPathsTitle": "Öffentliche (nicht authentifizierte) Pfade",
+        "publicPathsBody": "Dieses Plugin möchte die folgenden URL-Präfixe ohne Operator-Sitzung beantworten. Jede und jeder mit Zugriff auf diese Installation erreicht sie, und das Plugin allein verantwortet die Authentifizierung dieser Anfragen.",
+        "publicPathsNotGranted": "Deklarieren ist nicht Erteilen: Jedes Präfix bleibt hinter der Sitzungsprüfung, bis Sie zustimmen. Die Zustimmung wird automatisch entzogen, sobald das Plugin deaktiviert wird.",
         "none": "Keine Berechtigungen deklariert.",
         "runtimeCredentials": "Laufzeit-Credentials"
       },
