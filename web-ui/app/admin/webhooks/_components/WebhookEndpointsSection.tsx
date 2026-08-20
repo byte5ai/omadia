@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -31,6 +31,7 @@ type State =
  */
 export function WebhookEndpointsSection(): React.ReactElement {
   const t = useTranslations('adminWebhooks.endpoints');
+  const format = useFormatter();
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [actionError, setActionError] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
@@ -231,7 +232,7 @@ export function WebhookEndpointsSection(): React.ReactElement {
                             <tr key={d.deliveryId} className="border-t border-[color:var(--border)]">
                               <td className="py-1 pr-3 font-mono">{d.deliveryId}</td>
                               <td className="py-1 pr-3">{d.outcome}</td>
-                              <td className="py-1">{new Date(d.receivedAt).toLocaleString()}</td>
+                              <td className="py-1">{format.dateTime(new Date(d.receivedAt))}</td>
                             </tr>
                           ))}
                         </tbody>

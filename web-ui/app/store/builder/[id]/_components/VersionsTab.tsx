@@ -1,6 +1,6 @@
 'use client';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 
 import { Button } from '@/app/_components/ui/Button';
@@ -48,9 +48,11 @@ type LoadState =
   | { kind: 'error'; message: string };
 
 type VersionsT = ReturnType<typeof useTranslations<'builder.versions'>>;
+type Formatter = ReturnType<typeof useFormatter>;
 
 export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
   const t = useTranslations('builder.versions');
+  const format = useFormatter();
   const [state, setState] = useState<LoadState>({ kind: 'idle' });
   const [toast, setToast] = useState<{ kind: 'info' | 'error'; text: string } | null>(null);
   const [captureOpen, setCaptureOpen] = useState(false);
@@ -127,6 +129,7 @@ export function VersionsTab({ draftId }: VersionsTabProps): React.ReactElement {
           onMark={onMarkDeployReady}
           onRollback={setRollbackTarget}
           t={t}
+          format={format}
         />
       )}
 
@@ -199,6 +202,7 @@ interface SnapshotTableProps {
   onMark: (s: SnapshotSummary) => void;
   onRollback: (s: SnapshotSummary) => void;
   t: VersionsT;
+  format: Formatter;
 }
 
 function SnapshotTable({
@@ -208,6 +212,7 @@ function SnapshotTable({
   onMark,
   onRollback,
   t,
+  format,
 }: SnapshotTableProps): React.ReactElement {
   return (
     <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
@@ -230,7 +235,7 @@ function SnapshotTable({
             <Fragment key={s.snapshot_id}>
               <tr className="border-t border-[var(--border)] align-top">
                 <td className="px-3 pt-2 whitespace-nowrap">
-                  {new Date(s.created_at).toLocaleString()}
+                  {format.dateTime(new Date(s.created_at))}
                 </td>
                 <td className="px-3 pt-2 font-mono text-xs">
                   {s.bundle_hash.slice(0, 12)}
