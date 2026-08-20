@@ -1512,8 +1512,15 @@ readonly promptDoc?: string;
 readonly attachmentSink?: NativeToolAttachmentSink;
 readonly writeCapabilities?: readonly WriteCapability[];
 }
+export type RouteAuthMode = 'session' | 'public' | 'custom';
+export type RouteBodyMode = 'json' | 'raw' | 'none';
+export interface RouteRegisterOptions {
+readonly auth?: RouteAuthMode;
+readonly body?: RouteBodyMode;
+readonly bodyLimit?: string;
+}
 export interface RoutesAccessor {
-register(prefix: string, router: unknown): () => void;
+register(prefix: string, router: unknown, options?: RouteRegisterOptions): () => void;
 }
 export interface FlowsAccessor {
 publicUrl(relPath: string, opts?: {

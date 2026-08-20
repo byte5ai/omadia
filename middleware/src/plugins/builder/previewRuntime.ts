@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import yaml from 'yaml';
 import type { z } from 'zod';
 
-import type { HttpAccessor } from '@omadia/plugin-api';
+import type { HttpAccessor, RouteRegisterOptions } from '@omadia/plugin-api';
 
 import { extractZipToDir, type ExtractLimits } from '../zipExtractor.js';
 import { createHttpAccessor, isAuditMode } from '../../platform/httpAccessor.js';
@@ -169,7 +169,16 @@ export interface PreviewPluginContext {
     require<T = unknown>(key: string): T;
   };
   readonly routes: {
-    register(prefix: string, router: unknown): () => void;
+    /** Epic #470 C6 — signature parity with the real `RoutesAccessor`. The
+     *  options bag is ACCEPTED and DISCARDED here: preview never mounts
+     *  routes, so there is no auth or body parsing for it to configure. It
+     *  exists so plugin source that passes `{ auth, body }` typechecks and
+     *  runs identically under preview and after install. */
+    register(
+      prefix: string,
+      router: unknown,
+      options?: RouteRegisterOptions,
+    ): () => void;
   };
   /** B.12 — UI-Route catalogue. Preview accepts descriptors and discards
    *  (no Hub-render in preview). Real catalogue lives in middleware

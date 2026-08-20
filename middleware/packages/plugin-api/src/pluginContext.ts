@@ -770,13 +770,79 @@ export interface ToolRegistrationOptions {
 }
 
 /**
+ * Epic #470 C6 / G2 — how a contributed route is authenticated.
+ *
+ *  - `'session'` — **the default**. The kernel composes the same operator
+ *    session gate core mounts at `/api`, per route. Under `/api` that is
+ *    defence-in-depth (the blanket gate already ran); outside `/api`
+ *    (`/diagrams`, `/documents`, `/p/…`) it is the only session gate there is.
+ *    CSRF posture is core's own: a `SameSite=Lax` session cookie, no token
+ *    layer — a browser never attaches the session to a cross-site request.
+ *  - `'public'` — no kernel authentication. Registration THROWS unless the
+ *    prefix lies beneath a path this plugin declared in
+ *    `permissions.public_paths`. Whether it is actually served without a
+ *    session additionally requires operator consent (epic #470 C4/H1).
+ *  - `'custom'` — same registration constraint as `'public'`; the plugin
+ *    asserts it authenticates every request itself. A webhook verifying an
+ *    HMAC over `req.rawBody` is the canonical case.
+ *
+ * There is deliberately no `'none'`: a plugin cannot self-declare its way out
+ * of authentication, only ask the operator for a prefix and be granted it.
+ */
+export type RouteAuthMode = 'session' | 'public' | 'custom';
+
+/**
+ * Epic #470 C6 / G3 — how the request body reaches the contributed router.
+ *
+ *  - `'json'` — **the default**. Parsed JSON at core's own limit (10 MB).
+ *  - `'raw'` — untouched bytes as a `Buffer`, on BOTH `req.body` and
+ *    `req.rawBody`, at a 512 KB default limit. The kernel parses these ahead
+ *    of its global JSON parser, so the bytes an HMAC is computed over are the
+ *    bytes that arrived. Do NOT re-serialise `req.body` to verify a signature.
+ *  - `'none'` — the kernel mounts no parser for this route; the plugin owns the
+ *    stream (uploads, proxying, streaming responses). It does NOT disable the
+ *    kernel's global JSON parser: an `application/json` request has still been
+ *    read upstream. Use `'raw'` when you need the bytes as they arrived.
+ */
+export type RouteBodyMode = 'json' | 'raw' | 'none';
+
+export interface RouteRegisterOptions {
+  /** Default `'session'`. See {@link RouteAuthMode}. */
+  readonly auth?: RouteAuthMode;
+  /** Default `'json'`. See {@link RouteBodyMode}. */
+  readonly body?: RouteBodyMode;
+  /** Express body-parser limit string (`'1mb'`, `'512kb'`). Defaults to 10 MB
+   *  for `'json'` and 512 KB for `'raw'`. Ignored for `'none'`.
+   *
+   *  Only `'raw'` gives it a real effect. Raw bodies are captured before the
+   *  kernel's global parser (they have to be), which is also before the session
+   *  gate — so raising it raises how much an ANONYMOUS caller can make the
+   *  kernel buffer. State a bigger number only when the payload needs it.
+   *
+   *  On `'json'` the kernel's global 10 MB parser has already run, so a larger
+   *  value here cannot raise the effective ceiling. */
+  readonly bodyLimit?: string;
+}
+
+/**
  * Contributes an Express router to the kernel. The kernel mounts it at the
- * given prefix via `app.use(prefix, router)`. Authentication / CORS / rate
- * limiting remain the plugin's responsibility — the kernel does not inject
- * middleware around the contributed router.
+ * given prefix via `app.use(prefix, router)`.
+ *
+ * Since epic #470 C6 the kernel DOES inject middleware around the contributed
+ * router, in a fixed order:
+ *
+ *     [deactivation guard] → [auth] → [body parser] → your router
+ *
+ * The deactivation guard is first, so a deactivated plugin's prefix stops
+ * existing before any authentication or body buffering happens. CORS and rate
+ * limiting remain the plugin's responsibility.
  */
 export interface RoutesAccessor {
-  register(prefix: string, router: unknown): () => void;
+  register(
+    prefix: string,
+    router: unknown,
+    options?: RouteRegisterOptions,
+  ): () => void;
 }
 
 /**
