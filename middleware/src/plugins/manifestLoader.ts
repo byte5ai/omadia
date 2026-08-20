@@ -25,6 +25,7 @@ import type {
   SetupAudience,
   SetupProfile,
 } from '../api/admin-v1.js';
+import { parseSqlPermission } from '../platform/pluginSqlGrants.js';
 import {
   MAX_DECLARED_PUBLIC_PATHS,
   publicPathEntrySchema,
@@ -775,6 +776,15 @@ function extractPermissions(
     // Spec 005 — overridden to true in adaptManifestV1 when the manifest
     // declares >=1 valid oauth_providers descriptor.
     acquires_oauth: false,
+    // Epic #470 C7 / G4 — the plugin ASKS to hold a Postgres pool and own
+    // tables. Shape-validated here (including ledger ownership, which needs
+    // only the plugin's own id); operator consent is a separate, durable
+    // decision read from `plugin_sql_grants` at activation. A malformed block
+    // is dropped with a warning rather than rejecting the manifest, matching
+    // this loader's graceful-degradation rule — and dropping is the safe
+    // direction, because a dropped block is one fewer plugin holding the
+    // operator's database, never one more.
+    sql: parseSqlPermission(permissions?.['sql'], pluginId),
     // Epic #470 C4 / H1 — the prefixes the plugin ASKS to serve without a
     // session. Validated here for shape only; ownership and operator consent
     // are decided at activation (`platform/publicPathGrants.ts`). A malformed
@@ -790,8 +800,8 @@ function extractPermissions(
  * Keys this loader understands under `permissions:`. Anything else is a typo,
  * a key from a newer core, or a key from a core that dropped it — all three of
  * which used to be silently ignored (recorded in `implementation.md` §2.5 as
- * the reason a plugin could declare `permissions.public_paths` against an
- * unpatched core and activate with no grant and no error).
+ * the reason a plugin could declare a permission against an unpatched core and
+ * activate with no grant and no error).
  *
  * The manifest is still not rejected over an unknown key — that would make
  * every core upgrade a breaking change for plugins built against a newer
@@ -807,15 +817,17 @@ const KNOWN_PERMISSION_KEYS: ReadonlySet<string> = new Set([
   'network',
   'public_paths',
   'secrets',
+  'sql',
   'subAgents',
   'templates',
 ]);
 
 /**
- * Retired keys are deliberately NOT listed above. A manifest still declaring
- * one keeps loading and activating exactly as before — the warning is the
- * whole point: "core removed this, your manifest still asks for it" is
- * information the plugin author needs, and it is the same signal a typo gets.
+ * Retired keys are deliberately NOT listed above (the retired one is named in
+ * the NOTE inside `extractPermissions`). A manifest still declaring one keeps
+ * loading and activating exactly as before — the warning is the whole point:
+ * "core removed this, your manifest still asks for it" is information the
+ * plugin author needs, and it is the same signal a typo gets.
  */
 
 function warnOnUnknownPermissionKeys(

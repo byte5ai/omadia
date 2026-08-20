@@ -18,6 +18,15 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — plugin SQL ledgers now live in a core-proof namespace
+
+- `permissions.sql.ledger` is now kernel-validated as
+  `plg_<sanitized-plugin-id>_<suffix>`, closing the hole where a plugin whose
+  folded id matched a real core table name could adopt that table as its
+  migration ledger. The validator now also fails loudly when the mandatory
+  namespace leaves too little room inside Postgres' 63-byte identifier limit,
+  instead of relying on later DDL truncation behavior.
+
 ### Fixed — service-grant gate covers legacy rows, plugin-facing callers, and per-plugin factories (#470 C2b, PR #783)
 
 - Filled the dated `ctx.services.get` legacy allowlist with the currently-real built-in and hub-plugin rows the first audit missed: some service names are hidden behind exported constants (`PROCESS_MEMORY_SERVICE_NAME`, `PLUGIN_CAPABILITIES_SERVICE`, `CHANNEL_RESOLVER_SERVICE`, …) and some channel repos resolve them through shared `@omadia/channel-sdk` helpers rather than a literal string in the plugin's own file. The boot-breaking orchestrator/orchestrator-extras gaps are now grandfathered explicitly until their manifests catch up.

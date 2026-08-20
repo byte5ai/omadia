@@ -12,6 +12,7 @@ import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
+import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { OAuthReadinessTracker } from './oauth/oauthReadinessTracker.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
@@ -118,6 +119,10 @@ export interface ToolPluginRuntimeDeps {
    *  deactivate(). Separate from `pluginStatusRegistry` — see
    *  `OAuthReadinessTracker`'s doc comment for why. */
   oauthConnectionTracker?: OAuthReadinessTracker;
+  /** Epic #470 C7 / G4 — durable operator consent for `permissions.sql`, read
+   *  once per activate. Optional so narrow test contexts can omit it; absent
+   *  means ungranted, so a context built without it gets no database access. */
+  sqlGrantStore?: PluginSqlGrantStore;
   /** Event-catalog autodiscovery (US4 Conductor Surface): capability entries declaring
    *  `event_emit: true` are resolved into this registry on (de)activation. This runtime is the
    *  ONLY resolve site for built-in/static tool plugins (landmine K — the dynamic runtime has its
@@ -152,6 +157,23 @@ export interface ToolPluginRuntimeDeps {
   extensionStore?: ExtensionStore;
   log?: (msg: string) => void;
 }
+
+/**
+ * Wall-clock cap on a plugin's boot-time migration batch.
+ *
+ * Larger than the 10s `activate()` cap because applying schema is a different
+ * kind of work: an index build or a backfill on a real table is legitimately
+ * slower than wiring up a plugin's handlers. It is still a cap — the point is
+ * that a hung migration fails this ONE activation through the existing
+ * circuit-breaker instead of hanging middleware boot for everyone.
+ *
+ * Sits above `PLUGIN_MIGRATION_STATEMENT_TIMEOUT_MS` (30s) on purpose: the
+ * server-side budget should be what cancels a runaway statement, because it
+ * cancels it *in Postgres* and rolls the batch back cleanly. This one is the
+ * outer net for the case Postgres cannot see — a connection that never
+ * answers at all.
+ */
+const MIGRATION_TIMEOUT_MS = 60_000;
 
 export class ToolPluginRuntime {
   private readonly active = new Map<string, ActiveEntry>();
@@ -291,12 +313,37 @@ export class ToolPluginRuntime {
       );
     }
 
+    // Epic #470 C7 / G4 — read the operator's SQL grant BEFORE building the
+    // context. `ctx.services.get` is synchronous and cannot await, so this is
+    // the last point where the answer can be obtained honestly; a lookup
+    // deferred into the accessor would have to guess while its cache is cold,
+    // and a permission that is permissive while cold is not a permission.
+    //
+    // The grant must also still MATCH the manifest. An operator granted a
+    // specific ledger; a package that later ships a manifest naming a
+    // different one has not been granted that one, and carrying the stale row
+    // forward would let a plugin update silently move its schema somewhere the
+    // operator never approved.
+    const declaredSql = catalogEntry.plugin.permissions_summary.sql;
+    let sqlGranted = false;
+    if (declaredSql && this.deps.sqlGrantStore) {
+      const grant = await this.deps.sqlGrantStore.get(agentId);
+      sqlGranted = grant?.ledger === declaredSql.ledger;
+      if (grant && !sqlGranted) {
+        log(
+          `[tool-runtime] ${agentId}: permissions.sql grant is for ledger '${grant.ledger}' but the manifest now declares '${declaredSql.ledger}' — treating as ungranted until the operator re-grants`,
+        );
+      }
+    }
+
     const ctx = createPluginContext({
       agentId,
       vault: this.deps.vault,
       registry: this.deps.registry,
       catalog: this.deps.catalog,
       serviceRegistry: this.deps.serviceRegistry,
+      sqlGranted,
+      packageRoot: packagePath,
       nativeToolRegistry: this.deps.nativeToolRegistry,
       routeRegistry: this.deps.pluginRouteRegistry,
       notificationRouter: this.deps.notificationRouter,
@@ -308,6 +355,44 @@ export class ToolPluginRuntime {
       operatorAuth: this.deps.operatorAuth,
       logger: (...args) => console.log(`[${agentId}]`, ...args),
     });
+
+    // Epic #470 C7 / G4 — apply the plugin's schema BEFORE its `activate()`
+    // runs. A plugin whose first act is to query its own tables must not have
+    // to remember to migrate first, and the ordering is not a convenience: it
+    // is what makes "the tables exist" an invariant `activate()` can rely on
+    // rather than a race each plugin re-loses in its own way.
+    //
+    // Only when the manifest explicitly declares `permissions.sql.migrations`.
+    // A plugin that declares `permissions.sql` for pool access alone, with no
+    // migrations key, gets `ctx.sql` and decides for itself.
+    //
+    // A failure here fails the activation. That is deliberate: the alternative
+    // is a plugin running against a schema that is not the one it was built
+    // for, which fails later, further away, and with the database in a state
+    // nobody chose. The circuit-breaker in `activateAllInstalled` treats it
+    // like any other activate failure.
+    if (declaredSql?.migrations && ctx.sql) {
+      // Bounded with the SAME helper that caps `activate()`, and for the same
+      // reason. `runPluginMigrations` sets `lock_timeout` and
+      // `statement_timeout` server-side, but neither covers a connection that
+      // never answers — a pool exhausted by another plugin, a database that
+      // accepted the TCP connection and then went away. This await sits on the
+      // boot path ahead of `activate()`, so an unbounded one hangs the whole
+      // middleware rather than just this plugin. The budget is its own
+      // constant because migrating schema is legitimately slower than
+      // activating, and folding it into the 10s activate cap would either
+      // starve real migrations or loosen the activate bound.
+      const report = await withTimeout(
+        ctx.sql.runMigrations(),
+        MIGRATION_TIMEOUT_MS,
+        `runMigrations(${agentId}) timed out after ${String(MIGRATION_TIMEOUT_MS / 1000)}s`,
+      );
+      if (report.applied.length > 0) {
+        log(
+          `[tool-runtime] ${agentId}: applied ${String(report.applied.length)} migration(s) to ledger '${report.ledger}' in ${String(report.durationMs)}ms (${report.applied.join(', ')})`,
+        );
+      }
+    }
 
     let handle: ToolPluginHandle;
     try {

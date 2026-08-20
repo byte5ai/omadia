@@ -7,6 +7,14 @@
 // the canonical file to a shared package.
 // ===========================================================================
 
+// Epic #470 C7 / G4 — `permissions.sql` is part of the plugin CONTRACT, so its
+// shape is defined once on the plugin-api surface and re-exported here rather
+// than restated. A second declaration would drift from the one plugin authors
+// actually compile against.
+import type { SqlPermission } from '@omadia/plugin-api';
+
+export type { SqlPermission };
+
 export type ISO8601 = string;
 export type EntityURI = string;
 export type AgentId = string;
@@ -210,6 +218,13 @@ export interface OAuthProviderDescriptor {
 }
 
 export interface PluginPermissionsSummary {
+  /** Epic #470 C7 / G4 — the plugin asks to hold a Postgres pool and own its
+   *  own tables (`permissions.sql`). Present only when the manifest declares a
+   *  well-formed block whose `ledger` this plugin is allowed to own; the
+   *  loader drops a malformed one with a warning. Declaration is half the
+   *  gate — `platform/pluginSqlGrants.ts` additionally requires an operator
+   *  grant row before `graphPool` resolves or `ctx.sql` is built. */
+  sql?: SqlPermission;
   memory_reads: string[];
   memory_writes: string[];
   graph_reads: EntityURI[];

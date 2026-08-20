@@ -8,6 +8,71 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.2.0 — 2026-08-20
+
+Additive. A plugin may now be handed a Postgres pool and own tables in the
+operator's database — but only after declaring `permissions.sql` and being
+granted it (epic #470, C7 — G4 plugin-owned SQL schema). Every existing
+context consumer keeps compiling: `ctx.sql` is optional and is `undefined`
+for a plugin that declared nothing.
+
+### Added
+
+- **`ctx.sql`** (`SqlAccessor | undefined`) — present only when the plugin
+  declared a valid `permissions.sql` block AND an operator grant row exists.
+  Absence is the normal case and is not an error; it is the shape a denial
+  takes, so a plugin that forgot to declare gets `undefined` rather than a
+  pool it should not hold.
+- **`SqlPermission`** — `{ migrations?: string, ledger: string }`, the
+  manifest block. The ledger is charset-validated and must live inside the
+  plugin's own `plg_<sanitized-id>_` namespace, so a plugin cannot name a
+  core table as its migration ledger.
+- **`SqlAccessor`** — `{ ledger, runMigrations(opts?) }`. The one shared
+  migration runner, advisory-locked and transactional per batch, rather than
+  a pattern each plugin author reimplements.
+- **`RunMigrationsOptions`** — `{ dir?, allowChecksumDrift? }`.
+- **`MigrationReport`** — `{ applied, skipped, ledger, durationMs }`.
+- **`SqlPermissionError`** — carries `reason: 'undeclared' | 'ungranted'`.
+  The two stay distinct because `undeclared` is the plugin author's to fix
+  and `ungranted` is the operator's.
+- **`LedgerNameError`**, **`SqlMigrationError`** — thrown for a ledger name
+  outside the plugin's namespace and for a failed or drifted migration batch.
+
+A pool-shaped capability reaching a plugin through `ctx.services.get` is now
+BORROWED: `end()` throws rather than tearing down the connection pool core
+writes user data through (#665).
+
+## 1.1.0 — 2026-08-20
+
+Additive. Route registration gains an optional third argument; every existing
+`ctx.routes.register(prefix, router)` call site keeps compiling unchanged
+(epic #470, C6 — G2 route auth, G3 raw body).
+
+### Added
+
+- **`RouteAuthMode`** (`'session' | 'public' | 'custom'`) — the authentication
+  posture the kernel composes in front of a contributed router. Default
+  `'session'`, which is the previous behaviour made explicit. `'public'` and
+  `'custom'` additionally require the registered prefix to lie inside a
+  declared `permissions.public_paths` entry, checked at registration; being
+  *served* without a session still needs C4's exclusive prefix ownership plus
+  operator consent.
+- **`RouteBodyMode`** (`'json' | 'raw' | 'none'`) — which body parser runs
+  before the router. Default `'json'`, the previous behaviour. `'raw'` is
+  captured ahead of the kernel's global `express.json`, because a route-local
+  `express.raw()` cannot recover bytes body-parser has already marked
+  consumed — the reason HMAC-verifying webhooks could not be written as
+  plugins before.
+- **`RouteRegisterOptions`** — `{ auth?, body?, bodyLimit? }`, the optional
+  third parameter of `RoutesAccessor.register`. `bodyLimit` defaults to 10 MB
+  for `'json'` and **512 KB** for `'raw'`: a raw body is necessarily buffered
+  before authentication, so its ceiling is the anonymous one.
+
+The composition order around a contributed router is now fixed and documented
+on `RoutesAccessor`: `[deactivation guard] → [auth] → [body parser] → router`.
+The guard is first on purpose — a deactivated plugin's prefix answers 404
+before any auth logic or body buffering runs, rather than 401.
+
 ## 1.0.0 — 2026-08-20
 
 First stable cut of the contract. Two breaking changes are taken together,

@@ -53,7 +53,11 @@ import {
   EventNotDeclaredError,
   ConductorUnavailableError,
   type ServiceCaller,
+  type SqlAccessor,
+  type MigrationReport,
+  SqlMigrationError,
 } from '@omadia/plugin-api';
+import type { Pool } from 'pg';
 import type { DomainTool } from '@omadia/orchestrator';
 import { turnContext } from '@omadia/orchestrator';
 import {
@@ -93,7 +97,18 @@ import type { PluginStatusRegistry } from './pluginStatusRegistry.js';
 import { createMemoryAccessor } from './memoryAccessor.js';
 import { SCRATCH_DIR } from './paths.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
-import { createServiceGrantGate } from './pluginServiceGrants.js';
+import {
+  createServiceGrantGate,
+  LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20,
+} from './pluginServiceGrants.js';
+import {
+  createSqlGate,
+  DEFAULT_MIGRATIONS_DIR,
+  POOL_SHAPED_CAPABILITIES,
+  sqlPermissionOf,
+} from './pluginSqlGrants.js';
+import { borrowPool } from './borrowedPool.js';
+import { runPluginMigrations } from './pluginMigrations.js';
 
 /**
  * The plugin-facing types (PluginContext, SecretsAccessor, ConfigAccessor,
@@ -172,6 +187,37 @@ export interface CreatePluginContextOptions {
    *  is `undefined` and any plugin admin-router relying on it MUST fail closed
    *  (see the `PluginContext.operatorAuth` doc comment). */
   operatorAuth?: OperatorAuthAccessor;
+  /**
+   * Epic #470 C7 / G4 — whether the operator has granted this plugin
+   * `permissions.sql`, resolved BEFORE the context is built.
+   *
+   * It is a boolean and not a store because `ctx.services.get` is synchronous
+   * and cannot await a database read. Doing the lookup here would force either
+   * an async accessor (a breaking change to every plugin) or a cached
+   * best-effort answer that is permissive while the cache is cold — and a
+   * permission that is permissive while cold is not a permission. So the read
+   * happens once, at activate, where awaiting is free, and the gate is a pure
+   * function of the answer.
+   *
+   * Absent → ungranted. Test and migration contexts that omit it get no
+   * database access, which is the correct default for a context that was never
+   * meant to have any.
+   *
+   * The corollary, stated plainly because it is security-relevant: since this
+   * is resolved ONCE, revoking the operator's grant does not disarm a plugin
+   * that is already running. It stops the next activation. An operator who
+   * needs the access gone immediately must deactivate/reactivate the plugin.
+   * See `PluginSqlGrantStore.revoke`.
+   */
+  sqlGranted?: boolean;
+  /**
+   * Absolute package root, used to resolve `permissions.sql.migrations` and to
+   * prove the resolved directory did not escape it. Absent → `ctx.sql` is not
+   * built even for a granted plugin: without a root there is nothing to
+   * contain a path against, and an uncontained path is how a manifest turns
+   * `../../` into arbitrary SQL at boot.
+   */
+  packageRoot?: string;
   logger?: (...args: unknown[]) => void;
 }
 
@@ -237,6 +283,24 @@ export function createPluginContext(
   // a manifest cannot change under a live plugin.
   const assertServiceGranted = createServiceGrantGate({ agentId, catalog, log });
 
+  // Epic #470 (C7 / G4) — the SECOND gate, for pool-shaped capabilities only.
+  // `assertServiceGranted` answers "did the author declare this?"; this answers
+  // "may this plugin touch the operator's database?". A `requires:` line is the
+  // author's own say-so, and that is the wrong bar for handing over the pool
+  // core writes user data through — so `graphPool` additionally needs a
+  // `permissions.sql` declaration and an operator grant.
+  const sqlPermission = sqlPermissionOf(agentId, catalog);
+  const assertSqlAccess = createSqlGate({
+    agentId,
+    catalog,
+    granted: opts.sqlGranted ?? false,
+    // One migration ramp, not two: the pool gate honours exactly the pairs
+    // C2b's dated allowlist already grandfathered, and retires with it.
+    legacyCapabilities:
+      LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20[agentId] ?? [],
+    log,
+  });
+
   // Caller identity handed to per-caller service factories. Built from the
   // kernel-known `agentId`, never from an argument — that is the whole point
   // (§2.2: a self-attributed accessor is not an accessor, it is a suggestion).
@@ -248,7 +312,19 @@ export function createPluginContext(
   const services: ServicesAccessor = {
     get<T>(name: string): T | undefined {
       assertServiceGranted(name);
-      return serviceRegistry.get<T>(name, serviceCaller);
+      // Order matters: declaration first, permission second. A plugin that
+      // declared neither should hear about the manifest line it is missing
+      // before it hears about a grant it could not have obtained anyway.
+      assertSqlAccess(name);
+      const resolved = serviceRegistry.get<T>(name, serviceCaller);
+      // Epic #470 C7 / G4 — a pool-shaped capability is BORROWED, not handed
+      // over. Passing the raw `pg.Pool` would mean one `.end()` in one plugin
+      // tears down the connection pool core writes user data through. Applied
+      // here, at the plugin-facing seam, so core's own
+      // `serviceRegistry.get('graphPool')` keeps the real object.
+      return resolved !== undefined && POOL_SHAPED_CAPABILITIES.has(name)
+        ? (borrowPool(resolved as Pool, agentId) as T)
+        : resolved;
     },
     has(name: string): boolean {
       return serviceRegistry.has(name);
@@ -514,11 +590,47 @@ export function createPluginContext(
     },
   };
 
+  // `permissions.public_paths` as declared in THIS plugin's manifest. Read
+  // once, from the same catalogue entry `toolPluginRuntime` later claims
+  // against, so the register-time gate and the activation-time claim can never
+  // disagree about what was declared.
+  const declaredPublicPaths: readonly string[] =
+    catalog.get(agentId)?.plugin.permissions_summary?.public_paths ?? [];
+
   // Routes accessor: append to the kernel's route queue. The kernel mounts
   // after all plugins have activated.
+  //
+  // Epic #470 C6 / G2+G3 — this layer, and only this layer, decides whether a
+  // plugin is ALLOWED to ask for `auth: 'public' | 'custom'` OR `body:'raw'`.
+  // The route registry is a generic Express concern that must not know about
+  // manifests; the grant registry cannot answer yet (claims happen AFTER
+  // activate(), by design — see toolPluginRuntime.activate). What exists at
+  // registration time is the manifest declaration, and it is the right gate:
+  // a plugin may only opt a prefix out of the kernel session gate, or ask for
+  // the global pre-auth raw-body slot, if it ASKED for that prefix in
+  // `permissions.public_paths`, which the operator saw in the install dialog.
+  //
+  // Declaration is necessary, not sufficient. Being served without a session
+  // additionally needs exclusive ownership and operator consent, both checked
+  // at request time by the C4 mount. And `body:'raw'` is just as operator-
+  // visible a decision: the prefix is buffered by a GLOBAL mount that runs
+  // before authentication, for anonymous callers, and it changes what every
+  // request under that prefix looks like. So the failure modes stack the safe
+  // way: declared-but-unconsented is claimed and unreachable-without-a-
+  // session; undeclared is not registerable at all.
   const routes: RoutesAccessor = {
-    register(prefix, router) {
-      return opts.routeRegistry.register(prefix, router, agentId);
+    register(prefix, router, options) {
+      const auth = options?.auth ?? 'session';
+      const body = options?.body ?? 'json';
+      if (auth !== 'session' || body === 'raw') {
+        assertPrefixIsDeclared(
+          agentId,
+          prefix,
+          auth !== 'session' ? `auth:'${auth}'` : `body:'${body}'`,
+          declaredPublicPaths,
+        );
+      }
+      return opts.routeRegistry.register(prefix, router, agentId, options);
     },
   };
 
@@ -810,12 +922,35 @@ export function createPluginContext(
       }
     : undefined;
 
+  // Epic #470 C7 / G4 — `ctx.sql` exists only for a plugin that declared
+  // `permissions.sql`, was granted it, and has a package root to resolve
+  // migration paths against. Any one missing and the accessor is simply
+  // absent, which is the shape every other gated accessor here uses: a plugin
+  // guards with `if (ctx.sql)` and an older core, an undeclared permission and
+  // a withheld grant are indistinguishable — all three meaning "do not touch
+  // the database".
+  const sql: SqlAccessor | undefined =
+    sqlPermission && (opts.sqlGranted ?? false) && opts.packageRoot
+      ? createSqlAccessor({
+          agentId,
+          ledger: sqlPermission.ledger,
+          packageRoot: opts.packageRoot,
+          defaultDir: sqlPermission.migrations ?? DEFAULT_MIGRATIONS_DIR,
+          serviceRegistry,
+          serviceCaller,
+          log: (msg) => {
+            log(msg);
+          },
+        })
+      : undefined;
+
   return {
     agentId,
     domain,
     secrets,
     config,
     services,
+    ...(sql ? { sql } : {}),
     tools,
     routes,
     jobs,
@@ -837,6 +972,91 @@ export function createPluginContext(
     status,
     log,
   };
+}
+
+interface SqlAccessorOptions {
+  readonly agentId: string;
+  readonly ledger: string;
+  readonly packageRoot: string;
+  readonly defaultDir: string;
+  readonly serviceRegistry: ServiceRegistry;
+  readonly serviceCaller: ServiceCaller;
+  readonly log: (msg: string) => void;
+}
+
+/**
+ * Build `ctx.sql` for a plugin that has cleared both halves of the gate.
+ *
+ * The pool is resolved per CALL, not captured at construction. `graphPool` is
+ * wired late in `index.ts` (long after the first contexts are built) and a
+ * pool captured at activate could be a stale handle to a torn-down module. A
+ * per-call lookup also keeps the kernel attribution honest — this resolution
+ * bypasses the plugin-facing gate deliberately, because the gate has already
+ * run to decide this accessor exists at all, and re-running it here would gate
+ * the kernel's own call on the plugin's manifest.
+ */
+function createSqlAccessor(opts: SqlAccessorOptions): SqlAccessor {
+  const { agentId, ledger, packageRoot, defaultDir, log } = opts;
+
+  return {
+    ledger,
+    async runMigrations(runOpts): Promise<MigrationReport> {
+      const pool = opts.serviceRegistry.get<Pool>(
+        'graphPool',
+        opts.serviceCaller,
+      );
+      if (!pool) {
+        throw new SqlMigrationError(
+          agentId,
+          ledger,
+          "no 'graphPool' is registered — the operator granted permissions.sql but the middleware is running without a database",
+        );
+      }
+      return runPluginMigrations({
+        pool,
+        pluginId: agentId,
+        ledger,
+        dir: resolveMigrationsDir(
+          agentId,
+          ledger,
+          packageRoot,
+          runOpts?.dir ?? defaultDir,
+        ),
+        allowChecksumDrift: runOpts?.allowChecksumDrift ?? false,
+        log,
+      });
+    },
+  };
+}
+
+/**
+ * Resolve a migrations directory inside the package root, and prove it stayed
+ * there.
+ *
+ * The manifest is plugin-supplied, so `migrations: ../../../etc` is a string a
+ * package can ship. `zipExtractor.ts` allows `.sql` in uploaded packages
+ * precisely because "every migrator resolves its directory from its own
+ * `import.meta.url`" — this runner takes a directory from a manifest instead,
+ * so it has to re-establish that containment itself rather than inherit it.
+ * The `+ path.sep` on the comparison is load-bearing: without it a sibling
+ * directory named `<root>-evil` passes a bare `startsWith`.
+ */
+function resolveMigrationsDir(
+  agentId: string,
+  ledger: string,
+  packageRoot: string,
+  relative: string,
+): string {
+  const root = path.resolve(packageRoot);
+  const resolved = path.resolve(root, relative);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    throw new SqlMigrationError(
+      agentId,
+      ledger,
+      `migrations directory '${relative}' escapes the package root`,
+    );
+  }
+  return resolved;
 }
 
 /** Minimal server row shape the host MCP service exposes. */
@@ -1388,6 +1608,58 @@ export function createMigrationContext(
     toVersion: opts.toVersion,
     previousConfig: opts.previousConfig,
   };
+}
+
+/**
+ * Epic #470 C6 / G2+G3 — a route may only opt out of the kernel session gate,
+ * or ask for the pre-auth global raw-body slot, beneath a prefix the plugin
+ * declared in `permissions.public_paths`.
+ *
+ * The direction of the containment check is the point. We require the
+ * REGISTERED PREFIX to lie inside a DECLARED PATH, not the other way round.
+ * The inverse — "a declaration anywhere under this router makes the router
+ * public" — is the bug: a plugin declaring `/api/plugins/acme/webhook` would
+ * be able to register an unauthenticated router at `/api/plugins/acme` and
+ * serve its whole admin surface without a session. Requiring the prefix to sit
+ * inside the declaration means every URL the router can possibly answer was
+ * declared, and therefore shown to the operator.
+ *
+ * `body:'raw'` belongs behind the same gate for the same operator-visibility
+ * reason. The raw parse is not a local router concern; it happens in a GLOBAL
+ * mount before authentication, buffers bytes for anonymous callers, and
+ * changes what every request under that prefix looks like. That is exactly the
+ * kind of boundary decision an operator must have seen in the manifest.
+ *
+ * Throwing (rather than downgrading to `'session'`) is deliberate: a webhook
+ * receiver that silently acquires a session gate answers 401 to every delivery
+ * and looks like a broken integration. A plugin that mis-declares must fail to
+ * activate, loudly, at install time.
+ */
+function assertPrefixIsDeclared(
+  agentId: string,
+  prefix: string,
+  reason: string,
+  declared: readonly string[],
+): void {
+  const covered = declared.some((decl) => isPathUnderPrefix(prefix, decl));
+  if (covered) return;
+  throw new Error(
+    `routes.register: '${agentId}' asked for ${reason} at '${prefix}' but that prefix is not covered by any ` +
+      `permissions.public_paths declaration` +
+      (declared.length === 0
+        ? ' (the manifest declares none)'
+        : ` (declared: ${declared.join(', ')})`) +
+      ` — a plugin cannot change authentication or raw-body parsing at a prefix without an operator-visible declaration`,
+  );
+}
+
+/** `child` is `parent`, or sits beneath it on a segment boundary. Mirrors
+ *  `publicPathGrants.isUnderPrefix`; kept local so this module does not take a
+ *  dependency on the grant machinery for one three-line predicate. */
+function isPathUnderPrefix(child: string, parent: string): boolean {
+  if (child === parent) return true;
+  const withSlash = parent.endsWith('/') ? parent : `${parent}/`;
+  return child.startsWith(withSlash);
 }
 
 function memoryDeclared(agentId: string, catalog: PluginCatalog): boolean {

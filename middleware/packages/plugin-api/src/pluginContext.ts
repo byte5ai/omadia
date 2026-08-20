@@ -58,6 +58,16 @@ export interface PluginContext {
   readonly config: ConfigAccessor;
   readonly services: ServicesAccessor;
 
+  /** Epic #470 C7 / G4 — plugin-owned Postgres schema. Present ONLY when the
+   *  manifest declares `permissions.sql` AND the operator granted it. A plugin
+   *  that owns tables reaches them through the `graphPool` capability (also
+   *  gated by the same permission); this accessor is the migration side of
+   *  that — a shared, advisory-locked runner so eight plugins do not hand-roll
+   *  eight racy ones. Guard with `if (ctx.sql)`: an older core, an undeclared
+   *  permission and a withheld grant are all indistinguishable from the
+   *  plugin's side, and all three mean "do not touch the database". */
+  readonly sql?: SqlAccessor;
+
   /** True only when the kernel activated this plugin specifically for a
    *  smoke probe (Theme D — admin-route schema check). False during
    *  normal `activate()` calls. Plugins MAY branch on this to return
@@ -760,13 +770,79 @@ export interface ToolRegistrationOptions {
 }
 
 /**
+ * Epic #470 C6 / G2 — how a contributed route is authenticated.
+ *
+ *  - `'session'` — **the default**. The kernel composes the same operator
+ *    session gate core mounts at `/api`, per route. Under `/api` that is
+ *    defence-in-depth (the blanket gate already ran); outside `/api`
+ *    (`/diagrams`, `/documents`, `/p/…`) it is the only session gate there is.
+ *    CSRF posture is core's own: a `SameSite=Lax` session cookie, no token
+ *    layer — a browser never attaches the session to a cross-site request.
+ *  - `'public'` — no kernel authentication. Registration THROWS unless the
+ *    prefix lies beneath a path this plugin declared in
+ *    `permissions.public_paths`. Whether it is actually served without a
+ *    session additionally requires operator consent (epic #470 C4/H1).
+ *  - `'custom'` — same registration constraint as `'public'`; the plugin
+ *    asserts it authenticates every request itself. A webhook verifying an
+ *    HMAC over `req.rawBody` is the canonical case.
+ *
+ * There is deliberately no `'none'`: a plugin cannot self-declare its way out
+ * of authentication, only ask the operator for a prefix and be granted it.
+ */
+export type RouteAuthMode = 'session' | 'public' | 'custom';
+
+/**
+ * Epic #470 C6 / G3 — how the request body reaches the contributed router.
+ *
+ *  - `'json'` — **the default**. Parsed JSON at core's own limit (10 MB).
+ *  - `'raw'` — untouched bytes as a `Buffer`, on BOTH `req.body` and
+ *    `req.rawBody`, at a 512 KB default limit. The kernel parses these ahead
+ *    of its global JSON parser, so the bytes an HMAC is computed over are the
+ *    bytes that arrived. Do NOT re-serialise `req.body` to verify a signature.
+ *  - `'none'` — the kernel mounts no parser for this route; the plugin owns the
+ *    stream (uploads, proxying, streaming responses). It does NOT disable the
+ *    kernel's global JSON parser: an `application/json` request has still been
+ *    read upstream. Use `'raw'` when you need the bytes as they arrived.
+ */
+export type RouteBodyMode = 'json' | 'raw' | 'none';
+
+export interface RouteRegisterOptions {
+  /** Default `'session'`. See {@link RouteAuthMode}. */
+  readonly auth?: RouteAuthMode;
+  /** Default `'json'`. See {@link RouteBodyMode}. */
+  readonly body?: RouteBodyMode;
+  /** Express body-parser limit string (`'1mb'`, `'512kb'`). Defaults to 10 MB
+   *  for `'json'` and 512 KB for `'raw'`. Ignored for `'none'`.
+   *
+   *  Only `'raw'` gives it a real effect. Raw bodies are captured before the
+   *  kernel's global parser (they have to be), which is also before the session
+   *  gate — so raising it raises how much an ANONYMOUS caller can make the
+   *  kernel buffer. State a bigger number only when the payload needs it.
+   *
+   *  On `'json'` the kernel's global 10 MB parser has already run, so a larger
+   *  value here cannot raise the effective ceiling. */
+  readonly bodyLimit?: string;
+}
+
+/**
  * Contributes an Express router to the kernel. The kernel mounts it at the
- * given prefix via `app.use(prefix, router)`. Authentication / CORS / rate
- * limiting remain the plugin's responsibility — the kernel does not inject
- * middleware around the contributed router.
+ * given prefix via `app.use(prefix, router)`.
+ *
+ * Since epic #470 C6 the kernel DOES inject middleware around the contributed
+ * router, in a fixed order:
+ *
+ *     [deactivation guard] → [auth] → [body parser] → your router
+ *
+ * The deactivation guard is first, so a deactivated plugin's prefix stops
+ * existing before any authentication or body buffering happens. CORS and rate
+ * limiting remain the plugin's responsibility.
  */
 export interface RoutesAccessor {
-  register(prefix: string, router: unknown): () => void;
+  register(
+    prefix: string,
+    router: unknown,
+    options?: RouteRegisterOptions,
+  ): () => void;
 }
 
 /**
@@ -1738,5 +1814,170 @@ export class MigrationHookError extends Error {
     );
     this.name = 'MigrationHookError';
     this.migrationCause = cause;
+  }
+}
+
+// ── Plugin-owned SQL schema (epic #470 C7 / G4) ─────────────────────────────
+//
+// "Plugins can own tables." Three things had to become true for that sentence
+// to be safe rather than merely possible:
+//
+//   1. Reaching a Postgres pool must be a DECLARED, GRANTED permission — not a
+//      side effect of `ctx.services.get('graphPool')` resolving for anyone who
+//      asked (bug B1). `permissions.sql` is that declaration; the operator's
+//      grant is the other half.
+//   2. The ledger a plugin writes its applied-migration rows into must be
+//      unambiguously ITS ledger. A plugin that could name any table could
+//      forge another plugin's migration history and thereby suppress that
+//      plugin's schema changes at its next boot.
+//   3. Applying migrations must be serialised. `implementation.md` B3 recorded
+//      core migrators racing on multi-replica boot; shipping a fresh pattern
+//      for plugins to copy would have multiplied the bug rather than
+//      contained it.
+//
+// The kernel owns all three. A plugin only ever calls `ctx.sql.runMigrations()`.
+
+/**
+ * The shape of `permissions.sql` in a plugin manifest.
+ *
+ * ```yaml
+ * permissions:
+ *   sql:
+ *     migrations: migrations   # optional; directory inside the package
+ *     ledger: omadia_verifier_migrations
+ * ```
+ */
+export interface SqlPermission {
+  /** Directory (relative to the package root) holding `*.sql` / `*.js` /
+   *  `*.mjs` migration files. Defaults to `migrations`. When the manifest
+   *  declares it, the kernel runs the directory automatically at activate. */
+  readonly migrations?: string;
+  /** The plugin-owned table recording which migrations have been applied.
+   *  Must match `^[a-z][a-z0-9_]{2,62}$` AND begin with the plugin's sanitized
+   *  id, so a manifest cannot nominate another plugin's ledger. */
+  readonly ledger: string;
+}
+
+/** What one `runMigrations` pass did. Returned rather than logged so a plugin
+ *  (and a test) can assert on it instead of grepping stdout. */
+export interface MigrationReport {
+  /** Filenames applied by THIS pass, in the order they ran. */
+  readonly applied: readonly string[];
+  /** Filenames already in the ledger and therefore not re-run. */
+  readonly skipped: readonly string[];
+  /** The ledger table the pass wrote to — echoed back so a caller that took
+   *  the default cannot misreport which table it touched. */
+  readonly ledger: string;
+  /** Wall-clock duration of the pass, including lock wait. */
+  readonly durationMs: number;
+}
+
+/** Options for one `ctx.sql.runMigrations()` call. Every field is optional —
+ *  the manifest already carries the answers. */
+export interface RunMigrationsOptions {
+  /** Override the manifest's `permissions.sql.migrations` directory. Still
+   *  resolved inside the package root and rejected if it escapes. */
+  readonly dir?: string;
+  /**
+   * Accept a file whose content changed after it was applied.
+   *
+   * Off by default, and the default is the point: an edited migration means
+   * the database and the package disagree about what ran, and every
+   * environment that already applied the old bytes is now silently different
+   * from every environment that applies the new ones. The escape hatch exists
+   * for the one legitimate case — a cosmetic edit (a comment, a reformat) the
+   * author has verified is semantically identical.
+   */
+  readonly allowChecksumDrift?: boolean;
+}
+
+/** Plugin-facing migration runner. See {@link PluginContext.sql}. */
+export interface SqlAccessor {
+  /** The ledger table this plugin owns, as resolved from its manifest. */
+  readonly ledger: string;
+  /**
+   * Apply every not-yet-applied migration in the plugin's migrations
+   * directory, in filename order, inside ONE transaction held under an
+   * advisory lock keyed on the ledger.
+   *
+   * `.sql` files are executed verbatim. `.js` / `.mjs` files must
+   * `export default async (client) => { … }` and receive the same
+   * transaction-bound client — that is the codegen target described in
+   * `implementation.md` D6, where a plugin compiles its `.sql` into JS.
+   *
+   * Throws rather than returning a partial result: an empty directory
+   * ({@link SqlMigrationError}) is a misconfiguration, and a checksum change
+   * on an already-applied file is a divergence. Both are conditions where
+   * continuing quietly is worse than failing loudly.
+   */
+  runMigrations(opts?: RunMigrationsOptions): Promise<MigrationReport>;
+}
+
+/**
+ * Thrown when a plugin reaches for a database capability it has not been
+ * cleared for.
+ *
+ * Deliberately distinct from {@link ServiceNotDeclaredError}: that one means
+ * "your manifest is missing a line", which the plugin author fixes alone. This
+ * one can additionally mean "the operator has not agreed", which the author
+ * cannot fix at all — so the two must not be reported the same way.
+ */
+export class SqlPermissionError extends Error {
+  public readonly pluginId: string;
+  public readonly capability: string;
+  /** `undeclared` → the manifest lacks `permissions.sql`.
+   *  `ungranted`  → declared, but no operator grant is on record. */
+  public readonly reason: 'undeclared' | 'ungranted';
+  constructor(
+    pluginId: string,
+    capability: string,
+    reason: 'undeclared' | 'ungranted',
+  ) {
+    super(
+      reason === 'undeclared'
+        ? `plugin '${pluginId}' reached for the database capability '${capability}' but its manifest does not declare \`permissions.sql\` — ` +
+            'add a `permissions.sql` block (with a `ledger:` this plugin owns) so the operator can see the request at install time'
+        : `plugin '${pluginId}' declares \`permissions.sql\` but the operator has not granted it — ` +
+            `'${capability}' stays unavailable until the grant is recorded`,
+    );
+    this.name = 'SqlPermissionError';
+    this.pluginId = pluginId;
+    this.capability = capability;
+    this.reason = reason;
+  }
+}
+
+/**
+ * Thrown when a manifest nominates a ledger table this plugin may not own.
+ *
+ * The name is interpolated into DDL as a quoted identifier, so it is also the
+ * one plugin-supplied string in this subsystem that reaches SQL outside a bind
+ * parameter. It is validated against a charset allowlist BEFORE it is quoted,
+ * never by escaping afterwards — an allowlist that rejects `"` cannot be
+ * defeated by a cleverer `"`.
+ */
+export class LedgerNameError extends Error {
+  public readonly pluginId: string;
+  public readonly ledger: string;
+  constructor(pluginId: string, ledger: string, why: string) {
+    super(`plugin '${pluginId}' cannot use ledger table '${ledger}': ${why}`);
+    this.name = 'LedgerNameError';
+    this.pluginId = pluginId;
+    this.ledger = ledger;
+  }
+}
+
+/** Thrown for migration-run failures that are the plugin package's fault:
+ *  an empty or missing directory, or a file whose bytes changed after it was
+ *  applied. Both are recoverable by fixing the package, which is why they are
+ *  one type and not folded into a generic Error. */
+export class SqlMigrationError extends Error {
+  public readonly pluginId: string;
+  public readonly ledger: string;
+  constructor(pluginId: string, ledger: string, why: string) {
+    super(`plugin '${pluginId}' migrations (ledger '${ledger}') failed: ${why}`);
+    this.name = 'SqlMigrationError';
+    this.pluginId = pluginId;
+    this.ledger = ledger;
   }
 }

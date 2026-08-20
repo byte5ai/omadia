@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { Router } from 'express';
 
 import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
-import { PluginRouteRegistry } from '../src/platform/pluginRouteRegistry.js';
+import { newTestRouteRegistry } from './_helpers/routeRegistry.js';
 import { UiRouteCatalog } from '../src/platform/uiRouteCatalog.js';
 import { createPluginContext } from '../src/platform/pluginContext.js';
 import type { CreatePluginContextOptions } from '../src/platform/pluginContext.js';
@@ -151,7 +151,7 @@ describe('PluginContext — service ownership comes from the kernel', () => {
 describe('ToolPluginRuntime.deactivate — service disposal', () => {
   function makeRuntime(serviceRegistry: ServiceRegistry): ToolPluginRuntime {
     const deps = {
-      pluginRouteRegistry: new PluginRouteRegistry(),
+      pluginRouteRegistry: newTestRouteRegistry(),
       uiRouteCatalog: new UiRouteCatalog(),
       serviceRegistry,
       jobScheduler: { stopForPlugin: (): void => {} },
@@ -247,7 +247,7 @@ describe('DynamicAgentRuntime.deactivate — service disposal', () => {
     const serviceRegistry = new ServiceRegistry();
     const deps = {
       serviceRegistry,
-      pluginRouteRegistry: new PluginRouteRegistry(),
+      pluginRouteRegistry: newTestRouteRegistry(),
       uiRouteCatalog: new UiRouteCatalog(),
       jobScheduler: { stopForPlugin: (): void => {} },
       log: (): void => {},
@@ -281,7 +281,7 @@ describe('DynamicAgentRuntime.deactivate — service disposal', () => {
 
 describe('PluginRouteRegistry — unchanged behaviour alongside the new call', () => {
   it('still disposes routers by source', async () => {
-    const routes = new PluginRouteRegistry();
+    const routes = newTestRouteRegistry();
     const serviceRegistry = new ServiceRegistry();
     const deps = {
       pluginRouteRegistry: routes,

@@ -15,6 +15,7 @@ import {
   resolveLlmProvider,
 } from '@omadia/llm-provider';
 import express from 'express';
+import type { RequestHandler } from 'express';
 import cookieParser from 'cookie-parser';
 import { config, parseRegistries } from './config.js';
 import { createTigrisStore } from '@omadia/diagrams';
@@ -61,6 +62,14 @@ import type {
 import { createMemoryRouter } from './routes/memory.js';
 import { createDatasetsRouter } from './routes/datasets.js';
 import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
+import { createSkillPromotionRouter } from './routes/skillPromotion.js';
+import { PgSkillOwnershipLifecycleStore } from './services/skillLifecycleStore.js';
+import { resolveSkillManifestSigningKey } from './services/skillManifestSigningKey.js';
+import { createCredentialAskRouter } from './routes/credentialAsks.js';
+import { InMemoryCredentialAskStore } from './credentials/asks.js';
+import { PostgresCredentialAskStore } from './credentials/postgresCredentialAskStore.js';
+import { resolveCredentialMasterKey } from './credentials/crypto.js';
+import { createCredentialStore } from './credentials/credentialStoreFactory.js';
 import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createDuplicatesRouter } from './routes/duplicates.js';
 import { createTopicsRouter } from './routes/topics.js';
@@ -115,6 +124,7 @@ import { createAdminProvidersRouter } from './routes/adminProviders.js';
 import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
+import { createServiceRegistryBackedSqlGrantStore } from './platform/pluginSqlGrantStore.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
 import {
@@ -303,6 +313,7 @@ import { installProcessGuards } from './platform/processGuards.js';
 import { PluginRouteRegistry } from './platform/pluginRouteRegistry.js';
 import { PublicPathGrantRegistry } from './platform/publicPathGrants.js';
 import { createLazyPublicPathGrantStore } from './platform/publicPathGrantStore.js';
+import { createPluginRawBodyMount } from './platform/pluginRawBodyMount.js';
 import { createPublicPathMount } from './platform/publicPathMount.js';
 import { NotificationRouter } from './platform/notificationRouter.js';
 import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
@@ -563,7 +574,20 @@ async function main(): Promise<void> {
   // #133 E0 — expose the kernel turn-hook registry to the orchestrator plugin
   // so it can fire onBeforeTurn / onAfterToolCall / onAfterTurn during turns.
   serviceRegistry.provide('turnHookRegistry', turnHookRegistry);
-  const pluginRouteRegistry = new PluginRouteRegistry();
+  // Epic #470 C6 / G2 — forward reference to the kernel's `requireAuth`.
+  //
+  // The route registry has to exist here (ToolPluginRuntime and half a dozen
+  // wiring blocks below take it as a dependency) but `createRequireAuth` needs
+  // the session signing key, which is built much further down. The resolver is
+  // called ONCE PER REGISTRATION, not per request, and registrations happen at
+  // `toolPluginRuntime.activateAllInstalled()` — long after the assignment
+  // below — so every `auth: 'session'` route binds the real middleware. If that
+  // ordering is ever broken, `register()` throws rather than quietly serving a
+  // route with no gate.
+  const kernelRequireAuthRef: { current?: RequestHandler } = {};
+  const pluginRouteRegistry = new PluginRouteRegistry({
+    sessionAuth: () => kernelRequireAuthRef.current,
+  });
   // Epic #470 C4 / H1 — who owns which unauthenticated URL prefix, and which of
   // those the operator has consented to. The registry decides routing; the
   // store holds the durable consent. Both are wired into ToolPluginRuntime
@@ -788,6 +812,30 @@ async function main(): Promise<void> {
   // runtimes are constructed) because it doubles as the key the `ctx.flows`
   // toolkit signs plugin-flow state with (spec 004 FR-B3).
   const sessionSigningKey = await resolveSessionSigningKey(secretVault);
+  // #778 W1 — HMAC key `promoteSkillOwnerScope` (#577 P3) re-signs a skill's
+  // manifest with. Resolved here alongside the session key: same vault,
+  // same "generate once, persist, reuse every boot" pattern — see
+  // `services/skillManifestSigningKey.ts`.
+  const skillManifestSigningKey = await resolveSkillManifestSigningKey(secretVault);
+  // #778 W1 — the credential keychain's own master key (#578 Phase 1),
+  // resolved but never actually used anywhere until now. Same
+  // `resolveMasterKey` call `credentials/crypto.ts`'s module doc documents
+  // (`CREDENTIAL_KEYCHAIN_KEY` env, deliberately a DIFFERENT key/env var than
+  // `VAULT_KEY` — different trust domain). Needed here because
+  // `InMemoryCredentialAskStore` (the no-Postgres fallback) holds a live
+  // `CredentialStore` reference to validate an ask's `credentialId` in
+  // process, the same way `PostgresCredentialAskStore` validates it via SQL.
+  const credentialMasterKey = await resolveCredentialMasterKey(
+    DATA_DIR,
+    process.env['NODE_ENV'] === 'production',
+  );
+  if (credentialMasterKey.source === 'env') {
+    console.log('[middleware] credential-keychain master key loaded from CREDENTIAL_KEYCHAIN_KEY env');
+  } else if (credentialMasterKey.source === 'dev-file-existed') {
+    console.log('[middleware] ⚠ credential-keychain master key loaded from dev file — set CREDENTIAL_KEYCHAIN_KEY for production');
+  } else {
+    console.warn('[middleware] ⚠ credential-keychain master key GENERATED (dev file) — DEV ONLY. Set CREDENTIAL_KEYCHAIN_KEY for production.');
+  }
   // Spec 004 (FR-B5) — origin plugin flow callbacks resolve against.
   const flowPublicBaseUrl =
     config.FLOW_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL;
@@ -1088,6 +1136,12 @@ async function main(): Promise<void> {
     uploadedStore: uploadedPackageStore,
     builtInStore: builtInPackageStore,
     serviceRegistry,
+    // Epic #470 C7 / G4 — resolved per call, not captured: `graphPool` is
+    // published by a plugin THIS runtime activates, ~600 lines below where the
+    // runtime is built, so a store bound here would be permanently null.
+    sqlGrantStore: createServiceRegistryBackedSqlGrantStore(() =>
+      serviceRegistry.get<Pool>('graphPool'),
+    ),
     nativeToolRegistry,
     pluginRouteRegistry,
     // Epic #470 C4 / H1 — declared public-path prefixes are claimed here on
@@ -1584,6 +1638,13 @@ async function main(): Promise<void> {
     // `/api/v1/admin/*`, etc. since none of them match these regexes.
     publicPaths: publicPaths(),
   });
+  // Epic #470 C6 / G2 — hand the SAME instance to the plugin route registry.
+  // Same instance, not an equivalent one: a plugin route registered with
+  // `auth: 'session'` must agree with core, byte for byte, on what a valid
+  // operator session is — including the `publicPaths` short-circuit above.
+  // Two `createRequireAuth` calls with drifting options is exactly the class of
+  // bug `auth/requireAuth.ts` extracted `evaluateSessionToken` to prevent.
+  kernelRequireAuthRef.current = requireAuth;
 
   // ContextRetriever + FactExtractor construction moved to AFTER
   // `toolPluginRuntime.activateAllInstalled()` below — they consume
@@ -2566,6 +2627,28 @@ async function main(): Promise<void> {
     console.log('[middleware] dev-platform GitHub webhook router mounted at /api/webhooks/github (raw-body, before express.json)');
   }
 
+  // ── Epic #470 C6 / G3 — plugin raw-body slot ─────────────────────────────
+  //
+  // THE POSITION OF THIS LINE IS THE FEATURE, for the same reason C4's mount
+  // further down says so: it is the last place a plugin route can still see
+  // untouched request bytes.
+  //
+  // The two hand-rolled raw routers above (`/api/webhooks/github`,
+  // `/api/hooks/:endpointId`) exist here precisely because a router mounted
+  // after `express.json` cannot recover the bytes it needs — body-parser marks
+  // the request `_body` and every later parser, including a route-local
+  // `express.raw()`, short-circuits. This mount generalises that placement: a
+  // plugin that registered a prefix with `body: 'raw'` gets its parser run
+  // HERE, before the global JSON parser, and nowhere else. Everything else
+  // falls straight through.
+  //
+  // It never routes, never authenticates and never answers — it parses and
+  // calls next(). The plugin's router is still reached through the ordinary
+  // paths (C4's terminating public mount, or the boot-time flush behind
+  // requireAuth), so this adds no reachable surface. See pluginRawBodyMount.ts
+  // for why `express.json`'s `verify` hook is NOT the mechanism.
+  app.use(createPluginRawBodyMount({ routes: pluginRouteRegistry }));
+
   // The LLM proxy (`/api/v1/dev-runner/llm/*`, mounted later at `mountDevPlatform`)
   // owns its own route-level `express.raw()` so it can canonicalise the exact bytes
   // it validates before forwarding (see llmProxy.ts). A global body parser that runs
@@ -2907,6 +2990,53 @@ async function main(): Promise<void> {
       '[middleware] bulk-promotion endpoint skipped — service not published (Neon backend missing?)',
     );
   }
+
+  // #778 W1 — #577 P3's admin-gated skill promotion route. Deliberately
+  // deferred by #771 to keep that PR's blast radius to new files only (see
+  // its "Not in this PR" section) — this is the mount. `PgSkillOwnershipLifecycleStore`
+  // needs a real Postgres pool (raw SQL over the `skills` table's #577
+  // columns), so it is only constructed/mounted when `graphPool` is
+  // available, the same gate `bulkPromotionService` above uses. `requireAuth`
+  // gates the router; the router's own `requireSessionUserId` check replicates
+  // the `routes/bulkPromotion.ts` auth chain exactly (single-tenant byte5 —
+  // every authenticated session is an operator).
+  if (graphPool) {
+    const skillLifecycleStore = new PgSkillOwnershipLifecycleStore(graphPool);
+    app.use(
+      '/api/v1/admin/skills',
+      requireAuth,
+      createSkillPromotionRouter({ store: skillLifecycleStore, signingKey: skillManifestSigningKey }),
+    );
+    console.log(
+      '[middleware] skill-promotion endpoint ready at /api/v1/admin/skills/:skillId/promote',
+    );
+  } else {
+    console.log(
+      '[middleware] skill-promotion endpoint skipped — no graphPool (Neon backend missing?)',
+    );
+  }
+
+  // #778 W1 — #578 Phase 3's keychain-asks HTTP surface. Built and
+  // route-tested by #774 but deliberately left unmounted (same "new files
+  // only" blast-radius discipline as #577 P3) — this is the mount.
+  // `CredentialAskStore` follows the exact backend-choice precedent
+  // `credentials/credentialStoreFactory.ts` documents for the credential
+  // keychain itself: Postgres when a pool is configured, in-memory
+  // otherwise (works within one process; asks do not survive a restart).
+  // `requireAuth` gates the router, per that file's own module doc
+  // ("behind `requireAuth` like every other `/api/v1/admin/*` router").
+  const { store: credentialStoreForAsks } = createCredentialStore(graphPool, credentialMasterKey.key);
+  const credentialAskStore = graphPool
+    ? new PostgresCredentialAskStore(graphPool)
+    : new InMemoryCredentialAskStore(credentialStoreForAsks);
+  app.use(
+    '/api/v1/admin/credential-asks',
+    requireAuth,
+    createCredentialAskRouter({ store: credentialAskStore }),
+  );
+  console.log(
+    `[middleware] credential-asks endpoint ready at /api/v1/admin/credential-asks (backend=${graphPool ? 'postgres' : 'in-memory'})`,
+  );
 
   // Slice 9 — inconsistency detection workflow. Always mount (the
   // routes work without a detector — manual /detect 503s, list/get/
