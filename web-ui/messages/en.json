@@ -1034,6 +1034,14 @@
         "what": "One of the selected values is not in a shape the server accepts.",
         "next": "Clear the selection and pick the entries again from the list."
       },
+      "invalid_public_path": {
+        "what": "One of those paths is not a valid public prefix — it is too broad, percent-encoded, or reserved for core routes.",
+        "next": "Check the path against the prefixes the plugin declares, then consent again."
+      },
+      "invalid_public_paths": {
+        "what": "The consented paths did not arrive as a list of path strings.",
+        "next": "Send the complete set of paths you consent to, as a list of strings."
+      },
       "invalid_secrets_body": {
         "what": "The credential change was sent in a shape the server rejected.",
         "next": "Reload the page and enter the credentials again."
@@ -1094,6 +1102,14 @@
       "options_unavailable": {
         "what": "This core cannot fetch setup options from a running plugin.",
         "next": "Enter the value by hand."
+      },
+      "public_path_not_declared": {
+        "what": "One of those paths is not something this plugin asks for in its manifest, and consent can never reach further than the request.",
+        "next": "Consent only to the paths the plugin declares, or install a version that declares the one you want."
+      },
+      "public_paths_unavailable": {
+        "what": "Public-path consent is stored in the database, and this deployment has none wired.",
+        "next": "Configure a database for the deployment, then set the consented paths again."
       },
       "setup_field_invalid": {
         "what": "One of the values does not match the format this field expects.",
@@ -3036,6 +3052,9 @@
         "networkOutbound": "Network · Outbound",
         "flagRuntimeSecrets": "Writes its own credentials at runtime",
         "flagCredentialFlows": "Runs credential flows on its own routes",
+        "publicPathsTitle": "Public (unauthenticated) paths",
+        "publicPathsBody": "This plugin asks to answer the URL prefixes below without an operator session. Anyone who can reach this deployment can reach them, and the plugin alone is responsible for authenticating those requests.",
+        "publicPathsNotGranted": "Declaring is not granting: each prefix stays behind the session gate until you consent to it, and consent is withdrawn automatically when the plugin is deactivated.",
         "none": "No permissions declared.",
         "runtimeCredentials": "Runtime credentials"
       },

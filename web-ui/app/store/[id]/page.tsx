@@ -600,7 +600,15 @@ async function PermissionsBlock({
     });
   }
 
-  if (active.length === 0 && flags.length === 0) {
+  // Epic #470 C4 / H1 — the plugin asks to serve these URL prefixes with NO
+  // operator session. Deliberately NOT a chip in the group list above: it is
+  // the single most consequential thing a plugin can request, and burying it
+  // among "memory reads" chips would be the wrong visual weight. Rendered as
+  // its own labelled block, and the copy says plainly that declaring is not
+  // granting.
+  const publicPaths = perms.public_paths ?? [];
+
+  if (active.length === 0 && flags.length === 0 && publicPaths.length === 0) {
     return (
       <p className="text-sm italic text-[color:var(--faint-ink)]">
         {t('none')}
@@ -610,6 +618,30 @@ async function PermissionsBlock({
 
   return (
     <div className="space-y-4">
+      {publicPaths.length > 0 ? (
+        <div
+          className="rounded-md border border-[color:var(--oxblood)] p-3"
+          data-testid="public-paths-consent"
+        >
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--oxblood)]">
+            <ShieldAlert className="size-3.5" aria-hidden />
+            {t('publicPathsTitle')}
+          </div>
+          <p className="mt-2 text-sm text-[color:var(--muted-ink)]">
+            {t('publicPathsBody')}
+          </p>
+          <ul className="mt-2 flex flex-wrap gap-2">
+            {publicPaths.map((path) => (
+              <Chip key={path} tone="mono">
+                {path}
+              </Chip>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs italic text-[color:var(--faint-ink)]">
+            {t('publicPathsNotGranted')}
+          </p>
+        </div>
+      ) : null}
       {flags.length > 0 ? (
         <div>
           <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--muted-ink)]">

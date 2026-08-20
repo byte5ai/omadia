@@ -5,6 +5,9 @@ import { promises as fs } from 'node:fs';
 import { createPluginContext } from '../platform/pluginContext.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
+import { PublicPathClaimError } from '../platform/publicPathGrants.js';
+import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
+import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
@@ -82,6 +85,20 @@ export interface ToolPluginRuntimeDeps {
   serviceRegistry: ServiceRegistry;
   nativeToolRegistry: NativeToolRegistry;
   pluginRouteRegistry: PluginRouteRegistry;
+  /** Epic #470 C4 / H1 — exclusive ownership of manifest-declared public path
+   *  prefixes. Optional so narrow test wiring can omit it; when absent, NO
+   *  prefix is ever claimed and every plugin route stays behind `requireAuth`
+   *  (the fail-closed direction). */
+  publicPathGrants?: PublicPathGrantRegistry;
+  /** Operator consent backing `publicPathGrants`. Optional for the same
+   *  reason, and with the same consequence: no store, no consent, no public
+   *  path. */
+  publicPathGrantStore?: PublicPathGrantStore;
+  /** The core exemption list, injected rather than imported so a declaration
+   *  is checked against the SAME array `requireAuth` runs (see the doc comment
+   *  on `auth/publicPaths.ts`). Optional; absent means "no core exemptions to
+   *  collide with", which only widens what a plugin may declare in tests. */
+  corePublicPaths?: readonly RegExp[];
   notificationRouter: NotificationRouter;
   uiRouteCatalog: UiRouteCatalog;
   jobScheduler: JobScheduler;
@@ -317,6 +334,62 @@ export class ToolPluginRuntime {
       throw err;
     }
 
+    // Epic #470 C4 / H1 — claim the manifest-declared public-path prefixes.
+    //
+    // AFTER activate(), deliberately. The rule "a plugin may only make public
+    // something it actually serves" needs the prefixes the plugin registered,
+    // and those only exist once activate() has run. Claiming earlier would mean
+    // trusting the manifest about which routers exist, which is the same
+    // mistake as trusting it about authentication.
+    //
+    // A rejected claim is a hard activation failure with the SAME rollback the
+    // catch above performs. Half-activating a plugin whose public-path
+    // declaration conflicts with another plugin's is the one outcome worse than
+    // refusing it: the operator would see a healthy plugin serving a prefix
+    // somebody else owns.
+    if (this.deps.publicPathGrants) {
+      const declared = catalogEntry.plugin.permissions_summary?.public_paths ?? [];
+      if (declared.length > 0) {
+        try {
+          const granted =
+            (await this.deps.publicPathGrantStore?.listForPlugin(agentId)) ??
+            new Set<string>();
+          this.deps.publicPathGrants.claim(agentId, declared, {
+            corePublicPaths: this.deps.corePublicPaths ?? [],
+            ownRoutePrefixes: this.deps.pluginRouteRegistry
+              .list()
+              .filter((r) => r.source === agentId && !r.disposed)
+              .map((r) => r.prefix),
+            grantedPrefixes: granted,
+          });
+          const ungranted = declared.filter((p) => !granted.has(p));
+          log(
+            `[tool-runtime] public paths for ${agentId}: ${String(granted.size)} granted, ` +
+              `${String(ungranted.length)} declared-but-awaiting-consent` +
+              (ungranted.length > 0 ? ` (${ungranted.join(', ')})` : ''),
+          );
+        } catch (err) {
+          this.deps.publicPathGrants.releaseBySource(agentId);
+          this.deps.pluginRouteRegistry.disposeBySource(agentId);
+          this.deps.uiRouteCatalog.disposeBySource(agentId);
+          this.deps.serviceRegistry.disposeBySource(agentId);
+          this.deps.jobScheduler.stopForPlugin(agentId);
+          this.deps.pluginStatusRegistry?.clear(agentId);
+          // The plugin's own close() still has to run — it may hold a socket or
+          // a timer that activate() opened. Best-effort; the claim error is
+          // what propagates.
+          await Promise.resolve(handle.close()).catch(() => undefined);
+          if (err instanceof PublicPathClaimError) {
+            throw new Error(
+              `tool-runtime: ${agentId} cannot activate — ${err.message}`,
+              { cause: err },
+            );
+          }
+          throw err;
+        }
+      }
+    }
+
     // Plugin self-extension (Theme B): if the module opted into the selfExtend
     // SDK, register its declarative templates and re-materialise every
     // operator-approved extension via the plugin's OWN `apply()`, passing the
@@ -417,6 +490,13 @@ export class ToolPluginRuntime {
     this.deps.pluginRouteRegistry.disposeBySource(agentId);
     this.deps.uiRouteCatalog.disposeBySource(agentId);
     this.deps.serviceRegistry.disposeBySource(agentId);
+    // Epic #470 C4 / H1 — release the public-path ownership in the SAME breath
+    // as the routers. These two must never drift apart: an ownership claim that
+    // outlives its routers is a granted prefix with nothing behind it, and a
+    // router disposed while the claim stands is a prefix nobody else can take.
+    // (The mount answers 404 for the window in between either way — it resolves
+    // the live router on every request, not once at claim time.)
+    this.deps.publicPathGrants?.releaseBySource(agentId);
     try {
       await withTimeout(
         entry.handle.close(),
