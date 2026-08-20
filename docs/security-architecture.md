@@ -217,12 +217,21 @@ DELETE stays legal for bounded retention. The operator verify surface
 One consequence to state explicitly: because `created_at` sits outside the
 hash and DELETE is legal, an admin who drops the trigger could backdate
 `created_at` and let the reaper delete a row early — presenting the gap as
-legal retention. The mitigation is the checkpoint timeline: a row with
-`seq ≤` a checkpoint's seq provably existed by that checkpoint's signed
-time, so **the #761 verifier MUST check every retention gap's age against
-the checkpoint timeline** (a gap younger than the retention window measured
-in checkpoint time is a finding, not retention). Recorded as a hard
-requirement on #761.
+legal retention. The mitigation shipped with #761, in the sound direction:
+a signature-valid checkpoint at seq S signed at time T proves every row
+ABOVE S was created after T, so when the youngest reaped row sits above a
+checkpoint younger than the retention window, the verifier flags
+`premature_deletion` — a laundering finding, not retention. (The naive
+inverse — "a checkpoint covering the row bounds its age" — is deliberately
+NOT used: it only upper-bounds creation time and would flag legitimately
+old rows on installs that enabled signing late.) Two structural guards
+accompany it: the retention reaper deletes chained rows only up to the
+greatest checkpointed seq, so a surviving suffix always has a signed
+anchor; and the verifier consults the recorded stream head, so a wiped or
+tail-truncated table can never report green (`empty_chain_with_history`,
+`head_beyond_rows`). Verify surface: `GET /api/v1/operator/provenance/
+verify`, signed export + zero-dependency offline verifier — see
+`docs/provenance-verification.md`.
 
 ## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
 

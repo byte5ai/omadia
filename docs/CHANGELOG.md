@@ -18,6 +18,26 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — provenance verification surface: verify API, signed export, offline verifier (#761)
+
+- **`GET /api/v1/operator/provenance/verify`** walks the stored chain,
+  recomputes every entry hash, validates checkpoint signatures against the
+  operator key, checks the retention prefix for a signed anchor, and enforces
+  the #758 laundering rule: a reaped row a checkpoint proves was younger than
+  the retention window is a `premature_deletion` finding, not retention.
+- **Signed JSONL export** (`/provenance/export`) + a **zero-dependency
+  offline verifier** (`scripts/verify-audit-export.mjs`, node:crypto only) —
+  an external auditor verifies the export with the out-of-band public key
+  WITHOUT trusting the server; a zero-entry export refuses to report green.
+  The verifier is itself covered by end-to-end tests (clean export → exit 0;
+  tampered payload → exit 1 naming the exact seq).
+- **Chain-status card** on `/operator/receipts`: posture (key, cadence,
+  anchor), on-demand verify, findings list, export download.
+- **`docs/provenance-verification.md`**: mechanism explainer, the
+  five-minute tamper demo, and the explicit proves/does-not-prove list. With
+  this, "cryptographically verifiable" is backed by code; the public wording
+  change stays a deliberate separate step per `docs/ai-act-transparency.md`.
+
 ### Added — tamper-evident receipt chain: hash chaining + signed checkpoints (#758)
 
 - **Hash chain (migration `0041`).** Every persisted receipt row now joins a
