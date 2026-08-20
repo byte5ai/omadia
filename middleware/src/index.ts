@@ -36,6 +36,7 @@ import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
 import { loadCheckpointSigner, startCheckpointWorker } from './receipts/checkpoints.js';
+import { createProvenanceRoutes } from './receipts/verifyRoutes.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
@@ -3566,6 +3567,26 @@ async function main(): Promise<void> {
         anchorConfigured: Boolean(config.AUDIT_ANCHOR_PATH),
       });
     });
+
+    // #761 — the verification surface over the chain: server-side verify
+    // (incl. the #758 premature-deletion check against the checkpoint
+    // timeline) and the signed JSONL export the zero-dependency offline
+    // verifier (scripts/verify-audit-export.mjs) validates WITHOUT trusting
+    // this server.
+    app.use(
+      '/api/v1/operator/provenance',
+      requireAuth,
+      createProvenanceRoutes(graphPool, {
+        ...(checkpointSigner
+          ? {
+              publicKeyPem: checkpointSigner.publicKeyPem,
+              publicKeyFingerprint: checkpointSigner.publicKeyFingerprint,
+            }
+          : {}),
+        retentionDays: config.RECEIPT_RETENTION_DAYS,
+      }),
+    );
+    console.log('[middleware] provenance verify/export wired at /api/v1/operator/provenance (auth-gated)');
 
     const userStore = new UserStore(graphPool);
 

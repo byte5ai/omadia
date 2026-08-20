@@ -165,11 +165,16 @@ und ist unter `/api/v1/operator/receipts` (auth-gated) sowie im Operator-UI abru
 Fehlschläge werden gezählt und protokolliert, nie still verworfen. **Seit #758 ist der
 Record hash-verkettet und checkpoint-signiert** (Migration `0041`: `entry_hash` über
 `prev_hash` verkettet, Ed25519-Checkpoints mit Schlüssel außerhalb der DB, optionaler
-externer Anker) — eine nachträgliche Änderung bricht die Kette sichtbar. Was noch fehlt,
-ist die **Verifikations-Fläche** (#761: Verify-Endpoint, signierter Export,
-Offline-Verifier, UI). Bis #761 shipped, bleibt „kryptographisch nachweisbar" öffentlich
-eine Nicht-Zusage — intern ist der Mechanismus da, aber ein Nachweis, den nur wir führen
-können, ist noch kein Nachweis.
+externer Anker) — eine nachträgliche Änderung bricht die Kette sichtbar. **Seit #761
+existiert die Verifikations-Fläche**: `GET /api/v1/operator/provenance/verify`,
+signierter JSONL-Export, ein **Offline-Verifier ohne jede Abhängigkeit** (ein Auditor
+prüft den Export mit dem out-of-band erhaltenen Public Key, ohne unserem Server zu
+vertrauen — `middleware/scripts/verify-audit-export.mjs`), und die Chain-Status-Karte
+unter `/operator/receipts`. Mechanik, Tamper-Demo und die Grenzen (Detektion statt
+Prävention; Zeitanker = Checkpoint-Kadenz; Pre-Chain-Ära) stehen in
+`docs/provenance-verification.md`. Die Aussage „kryptographisch nachweisbar" ist damit
+**durch Code gedeckt** — die Übernahme in öffentliche Texte (Marketing-Site, Sales)
+bleibt ein bewusster, eigener Schritt nach diesem Dokumentprinzip.
 
 **C2PA ist offen.** Im Code existiert keine C2PA-Implementierung. Für Bilder wäre das der
 naheliegende nächste Schritt; heute ist es keine Zusage, sondern ein offener Punkt.
