@@ -245,7 +245,7 @@ replaces the separately-served `admin-ui.css`.
 **Shipped.** The Dev Platform is gone from core. It lives in
 `byte5ai/omadia-dev-platform` and installs via the Hub (or a ZIP upload).
 
-- **~49k LOC / 213 files deleted in one PR**, because a partial delete leaves `tsc`
+- **~49k LOC / 217 files deleted in one PR**, because a partial delete leaves `tsc`
   red: the backend tree, its 58 test files, the runner shim, three sidecars, the
   compose topology, the operator SPA, the CI image matrix and its supply chain, the
   43 config keys, and the whole `index.ts` assembly block.
