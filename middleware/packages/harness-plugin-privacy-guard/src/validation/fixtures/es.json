@@ -1476,5 +1476,20 @@
   {
     "text": "¿Cómo se pueden generar facturas recurrentes automáticamente?",
     "spans": []
+  },
+  {
+    "text": "Mi NIE es X2482300W, actualízalo en el expediente.",
+    "spans": [
+      {
+        "value": "X2482300W",
+        "type": "idnum",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "El pedido 84421907 sigue pendiente de aprobación en el ERP.",
+    "spans": []
   }
 ]

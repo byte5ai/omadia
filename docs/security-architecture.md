@@ -197,6 +197,33 @@ the connection. A subscription URL is also checked at creation time
 (`assertOutboundUrlAllowed`), so an operator gets an immediate 400 rather
 than only discovering the block on the first delivery attempt.
 
+## 7b. Tamper-evident receipt chain (#758)
+
+The per-turn receipt record (`turn_receipts`, #757) is hash-chained: each
+row's `entry_hash` covers its canonical payload plus the previous row's
+hash, appends serialized through a locked stream head. Editing a row breaks
+the copy of its hash stored in the next row — the chain visibly breaks for
+every later entry. Periodic Ed25519 checkpoints sign the head with a key
+held **only** in env/secret-manager (`AUDIT_SIGNING_KEY`) — never in
+Postgres, or the DB admin the chain defends against could re-sign a
+rewritten chain — optionally anchored to an external append-only file
+(`AUDIT_ANCHOR_PATH`) for WORM storage. Threat model: **detection, not
+prevention** — wholesale destruction shows as sequence gaps and orphaned
+checkpoints; per-row timestamps are anchored by checkpoint cadence, not
+per-row. UPDATE on the table is trigger-forbidden as defence in depth;
+DELETE stays legal for bounded retention. The operator verify surface
+(endpoint, signed export, offline verifier) is #761.
+
+One consequence to state explicitly: because `created_at` sits outside the
+hash and DELETE is legal, an admin who drops the trigger could backdate
+`created_at` and let the reaper delete a row early — presenting the gap as
+legal retention. The mitigation is the checkpoint timeline: a row with
+`seq ≤` a checkpoint's seq provably existed by that checkpoint's signed
+time, so **the #761 verifier MUST check every retention gap's age against
+the checkpoint timeline** (a gap younger than the retention window measured
+in checkpoint time is a finding, not retention). Recorded as a hard
+requirement on #761.
+
 ## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
 
 Three properties of the human-approval gate are security decisions, made
@@ -428,6 +455,19 @@ entry meaningful.
 `CoreApi.handleTurnStream` dispatch as every other channel (Teams,
 Telegram, Omadia UI) — no second, parallel response path — so
 privacy-guard's prompt masking and receipt behavior apply identically.
+
+**Operator deny-lists and the miss-report queue (#760).** Operators can add
+literal terms and vetted regex patterns (`custom_terms` / `custom_patterns`
+on the privacy plugin) to the masking layer; operator regexes are vetted at
+config time (syntax + escalating pathological probes over letters, digits,
+mixed and unicode input) AND bounded at runtime — a pattern that blows its
+per-turn budget throws, which the service converts into a BLOCKED turn
+(fail-closed; no auto-disable, because skipping the pattern on later turns
+would be fail-open for exactly the values it protects). Values a detector
+missed have a human path back: `privacy_miss_reports` stores the reported
+term **as the reporter typed it** — a deliberate act on an auth-gated
+operator surface, disclosed in the intake UI, and exactly what the reviewer
+needs to build the deny-list rule.
 
 ## 10. Operator surfaces vs. dev endpoints (`/api/dev`, issue #669)
 
