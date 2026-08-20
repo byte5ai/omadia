@@ -156,3 +156,41 @@ test('store and install-wizard paths agree on required for the SAME fixture', ()
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// OM-28/OM-06 (#602) — identity.description accepts a localized map.
+// ---------------------------------------------------------------------------
+
+test('a localized description map yields the English string + the full map', () => {
+  const doc = manifest();
+  (doc['identity'] as Record<string, unknown>)['description'] = {
+    en: 'Connects things.',
+    de: 'Verbindet Dinge.',
+  };
+  const plugin = adaptManifestV1(doc);
+  assert.equal(plugin?.description, 'Connects things.');
+  assert.deepEqual(plugin?.description_localized, {
+    en: 'Connects things.',
+    de: 'Verbindet Dinge.',
+  });
+});
+
+test('a plain-string description round-trips exactly as before — no map attached', () => {
+  const doc = manifest();
+  (doc['identity'] as Record<string, unknown>)['description'] = 'Plain text.';
+  const plugin = adaptManifestV1(doc);
+  assert.equal(plugin?.description, 'Plain text.');
+  assert.equal(plugin?.description_localized, undefined);
+});
+
+test('a German-only description still resolves a display string', () => {
+  // resolveLocalized falls back past the missing `en` — the store must never
+  // show an empty description because a plugin was authored German-first.
+  const doc = manifest();
+  (doc['identity'] as Record<string, unknown>)['description'] = {
+    de: 'Nur deutsch.',
+  };
+  const plugin = adaptManifestV1(doc);
+  assert.equal(plugin?.description, 'Nur deutsch.');
+  assert.deepEqual(plugin?.description_localized, { de: 'Nur deutsch.' });
+});

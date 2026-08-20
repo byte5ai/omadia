@@ -8,6 +8,15 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.4.0
+
+- MINOR: `PluginActionStatus` gains an optional, kernel-stamped `checked_at`
+  ISO timestamp, and `ctx.status.report({ state: 'ok', title })` is now stored
+  and rendered as a positive "connection verified" badge instead of being
+  normalized to `clear()`. A BARE `{ state: 'ok' }` keeps its clear() synonym
+  semantics — no existing caller changes behaviour. (Field-test OM-16/24/33:
+  integrations can now surface "Verbunden · geprüft <Zeit>" on the store card.)
+
 ## 1.3.0 — 2026-08-20
 
 Additive. Two shapes a plugin could not express before, both found by the

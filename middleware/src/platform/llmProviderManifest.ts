@@ -127,6 +127,9 @@ function parsePolicy(raw: unknown): ProviderPolicy | undefined {
     ...(typeof rec['requires_api_key'] === 'boolean'
       ? { requiresApiKey: rec['requires_api_key'] }
       : {}),
+    ...(typeof rec['subscription_notice'] === 'boolean'
+      ? { subscriptionNotice: rec['subscription_notice'] }
+      : {}),
   };
 }
 

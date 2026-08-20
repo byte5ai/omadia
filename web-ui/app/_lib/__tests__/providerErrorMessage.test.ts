@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  classifyProviderError,
   extractProviderErrorMessage,
   humanizeProviderError,
   isProviderAuthError,
@@ -142,5 +143,35 @@ describe('isProviderAuthError', () => {
     ['empty', ''],
   ])('does NOT classify as auth: %s', (_label, raw) => {
     expect(isProviderAuthError(raw)).toBe(false);
+  });
+});
+
+
+describe('classifyProviderError', () => {
+  it.each([
+    ['429 with envelope', '429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of requests has exceeded your rate limit"}}', 'rate_limit'],
+    ['status-less rate limit envelope', '{"type":"error","error":{"type":"rate_limit_error","message":"..."}}', 'rate_limit'],
+    ['extracted rate-limit sentence', 'Number of requests has exceeded your rate limit', 'rate_limit'],
+    ['529 overloaded', '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', 'overloaded'],
+    ['bare Overloaded sentence', 'Overloaded', 'overloaded'],
+    ['auth stays auth', '401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}', 'auth'],
+    ['generic 502', 'HTTP 502', 'generic'],
+    ['app text mentioning rates innocently (hyphenated, no provider shape)', 'Die Wechselkurse werden im Rate-Limit-Report erklärt.', 'generic'],
+  ] as const)('classifies %s', (_label, raw, expected) => {
+    expect(classifyProviderError(raw)).toBe(expected);
+  });
+
+  it('a 429 quota/billing exhaustion is NOT a transient rate limit — stays generic', () => {
+    // OpenAI's insufficient_quota arrives as 429; "wait and retry" would be
+    // wrong advice. The provider's own sentence names the real next step.
+    expect(
+      classifyProviderError(
+        '429 You exceeded your current quota, please check your plan and billing details.',
+      ),
+    ).toBe('generic');
+  });
+
+  it('overloaded matches ONLY the bare provider sentence, not prose containing the word', () => {
+    expect(classifyProviderError('The system feels overloaded today')).toBe('generic');
   });
 });

@@ -1253,6 +1253,8 @@
     "errorAborted": "Aborted.",
     "errorProviderGeneric": "Something went wrong while talking to the AI provider. Please try again.",
     "errorProviderAuth": "The AI provider rejected the stored API key. Check it under Admin → LLM access with “Test key” and store a new one if needed.",
+    "errorProviderRateLimit": "The AI provider is throttling requests right now (rate limit). Wait a moment and try again — no settings need changing.",
+    "errorProviderOverloaded": "The AI provider is currently overloaded. This resolves on its own — try again in a moment.",
     "intro": {
       "kicker": "What is this chat?",
       "body": "This is the operator debug chat — a direct line to your orchestrators for testing prompts and inspecting tool calls, plans, and knowledge-graph walks as they happen. It's not the end-user experience; it's built for debugging."
@@ -2850,7 +2852,8 @@
       "modelLabel": "Model",
       "pickModel": "Select a model …",
       "avvDisclosure": "This agent runs on {provider}. Its prompt data is sent to a third-party processor. Ensure a data-processing agreement (GDPR Art. 28) is in place before using it for personal data.",
-      "euHostedNote": "{provider} is hosted in the EU. An Art. 28 GDPR processing agreement is still required, but there is no third-country transfer — unlike US-based providers."
+      "euHostedNote": "{provider} is hosted in the EU. An Art. 28 GDPR processing agreement is still required, but there is no third-country transfer — unlike US-based providers.",
+      "subscriptionNotice": "{provider} runs on a personal Claude subscription of the signed-in account. No data-processing agreement (DPA/AVV) is available on a consumer plan — do not route personal data through this agent."
     },
     "status": {
       "saving": "saving …",
@@ -3037,6 +3040,8 @@
       "sectionSelfExtension": "Self-extension",
       "sectionPermissions": "Permissions",
       "sectionCapabilities": "Capabilities",
+      "sectionForDevelopers": "For developers",
+      "sectionForDevelopersHint": "Service contracts and integration targets",
       "capabilitiesMeta": "{provides} provided · {requires} required",
       "sectionIntegrations": "Integrations",
       "categories": "Categories",

@@ -407,6 +407,8 @@ export interface PluginActionStatus {
   state: PluginActionState;
   title?: string;
   detail?: string;
+  /** Kernel-stamped ISO time of the report — see plugin-api's contract. */
+  checked_at?: string;
 }
 
 /**
@@ -450,6 +452,14 @@ export interface Plugin {
   version: string;
   latest_version: string;
   description: string;
+  /**
+   * OM-28/OM-06 (#602) — the manifest may declare `identity.description` as a
+   * localized map (`{ en, de, … }`). `description` stays the resolved English
+   * string so every existing consumer (search, older UIs, the hub) keeps
+   * working; this carries the full map so the web-ui can pick the viewer's
+   * locale. Absent when the manifest declared a plain string.
+   */
+  description_localized?: Record<string, string>;
   authors: Array<{ name: string; email?: string; url?: string }>;
   license: string;
   icon_url: string | null;

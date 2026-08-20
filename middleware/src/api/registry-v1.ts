@@ -72,6 +72,9 @@ export interface RegistryPluginEntry {
   kind: PluginKind;
   domain: string;
   description: string;
+  /** OM-28 (#602) — optional localized description map mirrored from the
+   *  manifest; `description` stays the English string. */
+  description_localized?: Record<string, string>;
   categories: string[];
   authors: Array<{ name: string; email?: string; url?: string }>;
   license: string;

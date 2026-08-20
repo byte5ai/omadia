@@ -4,10 +4,7 @@ import { useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
 
 import { applyStreamEvent, type ChatStreamEvent } from '../_lib/chatStreamEvents';
-import {
-  humanizeProviderError,
-  isProviderAuthError,
-} from '../_lib/providerErrorMessage';
+import { resolveProviderErrorMessage } from '../_lib/providerErrorMessage';
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import {
   type ClaimedRequest,
@@ -114,9 +111,7 @@ export async function runOneTurn(
       // provider failure the user can fix, so it gets its own localized copy
       // pointing at Admin → LLM access; everything else keeps the extracted
       // provider sentence (better than a generic shrug for e.g. rate limits).
-      const clean = isProviderAuthError(event.message)
-        ? t('errorProviderAuth')
-        : humanizeProviderError(event.message, t('errorProviderGeneric'));
+      const clean = resolveProviderErrorMessage(event.message, t);
       // #641 — a failed turn used to reach the user with nothing they could act
       // on: no code, no id, nothing to hand to support. The detail was logged
       // server-side, so the information existed and simply never arrived. The
@@ -221,9 +216,7 @@ export async function runOneTurn(
       store.finish(
         sessionId,
         'error',
-        isProviderAuthError(msg)
-          ? t('errorProviderAuth')
-          : humanizeProviderError(msg, t('errorProviderGeneric')),
+        resolveProviderErrorMessage(msg, t),
       );
       finalizePending(depsRef.current.sessions, sessionId, pendingMessageId);
       return;
@@ -274,9 +267,7 @@ export async function runOneTurn(
       store.finish(
         sessionId,
         'error',
-        isProviderAuthError(msg)
-          ? t('errorProviderAuth')
-          : humanizeProviderError(msg, t('errorProviderGeneric')),
+        resolveProviderErrorMessage(msg, t),
       );
     }
   } finally {

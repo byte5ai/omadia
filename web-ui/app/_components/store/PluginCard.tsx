@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { AlertTriangle, ArrowUpRight, RefreshCw, Store, Wrench } from 'lucide-react';
-import { useLocale, useTranslations } from 'next-intl';
+import { useFormatter, useLocale, useTranslations } from 'next-intl';
 
 import { pickLocalized } from '../../_lib/localized';
 import type { Plugin } from '../../_lib/storeTypes';
@@ -22,6 +22,11 @@ export function PluginCard({
 }: PluginCardProps): React.ReactElement {
   const t = useTranslations('store.card');
   const locale = useLocale();
+  const format = useFormatter();
+  // OM-28 (#602) — prefer the manifest's localized description; fall back to
+  // the plain English string every manifest has carried so far.
+  const localizedDescription =
+    pickLocalized(plugin.description_localized, locale) ?? plugin.description;
   // OM-15 (#602) — installation-effort line composed from the structured
   // `setup_profile`, so the wording stays localized (next-intl) rather than
   // baked into the manifest. Only the parts the manifest declared are shown; an
@@ -102,9 +107,9 @@ export function PluginCard({
           content (e.g. <details>) inside this card's <Link>. */}
       <p
         className="mt-4 line-clamp-3 text-[14px] leading-relaxed text-[color:var(--fg-muted)]"
-        title={plugin.description || undefined}
+        title={localizedDescription || undefined}
       >
-        {plugin.description || <em>{t('noDescription')}</em>}
+        {localizedDescription || <em>{t('noDescription')}</em>}
       </p>
 
       {/* OM-15 (#602) — setup prerequisites, shown BEFORE install so the
@@ -143,6 +148,28 @@ export function PluginCard({
           >
             <AlertTriangle className="size-3" aria-hidden />
             {plugin.action_status.title ?? t('actionRequired')}
+          </span>
+        ) : null}
+        {/* OM-16/24/33 follow-up — a POSITIVE probe verdict. Only rendered when
+            the plugin deliberately reported ok WITH a title ("Verbunden"); the
+            kernel-stamped checked_at keeps the claim tied to a moment in time
+            instead of reading as a permanent fact. */}
+        {plugin.action_status &&
+        plugin.action_status.state === 'ok' &&
+        plugin.action_status.title ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-[color:var(--success)]/12 px-2.5 py-0.5 text-[11px] font-semibold text-[color:var(--success)]"
+            title={plugin.action_status.detail ?? undefined}
+          >
+            {plugin.action_status.title}
+            {plugin.action_status.checked_at ? (
+              <span className="font-normal opacity-80">
+                {' · '}
+                {format.dateTime(new Date(plugin.action_status.checked_at), {
+                  timeStyle: 'short',
+                })}
+              </span>
+            ) : null}
           </span>
         ) : null}
         {/* Origin marker — present only on remote-registry (Hub) entries that

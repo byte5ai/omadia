@@ -139,6 +139,7 @@ interface ProvidersResponse {
     verifyErrorCode?: string;
     requiresAvvDisclosure?: boolean;
     euHosted?: boolean;
+    subscriptionNotice?: boolean;
     models: Array<{ id: string; modelId: string; class: string }>;
   }>;
   assignments: Array<{
@@ -204,6 +205,11 @@ describe('admin providers route — GET /', () => {
     // vanished exactly on the stock configuration.
     assert.equal(anthropic.requiresAvvDisclosure, true);
     assert.equal(openai.requiresAvvDisclosure, true);
+    // API providers carry no subscription caveat; the claude-cli descriptor
+    // does (personal consumer plan ⇒ no AVV/DPA possible at all) — asserted in
+    // the same catalog-driven way as the flags above.
+    assert.equal(anthropic.subscriptionNotice, false);
+    assert.equal(openai.subscriptionNotice, false);
     assert.equal(mistral.requiresAvvDisclosure, true);
     assert.equal(mistral.euHosted, true);
     assert.equal(anthropic.euHosted, false);
