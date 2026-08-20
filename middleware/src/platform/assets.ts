@@ -118,6 +118,14 @@ export const ASSETS = {
       'COPY middleware/assets/entity-registry.v1.yaml ./entity-registry.v1.yaml (Dockerfile)',
     kind: 'file',
   }),
+  /** middleware/assets/plugin-ui/ — generated plugin stylesheet + fonts. */
+  pluginUi: resolveAssetBundle({
+    id: 'pluginUi',
+    envVar: 'PLUGIN_UI_ASSETS_DIR',
+    devFallback: path.join(MIDDLEWARE_ROOT, 'assets', 'plugin-ui'),
+    prodHint: 'COPY middleware/assets/plugin-ui ./plugin-ui (Dockerfile)',
+    kind: 'directory',
+  }),
   /** middleware/packages/agent-reference-maximum — Builder pattern source. */
   referencePackage: resolveAssetBundle({
     id: 'referencePackage',
@@ -178,6 +186,13 @@ export function _rebuildAssetsForTests(): void {
         'COPY middleware/assets/entity-registry.v1.yaml ./entity-registry.v1.yaml (Dockerfile)',
       kind: 'file',
     }),
+    pluginUi: resolveAssetBundle({
+      id: 'pluginUi',
+      envVar: 'PLUGIN_UI_ASSETS_DIR',
+      devFallback: path.join(MIDDLEWARE_ROOT, 'assets', 'plugin-ui'),
+      prodHint: 'COPY middleware/assets/plugin-ui ./plugin-ui (Dockerfile)',
+      kind: 'directory',
+    }),
     referencePackage: resolveAssetBundle({
       id: 'referencePackage',
       envVar: 'BUILDER_REFERENCE_PACKAGE_DIR',
@@ -193,5 +208,6 @@ export function _rebuildAssetsForTests(): void {
   };
   (ASSETS as unknown as Record<AssetBundleId, AssetBundle>).boilerplate = next.boilerplate;
   (ASSETS as unknown as Record<AssetBundleId, AssetBundle>).entityRegistry = next.entityRegistry;
+  (ASSETS as unknown as Record<AssetBundleId, AssetBundle>).pluginUi = next.pluginUi;
   (ASSETS as unknown as Record<AssetBundleId, AssetBundle>).referencePackage = next.referencePackage;
 }

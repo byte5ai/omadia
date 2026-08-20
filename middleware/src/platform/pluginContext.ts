@@ -359,7 +359,10 @@ export function createPluginContext(
   // — the active Agent slug is resolved from the turn context at call time, so
   // the same plugin invoked under two Agents writes to two disjoint trees.
   // Plugins cannot see each other's — or another orchestrator's — memory.
-  const memoryStoreService = serviceRegistry.get<MemoryStore>('memoryStore');
+  const memoryStoreService = serviceRegistry.get<MemoryStore>(
+    'memoryStore',
+    serviceCaller,
+  );
   const memory: MemoryAccessor | undefined =
     memoryStoreService && memoryDeclared(agentId, catalog)
       ? createMemoryAccessor({
@@ -818,6 +821,7 @@ export function createPluginContext(
     callerAgentId: agentId,
     permissions: extractSubAgentPermissions(agentId, catalog),
     serviceRegistry,
+    serviceCaller,
   });
 
   // OB-29-2 — KnowledgeGraphAccessor: present iff the manifest declares
@@ -827,6 +831,7 @@ export function createPluginContext(
     callerAgentId: agentId,
     entitySystems: extractEntitySystems(agentId, catalog),
     serviceRegistry,
+    serviceCaller,
   });
 
   // OB-29-3 — LlmAccessor: present iff the manifest declares
@@ -835,6 +840,7 @@ export function createPluginContext(
     callerAgentId: agentId,
     permissions: extractLlmPermissions(agentId, catalog),
     serviceRegistry,
+    serviceCaller,
     activeProvider: resolveActiveProvider(registry, agentId),
     vault,
   });
@@ -856,18 +862,24 @@ export function createPluginContext(
   // so the #462 audit log and the scan-policy dispatch guard see the plugin.
   const mcpAllowed = catalog.get(agentId)?.plugin.permissions_summary.mcp === true;
   const mcp: McpAccessor | undefined = mcpAllowed
-    ? createPluginMcpAccessor(agentId, serviceRegistry)
+    ? createPluginMcpAccessor(agentId, serviceRegistry, serviceCaller)
     : undefined;
 
   const eventsAllowed = catalog.get(agentId)?.plugin.permissions_summary.events_emit === true;
   const events: EventsAccessor | undefined = eventsAllowed
     ? {
         emit(id: string, payload: Record<string, unknown>) {
-          const router = serviceRegistry.get<ConductorEventRouterLike>('conductorEventRouter');
+          const router = serviceRegistry.get<ConductorEventRouterLike>(
+            'conductorEventRouter',
+            serviceCaller,
+          );
           if (!router) throw new ConductorUnavailableError();
           // Deny-by-default fails CLOSED: with no catalog we cannot prove the plugin declared
           // this id, so we reject rather than allow an unverified emit.
-          const eventCatalog = serviceRegistry.get<EventCatalogAllows>('eventCatalogRegistry');
+          const eventCatalog = serviceRegistry.get<EventCatalogAllows>(
+            'eventCatalogRegistry',
+            serviceCaller,
+          );
           if (!eventCatalog || !eventCatalog.allows(agentId, id)) throw new EventNotDeclaredError(agentId, id);
           return router.emit(id, payload, agentId);
         },
@@ -1058,10 +1070,16 @@ function mcpHostRowToConfig(row: McpHostServerRow): McpHostServiceConfig {
 /** Exported for direct unit testing (issue #458). */
 export function createPluginMcpAccessor(
   pluginId: string,
-  serviceRegistry: { get<T>(name: string): T | undefined },
+  serviceRegistry: {
+    get<T>(name: string, caller?: ServiceCaller): T | undefined;
+  },
+  caller: ServiceCaller = Object.freeze({
+    agentId: pluginId,
+    pluginId,
+  }),
 ): McpAccessor {
   const host = (): McpHostService => {
-    const service = serviceRegistry.get<McpHostService>('mcp');
+    const service = serviceRegistry.get<McpHostService>('mcp', caller);
     if (!service) {
       throw new Error('MCP host service unavailable — the core did not wire ctx.mcp');
     }
@@ -1164,12 +1182,13 @@ interface SubAgentAccessorOptions {
   callerAgentId: string;
   permissions: SubAgentPermissions | undefined;
   serviceRegistry: ServiceRegistry;
+  serviceCaller: ServiceCaller;
 }
 
 function createSubAgentAccessor(
   opts: SubAgentAccessorOptions,
 ): SubAgentAccessor | undefined {
-  const { callerAgentId, permissions, serviceRegistry } = opts;
+  const { callerAgentId, permissions, serviceRegistry, serviceCaller } = opts;
   if (!permissions) return undefined;
 
   // Per-instance call counter. Resets when a fresh ctx is created (which
@@ -1208,6 +1227,7 @@ function createSubAgentAccessor(
       }
       const tool = serviceRegistry.get<DomainTool>(
         `subAgent:${targetAgentId}`,
+        serviceCaller,
       );
       if (!tool) {
         throw new UnknownSubAgentError(callerAgentId, targetAgentId);
@@ -1235,12 +1255,13 @@ interface KnowledgeGraphAccessorOptions {
   callerAgentId: string;
   entitySystems: readonly string[];
   serviceRegistry: ServiceRegistry;
+  serviceCaller: ServiceCaller;
 }
 
 function createKnowledgeGraphAccessor(
   opts: KnowledgeGraphAccessorOptions,
 ): KnowledgeGraphAccessor | undefined {
-  const { callerAgentId, entitySystems, serviceRegistry } = opts;
+  const { callerAgentId, entitySystems, serviceRegistry, serviceCaller } = opts;
   if (entitySystems.length === 0) return undefined;
   // We don't pre-resolve the KG impl: doing it lazily lets the plugin
   // boot even when the kg-provider activates later (provider-ordering is
@@ -1248,7 +1269,10 @@ function createKnowledgeGraphAccessor(
   // throwing KgServiceUnavailableError if no provider is around.
   const allowed = new Set(entitySystems);
   function resolveKg(): KnowledgeGraph {
-    const kg = serviceRegistry.get<KnowledgeGraph>('knowledgeGraph');
+    const kg = serviceRegistry.get<KnowledgeGraph>(
+      'knowledgeGraph',
+      serviceCaller,
+    );
     if (!kg) throw new KgServiceUnavailableError(callerAgentId);
     return kg;
   }
@@ -1395,6 +1419,7 @@ interface LlmAccessorOptions {
   callerAgentId: string;
   permissions: LlmPermissions | undefined;
   serviceRegistry: ServiceRegistry;
+  serviceCaller: ServiceCaller;
   /** Provider that serves THIS plugin's `ctx.llm` (per-plugin pin → global →
    *  anthropic). Drives both class-ref whitelist resolution AND which provider
    *  the call is built on, so gate and execution stay in lockstep. */
@@ -1408,8 +1433,14 @@ interface LlmAccessorOptions {
 function createLlmAccessor(
   opts: LlmAccessorOptions,
 ): LlmAccessor | undefined {
-  const { callerAgentId, permissions, serviceRegistry, activeProvider, vault } =
-    opts;
+  const {
+    callerAgentId,
+    permissions,
+    serviceRegistry,
+    serviceCaller,
+    activeProvider,
+    vault,
+  } = opts;
   if (!permissions) return undefined;
 
   let callsUsed = 0;
@@ -1425,7 +1456,9 @@ function createLlmAccessor(
   let buildPromise: Promise<LlmProvider | undefined> | undefined;
   const resolveServingProvider = (): Promise<LlmProvider | undefined> => {
     if (activeProvider === 'anthropic') {
-      return Promise.resolve(serviceRegistry.get<LlmProvider>('llm'));
+      return Promise.resolve(
+        serviceRegistry.get<LlmProvider>('llm', serviceCaller),
+      );
     }
     if (buildPromise === undefined) {
       buildPromise = (async () => {

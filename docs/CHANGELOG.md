@@ -27,6 +27,32 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   namespace leaves too little room inside Postgres' 63-byte identifier limit,
   instead of relying on later DDL truncation behavior.
 
+### Fixed — service-grant gate covers legacy rows, plugin-facing callers, and per-plugin factories (#470 C2b, PR #783)
+
+- Filled the dated `ctx.services.get` legacy allowlist with the currently-real built-in and hub-plugin rows the first audit missed: some service names are hidden behind exported constants (`PROCESS_MEMORY_SERVICE_NAME`, `PLUGIN_CAPABILITIES_SERVICE`, `CHANNEL_RESOLVER_SERVICE`, …) and some channel repos resolve them through shared `@omadia/channel-sdk` helpers rather than a literal string in the plugin's own file. The boot-breaking orchestrator/orchestrator-extras gaps are now grandfathered explicitly until their manifests catch up.
+- Added `test/pluginServiceGrantCoverage.test.ts`, which derives service reads from every built-in `middleware/packages/*/manifest.yaml` plus its `src/**/*.ts` call sites and fails loud on undeclared or stale legacy rows instead of trusting a hand-maintained snapshot.
+- Threaded the plugin's `ServiceCaller` through plugin-facing accessors that resolved services outside `ctx.services.get` (`ctx.memory`, the knowledge-graph accessor, `ctx.mcp`, `ctx.subAgents`, `ctx.llm`, `ctx.events`) so `perCallerService(...)` providers see the consuming plugin instead of the kernel.
+- Made `perCallerService(...)` truthful to its docs: one implementation is now memoized per consuming plugin and per factory object, so repeat reads by the same plugin reuse the same instance while a replaced provider starts cold automatically.
+
+### Fixed — verifier: hallucinated record references no longer pass with a disclaimer (#129, PR #781)
+
+- **Behaviour change (blocking).** A qualitative answer that names a concrete
+  Odoo document (`INV/2026/0099`, `SO0123`, `RE-4711`) which does **not**
+  exist is now `blocked`, not `approved_with_disclaimer`. Root cause: the
+  LLM claim extractor typed such sentences as `qualitative` in roughly a
+  third of samples, and qualitative claims bypassed the deterministic
+  re-query entirely. `golden-eval.yml` flaked on exactly this
+  (`blocked_deterministic_id_absent`).
+- Scope is deliberately narrow: only `qualitative` claims with a
+  document-style `ref` (contains a digit) or numeric `id`; only models with
+  known reference fields (`account.move` `name|ref`, `sale.order`
+  `name|client_order_ref`, `purchase.order` `name|partner_ref`,
+  `stock.picking` `name|origin`, `account.payment`, `hr.expense.sheet`).
+  Person/company names, unknown models and reader errors stay on the judge
+  path (fail-open). Anchors already covered by a hard `id` claim in the same
+  turn are not re-queried twice.
+- Extractor prompt now asks for a separate `id` claim per record reference.
+
 ### Added — provenance verification surface: verify API, signed export, offline verifier (#761)
 
 - **`GET /api/v1/operator/provenance/verify`** walks the stored chain,

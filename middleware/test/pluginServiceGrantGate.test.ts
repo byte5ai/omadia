@@ -24,9 +24,11 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
+import { InMemoryMemoryStore } from '@omadia/memory';
 import {
   ServiceNotDeclaredError,
   perCallerService,
+  type KnowledgeGraph,
   type ServiceCaller,
 } from '@omadia/plugin-api';
 
@@ -58,8 +60,9 @@ function pluginOf(
   id: string,
   requires: string[],
   provides: string[] = [],
+  permissions: Record<string, unknown> = {},
 ): Plugin {
-  const plugin = adaptManifestV1({
+  const manifest = {
     schema_version: '1',
     identity: {
       id,
@@ -70,16 +73,36 @@ function pluginOf(
     },
     requires,
     provides,
-  });
+    permissions,
+  };
+  const plugin = adaptManifestV1(manifest);
   assert.ok(plugin, `fixture manifest for ${id} must adapt`);
+  rawManifestByPlugin.set(plugin, manifest);
   return plugin;
 }
+
+/**
+ * The raw manifest document behind each fixture plugin.
+ *
+ * `adaptManifestV1` does not carry every permission block onto the adapted
+ * `Plugin`: `memoryDeclared` reads `permissions.memory` off the catalog
+ * entry's UNPARSED `manifest` field, not off `permissions_summary`. A fixture
+ * that stored `manifest: {}` therefore silently produced `ctx.memory ===
+ * undefined` no matter what permissions it declared — the accessor under test
+ * was never built, so the test could only ever assert on nothing.
+ */
+const rawManifestByPlugin = new WeakMap<Plugin, unknown>();
 
 function catalogOf(...plugins: Plugin[]): PluginCatalog {
   const entries = new Map(
     plugins.map((plugin) => [
       plugin.id,
-      { plugin, manifest: {}, source_path: 'test', source_kind: 'manifest-v1' },
+      {
+        plugin,
+        manifest: rawManifestByPlugin.get(plugin) ?? {},
+        source_path: 'test',
+        source_kind: 'manifest-v1',
+      },
     ]),
   );
   return {
@@ -275,7 +298,37 @@ describe('services.provide — per-caller factories are kernel-attributed', () =
     );
   });
 
-  it('mints a fresh implementation per consuming plugin', () => {
+  it('reuses the same instance for repeated reads by the same caller', () => {
+    const catalog = catalogOf(
+      pluginOf('@test/provider', [], ['repoGrants@1']),
+      pluginOf('@test/a', ['repoGrants@^1']),
+    );
+    const registry = new ServiceRegistry();
+    let calls = 0;
+    makeCtx('@test/provider', catalog, registry).ctx.services.provide(
+      'repoGrants',
+      perCallerService((caller) => {
+        calls += 1;
+        return { scopedTo: caller.agentId, token: Symbol(caller.agentId) };
+      }),
+    );
+
+    const ctx = makeCtx('@test/a', catalog, registry).ctx;
+    const first = ctx.services.get<{
+      scopedTo: string;
+      token: symbol;
+    }>('repoGrants');
+    const second = ctx.services.get<{
+      scopedTo: string;
+      token: symbol;
+    }>('repoGrants');
+
+    assert.equal(calls, 1);
+    assert.equal(first, second);
+    assert.equal(first?.scopedTo, '@test/a');
+  });
+
+  it('mints a distinct implementation per consuming plugin', () => {
     const catalog = catalogOf(
       pluginOf('@test/provider', [], ['repoGrants@1']),
       pluginOf('@test/a', ['repoGrants@^1']),
@@ -297,6 +350,33 @@ describe('services.provide — per-caller factories are kernel-attributed', () =
     assert.equal(a?.scopedTo, '@test/a');
     assert.equal(b?.scopedTo, '@test/b');
     assert.notEqual(a, b);
+  });
+
+  it('treats a replaced provider as a cold cache because the factory object changed', () => {
+    const catalog = catalogOf(
+      pluginOf('@test/provider', [], ['repoGrants@1']),
+      pluginOf('@test/a', ['repoGrants@^1']),
+    );
+    const registry = new ServiceRegistry();
+    const providerCtx = makeCtx('@test/provider', catalog, registry).ctx;
+    providerCtx.services.provide(
+      'repoGrants',
+      perCallerService(() => ({ generation: 'first' as const })),
+    );
+
+    const consumerCtx = makeCtx('@test/a', catalog, registry).ctx;
+    const first = consumerCtx.services.get<{ generation: string }>('repoGrants');
+
+    providerCtx.services.replace(
+      'repoGrants',
+      perCallerService(() => ({ generation: 'second' as const })),
+    );
+    const second =
+      consumerCtx.services.get<{ generation: string }>('repoGrants');
+
+    assert.equal(first?.generation, 'first');
+    assert.equal(second?.generation, 'second');
+    assert.notEqual(first, second);
   });
 
   it('attributes core’s own direct registry reads to the kernel', () => {
@@ -330,6 +410,62 @@ describe('services.provide — per-caller factories are kernel-attributed', () =
       'a plain function registration must be returned as-is, never mistaken for a factory',
     );
     assert.equal(got?.(), 'i am the service itself');
+  });
+});
+
+describe('plugin-facing accessors keep per-caller attribution', () => {
+  it('builds ctx.memory from the consuming plugin caller, never @omadia/core', () => {
+    const catalog = catalogOf(
+      pluginOf('@test/memory-user', [], [], {
+        memory: { reads: ['notes'] },
+      }),
+    );
+    const registry = new ServiceRegistry();
+    const seen: ServiceCaller[] = [];
+    registry.provide(
+      'memoryStore',
+      perCallerService((caller) => {
+        seen.push(caller);
+        return new InMemoryMemoryStore();
+      }),
+    );
+
+    const ctx = makeCtx('@test/memory-user', catalog, registry).ctx;
+    assert.ok(ctx.memory);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.pluginId, '@test/memory-user');
+    assert.equal(seen[0]?.agentId, '@test/memory-user');
+  });
+
+  it('resolves the knowledge-graph accessor with the consuming plugin caller', async () => {
+    const catalog = catalogOf(
+      pluginOf('@test/kg-user', [], [], {
+        graph: { entity_systems: ['notes'] },
+      }),
+    );
+    const registry = new ServiceRegistry();
+    const seen: ServiceCaller[] = [];
+    registry.provide(
+      'knowledgeGraph',
+      perCallerService((caller) => {
+        seen.push(caller);
+        return {
+          stats: async () => ({
+            nodes: 0,
+            edges: 0,
+            byNodeType: {},
+            byEdgeType: {},
+          }),
+        } as unknown as KnowledgeGraph;
+      }),
+    );
+
+    const ctx = makeCtx('@test/kg-user', catalog, registry).ctx;
+    assert.ok(ctx.knowledgeGraph);
+    await ctx.knowledgeGraph!.stats();
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.pluginId, '@test/kg-user');
+    assert.equal(seen[0]?.agentId, '@test/kg-user');
   });
 });
 

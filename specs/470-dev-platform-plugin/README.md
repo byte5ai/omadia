@@ -19,7 +19,8 @@ it at all.
 | **`implementation.md`** | *In what order, and what did the detailed design change?* Six design passes synthesised: the five corrected decisions, six verified live bugs, the C1→C13 / P0→P6 PR sequence, and the six blocking decisions | Before starting a phase |
 | **`core-decoupling-checklist.md`** | *What is still coupled?* 276 items across 18 zones, ~49,100 LOC / ~200 files, with `file:line` and DELETE / MOVE / GENERICISE per item | While doing the removal |
 | **`acceptance.md`** | *Did every capability survive, and does it install?* 35 endpoints, 3 chat tools, 3 live background loops, 4 UI screens, CLI — each with a probe, plus FIVE capabilities marked unreachable. Plus install/uninstall/upgrade criteria | Before claiming a phase is done |
-| **`plugin-tailwind-subset.probe.css`** | *Can a distributed plugin ship a UI without shipping CSS?* Measured reference artifact (7.7 KB gzip) — not built, not shipped | When implementing P3b |
+| **`plugin-tailwind-subset.probe.css`** | *Can a distributed plugin ship a UI without shipping CSS?* Measured reference artifact (7.7 KB gzip) — not built, not shipped. **Superseded by the real build in C8**; kept as the sizing reference it was | For the sizing argument only |
+| **`plugin-ui-vocabulary.md`** | *What may a plugin UI actually use?* The shipped C8 contract: the utility vocabulary, the no-arbitrary-values rule and its enforcement, the ZIP layout, the iframe boundary | Before writing or reviewing any plugin UI |
 | **`decoupling-baseline.json`** | The committed reference count the CI ratchet enforces | Never by hand — use `--update` |
 
 ---
@@ -63,6 +64,28 @@ it at all.
   an unbounded `pg_advisory_lock` inside a 10s `activate()` budget, and a retry that never
   read `pg_advisory_unlock`'s return value.
 
+### Phase A — C1 shipped
+
+- **Golden `.d.ts` snapshot for `@omadia/plugin-api`.** The contract is now machine-checked:
+  `packages/plugin-api/api-snapshot/plugin-api.d.ts.snap` holds every emitted declaration
+  (comments stripped, whitespace normalized, files in sorted path order), and
+  `packages/plugin-api/test/apiSnapshot.test.ts` fails the middleware suite on any drift. The
+  package stays `private: true` — nothing is published (D1 stands).
+
+  Regenerating is deliberate, and a regeneration is not the whole job:
+
+  ```bash
+  npm run api:check  -w packages/plugin-api   # what CI runs
+  npm run api:update -w packages/plugin-api   # accept the new surface
+  ```
+
+  **The snapshot and the version move together.** A removed or renamed symbol, an added
+  parameter, a narrowed type, or an optional field made required is a **MAJOR** bump; an added
+  symbol, a widened type, or a required field made optional is a **MINOR** one. After the split
+  that version number is the only signal an out-of-repo plugin gets about whether its pinned
+  contract still holds, so a snapshot updated without a bump is the same silent break C1 exists
+  to stop. Full table in `middleware/packages/plugin-api/README.md`.
+
 ### C7 / G4 — plugin-owned SQL schema (this PR, stacked on C2b #783)
 
 - **`permissions.sql` is now a declaration the operator can see and refuse.** Manifest shape
@@ -88,6 +111,49 @@ it at all.
 - **Ratchet held at 3300** — no raise. The one line that moved it (+1, `middleware/src`) was a
   new comment naming the retired permission key, and it was reworded rather than excused.
 
+### C8 — the abandonment checkpoint (G7 / P3b)
+
+**Shipped.** The plugin UI mechanism, end to end. Everything before this point was
+core capability work; this is the piece the whole extraction was blocked on, and it is
+where the epic can honestly stop with a net-positive result.
+
+- **Token bridge extracted.** The `@theme inline` block left `globals.css` for
+  `web-ui/app/_lib/tailwind-bridge.css`; the shell imports it, the generated plugin
+  stylesheet imports it, and the drift the C8 work exists to end is now structurally
+  impossible rather than asked for in a comment.
+- **Plugin stylesheet generated, not hand-written.**
+  `web-ui/scripts/build-plugin-ui-css.mjs` compiles a finite Tailwind v4 vocabulary
+  (`@import 'tailwindcss' source(none)` + `@source inline(...)`) from the same Lume
+  tokens the shell uses, into the committed
+  `middleware/assets/plugin-ui/plugin-ui.css`. CI regenerates and diffs it inside the
+  existing web-ui job. Vocabulary documented in `plugin-ui-vocabulary.md`.
+- **`admin-ui.css` retired as source.** `src/admin-ui/harness-admin-css.ts` — 345
+  hand-maintained lines whose own header asked the next maintainer to keep two
+  palettes "roughly in sync" — is deleted. `/api/_harness/admin-ui.css` is now an
+  alias for the generated sheet and still carries the `.harness-*` helpers, so no
+  shipped plugin admin UI is restyled by the upgrade.
+- **Static serving for SPA bundles.** A plugin ships `ui/` (multi-file, hashed
+  assets) and core serves it at `/p/<pluginId>/ui/…` — traversal-checked (lexical +
+  realpath, root realpath'd too), extension-allowlisted, no directory listing,
+  immutable caching for hashed files, CSP on the document. `.woff2` was added to the
+  ZIP allowlist **scoped to `ui/`**. `.css` was NOT added and must not be — that
+  absence is the enforcement.
+- **Host page.** `/plugin-ui/<pluginId>` in web-ui embeds the bundle in a sandboxed
+  iframe and passes `?theme=&palette=&locale=`, closing both §2.3 regressions
+  (`next/font` and `data-theme` do not cross an iframe). Nav entries come from the
+  existing `ctx.uiRoutes.registerNav`.
+- **Ingest check.** Arbitrary Tailwind values in `ui/**/*.js` are rejected at package
+  ingest with file, line and token. Its false-positive and false-negative limits are
+  documented rather than implied.
+- **Proved, not asserted.** `middleware/test/fixtures/plugin-ui-proof/` is a throwaway
+  SPA driven through the real ingest path and the real routers, including the two
+  negative cases: a `.css` inside `ui/` is rejected at extraction, an arbitrary value
+  is rejected at ingest.
+
+Artifact: 69.5 KB raw / **11.8 KB gzip** / 9.0 KB brotli. The measured probe was 7.7 KB
+gzip against a narrower vocabulary and without the baseline + `.harness-*` layer that
+replaces the separately-served `admin-ui.css`.
+
 ### Still held back
 
 - **DynamicAgentRuntime rollback** — two attempts rejected. The current one does not cover
@@ -102,9 +168,10 @@ Two are genuinely blocking and belong to the maintainer, not the implementer:
    renders a core-compiled React card. An iframe per tool call is not acceptable. Either a
    declarative card schema, or an accepted degradation to a plain `ToolRow` for
    out-of-repo plugins. This is the one place "no hardcoding" and "no downgrade" conflict.
-2. **G7 fallback.** If fixing the plugin asset pipeline proves too costly, option E is an
-   npm-published UI package that web-ui optionally installs — which weakens "no hardcoding"
-   to "no source in core". Worth deciding deliberately rather than drifting into.
+2. ~~**G7 fallback.**~~ **Resolved by C8.** Option B is built and proved: a plugin ships a
+   compiled SPA, core serves it and the stylesheet it links. Option E (an npm-published UI
+   package web-ui optionally installs) is no longer needed and should not be revived — it
+   only ever weakened "no hardcoding" to "no source in core".
 
 Then P3's extension points (H1 public paths + prefix ownership, H2 conductor step-kind
 registry, G2/G3/G4), which everything else waits on.

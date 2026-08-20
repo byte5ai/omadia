@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Plugin UI proof</title>
+    <!--
+      The plugin ships NO stylesheet. `.css` is absent from the package
+      allowlist, and that absence is the enforcement: this link is the only
+      styling channel a distributed plugin has. Core generates the sheet from
+      web-ui's own Lume tokens, so this bundle follows the operator's active
+      palette and light/dark mode without knowing a single colour value.
+    -->
+    <link rel="stylesheet" href="/bot-api/_harness/plugin-ui.css" />
+    <script>
+      // An iframe is a separate document: `data-theme` and `data-palette` do
+      // not cross the boundary, and `next/font` does not either. The host page
+      // passes them as query params — mirror them onto <html> before first
+      // paint so there is no flash of the wrong appearance.
+      (function () {
+        var p = new URLSearchParams(window.location.search);
+        var theme = p.get('theme');
+        var palette = p.get('palette');
+        var locale = p.get('locale');
+        if (theme === 'light' || theme === 'dark') {
+          document.documentElement.setAttribute('data-theme', theme);
+        }
+        if (palette && /^[a-z]+$/.test(palette)) {
+          document.documentElement.setAttribute('data-palette', palette);
+        }
+        if (locale && /^[a-z]{2}$/.test(locale)) {
+          document.documentElement.setAttribute('lang', locale);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root" class="p-6"></div>
+    <script type="module" src="./assets/app-7c1f4b2e.js"></script>
+  </body>
+</html>

@@ -33,7 +33,7 @@
  * -------------------------
  * A call-site audit across this repo's built-in plugin packages and all ten
  * sibling plugin repos (`~/sources/omadia-*`) found that today's `requires:`
- * lists are far from complete — 27 (plugin, capability) pairs are consumed
+ * lists are far from complete — 63 (plugin, capability) pairs are consumed
  * without being declared. Turning the gate fail-closed in one step would break
  * every one of them, including shipped Hub plugins this PR cannot edit.
  *
@@ -49,6 +49,13 @@
  * Capability name and service key disagree, so no `requires:` entry could
  * grant it. That mismatch has to be fixed on one side or the other before the
  * corresponding allowlist rows can be dropped.
+ *
+ * The first audit missed some rows for two concrete reasons: several service
+ * names are hidden behind exported constants (`NUDGE_STATE_SERVICE_NAME`,
+ * `PROCESS_MEMORY_SERVICE_NAME`, `PLUGIN_CAPABILITIES_SERVICE`, …) instead of
+ * literal strings, and some channel plugins resolve capabilities through
+ * shared `@omadia/channel-sdk` helpers rather than a literal
+ * `ctx.services.get('...')` inside the plugin's own source file.
  *
  * RETIRING IT
  * -----------
@@ -87,19 +94,37 @@ export const LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20: Readonly<
   '@omadia/knowledge-graph-inmemory': Object.freeze(['turnContext']),
   '@omadia/knowledge-graph-neon': Object.freeze(['turnContext']),
   '@omadia/diagrams': Object.freeze(['memoryStore']),
+  '@omadia/ui-orchestrator': Object.freeze([
+    'agentToolInvoker',
+    'canvasOutputRegistry',
+    'deterministicActionRegistry',
+  ]),
   '@omadia/plugin-plan-runner': Object.freeze([
     'knowledgeGraph',
     'processMemory',
     'turnHookRegistry',
   ]),
-  '@omadia/orchestrator-extras': Object.freeze(['agentPriorities', 'graphPool']),
+  '@omadia/orchestrator-extras': Object.freeze([
+    'agentPriorities',
+    'graphPool',
+    'processMemory',
+  ]),
   '@omadia/ui-channel': Object.freeze(['graphTenantId']),
   '@omadia/orchestrator': Object.freeze([
     'attachmentBindings',
     'audienceGrants',
     'graphPool',
+    'installedPluginConfigReader',
+    'installedPluginToolsReadyReader',
+    'llmProviderCatalog',
+    'microsoft365.graph',
+    'nativeToolRegistry',
     'nudgeProviders',
+    'nudgeStateStore',
+    'palaiaExcerpt',
+    'pluginCapabilities',
     'privacyRedact',
+    'processMemory',
     'responseGuard',
     'sessionBriefing',
     'tigrisStore',
@@ -107,17 +132,39 @@ export const LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20: Readonly<
     'turnReceiptStore',
   ]),
   // -- standalone plugin repos (shipped via hub.omadia.ai) -----------------
+  '@omadia/channel-discord': Object.freeze([
+    'channelResolver',
+    'chatAgent',
+  ]),
+  '@omadia/channel-slack': Object.freeze([
+    'channelResolver',
+    'chatAgent',
+  ]),
   '@omadia/channel-teams': Object.freeze([
     'anthropicClient',
+    'channelDirectoryRegistry',
+    'channelResolver',
+    'conductorAwaitResolver',
     'embeddingClient',
     'graphPool',
     'graphTenantId',
     'microsoft365.graph',
+    'routinesIntegration',
     'tigrisStore',
     'topicDetector',
     'turnContext',
+    'uiRouteCatalog',
   ]),
-  '@omadia/channel-telegram': Object.freeze(['memoryStore', 'turnContext']),
+  '@omadia/channel-telegram': Object.freeze([
+    'channelResolver',
+    'memoryStore',
+    'turnContext',
+  ]),
+  '@omadia/channel-whatsapp': Object.freeze([
+    'channelResolver',
+    'chatAgent',
+  ]),
+  '@omadia/integration-odoo': Object.freeze(['entityRefBus']),
   '@omadia/agent-odoo-hr': Object.freeze([
     'odoo.agentToolkit.hr',
     'odoo.client',

@@ -4951,5 +4951,12 @@
       "heading": "Build",
       "version": "Web UI version {version}"
     }
+  },
+  "pluginUi": {
+    "metaTitle": "{pluginId} — Plugin UI",
+    "title": "{pluginId}",
+    "subtitle": "This screen is supplied by the plugin and runs in a sandboxed frame.",
+    "frameTitle": "User interface of the plugin {pluginId}",
+    "loading": "Loading the plugin interface…"
   }
 }
