@@ -66,6 +66,9 @@ async function makeHarness(opts: HarnessOpts = {}): Promise<Harness> {
       manifest: { setup: { fields } },
       source_path: '<test>',
       source_kind: 'manifest-v1',
+      // #794 — test fixtures are unprivileged: only the built-in package
+      // store may assert 'bundled'.
+      origin: 'installed',
     };
     catalog = {
       get: (id: string): PluginCatalogEntry | undefined =>

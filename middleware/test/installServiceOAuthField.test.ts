@@ -66,6 +66,9 @@ function makeDeps() {
     manifest: MANIFEST,
     source_path: '<test>/manifest.yaml',
     source_kind: 'manifest-v1',
+    // #794 — test fixtures are unprivileged: only the built-in package
+    // store may assert 'bundled'.
+    origin: 'installed',
   } as unknown as PluginCatalogEntry;
   const catalog = {
     get: (id: string) => (id === plugin.id ? entry : undefined),
