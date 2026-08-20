@@ -9,7 +9,7 @@
  * operator saw a green plugin serving nothing, and the only trace was one line
  * of stderr.
  *
- * Found by installing the first extracted plugin: the registry answered
+ * Found by installing the plugin extracted in epic #470: the registry answered
  * `{"status":"active"}` while every one of its routes 404'd.
  *
  * The boot path has always done this correctly (`toolPluginRuntime.ts` calls
@@ -75,8 +75,11 @@ async function install(service: InstallService, pluginId: string) {
 
 void describe('install reports activation truthfully (#470 P5)', () => {
   void it('marks the entry errored when the onInstalled hook throws', async () => {
-    const boom =
-      "NativeToolRegistry: duplicate native-tool name 'job_start'";
+    // The simulated message mirrors the real incident's shape; the tool name is
+    // neutralized so this file does not re-couple core to the extracted
+    // plugin's vocabulary (the #470 ratchet counts references, comments and
+    // strings included — this checker guards the direction of travel).
+    const boom = "NativeToolRegistry: duplicate native-tool name 'acme_job_start'";
     const { service, registry, pluginId } = makeService(async () => {
       throw new Error(boom);
     });
