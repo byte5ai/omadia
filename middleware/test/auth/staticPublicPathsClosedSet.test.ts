@@ -177,8 +177,18 @@ describe('publicPaths — a path off the closed set 401s before routing (#470 C1
         });
       });
     } catch (err) {
-      // Some sandboxes refuse loopback listeners; self-skip rather than fail.
+      // Some sandboxes refuse loopback listeners. Locally we self-skip so the
+      // rest of the file still runs, but in CI that would silently delete the
+      // entire 401 half of this closed-set guard while the job stayed green.
       if (err instanceof Error && 'code' in err && err.code === 'EPERM') {
+        if (process.env.CI) {
+          throw new Error(
+            'CI must allow a loopback listener for staticPublicPathsClosedSet.test.ts. ' +
+              'Without bind(127.0.0.1:0) the five unauthenticated 401 assertions ' +
+              'would be skipped, which would hide a regression in the closed public-path set.',
+            { cause: err },
+          );
+        }
         sandboxDeniedListen = true;
         return;
       }
