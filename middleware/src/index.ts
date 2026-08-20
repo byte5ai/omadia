@@ -3432,6 +3432,18 @@ async function main(): Promise<void> {
       // Issue #437 — inbound endpoint secrets + outbound subscription signing secrets
       // live in the same per-agent-scoped vault as every other subsystem's credentials.
       vault: secretVault,
+      // #759 — baton changes land in the admin audit trail. Closure, not the
+      // instance: `adminAudit` is constructed further down this block, and the
+      // route handler only dereferences it at request time.
+      auditRoleChange: async (entry) => {
+        await adminAudit?.record({
+          actor: { id: entry.actor },
+          action: 'conductor.role_holders_change',
+          target: `conductor-role:${entry.roleKey}`,
+          before: { action: entry.action, holderId: entry.holderId },
+          after: { holders: entry.holdersAfter },
+        });
+      },
       webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
       webhookInboundMaxPerMinute: config.CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE,
       // Review finding — the operator UI must display an inbound endpoint URL it can

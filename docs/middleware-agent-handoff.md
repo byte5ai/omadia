@@ -1103,6 +1103,28 @@ Emission-Asserts in `test/cliBridge/loopbackMcpServer.test.ts` und
 
 ---
 
+### Conductor-Cancel + Approval-Härtung (#759)
+
+Neu: **`POST /api/v1/operator/conductors/:slug/runs/:runId/cancel`** — `waiting`
+endet sofort (Awaits → `'cancelled'`, synthetischer Step mit `operator_cancel`-
+Actor), `running` wird geflaggt und stoppt an der nächsten Schrittgrenze
+(`runStore.isCancelRequested`-Check am Loop-Kopf von `driveFrom`), terminal ⇒
+409 `conductor.run_already_ended`. Schema: `conductor/migrations/0008_run_cancel.sql`.
+Per-Step-Flag `human.strictApproval` (nur explizites `{approved:true}` führt
+weiter; Designer-Checkbox). Validator liefert jetzt non-blocking `warnings`
+(`timeout_equals_approval`, `approval_fail_open`) — im 201-Response von
+`POST /` und amber im Designer. Rollen-Baton-Änderungen landen im
+`admin_audit` (`conductor.role_holders_change`), verdrahtet über
+`wireConductor.auditRoleChange`. Tests: `test/conductorCancelAndStrictApproval.test.ts`.
+Known limitations: (a) im engen Expire-vs-Cancel-Race kann `notifyRunEnded`
+**zweimal** feuern (Run-Ended-Webhooks sind at-least-once — Subscriber müssen
+das tolerieren) und ein konkurrierender Writer kann auf `UNIQUE(run_id, seq)`
+kollidieren (ein 500 beim Responder, Zustand bleibt korrekt); (b) verliert ein
+`resolveAwait` das Lease an einen konkurrierenden Cancel, antwortet die
+Respond-Route 500 statt 409 — Ergebnis korrekt (Run cancelled), Oberfläche
+hässlich. Die Cancel-Flag-Spalten werden absichtlich NIE gelöscht — sie sind
+der tragende Backstop aller Cancel-Races.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert

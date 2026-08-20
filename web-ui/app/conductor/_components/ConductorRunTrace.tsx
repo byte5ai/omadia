@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
+  cancelConductorRun,
   getConductorRun,
   listConductorRuns,
   type ConductorRun,
@@ -20,6 +21,8 @@ const STATUS_TONE: Record<string, string> = {
   running: 'var(--accent,#3b82f6)',
   waiting: 'var(--warning,#f5a623)',
   failed: 'var(--danger,#e5484d)',
+  // #759 — operator-terminated: neutral, neither success nor failure.
+  cancelled: 'var(--fg-muted)',
 };
 
 /** A step's actor is free-form JSON (e.g. {kind:'agent',ref:'fallback'}); render it compactly. */
@@ -156,6 +159,27 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
     [slug],
   );
 
+  // #759 — operator cancel. 'waiting' ends immediately; 'running' shows the
+  // pending hint until the driver honours the flag at the next step boundary.
+  const [cancelling, setCancelling] = useState(false);
+  const cancelRun = useCallback(
+    async (runId: string) => {
+      if (!confirm(t('cancelRunConfirm'))) return;
+      setCancelling(true);
+      setError(null);
+      try {
+        await cancelConductorRun(slug, runId);
+        setSelected(await getConductorRun(slug, runId));
+        await reload();
+      } catch (err) {
+        setError(err instanceof ApiError ? t('cancelRunFailed') : String(err));
+      } finally {
+        setCancelling(false);
+      }
+    },
+    [slug, t, reload],
+  );
+
   return (
     <div className={`${card} mt-4`}>
       <div className="mb-3 flex items-center justify-between">
@@ -174,9 +198,25 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
       {error && <p className="mb-3 text-[14px] text-[color:var(--danger,#e5484d)]">{error}</p>}
       {selected ? (
         <div>
-          <Button variant="ghost" onClick={() => setSelected(null)}>
-            ← {t('backToRuns')}
-          </Button>
+          <div className="flex items-center justify-between">
+            <Button variant="ghost" onClick={() => setSelected(null)}>
+              ← {t('backToRuns')}
+            </Button>
+            {(selected.run.status === 'running' || selected.run.status === 'waiting') && (
+              <Button
+                variant="danger"
+                busy={cancelling}
+                busyLabel={t('cancelRunBusy')}
+                onClick={() => void cancelRun(selected.run.id)}
+              >
+                {t('cancelRunButton')}
+              </Button>
+            )}
+          </div>
+          {(selected.run.status === 'running' || selected.run.status === 'waiting') &&
+          selected.run.cancelRequestedAt ? (
+            <p className="mt-2 text-[13px] text-[color:var(--fg-muted)]">{t('cancelPendingHint')}</p>
+          ) : null}
           <div className="mt-3">
             <ConductorRunTrace result={selected} />
           </div>

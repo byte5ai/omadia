@@ -1,7 +1,7 @@
 import type { Pool } from 'pg';
 import type { JsonObject, JsonValue } from '@omadia/conductor-core';
 
-export type RunStatus = 'running' | 'waiting' | 'completed' | 'failed';
+export type RunStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 export type TriggerKind = 'manual' | 'cron' | 'channel' | 'agent' | 'webhook' | 'workflow' | 'event';
 
 /**
@@ -27,6 +27,12 @@ export interface ConductorRun {
   isDryRun: boolean;
   startedAt: Date;
   endedAt: Date | null;
+  /** #759 — set when an operator requested a cancel; the driver honours it at
+   *  the next step boundary. DELIBERATELY never cleared: the persisted flag is
+   *  the load-bearing backstop for every cancel race (park, expire, resume) —
+   *  whoever re-drives a flagged run cancels it at the first boundary. */
+  cancelRequestedBy: string | null;
+  cancelRequestedAt: Date | null;
 }
 
 export interface ConductorRunStep {
@@ -52,6 +58,8 @@ interface RunRow {
   is_dry_run: boolean;
   started_at: Date;
   ended_at: Date | null;
+  cancel_requested_by: string | null;
+  cancel_requested_at: Date | null;
 }
 
 interface StepRow {
@@ -78,6 +86,8 @@ function toRun(r: RunRow): ConductorRun {
     isDryRun: r.is_dry_run,
     startedAt: r.started_at,
     endedAt: r.ended_at,
+    cancelRequestedBy: r.cancel_requested_by,
+    cancelRequestedAt: r.cancel_requested_at,
   };
 }
 
@@ -95,7 +105,7 @@ function toStep(r: StepRow): ConductorRunStep {
   };
 }
 
-const RUN_COLS = `id, workflow_version_id, status, current_step_id, context, trigger_kind, trigger_source, is_dry_run, started_at, ended_at`;
+const RUN_COLS = `id, workflow_version_id, status, current_step_id, context, trigger_kind, trigger_source, is_dry_run, started_at, ended_at, cancel_requested_by, cancel_requested_at`;
 const STEP_COLS = `id, run_id, step_id, seq, actor, postcondition_outcome, transition_taken, started_at, ended_at`;
 
 /** Persistence for runs + their durable per-step record (resume checkpoint + audit trace). */
@@ -189,7 +199,8 @@ export class ConductorRunStore {
           input.transitionTaken,
         ],
       );
-      const ended = input.status === 'completed' || input.status === 'failed';
+      const ended =
+        input.status === 'completed' || input.status === 'failed' || input.status === 'cancelled';
       const upd = await client.query(
         // Fence on claimed_by: if a resume worker has taken this run over, the lease no longer
         // matches and 0 rows update — we roll back (the step row too) and signal RunLeaseLostError.
@@ -247,6 +258,33 @@ export class ConductorRunStore {
       [claimerId, staleMs, safe],
     );
     return r.rows.map(toRun);
+  }
+
+  /**
+   * #759 — flag an operator cancel request. Atomic on non-terminal status:
+   * returns the updated run, or null when the run is already terminal (the
+   * caller answers 409). A 'running' run keeps driving until its driver
+   * observes the flag at the next step boundary; a 'waiting' run is
+   * finalized immediately by the executor's cancel path.
+   */
+  async requestCancel(runId: string, requestedBy: string): Promise<ConductorRun | null> {
+    const r = await this.pool.query<RunRow>(
+      `UPDATE conductor_runs
+          SET cancel_requested_by = $2, cancel_requested_at = now()
+        WHERE id = $1 AND status IN ('running', 'waiting')
+        RETURNING ${RUN_COLS}`,
+      [runId, requestedBy],
+    );
+    return r.rows[0] ? toRun(r.rows[0]) : null;
+  }
+
+  /** #759 — cheap per-step-boundary poll the driver uses to honour a cancel. */
+  async isCancelRequested(runId: string): Promise<boolean> {
+    const r = await this.pool.query<{ cancel_requested_at: Date | null }>(
+      `SELECT cancel_requested_at FROM conductor_runs WHERE id = $1`,
+      [runId],
+    );
+    return r.rows[0]?.cancel_requested_at != null;
   }
 
   async stepsForRun(runId: string): Promise<ConductorRunStep[]> {

@@ -22,7 +22,11 @@ export type AuditAction =
   // Phase 2.2 (OB-64) — profile-snapshot lifecycle
   | 'profile_snapshot.create'
   | 'profile_snapshot.mark_deploy_ready'
-  | 'profile_snapshot.rollback';
+  | 'profile_snapshot.rollback'
+  // #759 — Conductor role-holder (baton) changes: who may approve is a
+  // security decision and belongs in the trail (any operator can assign
+  // themselves — the single-role system has no finer permission today).
+  | 'conductor.role_holders_change';
 
 export interface AuditActor {
   id?: string;

@@ -337,9 +337,10 @@ without notice until `1.0.0`.
 
 Active development tracks:
 
-- **Conductor**: multi-step composition with a human sign-off path. Landing from
-  branch `005-omadia-conductor`; it graduates to a first-class feature once that
-  merges to `main`.
+- **Conductor**: shipped — a deterministic workflow engine (graph of agent /
+  action / human steps) with durable human approvals, crash-safe resume,
+  operator run cancellation, and a visual designer at `/conductor`. See
+  `specs/005-omadia-conductor/` and `docs/architecture.md`.
 - **Plugin marketplace**: discovery and signed-package distribution (post-1.0)
 - **Multi-tenant hosting**: out of scope for v1; a separate fork is planned
 - **Web-IDE for plugin development**: moves the Builder authoring loop into the
