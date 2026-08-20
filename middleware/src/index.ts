@@ -31,6 +31,9 @@ import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
 import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore } from './conductor/index.js';
+import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
+import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
+import { createReceiptRoutes } from './receipts/routes.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
@@ -3482,6 +3485,26 @@ async function main(): Promise<void> {
       log: (m) => console.log(m),
     });
     console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
+
+    // #757 — persistent per-turn privacy receipts. The store is published as
+    // a service the orchestrator resolves late-bound at turn end (same shape
+    // as `privacyRedact`); the read API mounts auth-gated next to the
+    // Conductor's operator surface; retention is enforced by an unref'd
+    // reaper (`RECEIPT_RETENTION_DAYS`). Postgres-only by construction —
+    // on the in-memory backend none of this wiring runs and receipts stay
+    // ephemeral, exactly the pre-#757 behaviour.
+    serviceRegistry.provide(
+      TURN_RECEIPT_STORE_SERVICE_NAME,
+      new PgTurnReceiptStore(graphPool),
+    );
+    app.use('/api/v1/operator/receipts', requireAuth, createReceiptRoutes(graphPool));
+    startTurnReceiptReaper(graphPool, {
+      retentionDays: config.RECEIPT_RETENTION_DAYS,
+    });
+    console.log(
+      `[middleware] turn receipts wired at /api/v1/operator/receipts (auth-gated, retention ${config.RECEIPT_RETENTION_DAYS}d)`,
+    );
+
     const userStore = new UserStore(graphPool);
 
     const bootstrapResult = await runAuthBootstrap({

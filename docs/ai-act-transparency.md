@@ -158,6 +158,15 @@ User-Cluster-Knoten existiert — der Normalfall für jeden Kanal außer dem Bro
 fehlender Trace heißt "nicht aufgezeichnet", nie "diesen Turn gab es nicht". Entschieden
 und begründet in #684; jeder Ausfall wird seitdem gezählt und protokolliert.
 
+**Seit #757 gibt es daneben einen persistierten Per-Turn-Receipt** (`turn_receipts`,
+Migration `0039`): der PII-freie Privacy-Receipt jedes abgeschlossenen Turns wird auf dem
+Postgres-Backend synchron gespeichert — ohne Graph-Sink, ohne User-Cluster-Vorbedingung —
+und ist unter `/api/v1/operator/receipts` (auth-gated) sowie im Operator-UI abrufbar.
+Fehlschläge werden gezählt und protokolliert, nie still verworfen. Der Receipt ist ein
+*Record*, aber (noch) nicht manipulationssicher: Hash-Verkettung, Signaturen und
+Verifikation sind #758/#761 — bis dahin bleibt „kryptographisch nachweisbar" eine
+Nicht-Zusage.
+
 **C2PA ist offen.** Im Code existiert keine C2PA-Implementierung. Für Bilder wäre das der
 naheliegende nächste Schritt; heute ist es keine Zusage, sondern ein offener Punkt.
 

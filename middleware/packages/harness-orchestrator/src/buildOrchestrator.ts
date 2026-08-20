@@ -33,6 +33,7 @@ import type {
   ProcessMemoryService,
   ResponseGuardService,
   SessionBriefingService,
+  TurnReceiptStore,
 } from '@omadia/plugin-api';
 import type { VerifierBundle } from '@omadia/verifier';
 import type { Pool } from 'pg';
@@ -140,6 +141,10 @@ export interface OrchestratorDeps {
   readonly responseGuard: () => ResponseGuardService | undefined;
   /** Late-bound `privacy.redact@1` lookup (see `OrchestratorOptions`). */
   readonly privacyGuard: () => PrivacyGuardService | undefined;
+  /** #757 — late-bound persistent per-turn receipt store lookup (see
+   *  `OrchestratorOptions.turnReceiptStore`). Optional: absent ⇒ receipts
+   *  stay ephemeral. */
+  readonly turnReceiptStore?: () => TurnReceiptStore | undefined;
   /**
    * Slice 2.5 — cross-plugin runtime-config lookup for the privacy bypass
    * resolver (see `OrchestratorOptions.pluginConfigGet`). Wired from the
@@ -393,6 +398,9 @@ export function buildOrchestratorForAgent(
     ...(deps.embeddingClient ? { embeddingClient: deps.embeddingClient } : {}),
     responseGuard: deps.responseGuard,
     privacyGuard: deps.privacyGuard,
+    ...(deps.turnReceiptStore
+      ? { turnReceiptStore: deps.turnReceiptStore }
+      : {}),
     ...(deps.pluginConfigGet
       ? { pluginConfigGet: deps.pluginConfigGet }
       : {}),
