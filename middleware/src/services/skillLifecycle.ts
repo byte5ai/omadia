@@ -48,6 +48,45 @@ export function isSkillOwnerScope(scope: ScopeId): scope is SkillOwnerScope {
   return scope.kind === 'personal' || scope.kind === 'group' || scope.kind === 'org';
 }
 
+// ── Automation write-guard (#577 Kernkonzept #6) ────────────────────────
+
+/**
+ * Thrown when a skill-mutating call is attempted by a machine actor. Carries
+ * the rejected `ScopeId` so a caller (route layer, log line) can report which
+ * automation origin was blocked without re-deriving it from the message.
+ */
+export class SkillAutomationWriteBlocked extends Error {
+  readonly actorScope: ScopeId;
+
+  constructor(actorScope: ScopeId) {
+    const origin = actorScope.kind === 'system' ? `:${actorScope.origin}` : '';
+    super(
+      `skill mutation blocked: actor scope is a machine origin ('${actorScope.kind}${origin}') — only a live human may modify a skill`,
+    );
+    this.name = 'SkillAutomationWriteBlocked';
+    this.actorScope = actorScope;
+  }
+}
+
+/**
+ * "Automations (crons) may not modify skills — as an enforced guard, not a
+ * convention" (#577 Kernkonzept #6). `ScopeId`'s own contract (`scopeId.ts`)
+ * is what makes this a one-line check rather than a new taxonomy: `kind:
+ * 'system'` is explicitly documented there as "no human is present in any of
+ * them" — routines, schedules and the Conductor's own automated runs. Every
+ * OTHER `ScopeId` kind — including `unscoped` — arises from an actual live
+ * turn, so `system` is the exact and only boundary this guard needs.
+ *
+ * Callers pass the ACTOR's scope (who/what is performing the write), never
+ * the skill's `ownerScope` (whose home it is) — those are unrelated axes; an
+ * org-owned skill can still be legitimately edited by a live human operator.
+ */
+export function assertHumanActor(actorScope: ScopeId): void {
+  if (actorScope.kind === 'system') {
+    throw new SkillAutomationWriteBlocked(actorScope);
+  }
+}
+
 // ── Lifecycle status ─────────────────────────────────────────────────────
 
 export const SKILL_LIFECYCLE_STATUSES = ['draft', 'reviewed', 'published', 'archived'] as const;

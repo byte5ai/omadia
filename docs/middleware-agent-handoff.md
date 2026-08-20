@@ -1174,6 +1174,18 @@ außerhalb des Hashes — bewusst, begründet in `src/receipts/chain.ts` +
 gegen die Checkpoint-Zeitachse prüfen (Backdating-Laundering-Kanal, s.
 security-architecture §7b).
 
+### Provenance-Verifikations-Fläche (#761)
+
+**`GET /api/v1/operator/provenance/verify`** (Chain-Walk + Checkpoint-
+Signaturen + Retention-Prefix inkl. `premature_deletion`-Regel aus #758) und
+**`GET /api/v1/operator/provenance/export`** (signierter JSONL-Export,
+Format `omadia-audit-export-v1`). Offline-Verifier:
+`scripts/verify-audit-export.mjs` — zero-dep, dupliziert Kanonisierung/Hash
+BEWUSST unabhängig von `chain.ts` (Änderung dort = `hash_version`-Bump +
+Nachzug hier). UI: Chain-Status-Karte auf `/operator/receipts`. Doku +
+Tamper-Demo: `docs/provenance-verification.md`. Tests:
+`test/provenanceVerify.test.ts` (inkl. Offline-Verifier via spawnSync).
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
