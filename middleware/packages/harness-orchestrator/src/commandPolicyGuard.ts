@@ -1,5 +1,6 @@
 import { decideCommand, type CommandPolicy } from '@omadia/channel-sdk';
 
+import { recordCommandPolicyOutcome } from './commandPolicyMetrics.js';
 import { turnContext } from './turnContext.js';
 
 /**
@@ -112,6 +113,11 @@ export async function guardToolCommands(name: string, input: unknown): Promise<s
   } catch (err) {
     // Opted-in deployment whose policy resolution threw: fail safe. Only ever
     // reachable for a command-carrying tool, of which there are none today.
+    // #576 P2 — count it: a run of `resolveFailed` means the GATE is broken,
+    // which reads identically to "nothing to gate" in a log grep but is the
+    // opposite condition operationally (the #748 lesson this metrics module
+    // exists to prevent recurring for this gate too).
+    recordCommandPolicyOutcome('resolve_failed');
     return commandRefusal(
       name,
       'the command policy could not be resolved',
@@ -126,9 +132,11 @@ export async function guardToolCommands(name: string, input: unknown): Promise<s
   for (const raw of commands) {
     const result = decideCommand(policy, raw);
     if (result.decision === 'deny') {
+      recordCommandPolicyOutcome('denied', result.ruleId);
       return commandRefusal(name, result.reason, `command: ${JSON.stringify(raw)}`);
     }
     if (result.decision === 'require_approval') {
+      recordCommandPolicyOutcome('require_approval', result.ruleId);
       return commandRefusal(
         name,
         `${result.reason} — this command requires human approval, which is not yet available in this build`,
@@ -142,12 +150,14 @@ export async function guardToolCommands(name: string, input: unknown): Promise<s
     // clearing a command it could not fully read. No legitimate agent command
     // nests substitutions eight deep, so this costs nothing real.
     if (result.normalized.truncated) {
+      recordCommandPolicyOutcome('truncated');
       return commandRefusal(
         name,
         'the command could not be fully normalized — substitution nesting exceeded the depth cap, so a denied command may be hidden below it and the command cannot be cleared',
         `command: ${JSON.stringify(raw)}`,
       );
     }
+    recordCommandPolicyOutcome('allowed');
   }
   return undefined;
 }
