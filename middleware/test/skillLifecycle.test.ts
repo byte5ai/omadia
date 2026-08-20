@@ -3,7 +3,9 @@ import { strict as assert } from 'node:assert';
 
 import {
   SKILL_LIFECYCLE_STATUSES,
+  SkillAutomationWriteBlocked,
   SkillManifestError,
+  assertHumanActor,
   canPublishSkill,
   canTransitionSkillLifecycle,
   canonicalSkillManifest,
@@ -237,6 +239,34 @@ describe('signSkillManifest / verifySkillManifestSignature', () => {
     assert.equal(verifySkillManifestSignature(BASE_MANIFEST, 'not-hex-!!', KEY), false);
     assert.equal(verifySkillManifestSignature(BASE_MANIFEST, 'ab', KEY), false);
     assert.equal(verifySkillManifestSignature(BASE_MANIFEST, '', KEY), false);
+  });
+});
+
+// ── Automation write-guard (#577 P3, Kernkonzept #6) ────────────────────
+
+describe('assertHumanActor', () => {
+  it('does not throw for any non-system ScopeId kind', () => {
+    assert.doesNotThrow(() => assertHumanActor({ kind: 'personal', userId: 'u1' }));
+    assert.doesNotThrow(() => assertHumanActor({ kind: 'group', groupRef: 'team-a' }));
+    assert.doesNotThrow(() => assertHumanActor({ kind: 'org', orgId: 'byte5' }));
+    assert.doesNotThrow(() => assertHumanActor({ kind: 'conversation', conversationId: 'c1' }));
+    assert.doesNotThrow(() => assertHumanActor({ kind: 'unscoped', reason: 'absent' }));
+  });
+
+  it('throws SkillAutomationWriteBlocked for every system origin', () => {
+    for (const origin of ['routine', 'schedule', 'conductor', 'conductor-builder'] as const) {
+      assert.throws(
+        () => assertHumanActor({ kind: 'system', origin, id: 'run-1' }),
+        (err: unknown) => {
+          assert.ok(err instanceof SkillAutomationWriteBlocked);
+          assert.match(err.message, /machine origin/);
+          assert.match(err.message, new RegExp(origin));
+          assert.deepEqual(err.actorScope, { kind: 'system', origin, id: 'run-1' });
+          return true;
+        },
+        origin,
+      );
+    }
   });
 });
 
