@@ -4951,5 +4951,12 @@
       "heading": "Build",
       "version": "Web-UI-Version {version}"
     }
+  },
+  "pluginUi": {
+    "metaTitle": "{pluginId} — Plugin-Oberfläche",
+    "title": "{pluginId}",
+    "subtitle": "Diese Ansicht stammt aus dem Plugin und läuft in einem abgeschotteten Frame.",
+    "frameTitle": "Oberfläche des Plugins {pluginId}",
+    "loading": "Plugin-Oberfläche wird geladen…"
   }
 }

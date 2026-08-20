@@ -95,6 +95,7 @@ import type {
   TopicClusteringService,
 } from '@omadia/plugin-api';
 import { createHarnessAdminUiRouter } from './routes/harnessAdminUi.js';
+import { createPluginUiStaticRouter } from './routes/pluginUiStatic.js';
 import { createStoreRouter } from './routes/store.js';
 import { createInstallRouter } from './routes/install.js';
 import { createAdminRegistriesRouter } from './routes/adminRegistries.js';
@@ -2673,11 +2674,34 @@ async function main(): Promise<void> {
       : `[middleware] MCP client-ID metadata document at GET ${CIMD_METADATA_PATH} answers 501 — FLOW_PUBLIC_BASE_URL unset, so CIMD is off and issuers use the manual client path`,
   );
 
-  // Harness shared assets — currently the admin-UI baseline stylesheet
-  // that plugin-bundled admin UIs `<link>` into their HTML. No auth: the
-  // CSS is static and operator-agnostic. See PLAN-admin-ui-theming.md.
-  app.use('/api/_harness', createHarnessAdminUiRouter());
-  console.log('[middleware] harness admin-ui assets ready at /api/_harness/admin-ui.css');
+  // Shared assets for plugin-authored UI: the generated design-system
+  // stylesheet (epic #470 C8) plus any `@font-face` sources. No auth — the
+  // bytes are static and operator-agnostic. `admin-ui.css` remains an alias
+  // so shipped plugin admin UIs keep resolving.
+  app.use('/api/_harness', await createHarnessAdminUiRouter());
+  console.log(
+    '[middleware] plugin UI stylesheet ready at /api/_harness/plugin-ui.css (alias: /admin-ui.css)',
+  );
+
+  // Static serving for a plugin's compiled SPA bundle, at
+  // `/p/<pluginId>/ui/...` — under the plugin's own prefix, so the nav
+  // contribution API, the `publicPaths` entry and the web-ui `/p/*` proxy all
+  // apply unchanged. Mounted BEFORE the plugin route flush so core owns the
+  // `ui/` segment; every other path under `/p` falls through to the plugin's
+  // own router. Read-only, extension-allowlisted, traversal-checked — and the
+  // allowlist has no `.css` in it, which is what keeps the Tailwind
+  // vocabulary the only styling channel a plugin has.
+  app.use(
+    '/p',
+    createPluginUiStaticRouter({
+      resolvePackageRoot: (pluginId) => {
+        const entry = pluginCatalog.get(pluginId);
+        if (!entry) return undefined;
+        return path.dirname(entry.source_path);
+      },
+    }),
+  );
+  console.log('[middleware] plugin UI bundles served at /p/<pluginId>/ui/');
 
   const agentResolver = createAgentResolver({ dynamicRuntime: dynamicAgentRuntime });
   // Phase A — Chat router resolves per-Agent via the registry. Falls

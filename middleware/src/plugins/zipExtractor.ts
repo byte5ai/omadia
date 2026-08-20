@@ -50,6 +50,24 @@ const EXTENSION_ALLOWLIST: ReadonlySet<string> = new Set([
 
 const DECL_EXTENSIONS: ReadonlySet<string> = new Set(['.ts', '.mts', '.cts']);
 
+/**
+ * Extensions accepted ONLY below a `ui/` directory (epic #470 C8).
+ *
+ * A plugin's compiled SPA bundle may carry web fonts; nothing else in a
+ * package has any business shipping a binary font, so the grant is scoped to
+ * the one place it is needed rather than widened globally.
+ *
+ * `.css` is deliberately NOT here, and must never be added — see
+ * `implementation.md` §1 row 3. Plugins link the stylesheet core generates
+ * and serves; the moment one can ship its own, "plugins inherit the design
+ * system by construction" stops being true, and the arbitrary-value ingest
+ * check becomes theatre because a plugin could simply write the rule itself.
+ */
+const UI_BUNDLE_EXTENSIONS: ReadonlySet<string> = new Set(['.woff2']);
+
+/** Matches `ui/...` at the root or below a single wrapper directory. */
+const UI_BUNDLE_PATH = /(?:^|\/)ui\//;
+
 export interface ExtractLimits {
   maxEntries: number;
   maxExtractedBytes: number;
@@ -167,9 +185,12 @@ export async function extractZipToDir(
               baseName === 'NOTICE' ||
               baseName === 'README' ||
               baseName === '.npmignore';
+            const uiBundleAllowed =
+              UI_BUNDLE_EXTENSIONS.has(ext) && UI_BUNDLE_PATH.test(relativeName);
             if (
               !EXTENSION_ALLOWLIST.has(ext) &&
               !DECL_EXTENSIONS.has(ext) &&
+              !uiBundleAllowed &&
               !isTopLevelLike
             ) {
               throw new ZipExtractionError(

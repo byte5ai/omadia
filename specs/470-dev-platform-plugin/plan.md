@@ -298,6 +298,21 @@ page) is exactly one hand-written HTML file.
 
 ### 4.3a Plugins use Tailwind — so they ship no CSS at all
 
+> **Status: SHIPPED (C8).** Built as described, with three corrections the
+> implementation forced. (1) The artifact is **11.8 KB gzip**, not 7.7 — the probe's
+> vocabulary was too narrow for a real SPA, and the shipped sheet also absorbs the
+> baseline element styling and the `.harness-*` helpers that `harness-admin-css.ts`
+> used to serve separately. (2) "Reject `[` in class attributes at package ingest" was
+> under-specified, as §2.5 already noted: ingest sees compiled Vite JS, so the check is
+> a two-pattern textual scan over `ui/**/*.js` with its false-positive and
+> false-negative limits written down (`tailwindArbitraryValueScan.ts`). (3) The font
+> problem is worse than "the plugin renders in the fallback stack": `theme.css`
+> composes `--font-sans: var(--font-geist), …`, and an undefined var invalidates the
+> whole declaration, so the plugin drops to the browser's serif default. The generated
+> sheet therefore always binds those three variables. The contract is documented in
+> `plugin-ui-vocabulary.md`.
+
+
 The `.css` gap above is real but it is the **wrong thing to fix**. web-ui is a Tailwind v4
 project; if plugin markup is required to use Tailwind utilities, a plugin never needs to
 ship a stylesheet — it links one that core serves.

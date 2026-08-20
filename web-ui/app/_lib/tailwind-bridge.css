@@ -1,0 +1,52 @@
+/* -------------------------------------------------------------------------- */
+/* Tailwind token bridge (Lume) — SHARED SOURCE, never inline a second copy.   */
+/*                                                                            */
+/* Extracted out of `globals.css` for epic #470 C8 (plan.md §4.3a): the shell  */
+/* stylesheet and the generated plugin stylesheet                             */
+/* (`middleware/assets/plugin-ui/plugin-ui.css`, built by                      */
+/* `web-ui/scripts/build-plugin-ui-css.mjs`) must map the Lume tokens onto     */
+/* Tailwind's `--color-*` / `--font-*` / `--radius-*` / `--shadow-*` namespace */
+/* from ONE file. Two copies of this block are the exact drift C8 exists to    */
+/* end: a plugin whose `bg-accent` resolved against a stale palette would be   */
+/* indistinguishable from a working one until someone re-themed the shell.    */
+/*                                                                            */
+/* `inline` keeps these referencing the runtime CSS vars in `_lib/theme.css`,  */
+/* so utilities like `bg-accent` / `text-fg-muted` follow the active palette   */
+/* and light/dark mode instead of freezing a value.                           */
+/* This is the §2 / item-4 mapping: the design-system swap stays a single-file */
+/* change at the token tier.                                                   */
+/* -------------------------------------------------------------------------- */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-soft: var(--bg-soft);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-surface: var(--surface);
+  --color-fg: var(--fg);
+  --color-fg-strong: var(--fg-strong);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-serif: var(--font-serif);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+
+  /* Elevation (§2.10): route the stock shadow-sm/md/lg utilities through the
+     Lume elevation tokens, so every existing `shadow-md` popover and
+     `shadow-lg` modal in the codebase gets elev.popover / elev.modal
+     (including the accent-glow components) without per-component edits. */
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+}

@@ -19,6 +19,10 @@ import {
   type UploadedPackage,
 } from './uploadedPackageStore.js';
 import { extractZipToDir, ZipExtractionError } from './zipExtractor.js';
+import {
+  formatArbitraryValueOffenders,
+  scanForArbitraryTailwindValues,
+} from './tailwindArbitraryValueScan.js';
 
 /**
  * Accepts an uploaded zip, validates it and registers the contained agent
@@ -234,6 +238,27 @@ export class PackageUploadService {
         return fail(
           'package.entry_unscannable',
           `lifecycle.entry '${entryRel}' liegt unter '${unscannable}' — Entry Points unter node_modules oder versteckten Verzeichnissen sind nicht erlaubt (der Code-Scan würde sie nicht erfassen).`,
+        );
+      }
+
+      // --- 8b. UI bundle: no arbitrary Tailwind values ----------------------
+      // Epic #470 C8. A plugin's `ui/` bundle styles itself exclusively from
+      // the stylesheet core generates and serves, which carries a finite,
+      // documented vocabulary. A class outside it renders unstyled and says
+      // nothing about why, so an arbitrary value is rejected here, where the
+      // answer can name the file and the line. `tailwindArbitraryValueScan.ts`
+      // documents the two patterns and their known limits.
+      const uiOffenders = scanForArbitraryTailwindValues(
+        await readUiBundleScripts(packageRoot),
+      );
+      if (uiOffenders.length > 0) {
+        return fail(
+          'package.ui_arbitrary_tailwind_value',
+          'The ui/ bundle uses Tailwind arbitrary values. Plugins may only use the ' +
+            'vocabulary core pre-generates (see plugin-ui-vocabulary.md in the ' +
+            'epic #470 spec directory); an undeclared class renders unstyled.\n' +
+            formatArbitraryValueOffenders(uiOffenders),
+          { offenders: uiOffenders },
         );
       }
 
@@ -503,6 +528,61 @@ async function resolvePackageRoot(stagingRoot: string): Promise<string | null> {
     }
   }
   return null;
+}
+
+/**
+ * Reads every `.js` / `.mjs` below the staged package's `ui/` directory for
+ * the arbitrary-value scan. Bounded on purpose: a bundle past the cap is left
+ * unscanned rather than allowed to turn ingest into an OOM. `node_modules`
+ * and dot-directories are skipped — the served bundle never reaches into them
+ * (`pluginUiStatic.ts` serves the `ui/` tree only, and the extractor rejects
+ * symlinks outright).
+ */
+const UI_SCAN_MAX_FILES = 200;
+const UI_SCAN_MAX_BYTES = 8 * 1024 * 1024;
+
+async function readUiBundleScripts(
+  packageRoot: string,
+): Promise<Array<{ path: string; content: string }>> {
+  const uiRoot = path.join(packageRoot, 'ui');
+  const out: Array<{ path: string; content: string }> = [];
+  let budget = UI_SCAN_MAX_BYTES;
+
+  const walk = async (dir: string): Promise<void> => {
+    if (out.length >= UI_SCAN_MAX_FILES || budget <= 0) return;
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (out.length >= UI_SCAN_MAX_FILES || budget <= 0) return;
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(abs);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (ext !== '.js' && ext !== '.mjs') continue;
+      let content: string;
+      try {
+        content = await fs.readFile(abs, 'utf-8');
+      } catch {
+        continue;
+      }
+      budget -= Buffer.byteLength(content);
+      out.push({
+        path: path.relative(packageRoot, abs).split(path.sep).join('/'),
+        content,
+      });
+    }
+  };
+
+  await walk(uiRoot);
+  return out;
 }
 
 async function readSubdirs(dir: string): Promise<Dirent[]> {

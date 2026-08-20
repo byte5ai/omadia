@@ -19,6 +19,7 @@
     "@omadia/orchestrator-extras": "*",
     "@omadia/plugin-api": "*",
     "@omadia/plugin-privacy-guard": "*",
+    "@omadia/publish": "*",
     "@omadia/sandbox": "*",
     "@omadia/usage-telemetry": "*",
     "@omadia/verifier": "*",

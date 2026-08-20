@@ -294,6 +294,16 @@ jobs:
       - name: Test (vitest)
         run: npm run test
 
+      - name: Plugin UI stylesheet drift check
+        # Epic #470 C8 — middleware/assets/plugin-ui/plugin-ui.css is generated
+        # from this workspace's theme tokens + tailwind bridge and committed so
+        # the runtime image needs no web-ui toolchain. Regenerate and diff here
+        # so an edit to the tokens, the bridge or the vocabulary that was not
+        # regenerated fails loudly instead of shipping a stylesheet that
+        # disagrees with the shell. Runs inside the existing web-ui job, not as
+        # a new required check.
+        run: npm run plugin-ui:css:check
+
   # ------------------------------------------------------------------
   # Schema smoke: apply every migration in the repo against pgvector.
   # Catches SQL-only regressions before they hit prod-or-OSS-demo
