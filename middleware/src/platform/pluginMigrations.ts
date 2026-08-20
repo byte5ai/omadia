@@ -175,7 +175,7 @@ export async function runPluginMigrations(
   const sources = new Map<string, { text: string; checksum: string }>();
   for (const file of files) {
     const text = await readFile(join(dir, file), 'utf8');
-    sources.set(file, { text, checksum: sha256(text) });
+    sources.set(file, { text, checksum: migrationChecksum(text) });
   }
 
   const client = await pool.connect();
@@ -208,7 +208,7 @@ export async function runPluginMigrations(
       // would reintroduce the `CREATE TABLE IF NOT EXISTS` race (42P07) the
       // core migrators had to special-case, because the check and the catalog
       // insert are separate steps.
-      await client.query(ledgerDdl(ledger));
+      await client.query(pluginLedgerDdl(ledger));
       const alreadyApplied = await readLedger(client, ledger);
 
       for (const file of files) {
@@ -261,8 +261,9 @@ export async function runPluginMigrations(
 
 /** Read the directory and return the migration files in filename order.
  *  A missing/unreadable directory is reported as the packaging failure it is,
- *  not as an empty list. */
-async function listMigrationFiles(
+ *  not as an empty list. Exported so the C11 handoff seeder hashes exactly the
+ *  set of files this runner would execute. */
+export async function listMigrationFiles(
   dir: string,
   pluginId: string,
   ledger: string,
@@ -323,7 +324,17 @@ async function readLedger(
   return new Map(result.rows.map((r) => [r.filename, r.checksum]));
 }
 
-function ledgerDdl(ledger: string): string {
+/**
+ * DDL for a plugin's migration ledger.
+ *
+ * EXPORTED because it is a CONTRACT, not an implementation detail. C11's
+ * handoff seeder writes rows this runner must later read as "already applied";
+ * if the two files each spelled the table out, a column added here would be
+ * missing there and the seeded rows would be rejected — or worse, accepted
+ * with a NULL where the runner expects a checksum. One definition, two
+ * callers.
+ */
+export function pluginLedgerDdl(ledger: string): string {
   return `
     CREATE TABLE IF NOT EXISTS ${quoteIdentifier(ledger)} (
       filename   TEXT PRIMARY KEY,
@@ -343,7 +354,7 @@ function ledgerDdl(ledger: string): string {
  * `"` doubling is retained for the same reason, even though a validated name
  * can never contain one.
  */
-function quoteIdentifier(name: string): string {
+export function quoteIdentifier(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
@@ -383,6 +394,15 @@ function asMigrationError(
   return err;
 }
 
-function sha256(text: string): string {
+/**
+ * The checksum a ledger row carries.
+ *
+ * Exported for the same reason as {@link pluginLedgerDdl}: C11 seeds rows for
+ * files it did not apply, and a seeded row whose checksum is computed
+ * differently from the runner's would trip the drift guard on the very next
+ * activation — turning a successful handoff into a hard activation failure one
+ * boot later.
+ */
+export function migrationChecksum(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }

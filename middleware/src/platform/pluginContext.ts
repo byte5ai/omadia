@@ -55,6 +55,8 @@ import {
   type ServiceCaller,
   type SqlAccessor,
   type MigrationReport,
+  type LedgerSeedReport,
+  type SeedLedgerOptions,
   SqlMigrationError,
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
@@ -109,6 +111,11 @@ import {
 } from './pluginSqlGrants.js';
 import { borrowPool } from './borrowedPool.js';
 import { runPluginMigrations } from './pluginMigrations.js';
+import {
+  CORE_MIGRATION_DONOR_LEDGER,
+  seedPluginLedgerFromDonor,
+  type MigrationWitness,
+} from './pluginMigrationHandoff.js';
 
 /**
  * The plugin-facing types (PluginContext, SecretsAccessor, ConfigAccessor,
@@ -1026,6 +1033,137 @@ function createSqlAccessor(opts: SqlAccessorOptions): SqlAccessor {
         log,
       });
     },
+
+    async seedLedger(seedOpts): Promise<LedgerSeedReport> {
+      const pool = opts.serviceRegistry.get<Pool>(
+        'graphPool',
+        opts.serviceCaller,
+      );
+      if (!pool) {
+        throw new SqlMigrationError(
+          agentId,
+          ledger,
+          "no 'graphPool' is registered - the operator granted permissions.sql but the middleware is running without a database",
+        );
+      }
+      const entries = validateSeedEntries(agentId, ledger, seedOpts);
+      return seedPluginLedgerFromDonor({
+        pool,
+        pluginId: agentId,
+        ledger,
+        dir: resolveMigrationsDir(
+          agentId,
+          ledger,
+          packageRoot,
+          seedOpts.dir ?? defaultDir,
+        ),
+        // Core's ledger, named by CORE. The plugin supplies its filenames and
+        // its witnesses - the two things only the plugin knows - and never
+        // gets to say which table those rows are read from, which is what
+        // keeps one plugin out of another's migration history.
+        donor: {
+          ledgerTable: CORE_MIGRATION_DONOR_LEDGER,
+          filenames: entries.map((e) => e.filename),
+        },
+        witnesses: Object.fromEntries(
+          entries.map((e) => [
+            e.filename,
+            makeSqlWitness(agentId, ledger, e.filename, e.witnessSql),
+          ]),
+        ),
+        dryRun: seedOpts.dryRun ?? false,
+        log,
+      });
+    },
+  };
+}
+
+/**
+ * Reject a malformed entry list before a connection is taken.
+ *
+ * `entries` crosses the plugin boundary as plain data, so none of its shape is
+ * guaranteed by the type system at runtime. Duplicates matter in particular: a
+ * filename listed twice with two different witnesses would make the outcome
+ * depend on iteration order, and `Object.fromEntries` would silently keep the
+ * last one.
+ */
+function validateSeedEntries(
+  agentId: string,
+  ledger: string,
+  seedOpts: SeedLedgerOptions,
+): readonly { filename: string; witnessSql: string }[] {
+  const entries = seedOpts.entries;
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new SqlMigrationError(
+      agentId,
+      ledger,
+      'seedLedger requires a non-empty `entries` list - a handoff that claims nothing is a caller bug, not a no-op',
+    );
+  }
+  const seen = new Set<string>();
+  return entries.map((entry) => {
+    const filename: unknown = entry?.filename;
+    const witnessSql: unknown = entry?.witnessSql;
+    if (typeof filename !== 'string' || filename.length === 0) {
+      throw new SqlMigrationError(
+        agentId,
+        ledger,
+        'every seedLedger entry needs a non-empty `filename`',
+      );
+    }
+    if (typeof witnessSql !== 'string' || witnessSql.trim().length === 0) {
+      throw new SqlMigrationError(
+        agentId,
+        ledger,
+        `seedLedger entry '${filename}' has no witnessSql - a file with no proof is never seeded, so an empty witness is a mistake rather than a way to force one`,
+      );
+    }
+    if (seen.has(filename)) {
+      throw new SqlMigrationError(
+        agentId,
+        ledger,
+        `seedLedger entry '${filename}' is listed twice - two witnesses for one file makes the outcome depend on iteration order`,
+      );
+    }
+    seen.add(filename);
+    return { filename, witnessSql };
+  });
+}
+
+/**
+ * Turn one plugin-supplied witness query into a witness function.
+ *
+ * The result must be a real boolean from a single row and a single column.
+ * Coercing a truthy value would accept `SELECT count(*) FROM ...` - which is
+ * `1` on a table that exists AND `0` on one that exists but is empty, and
+ * throws on one that does not. Every one of those readings is wrong for a
+ * witness, so the shape is enforced instead of guessed.
+ */
+function makeSqlWitness(
+  agentId: string,
+  ledger: string,
+  filename: string,
+  witnessSql: string,
+): MigrationWitness {
+  return async (client) => {
+    const result = await client.query(witnessSql);
+    const row: unknown = result.rows[0];
+    if (result.rows.length !== 1 || typeof row !== 'object' || row === null) {
+      throw new SqlMigrationError(
+        agentId,
+        ledger,
+        `witness for '${filename}' returned ${String(result.rows.length)} rows - a witness must be a single-row, single-column boolean SELECT`,
+      );
+    }
+    const values: unknown[] = Object.values(row);
+    if (values.length !== 1 || typeof values[0] !== 'boolean') {
+      throw new SqlMigrationError(
+        agentId,
+        ledger,
+        `witness for '${filename}' returned ${String(values.length)} column(s) of type ${typeof values[0]} - a witness must yield exactly one boolean`,
+      );
+    }
+    return values[0];
   };
 }
 

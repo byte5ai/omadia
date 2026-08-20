@@ -8,6 +8,44 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.3.0 — 2026-08-20
+
+Additive. A plugin that was extracted out of core can now ADOPT an existing
+installation's schema instead of re-applying it — and does so on proof rather
+than on trust (epic #470, C11 — the migration handoff). Every existing consumer
+keeps compiling: `seedLedger` is optional on `SqlAccessor`, so a plugin built
+against 1.3.0 still activates on a 1.2.0 core, where the accessor is
+`undefined` and the (idempotent) migrations simply run.
+
+### Added
+
+- **`SqlAccessor.seedLedger(opts)`** — optional. Records the plugin's own
+  migration files as applied, one file at a time, when a witness proves the
+  schema object that file creates already exists. Core supplies the donor
+  ledger; the plugin supplies its filenames and its witnesses. Never deletes a
+  donor row — those are the rollback path.
+- **`LedgerSeedEntry`** — `{ filename, witnessSql }`. The filename is the
+  plugin's own, matched to the donor ledger by STEM, so a codegen'd
+  `0022_x.js` adopts core's `0022_x.sql`.
+- **`SeedLedgerOptions`** — `{ entries, dryRun?, dir? }`. `dryRun` computes the
+  plan against the live database inside a transaction that is rolled back:
+  nothing is written, including anything a witness touched.
+- **`LedgerSeedReport`** — `{ seeded, applied, skippedNoWitness, alreadySeeded,
+  donorRecorded, ledger, donorLedger, dryRun, durationMs }`.
+  `skippedNoWitness` is the one to read: the donor says these ran, the catalog
+  says their objects are absent. On a healthy installation it is empty; a
+  non-empty list is a restore or a rollback, and the migration runner is about
+  to repair it.
+
+### Why the witness and not the donor row
+
+The naive handoff copies the donor ledger's rows and skips those files. That is
+correct on a healthy database and silently destroys one specific installation:
+rows present, tables ABSENT — a restore from an older snapshot, a version-skewed
+rollback, an operator who dropped a table during an incident. The plugin
+activates green and every request 500s, nine steps away from the cause. So the
+donor ledger is corroboration and the witness is the decision.
+
 ## 1.2.0 — 2026-08-20
 
 Additive. A plugin may now be handed a Postgres pool and own tables in the

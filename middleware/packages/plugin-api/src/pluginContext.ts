@@ -1891,6 +1891,80 @@ export interface RunMigrationsOptions {
   readonly allowChecksumDrift?: boolean;
 }
 
+// ── Migration handoff (epic #470 C11) ───────────────────────────────────────
+//
+// A plugin extracted from core inherits installations whose schema core
+// already created, recorded in a CORE ledger the plugin cannot see. Its own
+// ledger is empty, so its migration runner would re-apply every file.
+//
+// The naive fix — copy the core rows and skip those files — destroys an
+// installation in one case, silently: rows present, tables ABSENT (a restore,
+// a version-skewed rollback, an operator who dropped a table during an
+// incident). The plugin activates green and every request 500s.
+//
+// So the core ledger is corroboration, never authority. Each file carries a
+// WITNESS: one query against the live catalog that is true only if the schema
+// object that file creates is actually there. The witness decides; the core
+// row is reported so the DISAGREEMENT between the two is visible before
+// anything is written.
+
+/** One file's claim on the core ledger, and the proof that backs it. */
+export interface LedgerSeedEntry {
+  /** The plugin's OWN migration filename, exactly as it ships. Matched against
+   *  the core ledger by stem, so `0022_x.js` adopts core's `0022_x.sql`. */
+  readonly filename: string;
+  /**
+   * A single-row, single-column boolean SELECT that is true only when this
+   * file's schema object exists.
+   *
+   * SQL text rather than a callback on purpose. A callback cannot be printed,
+   * and the whole value of `dryRun` is that an operator reads the plan — WHICH
+   * query proved WHICH file — before a production handoff writes anything.
+   *
+   * It must be safe against a database where the objects are missing, which is
+   * the case it exists to detect: `to_regclass('public.t') IS NOT NULL` is
+   * safe, `'public.t'::regclass` throws. Prefer catalog lookups over casts.
+   */
+  readonly witnessSql: string;
+}
+
+/** Options for one `ctx.sql.seedLedger()` call. */
+export interface SeedLedgerOptions {
+  /** The files to consider. A file absent from this list is never seeded. */
+  readonly entries: readonly LedgerSeedEntry[];
+  /** Compute and report the plan; write nothing. Defaults to false. */
+  readonly dryRun?: boolean;
+  /** Override the manifest's migrations directory, as `runMigrations` does. */
+  readonly dir?: string;
+}
+
+/** What one `seedLedger` pass did, or — under `dryRun` — would have done. */
+export interface LedgerSeedReport {
+  /** Written into this plugin's ledger by this pass. */
+  readonly seeded: readonly string[];
+  /** Everything `runMigrations` still has to apply afterwards. Superset of
+   *  {@link LedgerSeedReport.skippedNoWitness}. */
+  readonly applied: readonly string[];
+  /** The subset that should worry you: the core ledger records these, but
+   *  their witness says the schema object is not there. Empty on a healthy
+   *  installation; non-empty means a restore or a rollback, and the migration
+   *  runner is about to repair it. */
+  readonly skippedNoWitness: readonly string[];
+  /** Already in this plugin's ledger before the pass — a re-run, or a peer
+   *  replica that got there first. */
+  readonly alreadySeeded: readonly string[];
+  /** Which requested files the core ledger actually records. Reported, not
+   *  obeyed. */
+  readonly donorRecorded: readonly string[];
+  /** This plugin's ledger table. */
+  readonly ledger: string;
+  /** The core ledger the rows were read from. Core-supplied — a plugin does
+   *  not name it and cannot choose it. */
+  readonly donorLedger: string;
+  readonly dryRun: boolean;
+  readonly durationMs: number;
+}
+
 /** Plugin-facing migration runner. See {@link PluginContext.sql}. */
 export interface SqlAccessor {
   /** The ledger table this plugin owns, as resolved from its manifest. */
@@ -1911,6 +1985,25 @@ export interface SqlAccessor {
    * continuing quietly is worse than failing loudly.
    */
   runMigrations(opts?: RunMigrationsOptions): Promise<MigrationReport>;
+  /**
+   * Adopt an existing installation's schema: record files as applied when a
+   * witness proves the schema object they create is already there.
+   *
+   * Call this BEFORE {@link SqlAccessor.runMigrations}, and guard it — the
+   * method was added in plugin-api 1.3.0 and is `undefined` on an older core,
+   * where the correct behaviour is simply to let `runMigrations` apply the
+   * (idempotent) files:
+   *
+   * ```ts
+   * await ctx.sql.seedLedger?.({ entries: HANDOFF_ENTRIES });
+   * await ctx.sql.runMigrations();
+   * ```
+   *
+   * Never deletes anything from the core ledger. Those rows are the rollback
+   * path: while core still ships the same files, removing them would make
+   * core's own migrator re-run them on the next boot.
+   */
+  seedLedger?(opts: SeedLedgerOptions): Promise<LedgerSeedReport>;
 }
 
 /**
