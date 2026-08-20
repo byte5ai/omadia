@@ -60,11 +60,12 @@ import type { PluginCatalog } from '../plugins/manifestLoader.js';
  * that, and the middleware stopped booting.
  *
  * The fix is not a wider gate — it is a ramp keyed on the right question. This
- * list covers EVERY bundled `graphPool` consumer, including the four that
- * happen to be covered by C2b's list today. That redundancy is the point: when
- * one of them finishes its C2b migration and drops off C2b's list, it must not
- * fall through into a boot failure the way memory-postgres did. The trap is
- * disarmed for the whole class, not just for the plugin that sprang it.
+ * list covers EVERY bundled `graphPool` consumer — all four of them —
+ * including the three that are ALSO covered by C2b's list today. That
+ * redundancy is the point: when one of those three finishes its C2b migration
+ * and drops off C2b's list, it must not fall through into a boot failure the
+ * way memory-postgres did. The trap is disarmed for the whole class, not just
+ * for the plugin that sprang it.
  *
  * TWO PROPERTIES, BOTH LOAD-BEARING
  * ---------------------------------
@@ -91,9 +92,10 @@ export const LEGACY_SQL_GRANTS_2026_08_20: Readonly<
   // migrator (`_memory_migrations`). The one whose absence was a hard startup
   // error — see issue #794.
   '@omadia/memory-postgres': Object.freeze(['graphPool']),
-  // The remaining bundled pool consumers. All four are on C2b's list TODAY,
-  // so they are not currently reachable through this branch; they are listed
-  // so that finishing their C2b migration cannot break boot.
+  // The remaining three bundled pool consumers. All three are on C2b's list
+  // TODAY, so they are not currently reachable through this branch; they are
+  // listed so that finishing their C2b migration cannot break boot.
+  // (@omadia/memory-postgres above is NOT on C2b's list — that is issue #794.)
   '@omadia/orchestrator': Object.freeze(['graphPool']),
   '@omadia/orchestrator-extras': Object.freeze(['graphPool']),
   '@omadia/verifier': Object.freeze(['graphPool']),
