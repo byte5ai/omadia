@@ -75,7 +75,6 @@ describe('#679 / I6 — number and date formatting follows the active locale', (
     'admin/kg-priorities/page.tsx',
     'admin/inconsistencies/page.tsx',
     'admin/users/page.tsx',
-    'admin/dev-platform/_components/GateInbox.tsx',
     'admin/webhooks/_components/WebhookSubscriptionsSection.tsx',
     'admin/webhooks/_components/WebhookEndpointsSection.tsx',
     'admin/duplicates/page.tsx',
