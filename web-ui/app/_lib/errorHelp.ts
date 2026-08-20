@@ -79,6 +79,12 @@ export const ERROR_HELP_CODES = [
   // "try another file" and "report this".
   'runtime.invalid_json_file_body',
   'runtime.invalid_multiselect',
+  // #470 C4/H1 — the public-path consent endpoint. `public_path_not_declared`
+  // is the one an operator is most likely to hit: consent is capped by what the
+  // manifest asks for, so a path the plugin never declared is refused rather
+  // than quietly granted.
+  'runtime.invalid_public_path',
+  'runtime.invalid_public_paths',
   'runtime.invalid_secrets_body',
   'runtime.json_file_bad_extract_path',
   'runtime.json_file_invalid_spec',
@@ -95,6 +101,8 @@ export const ERROR_HELP_CODES = [
   'runtime.options_provider_failed',
   'runtime.options_provider_timeout',
   'runtime.options_unavailable',
+  'runtime.public_path_not_declared',
+  'runtime.public_paths_unavailable',
   'runtime.setup_field_invalid',
   'runtime.update_failed',
   'runtime.value_not_offered',

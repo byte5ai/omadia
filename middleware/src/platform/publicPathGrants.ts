@@ -85,7 +85,10 @@ const MAX_PATH_LENGTH = 256;
  * Deliberately strict and deliberately zod: this string ends up deciding
  * whether a URL skips authentication, so every character it may contain is
  * enumerated rather than filtered. No wildcards (the match is prefix-based
- * already), no percent-encoding (`%2e%2e` is `..` after Express decodes it),
+ * already), no percent-encoding (Express does NOT decode `req.path` — an
+ * encoded declaration could therefore never match a raw request path, so
+ * banning it removes the second representation outright rather than relying on
+ * a decode that never happens),
  * no query or fragment (the match runs against `req.path`, which has neither),
  * no dot segments.
  */
