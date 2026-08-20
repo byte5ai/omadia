@@ -36,6 +36,8 @@ decision, write a new ADR and mark the old one **Superseded by …**.
 | 0006 | [In-context surfacing for background chat streams (no toasts)](0006-in-context-background-stream-surfacing.md) | Accepted | 2026-07-02 |
 | 0007 | [Client ID Metadata Documents coexist permanently with manual OAuth clients](0007-mcp-client-id-metadata-documents.md) | Accepted | 2026-07-30 |
 | 0008 | [MCP connection lifetime and pooling](0008-mcp-connection-lifetime.md) | Accepted | 2026-08-06 |
+| 0009 | [Default TTL for MCP tool-list caching](0009-default-ttl-for-mcp-tool-list-caching.md) | Accepted | 2026-08-15 |
+| 0010 | [Adopting the Lume icon + state-as-glyph specs into core](0010-lume-icon-and-state-glyph-adoption.md) | Accepted | 2026-08-17 |
 
 > These first records are written *retroactively* — they document decisions that
 > were already implemented and proven in the product. New decisions should be

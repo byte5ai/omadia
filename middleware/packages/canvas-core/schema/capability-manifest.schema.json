@@ -9,6 +9,7 @@
   "$defs": {
     "capabilityName": {
       "description": "lumens-spec.md §6 catalog",
+      "$comment": "The deferred iconGenerator@1 (canvas-protocol §12) is NOT a new catalog entry — it maps onto generateAsset with scope {kind:\"icon\"}. Decided in ADR-0010 so the name does not churn once the capability lands.",
       "enum": ["persist", "loadData", "writeData", "tiles", "fetch", "generateAsset", "clipboard", "share", "savePreset"]
     },
 
@@ -24,7 +25,7 @@
         "effect": { "$ref": "#/$defs/effectClass", "description": "agent's declared/expected class; Tier 2 re-derives and may upgrade (never downgrade)" },
         "scope": {
           "type": "object",
-          "description": "per-capability scope (spike-tunable). e.g. {namespace} for persist; {dataRef} for loadData; {endpoints:[...], shape} for fetch; {provider} for tiles; {kind} for generateAsset; {writeCapabilities} for writeData.",
+          "description": "per-capability scope (spike-tunable). e.g. {namespace} for persist; {dataRef} for loadData; {endpoints:[...], shape} for fetch; {provider} for tiles; {kind} for generateAsset (kind:\"icon\" is the home of the deferred iconGenerator@1, see ADR-0010); {writeCapabilities} for writeData.",
           "additionalProperties": true
         }
       }
