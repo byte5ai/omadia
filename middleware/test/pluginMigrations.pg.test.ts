@@ -47,7 +47,7 @@ const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   timeoutMs: 1_500,
 });
 
-/** Migration 0045, applied directly so this suite does not depend on the
+/** Migration 0047, applied directly so this suite does not depend on the
  *  multi-orchestrator migrator having run against the test database. */
 const GRANTS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS plugin_sql_grants (

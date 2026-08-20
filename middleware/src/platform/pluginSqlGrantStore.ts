@@ -3,7 +3,7 @@ import type { Pool } from 'pg';
 /**
  * Epic #470 C7 / G4 — durable operator consent for plugin-owned SQL schema.
  *
- * Backs `plugin_sql_grants` (migration 0045). Sibling of C4's
+ * Backs `plugin_sql_grants` (migration 0047). Sibling of C4's
  * `publicPathGrantStore` and it follows the same rules for the same reasons;
  * the differences below are the ones worth knowing.
  *
@@ -176,7 +176,7 @@ export class PostgresPluginSqlGrantStore implements PluginSqlGrantStore {
  * Resolving per call defers the question to activate time, by which point the
  * topological order has already brought the provider up.
  *
- * A plugin that activates BEFORE the pool provider (or before migration 0045
+ * A plugin that activates BEFORE the pool provider (or before migration 0047
  * has been applied by `runMultiOrchestratorMigrations`) reads no grant and is
  * treated as ungranted. That is the fail-closed direction and it self-corrects
  * on the next boot, when the ordering has settled.

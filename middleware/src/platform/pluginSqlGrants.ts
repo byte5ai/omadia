@@ -116,7 +116,7 @@ function ownedLedgerPrefix(pluginId: string): string {
  * plugins `acme_tool` and `acme_tool_extra` the name
  * `plg_acme_tool_extra_mig` carries both per-plugin prefixes. Exclusive
  * ownership is enforced by `UNIQUE (ledger)` in `plugin_sql_grants`
- * (migration 0045); this check is the cheap, offline half that rejects the
+ * (migration 0047); this check is the cheap, offline half that rejects the
  * obvious cases before a grant is ever requested.
  */
 export function assertLedgerName(pluginId: string, ledger: string): string {

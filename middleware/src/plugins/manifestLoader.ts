@@ -26,6 +26,11 @@ import type {
   SetupProfile,
 } from '../api/admin-v1.js';
 import { parseSqlPermission } from '../platform/pluginSqlGrants.js';
+import {
+  MAX_DECLARED_PUBLIC_PATHS,
+  publicPathEntrySchema,
+  publicPathsDeclarationSchema,
+} from '../platform/publicPathGrants.js';
 import { compileSetupPattern } from './setupFieldPattern.js';
 import { normalizeLocalized } from './manifestLocalized.js';
 
@@ -780,6 +785,14 @@ function extractPermissions(
     // direction, because a dropped block is one fewer plugin holding the
     // operator's database, never one more.
     sql: parseSqlPermission(permissions?.['sql'], pluginId),
+    // Epic #470 C4 / H1 — the prefixes the plugin ASKS to serve without a
+    // session. Validated here for shape only; ownership and operator consent
+    // are decided at activation (`platform/publicPathGrants.ts`). A malformed
+    // entry is dropped with a warning rather than rejecting the manifest,
+    // matching this loader's graceful-degradation rule everywhere else — and
+    // dropping is the safe direction, because a dropped entry is one fewer
+    // unauthenticated surface, never one more.
+    public_paths: extractPublicPaths(permissions?.['public_paths'], pluginId),
   };
 }
 
@@ -802,6 +815,7 @@ const KNOWN_PERMISSION_KEYS: ReadonlySet<string> = new Set([
   'mcp',
   'memory',
   'network',
+  'public_paths',
   'secrets',
   'sql',
   'subAgents',
@@ -815,6 +829,7 @@ const KNOWN_PERMISSION_KEYS: ReadonlySet<string> = new Set([
  * "core removed this, your manifest still asks for it" is information the
  * plugin author needs, and it is the same signal a typo gets.
  */
+
 function warnOnUnknownPermissionKeys(
   permissions: Record<string, unknown> | undefined,
   pluginId: string,
@@ -825,11 +840,51 @@ function warnOnUnknownPermissionKeys(
   );
   if (unknown.length === 0) return;
   console.warn(
-    `[catalog] plugin '${pluginId}': unknown permission key(s) ${unknown
+    `[catalog] plugin '${pluginId}' declares unknown permission key(s) ${unknown
       .map((k) => `permissions.${k}`)
       .join(', ')} — ignored. Check the spelling, or the core version this ` +
       'manifest was written against.',
   );
+}
+
+/**
+ * Epic #470 C4 / H1 — shape-validate `permissions.public_paths`.
+ *
+ * Only the syntactic gate lives here; it deliberately does NOT decide whether
+ * the path is claimable. Ownership needs to know about every other installed
+ * plugin, and the "must be a prefix this plugin actually serves" rule needs the
+ * live route registry — neither exists at catalog-load time. Both run at
+ * activation, where a violation is a loud activation failure rather than a
+ * quietly-shortened list.
+ */
+function extractPublicPaths(raw: unknown, pluginId: string): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    console.warn(
+      `[catalog] plugin '${pluginId}': permissions.public_paths must be an array of path prefixes — ignored.`,
+    );
+    return [];
+  }
+  const parsed = publicPathsDeclarationSchema.safeParse(raw);
+  if (parsed.success) return [...parsed.data];
+
+  // Keep the entries that are individually well-formed, name the ones that are
+  // not. A single bad entry must not silently take a plugin's whole
+  // declaration with it, and it must not pass unmentioned either.
+  const kept: string[] = [];
+  for (const entry of raw) {
+    const one = publicPathEntrySchema.safeParse(entry);
+    if (one.success) {
+      kept.push(one.data);
+      continue;
+    }
+    console.warn(
+      `[catalog] plugin '${pluginId}': permissions.public_paths entry ${JSON.stringify(entry)} rejected — ${
+        one.error.issues[0]?.message ?? 'invalid'
+      }`,
+    );
+  }
+  return kept.slice(0, MAX_DECLARED_PUBLIC_PATHS);
 }
 
 /**
