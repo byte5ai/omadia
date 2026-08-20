@@ -1,3 +1,4 @@
+import { Router as createRouter } from 'express';
 import type { Express, RequestHandler, Router } from 'express';
 
 /**
@@ -33,10 +34,25 @@ interface RouteEntry {
   source: string;
 }
 
+/** What the terminating public-path mount needs to hand a request to a plugin:
+ *  the prefix the router was mounted at, plus a handler that runs it with real
+ *  Express mount semantics. See {@link PluginRouteRegistry.resolvePublicDispatch}. */
+export interface PluginRouteDispatch {
+  readonly prefix: string;
+  readonly source: string;
+  /** Runs the plugin's router. Calls `next()` — and only `next()` — when the
+   *  router did not handle the request, so the caller decides what "unhandled"
+   *  means. The public-path mount decides it means 404, never fallthrough. */
+  readonly handle: RequestHandler;
+}
+
 export class PluginRouteRegistry {
   private readonly entries: RouteEntry[] = [];
   private mounted = false;
   private app: Express | null = null;
+  /** Per-entry mini-app used by `resolvePublicDispatch`, built once and reused.
+   *  Keyed on the entry object so a disposed entry's wrapper is collectable. */
+  private readonly dispatchWrappers = new WeakMap<RouteEntry, RequestHandler>();
 
   /**
    * Register a router at the given prefix. `source` is for diagnostics —
@@ -100,6 +116,59 @@ export class PluginRouteRegistry {
     app.use(entry.prefix, guardedRouter);
   }
 
+  /**
+   * Epic #470 C4 / H1 — resolve the live router that owns `path` for `source`.
+   *
+   * Returns `null` when the plugin registered nothing covering that path, or
+   * when the entry it did register has since been disposed. Both cases mean
+   * the same thing to the caller: nobody is entitled to answer this request
+   * without a session.
+   *
+   * The returned `handle` wraps the router in a one-line Express `Router`
+   * mounted at the entry's own prefix. That is deliberate rather than manual
+   * `req.url` surgery: `req.baseUrl`/`req.url`/`req.params` rewriting and its
+   * restoration on `next()` are subtle, Express already implements them
+   * correctly, and a plugin router must see exactly the same request it sees
+   * through the ordinary boot-time mount — otherwise the "public" path and the
+   * authenticated path diverge, which is precisely the drift this whole
+   * mechanism exists to prevent.
+   *
+   * The disposed check lives INSIDE the wrapper, not just at resolve time, so
+   * a plugin deactivated between resolution and dispatch still stops serving.
+   */
+  resolvePublicDispatch(
+    source: string,
+    path: string,
+  ): PluginRouteDispatch | null {
+    let best: RouteEntry | null = null;
+    for (const entry of this.entries) {
+      if (entry.source !== source || entry.disposed) continue;
+      if (!isUnderPrefix(path, entry.prefix)) continue;
+      // Longest prefix wins — a plugin registering both `/api/plugins/x` and
+      // `/api/plugins/x/hooks` must get the more specific router.
+      if (best === null || entry.prefix.length > best.prefix.length) {
+        best = entry;
+      }
+    }
+    if (!best) return null;
+    const entry = best;
+
+    let handle = this.dispatchWrappers.get(entry);
+    if (!handle) {
+      const wrapper = createRouter();
+      wrapper.use(entry.prefix, (req, res, next) => {
+        if (entry.disposed) {
+          next();
+          return;
+        }
+        entry.router(req, res, next);
+      });
+      handle = wrapper as unknown as RequestHandler;
+      this.dispatchWrappers.set(entry, handle);
+    }
+    return { prefix: entry.prefix, source: entry.source, handle };
+  }
+
   /** Diagnostic: what routers are registered today. */
   list(): readonly { prefix: string; source: string; disposed: boolean }[] {
     return this.entries.map((e) => ({
@@ -131,6 +200,15 @@ export class PluginRouteRegistry {
     }
     return count;
   }
+}
+
+/** `child` is `parent`, or sits beneath it on a segment boundary. Duplicated
+ *  deliberately from `publicPathGrants.ts` rather than imported: this registry
+ *  is a generic Express concern and must not depend on the grant machinery. */
+function isUnderPrefix(child: string, parent: string): boolean {
+  if (child === parent) return true;
+  const withSlash = parent.endsWith('/') ? parent : `${parent}/`;
+  return child.startsWith(withSlash);
 }
 
 function isExpressRouter(value: unknown): value is Router {

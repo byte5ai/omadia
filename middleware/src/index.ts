@@ -309,6 +309,9 @@ import { ChatAgentWrapRegistry } from './platform/chatAgentWrapRegistry.js';
 import { PromptContributionRegistry } from './platform/promptContributionRegistry.js';
 import { installProcessGuards } from './platform/processGuards.js';
 import { PluginRouteRegistry } from './platform/pluginRouteRegistry.js';
+import { PublicPathGrantRegistry } from './platform/publicPathGrants.js';
+import { createLazyPublicPathGrantStore } from './platform/publicPathGrantStore.js';
+import { createPublicPathMount } from './platform/publicPathMount.js';
 import { NotificationRouter } from './platform/notificationRouter.js';
 import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
 import { OAuthReadinessTracker } from './plugins/oauth/oauthReadinessTracker.js';
@@ -569,6 +572,18 @@ async function main(): Promise<void> {
   // so it can fire onBeforeTurn / onAfterToolCall / onAfterTurn during turns.
   serviceRegistry.provide('turnHookRegistry', turnHookRegistry);
   const pluginRouteRegistry = new PluginRouteRegistry();
+  // Epic #470 C4 / H1 — who owns which unauthenticated URL prefix, and which of
+  // those the operator has consented to. The registry decides routing; the
+  // store holds the durable consent. Both are wired into ToolPluginRuntime
+  // (claim on activate, release on deactivate) and into the terminating mount
+  // installed BEFORE the `/api` requireAuth line far below.
+  //
+  // The store is late-bound because `graphPool` is published into the service
+  // registry after plugins activate — see createLazyPublicPathGrantStore.
+  const publicPathGrants = new PublicPathGrantRegistry();
+  const publicPathGrantStore = createLazyPublicPathGrantStore(() =>
+    serviceRegistry.get<Pool>('graphPool'),
+  );
   const notificationRouter = new NotificationRouter();
 
   // Phase B+ — directory aggregator for the /operator/channels dashboard.
@@ -1107,6 +1122,13 @@ async function main(): Promise<void> {
     serviceRegistry,
     nativeToolRegistry,
     pluginRouteRegistry,
+    // Epic #470 C4 / H1 — declared public-path prefixes are claimed here on
+    // activate and released on deactivate. `corePublicPaths` is the SAME array
+    // requireAuth runs against, so a plugin can never declare a prefix that is
+    // already a static core exemption.
+    publicPathGrants,
+    publicPathGrantStore,
+    corePublicPaths: publicPaths(),
     notificationRouter,
     uiRouteCatalog,
     jobScheduler,
@@ -2762,6 +2784,35 @@ async function main(): Promise<void> {
     // Pre-Phase-A / no-DB boot: the legacy default is the only Agent.
     return reg ? undefined : 'default';
   };
+  // ── Epic #470 C4 / H1 — the terminating public-path mount ────────────────
+  //
+  // THE POSITION OF THIS LINE IS THE FEATURE. It sits immediately before the
+  // OB-106 `/api` requireAuth mount below, and everything about the design
+  // follows from that:
+  //
+  //   * A request under a prefix that is manifest-declared, exclusively owned
+  //     AND operator-granted is dispatched to the owning plugin's router right
+  //     here, before any authentication runs.
+  //   * If that router does not handle it, this mount answers 404. It does NOT
+  //     call next(). A granted prefix is a closed world owned by one plugin —
+  //     an unhandled subpath must never travel on into the authenticated stack
+  //     with no session attached. That is the hole a plain `publicPaths` entry
+  //     leaves open, and the reason `auth/publicPaths.ts` stays a frozen
+  //     core-owned literal instead of becoming a dynamic set.
+  //   * Anything else calls next() and meets requireAuth exactly as before.
+  //
+  // Fail-closed by construction: no grants, no store, no registry, no live
+  // plugin — every one of those is a next(), i.e. a 401. There is no failure
+  // mode of this mount that produces LESS authentication than a build without
+  // it. Mounted after express.json/cookieParser so plugin handlers see the
+  // same parsed request they see through the ordinary boot-time mount.
+  app.use(
+    createPublicPathMount({
+      grants: publicPathGrants,
+      routes: pluginRouteRegistry,
+    }),
+  );
+
   // OB-106: gate the chat-inference endpoints (`POST /api/chat`,
   // `POST /api/chat/stream`) behind `requireAuth`. Without this, anonymous
   // callers could trigger LLM inference (cost) and reach the tool surface
@@ -4186,6 +4237,10 @@ async function main(): Promise<void> {
       catalog: pluginCatalog,
       reactivate: reactivateAgent,
       dynamicAgentRuntime,
+      // Epic #470 C4 / H1 — operator consent for unauthenticated plugin path
+      // prefixes. Behind requireAuth like every other runtime endpoint.
+      publicPathGrantStore,
+      publicPathGrants,
     }),
   );
   console.log('[middleware] runtime introspection endpoint ready at /api/v1/admin/runtime (auth: required)');
