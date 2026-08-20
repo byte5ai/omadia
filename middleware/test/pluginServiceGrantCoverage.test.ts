@@ -1,0 +1,465 @@
+import { strict as assert } from 'node:assert';
+import { Dirent, promises as fs } from 'node:fs';
+import path from 'node:path';
+
+import { describe, it } from 'node:test';
+import ts from 'typescript';
+import { parseDocument } from 'yaml';
+
+import { parseCapabilityRef } from '@omadia/plugin-api';
+
+import { LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20 } from '../src/platform/pluginServiceGrants.js';
+
+const MIDDLEWARE_ROOT = path.resolve(import.meta.dirname, '..');
+const PACKAGES_ROOT = path.join(MIDDLEWARE_ROOT, 'packages');
+const KERNEL_SRC_ROOT = path.join(MIDDLEWARE_ROOT, 'src');
+
+interface ManifestInfo {
+  readonly pluginId: string;
+  readonly manifestPath: string;
+  readonly packageRoot: string;
+  readonly declaredNames: ReadonlySet<string>;
+  readonly sourceFiles: readonly string[];
+}
+
+interface ServiceUse {
+  readonly capability: string;
+  readonly file: string;
+  readonly line: number;
+}
+
+interface CoverageSnapshot {
+  readonly manifests: readonly ManifestInfo[];
+  readonly observedByPlugin: ReadonlyMap<string, readonly ServiceUse[]>;
+  readonly undeclaredFindings: readonly string[];
+  readonly scanFailures: readonly string[];
+}
+
+let cachedSnapshot: CoverageSnapshot | undefined;
+
+describe('plugin service grant coverage', () => {
+  it('every built-in services.get call is declared or allowlisted', async () => {
+    const snapshot = await loadCoverageSnapshot();
+    assert.deepEqual(
+      snapshot.scanFailures,
+      [],
+      `service-grant scanner failed:\n${snapshot.scanFailures.join('\n')}`,
+    );
+    assert.deepEqual(
+      snapshot.undeclaredFindings,
+      [],
+      `undeclared built-in service grants found:\n${snapshot.undeclaredFindings.join('\n')}`,
+    );
+  });
+
+  it('the built-in allowlist has no stale rows', async () => {
+    const snapshot = await loadCoverageSnapshot();
+    assert.deepEqual(
+      snapshot.scanFailures,
+      [],
+      `service-grant scanner failed:\n${snapshot.scanFailures.join('\n')}`,
+    );
+
+    const builtInIds = new Set(snapshot.manifests.map((m) => m.pluginId));
+    const findings: string[] = [];
+
+    // These plugin ids live in sibling repos outside this worktree. This repo
+    // can verify their manifests were allowlisted intentionally, but it cannot
+    // prove their current call sites still exist because their source is not
+    // under middleware/packages/* here.
+    const unverifiableStandaloneIds = new Set([
+      '@omadia/agent-confluence',
+      '@omadia/agent-odoo-accounting',
+      '@omadia/agent-odoo-hr',
+      '@omadia/channel-discord',
+      '@omadia/channel-slack',
+      '@omadia/channel-teams',
+      '@omadia/channel-telegram',
+      '@omadia/channel-whatsapp',
+      '@omadia/integration-odoo',
+    ]);
+
+    for (const [pluginId, legacyNames] of Object.entries(
+      LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20,
+    )) {
+      if (unverifiableStandaloneIds.has(pluginId)) continue;
+      if (!builtInIds.has(pluginId)) continue;
+      const observed = new Set(
+        (snapshot.observedByPlugin.get(pluginId) ?? []).map((use) => use.capability),
+      );
+      for (const capability of legacyNames) {
+        if (!observed.has(capability)) {
+          findings.push(
+            `${pluginId} still allowlists '${capability}', but no real built-in call site in middleware/packages/* now resolves it. Remove the stale row or restore the call before keeping it grandfathered.`,
+          );
+        }
+      }
+    }
+
+    assert.deepEqual(
+      findings,
+      [],
+      `stale built-in allowlist rows found:\n${findings.join('\n')}`,
+    );
+  });
+});
+
+async function loadCoverageSnapshot(): Promise<CoverageSnapshot> {
+  if (cachedSnapshot) return cachedSnapshot;
+
+  const manifests = await loadBuiltInManifests();
+  const program = await createWorkspaceProgram();
+  const checker = program.getTypeChecker();
+  const scanFailures: string[] = [];
+  const undeclaredFindings: string[] = [];
+  const observedByPlugin = new Map<string, readonly ServiceUse[]>();
+
+  for (const manifest of manifests) {
+    const observed = collectServiceUsesForManifest(
+      manifest,
+      program,
+      checker,
+      scanFailures,
+    );
+    observedByPlugin.set(manifest.pluginId, observed);
+
+    const declared = manifest.declaredNames;
+    const legacy = new Set(
+      LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20[manifest.pluginId] ?? [],
+    );
+    for (const use of observed) {
+      if (declared.has(use.capability) || legacy.has(use.capability)) continue;
+      undeclaredFindings.push(
+        `${manifest.pluginId} resolves '${use.capability}' at ${use.file}:${String(use.line)} without declaring it. Either add '${use.capability}@<major>' to manifest.yaml or add a dated row to LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20 for this legacy pair.`,
+      );
+    }
+  }
+
+  cachedSnapshot = {
+    manifests,
+    observedByPlugin,
+    undeclaredFindings,
+    scanFailures,
+  };
+  return cachedSnapshot;
+}
+
+async function loadBuiltInManifests(): Promise<ManifestInfo[]> {
+  const entries = await fs.readdir(PACKAGES_ROOT, { withFileTypes: true });
+  const manifests: ManifestInfo[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const packageRoot = path.join(PACKAGES_ROOT, entry.name);
+    const manifestPath = path.join(packageRoot, 'manifest.yaml');
+    try {
+      await fs.access(manifestPath);
+    } catch {
+      continue;
+    }
+    manifests.push(await parseManifest(manifestPath, packageRoot));
+  }
+
+  manifests.sort((a, b) => a.pluginId.localeCompare(b.pluginId, 'en'));
+  return manifests;
+}
+
+async function parseManifest(
+  manifestPath: string,
+  packageRoot: string,
+): Promise<ManifestInfo> {
+  const raw = await fs.readFile(manifestPath, 'utf8');
+  const doc = parseDocument(raw);
+  if (doc.errors.length > 0) {
+    throw new Error(
+      `${relativeToMiddleware(manifestPath)} failed to parse:\n${doc.errors
+        .map((error) => String(error))
+        .join('\n')}`,
+    );
+  }
+
+  const parsed = doc.toJSON() as Record<string, unknown> | null;
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error(
+      `${relativeToMiddleware(manifestPath)} did not parse to an object manifest`,
+    );
+  }
+
+  const identity = asRecord(parsed['identity']);
+  const pluginId = asString(identity?.['id']);
+  if (!pluginId) {
+    throw new Error(
+      `${relativeToMiddleware(manifestPath)} is missing identity.id`,
+    );
+  }
+
+  const requires = asStringArray(parsed['requires'], manifestPath, 'requires');
+  const provides = asStringArray(parsed['provides'], manifestPath, 'provides');
+  const declaredNames = new Set<string>();
+  for (const rawCapability of [...requires, ...provides]) {
+    declaredNames.add(parseCapabilityRef(rawCapability).name);
+  }
+
+  const sourceRoot = path.join(packageRoot, 'src');
+  const sourceFiles = await collectTypeScriptFiles(sourceRoot);
+  return {
+    pluginId,
+    manifestPath,
+    packageRoot,
+    declaredNames,
+    sourceFiles,
+  };
+}
+
+async function createWorkspaceProgram(): Promise<ts.Program> {
+  const packageEntries = await fs.readdir(PACKAGES_ROOT, { withFileTypes: true });
+  const packageSourceFiles = await Promise.all(
+    packageEntries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) =>
+        collectTypeScriptFiles(path.join(PACKAGES_ROOT, entry.name, 'src')),
+      ),
+  );
+  const allSourceFiles = [
+    ...(await collectTypeScriptFiles(KERNEL_SRC_ROOT)),
+    ...packageSourceFiles.flat(),
+  ];
+  const paths = await buildWorkspacePaths();
+  return ts.createProgram({
+    rootNames: allSourceFiles,
+    options: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      strict: true,
+      skipLibCheck: true,
+      esModuleInterop: true,
+      allowJs: false,
+      baseUrl: MIDDLEWARE_ROOT,
+      paths,
+    },
+  });
+}
+
+async function buildWorkspacePaths(): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {};
+  const entries = await fs.readdir(PACKAGES_ROOT, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const packageRoot = path.join(PACKAGES_ROOT, entry.name);
+    const packageJsonPath = path.join(packageRoot, 'package.json');
+    try {
+      const raw = await fs.readFile(packageJsonPath, 'utf8');
+      const pkg = JSON.parse(raw) as { name?: unknown };
+      if (typeof pkg.name !== 'string' || pkg.name.length === 0) continue;
+      const srcIndex = path.relative(
+        MIDDLEWARE_ROOT,
+        path.join(packageRoot, 'src', 'index.ts'),
+      );
+      const srcWildcard = path.relative(
+        MIDDLEWARE_ROOT,
+        path.join(packageRoot, 'src', '*'),
+      );
+      out[pkg.name] = [srcIndex];
+      out[`${pkg.name}/*`] = [srcWildcard];
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+function collectServiceUsesForManifest(
+  manifest: ManifestInfo,
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  scanFailures: string[],
+): readonly ServiceUse[] {
+  const observed: ServiceUse[] = [];
+
+  for (const filePath of manifest.sourceFiles) {
+    const sourceFile = program.getSourceFile(filePath);
+    if (!sourceFile) {
+      scanFailures.push(
+        `${manifest.pluginId} source file ${relativeToMiddleware(filePath)} was not loaded into the TypeScript program`,
+      );
+      continue;
+    }
+
+    walk(sourceFile, (node) => {
+      if (!isServicesGetCall(node)) return;
+      const firstArg = node.arguments[0];
+      const location = formatNodeLocation(sourceFile, firstArg ?? node);
+      if (!firstArg) {
+        scanFailures.push(
+          `${manifest.pluginId} uses ctx.services.get with no argument at ${location}`,
+        );
+        return;
+      }
+      const resolved = resolveServiceName(firstArg, checker);
+      if ('error' in resolved) {
+        scanFailures.push(`${manifest.pluginId} ${location}: ${resolved.error}`);
+        return;
+      }
+      observed.push({
+        capability: resolved.name,
+        file: relativeToMiddleware(filePath),
+        line: sourceFile.getLineAndCharacterOfPosition(firstArg.getStart()).line + 1,
+      });
+    });
+  }
+
+  return observed;
+}
+
+function isServicesGetCall(node: ts.Node): node is ts.CallExpression {
+  if (!ts.isCallExpression(node)) return false;
+  const callee = node.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== 'get') {
+    return false;
+  }
+  const target = callee.expression;
+  return ts.isPropertyAccessExpression(target) && target.name.text === 'services';
+}
+
+function resolveServiceName(
+  arg: ts.Expression,
+  checker: ts.TypeChecker,
+): { name: string } | { error: string } {
+  if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) {
+    return { name: arg.text };
+  }
+  if (!ts.isIdentifier(arg)) {
+    return {
+      error: `ctx.services.get argument must be a string literal or identifier, saw ${ts.SyntaxKind[arg.kind]}`,
+    };
+  }
+  const symbol = checker.getSymbolAtLocation(arg);
+  if (!symbol) {
+    return {
+      error: `could not resolve identifier '${arg.text}' to a declaration`,
+    };
+  }
+  return resolveLiteralFromSymbol(symbol, checker, new Set());
+}
+
+function resolveLiteralFromSymbol(
+  symbol: ts.Symbol,
+  checker: ts.TypeChecker,
+  seen: Set<ts.Symbol>,
+): { name: string } | { error: string } {
+  const target =
+    symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+  if (seen.has(target)) {
+    return { error: `identifier resolution looped at '${target.getName()}'` };
+  }
+  seen.add(target);
+
+  for (const declaration of target.declarations ?? []) {
+    if (ts.isVariableDeclaration(declaration)) {
+      const initializer = declaration.initializer;
+      if (
+        initializer &&
+        (ts.isStringLiteral(initializer) ||
+          ts.isNoSubstitutionTemplateLiteral(initializer))
+      ) {
+        return { name: initializer.text };
+      }
+      if (initializer && ts.isIdentifier(initializer)) {
+        const next = checker.getSymbolAtLocation(initializer);
+        if (next) return resolveLiteralFromSymbol(next, checker, seen);
+      }
+    }
+  }
+
+  const sourcePaths = Array.from(
+    new Set(
+      (target.declarations ?? [])
+        .map((declaration) => declaration.getSourceFile().fileName)
+        .filter(Boolean),
+    ),
+  ).map(relativeToMiddleware);
+
+  return {
+    error:
+      `identifier '${target.getName()}' does not resolve to a string-literal const in middleware/src or middleware/packages/*/src` +
+      (sourcePaths.length > 0
+        ? ` (declarations: ${sourcePaths.join(', ')})`
+        : ''),
+  };
+}
+
+function walk(node: ts.Node, visit: (node: ts.Node) => void): void {
+  visit(node);
+  node.forEachChild((child) => walk(child, visit));
+}
+
+async function collectTypeScriptFiles(root: string): Promise<string[]> {
+  const out: string[] = [];
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...(await collectTypeScriptFiles(fullPath)));
+      continue;
+    }
+    if (
+      entry.isFile() &&
+      entry.name.endsWith('.ts') &&
+      !entry.name.endsWith('.d.ts') &&
+      !entry.name.endsWith('.test.ts')
+    ) {
+      out.push(fullPath);
+    }
+  }
+
+  return out;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function asStringArray(
+  value: unknown,
+  manifestPath: string,
+  field: 'requires' | 'provides',
+): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `${relativeToMiddleware(manifestPath)} field '${field}' must be an array of strings`,
+    );
+  }
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.length === 0) {
+      throw new Error(
+        `${relativeToMiddleware(manifestPath)} field '${field}' contains a non-string capability entry`,
+      );
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
+function relativeToMiddleware(absPath: string): string {
+  return path.relative(MIDDLEWARE_ROOT, absPath).replaceAll(path.sep, '/');
+}
+
+function formatNodeLocation(sourceFile: ts.SourceFile, node: ts.Node): string {
+  const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+  return `${relativeToMiddleware(sourceFile.fileName)}:${String(pos.line + 1)}`;
+}

@@ -428,15 +428,35 @@ const PER_CALLER_FACTORY = Symbol.for('@omadia/plugin-api.perCallerService');
  * A service registration that mints one implementation **per consuming
  * plugin** instead of sharing a single instance.
  *
- * Build one with {@link perCallerService}; it is otherwise opaque.
+ * Build one with {@link perCallerService}; it is otherwise opaque. Resolution
+ * is memoized by the FACTORY OBJECT and then by `caller.pluginId`, so one
+ * provider instance is reused for repeat reads by the same consuming plugin,
+ * while a re-registered provider starts cold automatically because it is a
+ * different factory object.
  */
 export interface PerCallerFactory<T> {
   readonly [PER_CALLER_FACTORY]: (caller: ServiceCaller) => T;
 }
 
 /**
+ * Per-caller factory cache.
+ *
+ * Keying first on the wrapper object means a provider swap self-invalidates:
+ * `ctx.services.replace(name, perCallerService(...))` registers a fresh object,
+ * so the old cache becomes unreachable without any explicit lifecycle hook.
+ * Keying second on `caller.pluginId` makes the contract literal: one
+ * implementation per consuming plugin.
+ */
+const perCallerFactoryCache = new WeakMap<
+  PerCallerFactory<unknown>,
+  Map<string, unknown>
+>();
+
+/**
  * Wrap a factory so the kernel invokes it once per consuming plugin, handing
- * it the {@link ServiceCaller}.
+ * it the {@link ServiceCaller}. The factory must therefore be idempotent for a
+ * given caller: repeat reads by the same plugin receive the cached result, not
+ * a freshly constructed instance.
  *
  *   ctx.services.provide(
  *     'repoGrants',
@@ -476,7 +496,17 @@ export function resolvePerCallerService<T>(
   factory: PerCallerFactory<T>,
   caller: ServiceCaller,
 ): T {
-  return factory[PER_CALLER_FACTORY](caller);
+  let byPlugin = perCallerFactoryCache.get(factory);
+  if (!byPlugin) {
+    byPlugin = new Map<string, unknown>();
+    perCallerFactoryCache.set(factory, byPlugin);
+  }
+  if (byPlugin.has(caller.pluginId)) {
+    return byPlugin.get(caller.pluginId) as T;
+  }
+  const resolved = factory[PER_CALLER_FACTORY](caller);
+  byPlugin.set(caller.pluginId, resolved);
+  return resolved;
 }
 
 /**
