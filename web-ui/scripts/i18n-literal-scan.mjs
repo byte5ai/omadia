@@ -103,10 +103,29 @@ const TECH_TERMS = new Set([
  */
 const DOCUMENTED_EXCEPTIONS = new Map([
   ['global-error.tsx', 'renders when the intl provider itself has failed; intentionally bilingual'],
-  ['chat/page.tsx', 'MOCK_KG_WALK is a dev-only fixture behind ?kgmock=1'],
 ]);
 
-const REASONS = ['translate', 'review', 'spec-keyword', 'api-enum', 'code', 'placeholder', 'brand', 'symbol'];
+/**
+ * Exemptions that are scoped to a SYMBOL, not a file.
+ *
+ * `web-ui/CLAUDE.md` exempts `MOCK_KG_WALK` — a dev-only fixture behind
+ * `?kgmock=1` — not all of `chat/page.tsx`. Skipping the whole file was the
+ * cheap reading, and it hid a hardcoded German `title=` tooltip 1100 lines
+ * below the fixture. An exemption must be no wider than the thing it excuses.
+ */
+const EXEMPT_DECLARATIONS = new Map([['chat/page.tsx', ['MOCK_KG_WALK']]]);
+
+/** True when `node` sits inside one of the file's exempt declarations. */
+function isInExemptDeclaration(node, rel, sf) {
+  const names = EXEMPT_DECLARATIONS.get(rel);
+  if (names === undefined) return false;
+  for (let p = node.parent; p !== undefined && !ts.isSourceFile(p); p = p.parent) {
+    if (ts.isVariableDeclaration(p) && names.includes(p.name.getText(sf))) return true;
+  }
+  return false;
+}
+
+const REASONS = ['translate', 'review', 'diagnostic', 'spec-keyword', 'api-enum', 'code', 'placeholder', 'brand', 'symbol'];
 
 /** A token that names something the machine reads, not something a human reads. */
 function isCodeToken(tok) {
@@ -130,11 +149,31 @@ function classify(text) {
   const lower = t.toLowerCase();
 
   if (!/\p{L}/u.test(t)) return 'symbol';
+
+  // German in a component file is the severest class in `web-ui/CLAUDE.md`
+  // ("German belongs only in messages/de.json"), so it outranks every
+  // exemption below — a German string is never a placeholder or an enum value.
+  //
+  // Precision over recall on purpose: umlauts and ß never appear in the English
+  // source, so this cannot false-positive, but it also cannot catch
+  // umlaut-free German like `Triage-Klassifizierer`. Those still surface as
+  // `review`, which is the honest answer — no cheap test tells the two
+  // languages apart, and guessing would put real English labels in the wrong
+  // bucket.
+  if (/[äöüÄÖÜß]/.test(t)) return 'translate';
   if (BRAND_TERMS.has(lower)) return 'brand';
   if (SPEC_KEYWORDS.has(lower)) return 'spec-keyword';
 
   // `HOT`, `WARM | COLD`, `PENDING/DONE` — API enum values echoed into a badge.
   if (/^[A-Z][A-Z0-9_]*([\s]*[|/,][\s]*[A-Z][A-Z0-9_]*)*$/.test(t)) return 'api-enum';
+
+  // A version, phase or build stamp: `omadia · v1`, `B.0 Draft-Store`,
+  // `Phase B.5 (Workspace-UI)`, `omadia · v1 · Slice 1.1`. These sit in product
+  // footers and read like prose, but localising them changes an identifier an
+  // operator quotes back in a bug report. Whether they belong in the UI at all
+  // is a product question — the scan's job is only to keep them out of the
+  // translation list.
+  if (/(^|[\s·])(v\d+|[A-Z]\.?\d+(\.\d+)*)([\s·]|$)/.test(t)) return 'diagnostic';
 
   // A format being demonstrated, not a sentence: `https://…`, `{orgId}`,
   // `user@example.com`. Localising these teaches a wrong value.
@@ -163,7 +202,35 @@ function stringValueOf(node) {
   if (node === undefined) return undefined;
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
   if (ts.isJsxExpression(node)) return stringValueOf(node.expression);
+  // A template literal WITH substitutions is the shape interpolated status
+  // lines use — `title={`Triage classifier: ${a} → ${b}`}`. The first version
+  // of this scan could not see them at all, which hid a hardcoded GERMAN
+  // tooltip that the repo's own `git diff | grep '[äöüÄÖÜß]'` self-check also
+  // misses (no umlauts in "Triage-Klassifizierer"). Rendered with `{}` in
+  // place of each substitution, which is both what the ICU key will look like
+  // and enough for the classifier to judge the surrounding prose.
+  if (ts.isTemplateExpression(node)) {
+    return [node.head.text, ...node.templateSpans.map((sp) => `{}${sp.literal.text}`)].join('');
+  }
   return undefined;
+}
+
+/**
+ * The text a hit is CLASSIFIED on, which is not always the text it is SHOWN as.
+ *
+ * A template literal is displayed with `{}` where each substitution was — that
+ * is what the eventual ICU key looks like. But `{...}` is also how `classify`
+ * recognises a format-illustrating placeholder, so classifying the display form
+ * would mark every interpolated string as an exempt placeholder and silently
+ * re-hide the class this scan was just extended to see. Classify on the literal
+ * parts alone.
+ */
+function classifiableText(node, display) {
+  const inner = ts.isJsxExpression(node) ? node.expression : node;
+  if (inner !== undefined && ts.isTemplateExpression(inner)) {
+    return [inner.head.text, ...inner.templateSpans.map((sp) => sp.literal.text)].join(' ');
+  }
+  return display;
 }
 
 /**
@@ -177,16 +244,17 @@ export function scanFile(rel) {
   const sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const hits = [];
 
-  const record = (node, text, kind, forcedReason) => {
+  const record = (node, text, kind, forcedReason, valueNode) => {
     const trimmed = text.trim();
     if (trimmed === '') return;
+    if (isInExemptDeclaration(node, rel, sf)) return;
     const { line } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
     hits.push({
       file: rel,
       line: line + 1,
       kind,
       text: trimmed,
-      reason: forcedReason ?? classify(trimmed),
+      reason: forcedReason ?? classify(classifiableText(valueNode ?? node, trimmed).trim()),
     });
   };
 
@@ -202,18 +270,43 @@ export function scanFile(rel) {
       if (USER_FACING_PROPS.has(name)) {
         const value = stringValueOf(node.initializer);
         if (value !== undefined) {
-          // A one-word `placeholder=` is a format demo — `acme`, `api`,
-          // `github_pat_…`. GLOSSARY.md: "a form hint teaches a FORMAT;
-          // localising it teaches a wrong value."
+          // A `placeholder=` is a judgement call by nature, and the first
+          // triage pass proved it: of six hits, five were example VALUES that
+          // must not be translated (`Release sign-off`, `Release approver`,
+          // `id-1, id-2, …`, `email | uri | date-time | uuid`) and one was a
+          // real instruction (`Reason (optional)`). GLOSSARY.md: "a form hint
+          // teaches a FORMAT; localising it teaches a wrong value." Nothing in
+          // the syntax separates the two, so they go to `review` — except the
+          // single-token case, which is unambiguously a format demo.
+          const trimmedValue = value.trim();
           const forced =
-            name === 'placeholder' && !/\s/.test(value.trim()) ? 'placeholder' : undefined;
-          record(node, value, `prop:${name}`, forced);
+            name !== 'placeholder'
+              ? undefined
+              : /\s/.test(trimmedValue)
+                ? 'review'
+                : 'placeholder';
+          record(node, value, `prop:${name}`, forced, node.initializer);
         }
+      }
+    } else if (
+      ts.isPropertyAssignment(node) &&
+      USER_FACING_PROPS.has(node.name.getText(sf))
+    ) {
+      // A user-facing string can also live in a plain object that is rendered
+      // later — `const verdict = { simple: { label: 'einfach' } }` then
+      // `<span>{v.label}</span>`. Neither JSX text nor a JSX prop, so the first
+      // version of this scan could not see it, and two GERMAN badge labels sat
+      // there. Restricted to the same closed prop list, so a `label` on an API
+      // payload is the only kind of false positive this can produce — and a
+      // false `review` costs a comment, while a miss costs a shipped bug.
+      const value = stringValueOf(node.initializer);
+      if (value !== undefined) {
+        record(node, value, `obj:${node.name.getText(sf)}`, undefined, node.initializer);
       }
     } else if (ts.isJsxExpression(node) && node.parent && ts.isJsxElement(node.parent)) {
       // `<p>{'literal'}</p>` — same thing as JSX text, written differently.
       const value = stringValueOf(node);
-      if (value !== undefined) record(node, value, 'jsx-child-string');
+      if (value !== undefined) record(node, value, 'jsx-child-string', undefined, node);
     }
     ts.forEachChild(node, walk);
   };
