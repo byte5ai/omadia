@@ -261,6 +261,18 @@ export type { OrchestratorOptions, AiDisclosureSetup } from './orchestrator.js';
 // screener backends + per-turn outcome resolution; the shared primitives live
 // in `@omadia/channel-sdk`.
 export {
+  type ScreenOutcomeKind,
+  type SecurityScreenMetrics,
+  UNSCREENABLE_STREAK_ALERT,
+  getSecurityScreenMetrics,
+  recordScreenOutcome,
+  resetSecurityScreenMetrics,
+} from './securityScreenMetrics.js';
+
+export {
+  type ScreenFailureCause,
+  ScreenerFailure,
+  screenFailureCause,
   LlmScreener,
   HttpProxyScreener,
   screenProvenance,
