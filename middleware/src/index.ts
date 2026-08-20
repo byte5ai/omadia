@@ -15,6 +15,7 @@ import {
   resolveLlmProvider,
 } from '@omadia/llm-provider';
 import express from 'express';
+import type { RequestHandler } from 'express';
 import cookieParser from 'cookie-parser';
 import { config, parseRegistries } from './config.js';
 import { createTigrisStore } from '@omadia/diagrams';
@@ -311,6 +312,7 @@ import { installProcessGuards } from './platform/processGuards.js';
 import { PluginRouteRegistry } from './platform/pluginRouteRegistry.js';
 import { PublicPathGrantRegistry } from './platform/publicPathGrants.js';
 import { createLazyPublicPathGrantStore } from './platform/publicPathGrantStore.js';
+import { createPluginRawBodyMount } from './platform/pluginRawBodyMount.js';
 import { createPublicPathMount } from './platform/publicPathMount.js';
 import { NotificationRouter } from './platform/notificationRouter.js';
 import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
@@ -571,7 +573,20 @@ async function main(): Promise<void> {
   // #133 E0 — expose the kernel turn-hook registry to the orchestrator plugin
   // so it can fire onBeforeTurn / onAfterToolCall / onAfterTurn during turns.
   serviceRegistry.provide('turnHookRegistry', turnHookRegistry);
-  const pluginRouteRegistry = new PluginRouteRegistry();
+  // Epic #470 C6 / G2 — forward reference to the kernel's `requireAuth`.
+  //
+  // The route registry has to exist here (ToolPluginRuntime and half a dozen
+  // wiring blocks below take it as a dependency) but `createRequireAuth` needs
+  // the session signing key, which is built much further down. The resolver is
+  // called ONCE PER REGISTRATION, not per request, and registrations happen at
+  // `toolPluginRuntime.activateAllInstalled()` — long after the assignment
+  // below — so every `auth: 'session'` route binds the real middleware. If that
+  // ordering is ever broken, `register()` throws rather than quietly serving a
+  // route with no gate.
+  const kernelRequireAuthRef: { current?: RequestHandler } = {};
+  const pluginRouteRegistry = new PluginRouteRegistry({
+    sessionAuth: () => kernelRequireAuthRef.current,
+  });
   // Epic #470 C4 / H1 — who owns which unauthenticated URL prefix, and which of
   // those the operator has consented to. The registry decides routing; the
   // store holds the durable consent. Both are wired into ToolPluginRuntime
@@ -1616,6 +1631,13 @@ async function main(): Promise<void> {
     // `/api/v1/admin/*`, etc. since none of them match these regexes.
     publicPaths: publicPaths(),
   });
+  // Epic #470 C6 / G2 — hand the SAME instance to the plugin route registry.
+  // Same instance, not an equivalent one: a plugin route registered with
+  // `auth: 'session'` must agree with core, byte for byte, on what a valid
+  // operator session is — including the `publicPaths` short-circuit above.
+  // Two `createRequireAuth` calls with drifting options is exactly the class of
+  // bug `auth/requireAuth.ts` extracted `evaluateSessionToken` to prevent.
+  kernelRequireAuthRef.current = requireAuth;
 
   // ContextRetriever + FactExtractor construction moved to AFTER
   // `toolPluginRuntime.activateAllInstalled()` below — they consume
@@ -2597,6 +2619,28 @@ async function main(): Promise<void> {
     app.use(createDevWebhooksRouter(webhookDeps));
     console.log('[middleware] dev-platform GitHub webhook router mounted at /api/webhooks/github (raw-body, before express.json)');
   }
+
+  // ── Epic #470 C6 / G3 — plugin raw-body slot ─────────────────────────────
+  //
+  // THE POSITION OF THIS LINE IS THE FEATURE, for the same reason C4's mount
+  // further down says so: it is the last place a plugin route can still see
+  // untouched request bytes.
+  //
+  // The two hand-rolled raw routers above (`/api/webhooks/github`,
+  // `/api/hooks/:endpointId`) exist here precisely because a router mounted
+  // after `express.json` cannot recover the bytes it needs — body-parser marks
+  // the request `_body` and every later parser, including a route-local
+  // `express.raw()`, short-circuits. This mount generalises that placement: a
+  // plugin that registered a prefix with `body: 'raw'` gets its parser run
+  // HERE, before the global JSON parser, and nowhere else. Everything else
+  // falls straight through.
+  //
+  // It never routes, never authenticates and never answers — it parses and
+  // calls next(). The plugin's router is still reached through the ordinary
+  // paths (C4's terminating public mount, or the boot-time flush behind
+  // requireAuth), so this adds no reachable surface. See pluginRawBodyMount.ts
+  // for why `express.json`'s `verify` hook is NOT the mechanism.
+  app.use(createPluginRawBodyMount({ routes: pluginRouteRegistry }));
 
   // The LLM proxy (`/api/v1/dev-runner/llm/*`, mounted later at `mountDevPlatform`)
   // owns its own route-level `express.raw()` so it can canonicalise the exact bytes

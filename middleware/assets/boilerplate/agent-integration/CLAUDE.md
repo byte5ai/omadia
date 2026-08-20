@@ -260,6 +260,118 @@ ctx.log('admin UI mounted at /api/<slug>/admin/ui/');
 `ctx.routes.register(prefix, router)` ist Teil der PluginContext-Surface
 (siehe `pluginContext.ts:74`). Auto-unmount bei `close()`, hot-uninstall-safe.
 
+#### Der dritte Parameter: `auth` und `body`
+
+```typescript
+ctx.routes.register(prefix, router, { auth, body, bodyLimit });
+```
+
+Der Kernel legt eine feste Middleware-Kette um den Router — **in dieser
+Reihenfolge**:
+
+```
+[Deaktivierungs-Guard] → [auth] → [Body-Parser] → dein Router
+```
+
+Der Guard steht vorn: ein deaktiviertes Plugin antwortet **404, bevor
+irgendeine Auth-Logik läuft**. CORS und Rate-Limiting bleiben Sache des
+Plugins.
+
+**`auth`** — Default `'session'`.
+
+| Wert | Bedeutung |
+|---|---|
+| `'session'` | Der Kernel prüft die Operator-Session — dieselbe `requireAuth`-Instanz, die Core an `/api` mountet. Unter `/api` ist das Defense-in-Depth, **außerhalb** von `/api` (z.B. `/diagrams`) ist es das einzige Session-Gate. CSRF-Haltung = die von Core: `SameSite=Lax`-Cookie, kein Token-Layer. |
+| `'public'` | Kein Kernel-Auth. **Registrierung wirft**, wenn das Prefix nicht unterhalb eines in `permissions.public_paths` deklarierten Pfads liegt. Die Route wird **ausschließlich** über den Public-Path-Mount ausgeliefert — also nur, solange die Zustimmung des Operators für dieses Prefix steht. |
+| `'custom'` | Wie `'public'` — gleiche Deklarationspflicht, gleiche Erreichbarkeitsregel —, aber du sagst damit zu, **jeden** Request selbst zu authentifizieren (HMAC, Bearer, mTLS-Header). |
+
+Es gibt kein `'none'`. Ein Plugin kann sich nicht selbst aus der
+Authentifizierung herausdeklarieren — es kann ein Prefix nur **beantragen**
+(`permissions.public_paths` im Manifest) und braucht dafür die Zustimmung des
+Operators.
+
+> **Richtung der Prüfung:** Das **registrierte Prefix** muss **innerhalb** eines
+> deklarierten Pfads liegen — nicht umgekehrt. `public_paths:
+> ['/api/plugins/acme/hooks']` erlaubt `register('/api/plugins/acme/hooks', …,
+> { auth: 'custom' })`, aber **nicht** `register('/api/plugins/acme', …)` —
+> sonst würde eine Deklaration für einen Webhook die ganze Admin-Oberfläche
+> öffnen.
+
+**`body`** — Default `'json'`.
+
+| Wert | Bedeutung |
+|---|---|
+| `'json'` | Geparstes JSON, Limit wie Core (10 MB). |
+| `'raw'` | Unveränderte Bytes als `Buffer` — auf `req.body` **und** `req.rawBody`. Limit default 512 KB. **Braucht dieselbe `permissions.public_paths`-Deklaration wie `auth: 'public'`** (siehe Kasten unten). |
+| `'none'` | Der Kernel mountet **keinen** Parser für diese Route; der Stream gehört dem Plugin (Uploads, Proxying, Streaming). |
+
+> **`'none'` schaltet den globalen JSON-Parser nicht ab.** Ein Request mit
+> `Content-Type: application/json` ist stromaufwärts trotzdem schon gelesen und
+> geparst worden. `'none'` heißt „der Kernel legt hier nichts drauf", nicht
+> „diesen Request hat niemand angefasst". Wer die Bytes so braucht, wie sie
+> ankamen, nimmt `'raw'` — genau dafür hat `'raw'` einen eigenen Mount vor dem
+> globalen Parser.
+>
+> `bodyLimit` wirkt aus demselben Grund nur bei `'raw'` wirklich. Bei `'json'`
+> hat der globale 10-MB-Parser schon zugeschlagen; ein größerer Wert hebt die
+> effektive Grenze nicht an.
+
+> **`'raw'` ist deklarationspflichtig — und zwar aus demselben Grund wie
+> `auth: 'public'`.** Der Raw-Parser läuft **nicht** lokal an deinem Router,
+> sondern in einem **globalen Mount vor `express.json` und vor der
+> Authentifizierung**. Er puffert also Bytes für anonyme Aufrufer und verändert,
+> wie jeder Request unter diesem Prefix aussieht. Das ist genauso eine
+> Grenzentscheidung wie das Abschalten des Session-Gates — deshalb muss das
+> Prefix in `permissions.public_paths` stehen, damit der Operator es im
+> Install-Dialog gesehen hat. Ein nicht deklariertes `body: 'raw'` **wirft bei
+> der Registrierung**.
+>
+> Zwei Prefixe, zwei Modi: Es gewinnt immer der **längste** Prefix, der den Pfad
+> besitzt — erst dann wird gefragt, ob er `'raw'` ist. Ein `'json'`-Router
+> unterhalb eines `'raw'`-Prefixes bekommt also weiterhin geparstes JSON.
+
+**Webhook mit HMAC — das kanonische `raw`-Beispiel:**
+
+```typescript
+import crypto from 'node:crypto';
+
+const hooks = express.Router();
+hooks.post('/webhook', (req, res) => {
+  const raw = req.rawBody;                       // Buffer, exakt wie geliefert
+  if (!Buffer.isBuffer(raw)) return res.status(500).json({ ok: false });
+
+  const expected = Buffer.from(
+    `sha256=${crypto.createHmac('sha256', secret).update(raw).digest('hex')}`,
+  );
+  const given = Buffer.from(req.get('X-Hub-Signature-256') ?? '');
+  const ok =
+    given.length === expected.length && crypto.timingSafeEqual(given, expected);
+  if (!ok) return res.status(401).json({ ok: false, error: 'bad signature' });
+
+  res.json({ ok: true });
+});
+
+ctx.routes.register('/api/<slug>/hooks', hooks, {
+  auth: 'custom',
+  body: 'raw',
+});
+```
+
+> **Niemals `JSON.stringify(req.body)` signieren.** Der Sinn von `'raw'` ist,
+> dass genau die Bytes ankommen, über die der Absender signiert hat. Parsen +
+> Neu-Serialisieren ändert Whitespace, Key-Reihenfolge und Zahlenformat — die
+> HMAC stimmt dann nie wieder.
+>
+> Und: `timingSafeEqual` wirft, wenn die Längen sich unterscheiden — deshalb der
+> `length`-Vergleich davor.
+
+> **Warum das 512-KB-Default kleiner ist als das globale 10-MB-Limit:** Ein
+> `raw`-Body muss **vor** dem globalen JSON-Parser gepuffert werden (danach hat
+> body-parser den Stream schon gelesen und liefert ein Objekt statt Bytes) — und
+> damit auch vor der Authentifizierung. Was vor der Auth gepuffert wird, zahlt
+> der Server für **anonyme** Aufrufer. `bodyLimit` hochzusetzen ist erlaubt, aber
+> eine bewusste Entscheidung.
+
 > **KRITISCH — Response-Schema: Frontend prüft IMMER `data.ok`.** Backend
 > und Frontend müssen denselben Vertrag fahren — der Builder hatte in
 > einem Turn (UniFi-Tracker v0.4.0) `res.json({ devices: [...] })` ohne
