@@ -4,7 +4,8 @@ import express, { Router } from 'express';
 
 import { getJson } from './_helpers/httpInvoke.js';
 
-import { PluginRouteRegistry } from '../src/platform/pluginRouteRegistry.js';
+import type { PluginRouteRegistry } from '../src/platform/pluginRouteRegistry.js';
+import { newTestRouteRegistry } from './_helpers/routeRegistry.js';
 import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
 import { UiRouteCatalog } from '../src/platform/uiRouteCatalog.js';
 import {
@@ -78,7 +79,7 @@ function seedActive(runtime: ToolPluginRuntime, agentId: string): void {
 
 describe('ToolPluginRuntime.deactivate — route disposal', () => {
   it('disposes the plugin routers registered by the deactivated plugin', async () => {
-    const registry = new PluginRouteRegistry();
+    const registry = newTestRouteRegistry();
     const { runtime } = makeRuntime(registry, new UiRouteCatalog());
 
     registry.register('/api/v1/dev-runner', Router(), '@plugin/dev');
@@ -99,7 +100,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
   });
 
   it('leaves another plugin\'s routers untouched', async () => {
-    const registry = new PluginRouteRegistry();
+    const registry = newTestRouteRegistry();
     const { runtime } = makeRuntime(registry, new UiRouteCatalog());
 
     registry.register('/a', Router(), '@plugin/a');
@@ -116,7 +117,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
   });
 
   it('also disposes ui-route/nav entries and stops jobs (unchanged behaviour)', async () => {
-    const registry = new PluginRouteRegistry();
+    const registry = newTestRouteRegistry();
     const catalog = new UiRouteCatalog();
     const { runtime, stoppedJobsFor } = makeRuntime(registry, catalog);
 
@@ -137,7 +138,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
     // close() gets a 5s budget. Disposing after it would leave the router
     // answering for that whole window on a deactivation the operator has
     // already triggered — and for the full 5s when close() hangs.
-    const registry = new PluginRouteRegistry();
+    const registry = newTestRouteRegistry();
     const catalog = new UiRouteCatalog();
     const deps = {
       pluginRouteRegistry: registry,
@@ -183,7 +184,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
     // activate()'s catch and is NOT covered here — driving it needs a real
     // on-disk package plus catalog/vault wiring. Tracked as a test gap in
     // specs/470-dev-platform-plugin/plan.md.
-    const registry = new PluginRouteRegistry();
+    const registry = newTestRouteRegistry();
     const { runtime } = makeRuntime(registry, new UiRouteCatalog());
     registry.register('/api/v1/half-built', Router(), '@plugin/broken');
 
@@ -196,7 +197,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
   });
 
   it('a disposed router stops answering and falls through to the next handler', async () => {
-    const registry = new PluginRouteRegistry();
+    const registry = newTestRouteRegistry();
     const { runtime } = makeRuntime(registry, new UiRouteCatalog());
 
     const pluginRouter = Router();
