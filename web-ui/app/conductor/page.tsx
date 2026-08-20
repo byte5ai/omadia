@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -35,6 +35,7 @@ import { TemplateUpdateHint } from './_components/TemplateUpdateHint';
 
 export default function ConductorPage(): React.JSX.Element {
   const t = useTranslations('conductor');
+  const format = useFormatter();
 
   const [workflows, setWorkflows] = useState<ConductorWorkflow[]>([]);
   const [templates, setTemplates] = useState<ConductorTemplate[]>([]);
@@ -420,7 +421,7 @@ export default function ConductorPage(): React.JSX.Element {
                       : ''}
                     {' · '}
                     {aw.channelType}
-                    {aw.deadlineAt ? ` · deadline ${new Date(aw.deadlineAt).toLocaleString()}` : ''}
+                    {aw.deadlineAt ? ` · deadline ${format.dateTime(new Date(aw.deadlineAt))}` : ''}
                   </div>
                 </div>
                 <div className="flex gap-2">

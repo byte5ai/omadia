@@ -31,6 +31,7 @@
     "operatorChannels.routesTo": "glossary",
     "layout.metaTitle": "brand",
     "builder.drafts.list.metaTitle": "brand",
+    "builder.drafts.list.footerStamp": "brand",
     "builder.drafts.detail.metaTitle": "brand",
     "adminKgLifecycle.lastRuns.hotToWarm": "diagnostic",
     "adminKgLifecycle.lastRuns.warmToCold": "diagnostic",
@@ -59,6 +60,12 @@
     "builder.versions.detailSycophancy": "glossary",
     "builder.drafts.import.modal.maxSize": "loanword",
     "adminSubscriptionClis.connect.installCmd": "code",
+    "adminSubscriptionClis.connect.loginCmd": "code",
+    "adminUpdate.notifyOnlyComposeCmd": "code",
+    "routines.templateEditor.heading": "glossary",
+    "routines.templateEditor.badgeInactive": "glossary",
+    "builder.tools.bulkImport.tabOpenApi": "glossary",
+    "builder.tools.schema.patternRegexLabel": "glossary",
     "adminDevPlatform.apps.orgPlaceholder": "placeholder",
     "adminDevPlatform.bindApp.installationPlaceholder": "placeholder",
     "adminDevPlatform.jobs.live": "loanword",
@@ -75,6 +82,8 @@
     "adminInconsistencies.detail.status": "loanword",
     "system.vaultStatus.heading": "brand",
     "system.vaultStatus.bucket": "loanword",
-    "chat.routing.bucketFallback": "loanword"
+    "chat.routing.bucketFallback": "loanword",
+    "layout.tagline": "brand",
+    "login.tagline": "brand"
   }
 }

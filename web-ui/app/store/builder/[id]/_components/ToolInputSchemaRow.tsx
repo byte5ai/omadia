@@ -268,7 +268,7 @@ function TypeConstraintsEditor({
           onChange={(v) => onChange({ ...node, maxLength: v })}
         />
         <TextConstraint
-          label="pattern (regex)"
+          label={t('patternRegexLabel')}
           value={node.pattern ?? ''}
           mono
           onChange={(v) => onChange({ ...node, pattern: v.length > 0 ? v : undefined })}

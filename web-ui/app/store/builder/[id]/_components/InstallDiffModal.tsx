@@ -344,26 +344,26 @@ function DiffBody({ draft, t }: { draft: Draft; t: InstallT }): React.ReactEleme
           <EmptyHint>{t('noToolsDefined')}</EmptyHint>
         ) : (
           <ul className="space-y-2">
-            {tools.map((t) => (
+            {tools.map((tool) => (
               <li
-                key={t.id}
+                key={tool.id}
                 className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)] px-3 py-2"
               >
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="font-mono-num text-[12px] font-semibold text-[color:var(--fg-strong)]">
-                    {t.id}
+                    {tool.id}
                   </span>
                 </div>
                 <p className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
-                  {t.description}
+                  {tool.description}
                 </p>
-                {t.input ? (
+                {tool.input ? (
                   <details className="mt-2">
                     <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
-                      input schema
+                      {t('toolInputSchema')}
                     </summary>
                     <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-[color:var(--divider)] bg-[color:var(--paper)] px-2 py-2 text-[10px] font-mono leading-relaxed text-[color:var(--fg-strong)]">
-                      {JSON.stringify(t.input, null, 2)}
+                      {JSON.stringify(tool.input, null, 2)}
                     </pre>
                   </details>
                 ) : null}

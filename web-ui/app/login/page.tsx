@@ -251,6 +251,7 @@ function LoginPageInner(): React.ReactElement {
 }
 
 function PageShell({ children }: { children: React.ReactNode }): React.ReactElement {
+  const t = useTranslations('login');
   return (
     <main className="flex min-h-screen items-center justify-center px-4">
       {/* Lume modal-class surface: the login card is the lit object (§2.10
@@ -261,7 +262,7 @@ function PageShell({ children }: { children: React.ReactNode }): React.ReactElem
             omadia
           </h1>
           <span className="mt-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-muted)]">
-            an Agentic OS
+            {t('tagline')}
           </span>
         </header>
         {children}

@@ -97,7 +97,7 @@ async function RoutinesTable({
         <thead className="bg-[color:var(--surface-muted)] text-left text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
           <tr>
             <th className="px-4 py-3">Name</th>
-            <th className="px-4 py-3">User · Tenant</th>
+            <th className="px-4 py-3">{t('columnUserTenant')}</th>
             <th className="px-4 py-3">Cron</th>
             <th className="px-4 py-3">Channel</th>
             <th className="px-4 py-3">Status</th>
