@@ -150,3 +150,10 @@ export function createPublishHandler(options: CreatePublishHandlerOptions): Nati
 
 export const PUBLISH_SYSTEM_PROMPT_DOC = `### Publish (\`publish\`)
 Publishes a directory from this scope's sandbox as a running, immutably-versioned internal web app. The entrypoint must be a Node script listening on \`process.env.PORT\`; durable state must be written under \`process.env.DATA_DIR\`, never anywhere else in the container — files outside \`DATA_DIR\` do NOT survive a later publish of the same app. Every call creates a brand-new version; verify the app actually runs (the tool result includes the assigned version) before telling the user it is done.`;
+
+// Issue #581 P3 — re-exported (not newly defined here) so
+// `publishGrantedTools.ts`'s grant-check wrapper can resolve the SAME scope
+// key this handler provisions its sandbox under, without a third
+// copy-pasted implementation. Additive-only: nothing above this line
+// changed for P3.
+export { resolveScopeKey };
