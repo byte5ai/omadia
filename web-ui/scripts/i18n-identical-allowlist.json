@@ -69,6 +69,12 @@
     "adminDangerZone.selectorPlaceholder.agent": "placeholder",
     "adminMemoryBackend.backends.postgres": "brand",
     "adminEmbeddingProvider.title": "loanword",
-    "graph.filters.traceHint": "glossary"
+    "graph.filters.traceHint": "glossary",
+    "adminDuplicates.detail.status": "loanword",
+    "adminDuplicates.excerptDetail.status": "loanword",
+    "adminInconsistencies.detail.status": "loanword",
+    "system.vaultStatus.heading": "brand",
+    "system.vaultStatus.bucket": "loanword",
+    "chat.routing.bucketFallback": "loanword"
   }
 }

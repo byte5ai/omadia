@@ -165,7 +165,7 @@ function RunTracePanel({
         {user && (
           <>
             <span>·</span>
-            <span title={`User: ${user}`}>👤 {user.slice(0, 16)}</span>
+            <span title={t('userTooltip', { user })}>👤 {user.slice(0, 16)}</span>
           </>
         )}
       </div>

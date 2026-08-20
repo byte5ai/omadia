@@ -118,13 +118,13 @@ export default function InconsistencyDetailPage(): React.ReactElement {
             </h2>
             <p className="text-sm">{detail.props.summary}</p>
             <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[11px]">
-              <dt className="text-[color:var(--fg-muted)]">Severity</dt>
+              <dt className="text-[color:var(--fg-muted)]">{t('severity')}</dt>
               <dd className="font-mono">{detail.props.severity}</dd>
-              <dt className="text-[color:var(--fg-muted)]">Status</dt>
+              <dt className="text-[color:var(--fg-muted)]">{t('status')}</dt>
               <dd className="font-mono">{detail.props.status}</dd>
               {detail.props.resolution && (
                 <>
-                  <dt className="text-[color:var(--fg-muted)]">Resolution</dt>
+                  <dt className="text-[color:var(--fg-muted)]">{t('resolution')}</dt>
                   <dd className="font-mono">{detail.props.resolution}</dd>
                 </>
               )}
@@ -132,8 +132,8 @@ export default function InconsistencyDetailPage(): React.ReactElement {
           </section>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <MemoryCard label="Memory A" mk={detail.mkA} />
-            <MemoryCard label="Memory B" mk={detail.mkB} />
+            <MemoryCard label={t('memoryA')} mk={detail.mkA} />
+            <MemoryCard label={t('memoryB')} mk={detail.mkB} />
           </div>
 
           {detail.props.status === 'open' && (

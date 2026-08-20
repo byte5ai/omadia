@@ -130,7 +130,15 @@ describe('#679 / I3 — swept components carry no user-facing literals', () => {
   // So the ratchet now asks the scanner the same question the CLI asks:
   // does this file still contain a user-facing literal? Files join `SWEPT`
   // once they answer no, and can never silently regress afterwards.
-  const SWEPT_COMPONENTS = ['graph/_components/ListView.tsx'];
+  const SWEPT_COMPONENTS = [
+    'graph/_components/ListView.tsx',
+    'graph/_components/GraphCanvas.tsx',
+    'admin/duplicates/[id]/page.tsx',
+    'admin/duplicates/excerpt/[id]/page.tsx',
+    'admin/inconsistencies/[id]/page.tsx',
+    'admin/kg-priorities/page.tsx',
+    'system/_components/VaultStatusCard.tsx',
+  ];
 
   for (const file of SWEPT_COMPONENTS) {
     it(`${file} has no untranslated user-facing literal`, () => {
