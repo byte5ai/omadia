@@ -24,6 +24,14 @@ import { log } from './log';
 interface SecretsBlob {
   /** base64 of 32 random bytes — the kernel's VAULT_KEY value. */
   vaultKey: string;
+  /**
+   * base64 of 32 random bytes — the kernel's CREDENTIAL_KEYCHAIN_KEY value.
+   * A SEPARATE trust domain from the vault by the kernel's own design (a
+   * compromised key must not unlock both). Optional because installs created
+   * before this field existed have a blob without it — the accessor
+   * generates + persists one lazily, which is also the fresh-install path.
+   */
+  credentialKeychainKey?: string;
   /** provider key id → value, e.g. { ANTHROPIC_API_KEY: "sk-..." }. */
   providerKeys: Record<string, string>;
 }
@@ -93,6 +101,22 @@ function generateVaultKey(): string {
 /** The kernel's VAULT_KEY (base64, decodes to 32 bytes). Generated on first call. */
 export function vaultKey(): string {
   return load().vaultKey;
+}
+
+/**
+ * The kernel's CREDENTIAL_KEYCHAIN_KEY. The credential keychain (#578)
+ * fail-hards in production without it — v0.115.0 shipped with the kernel
+ * reading it and the supervisor not passing it, which killed every FRESH
+ * install at first boot ("kernel did not become healthy"). Lazily generated
+ * and persisted exactly like the vault key.
+ */
+export function credentialKeychainKey(): string {
+  const blob = load();
+  if (!blob.credentialKeychainKey) {
+    blob.credentialKeychainKey = generateVaultKey();
+    persist();
+  }
+  return blob.credentialKeychainKey;
 }
 
 /** Store a provider API key (encrypted). */

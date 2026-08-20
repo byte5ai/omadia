@@ -76,6 +76,14 @@
       // provisioning
       'provision.title': 'omadia wird eingerichtet…',
       'provision.starting': 'Starte…',
+      // Dynamic boot-progress phases (supervisor BootProgress.phase). The
+      // supervisor's `message` strings stay English fallbacks for unknown
+      // phases; known phases render localized.
+      'boot.starting-db': 'Eingebettete Datenbank wird gestartet…',
+      'boot.starting-kernel': 'omadia-Kernel wird gestartet…',
+      'boot.waiting-kernel': 'Warte, bis der Kernel bereit ist…',
+      'boot.starting-ui': 'Verwaltungsoberfläche wird gestartet…',
+      'boot.ready': 'omadia ist bereit.',
       'provision.hint':
         'Der erste Start führt Datenbank-Migrationen aus — das kann bis zu einer Minute dauern.',
       // nav

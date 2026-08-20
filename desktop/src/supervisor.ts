@@ -10,7 +10,7 @@ import {
 } from './paths';
 import { findFreePorts, isPortFree } from './ports';
 import { startEmbeddedDb, EmbeddedDb } from './embeddedDb';
-import { vaultKey, allProviderKeys } from './secrets';
+import { credentialKeychainKey, vaultKey, allProviderKeys } from './secrets';
 import { log } from './log';
 
 export type BootPhase =
@@ -154,6 +154,10 @@ export class Supervisor extends EventEmitter {
       // keep vault precedence.
       OMADIA_EMBEDDED_DB: '1',
       VAULT_KEY: vaultKey(),
+      // #578's credential keychain is a separate trust domain with its own
+      // master key; the kernel fail-hards in production without it. Missing
+      // here = dead fresh install (found the hard way on v0.115.0).
+      CREDENTIAL_KEYCHAIN_KEY: credentialKeychainKey(),
       PLATFORM_DATA_DIR: platformDataDir(),
       // The browser opens signed diagram URLs against this host base.
       DIAGRAM_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,

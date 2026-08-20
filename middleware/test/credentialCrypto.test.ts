@@ -105,3 +105,29 @@ describe('#578 resolveCredentialMasterKey', () => {
     assert.ok(!files.includes('.dev-credential-keychain.key'), 'must not create a dev key in production mode');
   });
 });
+
+// ---------------------------------------------------------------------------
+// v0.115.0 fresh-install regression — the production failure must name the
+// env var that is actually missing. The keychain shares resolveMasterKey with
+// the vault, and the shared error used to claim "VAULT_KEY is required" while
+// VAULT_KEY was set and loaded — the desktop supervisor passed VAULT_KEY but
+// not CREDENTIAL_KEYCHAIN_KEY, and the misleading text pointed the diagnosis
+// at the wrong variable.
+// ---------------------------------------------------------------------------
+void it('the production error names CREDENTIAL_KEYCHAIN_KEY, not VAULT_KEY', async () => {
+  const prev = process.env.CREDENTIAL_KEYCHAIN_KEY;
+  delete process.env.CREDENTIAL_KEYCHAIN_KEY;
+  try {
+    await assert.rejects(
+      resolveCredentialMasterKey('/tmp/nonexistent-keychain-dir', true),
+      (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        assert.match(msg, /CREDENTIAL_KEYCHAIN_KEY is required/);
+        assert.doesNotMatch(msg, /VAULT_KEY/);
+        return true;
+      },
+    );
+  } finally {
+    if (prev !== undefined) process.env.CREDENTIAL_KEYCHAIN_KEY = prev;
+  }
+});

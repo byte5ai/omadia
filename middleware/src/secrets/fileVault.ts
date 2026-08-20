@@ -214,20 +214,26 @@ export async function resolveMasterKey(
   envValue: string | undefined,
   devKeyPath: string,
   productionMode = false,
+  // Names the env var in every error. The credential keychain shares this
+  // resolver but reads CREDENTIAL_KEYCHAIN_KEY — its production failure used
+  // to claim "VAULT_KEY is required" while VAULT_KEY was set and loaded,
+  // which sent the v0.115.0 first-boot diagnosis in exactly the wrong
+  // direction. An error must name the variable that is actually missing.
+  envVarName = 'VAULT_KEY',
 ): Promise<MasterKeyResult> {
   if (envValue && envValue.length > 0) {
     const buf = Buffer.from(envValue, 'base64');
     if (buf.length !== 32) {
-      throw new Error('VAULT_KEY must decode to 32 bytes (base64)');
+      throw new Error(`${envVarName} must decode to 32 bytes (base64)`);
     }
     return { key: buf, source: 'env' };
   }
   if (productionMode) {
     throw new Error(
-      `VAULT_KEY is required when NODE_ENV=production. Refusing to fall back ` +
+      `${envVarName} is required when NODE_ENV=production. Refusing to fall back ` +
         `to dev key file at ${devKeyPath}. Generate one with ` +
         `\`openssl rand -base64 32\` and set it as a secret (e.g. ` +
-        `\`fly secrets set VAULT_KEY=...\`).`,
+        `\`fly secrets set ${envVarName}=...\`).`,
     );
   }
   try {

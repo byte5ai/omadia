@@ -29,7 +29,12 @@ export async function resolveCredentialMasterKey(
   productionMode = false,
 ): Promise<MasterKeyResult> {
   const devKeyPath = path.join(dataDir, DEV_KEY_FILENAME);
-  return resolveMasterKey(process.env.CREDENTIAL_KEYCHAIN_KEY, devKeyPath, productionMode);
+  return resolveMasterKey(
+    process.env.CREDENTIAL_KEYCHAIN_KEY,
+    devKeyPath,
+    productionMode,
+    'CREDENTIAL_KEYCHAIN_KEY',
+  );
 }
 
 /** Encrypts `plaintext` with `key` (32 bytes) into the shared envelope shape. */
