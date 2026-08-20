@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { AgentComputerProfile } from './agentComputerProfile.js';
 import { execDockerViaSpawn, type DockerExec } from './dockerExec.js';
 import { clampSandboxPathPosix } from './pathGuard.js';
+import type { SandboxRegistry } from './sandboxRegistry.js';
 import type {
   Sandbox,
   SandboxBackend,
@@ -46,6 +47,18 @@ export interface DockerSandboxBackendOptions {
   readonly workDir?: string;
   /** Test seam — see `dockerExec.ts`. Defaults to the real `docker` CLI. */
   readonly execDocker?: DockerExec;
+  /**
+   * #576 P3 — optional durable bookkeeping. Omitted (the default): this
+   * backend behaves EXACTLY as P1/P2 shipped it — deterministic container
+   * naming is the only durability, `provision()` never touches anything
+   * beyond Docker itself. Provided: `provision()` additionally records
+   * (scope → container name) with a `lastUsedAt` the reaper can act on, and
+   * re-attaches via the registry's stored `sandboxRef` rather than
+   * recomputing the deterministic name — the seam a future non-deterministic
+   * backend (one where Docker/the platform assigns the id) would need, kept
+   * exercised now via the Docker backend's own deterministic case.
+   */
+  readonly registry?: SandboxRegistry;
 }
 
 const DEFAULT_IMAGE = 'alpine:3.20';
@@ -67,11 +80,13 @@ export class DockerSandboxBackend implements SandboxBackend {
    *  than re-probing Docker every time. Cross-process durability comes from
    *  the deterministic container name, not from this map. */
   private readonly live = new Map<string, DockerSandbox>();
+  private readonly registry: SandboxRegistry | undefined;
 
   constructor(options: DockerSandboxBackendOptions = {}) {
     this.image = options.image ?? DEFAULT_IMAGE;
     this.workDir = options.workDir ?? DEFAULT_WORK_DIR;
     this.execDocker = options.execDocker ?? execDockerViaSpawn;
+    this.registry = options.registry;
   }
 
   async provision(args: {
@@ -79,9 +94,21 @@ export class DockerSandboxBackend implements SandboxBackend {
     readonly profile: AgentComputerProfile;
   }): Promise<Sandbox> {
     const cached = this.live.get(args.scopeKey);
-    if (cached) return cached;
+    if (cached) {
+      // #576 P3: even a process-local cache hit is real usage — the reaper
+      // must not treat a scope as idle while its sandbox is actively being
+      // reused just because Docker itself wasn't consulted this call.
+      if (this.registry) await this.registry.touch(args.scopeKey, new Date());
+      return cached;
+    }
 
-    const name = containerNameFor(args.scopeKey);
+    // #576 P3: a registered scope re-attaches via its STORED reference
+    // rather than recomputing the deterministic name — the seam a future
+    // non-deterministic backend needs, exercised here even though this
+    // backend's own name is always recomputable.
+    const registered = this.registry ? await this.registry.get(args.scopeKey) : undefined;
+    const name = registered?.sandboxRef ?? containerNameFor(args.scopeKey);
+
     const exists = await this.containerExists(name);
     if (!exists) {
       await this.runContainer(name, args.profile);
@@ -90,6 +117,16 @@ export class DockerSandboxBackend implements SandboxBackend {
       // up. `docker start` on an already-running container is a harmless
       // no-op (exit 0).
       await this.exec(['start', name], { timeoutMs: 15_000 });
+    }
+
+    if (this.registry) {
+      await this.registry.upsert({
+        scopeKey: args.scopeKey,
+        backend: 'docker',
+        sandboxRef: name,
+        profile: args.profile,
+        now: new Date(),
+      });
     }
 
     const sandbox = new DockerSandbox({
