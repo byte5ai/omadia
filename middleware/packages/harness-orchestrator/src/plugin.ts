@@ -1,6 +1,7 @@
 import {
   InMemoryDisclosureSeenStore,
   POSTURE_ORDER,
+  RoleSourceRegistry as RoleSourceRegistryImpl,
   type ChatAgent,
   type AiDisclosureLevel,
   type GrantStore,
@@ -124,6 +125,10 @@ import {
   createPublishRollbackHandler,
   publishRollbackToolSpec,
 } from './tools/publishRollbackTool.js';
+import {
+  createGrantCheckedPublishHandler,
+  createGrantCheckedPublishRollbackHandler,
+} from './tools/publishGrantedTools.js';
 import { DockerSandboxBackend } from '@omadia/sandbox';
 import { DockerPublishRuntime, InMemoryPublishStore, PostgresPublishStore, type PublishStore } from '@omadia/publish';
 /**
@@ -888,28 +893,57 @@ export async function activate(
   // documents for #576) — a deployment can still exercise the whole
   // publish/rollback loop with zero extra Postgres setup, just without
   // surviving a restart.
+  //
+  // #581 P3 — sharing. When `audienceGrants` (the same `GrantStore` #575
+  // already publishes as a service — see `audienceGrants` above) is
+  // configured, both handlers are wrapped with a grant check: the app's
+  // OWNER (the scope that published its version 1) always passes, any
+  // other scope needs a `publish:write:<appId>` grant. No `GrantStore`
+  // configured ⇒ no sharing concept exists yet in this deployment, so the
+  // raw P2 handlers run exactly as they did before P3 — never a behavior
+  // change for a deployment that has not opted into grants at all.
+  // `RoleSourceRegistryImpl` here is a fresh, empty registry (no role
+  // sources registered): role-based publish grants therefore resolve to
+  // nothing today — a known v1 gap, not a silent lie, since no role
+  // source registry is published as a shared service ANYWHERE in this
+  // codebase yet (`Orchestrator` builds its own private one the same way).
+  // Direct grants (`grantToPrincipal`) work fully.
   const disposePublishTools: Array<() => void> = [];
   const sandboxPublishEnabled = ctx.config.get<boolean>('sandbox_publish_enabled') === true;
   if (sandboxPublishEnabled) {
     const publishSandboxBackend = new DockerSandboxBackend();
     const publishRuntime = new DockerPublishRuntime();
     const publishStore: PublishStore = graphPool ? new PostgresPublishStore(graphPool) : new InMemoryPublishStore();
+    const publishSharing = audienceGrants
+      ? { grants: audienceGrants, roles: new RoleSourceRegistryImpl() }
+      : undefined;
+    const publishHandler = publishSharing
+      ? createGrantCheckedPublishHandler({
+          sandboxBackend: publishSandboxBackend,
+          runtime: publishRuntime,
+          store: publishStore,
+          sharing: publishSharing,
+        })
+      : createPublishHandler({ sandboxBackend: publishSandboxBackend, runtime: publishRuntime, store: publishStore });
+    const publishRollbackHandler = publishSharing
+      ? createGrantCheckedPublishRollbackHandler({ store: publishStore, sharing: publishSharing })
+      : createPublishRollbackHandler({ store: publishStore });
     disposePublishTools.push(
       nativeToolRegistry.register(PUBLISH_TOOL_NAME, {
-        handler: createPublishHandler({ sandboxBackend: publishSandboxBackend, runtime: publishRuntime, store: publishStore }),
+        handler: publishHandler,
         spec: publishToolSpec,
         promptDoc: PUBLISH_SYSTEM_PROMPT_DOC,
       }),
     );
     disposePublishTools.push(
       nativeToolRegistry.register(PUBLISH_ROLLBACK_TOOL_NAME, {
-        handler: createPublishRollbackHandler({ store: publishStore }),
+        handler: publishRollbackHandler,
         spec: publishRollbackToolSpec,
         promptDoc: PUBLISH_ROLLBACK_SYSTEM_PROMPT_DOC,
       }),
     );
     ctx.log(
-      `[harness-orchestrator] sandbox_publish_enabled=true — registered publish/publish_rollback native tools (${graphPool ? 'Postgres' : 'in-memory'} store)`,
+      `[harness-orchestrator] sandbox_publish_enabled=true — registered publish/publish_rollback native tools (${graphPool ? 'Postgres' : 'in-memory'} store, sharing ${publishSharing ? 'ON' : 'off (no GrantStore configured)'})`,
     );
   } else {
     ctx.log('[harness-orchestrator] sandbox_publish_enabled not set — skipping publish/publish_rollback native tools');
