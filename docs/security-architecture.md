@@ -197,6 +197,42 @@ the connection. A subscription URL is also checked at creation time
 (`assertOutboundUrlAllowed`), so an operator gets an immediate 400 rather
 than only discovering the block on the first delivery attempt.
 
+## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
+
+Three properties of the human-approval gate are security decisions, made
+explicit here so a deployment can reason about them:
+
+- **Approval polarity is fail-open by default, opt-in strict per step.** The
+  historical contract (kept for compatibility): only an explicit
+  `{approved:false}` counts as a rejection — an absent or malformed response
+  advances the run as approved. Any human step that gates an irreversible
+  action should set `human.strictApproval: true` (designer checkbox), which
+  inverts the polarity: only an explicit `{approved:true}` approves. The
+  validator flags the dangerous default (`approval_fail_open` warning) when a
+  non-strict human step directly gates an action step; it also flags a
+  deadline fallback that lands on a normal outgoing path
+  (`timeout_equals_approval`) — if that shared path is the approval path, a
+  timeout silently approves.
+- **Run cancellation is an operator surface, not a bypass.** Cancel never
+  skips a gate — it terminates the run. A waiting run's open awaits close as
+  `'cancelled'`; a running run stops at the next step boundary (mid-step
+  kills are not attempted, keeping the at-least-once effect window bounded to
+  one step). The cancel flag columns are deliberately never cleared: they are
+  the load-bearing backstop for every cancel race. Run-ended webhook
+  notifications are at-least-once — in the narrow expire-vs-cancel race a
+  subscriber can see the event twice.
+- **Who may approve is decided by role batons — and every baton move is
+  audited.** Any authenticated operator can assign any role holder, including
+  themselves; in the current single-role system ('admin' until roles split,
+  `src/auth/sessionJwt.ts`) a permission gate on that route would gate
+  nothing, so the control with teeth is the audit trail: every add/remove
+  lands in `admin_audit` as `conductor.role_holders_change` with actor,
+  role, and the resulting holder set.
+  <!-- TODO(roles-split): when user roles split beyond 'admin', add a
+       permission gate on POST/DELETE /roles/:key/holders (four-eyes or
+       admin-only) — the audit trail alone stops being sufficient the moment
+       non-admin operators exist. -->
+
 ## 8. What lives in the vault
 
 At a minimum, your deployment vault holds:

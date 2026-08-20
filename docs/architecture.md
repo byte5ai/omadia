@@ -21,6 +21,7 @@ every action they take.
 | **Vault** | Encrypted secret storage (AES-256-GCM file). Holds LLM keys and connector credentials; gated by `VAULT_KEY` in production. |
 | **Ingress channels** | Where conversations enter. Web-chat (the admin UI) is in-tree; Teams and Telegram ship as separate plugin ZIPs. |
 | **Web UI** | The Next.js admin UI: setup wizard, plugin builder, chat, and the call-stack trace viewer. Styled with Lume. |
+| **Conductor** | Deterministic workflow engine (Spec 005): operator-designed graphs of agent / action / human steps. The engine — not the LLM — picks every next step (postcondition → guards → exactly-one-match, else the declared fallback). Human steps open durable awaits with live role-holder authorization; runs are crash-safe (lease-fenced resume worker) and operator-cancellable (#759). Operator API under `/api/v1/operator/conductors`, designer + run trace at `/conductor`. |
 
 ## Data flow
 

@@ -4009,12 +4009,14 @@ export interface ConductorWorkflow {
 export interface ConductorRun {
   id: string;
   workflowVersionId: string;
-  status: 'running' | 'waiting' | 'completed' | 'failed';
+  status: 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
   currentStepId: string | null;
   context: unknown;
   triggerKind: string;
   startedAt: string;
   endedAt: string | null;
+  /** #759 — set while an operator cancel is pending on a 'running' run. */
+  cancelRequestedAt?: string | null;
 }
 
 export interface ConductorRunStep {
@@ -4116,13 +4118,24 @@ export async function respondToAwait(awaitId: string, response: unknown): Promis
   return postJson(`${CONDUCTOR_BASE}/awaits/${encodeURIComponent(awaitId)}/respond`, { response });
 }
 
+/** #759 — non-blocking validator finding carried on a successful publish. */
+export interface ConductorValidationWarning {
+  code: string;
+  message: string;
+  nodeIds: string[];
+}
+
 export async function publishConductorWorkflow(body: {
   slug: string;
   name: string;
   description?: string;
   graph: unknown;
   enable?: boolean;
-}): Promise<{ workflow: ConductorWorkflow; version: { id: string; version: number } }> {
+}): Promise<{
+  workflow: ConductorWorkflow;
+  version: { id: string; version: number };
+  warnings?: ConductorValidationWarning[];
+}> {
   return postJson(CONDUCTOR_BASE, body);
 }
 
@@ -4155,6 +4168,15 @@ export async function listConductorRuns(slug: string): Promise<{ runs: Conductor
 
 export async function getConductorRun(slug: string, runId: string): Promise<ConductorRunResult> {
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}`);
+}
+
+/** #759 — cancel a run. 'waiting' finalizes immediately; 'running' flags the
+ *  driver (honoured at the next step boundary); terminal runs 409. */
+export async function cancelConductorRun(slug: string, runId: string): Promise<{ run: ConductorRun }> {
+  return postJson(
+    `${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}/cancel`,
+    {},
+  );
 }
 
 // Workflow templates (#429) — curated, slot-parameterized starting points bundled with

@@ -51,7 +51,8 @@
         "reminderInterval": { "type": ["string", "null"] },
         "deadline": { "type": ["string", "null"] },
         "quorum": { "enum": ["any", "all"] },
-        "responseSchema": { "type": "object" }
+        "responseSchema": { "type": "object" },
+        "strictApproval": { "type": "boolean" }
       }
     },
     "transition": {
