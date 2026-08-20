@@ -3,6 +3,8 @@ import { getTranslations } from 'next-intl/server';
 
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
 import { listReceipts, type ReceiptsPageDto } from '../../_lib/receipts';
+import { getProvenancePublicKey, type ProvenancePublicKeyDto } from '../../_lib/provenance';
+import { ChainStatusCard } from './_components/ChainStatusCard';
 import { ReceiptsList } from './_components/ReceiptsList';
 
 /**
@@ -34,6 +36,15 @@ export default async function OperatorReceiptsPage(): Promise<React.ReactElement
     console.error('[operator/receipts] initial load failed:', err);
     loadError = t('loadError');
   }
+  // #761 — chain posture for the status card. Never fails the page: a
+  // receipts list that 500s because a posture hint could not load would be
+  // worse than a missing hint.
+  let chainKey: ProvenancePublicKeyDto | null = null;
+  try {
+    chainKey = await getProvenancePublicKey();
+  } catch (err) {
+    console.error('[operator/receipts] provenance posture load failed:', err);
+  }
 
   return (
     <main className="mx-auto w-full max-w-[1100px] px-6 py-12 lg:px-8 lg:py-16">
@@ -43,6 +54,7 @@ export default async function OperatorReceiptsPage(): Promise<React.ReactElement
           {t('subtitle')}
         </p>
       </header>
+      <ChainStatusCard initialKey={chainKey} />
       {loadError ? (
         <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
           {loadError}

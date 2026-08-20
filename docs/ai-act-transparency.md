@@ -162,10 +162,19 @@ und begründet in #684; jeder Ausfall wird seitdem gezählt und protokolliert.
 Migration `0039`): der PII-freie Privacy-Receipt jedes abgeschlossenen Turns wird auf dem
 Postgres-Backend synchron gespeichert — ohne Graph-Sink, ohne User-Cluster-Vorbedingung —
 und ist unter `/api/v1/operator/receipts` (auth-gated) sowie im Operator-UI abrufbar.
-Fehlschläge werden gezählt und protokolliert, nie still verworfen. Der Receipt ist ein
-*Record*, aber (noch) nicht manipulationssicher: Hash-Verkettung, Signaturen und
-Verifikation sind #758/#761 — bis dahin bleibt „kryptographisch nachweisbar" eine
-Nicht-Zusage.
+Fehlschläge werden gezählt und protokolliert, nie still verworfen. **Seit #758 ist der
+Record hash-verkettet und checkpoint-signiert** (Migration `0041`: `entry_hash` über
+`prev_hash` verkettet, Ed25519-Checkpoints mit Schlüssel außerhalb der DB, optionaler
+externer Anker) — eine nachträgliche Änderung bricht die Kette sichtbar. **Seit #761
+existiert die Verifikations-Fläche**: `GET /api/v1/operator/provenance/verify`,
+signierter JSONL-Export, ein **Offline-Verifier ohne jede Abhängigkeit** (ein Auditor
+prüft den Export mit dem out-of-band erhaltenen Public Key, ohne unserem Server zu
+vertrauen — `middleware/scripts/verify-audit-export.mjs`), und die Chain-Status-Karte
+unter `/operator/receipts`. Mechanik, Tamper-Demo und die Grenzen (Detektion statt
+Prävention; Zeitanker = Checkpoint-Kadenz; Pre-Chain-Ära) stehen in
+`docs/provenance-verification.md`. Die Aussage „kryptographisch nachweisbar" ist damit
+**durch Code gedeckt** — die Übernahme in öffentliche Texte (Marketing-Site, Sales)
+bleibt ein bewusster, eigener Schritt nach diesem Dokumentprinzip.
 
 **C2PA ist offen.** Im Code existiert keine C2PA-Implementierung. Für Bilder wäre das der
 naheliegende nächste Schritt; heute ist es keine Zusage, sondern ein offener Punkt.
