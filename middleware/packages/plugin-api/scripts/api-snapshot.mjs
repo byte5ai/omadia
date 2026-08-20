@@ -20,8 +20,8 @@
  * Every `.d.ts` the package emits, not just `index.d.ts`. `index.ts` re-exports
  * most modules but the emitted declarations are what a consumer's `tsc` actually
  * reads, so the whole emitted tree is the contract. Files are concatenated in
- * sorted POSIX path order, so the snapshot is stable regardless of filesystem
- * enumeration order.
+ * code-unit-sorted POSIX path order, so the snapshot is stable regardless of
+ * filesystem enumeration order or ambient locale collation.
  *
  * NORMALIZATION
  * -------------
@@ -67,6 +67,8 @@ const SNAPSHOT_REL = path.relative(PACKAGE_ROOT, SNAPSHOT_FILE).split(path.sep).
 const MAX_DIFF_CELLS = 2_000_000;
 /** Lines of unchanged context printed around each hunk. */
 const DIFF_CONTEXT = 3;
+/** Code-unit ordering. Never `localeCompare`: a golden snapshot's order must not depend on ambient collation. */
+const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 // ---------------------------------------------------------------------------
 // Emit
@@ -124,7 +126,7 @@ function listFiles(dir, suffix) {
   const out = [];
   const walk = (current) => {
     for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) =>
-      a.name.localeCompare(b.name),
+      byCodeUnit(a.name, b.name),
     )) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) {
@@ -136,7 +138,7 @@ function listFiles(dir, suffix) {
     }
   };
   walk(dir);
-  return out.sort((a, b) => a.localeCompare(b));
+  return out.sort(byCodeUnit);
 }
 
 /**

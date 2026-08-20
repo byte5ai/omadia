@@ -2024,6 +2024,39 @@ export interface ResponseGuardService {
 getRules(input: ResponseGuardRequest): Promise<ResponseGuardResult>;
 }
 
+// ===== routineTarget.d.ts =====
+export type RoutineRecipient = {
+readonly by: 'email';
+readonly email: string;
+} | {
+readonly by: 'aadObjectId';
+readonly aadObjectId: string;
+};
+export type RoutineOrchestratorProfile = 'bare' | 'inherit';
+export declare const COLD_START_TARGET_KIND: "coldStart";
+export interface ColdStartTarget {
+readonly kind: typeof COLD_START_TARGET_KIND;
+readonly channel: string;
+readonly recipient: RoutineRecipient;
+readonly orchestratorProfile: RoutineOrchestratorProfile;
+readonly createdBy: {
+readonly tenant: string;
+readonly userId: string;
+};
+}
+export declare function isColdStartTarget(ref: unknown): ref is ColdStartTarget;
+export declare function isRoutineRecipient(value: unknown): value is RoutineRecipient;
+export declare function normaliseRecipientEmail(raw: string): string | null;
+export declare function buildEmailColdStartTarget(input: {
+channel: string;
+email: string;
+createdBy: {
+tenant: string;
+userId: string;
+};
+orchestratorProfile?: RoutineOrchestratorProfile;
+}): ColdStartTarget | null;
+
 // ===== routinesIntegration.d.ts =====
 import type { ApprovalReminder } from './conductorApproval.js';
 export declare const ROUTINES_INTEGRATION_SERVICE_NAME = "routinesIntegration";
@@ -2082,39 +2115,6 @@ bodyItems?: readonly unknown[];
 }): RoutineCardAttachment;
 buildRoutineListSmartCardAttachment(input: RoutineListAttachmentInput): RoutineCardAttachment;
 }
-
-// ===== routineTarget.d.ts =====
-export type RoutineRecipient = {
-readonly by: 'email';
-readonly email: string;
-} | {
-readonly by: 'aadObjectId';
-readonly aadObjectId: string;
-};
-export type RoutineOrchestratorProfile = 'bare' | 'inherit';
-export declare const COLD_START_TARGET_KIND: "coldStart";
-export interface ColdStartTarget {
-readonly kind: typeof COLD_START_TARGET_KIND;
-readonly channel: string;
-readonly recipient: RoutineRecipient;
-readonly orchestratorProfile: RoutineOrchestratorProfile;
-readonly createdBy: {
-readonly tenant: string;
-readonly userId: string;
-};
-}
-export declare function isColdStartTarget(ref: unknown): ref is ColdStartTarget;
-export declare function isRoutineRecipient(value: unknown): value is RoutineRecipient;
-export declare function normaliseRecipientEmail(raw: string): string | null;
-export declare function buildEmailColdStartTarget(input: {
-channel: string;
-email: string;
-createdBy: {
-tenant: string;
-userId: string;
-};
-orchestratorProfile?: RoutineOrchestratorProfile;
-}): ColdStartTarget | null;
 
 // ===== selfExtend.d.ts =====
 import type { PluginContext } from './pluginContext.js';
