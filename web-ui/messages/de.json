@@ -428,6 +428,7 @@
     "graph": "Graph",
     "routines": "Routinen",
     "conductor": "Conductor",
+    "receipts": "Receipts",
     "admin": "Admin",
     "system": "System",
     "agentsCluster": "Orchestratoren",
@@ -714,6 +715,20 @@
     "templateRejecting": "Wird abgelehnt",
     "templatePendingEmpty": "Keine Vorlagen warten auf Review",
     "templateNoMatches": "Keine Vorlagen entsprechen deinen Filtern."
+  },
+  "operatorReceipts": {
+    "metaTitle": "Receipts · omadia",
+    "title": "Privacy-Receipts",
+    "subtitle": "Jeder abgeschlossene Turn schreibt seinen PII-freien Privacy-Receipt hierher — was der Shield interniert, maskiert und durchgereicht hat. Der Beleg überlebt die Chat-Ansicht; die Aufbewahrung begrenzt RECEIPT_RETENTION_DAYS der Middleware.",
+    "loadError": "Receipts konnten nicht geladen werden",
+    "empty": "Noch keine Receipts vorhanden. Sobald ein Turn mit Privacy-Shield-Aktivität abschließt, erscheint er hier.",
+    "scopeLabel": "Scope",
+    "channelLabel": "Channel",
+    "modelLabel": "Modell",
+    "turnIdLabel": "Turn",
+    "summaryCounts": "{masked} maskiert · {datasets} Datasets",
+    "loadMore": "Mehr laden",
+    "loadingMore": "Lädt…"
   },
   "operatorChannels": {
     "metaTitle": "Channels · omadia",

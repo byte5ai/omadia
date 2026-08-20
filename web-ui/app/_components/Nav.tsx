@@ -73,6 +73,8 @@ const NAV: readonly NavItem[] = [
       // operator-facing configuration surfaces, same audience as Admin/System.
       { kind: 'link', href: '/operator/agents', key: 'agentsCluster' },
       { kind: 'link', href: '/conductor', key: 'conductor' },
+      // #757 — persisted per-turn privacy receipts, same operator audience.
+      { kind: 'link', href: '/operator/receipts', key: 'receipts' },
       // Dev Platform used to be hardcoded here. It is now contributed at
       // runtime (middleware registers it while DEV_PLATFORM_ENABLED), so the
       // entry disappears when the feature is off — see mergeNav below.

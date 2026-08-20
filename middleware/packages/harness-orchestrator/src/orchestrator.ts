@@ -139,9 +139,11 @@ import type {
   PalaiaExcerpt,
   PalaiaExcerptExtractor,
   PrivacyGuardService,
+  PrivacyReceipt,
   ProcessMemoryService,
   ResponseGuardService,
   SessionBriefingService,
+  TurnReceiptStore,
 } from '@omadia/plugin-api';
 import {
   agentScopePrefix,
@@ -557,6 +559,16 @@ export interface OrchestratorOptions {
    * attached to the returned `ChatTurnResult.privacyReceipt`.
    */
   privacyGuard?: () => PrivacyGuardService | undefined;
+  /**
+   * #757 — persistent per-turn receipt store lookup. Same late-bound thunk
+   * shape as `privacyGuard` (the kernel provides the service once its pg
+   * pool resolves; a per-turn lookup needs no restart). When present, every
+   * receipt `finalizeTurn` emits is ALSO persisted before the `done` event
+   * is considered flushed; persistence failure is logged + counted by the
+   * store, never fails the turn. Absent ⇒ receipts stay ephemeral
+   * (pre-#757 behaviour: UI-only).
+   */
+  turnReceiptStore?: () => TurnReceiptStore | undefined;
   /**
    * Slice 2.5 — cross-plugin runtime-config lookup for the privacy
    * dispatch hook. Given `(agentId, configKey)` returns the operator-set
@@ -1747,6 +1759,7 @@ export class Orchestrator {
   private readonly bookMeetingTool: BookMeetingTool | undefined;
   private readonly responseGuard: (() => ResponseGuardService | undefined) | undefined;
   private readonly privacyGuard: (() => PrivacyGuardService | undefined) | undefined;
+  private readonly turnReceiptStore: (() => TurnReceiptStore | undefined) | undefined;
   /** Slice 2.5 — cross-plugin runtime-config lookup (see OrchestratorOptions). */
   private readonly pluginConfigGet:
     | ((agentId: string, configKey: string) => unknown | undefined)
@@ -1871,6 +1884,7 @@ export class Orchestrator {
     this.bookMeetingTool = options.bookMeetingTool;
     this.responseGuard = options.responseGuard;
     this.privacyGuard = options.privacyGuard;
+    this.turnReceiptStore = options.turnReceiptStore;
     this.pluginConfigGet = options.pluginConfigGet;
     this.isPluginToolsReady = options.isPluginToolsReady;
     this.nudgeRegistry = options.nudgeRegistry;
@@ -3327,6 +3341,7 @@ export class Orchestrator {
           try {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
+              await this.persistTurnReceipt(turnId, input, receipt);
               return { ...result, privacyReceipt: receipt };
             }
           } catch (err) {
@@ -3339,6 +3354,38 @@ export class Orchestrator {
         return result;
       },
     );
+  }
+
+  /**
+   * #757 — persist the turn's privacy receipt into the kernel-provided
+   * store, when one is wired. Called at every site that obtains a receipt
+   * from `finalizeTurn` (non-streaming, direct-line, streaming done) so a
+   * receipt that reaches the user also reaches the record. Never fails the
+   * turn: the user's answer outranks the audit row; the store counts the
+   * failure (`persistFailures`) and this logs it greppably — the exact
+   * inversion of the RunTrace defect (#684), where the drop was invisible.
+   */
+  private async persistTurnReceipt(
+    turnId: string,
+    input: ChatTurnInput,
+    receipt: PrivacyReceipt,
+  ): Promise<void> {
+    const store = this.turnReceiptStore?.();
+    if (!store) return;
+    try {
+      await store.record({
+        turnId,
+        sessionScope: input.sessionScope,
+        channel: input.channelIdentity?.channelKind,
+        model: this.model,
+        receipt,
+      });
+    } catch (err) {
+      console.error(
+        `[orchestrator] turn-receipt persist failed for turn ${turnId}:`,
+        err,
+      );
+    }
   }
 
   /**
@@ -4894,6 +4941,7 @@ export class Orchestrator {
           try {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
+              await this.persistTurnReceipt(turnId, input, receipt);
               doneEvent = { ...doneEvent, privacyReceipt: receipt };
             }
           } catch (err) {
@@ -4995,6 +5043,7 @@ export class Orchestrator {
           try {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
+              await this.persistTurnReceipt(turnId, input, receipt);
               doneEvent = { ...doneEvent, privacyReceipt: receipt };
             }
           } catch (err) {

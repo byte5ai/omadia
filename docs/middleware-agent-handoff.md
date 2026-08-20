@@ -1125,6 +1125,21 @@ Respond-Route 500 statt 409 — Ergebnis korrekt (Run cancelled), Oberfläche
 hässlich. Die Cancel-Flag-Spalten werden absichtlich NIE gelöscht — sie sind
 der tragende Backstop aller Cancel-Races.
 
+### Turn-Receipts (#757) — persistierte Per-Turn-Privacy-Receipts
+
+Jeder abgeschlossene Turn persistiert seinen PII-freien `PrivacyReceipt`
+synchron nach `turn_receipts` (Migration `0039`, Postgres-Backend only). Der
+Orchestrator löst den Store late-bound über den Service
+`turnReceiptStore` auf (Kernel provided in `index.ts`, gleiches Muster wie
+`privacyRedact`); ohne Service bleiben Receipts ephemer. Fehlschläge werden
+gezählt (`persistFailures` in `src/receipts/store.ts`) und greppbar geloggt
+(`turn-receipt persist failed`), scheitern aber nie den Turn. Read-API:
+auth-gated **`GET /api/v1/operator/receipts`** (Liste, Composite-Keyset-Cursor
+`(created_at, id)`) und **`GET /api/v1/operator/receipts/:turnId`**; UI unter
+`/operator/receipts`. Retention: `RECEIPT_RETENTION_DAYS` (Default 90),
+Reaper mit Eager-Boot-Tick, Cutoff auf der DB-Uhr. Tests:
+`test/turnReceipts.test.ts`, `test/orchestrator/turnReceiptPersistence.test.ts`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -1474,6 +1489,8 @@ SKILLS_DIR=../skills                # relativ zum middleware root
 MEMORY_DIR=./.memory
 MEMORY_SEED_DIR=./seed/memory
 MEMORY_SEED_MODE=missing            # missing | overwrite | skip
+# Turn receipts (#757)
+RECEIPT_RETENTION_DAYS=90           # bounded retention for turn_receipts
 # Odoo
 ODOO_URL, ODOO_DB, ODOO_LOGIN, ODOO_API_KEY
 ODOO_PROXY_MAX_BYTES=500000
