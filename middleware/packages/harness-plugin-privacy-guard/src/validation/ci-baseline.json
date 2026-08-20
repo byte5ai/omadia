@@ -1,0 +1,12 @@
+{
+  "_comment": "#760 — per-locale CI floors for the C0-only prompt-PII eval (promptDetectorEval.ts --check). The eval is deterministic (pure regex over committed fixtures), so a drop below a floor is a real change, not noise. de/en/es/fr/it use the official release gates (0.97/0.85). nl cannot meet 0.97 with C0 alone (de-centric address pattern, unpatterned BSN — validation/README.md): its floor is set BELOW today's 88.2% with a deliberate margin so adding honest nl fixtures the current patterns miss does not redden CI — growing the corpus must never be punished; the floor exists to catch pattern regressions, not fixture growth. Raising a floor is welcome; lowering one needs the justification of any ratchet edit.",
+  "minItemsPerLocale": 100,
+  "locales": {
+    "de": { "structuredRecall": 0.97, "precisionProxy": 0.85 },
+    "en": { "structuredRecall": 0.97, "precisionProxy": 0.85 },
+    "es": { "structuredRecall": 0.97, "precisionProxy": 0.85 },
+    "fr": { "structuredRecall": 0.97, "precisionProxy": 0.85 },
+    "it": { "structuredRecall": 0.97, "precisionProxy": 0.85 },
+    "nl": { "structuredRecall": 0.84, "precisionProxy": 0.85 }
+  }
+}

@@ -429,6 +429,7 @@
     "routines": "Routines",
     "conductor": "Conductor",
     "receipts": "Receipts",
+    "privacyReports": "Privacy reports",
     "admin": "Admin",
     "system": "System",
     "agentsCluster": "Orchestrators",
@@ -716,6 +717,20 @@
     "templatePendingEmpty": "No templates waiting for review",
     "templateNoMatches": "No templates match your filters."
   },
+  "operatorPrivacyReports": {
+    "metaTitle": "Privacy reports · omadia",
+    "title": "Privacy miss reports",
+    "subtitle": "Values the prompt-masking shield missed, reported by operators from the privacy receipt. Turn a term into a deny-list rule (custom_terms on the privacy plugin), then resolve the report.",
+    "loadError": "Failed to load reports",
+    "empty": "No open reports. Misses reported from the privacy receipt card appear here.",
+    "howToResolve": "To act on a report: copy the term, add it to the privacy plugin's custom_terms setup field, then resolve.",
+    "reportedBy": "reported by {reporter}",
+    "copyTerm": "Copy term",
+    "copied": "Copied",
+    "resolve": "Resolve",
+    "resolving": "Resolving",
+    "resolveFailed": "Resolving the report failed"
+  },
   "operatorReceipts": {
     "metaTitle": "Receipts · omadia",
     "title": "Privacy receipts",
@@ -728,7 +743,24 @@
     "turnIdLabel": "Turn",
     "summaryCounts": "{masked} masked · {datasets} datasets",
     "loadMore": "Load more",
-    "loadingMore": "Loading…"
+    "loadingMore": "Loading…",
+    "chainHeading": "Tamper-evidence chain",
+    "chainNotYetVerified": "not verified this session",
+    "chainVerifying": "Verifying",
+    "chainVerifyNow": "Verify now",
+    "chainVerified": "verified — {n} entries intact",
+    "chainVerifiedUnsigned": "verified without signatures — {n} entries intact, no signing key",
+    "chainBroken": "BROKEN — see findings",
+    "chainVerifyFailed": "Verification request failed",
+    "chainExport": "Download signed export",
+    "chainKeyConfigured": "Checkpoint signing active (key {fingerprint}…, every {minutes} min).",
+    "chainKeyMissing": "No signing key configured — the chain builds, but checkpoints are not signed (set AUDIT_SIGNING_KEY).",
+    "chainAnchorOn": "external anchor on",
+    "chainBreakAt": "Chain break: {kind} at seq {seq}",
+    "chainCheckpointFinding": "Checkpoint finding: {kind} at seq {seq}",
+    "chainUnanchoredPrefix": "Retention removed early rows and no signed checkpoint anchors the remaining chain",
+    "chainPrematureDeletion": "A checkpoint proves a deleted row was created after {provenAfter} — inside the {days}-day retention window. This is a finding, not retention",
+    "chainPreChainRows": "{n} rows predate the tamper-evidence chain and cannot be verified"
   },
   "operatorChannels": {
     "metaTitle": "Channels · omadia",
@@ -1437,7 +1469,15 @@
     "structuredBytes": "{kb} KB",
     "structuredSchemaYes": "output schema",
     "structuredSchemaNo": "no schema",
-    "explainerStructured": "A connected tool returned structured data. It reached the browser — the trusted side — but never the model, which saw only the interned digest. Listed here for transparency; nothing was masked because none was owed on this path."
+    "explainerStructured": "A connected tool returned structured data. It reached the browser — the trusted side — but never the model, which saw only the interned digest. Listed here for transparency; nothing was masked because none was owed on this path.",
+    "missReportSummary": "Report a value the shield missed",
+    "missReportTermPlaceholder": "The value that should have been masked",
+    "missReportDescriptionPlaceholder": "Context (optional)",
+    "missReportSubmit": "Report",
+    "missReportSending": "Reporting",
+    "missReportSent": "Reported — an admin reviews it under Operator → Privacy reports.",
+    "missReportFailed": "Report failed — try again",
+    "missReportHint": "The term you type here is stored as-is in the operator review queue, where it can be turned into a deny-list rule."
   },
   "directLine": {
     "consultedLabel": "🔎 Consulted",

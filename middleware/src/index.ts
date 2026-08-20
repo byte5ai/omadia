@@ -31,9 +31,12 @@ import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
 import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore } from './conductor/index.js';
+import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
+import { loadCheckpointSigner, startCheckpointWorker } from './receipts/checkpoints.js';
+import { createProvenanceRoutes } from './receipts/verifyRoutes.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
@@ -3498,6 +3501,17 @@ async function main(): Promise<void> {
     });
     console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
 
+    // #760 — privacy miss-report review queue (the catch basin for
+    // prompt-masking non-detection). Postgres-only, auth-gated like every
+    // operator surface; the table is created by the numbered-migration runner
+    // at plugin activation.
+    app.use(
+      '/api/v1/operator/privacy/miss-reports',
+      requireAuth,
+      createMissReportRoutes(graphPool),
+    );
+    console.log('[middleware] privacy miss-report queue wired at /api/v1/operator/privacy/miss-reports (auth-gated)');
+
     // #757 — persistent per-turn privacy receipts. The store is published as
     // a service the orchestrator resolves late-bound at turn end (same shape
     // as `privacyRedact`); the read API mounts auth-gated next to the
@@ -3516,6 +3530,63 @@ async function main(): Promise<void> {
     console.log(
       `[middleware] turn receipts wired at /api/v1/operator/receipts (auth-gated, retention ${config.RECEIPT_RETENTION_DAYS}d)`,
     );
+
+    // #758 — signed checkpoints over the receipt hash chain. The chain
+    // itself always builds (the store appends chained rows unconditionally);
+    // signing is the layer that needs the operator-held key. Absent key ⇒
+    // loud boot log, not a silent no-op.
+    const checkpointSigner = config.AUDIT_SIGNING_KEY
+      ? loadCheckpointSigner(config.AUDIT_SIGNING_KEY)
+      : undefined;
+    if (checkpointSigner) {
+      startCheckpointWorker(graphPool, checkpointSigner, {
+        intervalMs: config.AUDIT_CHECKPOINT_INTERVAL_MINUTES * 60_000,
+        ...(config.AUDIT_ANCHOR_PATH ? { anchorPath: config.AUDIT_ANCHOR_PATH } : {}),
+      });
+      console.log(
+        `[middleware] audit checkpoints wired (every ${config.AUDIT_CHECKPOINT_INTERVAL_MINUTES}min, fingerprint ${checkpointSigner.publicKeyFingerprint.slice(0, 16)}…${config.AUDIT_ANCHOR_PATH ? ', external anchor on' : ''})`,
+      );
+    } else {
+      console.warn(
+        '[middleware] AUDIT_SIGNING_KEY not set — receipt chain builds WITHOUT signed checkpoints; generate a key with scripts/generate-audit-signing-key.mjs (#758)',
+      );
+    }
+    // Always-on (review LOW): a keyless deployment answers `configured:false`
+    // instead of an undifferentiated 404 — #761 tooling can discover the
+    // posture either way.
+    app.get('/api/v1/operator/provenance/public-key', requireAuth, (_req, res) => {
+      res.json({
+        configured: Boolean(checkpointSigner),
+        ...(checkpointSigner
+          ? {
+              publicKeyPem: checkpointSigner.publicKeyPem,
+              fingerprint: checkpointSigner.publicKeyFingerprint,
+            }
+          : {}),
+        checkpointIntervalMinutes: config.AUDIT_CHECKPOINT_INTERVAL_MINUTES,
+        anchorConfigured: Boolean(config.AUDIT_ANCHOR_PATH),
+      });
+    });
+
+    // #761 — the verification surface over the chain: server-side verify
+    // (incl. the #758 premature-deletion check against the checkpoint
+    // timeline) and the signed JSONL export the zero-dependency offline
+    // verifier (scripts/verify-audit-export.mjs) validates WITHOUT trusting
+    // this server.
+    app.use(
+      '/api/v1/operator/provenance',
+      requireAuth,
+      createProvenanceRoutes(graphPool, {
+        ...(checkpointSigner
+          ? {
+              publicKeyPem: checkpointSigner.publicKeyPem,
+              publicKeyFingerprint: checkpointSigner.publicKeyFingerprint,
+            }
+          : {}),
+        retentionDays: config.RECEIPT_RETENTION_DAYS,
+      }),
+    );
+    console.log('[middleware] provenance verify/export wired at /api/v1/operator/provenance (auth-gated)');
 
     const userStore = new UserStore(graphPool);
 
