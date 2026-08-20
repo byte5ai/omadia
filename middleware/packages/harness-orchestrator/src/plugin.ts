@@ -1095,6 +1095,17 @@ export async function activate(
   let reloadBus: ReloadBus | undefined;
   if (graphPool) {
     try {
+      // #796 — SECOND PASS, not the owner. `middleware/migrations/` is core's
+      // directory and core now applies it at boot, before any plugin
+      // activates and regardless of whether a provider key exists. This call
+      // used to be its only production trigger, which made core's schema a
+      // side effect of an LLM key being configured.
+      //
+      // It stays because it costs one SELECT against a current ledger (the
+      // migrator takes no lock when nothing is pending) and it keeps this
+      // plugin working when it is activated outside core's boot path — an
+      // embedding host, a fixture harness. It must never be the only caller
+      // again.
       await runMultiOrchestratorMigrations(graphPool, (m) =>
         ctx.log(`[harness-orchestrator] ${m}`),
       );

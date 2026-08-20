@@ -111,3 +111,82 @@ describe('parseEntries', () => {
     expect(parsed[0]?.href).toBe('/admin/dev-platform');
   });
 });
+
+/**
+ * #798 — plugin-UI nav entries.
+ *
+ * A scoped plugin id only resolves percent-encoded, and percent-encoding is
+ * exactly what the canonical-href rule above refuses. So the middleware flags
+ * such an entry with `pluginUi: true` and this file DERIVES the href from
+ * `pluginId` instead of validating the transmitted string.
+ *
+ * That is deliberately stronger than validating would have been: the only
+ * encoded path this module can emit is one it computed itself from a
+ * charset-checked id, so a version skew or a compromised control plane still
+ * cannot inject an arbitrary encoded path into the trusted header.
+ *
+ * Mutation check: making the parser trust the incoming `href` for a
+ * `pluginUi` entry fails "ignores the transmitted href".
+ */
+describe('parseEntries — pluginUi entries (#798)', () => {
+  const pluginUiEntry = {
+    pluginId: '@acme/widget',
+    navId: 'main',
+    href: '/plugin-ui/%40acme%2Fwidget',
+    label: 'Reports',
+    order: 50,
+    cluster: 'adminCluster',
+    pluginUi: true,
+  };
+
+  it('accepts a scoped-id entry the canonical-href rule would reject', () => {
+    const parsed = parseEntries(wrap(pluginUiEntry));
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]?.href).toBe('/plugin-ui/%40acme%2Fwidget');
+    expect(parsed[0]?.pluginId).toBe('@acme/widget');
+    expect(parsed[0]?.cluster).toBe('adminCluster');
+  });
+
+  it('rejects that same href when the entry is NOT flagged pluginUi', () => {
+    // The strict rule is untouched for literal hrefs — the flag is the only
+    // thing that admits percent-encoding, and only for a path core computes.
+    expect(
+      parseEntries(wrap({ ...pluginUiEntry, pluginUi: undefined })),
+    ).toEqual([]);
+  });
+
+  it('ignores the transmitted href and derives it from pluginId', () => {
+    const parsed = parseEntries(
+      wrap({ ...pluginUiEntry, href: '/admin/somewhere-else' }),
+    );
+    expect(parsed[0]?.href).toBe('/plugin-ui/%40acme%2Fwidget');
+  });
+
+  it('leaves an unscoped id unencoded', () => {
+    const parsed = parseEntries(
+      wrap({ ...pluginUiEntry, pluginId: 'reporter' }),
+    );
+    expect(parsed[0]?.href).toBe('/plugin-ui/reporter');
+  });
+
+  it('drops an entry whose pluginId is not an npm-style id', () => {
+    for (const pluginId of ['../etc', 'Has Spaces', '@acme/UPPER', 'a/b/c']) {
+      expect(parseEntries(wrap({ ...pluginUiEntry, pluginId }))).toEqual([]);
+    }
+  });
+
+  it('drops a pluginUi value that is not literal true', () => {
+    for (const pluginUi of ['yes', 1, {}, false]) {
+      expect(parseEntries(wrap({ ...pluginUiEntry, pluginUi }))).toEqual([]);
+    }
+  });
+
+  it('still enforces the label rules on a pluginUi entry', () => {
+    expect(
+      parseEntries(wrap({ ...pluginUiEntry, label: 'x'.repeat(41) })),
+    ).toEqual([]);
+    expect(
+      parseEntries(wrap({ ...pluginUiEntry, label: 'Rep\u202eorts' })),
+    ).toEqual([]);
+  });
+});

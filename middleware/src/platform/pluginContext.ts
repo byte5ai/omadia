@@ -326,6 +326,17 @@ export function createPluginContext(
         ? (borrowPool(resolved as Pool, agentId) as T)
         : resolved;
     },
+    // #795 — the accessor an `optional_requires:` entry is consumed
+    // through. Same gates in the same order as `get`: a name the manifest
+    // declares nowhere is still a manifest bug and still throws, because a
+    // typo that quietly became `undefined` is precisely the failure the
+    // declaration gate exists to prevent. What differs is the contract the
+    // caller signs up to — `undefined` is an answer here, not a symptom —
+    // and the fact that the kernel never held the plugin's activation back
+    // waiting for a provider.
+    getOptional<T>(name: string): T | undefined {
+      return services.get<T>(name);
+    },
     has(name: string): boolean {
       return serviceRegistry.has(name);
     },

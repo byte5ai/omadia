@@ -101,6 +101,20 @@ export function resolveCapabilities(
 
   for (const consumerId of eligibleIds) {
     const consumer = catalog.get(consumerId);
+    // `requires` ONLY. `optional_requires` (#795) is deliberately not read
+    // here, and the omission is the whole feature: an optional capability
+    // must neither hold a consumer back nor contribute an ordering edge.
+    //
+    // Skipping the edge is the part worth arguing about, because an
+    // optional provider that IS installed may then activate after its
+    // consumer. That is accepted knowingly: optional dependencies are the
+    // shape most likely to point back at the plugin that offers them
+    // (A optionally uses B, B requires A), and an edge from a link the
+    // kernel is not allowed to enforce would turn that into a topo-sort
+    // cycle — a boot failure caused by a dependency declared as skippable.
+    // The cost lands in the API contract instead, where it is visible:
+    // `ctx.services.getOptional` documents that optional services must be
+    // resolved lazily rather than cached during activate().
     const requires = consumer?.plugin.requires ?? [];
     const consumerUnresolved: string[] = [];
 
@@ -314,6 +328,11 @@ export function walkCapabilityInstallChain(
   const walk = (pluginId: string, depth: number): void => {
     const entry = catalog.get(pluginId);
     if (!entry) return;
+    // `requires` only — an `optional_requires` entry (#795) is never a
+    // reason to refuse an install, so it must not enter the chain. Nor is
+    // its would-be provider walked: pulling an optional provider's own
+    // unmet requires into the 409 would block the install on a plugin the
+    // operator never asked for.
     for (const rawReq of entry.plugin.requires) {
       let capRef: CapabilityRef;
       try {

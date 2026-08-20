@@ -515,6 +515,19 @@ export interface Plugin {
    *  matching `provides` across the installed plugin set. */
   requires: string[];
   /**
+   * Capabilities this plugin may use but can run without (#795). Same
+   * capability-ref syntax as {@link requires}, and the same effect on the
+   * `ctx.services` declaration gate — but NOT an activation dependency:
+   * the installer does not refuse the install when nothing provides one,
+   * the capability resolver neither orders nor demands a provider, and
+   * `ctx.services.getOptional(name)` simply answers `undefined`.
+   *
+   * Absent when the manifest declares none; read it as `?? []`. Surfaced
+   * on the install DTO so the consent UI can render these prerequisites
+   * as optional rather than as blockers.
+   */
+  optional_requires?: string[];
+  /**
    * Builder service-type declarations (OB — service-type auto-discovery).
    * Integration plugins list every `ctx.services.provide(...)` surface they
    * expose, mapped to the TypeScript type a consuming agent imports. When
