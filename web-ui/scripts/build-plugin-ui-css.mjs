@@ -162,14 +162,15 @@ async function main() {
     const current = existsSync(OUT_FILE) ? readFileSync(OUT_FILE, 'utf-8') : '';
     if (current === next) {
       console.log(
-        `[plugin-ui-css] up to date (${next.length} bytes) — ${path.relative(REPO_ROOT, OUT_FILE)}`,
+        `[plugin-ui-css] up to date (${Buffer.byteLength(next)} bytes) — ` +
+          path.relative(REPO_ROOT, OUT_FILE),
       );
       return;
     }
     console.error(
       '[plugin-ui-css] DRIFT: the committed artifact does not match the source.\n' +
-        `  artifact : ${path.relative(REPO_ROOT, OUT_FILE)} (${current.length} bytes)\n` +
-        `  generated: ${next.length} bytes\n` +
+        `  artifact : ${path.relative(REPO_ROOT, OUT_FILE)} (${Buffer.byteLength(current)} bytes)\n` +
+        `  generated: ${Buffer.byteLength(next)} bytes\n` +
         '  Fix with: cd web-ui && npm run plugin-ui:css && git add ../middleware/assets/plugin-ui/plugin-ui.css',
     );
     process.exitCode = 1;
