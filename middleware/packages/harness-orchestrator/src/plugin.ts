@@ -112,7 +112,20 @@ import {
   createExecuteHandler,
   executeToolSpec,
 } from './tools/executeTool.js';
+import {
+  PUBLISH_SYSTEM_PROMPT_DOC,
+  PUBLISH_TOOL_NAME,
+  createPublishHandler,
+  publishToolSpec,
+} from './tools/publishTool.js';
+import {
+  PUBLISH_ROLLBACK_SYSTEM_PROMPT_DOC,
+  PUBLISH_ROLLBACK_TOOL_NAME,
+  createPublishRollbackHandler,
+  publishRollbackToolSpec,
+} from './tools/publishRollbackTool.js';
 import { DockerSandboxBackend } from '@omadia/sandbox';
+import { DockerPublishRuntime, InMemoryPublishStore, PostgresPublishStore, type PublishStore } from '@omadia/publish';
 /**
  * @omadia/orchestrator — plugin entry point.
  *
@@ -864,6 +877,44 @@ export async function activate(
     ctx.log('[harness-orchestrator] sandbox_execute_enabled not set — skipping execute native tool');
   }
 
+  // Issue #581 P2 — `publish`/`publish_rollback` native tools: turn a
+  // directory in the scope sandbox into a running, immutably-versioned web
+  // app. Same honest-inert opt-in convention as `execute` above, behind its
+  // OWN flag (`sandbox_publish_enabled`, independent of
+  // `sandbox_execute_enabled` — an operator may want one without the
+  // other). `PublishStore` durability follows the shared graph pool when
+  // one is configured; without it, versions are recorded in-memory only
+  // (process-lifetime durability, same posture `InMemorySandboxRegistry`
+  // documents for #576) — a deployment can still exercise the whole
+  // publish/rollback loop with zero extra Postgres setup, just without
+  // surviving a restart.
+  const disposePublishTools: Array<() => void> = [];
+  const sandboxPublishEnabled = ctx.config.get<boolean>('sandbox_publish_enabled') === true;
+  if (sandboxPublishEnabled) {
+    const publishSandboxBackend = new DockerSandboxBackend();
+    const publishRuntime = new DockerPublishRuntime();
+    const publishStore: PublishStore = graphPool ? new PostgresPublishStore(graphPool) : new InMemoryPublishStore();
+    disposePublishTools.push(
+      nativeToolRegistry.register(PUBLISH_TOOL_NAME, {
+        handler: createPublishHandler({ sandboxBackend: publishSandboxBackend, runtime: publishRuntime, store: publishStore }),
+        spec: publishToolSpec,
+        promptDoc: PUBLISH_SYSTEM_PROMPT_DOC,
+      }),
+    );
+    disposePublishTools.push(
+      nativeToolRegistry.register(PUBLISH_ROLLBACK_TOOL_NAME, {
+        handler: createPublishRollbackHandler({ store: publishStore }),
+        spec: publishRollbackToolSpec,
+        promptDoc: PUBLISH_ROLLBACK_SYSTEM_PROMPT_DOC,
+      }),
+    );
+    ctx.log(
+      `[harness-orchestrator] sandbox_publish_enabled=true — registered publish/publish_rollback native tools (${graphPool ? 'Postgres' : 'in-memory'} store)`,
+    );
+  } else {
+    ctx.log('[harness-orchestrator] sandbox_publish_enabled not set — skipping publish/publish_rollback native tools');
+  }
+
   // US3 — per-Agent Orchestrator construction. The orchestrator plugin
   // builds the single "default" Agent; the multi-orchestrator registry
   // (US4) calls the same factory once per configured Agent against the
@@ -1146,6 +1197,13 @@ export async function activate(
         }
       }
       for (const dispose of disposeExecuteTool) {
+        try {
+          dispose();
+        } catch {
+          // best-effort
+        }
+      }
+      for (const dispose of disposePublishTools) {
         try {
           dispose();
         } catch {
