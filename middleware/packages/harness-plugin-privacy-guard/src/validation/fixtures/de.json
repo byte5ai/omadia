@@ -1496,5 +1496,20 @@
   {
     "text": "Wie kann ich wiederkehrende Rechnungen automatisch erstellen lassen?",
     "spans": []
+  },
+  {
+    "text": "Unsere USt-IdNr. lautet DE811907980, bitte auf der Rechnung ergänzen.",
+    "spans": [
+      {
+        "value": "DE811907980",
+        "type": "idnum",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Die Bestellnummer 84421907 findest du im ERP unter Einkauf.",
+    "spans": []
   }
 ]

@@ -1481,5 +1481,20 @@
   {
     "text": "How can recurring invoices be generated automatically?",
     "spans": []
+  },
+  {
+    "text": "My National Insurance number is QQ123456C, please update payroll.",
+    "spans": [
+      {
+        "value": "QQ123456C",
+        "type": "idnum",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "Purchase order 84421907 is still waiting for approval in the ERP.",
+    "spans": []
   }
 ]

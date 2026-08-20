@@ -133,6 +133,14 @@ jobs:
       - name: Typecheck (test + scripts trees, ratchet)
         run: npm run typecheck:test
 
+      # #760 — prompt-PII detection-quality gate. Deterministic (pure regex
+      # over committed fixtures, C0 set only — no sidecar): every locale must
+      # stay at or above its committed floor in validation/ci-baseline.json.
+      # The check FAILS on an empty evaluation, so a broken fixture load can
+      # never report green (the #640 permanently-green-no-op failure mode).
+      - name: Prompt-PII C0 eval gate (per-locale floors)
+        run: npx tsx packages/harness-plugin-privacy-guard/src/validation/promptDetectorEval.ts --check
+
       # Non-Postgres suites, run in parallel as before. No pg DSN is set for
       # this step, so the *.pg.test.ts files probe the unreachable default
       # and self-skip — same as today. They get real coverage in the

@@ -429,6 +429,7 @@
     "routines": "Routinen",
     "conductor": "Conductor",
     "receipts": "Receipts",
+    "privacyReports": "Privacy-Reports",
     "admin": "Admin",
     "system": "System",
     "agentsCluster": "Orchestratoren",
@@ -716,6 +717,20 @@
     "templatePendingEmpty": "Keine Vorlagen warten auf Review",
     "templateNoMatches": "Keine Vorlagen entsprechen deinen Filtern."
   },
+  "operatorPrivacyReports": {
+    "metaTitle": "Privacy-Reports · omadia",
+    "title": "Privacy-Miss-Reports",
+    "subtitle": "Werte, die das Prompt-Masking übersehen hat — von Operatoren aus dem Privacy-Receipt gemeldet. Begriff in eine Deny-List-Regel überführen (custom_terms am Privacy-Plugin), dann den Report auflösen.",
+    "loadError": "Reports konnten nicht geladen werden",
+    "empty": "Keine offenen Reports. Aus der Receipt-Karte gemeldete Misses erscheinen hier.",
+    "howToResolve": "So bearbeitest Du einen Report: Begriff kopieren, ins custom_terms-Setup-Feld des Privacy-Plugins eintragen, dann auflösen.",
+    "reportedBy": "gemeldet von {reporter}",
+    "copyTerm": "Begriff kopieren",
+    "copied": "Kopiert",
+    "resolve": "Auflösen",
+    "resolving": "Wird aufgelöst",
+    "resolveFailed": "Auflösen des Reports fehlgeschlagen"
+  },
   "operatorReceipts": {
     "metaTitle": "Receipts · omadia",
     "title": "Privacy-Receipts",
@@ -728,7 +743,24 @@
     "turnIdLabel": "Turn",
     "summaryCounts": "{masked} maskiert · {datasets} Datasets",
     "loadMore": "Mehr laden",
-    "loadingMore": "Lädt…"
+    "loadingMore": "Lädt…",
+    "chainHeading": "Manipulationsschutz-Kette",
+    "chainNotYetVerified": "in dieser Sitzung noch nicht geprüft",
+    "chainVerifying": "Wird geprüft",
+    "chainVerifyNow": "Jetzt prüfen",
+    "chainVerified": "geprüft — {n} Einträge intakt",
+    "chainVerifiedUnsigned": "geprüft ohne Signaturen — {n} Einträge intakt, kein Signierschlüssel",
+    "chainBroken": "GEBROCHEN — siehe Befunde",
+    "chainVerifyFailed": "Prüf-Anfrage fehlgeschlagen",
+    "chainExport": "Signierten Export herunterladen",
+    "chainKeyConfigured": "Checkpoint-Signierung aktiv (Key {fingerprint}…, alle {minutes} Min.).",
+    "chainKeyMissing": "Kein Signierschlüssel konfiguriert — die Kette wird gebaut, aber Checkpoints sind unsigniert (AUDIT_SIGNING_KEY setzen).",
+    "chainAnchorOn": "externer Anker aktiv",
+    "chainBreakAt": "Kettenbruch: {kind} bei Seq {seq}",
+    "chainCheckpointFinding": "Checkpoint-Befund: {kind} bei Seq {seq}",
+    "chainUnanchoredPrefix": "Retention hat frühe Zeilen entfernt und kein signierter Checkpoint verankert die verbleibende Kette",
+    "chainPrematureDeletion": "Ein Checkpoint beweist, dass eine gelöschte Zeile nach {provenAfter} entstand — innerhalb des {days}-Tage-Retention-Fensters. Das ist ein Befund, keine Retention",
+    "chainPreChainRows": "{n} Zeilen stammen aus der Zeit vor der Manipulationsschutz-Kette und sind nicht prüfbar"
   },
   "operatorChannels": {
     "metaTitle": "Channels · omadia",
@@ -1437,7 +1469,15 @@
     "structuredBytes": "{kb} KB",
     "structuredSchemaYes": "Output-Schema",
     "structuredSchemaNo": "kein Schema",
-    "explainerStructured": "Ein verbundenes Tool lieferte strukturierte Daten. Sie erreichten den Browser — die vertrauenswürdige Seite — aber nie das Modell, das nur den internen Digest sah. Hier zur Transparenz aufgeführt; es wurde nichts maskiert, weil auf diesem Pfad nichts zu maskieren war."
+    "explainerStructured": "Ein verbundenes Tool lieferte strukturierte Daten. Sie erreichten den Browser — die vertrauenswürdige Seite — aber nie das Modell, das nur den internen Digest sah. Hier zur Transparenz aufgeführt; es wurde nichts maskiert, weil auf diesem Pfad nichts zu maskieren war.",
+    "missReportSummary": "Übersehenen Wert melden",
+    "missReportTermPlaceholder": "Der Wert, der hätte maskiert werden sollen",
+    "missReportDescriptionPlaceholder": "Kontext (optional)",
+    "missReportSubmit": "Melden",
+    "missReportSending": "Wird gemeldet",
+    "missReportSent": "Gemeldet — ein Admin prüft es unter Operator → Privacy-Reports.",
+    "missReportFailed": "Meldung fehlgeschlagen — bitte erneut versuchen",
+    "missReportHint": "Der hier eingegebene Begriff wird unverändert in der Operator-Review-Queue gespeichert und kann dort zur Deny-List-Regel werden."
   },
   "directLine": {
     "consultedLabel": "🔎 Konsultiert",

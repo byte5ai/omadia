@@ -75,6 +75,8 @@ const NAV: readonly NavItem[] = [
       { kind: 'link', href: '/conductor', key: 'conductor' },
       // #757 — persisted per-turn privacy receipts, same operator audience.
       { kind: 'link', href: '/operator/receipts', key: 'receipts' },
+      // #760 — miss-report review queue, same operator audience.
+      { kind: 'link', href: '/operator/privacy-reports', key: 'privacyReports' },
       // Dev Platform used to be hardcoded here. It is now contributed at
       // runtime (middleware registers it while DEV_PLATFORM_ENABLED), so the
       // entry disappears when the feature is off — see mergeNav below.

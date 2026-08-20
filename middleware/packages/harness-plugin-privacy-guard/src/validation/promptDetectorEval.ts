@@ -84,8 +84,73 @@ async function evalLocale(
   return outcomes;
 }
 
+/**
+ * #760 — CI gate mode (`--check`): run the C0-only set and compare every
+ * locale against the committed per-locale floors in `ci-baseline.json`.
+ * Non-zero exit on any regression — and on an EMPTY evaluation: a run that
+ * scored zero locales or too few items must never report green (the
+ * permanently-green no-op is the failure mode this guards against, PR #640).
+ * Latency is deliberately not gated here (CI-runner jitter); the 400 ms gate
+ * stays part of the interactive report.
+ */
+interface CiBaseline {
+  minItemsPerLocale: number;
+  locales: Record<string, { structuredRecall: number; precisionProxy: number }>;
+}
+
+function runCheck(perLocale: readonly LocaleResult[]): number {
+  const baselinePath = join(dirname(fileURLToPath(import.meta.url)), 'ci-baseline.json');
+  const baseline = JSON.parse(readFileSync(baselinePath, 'utf-8')) as CiBaseline;
+  const failures: string[] = [];
+  const seen = new Set<string>();
+  for (const { report } of perLocale) {
+    seen.add(report.locale);
+    const floor = baseline.locales[report.locale];
+    if (!floor) {
+      failures.push(`locale '${report.locale}' has fixtures but no ci-baseline floor — add one`);
+      continue;
+    }
+    // Span totals + negatives ≈ evaluated volume; the point is catching a
+    // broken fixture load (near-zero), not an exact item count.
+    const items = report.byType.reduce((n, t) => n + t.total, 0) + report.negatives;
+    if (items < baseline.minItemsPerLocale) {
+      failures.push(
+        `locale '${report.locale}' evaluated only ${String(items)} items (< ${String(baseline.minItemsPerLocale)}) — fixture load is broken`,
+      );
+    }
+    if (report.structuredRecall < floor.structuredRecall) {
+      failures.push(
+        `locale '${report.locale}' structured recall ${(report.structuredRecall * 100).toFixed(1)}% < floor ${(floor.structuredRecall * 100).toFixed(1)}%`,
+      );
+    }
+    if (report.precisionProxy < floor.precisionProxy) {
+      failures.push(
+        `locale '${report.locale}' precision proxy ${(report.precisionProxy * 100).toFixed(1)}% < floor ${(floor.precisionProxy * 100).toFixed(1)}%`,
+      );
+    }
+  }
+  for (const locale of Object.keys(baseline.locales)) {
+    if (!seen.has(locale)) {
+      failures.push(`baseline locale '${locale}' was not evaluated — fixture file missing?`);
+    }
+  }
+  if (seen.size === 0) {
+    failures.push('zero locales evaluated — the check ran against nothing');
+  }
+  if (failures.length > 0) {
+    console.error('\n✗ prompt-PII C0 eval gate FAILED:');
+    for (const f of failures) console.error(`  - ${f}`);
+    return 1;
+  }
+  console.log(
+    `\n✓ prompt-PII C0 eval gate: ${String(seen.size)} locale(s) at or above their committed floors`,
+  );
+  return 0;
+}
+
 async function main(): Promise<void> {
   const markdown = process.argv.includes('--markdown');
+  const check = process.argv.includes('--check');
   const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
   const locales = readdirSync(fixturesDir)
     .filter((f) => f.endsWith('.json'))
@@ -104,6 +169,9 @@ async function main(): Promise<void> {
 
   const allResults: SetResults[] = [];
   for (const [setName, detectors] of buildDetectorSets()) {
+    // `--check` gates the deterministic C0 set only — the c0+c1 sets depend
+    // on a live sidecar CI does not run.
+    if (check && setName !== 'c0') continue;
     if (!markdown) console.log(`\n########## detector set: ${setName} ##########`);
     // One un-timed warm-up call per set before measurement.
     await maskPrompt(WARMUP_TEXT, detectors);
@@ -116,6 +184,11 @@ async function main(): Promise<void> {
       if (!markdown) console.log(renderConsoleLocale(report, verdict));
     }
     allResults.push({ set: setName, locales: perLocale });
+  }
+
+  if (check) {
+    process.exitCode = runCheck(allResults[0]?.locales ?? []);
+    return;
   }
 
   if (markdown) {
