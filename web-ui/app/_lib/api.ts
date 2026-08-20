@@ -633,10 +633,16 @@ export async function createInstallJob(
 export async function configureInstallJob(
   jobId: string,
   values: Record<string, unknown>,
+  /** #603 (OM-17) — raw json_file documents keyed by setup-field key. Parsed
+   *  SERVER-side (size cap, `expect` check, path extraction); the derived
+   *  values then run through the same validation as typed input. */
+  jsonFiles?: Record<string, string>,
 ): Promise<InstallConfigureResponse> {
   return postJson<InstallConfigureResponse>(
     `/v1/install/jobs/${encodeURIComponent(jobId)}/configure`,
-    { values },
+    jsonFiles && Object.keys(jsonFiles).length > 0
+      ? { values, json_files: jsonFiles }
+      : { values },
   );
 }
 
