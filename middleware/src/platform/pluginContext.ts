@@ -514,11 +514,47 @@ export function createPluginContext(
     },
   };
 
+  // `permissions.public_paths` as declared in THIS plugin's manifest. Read
+  // once, from the same catalogue entry `toolPluginRuntime` later claims
+  // against, so the register-time gate and the activation-time claim can never
+  // disagree about what was declared.
+  const declaredPublicPaths: readonly string[] =
+    catalog.get(agentId)?.plugin.permissions_summary?.public_paths ?? [];
+
   // Routes accessor: append to the kernel's route queue. The kernel mounts
   // after all plugins have activated.
+  //
+  // Epic #470 C6 / G2+G3 — this layer, and only this layer, decides whether a
+  // plugin is ALLOWED to ask for `auth: 'public' | 'custom'` OR `body:'raw'`.
+  // The route registry is a generic Express concern that must not know about
+  // manifests; the grant registry cannot answer yet (claims happen AFTER
+  // activate(), by design — see toolPluginRuntime.activate). What exists at
+  // registration time is the manifest declaration, and it is the right gate:
+  // a plugin may only opt a prefix out of the kernel session gate, or ask for
+  // the global pre-auth raw-body slot, if it ASKED for that prefix in
+  // `permissions.public_paths`, which the operator saw in the install dialog.
+  //
+  // Declaration is necessary, not sufficient. Being served without a session
+  // additionally needs exclusive ownership and operator consent, both checked
+  // at request time by the C4 mount. And `body:'raw'` is just as operator-
+  // visible a decision: the prefix is buffered by a GLOBAL mount that runs
+  // before authentication, for anonymous callers, and it changes what every
+  // request under that prefix looks like. So the failure modes stack the safe
+  // way: declared-but-unconsented is claimed and unreachable-without-a-
+  // session; undeclared is not registerable at all.
   const routes: RoutesAccessor = {
-    register(prefix, router) {
-      return opts.routeRegistry.register(prefix, router, agentId);
+    register(prefix, router, options) {
+      const auth = options?.auth ?? 'session';
+      const body = options?.body ?? 'json';
+      if (auth !== 'session' || body === 'raw') {
+        assertPrefixIsDeclared(
+          agentId,
+          prefix,
+          auth !== 'session' ? `auth:'${auth}'` : `body:'${body}'`,
+          declaredPublicPaths,
+        );
+      }
+      return opts.routeRegistry.register(prefix, router, agentId, options);
     },
   };
 
@@ -1388,6 +1424,58 @@ export function createMigrationContext(
     toVersion: opts.toVersion,
     previousConfig: opts.previousConfig,
   };
+}
+
+/**
+ * Epic #470 C6 / G2+G3 — a route may only opt out of the kernel session gate,
+ * or ask for the pre-auth global raw-body slot, beneath a prefix the plugin
+ * declared in `permissions.public_paths`.
+ *
+ * The direction of the containment check is the point. We require the
+ * REGISTERED PREFIX to lie inside a DECLARED PATH, not the other way round.
+ * The inverse — "a declaration anywhere under this router makes the router
+ * public" — is the bug: a plugin declaring `/api/plugins/acme/webhook` would
+ * be able to register an unauthenticated router at `/api/plugins/acme` and
+ * serve its whole admin surface without a session. Requiring the prefix to sit
+ * inside the declaration means every URL the router can possibly answer was
+ * declared, and therefore shown to the operator.
+ *
+ * `body:'raw'` belongs behind the same gate for the same operator-visibility
+ * reason. The raw parse is not a local router concern; it happens in a GLOBAL
+ * mount before authentication, buffers bytes for anonymous callers, and
+ * changes what every request under that prefix looks like. That is exactly the
+ * kind of boundary decision an operator must have seen in the manifest.
+ *
+ * Throwing (rather than downgrading to `'session'`) is deliberate: a webhook
+ * receiver that silently acquires a session gate answers 401 to every delivery
+ * and looks like a broken integration. A plugin that mis-declares must fail to
+ * activate, loudly, at install time.
+ */
+function assertPrefixIsDeclared(
+  agentId: string,
+  prefix: string,
+  reason: string,
+  declared: readonly string[],
+): void {
+  const covered = declared.some((decl) => isPathUnderPrefix(prefix, decl));
+  if (covered) return;
+  throw new Error(
+    `routes.register: '${agentId}' asked for ${reason} at '${prefix}' but that prefix is not covered by any ` +
+      `permissions.public_paths declaration` +
+      (declared.length === 0
+        ? ' (the manifest declares none)'
+        : ` (declared: ${declared.join(', ')})`) +
+      ` — a plugin cannot change authentication or raw-body parsing at a prefix without an operator-visible declaration`,
+  );
+}
+
+/** `child` is `parent`, or sits beneath it on a segment boundary. Mirrors
+ *  `publicPathGrants.isUnderPrefix`; kept local so this module does not take a
+ *  dependency on the grant machinery for one three-line predicate. */
+function isPathUnderPrefix(child: string, parent: string): boolean {
+  if (child === parent) return true;
+  const withSlash = parent.endsWith('/') ? parent : `${parent}/`;
+  return child.startsWith(withSlash);
 }
 
 function memoryDeclared(agentId: string, catalog: PluginCatalog): boolean {

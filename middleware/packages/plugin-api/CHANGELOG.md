@@ -8,6 +8,37 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.1.0 — 2026-08-20
+
+Additive. Route registration gains an optional third argument; every existing
+`ctx.routes.register(prefix, router)` call site keeps compiling unchanged
+(epic #470, C6 — G2 route auth, G3 raw body).
+
+### Added
+
+- **`RouteAuthMode`** (`'session' | 'public' | 'custom'`) — the authentication
+  posture the kernel composes in front of a contributed router. Default
+  `'session'`, which is the previous behaviour made explicit. `'public'` and
+  `'custom'` additionally require the registered prefix to lie inside a
+  declared `permissions.public_paths` entry, checked at registration; being
+  *served* without a session still needs C4's exclusive prefix ownership plus
+  operator consent.
+- **`RouteBodyMode`** (`'json' | 'raw' | 'none'`) — which body parser runs
+  before the router. Default `'json'`, the previous behaviour. `'raw'` is
+  captured ahead of the kernel's global `express.json`, because a route-local
+  `express.raw()` cannot recover bytes body-parser has already marked
+  consumed — the reason HMAC-verifying webhooks could not be written as
+  plugins before.
+- **`RouteRegisterOptions`** — `{ auth?, body?, bodyLimit? }`, the optional
+  third parameter of `RoutesAccessor.register`. `bodyLimit` defaults to 10 MB
+  for `'json'` and **512 KB** for `'raw'`: a raw body is necessarily buffered
+  before authentication, so its ceiling is the anonymous one.
+
+The composition order around a contributed router is now fixed and documented
+on `RoutesAccessor`: `[deactivation guard] → [auth] → [body parser] → router`.
+The guard is first on purpose — a deactivated plugin's prefix answers 404
+before any auth logic or body buffering runs, rather than 401.
+
 ## 1.0.0 — 2026-08-20
 
 First stable cut of the contract. Two breaking changes are taken together,

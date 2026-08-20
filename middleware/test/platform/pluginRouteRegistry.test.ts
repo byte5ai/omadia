@@ -5,7 +5,7 @@ import http from 'node:http';
 import express, { Router } from 'express';
 import type { AddressInfo } from 'node:net';
 
-import { PluginRouteRegistry } from '../../src/platform/pluginRouteRegistry.js';
+import { newTestRouteRegistry } from '../_helpers/routeRegistry.js';
 
 interface BootedApp {
   url: string;
@@ -47,7 +47,7 @@ function makeRouter(body: string): Router {
 
 describe('PluginRouteRegistry', () => {
   it('mounts boot-time registered routers on the app', async () => {
-    const reg = new PluginRouteRegistry();
+    const reg = newTestRouteRegistry();
     reg.register('/api/foo', makeRouter('foo-pong'), 'foo-plugin');
     const app = express();
     reg.mountAll(app);
@@ -60,7 +60,7 @@ describe('PluginRouteRegistry', () => {
   });
 
   it('lists every registered entry for diagnostics', () => {
-    const reg = new PluginRouteRegistry();
+    const reg = newTestRouteRegistry();
     reg.register('/api/a', makeRouter('a'), 'a-plugin');
     reg.register('/api/b', makeRouter('b'), 'b-plugin');
     const list = reg.list();
@@ -71,7 +71,7 @@ describe('PluginRouteRegistry', () => {
   });
 
   it('lets dispose() neuter a boot-mounted router (404 pass-through)', async () => {
-    const reg = new PluginRouteRegistry();
+    const reg = newTestRouteRegistry();
     const dispose = reg.register('/api/foo', makeRouter('foo-pong'), 'foo-plugin');
     const app = express();
     reg.mountAll(app);
@@ -92,7 +92,7 @@ describe('PluginRouteRegistry', () => {
     // never reached Express, so hot-installed plugins (e.g. unifi-device-
     // tracker v0.2.0 admin UI) returned 404 on every request despite the
     // plugin's activate() having logged the mount as successful.
-    const reg = new PluginRouteRegistry();
+    const reg = newTestRouteRegistry();
     const app = express();
     reg.mountAll(app); // boot flush — registry has zero entries
     const booted = await bootApp(app);
@@ -114,7 +114,7 @@ describe('PluginRouteRegistry', () => {
   });
 
   it('rejects a non-Express router with a clear error', () => {
-    const reg = new PluginRouteRegistry();
+    const reg = newTestRouteRegistry();
     assert.throws(
       () => reg.register('/api/bad', { not: 'a router' }, 'bad-plugin'),
       /non-Express router/,
@@ -122,7 +122,7 @@ describe('PluginRouteRegistry', () => {
   });
 
   it('rejects a prefix that does not start with `/`', () => {
-    const reg = new PluginRouteRegistry();
+    const reg = newTestRouteRegistry();
     assert.throws(
       () => reg.register('api/missing-slash', makeRouter('x'), 'src'),
       /must start with/,
@@ -130,7 +130,7 @@ describe('PluginRouteRegistry', () => {
   });
 
   it('disposeBySource flips every still-active entry with the given source', () => {
-    const reg = new PluginRouteRegistry();
+    const reg = newTestRouteRegistry();
     reg.register('/api/a', makeRouter('a'), 'agent-X');
     reg.register('/api/b', makeRouter('b'), 'agent-X');
     const disposed = reg.disposeBySource('agent-X');
@@ -139,7 +139,7 @@ describe('PluginRouteRegistry', () => {
   });
 
   it('disposeBySource leaves entries with other sources alone', () => {
-    const reg = new PluginRouteRegistry();
+    const reg = newTestRouteRegistry();
     reg.register('/api/a', makeRouter('a'), 'agent-X');
     reg.register('/api/b', makeRouter('b'), 'agent-Y');
     const disposed = reg.disposeBySource('agent-X');
@@ -150,7 +150,7 @@ describe('PluginRouteRegistry', () => {
   });
 
   it('disposeBySource is idempotent — second call returns 0', () => {
-    const reg = new PluginRouteRegistry();
+    const reg = newTestRouteRegistry();
     reg.register('/api/a', makeRouter('a'), 'agent-X');
     assert.equal(reg.disposeBySource('agent-X'), 1);
     assert.equal(reg.disposeBySource('agent-X'), 0);

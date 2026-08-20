@@ -9,7 +9,8 @@ import type { AddressInfo } from 'node:net';
 import { createRequireAuth } from '../src/auth/requireAuth.js';
 import { EmailWhitelist } from '../src/auth/whitelist.js';
 import { publicPaths } from '../src/auth/publicPaths.js';
-import { PluginRouteRegistry } from '../src/platform/pluginRouteRegistry.js';
+import type { PluginRouteRegistry } from '../src/platform/pluginRouteRegistry.js';
+import { newTestRouteRegistry } from './_helpers/routeRegistry.js';
 import {
   PublicPathClaimError,
   PublicPathGrantRegistry,
@@ -278,7 +279,7 @@ describe('#470 C4/H1 — terminating early mount (production order)', () => {
   let dispose: () => void;
 
   beforeEach(() => {
-    routes = new PluginRouteRegistry();
+    routes = newTestRouteRegistry();
     grants = new PublicPathGrantRegistry();
     dispose = routes.register(PREFIX, pluginRouter(), 'acme');
   });
@@ -408,7 +409,7 @@ describe('#470 C4/H1 — COUNTER-PROOF: termination is load-bearing', () => {
    * skips auth", and it is why `auth/publicPaths.ts` stays a frozen literal.
    */
   it('with termination OFF the unhandled path escapes the mount', async () => {
-    const routes = new PluginRouteRegistry();
+    const routes = newTestRouteRegistry();
     const grants = new PublicPathGrantRegistry();
     routes.register(PREFIX, pluginRouter(), 'acme');
     grants.claim('acme', [PREFIX], {
@@ -425,7 +426,7 @@ describe('#470 C4/H1 — COUNTER-PROOF: termination is load-bearing', () => {
       withTermination.server.close();
     }
 
-    const routes2 = new PluginRouteRegistry();
+    const routes2 = newTestRouteRegistry();
     const grants2 = new PublicPathGrantRegistry();
     routes2.register(PREFIX, pluginRouter(), 'acme');
     grants2.claim('acme', [PREFIX], {
@@ -518,7 +519,7 @@ async function makeConsentHarness(opts: {
   granted: readonly string[];
   store: PublicPathGrantStore;
 }): Promise<ConsentHarness> {
-  const routes = new PluginRouteRegistry();
+  const routes = newTestRouteRegistry();
   routes.register(P_ONE, pluginRouter(), ACME);
   routes.register(P_TWO, pluginRouter(), ACME);
 
