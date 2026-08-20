@@ -63,6 +63,28 @@ it at all.
   an unbounded `pg_advisory_lock` inside a 10s `activate()` budget, and a retry that never
   read `pg_advisory_unlock`'s return value.
 
+### C4 / H1 — public-path grants (shipped)
+
+- **Manifest-declared, operator-consented public-path grants + exclusive prefix ownership +
+  the terminating early mount.** Closes G6. `permissions.public_paths` is a REQUEST; three
+  gates must all hold before a prefix is served without a session: declaration (zod-validated
+  shape), exclusive ownership (claimed at activation, first plugin wins, released on
+  deactivate), and operator consent (`plugin_public_path_grants`, migration `0044`).
+- **`auth/publicPaths.ts` stays a frozen literal, and both static exemptions stay** — they
+  leave in C12, not here. Making that list dynamic was rejected in `implementation.md` §1:
+  `requireAuth` runs before routing and cannot know who will answer, so a grant there says
+  "this URL needs no session" without saying "and only plugin A may answer it".
+- **The mount terminates.** An unhandled path under a granted prefix is answered 404 and does
+  NOT fall through into the authenticated stack. A counter-proof test disables termination
+  and shows the request escaping to `requireAuth`, so the guarantee is evidenced rather than
+  asserted. Two mutation checks confirm the suite fails when termination or the consent gate
+  is removed.
+- **Fail-closed:** no grants, no store, no registry, no live plugin — each is a `next()` into
+  `requireAuth`. No failure mode of the new machinery yields less authentication than a build
+  without it.
+- Unknown `permissions.*` keys now warn instead of vanishing silently (`implementation.md`
+  §2.5). Ratchet unchanged at 3296.
+
 ### Still held back
 
 - **DynamicAgentRuntime rollback** — two attempts rejected. The current one does not cover
