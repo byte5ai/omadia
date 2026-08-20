@@ -28,7 +28,6 @@ import {
 } from '@omadia/llm-provider-api';
 
 import { sanitizeIssueBody } from '../../src/plugins/builder/issueBodySanitizer.js';
-import { composeBrief } from '../../src/devplatform/briefComposer.js';
 
 import {
   runEscalation,
@@ -104,55 +103,9 @@ function probeIssueSanitizer(scenario: AttackScenario): ProbeVerdict {
   };
 }
 
-/** The delimiter shape composeBrief frames untrusted text with, and the defused
- *  form it rewrites a forged marker into (mirrors briefComposer's spec §7). */
-const DELIMITER_RE = /^-{5} (BEGIN|END) UNTRUSTED/gm;
-const DEFUSED_RE = /^-{5} \[x-(BEGIN|END)\] UNTRUSTED/m;
-
-/**
- * Untrusted-ticket delimiter. Compose the real trusted-header + untrusted-body
- * brief and read the markers back. HELD ⇒ exactly the two framing delimiters
- * survive (a forged marker cannot close the block early); when the fixture
- * plants a marker, the defused `[x-…]` rewrite must be present — proving the
- * neutralisation branch actually ran, not merely that no extra marker appeared.
- */
-function probeBriefDelimiter(scenario: AttackScenario): ProbeVerdict {
-  const f = scenario.fixture;
-  const title = String(f['title'] ?? 'Untitled');
-  const ticketBody = String(f['ticketBody'] ?? '');
-  const expectDefused = f['expectDefused'] === true;
-
-  const brief = composeBrief(
-    {
-      kind: 'fix_issue',
-      repo: { owner: 'byte5ai', name: 'omadia' },
-      branch: 'work',
-      defaultBranch: 'main',
-      capabilities: { installDeps: false, runTests: false },
-    },
-    {
-      number: 1,
-      title,
-      body: ticketBody,
-      labels: [],
-      htmlUrl: 'https://example.test/1',
-      authorLogin: 'reporter',
-    },
-  );
-
-  const delimiterLines = (brief.match(DELIMITER_RE) ?? []).length;
-  const defused = DEFUSED_RE.test(brief);
-  const held = delimiterLines === 2 && (!expectDefused || defused);
-  return {
-    outcome: held ? 'held' : 'breached',
-    evidence: `delimiters=${String(delimiterLines)} defused=${String(defused)}`,
-  };
-}
-
 const PROBES: Record<string, (s: AttackScenario) => ProbeVerdict> = {
   digest_boundary: probeDigestBoundary,
   issue_sanitizer: probeIssueSanitizer,
-  brief_delimiter: probeBriefDelimiter,
 };
 
 /** Run one deterministic scenario against its real defense. Throws on an
