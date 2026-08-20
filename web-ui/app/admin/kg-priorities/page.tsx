@@ -146,7 +146,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
     <main className="mx-auto max-w-[1200px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Knowledge-Graph Priorities
+          {t('title')}
         </h1>
         <p className="mt-3 max-w-3xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
           {t('intro')}
@@ -194,8 +194,8 @@ export default function KgPrioritiesPage(): React.ReactElement {
             onChange={(e) => { setDraftAction(e.target.value as 'block' | 'boost'); }}
             className="lg:col-span-2 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-sm text-[color:var(--fg-strong)]"
           >
-            <option value="block">block</option>
-            <option value="boost">boost</option>
+            <option value="block">{t('actionBlock')}</option>
+            <option value="boost">{t('actionBoost')}</option>
           </select>
           <input
             type="number"
@@ -215,7 +215,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
             type="text"
             value={draftReason}
             onChange={(e) => { setDraftReason(e.target.value); }}
-            placeholder="Reason (optional)"
+            placeholder={t('reasonPlaceholder')}
             className="lg:col-span-3 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-sm text-[color:var(--fg-strong)]"
           />
           <Button
@@ -241,11 +241,11 @@ export default function KgPrioritiesPage(): React.ReactElement {
         <table className="w-full text-sm">
           <thead className="border-b border-[color:var(--border)] text-left text-[color:var(--fg-muted)]">
             <tr>
-              <th className="px-4 py-3 font-semibold">Entry External ID</th>
-              <th className="px-4 py-3 font-semibold">Action</th>
-              <th className="px-4 py-3 font-semibold">Weight</th>
-              <th className="px-4 py-3 font-semibold">Reason</th>
-              <th className="px-4 py-3 font-semibold">Updated</th>
+              <th className="px-4 py-3 font-semibold">{t('colEntryExternalId')}</th>
+              <th className="px-4 py-3 font-semibold">{t('colAction')}</th>
+              <th className="px-4 py-3 font-semibold">{t('colWeight')}</th>
+              <th className="px-4 py-3 font-semibold">{t('colReason')}</th>
+              <th className="px-4 py-3 font-semibold">{t('colUpdated')}</th>
               <th className="px-4 py-3"></th>
             </tr>
           </thead>

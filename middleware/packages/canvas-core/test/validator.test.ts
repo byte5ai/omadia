@@ -35,6 +35,38 @@ describe('validateTree (whitelist parser)', () => {
       }).ok,
     ).toBe(false);
   });
+
+  // icon trait (canvas-protocol §12) — additive 1.1 vocabulary carried in the 1.0 whitelist.
+  it('accepts the icon + iconState trait on a primitive', () => {
+    expect(validateTree({ type: 'button', label: 'Play', icon: 'app:play', iconState: 'active' }).ok).toBe(true);
+  });
+  it('accepts a lib: icon ref', () => {
+    expect(validateTree({ type: 'status', text: 'Synced', icon: 'lib:cloud-check' }).ok).toBe(true);
+  });
+  it('rejects an icon ref outside the app:/lib: namespaces', () => {
+    expect(validateTree({ type: 'button', label: 'x', icon: 'https://evil/icon.svg' }).ok).toBe(false);
+  });
+  it('rejects the deferred gen: prefix until the §6 sanitised-SVG + consent review lands', () => {
+    expect(validateTree({ type: 'button', label: 'x', icon: 'gen:sparkles' }).ok).toBe(false);
+  });
+  it('rejects iconState without an icon (dependentRequired)', () => {
+    expect(validateTree({ type: 'button', label: 'x', iconState: 'active' }).ok).toBe(false);
+  });
+  it('rejects an unknown iconState value', () => {
+    expect(validateTree({ type: 'button', label: 'x', icon: 'app:play', iconState: 'blinking' }).ok).toBe(false);
+  });
+
+  // chart spark variant — state-as-glyph.
+  it('accepts the spark chart variant', () => {
+    expect(
+      validateTree({ type: 'chart', chartType: 'line', variant: 'spark', points: [{ pointKey: 'p1' }] }).ok,
+    ).toBe(true);
+  });
+  it('rejects an unknown chart variant', () => {
+    expect(
+      validateTree({ type: 'chart', chartType: 'line', variant: 'gauge', points: [{ pointKey: 'p1' }] }).ok,
+    ).toBe(false);
+  });
 });
 
 describe('validateSurfaceEvent', () => {

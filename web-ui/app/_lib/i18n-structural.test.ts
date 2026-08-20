@@ -18,6 +18,10 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+// Typed by `scripts/i18n-literal-scan.d.mts` — the scanner stays plain JS so it
+// runs with a bare `node scripts/…`, but the test still typechecks against it.
+import { scanFile } from '../../scripts/i18n-literal-scan.mjs';
+
 import { isSeededAgentDescription } from './agents';
 
 const APP_DIR = path.resolve(__dirname, '..');
@@ -117,15 +121,41 @@ describe('#679 / I5 — the boot-seeded agent description is recognised', () => 
 });
 
 describe('#679 / I3 — swept components carry no user-facing literals', () => {
-  it('ListView renders no German literal', () => {
-    // This component held three German sentences — the rule in
-    // `web-ui/CLAUDE.md` broken twice over: hardcoded, and hardcoded in the
-    // language that is supposed to exist only in `messages/de.json`.
-    const src = read('graph/_components/ListView.tsx');
+  // #687 — the previous form of this guard named three literal strings and
+  // asserted they were gone. It passed while a FOURTH German sentence sat 100
+  // lines below in the same file, in a sibling component that never called
+  // `useTranslations` at all. A guard built from a hand-made list only ever
+  // guards what happened to be on the list.
+  //
+  // So the ratchet now asks the scanner the same question the CLI asks:
+  // does this file still contain a user-facing literal? Files join `SWEPT`
+  // once they answer no, and can never silently regress afterwards.
+  const SWEPT_COMPONENTS = [
+    'graph/_components/ListView.tsx',
+    'graph/_components/GraphCanvas.tsx',
+    'admin/duplicates/[id]/page.tsx',
+    'admin/duplicates/excerpt/[id]/page.tsx',
+    'admin/inconsistencies/[id]/page.tsx',
+    'admin/kg-priorities/page.tsx',
+    'system/_components/VaultStatusCard.tsx',
+  ];
 
-    expect(src).not.toContain('keine Entities in diesem Turn');
-    expect(src).not.toContain('lade Run…');
-    expect(src).not.toContain('keine Run-Trace erfasst');
-    expect(src).toContain("useTranslations('graph.listView')");
+  for (const file of SWEPT_COMPONENTS) {
+    it(`${file} has no untranslated user-facing literal`, () => {
+      const { hits } = scanFile(file);
+      const actionable = hits
+        .filter((h) => h.reason === 'translate' || h.reason === 'review')
+        .map((h) => `${String(h.line)}: ${h.text}`);
+
+      expect(actionable).toEqual([]);
+    });
+  }
+
+  it('ListView resolves its strings through the catalogue', () => {
+    // The other direction: a file could satisfy the check above by deleting
+    // its text instead of translating it.
+    expect(read('graph/_components/ListView.tsx')).toContain(
+      "useTranslations('graph.listView')",
+    );
   });
 });

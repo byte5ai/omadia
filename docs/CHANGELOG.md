@@ -18,6 +18,47 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — a command policy that reads what a command actually does
+
+- **Shell-normalizing command policy (#580).** Command gating is not
+  regex-on-the-raw-string: `r""m -rf /`, `rm${IFS}-rf${IFS}/`, `$'\x72\x6d' -rf /`
+  and `$(printf rm) -rf /` are the same command wearing four disguises, and a
+  naive `includes('rm -rf')` misses every one. The new primitive **normalizes
+  first** — unwraps quoting, decodes ANSI-C `$'…'`, collapses `${IFS}` to a field
+  split, recurses into `$(…)` and backticks — then tokenizes, and only then runs
+  the rule cascade (org floor → org allowlist → scope rules → default).
+- **The org floor holds in every posture.** Recursive `rm`, `git push --force`,
+  destructive SQL, fork bombs and pipe-to-shell are denied with no caller flag
+  that turns them off — a `dangerous` posture is not an exemption. The shipped
+  floor is **deep-frozen**, so no caller can flip a rule from `deny` to `allow`
+  on the shared value.
+- **A command that could not be fully read is refused, not cleared.** When
+  substitution nesting passes the depth cap the normalizer reports `truncated`;
+  the enforcement seam treats that as suspicious rather than clean, because a
+  floored command could be hiding below the cap (`$($($(…rm -rf…)))`).
+- **This is a speed bump, not a sandbox boundary** — the framing is borrowed
+  from qm's own SECURITY.md, and it is the honest one. Unresolved variables,
+  `eval` of a computed string and exotic here-docs are documented blind spots;
+  the durable sandbox is the real containment.
+- The enforcement seam is **honest-inert**: omadia ships no shell-execute tool
+  yet, and with no policy provider installed the guard is a no-op. Nothing
+  changes for any existing turn.
+
+### Changed — a restricted room keeps the curated knowledge it is entitled to
+
+- **`sharedOnly` recall (#575).** Narrowing a room to its own conversation used
+  to drop curated memory entirely along with the other cross-session legs. But
+  curated memory is **tiered**: `team` / `public` knowledge is shared by
+  construction, so a restricted room may have it — only rows the recalling user
+  privately owns are off-limits.
+- **`sharedOnly` is not the opposite of `teamVisibility`.** The latter *widens*
+  the ACL (owner rows plus shared ones); this *narrows* it to the shared tier
+  alone. They answer different questions, and the audience floor needs the
+  second one: "what may **everyone present** see?"
+- `sharedOnly` **implies** the shared branch in every implementation — asking
+  for shared rows while that branch is off would silently return only the
+  viewer's own shared rows, a misconfiguration with no legitimate use.
+
 ### Fixed — shielded result tables no longer render blank columns
 
 - **Masked columns came out empty on the canvas (#326).** A privacy-shield

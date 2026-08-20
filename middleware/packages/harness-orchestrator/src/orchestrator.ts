@@ -41,6 +41,7 @@ import {
   type SecurityAuditEvent,
   type ScreenOutcome,
 } from './securityScreener.js';
+import { recordScreenOutcome } from './securityScreenMetrics.js';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { LlmProvider } from '@omadia/llm-provider';
 import type {
@@ -212,6 +213,7 @@ import {
   createAudienceFloorProvider,
   knowledgeGraphPrincipalResolver,
 } from './audienceFloorProvider.js';
+import { guardToolCommands } from './commandPolicyGuard.js';
 import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
@@ -3055,10 +3057,22 @@ export class Orchestrator {
     } else if (hasScreenableContent(pairs)) {
       // Screening is ON and there is non-human content, but no screener is
       // wired → UNSCREENABLE. Fail open with evidence, never silently clear.
-      outcome = { status: 'unscreenable', reason: 'no screener configured' };
+      outcome = {
+        status: 'unscreenable',
+        reason: 'no screener configured',
+        cause: 'not-configured',
+      };
     } else {
       outcome = { status: 'allow' };
     }
+
+    // #749 — count every resolved attempt before acting on it. The fail-open
+    // policy below is unchanged; this only makes its exercise visible, so a
+    // screener that fails on EVERY turn stops looking like one that failed once.
+    recordScreenOutcome(
+      outcome.status,
+      outcome.status === 'unscreenable' ? outcome.cause : undefined,
+    );
 
     switch (outcome.status) {
       case 'allow':
@@ -3082,6 +3096,7 @@ export class Orchestrator {
           mode: setup.mode,
           posture,
           reason: outcome.reason,
+          cause: outcome.cause,
           ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
           sourceTags,
         });
@@ -6062,6 +6077,14 @@ export class Orchestrator {
     // is a TOCTOU hole. Inert unless an audience source is installed.
     const refusal = await guardToolEgress(name);
     if (refusal !== undefined) return refusal;
+
+    // #580 — the command policy's enforcement seam, at the same choke point.
+    // Normalizes any command-shaped argument (unwrapping quoting/substitution)
+    // and applies the org floor + cascade. Inert unless a policy provider is
+    // installed AND the tool input carries a command field — no shell-execute
+    // tool ships yet, so this is a no-op in every current deployment.
+    const policyRefusal = await guardToolCommands(name, input);
+    if (policyRefusal !== undefined) return policyRefusal;
 
     const timeoutMs = resolveToolDispatchTimeoutMs();
     if (timeoutMs === 0) {

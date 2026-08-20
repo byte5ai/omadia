@@ -95,7 +95,13 @@ export function resolveEffectivePosture(setup: SecurityPostureSetup): SecurityPo
 export type ScreenOutcome =
   | { readonly status: 'allow' }
   | { readonly status: 'quarantine'; readonly reason: string }
-  | { readonly status: 'unscreenable'; readonly reason: string };
+  | {
+      readonly status: 'unscreenable';
+      readonly reason: string;
+      /** #749 — structured counterpart to `reason`, so an operator dashboard
+       *  can separate "misconfigured" from "busy" without parsing prose. */
+      readonly cause: ScreenFailureCause;
+    };
 
 /**
  * A clock-free security audit record. Emitted (fire-and-forget) on a quarantine
@@ -111,6 +117,8 @@ export interface SecurityAuditEvent {
   readonly mode: SecurityScreenMode;
   readonly posture: SecurityPosture;
   readonly reason: string;
+  /** Present only on `kind: 'unscreenable'` — see {@link ScreenFailureCause}. */
+  readonly cause?: ScreenFailureCause;
   readonly sessionScope?: string;
   readonly sourceTags: readonly string[];
 }
@@ -141,7 +149,7 @@ export async function screenProvenance(
       ? { status: 'quarantine', reason: verdict.reason }
       : { status: 'allow' };
   } catch (err) {
-    return { status: 'unscreenable', reason: errorText(err) };
+    return { status: 'unscreenable', reason: errorText(err), cause: screenFailureCause(err) };
   }
 }
 
@@ -168,6 +176,67 @@ export const SCREEN_SYSTEM_PROMPT = [
 ].join('\n');
 
 /**
+ * Why a screening attempt produced `unscreenable`.
+ *
+ * #749 — the point of the distinction is that these demand DIFFERENT operator
+ * responses, and collapsing them into one free-text `reason` made that
+ * undecidable without string-matching:
+ *
+ *  - `provider-rejected` — the provider refused the request and will keep
+ *    refusing it (auth, a bad parameter, an unknown model). **A configuration
+ *    bug to fix**, and the shape that made screening a silent no-op before
+ *    #748: the request was malformed on every single turn.
+ *  - `provider-unavailable` — retryable (rate limit, overload, 5xx). Capacity,
+ *    not configuration.
+ *  - `proxy-unreachable` — the external screening proxy answered non-2xx or
+ *    could not be reached.
+ *  - `unparseable-verdict` — the judge answered, but not in the contract. A
+ *    prompt/model problem, not a transport one.
+ *  - `not-configured` — screening is on for this posture and there is non-human
+ *    content, but no screener is wired. Nothing is broken; nothing is running.
+ *  - `unknown` — everything else, kept explicit so an unclassified failure is
+ *    visible as unclassified rather than silently folded into a real cause.
+ */
+export type ScreenFailureCause =
+  | 'not-configured'
+  | 'provider-rejected'
+  | 'provider-unavailable'
+  | 'proxy-unreachable'
+  | 'unparseable-verdict'
+  | 'unknown';
+
+/**
+ * An error that carries its {@link ScreenFailureCause}.
+ *
+ * The classification is attached where the knowledge lives — inside the
+ * screener, which holds the provider and can call its `classifyError` — rather
+ * than reconstructed later by matching on a message string. `screenProvenance`
+ * only reads the tag.
+ */
+export class ScreenerFailure extends Error {
+  /**
+   * Deliberately NOT named `cause`: `Error.cause` is the standard slot for the
+   * underlying exception, and narrowing it to a string union would both need an
+   * `override` and mislead anyone who expects an error there.
+   */
+  readonly failureCause: ScreenFailureCause;
+
+  constructor(cause: ScreenFailureCause, message: string, options?: { readonly from?: unknown }) {
+    super(message, options?.from === undefined ? undefined : { cause: options.from });
+    this.name = 'ScreenerFailure';
+    this.failureCause = cause;
+    if (options?.from instanceof Error && options.from.stack !== undefined) {
+      this.stack = options.from.stack;
+    }
+  }
+}
+
+/** The tag off an error, or `'unknown'` for anything not classified at source. */
+export function screenFailureCause(err: unknown): ScreenFailureCause {
+  return err instanceof ScreenerFailure ? err.failureCause : 'unknown';
+}
+
+/**
  * Parse the judge's single-line verdict. `QUARANTINE: reason` → quarantine;
  * `ALLOW` → allow. Anything else is UNPARSEABLE and throws — the caller turns
  * that into `unscreenable` (fail open), never a silent allow: an
@@ -181,7 +250,10 @@ export function parseVerdict(raw: string): SecurityVerdict {
     return { decision: 'quarantine', reason: reason.length > 0 ? reason : 'flagged by judge' };
   }
   if (/^allow\b/i.test(line)) return { decision: 'allow' };
-  throw new Error(`unparseable screening verdict: ${JSON.stringify(line.slice(0, 80))}`);
+  throw new ScreenerFailure(
+    'unparseable-verdict',
+    `unparseable screening verdict: ${JSON.stringify(line.slice(0, 80))}`,
+  );
 }
 
 /** Options for {@link LlmScreener}. */
@@ -217,7 +289,20 @@ export class LlmScreener implements SecurityScreener {
       maxTokens: this.#maxTokens,
       temperature: 0,
     };
-    const res = await this.#provider.complete(req);
+    let res;
+    try {
+      res = await this.#provider.complete(req);
+    } catch (err) {
+      // The provider knows its own errors; ask it rather than reading the
+      // message. `retryable` is the axis that matters here — a non-retryable
+      // rejection repeats on every turn and is an operator's job to fix.
+      const classified = this.#provider.classifyError?.(err);
+      throw new ScreenerFailure(
+        classified?.retryable === true ? 'provider-unavailable' : 'provider-rejected',
+        err instanceof Error ? err.message : String(err),
+        { from: err },
+      );
+    }
     return parseVerdict(collectText(res.content));
   }
 }
@@ -296,7 +381,9 @@ export class HttpProxyScreener implements SecurityScreener {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ payload }),
     });
-    if (!res.ok) throw new Error(`screen proxy HTTP ${res.status}`);
+    if (!res.ok) {
+      throw new ScreenerFailure('proxy-unreachable', `screen proxy HTTP ${String(res.status)}`);
+    }
     const body = (await res.json()) as { decision?: unknown; reason?: unknown };
     if (body.decision === 'quarantine') {
       const reason = typeof body.reason === 'string' && body.reason.trim().length > 0

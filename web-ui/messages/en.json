@@ -1373,7 +1373,13 @@
       "factHintTags": "'<palaia-hint>' tags"
     },
     "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
-    "errorCorrelationRef": "Reference for support: {id}"
+    "errorCorrelationRef": "Reference for support: {id}",
+    "routing": {
+      "classifierTooltip": "Triage classifier: {classifier} → {bucket} → {model}",
+      "bucketSimple": "simple",
+      "bucketComplex": "complex",
+      "bucketFallback": "Fallback"
+    }
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -3156,6 +3162,9 @@
       "dontSet": "(leave unset)",
       "noPasswordWarning": "No account password belongs here. This expects a technical key from the provider's console.",
       "patternUnavailable": "This field declares a format check that could not be applied — its value is not validated."
+    },
+    "adminUi": {
+      "iframeTitle": "{plugin} admin UI"
     }
   },
   "adminAuth": {
@@ -4243,7 +4252,11 @@
         }
       },
       "openMemory": "View memory →",
-      "memoryUnavailable": "Memory not accessible (deleted or no owner)."
+      "memoryUnavailable": "Memory not accessible (deleted or no owner).",
+      "memoryA": "Memory A",
+      "memoryB": "Memory B",
+      "status": "Status",
+      "resolution": "Resolution"
     },
     "excerptDetail": {
       "title": "Resolve excerpt duplicate",
@@ -4273,7 +4286,11 @@
       "excerptUnavailable": "Excerpt not accessible (deleted or no owner).",
       "positionLine": "Position {position} · {source}",
       "quotedText": "“{text}”",
-      "parentMemory": "Parent memory: {summary}"
+      "parentMemory": "Parent memory: {summary}",
+      "excerptA": "Excerpt A",
+      "excerptB": "Excerpt B",
+      "status": "Status",
+      "resolution": "Resolution"
     }
   },
   "adminInconsistencies": {
@@ -4332,7 +4349,12 @@
         }
       },
       "openMemory": "View memory →",
-      "memoryUnavailable": "Memory not accessible (deleted or no owner)."
+      "memoryUnavailable": "Memory not accessible (deleted or no owner).",
+      "memoryA": "Memory A",
+      "memoryB": "Memory B",
+      "severity": "Severity",
+      "status": "Status",
+      "resolution": "Resolution"
     }
   },
   "adminKgLifecycle": {
@@ -4394,7 +4416,16 @@
     "newEntryTitle": "New entry",
     "weightIgnoredTitle": "weight ignored for block",
     "weightMultiplierTitle": "score multiplier",
-    "empty": "No entries for this agent."
+    "empty": "No entries for this agent.",
+    "title": "Knowledge Graph priorities",
+    "colEntryExternalId": "Entry external ID",
+    "actionBlock": "block",
+    "actionBoost": "boost",
+    "reasonPlaceholder": "Reason (optional)",
+    "colAction": "Action",
+    "colWeight": "Weight",
+    "colReason": "Reason",
+    "colUpdated": "Updated"
   },
   "adminMemoryBackend": {
     "title": "Memory · Storage Backend",
@@ -4540,7 +4571,11 @@
         "excerptDuplicate": "Excerpt duplicate",
         "planStep": "Plan step",
         "hasTopicTransitive": "HAS_TOPIC (excerpt, transitive)"
-      }
+      },
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "fit": "Fit",
+      "relayout": "Re-layout"
     },
     "detailPanel": {
       "manualTitle": "manually captured — score boost ×1.3 in the token-budget assembler",
@@ -4572,7 +4607,13 @@
       "runTrace": "Run trace",
       "noEntities": "No entities in this turn",
       "loadingRun": "loading run…",
-      "noRunTrace": "No run trace recorded"
+      "noRunTrace": "No run trace recorded",
+      "noToolCalls": "Run without tool calls (plain text answer)",
+      "toolsLabel": "tools={count}",
+      "iterations": "{count} iter",
+      "orchestratorTools": "Orchestrator tools",
+      "toolCalls": "{count, plural, one {# tool call} other {# tool calls}}",
+      "userTooltip": "User: {user}"
     }
   },
   "memory": {
@@ -4781,7 +4822,11 @@
       "dotDanger": "Error",
       "dotInactive": "Inactive",
       "keySourceDevFile": "dev file (not for production)",
-      "keySourceDevFileCreated": "dev file (newly generated — DEV ONLY)"
+      "keySourceDevFileCreated": "dev file (newly generated — DEV ONLY)",
+      "eyebrow": "Encrypted secret vault",
+      "heading": "Vault",
+      "bucket": "Bucket",
+      "prefix": "Prefix"
     }
   },
   "help": {

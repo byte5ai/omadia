@@ -148,6 +148,13 @@ export interface ContextBuildInput {
   userMessage: string;
   sessionScope?: string;
   userId?: string;
+  /**
+   * #575 — curated-memory recall admits only SHARED knowledge (`team` /
+   * `public`), never a row the recalling user merely owns. Set by the
+   * assembler when the room is restricted; see the field of the same name on
+   * {@link AssembleForBudgetInput}.
+   */
+  sharedRecallOnly?: boolean;
   /** External id of the turn currently being answered — excluded from hits. */
   currentTurnId?: string;
   /**
@@ -259,6 +266,17 @@ export interface AssembleForBudgetInput {
    * the floor and every 1:1 conversation.
    */
   restrictToScope?: string;
+  /**
+   * #575 — curated-memory recall admits only SHARED knowledge (`team` /
+   * `public`), never a row the recalling user merely owns.
+   *
+   * Set alongside {@link restrictToScope}: a room that may not reach outside
+   * itself is equally not entitled to one participant's private knowledge, and
+   * recall is ACL-gated by that participant. Unlike the turn legs this does not
+   * drop the leg — shared knowledge is shared by construction, so the room
+   * keeps it.
+   */
+  sharedRecallOnly?: boolean;
   /** Optional override; otherwise `defaultBudgetTokens` from ContextRetriever-Opts. */
   budget?: { tokens: number };
 }
@@ -564,9 +582,15 @@ export class ContextRetriever {
     // rendered as their own blocks, so the scope filter further down would never
     // see them — gating here is what makes that filter honest rather than
     // partial.
-    const runCrossSessionRecall =
-      input.restrictToScope === undefined &&
-      (!this.opts.recallRequiresTerms || extractedTerms.length > 0);
+    const hasTopicalAnchor = !this.opts.recallRequiresTerms || extractedTerms.length > 0;
+    const runCrossSessionRecall = input.restrictToScope === undefined && hasTopicalAnchor;
+    // #575 — curated memory is TIERED, unlike plans and processes: `team` /
+    // `public` knowledge is shared by construction, and a restricted room is
+    // entitled to it. So the memory leg narrows rather than dying with the
+    // others — the same "narrow instead of skip" step this whole cluster is
+    // built on, one level deeper.
+    const runMemoryRecall = hasTopicalAnchor;
+    const sharedRecallOnly = input.restrictToScope !== undefined;
     const emptyPlans: Promise<RecalledPlan[]> = Promise.resolve([]);
     const emptyProcesses: Promise<RecalledProcess[]> = Promise.resolve([]);
     const emptyMemory: Promise<MemoryRecallHit[]> = Promise.resolve([]);
@@ -587,7 +611,9 @@ export class ContextRetriever {
       this.loadAgentPriorities(input.agentId),
       runCrossSessionRecall ? this.loadPlanHits(buildInput) : emptyPlans,
       runCrossSessionRecall ? this.loadProcessHits(buildInput) : emptyProcesses,
-      runCrossSessionRecall ? this.loadMemoryHits(buildInput) : emptyMemory,
+      runMemoryRecall
+        ? this.loadMemoryHits({ ...buildInput, ...(sharedRecallOnly ? { sharedRecallOnly } : {}) })
+        : emptyMemory,
       this.loadDurableHits(buildInput),
     ]);
 
@@ -1220,6 +1246,7 @@ export class ContextRetriever {
         this.graph.searchMemorableKnowledgeByEmbedding({
           queryEmbedding: queryVector,
           viewerOmadiaUserId: input.userId,
+          ...(input.sharedRecallOnly ? { sharedOnly: true } : {}),
           limit: overshoot,
           minSimilarity: this.opts.memoryMinSimilarity,
           teamVisibility: this.opts.teamVisibility,
@@ -1228,6 +1255,7 @@ export class ContextRetriever {
         this.graph.searchExcerptsByEmbedding({
           queryEmbedding: queryVector,
           viewerOmadiaUserId: input.userId,
+          ...(input.sharedRecallOnly ? { sharedOnly: true } : {}),
           limit: excerptOvershoot,
           minSimilarity: this.opts.memoryMinSimilarity,
           teamVisibility: this.opts.teamVisibility,

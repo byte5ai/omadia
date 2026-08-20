@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { AudienceFloorProvider } from './audienceFloorGuard.js';
+import type { CommandPolicyProvider } from './commandPolicyGuard.js';
 import type { ChatParticipantsProvider } from './chatParticipants.js';
 import type { McpInputSentinelMint } from './mcp/pendingMcpInput.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
@@ -98,6 +99,18 @@ export interface TurnContextValue {
    * Same shape and same reasoning as `privacyHandle` below.
    */
   audienceFloor?: AudienceFloorProvider;
+  /**
+   * #580 — resolves the shell-normalizing command policy in force for this turn.
+   * Read PER tool dispatch by `commandPolicyGuard.guardToolCommands`, which
+   * normalizes any command-shaped argument and applies the org floor + cascade.
+   *
+   * `undefined` when no policy provider is installed, and — exactly like
+   * `audienceFloor` above — that means the policy is **not enforced**, not that
+   * every command is denied. No shell-execute tool ships yet, so this is inert in
+   * every current deployment; the seam exists so the primitive plugs straight in
+   * when an execute (or command-carrying connector) tool lands.
+   */
+  commandPolicy?: CommandPolicyProvider;
   /**
    * Privacy-Proxy Slice 2.1: per-turn privacy handle threaded through the
    * call tree so every tool-dispatch site can intern raw tool results
