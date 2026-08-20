@@ -58,6 +58,9 @@ export * from './agentPriorities.js';
 // renderers build against the fixtures here.
 export * from './privacyReceipt.js';
 export * from './privacyReceiptFixtures.js';
+// #757 — persistent per-turn audit receipts (kernel-provided store the
+// orchestrator resolves late-bound; receipts stay ephemeral when absent).
+export * from './turnReceiptStore.js';
 
 // Slice 2.5 — operator-owned per-plugin Privacy Mode contract. Shared by
 // the orchestrator dispatch hook (resolves mode at dispatch time) and the
