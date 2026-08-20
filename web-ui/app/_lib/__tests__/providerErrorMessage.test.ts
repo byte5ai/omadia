@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   extractProviderErrorMessage,
   humanizeProviderError,
+  isProviderAuthError,
 } from '../providerErrorMessage';
 
 /**
@@ -116,5 +117,30 @@ describe('humanizeProviderError', () => {
     expect(
       humanizeProviderError('503 {"error":{"type":"overloaded_error"}}', 'fallback'),
     ).toBe('fallback');
+  });
+});
+
+describe('isProviderAuthError', () => {
+  // Real strings observed in the wild (v0.58.0 field test + 2026-08-20
+  // packaged-app retest). The classifier keys on the error's SHAPE — status,
+  // error type, key-phrasings — never on full-sentence equality.
+  it.each([
+    ['bare middleware sentence', 'API key is invalid.'],
+    ['Anthropic raw 401 envelope', '401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}'],
+    ['extracted Anthropic sentence', 'invalid x-api-key'],
+    ['expired key phrasing', 'The provided API key has expired'],
+    ['German admin phrasing', 'Der Provider hat diesen API-Key abgelehnt'],
+  ])('classifies as auth: %s', (_label, raw) => {
+    expect(isProviderAuthError(raw)).toBe(true);
+  });
+
+  it.each([
+    ['rate limit envelope', '429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of requests has exceeded your rate limit"}}'],
+    ['overloaded', '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'],
+    ['generic transport', 'HTTP 502'],
+    ['app message mentioning a key innocently', 'Der Skill beschreibt, wie ein API-Key sicher gespeichert wird.'],
+    ['empty', ''],
+  ])('does NOT classify as auth: %s', (_label, raw) => {
+    expect(isProviderAuthError(raw)).toBe(false);
   });
 });

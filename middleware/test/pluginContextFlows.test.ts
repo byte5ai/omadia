@@ -84,6 +84,9 @@ function makeCatalog(id: string, flows: boolean): PluginCatalog {
     manifest: {},
     source_path: `/abs/${id}/manifest.yaml`,
     source_kind: 'manifest-v1',
+    // #794 — test fixtures are unprivileged: only the built-in package
+    // store may assert 'bundled'.
+    origin: 'installed',
   } as unknown as PluginCatalogEntry;
   return {
     list: () => [entry],

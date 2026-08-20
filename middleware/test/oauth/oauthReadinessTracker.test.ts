@@ -47,7 +47,14 @@ function entryWithFields(fields: Array<Record<string, unknown>>): PluginCatalogE
     },
     setup: { fields },
   })!;
-  return { plugin, manifest: {}, source_path: '/dev/null', source_kind: 'manifest-v1' };
+  // #794 — an unprivileged fixture: only the built-in package store asserts 'bundled'.
+  return {
+    plugin,
+    manifest: {},
+    source_path: '/dev/null',
+    source_kind: 'manifest-v1',
+    origin: 'installed',
+  };
 }
 
 describe('OAuthReadinessTracker', () => {

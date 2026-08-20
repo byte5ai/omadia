@@ -23,6 +23,9 @@
  * invented here:
  *
  *   - `requires: ["knowledgeGraph@^1"]` grants `get('knowledgeGraph')`.
+ *   - `optional_requires: ["turnContext@1"]` grants `get('turnContext')` and
+ *     `getOptional('turnContext')` without making the capability an
+ *     activation prerequisite (#795).
  *   - `provides: ["memoryStore@1"]`     grants `get('memoryStore')` — a plugin
  *     may always read back its own registration; it holds the implementation
  *     anyway, so this is not an escalation.
@@ -59,13 +62,14 @@
  *
  * RETIRING IT
  * -----------
- * Each row is retired by adding the capability to that plugin's manifest — but
- * note `requires:` is also the *activation* dependency (`resolveEligiblePlugins`
- * holds back a consumer whose requires are unmet), so a plugin that consumes a
- * service *optionally* cannot express that today. Declaring it would make an
- * optional dependency mandatory and could stop the plugin activating. That
- * missing "optional requires" expression is the open design question this
- * allowlist defers, not a shortcut around work that is already possible.
+ * Each row is retired by adding the capability to that plugin's manifest. Until
+ * #795 that was not always possible: `requires:` is also the *activation*
+ * dependency (`resolveEligiblePlugins` holds back a consumer whose requires are
+ * unmet), so declaring an optionally-consumed service would have made it
+ * mandatory and could have stopped the plugin activating. `optional_requires:`
+ * now expresses exactly that case — it grants the same declaration this gate
+ * asks for and creates no activation prerequisite — so every remaining row here
+ * has a manifest fix available and the allowlist can be drained.
  */
 
 import {
@@ -203,6 +207,14 @@ export function declaredServiceNames(
   const names = new Set<string>();
   for (const raw of [
     ...(entry.plugin.requires ?? []),
+    // #795 — an optional dependency is still a DECLARATION. It says "I may
+    // resolve this", which is exactly the question this gate asks; what it
+    // does not say is "hold my activation until someone provides it", which
+    // is a different gate (capabilityResolver) and stays untouched. Without
+    // this line the two gates contradict each other: C2b would demand the
+    // capability be listed, and listing it under `requires:` would make a
+    // degradable dependency mandatory.
+    ...(entry.plugin.optional_requires ?? []),
     ...(entry.plugin.provides ?? []),
   ]) {
     try {

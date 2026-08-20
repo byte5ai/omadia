@@ -197,7 +197,12 @@ describe('admin providers route — GET /', () => {
     assert.equal(mistral.connected, false);
     // Data-protection policy flags are data-driven from the provider descriptor
     // (replaces the old hard-coded `provider !== 'anthropic'` / `=== 'mistral'`).
-    assert.equal(anthropic.requiresAvvDisclosure, false);
+    // Anthropic is TRUE since the 2026-08-20 retest: it is the default
+    // provider, prompt data sent to its API is third-party processing under
+    // DSGVO Art. 28 like any other API provider, and the legacy carve-out
+    // meant the disclosure a field-test customer explicitly praised (OM-10)
+    // vanished exactly on the stock configuration.
+    assert.equal(anthropic.requiresAvvDisclosure, true);
     assert.equal(openai.requiresAvvDisclosure, true);
     assert.equal(mistral.requiresAvvDisclosure, true);
     assert.equal(mistral.euHosted, true);

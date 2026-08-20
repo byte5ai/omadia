@@ -1474,6 +1474,7 @@ constructor(pluginId: string, capability: string);
 }
 export interface ServicesAccessor {
 get<T>(name: string): T | undefined;
+getOptional<T>(name: string): T | undefined;
 has(name: string): boolean;
 provide<T>(name: string, impl: T | PerCallerFactory<T>): () => void;
 replace<T>(name: string, impl: T | PerCallerFactory<T>): () => void;
@@ -1568,13 +1569,15 @@ readonly pluginId: string;
 }
 export interface UiNavEntryInput {
 readonly navId: string;
-readonly href: string;
+readonly href?: string;
+readonly pluginUi?: true;
 readonly cluster?: string;
 readonly order?: number;
 readonly label: Readonly<Record<string, string>>;
 }
-export interface UiNavEntry extends UiNavEntryInput {
+export interface UiNavEntry extends Omit<UiNavEntryInput, 'href'> {
 readonly pluginId: string;
+readonly href: string;
 }
 export interface ResolvedUiNavEntry {
 readonly pluginId: string;
@@ -1583,6 +1586,7 @@ readonly href: string;
 readonly cluster?: string;
 readonly order: number;
 readonly label: string;
+readonly pluginUi?: true;
 }
 export interface NotificationsAccessor {
 send(payload: NotificationPayload): Promise<NotificationDispatchResult>;
