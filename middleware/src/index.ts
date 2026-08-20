@@ -114,6 +114,7 @@ import { createAdminProvidersRouter } from './routes/adminProviders.js';
 import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
+import { createServiceRegistryBackedSqlGrantStore } from './platform/pluginSqlGrantStore.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
 import {
@@ -1072,6 +1073,12 @@ async function main(): Promise<void> {
     uploadedStore: uploadedPackageStore,
     builtInStore: builtInPackageStore,
     serviceRegistry,
+    // Epic #470 C7 / G4 — resolved per call, not captured: `graphPool` is
+    // published by a plugin THIS runtime activates, ~600 lines below where the
+    // runtime is built, so a store bound here would be permanently null.
+    sqlGrantStore: createServiceRegistryBackedSqlGrantStore(() =>
+      serviceRegistry.get<Pool>('graphPool'),
+    ),
     nativeToolRegistry,
     pluginRouteRegistry,
     notificationRouter,
