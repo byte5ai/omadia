@@ -42,6 +42,19 @@ CREATE TABLE IF NOT EXISTS audit_stream_heads (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Seed the receipts head at genesis (review H1): `SELECT … FOR UPDATE` on a
+-- row that does not exist locks NOTHING, so on a fresh deployment two
+-- concurrent FIRST appends would both compute seq=1 and the loser's receipt
+-- would be permanently lost on the unique index. With the row pre-seeded the
+-- lock always has something to grab. head_seq 0 + the genesis hash keep the
+-- store's `seq = head_seq + 1` arithmetic identical.
+-- The literal is sha256('genesis:receipts') — reproduce with:
+--   node -e "console.log(require('node:crypto').createHash('sha256').update('genesis:receipts','utf-8').digest('hex'))"
+-- (hard-coded rather than pgcrypto's digest() so the migration needs no extension).
+INSERT INTO audit_stream_heads (stream_id, head_seq, head_hash)
+VALUES ('receipts', 0, '\xb69452622fd89eb75373337022abd13f81da4da98bdad81955868609bbe42ac2')
+ON CONFLICT (stream_id) DO NOTHING;
+
 -- Signed checkpoints: Ed25519 over (stream_id, seq, head_hash, signed_at).
 -- The private key lives in env/secret manager, NEVER in this database —
 -- otherwise the admin we defend against could re-sign a rewritten chain.

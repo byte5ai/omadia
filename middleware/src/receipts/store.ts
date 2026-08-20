@@ -49,15 +49,23 @@ export function resetTurnReceiptCounters(): void {
 
 /** #758 — the canonical hash payload of a receipt row. NEVER includes
  *  DB-generated values (created_at): time is anchored by checkpoint cadence,
- *  not per-row. Exported so the #761 verifier recomputes the identical shape. */
+ *  not per-row. Exported so the #761 verifier recomputes the identical shape.
+ *
+ *  The JSON round-trip is load-bearing (review M3): the verifier recomputes
+ *  from the stored JSONB, which honored `toJSON` at write time — hashing the
+ *  live object would canonicalize e.g. a Date to `{}` while the row stores
+ *  its ISO string, a guaranteed spurious mismatch. Round-tripping here makes
+ *  hash input and stored row see the identical plain-JSON value. */
 export function receiptChainPayload(entry: TurnReceiptRecordInput): unknown {
-  return {
-    turnId: entry.turnId,
-    sessionScope: entry.sessionScope ?? null,
-    channel: entry.channel ?? null,
-    model: entry.model ?? null,
-    receipt: entry.receipt,
-  };
+  return JSON.parse(
+    JSON.stringify({
+      turnId: entry.turnId,
+      sessionScope: entry.sessionScope ?? null,
+      channel: entry.channel ?? null,
+      model: entry.model ?? null,
+      receipt: entry.receipt,
+    }),
+  );
 }
 
 export class PgTurnReceiptStore implements TurnReceiptStore {

@@ -120,13 +120,18 @@ export async function runCheckpointPass(
     }),
     signer.privateKey,
   );
-  await pool.query(
+  const insertRes = await pool.query(
     `INSERT INTO audit_checkpoints
        (stream_id, seq, head_hash, signed_at, signature, public_key_fingerprint)
      VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (stream_id, seq) DO NOTHING`,
     [RECEIPT_STREAM_ID, seq, row.head_hash, signedAt, signature, signer.publicKeyFingerprint],
   );
+  // Replica race (review M1): the loser of the (stream, seq) conflict must
+  // NOT anchor or report its own differently-timestamped signature — the
+  // anchor file has to correspond to what the DB actually stored, or the
+  // promised anchor↔DB comparison flags phantom "tampering".
+  if ((insertRes.rowCount ?? 0) === 0) return undefined;
   const record: CheckpointRecord = {
     streamId: RECEIPT_STREAM_ID,
     seq,

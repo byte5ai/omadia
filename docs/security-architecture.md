@@ -214,6 +214,16 @@ per-row. UPDATE on the table is trigger-forbidden as defence in depth;
 DELETE stays legal for bounded retention. The operator verify surface
 (endpoint, signed export, offline verifier) is #761.
 
+One consequence to state explicitly: because `created_at` sits outside the
+hash and DELETE is legal, an admin who drops the trigger could backdate
+`created_at` and let the reaper delete a row early — presenting the gap as
+legal retention. The mitigation is the checkpoint timeline: a row with
+`seq ≤` a checkpoint's seq provably existed by that checkpoint's signed
+time, so **the #761 verifier MUST check every retention gap's age against
+the checkpoint timeline** (a gap younger than the retention window measured
+in checkpoint time is a finding, not retention). Recorded as a hard
+requirement on #761.
+
 ## 8. What lives in the vault
 
 At a minimum, your deployment vault holds:

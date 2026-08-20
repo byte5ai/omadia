@@ -1132,7 +1132,10 @@ Keygen `scripts/generate-audit-signing-key.mjs`), Intervall
 Verify-Grundstein `verifyChainSegment` in `src/receipts/chain.ts` (Tamper-
 Tests in `test/receiptHashChain.test.ts`); die Operator-Verify-Fläche ist
 #761. Zeitanker: Checkpoint-Kadenz, nicht pro Zeile (`created_at` ist
-außerhalb des Hashes — bewusst, Doku im Migration-Header).
+außerhalb des Hashes — bewusst, begründet in `src/receipts/chain.ts` +
+`receiptChainPayload` in `store.ts`). ⚠️ #761-Pflicht: Retention-Lücken
+gegen die Checkpoint-Zeitachse prüfen (Backdating-Laundering-Kanal, s.
+security-architecture §7b).
 
 ## 4. Migration Managed Agents → Lokal
 

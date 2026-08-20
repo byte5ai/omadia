@@ -168,6 +168,23 @@ describe('#758 PgTurnReceiptStore chained append', () => {
     assert.equal(turnReceiptCounters().persisted, 3);
   });
 
+  it('a migration-seeded head (seq 0, genesis hash) yields the identical first append', async () => {
+    // Review H1 — 0041 seeds the head row so FOR UPDATE always has a row to
+    // lock. The seeded state (0, genesis) must produce byte-identical chain
+    // rows to the pre-seed fallback path.
+    resetTurnReceiptCounters();
+    const { pool, rows } = chainFakePool();
+    // Simulate the seed by priming the fake's head before any append.
+    await pool.query(
+      'INSERT INTO audit_stream_heads (stream_id, head_seq, head_hash, updated_at) VALUES ($1,$2,$3,NOW())',
+      [RECEIPT_STREAM_ID, 0, genesisHash(RECEIPT_STREAM_ID)],
+    );
+    await new PgTurnReceiptStore(pool).record({ turnId: 't-1', sessionScope: 's', receipt: RECEIPT });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.seq, 1);
+    assert.ok(rows[0]!.prev_hash.equals(genesisHash(RECEIPT_STREAM_ID)));
+  });
+
   it('a replayed turn advances neither rows, nor head, nor the counter', async () => {
     resetTurnReceiptCounters();
     const { pool, rows, head } = chainFakePool();
@@ -252,5 +269,25 @@ describe('#758 checkpoint signing', () => {
     const { pool, inserted } = checkpointFakePool(undefined);
     assert.equal(await runCheckpointPass(pool, signer, {}), undefined);
     assert.equal(inserted.length, 0);
+  });
+
+  it('the LOSING replica of a checkpoint race neither anchors nor reports (review M1)', async () => {
+    const signer = loadCheckpointSigner(makeKey());
+    // Fake where the checkpoint INSERT loses the (stream, seq) conflict.
+    const pool = {
+      query: async (sql: string) => {
+        if (sql.includes('FROM audit_stream_heads')) {
+          return { rows: [{ head_seq: '7', head_hash: genesisHash('x') }], rowCount: 1 };
+        }
+        if (sql.includes('MAX(seq)')) return { rows: [{ seq: null }], rowCount: 1 };
+        if (sql.includes('INSERT INTO audit_checkpoints')) return { rows: [], rowCount: 0 };
+        throw new Error('unscripted');
+      },
+    } as unknown as Pool;
+    const anchorPath = join(mkdtempSync(join(tmpdir(), 'anchor-loser-')), 'anchors.jsonl');
+    const record = await runCheckpointPass(pool, signer, { anchorPath });
+    assert.equal(record, undefined, 'the loser must not report a checkpoint');
+    // The anchor file must not exist — nothing was appended.
+    assert.throws(() => readFileSync(anchorPath, 'utf-8'));
   });
 });
