@@ -6,10 +6,14 @@ import type {
   PrivacyReceipt,
   PromptMaskedSpanInfo,
 } from '../../_lib/chatSessions';
+import { MissReportForm } from './MissReportForm';
 
 interface PrivacyReceiptCardProps {
   receipt: PrivacyReceipt;
   className?: string;
+  /** #760 — threads into the miss-report intake so a filed report keeps the
+   *  turn correlation the review schema was built with. */
+  turnId?: string;
 }
 
 /**
@@ -35,6 +39,7 @@ type TFn = (key: string, values?: Record<string, string | number>) => string;
 export function PrivacyReceiptCard({
   receipt,
   className,
+  turnId,
 }: PrivacyReceiptCardProps): React.ReactElement {
   const t = useTranslations('privacyReceipt');
   const verbs = receipt.verbsExecuted;
@@ -202,6 +207,8 @@ export function PrivacyReceiptCard({
             {t('explainerStructured')}
           </div>
         )}
+        {/* #760 — the catch basin's intake: report a value the shield missed. */}
+        <MissReportForm turnId={turnId} />
       </div>
     </details>
   );

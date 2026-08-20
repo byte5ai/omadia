@@ -429,6 +429,7 @@
     "routines": "Routinen",
     "conductor": "Conductor",
     "receipts": "Receipts",
+    "privacyReports": "Privacy-Reports",
     "admin": "Admin",
     "system": "System",
     "agentsCluster": "Orchestratoren",
@@ -715,6 +716,20 @@
     "templateRejecting": "Wird abgelehnt",
     "templatePendingEmpty": "Keine Vorlagen warten auf Review",
     "templateNoMatches": "Keine Vorlagen entsprechen deinen Filtern."
+  },
+  "operatorPrivacyReports": {
+    "metaTitle": "Privacy-Reports · omadia",
+    "title": "Privacy-Miss-Reports",
+    "subtitle": "Werte, die das Prompt-Masking übersehen hat — von Operatoren aus dem Privacy-Receipt gemeldet. Begriff in eine Deny-List-Regel überführen (custom_terms am Privacy-Plugin), dann den Report auflösen.",
+    "loadError": "Reports konnten nicht geladen werden",
+    "empty": "Keine offenen Reports. Aus der Receipt-Karte gemeldete Misses erscheinen hier.",
+    "howToResolve": "So bearbeitest Du einen Report: Begriff kopieren, ins custom_terms-Setup-Feld des Privacy-Plugins eintragen, dann auflösen.",
+    "reportedBy": "gemeldet von {reporter}",
+    "copyTerm": "Begriff kopieren",
+    "copied": "Kopiert",
+    "resolve": "Auflösen",
+    "resolving": "Wird aufgelöst",
+    "resolveFailed": "Auflösen des Reports fehlgeschlagen"
   },
   "operatorReceipts": {
     "metaTitle": "Receipts · omadia",
@@ -1437,7 +1452,15 @@
     "structuredBytes": "{kb} KB",
     "structuredSchemaYes": "Output-Schema",
     "structuredSchemaNo": "kein Schema",
-    "explainerStructured": "Ein verbundenes Tool lieferte strukturierte Daten. Sie erreichten den Browser — die vertrauenswürdige Seite — aber nie das Modell, das nur den internen Digest sah. Hier zur Transparenz aufgeführt; es wurde nichts maskiert, weil auf diesem Pfad nichts zu maskieren war."
+    "explainerStructured": "Ein verbundenes Tool lieferte strukturierte Daten. Sie erreichten den Browser — die vertrauenswürdige Seite — aber nie das Modell, das nur den internen Digest sah. Hier zur Transparenz aufgeführt; es wurde nichts maskiert, weil auf diesem Pfad nichts zu maskieren war.",
+    "missReportSummary": "Übersehenen Wert melden",
+    "missReportTermPlaceholder": "Der Wert, der hätte maskiert werden sollen",
+    "missReportDescriptionPlaceholder": "Kontext (optional)",
+    "missReportSubmit": "Melden",
+    "missReportSending": "Wird gemeldet",
+    "missReportSent": "Gemeldet — ein Admin prüft es unter Operator → Privacy-Reports.",
+    "missReportFailed": "Meldung fehlgeschlagen — bitte erneut versuchen",
+    "missReportHint": "Der hier eingegebene Begriff wird unverändert in der Operator-Review-Queue gespeichert und kann dort zur Deny-List-Regel werden."
   },
   "directLine": {
     "consultedLabel": "🔎 Konsultiert",

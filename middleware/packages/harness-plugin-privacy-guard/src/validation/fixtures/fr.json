@@ -1471,5 +1471,20 @@
   {
     "text": "Comment générer automatiquement des factures récurrentes ?",
     "spans": []
+  },
+  {
+    "text": "Mon numéro de sécurité sociale est 2 90 03 2A 123 456, merci de le corriger.",
+    "spans": [
+      {
+        "value": "2 90 03 2A 123 456",
+        "type": "idnum",
+        "tier": "critical"
+      }
+    ],
+    "origin": "hand"
+  },
+  {
+    "text": "La commande 84421907 attend une validation dans l'ERP.",
+    "spans": []
   }
 ]

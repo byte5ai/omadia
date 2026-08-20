@@ -1035,7 +1035,7 @@ function MessageRow({
               <CaptureDisclosure disclosure={message.captureDisclosure} />
             )}
             {message.privacyReceipt && (
-              <PrivacyReceiptCard receipt={message.privacyReceipt} />
+              <PrivacyReceiptCard receipt={message.privacyReceipt} turnId={message.turnId} />
             )}
           </>
         )}

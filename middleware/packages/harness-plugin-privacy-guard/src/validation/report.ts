@@ -30,7 +30,12 @@ export interface FixtureItem {
   readonly origin?: FixtureOrigin;
 }
 
-/** Types the C0 baseline is expected (and gated) to catch. */
+/** Types the C0 baseline is expected (and gated) to catch. #760 promoted
+ *  `idnum` from informational to gated: C0 now carries locale-ID patterns
+ *  (DE Steuer-ID/USt-IdNr., ES NIE/DNI, IT Codice Fiscale, UK NINO, FR n°
+ *  sécu). Known residual gap, deliberately unpatterned: NL BSN — 9 bare
+ *  digits with no distinguishing shape; it stays a recorded miss inside the
+ *  aggregate rather than an ungated type. */
 export const STRUCTURED_TYPES: ReadonlySet<string> = new Set([
   'email',
   'iban',
@@ -38,12 +43,12 @@ export const STRUCTURED_TYPES: ReadonlySet<string> = new Set([
   'address',
   'amount',
   'date',
+  'idnum',
 ]);
 
-/** Measured informationally only — no detector tier owns these in v1
- *  (C0 has no locale-ID patterns; C1's calibrated label set is
- *  person/address). Never gated. */
-export const INFORMATIONAL_TYPES: ReadonlySet<string> = new Set(['idnum']);
+/** Measured informationally only — empty since #760 gated `idnum`; the set
+ *  stays as the seam for future not-yet-gated types. */
+export const INFORMATIONAL_TYPES: ReadonlySet<string> = new Set([]);
 
 export const KNOWN_TYPES: ReadonlySet<string> = new Set([
   ...STRUCTURED_TYPES,
