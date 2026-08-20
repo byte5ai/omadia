@@ -240,6 +240,39 @@ Artifact: 69.5 KB raw / **11.8 KB gzip** / 9.0 KB brotli. The measured probe was
 gzip against a narrower vocabulary and without the baseline + `.harness-*` layer that
 replaces the separately-served `admin-ui.css`.
 
+### C10 — the flip (this PR)
+
+**Shipped.** The Dev Platform is gone from core. It lives in
+`byte5ai/omadia-dev-platform` and installs via the Hub (or a ZIP upload).
+
+- **~49k LOC / 213 files deleted in one PR**, because a partial delete leaves `tsc`
+  red: the backend tree, its 58 test files, the runner shim, three sidecars, the
+  compose topology, the operator SPA, the CI image matrix and its supply chain, the
+  43 config keys, and the whole `index.ts` assembly block.
+- **Ratchet 3,300 → 214.** Nine of fourteen zones read CLEAN. Everything left is
+  scheduled: migrations `0022`–`0030` (69) are **C11**, the two `publicPaths`
+  exemptions (6) are **C12**, and the remainder is **C13** residue — comments,
+  fixture strings, the `plugin-api` CHANGELOG that records the removal, and the
+  ratchet script's own pattern list.
+- **KEPT deliberately** (each argued in the PR): `services/githubAppJwt.ts` (§5 —
+  sending it out would recreate the reverse dependency across a repo boundary),
+  `express`/`pg`/`zod` (§5 — plugin `peerDependencies`, now with the comment §5
+  asked for), `DEV_ENDPOINTS_ENABLED` + `DEV_ENDPOINTS_LOOPBACK_ONLY` (core
+  dev-graph), `FLY_APP_NAME` (describes the host), `devFlag()` (two `PUBLIC_MCP_*`
+  call sites), and the generic C1–C8 platform capabilities.
+- **H3 resolved by omission.** `chat/page.tsx` no longer names `dev_job_start`; the
+  plugin's start tool falls through to the generic long-running-task card. That is
+  the accepted degradation from the two options above.
+- **One coverage reduction, recorded not absorbed.** The adversarial eval's
+  `brief_delimiter` Tier A probe ran the real `composeBrief` out of
+  `src/devplatform/`. It leaves with the code it measured, taking the
+  `direct_injection` and `indirect_injection` deterministic vectors with it
+  (12 scenarios → 7). `test/adversarial/README.md` states both ways to close it.
+- **A latent ordering bug fell out.** The `/api/v1/dev-runner/llm/` `express.json`
+  carve-out sat ahead of the conductor's inbound webhook router, whose route-level
+  `express.raw()` body-parser then short-circuited. Deleting the carve-out restores
+  the order the surrounding comments already promised.
+
 ### Still held back
 
 - **DynamicAgentRuntime rollback** — two attempts rejected. The current one does not cover
@@ -250,10 +283,11 @@ replaces the separately-served `admin-ui.css`.
 
 Two are genuinely blocking and belong to the maintainer, not the implementer:
 
-1. **H3 — the chat card.** `chat/page.tsx` hardcodes `tool.name === 'dev_job_start'` and
-   renders a core-compiled React card. An iframe per tool call is not acceptable. Either a
-   declarative card schema, or an accepted degradation to a plain `ToolRow` for
-   out-of-repo plugins. This is the one place "no hardcoding" and "no downgrade" conflict.
+1. ~~**H3 — the chat card.**~~ **Resolved in C10 by omission.** `chat/page.tsx` no longer
+   names the tool. The bespoke card left with the plugin and its start tool now falls
+   through to the generic long-running-task card (`isTaskStartToolName` / `TaskChatCard`)
+   — the "accepted degradation" branch of the two options, not the declarative schema.
+   A plugin wanting a richer card needs the C8 UI contract, not a core code path.
 2. ~~**G7 fallback.**~~ **Resolved by C8.** Option B is built and proved: a plugin ships a
    compiled SPA, core serves it and the stylesheet it links. Option E (an npm-published UI
    package web-ui optionally installs) is no longer needed and should not be revived — it
@@ -275,7 +309,7 @@ node scripts/check-core-decoupling.mjs --update   # lower the baseline
 ```
 
 The ratchet counts Dev Platform references across 14 disjoint zones and **fails if the count
-rises, per zone**. Baseline **3,300**. It only ever falls; raising it needs a hand-edited baseline, so
+rises, per zone**. Baseline **214** (C10 took it down from 3,300). It only ever falls; raising it needs a hand-edited baseline, so
 a new coupling shows up in review instead of slipping in.
 
 That is what makes the checklist's staleness survivable — a file inventory goes stale on
