@@ -4,6 +4,7 @@ import type {
   HardClaim,
   OdooRecordRef,
 } from './claimTypes.js';
+import { SOFT_ANCHOR_REF_FIELDS, hasOdooRecordAnchor } from './claimTypes.js';
 
 /**
  * Deterministic verifier for HardClaims. Runs an INDEPENDENT read-only
@@ -124,20 +125,46 @@ export class DeterministicChecker {
   }
 
   /**
-   * #129 — existence check for ANY claim anchored on an Odoo record
-   * (`hasOdooRecordAnchor`), independent of `claim.type`. The extractor
-   * is an LLM and types "INV/2026/0099 ist verbucht" as `id` in some
-   * samples and `qualitative` in others; the record either exists or it
-   * doesn't either way. Same transport as the `id` path: `read` by id,
-   * `search` by `name = ref`. Always resolves — never throws.
+   * #129 — existence check for a qualitative claim anchored on an Odoo
+   * record (`hasOdooRecordAnchor`). The extractor is an LLM and types
+   * "INV/2026/0099 ist verbucht" as `id` in some samples and `qualitative`
+   * in others; the record either exists or it doesn't either way.
+   *
+   * Narrower than the `id` path on purpose: a numeric id is `read` on any
+   * model, but a textual `ref` is only searched on models whose reference
+   * fields are known ({@link SOFT_ANCHOR_REF_FIELDS}) — `name` first, then
+   * the model's secondary reference field (vendor bill `ref`, sale order
+   * `client_order_ref`, …). Unknown model ⇒ `unverified`, the judge decides.
+   * Always resolves — never throws.
    */
   async checkRecordExists(claim: Claim): Promise<ClaimVerdict> {
-    if (claim.expectedSource !== 'odoo') {
-      return unverified(claim, `existence check needs odoo source, got ${claim.expectedSource}`);
+    if (!hasOdooRecordAnchor(claim)) {
+      return unverified(claim, 'claim has no odoo record anchor');
     }
     if (!this.odoo) return unverified(claim, 'no odoo reader configured');
+    const ref = claim.odooRecord!;
     try {
-      return await this.checkOdooId(claim, claim.odooRecord);
+      if (typeof ref.id === 'number') {
+        return await this.checkOdooId(claim, ref);
+      }
+      const fields = SOFT_ANCHOR_REF_FIELDS[ref.model];
+      if (!fields) {
+        return unverified(claim, `no known reference field for ${ref.model}`);
+      }
+      for (const field of fields) {
+        const ids = (await this.odoo.execute({
+          model: ref.model,
+          method: 'search',
+          positionalArgs: [[[field, '=', ref.ref]]],
+          kwargs: { limit: 1 },
+        })) as number[] | undefined;
+        if (Array.isArray(ids) && ids.length > 0) return verified(claim, 'odoo');
+      }
+      return contradicted(
+        claim,
+        null,
+        `no ${ref.model} with ${fields.join('|')}="${String(ref.ref)}"`,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.log(`[verifier/deterministic] FAIL exists claim=${claim.id} err=${msg}`);

@@ -135,7 +135,7 @@ export class VerifierPipeline {
     // own — we never need to wait on one to start the other.
     const [hardVerdicts, softVerdicts] = await Promise.all([
       this.deterministic.checkAll(hardToActuallyCheck),
-      this.checkSoftClaims(soft),
+      this.checkSoftClaims(soft, hard),
     ]);
 
     const all: ClaimVerdict[] = [
@@ -148,13 +148,26 @@ export class VerifierPipeline {
   }
 
   /**
-   * #129 — soft claims anchored on an Odoo record get a deterministic
+   * #129 — qualitative claims anchored on an Odoo record get a deterministic
    * existence check first. A record that does not exist is a contradiction
    * no judge can talk away, so those claims never reach the judge; claims
-   * whose record exists (or could not be checked) go to the judge unchanged.
+   * whose record exists (or could not be checked — reader error, unknown
+   * model) go to the judge unchanged (fail-open on the soft path).
+   *
+   * Anchors already covered by a hard claim in the same turn are skipped:
+   * the extractor is told to emit the `id` claim alongside the qualitative
+   * one, and the hard path (incl. the context-replay guard, which does not
+   * run on soft claims) already produces the verdict for that record — a
+   * second re-query would only duplicate the contradiction.
    */
-  private async checkSoftClaims(soft: SoftClaim[]): Promise<ClaimVerdict[]> {
-    const anchored = soft.filter(hasOdooRecordAnchor);
+  private async checkSoftClaims(
+    soft: SoftClaim[],
+    hard: readonly HardClaim[],
+  ): Promise<ClaimVerdict[]> {
+    const coveredByHard = new Set(hard.map(anchorKey).filter(Boolean));
+    const anchored = soft.filter(
+      (c) => hasOdooRecordAnchor(c) && !coveredByHard.has(anchorKey(c)),
+    );
     if (anchored.length === 0) return this.judge.checkAll(soft);
 
     const existence = await Promise.all(
@@ -273,6 +286,15 @@ function traceMissingCallVerdict(
     detail:
       'Claim ohne Fach-Agent-Call im Turn — Antwort hat keine Live-Daten aus Odoo abgerufen (Kontext-Replay).',
   };
+}
+
+/** `model#id` / `model@ref` identity of a claim's Odoo anchor; '' when none. */
+function anchorKey(claim: Claim): string {
+  const ref = claim.odooRecord;
+  if (!ref || claim.expectedSource !== 'odoo') return '';
+  if (typeof ref.id === 'number') return `${ref.model}#${String(ref.id)}`;
+  if (typeof ref.ref === 'string' && ref.ref.length > 0) return `${ref.model}@${ref.ref}`;
+  return '';
 }
 
 function classify(claims: readonly Claim[]): {

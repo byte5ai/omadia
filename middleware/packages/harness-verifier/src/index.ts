@@ -41,6 +41,7 @@ export type {
 // claimTypes — shared vocabulary used by every other verifier file plus
 // the kernel-side `verifierService.ts` until sub-commit 2b moves it.
 export {
+  SOFT_ANCHOR_REF_FIELDS,
   hasOdooRecordAnchor,
   isBorderlineVerdict,
   isHardClaim,

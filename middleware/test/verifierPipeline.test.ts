@@ -490,6 +490,75 @@ describe('verifier/pipeline - anchored soft claims', () => {
     assert.equal(verdict.status, 'approved_with_disclaimer');
   });
 
+  it('fails open: an unverifiable existence lookup still sends the claim to the judge', async () => {
+    let judgeCalls = 0;
+    const pipeline = new VerifierPipeline({
+      extractor: stubExtractor([anchoredSoft()]),
+      deterministic: stubDeterministicWithExists((c) => ({
+        status: 'unverified',
+        claim: c,
+        reason: 're-query error: ECONNRESET',
+      })),
+      judge: stubJudge((c) => {
+        judgeCalls += 1;
+        return { status: 'verified', claim: c, source: 'odoo' };
+      }),
+      log: SILENT_LOG,
+    });
+    const verdict = await pipeline.verify({
+      runId: 'r_anchor_err',
+      userMessage: 'Ist die Rechnung verbucht?',
+      answer: 'Ja, die Rechnung INV/2026/0099 ist verbucht.',
+      domainToolsCalled: ['query_odoo_accounting'],
+    });
+    assert.equal(judgeCalls, 1);
+    assert.equal(verdict.status, 'approved');
+  });
+
+  it('skips the existence re-query when a hard id claim already covers the same anchor (no double contradiction)', async () => {
+    let existsCalls = 0;
+    let judgeCalls = 0;
+    const twinId = hardClaim({
+      id: 'c_id',
+      text: 'INV/2026/0099',
+      type: 'id',
+      value: undefined,
+      odooRecord: { model: 'account.move', ref: 'INV/2026/0099' },
+    });
+    const pipeline = new VerifierPipeline({
+      extractor: stubExtractor([twinId, anchoredSoft()]),
+      deterministic: {
+        ...stubDeterministic((c) => ({
+          status: 'contradicted',
+          claim: c,
+          truth: null,
+          source: 'odoo',
+        })),
+        checkRecordExists(c: Claim): Promise<ClaimVerdict> {
+          existsCalls += 1;
+          return Promise.resolve({ status: 'contradicted', claim: c, truth: null, source: 'odoo' });
+        },
+      } as unknown as DeterministicChecker,
+      judge: stubJudge((c) => {
+        judgeCalls += 1;
+        return { status: 'unverified', claim: c, reason: 'no evidence' };
+      }),
+      log: SILENT_LOG,
+    });
+    const verdict = await pipeline.verify({
+      runId: 'r_twin',
+      userMessage: 'Ist die Rechnung INV/2026/0099 bereits verbucht?',
+      answer: 'Ja, die Rechnung INV/2026/0099 ist verbucht und abgeschlossen.',
+      domainToolsCalled: ['query_odoo_accounting'],
+    });
+    assert.equal(existsCalls, 0, 'hard twin owns the record verdict');
+    assert.equal(judgeCalls, 1, 'qualitative twin still judged');
+    assert.equal(verdict.status, 'blocked');
+    if (verdict.status === 'blocked') {
+      assert.equal(verdict.contradictions.length, 1);
+    }
+  });
+
   it('leaves unanchored soft claims on the judge path untouched', async () => {
     let existsCalls = 0;
     const pipeline = new VerifierPipeline({
