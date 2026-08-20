@@ -93,18 +93,22 @@ describe('Spec 004 — ctx.status', () => {
     assert.doesNotThrow(() => ctx.status.clear());
   });
 
-  it('report writes to the registry under the plugin id', () => {
+  it('report writes to the registry under the plugin id, checked_at kernel-stamped', () => {
     const reg = new PluginStatusRegistry();
     const ctx = makeCtx('caller', reg);
+    const before = Date.now();
     ctx.status.report({ state: 'needs_action', title: 'Nicht verbunden', detail: 'd' });
-    assert.deepEqual(reg.get('caller'), {
-      state: 'needs_action',
-      title: 'Nicht verbunden',
-      detail: 'd',
-    });
+    const got = reg.get('caller');
+    assert.equal(got?.state, 'needs_action');
+    assert.equal(got?.title, 'Nicht verbunden');
+    assert.equal(got?.detail, 'd');
+    // OM-16/24/33 follow-up: the time a status claims to have been checked is
+    // the time it was reported — stamped by the kernel, never by the caller.
+    const at = Date.parse(got?.checked_at ?? '');
+    assert.ok(at >= before - 1000 && at <= Date.now() + 1000, 'checked_at stamped');
   });
 
-  it('report({state:ok}) and clear() both leave no entry', () => {
+  it('a BARE report({state:ok}) and clear() both leave no entry', () => {
     const reg = new PluginStatusRegistry();
     const ctx = makeCtx('caller', reg);
     ctx.status.report({ state: 'needs_action', title: 'x' });
@@ -113,6 +117,28 @@ describe('Spec 004 — ctx.status', () => {
     ctx.status.report({ state: 'error', title: 'y' });
     ctx.status.clear();
     assert.equal(reg.get('caller'), undefined);
+  });
+
+  it('ok WITH a title is stored and rendered as a positive verdict', () => {
+    // The connection-probe surface (OM-16/24/33): an integration that verified
+    // its credentials reports ok+title and the store card shows
+    // "Verbunden · <Zeit>" instead of silence.
+    const reg = new PluginStatusRegistry();
+    const ctx = makeCtx('caller', reg);
+    ctx.status.report({ state: 'ok', title: 'Verbunden' });
+    const got = reg.get('caller');
+    assert.equal(got?.state, 'ok');
+    assert.equal(got?.title, 'Verbunden');
+    assert.ok(got?.checked_at, 'carries the kernel timestamp');
+    // ...and a plugin cannot smuggle its own timestamp in.
+    ctx.status.report({
+      state: 'ok',
+      title: 'Verbunden',
+      // The TYPE admits checked_at (it is part of the read surface), but the
+      // kernel must ignore a caller-supplied value and stamp its own.
+      checked_at: '1999-01-01T00:00:00.000Z',
+    });
+    assert.notEqual(reg.get('caller')?.checked_at, '1999-01-01T00:00:00.000Z');
   });
 
   it('normalizes a malformed state to needs_action', () => {

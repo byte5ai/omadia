@@ -1537,6 +1537,7 @@ export interface PluginActionStatus {
 readonly state: PluginActionState;
 readonly title?: string;
 readonly detail?: string;
+readonly checked_at?: string;
 }
 export interface StatusAccessor {
 report(status: PluginActionStatus): void;

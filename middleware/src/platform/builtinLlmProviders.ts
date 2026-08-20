@@ -132,7 +132,16 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     label: 'Claude (subscription CLI)',
     wireFormat: 'claude-cli',
     baseURL: '',
-    policy: { requiresApiKey: false, requiresAvvDisclosure: false },
+    // `requiresAvvDisclosure: false` is NOT a privacy carve-out here — the
+    // Art. 28 AVV framing simply does not fit: a consumer Claude subscription
+    // offers no data-processing agreement at all. That is a STRONGER caveat,
+    // not a weaker one, and `subscriptionNotice` surfaces exactly that in the
+    // assignment UI (field-test follow-up, OM-10 family).
+    policy: {
+      requiresApiKey: false,
+      requiresAvvDisclosure: false,
+      subscriptionNotice: true,
+    },
     models: [
       // modelId is suffixed `-cli` so it never collides with another provider's
       // alias (the registry requires globally-unique aliases and id ==

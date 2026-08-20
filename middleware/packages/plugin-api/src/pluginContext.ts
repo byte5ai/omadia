@@ -935,6 +935,14 @@ export interface PluginActionStatus {
   readonly title?: string;
   /** One-line detail / next step (e.g. "Verbindung in der Admin-UI herstellen"). */
   readonly detail?: string;
+  /**
+   * ISO timestamp of when this status was reported — STAMPED BY THE KERNEL at
+   * `report()` time, never trusted from the plugin, so "geprüft um <Zeit>"
+   * cannot lie about when the check actually ran. Field-test follow-up
+   * (OM-16/24/33): a connection verdict without a time reads as a permanent
+   * fact; with one it reads as what it is — the result of the last probe.
+   */
+  readonly checked_at?: string;
 }
 
 /**
@@ -943,6 +951,12 @@ export interface PluginActionStatus {
  * and `clear()` once everything is fine. The kernel keeps only the latest
  * value per plugin; there is no history. Reporting another plugin's status is
  * impossible — the accessor is bound to the calling plugin's id.
+ *
+ * `state: 'ok'` semantics: a BARE ok (no `title`) is equivalent to `clear()`
+ * and renders nothing — existing callers keep their behaviour. An ok WITH a
+ * `title` (e.g. "Verbunden") is stored and rendered as a positive badge with
+ * the kernel-stamped `checked_at`, so an integration can surface "connection
+ * verified at <time>" instead of silence.
  */
 export interface StatusAccessor {
   report(status: PluginActionStatus): void;
