@@ -41,7 +41,13 @@ jobs:
   decoupling:
     name: core decoupling ratchet (#470)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Was 5. `Ensure ripgrep` alone took 3:28 on a good run and 5:07 on a bad
+    # one, so this job routinely had ~90 seconds of headroom and intermittently
+    # blew the budget. A timed-out job reports as `cancelled`, and its remaining
+    # steps are `skipped` — so the ratchet was a REQUIRED check that silently
+    # did not run, which is the same failure family as a permanently-green
+    # guard-skip: not red, not passing, just absent.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -50,7 +56,15 @@ jobs:
           node-version: '22'
 
       - name: Ensure ripgrep
-        run: command -v rg >/dev/null || (sudo apt-get update && sudo apt-get install -y ripgrep)
+        # `apt-get update` is the expensive half — it refetches every package
+        # index to install one small binary. Try the cached indices first and
+        # only refresh when that actually fails. `rg` is genuinely needed:
+        # `check-core-decoupling.mjs` shells out to it (`execFileSync('rg', …)`).
+        run: |
+          if ! command -v rg >/dev/null; then
+            sudo apt-get install -y ripgrep \
+              || (sudo apt-get update && sudo apt-get install -y ripgrep)
+          fi
 
       - name: Check core is not re-coupling to the Dev Platform
         run: node scripts/check-core-decoupling.mjs
